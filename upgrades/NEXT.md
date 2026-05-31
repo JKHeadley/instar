@@ -1,0 +1,54 @@
+---
+review-convergence: complete
+approved: true
+approved-by: echo (standing 12h deploy mandate, topic 13481; multi-machine live-transfer cascade)
+---
+
+# Instar Upgrade Guide — vNEXT
+
+<!-- bump: patch -->
+
+## What Changed — a backup machine can now keep a conversation that was moved to it
+
+Another step in making the multi-machine "move this conversation to my other machine"
+feature work. To stay safe, a backup machine runs in read-only mode so it can never
+fork the shared cluster state. But when you move a single conversation to that
+machine, it has to record that it now owns and is running that conversation — and the
+read-only rule was blocking that save, so the moved conversation never started.
+
+This release splits writes into two kinds. Shared cluster state stays fully blocked on
+a backup, exactly as before. But a single conversation's own state — for a
+conversation the machine legitimately owns through the pool — is now allowed when the
+conversation-pool feature is on. That is safe because the system already guarantees a
+single owner per conversation, so there is nothing for that write to conflict with.
+
+## Summary of New Capabilities
+
+- `StateManager.setSessionPoolActive(active)` + a `sessionScoped` write option: a
+  read-only standby permits per-session writes (`saveSession`/`removeSession`) only
+  when the session pool is active; shared writes (`set`/`delete`/`saveJobState`/
+  `appendEvent`) stay blocked.
+- The server marks a pool-participant machine session-pool-active where it wires the
+  session router; a non-pool agent stays fully read-only (default off).
+
+## What to Tell Your User
+
+If you run your agent across more than one machine and move a conversation to another
+one, that machine can now actually record and run the moved conversation instead of
+refusing to save it. Your backup machine still can't touch shared cluster state, so
+the safety against split state is unchanged. This only matters when the multi-machine
+session pool is turned on; single-machine agents are unaffected. Nothing to configure.
+
+## Evidence
+
+- Found live on 2026-05-31: after the previous release made the move forward
+  correctly, the mini received the conversation and tried to start it but logged
+  "StateManager is read-only (this machine is on standby). Blocked: saveSession", so
+  the owner-side resume aborted.
+- Unit, `tests/unit/state-manager-readonly.test.ts`: a read-only standby with the
+  pool active allows saveSession/removeSession and the file persists; still blocks
+  set/delete/saveJobState/appendEvent; with the pool inactive it blocks saveSession
+  too (one-awake unchanged); a normal machine writes everything.
+- 104 StateManager-family + coordinator + wiring tests pass; tsc --noEmit clean.
+- Spec, `docs/specs/standby-pool-session-writes.md` plus the .eli16.md sibling.
+- Side-effects, `upgrades/side-effects/standby-pool-session-writes.md`.

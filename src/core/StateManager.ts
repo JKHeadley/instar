@@ -52,6 +52,7 @@ function describeReadError(err: unknown, filePath: string): {
 export class StateManager {
   private stateDir: string;
   private _readOnly: boolean = false;
+  private _sessionPoolActive: boolean = false;
   private _machineId: string | null = null;
 
   constructor(stateDir: string) {
@@ -85,11 +86,30 @@ export class StateManager {
     this._readOnly = readOnly;
   }
 
-  /** Guard that throws if in read-only mode. */
-  private guardWrite(operation: string): void {
-    if (this._readOnly) {
-      throw new Error(`StateManager is read-only (this machine is on standby). Blocked: ${operation}`);
-    }
+  /**
+   * Whether the active-active session pool is enabled for this machine. When true, a
+   * read-only standby is still permitted to write the PER-SESSION state of sessions it
+   * legitimately OWNS (the pool's CAS ownership guarantees a single owner per session,
+   * so a per-session file write can't fork shared cluster state). Shared-cluster writes
+   * (set/delete/saveJobState/appendEvent) stay blocked on a standby regardless.
+   * Default false → a pure one-awake standby remains fully read-only (unchanged).
+   */
+  setSessionPoolActive(active: boolean): void {
+    this._sessionPoolActive = active;
+  }
+
+  /**
+   * Guard that throws in read-only mode. `sessionScoped` marks a write that targets a
+   * single owned session's own file (state/sessions/<id>.json) — permitted on a
+   * read-only standby ONLY when the session pool is active (bug #9: a moved session's
+   * owner-side resume must persist on the standby that now owns it; the pool path that
+   * triggers it only fires for CAS-confirmed owned sessions). Shared-state writes pass
+   * no opts and stay blocked.
+   */
+  private guardWrite(operation: string, opts?: { sessionScoped?: boolean }): void {
+    if (!this._readOnly) return;
+    if (opts?.sessionScoped && this._sessionPoolActive) return;
+    throw new Error(`StateManager is read-only (this machine is on standby). Blocked: ${operation}`);
   }
 
   /** Validate a key/ID contains only safe characters to prevent path traversal. */
@@ -122,7 +142,7 @@ export class StateManager {
   }
 
   saveSession(session: Session): void {
-    this.guardWrite('saveSession');
+    this.guardWrite('saveSession', { sessionScoped: true });
     this.validateKey(session.id, 'sessionId');
     const filePath = path.join(this.stateDir, 'state', 'sessions', `${session.id}.json`);
     this.atomicWrite(filePath, JSON.stringify(session, null, 2));
@@ -158,7 +178,7 @@ export class StateManager {
   }
 
   removeSession(sessionId: string): boolean {
-    this.guardWrite('removeSession');
+    this.guardWrite('removeSession', { sessionScoped: true });
     this.validateKey(sessionId, 'sessionId');
     const filePath = path.join(this.stateDir, 'state', 'sessions', `${sessionId}.json`);
     if (!fs.existsSync(filePath)) return false;

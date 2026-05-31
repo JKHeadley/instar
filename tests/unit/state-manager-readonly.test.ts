@@ -148,3 +148,48 @@ describe('StateManager read-only mode', () => {
     });
   });
 });
+
+describe('StateManager read-only + session pool active (bug #9)', () => {
+  let tmpDir: string;
+  let state: StateManager;
+  const sess = (id: string) => ({ id, status: 'running', createdAt: new Date(0).toISOString(), updatedAt: new Date(0).toISOString() } as any);
+
+  beforeEach(() => {
+    tmpDir = createTempDir();
+    state = new StateManager(tmpDir);
+    state.setReadOnly(true);          // standby
+    state.setSessionPoolActive(true); // but participates in the active-active pool
+  });
+  afterEach(() => cleanup(tmpDir));
+
+  it('ALLOWS saveSession for an owned session (per-session write, pool CAS = single owner)', () => {
+    expect(() => state.saveSession(sess('moved-1'))).not.toThrow();
+    expect(state.getSession('moved-1')).toMatchObject({ id: 'moved-1' });
+  });
+
+  it('ALLOWS removeSession (per-session lifecycle)', () => {
+    state.saveSession(sess('moved-2'));
+    expect(() => state.removeSession('moved-2')).not.toThrow();
+    expect(state.getSession('moved-2')).toBeNull();
+  });
+
+  it('STILL BLOCKS shared-cluster writes on a standby (no state fork)', () => {
+    expect(() => state.set('shared-key', { x: 1 })).toThrow('read-only');
+    expect(() => state.delete('shared-key')).toThrow('read-only');
+    expect(() => state.saveJobState({ slug: 'j', lastRun: new Date(0).toISOString() } as any)).toThrow('read-only');
+    expect(() => state.appendEvent({ type: 't', timestamp: new Date(0).toISOString() } as any)).toThrow('read-only');
+  });
+
+  it('a read-only standby with the pool INACTIVE blocks saveSession too (pure one-awake unchanged)', () => {
+    const s2 = new StateManager(createTempDir());
+    s2.setReadOnly(true); // pool NOT active (default)
+    expect(() => s2.saveSession(sess('x'))).toThrow('read-only');
+  });
+
+  it('pool-active alone (not read-only) leaves all writes working', () => {
+    const s3 = new StateManager(createTempDir());
+    s3.setSessionPoolActive(true);
+    expect(() => s3.set('k', 'v')).not.toThrow();
+    expect(() => s3.saveSession(sess('y'))).not.toThrow();
+  });
+});

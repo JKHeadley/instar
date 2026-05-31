@@ -9376,6 +9376,12 @@ export async function startServer(options: StartOptions): Promise<void> {
           const peerUrl = (machineId: string): string | null =>
             meshIdMgr.getActiveMachines().find((m) => m.machineId === machineId)?.entry.lastKnownUrl ?? null;
           _meshSelfId = meshSelfId;
+          // This machine participates in the session pool, so a read-only standby may
+          // persist the PER-SESSION state of sessions it's handed (the pool's owner-side
+          // resume only fires for CAS-confirmed owned sessions, and only past 'dark').
+          // Shared-cluster writes stay blocked on a standby. (bug #9: the moved session's
+          // saveSession was blocked by the standby read-only guard.)
+          state.setSessionPoolActive(true);
           _sessionRouter = new routerMod.SessionRouter({
             selfMachineId: meshSelfId,
             placement: new placeMod.PlacementExecutor(),
