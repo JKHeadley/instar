@@ -54,13 +54,33 @@ describe('Session Pool activation wiring (§L4)', () => {
   it('the owner-side bridge resumes the local session on a forwarded message, gated + fail-safe', () => {
     const idx = src.indexOf('onAccepted: (cmd) => {');
     expect(idx).toBeGreaterThan(0);
-    const block = src.slice(idx, idx + 2800);
+    const block = src.slice(idx, idx + 4200);
     // Gated on a non-dark stage + only with Telegram present.
     expect(block).toContain("_sessionPoolStage() === 'dark' || !telegram");
     // Bridges to the existing local spawn/resume path for the topic (now wrapped in an
     // async IIFE that first fetches the moved topic's history from the router — bug #2).
-    expect(block).toContain('spawnSessionForTopic(sessionManager, tg, sessionName, topicId, text');
+    // The spawn name is a clean topic-derived name, NOT the prefixed getSessionForTopic
+    // value (bug #13 — re-prefixing it spawned a duplicate per follow-up).
+    expect(block).toContain('spawnSessionForTopic(sessionManager, tg, spawnName, topicId, text');
     // Fire-and-forget + fail-safe (the receipt is already durably ACKed before this).
     expect(block).toContain('owner-side resume failed');
+  });
+
+  it('bug #13: a forwarded follow-up to an already-running moved session INJECTS, never re-spawns', () => {
+    const idx = src.indexOf('onAccepted: (cmd) => {');
+    expect(idx).toBeGreaterThan(0);
+    const block = src.slice(idx, idx + 4200);
+    // A live session for the topic short-circuits to injection BEFORE the spawn IIFE.
+    const injectIdx = block.indexOf('sessionManager.isSessionAlive(existing)');
+    const spawnIdx = block.indexOf('spawnSessionForTopic(sessionManager, tg, spawnName');
+    expect(injectIdx).toBeGreaterThan(0);
+    expect(spawnIdx).toBeGreaterThan(injectIdx); // inject decision precedes spawn
+    // Injection uses the Telegram-aware path (adds the [telegram:N …] prefix the moved
+    // session needs to reply) and tracks the injection for stall detection.
+    expect(block).toContain('sessionManager.injectTelegramMessage(existing, topicId, text');
+    expect(block).toContain('tg.trackMessageInjection(topicId, existing, text)');
+    // The spawn name must NOT be the prefixed session name (the double-prefix defect).
+    expect(block).toContain('const spawnName = `topic-${topicId}`');
+    expect(block).not.toContain('const sessionName = tg.getSessionForTopic(topicId)');
   });
 });

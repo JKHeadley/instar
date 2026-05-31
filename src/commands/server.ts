@@ -9323,7 +9323,28 @@ export async function startServer(options: StartOptions): Promise<void> {
               : (cmd.payload && typeof cmd.payload === 'object' && 'text' in (cmd.payload as object))
                 ? String((cmd.payload as { text: unknown }).text)
                 : undefined;
-            const sessionName = tg.getSessionForTopic(topicId) ?? `topic-${topicId}`;
+            // bug #13: a moved session ALREADY running on this machine must receive
+            // follow-ups via INJECTION (mirroring the normal inbound dispatch), NOT a
+            // re-spawn. getSessionForTopic returns the already-prefixed tmux name; routing
+            // it back through spawnSessionForTopic re-prefixes it (projectBase-projectBase-
+            // topic-N) so tmuxSessionExists misses and a DUPLICATE session is spawned on
+            // every follow-up — the moved conversation never advances. So: if a live
+            // session exists, inject the text into it (with the [telegram:N …] prefix the
+            // session expects) and return; only spawn when there is none.
+            const existing = tg.getSessionForTopic(topicId);
+            if (existing && sessionManager.isSessionAlive(existing)) {
+              if (text) {
+                console.log(pc.green(`  [session-pool] owner-side inject for forwarded topic ${topicId} → ${existing}`));
+                sessionManager.injectTelegramMessage(existing, topicId, text, tg.getTopicName?.(topicId) ?? undefined);
+                tg.trackMessageInjection(topicId, existing, text);
+              }
+              return;
+            }
+            // No live session yet (the FIRST forwarded message for this topic, or the
+            // prior one died) — spawn the moved session with the relayed context, under a
+            // clean topic-derived name. NEVER reuse the prefixed getSessionForTopic value
+            // as the spawn name (that is the double-prefix defect above).
+            const spawnName = `topic-${topicId}`;
             // bug #2: fetch the prior conversation from the router (this machine's local
             // history for the topic is empty) so the moved session continues with context
             // instead of starting blank. Best-effort — on any failure we spawn without it.
@@ -9343,10 +9364,10 @@ export async function startServer(options: StartOptions): Promise<void> {
               } catch {
                 // @silent-fallback-ok — cross-machine context relay is best-effort
               }
-              return spawnSessionForTopic(sessionManager, tg, sessionName, topicId, text, undefined, undefined, movedContext);
+              return spawnSessionForTopic(sessionManager, tg, spawnName, topicId, text, undefined, undefined, movedContext);
             })()
               .then((name) => {
-                tg.registerTopicSession(topicId, name, sessionName);
+                tg.registerTopicSession(topicId, name, spawnName);
                 console.log(pc.green(`  [session-pool] owner-side resume for forwarded topic ${topicId} → ${name}`));
               })
               .catch((err) => console.warn(`  [session-pool] owner-side resume failed for topic ${topicId}: ${err instanceof Error ? err.message : String(err)}`));
