@@ -26,7 +26,7 @@ import { execFileSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import { SafeGitExecutor } from './SafeGitExecutor.js';
 import { ensureInstarBashPreToolUseHooks, type SettingsMatcherEntry } from './instarSettingsHooks.js';
-import { resolveAgentHome as resolveAgentHomeForWorktree } from './InstarWorktreeManager.js';
+import { resolveAgentHome as resolveAgentHomeForWorktree, ensureWorktreeSpotlightExclusion } from './InstarWorktreeManager.js';
 import { fileURLToPath } from 'node:url';
 import { TreeGenerator } from '../knowledge/TreeGenerator.js';
 import { HTTP_HOOK_TEMPLATES, buildHttpHookSettings } from '../data/http-hook-templates.js';
@@ -228,6 +228,7 @@ export class PostUpdateMigrator {
     this.migrateParitySentinelTrust(result);
     this.migrateConversationalCatalogPlaybookManifest(result);
     this.migrateWorktreeConvention(result);
+    this.migrateWorktreeSpotlightExclusion(result);
     this.migrateBootWrapperToCjs(result);
     this.migrateBootWrapperAbiCheck(result);
     this.migrateStaleLifelineSignal(result);
@@ -688,6 +689,40 @@ export class PostUpdateMigrator {
   //     somewhere else simply opt out — the wrapper isn't applicable).
   //   - `<agent_home>/.bin` exists as a symlink (defeats the
   //     /usr/local/bin clobber attack surface).
+  /**
+   * OS resource hygiene (Responsible Resource Usage standard): ensure a
+   * `.metadata_never_index` marker at the agent's `.worktrees/` container so
+   * macOS Spotlight/mediaanalysisd stop re-indexing every worktree beneath it.
+   * Existing agents accumulated dozens of worktrees before the create-path drop
+   * existed; this backfills the marker so they get the relief on update. The
+   * marker is honored recursively, harmless on non-macOS, and idempotent.
+   */
+  private migrateWorktreeSpotlightExclusion(result: MigrationResult): void {
+    const agentHome = path.dirname(this.config.stateDir);
+    let resolved: { agentHome: string; agentName: string };
+    try {
+      resolved = resolveAgentHomeForWorktree({ env: { INSTAR_AGENT_HOME: agentHome } });
+    } catch {
+      result.skipped.push('worktree-spotlight-exclusion: agent home does not match the convention');
+      return;
+    }
+    const worktreesDir = path.join(resolved.agentHome, '.worktrees');
+    if (!fs.existsSync(worktreesDir)) {
+      result.skipped.push('worktree-spotlight-exclusion: no .worktrees/ directory');
+      return;
+    }
+    try {
+      const created = ensureWorktreeSpotlightExclusion(worktreesDir);
+      if (created) {
+        result.upgraded.push('worktree-spotlight-exclusion: dropped .metadata_never_index at .worktrees/ (excludes worktrees from Spotlight indexing)');
+      } else {
+        result.skipped.push('worktree-spotlight-exclusion: marker already present');
+      }
+    } catch (err) {
+      result.errors.push(`worktree-spotlight-exclusion: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
   private migrateWorktreeConvention(result: MigrationResult): void {
     const agentHome = path.dirname(this.config.stateDir);
 
