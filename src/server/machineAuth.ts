@@ -157,20 +157,47 @@ export interface SignedHeaders {
 }
 
 /**
+ * Process-global monotonic sequence for ALL machineAuth-signed outbound requests.
+ *
+ * The receiver's NonceStore tracks ONE monotonic sequence PER SENDING MACHINE
+ * (src/core/NonceStore.ts) — so EVERY signed channel from this process (lease
+ * broadcast, machine heartbeat, handoff, reply-marker, live-tail, …) MUST draw
+ * from a single shared counter. They previously each used their own
+ * `Date.now()`-seeded counter; the fast-firing heartbeat pushed the receiver's
+ * per-machine watermark high while the slow lease counter stayed low, so every
+ * lease broadcast was rejected as an out-of-order replay and the standby never
+ * learned the holder (found live 2026-05-31:
+ * `Sequence 1780200440053 <= last seen 1780200440744`). Seeding from `Date.now()`
+ * keeps it monotonic across a process restart (wall-clock only advances), so the
+ * receiver's persisted watermark from a prior run is never above our fresh seed.
+ */
+let __machineAuthSequence = Date.now();
+/** The next process-global machineAuth sequence (strictly increasing). */
+export function nextMachineAuthSequence(): number {
+  __machineAuthSequence += 1;
+  return __machineAuthSequence;
+}
+
+/**
  * Sign an outgoing request with machine credentials.
  *
  * @param machineId - This machine's ID
  * @param privateKeyPem - Ed25519 private key in PEM format
  * @param body - The request body (will be JSON stringified for hashing)
- * @param sequence - The sequence number for this request
+ * @param _legacySequence - IGNORED. Retained for signature compatibility with
+ *   existing callers. The sequence is now drawn from the process-global
+ *   `nextMachineAuthSequence()` so every channel shares one monotonic counter
+ *   (see the note above — per-caller counters collided on the receiver's
+ *   per-machine watermark). New callers may omit it.
  * @returns Headers to include in the request
  */
 export function signRequest(
   machineId: string,
   privateKeyPem: string,
   body: unknown,
-  sequence: number,
+  _legacySequence?: number,
 ): SignedHeaders {
+  const sequence = nextMachineAuthSequence();
   const timestamp = Math.floor(Date.now() / 1000).toString();
   const nonce = crypto.randomBytes(16).toString('hex');
   const bodyHash = crypto.createHash('sha256')
