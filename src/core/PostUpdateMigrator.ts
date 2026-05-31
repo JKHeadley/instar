@@ -1440,15 +1440,17 @@ export class PostUpdateMigrator {
       }
     };
     // Marker = the latest capability signature (bumped each time the bundled hook/
-    // setup gains a feature, so prior installs upgrade): now notify-on-stop —
-    // terminal exits (completion/duration/emergency) send a Telegram explaining
-    // why the run stopped (2026-05-27 silent-stalls postmortem, Task 2). The
-    // `notify_terminal_stop` function name is absent from all prior installs.
+    // setup gains a feature, so prior installs upgrade): now the #28 codex
+    // autonomous-loop driver — the shared hook self-gates on `--codex` +
+    // autonomousSessions.codexLoopDriver (var `CODEX_LOOP_ENABLED`), which is absent
+    // from every prior install (incl. the notify-on-stop version). Bumping the marker
+    // re-deploys the bundled hook to stock installs so existing CODEX agents get the
+    // codex-aware hook; customized hooks (no stock fingerprint) are still left untouched.
     upgrade(
       '.claude/skills/autonomous/hooks/autonomous-stop-hook.sh',
-      'notify_terminal_stop',
+      'CODEX_LOOP_ENABLED',
       'Autonomous Mode Stop Hook',
-      'skills/autonomous/hooks/autonomous-stop-hook.sh (topic-keyed + multi-session + completion evaluator + native /goal + notify-on-stop)',
+      'skills/autonomous/hooks/autonomous-stop-hook.sh (#28 codex autonomous-loop driver — --codex self-gate)',
     );
     upgrade(
       '.claude/skills/autonomous/scripts/setup-autonomous.sh',
@@ -2878,6 +2880,28 @@ Every session shutoff — and every REFUSED shutoff (protected, not-lease-holder
       result.upgraded.push('CLAUDE.md: added Reap-Log section');
     } else {
       result.skipped.push('CLAUDE.md: Reap-Log section already present');
+    }
+
+    // SessionReaper CPU-aware pressure + decision audit (RESPONSIBLE-RESOURCE-USAGE).
+    // Tells the agent (a) the reaper now reaps under CPU strain, not only memory,
+    // and (b) a silent, reviewable decision trail + endpoint exists. Without this an
+    // agent asked "what is the reaper considering / why isn't it acting under load?"
+    // has no grounded answer. Idempotent via content-sniffing on the new route path.
+    if (!content.includes('/sessions/reaper/audit')) {
+      const section = `
+## SessionReaper — CPU-aware pressure + decision audit
+
+The idle-session reaper's pressure is **CPU-aware**: the tier is the WORST of memory (free %) and CPU (1-min load ÷ cores), so a CPU-bound box raises pressure even when free RAM is fine. Tune the CPU thresholds in \`.instar/config.json\` → \`{"monitoring": {"sessionReaper": {"cpuModerateLoadPerCore": 1.0, "cpuCriticalLoadPerCore": 1.5}}}\`. \`GET /sessions/reaper\`'s \`pressure.inputs\` shows freePct, loadPerCore, and the memTier/cpuTier breakdown.
+
+A silent **decision audit** records every keep/kill decision *change* (logged on transition, not every tick) plus the reap-path events, each stamped with the pressure tier that drove it, to \`logs/reaper-audit.jsonl\`.
+- Read the tail: \`curl -H "Authorization: Bearer $AUTH" "http://localhost:4040/sessions/reaper/audit?limit=50"\` → \`{ entries: [...] }\`. Read-only, no notifications — purely for inspection.
+- Proactive: user asks "what is the reaper considering?" / "why did/didn't it reap X?" / "is it acting under load?" → GET /sessions/reaper (live pressure + verdicts) and GET /sessions/reaper/audit (decision history).
+`;
+      content += '\n' + section;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added SessionReaper CPU-aware + decision-audit section');
+    } else {
+      result.skipped.push('CLAUDE.md: SessionReaper CPU-aware + decision-audit section already present');
     }
 
     // Self-Heal: Update Restart Behavior — explains restart-cascade dampener

@@ -78,6 +78,10 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       maxReapsPerHour: 12,
       finalGraceSec: 60,
       protectOpenCommitments: true,
+      // CPU pressure: overall tier = WORST of memory (free %) and CPU (1-min load
+      // ÷ cores), so a CPU-bound box raises pressure even when memory is fine.
+      cpuModerateLoadPerCore: 1.0,
+      cpuCriticalLoadPerCore: 1.5,
     },
     // Reap-notification (UNIFIED-SESSION-LIFECYCLE §P3). Default ON — the single
     // coalescing listener that surfaces "your session was shut down" so a reap is
