@@ -53,6 +53,15 @@ describe('buildStageAContext — only the conversation surface', () => {
     expect(ctx).toMatch(/unblock \| answer \| assign-next \| observe-only/);
     expect(ctx).toMatch(/untrusted/i);
   });
+  it('instructs the compose LLM to never name source paths/files/lines/PR#/SHA (two-hats leak prevention §4.3)', () => {
+    // The detectStageALeak canary flags exactly these reference shapes; the
+    // prompt must prevent the leak at the source rather than rely on loosening
+    // the detector. Still permits WHAT-to-check guidance.
+    const ctx = buildStageAContext(baseSurface);
+    expect(ctx).toMatch(/[Nn]ever name specific source paths/);
+    expect(ctx).toMatch(/file names, line numbers, PR or issue numbers, or commit hashes/);
+    expect(ctx).toMatch(/WHAT to check or verify, not WHERE in the code/);
+  });
   it('handles an empty surface without throwing', () => {
     const ctx = buildStageAContext({ framework: 'cursor', threadlineHistory: '' });
     expect(ctx).toContain('no prior conversation');
