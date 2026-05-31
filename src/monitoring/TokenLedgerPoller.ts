@@ -5,11 +5,21 @@
  * Read-only observability: never mutates the source JSONL files.
  */
 import type { TokenLedger } from './TokenLedger.js';
+import { IdleAwareCadence } from './IdleAwareCadence.js';
 
 export interface TokenLedgerPollerOptions {
   ledger: TokenLedger;
-  /** Polling interval (ms). Defaults to 60_000. */
+  /** Polling interval (ms) while the agent is active. Defaults to 60_000. */
   intervalMs?: number;
+  /**
+   * When provided, the poller backs off to {@link idleIntervalMs} while this
+   * returns true (e.g. no active sessions). Scanning JSONL for token usage when
+   * nothing is running is wasted work — this trims it from the idle CPU floor.
+   * Omit for the prior fixed-cadence behavior. (Responsible Resource Usage.)
+   */
+  isIdle?: () => boolean;
+  /** Polling interval (ms) while idle. Defaults to 5 minutes. */
+  idleIntervalMs?: number;
   /** Optional logger (defaults to console.warn for errors only). */
   onError?: (err: unknown) => void;
   /**
@@ -25,7 +35,10 @@ export interface TokenLedgerPollerOptions {
 export class TokenLedgerPoller {
   private ledger: TokenLedger;
   private intervalMs: number;
+  private idleIntervalMs: number;
+  private isIdle: (() => boolean) | null;
   private timer: ReturnType<typeof setInterval> | null = null;
+  private cadence: IdleAwareCadence | null = null;
   private running = false;
   private onError: (err: unknown) => void;
   private codexProjectDir: string | null;
@@ -34,6 +47,8 @@ export class TokenLedgerPoller {
   constructor(opts: TokenLedgerPollerOptions) {
     this.ledger = opts.ledger;
     this.intervalMs = opts.intervalMs ?? 60_000;
+    this.isIdle = opts.isIdle ?? null;
+    this.idleIntervalMs = opts.idleIntervalMs && opts.idleIntervalMs > 0 ? opts.idleIntervalMs : 5 * 60_000;
     this.codexProjectDir = opts.codexProjectDir ?? null;
     this.codexMaxFileAgeMs = opts.codexMaxFileAgeMs && opts.codexMaxFileAgeMs > 0
       ? opts.codexMaxFileAgeMs
@@ -44,17 +59,32 @@ export class TokenLedgerPoller {
   }
 
   start(): void {
-    if (this.timer) return;
+    if (this.timer || this.cadence) return;
     // Immediate first tick (non-blocking) so the dashboard has data fast.
     queueMicrotask(() => this.tick());
-    this.timer = setInterval(() => this.tick(), this.intervalMs);
-    if (typeof this.timer.unref === 'function') this.timer.unref();
+    if (this.isIdle) {
+      // Idle-aware: full cadence while active, back off while idle.
+      this.cadence = new IdleAwareCadence({
+        activeMs: this.intervalMs,
+        idleMs: this.idleIntervalMs,
+        isIdle: this.isIdle,
+        tick: () => this.tick(),
+      });
+      this.cadence.start();
+    } else {
+      this.timer = setInterval(() => this.tick(), this.intervalMs);
+      if (typeof this.timer.unref === 'function') this.timer.unref();
+    }
   }
 
   stop(): void {
     if (this.timer) {
       clearInterval(this.timer);
       this.timer = null;
+    }
+    if (this.cadence) {
+      this.cadence.stop();
+      this.cadence = null;
     }
   }
 

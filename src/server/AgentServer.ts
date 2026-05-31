@@ -1979,6 +1979,10 @@ export class AgentServer {
             this.tokenLedgerPoller = new TokenLedgerPoller({
               ledger: this.tokenLedger,
               codexProjectDir: process.cwd(),
+              // Idle-aware cadence (Responsible Resource Usage): back off the
+              // JSONL scan while no sessions are running — there are no new
+              // tokens to attribute, so the full-cadence scan is wasted.
+              isIdle: () => this.sessionManager.listRunningSessions().length === 0,
             });
             this.tokenLedgerPoller.start();
           } catch (err) {
