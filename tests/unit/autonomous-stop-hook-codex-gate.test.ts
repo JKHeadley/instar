@@ -42,7 +42,8 @@ function writeConfig(codexLoopEnabled: boolean | undefined): void {
   fs.writeFileSync(path.join(homeDir, '.instar', 'config.json'), JSON.stringify(cfg));
 }
 
-function runHook(opts: { codex: boolean; tmuxSession: string }): { exitCode: number; decision: string | null } {
+function runHook(opts: { codex: boolean; tmuxSession: string; emergencyStop?: boolean }): { exitCode: number; decision: string | null; stdout: string } {
+  if (opts.emergencyStop) fs.writeFileSync(path.join(homeDir, '.instar', 'autonomous-emergency-stop'), '');
   const env: NodeJS.ProcessEnv = {
     ...process.env,
     INSTAR_HOOK_TMUX_SESSION: opts.tmuxSession,
@@ -69,7 +70,7 @@ function runHook(opts: { codex: boolean; tmuxSession: string }): { exitCode: num
   } catch {
     decision = null;
   }
-  return { exitCode, decision };
+  return { exitCode, decision, stdout };
 }
 
 beforeEach(() => {
@@ -108,5 +109,26 @@ describe('autonomous stop hook — codex dark-launch gate (#28)', () => {
     writeConfig(false); // flag off must NOT suppress the Claude loop
     const r = runHook({ codex: false, tmuxSession: 'echo-codey' });
     expect(r.decision).toBe('block');
+  });
+
+  // Regression (live 2026-05-31): with the flag ON, a codex APPROVE path (here emergency
+  // stop) used to `echo` plain text to stdout — codex rejects any non-JSON stdout as
+  // "invalid stop hook JSON output" and logs the stop hook as FAILED. The fix routes those
+  // messages to stderr in codex mode (emit()). Stdout must be empty or valid JSON only.
+  it('ENABLED codex approve-path emits NO non-JSON to stdout (regression: invalid stop hook JSON)', () => {
+    writeActiveJob('13435', 'echo-codey');
+    writeConfig(true);
+    const r = runHook({ codex: true, tmuxSession: 'echo-codey', emergencyStop: true });
+    expect(r.decision).toBeNull(); // approves the stop (not a block)
+    const out = r.stdout.trim();
+    if (out.length > 0) expect(() => JSON.parse(out)).not.toThrow(); // only JSON allowed on stdout
+    expect(out).not.toMatch(/Autonomous mode: Emergency stop/); // the old plain-text leak is gone
+  });
+
+  it('Claude approve-path STILL writes the human message to stdout (emit() preserves Claude behavior)', () => {
+    writeActiveJob('13435', 'echo-codey');
+    writeConfig(false);
+    const r = runHook({ codex: false, tmuxSession: 'echo-codey', emergencyStop: true });
+    expect(r.stdout).toMatch(/Emergency stop detected/); // Claude surfaces approve stdout to the user
   });
 });
