@@ -166,7 +166,18 @@ export class LeaseCoordinator {
     if (this.d.tunnel) {
       const obs = this.d.tunnel.observed();
       if (obs.lease) {
-        const decision = this.fl.acceptTunnelLease(obs.lease, git.epoch, obs.lastNonceByHolder);
+        // acceptTunnelLease re-checks signature + git-floor + nonce-replay. The
+        // transport already replay-guarded obs.lease on RECEIVE (recordObserved),
+        // and by design its watermark for obs.lease's holder == obs.lease.nonce —
+        // so passing the raw watermark here would self-reject the very lease we're
+        // validating (nonce <= watermark). Exclude obs.lease's own holder from the
+        // nonce floor so a genuine standby broadcast is folded in; the transport
+        // remains the replay guard and the signature/git-floor checks still run.
+        // (2026-05-31: this self-rejection silently broke the git-less tunnel-
+        // observe path — a standby never learned the holder → MeshRpc not-router.)
+        const { [obs.lease.holder]: _self, ...nonceFloor } = obs.lastNonceByHolder;
+        void _self;
+        const decision = this.fl.acceptTunnelLease(obs.lease, git.epoch, nonceFloor);
         if (decision.accept && obs.lease.epoch > epoch) {
           bestLease = obs.lease;
           epoch = obs.lease.epoch;

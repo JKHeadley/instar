@@ -69,7 +69,8 @@ import { wireRegistrySync } from '../core/wireRegistrySync.js';
 import { assertSeamlessnessInvariants } from '../core/seamlessnessConfig.js';
 import { FencedLease, type LeaseCrypto } from '../core/FencedLease.js';
 import { GitLeaseStore } from '../core/GitLeaseStore.js';
-import { LeaseCoordinator } from '../core/LeaseCoordinator.js';
+import { LocalLeaseStore } from '../core/LocalLeaseStore.js';
+import { LeaseCoordinator, type LeaseStore } from '../core/LeaseCoordinator.js';
 import { HttpLeaseTransport } from '../core/HttpLeaseTransport.js';
 import { HttpLiveTailTransport } from '../core/HttpLiveTailTransport.js';
 import { LiveTailBuffer } from '../core/LiveTailBuffer.js';
@@ -2508,54 +2509,72 @@ export async function startServer(options: StartOptions): Promise<void> {
     // (the Phase-0 scenario) must ALREADY have it so its role-change push fires.
     // Only an awake machine pulls+pushes at boot; the durable registry push is
     // driven by the RegistrySyncDebouncer below, gated on authority.
-    if (coordinator.enabled && isGitRepo && gitBackupEnabled) {
-      try {
-        gitSync = new GitSyncManager({
-          projectDir: config.projectDir,
-          stateDir: config.stateDir,
-          identityManager: coordinator.managers.identityManager,
-          securityLog: coordinator.managers.securityLog,
-          machineId: coordinator.identity!.machineId,
-        });
-
-        // Configure commit signing if not already done
-        if (!gitSync.isSigningConfigured() && localSigningKeyPem) {
-          gitSync.configureCommitSigning();
-          console.log(pc.green('  Git commit signing configured'));
-        }
-
-        // Pull (and auto-push) latest on startup — awake machine only.
-        if (coordinator.isAwake) {
-          const syncResult = await gitSync.sync();
-          if (syncResult.pulled) {
-            console.log(pc.green(`  Git sync: pulled ${syncResult.commitsPulled} commit(s)`));
+    if (coordinator.enabled && coordinator.identity) {
+      const idMgr = coordinator.managers.identityManager;
+      const selfMachineId = coordinator.identity.machineId;
+      // ── Git-sync substrate (OPTIONAL — not required for coordination) ──
+      // git is the durable shared-CAS substrate for the lease + the registry
+      // push channel. It is NOT required for cross-machine coordination: a
+      // credential-less standby, or an agent whose home IS the instar source
+      // tree (where SourceTreeGuard refuses GitSyncManager), has no git medium.
+      // Construct it best-effort; its failure must NOT skip the HTTP lease/
+      // handoff/live-tail transports below. (2026-05-31 bug, found live: the
+      // lease block was nested in the git-gated try, so a gitSync throw left the
+      // standby with leaseHolder=null → MeshRpc 'not-router' → transfer dead.)
+      let gitSyncRef: GitSyncManager | undefined;
+      if (isGitRepo && gitBackupEnabled) {
+        try {
+          gitSync = new GitSyncManager({
+            projectDir: config.projectDir,
+            stateDir: config.stateDir,
+            identityManager: coordinator.managers.identityManager,
+            securityLog: coordinator.managers.securityLog,
+            machineId: selfMachineId,
+          });
+          // Configure commit signing if not already done
+          if (!gitSync.isSigningConfigured() && localSigningKeyPem) {
+            gitSync.configureCommitSigning();
+            console.log(pc.green('  Git commit signing configured'));
           }
+          // Pull (and auto-push) latest on startup — awake machine only.
+          if (coordinator.isAwake) {
+            const syncResult = await gitSync.sync();
+            if (syncResult.pulled) {
+              console.log(pc.green(`  Git sync: pulled ${syncResult.commitsPulled} commit(s)`));
+            }
+          }
+          gitSyncRef = gitSync;
+          // ── G2 wiring (spec §8 G2) — roleChange/leaseEpoch → debounced push ──
+          // Without a subscriber the durable registry push never fires; a
+          // wiring-integrity test asserts this subscription exists.
+          const gitSyncForDebounce = gitSyncRef;
+          registrySyncDebouncer = new RegistrySyncDebouncer({
+            commitAndPush: (msg, paths) => gitSyncForDebounce.commitAndPush(msg, paths),
+            registryAbsPath: coordinator.managers.identityManager.registryPath,
+            isAuthoritative: () => coordinator.isAwake,
+            debounceMs: seamlessness.registrySyncDebounceMs,
+            logger: (m) => console.log(pc.dim(m)),
+          });
+          wireRegistrySync(coordinator, registrySyncDebouncer);
+          console.log(pc.dim('  Registry sync wired (roleChange/leaseEpoch → durable push)'));
+        } catch (err) {
+          // @silent-fallback-ok — git medium unavailable (SourceTreeGuard, no
+          // remote, etc). The lease falls back to LocalLeaseStore + the HTTP
+          // transport below, so cross-machine coordination still works.
+          console.log(pc.yellow(`  Git sync setup: ${err instanceof Error ? err.message : String(err)}`));
+          gitSyncRef = undefined;
         }
+      }
 
-        // ── G2 wiring (spec §8 G2) — the Phase-0 fix, named explicitly ──
-        // MultiMachineCoordinator emits roleChange / leaseEpochChange; without
-        // a subscriber the durable push never fired. wireRegistrySync connects
-        // those events to a debounced, single-writer registry push. A
-        // wiring-integrity test asserts this subscription exists.
-        const gitSyncRef = gitSync;
-        registrySyncDebouncer = new RegistrySyncDebouncer({
-          commitAndPush: (msg, paths) => gitSyncRef.commitAndPush(msg, paths),
-          registryAbsPath: coordinator.managers.identityManager.registryPath,
-          isAuthoritative: () => coordinator.isAwake,
-          debounceMs: seamlessness.registrySyncDebounceMs,
-          logger: (m) => console.log(pc.dim(m)),
-        });
-        wireRegistrySync(coordinator, registrySyncDebouncer);
-        console.log(pc.dim('  Registry sync wired (roleChange/leaseEpoch → durable push)'));
-
+      try {
         // ── G1 fenced-lease integration (spec §6) ──────────────────
-        // The lease becomes the authority for awake/standby. git is the durable
-        // CAS substrate (correct, bounded by git cadence — the tunnel accelerator
-        // is a tracked follow-on, ACT-156-adjacent). A holder that cannot refresh
-        // its lease over git for > leaseTtlMs self-suspends, preventing the
-        // partitioned-old-awake split-brain.
-        const idMgr = coordinator.managers.identityManager;
-        const selfMachineId = coordinator.identity!.machineId;
+        // The lease is the authority for awake/standby + the MeshRpc router-only
+        // RBAC (deliverMessage/place/transfer). GitLeaseStore is the durable
+        // shared-CAS substrate WHEN git is available; otherwise LocalLeaseStore
+        // persists this machine's own view and the HttpLeaseTransport carries
+        // cross-machine propagation (broadcast/observe). A holder that cannot
+        // confirm its renewal over its medium for > leaseTtlMs self-suspends,
+        // preventing the partitioned-old-awake split-brain.
         const leaseCrypto: LeaseCrypto = {
           selfMachineId,
           sign: (canonical) => signEd25519(canonical, idMgr.loadSigningKey()),
@@ -2569,15 +2588,25 @@ export async function startServer(options: StartOptions): Promise<void> {
           leaseTtlMs: seamlessness.leaseTtlMs,
           failoverThresholdMs: seamlessness.failoverThresholdMs,
         });
-        const leaseStore = new GitLeaseStore({
-          machineId: selfMachineId,
-          loadRegistry: () => idMgr.loadRegistry(),
-          saveRegistry: (r) => idMgr.saveRegistry(r),
-          registryAbsPath: idMgr.registryPath,
-          pullRebase: () => gitSyncRef.pullRebase(),
-          commitAndPush: (msg, paths) => gitSyncRef.commitAndPush(msg, paths),
-          logger: (m) => console.log(pc.dim(m)),
-        });
+        let leaseStore: LeaseStore;
+        if (gitSyncRef) {
+          const gs = gitSyncRef;
+          leaseStore = new GitLeaseStore({
+            machineId: selfMachineId,
+            loadRegistry: () => idMgr.loadRegistry(),
+            saveRegistry: (r) => idMgr.saveRegistry(r),
+            registryAbsPath: idMgr.registryPath,
+            pullRebase: () => gs.pullRebase(),
+            commitAndPush: (msg, paths) => gs.commitAndPush(msg, paths),
+            logger: (m) => console.log(pc.dim(m)),
+          });
+        } else {
+          leaseStore = new LocalLeaseStore({
+            filePath: path.join(config.stateDir, 'lease-local.json'),
+            logger: (m) => console.log(pc.dim(m)),
+          });
+          console.log(pc.dim('  Lease store: LocalLeaseStore (no git medium — HTTP transport carries cross-machine lease)'));
+        }
         // Lease wire transport (spec §6) — the low-latency authoritative copy
         // travels over the existing authenticated machine channel. For a
         // single-machine mesh (no peers) broadcast is a no-op and isReachable()
@@ -2723,8 +2752,9 @@ export async function startServer(options: StartOptions): Promise<void> {
           });
         }
       } catch (err) {
-        // @silent-fallback-ok — git sync disabled gracefully
-        console.log(pc.yellow(`  Git sync setup: ${err instanceof Error ? err.message : String(err)}`));
+        // @silent-fallback-ok — lease/transport setup failed; the agent still
+        // serves single-machine (cross-machine coordination simply stays off).
+        console.log(pc.yellow(`  Lease/transport setup: ${err instanceof Error ? err.message : String(err)}`));
       }
     }
 
