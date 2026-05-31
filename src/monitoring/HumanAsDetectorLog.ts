@@ -116,12 +116,14 @@ const SIGNAL_RULES: SignalRule[] = [
   // preference family:
   { pattern: /\bfrom now on\b/, category: 'preference', suspectedLayer: LEARNING_ONLY_LAYER, weight: 3, label: 'from now on' },
   { pattern: /\b(please )?always\b/, category: 'preference', suspectedLayer: LEARNING_ONLY_LAYER, weight: 2, label: 'always' },
-  { pattern: /\bi (prefer|'?d rather|would rather)\b/, category: 'preference', suspectedLayer: LEARNING_ONLY_LAYER, weight: 3, label: 'I prefer / I’d rather' },
+  // "i prefer", "i'd rather", "i would rather" — note "i'd" has no space.
+  { pattern: /\b(i prefer|i'?d rather|i would rather)\b/, category: 'preference', suspectedLayer: LEARNING_ONLY_LAYER, weight: 3, label: 'I prefer / I’d rather' },
   { pattern: /\bdon'?t (use|ask|do|send|give)\b/, category: 'preference', suspectedLayer: LEARNING_ONLY_LAYER, weight: 2, label: "don't X" },
   { pattern: /\b(please )?(just )?keep it\b/, category: 'preference', suspectedLayer: LEARNING_ONLY_LAYER, weight: 2, label: 'keep it' },
   { pattern: /\bno (need to|more)\b/, category: 'preference', suspectedLayer: LEARNING_ONLY_LAYER, weight: 1, label: 'no need to / no more' },
-  // frustration family:
-  { pattern: /\byou keep\b/, category: 'frustration', suspectedLayer: LEARNING_ONLY_LAYER, weight: 3, label: 'you keep' },
+  // frustration family — "you keep" requires a following gerund/verb so a
+  // benign "you keep it plain" is NOT misread as frustration.
+  { pattern: /\byou keep (asking|doing|saying|telling|sending|giving|making|getting|\w+ing)\b/, category: 'frustration', suspectedLayer: LEARNING_ONLY_LAYER, weight: 3, label: 'you keep …ing' },
   { pattern: /\bevery (time|session)\b/, category: 'frustration', suspectedLayer: LEARNING_ONLY_LAYER, weight: 3, label: 'every time/session' },
   { pattern: /\bi keep having to\b/, category: 'frustration', suspectedLayer: LEARNING_ONLY_LAYER, weight: 3, label: 'I keep having to' },
   { pattern: /\bstop asking me\b/, category: 'frustration', suspectedLayer: LEARNING_ONLY_LAYER, weight: 3, label: 'stop asking me' },
