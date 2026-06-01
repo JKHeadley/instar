@@ -18,8 +18,8 @@ change (#638), so the two don't collide.
 ## What to Tell Your User
 
 Nothing required. If asked: the agent can now report, per safety check, how
-much it costs and how often it fires — `GET /metrics/features` — which is what
-lets us tune the checks with data instead of guesses.
+much it costs and how often it fires (via a new per-feature metrics endpoint) —
+which is what lets us tune the checks with data instead of guesses.
 
 ## Summary of New Capabilities
 
