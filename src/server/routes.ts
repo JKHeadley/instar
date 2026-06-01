@@ -211,7 +211,7 @@ import { detectJargon } from '../core/JargonDetector.js';
 import type { PasteManager } from '../paste/PasteManager.js';
 import type { WebSocketManager } from './WebSocketManager.js';
 import { TruncationDetector } from '../paste/TruncationDetector.js';
-import { SecretDrop } from './SecretDrop.js';
+import { SecretDrop, type CreateSecretRequestOptions } from './SecretDrop.js';
 import { buildAllCapabilityBlocks } from './CapabilityIndex.js';
 import { matchesSystemTemplate } from '../messaging/system-templates.js';
 import { resolvePendingRelayPath } from '../messaging/pending-relay-store.js';
@@ -9009,46 +9009,113 @@ export function createRoutes(ctx: RouteContext): Router {
     return { localUrl, tunnelUrl };
   }
 
-  // Create a new secret request (agent-facing, requires auth)
-  router.post('/secrets/request', (req, res) => {
-    const { label, description, fields, topicId, ttlMs } = req.body;
+  // Shared body validation for BOTH secret-mint paths: the bearer-gated
+  // /secrets/request and the loopback-only /threadline/secrets/request
+  // (sealed-handoff keystone). Keeping the contract in ONE place prevents the two
+  // mint paths from drifting — a divergence on a credential-minting boundary would
+  // itself be a security bug. Returns either an { error } (→ 400) or the validated
+  // { opts } ready for secretDrop.create().
+  function validateSecretRequestBody(
+    body: any,
+  ): { error: string } | { opts: CreateSecretRequestOptions } {
+    const { label, description, fields, topicId, ttlMs, senderVerification } = body ?? {};
 
     if (!label || typeof label !== 'string' || label.length > 256) {
-      res.status(400).json({ error: '"label" must be a non-empty string under 256 characters' });
-      return;
+      return { error: '"label" must be a non-empty string under 256 characters' };
     }
     if (description !== undefined && (typeof description !== 'string' || description.length > 1024)) {
-      res.status(400).json({ error: '"description" must be a string under 1024 characters' });
-      return;
+      return { error: '"description" must be a string under 1024 characters' };
     }
     if (fields !== undefined) {
       if (!Array.isArray(fields) || fields.length === 0 || fields.length > 10) {
-        res.status(400).json({ error: '"fields" must be an array of 1-10 items' });
-        return;
+        return { error: '"fields" must be an array of 1-10 items' };
       }
       for (const f of fields) {
         if (!f.name || typeof f.name !== 'string' || !f.label || typeof f.label !== 'string') {
-          res.status(400).json({ error: 'Each field must have a "name" and "label"' });
-          return;
+          return { error: 'Each field must have a "name" and "label"' };
         }
       }
     }
     if (topicId !== undefined && (typeof topicId !== 'number' || !Number.isInteger(topicId))) {
-      res.status(400).json({ error: '"topicId" must be an integer' });
-      return;
+      return { error: '"topicId" must be an integer' };
     }
     if (ttlMs !== undefined && (typeof ttlMs !== 'number' || ttlMs < 60_000 || ttlMs > 3600_000)) {
-      res.status(400).json({ error: '"ttlMs" must be between 60000 (1 min) and 3600000 (1 hour)' });
-      return;
+      return { error: '"ttlMs" must be between 60000 (1 min) and 3600000 (1 hour)' };
+    }
+    // R1a sealed-handoff (optional): pin the expected sender's Ed25519 pubkey so
+    // the submit handler can verify the signed payload before accept.
+    if (senderVerification !== undefined) {
+      if (
+        typeof senderVerification !== 'object' ||
+        senderVerification === null ||
+        typeof senderVerification.senderPubKeyHex !== 'string' ||
+        !/^[0-9a-fA-F]{64}$/.test(senderVerification.senderPubKeyHex)
+      ) {
+        return { error: '"senderVerification.senderPubKeyHex" must be a 64-char hex Ed25519 public key' };
+      }
     }
 
+    return { opts: { label, description, fields, topicId, ttlMs, senderVerification } };
+  }
+
+  // Create a new secret request (agent-facing, requires auth)
+  router.post('/secrets/request', (req, res) => {
+    const validated = validateSecretRequestBody(req.body);
+    if ('error' in validated) {
+      res.status(400).json({ error: validated.error });
+      return;
+    }
     try {
-      const { token } = secretDrop.create({ label, description, fields, topicId, ttlMs });
+      const { token } = secretDrop.create(validated.opts);
       const urls = secretDropUrl(token);
       res.status(201).json({
         token,
         ...urls,
-        expiresIn: ttlMs || 15 * 60 * 1000,
+        expiresIn: validated.opts.ttlMs || 15 * 60 * 1000,
+      });
+    } catch (err) {
+      res.status(429).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  // Sealed-handoff KEYSTONE: agent self-mint of a Secret Drop request over a
+  // localhost-only loopback that does NOT require the externalized bearer.
+  //
+  // Why this exists: the Threadline MCP server runs as a SEPARATE stdio process
+  // (.mcp.json → node mcp-stdio-entry.js) and can only read the on-disk
+  // config.json, where authToken is vault-externalized ({secret:true}) — so it
+  // cannot present a valid bearer to the gated /secrets/request. This route lives
+  // under /threadline/* (authMiddleware bypasses the general bearer there, like
+  // relay-send) but ADDS explicit loopback enforcement, because minting a
+  // credential-collection URL is more sensitive than a relay send: any
+  // non-loopback origin or any X-Forwarded-For is rejected (defense-in-depth
+  // against a misconfigured bind or a tunnel accidentally forwarding internal
+  // paths). It routes through the SAME durable server-side SecretDrop store, so
+  // the minted request survives session churn — the robustness property. Spec:
+  // SEALED-HANDOFF §keystone ("a localhost-only loopback that does not require
+  // the externalized bearer — NOT by scraping the vault").
+  router.post('/threadline/secrets/request', (req, res) => {
+    const remote = req.socket?.remoteAddress;
+    if (remote !== '127.0.0.1' && remote !== '::1' && remote !== '::ffff:127.0.0.1') {
+      res.status(403).json({ error: 'Self-mint is localhost-only' });
+      return;
+    }
+    if (req.headers['x-forwarded-for']) {
+      res.status(403).json({ error: 'Self-mint rejects forwarded (X-Forwarded-For) requests' });
+      return;
+    }
+    const validated = validateSecretRequestBody(req.body);
+    if ('error' in validated) {
+      res.status(400).json({ error: validated.error });
+      return;
+    }
+    try {
+      const { token } = secretDrop.create(validated.opts);
+      const urls = secretDropUrl(token);
+      res.status(201).json({
+        token,
+        ...urls,
+        expiresIn: validated.opts.ttlMs || 15 * 60 * 1000,
       });
     } catch (err) {
       res.status(429).json({ error: err instanceof Error ? err.message : String(err) });
