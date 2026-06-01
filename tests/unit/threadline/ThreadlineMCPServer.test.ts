@@ -619,6 +619,84 @@ describe('ThreadlineMCPServer', () => {
       }
     });
 
+    // ── Ground Before You Assert (grounding gate wired into the send path) ──
+    it('REFUSES a send asserting an unverified scheme-qualified URL (gate blocks, sendMessage not called)', async () => {
+      const { client, close } = await connectClientServer({}, deps);
+      try {
+        const result = await client.callTool({
+          name: 'threadline_send',
+          arguments: {
+            agentId: 'remote-agent',
+            message: 'The read endpoint is https://the-portal.vercel.app/api/instar/read',
+          },
+        });
+
+        const text = (result.content as any)[0].text;
+        expect(result.isError).toBe(true);
+        expect(text).toContain('Ground Before You Assert');
+        expect(text).toContain('the-portal.vercel.app');
+        // The block happens BEFORE delivery — the message never went out.
+        expect(deps.sendMessage).not.toHaveBeenCalled();
+      } finally {
+        await close();
+      }
+    });
+
+    it('ALLOWS the same ungrounded URL once the caller acks grounding (block-with-override)', async () => {
+      const { client, close } = await connectClientServer({}, deps);
+      try {
+        const result = await client.callTool({
+          name: 'threadline_send',
+          arguments: {
+            agentId: 'remote-agent',
+            message: 'The read endpoint is https://the-portal.vercel.app/api/instar/read',
+            groundingAck: true,
+          },
+        });
+
+        expect(result.isError).toBeFalsy();
+        expect(deps.sendMessage).toHaveBeenCalledTimes(1);
+      } finally {
+        await close();
+      }
+    });
+
+    it('ALLOWS a bare host (no scheme) without an ack — same info, no asserted live endpoint', async () => {
+      const { client, close } = await connectClientServer({}, deps);
+      try {
+        const result = await client.callTool({
+          name: 'threadline_send',
+          arguments: {
+            agentId: 'remote-agent',
+            message: 'The live endpoint is dawn.bot-me.ai/api/instar/read (401 = real auth)',
+          },
+        });
+
+        expect(result.isError).toBeFalsy();
+        expect(deps.sendMessage).toHaveBeenCalledTimes(1);
+      } finally {
+        await close();
+      }
+    });
+
+    it('ALLOWS a known/infra domain without an ack (gate does not over-fire)', async () => {
+      const { client, close } = await connectClientServer({}, deps);
+      try {
+        const result = await client.callTool({
+          name: 'threadline_send',
+          arguments: {
+            agentId: 'remote-agent',
+            message: 'See the PR: https://github.com/JKHeadley/instar/pull/642',
+          },
+        });
+
+        expect(result.isError).toBeFalsy();
+        expect(deps.sendMessage).toHaveBeenCalledTimes(1);
+      } finally {
+        await close();
+      }
+    });
+
     it('rejects invalid timeout', async () => {
       const { client, close } = await connectClientServer({}, deps);
       try {
