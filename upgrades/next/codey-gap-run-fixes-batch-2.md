@@ -1,0 +1,41 @@
+# Upgrade Guide — vNEXT
+
+<!-- bump: patch -->
+
+## What Changed
+
+Two more fixes from Codey's autonomous gap run, reviewed and landed by Echo:
+
+1. **Script-type scheduled jobs now run directly instead of launching a model session.**
+   Plain shell chores (e.g. a dashboard-link refresh) were being dispatched by spawning
+   an AI session with a "Run this script:" prompt — and a couple hung for 9–16 hours
+   holding a session slot with their run-history stuck at "pending". They now run in a
+   bounded subprocess, record success/failure normally, and never consume a session slot
+   (even when the system is at its parallel-job cap).
+2. **Retired/disabled built-in jobs stay retired.** A disabled per-slug job manifest whose
+   markdown body had been deleted was being dropped, so it could no longer shadow a stale
+   copy of itself in the legacy job list — and the retired job quietly ran again. Disabled
+   manifests now load (disabled) without needing a body, so they correctly shadow the stale
+   entry.
+
+## What to Tell Your User
+
+Nothing for you to do. If you noticed a script-style scheduled job occasionally getting
+stuck for hours, or a job you thought was retired still showing up, both are fixed.
+
+## Summary of New Capabilities
+
+- Script jobs execute in a bounded subprocess via the scheduler's direct path (no model
+  session, no session-capacity consumption); run-history and claims are recorded the same way.
+- Disabled/retired per-slug manifests load as disabled job definitions without a body, so
+  they shadow stale legacy entries instead of being dropped.
+
+## Evidence
+
+- Spec: `docs/specs/codey-gap-run-fixes-batch-2.md` (+ `.eli16.md`), review-convergence +
+  approved by Justin (Telegram topic 17481, 2026-05-31).
+- Tests: `tests/unit/JobScheduler-script-job.test.ts` (new) and the disabled-manifest case
+  in `tests/unit/scheduler/JobLoader.agentmd.test.ts`; `tsc --noEmit` clean.
+- Origin: findings F005 and F009 from Codey's Codex-on-Instar gap run, ported from a
+  v1.3.78 base and re-verified on current main. F006 from the same run is held for a
+  separate change that includes its required upgrade-migration.
