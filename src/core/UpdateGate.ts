@@ -47,6 +47,15 @@ export interface UpdateGateConfig {
   finalWarningMinutes?: number;
   /** How often to re-check sessions during deferral, in ms. Default: 5 * 60_000 (5 min) */
   retryIntervalMs?: number;
+  /**
+   * Primary-developer mode. When true, the gate NEVER defers a restart for
+   * active sessions — `canRestart` always returns `{ allowed: true }`. The
+   * agent prioritizes always running the latest version over protecting its
+   * own sessions from a (session-surviving) server restart. Opt-in per agent
+   * via `updates.restartImmediately`; default false leaves the fleet's
+   * session-aware deferral untouched. Spec: docs/specs/restart-immediately-spec.md.
+   */
+  alwaysRestartImmediately?: boolean;
 }
 
 export interface UpdateGateStatus {
@@ -66,6 +75,8 @@ export interface UpdateGateStatus {
   firstWarningSent: boolean;
   /** Whether the final warning (T-5min) has been sent */
   finalWarningSent: boolean;
+  /** Primary-developer mode: restarts are never deferred for active sessions */
+  alwaysRestartImmediately: boolean;
 }
 
 /** Minimal interface for SessionManager — only what we need */
@@ -97,7 +108,19 @@ export class UpdateGate {
       firstWarningMinutes: config?.firstWarningMinutes ?? 30,
       finalWarningMinutes: config?.finalWarningMinutes ?? 5,
       retryIntervalMs: config?.retryIntervalMs ?? 5 * 60_000,
+      alwaysRestartImmediately: config?.alwaysRestartImmediately ?? false,
     };
+  }
+
+  /**
+   * Toggle primary-developer mode at runtime (config may change on disk
+   * without a restart). When enabled, the next `canRestart` allows immediately
+   * and clears any in-flight deferral so a held restart proceeds at once.
+   */
+  setAlwaysRestartImmediately(value: boolean): void {
+    if (this.config.alwaysRestartImmediately === value) return;
+    this.config.alwaysRestartImmediately = value;
+    if (value) this.reset();
   }
 
   /**
@@ -110,6 +133,16 @@ export class UpdateGate {
     sessionManager: SessionManagerLike,
     sessionMonitor?: SessionMonitorLike | null,
   ): GateResult {
+    // Primary-developer mode: never defer for active sessions. A server restart
+    // does NOT kill the agent's tmux sessions (they resume via CONTINUATION) —
+    // this agent simply chooses being-on-latest over avoiding the brief restart
+    // blip. Short-circuit BEFORE listing sessions so the deferral clock never
+    // starts. Default false, so the fleet's session-aware deferral is unchanged.
+    if (this.config.alwaysRestartImmediately) {
+      this.reset();
+      return { allowed: true };
+    }
+
     const sessions = sessionManager.listRunningSessions();
 
     // No sessions → restart immediately
@@ -265,6 +298,7 @@ export class UpdateGate {
       blockingSessions: this.blockingSessions,
       firstWarningSent: this.firstWarningSent,
       finalWarningSent: this.finalWarningSent,
+      alwaysRestartImmediately: this.config.alwaysRestartImmediately,
     };
   }
 
