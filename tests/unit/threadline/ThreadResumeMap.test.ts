@@ -354,7 +354,13 @@ describe('ThreadResumeMap', () => {
     });
 
     it('archives stale active and idle threads before listing', () => {
-      const now = new Date('2026-05-30T09:00:00.000Z');
+      // Anchor timestamps to REAL wall-clock time, not a hardcoded fixture date.
+      // listActive() archives internally via retireInactive(new Date()) (real now),
+      // so a fixed historical `now` makes this a time bomb: once real time advances
+      // past 24h beyond the fixture, the "fresh" entry ages out of the window and
+      // listActive() returns []. Relative-to-now keeps it deterministic forever.
+      // (Same fix as main #653.)
+      const now = new Date();
       const stale = new Date(now.getTime() - 25 * 60 * 60 * 1000).toISOString();
       const fresh = new Date(now.getTime() - 10 * 60 * 1000).toISOString();
 
@@ -362,7 +368,7 @@ describe('ThreadResumeMap', () => {
       map.save('stale-idle', makeEntry({ state: 'idle', lastAccessedAt: stale, savedAt: stale }));
       map.save('fresh-active', makeEntry({ state: 'active', lastAccessedAt: fresh, savedAt: fresh }));
 
-      expect(map.retireInactive(24 * 60 * 60 * 1000, now)).toBe(2);
+      expect(map.retireInactive(24 * 60 * 60 * 1000)).toBe(2);
       expect(map.listActive().map(t => t.threadId)).toEqual(['fresh-active']);
       expect(map.get('stale-active')?.state).toBe('archived');
       expect(map.get('stale-idle')?.state).toBe('archived');
