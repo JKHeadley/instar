@@ -23,9 +23,23 @@ type StubManager = {
   tmuxSessionExists: ReturnType<typeof vi.fn>;
   captureOutput: ReturnType<typeof vi.fn>;
   fireStuckInputRecovery: ReturnType<typeof vi.fn>;
+  getStrandedDraftMarker: ReturnType<typeof vi.fn>;
+  clearStrandedDraftMarker: ReturnType<typeof vi.fn>;
+  strandedDraftMarkerSessions: ReturnType<typeof vi.fn>;
+  isMarkerStuckAtPrompt: ReturnType<typeof vi.fn>;
 };
 
-function buildStubManager(panes: Record<string, string | (() => string)>): StubManager {
+/**
+ * @param panes per-session pane content (string or thunk).
+ * @param markers per-session stranded-draft marker record. When a session has a
+ *   codex marker, the sentinel uses MARKER-based detection (isMarkerStuckAtPrompt
+ *   over the pane) instead of the generic `❯`-prompt reader.
+ */
+function buildStubManager(
+  panes: Record<string, string | (() => string)>,
+  markers: Record<string, { marker: string; framework: string }> = {},
+): StubManager {
+  const liveMarkers = new Map(Object.entries(markers).map(([k, v]) => [k, { ...v, injectedAt: 0 }]));
   return {
     listRunningSessions: vi.fn(() => Object.keys(panes).map(name => ({ tmuxSession: name }))),
     tmuxSessionExists: vi.fn((name: string) => name in panes),
@@ -34,6 +48,14 @@ function buildStubManager(panes: Record<string, string | (() => string)>): StubM
       return typeof p === 'function' ? p() : p;
     }),
     fireStuckInputRecovery: vi.fn(),
+    getStrandedDraftMarker: vi.fn((name: string) => liveMarkers.get(name)),
+    clearStrandedDraftMarker: vi.fn((name: string) => { liveMarkers.delete(name); }),
+    strandedDraftMarkerSessions: vi.fn(() => [...liveMarkers.keys()]),
+    // Real codex-aware semantics: the marker is "stuck" iff it appears on a line
+    // bearing a prompt char (`❯` or `›`) in the captured pane.
+    isMarkerStuckAtPrompt: vi.fn((pane: string, marker: string) =>
+      pane.split('\n').some(l => (l.includes('❯') || l.includes('›')) && l.includes(marker)),
+    ),
   };
 }
 
@@ -275,6 +297,109 @@ describe('StuckInputSentinel — start/stop lifecycle', () => {
     expect(() => sentinel.start()).not.toThrow(); // idempotent
     expect(() => sentinel.stop()).not.toThrow();
     expect(() => sentinel.stop()).not.toThrow(); // idempotent
+  });
+});
+
+describe('StuckInputSentinel — codex stranded-draft recovery (marker-based)', () => {
+  const CODEX_DRAFT = '[telegram:1052] continue running into version issues';
+  const CODEX_MARKER = CODEX_DRAFT.slice(0, 40);
+
+  // Idle codex pane with the injected message stranded as a draft at the `›` prompt.
+  const CODEX_DRAFT_PANE = [
+    '─ Worked for 1m 20s ────────',
+    '',
+    `› ${CODEX_DRAFT}`,
+    '',
+    '  gpt-5.5 medium · ~/Documents/Projects/instar-codey   Goal achieved (20m)',
+  ].join('\n');
+
+  // Idle codex pane with EMPTY input — codex renders a dim "Explain this codebase"
+  // placeholder. Indistinguishable from real text by prompt-reading alone.
+  const CODEX_EMPTY_PANE = [
+    '─ Worked for 1m 20s ────────',
+    '',
+    '› Explain this codebase',
+    '',
+    '  gpt-5.5 medium · ~/Documents/Projects/instar-codey   Goal achieved (20m)',
+  ].join('\n');
+
+  // Busy codex pane — shares Claude's "esc to interrupt" footer hint.
+  const CODEX_WORKING_PANE = [
+    `› ${CODEX_DRAFT}`,
+    '',
+    '  Working (37m 24s • esc to interrupt)',
+  ].join('\n');
+
+  function codexMarkers(session: string) {
+    return { [session]: { marker: CODEX_MARKER, framework: 'codex-cli' } };
+  }
+
+  it('fires Enter to submit a stranded codex draft once idle (after minTicks)', () => {
+    const mgr = buildStubManager({ 'codey-A': CODEX_DRAFT_PANE }, codexMarkers('codey-A'));
+    const sentinel = buildSentinel(mgr);
+
+    sentinel.tick(); // first sighting — no fire
+    sentinel.tick(); // second sighting — fire attempt 0
+
+    expect(mgr.fireStuckInputRecovery).toHaveBeenCalledTimes(1);
+    expect(mgr.fireStuckInputRecovery).toHaveBeenCalledWith('codey-A', 0);
+  });
+
+  it('does NOT fire on an EMPTY codex pane showing only the placeholder hint (placeholder immunity)', () => {
+    // The marker for the real injected message is present, but it never matches
+    // the "Explain this codebase" placeholder text → never seen as stuck.
+    const mgr = buildStubManager({ 'codey-A': CODEX_EMPTY_PANE }, codexMarkers('codey-A'));
+    const sentinel = buildSentinel(mgr);
+
+    for (let i = 0; i < 5; i++) sentinel.tick();
+
+    expect(mgr.fireStuckInputRecovery).not.toHaveBeenCalled();
+  });
+
+  it('refuses to fire while the codex pane is actively working', () => {
+    const mgr = buildStubManager({ 'codey-A': CODEX_WORKING_PANE }, codexMarkers('codey-A'));
+    const sentinel = buildSentinel(mgr);
+
+    for (let i = 0; i < 5; i++) sentinel.tick();
+
+    expect(mgr.fireStuckInputRecovery).not.toHaveBeenCalled();
+  });
+
+  it('clears the stranded-draft marker once the message submits (marker leaves the prompt)', () => {
+    let pane = CODEX_DRAFT_PANE;
+    const mgr = buildStubManager({ 'codey-A': () => pane }, codexMarkers('codey-A'));
+    const sentinel = buildSentinel(mgr);
+
+    sentinel.tick();
+    sentinel.tick(); // fired attempt 0
+    expect(mgr.fireStuckInputRecovery).toHaveBeenCalledTimes(1);
+
+    // Message submitted → input now empty (placeholder). Marker no longer stuck.
+    pane = CODEX_EMPTY_PANE;
+    sentinel.tick();
+
+    expect(mgr.clearStrandedDraftMarker).toHaveBeenCalledWith('codey-A');
+  });
+
+  it('GCs stranded-draft markers for sessions that are no longer running', () => {
+    const panes: Record<string, string> = { 'codey-A': CODEX_DRAFT_PANE };
+    const mgr = buildStubManager(panes, codexMarkers('codey-A'));
+    const sentinel = buildSentinel(mgr);
+
+    sentinel.tick();
+    delete panes['codey-A']; // session gone
+    sentinel.tick();
+
+    expect(mgr.clearStrandedDraftMarker).toHaveBeenCalledWith('codey-A');
+  });
+
+  it('escalates Enter → Enter → C-m → Enter-sleep-Enter for a persistently stranded codex draft', () => {
+    const mgr = buildStubManager({ 'codey-A': CODEX_DRAFT_PANE }, codexMarkers('codey-A'));
+    const sentinel = buildSentinel(mgr);
+
+    for (let i = 0; i < 6; i++) sentinel.tick();
+
+    expect(mgr.fireStuckInputRecovery.mock.calls.map(c => c[1])).toEqual([0, 1, 2, 3]);
   });
 });
 

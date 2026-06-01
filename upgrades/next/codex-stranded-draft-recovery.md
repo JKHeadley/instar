@@ -1,0 +1,44 @@
+# Upgrade Guide — vNEXT
+
+<!-- bump: patch -->
+
+## What Changed
+
+Messages sent to a **busy codex agent** are no longer silently dropped. Codex
+holds a message typed mid-turn as an unsubmitted draft and — unlike Claude Code,
+which queues and auto-submits it when the turn ends — never submits it. On top of
+that, the background stuck-input recovery only recognized Claude's prompt symbol,
+so a stranded codex message had no recovery path at all (live repro: a user
+message sat unanswered for 3 hours on a busy 37-minute codex turn).
+
+The fix teaches the recovery to recognize codex's prompt and to remember the
+first words of each message sent to a codex session, so it can spot that exact
+message still stuck in the input box and submit it once codex goes idle. It
+matches the real message text, so it never false-fires on the faint placeholder
+codex shows in an empty input box. It never fires while codex is working, is
+bounded to four escalating nudges, and leaves the Claude path untouched.
+
+## What to Tell Your User
+
+If you message one of your codex-based agents while it is in the middle of a long
+task, it will now actually receive and answer you once it finishes — instead of
+your message silently getting stuck. Claude-based agents already behaved this way;
+this brings codex agents in line. Nothing for you to do.
+
+## Summary of New Capabilities
+
+- Codex inbound messages stranded at the input prompt are now auto-recovered by
+  the persistent stuck-input sentinel, the same way Claude's already are.
+- Recovery is marker-based (matches the injected message text), so it is immune
+  to codex's empty-prompt placeholder hint and never fires mid-turn.
+
+## Evidence
+
+- Spec: `docs/specs/codex-stranded-draft-recovery.md` (+ `.eli16.md`),
+  review-convergence + approved by Justin (Telegram topic 17481, 2026-05-31).
+- Tests: `tests/unit/codex-stranded-draft-recovery.test.ts` (new, incl. the
+  placeholder-immunity case + Claude no-regression) and the codex pass in
+  `tests/unit/StuckInputSentinel.test.ts`; 48 unit tests green, `tsc --noEmit` clean.
+- Known limitation tracked as framework issue
+  `codex-stranded-draft-marker-not-restart-durable` (in-memory marker; restart-
+  durability is a separate, smaller change).
