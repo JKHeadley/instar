@@ -20,6 +20,7 @@
  */
 
 import type { Cluster } from './types.js';
+import { normalizeStatus } from './transitions.js';
 
 export interface PreviousReportState {
   lastReportAt?: string;
@@ -60,8 +61,13 @@ export function partitionClustersForReport(
   const prevFixed = new Set(prev.reportedFixedIds ?? []);
   const lastReportTime = prev.lastReportAt ?? '';
 
-  const allOpen = clusters.filter((c) => c.status === 'open');
-  const allInvestigating = clusters.filter((c) => c.status === 'investigating');
+  // Partition on the NORMALIZED status so the report is robust to the mixed v1/v2
+  // vocabulary in live data: the "open" bucket is the canonical `new` (the v1 birth
+  // literal `open` projects to `new`), and "fixed" is the canonical `fix_applied`.
+  // Keying off the raw `open`/`fixed` literals silently emptied these partitions for
+  // any cluster already rewritten to its v2 spelling.
+  const allOpen = clusters.filter((c) => normalizeStatus(c.status ?? '') === 'new');
+  const allInvestigating = clusters.filter((c) => normalizeStatus(c.status ?? '') === 'investigating');
 
   const newIssues = allOpen.filter((c) => !prevOpen.has(c.clusterId)).sort(bySeverity);
   const continuingOpen = allOpen.filter((c) => prevOpen.has(c.clusterId));
@@ -77,7 +83,10 @@ export function partitionClustersForReport(
     cutoff = new Date(new Date(now).getTime() - 4 * 60 * 60 * 1000).toISOString();
   }
   const fixedNew = clusters.filter(
-    (c) => c.status === 'fixed' && String(c.updatedAt ?? '') > cutoff && !prevFixed.has(c.clusterId),
+    (c) =>
+      normalizeStatus(c.status ?? '') === 'fix_applied' &&
+      String(c.updatedAt ?? '') > cutoff &&
+      !prevFixed.has(c.clusterId),
   );
 
   const shouldSkip = newIssues.length === 0 && newInvestigating.length === 0 && fixedNew.length === 0;

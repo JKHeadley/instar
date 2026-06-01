@@ -21,12 +21,36 @@ describe('InMemoryFeedbackStore', () => {
     expect(s.getUnprocessedFeedback().map(f => f.feedbackId)).toEqual(['fb-1', 'fb-2']);
   });
 
-  it('getActiveClusters excludes resolved', () => {
+  it('getActiveClusters excludes resolved (legacy literal → normalizes to terminal closed)', () => {
     const s = new InMemoryFeedbackStore({ clusters: [
       { clusterId: 'c-open', title: 'o', description: 'd', status: 'investigating' },
       { clusterId: 'c-res', title: 'r', description: 'd', status: 'resolved' },
     ]});
     expect(s.getActiveClusters().map(c => c.clusterId)).toEqual(['c-open']);
+  });
+
+  it('getActiveClusters keeps every non-terminal lifecycle state as a merge candidate', () => {
+    // Non-terminal states (incl. legacy spellings open→new, fixed→fix_applied) stay active.
+    const active = ['new', 'open', 'investigating', 'research_complete', 'fix_applied',
+      'fixed', 'dispatched', 'verified_tentative', 'chronic', 'deferred', 'needs_human_verify'];
+    const s = new InMemoryFeedbackStore({
+      clusters: active.map((status, i) => ({ clusterId: `c-${i}`, title: 't', description: 'd', status })),
+    });
+    expect(s.getActiveClusters().map(c => c.clusterId)).toEqual(active.map((_, i) => `c-${i}`));
+  });
+
+  it('getActiveClusters excludes EVERY terminal state — the perpetual-merge-candidate bug', () => {
+    // The prior `!== "resolved"` filter wrongly kept closed/verified/wontfix/duplicate/
+    // chronic_escalated/legacy_closed as active forever. All must now be excluded;
+    // raw v1 `resolved` too (terminal only once normalized to `closed`).
+    const terminal = ['closed', 'verified', 'wontfix', 'duplicate', 'chronic_escalated', 'legacy_closed', 'resolved'];
+    const s = new InMemoryFeedbackStore({
+      clusters: [
+        { clusterId: 'c-active', title: 't', description: 'd', status: 'new' },
+        ...terminal.map((status, i) => ({ clusterId: `c-term-${i}`, title: 't', description: 'd', status })),
+      ],
+    });
+    expect(s.getActiveClusters().map(c => c.clusterId)).toEqual(['c-active']);
   });
 
   it('upsertClusterFromItem creates then bumps reportCount + created counter', () => {

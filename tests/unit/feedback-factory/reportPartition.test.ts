@@ -59,4 +59,30 @@ describe('partitionClustersForReport', () => {
     const hasNew = partitionClustersForReport([c('o2', 'open')], { lastReportAt: '2026-05-26T00:00:00Z' }, NOW);
     expect(hasNew.shouldSkip).toBe(false);
   });
+
+  // --- v2-vocabulary regression: the prior raw 'open'/'fixed' filters silently
+  //     emptied these partitions for any cluster already rewritten to its v2 spelling.
+  it('surfaces canonical v2 `new` clusters in the open partition (open ≡ new)', () => {
+    const clusters = [c('n1', 'new'), c('n2', 'new')];
+    const p = partitionClustersForReport(clusters, { lastReportAt: '2026-05-26T00:00:00Z', reportedOpenIds: ['n1'] }, NOW);
+    expect(p.newIssues.map(x => x.clusterId)).toEqual(['n2']);
+    expect(p.continuingOpen.map(x => x.clusterId)).toEqual(['n1']);
+  });
+
+  it('surfaces canonical v2 `fix_applied` clusters in the fixed partition (fixed → fix_applied)', () => {
+    const clusters = [c('fa', 'fix_applied', { updatedAt: '2026-05-26T12:00:00Z' })];
+    const p = partitionClustersForReport(clusters, { lastReportAt: '2026-05-26T00:00:00Z' }, NOW);
+    expect(p.fixedNew.map(x => x.clusterId)).toEqual(['fa']);
+  });
+
+  it('partitions a mixed v1/v2 batch identically (open+new together, fixed+fix_applied together)', () => {
+    const clusters = [
+      c('raw-open', 'open'), c('v2-new', 'new'),
+      c('raw-fixed', 'fixed', { updatedAt: '2026-05-26T12:00:00Z' }),
+      c('v2-fix', 'fix_applied', { updatedAt: '2026-05-26T12:00:00Z' }),
+    ];
+    const p = partitionClustersForReport(clusters, { lastReportAt: '2026-05-26T00:00:00Z' }, NOW);
+    expect(p.newIssues.map(x => x.clusterId).sort()).toEqual(['raw-open', 'v2-new']);
+    expect(p.fixedNew.map(x => x.clusterId).sort()).toEqual(['raw-fixed', 'v2-fix']);
+  });
 });

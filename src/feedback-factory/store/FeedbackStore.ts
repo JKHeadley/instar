@@ -16,6 +16,7 @@
 import type { FeedbackItem, Cluster, ClusterResult } from '../processor/types.js';
 import type { ReopenDecision } from '../processor/reopen.js';
 import type { DispatchRecord } from '../dispatch/dispatch.js';
+import { isTerminalStatus } from '../processor/transitions.js';
 
 /** Read-only observability counters for the capture→cluster→reopen loop (spec §2.7). */
 export interface FeedbackMetrics {
@@ -28,7 +29,7 @@ export interface FeedbackMetrics {
 export interface FeedbackStore {
   /** Unprocessed feedback, oldest first (mirrors the reference's `status:'unprocessed'` query). */
   getUnprocessedFeedback(): FeedbackItem[];
-  /** Active clusters (status != 'resolved'), the merge candidates. */
+  /** Active clusters (normalized status NOT terminal), the merge candidates. */
   getActiveClusters(): Cluster[];
   getCluster(clusterId: string): Cluster | undefined;
   /** Create a new cluster from an item (or bump reportCount if it already exists). */
@@ -75,7 +76,13 @@ export class InMemoryFeedbackStore implements FeedbackStore {
   }
 
   getActiveClusters(): Cluster[] {
-    return [...this.clusters.values()].filter((c) => c.status !== 'resolved');
+    // Active = NOT terminal against the NORMALIZED status (mirrors the reference's
+    // active-cluster query, which excludes the full terminal set). The prior
+    // `!== 'resolved'` check only excluded the raw v1 literal, so it stranded every
+    // canonical terminal cluster — `closed`, `verified`, `wontfix`, `duplicate`,
+    // `chronic_escalated`, `legacy_closed` — as a perpetual merge candidate. It also
+    // missed a raw v1 `resolved` (terminal only once projected to `closed`).
+    return [...this.clusters.values()].filter((c) => !isTerminalStatus(c.status ?? ''));
   }
 
   getCluster(clusterId: string): Cluster | undefined {
