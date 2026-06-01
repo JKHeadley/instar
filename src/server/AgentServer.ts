@@ -62,6 +62,7 @@ import { getOrCreateBootId } from './boot-id.js';
 import { DeliveryFailureSentinel } from '../monitoring/delivery-failure-sentinel.js';
 import os from 'node:os';
 import { TokenLedger } from '../monitoring/TokenLedger.js';
+import { FeatureMetricsLedger } from '../monitoring/FeatureMetricsLedger.js';
 import { TokenLedgerPoller } from '../monitoring/TokenLedgerPoller.js';
 import { FrameworkIssueLedger } from '../monitoring/FrameworkIssueLedger.js';
 import { MentorOnboardingRunner, DEFAULT_MENTOR_CONFIG, resolveMentorDeliveryTopic, type MentorConfig } from '../scheduler/MentorOnboardingRunner.js';
@@ -134,6 +135,7 @@ export class AgentServer {
   private deliveryStore: PendingRelayStore | null = null;
   private toneGate: import('../core/MessagingToneGate.js').MessagingToneGate | null = null;
   private tokenLedger: TokenLedger | null = null;
+  private featureMetricsLedger: FeatureMetricsLedger | null = null;
   private tokenLedgerPoller: TokenLedgerPoller | null = null;
   private frameworkIssueLedger: FrameworkIssueLedger | null = null;
   private mentorRunner: MentorOnboardingRunner | null = null;
@@ -623,6 +625,25 @@ export class AgentServer {
       }
     }
 
+    // Per-feature LLM metrics ledger — read-only observability for every gate/
+    // sentinel's cost + hit-rate (docs/specs/llm-feature-metrics-spec.md). Own
+    // try/catch, independent of the other ledgers (same cascade-isolation as
+    // FrameworkIssueLedger). Phase 1a: this store + the /metrics/features route.
+    // The single funnel tap that feeds it (CircuitBreakingIntelligenceProvider →
+    // record()) lands in Phase 1b, on top of #638's hardened funnel.
+    if (options.config.stateDir) {
+      try {
+        const serverDataDir = path.join(options.config.stateDir, 'server-data');
+        fs.mkdirSync(serverDataDir, { recursive: true });
+        this.featureMetricsLedger = new FeatureMetricsLedger({
+          dbPath: path.join(serverDataDir, 'feature-metrics.db'),
+        });
+      } catch (err) {
+        console.warn('[instar] feature-metrics-ledger init failed (non-fatal):', err);
+        this.featureMetricsLedger = null;
+      }
+    }
+
     // Failure-Learning Loop (docs/specs/FAILURE-LEARNING-LOOP-SPEC.md) — instar
     // self-hosting dev-process forensics. Ships OFF; constructed only when
     // enabled (else the inline /failures routes 503-stub via the null ledger).
@@ -849,6 +870,7 @@ export class AgentServer {
       projectDriftChecker: options.projectDriftChecker ?? null,
       machineHeartbeat: options.machineHeartbeat ?? null,
       tokenLedger: this.tokenLedger,
+      featureMetricsLedger: this.featureMetricsLedger,
       frameworkIssueLedger: this.frameworkIssueLedger,
       mentorRunner: this.mentorRunner,
       failureLedger: this.failureLedger,

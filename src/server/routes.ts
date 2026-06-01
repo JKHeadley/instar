@@ -696,6 +696,7 @@ export interface RouteContext {
   /** Token-usage ledger (read-only observability over Claude Code JSONL
    *  transcripts). Null when stateDir is unavailable. */
   tokenLedger: import('../monitoring/TokenLedger.js').TokenLedger | null;
+  featureMetricsLedger: import('../monitoring/FeatureMetricsLedger.js').FeatureMetricsLedger | null;
   /** Framework-Onboarding Mentor System issue ledger (read-only observability;
    *  signal-only — never gates). Null when stateDir is unavailable. Powers
    *  GET /framework-issues and /framework-issues/playbook. */
@@ -4460,6 +4461,27 @@ export function createRoutes(ctx: RouteContext): Router {
       summary: ctx.tokenLedger.summary({ sinceMs }),
       codex: ctx.tokenLedger.codexSummary({ sinceMs }),
     });
+  });
+
+  // Per-feature LLM metrics (docs/specs/llm-feature-metrics-spec.md) — read-only
+  // observability: per gate/sentinel cost + hit-rate, so tuning is evidence-based
+  // (which to thin, which to strengthen). 503-stubs via the null ledger when
+  // stateDir/metrics is unavailable. Phase 1a — the funnel tap that feeds it is
+  // Phase 1b (on top of #638).
+  router.get('/metrics/features', (req, res) => {
+    if (!ctx.featureMetricsLedger) {
+      res.status(503).json({ error: 'feature-metrics ledger unavailable' });
+      return;
+    }
+    const sinceHours = req.query.sinceHours ? Number(req.query.sinceHours) : undefined;
+    const feature = typeof req.query.feature === 'string' ? req.query.feature : undefined;
+    const summary = ctx.featureMetricsLedger.summary(
+      sinceHours && sinceHours > 0 ? { sinceHours } : {},
+    );
+    const features = feature
+      ? summary.features.filter((f) => f.feature === feature)
+      : summary.features;
+    res.json({ ...summary, features });
   });
 
   // ── Release-readiness (Layer B of release-readiness-visibility) ──────

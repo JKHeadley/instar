@@ -511,6 +511,17 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     }),
   },
   {
+    key: 'featureMetrics',
+    prefixes: ['/metrics'],
+    description: 'FeatureMetricsLedger — read-only per-feature LLM observability: per gate/sentinel cost + hit-rate, so tuning the LLM checks is evidence-based. Phase 1a (the funnel tap that feeds it is Phase 1b). Never gates.',
+    build: () => ({
+      enabled: true,
+      endpoints: [
+        'GET /metrics/features — per-feature rollup (calls, tokens, fired/no-op, fire-rate, p50/p95 latency, wait-stats); ?sinceHours= / ?feature= filters',
+      ],
+    }),
+  },
+  {
     key: 'frameworkIssues',
     prefixes: ['/framework-issues'],
     description: 'Framework-Onboarding Mentor System — read-only issue-ledger observability (never gates)',
