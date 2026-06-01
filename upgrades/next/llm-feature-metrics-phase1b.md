@@ -16,9 +16,9 @@ No gate changes behavior.
 
 ## What to Tell Your User
 
-Nothing required. If asked: `GET /metrics/features` now shows real per-check cost
-(latency), how often each check runs, and how often it hits a rate-limit wait —
-the data that lets us tune the checks with evidence.
+Nothing required. If asked: I can now show real per-check cost and timing, how
+often each check runs, and how often it hits a rate-limit wait — the data that
+lets us tune the checks with evidence.
 
 ## Summary of New Capabilities
 

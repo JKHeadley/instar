@@ -17,9 +17,9 @@ change (#638), so the two don't collide.
 
 ## What to Tell Your User
 
-Nothing required. If asked: the agent can now report, per safety check, how
-much it costs and how often it fires — `GET /metrics/features` — which is what
-lets us tune the checks with data instead of guesses.
+Nothing required. If asked: I can now report, per safety check, how much it costs
+and how often it fires — which is what lets us tune the checks with real data
+instead of guesses.
 
 ## Summary of New Capabilities
 

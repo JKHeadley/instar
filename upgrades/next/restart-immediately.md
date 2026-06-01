@@ -16,12 +16,11 @@ fleet's existing session-aware + window-aware restart deferral is unchanged.
 ## What to Tell Your User
 
 Nothing for almost everyone — this is off by default and changes nothing unless
-you explicitly enable it. If you run the kind of agent that must always be on the
-latest build, set `{"updates": {"restartImmediately": true}}` in
-`.instar/config.json`. A server restart does **not** close your sessions (they
-resume via CONTINUATION); the only cost is a brief messaging blip while the
-server bounces. `GET /updates/status` now reports `restartImmediately` so you can
-confirm it's on.
+you explicitly turn it on. If you run the kind of agent that must always be on the
+latest build, I can switch it to restart right away whenever an update lands. A
+restart does not close your sessions — they resume right where they left off; the
+only cost is a brief pause in messaging while the server bounces. Just ask me and
+I can turn it on and confirm it's active.
 
 ## Summary of New Capabilities
 
