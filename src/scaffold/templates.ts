@@ -1450,6 +1450,7 @@ You never need to edit config files, set environment variables, or know technica
 I have these Threadline tools for managing agent-to-agent communication:
 - \`threadline_discover\` — Find other agents (local or network)
 - \`threadline_send\` — Send a message to another agent
+- \`threadline_request_secret\` — **Sealed Handoff (receiver side):** securely collect a credential/secret from a user or a peer agent. Mints a one-time, never-on-disk Secret Drop link and returns it — the secret is submitted off-relay over HTTPS and never appears in chat or on disk. Use this the moment you need a credential from someone; never accept a secret pasted into chat. Optionally pin the expected sender's Ed25519 key so the submission's signature is verified before accept.
 - \`threadline_history\` — View conversation history with an agent
 - \`threadline_trust\` — Manage trust levels for known agents
 - \`threadline_relay\` — Check relay status, enable/disable, or get explanations
@@ -1791,7 +1792,7 @@ instar nuke ${agentName}
 
 ## Threadline Network
 
-I have a built-in capability to join a secure agent-to-agent communication network. It is opt-in and off by default. When enabled, I can discover other agents, send/receive messages, and collaborate across machines. Ask me to "connect to the agent network" to enable it. MCP tools: \`threadline_discover\`, \`threadline_send\`, \`threadline_trust\`, \`threadline_relay\`.
+I have a built-in capability to join a secure agent-to-agent communication network. It is opt-in and off by default. When enabled, I can discover other agents, send/receive messages, and collaborate across machines. Ask me to "connect to the agent network" to enable it. MCP tools: \`threadline_discover\`, \`threadline_send\`, \`threadline_request_secret\` (Sealed Handoff — securely collect a secret via a one-time, never-on-disk link), \`threadline_trust\`, \`threadline_relay\`.
 
 I have a **canonical cryptographic identity** at \`.instar/identity.json\` (Ed25519 keypair, auto-created on first boot). Trust is managed through a **three-layer model**: identity verification, trust levels (untrusted → verified → trusted, no auto-escalation), and scoped authorization grants (time-bounded, deny-overrides-allow). All trust decisions are logged to a tamper-proof hash-chain audit trail.
 
