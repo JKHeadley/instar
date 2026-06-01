@@ -1,0 +1,55 @@
+<!-- bump: patch -->
+
+## What Changed
+
+Agent-to-agent messages now pass through a **"Ground Before You Assert"** gate
+before they leave. When you send a peer a message via `threadline_send` that
+asserts a full `https://…` URL to a host you have **not** confirmed this
+session, the send is refused with a clear explanation instead of going out —
+because an unverified claim handed to another agent propagates as fact (this is
+exactly the failure that caused recent Echo↔Dawn incoherence: a peer handed over
+an endpoint that 404'd and a token that 401'd, and both were treated as real).
+
+It is a **block-with-override** gate, not a wall: known infrastructure hosts
+(github, localhost, anthropic, npm, …) pass; a **bare** host reference (no
+scheme — e.g. `dawn.bot-me.ai/api/instar/read`) passes, since it conveys the same
+already-verified information without asserting a live, fetchable endpoint; and
+once you have actually verified the URL (e.g. you curled it), you resend with the
+new `groundingAck: true` argument and it goes through. So a false positive can
+never permanently block a legitimate send — it only forces a conscious moment of
+verification on the exact class of claim that has burned cross-agent trust.
+
+The check is a pure function and runs inside the Threadline MCP process, so it
+adds no network round-trip and never blocks on I/O.
+
+## What to Tell Your User
+
+Your agent is now harder to mislead when it talks to other agents. If it is
+about to tell a peer that some web endpoint is live without having checked, it
+stops itself, verifies, and only then asserts it — the same discipline it already
+applies before messaging you. Nothing for you to configure; agent-to-agent
+collaboration just becomes more trustworthy.
+
+## Summary of New Capabilities
+
+- `threadline_send` refuses a message asserting a scheme-qualified URL to an
+  unverified host, unless the caller sets the new `groundingAck: true` argument
+  (after verifying) — the structural realization of "grounding before every
+  Threadline communication."
+- Known/infra hosts and bare-host references (no scheme) are exempt, so the gate
+  targets only unverified live-endpoint assertions.
+- Pure, in-process check — no added latency, no I/O dependency.
+
+## Evidence
+
+- Logic: `src/threadline/ThreadlineGroundingGate.ts` (`evaluateOutboundGrounding`),
+  9 unit tests covering both sides of the boundary
+  (`tests/unit/threadline/ThreadlineGroundingGate.test.ts`).
+- Wiring: `src/threadline/ThreadlineMCPServer.ts` `registerSendTool` — 4 integration
+  tests over the real MCP Client/Server transport (refuses an ungrounded URL and
+  proves `sendMessage` is never called; allows with `groundingAck`; allows a bare
+  host; allows a known/infra domain) in
+  `tests/unit/threadline/ThreadlineMCPServer.test.ts` (49 tests green).
+- `tsc --noEmit` clean; companion constitution article
+  ("Ground Before You Assert", `docs/STANDARDS-REGISTRY.md`) proposed separately
+  and awaiting operator ratification.
