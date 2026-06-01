@@ -23,6 +23,7 @@ import os from 'node:os';
 import type { AddressInfo } from 'node:net';
 import { createRoutes } from '../../src/server/routes.js';
 import { authMiddleware } from '../../src/server/middleware.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 const SENTINEL = 'SEALED-HANDOFF-ATREST-SENTINEL-9f3a2b7c1e';
 const TOPIC_ID = 424242;
@@ -101,7 +102,7 @@ describe('Sealed-handoff R3 — at-rest invariant (no plaintext to disk / Telegr
 
   afterEach(async () => {
     await server.close();
-    fs.rmSync(stateDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(stateDir, { recursive: true, force: true, operation: 'tests/integration/sealed-handoff-at-rest.test.ts:cleanup' });
   });
 
   it('the submitted secret value never reaches Telegram, the session, or disk', async () => {
