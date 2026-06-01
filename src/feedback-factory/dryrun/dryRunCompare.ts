@@ -69,6 +69,7 @@ export type DryRunRecord =
       kind: 'summary';
       at: string;
       clustersCompared: number;
+      clustersWithFingerprint: number;
       outcomesCompared: number;
       fingerprintDivergences: number;
       outcomeDivergences: number;
@@ -94,6 +95,7 @@ export function toRecords(result: ParityResult, now: string): DryRunRecord[] {
     kind: 'summary',
     at: now,
     clustersCompared: result.clustersCompared,
+    clustersWithFingerprint: result.clustersWithFingerprint,
     outcomesCompared: result.outcomesCompared,
     fingerprintDivergences: result.fingerprintDivergences.length,
     outcomeDivergences: result.outcomeDivergences.length,

@@ -249,6 +249,15 @@ const DEFAULT_BREAKER_THRESHOLD = 3;
 const DEFAULT_BREAKER_COOLDOWN_MS = 5 * 60_000;
 
 /**
+ * This runs on the agent Stop critical path, so the bounded rate-limit wait must
+ * stay SHORT — a long wait here delays every stop. If the shared LLM circuit
+ * breaker is open, wait at most 8s for the window to clear before failing open.
+ * (This is SEPARATE from this gate's own inner circuit breaker, which is
+ * untouched; it only flows to the shared-provider call's options.)
+ */
+const RATE_LIMIT_WAIT_MS = 8_000;
+
+/**
  * Evaluate a Stop event. Returns an authority result OR a structured
  * failure that the caller fail-opens on.
  *
@@ -408,6 +417,7 @@ export class UnjustifiedStopGate {
         model: 'fast',
         maxTokens: this.config.maxTokens,
         temperature: 0,
+        rateLimitWaitMs: RATE_LIMIT_WAIT_MS,
       });
       return await Promise.race([call, abortRace]);
     } finally {

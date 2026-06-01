@@ -86,6 +86,68 @@ describe('compareClusterOutcomes (invariants 2 & 3)', () => {
   });
 });
 
+describe('compareClusterOutcomes — status normalization (the resolved→closed projection)', () => {
+  // Portal still writes v1 literals while Instar emits the v2 lifecycle. The
+  // comparison projects both sides into v2 space, so benign vocabulary skew is NOT
+  // a cutover-blocking divergence — but a genuine lifecycle mismatch still is.
+  const rc = 0;
+
+  it('does NOT flag a status that differs only by vocabulary (each v1↔v2 pair)', () => {
+    const pairs: Array<[string, string]> = [
+      ['closed', 'resolved'], // instar v2 ↔ portal v1 (the headline case)
+      ['new', 'open'], // open is the v1 birth-default literal
+      ['fix_applied', 'fixed'],
+      ['investigating', 'investigating'], // identity
+      ['wontfix', 'wontfix'],
+      ['duplicate', 'duplicate'],
+    ];
+    for (const [instarStatus, portalStatus] of pairs) {
+      const instar: ClusterOutcome[] = [{ fingerprint: 'fp', status: instarStatus, recurrenceCount: rc }];
+      const portal: ClusterOutcome[] = [{ fingerprint: 'fp', status: portalStatus, recurrenceCount: rc }];
+      expect(compareClusterOutcomes(instar, portal)).toEqual([]);
+    }
+  });
+
+  it('is direction-agnostic (portal v2 vs instar v1 also reconciles)', () => {
+    const instar: ClusterOutcome[] = [{ fingerprint: 'fp', status: 'resolved', recurrenceCount: rc }];
+    const portal: ClusterOutcome[] = [{ fingerprint: 'fp', status: 'closed', recurrenceCount: rc }];
+    expect(compareClusterOutcomes(instar, portal)).toEqual([]);
+  });
+
+  it('STILL flags a genuine lifecycle divergence that survives normalization', () => {
+    const instar: ClusterOutcome[] = [{ fingerprint: 'fp', status: 'investigating', recurrenceCount: rc }];
+    const portal: ClusterOutcome[] = [{ fingerprint: 'fp', status: 'resolved', recurrenceCount: rc }];
+    const out = compareClusterOutcomes(instar, portal);
+    // 'investigating' vs normalize('resolved')='closed' → real divergence.
+    // Reported values stay RAW so the operator sees each side's actual stored status.
+    expect(out).toEqual([{ fingerprint: 'fp', kind: 'status', instar: 'investigating', portal: 'resolved' }]);
+  });
+
+  it('does not let normalization mask a recurrence divergence on a vocabulary-equivalent status', () => {
+    const instar: ClusterOutcome[] = [{ fingerprint: 'fp', status: 'closed', recurrenceCount: 2 }];
+    const portal: ClusterOutcome[] = [{ fingerprint: 'fp', status: 'resolved', recurrenceCount: 5 }];
+    const out = compareClusterOutcomes(instar, portal);
+    expect(out).toEqual([{ fingerprint: 'fp', kind: 'recurrence', instar: 2, portal: 5 }]);
+  });
+});
+
+describe('compareInvariants — divergent=false across a vocabulary-skewed window', () => {
+  it('green verdict when the only status differences are v1↔v2 projections', () => {
+    const clusters = [cluster('c1', 'bug', 'gitsync.pull fails'), cluster('c2', 'feature', 'dark mode')];
+    const instarOutcomes: ClusterOutcome[] = [
+      { fingerprint: 'fp-1', status: 'closed', recurrenceCount: 0 },
+      { fingerprint: 'fp-2', status: 'new', recurrenceCount: 1 },
+    ];
+    const portalOutcomes: ClusterOutcome[] = [
+      { fingerprint: 'fp-1', status: 'resolved', recurrenceCount: 0 }, // v1 of closed
+      { fingerprint: 'fp-2', status: 'open', recurrenceCount: 1 }, // v1 of new
+    ];
+    const r = compareInvariants({ portalClusters: clusters, instarOutcomes, portalOutcomes });
+    expect(r.divergent).toBe(false);
+    expect(r.outcomeDivergences).toEqual([]);
+  });
+});
+
 describe('compareInvariants (full verdict)', () => {
   it('divergent=false when all invariants hold', () => {
     const clusters = [cluster('c1', 'bug', 'gitsync.pull fails')];
@@ -93,7 +155,28 @@ describe('compareInvariants (full verdict)', () => {
     const r = compareInvariants({ portalClusters: clusters, instarOutcomes: outcomes, portalOutcomes: outcomes });
     expect(r.divergent).toBe(false);
     expect(r.clustersCompared).toBe(1);
+    expect(r.clustersWithFingerprint).toBe(1); // full coverage: every cluster carried a fingerprint
     expect(r.outcomesCompared).toBe(1);
+  });
+
+  it('reports a coverage gap — empty-fingerprint clusters count toward clustersCompared but NOT clustersWithFingerprint', () => {
+    // The exact misread-as-100% hazard: a window where some clusters have no stored
+    // fingerprint. Invariant 1 skips them, so the verdict is green — but it is green
+    // over a SUBSET, not the whole window. The coverage numerator makes that explicit.
+    const covered = cluster('c1', 'bug', 'has fingerprint');
+    const preBackfill: PortalCluster = { clusterId: 'c2', type: 'bug', title: 'pre-backfill', fingerprint: '' };
+    const r = compareInvariants({ portalClusters: [covered, preBackfill] });
+    expect(r.divergent).toBe(false); // no divergence among the COVERED clusters
+    expect(r.fingerprintDivergences).toEqual([]);
+    expect(r.clustersCompared).toBe(2); // denominator: every cluster read
+    expect(r.clustersWithFingerprint).toBe(1); // numerator: only the one with a fingerprint
+  });
+
+  it('clustersWithFingerprint counts every cluster when all carry a fingerprint', () => {
+    const clusters = [cluster('c1', 'bug', 'a'), cluster('c2', 'feature', 'b'), cluster('c3', 'bug', 'c')];
+    const r = compareInvariants({ portalClusters: clusters });
+    expect(r.clustersCompared).toBe(3);
+    expect(r.clustersWithFingerprint).toBe(3);
   });
 
   it('divergent=true on any fingerprint divergence (fingerprint-only pass, no outcomes)', () => {

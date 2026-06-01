@@ -1250,4 +1250,60 @@ describe('CommitmentTracker', () => {
       expect(tracker.verifyOne(c.id)).toBeNull();
     });
   });
+
+  // ── Beacon-enabled future promises are NOT auto-delivered ────────
+  //
+  // Regression (Codey gap-run F007, matches Echo's own finding): a beacon-enabled
+  // one-time-action with no machine-checkable verifier was auto-marked "delivered"
+  // on the very first verify sweep ("no automated verification method — trusting
+  // agent acknowledgment"), seconds after creation and before the PromiseBeacon
+  // ever beat — silently defeating the "open a commitment for follow-through"
+  // pattern. Such a commitment must stay PENDING until an explicit deliver().
+  describe('beacon-enabled follow-through is not auto-delivered', () => {
+    let stateDir: string;
+    let cleanup: () => void;
+    beforeEach(() => { ({ stateDir, cleanup } = createTmpState()); });
+    afterEach(() => cleanup());
+
+    it('verifyOne returns null (stays pending) for a beacon one-time action with no verifier', () => {
+      const tracker = makeTracker(stateDir);
+      const c = tracker.record({
+        type: 'one-time-action',
+        userRequest: 'check back in 20 minutes',
+        agentResponse: 'will report back',
+        beaconEnabled: true,
+      });
+      expect(c.beaconEnabled).toBe(true);
+      // The verify sweep must NOT resolve it.
+      expect(tracker.verifyOne(c.id)).toBeNull();
+      expect(tracker.get(c.id)?.status).not.toBe('delivered');
+      // It remains in the active set so the beacon keeps following through.
+      expect(tracker.getActive().some(x => x.id === c.id)).toBe(true);
+    });
+
+    it('a NON-beacon unverifiable one-time action is still auto-delivered (no regression)', () => {
+      const tracker = makeTracker(stateDir);
+      const c = tracker.record({
+        type: 'one-time-action',
+        userRequest: 'do a thing',
+        agentResponse: 'done',
+        beaconEnabled: false,
+      });
+      const result = tracker.verifyOne(c.id);
+      expect(result?.passed).toBe(true);
+      expect(tracker.get(c.id)?.status).toBe('delivered');
+    });
+
+    it('a full verify() sweep leaves the beacon commitment pending', () => {
+      const tracker = makeTracker(stateDir);
+      const c = tracker.record({
+        type: 'one-time-action',
+        userRequest: 'back in 20 minutes',
+        agentResponse: 'on it',
+        beaconEnabled: true,
+      });
+      tracker.verify();
+      expect(tracker.get(c.id)?.status).not.toBe('delivered');
+    });
+  });
 });

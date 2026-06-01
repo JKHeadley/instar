@@ -64,9 +64,10 @@ if [ -n "$URLS_IN_MSG" ]; then
   # confabulation. Read it from config at runtime. If config/python is
   # unavailable or tunnel.hostname is empty, fall back to the static allowlist.
   OWN_TUNNEL_HOST=""
+  OWN_TUNNEL_PARENT=""
   CONFIG_PATH="${CLAUDE_PROJECT_DIR:-.}/.instar/config.json"
   if [ -f "$CONFIG_PATH" ]; then
-    OWN_TUNNEL_HOST=$(python3 - "$CONFIG_PATH" <<'PY' 2>/dev/null
+    OWN_TUNNEL_INFO=$(python3 - "$CONFIG_PATH" <<'PY' 2>/dev/null
 import json
 import sys
 from urllib.parse import urlparse
@@ -76,13 +77,26 @@ try:
     raw = ((cfg.get('tunnel') or {}).get('hostname') or '').strip()
     if not raw:
         print('')
+        print('')
     else:
         parsed = urlparse(raw if '://' in raw else f'https://{raw}')
-        print((parsed.hostname or '').lower())
+        host = (parsed.hostname or '').lower()
+        print(host)
+        # Parent tunnel domain: drop the leftmost label so SIBLING NODES of the
+        # SAME agent on the SAME tunnel provider domain are trusted — a
+        # multi-machine agent runs on >1 machine, each with its own subdomain
+        # under the operator's tunnel domain (e.g. own 'echo.dawn-tunnel.dev'
+        # trusts sibling 'echo-mini.dawn-tunnel.dev'). Only emit a parent with
+        # >=3 labels so we never collapse to a 2-label apex or public suffix.
+        labels = host.split('.')
+        print('.'.join(labels[1:]) if len(labels) >= 3 else '')
 except Exception:
+    print('')
     print('')
 PY
 )
+    OWN_TUNNEL_HOST=$(printf '%s\n' "$OWN_TUNNEL_INFO" | sed -n '1p')
+    OWN_TUNNEL_PARENT=$(printf '%s\n' "$OWN_TUNNEL_INFO" | sed -n '2p')
   fi
 
   UNFAMILIAR_URLS=""
@@ -99,6 +113,15 @@ PY
 )
     # Skip the agent's own configured tunnel host.
     if [ -n "$OWN_TUNNEL_HOST" ] && [ "$URL_HOST" = "$OWN_TUNNEL_HOST" ]; then
+      continue
+    fi
+    # Skip SIBLING NODES of the same agent: any host under the agent's own
+    # tunnel parent domain (e.g. own 'echo.dawn-tunnel.dev' → trust
+    # 'echo-mini.dawn-tunnel.dev'). A multi-machine agent reaches its other
+    # machines via per-machine subdomains of the operator's tunnel domain;
+    # those are agent-controlled, not confabulated. Guarded to >=3-label
+    # parents above so this never trusts a bare public-suffix apex.
+    if [ -n "$OWN_TUNNEL_PARENT" ] && { [ "$URL_HOST" = "$OWN_TUNNEL_PARENT" ] || [ "${URL_HOST%.$OWN_TUNNEL_PARENT}" != "$URL_HOST" ]; }; then
       continue
     fi
     # Skip Cloudflare quick-tunnel hosts. These are ephemeral but agent-generated.

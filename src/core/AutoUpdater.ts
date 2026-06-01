@@ -69,6 +69,16 @@ export interface AutoUpdaterConfig {
    * are NOT dampened. Default: 900_000 (15 minutes). Set to 0 to disable.
    */
   restartCascadeDampenerWindowMs?: number;
+  /**
+   * Primary-developer mode (per-agent opt-in via `updates.restartImmediately`).
+   * When true, update restarts are NEVER deferred for active sessions OR the
+   * restart window — the agent always rolls onto the latest version as soon as
+   * it is downloaded. A server restart does not kill the agent's tmux sessions
+   * (they resume via CONTINUATION), so the only cost is a brief restart blip.
+   * Default false: the fleet keeps its session-aware + window-aware deferral.
+   * Spec: docs/specs/restart-immediately-spec.md.
+   */
+  restartImmediately?: boolean;
 }
 
 export interface AutoUpdaterStatus {
@@ -98,6 +108,8 @@ export interface AutoUpdaterStatus {
   maxDeferralHours: number;
   /** Persisted restart deferral details, surfaced for "installed but not active" diagnosis */
   restartDeferral: RestartDeferralState | null;
+  /** Primary-developer mode: restarts roll onto latest immediately, never deferred for sessions/window */
+  restartImmediately: boolean;
 }
 
 export interface RestartDeferralState {
@@ -184,13 +196,16 @@ export class AutoUpdater {
       preRestartDelaySecs: config?.preRestartDelaySecs ?? 60,
       restartWindow: config?.restartWindow ?? null,
       restartCascadeDampenerWindowMs: config?.restartCascadeDampenerWindowMs ?? 15 * 60_000,
+      restartImmediately: config?.restartImmediately ?? false,
       // codex-instar audit Item 4 — Required<T> demands every field, so we
       // coerce undefined to undefined explicitly; consumers branch on
       // truthiness in gatedRestart.
       restartHandshake: config?.restartHandshake as UpdateRestartHandshake | undefined as never,
     };
 
-    this.gate = new UpdateGate();
+    // Primary-developer mode: the gate inherits restartImmediately so it never
+    // defers behind active sessions (default false → fleet behavior unchanged).
+    this.gate = new UpdateGate({ alwaysRestartImmediately: this.config.restartImmediately });
     this.dampener = new RestartCascadeDampener(this.config.restartCascadeDampenerWindowMs);
 
     // npx cache detection is no longer needed — updates install to a local
@@ -263,6 +278,7 @@ export class AutoUpdater {
       deferralElapsedMinutes: gateStatus.deferralElapsedMinutes,
       maxDeferralHours: gateStatus.maxDeferralHours,
       restartDeferral: this.restartDeferral ? { ...this.restartDeferral } : null,
+      restartImmediately: gateStatus.alwaysRestartImmediately,
     };
   }
 
@@ -298,6 +314,12 @@ export class AutoUpdater {
           console.log(`[AutoUpdater] Config changed: autoApply ${this.config.autoApply} → ${diskValue}`);
           this.config.autoApply = diskValue;
         }
+        const diskRestartImmediately = this.liveConfig.get<boolean>('updates.restartImmediately', false);
+        if (diskRestartImmediately !== this.config.restartImmediately) {
+          console.log(`[AutoUpdater] Config changed: restartImmediately ${this.config.restartImmediately} → ${diskRestartImmediately}`);
+          this.config.restartImmediately = diskRestartImmediately;
+          this.gate.setAlwaysRestartImmediately(diskRestartImmediately);
+        }
         return;
       }
 
@@ -310,6 +332,12 @@ export class AutoUpdater {
       if (typeof diskValue === 'boolean' && diskValue !== this.config.autoApply) {
         console.log(`[AutoUpdater] Config changed on disk: autoApply ${this.config.autoApply} → ${diskValue}`);
         this.config.autoApply = diskValue;
+      }
+      const diskRestartImmediately = raw?.updates?.restartImmediately;
+      if (typeof diskRestartImmediately === 'boolean' && diskRestartImmediately !== this.config.restartImmediately) {
+        console.log(`[AutoUpdater] Config changed on disk: restartImmediately ${this.config.restartImmediately} → ${diskRestartImmediately}`);
+        this.config.restartImmediately = diskRestartImmediately;
+        this.gate.setAlwaysRestartImmediately(diskRestartImmediately);
       }
     } catch {
       // @silent-fallback-ok — config read failure shouldn't break update cycle
@@ -631,7 +659,10 @@ export class AutoUpdater {
     // path already does). So only defer to the window when active sessions are
     // present; when idle, fall through and restart now. The probe is pure
     // (getBlockingSessions) — it does NOT start the deferral clock.
-    if (!bypassWindow && !this.isInRestartWindow()) {
+    // Primary-developer mode also skips the restart-window wait — always-latest
+    // means no "wait until 02:00". The session gate is short-circuited inside
+    // UpdateGate.canRestart (alwaysRestartImmediately), so the restart proceeds.
+    if (!bypassWindow && !this.config.restartImmediately && !this.isInRestartWindow()) {
       const blockers = this.sessionManager
         ? this.gate.getBlockingSessions(this.sessionManager, this.sessionMonitor)
         : [];

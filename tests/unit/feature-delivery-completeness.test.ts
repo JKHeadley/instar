@@ -214,6 +214,7 @@ describe('Feature Delivery Completeness', () => {
       'sentinelTelegramEscalation',                       // silently-stopped sentinel delivery gate
       'Sentinel Notifications (silently-stopped trio)',   // alternate heading phrase
       'Cross-Agent Communication Discipline (anti-confabulation)', // migrator-only behavioral guard, no template parity
+      'Close the Loop (Untracked = Abandoned)', // core operating PRINCIPLE (constitution: docs/STANDARDS-REGISTRY.md), like Structure>Willpower / Deferral=Deletion — mirrored in the template's Core Principles but NOT a user-invokable capability, so no shadow-capability markers[] parity required
       'The "Threadline" hub topic — notifications',       // CMT-519 migrator-only notification-routing guidance, no template parity
       'Cross-Machine Seamlessness (one agent, many machines)', // operational self-heal/handoff awareness (like Version-Skew); not a user-invokable capability
       'What are we working on?',                           // migrator patch for the initiatives Registry-First row, not a capability section
@@ -222,6 +223,7 @@ describe('Feature Delivery Completeness', () => {
       'ContextWedgeSentinel',                              // thinking-block-400 wedge recovery; operational self-heal awareness, migrator-only (no template parity) — see context-wedge-sentinel.md
       '/release-readiness',                                // alternate endpoint check for the templated Release Readiness section
       '/codex/usage',                                      // codex `/status` rate-limit READ surface (templated "Codex Usage" + migrator): observability the agent READS to answer "how much codex usage is left?" — like Release Readiness, discoverable via GET /capabilities; not a framework-shadowed user-invokable capability
+      '/metrics/features',                                 // per-feature LLM metrics READ surface (templated "Per-Feature LLM Metrics" + migrator): observability the agent READS to answer "which gates cost most / fire least?" — like /codex/usage and /tokens, not a framework-shadowed user-invokable capability
       'Agent Updates topic (self-broadcasts about ships, restarts, updates)', // self-broadcast routing operational knowledge, migrator-only
       '/sessions/reap-log',                               // UNIFIED-SESSION-LIFECYCLE §P4 reap-log: operational observability the agent READS to answer "where did my session go?" — like Sentinel Notifications, not a user-invokable capability requiring framework-shadow parity
       '/sessions/reaper/audit',                           // RESPONSIBLE-RESOURCE-USAGE reaper decision audit: operational observability the agent READS to answer "what is the reaper considering / why under load?" — like /sessions/reap-log, migrator-only (no template/shadow parity)

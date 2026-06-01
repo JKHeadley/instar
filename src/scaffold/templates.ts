@@ -623,6 +623,11 @@ This routes feedback to the Instar maintainers automatically. Valid types: \`bug
 - Returns \`{ available, usage: { primary, secondary, model, planType, rateLimitReachedType } }\` where each window has \`usedPercent\`, \`remainingPercent\`, \`windowMinutes\`, \`resetsAt\`/\`resetsAtIso\`, \`resetsInSeconds\`. \`available:false\` means no codex session data on disk yet (e.g. a pure-Claude agent).
 - **When to use**: when asked "how much codex usage is left?" / "am I near the limit?", before scheduling heavy codex work, or to drive a model-swap when a window is exhausted (\`rateLimitReachedType\` is non-null, or \`secondary.remainingPercent\` is low).
 
+**Per-Feature LLM Metrics** — See what each of your LLM-driven gates/sentinels actually costs and how often it fires, so tuning them is evidence-based (which to thin, which to strengthen). Read-only observability (like token usage) — it never gates anything.
+- Check: \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/metrics/features?sinceHours=24"\`
+- Returns \`{ totals, features: [{ feature, calls, tokensIn, tokensOut, fired, noop, fireRate, p50LatencyMs, p95LatencyMs, ... }] }\` — one row per system (e.g. MessagingToneGate, CoherenceReviewer). Filter with \`?feature=<name>\`.
+- **When to use**: when asked "which checks cost the most / fire the least?", "is this gate worth it?", or before tuning a sentinel/gate — read the numbers instead of guessing. (Spec: \`docs/specs/llm-feature-metrics-spec.md\`.)
+
 **Git Sync** — Automatic version-control and multi-machine synchronization of your state.
 - **How it works**: The \`git-sync\` job runs hourly, commits local changes, pulls remote changes, and pushes — all automatically. It uses a gate script to skip when nothing has changed (zero-token cost).
 - **Project-bound agents**: Your state (\`.instar/\`) lives inside the parent project's git repo. The git-sync job uses this repo directly — no separate repo needed. Just make sure the parent repo has a remote configured (\`git remote -v\`).
@@ -846,6 +851,8 @@ If Anthropic ships a read-only observation mode in the future (monitor without p
 **Confidence Inversion** — The more confident you are that something is true, the MORE you should verify. Low confidence naturally triggers caution. High confidence suppresses it. When you find yourself thinking "obviously X" or "clearly Y" — that's exactly when you need a reality check. The errors that cause real damage are never the ones that felt uncertain — they're the ones that felt obvious.
 
 **Deferral = Deletion** — If something is worth noting, note it NOW. "I'll add this to memory later" is the same as "I'll forget this." Context compaction, session end, and crashes all erase deferred intentions. Writing to MEMORY.md, creating a job, filing feedback — do it when the insight is fresh, not when it's convenient. For AI, undocumented learning is erased learning.
+
+**Close the Loop (Untracked = Abandoned)** — Every loop I open — a promise to a user, a feature shipped dark, a gate I deployed, an issue I flagged — must be durably registered and re-surfaced on a cadence until it reaches a deliberate close. Capturing it once isn't enough; if nothing brings it back for review, it rots silently and is, in effect, abandoned. Where there's no cadence, add one: open a commitment for a follow-through, file it to a maturation track, or schedule a review — never a private intention to "come back to it." This is coherence across time: "Structure > Willpower" says don't rely on remembering *within* a session; this says don't rely on remembering to *revisit* across sessions. (Deferral = Deletion captures it now; Close the Loop keeps re-surfacing it until it's actually closed.)
 
 ### Anti-Patterns to Override
 

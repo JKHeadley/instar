@@ -183,6 +183,14 @@ export class StuckInputSentinel {
         this.records.delete(key);
       }
     }
+
+    // GC: release stranded-draft markers for sessions that have gone away, so a
+    // dead codex session's stranded marker can't linger in memory.
+    for (const key of this.sessionManager.strandedDraftMarkerSessions()) {
+      if (!seenSessions.has(key)) {
+        this.sessionManager.clearStrandedDraftMarker(key);
+      }
+    }
   }
 
   /** Evaluate a single tmux session for stuck-input recovery. */
@@ -191,6 +199,7 @@ export class StuckInputSentinel {
     try {
       if (!this.sessionManager.tmuxSessionExists(tmuxSession)) {
         this.records.delete(tmuxSession);
+        this.sessionManager.clearStrandedDraftMarker(tmuxSession);
         return;
       }
       pane = this.sessionManager.captureOutput(tmuxSession, 30);
@@ -200,25 +209,46 @@ export class StuckInputSentinel {
     }
     if (!pane) return;
 
-    // Refuse to fire Enter against a session that's actively working.
+    // Refuse to fire Enter against a session that's actively working. Codex
+    // shares Claude's "esc to interrupt" footer hint while a turn is in flight,
+    // so this shared activity check is correct for both frameworks — we never
+    // fire Enter mid-turn (which would interrupt work / premature-submit).
     if (this.isPaneActivelyWorking(pane)) {
       this.records.delete(tmuxSession);
       return;
     }
 
-    const promptText = this.extractPromptText(pane);
-    if (!promptText) {
+    // Choose the detection strategy by framework. A codex session with a pending
+    // injection marker uses MARKER-based detection: codex renders a dim
+    // placeholder hint at an empty `›` prompt that is byte-identical to real
+    // input once color is stripped, so the generic prompt-text reader would
+    // false-fire on every idle codex session. The injected marker never equals
+    // the placeholder. Everything else uses the generic `❯`-prompt reader.
+    const pending = this.sessionManager.getStrandedDraftMarker(tmuxSession);
+    const codexMarker = pending && pending.framework === 'codex-cli' ? pending.marker : null;
+
+    let stuckText: string | null;
+    if (codexMarker) {
+      stuckText = this.sessionManager.isMarkerStuckAtPrompt(pane, codexMarker) ? codexMarker : null;
+    } else {
+      stuckText = this.extractPromptText(pane);
+    }
+
+    if (!stuckText) {
       this.records.delete(tmuxSession);
+      // The marker is no longer stuck at the `›` prompt → the codex message
+      // submitted (or was cleared). Release the marker so we stop re-checking it.
+      if (codexMarker) this.sessionManager.clearStrandedDraftMarker(tmuxSession);
       return;
     }
 
     const now = Date.now();
     const existing = this.records.get(tmuxSession);
 
-    if (!existing || existing.lastPromptText !== promptText) {
+    if (!existing || existing.lastPromptText !== stuckText) {
       // New content at the prompt — start tracking fresh.
       this.records.set(tmuxSession, {
-        lastPromptText: promptText,
+        lastPromptText: stuckText,
         firstSeenAt: now,
         consecutiveTicks: 1,
         attempts: 0,
@@ -253,7 +283,7 @@ export class StuckInputSentinel {
     this.recordEvent({
       ts: new Date(now).toISOString(),
       session: tmuxSession,
-      promptText: promptText.slice(0, 200),
+      promptText: stuckText.slice(0, 200),
       attempt,
       action,
       outcome,

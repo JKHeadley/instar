@@ -2652,6 +2652,23 @@ Rule: I do not state that work landed inside another agent's state unless I have
       result.upgraded.push('CLAUDE.md: added Cross-Agent Communication Discipline (anti-confabulation) section');
     }
 
+    // Close the Loop (Untracked = Abandoned) — STANDARDS-REGISTRY amendment
+    // ratified with Justin 2026-05-31. The "nothing slips through the cracks"
+    // principle was made a constitutional standard; existing agents need the
+    // operating principle, not just new agents via the template. Content-sniffed
+    // on the distinctive name (also present in the template's Core Principles,
+    // so a freshly-initialized agent is never double-patched).
+    if (!content.includes('Close the Loop (Untracked = Abandoned)')) {
+      const closeTheLoopSection = `
+### Close the Loop (Untracked = Abandoned)
+
+Every loop I open — a promise to a user, a feature shipped dark, a gate I deployed, an issue I flagged — must be durably registered and re-surfaced on a cadence until it reaches a deliberate close. Capturing it once isn't enough; if nothing brings it back for review, it rots silently and is, in effect, abandoned. Where there's no cadence, add one: open a commitment for a follow-through, file it to a maturation track, or schedule a review — never a private intention to "come back to it." This is coherence across **time** — "Structure > Willpower" says don't rely on remembering *within* a session; this says don't rely on remembering to *revisit* across sessions. (Deferral = Deletion captures it now; Close the Loop keeps re-surfacing it until it's actually closed. Instar constitution: "Close the Loop", \`docs/STANDARDS-REGISTRY.md\`.)
+`;
+      content += '\n' + closeTheLoopSection;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Close the Loop (Untracked = Abandoned) core principle');
+    }
+
     // THREADLINE-IDENTITY-DISCOVERY-UNIFICATION (Agent Awareness). Existing
     // agents on the network need to know the authoritative "what address reaches
     // me" source is the routing fingerprint (relay registration / health
@@ -2743,6 +2760,24 @@ Check where codex account usage sits without the interactive TUI. The codex CLI 
       content += '\n' + codexUsageSection;
       patched = true;
       result.upgraded.push('CLAUDE.md: added Codex Usage (/codex/usage) awareness (codex-usage-visibility)');
+    }
+
+    // llm-feature-metrics (Agent Awareness + Migration Parity): existing agents
+    // must learn they can read per-gate/sentinel cost + hit-rate over HTTP to
+    // tune their LLM checks. Content-sniff on the route marker (also emitted by
+    // the template, so a freshly-initialized agent is never double-patched).
+    if (!content.includes('/metrics/features')) {
+      const metricsSection = `
+### Per-Feature LLM Metrics (\`/metrics/features\`)
+
+See what each LLM-driven gate/sentinel actually costs and how often it fires, so tuning them is evidence-based (which to thin, which to strengthen). Read-only observability (like token usage) — it never gates anything.
+- Check: \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/metrics/features?sinceHours=24"\`
+- Returns \`{ totals, features: [{ feature, calls, tokensIn, tokensOut, fired, noop, fireRate, p50LatencyMs, p95LatencyMs, ... }] }\` — one row per system (e.g. MessagingToneGate, CoherenceReviewer). Filter with \`?feature=<name>\`.
+- **When to use**: "which checks cost the most / fire the least?", "is this gate worth it?", or before tuning a sentinel/gate. Spec: \`docs/specs/llm-feature-metrics-spec.md\`.
+`;
+      content += '\n' + metricsSection;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Per-Feature LLM Metrics (/metrics/features) awareness (llm-feature-metrics)');
     }
 
     // update-message-topic-routing §Fix 3 — existing agents need to learn that

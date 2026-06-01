@@ -176,6 +176,32 @@ export class SessionManager extends EventEmitter {
   /** Track when each session was first seen idle at the Claude prompt. Key = session ID */
   private idlePromptSince = new Map<string, number>();
 
+  /**
+   * Per-session marker of the most-recently injected message that has NOT yet
+   * been confirmed submitted. Keyed by tmuxSession. Used by StuckInputSentinel
+   * to recover messages that stranded at the input prompt.
+   *
+   * Why this exists for codex specifically: Claude Code's readline QUEUES input
+   * typed while a turn is in flight and auto-submits it when the turn ends, so a
+   * busy-delivery is self-healing. Codex's TUI does NOT — a message typed while
+   * codex is "Working" is held as an unsubmitted DRAFT and never auto-submits
+   * when the turn ends (live repro 2026-05-31: a user message sat stranded for
+   * 3h on a busy 37-min codex turn). The in-process verifyInjection timers only
+   * poll for 6.5s — far short of a multi-minute codex turn — and the generic
+   * StuckInputSentinel prompt-text reader can't tell a real codex draft from the
+   * dim placeholder hint codex renders at an EMPTY `›` prompt. A marker (the
+   * actual injected text) is the robust, placeholder-immune tell: the codex
+   * placeholder never equals what we injected. The sentinel matches this marker
+   * at the `›` prompt and fires Enter once codex goes idle. Cleared on confirmed
+   * submit (verifyInjection / sentinel) and GC'd for dead sessions.
+   *
+   * Distinct from `pendingInjections` (response-verification: did the session die
+   * before replying?) — that map is cleared the moment the session produces ANY
+   * output, which for a busy codex session happens while the draft is still
+   * stranded. This map clears only when the marker actually leaves the prompt,
+   * so it survives a long busy turn. */
+  private strandedDraftMarkers = new Map<string, { marker: string; framework: string; injectedAt: number }>();
+
   /** Throttle stale session cleanup to every 5 minutes */
   private lastCleanupAt = 0;
 
@@ -2778,11 +2804,19 @@ rm()  { "${shimRunner}" rm  "$@"; }
             }
           }
         }
+        // Track the just-injected message so the persistent StuckInputSentinel
+        // can recover it if it strands at the prompt. This is the durable-across-
+        // turn backstop for codex specifically: codex holds a busy-delivery as an
+        // unsubmitted draft and does NOT auto-submit it when the turn ends, and a
+        // long codex turn far outlasts verifyInjection's 6.5s in-process window.
+        if (framework === 'codex-cli') {
+          this.recordStrandedDraftMarker(tmuxSession, text, framework);
+        }
         // Verify Enter actually submitted — on fresh Claude Code TUIs (v2.1.105+)
         // the Enter after bracketed-paste-end is occasionally eaten, leaving the
         // text sitting in the input box unsubmitted. verifyInjection captures the
         // pane after a short delay and sends one extra Enter if the marker text
-        // is still visible at the ❯ prompt.
+        // is still visible at the ❯ (or codex `›`) prompt.
         this.verifyInjection(tmuxSession, text);
         return true;
       } catch (err) {
@@ -2843,7 +2877,10 @@ rm()  { "${shimRunner}" rm  "$@"; }
         if (!this.tmuxSessionExists(tmuxSession)) return;
         const pane = this.captureOutput(tmuxSession, 30) || '';
         if (!this.isMarkerStuckAtPrompt(pane, marker)) {
-          // Submitted (or marker no longer at the input prompt) — stop polling.
+          // Submitted (or marker no longer at the input prompt) — stop polling
+          // and release the stranded-draft marker so the sentinel doesn't keep
+          // re-checking a message that already landed.
+          this.clearStrandedDraftMarker(tmuxSession);
           return;
         }
 
@@ -2894,10 +2931,17 @@ rm()  { "${shimRunner}" rm  "$@"; }
   }
 
   /**
-   * Detect whether a marker snippet of injected text is still sitting at a
-   * `❯` prompt line in the captured pane. Matches the marker on the same
-   * line as `❯` or on the immediately-following line (Claude Code wraps
+   * Detect whether a marker snippet of injected text is still sitting at an
+   * input prompt line in the captured pane. Matches the marker on the same
+   * line as the prompt char or on the immediately-following line (TUIs wrap
    * long input across two visible rows).
+   *
+   * Recognises BOTH framework prompt chars: Claude Code's `❯` and codex's `›`
+   * (U+203A). Marker-based detection is deliberate for codex — codex renders a
+   * dim placeholder hint (e.g. "Explain this codebase") at an EMPTY `›` prompt
+   * that is byte-identical to real input once color is stripped, so reading the
+   * prompt text generically would false-fire on every idle codex session. The
+   * injected marker never equals the placeholder, so matching it is robust.
    *
    * Exposed as a method so StuckInputSentinel and tests can reuse it.
    */
@@ -2907,11 +2951,55 @@ rm()  { "${shimRunner}" rm  "$@"; }
     const shortMarker = marker.slice(0, 30);
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i];
-      if (line.includes('❯') && (line.includes(marker) || (lines[i + 1] && lines[i + 1].includes(shortMarker)))) {
+      const hasPromptChar = line.includes('❯') || line.includes('›');
+      if (hasPromptChar && (line.includes(marker) || (lines[i + 1] && lines[i + 1].includes(shortMarker)))) {
         return true;
       }
     }
     return false;
+  }
+
+  /**
+   * Extract the distinguishing first-40-chars marker from injected text, the
+   * same way verifyInjection and the pending-injection map do. Returns null if
+   * the text is too short to be a reliable marker (<8 visible chars). Shared so
+   * the recorded marker and the verification marker can never drift apart.
+   */
+  static extractInjectionMarker(injectedText: string): string | null {
+    const marker = injectedText.replace(/^\s+/, '').slice(0, 40).trim();
+    if (!marker || marker.length < 8) return null;
+    return marker;
+  }
+
+  /**
+   * Record that `text` was just injected into `tmuxSession` and has not yet been
+   * confirmed submitted. Only the latest injection per session is tracked
+   * (a newer message supersedes an older stuck one). No-op when the marker is
+   * too short to track reliably. See the strandedDraftMarkers field for why this
+   * primarily matters for codex sessions. */
+  recordStrandedDraftMarker(tmuxSession: string, text: string, framework: string): void {
+    const marker = SessionManager.extractInjectionMarker(text);
+    if (!marker) return;
+    this.strandedDraftMarkers.set(tmuxSession, { marker, framework, injectedAt: Date.now() });
+  }
+
+  /** Read the stranded-draft marker record for a session (or undefined). Used by
+   *  StuckInputSentinel to do marker-based recovery for codex sessions. */
+  getStrandedDraftMarker(tmuxSession: string): { marker: string; framework: string; injectedAt: number } | undefined {
+    return this.strandedDraftMarkers.get(tmuxSession);
+  }
+
+  /** Clear the stranded-draft marker for a session — called once the marker is
+   *  no longer stuck at the prompt (confirmed submitted) or the session is
+   *  gone. */
+  clearStrandedDraftMarker(tmuxSession: string): void {
+    this.strandedDraftMarkers.delete(tmuxSession);
+  }
+
+  /** All tmux sessions with a stranded-draft marker. Used by the sentinel to GC
+   *  records for sessions that are no longer running. */
+  strandedDraftMarkerSessions(): string[] {
+    return [...this.strandedDraftMarkers.keys()];
   }
 
   /**

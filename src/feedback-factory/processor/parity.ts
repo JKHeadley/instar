@@ -34,6 +34,7 @@
  */
 
 import { computeFingerprint } from './fingerprint.js';
+import { normalizeStatus } from './transitions.js';
 
 /** The canonical fingerprint for a cluster: exactly the reference's per-cluster derivation. */
 export function clusterFingerprint(cluster: { type: string; title: string }): string {
@@ -54,7 +55,11 @@ export interface PortalCluster {
 /** A cluster-level outcome, keyed by fingerprint (the order-independent cluster identity). */
 export interface ClusterOutcome {
   fingerprint: string;
-  /** Terminal lifecycle status (e.g. 'resolved', 'investigating', 'new'). */
+  /**
+   * Lifecycle status in either vocabulary (v1 'resolved'/'open'/'fixed' or v2
+   * 'closed'/'new'/'fix_applied'). compareClusterOutcomes projects both sides
+   * through normalizeStatus before comparing, so the side's vocabulary is irrelevant.
+   */
   status: string;
   /** Chronic-regression recurrence count. */
   recurrenceCount: number;
@@ -77,7 +82,23 @@ export interface OutcomeDivergence {
 
 /** The full parity verdict over a window. `divergent` gates Phase 4 cutover. */
 export interface ParityResult {
+  /**
+   * Total Portal clusters in the window — the coverage DENOMINATOR. This is every
+   * cluster read, NOT the number actually fingerprint-compared (see
+   * {@link clustersWithFingerprint}); invariant 1 can only compare a cluster that
+   * carries a stored fingerprint.
+   */
   clustersCompared: number;
+  /**
+   * Clusters that carried a stored fingerprint and were therefore actually subject
+   * to the invariant-1 comparison — the coverage NUMERATOR. When this is below
+   * {@link clustersCompared}, a `divergent: false` verdict means "no divergence
+   * among the covered clusters", NOT "100% equivalence across the window": the gap
+   * (`clustersCompared - clustersWithFingerprint`) was skipped for lack of a stored
+   * fingerprint to compare against. Pre-backfill windows expose exactly this gap, so
+   * a green run is never silently misread as full coverage.
+   */
+  clustersWithFingerprint: number;
   outcomesCompared: number;
   fingerprintDivergences: FingerprintDivergence[];
   outcomeDivergences: OutcomeDivergence[];
@@ -128,7 +149,13 @@ export function compareClusterOutcomes(
       out.push({ fingerprint: fp, kind: 'missing-instar', portal: p.status });
       continue;
     }
-    if (i.status !== p.status) {
+    // Compare in the canonical v2 space: Portal still emits v1 literals
+    // (open/fixed/resolved) while Instar emits the v2 lifecycle (new/fix_applied/
+    // closed), so a raw `i.status !== p.status` reads benign vocabulary skew as a
+    // cutover-blocking divergence (e.g. Portal `resolved` vs Instar `closed`).
+    // normalizeStatus projects BOTH sides first; the reported values stay raw so the
+    // operator sees each side's actual stored status when a real divergence survives.
+    if (normalizeStatus(i.status) !== normalizeStatus(p.status)) {
       out.push({ fingerprint: fp, kind: 'status', instar: i.status, portal: p.status });
     }
     if (i.recurrenceCount !== p.recurrenceCount) {
@@ -161,12 +188,18 @@ export function compareInvariants(args: {
   portalOutcomes?: ClusterOutcome[];
 }): ParityResult {
   const fingerprintDivergences = compareClusterFingerprints(args.portalClusters);
+  // Coverage numerator: clusters carrying a stored fingerprint are the only ones
+  // compareClusterFingerprints actually compares (it skips empties). This predicate
+  // MUST stay identical to the `if (!c.fingerprint) continue` skip there, or the
+  // reported coverage will lie about what was checked.
+  const clustersWithFingerprint = args.portalClusters.filter((c) => c.fingerprint).length;
   const outcomeDivergences =
     args.instarOutcomes && args.portalOutcomes
       ? compareClusterOutcomes(args.instarOutcomes, args.portalOutcomes)
       : [];
   return {
     clustersCompared: args.portalClusters.length,
+    clustersWithFingerprint,
     outcomesCompared: args.portalOutcomes?.length ?? 0,
     fingerprintDivergences,
     outcomeDivergences,

@@ -465,6 +465,25 @@ export class TelegramAdapter implements MessagingAdapter {
    */
   public outboundRelay: ((topicId: number, text: string, options?: { silent?: boolean }) => Promise<SendResult | null>) | null = null;
 
+  /**
+   * True when a `sendToTopic` will RELAY through the lease holder rather than
+   * send directly — i.e. this is a tokenless pool standby with `outboundRelay`
+   * wired. Mirrors the exact `sendToTopic` branch condition (no usable string
+   * bot token + a relay available). Callers use this to skip work the HOLDER
+   * will do anyway: e.g. the `/telegram/reply` route skips its LOCAL tone gate
+   * for a relayed reply, because (a) the reply is already the agent's finalized
+   * output, (b) the Telegram-owning holder runs ITS tone gate on receipt, and
+   * (c) running the standby's tone gate adds a serial LLM call to every
+   * cross-machine reply — which, under a rate-limited circuit, waits up to
+   * `MessagingToneGate` rateLimitWaitMs (120s) BEFORE the relay even starts.
+   * That double-gate + pre-relay stall is a real robustness defect on the
+   * standby reply path.
+   */
+  willRelay(): boolean {
+    const hasUsableBotToken = typeof this.config.token === 'string' && this.config.token.length > 0;
+    return !hasUsableBotToken && this.outboundRelay !== null;
+  }
+
   // Sentinel interceptor — fires BEFORE the message handler for real-time interrupt detection.
   // Returns the sentinel classification. If category is 'emergency-stop' or 'pause',
   // the adapter will handle the session action and skip the normal handler.

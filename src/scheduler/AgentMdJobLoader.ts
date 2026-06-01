@@ -297,6 +297,17 @@ export function loadAgentMdJobs(
   // Issues card.
   const jobs: JobDefinition[] = [];
   for (const { manifest } of survivors) {
+    // A disabled/retired per-slug manifest must load as a disabled JobDefinition
+    // WITHOUT requiring its markdown body — the body may have been deleted when
+    // the job was retired. Loading it disabled lets it still shadow a stale
+    // enabled entry in legacy jobs.json (the per-slug precedence rule), instead
+    // of being dropped for a missing body and letting the zombie legacy job run
+    // (Codey gap-run F009).
+    if (!manifest.enabled) {
+      jobs.push(manifestToJobDefinition(manifest));
+      continue;
+    }
+
     if (manifest.execute.type === 'agentmd') {
       const loaded = loadAgentMdBody(manifest, jobsRootDir);
       if (loaded.problem) {

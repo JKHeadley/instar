@@ -160,7 +160,10 @@ describe('TopicLinkageHandler.captureOriginOnSend', () => {
     expect(c.relatedAgent).toBe('ai-guy');
     expect(c.topicId).toBe(9210);
     expect(c.userRequest).toBe('ask for stripe data');
-    expect(c.beaconEnabled).toBe(true);
+    // Near-Silent Notifications: a threadline-reply commitment must NOT beacon the
+    // user's topic — the reply routes back automatically, so a cadenced "awaiting
+    // reply" heartbeat is housekeeping noise that floods the user's chat.
+    expect(c.beaconEnabled).toBe(false);
     expect(c.expiresAt).toBeDefined();
   });
 

@@ -696,6 +696,7 @@ export interface RouteContext {
   /** Token-usage ledger (read-only observability over Claude Code JSONL
    *  transcripts). Null when stateDir is unavailable. */
   tokenLedger: import('../monitoring/TokenLedger.js').TokenLedger | null;
+  featureMetricsLedger: import('../monitoring/FeatureMetricsLedger.js').FeatureMetricsLedger | null;
   /** Framework-Onboarding Mentor System issue ledger (read-only observability;
    *  signal-only — never gates). Null when stateDir is unavailable. Powers
    *  GET /framework-issues and /framework-issues/playbook. */
@@ -4462,6 +4463,27 @@ export function createRoutes(ctx: RouteContext): Router {
     });
   });
 
+  // Per-feature LLM metrics (docs/specs/llm-feature-metrics-spec.md) — read-only
+  // observability: per gate/sentinel cost + hit-rate, so tuning is evidence-based
+  // (which to thin, which to strengthen). 503-stubs via the null ledger when
+  // stateDir/metrics is unavailable. Phase 1a — the funnel tap that feeds it is
+  // Phase 1b (on top of #638).
+  router.get('/metrics/features', (req, res) => {
+    if (!ctx.featureMetricsLedger) {
+      res.status(503).json({ error: 'feature-metrics ledger unavailable' });
+      return;
+    }
+    const sinceHours = req.query.sinceHours ? Number(req.query.sinceHours) : undefined;
+    const feature = typeof req.query.feature === 'string' ? req.query.feature : undefined;
+    const summary = ctx.featureMetricsLedger.summary(
+      sinceHours && sinceHours > 0 ? { sinceHours } : {},
+    );
+    const features = feature
+      ? summary.features.filter((f) => f.feature === feature)
+      : summary.features;
+    res.json({ ...summary, features });
+  });
+
   // ── Release-readiness (Layer B of release-readiness-visibility) ──────
   // Null when there's no analyzable instar git repo or the feature is off.
   router.get('/release-readiness', (_req, res) => {
@@ -5839,9 +5861,19 @@ export function createRoutes(ctx: RouteContext): Router {
     const isProxy = metadata?.isProxy === true;
     const allowDebugText = metadata?.allowDebugText === true;
     const allowDuplicate = metadata?.allowDuplicate === true;
+    // Skip the LOCAL tone gate when this server will RELAY the reply through the
+    // lease holder (a tokenless pool standby). The holder runs ITS OWN tone gate
+    // on receipt, so the standby gating too is redundant — and worse, it adds a
+    // serial LLM call to every cross-machine reply that, under a rate-limited
+    // circuit, can wait up to 120s (MessagingToneGate rateLimitWaitMs) BEFORE the
+    // relay even starts (observed: the standby's /telegram/reply hung >50s before
+    // relaying). The holder is the single Telegram owner and the correct place to
+    // gate. (Direct, non-relay sends still gate locally — unchanged.)
+    const willRelay = typeof ctx.telegram.willRelay === 'function' && ctx.telegram.willRelay();
     if (
       !isProxy &&
       !isSystemTemplate &&
+      !willRelay &&
       (await checkOutboundMessage(text, 'telegram', res, {
         topicId,
         allowDebugText,
@@ -5851,7 +5883,12 @@ export function createRoutes(ctx: RouteContext): Router {
       return;
 
     try {
-      await ctx.telegram.sendToTopic(topicId, text, { skipStallClear: isProxy });
+      // Capture the SendResult so the response can carry the REAL Telegram
+      // messageId. A tokenless-standby relay reads this messageId to decide
+      // whether the reply actually landed — without it the relay could only
+      // ever return a placeholder 0 and so reported "ok" even when nothing was
+      // delivered (the false-success-under-load class).
+      const sendResult = await ctx.telegram.sendToTopic(topicId, text, { skipStallClear: isProxy });
       // Clear injection tracker — but NOT for proxy messages (PresenceProxy)
       // Proxy messages should not reset stall detection timers
       if (!isProxy) {
@@ -5904,7 +5941,7 @@ export function createRoutes(ctx: RouteContext): Router {
       if (deliveryId && typeof deliveryId === 'string' && /^[0-9a-f-]{16,64}$/i.test(deliveryId)) {
         deliveryLruRecord(deliveryId);
       }
-      res.json({ ok: true, topicId });
+      res.json({ ok: true, topicId, messageId: sendResult?.messageId });
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
     }
@@ -8370,6 +8407,7 @@ export function createRoutes(ctx: RouteContext): Router {
         deferralElapsedMinutes: auto.deferralElapsedMinutes,
         maxDeferralHours: auto.maxDeferralHours,
         restartDeferral: auto.restartDeferral,
+        restartImmediately: auto.restartImmediately,
         lastCheck: auto.lastCheck,
         lastApply: auto.lastApply,
         lastAppliedVersion: auto.lastAppliedVersion,

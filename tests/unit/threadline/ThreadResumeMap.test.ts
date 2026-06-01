@@ -359,7 +359,6 @@ describe('ThreadResumeMap', () => {
       // so a fixed historical `now` makes this a time bomb: once real time advances
       // past 24h beyond the fixture, the "fresh" entry ages out of the window and
       // listActive() returns []. Relative-to-now keeps it deterministic forever.
-      // (Same fix as main #653.)
       const now = new Date();
       const stale = new Date(now.getTime() - 25 * 60 * 60 * 1000).toISOString();
       const fresh = new Date(now.getTime() - 10 * 60 * 1000).toISOString();

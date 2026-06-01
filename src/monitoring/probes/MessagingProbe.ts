@@ -25,6 +25,11 @@ export interface MessagingProbeDeps {
   messageLogPath: string;
   /** Whether the Telegram adapter is configured */
   isConfigured: () => boolean;
+  /** True when another supervised component (the lifeline) owns Telegram polling
+   *  and the in-server adapter is intentionally send-only. In that mode
+   *  `status.started` is false by design, so the probe must treat the
+   *  lifeline-owned poller as the healthy signal instead of reporting a failure. */
+  externalPollerActive?: () => boolean;
 }
 
 export function createMessagingProbes(deps: MessagingProbeDeps): Probe[] {
@@ -48,6 +53,14 @@ export function createMessagingProbes(deps: MessagingProbeDeps): Probe[] {
           const status = deps.getStatus();
 
           if (!status.started) {
+            if (deps.externalPollerActive?.() ?? false) {
+              return {
+                ...base,
+                passed: true,
+                description: 'Telegram connected via lifeline-owned polling; adapter is send-only',
+                diagnostics: { status, externalPollerActive: true },
+              };
+            }
             const fatal = status.fatalReason ?? null;
             const lastErr = status.lastError ?? null;
             const stoppedAt = status.stoppedAt ?? null;
@@ -110,6 +123,19 @@ export function createMessagingProbes(deps: MessagingProbeDeps): Probe[] {
           const status = deps.getStatus();
 
           if (!status.started) {
+            if (deps.externalPollerActive?.() ?? false) {
+              return {
+                ...base,
+                passed: true,
+                description: 'Polling active via lifeline-owned Telegram poller',
+                diagnostics: {
+                  uptime: status.uptime,
+                  pendingStalls: status.pendingStalls,
+                  pendingPromises: status.pendingPromises,
+                  externalPollerActive: true,
+                },
+              };
+            }
             return {
               ...base,
               passed: false,

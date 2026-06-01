@@ -663,6 +663,12 @@ export class CommitmentTracker extends EventEmitter {
    */
   private static isUnverifiableOneTime(c: Commitment): boolean {
     if (c.type !== 'one-time-action') return false;
+    // Beacon-enabled future promises are NOT auto-deliverable: PromiseBeacon owns
+    // their follow-through and they stay pending until the agent explicitly calls
+    // deliver(). Treating them as "unverifiable → trust the ack" auto-marks them
+    // delivered ~seconds after creation (heartbeatCount 0), silently defeating the
+    // "open a commitment for follow-through" pattern. See the verify-sweep guard below.
+    if (c.beaconEnabled) return false;
     const m = c.verificationMethod;
     return m === undefined || m === null || m === 'manual';
   }
@@ -816,6 +822,22 @@ export class CommitmentTracker extends EventEmitter {
       commitment.verificationMethod === 'threadline-reply'
     ) {
       return { passed: false, detail: 'Awaiting threadline reply' };
+    }
+
+    // PromiseBeacon owns follow-through for beacon-enabled future promises. If
+    // such a one-time action has no machine-checkable verifier, keep it PENDING
+    // until the agent explicitly delivers the promised update via deliver() —
+    // do NOT auto-mark it delivered (which fires ~seconds after creation and
+    // makes the beacon never beat). The beacon's cadenced heartbeats are the
+    // intended follow-through; this sweep is a no-op for them.
+    if (
+      commitment.type === 'one-time-action' &&
+      commitment.beaconEnabled &&
+      (commitment.verificationMethod === undefined ||
+        commitment.verificationMethod === null ||
+        commitment.verificationMethod === 'manual')
+    ) {
+      return null;
     }
 
     // One-time-actions with no automated verification path cannot keep

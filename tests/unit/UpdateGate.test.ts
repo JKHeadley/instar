@@ -188,4 +188,81 @@ describe('UpdateGate', () => {
       expect(gate.getBlockingSessions(mgr, nameKeyedMonitor)).toEqual([]); // idle via name-key fallback
     });
   });
+
+  // Primary-developer mode (updates.restartImmediately) — the agent never defers
+  // a restart for active sessions. A server restart does not kill the agent's
+  // tmux sessions (CONTINUATION), so being-on-latest wins over the restart blip.
+  // Spec: docs/specs/restart-immediately-spec.md.
+  describe('alwaysRestartImmediately (primary-developer mode)', () => {
+    // The exact fixture that BLOCKS by default — a healthy interactive session.
+    const healthyManager = {
+      listRunningSessions: () => [{ name: 'Codey Collaboration', tmuxSession: 'echo-codey-collaboration' }],
+      hasActiveProcesses: () => true,
+    };
+    const healthyMonitor = {
+      getStatus: () => ({
+        sessionHealth: [
+          { sessionName: 'echo-codey-collaboration', topicId: 13435, status: 'healthy' as const, idleMinutes: 0 },
+        ],
+      }),
+    };
+
+    it('ALLOWS the restart even with a healthy active session that would otherwise block', () => {
+      const blocked = new UpdateGate().canRestart(healthyManager, healthyMonitor);
+      expect(blocked.allowed).toBe(false); // baseline: default gate blocks
+
+      const gate = new UpdateGate({ alwaysRestartImmediately: true });
+      const result = gate.canRestart(healthyManager, healthyMonitor);
+      expect(result.allowed).toBe(true);
+      expect(result.blockingSessions).toBeUndefined();
+    });
+
+    it('does NOT start the deferral clock or set blocking state (pure allow)', () => {
+      const gate = new UpdateGate({ alwaysRestartImmediately: true });
+      gate.canRestart(healthyManager, healthyMonitor);
+      const status = gate.getStatus();
+      expect(status.deferring).toBe(false);
+      expect(status.deferralStartedAt).toBeNull();
+      expect(status.blockingSessions).toEqual([]);
+      expect(status.alwaysRestartImmediately).toBe(true);
+    });
+
+    it('short-circuits without even consulting the session monitor', () => {
+      let monitorConsulted = false;
+      const gate = new UpdateGate({ alwaysRestartImmediately: true });
+      const result = gate.canRestart(healthyManager, {
+        getStatus: () => { monitorConsulted = true; return { sessionHealth: [] }; },
+      });
+      expect(result.allowed).toBe(true);
+      expect(monitorConsulted).toBe(false);
+    });
+
+    it('default (false) still blocks a healthy active session — fleet behavior unchanged', () => {
+      const gate = new UpdateGate(); // default
+      expect(gate.getStatus().alwaysRestartImmediately).toBe(false);
+      expect(gate.canRestart(healthyManager, healthyMonitor).allowed).toBe(false);
+    });
+
+    it('setAlwaysRestartImmediately(true) flips a deferring gate to allowed and clears the deferral', () => {
+      const gate = new UpdateGate();
+      // First, start a deferral against a healthy session.
+      expect(gate.canRestart(healthyManager, healthyMonitor).allowed).toBe(false);
+      expect(gate.getStatus().deferring).toBe(true);
+
+      // Operator turns on primary-developer mode at runtime (config edit, no restart).
+      gate.setAlwaysRestartImmediately(true);
+      const status = gate.getStatus();
+      expect(status.alwaysRestartImmediately).toBe(true);
+      expect(status.deferring).toBe(false); // deferral cleared
+      expect(gate.canRestart(healthyManager, healthyMonitor).allowed).toBe(true);
+    });
+
+    it('setAlwaysRestartImmediately(false) restores session-aware deferral', () => {
+      const gate = new UpdateGate({ alwaysRestartImmediately: true });
+      expect(gate.canRestart(healthyManager, healthyMonitor).allowed).toBe(true);
+      gate.setAlwaysRestartImmediately(false);
+      expect(gate.getStatus().alwaysRestartImmediately).toBe(false);
+      expect(gate.canRestart(healthyManager, healthyMonitor).allowed).toBe(false);
+    });
+  });
 });
