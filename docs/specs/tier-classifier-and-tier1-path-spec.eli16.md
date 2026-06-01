@@ -9,7 +9,8 @@ new things:
 1. **Suggest a tier.** Before a commit, the gate looks at how big the change is *and* how
    risky it is, and prints a suggested tier (1, 2, or 3) with the reasons. A tiny,
    low-risk change → suggested Tier 1. Anything near the dangerous areas (secret-handling,
-   auth/tokens, the message-delivery path, the destructive-file/git guards) → bumped up,
+   auth/tokens, the message-delivery path, the destructive-file/git guards, or the
+   migration/fleet-release machinery) → bumped up,
    no matter how small.
 
 2. **Open the Tier-1 lane.** If the change is Tier 1, the agent can commit it with just a
@@ -24,10 +25,14 @@ This is the new constitution article ("The Body and the Mind") in action. The ga
 the final tier and writes down *why*. Every one of those decisions is **recorded** to a
 log (what the gate suggested, what the agent chose, and why). If the agent ever picks a
 *lower* tier than the risk signals warrant, the gate doesn't block it — but it prints a
-loud notice and stamps the record as an "override," so it's visible and reviewable. That
-record is exactly what makes "let the agent decide" safe instead of a loophole — and it's
-the data we'll use later to make both the gate's suggestions and the agent's judgment
-better over time.
+loud notice and stamps the record as an "override," so it's visible and reviewable.
+
+That record is a **learning signal, not a security wall**: it only catches cases the gate
+*noticed* were risky, and the agent could still under-declare a risk the heuristics missed.
+The real human gates are the **pull-request review** (every Tier-1 change is a PR you see)
+and the **operator spot-check** on auto-merge. What the log gives us is the data to make
+both the gate's suggestions and the agent's judgment better over time — and to grow the
+risk list when a blind spot shows up.
 
 ## What already exists / what's new
 

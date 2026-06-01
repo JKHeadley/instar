@@ -66,6 +66,7 @@ describe('instar-dev pre-commit — orphan deferrals enforcement', () => {
     fs.writeFileSync(
       path.join(sandbox, 'scripts', 'eli16-overview-check.mjs'),
       `import path from 'node:path';\n` +
+      `export const MIN_ELI16_CHARS = 800;\n` +
       `export function checkEli16Overview(specPath) {\n` +
       `  const eli16Path = path.join(path.dirname(specPath), path.basename(specPath, '.md') + '.eli16.md');\n` +
       `  return { ok: true, eli16Path, charCount: 9999, minChars: 1 };\n` +
@@ -76,7 +77,13 @@ describe('instar-dev pre-commit — orphan deferrals enforcement', () => {
       'export function verifyProposalDerivedRunbooks() { return { ok: true, reason: "no-proposal-derived-runbooks-or-all-verified" }; }\n',
     );
 
-    // Copy the hook script under test into the sandbox.
+    // Copy the hook script under test + its new pure tier classifier dependency
+    // (scripts/lib/classify-tier.mjs) into the sandbox.
+    fs.mkdirSync(path.join(sandbox, 'scripts', 'lib'), { recursive: true });
+    fs.copyFileSync(
+      path.join(path.dirname(HOOK_SCRIPT), 'lib', 'classify-tier.mjs'),
+      path.join(sandbox, 'scripts', 'lib', 'classify-tier.mjs'),
+    );
     fs.copyFileSync(HOOK_SCRIPT, path.join(sandbox, 'scripts', 'instar-dev-precommit.js'));
   });
 
@@ -138,6 +145,57 @@ describe('instar-dev pre-commit — orphan deferrals enforcement', () => {
     });
     const result = await runHook(process.env, sandbox);
     expect(result.status).toBe(0);
+  });
+
+  // ─── BACK-COMPAT REGRESSION GUARD (Step A — tier classifier) ──────────────
+  // The named guard required by the spec's Testing section: an EXISTING-SHAPE
+  // trace with NO `tier` field + an approved converged spec must pass EXACTLY
+  // as before the tier classifier landed. The stageFixture() trace above writes
+  // no `tier` field, so this is the canonical legacy shape; the gate must take
+  // the full Tier-2 path (decideRequirementSet(null) → 'tier2-full') and the
+  // additive Step-A change must NOT alter the outcome.
+  it('BACK-COMPAT: a no-tier trace + approved converged spec passes the full Tier-2 path exactly as before', async () => {
+    const { tracePath } = stageFixture({
+      specFrontmatter: 'title: Legacy spec\napproved: true\nreview-convergence: tactical\neli16-overview: fixture.eli16.md',
+      specBody: 'A normal, fully-in-scope change. No deferrals, no tier field.',
+    });
+    // Sanity-check the fixture really is the legacy shape (no tier declaration).
+    const trace = JSON.parse(fs.readFileSync(path.join(sandbox, tracePath), 'utf-8'));
+    expect(trace).not.toHaveProperty('tier');
+
+    const result = await runHook(process.env, sandbox);
+    expect(result.status).toBe(0);
+    // The pass message is the unchanged full-Tier-2 OK line (NOT the Tier-1 line).
+    expect(result.stderr).toMatch(/OK — trace/);
+    expect(result.stderr).not.toMatch(/OK \(Tier 1\)/);
+    // And the converged + approved spec was actually checked (proves the full path ran).
+    expect(result.stderr).toMatch(/converged \+ approved/);
+  });
+
+  // The audit JSON line must record riskFloor (the NUMBER), not just belowFloor,
+  // so the decision record is self-contained for later review (convergence
+  // Finding — audit field). The no-tier legacy fixture above touches only a
+  // benign src/touched.ts, so riskFloor is 1.
+  it('AUDIT: a commit appends one well-formed decisions.jsonl line including riskFloor (number)', async () => {
+    stageFixture({
+      specFrontmatter: 'title: Audit spec\napproved: true\nreview-convergence: tactical\neli16-overview: fixture.eli16.md',
+      specBody: 'A normal change for audit-line shape verification.',
+    });
+    const result = await runHook(process.env, sandbox);
+    expect(result.status).toBe(0);
+
+    const auditPath = path.join(sandbox, '.instar', 'instar-dev-decisions.jsonl');
+    expect(fs.existsSync(auditPath)).toBe(true);
+    const lines = fs.readFileSync(auditPath, 'utf-8').trim().split('\n').filter(Boolean);
+    expect(lines.length).toBe(1);
+    const entry = JSON.parse(lines[0]);
+    expect(entry).toHaveProperty('riskFloor');
+    expect(typeof entry.riskFloor).toBe('number');
+    expect(entry.riskFloor).toBe(1); // benign src/touched.ts → no risk signals
+    expect(entry).toHaveProperty('belowFloor');
+    expect(entry.belowFloor).toBe(false); // no declared tier → never below floor
+    expect(entry).toHaveProperty('suggestedTier');
+    expect(Array.isArray(entry.riskFloorReasons)).toBe(true);
   });
 
   it('blocks when spec contains orphan "out of scope today"', async () => {

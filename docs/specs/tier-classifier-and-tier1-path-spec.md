@@ -2,8 +2,10 @@
 title: "Tier classifier + Tier-1 PR path (Step A of the tiered development process)"
 date: 2026-06-01
 author: echo
-review-convergence: pending
-approved: false
+review-convergence: abbreviated-internal-2026-06-01
+approved: true
+approved-by: Justin
+approved-via: "Telegram topic 13435 (2026-06-01): 'Perfect approved please continue' on the design. Abbreviated convergence (internal adversarial/integration/lessons-aware panel) then ran and returned MINOR ISSUES; the three substantive findings + polish are folded in below (§1 risk list, §2 trace-writer, §4 audit honesty + Close-the-Loop). External cross-model review is itself built in Step B (it is the thing this project builds). Findings were refinements, not a redesign, so the approval stands."
 eli16-overview: tier-classifier-and-tier1-path-spec.eli16.md
 ---
 
@@ -53,9 +55,16 @@ A pure function `classifyTier(stagedInScopeFiles, diffStat, repoRoot)` returns
     invariant-bearing set: SecretDrop (`*secret*`, never-on-disk), the relay/delivery
     path (`*Relay*`, `*Telegram*Adapter*`, delivery-robustness), auth/tokens
     (`*auth*`, `*token*`), the destructive-op funnels (`SafeFsExecutor`,
-    `SafeGitExecutor`, `SourceTreeGuard`), the session lifecycle/reaper. → `riskFloor ≥ 2`.
-  - **Irreversibility** — touches a migration, a data-format/schema, or a
-    `PostUpdateMigrator` path. → `riskFloor ≥ 2`.
+    `SafeGitExecutor`, `SourceTreeGuard`), the session lifecycle/reaper
+    (`*Reaper*`, `*session*lifecycle*`). → `riskFloor ≥ 2`.
+  - **Migration / fleet-rollout surface** — touches the migration machinery by name
+    (`PostUpdateMigrator`, the `migrate*()` family, `src/data/http-hook-templates.ts`,
+    settings/config migration) or the **fleet-release / publish path** (`upgrades/NEXT.md`,
+    release/publish scripts). These are where the zombie-cleanup, lifeline-skew, and
+    "one malformed NEXT.md jams all releases" (#42) regressions lived — a one-line change
+    here is never Tier-1. → `riskFloor ≥ 2`.
+  - **Irreversibility** — touches a data-format/schema or anything not trivially
+    revertable. → `riskFloor ≥ 2`.
   - **New capability** — adds a new route, a new exported subsystem/class, or a new
     config surface (heuristic: net-new `router.<verb>(` / `export class ` / config key).
     → `riskFloor ≥ 2`.
@@ -77,6 +86,13 @@ The agent records its decision in the trace JSON (the gate already reads a fresh
 makes the change strictly additive and back-compatible: an unaware caller behaves exactly
 as before.
 
+**Trace writer (`skills/instar-dev/scripts/write-trace.mjs`) must emit the new fields**
+(convergence Finding 1 — without this the Tier-1 trace cannot be produced and the feature
+is unreachable). Add flags: `--tier <1|2|3>`, `--tier-reasoning <text>`, and (for Tier 1)
+`--eli16-path <path>` + `--side-effects-path <path>`; make `--spec` **optional when
+`--tier 1`** (a Tier-1 trace carries no `specPath`). A unit test must round-trip a Tier-1
+trace (tier:1 + eli16Path + sideEffectsPath, no specPath) and a Tier-2 trace (unchanged).
+
 ### 3. Enforcement (the chosen tier's requirement set)
 
 - **Tier 1:** require a staged ELI16 (the "request" ELI16) + a staged side-effects
@@ -93,11 +109,23 @@ as before.
 
 On every in-scope commit the gate appends one JSON line to
 `.instar/instar-dev-decisions.jsonl`: `{ ts, slug, suggestedTier, declaredTier,
-riskFloorReasons, belowFloor: boolean, files, loc }`. When `declaredTier < riskFloor`
-(the agent chose under the risk-signaled floor), the gate **prints a loud notice and
-records `belowFloor: true`** — it does **not** block (the mind holds authority), but the
-override is now a visible, reviewable record. This is the audit trail the constitution
-requires; a later step may surface `belowFloor` overrides for operator review.
+riskFloor, riskFloorReasons, belowFloor: boolean, files, loc }` (recording `riskFloor`
+the number — not just the derived boolean — keeps the line self-contained for later
+review without re-running the classifier). When `declaredTier < riskFloor` (the agent
+chose under the risk-signaled floor), the gate **prints a loud notice and records
+`belowFloor: true`** — it does **not** block (the mind holds authority), but the override
+is now a visible, reviewable record.
+
+**Honest scope of the audit (convergence Finding 2).** `belowFloor` only fires when the
+gate's heuristic *detected* the risk. A risky change that *evades* the path/keyword globs
+produces `riskFloor: 1`, so declaring Tier-1 on it is never flagged. The audit therefore
+backstops the **honest-but-overruling** case, not the **evasion** case. Undetected risk is
+caught downstream by the two surfaces the tier model already has: the **PR is the review
+surface** for every Tier-1 change, and the Tier-1 **auto-merge operator spot-check** (the
+merge policy, a sibling step) is the human gate. Per **Close the Loop**: `belowFloor`
+rates — and the broader question "are we mis-classifying?" — should be reviewed on a
+cadence, because that review is the only way the heuristic's blind spots surface and the
+risk-floor list grows. The audit is a *learning signal*, not a *security boundary*.
 
 ## Safety / blast radius
 
@@ -114,10 +142,15 @@ the gate's existing checks are untouched for Tier-2+.
   each risk signal raises the floor (a 1-line change touching a `*secret*` path →
   suggested Tier 2); `max(size, risk)`; Tier-3 never auto-suggested.
 - **Unit (gate enforcement):** Tier-1 trace (ELI16 + side-effects, no spec) → commit
-  allowed; Tier-1 trace missing ELI16 → blocked; no `tier` field → Tier-2 requirement
-  set enforced (back-compat); `declaredTier < riskFloor` → `belowFloor:true` recorded +
-  not blocked; Tier-2 path unchanged (existing tests stay green).
-- **Audit:** a commit appends exactly one well-formed `instar-dev-decisions.jsonl` line.
+  allowed; Tier-1 trace missing ELI16 → blocked; `declaredTier < riskFloor` →
+  `belowFloor:true` recorded + not blocked; Tier-2 path unchanged.
+- **Back-compat regression (required fixture):** an *existing-shape* trace with **no
+  `tier` field** + an approved converged spec must pass **byte-for-byte as today** — this
+  is the named guard that the additive change broke nothing.
+- **Trace writer (`write-trace.mjs`):** round-trip a Tier-1 trace (`tier:1` + `eli16Path`
+  + `sideEffectsPath`, **no** `specPath`) and a Tier-2 trace (unchanged).
+- **Audit:** a commit appends exactly one well-formed `instar-dev-decisions.jsonl` line,
+  including `riskFloor` (number) and `belowFloor` (boolean).
 
 ## Migration parity
 

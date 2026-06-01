@@ -28,13 +28,15 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { execSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { checkEli16Overview } from './eli16-overview-check.mjs';
+import { checkEli16Overview, MIN_ELI16_CHARS } from './eli16-overview-check.mjs';
 import { verifyProposalDerivedRunbooks } from '../skills/instar-dev/scripts/verify-proposal-derived-runbook.mjs';
+import { classifyTier, decideRequirementSet } from './lib/classify-tier.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const ROOT = path.resolve(__dirname, '..');
 const TRACES_DIR = path.join(ROOT, '.instar', 'instar-dev-traces');
+const DECISIONS_LOG = path.join(ROOT, '.instar', 'instar-dev-decisions.jsonl');
 const WINDOW_MS = 60 * 60 * 1000; // 60 minutes
 const MIN_ARTIFACT_CHARS = 200;
 
@@ -135,6 +137,72 @@ if (bootstrapTrigger) {
   process.exit(0);
 }
 
+// ─── Step 3.5: compute + surface the tier signal ─────────────────────────
+// Pure classifier (scripts/lib/classify-tier.mjs). SIGNAL ONLY — the gate
+// SURFACES the suggestion; the agent DECLARES the real tier in its trace. The
+// classifier never decides for the agent and never blocks. (The Body and the
+// Mind: the body informs, the mind decides, the decision is audited.)
+
+let tierSignal = { suggestedTier: 2, sizeTier: 2, riskFloor: 1, reasons: [] };
+let totalChangedLoc = 0;
+{
+  let addedLines = 0;
+  let deletedLines = 0;
+  let addedDiffText = '';
+  try {
+    const numstat = execSync(
+      `git diff --cached --numstat -- ${inScopeFiles.map((f) => JSON.stringify(f)).join(' ')}`,
+      { cwd: ROOT, encoding: 'utf8' },
+    );
+    for (const line of numstat.split('\n')) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      const [a, d] = trimmed.split('\t');
+      // Binary files show "-\t-"; treat as 0 LOC.
+      addedLines += a === '-' ? 0 : parseInt(a, 10) || 0;
+      deletedLines += d === '-' ? 0 : parseInt(d, 10) || 0;
+    }
+  } catch {
+    // If numstat fails, leave LOC at 0 — sizeTier becomes 1, riskFloor still
+    // governs. We never crash the gate over a diff-stat hiccup.
+  }
+  try {
+    // Added-line-only diff text feeds the new-capability heuristic. We pull the
+    // full staged diff and keep only the added (`+`) lines, stripping the `+`.
+    const fullDiff = execSync(
+      `git diff --cached -- ${inScopeFiles.map((f) => JSON.stringify(f)).join(' ')}`,
+      { cwd: ROOT, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 },
+    );
+    addedDiffText = fullDiff
+      .split('\n')
+      .filter((l) => l.startsWith('+') && !l.startsWith('+++'))
+      .map((l) => l.slice(1))
+      .join('\n');
+  } catch {
+    // No added-diff text → classifier SKIPS the new-capability check (per spec).
+    addedDiffText = '';
+  }
+
+  totalChangedLoc = addedLines + deletedLines;
+
+  tierSignal = classifyTier({
+    inScopeFiles,
+    addedLines,
+    deletedLines,
+    addedDiffText: addedDiffText || undefined,
+  });
+
+  console.error(
+    `[instar-dev-precommit] tier signal: suggestedTier=${tierSignal.suggestedTier} ` +
+      `(size=${tierSignal.sizeTier}, riskFloor=${tierSignal.riskFloor}, ` +
+      `${addedLines + deletedLines} LOC across ${inScopeFiles.length} file(s))`,
+  );
+  if (tierSignal.reasons.length > 0) {
+    console.error('[instar-dev-precommit] risk-floor reasons:');
+    for (const r of tierSignal.reasons) console.error(`  • ${r}`);
+  }
+}
+
 // ─── Step 4: find a fresh trace ──────────────────────────────────────────
 
 if (!fs.existsSync(TRACES_DIR)) {
@@ -157,6 +225,75 @@ if (traceEntries.length === 0) {
     'No fresh trace found (< 60 min old) in .instar/instar-dev-traces/. Run the /instar-dev skill to produce one.',
   );
 }
+
+// ─── Step 4.5: read the agent's DECLARED tier + branch ───────────────────
+// The agent records its tier in the trace JSON. We peek the freshest fresh
+// trace to read `trace.tier` (1|2|3). decideRequirementSet() factors the pure
+// enforcement decision:
+//   - tier 1            → 'tier1-lite'  (ELI16 + side-effects staged; no spec)
+//   - tier 2 / 3        → 'tier2-full'  (the EXISTING full validation, unchanged)
+//   - missing / no tier → 'tier2-full'  (back-compat default — behaves as today)
+
+let declaredTier = null;
+let tierReasoning = '';
+let freshestTrace = null;
+try {
+  freshestTrace = JSON.parse(fs.readFileSync(traceEntries[0].file, 'utf8'));
+  if (freshestTrace && (freshestTrace.tier === 1 || freshestTrace.tier === 2 || freshestTrace.tier === 3)) {
+    declaredTier = freshestTrace.tier;
+  }
+  if (freshestTrace && typeof freshestTrace.tierReasoning === 'string') {
+    tierReasoning = freshestTrace.tierReasoning;
+  }
+} catch {
+  // Malformed freshest trace → declaredTier stays null → Tier-2 back-compat
+  // path (the existing Step 5 loop will surface the malformed-JSON attempt).
+}
+
+const slug = (freshestTrace && (freshestTrace.slug || freshestTrace.name)) || 'unknown';
+const decision = decideRequirementSet(declaredTier);
+
+// AUDIT (all in-scope cases): one JSON line, written regardless of branch.
+// belowFloor = the agent declared UNDER the risk-signaled floor. We never
+// block on it (the mind holds authority) — the record is the backstop.
+const belowFloor = declaredTier != null && declaredTier < tierSignal.riskFloor;
+writeDecisionAudit({
+  slug,
+  suggestedTier: tierSignal.suggestedTier,
+  declaredTier,
+  riskFloor: tierSignal.riskFloor,
+  riskFloorReasons: tierSignal.reasons,
+  belowFloor,
+  files: inScopeFiles.length,
+  loc: totalChangedLoc,
+});
+if (belowFloor) {
+  console.error('');
+  console.error('┌──────────────────────────────────────────────────────────────────┐');
+  console.error('│  ⚠ BELOW RISK FLOOR — declared tier is under the risk-signaled    │');
+  console.error('│    floor. NOT blocked (you hold authority), but recorded.         │');
+  console.error('└──────────────────────────────────────────────────────────────────┘');
+  console.error(`  declared Tier ${declaredTier} < risk floor ${tierSignal.riskFloor}. Risk signals:`);
+  for (const r of tierSignal.reasons) console.error(`    • ${r}`);
+  if (tierReasoning) console.error(`  Your tierReasoning: ${tierReasoning}`);
+  console.error(`  Recorded to ${path.relative(ROOT, DECISIONS_LOG)} (belowFloor:true).`);
+  console.error('');
+}
+
+// ─── Step 4.6: Tier-1 lite path ──────────────────────────────────────────
+// When the agent declared Tier 1, the requirement set is intentionally lighter:
+// a staged ELI16 (the "request" ELI16) + a staged side-effects artifact
+// (sha-matched if the trace records a sha) — and NO converged/approved spec.
+// (The tests/lint requirement from the spec lives in the pre-PUSH gate, not
+// here: this pre-COMMIT hook checks ARTIFACTS only.)
+if (decision.requirementSet === 'tier1-lite') {
+  enforceTier1(freshestTrace, traceEntries[0].file);
+  // enforceTier1 either passes through (process.exit(0)) or blockCommit()s.
+}
+
+// ── Otherwise: Tier-2 / Tier-3 / no-tier → the EXISTING full validation ──
+// Everything below (Steps 5–8) is unchanged. A Tier-3 project step is just a
+// Tier-2 spec; nothing new is enforced for "Tier 3" at the gate.
 
 // ─── Step 5: validate most recent trace against staged files ─────────────
 
@@ -538,4 +675,145 @@ function blockCommit(files, reason) {
   console.error('See docs/signal-vs-authority.md and skills/instar-dev/SKILL.md for details.');
   console.error('');
   process.exit(1);
+}
+
+// ─── Audit writer ─────────────────────────────────────────────────────────
+// Append exactly one JSON line to .instar/instar-dev-decisions.jsonl for every
+// in-scope commit (regardless of tier branch). Best-effort: a logging failure
+// must never crash the gate.
+function writeDecisionAudit({ slug, suggestedTier, declaredTier, riskFloor, riskFloorReasons, belowFloor, files, loc }) {
+  try {
+    fs.mkdirSync(path.dirname(DECISIONS_LOG), { recursive: true });
+    fs.appendFileSync(
+      DECISIONS_LOG,
+      JSON.stringify({
+        ts: new Date().toISOString(),
+        slug,
+        suggestedTier,
+        declaredTier,
+        // riskFloor (the number) keeps the line self-contained for later review
+        // without re-running the classifier — not just the derived belowFloor.
+        riskFloor,
+        riskFloorReasons,
+        belowFloor,
+        files,
+        loc,
+      }) + '\n',
+    );
+  } catch {
+    // best-effort — never block on audit I/O
+  }
+}
+
+// ─── Tier-1 lite enforcement ──────────────────────────────────────────────
+// Tier-1 requirement set: a staged ELI16 (trace.eli16Path) passing the length
+// check + a staged side-effects artifact (trace.sideEffectsPath, sha-matched if
+// trace.artifactSha256 is present). NO specPath / review-convergence / approved.
+// On success this PASSES the whole gate (process.exit(0)); on any failure it
+// blockCommit()s with a Tier-1-specific message.
+function enforceTier1(trace, traceFile) {
+  const traceName = path.basename(traceFile);
+
+  // ── ELI16 (request overview) ──
+  const eli16Rel = trace.eli16Path;
+  if (!eli16Rel) {
+    blockCommit(
+      inScopeFiles,
+      [
+        `Tier-1 trace ${traceName} does not declare an ELI16 overview (trace.eli16Path is missing).`,
+        '',
+        'A Tier-1 commit still requires a plain-English ELI16 overview of the',
+        'change. Write it, stage it, and set "eli16Path": "<relative-path>" in the trace.',
+      ].join('\n'),
+    );
+  }
+  const eli16Abs = path.resolve(ROOT, eli16Rel);
+  if (!fs.existsSync(eli16Abs)) {
+    blockCommit(
+      inScopeFiles,
+      `Tier-1 ELI16 overview ${eli16Rel} (trace.eli16Path) does not exist.`,
+    );
+  }
+  if (!staged.includes(eli16Rel)) {
+    blockCommit(
+      inScopeFiles,
+      [
+        `Tier-1 ELI16 overview ${eli16Rel} is not staged for commit.`,
+        'It must ship alongside the change.',
+      ].join('\n'),
+    );
+  }
+  const eli16Content = fs.readFileSync(eli16Abs, 'utf8');
+  if (eli16Content.trim().length < MIN_ELI16_CHARS) {
+    blockCommit(
+      inScopeFiles,
+      [
+        `Tier-1 ELI16 overview ${eli16Rel} is too short`,
+        `(${eli16Content.trim().length} chars, need ${MIN_ELI16_CHARS}).`,
+        '',
+        "A stub isn't an overview — write a real one.",
+        'See skills/instar-dev/templates/eli16-overview.md for the expected shape.',
+      ].join('\n'),
+    );
+  }
+
+  // ── Side-effects artifact ──
+  const sideEffectsRel = trace.sideEffectsPath;
+  if (!sideEffectsRel) {
+    blockCommit(
+      inScopeFiles,
+      [
+        `Tier-1 trace ${traceName} does not declare a side-effects artifact (trace.sideEffectsPath is missing).`,
+        '',
+        'A Tier-1 commit still requires a side-effects review artifact. Write it,',
+        'stage it, and set "sideEffectsPath": "<relative-path>" in the trace.',
+      ].join('\n'),
+    );
+  }
+  const sideEffectsAbs = path.resolve(ROOT, sideEffectsRel);
+  if (!fs.existsSync(sideEffectsAbs)) {
+    blockCommit(
+      inScopeFiles,
+      `Tier-1 side-effects artifact ${sideEffectsRel} (trace.sideEffectsPath) does not exist.`,
+    );
+  }
+  if (!staged.includes(sideEffectsRel)) {
+    blockCommit(
+      inScopeFiles,
+      [
+        `Tier-1 side-effects artifact ${sideEffectsRel} is not staged for commit.`,
+        'It must ship alongside the change.',
+      ].join('\n'),
+    );
+  }
+  const sideEffectsContent = fs.readFileSync(sideEffectsAbs, 'utf8');
+  if (sideEffectsContent.trim().length < MIN_ARTIFACT_CHARS) {
+    blockCommit(
+      inScopeFiles,
+      `Tier-1 side-effects artifact ${sideEffectsRel} is too short ` +
+        `(${sideEffectsContent.trim().length} chars, need ${MIN_ARTIFACT_CHARS}).`,
+    );
+  }
+  // sha-match exactly as the existing artifact logic, when a sha is recorded.
+  if (trace.artifactSha256) {
+    const sha = crypto.createHash('sha256').update(sideEffectsContent).digest('hex');
+    if (trace.artifactSha256 !== sha) {
+      blockCommit(
+        inScopeFiles,
+        [
+          `Tier-1 side-effects artifact ${sideEffectsRel} sha mismatch —`,
+          `trace records ${String(trace.artifactSha256).slice(0, 12)}… but the staged bytes hash to ${sha.slice(0, 12)}….`,
+          `If the current artifact is correct, set "artifactSha256": "${sha}" in the trace,`,
+          're-stage BOTH the artifact and the trace, and commit fresh (do NOT amend).',
+        ].join('\n'),
+      );
+    }
+  }
+
+  console.error(
+    `[instar-dev-precommit] OK (Tier 1) — trace ${traceName} covers ${inScopeFiles.length} in-scope file(s), ` +
+      `ELI16 ${eli16Rel} (${eli16Content.trim().length} chars) + side-effects ${sideEffectsRel} staged & verified. ` +
+      `No converged spec required for Tier 1.`,
+  );
+  process.exit(0);
 }
