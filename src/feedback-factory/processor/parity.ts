@@ -34,6 +34,7 @@
  */
 
 import { computeFingerprint } from './fingerprint.js';
+import { normalizeStatus } from './transitions.js';
 
 /** The canonical fingerprint for a cluster: exactly the reference's per-cluster derivation. */
 export function clusterFingerprint(cluster: { type: string; title: string }): string {
@@ -54,7 +55,11 @@ export interface PortalCluster {
 /** A cluster-level outcome, keyed by fingerprint (the order-independent cluster identity). */
 export interface ClusterOutcome {
   fingerprint: string;
-  /** Terminal lifecycle status (e.g. 'resolved', 'investigating', 'new'). */
+  /**
+   * Lifecycle status in either vocabulary (v1 'resolved'/'open'/'fixed' or v2
+   * 'closed'/'new'/'fix_applied'). compareClusterOutcomes projects both sides
+   * through normalizeStatus before comparing, so the side's vocabulary is irrelevant.
+   */
   status: string;
   /** Chronic-regression recurrence count. */
   recurrenceCount: number;
@@ -144,7 +149,13 @@ export function compareClusterOutcomes(
       out.push({ fingerprint: fp, kind: 'missing-instar', portal: p.status });
       continue;
     }
-    if (i.status !== p.status) {
+    // Compare in the canonical v2 space: Portal still emits v1 literals
+    // (open/fixed/resolved) while Instar emits the v2 lifecycle (new/fix_applied/
+    // closed), so a raw `i.status !== p.status` reads benign vocabulary skew as a
+    // cutover-blocking divergence (e.g. Portal `resolved` vs Instar `closed`).
+    // normalizeStatus projects BOTH sides first; the reported values stay raw so the
+    // operator sees each side's actual stored status when a real divergence survives.
+    if (normalizeStatus(i.status) !== normalizeStatus(p.status)) {
       out.push({ fingerprint: fp, kind: 'status', instar: i.status, portal: p.status });
     }
     if (i.recurrenceCount !== p.recurrenceCount) {
