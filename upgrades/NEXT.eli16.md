@@ -1,88 +1,60 @@
 # vNEXT — plain English overview
 
-## What this change is
+## What Changed
 
-The post-mortem this morning named five recurring bug classes. Four of
-the five PRs landed today (#542, #545, #550, #551, #552) each closed
-one specific incident — silent 403s, missing wiring, watch-exit
-merges, bare catches. This is the fifth and final post-mortem PR, and
-it closes the broader pattern that produced them:
+This release rolls up four things that landed together:
 
-**Tested on fresh state, not real-world state.**
+1. **The agent can now measure its own safety checks.** Instar runs a bunch of
+   little AI-powered "checks" (is this message okay to send, is this a good time
+   to stop, etc.). Until now nobody could see how much each one costs or how often
+   it actually does something. Now each check's cost and outcome is recorded, so we
+   can tune them with real numbers instead of guessing.
 
-That class is the one where the test suite passes because it uses
-small, fresh, just-created fixtures, but the actual deployed agent has
-a 202MB token-ledger.db / an externalized secret config / a
-wrong-ABI binary / 8 concurrent jobs — and the boot path breaks in
-production despite tests being green. Every fix-shape PR I named in
-the post-mortem analysis had at least one test that PASSED on fresh
-state and would have FAILED on real state.
+2. **A new "always stay on the latest version" mode — for one special agent.**
+   The agent that builds Instar needs to always run the newest build. Normally an
+   agent waits for a quiet moment before restarting to load an update. This adds a
+   switch (off by default for everyone else) that says "don't wait — update right
+   away." Restarting doesn't close your chats, so nothing is lost.
 
-This PR adds a new test category called `tests/real-world-state/`
-specifically for that class. It sits alongside `unit/`,
-`integration/`, and `e2e/` as a peer.
+3. **Agents talking to each other no longer spam your chat.** When one agent
+   messaged another and waited for a reply, it was posting "still waiting…" pings
+   into your chat. That was pointless noise — the reply finds its way back on its
+   own. Those pings are now turned off for agent-to-agent waits.
 
 ## What already exists
 
-- The three existing test categories. None of them load real-shaped
-  state — they all use small fresh fixtures (`tests/fixtures/`).
-- Some adjacent code that COULD be tested at real-world state (the
-  SecretMigrator + SecretStore have unit tests but their merge layer
-  was never exercised end-to-end against the externalized shape until
-  this PR).
+- The little AI checks (sentinels and gates) already ran; they just weren't
+  measured per-check.
+- Agents already updated themselves, but always politely waited for a quiet
+  moment, which sometimes left the developer's agent stuck on an old version for
+  hours.
+- Agent-to-agent replies already routed back to the right place on their own; the
+  status pings were redundant on top of that.
 
 ## What's new
 
-- A new directory `tests/real-world-state/`.
-- A small framework helper (`_framework.ts`) with two things:
-  - A two-tier system. Small/fast fixtures run on every PR. Big/slow
-    fixtures (multi-100MB DBs, concurrency at scale) are gated on
-    `INSTAR_REAL_WORLD_BIG=1` env, default off, so CI cost stays
-    bounded.
-  - A `makeAgentFixture()` helper that gives each test a real-shape
-    on-disk agent home (`projectDir` + `.instar/`) for setting up the
-    scenario.
-- The first scenario: `externalized-config-boot.test.ts`. Five tests
-  that target the #542 incident class — making sure `loadConfig()`
-  correctly merges the real authToken back from the secret store when
-  the on-disk config holds the placeholder. This is the in-process
-  Node side of the bug; the existing PR #542 tests cover only the
-  shell-script side.
-- Vitest config updated to include the new directory.
+- A read-only metrics store plus a way to read it, fed by one shared spot every
+  AI check already flows through (so it covers all of them, now and later).
+- A per-agent on/off switch for "update immediately." Default off — the rest of
+  the fleet behaves exactly as before.
+- A one-line change so agent-to-agent reply-waits don't create a user-facing ping.
+
+## What to Tell Your User
+
+Mostly nothing to do. You might notice your agent can now explain what its safety
+checks cost, your chat is quieter when your agent talks to other agents, and — if
+you want it — your agent can be told to always jump straight onto the newest
+version.
+
+## Summary of New Capabilities
+
+- Per-check cost and outcome metrics, readable on demand.
+- An opt-in "always update immediately" mode for an agent that needs to stay
+  current (off by default).
+- Quieter agent-to-agent waits — no more "awaiting reply" pings in your chat.
 
 ## What you need to decide
 
-Nothing. Test-only change. No runtime code modified. CI cost negligible
-(the PR-tier fixture is tiny; nightly tier is opt-in).
-
-## How to verify it worked after deploy
-
-In CI, the new tests will appear in the unit-shard results as
-`[real-world-state:pr] externalized-config-boot — ...`. The
-`[real-world-state:nightly]` blocks (when added in future PRs) will
-appear as "skipped (set INSTAR_REAL_WORLD_BIG=1 to run)".
-
-Locally: `npm test` runs the PR tier. `INSTAR_REAL_WORLD_BIG=1 npm test`
-runs everything.
-
-## Why this matters more than it might look
-
-This is the framework for catching the broader class. Future PRs will
-add scenarios that target the other patterns I named in the
-post-mortem:
-
-- Multi-100MB token-ledger.db boot (catches the #534 class).
-- Wrong-ABI better-sqlite3 binary swap (catches #539).
-- Concurrent-job restart-during-tick (catches the class behind
-  several silent-stop incidents).
-
-Each future scenario follows the same `describeAtTier(...)` shape as
-the first one. Adding the next one is small (~30 minutes of test
-writing); designing the framework was the hard part and it's done.
-
-This is the LAST recommended fix from the post-mortem. Six PRs in <7
-hours total. The fix-rate of 19% over the last 14 days won't drop
-overnight, but each of these closes a class structurally — which means
-the rate drops the next time someone tries to ship one of those
-patterns again, not because they remember to be careful but because
-the lint or the test or the gate refuses to let them.
+Nothing is required. The only optional choice is whether you want a particular
+agent to update immediately instead of waiting for a quiet moment — and you can
+just ask the agent to turn that on.
