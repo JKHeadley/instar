@@ -141,6 +141,28 @@ describe('AutoUpdater', () => {
       expect(status.config.autoApply).toBe(false);
       expect(status.config.autoRestart).toBe(false);
     });
+
+    // Primary-developer mode (updates.restartImmediately) wiring.
+    it('defaults restartImmediately to false (fleet behavior unchanged)', () => {
+      const updater = new AutoUpdater(createMockUpdateChecker(), createMockState(), tmpDir);
+      expect(updater.getStatus().config.restartImmediately).toBe(false);
+      // The gate it constructed must reflect the same default.
+      expect(updater.getStatus().restartImmediately).toBe(false);
+    });
+
+    it('wires restartImmediately:true into the UpdateGate (status reflects the gate flag)', () => {
+      const updater = new AutoUpdater(
+        createMockUpdateChecker(),
+        createMockState(),
+        tmpDir,
+        { restartImmediately: true },
+      );
+      const status = updater.getStatus();
+      expect(status.config.restartImmediately).toBe(true);
+      // status.restartImmediately is sourced from gate.getStatus() — proves the
+      // flag reached the actual gate instance, not just the config echo.
+      expect(status.restartImmediately).toBe(true);
+    });
   });
 
   describe('state persistence', () => {
