@@ -5861,9 +5861,19 @@ export function createRoutes(ctx: RouteContext): Router {
     const isProxy = metadata?.isProxy === true;
     const allowDebugText = metadata?.allowDebugText === true;
     const allowDuplicate = metadata?.allowDuplicate === true;
+    // Skip the LOCAL tone gate when this server will RELAY the reply through the
+    // lease holder (a tokenless pool standby). The holder runs ITS OWN tone gate
+    // on receipt, so the standby gating too is redundant — and worse, it adds a
+    // serial LLM call to every cross-machine reply that, under a rate-limited
+    // circuit, can wait up to 120s (MessagingToneGate rateLimitWaitMs) BEFORE the
+    // relay even starts (observed: the standby's /telegram/reply hung >50s before
+    // relaying). The holder is the single Telegram owner and the correct place to
+    // gate. (Direct, non-relay sends still gate locally — unchanged.)
+    const willRelay = typeof ctx.telegram.willRelay === 'function' && ctx.telegram.willRelay();
     if (
       !isProxy &&
       !isSystemTemplate &&
+      !willRelay &&
       (await checkOutboundMessage(text, 'telegram', res, {
         topicId,
         allowDebugText,
