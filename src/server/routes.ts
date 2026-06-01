@@ -8398,6 +8398,8 @@ export function createRoutes(ctx: RouteContext): Router {
         maxDeferralHours: auto.maxDeferralHours,
         restartDeferral: auto.restartDeferral,
         restartImmediately: auto.restartImmediately,
+        restartSafeSessions: auto.restartSafeSessions,
+        hardBlockingSessions: auto.hardBlockingSessions,
         lastCheck: auto.lastCheck,
         lastApply: auto.lastApply,
         lastAppliedVersion: auto.lastAppliedVersion,
