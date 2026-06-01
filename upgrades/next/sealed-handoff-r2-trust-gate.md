@@ -1,0 +1,52 @@
+<!-- bump: patch -->
+
+## What Changed
+
+Agent-to-agent secret transfers (the **Sealed Handoff**) are now **trust-gated**,
+like every other Instar capability. Whether a transfer needs your approval is
+decided by two trust levels you already control: **your trust of the agent**
+(its autonomy for this kind of operation) and **the agent's trust of the other
+agent** (the peer's trust level). When both are high, the transfer goes through
+with **no approval needed**; otherwise it requires an explicit operator
+authorization, and below the bar it is refused before the one-time secret link is
+ever consumed.
+
+This refines the operator-confirm gate from "the operator always approves" into a
+trust-conditional one, reusing the two existing trust systems (no new concept):
+the peer trust ladder (`untrusted → verified → trusted → autonomous`) and the
+operation-autonomy ladder (`ask-every-time → ask-first → log → autonomous`). A
+credential transfer defaults to requiring approval; it only becomes
+no-approval when you've both raised the peer to `trusted`+ and granted the agent
+autonomy for transfers.
+
+## What to Tell Your User
+
+You stay in control of agent-to-agent secret transfers through the same trust
+levels you already use elsewhere. For peers you've explicitly marked trusted and
+agents you've granted autonomy, transfers happen without interrupting you; for
+anything less trusted, the transfer is held. Nothing to configure — it follows
+the trust you've already set.
+
+## Summary of New Capabilities
+
+- Sealed Handoff transfers consult both trust axes (peer trust + the user's
+  operation-autonomy for the agent) before a transfer is allowed.
+- High trust on both axes → no operator approval needed; below the bar → refused
+  (fail-closed) until an explicit operator authorization exists.
+- Reuses the existing AgentTrustManager + AdaptiveTrust systems — no new trust
+  concept, and ordinary user Secret Drops are never gated by it.
+
+## Evidence
+
+- Decision logic: `src/threadline/OperatorConfirmGate.ts`
+  (`evaluateTransferAuthorization`, `isHighTrustTransfer`) — 15 unit tests
+  covering both sides of each threshold + the trust-bypass + fallback paths.
+- Wiring: `src/server/routes.ts` submit handler consults the gate for
+  peer-pinned requests before consuming them — 4 integration tests
+  (`tests/integration/sealed-handoff-r2-trust-gate.test.ts`): peer-below-bar →
+  403, op-below-bar → 403, high-both → passes (410 on the downstream signature
+  check), ordinary drop → never gated.
+- `npm run lint` + `tsc --noEmit` clean.
+- Follow-up (separate): the operator-authorization store + the low-trust
+  approval flow (so a below-the-bar transfer can be approved one-off rather than
+  only via raising trust levels).

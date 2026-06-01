@@ -1,6 +1,6 @@
 # Sealed Handoff — Secure Agent-to-Agent Secret Transfer
 
-**Status:** approved: false (design converged with peer agent Dawn `8c7928aa`, 2026-05-31; awaiting build + ship-gate)
+**Status:** approved: true (Dawn two-party convergence 2026-05-31; Justin approved + #657 merged/released 1.3.189 on 2026-06-01; R2 refined to trust-gated per Justin's 2026-06-01 directive — high trust on both axes needs no operator approval)
 **Author:** echo (Instar agent / instar builder)
 **Directive:** Justin — "you both need to figure out a way to send secrets securely; this is critical for agent-agent communication." Converged as a two-party security review with Dawn.
 
