@@ -31,6 +31,7 @@ import type { ThreadResumeMap, ThreadResumeEntry } from './ThreadResumeMap.js';
 import type { AgentTrustManager, AgentTrustLevel } from './AgentTrustManager.js';
 import type { MCPAuth, MCPTokenInfo, MCPTokenScope } from './MCPAuth.js';
 import { DEFAULT_RELAY_URL } from './constants.js';
+import { evaluateOutboundGrounding } from './ThreadlineGroundingGate.js';
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -531,6 +532,15 @@ export class ThreadlineMCPServer {
           'commitment record for context when the reply lands; NEVER sent ' +
           'over the wire to the remote agent.'
         ),
+        groundingAck: z.boolean().default(false).describe(
+          'Ground Before You Assert: set true ONLY after you have verified the ' +
+          'claims in this message (endpoints resolve, tokens authenticate, ' +
+          'identities/state are current). Leave false (default) and the send is ' +
+          'refused if it contains a scheme-qualified URL to a host you have not ' +
+          'confirmed this session — so an unverified claim never propagates to a ' +
+          'peer as fact. Resend with groundingAck:true once verified, or write ' +
+          'the host bare (no scheme).'
+        ),
       },
       async (args) => {
         const authError = this.checkAuth('threadline:send');
@@ -544,6 +554,27 @@ export class ThreadlineMCPServer {
         // Validate message is non-empty
         if (!args.message.trim()) {
           return errorResult('Message cannot be empty');
+        }
+
+        // Ground Before You Assert (constitution Interaction principle): refuse to
+        // send a peer message that asserts an unverified scheme-qualified URL,
+        // unless the caller has consciously acked grounding. Block-with-override —
+        // a real structural gate (Structure > Willpower) that still respects
+        // Signal-vs-Authority: the agent can override after verifying, so a
+        // false-positive can never permanently block a legitimate send. The check
+        // is a pure function, so it runs correctly here in the MCP stdio process.
+        if (!args.groundingAck) {
+          const grounding = evaluateOutboundGrounding(args.message);
+          if (!grounding.allow) {
+            return errorResult(
+              'Ground Before You Assert — this message asserts something you have not ' +
+              'verified this session:\n' +
+              grounding.issues.map((i) => `• ${i.detail}`).join('\n') +
+              '\nVerify each (e.g. curl the endpoint), or reference the host bare (no ' +
+              'scheme) if it carries already-verified info. If you have already ' +
+              'verified it, resend with groundingAck: true.'
+            );
+          }
         }
 
         try {
