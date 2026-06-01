@@ -63,6 +63,7 @@ import { DeliveryFailureSentinel } from '../monitoring/delivery-failure-sentinel
 import os from 'node:os';
 import { TokenLedger } from '../monitoring/TokenLedger.js';
 import { FeatureMetricsLedger } from '../monitoring/FeatureMetricsLedger.js';
+import { setFeatureMetricsRecorder } from '../core/CircuitBreakingIntelligenceProvider.js';
 import { TokenLedgerPoller } from '../monitoring/TokenLedgerPoller.js';
 import { FrameworkIssueLedger } from '../monitoring/FrameworkIssueLedger.js';
 import { MentorOnboardingRunner, DEFAULT_MENTOR_CONFIG, resolveMentorDeliveryTopic, type MentorConfig } from '../scheduler/MentorOnboardingRunner.js';
@@ -629,8 +630,9 @@ export class AgentServer {
     // sentinel's cost + hit-rate (docs/specs/llm-feature-metrics-spec.md). Own
     // try/catch, independent of the other ledgers (same cascade-isolation as
     // FrameworkIssueLedger). Phase 1a: this store + the /metrics/features route.
-    // The single funnel tap that feeds it (CircuitBreakingIntelligenceProvider →
-    // record()) lands in Phase 1b, on top of #638's hardened funnel.
+    // Phase 1b: the funnel tap — setFeatureMetricsRecorder() registers this
+    // ledger as the module-level recorder every CircuitBreakingIntelligenceProvider
+    // reads, so the single funnel writes per-feature metrics for ALL LLM systems.
     if (options.config.stateDir) {
       try {
         const serverDataDir = path.join(options.config.stateDir, 'server-data');
@@ -638,6 +640,9 @@ export class AgentServer {
         this.featureMetricsLedger = new FeatureMetricsLedger({
           dbPath: path.join(serverDataDir, 'feature-metrics.db'),
         });
+        // Phase 1b: wire the funnel → ledger. One injection point covers every
+        // wrapped provider (current and future). Null-safe; no-op if it failed above.
+        setFeatureMetricsRecorder(this.featureMetricsLedger);
       } catch (err) {
         console.warn('[instar] feature-metrics-ledger init failed (non-fatal):', err);
         this.featureMetricsLedger = null;
