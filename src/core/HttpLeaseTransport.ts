@@ -47,6 +47,7 @@ export class HttpLeaseTransport implements LeaseTransport {
   private lastObserved: LeaseRecord | null = null;
   private lastNonceByHolder: Record<string, number> = {};
   private lastBroadcastOkAt = 0;
+  private lastPullOkAt = 0;
   private readonly windowMs: number;
 
   constructor(deps: HttpLeaseTransportDeps) {
@@ -100,7 +101,12 @@ export class HttpLeaseTransport implements LeaseTransport {
   }
 
   isReachable(): boolean {
-    return this.now() - this.lastBroadcastOkAt <= this.windowMs;
+    // Reachability is bidirectional: a successful broadcast (we pushed to a peer) OR
+    // a successful pull (we reached a peer to read its lease) both prove a live
+    // medium. A standby behind a one-way NAT — can pull but can't be pushed to — is
+    // now correctly seen as connected.
+    const last = Math.max(this.lastBroadcastOkAt, this.lastPullOkAt);
+    return this.now() - last <= this.windowMs;
   }
 
   /**
@@ -120,5 +126,55 @@ export class HttpLeaseTransport implements LeaseTransport {
     if (!this.lastObserved || lease.epoch >= this.lastObserved.epoch) {
       this.lastObserved = lease;
     }
+  }
+
+  /**
+   * Active PULL (Cross-Machine Coherence): GET a peer's current lease over the
+   * authenticated channel and fold it into our effective view via the SAME
+   * recordObserved path the push receiver uses. This lets a standby *ask* for the
+   * holder's lease instead of only waiting to be pushed to — so a quiet or one-way
+   * network can't blind it. Returns the peer's lease (may name a third machine as
+   * holder — re-served), or null when the peer has none / is unreachable.
+   *
+   * Uses POST /api/lease/pull with a signed empty body: machine-auth is body-hash
+   * based (signs SHA256(body)), so a POST with `{}` authenticates cleanly where a
+   * GET (whose body fetch would drop) cannot. A successful pull — even one that
+   * returns no lease — proves reachability.
+   */
+  async pullPeer(peer: LeasePeer): Promise<LeaseRecord | null> {
+    const fetchImpl = this.d.fetchImpl ?? fetch;
+    try {
+      const body = {};
+      const headers = signRequest(this.d.selfMachineId, this.d.signingKeyPem, body, this.d.nextSequence());
+      const res = await fetchImpl(`${peer.url.replace(/\/$/, '')}/api/lease/pull`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...headers },
+        body: JSON.stringify(body),
+      });
+      if (!res || !(res as Response).ok) return null;
+      const data = (await (res as Response).json().catch(() => null)) as { lease?: LeaseRecord | null } | null;
+      // A successful response (even one carrying no lease) proves the medium is live.
+      this.lastPullOkAt = this.now();
+      const lease = data?.lease ?? null;
+      if (lease && typeof lease.epoch === 'number') {
+        this.recordObserved(lease);
+        return lease;
+      }
+      return null;
+    } catch (err) {
+      this.log(`pull from ${peer.machineId} failed: ${err instanceof Error ? err.message : String(err)}`);
+      return null;
+    }
+  }
+
+  /**
+   * Best-effort fan-out pull of every peer's lease. Failures are advisory (a peer
+   * being unreachable is data, not an error) — mirrors broadcast()'s tolerance.
+   * Cadence/jitter is owned by the caller (the standby loop), not here.
+   */
+  async pullAllPeers(): Promise<void> {
+    const peers = this.d.peers();
+    if (peers.length === 0) return;
+    await Promise.all(peers.map((p) => this.pullPeer(p).catch(() => null)));
   }
 }

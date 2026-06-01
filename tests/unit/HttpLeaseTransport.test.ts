@@ -84,4 +84,59 @@ describe('HttpLeaseTransport', () => {
     expect(t.observed().lease?.epoch).toBe(4);
     expect(t.observed().lease?.holder).toBe('m_c');
   });
+
+  // ── Cross-Machine Coherence: active PULL (POST /api/lease/pull) ──────────
+
+  it('pullPeer POSTs a signed empty body to /api/lease/pull and folds the returned lease', async () => {
+    const peerLease = lease({ holder: 'm_b', epoch: 7, nonce: 9 });
+    const fetchImpl = vi.fn(async () => ({ ok: true, json: async () => ({ lease: peerLease }) })) as any;
+    const t = make([{ machineId: 'm_b', url: 'http://peer/' }], fetchImpl);
+    const got = await t.pullPeer({ machineId: 'm_b', url: 'http://peer/' });
+    expect(got?.epoch).toBe(7);
+    const [url, opts] = fetchImpl.mock.calls[0];
+    expect(url).toBe('http://peer/api/lease/pull'); // trailing slash normalized
+    expect(opts.method).toBe('POST');
+    expect(opts.body).toBe('{}'); // signed EMPTY body (machine-auth is body-hash based)
+    expect(opts.headers['X-Machine-Id']).toBe('m_a');
+    expect(opts.headers['X-Signature']).toBeTruthy();
+    // Folded via recordObserved → visible in observed() and the watermark advanced.
+    expect(t.observed().lease?.epoch).toBe(7);
+    expect(t.observed().lastNonceByHolder['m_b']).toBe(9);
+  });
+
+  it('a successful pull proves reachability even when the peer returns no lease', async () => {
+    let now = 2_000_000;
+    const fetchImpl = vi.fn(async () => ({ ok: true, json: async () => ({ lease: null }) })) as any;
+    const t = make([{ machineId: 'm_b', url: 'http://peer' }], fetchImpl, () => now);
+    now += 60_001; // age out any prior broadcast window
+    expect(t.isReachable()).toBe(false);
+    const got = await t.pullPeer({ machineId: 'm_b', url: 'http://peer' });
+    expect(got).toBeNull();
+    expect(t.isReachable()).toBe(true); // pull alone made the medium live (one-way NAT case)
+  });
+
+  it('pullPeer returns null on a non-ok response and does not mark reachable', async () => {
+    let now = 3_000_000;
+    const fetchImpl = vi.fn(async () => ({ ok: false, json: async () => ({}) })) as any;
+    const t = make([{ machineId: 'm_b', url: 'http://peer' }], fetchImpl, () => now);
+    now += 60_001;
+    expect(await t.pullPeer({ machineId: 'm_b', url: 'http://peer' })).toBeNull();
+    expect(t.isReachable()).toBe(false);
+  });
+
+  it('pullPeer returns null on a network error (advisory, not thrown)', async () => {
+    const fetchImpl = vi.fn(async () => { throw new Error('ECONNREFUSED'); }) as any;
+    const t = make([{ machineId: 'm_b', url: 'http://peer' }], fetchImpl);
+    await expect(t.pullPeer({ machineId: 'm_b', url: 'http://peer' })).resolves.toBeNull();
+  });
+
+  it('pullAllPeers fans out to every peer and is a no-op with none', async () => {
+    const fetchImpl = vi.fn(async () => ({ ok: true, json: async () => ({ lease: null }) })) as any;
+    const t = make([{ machineId: 'm_b', url: 'http://b' }, { machineId: 'm_c', url: 'http://c' }], fetchImpl);
+    await t.pullAllPeers();
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    const empty = make([], fetchImpl);
+    await empty.pullAllPeers();
+    expect(fetchImpl).toHaveBeenCalledTimes(2); // unchanged — no peers, no calls
+  });
 });

@@ -33,10 +33,12 @@ gaps:
 ## The fixes
 
 - **Let backups ask (active pull).** Add a simple read-only "what's your current
-  lease?" endpoint, and have backups periodically *ask* the in-charge machine over
-  the internet (using the same tunnel address the rest of the system already uses).
-  It feeds into the exact same logic as before — it just adds a second way for the
-  info to arrive, so a quiet or one-way network no longer blinds a backup.
+  lease?" endpoint (`POST /api/lease/pull` — a POST only so the signed-body
+  authentication works; the meaning is still just a read), and have backups
+  periodically *ask* the in-charge machine over the internet (using the same tunnel
+  address the rest of the system already uses). It feeds into the exact same logic as
+  before — it just adds a second way for the info to arrive, so a quiet or one-way
+  network no longer blinds a backup.
 - **LAN-optional, never LAN-required.** Justin's rule: this MUST work for machines
   that are *not* on the same local network. So everything uses the internet address
   by default; being on the same LAN is just a faster shortcut to the same place,

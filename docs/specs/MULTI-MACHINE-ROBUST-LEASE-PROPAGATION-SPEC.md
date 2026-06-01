@@ -29,7 +29,7 @@ approval-as-data-note: >
   the constitution."
 lessons-engaged:
   - P1   # Structure > Willpower — lease fencing + rollout gating are structural, not willpower
-  - P3   # Migration Parity — new GET /api/lease route + config defaults reach existing agents
+  - P3   # Migration Parity — new POST /api/lease/pull route + config defaults reach existing agents
   - P4   # Testing Integrity — partition/split-brain E2E is the missing tier-3; all three tiers
   - P10  # Comprehensive-First — fix propagation + wire rollout + add the regression test, no deferral
   - P11  # A Wall Is a Hypothesis — "can't prove multi-machine live" was a wall; the inventory found the real gaps
@@ -147,19 +147,24 @@ layers"). The parent article names this sub-standard explicitly:
 
 Symmetric to the existing push (`POST /api/lease` → `recordObserved`):
 
-- **New `GET /api/lease`** (machineRoutes, behind the same `machineAuthMiddleware` as
+- **New `POST /api/lease/pull`** (machineRoutes, behind the same `machineAuthMiddleware` as
   `POST /api/lease` — NOT the Bearer `authMiddleware`): returns the responder's
   **effective-view** lease (or null) — which on a standby may name a *third* machine
   as holder (the holder's lease, re-served). The puller validates it via
   `FencedLease.acceptTunnelLease` (signature against the **named holder's** registered
   key + epoch-floor + nonce), so a re-served third-party lease still validates. It MUST
   NOT apply the POST holder==responder guard (`POST /api/lease` 403s a pushed lease
-  whose `holder` ≠ sender) — applying that to GET would let a standby pull only from
-  the actual holder, defeating "ask any peer."
-- **New `HttpLeaseTransport.pullPeer(peerUrl): Promise<LeaseRecord | null>`** — GETs
-  `${peerUrl}/api/lease`, validates the signed lease, and feeds it through the same
-  `recordObserved(lease)` path the push receiver uses (so the effective-view fold is
-  unchanged — this only adds a *second way* for a peer lease to arrive).
+  whose `holder` ≠ sender) — applying that here would let a standby pull only from
+  the actual holder, defeating "ask any peer." (It is a **POST with a signed empty
+  body**, not a GET: machine-auth signs `SHA256(body)`, so a GET — whose body `fetch`
+  would drop — cannot authenticate cleanly. The verb is an auth-mechanism detail; the
+  semantics are a read.)
+- **New `HttpLeaseTransport.pullPeer(peer): Promise<LeaseRecord | null>`** — POSTs a
+  signed empty body to `${peer.url}/api/lease/pull`, validates the returned signed
+  lease, and feeds it through the same `recordObserved(lease)` path the push receiver
+  uses (so the effective-view fold is unchanged — this only adds a *second way* for a
+  peer lease to arrive). A successful pull — even one returning no lease — proves
+  reachability (`lastPullOkAt`).
 - **New `HttpLeaseTransport.pullAllPeers(peerUrls): Promise<void>`** — best-effort
   fan-out pull; failures are advisory (a peer being unreachable is data, not an
   error), consistent with `broadcast()`'s tolerant return.
@@ -232,24 +237,24 @@ be observed on that harness. This test MUST therefore **explicitly stand up a
   fail the batch); `isReachable` reflects a successful pull; `currentCommitSha`
   resolution chain (env set → env; unset in a repo → rev-parse; unset non-repo →
   `'unknown'`).
-- **Integration:** `GET /api/lease` returns the signed current lease over the HTTP
+- **Integration:** `POST /api/lease/pull` returns the signed current lease over the HTTP
   pipeline and a peer's `pullPeer` accepts it; `StageAdvancer` reconcile advances on a
   green-E2E row for the current commit and reverts on red.
 - **E2E (feature-alive + the new regression):** the partition→heal split-brain test
-  (Part D) — the headline missing tier-3; plus `GET /api/lease` returns 200 on the
+  (Part D) — the headline missing tier-3; plus `POST /api/lease/pull` returns 200 on the
   production init path.
 - **Wiring integrity:** the `StageAdvancer` instance is retained and its driver
   actually calls `reconcile()` (not `void`-discarded); `pullPeer` feeds the real
-  `recordObserved`/`effectiveView` fold; `GET /api/lease` is registered.
+  `recordObserved`/`effectiveView` fold; `POST /api/lease/pull` is registered.
 
 ## Migration Parity (P3)
 
-- `GET /api/lease` ships in code (reaches existing agents on the normal update).
+- `POST /api/lease/pull` ships in code (reaches existing agents on the normal update).
 - `multiMachine.leasePullIntervalMs` default added via `migrateConfig()` with an
   existence check.
 - The rollout driver is additive and dark-by-default; no existing agent's stage
   changes (it stays `dark` until a real green E2E + operator gating).
-- Agent Awareness (P5): note the active-pull behavior + `GET /api/lease` in the
+- Agent Awareness (P5): note the active-pull behavior + `POST /api/lease/pull` in the
   multi-machine section of the CLAUDE.md template — BOTH halves: `generateClaudeMd()`
   (new agents) AND a `migrateClaudeMd()` content-sniff guard (existing agents), per
   the Migration Parity Standard.
@@ -267,17 +272,17 @@ be observed on that harness. This test MUST therefore **explicitly stand up a
 4. **Signal vs Authority (P2).** Lease decisions stay epoch-CAS (the FencedLease
    authority model — deterministic by design); pull only changes *when* a peer epoch
    is *seen*, never *who wins*. No new authority introduced.
-5. **External surfaces.** Adds `GET /api/lease` (auth-gated, read-only, returns a
+5. **External surfaces.** Adds `POST /api/lease/pull` (auth-gated, read-only, returns a
    signed lease — no secrets); outbound pulls go only to registry-advertised peer
    URLs (same trust domain as the existing push/mesh). No new third-party calls.
 6. **Interactions with existing primitives.** Pull feeds the SAME `recordObserved`
-   /`effectiveView` fold as push (no divergent path); `GET /api/lease` mirrors the
+   /`effectiveView` fold as push (no divergent path); `POST /api/lease/pull` mirrors the
    existing `POST /api/lease`; `StageAdvancer` is the existing component, now driven;
    git `GitLeaseStore` durable path unchanged. No new split-brain surface — pull can
    only *accelerate* convergence.
 7. **Rollback cost.** All additive + dark/default-off. Disable pull = set
    `leasePullIntervalMs` to 0 (falls back to today's push-only behavior). The rollout
-   driver reverts to `void`-equivalent by leaving the stage `dark`. `GET /api/lease`
+   driver reverts to `void`-equivalent by leaving the stage `dark`. `POST /api/lease/pull`
    is read-only and harmless if unused.
 
 ## Open questions for ratification (proposals I proceed under unless redirected)

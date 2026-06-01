@@ -44,6 +44,8 @@ export interface MultiMachineSyncStatus {
 const HEARTBEAT_WRITE_INTERVAL_MS = 2 * 60_000; // Write heartbeat every 2 min
 const HEARTBEAT_CHECK_INTERVAL_MS = 2 * 60_000;  // Check heartbeat every 2 min
 const DEFAULT_FAILOVER_TIMEOUT_MS = 15 * 60_000;  // 15 min before failover
+/** Cross-Machine Coherence — default active lease-PULL cadence over the tunnel. */
+const DEFAULT_LEASE_PULL_INTERVAL_MS = 5_000;
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -90,6 +92,18 @@ export class MultiMachineCoordinator extends EventEmitter {
    */
   private leaseCoordinator: LeaseCoordinator | null = null;
   private leaseTicking: boolean = false;
+  /**
+   * Cross-Machine Coherence — the active lease-PULL loop. A self-rearming
+   * (jittered) timer that asks each peer for its current lease at a constant
+   * cadence, independent of holder liveness. `leasePullContested` latches a
+   * pull-discovered same-epoch split-brain for the Near-Silent surface
+   * (getSyncStatus → dashboard) that the registry awakeMachineCount misses in a
+   * git-less mesh where each machine only sees itself as awake.
+   */
+  private leasePullTimer: ReturnType<typeof setTimeout> | null = null;
+  private leasePulling: boolean = false;
+  private leasePullContested: boolean = false;
+  private leasePullStopped: boolean = false;
 
   constructor(state: StateManager, config: CoordinatorConfig) {
     super();
@@ -292,6 +306,11 @@ export class MultiMachineCoordinator extends EventEmitter {
       clearInterval(this.heartbeatCheckTimer);
       this.heartbeatCheckTimer = null;
     }
+    this.leasePullStopped = true;
+    if (this.leasePullTimer) {
+      clearTimeout(this.leasePullTimer);
+      this.leasePullTimer = null;
+    }
     this.nonceStore.destroy();
   }
 
@@ -448,7 +467,7 @@ export class MultiMachineCoordinator extends EventEmitter {
     const selfSuspended = this.leaseCoordinator?.isSuspended ?? false;
     const splitBrainState: MultiMachineSyncStatus['splitBrainState'] = selfSuspended
       ? 'self-suspended'
-      : awakeMachineCount > 1
+      : (awakeMachineCount > 1 || this.leasePullContested)
         ? 'contested'
         : 'clear';
 
@@ -473,10 +492,15 @@ export class MultiMachineCoordinator extends EventEmitter {
     if (this.isLeaseObserveOnly) {
       // Silent standby: do NOT acquire — only observe the primary's lease.
       this.reconcileRoleToLease('lease-init-observe-only');
-      return;
+    } else {
+      await this.leaseCoordinator.acquireIfEligible();
+      this.reconcileRoleToLease('lease-init');
     }
-    await this.leaseCoordinator.acquireIfEligible();
-    this.reconcileRoleToLease('lease-init');
+    // Cross-Machine Coherence — start the active pull loop on every machine once
+    // the lease is attached. Pulling is read-only and benefits all roles (a
+    // standby learns of a takeover it was never pushed; a holder learns of a
+    // same-epoch contender). No-op when the transport can't pull (git-only mesh).
+    this.startLeasePullLoop();
   }
 
   /**
@@ -545,6 +569,86 @@ export class MultiMachineCoordinator extends EventEmitter {
     if (holds) this.emit('promote');
     else this.emit('demote');
     console.log(`[MultiMachine] Lease reconcile → ${desired} (${reason})`);
+  }
+
+  // ── Cross-Machine Coherence: active lease PULL ───────────────────
+
+  /**
+   * Start the constant-cadence active lease-PULL loop. Self-rearming setTimeout
+   * (jittered ±20% so peers don't synchronize their pulls). Runs at
+   * leasePullIntervalMs (default 5s) REGARDLESS of holder liveness — the
+   * anti-blinding guarantee that a quiet or one-way (NAT) network can't hide a
+   * takeover or a same-epoch split-brain. No-op when the transport can't pull
+   * (git-only mesh). Tier-0: no LLM; a failed pull is data, retried next tick.
+   */
+  private startLeasePullLoop(): void {
+    if (!this.leaseCoordinator || !this.leaseCoordinator.canPullPeers()) return;
+    if (this.leasePullTimer) return; // already running
+    this.leasePullStopped = false;
+    const base = this.config.multiMachine?.leasePullIntervalMs ?? DEFAULT_LEASE_PULL_INTERVAL_MS;
+    const arm = () => {
+      // Respect a stop() that landed while a tick was in-flight (its finally
+      // re-arms; this prevents the timer resurrecting after shutdown).
+      if (this.leasePullStopped) return;
+      // ±20% jitter to de-synchronize peer pulls (floor 1s so a tiny config
+      // can't busy-loop).
+      const jitter = base * 0.2 * (Math.random() * 2 - 1);
+      const delay = Math.max(1_000, Math.round(base + jitter));
+      this.leasePullTimer = setTimeout(() => { void this.tickLeasePull(arm); }, delay);
+      if (this.leasePullTimer.unref) this.leasePullTimer.unref();
+    };
+    arm();
+  }
+
+  /**
+   * One pull tick: fan-out pull every peer, fold the freshest lease into our
+   * view, reconcile role (a pulled HIGHER-epoch peer fences us → auto-demote),
+   * then surface a SAME-epoch contested split-brain Near-Silently. Pull is for
+   * LEARNING (anti-blinding); the heartbeat tickLease remains the only path that
+   * ACTS (acquire/renew). Re-arms via `arm` even on failure.
+   */
+  private async tickLeasePull(arm: () => void): Promise<void> {
+    if (this.leasePulling) { arm(); return; }
+    this.leasePulling = true;
+    try {
+      await this.leaseCoordinator!.pullFromPeers();
+      this.reconcileRoleToLease('lease-pull');
+      this.surfacePullDiscoveredSplitBrain();
+    } catch {
+      // @silent-fallback-ok — a pull failure is retried next tick
+    } finally {
+      this.leasePulling = false;
+      arm();
+    }
+  }
+
+  /**
+   * Near-Silent split-brain surface. After a pull, if we STILL hold the lease yet
+   * a peer's RAW observed lease names a different holder at our epoch (a same-epoch
+   * tie a git-less LocalLeaseStore can produce — effectiveView()'s tie-break masks
+   * it because our self-issued lease wins), latch `leasePullContested` and log once
+   * on the rising edge. This feeds getSyncStatus().splitBrainState='contested' for
+   * the dashboard; it does NOT buzz the user (the unresolvable-partition Attention
+   * item is a separate, deduped escalation path). Clears on the falling edge.
+   */
+  private surfacePullDiscoveredSplitBrain(): void {
+    if (!this.leaseCoordinator || !this._identity) return;
+    const self = this._identity.machineId;
+    const weHold = this.leaseCoordinator.holdsLease();
+    const peer = this.leaseCoordinator.observedPeerLease();
+    const ourEpoch = this.leaseCoordinator.currentEpoch();
+    const contested = !!(weHold && peer && peer.holder && peer.holder !== self && peer.epoch >= ourEpoch);
+    if (contested && !this.leasePullContested) {
+      this.leasePullContested = true;
+      console.warn(
+        `[MultiMachine] lease-pull: same-epoch contested lease — peer ${peer!.holder} ` +
+        `claims epoch ${peer!.epoch} while we hold epoch ${ourEpoch} (near-silent split-brain signal)`,
+      );
+      this.emit('splitBrainDetected', { peer: peer!.holder, peerEpoch: peer!.epoch, ourEpoch });
+    } else if (!contested && this.leasePullContested) {
+      this.leasePullContested = false;
+      console.log('[MultiMachine] lease-pull: contested lease cleared');
+    }
   }
 
   // ── Private ──────────────────────────────────────────────────────
