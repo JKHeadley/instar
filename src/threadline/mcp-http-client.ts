@@ -13,6 +13,8 @@ import type {
   SendMessageResult,
   ThreadHistoryResult,
   ThreadHistoryMessage,
+  RequestSecretParams,
+  RequestSecretResult,
 } from './ThreadlineMCPServer.js';
 
 /**
@@ -187,5 +189,63 @@ export async function getThreadHistoryViaHttp(
     return { threadId, messages, totalCount, hasMore };
   } catch {
     return empty;
+  }
+}
+
+/**
+ * Sealed-handoff keystone — self-mint a Secret Drop request via the agent
+ * server's loopback `/threadline/secrets/request` route.
+ *
+ * Deliberately sends NO Authorization header: this route lives under the
+ * `/threadline/*` auth-bypass umbrella and enforces localhost itself. The MCP
+ * stdio process cannot present a valid bearer anyway — the on-disk authToken is
+ * vault-externalized (`{secret:true}`), which is the exact gap this route closes.
+ * The mint goes through the server's durable SecretDrop store, so the request
+ * survives session churn.
+ */
+export async function requestSecretViaHttp(
+  params: RequestSecretParams,
+  serverPort: number,
+): Promise<RequestSecretResult> {
+  try {
+    const response = await fetch(`http://localhost:${serverPort}/threadline/secrets/request`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        label: params.label,
+        description: params.description,
+        fields: params.fields,
+        topicId: params.topicId,
+        ttlMs: params.ttlMs,
+        senderVerification: params.senderVerification,
+      }),
+    });
+
+    const raw = await response.text();
+    let parsed: {
+      token?: string;
+      localUrl?: string;
+      tunnelUrl?: string | null;
+      expiresIn?: number;
+      error?: string;
+    } = {};
+    try {
+      parsed = raw ? JSON.parse(raw) : {};
+    } catch {
+      /* tolerate a non-JSON body */
+    }
+
+    if (!response.ok) {
+      return { success: false, error: parsed.error || `HTTP ${response.status}` };
+    }
+    return {
+      success: true,
+      token: parsed.token,
+      localUrl: parsed.localUrl,
+      tunnelUrl: parsed.tunnelUrl ?? null,
+      expiresIn: parsed.expiresIn,
+    };
+  } catch (err) {
+    return { success: false, error: err instanceof Error ? err.message : String(err) };
   }
 }

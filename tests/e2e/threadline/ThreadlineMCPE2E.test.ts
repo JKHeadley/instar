@@ -660,7 +660,7 @@ describe('ThreadlineMCP E2E', () => {
 
       // Step 1: User lists available tools
       const tools = await e2e.client.listTools();
-      expect(tools.tools.length).toBe(7);
+      expect(tools.tools.length).toBe(8); // includes threadline_request_secret (sealed-handoff keystone)
 
       // Step 2: User discovers agents
       const discover = await e2e.client.callTool({

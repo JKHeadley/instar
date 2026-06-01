@@ -130,4 +130,60 @@ describe('SecureInvitation', () => {
       expect(mgr2.isRedeemed(token.tokenId)).toBe(true);
     });
   });
+
+  describe('R1b — endpoint+cert pinning (sealed handoff)', () => {
+    const HOST = 'echo.dawn-tunnel.dev/secrets/submit/abc';
+    const CERTFP = 'aabbccddeeff'.padEnd(64, '0');
+
+    it('carries submitHost + submitCertFingerprint and validates', () => {
+      const token = mgr.create(issuer.fingerprint, issuer.privateKey, {
+        recipient: redeemer.fingerprint,
+        submitHost: HOST,
+        submitCertFingerprint: CERTFP,
+      });
+      expect(token.submitHost).toBe(HOST);
+      expect(token.submitCertFingerprint).toBe(CERTFP);
+      expect(mgr.validate(token, issuer.publicKey, redeemer.fingerprint).valid).toBe(true);
+    });
+
+    it('rejects a tampered submitHost (relay-swapped collector)', () => {
+      const token = mgr.create(issuer.fingerprint, issuer.privateKey, {
+        submitHost: HOST, submitCertFingerprint: CERTFP,
+      });
+      const tampered = { ...token, submitHost: 'evil.attacker.example/collect' };
+      const result = mgr.validate(tampered, issuer.publicKey, redeemer.fingerprint);
+      expect(result.valid).toBe(false);
+      expect(result.reason).toContain('Invalid signature');
+    });
+
+    it('rejects a tampered submitCertFingerprint', () => {
+      const token = mgr.create(issuer.fingerprint, issuer.privateKey, {
+        submitHost: HOST, submitCertFingerprint: CERTFP,
+      });
+      const tampered = { ...token, submitCertFingerprint: 'ff'.padEnd(64, '0') };
+      expect(mgr.validate(tampered, issuer.publicKey, redeemer.fingerprint).valid).toBe(false);
+    });
+
+    it('rejects stripping the pinned fields (downgrade to a plain invitation)', () => {
+      const token = mgr.create(issuer.fingerprint, issuer.privateKey, {
+        submitHost: HOST, submitCertFingerprint: CERTFP,
+      });
+      const stripped = { ...token };
+      delete stripped.submitHost;
+      delete stripped.submitCertFingerprint;
+      expect(mgr.validate(stripped, issuer.publicKey, redeemer.fingerprint).valid).toBe(false);
+    });
+
+    it('rejects injecting a submit host into a plain invitation', () => {
+      const token = mgr.create(issuer.fingerprint, issuer.privateKey);
+      const injected = { ...token, submitHost: 'evil.attacker.example/collect' };
+      expect(mgr.validate(injected, issuer.publicKey, redeemer.fingerprint).valid).toBe(false);
+    });
+
+    it('backward-compat: a token without submit fields still validates', () => {
+      const token = mgr.create(issuer.fingerprint, issuer.privateKey);
+      expect(token.submitHost).toBeUndefined();
+      expect(mgr.validate(token, issuer.publicKey, redeemer.fingerprint).valid).toBe(true);
+    });
+  });
 });
