@@ -81,7 +81,17 @@ export async function relayOutbound(
       return null;
     }
     const j = (await resp.json().catch(() => ({}))) as { messageId?: number };
-    return { messageId: j.messageId ?? 0, topicId };
+    // Truthful success: the holder must report a REAL positive Telegram
+    // messageId. A 2xx with a missing/0 messageId means the holder accepted the
+    // request but did NOT confirm a Telegram delivery — treat that as FAILURE,
+    // not success, so the relay never reports "delivered" for a message that
+    // didn't land (the false-success-under-load class). The caller's
+    // sendToTopic then throws and the durable retry path can re-attempt.
+    if (typeof j.messageId !== 'number' || j.messageId <= 0) {
+      log(`[telegram-relay] holder ${url} returned ok but NO confirmed messageId for topic ${topicId} (${Date.now() - started}ms) — treating as undelivered`);
+      return null;
+    }
+    return { messageId: j.messageId, topicId };
   } catch (err) {
     const reason = ac.signal.aborted
       ? `timeout after ${deps.timeoutMs}ms`

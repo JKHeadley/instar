@@ -51,6 +51,23 @@ describe('relayOutbound — bounded + observable tokenless-standby relay', () =>
     expect(log.mock.calls[0][0]).toMatch(/no peer URL/i);
   });
 
+  it('treats a 2xx with NO messageId as undelivered (truthful success — false-success-under-load fix)', async () => {
+    const log = vi.fn();
+    // The holder accepted the request (ok:true) but did not confirm a Telegram
+    // messageId — the exact shape observed live that made the relay lie.
+    const fetchImpl = (async () => new Response(JSON.stringify({ ok: true, topicId: 8882 }), { status: 200 })) as unknown as typeof fetch;
+    const r = await relayOutbound(8882, 'x', undefined, baseDeps({ fetchImpl, log }));
+    expect(r).toBeNull();
+    expect(log).toHaveBeenCalledTimes(1);
+    expect(log.mock.calls[0][0]).toMatch(/no confirmed messageId/i);
+  });
+
+  it('treats a 2xx with messageId:0 as undelivered', async () => {
+    const fetchImpl = (async () => new Response(JSON.stringify({ messageId: 0 }), { status: 200 })) as unknown as typeof fetch;
+    const r = await relayOutbound(8882, 'x', undefined, baseDeps({ fetchImpl }));
+    expect(r).toBeNull();
+  });
+
   it('returns null and LOGS the status on a non-2xx (was silent)', async () => {
     const log = vi.fn();
     const fetchImpl = (async () => new Response('nope', { status: 403 })) as unknown as typeof fetch;

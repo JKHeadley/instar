@@ -45,10 +45,25 @@ so each of these behaviors is checked automatically — including a test that
 proves a hanging laptop now makes the relay give up quickly instead of waiting
 forever.
 
+## The worst one: lying about success
+
+There was a third, sneakier problem. The relay would sometimes say "delivered!"
+when the message never actually showed up in the chat. That happened because the
+laptop replied "ok" but didn't include the one thing that proves a real send —
+the message's id number from Telegram — and the relay accepted that empty "ok" as
+good enough.
+
+A safety system that *lies about working* is worse than one that visibly fails,
+because you trust it and then quietly lose messages. So now: the laptop hands back
+the real Telegram message id, and the relay only counts a reply as delivered when
+that real id is present. No id means "not delivered" — said plainly, and retried —
+never dressed up as success. This matters most exactly when the machine is busy or
+the network is flaky, which is when the old code was most likely to lie.
+
 ## Why it matters
 
 This is the difference between "the multi-machine reply feature mysteriously
-doesn't work sometimes and nobody can tell why" and "if it fails, it fails fast
-and tells you the reason." That visibility is what lets the actual root cause get
-fixed — and it stops a moved conversation from freezing for over a minute when
-the other machine has a hiccup.
+doesn't work sometimes and nobody can tell why" and "if it fails, it fails fast,
+tells you the reason, and never pretends it worked." That honesty-under-load is
+the whole point — and it stops a moved conversation from freezing for over a
+minute, or silently dropping a reply, when the other machine has a hiccup.

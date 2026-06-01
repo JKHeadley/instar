@@ -19,6 +19,14 @@ writes one clear line saying exactly what went wrong (no reachable machine, a
 rejection with its status code, or a timeout). The relay logic was also extracted
 into its own well-tested unit.
 
+It also no longer reports a false success: previously the relay could report
+"delivered" even when the message never actually reached the chat (it accepted a
+response that carried no real message id). Now the receiving machine returns the
+real message id and the relay only counts a reply as delivered when that id is
+present — otherwise it's treated as undelivered and surfaced, so a busy or flaky
+moment becomes a real, visible failure (and a retry candidate) instead of a
+silent loss dressed up as success.
+
 ## What to Tell Your User
 
 Nothing to configure. If you run across more than one machine and move a
