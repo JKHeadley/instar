@@ -77,7 +77,23 @@ export interface OutcomeDivergence {
 
 /** The full parity verdict over a window. `divergent` gates Phase 4 cutover. */
 export interface ParityResult {
+  /**
+   * Total Portal clusters in the window — the coverage DENOMINATOR. This is every
+   * cluster read, NOT the number actually fingerprint-compared (see
+   * {@link clustersWithFingerprint}); invariant 1 can only compare a cluster that
+   * carries a stored fingerprint.
+   */
   clustersCompared: number;
+  /**
+   * Clusters that carried a stored fingerprint and were therefore actually subject
+   * to the invariant-1 comparison — the coverage NUMERATOR. When this is below
+   * {@link clustersCompared}, a `divergent: false` verdict means "no divergence
+   * among the covered clusters", NOT "100% equivalence across the window": the gap
+   * (`clustersCompared - clustersWithFingerprint`) was skipped for lack of a stored
+   * fingerprint to compare against. Pre-backfill windows expose exactly this gap, so
+   * a green run is never silently misread as full coverage.
+   */
+  clustersWithFingerprint: number;
   outcomesCompared: number;
   fingerprintDivergences: FingerprintDivergence[];
   outcomeDivergences: OutcomeDivergence[];
@@ -161,12 +177,18 @@ export function compareInvariants(args: {
   portalOutcomes?: ClusterOutcome[];
 }): ParityResult {
   const fingerprintDivergences = compareClusterFingerprints(args.portalClusters);
+  // Coverage numerator: clusters carrying a stored fingerprint are the only ones
+  // compareClusterFingerprints actually compares (it skips empties). This predicate
+  // MUST stay identical to the `if (!c.fingerprint) continue` skip there, or the
+  // reported coverage will lie about what was checked.
+  const clustersWithFingerprint = args.portalClusters.filter((c) => c.fingerprint).length;
   const outcomeDivergences =
     args.instarOutcomes && args.portalOutcomes
       ? compareClusterOutcomes(args.instarOutcomes, args.portalOutcomes)
       : [];
   return {
     clustersCompared: args.portalClusters.length,
+    clustersWithFingerprint,
     outcomesCompared: args.portalOutcomes?.length ?? 0,
     fingerprintDivergences,
     outcomeDivergences,

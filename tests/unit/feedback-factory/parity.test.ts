@@ -93,7 +93,28 @@ describe('compareInvariants (full verdict)', () => {
     const r = compareInvariants({ portalClusters: clusters, instarOutcomes: outcomes, portalOutcomes: outcomes });
     expect(r.divergent).toBe(false);
     expect(r.clustersCompared).toBe(1);
+    expect(r.clustersWithFingerprint).toBe(1); // full coverage: every cluster carried a fingerprint
     expect(r.outcomesCompared).toBe(1);
+  });
+
+  it('reports a coverage gap — empty-fingerprint clusters count toward clustersCompared but NOT clustersWithFingerprint', () => {
+    // The exact misread-as-100% hazard: a window where some clusters have no stored
+    // fingerprint. Invariant 1 skips them, so the verdict is green — but it is green
+    // over a SUBSET, not the whole window. The coverage numerator makes that explicit.
+    const covered = cluster('c1', 'bug', 'has fingerprint');
+    const preBackfill: PortalCluster = { clusterId: 'c2', type: 'bug', title: 'pre-backfill', fingerprint: '' };
+    const r = compareInvariants({ portalClusters: [covered, preBackfill] });
+    expect(r.divergent).toBe(false); // no divergence among the COVERED clusters
+    expect(r.fingerprintDivergences).toEqual([]);
+    expect(r.clustersCompared).toBe(2); // denominator: every cluster read
+    expect(r.clustersWithFingerprint).toBe(1); // numerator: only the one with a fingerprint
+  });
+
+  it('clustersWithFingerprint counts every cluster when all carry a fingerprint', () => {
+    const clusters = [cluster('c1', 'bug', 'a'), cluster('c2', 'feature', 'b'), cluster('c3', 'bug', 'c')];
+    const r = compareInvariants({ portalClusters: clusters });
+    expect(r.clustersCompared).toBe(3);
+    expect(r.clustersWithFingerprint).toBe(3);
   });
 
   it('divergent=true on any fingerprint divergence (fingerprint-only pass, no outcomes)', () => {
