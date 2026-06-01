@@ -30,7 +30,7 @@ import { AgentTrustManager } from './AgentTrustManager.js';
 import { IdentityManager } from './client/IdentityManager.js';
 import { RegistryRestClient } from './client/RegistryRestClient.js';
 import type { RegistryClient, RelayDiscoverer } from './ThreadlineMCPServer.js';
-import { sendMessageViaHttp, getThreadHistoryViaHttp } from './mcp-http-client.js';
+import { sendMessageViaHttp, getThreadHistoryViaHttp, requestSecretViaHttp } from './mcp-http-client.js';
 import { DEFAULT_RELAY_URL } from './constants.js';
 
 // ── Parse CLI args ───────────────────────────────────────────────────
@@ -215,6 +215,9 @@ async function main(): Promise<void> {
       sendMessage: (params) => sendMessageViaHttp(params, serverPort, agentToken),
       getThreadHistory: (threadId, limit, before) =>
         getThreadHistoryViaHttp(threadId, limit, serverPort, agentToken, before),
+      // Sealed-handoff keystone: self-mint over the loopback route (no bearer —
+      // the on-disk authToken is vault-externalized).
+      requestSecret: (params) => requestSecretViaHttp(params, serverPort),
       registry: registryClient,
       relayClient: createHttpRelayDiscoverer(serverPort, agentToken),
     },

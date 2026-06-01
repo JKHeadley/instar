@@ -2,9 +2,10 @@
  * ThreadlineMCPServer — Unit Tests
  *
  * Tests the MCP server tool registration and behavior using mocked dependencies.
- * Covers all 7 tools:
+ * Covers the core tools:
  *   - threadline_discover
  *   - threadline_send
+ *   - threadline_request_secret
  *   - threadline_history
  *   - threadline_agents
  *   - threadline_delete
@@ -137,6 +138,13 @@ function createMockDeps(stateDir: string): ThreadlineMCPDeps {
       totalCount: 2,
       hasMore: false,
     } satisfies ThreadHistoryResult),
+    requestSecret: vi.fn<any>().mockResolvedValue({
+      success: true,
+      token: 'tok-abc123',
+      localUrl: '/secrets/drop/tok-abc123',
+      tunnelUrl: null,
+      expiresIn: 15 * 60 * 1000,
+    }),
   };
 }
 
@@ -190,11 +198,11 @@ describe('ThreadlineMCPServer', () => {
   // ── Server Lifecycle ─────────────────────────────────────────────
 
   describe('lifecycle', () => {
-    it('creates server and lists 7 tools', async () => {
+    it('creates server and lists 8 tools', async () => {
       const { client, close } = await connectClientServer({}, deps);
       try {
         const tools = await client.listTools();
-        expect(tools.tools).toHaveLength(7);
+        expect(tools.tools).toHaveLength(8);
 
         const names = tools.tools.map(t => t.name).sort();
         expect(names).toEqual([
@@ -203,6 +211,7 @@ describe('ThreadlineMCPServer', () => {
           'threadline_discover',
           'threadline_history',
           'threadline_relay',
+          'threadline_request_secret',
           'threadline_send',
           'threadline_trust',
         ]);
@@ -681,6 +690,74 @@ describe('ThreadlineMCPServer', () => {
         const text = (result.content as any)[0].text;
         expect(text).toContain('Connection refused');
         expect(result.isError).toBe(true);
+      } finally {
+        await close();
+      }
+    });
+  });
+
+  // ── threadline_request_secret (sealed-handoff keystone) ────────────
+
+  describe('threadline_request_secret', () => {
+    it('mints a Secret Drop request and returns the one-time URL', async () => {
+      const { client, close } = await connectClientServer({}, deps);
+      try {
+        const result = await client.callTool({
+          name: 'threadline_request_secret',
+          arguments: { label: 'OpenAI API Key', ttlMinutes: 10 },
+        });
+
+        const data = JSON.parse((result.content as any)[0].text);
+        expect(data.token).toBe('tok-abc123');
+        expect(data.localUrl).toBe('/secrets/drop/tok-abc123');
+        expect(deps.requestSecret).toHaveBeenCalledWith(
+          expect.objectContaining({ label: 'OpenAI API Key', ttlMs: 10 * 60 * 1000 }),
+        );
+      } finally {
+        await close();
+      }
+    });
+
+    it('forwards an R1a senderPubKeyHex pin as senderVerification', async () => {
+      const { client, close } = await connectClientServer({}, deps);
+      try {
+        await client.callTool({
+          name: 'threadline_request_secret',
+          arguments: { label: 'Stripe key', senderPubKeyHex: 'b'.repeat(64) },
+        });
+        expect(deps.requestSecret).toHaveBeenCalledWith(
+          expect.objectContaining({ senderVerification: { senderPubKeyHex: 'b'.repeat(64) } }),
+        );
+      } finally {
+        await close();
+      }
+    });
+
+    it('surfaces a mint failure as an error result', async () => {
+      (deps.requestSecret as any).mockResolvedValueOnce({ success: false, error: 'rate limited' });
+      const { client, close } = await connectClientServer({}, deps);
+      try {
+        const result = await client.callTool({
+          name: 'threadline_request_secret',
+          arguments: { label: 'k' },
+        });
+        expect(result.isError).toBe(true);
+        expect((result.content as any)[0].text).toContain('rate limited');
+      } finally {
+        await close();
+      }
+    });
+
+    it('errors cleanly when the requestSecret dep is absent (transport without a local server)', async () => {
+      const depsNoMint = { ...deps, requestSecret: undefined };
+      const { client, close } = await connectClientServer({}, depsNoMint);
+      try {
+        const result = await client.callTool({
+          name: 'threadline_request_secret',
+          arguments: { label: 'k' },
+        });
+        expect(result.isError).toBe(true);
+        expect((result.content as any)[0].text).toMatch(/unavailable|loopback/i);
       } finally {
         await close();
       }
