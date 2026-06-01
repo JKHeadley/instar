@@ -212,6 +212,12 @@ import type { PasteManager } from '../paste/PasteManager.js';
 import type { WebSocketManager } from './WebSocketManager.js';
 import { TruncationDetector } from '../paste/TruncationDetector.js';
 import { SecretDrop, type CreateSecretRequestOptions } from './SecretDrop.js';
+import { computeFingerprint } from '../threadline/client/MessageEncryptor.js';
+import {
+  evaluateTransferAuthorization,
+  type PeerTrustLevel,
+  type OperationAutonomyLevel,
+} from '../threadline/OperatorConfirmGate.js';
 import { buildAllCapabilityBlocks } from './CapabilityIndex.js';
 import { matchesSystemTemplate } from '../messaging/system-templates.js';
 import { resolvePendingRelayPath } from '../messaging/pending-relay-store.js';
@@ -9198,6 +9204,41 @@ export function createRoutes(ctx: RouteContext): Router {
       if ((val as string).length > 10_000) {
         res.status(400).json({ error: `Field "${key}" exceeds maximum length (10KB)` });
         return;
+      }
+    }
+
+    // ── R2 (sealed-handoff): trust-gated transfer authorization ──────────────
+    // When the pending request pins a peer's sender key, this is a peer-to-peer
+    // credential transfer (not an ordinary user Secret Drop). Per Justin's
+    // 2026-06-01 directive, such a transfer needs NO operator approval only when
+    // BOTH trust axes are high: this agent trusts the peer ≥ 'trusted' AND the
+    // user has granted credential-transfer autonomy ≥ 'log'. A transfer is a
+    // 'modify'-class op (default 'approve-always', below the bar), so absent an
+    // explicit grant it requires operator authorization — and since the
+    // operator-authorization store is a follow-up, a below-the-bar transfer is
+    // refused here (fail-closed) BEFORE the one-time request is consumed. Ordinary
+    // user Secret Drops (no senderVerification) are untouched.
+    {
+      const pending = secretDrop.getPending(req.params.token);
+      const peerKeyHex = pending?.senderVerification?.senderPubKeyHex;
+      if (peerKeyHex) {
+        let peerFp = '';
+        try { peerFp = computeFingerprint(Buffer.from(peerKeyHex, 'hex')); } catch { /* malformed → '' → untrusted */ }
+        const peerTrust = (ctx.unifiedTrust?.trustManager?.getTrustLevelByFingerprint(peerFp)
+          ?? 'untrusted') as PeerTrustLevel;
+        const opAutonomy = (ctx.adaptiveTrust?.getTrustLevel('threadline', 'modify')?.level
+          ?? 'approve-always') as OperationAutonomyLevel;
+        const decision = evaluateTransferAuthorization({
+          requesterFingerprint: 'self', // receiver = this agent; only consulted once an operator-auth record exists
+          holderFingerprint: peerFp,
+          requestId: req.params.token,
+          authorization: null,          // operator-auth store is a follow-up; below-the-bar fails closed
+          trust: { peerTrust, opAutonomy },
+        });
+        if (!decision.allow) {
+          res.status(403).json({ error: 'Transfer not authorized by trust policy', reason: decision.reason });
+          return;
+        }
       }
     }
 
