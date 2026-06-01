@@ -5873,7 +5873,12 @@ export function createRoutes(ctx: RouteContext): Router {
       return;
 
     try {
-      await ctx.telegram.sendToTopic(topicId, text, { skipStallClear: isProxy });
+      // Capture the SendResult so the response can carry the REAL Telegram
+      // messageId. A tokenless-standby relay reads this messageId to decide
+      // whether the reply actually landed — without it the relay could only
+      // ever return a placeholder 0 and so reported "ok" even when nothing was
+      // delivered (the false-success-under-load class).
+      const sendResult = await ctx.telegram.sendToTopic(topicId, text, { skipStallClear: isProxy });
       // Clear injection tracker — but NOT for proxy messages (PresenceProxy)
       // Proxy messages should not reset stall detection timers
       if (!isProxy) {
@@ -5926,7 +5931,7 @@ export function createRoutes(ctx: RouteContext): Router {
       if (deliveryId && typeof deliveryId === 'string' && /^[0-9a-f-]{16,64}$/i.test(deliveryId)) {
         deliveryLruRecord(deliveryId);
       }
-      res.json({ ok: true, topicId });
+      res.json({ ok: true, topicId, messageId: sendResult?.messageId });
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
     }

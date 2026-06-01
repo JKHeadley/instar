@@ -54,12 +54,32 @@ lease holder, peer-URL resolver, auth token, timeout, and a `pc.yellow` logger.
 Behavior on the success path is unchanged (POST the holder, return its
 messageId).
 
+## Truthful success (no false "ok" under load)
+
+A third, more dangerous defect surfaced in the same live run: the relay reported
+success while the message never landed. Mechanism: the holder's
+`/telegram/reply` returned `{ ok: true, topicId }` with **no messageId** (it
+discarded the `SendResult` from `sendToTopic`), and the relay returned
+`{ messageId: j.messageId ?? 0 }` — a truthy `0` — so the standby's `sendToTopic`
+counted it as delivered. Under load this means the system *lies*: "ok" with
+nothing delivered.
+
+Fix, two halves:
+- The holder's `/telegram/reply` now returns the **real** Telegram `messageId`
+  from `sendToTopic` (`res.json({ ok, topicId, messageId })`).
+- `relayOutbound` requires a **positive** `messageId` to count as delivered; a
+  2xx with a missing/0 messageId is logged and returned as `null` (undelivered),
+  so the standby's `sendToTopic` throws and the failure is real + visible (and
+  eligible for durable retry) rather than a silent false success.
+
 ## Scope
 
 - `src/core/TelegramRelay.ts` (new) — pure `relayOutbound` with injected
-  fetch/clock/log.
+  fetch/clock/log; requires a confirmed positive messageId.
 - `src/commands/server.ts` — `outboundRelay` now delegates to `relayOutbound`
   (replaces the inline fetch); adds the `relayTimeoutMs` config read + import.
+- `src/server/routes.ts` — `/telegram/reply` returns the real `messageId` so the
+  relay can confirm delivery (additive field; existing callers unaffected).
 
 ## Testing
 
