@@ -33,13 +33,68 @@ import {
   classifyRateLimit,
 } from './LlmCircuitBreaker.js';
 
+/**
+ * Minimal structural recorder the funnel writes per-call metrics to. Kept as a
+ * local interface (not an import of FeatureMetricsLedger) so core/ never depends
+ * on monitoring/ — the concrete ledger is injected at runtime via
+ * setFeatureMetricsRecorder(). FeatureMetricsLedger.record() satisfies this.
+ */
+export interface FeatureMetricsRecorder {
+  record(entry: {
+    feature: string;
+    kind?: 'llm' | 'event';
+    outcome: 'fired' | 'noop' | 'error';
+    latencyMs?: number;
+    waited?: boolean;
+    waitMs?: number;
+  }): void;
+}
+
+// Module-level recorder — set once by AgentServer at startup. Every wrapped
+// provider reads it, so a single injection point instruments ALL LLM features
+// (the same single-funnel pattern the breaker itself uses). Null = no recording
+// (e.g. CLI commands without a server), which is a clean no-op.
+let _featureMetricsRecorder: FeatureMetricsRecorder | null = null;
+export function setFeatureMetricsRecorder(recorder: FeatureMetricsRecorder | null): void {
+  _featureMetricsRecorder = recorder;
+}
+export function getFeatureMetricsRecorder(): FeatureMetricsRecorder | null {
+  return _featureMetricsRecorder;
+}
+
 export class CircuitBreakingIntelligenceProvider implements IntelligenceProvider {
   constructor(
     private readonly inner: IntelligenceProvider,
     private readonly breaker: LlmCircuitBreaker = getLlmCircuitBreaker(),
   ) {}
 
+  /**
+   * Record one funnel call to the per-feature metrics ledger (Phase 1b). Pure
+   * side-channel: it MUST never throw into the LLM path (observability must not
+   * break what it observes — the Close the Loop principle applied to itself).
+   * outcome here is funnel-level: 'noop' = the call completed (the fired-vs-noop
+   * VERDICT is the caller's interpretation → Phase 2); 'error' = it failed.
+   */
+  private recordMetric(
+    feature: string,
+    outcome: 'noop' | 'error',
+    latencyMs: number,
+    waited: boolean,
+    waitMs: number | undefined,
+  ): void {
+    const rec = _featureMetricsRecorder;
+    if (!rec) return;
+    try {
+      rec.record({ feature, kind: 'llm', outcome, latencyMs, waited, waitMs: waited ? waitMs : undefined });
+    } catch {
+      /* never break the LLM path on a metrics write */
+    }
+  }
+
   async evaluate(prompt: string, options?: IntelligenceOptions): Promise<string> {
+    const feature = options?.attribution?.component ?? 'unlabeled';
+    const startedAt = Date.now();
+    let waited = false;
     let gate = this.breaker.acquire();
     if (!gate.allow) {
       // Coherence-critical callers set rateLimitWaitMs: wait (bounded) for the
@@ -47,9 +102,14 @@ export class CircuitBreakingIntelligenceProvider implements IntelligenceProvider
       // omit it — behavior is byte-identical to the instant throw below.
       const waitMs = options?.rateLimitWaitMs;
       if (typeof waitMs === 'number' && waitMs > 0) {
+        waited = true;
         gate = await this.breaker.acquireOrWait(waitMs);
       }
       if (!gate.allow) {
+        // Circuit open, no LLM call ran (no cost) — but the throttle itself is a
+        // signal worth measuring per feature (how often a gate hits the open
+        // window). Recorded as a no-op; `waited` marks whether a bounded wait was engaged.
+        this.recordMetric(feature, 'noop', Date.now() - startedAt, waited, options?.rateLimitWaitMs);
         throw new LlmCircuitOpenError(gate.retryAfterMs);
       }
     }
@@ -57,10 +117,12 @@ export class CircuitBreakingIntelligenceProvider implements IntelligenceProvider
     try {
       const result = await this.inner.evaluate(prompt, options);
       this.breaker.onResolved();
+      this.recordMetric(feature, 'noop', Date.now() - startedAt, waited, options?.rateLimitWaitMs);
       return result;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       const parsed = classifyRateLimit(message);
+      this.recordMetric(feature, 'error', Date.now() - startedAt, waited, options?.rateLimitWaitMs);
       if (err instanceof RateLimitError || parsed.isLimit) {
         // Pass the parsed retry-after hint through so the breaker can shorten
         // the open window when the provider told us when it resets.
