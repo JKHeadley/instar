@@ -281,10 +281,15 @@ export class TopicLinkageHandler {
       agentResponse: `Sent threadline message to ${input.remoteAgentDisplayName ?? input.remoteAgent}, awaiting reply.`,
       source: 'agent',
       expiresAt: new Date(this.nowFn() + ttlMs).toISOString(),
-      // Explicit beaconEnabled so the auto-opt path is deterministic regardless
-      // of whether the agentResponse text contains a time-promise marker.
-      beaconEnabled: true,
-      beaconCreatedBySource: 'api-loopback',
+      // Near-Silent Notifications: a threadline-reply commitment must NOT beacon
+      // the user's topic. Its purpose is reply ROUTING (relatedThreadId + topicId);
+      // the inbound reply is dispatched automatically when it arrives, so a cadenced
+      // "⏳ awaiting reply" heartbeat is pure housekeeping noise about an agent-to-
+      // agent conversation — beaconing it floods the user's chat (observed 2026-05-31,
+      // dozens of heartbeats on one topic). Explicit `false` also pins the
+      // CommitmentTracker auto-opt path, which would otherwise enable a beacon
+      // whenever a topicId is attached.
+      beaconEnabled: false,
     });
 
     return {

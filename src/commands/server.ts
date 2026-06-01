@@ -5406,6 +5406,9 @@ export async function startServer(options: StartOptions): Promise<void> {
         autoRestart: true,
         restartWindow: config.updates?.restartWindow ?? null,
         restartCascadeDampenerWindowMs: config.updates?.restartCascadeDampenerWindowMs,
+        // Primary-developer mode (per-agent opt-in) — never defer a restart for
+        // active sessions or the restart window; always roll onto the latest.
+        restartImmediately: config.updates?.restartImmediately ?? false,
         // codex-instar audit Item 4 — wire the handshake into AutoUpdater so
         // the pre-restart notification is DEFERRED into the marker file.
         restartHandshake,
