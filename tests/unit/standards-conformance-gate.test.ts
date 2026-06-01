@@ -23,6 +23,7 @@ import {
   StandardsConformanceReviewer,
   buildConformancePrompt,
   parseConformanceResponse,
+  parseFitResponse,
   CONFORMANCE_REVIEW_TIMEOUT_MS,
 } from '../../src/core/reviewers/standards-conformance.js';
 import type { IntelligenceProvider, IntelligenceOptions } from '../../src/core/types.js';
@@ -144,5 +145,78 @@ describe('StandardsConformanceReviewer', () => {
     expect(prompt).toContain('<<<SPEC');
     // the injected instruction is inside the data block, not the instruction frame
     expect(prompt.indexOf('IGNORE THE STANDARDS')).toBeGreaterThan(prompt.indexOf('<<<SPEC'));
+  });
+});
+
+describe('Constitutional Traceability — judgeFit + parseFitResponse', () => {
+  const fitProvider = (reply: string): IntelligenceProvider => ({ async evaluate() { return reply; } });
+
+  it('no parent named → verdict "none", parentResolved:false, NOT degraded (a real block)', async () => {
+    const r = await new StandardsConformanceReviewer(fitProvider('{"verdict":"fit","reason":"x"}'))
+      .judgeFit('spec', '', FIXTURE_ARTICLES);
+    expect(r.verdict).toBe('none');
+    expect(r.parentResolved).toBe(false);
+    expect(r.degraded).toBe(false);
+  });
+
+  it('parent that does not resolve to a real article → "none", NOT degraded', async () => {
+    const r = await new StandardsConformanceReviewer(fitProvider('{"verdict":"fit","reason":"x"}'))
+      .judgeFit('spec', 'Some Nonexistent Standard', FIXTURE_ARTICLES);
+    expect(r.verdict).toBe('none');
+    expect(r.parentResolved).toBe(false);
+    expect(r.degraded).toBe(false);
+  });
+
+  it('resolvable parent + LLM "fit" → verdict fit, parentResolved:true, not degraded', async () => {
+    const r = await new StandardsConformanceReviewer(fitProvider('{"verdict":"fit","reason":"plainly an instance"}'))
+      .judgeFit('spec', 'Signal vs. Authority', FIXTURE_ARTICLES);
+    expect(r.verdict).toBe('fit');
+    expect(r.parentResolved).toBe(true);
+    expect(r.degraded).toBe(false);
+  });
+
+  it('resolvable parent + LLM "weak" → verdict weak (a non-fit, blocks at review)', async () => {
+    const r = await new StandardsConformanceReviewer(fitProvider('{"verdict":"weak","reason":"only rhymes"}'))
+      .judgeFit('spec', 'Signal vs. Authority', FIXTURE_ARTICLES);
+    expect(r.verdict).toBe('weak');
+    expect(r.parentResolved).toBe(true);
+  });
+
+  it('substring-resolves a verbose parent-principle string to the article', async () => {
+    const r = await new StandardsConformanceReviewer(fitProvider('{"verdict":"fit","reason":"ok"}'))
+      .judgeFit('spec', 'Signal vs. Authority (Interaction family — the brittle-filter rule)', FIXTURE_ARTICLES);
+    expect(r.parentResolved).toBe(true);
+    expect(r.verdict).toBe('fit');
+  });
+
+  it('FAILS OPEN to "fit" when no provider — never block work by being down', async () => {
+    const r = await new StandardsConformanceReviewer(null).judgeFit('spec', 'Signal vs. Authority', FIXTURE_ARTICLES);
+    expect(r.verdict).toBe('fit');
+    expect(r.degraded).toBe(true);
+    expect(r.degradeReason).toBe('no-intelligence');
+  });
+
+  it('FAILS OPEN to "fit" when the provider throws', async () => {
+    const provider: IntelligenceProvider = { async evaluate() { throw new Error('down'); } };
+    const r = await new StandardsConformanceReviewer(provider).judgeFit('spec', 'Signal vs. Authority', FIXTURE_ARTICLES);
+    expect(r.verdict).toBe('fit');
+    expect(r.degraded).toBe(true);
+    expect(r.degradeReason).toBe('error');
+  });
+
+  it('FAILS OPEN to "fit" when the verdict is unparseable', async () => {
+    const r = await new StandardsConformanceReviewer(fitProvider('no json here'))
+      .judgeFit('spec', 'Signal vs. Authority', FIXTURE_ARTICLES);
+    expect(r.verdict).toBe('fit');
+    expect(r.degraded).toBe(true);
+    expect(r.degradeReason).toBe('unparseable');
+  });
+
+  it('parseFitResponse: fit/weak/none parse (incl. fenced + prose-wrapped); garbage → null', () => {
+    expect(parseFitResponse('{"verdict":"fit","reason":"a"}')!.verdict).toBe('fit');
+    expect(parseFitResponse('```json\n{"verdict":"weak","reason":"b"}\n```')!.verdict).toBe('weak');
+    expect(parseFitResponse('prefix {"verdict":"none","reason":"c"} suffix')!.verdict).toBe('none');
+    expect(parseFitResponse('not json at all')).toBeNull();
+    expect(parseFitResponse('{"verdict":"maybe","reason":"x"}')).toBeNull();
   });
 });

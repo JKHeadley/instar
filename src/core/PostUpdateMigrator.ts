@@ -1517,18 +1517,20 @@ export class PostUpdateMigrator {
       }
     };
     // Marker = the latest capability signature (bumped each time the bundled hook/
-    // setup gains a feature, so prior installs upgrade): now `codex-stdout-json-safe` —
-    // the codex Stop hook must keep STDOUT JSON-only (emit() routes approve/status text
-    // to stderr in codex mode), fixing the live 2026-05-31 "invalid stop hook JSON output"
-    // failure. This marker is ABSENT from prior #28 installs (which already carry
-    // CODEX_LOOP_ENABLED — using that as the marker would wrongly skip them), so bumping
-    // to it re-deploys the FIXED hook to every existing codex agent; customized hooks (no
-    // stock fingerprint) are still left untouched.
+    // setup gains a feature, so prior installs upgrade): now `p13_stop_allowed` —
+    // the autonomous stop-hook now consults the P13 "The Stop Reason Is the Work"
+    // guard (POST /autonomous/evaluate-stop) before approving a completion, so a stop
+    // resting on a judgment-call / needs-engineering deferral keeps working instead of
+    // exiting. This marker is ABSENT from prior installs (which carry the older
+    // `codex-stdout-json-safe` signature but not the P13 guard), so bumping to it
+    // re-deploys the updated hook to every existing agent; the bundled hook retains all
+    // prior features (codex stdout-safe, native /goal); customized hooks (no stock
+    // fingerprint) are still left untouched.
     upgrade(
       '.claude/skills/autonomous/hooks/autonomous-stop-hook.sh',
-      'codex-stdout-json-safe',
+      'p13_stop_allowed',
       'Autonomous Mode Stop Hook',
-      'skills/autonomous/hooks/autonomous-stop-hook.sh (codex Stop stdout JSON-safe — emit() to stderr)',
+      'skills/autonomous/hooks/autonomous-stop-hook.sh (P13 stop-reason guard — evaluate-stop before approving a completion)',
     );
     // setup-autonomous.sh marker bumped `native-goal/set` → `IS_CODEX_AGENT`: the bundled
     // setup now ALSO auto-delegates to native /goal for CODEX agents (the prior native /goal

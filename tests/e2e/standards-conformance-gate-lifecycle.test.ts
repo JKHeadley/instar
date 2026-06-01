@@ -27,6 +27,11 @@ const SPECS_DIR = path.join(process.cwd(), 'docs/specs');
 // "remember to" manual step — mimicking what the real LLM would catch.
 const stubIntelligence: IntelligenceProvider = {
   async evaluate(prompt: string) {
+    // The Constitutional Traceability fit prompt is distinct from the violations
+    // review prompt — serve a fit verdict object for it.
+    if (prompt.includes('Constitutional Traceability reviewer')) {
+      return '{"verdict":"fit","reason":"plainly an instance of the named standard"}';
+    }
     // The spec block is the tail after this anchor (the examples/instructions,
     // which also mention "remember", are all BEFORE it).
     const spec = prompt.split('The draft spec to review:')[1] ?? '';
@@ -93,5 +98,20 @@ describe('E2E: standards-conformance gate lifecycle', () => {
   it('the run is metered (the observability funnel reflects it)', async () => {
     const m = await request(server).get('/spec/conformance-metrics');
     expect(m.body.metrics.runs).toBeGreaterThanOrEqual(2);
+  });
+
+  it('the Constitutional Traceability fit verdict is alive (a spec naming a real parent gets a fit report)', async () => {
+    const md = [
+      '---',
+      'parent-principle: "No Manual Work"',
+      '---',
+      '# Spec — automatic digest',
+      'A scheduled job captures the day automatically.',
+    ].join('\n');
+    const res = await request(server).post('/spec/conformance-check').send({ markdown: md });
+    expect(res.status).toBe(200);
+    expect(res.body.report.fit).toBeTruthy();
+    expect(res.body.report.fit.verdict).toBe('fit');
+    expect(res.body.report.fit.parentResolved).toBe(true);
   });
 });

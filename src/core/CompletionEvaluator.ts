@@ -25,6 +25,20 @@ export interface CompletionVerdict {
   reason: string;
 }
 
+/**
+ * Verdict for the P13 "The Stop Reason Is the Work" guard. SECONDARY to the
+ * completion check: it does not decide whether the goal is done, only whether a
+ * stop-attempt rests on the P13 anti-pattern (ending an autonomous run because
+ * "I need a judgment call" or "this needs real engineering" — a derivable
+ * standard or a buildable artifact dressed up as a stop reason).
+ */
+export interface StopRationaleVerdict {
+  /** Whether the autonomous run may stop (no P13 violation detected). */
+  stopAllowed: boolean;
+  /** One-line P13 steering, fed back as next-turn guidance when the stop is not allowed. */
+  guidance: string;
+}
+
 export interface CompletionEvaluatorDeps {
   intelligence: IntelligenceProvider;
   /** Override model tier (default 'fast' — matches /goal's small-fast evaluator). */
@@ -95,6 +109,86 @@ export class CompletionEvaluator {
     if (/\bMET\b/.test(first)) return { met: true, reason: reason || 'condition met' };
     // Ambiguous → safe direction (keep working).
     return { met: false, reason: `ambiguous verdict, keeping work going: ${text.slice(0, 120)}` };
+  }
+
+  /**
+   * P13 "The Stop Reason Is the Work" guard. Given the recent transcript, decide
+   * whether an autonomous stop-attempt is EARNED, or whether it rests on the P13
+   * anti-pattern: ending the run citing "needs a judgment call" or "needs real
+   * engineering" WITHOUT showing a derived standard, a built artifact, or a
+   * genuinely operator-only residual. Returns stopAllowed:false + guidance when
+   * the anti-pattern is detected; otherwise stopAllowed:true.
+   *
+   * Fails OPEN (stopAllowed:true) on error or ambiguity: this is a SECONDARY guard
+   * on top of the completion check, so an evaluator hiccup must never TRAP a
+   * genuine completion — the primary completion authority still governs.
+   */
+  async evaluateStopRationale(transcriptTail: string): Promise<StopRationaleVerdict> {
+    const prompt = this.buildStopRationalePrompt(transcriptTail);
+    let raw: string;
+    try {
+      raw = await this.intelligence.evaluate(prompt, {
+        model: this.modelTier,
+        temperature: 0,
+        maxTokens: 200,
+        timeoutMs: 30_000,
+        attribution: { component: 'CompletionEvaluator/P13' },
+      });
+    } catch {
+      // Fail OPEN — never trap a legitimate completion on an evaluator error.
+      return { stopAllowed: true, guidance: '' };
+    }
+    return this.parseStopRationale(raw);
+  }
+
+  private buildStopRationalePrompt(transcriptTail: string): string {
+    return [
+      'You are a guard for an autonomous coding agent, enforcing the constitutional',
+      'standard P13 "The Stop Reason Is the Work." Judge ONLY the transcript below.',
+      '',
+      'Decide whether the agent is ENDING / STOPPING its autonomous run, and if so,',
+      'WHY. The stop is NOT earned (BLOCK it) when the stated reason is essentially',
+      '"I need a judgment call from the user" or "this needs real engineering / a',
+      'careful build / reverse-engineering" — i.e. a judgment gap (which is a',
+      'DERIVABLE standard) or buildable engineering (which the agent can DO) dressed',
+      'up as a stop reason.',
+      '',
+      'The stop IS earned (ALLOW it) when ANY of these is shown in the transcript:',
+      '- a DERIVED STANDARD the agent reasoned out and is proceeding under (even if',
+      '  flagged for later ratification);',
+      '- a BUILT ARTIFACT produced this run (a PR/commit, a spec/file written, a test',
+      '  result, a converged artifact handed over for review);',
+      "- a genuinely OPERATOR-ONLY residual (a credential/account the user holds, a",
+      "  real value/priority/risk judgment that is the user's, a required approval,",
+      '  a legal/billing/payment action);',
+      '- a DURATION limit reached or an EMERGENCY stop;',
+      '- the agent is NOT actually stopping (it is continuing / re-scoping / moving',
+      '  to another topic and proceeding).',
+      '',
+      `RECENT TRANSCRIPT (most recent last):\n${transcriptTail}`,
+      '',
+      'Respond on the FIRST line with exactly "STOP_OK" or "STOP_BLOCKED", then on',
+      'the next line a one-sentence reason / steering. Nothing else.',
+    ].join('\n');
+  }
+
+  /** Parse the P13 guard output. Conservative: defaults to ALLOW (never trap completion). */
+  private parseStopRationale(raw: string): StopRationaleVerdict {
+    const text = (raw || '').trim();
+    if (!text) return { stopAllowed: true, guidance: '' };
+    const lines = text.split('\n').map((l) => l.trim()).filter(Boolean);
+    const first = (lines[0] || '').toUpperCase();
+    const reason = (lines[1] || lines[0] || '').slice(0, 300);
+    // Check BLOCKED before OK (explicit; they share no substring but keep the order clear).
+    if (/\bSTOP[_ ]?BLOCKED\b/.test(first)) {
+      return {
+        stopAllowed: false,
+        guidance: reason || 'P13: the stop rests on a judgment-call / needs-engineering reason — derive+document the standard and proceed, or build the artifact and hand it over; reserve the stop for a genuinely operator-only residual.',
+      };
+    }
+    if (/\bSTOP[_ ]?OK\b/.test(first)) return { stopAllowed: true, guidance: '' };
+    // Ambiguous → ALLOW (don't trap a genuine completion on a fuzzy verdict).
+    return { stopAllowed: true, guidance: '' };
   }
 
   get promptVersion(): string {
