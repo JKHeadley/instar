@@ -5,7 +5,8 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { SecretDrop } from '../../src/server/SecretDrop.js';
+import crypto from 'node:crypto';
+import { SecretDrop, canonicalSubmitMessage } from '../../src/server/SecretDrop.js';
 
 describe('SecretDrop', () => {
   let drop: SecretDrop;
@@ -269,6 +270,64 @@ describe('SecretDrop', () => {
       const html = drop.renderExpiredPage();
       expect(html).toContain('Expired');
       expect(html).toContain('no longer valid');
+    });
+  });
+
+  describe('R1a — sealed-handoff sender authentication', () => {
+    function genKey() {
+      const { publicKey, privateKey } = crypto.generateKeyPairSync('ed25519');
+      const pubRaw = Buffer.from(publicKey.export({ type: 'spki', format: 'der' })).subarray(-32);
+      return { privateKey, pubHex: Buffer.from(pubRaw).toString('hex') };
+    }
+    function sign(privateKey: crypto.KeyObject, token: string, values: Record<string, string>): string {
+      return crypto.sign(null, canonicalSubmitMessage(token, values), privateKey).toString('hex');
+    }
+    const csrf = (token: string) => drop.getPending(token)!.csrfToken;
+
+    it('accepts a correctly-signed submission', () => {
+      const k = genKey();
+      const { token } = drop.create({ label: 'Token', senderVerification: { senderPubKeyHex: k.pubHex } });
+      const values = { secret: 'live-token-value' };
+      const sub = drop.submit(token, csrf(token), { ...values, _sig: sign(k.privateKey, token, values) });
+      expect(sub).not.toBeNull();
+      expect(sub!.values.secret).toBe('live-token-value');
+      expect(sub!.values._sig).toBeUndefined(); // _sig is auth metadata, never stored as a value
+    });
+
+    it('rejects an unsigned submission and does NOT burn the one-time token', () => {
+      const k = genKey();
+      const { token } = drop.create({ label: 'Token', senderVerification: { senderPubKeyHex: k.pubHex } });
+      expect(drop.submit(token, csrf(token), { secret: 'x' })).toBeNull();
+      expect(drop.getPending(token)).not.toBeNull(); // a real sender can retry
+    });
+
+    it('rejects a signature made with the wrong key', () => {
+      const k = genKey(); const attacker = genKey();
+      const { token } = drop.create({ label: 'Token', senderVerification: { senderPubKeyHex: k.pubHex } });
+      const values = { secret: 'x' };
+      expect(drop.submit(token, csrf(token), { ...values, _sig: sign(attacker.privateKey, token, values) })).toBeNull();
+    });
+
+    it('rejects a value tampered after signing', () => {
+      const k = genKey();
+      const { token } = drop.create({ label: 'Token', senderVerification: { senderPubKeyHex: k.pubHex } });
+      const sig = sign(k.privateKey, token, { secret: 'original' });
+      expect(drop.submit(token, csrf(token), { secret: 'TAMPERED', _sig: sig })).toBeNull();
+    });
+
+    it('rejects a signature replayed from a different request token', () => {
+      const k = genKey();
+      const a = drop.create({ label: 'A', senderVerification: { senderPubKeyHex: k.pubHex } });
+      const b = drop.create({ label: 'B', senderVerification: { senderPubKeyHex: k.pubHex } });
+      const sigForA = sign(k.privateKey, a.token, { secret: 'x' });
+      expect(drop.submit(b.token, csrf(b.token), { secret: 'x', _sig: sigForA })).toBeNull();
+    });
+
+    it('backward-compat: no senderVerification → submit works without _sig', () => {
+      const { token } = drop.create({ label: 'Plain' });
+      const sub = drop.submit(token, csrf(token), { secret: 'human-pasted' });
+      expect(sub).not.toBeNull();
+      expect(sub!.values.secret).toBe('human-pasted');
     });
   });
 });
