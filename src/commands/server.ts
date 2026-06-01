@@ -66,6 +66,7 @@ import { MachineIdentityManager } from '../core/MachineIdentity.js';
 import { isRemotelyHandled } from '../core/SessionRouter.js';
 import { formatForwardedTopicContext } from '../core/ForwardedTopicContext.js';
 import { resolveAdvertisedMeshUrl, advertiseSelfMeshUrl } from '../core/MeshUrlAdvertiser.js';
+import { relayOutbound } from '../core/TelegramRelay.js';
 import { GitSyncManager } from '../core/GitSync.js';
 import { RegistrySyncDebouncer } from '../core/RegistrySyncDebouncer.js';
 import { wireRegistrySync } from '../core/wireRegistrySync.js';
@@ -9535,24 +9536,24 @@ export async function startServer(options: StartOptions): Promise<void> {
           // replies reach the user without the standby ever sending on the shared bot
           // (preserving the single-Telegram-owner invariant — the 409-conflict guard).
           if (telegram) {
-            telegram.outboundRelay = async (topicId, text, opts) => {
-              const holder = coordinator.getSyncStatus().leaseHolder;
-              if (!holder || holder === meshSelfId) return null; // we ARE the owner, or none known
-              const url = peerUrl(holder);
-              if (!url) return null;
-              try {
-                const resp = await fetch(`${url}/telegram/reply/${topicId}`, {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${config.authToken}` },
-                  body: JSON.stringify({ text, ...(opts?.silent ? { silent: true } : {}) }),
-                });
-                if (!resp.ok) return null;
-                const j = (await resp.json().catch(() => ({}))) as { messageId?: number };
-                return { messageId: j.messageId ?? 0, topicId };
-              } catch {
-                return null; // relay unreachable → sendToTopic surfaces the failure
-              }
-            };
+            // Bounded + observable relay (see src/core/TelegramRelay.ts). The
+            // original inline fetch had NO timeout (a stalled holder tunnel hung
+            // the moved session's reply >70s) and logged NOTHING on failure (a
+            // dropped reply was invisible). Timeout tunable via
+            // config.multiMachine.relayTimeoutMs (default 15s).
+            const relayTimeoutMs = ((): number => {
+              const v = (config as { multiMachine?: { relayTimeoutMs?: number } }).multiMachine?.relayTimeoutMs;
+              return typeof v === 'number' && v > 0 ? v : 15_000;
+            })();
+            telegram.outboundRelay = (topicId, text, opts) =>
+              relayOutbound(topicId, text, opts, {
+                leaseHolder: () => coordinator.getSyncStatus().leaseHolder,
+                selfMachineId: meshSelfId,
+                peerUrl,
+                authToken: config.authToken,
+                timeoutMs: relayTimeoutMs,
+                log: (line) => console.warn(pc.yellow(`  ${line}`)),
+              });
           }
 
           // ── L4 transfer-by-nickname activation: the "move/run this on <nickname>"
