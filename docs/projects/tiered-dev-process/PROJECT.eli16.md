@@ -29,12 +29,17 @@ and isn't reliably available to every agent. We want to fix that too.
 The rule across all three: **anything you have to review — a PR or a spec — comes with
 a plain-English (ELI16) overview.** That part doesn't change.
 
-**2. The agent doesn't get to decide the tier — the system does.** A change's tier is
-computed automatically from how big it is *and* how risky it is. A one-line change is
-usually Tier 1 — UNLESS it's near something dangerous (the secret-handling code, the
-auth/token code, the message-delivery path), in which case it's bumped up regardless of
-size. The tool prints the tier and *why*, so it's never a judgment call you have to
-trust me on.
+**2. The system *suggests* the tier and the agent makes the final call — together.** The
+tool automatically works out a *suggested* tier from how big the change is *and* how
+risky it is (a one-line change near the secret-handling, auth, or message-delivery code
+gets flagged as higher-risk regardless of size), and shows the agent that suggestion
+*and its reasoning*. The agent then makes the final call, informed by it — and the whole
+decision (what the tool suggested, what the agent chose, and why) is recorded, so we can
+review it and improve both the tool's signals and the agent's judgment over time. This
+is a core Instar principle: the structural side (the tool/code) **informs** the AI, it
+doesn't decide *for* it — the two work together, with the AI holding the final say. (An
+earlier draft of this said "the system decides, not the agent"; that was wrong, and
+Justin corrected it — it's a foundational point, not a detail.)
 
 **3. The "second-AI opinion" stops needing API keys.** Instead of calling an outside
 API, the system detects whether the **codex** tool is installed on the machine (codex

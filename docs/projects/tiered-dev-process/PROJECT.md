@@ -45,11 +45,23 @@ Tier 1 keeps the *safety* requirements (tests, lint, side-effects review) and th
 ELI16 — it only drops the *pre-approved spec* ceremony, because for a small change the
 **PR itself is the review surface**.
 
-## 3. Tier classification — structural, in the gate (Structure > Willpower)
+## 3. Tier classification — structure informs, the agent decides (Signal vs. Authority)
 
-The tier must NOT be the agent's per-change judgment call (that's willpower). The
-**commit gate computes and reports the tier** from the staged change, so it's
-deterministic and visible to both agent and reviewer.
+Structural intelligence (the classifier/gate/code) and LLM intelligence are not
+substitutes; they **compose**. The commit gate **computes a tier signal** — size +
+risk + its reasoning — and **surfaces it to the agent**, always, so the tier question
+can never be skipped or forgotten (that is *Structure > Willpower*). But the signal
+**informs**; it does not decide. The **agent makes the final tier call** with full
+awareness of the signal (*Signal vs. Authority* — structure signals, the LLM holds
+authority). The decision — the structural signal, the agent's chosen tier, and its
+reasoning — is **recorded and audited**, which is the data that lets us improve *both*
+the classifier and the judgment over time.
+
+> An earlier draft of this section said "the system decides the tier — not the agent."
+> That framing was wrong (and, per the constitution, unconstitutional): past a
+> threshold of importance, structure must **inform** the LLM, never replace its
+> decision. Regex/code earns the LLM the most awareness to make an optimal choice; it
+> does not make the choice for it. (Corrected per Justin, 2026-06-01 — see §8.)
 
 **Inputs:**
 - **Size** — in-scope lines changed + files touched (the gate already enumerates
@@ -68,10 +80,15 @@ deterministic and visible to both agent and reviewer.
 - **De-escalate** is never automatic — only size *raises* the floor; risk only *raises*.
 - Tier 3 is **declared**, not auto-detected: when a change is part of an approved
   project, its step-specs are Tier 2 each; the *project* is what's Tier 3.
-- The gate **prints the computed tier + the reasons**, and enforces the matching
-  requirement set (Tier 1 → ELI16 + side-effects + tests/lint; Tier 2+ → + approved
-  converged spec + trace). The thresholds are tunable; the classifier is advisory on
-  the boundary but **the requirement set it selects is enforced**.
+- The gate **prints the computed tier signal + the reasons** and **records the agent's
+  final tier choice + reasoning** to an audit trail. It enforces that (a) a tier
+  decision is made and surfaced, and (b) the **chosen** tier's requirement set is
+  satisfied (Tier 1 → ELI16 + side-effects + tests/lint; Tier 2+ → + approved converged
+  spec + trace). A **safety-invariant-proximity signal is loud**: the agent may still
+  choose a lower tier, but only with explicit recorded justification, and such overrides
+  are surfaced for review (the audit trail is exactly what makes "the agent decides"
+  safe rather than a loophole). Structure makes the right call unskippable and
+  well-informed; the agent makes it.
 
 ## 4. Cross-model review — re-platformed onto the installed framework
 
@@ -125,7 +142,9 @@ default**, on **all** its Tier-2+ development work — fulfilling the Self-Hosti
 
 ## 6. Key decisions (locked)
 
-- **D1 — Tier by size AND risk, computed in the gate** (not agent judgment). §3.
+- **D1 — The gate computes a tier *signal* (size AND risk); the agent makes the final
+  tier call, informed + audited.** Structure informs, the LLM decides — never "the
+  system decides." (*Signal vs. Authority*.) §3, §8.
 - **D2 — Tier 1 drops the pre-approved spec but keeps ELI16 + side-effects + tests/lint;
   the PR is the review surface.** §2.
 - **D3 — Cross-model review is framework-native (detected codex CLI), not API-driven.** §4.
@@ -147,3 +166,45 @@ default**, on **all** its Tier-2+ development work — fulfilling the Self-Hosti
    shape, with convergence happening at each step-spec? (I've assumed the latter.)
 4. **Reviewer model within codex:** drive the cross-model review with codex's default
    top model, or pin a specific GPT tier for review consistency?
+
+## 8. Foundational principle — LLM intelligence WITH structural intelligence
+
+This project is a concrete instance of a principle that runs through all of Instar, and
+the tier-classifier (§3) is where it almost got violated — so it's worth stating here,
+and integrating into the constitution as its own careful pass (below).
+
+**The principle.** An LLM is a powerful intelligence but, on its own, lacks the
+regulatory and convergent dynamics a human body provides — so it cannot be a behavioral
+equivalent to a person over an expanded scope of awareness and time. Instar closes that
+gap with **infrastructure**: it sits at the top of an abstraction stack (tool access →
+agentic harnesses like Claude Code / Codex → Instar) and systematically fills the
+remaining gaps, balancing **evolution with convergence to maintain homeostasis**. The
+more robust that homeostasis, the *faster* Instar can safely evolve. It does this by
+**encoding evolutionary intelligence into infrastructure** — produced by LLM and human
+intelligence together (co-evolution keeps self-evolution aligned and coherent), with the
+long arc being that Instar depends *less and less* on human intelligence while remaining
+aligned with it — the way a child matures in a supportive environment into self-
+sufficiency and then gives back.
+
+**The operative rule (fractal, applies everywhere).** Structural intelligence (regex,
+code, gates, classifiers — the crystallized output of past evolution) and LLM
+intelligence are **composed, not substituted**. Past a threshold of importance,
+structure must **inform** the LLM — giving it maximal awareness to make an optimal
+choice — and must **not decide for it**. The LLM holds final authority; the structure is
+signal. This is why Instar does not let regex "make decisions" alone past a certain
+importance — and why §3's gate *suggests + informs + audits* a tier rather than dictating
+it. The audit trail (structural signal + the agent's choice + its reasoning) is itself
+infrastructure that closes the loop: it's the data for improving both the structural and
+the LLM side over time.
+
+**Constitutional integration (its own work, deliberately not buried here).** This maps
+directly onto the existing **Signal vs. Authority** principle (`docs/signal-vs-authority.md`)
+and complements **Structure > Willpower** (structure makes the right decision unskippable
+and well-informed; it does not remove the decision). Justin's framing adds the deeper
+"why" — the homeostasis / co-evolution / progressive-self-sufficiency arc — which the
+constitution does not yet state as a first-class foundational article. **Action:** a
+separate, careful pass (a constitutional article + `STANDARDS-REGISTRY.md` update,
+reviewed) that (a) elevates "structure informs, the LLM decides, the decision is audited"
+to a general law, and (b) records the evolutionary-intelligence-into-infrastructure
+framing as Instar's stated long-term purpose. Tracked as a sibling effort to this project,
+not a step inside it.
