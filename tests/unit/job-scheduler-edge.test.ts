@@ -98,15 +98,19 @@ describe('JobScheduler edge cases', () => {
       expect(mockSM._lastSpawnArgs?.prompt).toContain('/scan --deep');
     });
 
-    it('builds prompt for "script" type job', async () => {
+    it('runs a "script" type job directly WITHOUT spawning a model session', async () => {
+      // F005: script jobs are zero-token shell work — they run directly in a
+      // bounded subprocess, never via a spawned "Run this script: ..." session.
       createScheduler([
         makeJob('test', { execute: { type: 'script', value: './check.sh' } }),
       ]);
       scheduler.start();
-      await scheduler.triggerJob('test', 'manual');
+      const result = await scheduler.triggerJob('test', 'manual');
       await new Promise(r => setTimeout(r, 50));
 
-      expect(mockSM._lastSpawnArgs?.prompt).toContain('Run this script: ./check.sh');
+      expect(result).toBe('triggered');
+      expect(mockSM._spawnCount).toBe(0);
+      expect(mockSM._lastSpawnArgs).toBeNull();
     });
 
     it('passes model tier to session', async () => {

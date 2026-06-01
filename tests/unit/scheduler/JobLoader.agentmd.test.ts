@@ -682,4 +682,22 @@ describe('JobLoader · agentmd (Phase 1a)', () => {
       expect(absent?.kind).toBe('agentmd-file-missing');
     });
   });
+
+  // Regression (Codey gap-run F009): a disabled/retired per-slug manifest was
+  // dropped when its markdown body had been deleted, so it could no longer shadow
+  // a stale enabled entry in legacy jobs.json — and the zombie legacy job ran.
+  describe('disabled manifest shadowing (F009)', () => {
+    it('loads a disabled/retired manifest as a disabled job without requiring its body', () => {
+      const a = setup({
+        manifests: { retired: mkManifest({ slug: 'retired', enabled: false }) },
+        // No body file for `retired` — it was deleted when the job was retired.
+      });
+      const result = loadAgentMdJobs(a.scheduleDir, a.jobsRoot);
+      const retired = result.jobs.find((j) => j.slug === 'retired');
+      expect(retired).toBeDefined();
+      expect(retired!.enabled).toBe(false);
+      // It must NOT be dropped as a missing-body problem.
+      expect(result.problems.find((p) => p.slug === 'retired')).toBeUndefined();
+    });
+  });
 });

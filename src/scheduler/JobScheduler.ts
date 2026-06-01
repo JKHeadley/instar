@@ -387,6 +387,17 @@ export class JobScheduler {
       }
     }
 
+    // Script jobs are zero-token shell work — they do NOT spawn a model session,
+    // so they bypass session-capacity gating and the spawn path entirely and run
+    // directly in a bounded subprocess. Without this they were spawned with a
+    // "Run this script: ..." prompt and could hang for hours holding a live
+    // session slot, leaving run-history stuck at `pending` (Codey gap-run F005).
+    if (job.execute.type === 'script') {
+      this.clearRetryState(slug);
+      this.runScriptJob(job, reason);
+      return 'triggered';
+    }
+
     // Check session capacity
     const runningSessions = this.sessionManager.listRunningSessions();
     const jobSessions = runningSessions.filter(s => s.jobSlug);
@@ -673,6 +684,94 @@ export class JobScheduler {
       const jobA = this.jobs.find(j => j.slug === a.slug);
       const jobB = this.jobs.find(j => j.slug === b.slug);
       return (PRIORITY_ORDER[jobA?.priority ?? 'low']) - (PRIORITY_ORDER[jobB?.priority ?? 'low']);
+    });
+  }
+
+  /**
+   * Execute a `script`-type job directly in a bounded subprocess instead of
+   * spawning a model session. Script jobs are zero-token infrastructure work
+   * (e.g. dashboard-link refresh); spawning a model for them wasted a session
+   * slot and could hang for hours (Codey gap-run F005). Mirrors spawnJobSession's
+   * run-history / job-state / claim bookkeeping so observability is identical.
+   */
+  private runScriptJob(job: JobDefinition, reason: string): void {
+    const script = `${job.execute.value}${job.execute.args ? ' ' + job.execute.args : ''}`;
+    const sessionName = `script-${job.slug}-${Date.now().toString(36)}`;
+    const observability = JobScheduler.computeRunObservability(job, JobScheduler.resolveAllowlist(job));
+    const runId = this.runHistory.recordStart({
+      slug: job.slug,
+      sessionId: sessionName,
+      trigger: reason,
+      model: job.model,
+      origin: observability.origin,
+      resolvedPath: observability.resolvedPath,
+      bodyHash: observability.bodyHash,
+      frontmatterHash: observability.frontmatterHash,
+      manifestVersion: observability.manifestVersion,
+      toolAllowlist: observability.toolAllowlist,
+      unrestrictedTools: observability.unrestrictedTools,
+      clampedAllowlist: observability.clampedAllowlist,
+    });
+
+    this.state.saveJobState({
+      slug: job.slug,
+      lastRun: new Date().toISOString(),
+      lastResult: 'pending',
+      lastError: undefined,
+      consecutiveFailures: 0,
+      nextScheduled: this.getNextRun(job.slug),
+    });
+
+    this.state.appendEvent({
+      type: 'job_triggered',
+      summary: `Job "${job.slug}" triggered (${reason})`,
+      sessionId: sessionName,
+      timestamp: new Date().toISOString(),
+      metadata: { slug: job.slug, reason, mode: 'script' },
+    });
+
+    const timeout = Math.max(1, job.expectedDurationMinutes ?? DEFAULT_EXPECTED_MINUTES) * 2 * 60_000;
+    const env = this.config.authToken
+      ? { ...process.env, INSTAR_AUTH_TOKEN: this.config.authToken }
+      : process.env;
+
+    execFileAsync('/bin/sh', ['-c', script], {
+      cwd: path.dirname(this.stateDir),
+      encoding: 'utf-8',
+      timeout,
+      env,
+      maxBuffer: 1024 * 1024,
+    }).then(({ stdout, stderr }) => {
+      const output = [stdout, stderr].filter(Boolean).join('\n').slice(-1000);
+      this.runHistory.recordCompletion({ runId, result: 'success', outputSummary: output || undefined });
+      this.state.saveJobState({
+        slug: job.slug,
+        lastRun: new Date().toISOString(),
+        lastResult: 'success',
+        lastError: undefined,
+        consecutiveFailures: 0,
+        nextScheduled: this.getNextRun(job.slug),
+      });
+      this.claimManager?.completeClaim(job.slug, 'success');
+    }).catch((err: unknown) => {
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      const output = [
+        (err as { stdout?: string })?.stdout,
+        (err as { stderr?: string })?.stderr,
+      ].filter(Boolean).join('\n').slice(-1000);
+      const result = errorMsg.includes('timed out') || errorMsg.includes('ETIMEDOUT') ? 'timeout' : 'failure';
+      this.runHistory.recordCompletion({ runId, result, error: errorMsg, outputSummary: output || undefined });
+      const previous = this.state.getJobState(job.slug);
+      this.state.saveJobState({
+        slug: job.slug,
+        lastRun: new Date().toISOString(),
+        lastResult: result,
+        lastError: errorMsg,
+        consecutiveFailures: (previous?.consecutiveFailures ?? 0) + 1,
+        nextScheduled: this.getNextRun(job.slug),
+      });
+      this.claimManager?.completeClaim(job.slug, 'failure');
+      this.scheduleRetry(job.slug, 'error');
     });
   }
 
