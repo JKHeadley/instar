@@ -80,3 +80,104 @@ export function evaluateOperatorConfirm(input: OperatorConfirmInput): OperatorCo
 
   return { allow: true, reason: 'Operator-authorized for this request + holder; requester is not the authorizer.' };
 }
+
+// ── Trust-gated transfer authorization (R2, Justin directive 2026-06-01) ──────
+//
+// "Agent-to-agent transfer should, like all other Instar functionalities, be
+//  based on trust levels. This includes the user's trust level of the agent AND
+//  the agent's trust level of the other agent. In high trust situations: no
+//  approval is needed."
+//
+// Two existing Instar trust systems, no new concept:
+//  • peerTrust  — the agent's trust of the PEER (AgentTrustManager AgentTrustLevel).
+//  • opAutonomy — the user's granted autonomy for this operation class
+//                 (AdaptiveTrust / ExternalOperationGate TrustLevel).
+// When BOTH are at/above the high-trust thresholds, the transfer is authorized
+// WITHOUT an operator-confirm record. Otherwise it falls back to the explicit
+// operator-confirm gate above (requester ≠ authorizer, scoped record).
+
+/** Peer trust ladder (ascending), mirrors AgentTrustManager's TRUST_ORDER. */
+export type PeerTrustLevel = 'untrusted' | 'verified' | 'trusted' | 'autonomous';
+/** Operation-autonomy ladder (ascending), mirrors AdaptiveTrust's TRUST_ORDER. */
+export type OperationAutonomyLevel =
+  | 'blocked' | 'approve-always' | 'approve-first' | 'log' | 'autonomous';
+
+const PEER_TRUST_ORDER: readonly PeerTrustLevel[] =
+  ['untrusted', 'verified', 'trusted', 'autonomous'];
+const OP_AUTONOMY_ORDER: readonly OperationAutonomyLevel[] =
+  ['blocked', 'approve-always', 'approve-first', 'log', 'autonomous'];
+
+/** High-trust thresholds — confirmed by Justin 2026-06-01. */
+export const PEER_TRUST_HIGH: PeerTrustLevel = 'trusted';
+export const OP_AUTONOMY_HIGH: OperationAutonomyLevel = 'log';
+
+export interface TransferTrustContext {
+  /** The agent's trust of the peer (from AgentTrustManager). */
+  peerTrust: PeerTrustLevel;
+  /** The user's granted autonomy for this credential-transfer operation. */
+  opAutonomy: OperationAutonomyLevel;
+}
+
+/**
+ * True when BOTH trust axes are at/above their high-trust thresholds, so the
+ * transfer needs no operator approval. Unknown level strings are treated as the
+ * lowest rung (fail-closed: an unrecognized trust value never clears the bar).
+ */
+export function isHighTrustTransfer(ctx: TransferTrustContext): boolean {
+  const peerIdx = PEER_TRUST_ORDER.indexOf(ctx.peerTrust);
+  const opIdx = OP_AUTONOMY_ORDER.indexOf(ctx.opAutonomy);
+  const peerOk = peerIdx >= 0 && peerIdx >= PEER_TRUST_ORDER.indexOf(PEER_TRUST_HIGH);
+  const opOk = opIdx >= 0 && opIdx >= OP_AUTONOMY_ORDER.indexOf(OP_AUTONOMY_HIGH);
+  return peerOk && opOk;
+}
+
+export interface TransferAuthorizationInput extends OperatorConfirmInput {
+  /** The two trust levels gating whether operator approval is required. */
+  trust: TransferTrustContext;
+}
+
+export interface TransferAuthorizationDecision {
+  allow: boolean;
+  reason: string;
+  /** How it was (or wasn't) authorized — for the audit trail. */
+  path: 'high-trust' | 'operator-confirm' | 'blocked';
+}
+
+/**
+ * Trust-gated R2 decision. High trust on both axes → authorized with no operator
+ * approval. Otherwise → the explicit operator-confirm gate decides (and a missing
+ * authorization blocks). Pure logic; the caller resolves the two trust levels
+ * (peer from AgentTrustManager, op-autonomy from AdaptiveTrust) and the
+ * authorization record from durable storage.
+ */
+export function evaluateTransferAuthorization(
+  input: TransferAuthorizationInput,
+): TransferAuthorizationDecision {
+  const { peerTrust, opAutonomy } = input.trust;
+  if (isHighTrustTransfer(input.trust)) {
+    return {
+      allow: true,
+      path: 'high-trust',
+      reason:
+        `High trust on both axes (peer "${peerTrust}" ≥ "${PEER_TRUST_HIGH}", ` +
+        `user-trust-of-agent "${opAutonomy}" ≥ "${OP_AUTONOMY_HIGH}") — no operator approval needed.`,
+    };
+  }
+  const oc = evaluateOperatorConfirm(input);
+  if (oc.allow) {
+    return {
+      allow: true,
+      path: 'operator-confirm',
+      reason:
+        `Trust below the no-approval bar (peer "${peerTrust}", user-trust-of-agent ` +
+        `"${opAutonomy}"); proceeding on explicit operator authorization. ${oc.reason}`,
+    };
+  }
+  return {
+    allow: false,
+    path: 'blocked',
+    reason:
+      `Trust below the no-approval bar (peer "${peerTrust}", user-trust-of-agent ` +
+      `"${opAutonomy}") and no valid operator authorization: ${oc.reason}`,
+  };
+}
