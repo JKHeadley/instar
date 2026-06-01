@@ -6,7 +6,7 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import crypto from 'node:crypto';
-import { SecretDrop, canonicalSubmitMessage } from '../../src/server/SecretDrop.js';
+import { SecretDrop, canonicalSubmitMessage, buildSignedSubmission } from '../../src/server/SecretDrop.js';
 
 describe('SecretDrop', () => {
   let drop: SecretDrop;
@@ -328,6 +328,28 @@ describe('SecretDrop', () => {
       const sub = drop.submit(token, csrf(token), { secret: 'human-pasted' });
       expect(sub).not.toBeNull();
       expect(sub!.values.secret).toBe('human-pasted');
+    });
+
+    it('round-trip: buildSignedSubmission (sender) is accepted by submit (receiver)', () => {
+      // Sender holds a raw 32-byte Ed25519 seed; receiver pins the derived pubkey.
+      const seed = crypto.randomBytes(32);
+      const priv = crypto.createPrivateKey({
+        key: Buffer.concat([Buffer.from('302e020100300506032b657004220420', 'hex'), seed]),
+        format: 'der', type: 'pkcs8',
+      });
+      const pubHex = Buffer.from(
+        Buffer.from(crypto.createPublicKey(priv).export({ type: 'spki', format: 'der' })).subarray(-32),
+      ).toString('hex');
+
+      const { token } = drop.create({ label: 'Token', senderVerification: { senderPubKeyHex: pubHex } });
+      const body = buildSignedSubmission(token, { secret: 'live-token' }, seed.toString('hex'));
+      const sub = drop.submit(token, csrf(token), body);
+      expect(sub).not.toBeNull();
+      expect(sub!.values.secret).toBe('live-token');
+    });
+
+    it('buildSignedSubmission rejects a non-32-byte seed', () => {
+      expect(() => buildSignedSubmission('t', { secret: 'x' }, 'aabb')).toThrow(/32 bytes/);
     });
   });
 });

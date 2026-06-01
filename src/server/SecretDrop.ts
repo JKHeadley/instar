@@ -122,6 +122,32 @@ export function canonicalSubmitMessage(token: string, declaredValues: Record<str
 }
 
 /**
+ * Sender-side counterpart to R1a: build a signed sealed-handoff submission body.
+ * Given the one-time `token`, the declared field values, and the sender's raw
+ * 32-byte Ed25519 private seed (hex), returns the values plus a `_sig` that the
+ * receiver's {@link SecretDrop.submit} verifies against the pinned sender key.
+ * The sender POSTs the returned object as the submission body. Keeping the signer
+ * and verifier in one module guarantees they share {@link canonicalSubmitMessage}.
+ */
+export function buildSignedSubmission(
+  token: string,
+  declaredValues: Record<string, string>,
+  senderEd25519SeedHex: string,
+): Record<string, string> {
+  const seed = Buffer.from(senderEd25519SeedHex, 'hex');
+  if (seed.length !== 32) {
+    throw new Error('buildSignedSubmission: sender Ed25519 seed must be 32 bytes (hex)');
+  }
+  const privateKey = crypto.createPrivateKey({
+    key: Buffer.concat([Buffer.from('302e020100300506032b657004220420', 'hex'), seed]),
+    format: 'der',
+    type: 'pkcs8',
+  });
+  const sig = crypto.sign(null, canonicalSubmitMessage(token, declaredValues), privateKey);
+  return { ...declaredValues, _sig: sig.toString('hex') };
+}
+
+/**
  * Event emitted when a submission has been sitting in `received` for longer
  * than {@link STUCK_CONSUMER_GRACE_MS} without being explicitly consumed.
  * Consumers register a listener via {@link SecretDrop.onStuckConsumer}.
