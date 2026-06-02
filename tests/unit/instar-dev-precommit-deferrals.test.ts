@@ -95,15 +95,24 @@ describe('instar-dev pre-commit — orphan deferrals enforcement', () => {
     specFrontmatter: string;
     specBody: string;
     artifactBody?: string;
+    /** Skip the auto-injected parent-principle (to exercise Step 7.6's missing-parent block). */
+    omitParentPrinciple?: boolean;
   }): { specPath: string; artifactPath: string; tracePath: string } {
     const specRel = path.join('docs', 'specs', 'fixture.md');
     const eli16Rel = path.join('docs', 'specs', 'fixture.eli16.md');
     const artifactRel = path.join('upgrades', 'side-effects', 'fixture.md');
     const traceRel = path.join('.instar', 'instar-dev-traces', `${Date.now()}-fixture.json`);
 
+    // Every fixture spec needs a parent-principle (pre-commit Step 7.6 /
+    // Constitutional Traceability) so this test exercises the DEFERRALS path, not
+    // the traceability block. The sandbox has no STANDARDS-REGISTRY.md, so Step
+    // 7.6's article-resolution fails open — the line just needs to be present.
+    const fm = (opts.omitParentPrinciple || /^\s*parent-principle\s*:/m.test(opts.specFrontmatter))
+      ? opts.specFrontmatter
+      : `${opts.specFrontmatter}\nparent-principle: "Structure beats Willpower"`;
     fs.writeFileSync(
       path.join(sandbox, specRel),
-      `---\n${opts.specFrontmatter}\n---\n\n${opts.specBody}\n`,
+      `---\n${fm}\n---\n\n${opts.specBody}\n`,
     );
     // ELI16 sibling — hook requires it to be staged with the spec.
     fs.writeFileSync(
@@ -145,6 +154,17 @@ describe('instar-dev pre-commit — orphan deferrals enforcement', () => {
     });
     const result = await runHook(process.env, sandbox);
     expect(result.status).toBe(0);
+  });
+
+  it('Step 7.6 (Constitutional Traceability): blocks a spec with no parent-principle', async () => {
+    stageFixture({
+      specFrontmatter: 'title: Unanchored spec\napproved: true\nreview-convergence: tactical\neli16-overview: x.md',
+      specBody: 'Everything is in scope and ships in this PR. Done.',
+      omitParentPrinciple: true,
+    });
+    const result = await runHook(process.env, sandbox);
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toMatch(/parent-principle|constitutional/i);
   });
 
   // ─── BACK-COMPAT REGRESSION GUARD (Step A — tier classifier) ──────────────

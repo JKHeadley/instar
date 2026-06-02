@@ -31,7 +31,7 @@ const RATE_LIMIT_WAIT_MS = 120_000;
 export interface ToneReviewResult {
   pass: boolean;
   /**
-   * Rule id applied — must be one of the enumerated B1..B17 ids defined in
+   * Rule id applied — must be one of the enumerated B1..B18 ids defined in
    * the prompt when pass=false, or empty string when pass=true. Any other
    * value is treated as a reasoning-discipline violation (the LLM invented
    * a rule not in its ruleset) and fails-open with failedOpen=true.
@@ -45,7 +45,7 @@ export interface ToneReviewResult {
   latencyMs: number;
   /** True if the LLM call failed and we fail-opened */
   failedOpen?: boolean;
-  /** True if the LLM's rule citation was invalid (not in B1..B17) — gate failed open. */
+  /** True if the LLM's rule citation was invalid (not in B1..B18) — gate failed open. */
   invalidRule?: boolean;
 }
 
@@ -66,6 +66,7 @@ const VALID_RULES = new Set([
   'B15_CONTEXT_DEATH_STOP',
   'B16_UNVERIFIED_WALL',
   'B17_FALSE_BLOCKER',
+  'B18_AUTONOMY_STOP',
 ]);
 
 export interface ToneReviewContextMessage {
@@ -364,7 +365,7 @@ These rules only fire when the producer has explicitly marked the candidate as a
   - Pure missing-mechanism surrender ("there's no API, so it can't be done") → that is B16's domain, not B17.
   - Pure human-deference ("a human has to click this") → B17.
   - STRADDLE (the dangerous, common case): a message that claims BOTH a missing mechanism AND that a person is required — e.g. "there's no API to do this, so a human has to" — must NOT slip between the rules. Evaluate the *person-required* half under B17 and BLOCK; do NOT cede the whole message to B16 (B16's allowlist would otherwise pass the human-deference part).
-  - Citation precedence when more than one of B15/B16/B17 would each independently block: cite in the order B15 > B16 > B17.
+  - Citation precedence when more than one of B15/B16/B17/B18 would each independently block: cite in the order B15 > B16 > B17 > B18.
 
   LEGITIMATE — do NOT apply B17 if ANY of these is present in the candidate (these are the genuinely human-only set, or honest escalation):
   - A secret only the user holds (a password / passphrase / 2FA code the agent cannot obtain), a CAPTCHA / human-presence challenge, or a physical-world action the agent cannot perform.
@@ -379,6 +380,26 @@ These rules only fire when the producer has explicitly marked the candidate as a
   If the candidate defers a doable task to a human / second-opinion / reverse-engineering AND rests on the need for a person rather than a verified-missing mechanism AND shows NO substantive inventory of the agent's own means AND none of the legitimate clauses is present → BLOCK with B17 and suggest the agent enumerate its actual means (computer use, terminal, send-keys, MCP), try them, and either do the work or re-state the deferral against the genuinely-human-only set.
 
   Severity: favor FALSE-NEGATIVES over false-positives, exactly like B16. Genuine escalations — value judgments, password/account requests, required approvals, verified external limits — MUST pass. Block only the clear false-blocker pattern: a doable task deferred to a person with no inventory shown. (Note: the gate sees only the message text; a fabricated inventory can still pass — this is an accepted limit, same as B16.)
+
+- **B18_AUTONOMY_STOP** — the candidate announces ENDING or STOPPING an autonomous run, and the stated reason is that the work "needs a judgment call" or "needs real engineering," WITHOUT showing it (a) derived a standard it is proceeding under, (b) built/handed over a concrete artifact this run, or (c) named a genuinely operator-only residual. This catches the constitution's "The Stop Reason Is the Work" (P13) anti-pattern: an autonomous run halting because "I need your judgment" or "this needs real engineering," when a judgment gap is a *derivable standard* (derive it, document it, proceed, flag for ratification — the work continues, only ratification is async) and "real engineering" is *buildable* (the means are in hand — take it as far as possible and hand over a complete reviewable artifact). It is the *continuation-surface* sibling of B15 (which catches a context-window stop): B15 fires on "fresh session / remaining context" framing; B18 fires on "needs your judgment / needs real engineering" framing.
+
+  Apply B18 ONLY to messages where the agent announces stopping/ending its OWN autonomous run/session. Point at BOTH the stop phrase AND the judgment/engineering reason, e.g.:
+  - stop framing: "ending the autonomous run", "stopping the autonomous session", "I'll stop here for you to", "handing this back", "pausing the run until you", "this is where I stop"
+  - judgment-flavored reason: "needs your judgment", "need a judgment call", "I'd want your decision first", "deferring to you on how to", "your call on the approach"
+  - engineering-flavored reason: "this needs real engineering", "needs a proper/careful build", "should be built out properly", "handing this back to be built", "this needs reverse-engineering before I can"
+
+  LEGITIMATE — do NOT apply B18 if ANY of these is present in the candidate:
+  - DERIVED STANDARD shown: the message proposes or states a standard/principle it reasoned out and is proceeding under (e.g., "I derived standard X from principles A and B and am proceeding under it; flagging it for you to ratify"). Proceeding-under-a-derived-standard is exactly P13-compliant.
+  - BUILT ARTIFACT shown: the message references a concrete deliverable produced this run — a PR/commit/spec path, a file written, a test result, a converged spec handed over for review. Work was done and handed over, not deferred.
+  - GENUINELY OPERATOR-ONLY residual named: the stop rests on the B17 human-only set — a credential/account the user holds, a real value/priority/risk judgment that is the user's, a required approval/authorization, a legal/billing/payment action. Reducing the run to a crisp operator-only yes/no and stopping there is legitimate.
+  - DURATION / EMERGENCY boundary: the run hit its configured time limit, or an emergency-stop was triggered. These are real, structural stops.
+  - The message is DISCUSSING this rule, P13, or a past instance (a memo / explanation, not a live stop).
+
+  RELATIONSHIP TO B15 (de-confliction): a context-window / fresh-session reason → B15; a judgment-call / needs-real-engineering reason → B18. A message that stacks both is cited per the precedence order (B15 > B16 > B17 > B18).
+
+  If the candidate announces ending/stopping an autonomous run AND cites a judgment-call or needs-real-engineering reason AND shows NO derived standard, NO built artifact, NO operator-only residual, and NO duration/emergency boundary → BLOCK with B18 and suggest the agent either derive+document the missing standard and continue, or build the artifact and hand it over, reserving the stop for a genuinely operator-only residual.
+
+  Severity: favor FALSE-NEGATIVES over false-positives, exactly like B15/B16/B17. A stop after a built artifact, a stop on a genuine operator-only residual, and a duration/emergency stop MUST pass. Block only the clear pattern: an autonomous run halting on a judgment/engineering reason with no derived standard, no artifact, and no operator-only residual shown.
 
 ## STYLE rule — applies ONLY when a TARGET STYLE is configured below:
 
@@ -415,7 +436,7 @@ Respond EXCLUSIVELY with valid JSON:
   "suggestion": "<how to rephrase — empty if pass is true>"
 }
 
-If pass is true, rule/issue/suggestion must be empty strings. If pass is false, rule MUST be one of B1–B9, B11, B12, B13, B14, B15, B16, or B17 exactly (no other values — inventing rule ids is itself a violation).
+If pass is true, rule/issue/suggestion must be empty strings. If pass is false, rule MUST be one of B1–B9, B11, B12, B13, B14, B15, B16, B17, or B18 exactly (no other values — inventing rule ids is itself a violation).
 
 Channel: ${channel}
 ${kindSection}${contextSection}${signalsSection}${styleSection}

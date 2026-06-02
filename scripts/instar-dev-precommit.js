@@ -496,6 +496,65 @@ if (staged.includes(spec) && !staged.includes(eli16Rel)) {
   );
 }
 
+// ─── Step 7.6: Constitutional Traceability (No Unconstitutional Work) ──────
+// Every spec must trace to a real constitutional standard with an indisputable
+// fit. This commit-time gate enforces the STRUCTURAL half (always-on, server-free):
+// the spec's parent-principle frontmatter must be PRESENT and RESOLVE to a real
+// article heading in docs/STANDARDS-REGISTRY.md. The QUALITATIVE "indisputable fit"
+// judgment (fit/weak/none) is the review-time reviewer's job — POST
+// /spec/conformance-check now returns report.fit — so a weak/none fit is caught and
+// resolved before approval, not at commit (where a 150s LLM call would hang every
+// commit). A non-resolving parent is the signal to amend the constitution (propose a
+// new standard) or recognize the work as unconstitutional. Fail-OPEN if the registry
+// is unreadable — never block work because the constitution can't be read.
+{
+  const parentMatch = specFm.match(/^\s*parent-principle\s*:\s*(.+)$/m);
+  const parent = parentMatch ? parentMatch[1].trim().replace(/^["']|["']$/g, '') : '';
+  if (!parent) {
+    blockCommit(
+      inScopeFiles,
+      [
+        `Spec ${spec} names no parent-principle (Constitutional Traceability).`,
+        'Every spec MUST name the constitutional standard it serves, with an indisputable fit.',
+        'Add a frontmatter line, e.g.:',
+        '  parent-principle: "<exact article name from docs/STANDARDS-REGISTRY.md>"',
+        '',
+        'If no current standard covers this work, that is the signal to either amend the',
+        'constitution (propose a new standard, get it ratified) or recognize the work as',
+        'unconstitutional — do not ship it unanchored.',
+      ].join('\n'),
+    );
+  }
+  let registryNames = [];
+  try {
+    const reg = fs.readFileSync(path.join(ROOT, 'docs', 'STANDARDS-REGISTRY.md'), 'utf8');
+    registryNames = (reg.match(/^###\s+(.+)$/gm) || []).map((h) => h.replace(/^###\s+/, '').trim());
+  } catch {
+    // Registry unreadable → cannot resolve; fail-open (skip the resolution check).
+    registryNames = [];
+  }
+  if (parent && registryNames.length) {
+    const pl = parent.toLowerCase();
+    const resolves = registryNames.some((n) => {
+      const nl = n.toLowerCase();
+      return pl.includes(nl) || nl.includes(pl);
+    });
+    if (!resolves) {
+      blockCommit(
+        inScopeFiles,
+        [
+          `Spec ${spec}'s parent-principle does not resolve to a real constitutional standard.`,
+          `  parent-principle: ${parent}`,
+          '',
+          'It must name (or contain) an exact article heading from docs/STANDARDS-REGISTRY.md.',
+          'A hand-wave parent fails the same as none — name the standard this work is plainly an',
+          'instance of, or amend the constitution to cover it (then the work is constitutional).',
+        ].join('\n'),
+      );
+    }
+  }
+}
+
 // ─── Step 7.5: orphan deferrals must be tracked ───────────────────────────
 // Why: on 2026-05-20 PR #284 shipped four of five fixes for a version-skew
 // failure class and explicitly deferred the fifth ("lifeline auto-restart on

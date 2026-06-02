@@ -18,7 +18,7 @@ The catalog is structured so a reviewer (human or LLM) can answer one question f
 
 ---
 
-## Part 1 — Foundational Principles (P1-P12)
+## Part 1 — Foundational Principles (P1-P13)
 
 These are the principles every Instar design must engage with explicitly. Violating one without explicit justification is a critical convergence-blocker.
 
@@ -320,6 +320,26 @@ Jobs support a `supervision` field on `JobDefinition` so the level is declarativ
 - This catalog entry, so the `/spec-converge` lessons-aware reviewer flags specs that accept a false blocker.
 
 **Earned from:** an instance stacked "needs a human to click, needs reverse-engineering, want a second opinion" in one sentence while looking at the very "Press t to trust all" prompt it claimed needed a human — in a dashboard it had open, with computer use available. It then drove the prompt itself, no human. The wall was a button.
+
+---
+
+### P13. The Stop Reason Is the Work (an autonomous stop for judgment/engineering is a work item)
+
+**Statement:** When an autonomous run would stop because "this needs a judgment call" or "this needs real engineering," the stop reason is itself the next work item, not a verdict. A judgment gap is a missing documented standard: derive it from existing principles, write it down, proceed under it, and flag it for ratification — the work continues, only ratification is async. "Real engineering" is not a stop at all: the means are in hand (specs, worktrees, the ship-gate, skills), so take it as far as possible and hand over a complete reviewable artifact, never a request.
+
+**Source:** `docs/specs/AUTONOMOUS-OPERATION-JUDGMENT-AND-APPROVAL-AS-DATA-SPEC.md`; constitution standard "The Stop Reason Is the Work" (The Substrate family). Earned 2026-06-01 (topic 13481).
+
+**Translation:**
+- The *continuation-surface* sibling of P11/P12. P11 surrenders on feasibility ("no mechanism exists"); P12 on agency ("a person is required"); P13 on *continuation* ("I should stop here"). The most insidious of the three — it wears the clothing of prudence ("I'd want your judgment") and humility ("this deserves careful engineering"), so it slips past the agent's own guard.
+- A stop named honestly *after* the inventory — "I derived standard X, proceeded under it, built and tested the slice; the residual decision is genuinely yours, here it is as a yes/no" — is legitimate. The failure is stopping *without* deriving, building, and reducing the residual to a crisp ratifiable question.
+- Counterweight: a genuinely operator-only residual (the P12 human-only set) is a real stop, and so is a duration/emergency-stop boundary. This is not "never pause for the user"; it is "don't stop the *work* when the stop reason is a derivable standard or a buildable artifact."
+
+**Enforcement (structural):**
+- PRIMARY: the autonomous-completion evaluator (the `/autonomous/evaluate-completion` path the autonomous-stop-hook calls) — when a stop classifies as judgment-gap or engineering-deferral, it requires a derived-standard proposal, a built artifact, or a named operator-only residual before permitting the stop; otherwise it re-injects P13 guidance and the run continues. The strongest structural surface: it catches a *silent* stop that emits no message.
+- SECONDARY: `B18_AUTONOMY_STOP` in `MessagingToneGate` (sibling to B15/B16/B17, citation precedence B15 > B16 > B17 > B18) — an outbound message announcing an autonomous stop for judgment/engineering is held unless it shows a derived standard, a built artifact, or a named operator-only item. Favors false-negatives.
+- This catalog entry, so the `/spec-converge` lessons-aware reviewer flags plans that accept an autonomous halt without a derived standard or a built artifact.
+
+**Earned from:** 2026-06-01 (topic 13481) — a multi-machine autonomous run stopped repeatedly, each time citing "needs your judgment on sequencing" or "needs real engineering at the machines," while the means to proceed were in hand. Justin: "this is yet again another example of autonomous mode failing… for judgment calls all this means is that we are lacking the standards and principles… 'real engineering'… this one is definitely more of an excuse. You have the full capability to do this." The crystallizing instance — the deferral-shaped cousin of every prior early stop.
 
 ---
 

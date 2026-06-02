@@ -3292,6 +3292,27 @@ export function createRoutes(ctx: RouteContext): Router {
     }
   });
 
+  // P13 "The Stop Reason Is the Work" guard for the autonomous stop-hook: given the
+  // recent transcript, decide whether a stop-attempt is EARNED or rests on a
+  // judgment-call / needs-real-engineering deferral. Fail-open: the hook treats
+  // 503/unreachable/error and stopAllowed:true as permit — a SECONDARY guard must
+  // never trap a genuine completion (the completion check is the primary authority).
+  router.post('/autonomous/evaluate-stop', async (req, res) => {
+    if (!ctx.completionEvaluator) {
+      res.status(503).json({ error: 'No completion evaluator (IntelligenceProvider not configured)' });
+      return;
+    }
+    const { transcriptTail } = req.body ?? {};
+    try {
+      const verdict = await ctx.completionEvaluator.evaluateStopRationale(
+        typeof transcriptTail === 'string' ? transcriptTail : '',
+      );
+      res.json(verdict);
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
   // Native /goal delegation (Phase 2): drive the framework's own /goal loop by
   // INJECTING the slash command into the session (instar's core mechanism —
   // SessionManager.sendInput / tmux send-keys), and mark the job goal_mode:native so

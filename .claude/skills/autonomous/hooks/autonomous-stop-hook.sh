@@ -394,6 +394,44 @@ if [[ -f ".instar/autonomous-emergency-stop" ]]; then
   exit 0
 fi
 
+# ── P13 "The Stop Reason Is the Work" guard ──────────────────────────────────
+# Consulted ONLY when a stop is about to be APPROVED (genuine completion), so the
+# LLM call costs nothing on ordinary keep-working iterations. Returns 0 (stop
+# allowed) / 1 (blocked); on block, P13_GUIDANCE carries the steering. FAIL-OPEN:
+# any unreachable / 503 / missing-field result → allowed — a SECONDARY guard must
+# never trap a genuine completion (the completion check is the primary authority).
+P13_GUIDANCE=""
+p13_stop_allowed() {
+  P13_GUIDANCE=""
+  if [[ -n "${INSTAR_HOOK_P13_OVERRIDE:-}" ]]; then
+    # Test seam: "blocked" forces a P13 block; anything else permits.
+    if [[ "$INSTAR_HOOK_P13_OVERRIDE" == "blocked" ]]; then
+      P13_GUIDANCE="P13 — the stop is not earned (test): derive+document the standard and proceed, or build the artifact and hand it over."
+      return 1
+    fi
+    return 0
+  fi
+  [[ -z "$TRANSCRIPT_PATH" || ! -f "$TRANSCRIPT_PATH" ]] && return 0
+  local p13_tail p13_port p13_auth p13_resp p13_allowed p13_guid
+  p13_tail=$(grep '"role":"assistant"' "$TRANSCRIPT_PATH" 2>/dev/null | tail -6 \
+    | jq -r '.message.content | map(select(.type=="text")) | map(.text) | join("\n")' 2>/dev/null \
+    | tail -c 8000 || echo "")
+  [[ -z "$p13_tail" ]] && return 0
+  p13_port=$(python3 -c "import json;print(json.load(open('.instar/config.json')).get('port',4040))" 2>/dev/null || echo 4040)
+  p13_auth=$(python3 -c "import json;print(json.load(open('.instar/config.json')).get('authToken',''))" 2>/dev/null || echo "")
+  p13_resp=$(jq -nc --arg t "$p13_tail" '{transcriptTail:$t}' \
+    | curl -s -m 35 -H "Authorization: Bearer $p13_auth" -H 'Content-Type: application/json' \
+      --data-binary @- "http://localhost:${p13_port}/autonomous/evaluate-stop" 2>/dev/null || echo "")
+  p13_allowed=$(printf '%s' "$p13_resp" | jq -r '.stopAllowed // empty' 2>/dev/null || echo "")
+  p13_guid=$(printf '%s' "$p13_resp" | jq -r '.guidance // empty' 2>/dev/null || echo "")
+  # FAIL-OPEN: block ONLY on an explicit stopAllowed:false.
+  if [[ "$p13_allowed" == "false" ]]; then
+    P13_GUIDANCE="P13 — the stop is not earned: ${p13_guid}"
+    return 1
+  fi
+  return 0
+}
+
 # Completion CONDITION — independent evaluator (mirrors /goal). Authoritative when
 # set; the self-declared promise below is the legacy fallback. FAIL-SAFE: if the
 # evaluator is unreachable or unsure, we keep working — never a false "done".
@@ -417,10 +455,16 @@ if [[ -n "$COMPLETION_CONDITION" ]] && [[ -n "$TRANSCRIPT_PATH" ]] && [[ -f "$TR
     EVAL_REASON=$(printf '%s' "$EVAL_RESP" | jq -r '.reason // empty' 2>/dev/null || echo "")
   fi
   if [[ "$EVAL_MET" == "true" ]]; then
-    emit "✅ Autonomous mode: completion condition met (independent evaluator): ${EVAL_REASON}"
-    notify_terminal_stop "✅ My autonomous run on \"$(goal_snippet)\" finished — the goal was met."
-    rm -f "$STATE_FILE"
-    exit 0
+    if p13_stop_allowed; then
+      emit "✅ Autonomous mode: completion condition met (independent evaluator): ${EVAL_REASON}"
+      notify_terminal_stop "✅ My autonomous run on \"$(goal_snippet)\" finished — the goal was met."
+      rm -f "$STATE_FILE"
+      exit 0
+    fi
+    # P13 "The Stop Reason Is the Work": the condition reads as met, but the stop
+    # rests on a judgment-call / needs-engineering deferral → keep working. The
+    # P13 steering becomes the next-turn guidance (surfaced via EVAL_REASON below).
+    EVAL_REASON="$P13_GUIDANCE"
   fi
   # Not met / unreachable → keep working; EVAL_REASON (if any) becomes next-turn guidance.
 fi
@@ -435,11 +479,16 @@ if [[ -n "$TRANSCRIPT_PATH" ]] && [[ -f "$TRANSCRIPT_PATH" ]]; then
     if [[ -n "$COMPLETION_PROMISE" ]] && [[ "$COMPLETION_PROMISE" != "null" ]]; then
       PROMISE_TEXT=$(printf '%s' "$LAST_OUTPUT" | perl -0777 -pe 's/.*?<promise>(.*?)<\/promise>.*/$1/s; s/^\s+|\s+$//g; s/\s+/ /g' 2>/dev/null || echo "")
       if [[ -n "$PROMISE_TEXT" ]] && [[ "$PROMISE_TEXT" = "$COMPLETION_PROMISE" ]]; then
-        emit "✅ Autonomous mode: Completion promise detected — <promise>$COMPLETION_PROMISE</promise>"
-        emit "   Session is free to exit. Good work!"
-        notify_terminal_stop "✅ My autonomous run on \"$(goal_snippet)\" finished — all the work is done."
-        rm -f "$STATE_FILE"
-        exit 0
+        if p13_stop_allowed; then
+          emit "✅ Autonomous mode: Completion promise detected — <promise>$COMPLETION_PROMISE</promise>"
+          emit "   Session is free to exit. Good work!"
+          notify_terminal_stop "✅ My autonomous run on \"$(goal_snippet)\" finished — all the work is done."
+          rm -f "$STATE_FILE"
+          exit 0
+        fi
+        # P13: a completion promise was emitted, but the stop rests on a
+        # judgment-call / needs-engineering deferral → keep working. P13_GUIDANCE
+        # is surfaced in the continuing system message below.
       fi
     fi
   fi
@@ -560,7 +609,9 @@ if [[ -n "$COMPLETION_CONDITION" ]]; then
   [[ -n "$EVAL_REASON" ]] && GUIDANCE=" | Not done yet: ${EVAL_REASON}"
   SYSTEM_MSG="🔄 Autonomous iteration $NEXT_ITERATION ($TIME_MSG) | Keep working until this is TRUE: ${COMPLETION_CONDITION}${GUIDANCE} | An independent check decides done from what you SURFACE — run the real checks and show the evidence. Do NOT defer — do it now${REPORT_DIRECTIVE}"
 else
-  SYSTEM_MSG="🔄 Autonomous iteration $NEXT_ITERATION ($TIME_MSG) | Complete ALL tasks, then output <promise>$COMPLETION_PROMISE</promise> | Do NOT defer to future self — if you can do it now, DO IT NOW${REPORT_DIRECTIVE}"
+  P13_NOTE=""
+  [[ -n "${P13_GUIDANCE:-}" ]] && P13_NOTE=" | ${P13_GUIDANCE}"
+  SYSTEM_MSG="🔄 Autonomous iteration $NEXT_ITERATION ($TIME_MSG) | Complete ALL tasks, then output <promise>$COMPLETION_PROMISE</promise>${P13_NOTE} | Do NOT defer to future self — if you can do it now, DO IT NOW${REPORT_DIRECTIVE}"
 fi
 
 # Block exit and feed prompt back
