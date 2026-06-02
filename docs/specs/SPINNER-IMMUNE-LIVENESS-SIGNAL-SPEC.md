@@ -1,7 +1,7 @@
 # Spinner-Immune Liveness Signal — Spec
 
-**Status:** draft (pre-convergence)
-**Tier:** 2 (core monitoring, fleet-wide, false-positive-nudge risk)
+**Status:** draft (post-adversarial-self-review; external cross-model unavailable — see §8)
+**Tier:** 2 (core monitoring, fleet-wide, destructive-recovery risk)
 **Author:** Echo
 **Date:** 2026-06-02
 **Task:** #63
@@ -9,85 +9,76 @@
 
 ## 1. Problem (grounded)
 
-`SessionMonitor.checkSession` (`src/monitoring/SessionMonitor.ts:197`) refreshes a session's activity timestamp like this:
+The signal `ActiveWorkSilenceSentinel` consumes is produced by **`OutputActivityTracker.snapshot()`** (`src/monitoring/sentinelWiring.ts:215`), NOT `SessionMonitor`. Per tick it does:
 
 ```ts
-const currentOutput = alive ? (this.deps.captureSessionOutput(sessionName, 30) || '') : '';
-if (currentOutput !== snap.lastOutput && currentOutput.length > 0) {
-  snap.lastOutput = currentOutput;
-  snap.lastOutputAt = now;   // <-- refreshed on ANY pane-text change
-}
+const output = captureOutput(s.tmuxSession, SILENCE_CAPTURE_LINES) ?? '';
+const hash = cheapHash(output);
+// first sighting → lastChangeAt 0 (skip); hash changed → lastChangeAt = now; unchanged → hold prior
+const active = looksActivelyWorking(output, s.framework);   // spinner / esc-to-interrupt / (running)
+out.push({ sessionName, lastOutputAt: lastChangeAt, paused: !active });
 ```
 
-Claude Code's working spinner renders a line like `✻ Sautéed for 26m 16s · (esc to interrupt)` whose **elapsed-time counter increments every second**. The captured pane therefore differs on every poll, so `lastOutputAt` is continuously refreshed even when the turn has produced **no real output for 26 minutes** (a hung API stream).
+`ActiveWorkSilenceSentinel` flags when `lastOutputAt > 0` and `now - lastOutputAt >= silenceThresholdMs` (~16 min).
 
-`lastOutputAt` is the signal `ActiveWorkSilenceSentinel` consumes (`idleMs = now - lastOutputAt`, ~16 min threshold; fed via `sentinelWiring.ts:236`). Because the spinner keeps it fresh, **the fast watchdog that actually nudges (Ctrl-C + re-prompt) never engages for a stalled-but-spinning turn.**
+**The bug:** Claude Code's working spinner renders `✻ Sautéed for 26m 16s · (esc to interrupt)` whose **elapsed-time counter ticks every second**. `cheapHash(output)` therefore changes on every poll, so `lastChangeAt` is re-stamped to `now` every tick — even when the turn produced **no real output for 26 minutes** (a hung API stream). The session never goes idle; the fast nudging watchdog never engages.
 
-**Empirical confirmation (same incident window, `logs/server.log` + `logs/sentinel-events.jsonl`):**
-- `active-silence` fired at 18:02 for `echo-cpu-load-investigation` — a session idle at a **static** prompt (output not changing). Correct.
-- It did **not** fire for `echo-codey-collaboration` during the 17:52→18:18 spinning stall. The spinner kept its output "changing."
-- `socket-disconnect` matched only when the `connection closed` STRING finally appeared at the very end (too late).
+**Empirically confirmed** (`logs/server.log` + `logs/sentinel-events.jsonl`, 2026-06-02): `active-silence` fired at 18:02 for `echo-cpu-load-investigation` (idle at a STATIC prompt — hash stable) but NOT for `echo-codey-collaboration` during its 17:52→18:18 spinning stall (hash churned by the timer). `SocketDisconnectSentinel` matched the `connection closed` STRING only at the very end (too late). `StaleSessionBackstop` (JSONL-growth, spinner-immune) is ask-don't-recover and its `unverifiableEscalateMinutes:30` is longer than the stall.
 
-**Why the existing spinner-immune backstop didn't save it:** `StaleSessionBackstop` uses transcript (JSONL) growth (`progressFloorBytes`, spinner-immune) — but it (a) escalates at `unverifiableEscalateMinutes: 30` (longer than the 26-min stall), and (b) is **signal-only by design** ("never ends a session; only observes and asks") — it raises an Attention item, it does **not** nudge to recover. So nothing recovered the turn in-window.
+**Note:** `SessionMonitor.checkSession:197` has the *same* pane-diff-fooled-by-spinner shape for its own `lastOutputAt`, but that field does not feed the silence sentinel; it is out of scope here (track separately if a consumer depends on it).
 
-Net: the safety net has a hole exactly at *"stuck mid-turn on an API stall that is still spinning."* The fast nudging watchdog is blind to it; the slow watchdog only asks and is too slow.
+## 2. The hard part (why this is not a one-liner)
 
-## 2. Goal
-
-Make the **fast** watchdog (`ActiveWorkSilenceSentinel`) engage for a stalled-but-spinning turn, so its existing bounded recovery (Ctrl-C + re-prompt) fires — **without** introducing false-positive nudges that interrupt legitimately long turns.
-
-Non-goals: changing `StaleSessionBackstop`'s ask-don't-kill contract; building a new detector (the detector exists — its input signal is wrong); redesigning recovery (the nudge loop already exists and is bounded).
+Making the hash spinner-immune so the idle timer accrues is easy. The danger is what happens next: **a stalled API turn and a legitimately long turn are externally identical** — both show a ticking spinner, no new scrollback, and no transcript (JSONL) growth until they finish (a 20-min `Bash` build; a slow generation). If the hash is spinner-immune, BOTH look idle at the threshold — and `ActiveWorkSilenceSentinel`'s recovery nudge is **Ctrl-C then Enter**, which would **interrupt the legitimately long operation**. A careless fix turns a rare silent-stall into a fleet-wide "kills long builds" regression. The whole design must center on a safe discriminator.
 
 ## 3. Design
 
-### 3.1 Spinner-immune activity signal (core change)
+### 3.1 Spinner-immune frame hash (detection)
 
-Introduce a `stripVolatileStatus(paneText: string): string` normalizer used **only** for the changed-comparison in `SessionMonitor.checkSession`. It removes the host's animated status region before diffing, so only **real** content changes refresh `lastOutputAt`.
+In `OutputActivityTracker`, hash a **normalized** frame: `cheapHash(stripVolatileStatus(output, framework))`. `stripVolatileStatus` removes only the host's animated status region so the hash reflects real scrollback content, not the ticking clock:
+- the rotating spinner glyph (Braille `⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏` etc.) — reuse the glyph set already in `frameworkActivitySignals.ts`;
+- the elapsed-timer token in the status line (`for 26m 16s`, `(12s ·`) — a digit+`m`/`s` run adjacent to the spinner/`esc to interrupt` affordance;
+- the trailing token/context counter (`↑ N tokens`, `N% context left`);
+- the `(esc to interrupt)` / `(ctrl+c to …)` affordance line itself.
+Conservative + anchored — real assistant/tool text is never stripped. Unknown hosts fall back to stripping only the shared `esc to interrupt` affordance (degrade-safe). `looksActivelyWorking` continues to run on the RAW frame (unchanged) — a frozen-but-spinning turn still reads `active=true`, so it stays silence-eligible rather than being marked `paused`.
 
-Conservative, anchored patterns only (never strip real assistant/tool text):
-- The animated spinner glyph + verb + elapsed timer: lines matching `/^\s*[✻✶✳✷·*]?\s*\w+…?\s+(for\s+)?\d+m?\s*\d+s\b.*\(esc to interrupt\)/i` and the bare `(esc to interrupt)` / `(ctrl+c to …)` affordance line.
-- A trailing token/context counter line (`↑ N tokens`, `N% context left`).
-- Cross-framework: codex and gemini spinner shapes differ — each host contributes its own pattern set; unknown hosts fall back to §3.2 (transcript corroboration) so the fix degrades safe.
+### 3.2 Safe-to-recover discriminator (the guard that prevents the regression)
 
-The comparison becomes: `stripVolatileStatus(currentOutput) !== stripVolatileStatus(snap.lastOutput)`. Store the raw `lastOutput` for display, compare on the stripped form.
+`ActiveWorkSilenceSentinel` must only issue its destructive nudge when the stall is a **pure API wait** — i.e. nothing real is happening that a Ctrl-C would destroy. Gate the nudge on ALL of:
+1. spinner-immune hash unchanged for the silence window (no real output), AND
+2. transcript (JSONL) size+tail-hash unchanged over the window (no tokens landing) — reuse `StaleSessionBackstop.ProgressSnapshot` / the `stall-detector.ts` jsonl-stat helper, AND
+3. **no active child process** under the pane (main-process CPU below an idle floor) — reuse `StaleSessionBackstop`'s `mainProcessActive` probe. A long `Bash`/tool call has a live child process → fails this gate → never nudged. A dead API stream has only Claude Code idling on a closed socket → passes → safe to cancel+resubmit (the stream is already dead; nothing is lost).
 
-### 3.2 Transcript-growth corroboration (false-positive guard)
+If any gate fails, the session is treated as legitimately busy: do not nudge (optionally refresh activity so it isn't re-flagged each tick).
 
-A turn legitimately in a single long tool call / long model turn produces **no** transcript growth until it completes — so a stripped-pane-unchanged signal alone could flag a legitimately-busy turn and nudge it (Ctrl-C would interrupt real work — the central risk).
+### 3.3 Recovery + visibility
 
-Guard: only let the idle timer advance toward the silence threshold when **both** hold for the whole window:
-1. stripped pane content unchanged, AND
-2. transcript (JSONL) size+tail-hash unchanged (reuse `StaleSessionBackstop.ProgressSnapshot` / the `stall-detector.ts` jsonl-stat helper — do not reinvent).
-
-If the transcript grows, that is real progress → refresh `lastOutputAt` even if the stripped pane looks static. This makes the signal "no real output AND no transcript advance," which a hung API stream satisfies and a legitimately-working turn does not.
-
-### 3.3 Recovery is unchanged
-
-Once `ActiveWorkSilenceSentinel` correctly detects the spinning stall at its existing threshold, its current bounded nudge (Ctrl-C + re-prompt, backoff, recovery verification via `lastOutputAt` advance) runs as-is. No new recovery code.
-
-### 3.4 Visibility (secondary)
-
-When a confirmed hard-stall is detected AND recovery is attempted-and-failed, emit ONE coalesced Telegram heads-up to the system topic — gated by the existing `sentinelTelegramEscalation` flag and the topic-flood guard (never per-event, never a new topic). Default-off remains; this only changes WHAT is eligible to escalate (a confirmed unrecovered hard-stall), not the default. Rationale: the user should not have to catch a wedged terminal by eye.
+- Recovery on a confirmed pure-API-wait stall: the existing bounded nudge (Ctrl-C + Enter re-submit, backoff, recovery-verified by a subsequent real hash change). No new recovery code.
+- Visibility: on a CONFIRMED stall that recovery could not clear, emit ONE coalesced Telegram heads-up to the system topic — gated by the existing `sentinelTelegramEscalation` flag + topic-flood guard (never per-event, never a new topic). Default-off unchanged; this only makes a confirmed unrecovered hard-stall *eligible*. Rationale: the user should not have to catch a wedged terminal by eye.
 
 ## 4. Migration / parity
 
-- `SessionMonitor` ships in the server bundle (not an agent-installed file) → no PostUpdateMigrator change; every agent gets it on server update.
-- No config schema change required; `silenceThresholdMs` already exists. (Optional: expose the transcript-floor reuse under existing `staleBackstop.progressFloorBytes`.)
+`OutputActivityTracker` / `ActiveWorkSilenceSentinel` ship in the server bundle (not agent-installed files) → no PostUpdateMigrator change; every agent gets it on server update. No config schema change required (reuse `silenceThresholdMs`, `staleBackstop.progressFloorBytes`, the existing process probe). The framework spinner patterns already live in `frameworkActivitySignals.ts`.
 
 ## 5. Tests (3 tiers)
 
-- **Unit:** `stripVolatileStatus` — both sides of the boundary: (a) two pane captures differing ONLY in the spinner timer normalize-equal (→ no refresh); (b) a pane with a new assistant sentence normalizes-different (→ refresh); (c) codex/gemini spinner shapes; (d) a real line that merely CONTAINS a digit+`s` is not over-stripped. Plus the §3.2 AND-gate truth table (pane-static+jsonl-grew ⇒ progress; pane-static+jsonl-static ⇒ idle advances).
-- **Integration:** drive `SessionMonitor` + `ActiveWorkSilenceSentinel` with a fake capture that emits only ticking-spinner frames + a frozen transcript → assert `silence` fires at threshold; with a growing transcript → assert it does NOT fire.
-- **E2E:** a tmux session parked on a synthetic ticking-spinner pane with a frozen jsonl → the sentinel detects + issues the nudge (dry-run assertion), proving the wired path is alive end-to-end.
+- **Unit:** `stripVolatileStatus` — (a) two frames differing ONLY in the spinner timer/glyph normalize-equal → stable hash; (b) a new assistant sentence → different hash; (c) codex `Working (Ns • esc to interrupt)` + gemini shapes; (d) a real line merely containing a digit+`s` is not over-stripped. Discriminator truth table (§3.2): {hash-static, jsonl-static, no-child-proc} ⇒ nudge-eligible; flipping ANY one ⇒ NOT eligible (esp. child-process-active ⇒ never nudged).
+- **Integration:** drive `OutputActivityTracker` + `ActiveWorkSilenceSentinel` with a fake capture emitting only ticking-spinner frames + frozen jsonl + idle process → `silence` fires + nudge issued (dry-run); with a live child process OR growing jsonl → NOT issued.
+- **E2E:** a tmux pane parked on a synthetic ticking-spinner frame with frozen jsonl + no child process → the wired path detects + issues the nudge (assert via dry-run), proving liveness end-to-end.
 
 ## 6. Risks & mitigations
 
-- **False-positive nudge interrupts a legit long turn** (the central risk) → mitigated by the §3.2 transcript-AND-gate + the conservative anchored strip patterns + the existing bounded/verified recovery loop.
-- **Spinner format drift across host versions** → unknown shapes fall back to transcript corroboration (degrade-safe); patterns are host-keyed and unit-tested against captured fixtures.
-- **Over-stripping real content** → anchored, line-shaped patterns; unit test (d) guards it.
+- **Destructive nudge interrupts a legit long op** (the central risk) → the §3.2 three-part gate (esp. no-active-child-process) excludes live tool calls; only pure dead-API-waits are nudged.
+- **A genuinely long model generation (no child process, no output) >16 min** would still pass the gate and be cancelled. Real generations almost never run that long, but to be safe the spinning-stall threshold may need to be HIGHER than the static-prompt silence threshold (open Q §7.2), and the cancel is on an already-dead stream when the API error has surfaced.
+- **Spinner-format drift across host versions** → anchored patterns keyed per framework + unit fixtures; unknown shapes fall back to the shared affordance only (degrade-safe).
+- **Over-stripping real content** → anchored line-shaped patterns; unit test (d).
 
-## 7. Open questions (for convergence)
+## 7. Open questions (for review)
 
-1. Should the transcript-AND-gate be REQUIRED (only fire when both static) or should stripped-pane-static alone suffice after a longer threshold when transcript is unresolvable (codex account-wide jsonl)?
-2. Is 16 min the right threshold for a hard API stall, or should a spinning-stall get a shorter dedicated threshold than a static-prompt silence?
-3. Should §3.4 visibility ship in this PR or as a separate follow-up to keep the core signal fix surgical?
+1. Is the no-active-child-process gate sufficient, or do we also need the API-error string as a positive confirmation before the destructive nudge?
+2. Should a spinning-stall get a dedicated (higher) threshold than static-prompt silence, to protect rare long generations?
+3. Ship §3.3 visibility in this PR or as a separate follow-up to keep the detection+gate change surgical?
+
+## 8. Convergence note (honesty)
+
+External cross-model review was **unavailable** at authoring time: codex CLI is not installed on this host, and the Gemini CLI returned `429 "exhausted capacity"` ×10 on `gemini-2.5-pro` (the user's Gemini quota is capacity-limited right now). This draft therefore rests on a hard adversarial **self**-review, which already corrected the original draft on two counts: (a) the fix location was wrong (`SessionMonitor` → `OutputActivityTracker`), and (b) the original design would have interrupted legitimately long operations (→ added the §3.2 process-activity gate). Re-run a cross-model pass when codex is reinstalled or Gemini capacity returns, before merge.
