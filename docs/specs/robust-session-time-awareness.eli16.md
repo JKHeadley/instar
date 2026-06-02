@@ -55,3 +55,9 @@ confident, wrong calls about all of those. This makes the clock a permanent,
 trustworthy part of every turn — so "how far along are we?" always has a real
 answer instead of a guess. It's purely additive: a healthy short chat is
 unaffected; the change only shows up when there's a session worth timing.
+
+---
+
+*Constitutional anchor: this serves **"Structure beats Willpower"** — the agent
+must never have to remember or compute the time; the system computes and surfaces
+it structurally.*

@@ -20,6 +20,7 @@ import type { InstarConfig, JobPriority } from '../core/types.js';
 import { rateLimiter, signViewPath } from './middleware.js';
 import type { WriteOperation, WriteToken } from '../core/StateWriteAuthority.js';
 import { writeLifelineRestartSignal } from '../core/version-skew.js';
+import { readSessionClocks } from '../core/SessionClockReader.js';
 import { creditUsherOnOutbound } from '../core/UsherActedCorrelator.js';
 import { validateWriteToken, canPerformOperation } from '../core/StateWriteAuthority.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
@@ -4493,6 +4494,24 @@ export function createRoutes(ctx: RouteContext): Router {
       summary: ctx.tokenLedger.summary({ sinceMs }),
       codex: ctx.tokenLedger.codexSummary({ sinceMs }),
     });
+  });
+
+  // Session clock (docs/specs/ROBUST-SESSION-TIME-AWARENESS-SPEC.md) — read-only
+  // observability: elapsed/remaining for each active time-boxed (autonomous)
+  // session, so an agent (or the dashboard) can ask "how long have I been running
+  // / how much is left" instead of guessing. Leak-bounded: returns the computed
+  // clock + the sanitized derived `label` only — never the raw `goal` task text.
+  // Per-machine by nature (the record is `.local`, gitignored).
+  router.get('/session/clock', (req, res) => {
+    const topic = typeof req.query.topic === 'string' ? req.query.topic : null;
+    const now = Date.now();
+    let sessions: ReturnType<typeof readSessionClocks> = [];
+    try {
+      sessions = readSessionClocks(ctx.config.stateDir, now, topic);
+    } catch {
+      sessions = [];
+    }
+    res.json({ now, nowIso: new Date(now).toISOString(), sessions });
   });
 
   // Per-feature LLM metrics (docs/specs/llm-feature-metrics-spec.md) — read-only

@@ -1,0 +1,24 @@
+# Upgrade Guide — vNEXT
+
+<!-- bump: patch -->
+
+## What Changed
+
+Your agent can now answer "how long have I been running, and how much time is left?" instead of guessing.
+
+For any active time-boxed (autonomous) session, a new read-only endpoint computes elapsed + remaining from the session's durable record. This is Step 1 of a fix for a real problem where an agent in a long autonomous run lost track of time and wound down far too early. (Step 2 — injecting that clock into every turn automatically — follows.)
+
+## What to Tell Your User
+
+Nothing to configure. If you run timed autonomous sessions, your agent can now check its own elapsed/remaining time accurately (and you can see it too). A normal short chat is unaffected — the clock only appears when there's actually a timed session to report on.
+
+## Summary of New Capabilities
+
+- New read-only `GET /session/clock` (optional `?topic=N`) returns, for each active time-boxed session, `{ label, kind, startedAt, endsAt, elapsedSeconds, remainingSeconds, elapsedHuman, remainingHuman, percentElapsed, status }`. Bearer-gated; `{ sessions: [] }` when nothing is time-boxed; per-machine.
+- The clock is computed by a pure `SessionClock` module (clock-skew-clamped, never negative). The session's task text is sanitized + length-capped into a `label` before it's ever surfaced — the raw goal is never exposed (prompt-injection + leak safety).
+- CLAUDE.md gains a "Session Clock" awareness entry (proactive trigger: quote the real numbers before reporting progress or deciding a session is done) — delivered to existing agents via migration.
+
+## Evidence
+
+- All three test tiers green: 20 unit (`SessionClock` 14 + `SessionClockReader` 6), 4 integration (`session-clock-route`), 4 E2E (`session-clock-lifecycle`, real AgentServer boot — alive 200 not 503, Bearer-required, read-only, leak-bound). No regressions (AutonomousSessions 13, migrateClaudeMd 3). `tsc --noEmit` clean.
+- Spec: `docs/specs/ROBUST-SESSION-TIME-AWARENESS-SPEC.md` (converged 3 rounds, approved). Side-effects: `upgrades/side-effects/session-clock-step1.md`.

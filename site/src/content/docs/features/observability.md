@@ -98,6 +98,14 @@ Read-only token-usage observability. The ledger scans Claude Code's JSONL sessio
 
 The ledger never mutates source files — it only reads. The poller is the only writer (to its own SQLite index), and even that is restartable from any state.
 
+## Session clock
+
+Components: `SessionClock`, `SessionClockReader`.
+
+Read-only time-awareness so an agent always knows how long it has been running and how much time is left, instead of guessing. `SessionClock` is a pure, deterministic module that computes elapsed/remaining (with clock-skew clamping — it never reports a negative or absurd value) and a human-readable label derived safely from the session's goal. `SessionClockReader` maps each active time-boxed (autonomous) session record into a computed clock, with optional per-topic binding.
+
+The data is exposed via the read-only `/session/clock` HTTP route (`?topic=N` to bind to a single session). Like the token ledger, the `SessionClock` path never mutates source files and the response is leak-bounded: it surfaces a sanitized, length-capped label only, never the raw goal text. The agent quotes these numbers before reporting progress or deciding a session is over.
+
 ## Usher precision (continuous-working-awareness)
 
 Components: `UsherSignalStore`, `UsherActedCorrelator`.

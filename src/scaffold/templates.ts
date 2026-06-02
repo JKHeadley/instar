@@ -635,6 +635,11 @@ This routes feedback to the Instar maintainers automatically. Valid types: \`bug
 - Returns \`{ totals, features: [{ feature, calls, tokensIn, tokensOut, fired, noop, fireRate, p50LatencyMs, p95LatencyMs, ... }] }\` — one row per system (e.g. MessagingToneGate, CoherenceReviewer). Filter with \`?feature=<name>\`.
 - **When to use**: when asked "which checks cost the most / fire the least?", "is this gate worth it?", or before tuning a sentinel/gate — read the numbers instead of guessing. (Spec: \`docs/specs/llm-feature-metrics-spec.md\`.)
 
+**Session Clock** — How long have you been running, and how much time is left? For any active time-boxed (autonomous) session, this returns the computed elapsed + remaining so you never have to guess or compute it yourself. Read-only observability.
+- Check: \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/session/clock"\` (optional \`?topic=<N>\` to bind to one session)
+- Returns \`{ now, nowIso, sessions: [{ label, kind, startedAt, endsAt, elapsedSeconds, remainingSeconds, elapsedHuman, remainingHuman, percentElapsed, status }] }\`; \`{ sessions: [] }\` when nothing is time-boxed. Per-machine (the record is local).
+- **When to use** (PROACTIVE): the moment you're about to report progress, decide whether a session is "done", or you catch yourself estimating elapsed/remaining time — call this and quote the real numbers. NEVER assert a timed session is over without checking \`remainingSeconds\`. (Spec: \`docs/specs/ROBUST-SESSION-TIME-AWARENESS-SPEC.md\`.)
+
 **Git Sync** — Automatic version-control and multi-machine synchronization of your state.
 - **How it works**: The \`git-sync\` job runs hourly, commits local changes, pulls remote changes, and pushes — all automatically. It uses a gate script to skip when nothing has changed (zero-token cost).
 - **Project-bound agents**: Your state (\`.instar/\`) lives inside the parent project's git repo. The git-sync job uses this repo directly — no separate repo needed. Just make sure the parent repo has a remote configured (\`git remote -v\`).

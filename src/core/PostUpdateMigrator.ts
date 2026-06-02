@@ -2788,6 +2788,23 @@ Check where codex account usage sits without the interactive TUI. The codex CLI 
       result.upgraded.push('CLAUDE.md: added Codex Usage (/codex/usage) awareness (codex-usage-visibility)');
     }
 
+    // session-clock (Agent Awareness + Migration Parity): existing agents must
+    // learn they can ask how long they've been running / how much is left,
+    // instead of guessing. Content-sniff on the route marker.
+    if (!content.includes('/session/clock')) {
+      const sessionClockSection = `
+### Session Clock (how long have I been running / how much is left)
+
+For any active time-boxed (autonomous) session, this returns the computed elapsed + remaining so you never guess or compute time yourself. Read-only.
+- Check: \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/session/clock"\` (optional \`?topic=<N>\`)
+- Returns \`{ now, nowIso, sessions: [{ label, kind, startedAt, endsAt, elapsedSeconds, remainingSeconds, elapsedHuman, remainingHuman, percentElapsed, status }] }\`; \`{ sessions: [] }\` when nothing is time-boxed. Per-machine.
+- **When to use** (PROACTIVE): before reporting progress, before deciding a session is "done", or whenever you catch yourself estimating elapsed/remaining — call this and quote the real numbers. NEVER assert a timed session is over without checking \`remainingSeconds\`. Spec: \`docs/specs/ROBUST-SESSION-TIME-AWARENESS-SPEC.md\`.
+`;
+      content += '\n' + sessionClockSection;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Session Clock (/session/clock) awareness (time-awareness)');
+    }
+
     // llm-feature-metrics (Agent Awareness + Migration Parity): existing agents
     // must learn they can read per-gate/sentinel cost + hit-rate over HTTP to
     // tune their LLM checks. Content-sniff on the route marker (also emitted by
