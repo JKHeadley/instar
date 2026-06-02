@@ -221,6 +221,19 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
     relayEnabled: false,
     visibility: 'public',
     capabilities: ['chat'],
+    // A2A Coherence Layer 4 — keep the operator in the loop on agent-to-agent
+    // conversations WITHOUT flooding them. Ships DARK (enabled:false): the
+    // check-in summarizer is inert until the operator opts in. `heartbeatEnabled`
+    // gates the silence-breaker; `heartbeatIntervalMs` is its cadence (operator
+    // refinement, 2026-06-02: every 5-10 min while a conversation is active and
+    // nothing has surfaced). applyDefaults add-missing semantics → migrateConfig
+    // backfills these on existing agents on update (Migration Parity).
+    // Spec: docs/specs/THREADLINE-A2A-COHERENCE-SPEC.md Layer 4.
+    a2aCheckIn: {
+      enabled: false,
+      heartbeatEnabled: false,
+      heartbeatIntervalMs: 420000, // 7 min — middle of the 5-10 min range
+    },
   },
   // Topic-intent auto-capture loop (rung 0 of continuous-working-awareness).
   // ON by default (ratified): every substantive conversation turn gets a cheap

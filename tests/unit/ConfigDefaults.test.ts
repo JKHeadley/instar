@@ -81,6 +81,20 @@ describe('ConfigDefaults', () => {
       expect(mig.stage).toBe('dark');
     });
 
+    it('ships threadline.a2aCheckIn (A2A Coherence Layer 4) DARK by default + migrates it', () => {
+      for (const t of ['managed-project', 'standalone'] as const) {
+        const c = ((getInitDefaults(t).threadline as any) ?? {}).a2aCheckIn;
+        expect(c).toBeDefined();
+        expect(c.enabled).toBe(false);
+        expect(c.heartbeatEnabled).toBe(false);
+        expect(c.heartbeatIntervalMs).toBe(420000);
+      }
+      // Migration backfills it on existing agents (Migration Parity).
+      const mig = (getMigrationDefaults('managed-project').threadline as any).a2aCheckIn;
+      expect(mig.enabled).toBe(false);
+      expect(mig.heartbeatIntervalMs).toBe(420000);
+    });
+
     it('NEVER sets multiMachine.enabled — the sessionPool block must not switch multi-machine on', () => {
       for (const t of ['managed-project', 'standalone'] as const) {
         const mm = getInitDefaults(t).multiMachine as any;
