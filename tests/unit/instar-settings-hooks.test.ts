@@ -30,6 +30,7 @@ const EXPECTED_BASH_FILENAMES = [
   'dangerous-command-guard.sh',
   'grounding-before-messaging.sh',
   'deferral-detector.js',
+  'self-stop-guard.js',
   'external-communication-guard.js',
   'post-action-reflection.js',
 ];
