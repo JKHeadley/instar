@@ -169,6 +169,55 @@ if [ -n "$SPEC_HANDOFF" ] \
   ISSUE_COUNT=$((ISSUE_COUNT + 1))
 fi
 
+# 9. TIME-AWARENESS NUDGE (Robust Session Time Awareness spec — Component 4,
+# SIGNAL-ONLY). If this outbound message asserts the SESSION/RUN is done/over
+# while a LIVE autonomous record still has >10% of its time-box remaining, emit a
+# one-line SIGNAL to an operator log + stderr. It NEVER blocks or rewrites the
+# message (does NOT touch ISSUE_COUNT / the exit code) and NEVER quotes the
+# agent's phrase — it carries the computed fact (≈NN% remains) only, so the
+# signal can't be re-read as self-confirming evidence the run is finished
+# (P2 Signal vs Authority). Guards the exact wind-down-early incident class.
+if echo "$CONTENT" | grep -qiE "((the )?([a-z0-9 ._-]{0,25} )?(session|run|sprint) (is|was|.s) (now )?(done|over|complete|completed|finished|wrapped[ -]?up)|winding[ -]down( the| this| my)?( session| run)?|wrapping[ -]up the (session|run))"; then
+  TA_DIR="${CLAUDE_PROJECT_DIR:-.}/.instar/autonomous"
+  TA_SIG=""
+  TA_REC=""
+  if [ -d "$TA_DIR" ]; then
+    for ta_rec in "$TA_DIR"/*.local.md; do
+      [ -f "$ta_rec" ] || continue
+      ta_pct=$(python3 - "$ta_rec" <<'PY' 2>/dev/null
+import sys, re, datetime
+try:
+    body = open(sys.argv[1]).read()
+    def g(k):
+        m = re.search(r'^\s*' + k + r'\s*:\s*"?([^"\n]+)"?', body, re.M)
+        return m.group(1).strip() if m else ''
+    if g('active').lower() != 'true':
+        sys.exit(0)
+    end, dur = g('end_at'), g('duration_seconds')
+    if not end or not dur:
+        sys.exit(0)
+    end_dt = datetime.datetime.fromisoformat(end.replace('Z', '+00:00'))
+    now = datetime.datetime.now(datetime.timezone.utc)
+    remain = (end_dt - now).total_seconds()
+    durs = float(dur)
+    if durs > 0 and remain > 0 and (remain / durs) > 0.10:
+        print(int(round(remain / durs * 100)))
+except Exception:
+    sys.exit(0)
+PY
+)
+      if [ -n "$ta_pct" ]; then TA_SIG="$ta_pct"; TA_REC="$(basename "$ta_rec")"; break; fi
+    done
+  fi
+  if [ -n "$TA_SIG" ]; then
+    TA_TS=$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)
+    TA_LOG="${CLAUDE_PROJECT_DIR:-.}/logs"
+    mkdir -p "$TA_LOG" 2>/dev/null
+    printf '{"ts":"%s","signal":"premature-completion-assertion","remainingPct":%s,"record":"%s"}\n' "$TA_TS" "$TA_SIG" "$TA_REC" >> "$TA_LOG/time-awareness-signals.jsonl" 2>/dev/null || true
+    echo "[time-awareness] SIGNAL: this message asserts completion while ~${TA_SIG}% of the active autonomous time-box (${TA_REC}) remains — verify before concluding. (signal-only; message NOT blocked)" >&2
+  fi
+fi
+
 # Output results
 if [ "$ISSUE_COUNT" -gt "0" ]; then
   echo "=== CONVERGENCE CHECK: ${ISSUE_COUNT} ISSUE(S) FOUND ==="
