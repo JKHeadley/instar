@@ -104,6 +104,18 @@ export class MultiMachineCoordinator extends EventEmitter {
   private leasePulling: boolean = false;
   private leasePullContested: boolean = false;
   private leasePullStopped: boolean = false;
+  /**
+   * Cross-Machine Coherence §Problem A — the active CONTESTED-RESOLUTION state.
+   * When a same-epoch contested split-brain is detected (a git-less LocalLeaseStore
+   * leapfrog), a deterministic tie-break (lower machineId wins) drives a ONE-SHOT
+   * resolution per episode: the loser relinquishes, the winner advances once to
+   * N+1. `key` is the unordered {machineIdA, machineIdB} pair (epoch-independent,
+   * so it SURVIVES the leapfrog where the epoch changes each tick); `resolved`
+   * latches the one-shot (no per-tick re-relinquish/re-advance churn); `cycles`
+   * counts pull ticks the episode persisted; `escalated` dedupes the bounded
+   * K-cycle escalation. Cleared on the falling edge (contested resolved).
+   */
+  private contestedEpisode: { key: string; cycles: number; resolved: boolean; escalated: boolean } | null = null;
 
   constructor(state: StateManager, config: CoordinatorConfig) {
     super();
@@ -629,6 +641,9 @@ export class MultiMachineCoordinator extends EventEmitter {
       if (this.leaseCoordinator!.observedPeerLease()) {
         this.reconcileRoleToLease('lease-pull');
         this.surfacePullDiscoveredSplitBrain();
+        // §Problem A — ACT on a same-epoch contested tie (not just surface it):
+        // deterministic tie-break → loser relinquishes / winner advances once.
+        await this.resolveContestedSplitBrain();
       }
     } catch {
       // @silent-fallback-ok — a pull failure is retried next tick
@@ -664,6 +679,90 @@ export class MultiMachineCoordinator extends EventEmitter {
     } else if (!contested && this.leasePullContested) {
       this.leasePullContested = false;
       console.log('[MultiMachine] lease-pull: contested lease cleared');
+    }
+  }
+
+  /**
+   * §Problem A — RESOLVE a same-epoch contested split-brain (the git-less
+   * LocalLeaseStore leapfrog) to a single holder. surfacePullDiscoveredSplitBrain
+   * only DETECTS + latches the dashboard signal; this ACTS:
+   *
+   *   1. Deterministic tie-break — the lexicographically LOWER `machineId` WINS.
+   *      Both machines compute the SAME winner, so exactly one relinquishes and
+   *      exactly one advances (no coordination needed).
+   *   2. LOSER relinquishes ONCE (clears selfIssued + forces local expiry →
+   *      stops being a live holder@N, reconciles to standby).
+   *   3. WINNER advances ONCE to N+1 (a strictly-higher signed lease the loser
+   *      then adopts via effectiveView()'s strict-`>` tunnel fold → single holder).
+   *
+   * Both actions are LATCHED one-shot per contested episode (keyed on the
+   * epoch-independent {self,peer} pair), so they fire ONCE, not every ~5s tick —
+   * a per-tick relinquish/advance would re-introduce the very leapfrog this fixes.
+   * If the episode persists past K cycles (the resolution genuinely failed — a
+   * stuck/partitioned peer), emit ONE deduped escalation with a DETERMINISTIC
+   * recommendation (demote the tie-break loser). Distinct from the
+   * unresolvable-PARTITION path (checkForUnresolvableSplit); this is the
+   * same-epoch-CONTESTED path. Cleared on the falling edge.
+   */
+  private async resolveContestedSplitBrain(): Promise<void> {
+    if (!this.leaseCoordinator || !this._identity) return;
+    const ESCALATE_AFTER_CYCLES = 5;
+    const self = this._identity.machineId;
+    const peer = this.leaseCoordinator.observedPeerLease();
+    const weHold = this.leaseCoordinator.holdsLease();
+    const ourEpoch = this.leaseCoordinator.currentEpoch();
+    // A genuine same-epoch contested tie: we still hold AND a peer claims a
+    // different-holder lease at our epoch (or higher-but-equal after a leapfrog).
+    const contested = !!(weHold && peer && peer.holder && peer.holder !== self && peer.epoch >= ourEpoch);
+    if (!contested) {
+      // Falling edge — the tie resolved (we adopted the winner, or it cleared).
+      // Drop the episode so a future contested tie starts a fresh latch.
+      this.contestedEpisode = null;
+      return;
+    }
+    const peerHolder = peer!.holder;
+    const episodeKey = [self, peerHolder].sort().join('~'); // epoch-INDEPENDENT
+    if (!this.contestedEpisode || this.contestedEpisode.key !== episodeKey) {
+      this.contestedEpisode = { key: episodeKey, cycles: 0, resolved: false, escalated: false };
+    }
+    const ep = this.contestedEpisode;
+    ep.cycles++;
+    const winner = self < peerHolder ? self : peerHolder; // lower machineId WINS
+    const loser = self < peerHolder ? peerHolder : self;
+    const iAmWinner = winner === self;
+    if (!ep.resolved) {
+      if (iAmWinner) {
+        await this.leaseCoordinator.advanceEpochForContestedWin();
+        console.log(
+          `[MultiMachine] contested tie-break: WON vs ${peerHolder} at epoch ${ourEpoch} ` +
+          `— advanced once to N+1 to break the same-epoch split`,
+        );
+      } else {
+        this.leaseCoordinator.relinquish();
+        this.reconcileRoleToLease('contested-relinquish');
+        console.log(
+          `[MultiMachine] contested tie-break: YIELDED to ${winner} at epoch ${ourEpoch} ` +
+          `— relinquished self-lease (will adopt the winner's N+1)`,
+        );
+      }
+      ep.resolved = true; // one-shot latch — no per-tick churn (no re-leapfrog)
+    }
+    // Bounded escalation: the resolution did NOT converge after K cycles → a
+    // genuinely stuck/partitioned peer. Surface ONCE, deduped per episode, with a
+    // DETERMINISTIC recommendation (never a raw Y/N the operator could mis-answer).
+    if (ep.cycles >= ESCALATE_AFTER_CYCLES && !ep.escalated) {
+      ep.escalated = true;
+      this.emit('splitBrainEscalation', {
+        episodeKey,
+        winner,
+        loser,
+        recommendation: `demote ${loser}`,
+        reason: `same-epoch contested split-brain persisted ${ep.cycles} pull cycles without converging`,
+      });
+      console.warn(
+        `[MultiMachine] contested split-brain UNRESOLVED after ${ep.cycles} cycles — ` +
+        `recommend demoting ${loser} (episode ${episodeKey})`,
+      );
     }
   }
 

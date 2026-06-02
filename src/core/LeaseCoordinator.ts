@@ -44,6 +44,14 @@ export interface LeaseStore {
    * confirms over the tunnel instead and may no-op this.
    */
   refresh(lease: LeaseRecord): boolean;
+  /**
+   * Force the local self-lease to read as expired (git-less relinquish, spec
+   * §Problem A). Used by LeaseCoordinator.relinquish() to break a same-epoch
+   * contested tie WITHOUT lowering the epoch floor. Optional: only the git-less
+   * LocalLeaseStore implements it; a git-substrate store resolves contention via
+   * CAS instead, so this is a no-op there.
+   */
+  forceLocalExpiry?(): void;
 }
 
 /** Optional low-latency tunnel transport for the lease. */
@@ -235,6 +243,62 @@ export class LeaseCoordinator {
    */
   currentLease(): LeaseRecord | null {
     return this.effectiveView().lease;
+  }
+
+  /**
+   * Relinquish this machine's claim to break a same-epoch contested tie (spec
+   * §Problem A — the deterministic loser, lower-`machineId` LOSES is FALSE: the
+   * lower machineId WINS, the higher relinquishes). Two effects, both required
+   * for convergence:
+   *  (a) clears `selfIssued` AND forces the local store's persisted self-lease to
+   *      read as expired — so we stop being a "live holder at epoch N": the
+   *      winner's `canAcquire()` no longer returns `held-by-live-peer` (it can
+   *      now advance to N+1) and our `holdsLease()` returns false (we reconcile
+   *      to standby);
+   *  (b) we then ADOPT the winner's N+1 lease via the strict-`>` tunnel fold in
+   *      effectiveView() (N+1 > N), so currentHolder() names the winner.
+   * Idempotent. The caller (MultiMachineCoordinator's contested branch) latches
+   * this ONE-SHOT per contested episode so we do not re-clear+re-acquire every
+   * tick (which would re-introduce the leapfrog). The epoch FLOOR is preserved
+   * (forceLocalExpiry keeps the committed epoch) so a replayed stale lease can't
+   * win after we relinquish.
+   */
+  relinquish(): void {
+    this.selfIssued = null;
+    this.d.store.forceLocalExpiry?.();
+    this.log('relinquished self-lease (contested tie-break loser) — winner may now advance to N+1');
+  }
+
+  /**
+   * Force a ONE-TIME epoch advance to resolve a same-epoch contested tie (spec
+   * §Problem A — the WINNER side, lower `machineId`). Unlike acquireIfEligible(),
+   * which RENEWS the same epoch when we already hold it, this builds the NEXT
+   * epoch (N+1) and CAS-writes it, establishing a strictly-higher signed lease
+   * that the contested peer (the loser, having relinquished) adopts via the
+   * strict-`>` tunnel fold. The caller latches this ONE-SHOT per contested
+   * episode (NOT per tick), so it is a tie-resolution, never a per-tick bump →
+   * no leapfrog. Routes through the SAME casWrite/broadcast/sign path as a normal
+   * acquisition. Returns true if the advance landed (or we already hold a
+   * strictly-higher epoch). Idempotent against a peer that advanced first.
+   */
+  async advanceEpochForContestedWin(): Promise<boolean> {
+    const view = this.effectiveView();
+    // buildAcquisition writes currentEpoch+1; currentEpoch is max(self@N, peer@N)=N.
+    const candidate = this.fl.buildAcquisition(view.lease, this.now(), this.nextNonce());
+    const res = this.d.store.casWrite(candidate);
+    if (res.ok) {
+      this.selfIssued = candidate;
+      await this.broadcast(candidate);
+      this.markRenewOk();
+      this.emitEpoch(candidate.epoch);
+      this.log(`advanced to epoch ${candidate.epoch} to resolve contested same-epoch tie (winner)`);
+      return true;
+    }
+    // CAS lost — a strictly-higher epoch already exists (a peer advanced first);
+    // adopt it. Either way the same-epoch tie is broken.
+    this.emitEpoch(res.observed.epoch);
+    this.log(`contested-win advance lost CAS to epoch ${res.observed.epoch} — adopting the higher lease`);
+    return res.observed.lease?.holder === this.selfMachineId;
   }
 
   /**

@@ -112,4 +112,22 @@ export class LocalLeaseStore implements LeaseStore {
     this.persist(lease); // same epoch, fresh expiry + nonce
     return true;
   }
+
+  /**
+   * Relinquish THIS machine's local self-lease to break a same-epoch contested
+   * tie (spec §Problem A). The deterministic loser forces its persisted lease to
+   * read as EXPIRED — so it stops being a "live holder at epoch N" (the winner's
+   * canAcquire() unblocks; holdsLease() returns false) — while KEEPING the
+   * committed epoch as the CAS/replay floor. (Clearing to epoch 0 would drop the
+   * floor and let a replayed stale lease win; expiring-in-place preserves it.)
+   * The winner then advances to N+1, which the loser adopts via the strict-`>`
+   * tunnel fold in effectiveView(). No-op if there is no local lease.
+   */
+  forceLocalExpiry(): void {
+    this.load();
+    if (!this.cached) return;
+    const expired: LeaseRecord = { ...this.cached, expiresAt: new Date(0).toISOString() };
+    this.persist(expired); // keep epoch + holder as the floor; expiresAt deep-past
+    this.log(`local self-lease forced expired (epoch ${expired.epoch} retained as floor) → relinquished`);
+  }
 }
