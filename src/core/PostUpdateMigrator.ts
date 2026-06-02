@@ -271,15 +271,19 @@ export class PostUpdateMigrator {
       return;
     }
     // Marker strings the current boot wrapper must contain to be considered
-    // up-to-date. Both are required:
+    // up-to-date. All are required:
     //  - 'cannot load better-sqlite3 (ABI drift)' — the ABI-check self-heal branch.
     //  - 'version-managed node candidates' — the asdf/nvm `which node` candidate
     //    discovery (instar-codey node-25/ABI-141 deadlock fix). An install that has
     //    the ABI check but NOT this marker (e.g. instar-codey) self-heals FORWARD to
     //    the wrong ABI and cannot recover — it must be regenerated.
+    //  - 'npm_config_scripts_prepend_node_path' — the reinstall now puts the resolved
+    //    node dir on PATH so native postinstalls (sharp) don't die with "command not
+    //    found" under a launchd-spawned boot child. Wrappers lacking it must regenerate.
     if (
       content.includes('cannot load better-sqlite3 (ABI drift)') &&
-      content.includes('version-managed node candidates')
+      content.includes('version-managed node candidates') &&
+      content.includes('npm_config_scripts_prepend_node_path')
     ) {
       result.skipped.push('boot-wrapper ABI-check: already current');
       return;

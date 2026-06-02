@@ -1159,7 +1159,11 @@ if [ ! -f "$SHADOW" ]; then
 PKGEOF
     fi
 
-    if "$NODE_BIN" "$NPM_BIN" install --no-audit --no-fund --silent --prefix "$SHADOW_DIR" >&2; then
+    # Native postinstall scripts (e.g. sharp's "sh -c node ...") need node/npm on
+    # PATH; a launchd-spawned boot child may inherit a PATH without them. Prepend the
+    # resolved node dir and set npm scripts-prepend-node-path so lifecycle scripts
+    # resolve node/npm instead of failing with "command not found".
+    if PATH="$(dirname "$NODE_BIN"):$PATH" npm_config_scripts_prepend_node_path=true "$NODE_BIN" "$NPM_BIN" install --no-audit --no-fund --silent --prefix "$SHADOW_DIR" >&2; then
       if [ -f "$SHADOW" ]; then
         echo "[instar-boot] Reinstall succeeded — continuing boot" >&2
       else
@@ -1410,10 +1414,21 @@ if (!fs.existsSync(SHADOW)) {
         }, null, 2));
       }
 
+      // boot-wrapper install-path self-heal: native postinstall scripts (e.g.
+      // sharp's "sh -c node install/check.js") need node/npm on PATH, but a
+      // launchd-spawned boot child often inherits a PATH without them — so the
+      // reinstall dies with "command not found" and the shadow install never heals.
+      // Prepend the resolved node dir to PATH and set npm scripts-prepend-node-path
+      // so lifecycle scripts resolve node/npm regardless of the inherited PATH.
+      const installEnv = Object.assign({}, process.env, {
+        PATH: path.dirname(nodeBin) + path.delimiter + (process.env.PATH || ''),
+        npm_config_scripts_prepend_node_path: 'true',
+      });
       execFileSync(nodeBin, [npmCli, 'install', '--no-audit', '--no-fund', '--silent'], {
         cwd: SHADOW_DIR,
         stdio: 'inherit',
         timeout: 5 * 60 * 1000,
+        env: installEnv,
       });
 
       if (!fs.existsSync(SHADOW)) {
