@@ -4,6 +4,7 @@ status: draft
 approved: false
 author: Echo (Instar agent)
 created: 2026-06-01
+eli16-overview: THREADLINE-A2A-COHERENCE-ELI16.md
 supersedes-investigation:
   - finding_contextblind_spawn_loop_and_phase1_blocker
   - finding_perinbound_session_amnesia_false_spoof_alarm
