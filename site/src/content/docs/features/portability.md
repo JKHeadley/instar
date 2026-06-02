@@ -5,6 +5,8 @@ description: First-class support for Codex CLI alongside Claude Code.
 
 Instar started life as Claude Code infrastructure, but the agent's identity, memory, scheduling, and messaging surface don't actually depend on Claude. Starting with v1.0.13, instar grew first-class support for [Codex CLI](https://github.com/openai/codex) as a second runtime. Codex agents get the same identity files, the same memory, the same scheduler, the same Telegram/WhatsApp/iMessage/Slack channels, and the same coherence gates.
 
+A third runtime, **Gemini CLI**, was added through the apprenticeship program. Each runtime's one-shot judgment path is a dedicated intelligence provider — `CodexCliIntelligenceProvider` for Codex, `GeminiCliIntelligenceProvider` for Gemini — selected by the `buildIntelligenceProvider` factory from the agent's configured framework. See the [Gemini CLI Framework](/features/gemini-cli-framework/) page for the Gemini adapter specifics.
+
 ## Choosing a framework at setup
 
 ```bash
