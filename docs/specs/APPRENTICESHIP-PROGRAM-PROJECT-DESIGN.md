@@ -1,9 +1,11 @@
 ---
 title: The Apprenticeship Program — Project Design (Tier-3 umbrella)
-status: draft-for-approval
+status: approved
 tier: 3
-approved: false
+approved: true
 approver: justin
+approved-at: "2026-06-02T02:49:32Z"
+approval-basis: "Justin, topic 13435, 2026-06-01: 'Perfect! I agree/approve' — approves the Tier-3 umbrella SHAPE; each step ships as its own Tier-2 spec before build. Forks 1 & 3 (§9) accepted per my stated leanings (reuse guardian + swap identity; only per-step specs get cross-model convergence). Fork 2 (install safety rails) deferred to Step 3's spec."
 author: Echo
 date: 2026-06-01
 topic: 13435
