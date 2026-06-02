@@ -1,0 +1,25 @@
+# Upgrade Guide — Gemini Hybrid Setup Driver
+
+<!-- bump: minor -->
+
+## What Changed
+
+Gemini setup now uses a framework-specific hybrid wizard driver. The setup command routes Gemini installs into a code-owned state machine, calls Gemini only for short narrative prose, and keeps setup actions such as initialization, user creation, server startup, and Telegram configuration inside Instar. This replaces the old Gemini setup shape where Gemini was asked to read and follow the Claude setup wizard instructions.
+
+The driver also sets Gemini's documented headless trust environment for wizard narrative calls, uses the verified Gemini Flash setup model, and falls back to deterministic text if narrative generation is unavailable.
+
+## What to Tell Your User
+
+- **Gemini setup is more reliable now**: "When you set up a Gemini-backed agent, I guide the setup myself and use Gemini only for friendly wording. The actual setup work stays under Instar's control, so the wizard no longer depends on Gemini understanding Claude-specific instructions."
+
+## Summary of New Capabilities
+
+| Capability | How to Use |
+|-----------|-----------|
+| Gemini hybrid setup wizard | Run setup with the Gemini framework selected |
+| Gemini narrative-only setup boundary | Automatic during Gemini setup |
+| Gemini setup driver coverage | Automatic in the test suite |
+
+## Evidence
+
+The focused verification passed with the new driver and dispatch tests: unit coverage for the Gemini driver boundary, integration coverage for setup routing, and the Gemini setup narrative E2E. The live E2E reached the real Gemini CLI path, but the provider reported model quota exhaustion during this run, so the test recorded quota unavailability rather than claiming a successful prose response.

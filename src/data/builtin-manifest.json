@@ -1,7 +1,7 @@
 {
   "$schema": "./builtin-manifest.schema.json",
   "schemaVersion": 1,
-  "generatedAt": "2026-06-02T18:47:24.711Z",
+  "generatedAt": "2026-06-02T19:09:35.138Z",
   "instarVersion": "1.3.203",
   "entryCount": 195,
   "entries": {
@@ -1562,7 +1562,7 @@
       "type": "subsystem",
       "domain": "coordination",
       "sourcePath": "src/core/MultiMachineCoordinator.ts",
-      "contentHash": "9646bb62caff1d39524f0680bd6824bba5866ae283582cd9fd23cf011e083520",
+      "contentHash": "41a23e97e4006eaa33aa5ef50bf367bfd4306b653c7433e0c8574f12d1af4360",
       "since": "2025-01-01"
     },
     "subsystem:backup-manager": {

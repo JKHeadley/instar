@@ -330,6 +330,38 @@ export class LeaseCoordinator {
   }
 
   /**
+   * Whether the most-recently OBSERVED peer lease genuinely SUPERSEDES ours and
+   * may therefore drive a pull-loop demotion. True ONLY when that peer lease is
+   * LIVE (not expired) AND at a STRICTLY HIGHER epoch than our own self-issued
+   * lease.
+   *
+   * Why this stricter gate exists (live incident 2026-06-02, the real laptop+mini
+   * pair): the pull loop demoted on ANY non-null `observedPeerLease()`. A standby
+   * peer kept disclosing a 2-DAY-EXPIRED, epoch-150 lease (vs our live epoch-1400+),
+   * which satisfied that loose gate — so every time our own ~60s lease lapsed
+   * transiently between renewals, the legitimate holder flipped to read-only
+   * standby (~50% of the time), blocking real writes (#673 caught the crash but the
+   * writes still failed). A stale/expired or lower-or-equal-epoch peer carries no
+   * fencing authority and must NEVER demote a legitimate holder; that holder's
+   * transient self-lapse is re-acquired by `tickLease`. Same-epoch contention is a
+   * separate concern handled by the contested-split-brain resolver, not here.
+   *
+   * NOTE: compare against `selfIssued.epoch` (our OWN lease), NOT `currentEpoch()`
+   * — the latter is `effectiveView().epoch = max(self, observed-peer)`, so it would
+   * already fold the peer in and make `peer.epoch > currentEpoch()` impossible.
+   */
+  peerLeaseSupersedes(): boolean {
+    const peer = this.observedPeerLease();
+    if (!peer) return false;
+    // A stale/expired observed peer lease carries no fencing authority.
+    if (this.fl.isExpired(peer, this.now())) return false;
+    // Only a STRICTLY higher epoch out-fences our own self-issued lease. A peer at
+    // our epoch or below cannot demote us (same-epoch ties → contested resolver).
+    const ourEpoch = this.selfIssued?.epoch ?? -1;
+    return peer.epoch > ourEpoch;
+  }
+
+  /**
    * Attempt to acquire (or self-renew) the lease if eligible. Returns true if
    * THIS machine holds the lease afterward. Implements the bounded-retry CAS
    * with livelock backoff.
