@@ -1,0 +1,228 @@
+// safe-fs-allow: test file — SafeFsExecutor used for tmpdir cleanup.
+
+/**
+ * Integration tests — /apprenticeship/* routes (Apprenticeship Step 1). Tier 2:
+ * the REAL inline routes in createRoutes(), behind the real authMiddleware,
+ * backed by a real ApprenticeshipProgram.
+ *
+ * Covers (spec §5 Integration):
+ *   - GET /apprenticeship/instances requires bearer (401 without; wrong token 401)
+ *   - 503 when the program is unavailable (null)
+ *   - create → transition gating end to end (gate refuses, then allows)
+ *   - the decision-audit line is written
+ *   - read-only gate previews (can-start / can-complete)
+ */
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import express from 'express';
+import request from 'supertest';
+import fs from 'node:fs';
+import path from 'node:path';
+import os from 'node:os';
+import { createRoutes } from '../../src/server/routes.js';
+import type { RouteContext } from '../../src/server/routes.js';
+import { authMiddleware } from '../../src/server/middleware.js';
+import { ApprenticeshipProgram, type GateDeps } from '../../src/core/ApprenticeshipProgram.js';
+import { validateRetroHarvest } from '../../src/core/retroHarvestValidator.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+
+const AUTH = 'apprenticeship-routes-token';
+const auth = () => ({ Authorization: `Bearer ${AUTH}` });
+
+const SCHEMA_ID = 'apprenticeship-retro-harvest/v1';
+function buildHarvest(): string {
+  const fm: Record<string, unknown> = {
+    schema: SCHEMA_ID,
+    instanceType: 'mentorship',
+    from: 'echo',
+    to: 'codey',
+    framework: 'codex-cli',
+    harvestedAt: '2026-06-02T03:00:00Z',
+    scopeMode: 'full',
+    completeness: 'complete',
+    sourcesCovered: {
+      ledger: { read: true, issueCount: 12 },
+      playbook: { read: true, entryCount: 3 },
+      memory: { read: true, files: 40 },
+      threads: [{ id: 13435, messagesRead: 500, truncated: false }],
+      prs: [666],
+    },
+    counts: { lessons: 1, metaLessons: 1, processInsights: 1 },
+    seededToPlaybook: [],
+    redaction: { scrubber: 'correction-scrub@v1', findingsRemoved: 2, scrubbedAt: '2026-06-02T03:00:00Z' },
+    fidelityReview: { reviewer: 'indep', verdict: 'faithful', at: '2026-06-02T03:05:00Z' },
+    programNeeds: 1,
+  };
+  const yamlLines = Object.entries(fm).map(([k, v]) => `${k}: ${JSON.stringify(v)}`).join('\n');
+  const body = ['## Lessons', '- l. ledger:4c4a8ded', '## Meta-lessons', '- m. thread:13435#m1', '## Process-insights', '- p.', '## What the program needs', '- need-001 x.'].join('\n');
+  return `---\n${yamlLines}\n---\n\n${body}\n`;
+}
+
+function ctxFor(stateDir: string, program: ApprenticeshipProgram | null): RouteContext {
+  return {
+    config: {
+      projectName: 'apprenticeship-routes', projectDir: path.dirname(stateDir), stateDir, port: 0,
+      authToken: AUTH, monitoring: {}, sessions: {} as any, scheduler: {} as any,
+    } as any,
+    sessionManager: { listRunningSessions: () => [] } as any,
+    state: { getJobState: () => null, getSession: () => null } as any,
+    scheduler: null, telegram: null, relationships: null, feedback: null,
+    dispatches: null, updateChecker: null, autoUpdater: null, autoDispatcher: null,
+    quotaTracker: null, publisher: null, viewer: null, tunnel: null, evolution: null,
+    watchdog: null, triageNurse: null, topicMemory: null, feedbackAnomalyDetector: null,
+    discoveryEvaluator: null, correctionLedger: null, apprenticeshipProgram: program,
+    startTime: new Date(),
+  } as unknown as RouteContext;
+}
+
+function appWith(ctx: RouteContext): express.Express {
+  const app = express();
+  app.use(express.json());
+  app.use(authMiddleware(AUTH));
+  app.use('/', createRoutes(ctx));
+  return app;
+}
+
+describe('/apprenticeship routes (integration)', () => {
+  let tmpDir: string;
+  let stateDir: string;
+  let projectDir: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'apprenticeship-routes-'));
+    projectDir = path.join(tmpDir, 'project');
+    stateDir = path.join(projectDir, '.instar');
+    fs.mkdirSync(stateDir, { recursive: true });
+  });
+
+  afterEach(() => {
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/integration/apprenticeship-routes.test.ts:afterEach' });
+  });
+
+  function makeProgram(deps?: Partial<GateDeps>): ApprenticeshipProgram {
+    return new ApprenticeshipProgram({ stateDir, projectDir, deps });
+  }
+
+  // ── auth-negative ─────────────────────────────────────────────────────
+  it('401 without a bearer token', async () => {
+    const res = await request(appWith(ctxFor(stateDir, makeProgram()))).get('/apprenticeship/instances');
+    expect(res.status).toBe(401);
+  });
+
+  it('403 with a WRONG bearer token', async () => {
+    const res = await request(appWith(ctxFor(stateDir, makeProgram())))
+      .get('/apprenticeship/instances')
+      .set({ Authorization: 'Bearer wrong-token' });
+    expect(res.status).toBe(403);
+  });
+
+  it('503 when the program is unavailable (null)', async () => {
+    const res = await request(appWith(ctxFor(stateDir, null))).get('/apprenticeship/instances').set(auth());
+    expect(res.status).toBe(503);
+    expect(res.body.error).toContain('apprenticeship program disabled');
+  });
+
+  // ── create ────────────────────────────────────────────────────────────
+  it('200 with an empty list, then 201 create, then GET :id', async () => {
+    const app = appWith(ctxFor(stateDir, makeProgram()));
+    const empty = await request(app).get('/apprenticeship/instances').set(auth());
+    expect(empty.status).toBe(200);
+    expect(empty.body.instances).toEqual([]);
+
+    const created = await request(app)
+      .post('/apprenticeship/instances')
+      .set(auth())
+      .send({ id: 'echo-to-codey', instanceType: 'mentorship', overseer: 'echo', mentor: 'echo', mentee: 'codey', framework: 'codex-cli', priorInstanceId: null });
+    expect(created.status).toBe(201);
+    expect(created.body.harvestFrom).toBe('echo');
+    expect(created.body.status).toBe('pending');
+
+    const fetched = await request(app).get('/apprenticeship/instances/echo-to-codey').set(auth());
+    expect(fetched.status).toBe(200);
+    expect(fetched.body.id).toBe('echo-to-codey');
+
+    const missing = await request(app).get('/apprenticeship/instances/no-such').set(auth());
+    expect(missing.status).toBe(404);
+  });
+
+  it('400 on a charset-invalid create', async () => {
+    const app = appWith(ctxFor(stateDir, makeProgram()));
+    const res = await request(app)
+      .post('/apprenticeship/instances')
+      .set(auth())
+      .send({ id: 'Bad/Id', instanceType: 'mentorship', mentor: 'echo', mentee: 'codey', framework: 'codex-cli' });
+    expect(res.status).toBe(400);
+  });
+
+  // ── create → transition gating end to end ─────────────────────────────
+  it('transition pending→active is REFUSED (409) when the start gate fails, then ALLOWED when it passes', async () => {
+    // First: no harvest on disk → start gate refuses.
+    const program = makeProgram({ readHarvest: () => null, validate: validateRetroHarvest });
+    const app = appWith(ctxFor(stateDir, program));
+    await request(app)
+      .post('/apprenticeship/instances')
+      .set(auth())
+      .send({ id: 'gated', instanceType: 'mentorship', overseer: 'echo', mentor: 'echo', mentee: 'codey', framework: 'codex-cli', priorInstanceId: null });
+
+    const refused = await request(app).post('/apprenticeship/instances/gated/transition').set(auth()).send({ to: 'active' });
+    expect(refused.status).toBe(409);
+    expect(refused.body.ok).toBe(false);
+    expect(refused.body.reason).toMatch(/start gate refused/);
+
+    // Now: a program whose readHarvest returns a valid harvest → allowed.
+    const program2 = makeProgram({ readHarvest: () => buildHarvest(), validate: validateRetroHarvest });
+    const app2 = appWith(ctxFor(stateDir, program2)); // same store on disk (the instance persists)
+    const allowed = await request(app2).post('/apprenticeship/instances/gated/transition').set(auth()).send({ to: 'active' });
+    expect(allowed.status).toBe(200);
+    expect(allowed.body.ok).toBe(true);
+    expect(allowed.body.instance.status).toBe('active');
+  });
+
+  it('400 on an invalid transition target', async () => {
+    const program = makeProgram();
+    const app = appWith(ctxFor(stateDir, program));
+    await request(app).post('/apprenticeship/instances').set(auth()).send({ id: 'i', instanceType: 'mentorship', mentor: 'echo', mentee: 'codey', framework: 'codex-cli' });
+    const res = await request(app).post('/apprenticeship/instances/i/transition').set(auth()).send({ to: 'bogus' });
+    expect(res.status).toBe(400);
+  });
+
+  it('404 transition on a missing instance', async () => {
+    const app = appWith(ctxFor(stateDir, makeProgram()));
+    const res = await request(app).post('/apprenticeship/instances/ghost/transition').set(auth()).send({ to: 'active' });
+    expect(res.status).toBe(404);
+  });
+
+  // ── read-only gate previews ───────────────────────────────────────────
+  it('can-start / can-complete are read-only previews (no mutation)', async () => {
+    const program = makeProgram({ readHarvest: () => buildHarvest(), validate: validateRetroHarvest, countInstanceLedgerEntries: () => 0, detectorAuditExists: () => false });
+    const app = appWith(ctxFor(stateDir, program));
+    await request(app).post('/apprenticeship/instances').set(auth()).send({ id: 'preview', instanceType: 'mentorship', overseer: 'echo', mentor: 'echo', mentee: 'codey', framework: 'codex-cli', priorInstanceId: null });
+
+    const canStart = await request(app).post('/apprenticeship/instances/preview/can-start').set(auth());
+    expect(canStart.status).toBe(200);
+    expect(canStart.body.allow).toBe(true);
+
+    const canComplete = await request(app).post('/apprenticeship/instances/preview/can-complete').set(auth());
+    expect(canComplete.status).toBe(200);
+    expect(canComplete.body.allow).toBe(false);
+    expect(canComplete.body.missing).toContain('ledgerEntries:none');
+
+    // Previews did not mutate — still pending.
+    const after = await request(app).get('/apprenticeship/instances/preview').set(auth());
+    expect(after.body.status).toBe('pending');
+  });
+
+  // ── decision-audit line ───────────────────────────────────────────────
+  it('writes a decision-audit line on a gated transition', async () => {
+    const program = makeProgram({ readHarvest: () => null, validate: validateRetroHarvest });
+    const app = appWith(ctxFor(stateDir, program));
+    await request(app).post('/apprenticeship/instances').set(auth()).send({ id: 'aud', instanceType: 'mentorship', overseer: 'echo', mentor: 'echo', mentee: 'codey', framework: 'codex-cli', priorInstanceId: null });
+    await request(app).post('/apprenticeship/instances/aud/transition').set(auth()).send({ to: 'active' });
+
+    const logPath = path.join(stateDir, 'logs', 'apprenticeship-decisions.jsonl');
+    expect(fs.existsSync(logPath)).toBe(true);
+    const entry = JSON.parse(fs.readFileSync(logPath, 'utf-8').trim().split('\n')[0]);
+    expect(entry.gate).toBe('start');
+    expect(entry.instanceId).toBe('aud');
+    expect(entry.allow).toBe(false);
+  });
+});

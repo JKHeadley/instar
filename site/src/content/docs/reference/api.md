@@ -213,6 +213,14 @@ The sections above describe the most commonly-used endpoints with curl examples 
 - `GET /agents`
 - `POST /agents/:name/restart`
 
+## /apprenticeship
+- `GET /apprenticeship/instances`
+- `GET /apprenticeship/instances/:id`
+- `POST /apprenticeship/instances`
+- `POST /apprenticeship/instances/:id/transition`
+- `POST /apprenticeship/instances/:id/can-start`
+- `POST /apprenticeship/instances/:id/can-complete`
+
 ## /attention
 - `DELETE /attention/:id`
 - `GET /attention`

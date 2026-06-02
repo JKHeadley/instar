@@ -11,9 +11,7 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
-import yaml from 'js-yaml';
-// @ts-expect-error: .mjs script, not typed
-import { validateRetroHarvest, parseArtifact } from '../../scripts/validate-retro-harvest.mjs';
+import { validateRetroHarvest, parseArtifact } from '../../src/core/retroHarvestValidator';
 
 const ROOT = path.resolve(__dirname, '..', '..');
 const ARTIFACT = path.join(ROOT, 'docs/apprenticeship/retro-harvests/echo-to-codey-mentorship.md');

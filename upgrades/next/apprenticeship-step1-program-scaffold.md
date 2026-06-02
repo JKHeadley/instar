@@ -1,0 +1,23 @@
+# Upgrade Guide — vNEXT
+
+<!-- bump: minor -->
+
+## What Changed
+
+The Apprenticeship Program now has a real, structural backbone. Each mentorship/apprenticeship the agent runs (Echo mentors Codey, then Codey mentors Gemini while Echo oversees) is tracked as an instance with a locked role triple, a framework, and a required-artifact checklist. Two lifecycle gates now make the program disciplined instead of relying on the agent to remember the right order: the agent cannot start a new instance until the prior one's retro-harvest exists and validates, and it cannot close an instance until that instance's lessons are verified captured from live state.
+
+## What to Tell Your User
+
+Nothing to do. If your agent runs mentorship/apprenticeship instances, it can now register them and drive their lifecycle through structural gates that enforce "review the last instance's lessons before you start the next" and "capture this instance's lessons before you close it" — so learnings can't silently evaporate between instances. The first instance is seeded by the existing Echo→Codey bootstrap harvest. All endpoints are read/observable; the gates only ever stall one instance's own transition (with a reason), never your fleet.
+
+## Summary of New Capabilities
+
+- New module `src/core/ApprenticeshipProgram.ts`: a file-backed instance registry (`.instar/apprenticeship/instances.json`, atomic write + optimistic version CAS, fail-closed on corruption) with two pure gates that re-derive truth from injected live deps (never a stored flag). Every gate verdict is audited to `logs/apprenticeship-decisions.jsonl`.
+- The retro-gate (pending→active) and the doc-as-required-artifact gate (active→complete) run inside the state-mutating transition — they are not advisory. `complete` is terminal; `requiredArtifacts` is immutable after create; the canonical harvest path is recomputed (a stored `harvestRef` is never trusted for resolution, closing path traversal).
+- New Bearer-auth routes: `GET /apprenticeship/instances`, `GET /apprenticeship/instances/:id`, `POST /apprenticeship/instances`, `POST /apprenticeship/instances/:id/transition`, plus read-only `.../can-start` and `.../can-complete` gate previews. 503 when the program is unavailable. The `/apprenticeship` prefix is classified agent-facing in `src/server/CapabilityIndex.ts`, so it surfaces in `/capabilities` for discovery.
+- The retro-harvest validator's pure logic moved to TypeScript at `src/core/retroHarvestValidator.ts` (the new source of truth); `scripts/validate-retro-harvest.mjs` is now a thin CLI re-exporting it. The agent's CLAUDE.md gains an Apprenticeship Program awareness section (new agents via the template, existing agents via a migration).
+
+## Evidence
+
+- `tsc --noEmit` clean; `pnpm build` succeeds (the `.mjs`→dist re-export resolves). The real Echo→Codey bootstrap harvest still validates through the CLI after the relocation + the added `acceptedBy`/`acceptedAt` acceptance metadata.
+- Three test tiers added and green: unit (`tests/unit/apprenticeship-program.test.ts` — both gates both sides, the status table incl. terminal/illegal, charset-clamp + dup-reject, path-confinement, wiring-integrity, partial-accepted with/without acceptance), integration (`tests/integration/apprenticeship-routes.test.ts` — the HTTP routes incl. auth-negative, create→transition gating, the decision-audit line), and E2E (`tests/e2e/apprenticeship-lifecycle.test.ts` — `/apprenticeship/instances` returns 200 through the production AgentServer init path). The relocated Step-0 validator tests still pass unchanged.

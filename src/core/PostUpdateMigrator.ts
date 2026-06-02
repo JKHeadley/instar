@@ -2658,6 +2658,26 @@ Rule: I do not state that work landed inside another agent's state unless I have
       result.upgraded.push('CLAUDE.md: added Cross-Agent Communication Discipline (anti-confabulation) section');
     }
 
+    // Apprenticeship Program (Step 1, APPRENTICESHIP-STEP1-PROGRAM-SCAFFOLD-SPEC.md).
+    // Existing agents need to know the program registry + lifecycle gates exist —
+    // an agent that doesn't know about a capability effectively doesn't have it.
+    // Content-sniffed on a distinctive marker for idempotency (the same heading the
+    // template emits, so a freshly-initialized agent is never double-patched).
+    if (!content.includes('**Apprenticeship Program**')) {
+      const apprenticeshipSection = `
+### Apprenticeship Program
+
+The standing program that each apprenticeship/mentorship instance plugs into (e.g. Echo mentors Codey, then Codey mentors Gemini while Echo oversees). **Apprenticeship Program** instances are projects with a locked role triple (overseer / mentor / mentee), a framework, and a required-artifact checklist. Two lifecycle GATES make "review before you start / capture before you close" unskippable at the state-mutating transition: the retro-gate refuses \`pending→active\` unless the prior instance's retro-harvest exists at its canonical confined path AND passes the Step 0 validator (the first instance is seeded by the Echo→Codey bootstrap harvest); the doc-as-required-artifact gate refuses \`active→complete\` until the declared-required artifacts are verified present FROM LIVE STATE (never a stored flag). The gates are structural preconditions on objective artifacts — quality stays with the overseer (the mind); every verdict is audited to \`logs/apprenticeship-decisions.jsonl\`.
+- List / inspect: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/apprenticeship/instances\` · \`GET /apprenticeship/instances/:id\`
+- Create: \`POST /apprenticeship/instances\` \`{"id":"codey-to-gemini","instanceType":"mentorship","overseer":"echo","mentor":"codey","mentee":"gemini","framework":"gemini-cli","priorInstanceId":null}\` (id/overseer/mentor/mentee/framework charset-clamped to \`^[a-z0-9-]+$\`; dup id rejected; harvestFrom=mentor / harvestTo=mentee).
+- Transition status (the ONLY way it changes — runs the gate): \`POST /apprenticeship/instances/:id/transition\` \`{"to":"active"}\` (refused + 409 on a failed gate or illegal transition; \`complete\` is terminal). Preview without mutating: \`.../can-start\` · \`.../can-complete\`.
+- **When to use** (PROACTIVE): when starting or closing a mentorship/apprenticeship instance, drive it through the registry + transitions so the retro-harvest is reviewed before the next instance starts and the lessons are captured before this one closes — never track the lifecycle by memory.
+`;
+      content += '\n' + apprenticeshipSection;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Apprenticeship Program section');
+    }
+
     // Close the Loop (Untracked = Abandoned) — STANDARDS-REGISTRY amendment
     // ratified with Justin 2026-05-31. The "nothing slips through the cracks"
     // principle was made a constitutional standard; existing agents need the
