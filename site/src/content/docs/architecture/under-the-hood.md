@@ -190,6 +190,18 @@ Code-enforced requester-≠-authorizer gate for an agent-to-agent credential tra
 ### ThreadlineGroundingGate
 "Ground Before You Assert" pre-send check for outbound agent-to-agent messages. Flags a scheme-qualified URL to a host the agent has not verified this session, so an unverified claim does not propagate to a peer as fact. Known/infra hosts and bare-host references are exempt; the gate is wired into `threadline_send` as a block-with-override.
 
+### A2ACheckInPolicy
+The decision core of the agent-to-agent coherence "check-in" (Layer 4): given whether a conversation is active, whether a salient event occurred, and how long since the operator last heard anything, it returns `salience` (something to surface), `heartbeat` (the silence-breaker — a periodic "still talking" while active and silent for the configured interval), or `none` (stay quiet — routine churn never surfaces). Pure and clock-injected.
+
+### A2ACheckInSummarizer
+Turns an ongoing agent-to-agent conversation into a short operator-facing check-in. It redacts credentials out of the peer content before the LLM ever sees it, frames that content as untrusted data to summarize (never instructions to follow), requires attribution ("X says…", never asserted as fact), and guards the generated summary so no URL, command, or credential-request can reach the operator's topic.
+
+### A2ACheckInProxy
+Orchestrates one check-in: decide → fetch history → summarize → guard → surface. It short-circuits before any LLM spend when there is nothing worth saying, and drops a summary that fails the output guard rather than surfacing it.
+
+### A2ACheckInScheduler
+Drives the Layer-4 cadence: on each tick it walks the active agent-to-agent threads and runs the check-in flow per thread. First-sight starts the silence clock (it never fires the instant a conversation becomes active), the heartbeat fires only after the full interval of subsequent silence, and the clock resets on any surface. Summaries run on the shared LLM queue's background lane; the scheduler is a no-op while the feature is disabled (it ships dark, off by default).
+
 </details>
 
 ---

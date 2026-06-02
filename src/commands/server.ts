@@ -7691,6 +7691,54 @@ export async function startServer(options: StartOptions): Promise<void> {
       }
     });
 
+    // A2A Coherence Layer 4 — silence-breaker check-ins (THREADLINE-A2A-COHERENCE-SPEC).
+    // Ships DARK (config.threadline.a2aCheckIn.enabled=false). When enabled, a cadence timer
+    // posts a brief conversational "still talking to <peer>" to the bound topic after the
+    // operator has heard nothing for the configured interval (default 5-10 min). Summaries run
+    // on the shared LlmQueue BACKGROUND lane, are credential-redacted + attributed +
+    // output-guarded, and never fire when there's nothing worth saying. start() is a no-op
+    // when disabled, so this is inert until the operator opts in.
+    const a2aCheckInCfg = (config.threadline as { a2aCheckIn?: { enabled?: boolean; heartbeatEnabled?: boolean; heartbeatIntervalMs?: number } } | undefined)?.a2aCheckIn;
+    if (a2aCheckInCfg?.enabled && _sharedIntelligence && telegram) {
+      const { createA2ACheckInScheduler } = await import('../threadline/A2ACheckInScheduler.js');
+      const intelligence = _sharedIntelligence;
+      const tg = telegram;
+      const a2aCheckInScheduler = createA2ACheckInScheduler({
+        config: {
+          enabled: true,
+          heartbeatEnabled: a2aCheckInCfg.heartbeatEnabled ?? false,
+          heartbeatIntervalMs: a2aCheckInCfg.heartbeatIntervalMs ?? 420_000,
+        },
+        listActiveThreads: () =>
+          threadResumeMap
+            .listActive()
+            .map(({ threadId, entry }) => ({ threadId, peerName: entry.remoteAgent ?? 'peer', topicId: entry.originTopicId }))
+            .filter((t): t is { threadId: string; peerName: string; topicId: number } => typeof t.topicId === 'number'),
+        summarize: (prompt) => sharedLlmQueue.enqueue('background', () => intelligence.evaluate(prompt, { model: 'fast' })),
+        surface: async ({ topicId, body }) => {
+          if (typeof topicId === 'number') await tg.sendToTopic(topicId, body);
+        },
+        getHistory: async (threadId) => {
+          try {
+            const [inbound, outbound] = await Promise.all([
+              messageStore.queryInbox(config.projectName, { threadId }),
+              messageStore.queryOutbox(config.projectName, { threadId }),
+            ]);
+            return [...inbound, ...outbound]
+              .sort((a, b) => new Date(a.message.createdAt).getTime() - new Date(b.message.createdAt).getTime())
+              .slice(-12)
+              .map((e) => `${e.message.from?.agent ?? 'peer'}: ${e.message.body ?? ''}`)
+              .join('\n');
+          } catch {
+            return '';
+          }
+        },
+        log: (m) => console.log(m),
+      });
+      a2aCheckInScheduler.start();
+      console.log(pc.green('  A2A check-ins: enabled (Layer 4 silence-breaker active)'));
+    }
+
     // Topic linkage handler — Per THREAD-TOPIC-LINKAGE-SPEC.md.
     // Ties threadline conversations to the originating Telegram topic so
     // replies route back to the topic session instead of a sibling worker.
