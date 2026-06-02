@@ -1,0 +1,52 @@
+# Upgrade Guide — self-stop-guard hook
+
+<!-- patch = additive behavioral guard, no breaking changes -->
+
+## What Changed
+
+A new signal-only PreToolUse hook, `self-stop-guard.js`, joins the behavioral-guard
+family (alongside `deferral-detector.js`). It scans **outbound user messages** for
+context/length stop-excuses — "maxed out context", "session too long / long-running
+session", "let's start a fresh session", "good stopping point", "close this out and
+restart" — and, when matched, injects a self-reminder that those are never valid stop
+reasons (compaction infrastructure handles context; the only legitimate stops are a
+question only the user can answer, missing info, a genuine error, or real completion).
+
+It is **signal-only**: it never blocks a message and is never destructive. An
+allow-list suppresses it on genuine completion (the `ALL_TASKS_COMPLETE` promise,
+"all tests passing", etc.) and when the user themselves asked to stop. It runs for
+both Claude (`Bash`) and Codex (`exec_command`) agents and reaches existing agents on
+their next update via `INSTAR_BASH_PRETOOLUSE_HOOKS` (init + migrate parity) — it is
+also registered in the Codex PreToolUse chain and drift-verified in the builtin
+manifest. This is the structural enforcement (Structure > Willpower) of the existing
+"No context-death self-stops" principle already present in the CLAUDE.md template.
+
+## What to Tell Your User
+
+- **A guard against quitting early**: "I added a small safety check on myself — if I
+  ever start to tell you I'm stopping just because I've been running a while or my
+  memory is filling up, it now catches me and reminds me that's not a real reason to
+  quit. My memory gets refreshed automatically, so I can keep going as long as the
+  work needs. It only nudges me — it never blocks anything, and it stays quiet when a
+  job is genuinely finished or when you've asked me to stop."
+
+## Summary of New Capabilities
+
+| Capability | How to Use |
+|-----------|-----------|
+| Self-stop excuse guard | Automatic (PreToolUse hook on every agent, Claude + Codex) |
+
+## Evidence
+
+Not a code-bug fix — this adds a new preventive behavioral guard, so no
+reproduction-of-a-broken-code-path applies. Origin and verification:
+
+- **Origin (the behavior it guards):** on 2026-06-02 an agent ended a multi-hour
+  autonomous run early, telling the user "this session's almost done, let's start
+  fresh" while citing "maxed out context." The user flagged this as a recurring,
+  invalid excuse and asked for a structural check.
+- **Verified behavior:** the shipped hook is spawned end-to-end by 16 unit tests that
+  feed it real outbound-message payloads. It emits the reminder for each excuse
+  phrasing (Claude `Bash` and Codex `exec_command`) and stays silent on the other
+  side of the boundary — normal messages, genuine completion, the completion promise,
+  user-requested stops, and non-communication shell commands.
