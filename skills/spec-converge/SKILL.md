@@ -203,7 +203,18 @@ The `approved: true` tag is NOT written by this skill. That's the user's step.
 
 ### Phase 6 — User handoff
 
-The skill emits the link to the convergence report via the messaging layer (Telegram or equivalent) so the user can read the ELI10 report and decide.
+When a spec is handed to the user for review, it MUST go out with a **rendered, verified ELI16 tunnel link** the user can tap and read — never a bare filename or a PR they have to dig through. This is the required delivery step, enforced structurally (not by memory):
+
+```bash
+node skills/spec-converge/scripts/publish-spec-review.mjs \
+  --spec docs/specs/<SPEC>.md \
+  --pr <github-pr-url> \
+  --topic <telegram-topic-id> --send
+```
+
+`publish-spec-review.mjs` is the sanctioned path. It (1) resolves the ELI16 companion via the same convention the commit-time gate enforces (`scripts/eli16-overview-check.mjs`) and refuses if it is missing or a stub; (2) renders it as an auth-gated Private View (`POST /view` on port 4042, `INSTAR_AUTH_TOKEN`); (3) **verifies the tunnel link returns HTTP 200 before it is ever sent** — no broken links; (4) composes and delivers the review message (rendered ELI16 link first, full-spec PR link second).
+
+Backstop (Structure > Willpower): the pre-messaging gate (`convergence-check.sh`, criterion 8) **blocks** any hand-sent spec-review message that lacks a rendered `/view/` link, so the requirement cannot be silently skipped even if the script is bypassed.
 
 The skill does NOT auto-apply `approved: true`. That requires explicit human action — editing the frontmatter or running `instar spec approve <path>` (follow-on CLI command).
 
