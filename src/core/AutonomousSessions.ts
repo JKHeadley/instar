@@ -28,6 +28,8 @@ export interface AutonomousJobSummary {
   goal: string | null;
   iteration: number | null;
   startedAt: string | null;
+  /** duration_seconds front-matter field; null when absent/unparseable (unbounded run). */
+  durationSeconds: number | null;
   reportChannel: string | null;
 }
 
@@ -52,6 +54,7 @@ function summarize(file: string, topicFromName: string | null): AutonomousJobSum
     return null;
   }
   const iterRaw = readField(content, 'iteration');
+  const durRaw = readField(content, 'duration_seconds');
   return {
     topic: readField(content, 'report_topic') || topicFromName,
     file,
@@ -60,6 +63,7 @@ function summarize(file: string, topicFromName: string | null): AutonomousJobSum
     goal: readField(content, 'goal'),
     iteration: iterRaw && /^\d+$/.test(iterRaw) ? parseInt(iterRaw, 10) : null,
     startedAt: readField(content, 'started_at'),
+    durationSeconds: durRaw && /^\d+$/.test(durRaw) ? parseInt(durRaw, 10) : null,
     reportChannel: readField(content, 'report_channel'),
   };
 }

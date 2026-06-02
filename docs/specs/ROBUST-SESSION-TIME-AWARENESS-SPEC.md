@@ -2,6 +2,7 @@
 title: "Robust Session Time Awareness"
 slug: "robust-session-time-awareness"
 author: "echo"
+parent-principle: "Structure beats Willpower"
 eli16-overview: "robust-session-time-awareness.eli16.md"
 lessons-engaged:
   - "Structure > Willpower — time awareness is computed + injected, never agent-remembered"
@@ -79,7 +80,7 @@ Call sites (no instar-owned turn type left blind):
 - (Optional) `instar clock` CLI.
 
 ### Component 4 — Accurate-reporting nudge (SIGNAL-ONLY, v1.1, scoped down after review)
-Lessons-aware + security flagged the first draft for giving a regex-only host blocking-adjacent authority. Scoped down: a **bash, signal-only** check that reads the active record directly (no server call — the convergence-check host is pure-bash by design) and, if an outbound message contains a "done/over/complete/wrapped-up" assertion while `remainingSeconds > 10%` of total, emits a one-line SIGNAL. It **never blocks or rewrites** the message (P2 Signal vs Authority). **Signal sink (adversarial round-2):** the SIGNAL goes to **stderr / an operator log line ONLY — never into the agent's injected context** — and it carries the computed fact ("≈NN% of the time-box remains"), NOT a quote of the agent's "done/over" phrase, so the correction can never be re-read as self-confirming evidence that the run is finished. Deferred to v1.1; v1 ships Components 0–3.
+Lessons-aware + security flagged the first draft for giving a regex-only host blocking-adjacent authority. Scoped down: a **bash, signal-only** check that reads the active record directly (no server call — the convergence-check host is pure-bash by design) and, if an outbound message contains a "done/over/complete/wrapped-up" assertion while `remainingSeconds > 10%` of total, emits a one-line SIGNAL. It **never blocks or rewrites** the message (P2 Signal vs Authority). **Signal sink (adversarial round-2):** the SIGNAL goes to **stderr / an operator log line ONLY — never into the agent's injected context** — and it carries the computed fact ("≈NN% of the time-box remains"), NOT a quote of the agent's "done/over" phrase, so the correction can never be re-read as self-confirming evidence that the run is finished. Deferred to v1.1; v1 ships Components 0–3. <!-- tracked: issue-682 -->
 
 ## Migration parity (concrete hooks — integration findings)
 - **`emit-session-clock.sh`** (new built-in script): add an explicit `migrateSessionClockScript()` block in `PostUpdateMigrator` that writes/overwrites it under `.instar/scripts/` every run (there is no generic "ship all template scripts" mechanism — it needs its own block). New agents get it via the same install path used by `init`.
