@@ -5343,9 +5343,10 @@ Create worktrees for collaborator repos with \`instar worktree create <branch>\`
    * Get the content of a named hook template.
    * Used by init.ts to share canonical hook content without duplication.
    */
-  getHookContent(name: 'session-start' | 'compaction-recovery' | 'external-operation-gate' | 'deferral-detector' | 'self-stop-guard' | 'slopcheck-guard' | 'post-action-reflection' | 'external-communication-guard' | 'scope-coherence-collector' | 'scope-coherence-checkpoint' | 'claim-intercept' | 'claim-intercept-response' | 'telegram-topic-context' | 'response-review' | 'stop-gate-router' | 'auto-approve-permissions' | 'skill-usage-telemetry' | 'build-stop-hook'): string {
+  getHookContent(name: 'session-start' | 'mcp-health-autorefresh' | 'compaction-recovery' | 'external-operation-gate' | 'deferral-detector' | 'self-stop-guard' | 'slopcheck-guard' | 'post-action-reflection' | 'external-communication-guard' | 'scope-coherence-collector' | 'scope-coherence-checkpoint' | 'claim-intercept' | 'claim-intercept-response' | 'telegram-topic-context' | 'response-review' | 'stop-gate-router' | 'auto-approve-permissions' | 'skill-usage-telemetry' | 'build-stop-hook'): string {
     switch (name) {
       case 'session-start': return this.getSessionStartHook();
+      case 'mcp-health-autorefresh': return this.getMcpHealthAutorefreshHook();
       case 'compaction-recovery': return this.getCompactionRecovery();
       case 'external-operation-gate': return this.getExternalOperationGateHook();
       case 'deferral-detector': return this.getDeferralDetectorHook();
