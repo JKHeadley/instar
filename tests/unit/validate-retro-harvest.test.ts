@@ -1,11 +1,12 @@
-// Unit tests for the pure retro-harvest validator (scripts/validate-retro-harvest.mjs),
-// the structural SIGNAL for Apprenticeship Step 0 artifacts (spec §9). Each decision
-// boundary is exercised on BOTH sides: a valid baseline passes, and a single targeted
-// mutation fails with the expected error. The validator is pure/offline — the live
-// ledger cross-check (checkLiveLedger) is tested separately with an injected fetch.
+// Unit tests for the pure retro-harvest validator (src/core/retroHarvestValidator.ts —
+// the SOURCE OF TRUTH after the Apprenticeship Step 1 §3.2 relocation; the
+// scripts/validate-retro-harvest.mjs CLI re-exports it), the structural SIGNAL for
+// Apprenticeship Step 0 artifacts (spec §9). Each decision boundary is exercised on
+// BOTH sides: a valid baseline passes, and a single targeted mutation fails with the
+// expected error. The validator is pure/offline — the live ledger cross-check
+// (checkLiveLedger) is tested separately with an injected fetch.
 
 import { describe, it, expect } from 'vitest';
-// @ts-expect-error: .mjs script, not typed
 import {
   validateRetroHarvest,
   parseArtifact,
@@ -15,7 +16,7 @@ import {
   checkLiveLedger,
   SCHEMA_ID,
   APPROVED_SCRUBBERS,
-} from '../../scripts/validate-retro-harvest.mjs';
+} from '../../src/core/retroHarvestValidator';
 
 // Build a VALID artifact, with optional frontmatter overrides + body override.
 function buildArtifact(fmOverrides: Record<string, unknown> = {}, body?: string): string {

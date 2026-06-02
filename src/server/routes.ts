@@ -718,6 +718,11 @@ export interface RouteContext {
    *  records only). Null/absent when monitoring.correctionLearning.enabled is
    *  false (default) → /corrections 503s. */
   correctionLedger?: import('../monitoring/CorrectionLedger.js').CorrectionLedger | null;
+  /** Apprenticeship Program registry + lifecycle gates (Apprenticeship Step 1).
+   *  Null when stateDir is unavailable → /apprenticeship/* 503s. Powers the
+   *  instance-as-project registry, the retro-gate (pending→active) and the
+   *  doc-as-required-artifact gate (active→complete). */
+  apprenticeshipProgram?: import('../core/ApprenticeshipProgram.js').ApprenticeshipProgram | null;
   /** SessionReaper — pressure-aware idle-session reaper. Null when not wired
    *  (older boot paths). Powers GET /sessions/reaper observability. */
   sessionReaper?: import('../monitoring/SessionReaper.js').SessionReaper | null;
@@ -11452,6 +11457,83 @@ export function createRoutes(ctx: RouteContext): Router {
       // Fail-open: the analyzer never crashes the caller (job).
       res.status(200).json({ error: 'analyze failed (logged)', detail: err instanceof Error ? err.message : String(err) });
     }
+  });
+
+  // ── Apprenticeship Program (Step 1) ──────────────────────────────────
+  //
+  // Instance-as-project registry + the two lifecycle gates. The transition
+  // route is the ONLY way status changes (the gates are not advisory — the
+  // state-mutating transition itself consults the gate). 503 when the program
+  // is not wired (null). Bearer-auth enforced globally by authMiddleware.
+  //
+  //   GET  /apprenticeship/instances            — list
+  //   GET  /apprenticeship/instances/:id        — one instance (404 missing)
+  //   POST /apprenticeship/instances            — create (charset-clamped, dup-rejected)
+  //   POST /apprenticeship/instances/:id/transition {to} — gated status change
+  //   POST /apprenticeship/instances/:id/can-start    — read-only start-gate preview
+  //   POST /apprenticeship/instances/:id/can-complete — read-only completion-gate preview
+  router.get('/apprenticeship/instances', (_req, res) => {
+    if (!ctx.apprenticeshipProgram) { res.status(503).json({ error: 'apprenticeship program disabled' }); return; }
+    res.json({ instances: ctx.apprenticeshipProgram.list() });
+  });
+
+  router.get('/apprenticeship/instances/:id', (req, res) => {
+    if (!ctx.apprenticeshipProgram) { res.status(503).json({ error: 'apprenticeship program disabled' }); return; }
+    const inst = ctx.apprenticeshipProgram.get(req.params.id);
+    if (!inst) { res.status(404).json({ error: 'not found' }); return; }
+    res.json(inst);
+  });
+
+  router.post('/apprenticeship/instances', (req, res) => {
+    if (!ctx.apprenticeshipProgram) { res.status(503).json({ error: 'apprenticeship program disabled' }); return; }
+    const body = req.body ?? {};
+    try {
+      const inst = ctx.apprenticeshipProgram.createInstance({
+        id: typeof body.id === 'string' ? body.id : '',
+        instanceType: body.instanceType,
+        overseer: typeof body.overseer === 'string' ? body.overseer : undefined,
+        mentor: typeof body.mentor === 'string' ? body.mentor : '',
+        mentee: typeof body.mentee === 'string' ? body.mentee : '',
+        framework: typeof body.framework === 'string' ? body.framework : '',
+        priorInstanceId: typeof body.priorInstanceId === 'string' ? body.priorInstanceId : null,
+        requiredArtifacts: body.requiredArtifacts,
+        programNeeds: Array.isArray(body.programNeeds) ? body.programNeeds : undefined,
+      });
+      res.status(201).json(inst);
+    } catch (err) {
+      res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  router.post('/apprenticeship/instances/:id/transition', (req, res) => {
+    if (!ctx.apprenticeshipProgram) { res.status(503).json({ error: 'apprenticeship program disabled' }); return; }
+    const to = (req.body ?? {}).to;
+    if (!['pending', 'active', 'complete', 'blocked'].includes(to)) {
+      res.status(400).json({ error: 'to must be one of pending | active | complete | blocked' });
+      return;
+    }
+    const result = ctx.apprenticeshipProgram.transition(req.params.id, to);
+    if (!result.ok) {
+      // 404 for a missing instance; 409 for a refused/illegal transition.
+      const code = result.reason.includes('not found') ? 404 : 409;
+      res.status(code).json({ ok: false, reason: result.reason });
+      return;
+    }
+    res.json({ ok: true, reason: result.reason, instance: result.instance });
+  });
+
+  router.post('/apprenticeship/instances/:id/can-start', (req, res) => {
+    if (!ctx.apprenticeshipProgram) { res.status(503).json({ error: 'apprenticeship program disabled' }); return; }
+    const inst = ctx.apprenticeshipProgram.get(req.params.id);
+    if (!inst) { res.status(404).json({ error: 'not found' }); return; }
+    res.json(ctx.apprenticeshipProgram.evaluateStartGate(inst));
+  });
+
+  router.post('/apprenticeship/instances/:id/can-complete', (req, res) => {
+    if (!ctx.apprenticeshipProgram) { res.status(503).json({ error: 'apprenticeship program disabled' }); return; }
+    const inst = ctx.apprenticeshipProgram.get(req.params.id);
+    if (!inst) { res.status(404).json({ error: 'not found' }); return; }
+    res.json(ctx.apprenticeshipProgram.evaluateCompletionGate(inst));
   });
 
   // ORG-INTENT.md tradeoff resolution (Phase 3 of the ORG-INTENT runtime

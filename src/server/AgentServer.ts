@@ -49,6 +49,7 @@ import { FailureAttributionEngine } from '../monitoring/FailureAttributionEngine
 import { CiFailurePoller } from '../monitoring/CiFailurePoller.js';
 import { RevertDetector } from '../monitoring/RevertDetector.js';
 import { CorrectionLedger } from '../monitoring/CorrectionLedger.js';
+import { ApprenticeshipProgram } from '../core/ApprenticeshipProgram.js';
 import { SafeGitExecutor } from '../core/SafeGitExecutor.js';
 import { createSpecReviewRoutes } from './specReviewRoutes.js';
 import { createUsherRoutes } from './usherRoutes.js';
@@ -165,6 +166,7 @@ export class AgentServer {
   private ciFailurePoller: CiFailurePoller | null = null;
   private revertDetector: RevertDetector | null = null;
   private correctionLedger: CorrectionLedger | null = null;
+  private apprenticeshipProgram: ApprenticeshipProgram | null = null;
   // Burn-detection-and-self-heal system (six-phase umbrella spec at
   // docs/specs/token-burn-detection-and-self-heal.md). Lazy-initialised
   // after the TokenLedger comes up — burn detection without a ledger is
@@ -789,6 +791,56 @@ export class AgentServer {
       this.correctionLedger = null;
     }
 
+    // Apprenticeship Program (Step 1) — the instance-as-project registry + the
+    // retro-gate (pending→active) and doc-as-required-artifact gate
+    // (active→complete). Ships ON (additive, passive registry; no config flag —
+    // spec §6). Own try/catch so a failure here can never cascade into other
+    // init. The live ledger-count dep is instance-scoped: it counts framework
+    // issues whose relatedSpec/dedupKey references THIS instance (never merely
+    // any framework entry), so unrelated history can't satisfy the doc-gate.
+    try {
+      if (options.config.stateDir) {
+        const frameworkLedger = this.frameworkIssueLedger;
+        this.apprenticeshipProgram = new ApprenticeshipProgram({
+          stateDir: options.config.stateDir,
+          projectDir: options.config.projectDir,
+          deps: {
+            countInstanceLedgerEntries: (instance) => {
+              if (!frameworkLedger) return 0;
+              try {
+                const rows = frameworkLedger.listIssues({ framework: instance.framework });
+                return rows.filter(
+                  (r) =>
+                    (r.relatedSpec && r.relatedSpec.includes(instance.id)) ||
+                    (r.dedupKey && r.dedupKey.includes(instance.id)),
+                ).length;
+              } catch {
+                return 0;
+              }
+            },
+            detectorAuditExists: (instance) => {
+              // The instance-scoped detector-audit artifact (need-003). Run in
+              // Step 2/3; the gate checks for its presence on disk.
+              try {
+                const auditPath = path.join(
+                  options.config.stateDir!,
+                  'apprenticeship',
+                  'detector-audits',
+                  `${instance.id}.json`,
+                );
+                return fs.existsSync(auditPath);
+              } catch {
+                return false;
+              }
+            },
+          },
+        });
+      }
+    } catch (err) {
+      console.warn('[instar] apprenticeship program init failed (non-fatal):', err);
+      this.apprenticeshipProgram = null;
+    }
+
     // Routes
     const routeCtx = {
       config: options.config,
@@ -888,6 +940,7 @@ export class AgentServer {
       failureLedger: this.failureLedger,
       failureAttributionEngine: this.failureAttributionEngine,
       correctionLedger: this.correctionLedger,
+      apprenticeshipProgram: this.apprenticeshipProgram,
       sessionReaper: options.sessionReaper ?? null,
       agentWorktreeReaper: options.agentWorktreeReaper ?? null,
       sleepController: options.sleepController ?? null,

@@ -29,6 +29,8 @@ fidelityReview:
     classification: "sound — 5 meta-lessons genuinely cross-framework, 10 lessons correctly framework-specific; anti-skew satisfied."
     redaction: "clean — pointers-only, no secrets/PII."
   gaps: "Telegram threads 13435/458 are sampled, not exhaustively re-read message-by-message (frontmatter flags truncated:true / completeness partial-accepted); their high-signal content is captured via the ledger + memory, so the gap is depth-of-re-read, not lost signal. Accepted pending Justin's nod."
+acceptedBy: justin
+acceptedAt: "2026-06-02T04:33:00Z"
 programNeeds: 5
 ---
 
