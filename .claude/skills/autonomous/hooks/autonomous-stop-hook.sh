@@ -601,17 +601,36 @@ else
   TIME_MSG="no time limit"
 fi
 
+# Session-clock injection (render mode) — the rich "SESSION CLOCK: Nh elapsed ·
+# Mh remaining (NN%)" line, rendered by emit-session-clock.sh FROM THIS HOOK'S OWN
+# already-computed numbers (no re-resolution -> can never disagree with the expiry
+# verdict above). Additive + fail-safe: if the script is absent or the run is
+# unbounded (no ELAPSED), the segment is simply omitted and the existing
+# ($TIME_MSG) slot is unchanged. Spec: docs/specs/ROBUST-SESSION-TIME-AWARENESS-SPEC.md.
+CLOCK_SEG=""
+if [[ -n "${ELAPSED:-}" ]]; then
+  _clk_dir="$(dirname "$STATE_FILE")"
+  _clk_script=""
+  for _c in "$_clk_dir/scripts/emit-session-clock.sh" "$_clk_dir/../scripts/emit-session-clock.sh"; do
+    if [[ -f "$_c" ]]; then _clk_script="$_c"; break; fi
+  done
+  if [[ -n "$_clk_script" ]]; then
+    _clk=$(bash "$_clk_script" render "$STARTED_AT" "$DURATION_SECONDS" "$ELAPSED" "${REMAINING:-}" "$(goal_snippet)" 2>/dev/null)
+    [[ -n "$_clk" ]] && CLOCK_SEG=" | $_clk"
+  fi
+fi
+
 # When a completion CONDITION is set, an independent judge decides "done" — steer
 # toward the condition + feed back the judge's latest reason (mirrors /goal). When
 # only a legacy promise is set, keep the self-declared-promise directive.
 if [[ -n "$COMPLETION_CONDITION" ]]; then
   GUIDANCE=""
   [[ -n "$EVAL_REASON" ]] && GUIDANCE=" | Not done yet: ${EVAL_REASON}"
-  SYSTEM_MSG="🔄 Autonomous iteration $NEXT_ITERATION ($TIME_MSG) | Keep working until this is TRUE: ${COMPLETION_CONDITION}${GUIDANCE} | An independent check decides done from what you SURFACE — run the real checks and show the evidence. Do NOT defer — do it now${REPORT_DIRECTIVE}"
+  SYSTEM_MSG="🔄 Autonomous iteration $NEXT_ITERATION ($TIME_MSG)${CLOCK_SEG} | Keep working until this is TRUE: ${COMPLETION_CONDITION}${GUIDANCE} | An independent check decides done from what you SURFACE — run the real checks and show the evidence. Do NOT defer — do it now${REPORT_DIRECTIVE}"
 else
   P13_NOTE=""
   [[ -n "${P13_GUIDANCE:-}" ]] && P13_NOTE=" | ${P13_GUIDANCE}"
-  SYSTEM_MSG="🔄 Autonomous iteration $NEXT_ITERATION ($TIME_MSG) | Complete ALL tasks, then output <promise>$COMPLETION_PROMISE</promise>${P13_NOTE} | Do NOT defer to future self — if you can do it now, DO IT NOW${REPORT_DIRECTIVE}"
+  SYSTEM_MSG="🔄 Autonomous iteration $NEXT_ITERATION ($TIME_MSG)${CLOCK_SEG} | Complete ALL tasks, then output <promise>$COMPLETION_PROMISE</promise>${P13_NOTE} | Do NOT defer to future self — if you can do it now, DO IT NOW${REPORT_DIRECTIVE}"
 fi
 
 # Block exit and feed prompt back
