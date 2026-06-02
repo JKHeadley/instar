@@ -11,6 +11,10 @@
  *     --artifact upgrades/side-effects/<slug>.md \
  *     --files "src/a.ts,src/b.ts,tests/x.test.ts" \
  *     [--spec docs/specs/<slug>.md] \
+ *     [--tier 1|2|3] \
+ *     [--tier-reasoning "<one or two sentences>"] \
+ *     [--eli16-path docs/specs/<slug>.eli16.md] \
+ *     [--side-effects-path upgrades/side-effects/<slug>.md] \
  *     [--second-pass true|false|not-required] \
  *     [--reviewer-concurred true|false]
  *
@@ -19,6 +23,17 @@
  * review-convergence and approved tags before allowing the commit.
  * Bootstrap commits (installing /instar-dev itself or /spec-converge itself)
  * may omit --spec; all other commits REQUIRE it.
+ *
+ * Tier declaration (Step A of the Tiered Development Process,
+ * docs/specs/tier-classifier-and-tier1-path-spec.md): the agent DECLARES the
+ * change's tier so the gate can enforce the chosen tier's requirement set.
+ *   - --tier 1 → a Tier-1 (small / low-risk) change. The trace carries
+ *     `tier: 1` + `eli16Path` + `sideEffectsPath` and NO `specPath` — a Tier-1
+ *     commit needs an ELI16 + side-effects artifact + green tests/lint, but no
+ *     pre-approved converged spec. `--spec` is therefore OPTIONAL when --tier 1.
+ *   - --tier 2|3 (or omitted) → the existing full requirement set; `--spec`
+ *     (a converged + approved spec) is required exactly as before.
+ * No tier declaration → the gate defaults to Tier 2 (back-compatible).
  *
  * The trace is written to .instar/instar-dev-traces/<timestamp>-<slug>.json.
  * Trace files are gitignored (runtime state, not source).
@@ -38,6 +53,10 @@ function parseArgs() {
   const args = process.argv.slice(2);
   const out = {
     artifact: null, files: [], spec: null, secondPass: 'not-required', reviewerConcurred: null,
+    // Tier declaration (Step A — Tiered Development Process). All OPTIONAL; when
+    // omitted the gate defaults to Tier 2 (back-compatible). For --tier 1 the
+    // trace carries tier + eli16Path + sideEffectsPath and no specPath.
+    tier: null, tierReasoning: null, eli16Path: null, sideEffectsPath: null,
     // v3 toolchain enrichment (Failure-Learning Loop §4.1) — all OPTIONAL, caller-passed
     // literals (O(1), no discovery/git/parse at commit time). Omitted fields → omitted
     // from the toolchain block; a gather failure → omit, never block the commit.
@@ -48,6 +67,10 @@ function parseArgs() {
     if (a === '--artifact') out.artifact = args[++i];
     else if (a === '--files') out.files = args[++i].split(',').map((s) => s.trim()).filter(Boolean);
     else if (a === '--spec') out.spec = args[++i];
+    else if (a === '--tier') out.tier = parseInt(args[++i], 10);
+    else if (a === '--tier-reasoning') out.tierReasoning = args[++i];
+    else if (a === '--eli16-path') out.eli16Path = args[++i];
+    else if (a === '--side-effects-path') out.sideEffectsPath = args[++i];
     else if (a === '--second-pass') out.secondPass = args[++i];
     else if (a === '--reviewer-concurred') out.reviewerConcurred = args[++i] === 'true';
     else if (a === '--build-skill') out.buildSkill = args[++i];
@@ -67,10 +90,27 @@ function parseArgs() {
     console.error('Missing --files');
     process.exit(1);
   }
+  if (out.tier != null && ![1, 2, 3].includes(out.tier)) {
+    console.error(`Invalid --tier ${out.tier}: must be 1, 2, or 3`);
+    process.exit(1);
+  }
+  // A Tier-1 trace must carry its own ELI16 + side-effects path (no converged
+  // spec). The side-effects path defaults to the --artifact (the sha is computed
+  // from that same file), but the ELI16 path is required and has no default.
+  if (out.tier === 1) {
+    if (!out.sideEffectsPath) out.sideEffectsPath = out.artifact;
+    if (!out.eli16Path) {
+      console.error('A Tier-1 trace requires --eli16-path (the request ELI16 overview).');
+      process.exit(1);
+    }
+  }
   return out;
 }
 
-const { artifact, files, spec, secondPass, reviewerConcurred, buildSkill, reviewSkills, convergenceReport, convergenceIterations } = parseArgs();
+const {
+  artifact, files, spec, tier, tierReasoning, eli16Path, sideEffectsPath,
+  secondPass, reviewerConcurred, buildSkill, reviewSkills, convergenceReport, convergenceIterations,
+} = parseArgs();
 
 /**
  * Build the v3 `toolchain` block (Failure-Learning Loop §4.1). Toolchain fields
@@ -136,15 +176,23 @@ fs.mkdirSync(traceDir, { recursive: true });
 
 const traceFile = path.join(traceDir, `${timestamp.replace(/[:.]/g, '-')}-${slug}-${traceId}.json`);
 const toolchain = buildToolchain();
+const isTier1 = tier === 1;
 const trace = {
   version: toolchain ? 3 : 2, // v3 only when enriched; readers ignore unknown fields either way
   sessionId: process.env.INSTAR_SESSION_ID || process.env.CLAUDE_CODE_SESSION_ID || 'unknown',
   timestamp,
   artifactPath: artifact,
   artifactSha256: crypto.createHash('sha256').update(artifactContent).digest('hex'),
-  specPath: spec,
+  // A Tier-1 trace carries NO specPath (it ships an ELI16 + side-effects instead
+  // of a converged + approved spec). Tier 2+/no-tier keep the existing specPath.
+  ...(isTier1 ? {} : { specPath: spec }),
   coveredFiles: files.sort(),
   phase: 'complete',
+  // Tier declaration (Step A). Emitted only when the agent declared a tier so an
+  // undeclared trace round-trips byte-identically to the pre-Step-A shape.
+  ...(tier != null ? { tier } : {}),
+  ...(tierReasoning != null ? { tierReasoning } : {}),
+  ...(isTier1 ? { eli16Path, sideEffectsPath } : {}),
   secondPass,
   reviewerConcurred,
   ...(toolchain ? { toolchain } : {}),

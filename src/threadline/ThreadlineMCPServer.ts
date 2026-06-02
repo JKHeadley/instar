@@ -96,6 +96,13 @@ export interface ThreadlineMCPDeps {
   sendMessage: (params: SendMessageParams) => Promise<SendMessageResult>;
   /** Thread history retriever */
   getThreadHistory: (threadId: string, limit: number, before?: string) => Promise<ThreadHistoryResult>;
+  /**
+   * Sealed-handoff keystone: self-mint a Secret Drop request (one-time,
+   * never-on-disk submit URL) via the loopback /threadline/secrets/request
+   * route — no externalized bearer needed. Optional; absent on transports that
+   * cannot reach the local server. See {@link RequestSecretParams}.
+   */
+  requestSecret?: (params: RequestSecretParams) => Promise<RequestSecretResult>;
   /** Registry REST API client (null if registry not available) */
   registry: RegistryClient | null;
   /** State directory (.instar path) for config access */
@@ -131,6 +138,37 @@ export interface SendMessageResult {
   deliveryOutcome?: string;
   /** How the message was delivered (local, relay) */
   deliveryPath?: string;
+}
+
+export interface RequestSecretParams {
+  /** What's being requested — shown as the Secret Drop form title. */
+  label: string;
+  /** Why it's needed — shown as the form description. */
+  description?: string;
+  /** Fields to collect (defaults to a single masked "secret" field). */
+  fields?: Array<{ name: string; label: string; type?: string }>;
+  /** Telegram topic to notify on receipt. */
+  topicId?: number;
+  /** TTL in milliseconds (server bounds: 60_000 … 3_600_000; default 15 min). */
+  ttlMs?: number;
+  /**
+   * R1a sealed-handoff: pin the expected sender's Ed25519 public key (32-byte,
+   * hex) so the submit handler verifies the signed payload before accepting it.
+   */
+  senderVerification?: { senderPubKeyHex: string };
+}
+
+export interface RequestSecretResult {
+  success: boolean;
+  /** Opaque one-time token (also embedded in the URLs). */
+  token?: string;
+  /** Server-relative submit path (`/secrets/drop/<token>`). */
+  localUrl?: string;
+  /** Tunnel-absolute submit URL when a tunnel is up, else null. */
+  tunnelUrl?: string | null;
+  /** Milliseconds until the request expires. */
+  expiresIn?: number;
+  error?: string;
 }
 
 export interface ThreadHistoryMessage {
@@ -359,6 +397,7 @@ export class ThreadlineMCPServer {
   private registerTools(): void {
     this.registerDiscoverTool();
     this.registerSendTool();
+    this.registerRequestSecretTool();
     this.registerHistoryTool();
     this.registerAgentsTool();
     this.registerDeleteTool();
@@ -622,6 +661,73 @@ export class ThreadlineMCPServer {
         } catch (err) {
           return errorResult(`Send failed: ${err instanceof Error ? err.message : 'Unknown error'}`);
         }
+      },
+    );
+  }
+
+  // ── threadline_request_secret (sealed-handoff keystone) ────────────
+
+  private registerRequestSecretTool(): void {
+    this.mcpServer.tool(
+      'threadline_request_secret',
+      'Sealed handoff (receiver side): mint a one-time, never-on-disk Secret Drop ' +
+      'request and return its submit URL. Use this to securely collect a credential ' +
+      'or secret from a user or a peer agent — send them the returned URL; the secret ' +
+      'is submitted off-relay over HTTPS and NEVER appears in chat history or on disk. ' +
+      'Self-mints over a localhost path, so no auth token is needed.',
+      {
+        label: z.string().min(1).max(256).describe(
+          'What is being requested — the form title (e.g. "OpenAI API Key").'
+        ),
+        description: z.string().max(1024).optional().describe(
+          'Why it is needed — shown to whoever opens the link.'
+        ),
+        ttlMinutes: z.number().int().min(1).max(60).optional().describe(
+          'Minutes until the one-time link expires (default 15, max 60).'
+        ),
+        topicId: z.number().int().positive().optional().describe(
+          'Telegram topic to notify when the secret is received.'
+        ),
+        senderPubKeyHex: z.string().regex(/^[0-9a-fA-F]{64}$/).optional().describe(
+          'R1a sealed-handoff: pin the expected sender\'s Ed25519 public key ' +
+          '(64-char hex) so the submitted payload\'s signature is verified before ' +
+          'the secret is accepted. Defeats a first-POST-wins race on an intercepted URL.'
+        ),
+      },
+      async (args) => {
+        const authError = this.checkAuth('threadline:send');
+        if (authError) return errorResult(authError);
+
+        if (!this.deps.requestSecret) {
+          return errorResult(
+            'Secret Drop self-mint is unavailable on this transport (no local agent ' +
+            'server reachable over loopback).'
+          );
+        }
+
+        const result = await this.deps.requestSecret({
+          label: args.label,
+          description: args.description,
+          topicId: args.topicId,
+          ttlMs: args.ttlMinutes ? args.ttlMinutes * 60_000 : undefined,
+          senderVerification: args.senderPubKeyHex
+            ? { senderPubKeyHex: args.senderPubKeyHex }
+            : undefined,
+        });
+
+        if (!result.success) {
+          return errorResult(result.error || 'Secret Drop request failed');
+        }
+
+        return jsonResult({
+          token: result.token,
+          localUrl: result.localUrl,
+          tunnelUrl: result.tunnelUrl ?? null,
+          expiresIn: result.expiresIn,
+          note: 'Send the submit URL to the secret holder. The secret is submitted ' +
+            'off-relay and is never stored on disk or shown in chat. The link is ' +
+            'one-time and expires.',
+        });
       },
     );
   }
