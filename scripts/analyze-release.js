@@ -706,9 +706,48 @@ HUMAN-REQUIRED: reproduction + observed before/after, or "Not reproducible in de
   return out;
 }
 
+/**
+ * Build the silent-by-default `user_announcement` front-matter block
+ * (MATURE-UPDATE-ANNOUNCEMENTS spec D3). One entry per feature/enhancement,
+ * every entry defaulting to `audience: agent-only` + `maturity: experimental`
+ * — so NOTHING reaches the user until a human deliberately flips an entry to
+ * `audience: user`. An un-reviewed block is therefore SAFE (it announces
+ * nothing). Parsed at notify-time by src/core/upgradeAnnouncement.ts; the
+ * coherence check over edited entries is the canonical TS helper
+ * `announcementCoherenceWarnings`.
+ */
+function buildAnnouncementFrontmatter(changeDescriptions) {
+  const candidates = changeDescriptions.filter(
+    (d) => d.type === 'feature' || d.type === 'enhancement'
+  );
+  const yamlStr = (s) => `"${String(s ?? '').replace(/"/g, '\\"')}"`;
+  const entries = candidates.length
+    ? candidates
+        .map(
+          (d) =>
+            `  - audience: agent-only   # flip to "user" to announce to the user
+    maturity: experimental # experimental | preview | stable
+    headline: ${yamlStr(sanitizeDraftText(d.summary))}
+    body: ${yamlStr('HUMAN-REQUIRED: one or two plain sentences for the user, matching the maturity above')}`
+        )
+        .join('\n')
+    : '  # (no feature/enhancement changes detected — add an entry only if a change is user-facing)';
+
+  return `---
+# user_announcement — SILENT BY DEFAULT (mature-update-announcements spec).
+# Every entry below defaults to agent-only, so the user hears NOTHING about this
+# release until you deliberately set an entry's audience to "user". Then set its
+# maturity honestly: experimental (early, not for general use), preview (try it,
+# still rough), or stable (finished, use it now).
+user_announcement:
+${entries}
+---
+`;
+}
+
 /** Full NEXT.md draft (used when the guide is absent or a pristine template). */
 function buildFullDraft(changeDescriptions, recommended, hasFix) {
-  return `# Upgrade Guide — vNEXT
+  return `${buildAnnouncementFrontmatter(changeDescriptions)}# Upgrade Guide — vNEXT
 
 <!-- bump: ${recommended} -->
 ${UNREVIEWED_BLOCK_MARKER}
@@ -940,6 +979,25 @@ if (guideContent) {
 
   if (guideCoverage.gaps.length === 0) {
     log(`\n  ✓ Upgrade guide adequately covers all detected changes.`);
+  }
+
+  // Silent-by-default author guard (mature-update-announcements spec, D3):
+  // when a release ships user-relevant changes but the guide carries NO
+  // `user_announcement` block at all, every change is silent to the user. That
+  // is correct for an all-internal release, but it is also exactly what a
+  // forgotten block looks like. Emit a NON-BLOCKING advisory so the author
+  // consciously decides — `instar` analyze --draft-guide scaffolds the block
+  // (defaulting agent-only), so its total absence means the scaffold was
+  // bypassed. Structure informs; the author decides (never blocks).
+  const userRelevantChanges = changeDescriptions.filter(
+    (d) => d.type === 'feature' || d.type === 'enhancement',
+  ).length;
+  if (userRelevantChanges > 0 && !/^\s*user_announcement\s*:/m.test(guideContent)) {
+    log(
+      `\n  ⚠ This release has ${userRelevantChanges} user-relevant change(s) but the guide has no ` +
+        `\`user_announcement\` block — nothing will be announced to the user. If any change is ` +
+        `user-ready, add a block (\`audience: user\` + a maturity); otherwise this silence is correct.`,
+    );
   }
 } else {
   log(`\n  ⚠ No upgrade guide found — cannot validate coverage.`);

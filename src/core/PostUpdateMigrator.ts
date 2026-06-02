@@ -2692,6 +2692,22 @@ The standing program that each apprenticeship/mentorship instance plugs into (e.
       result.upgraded.push('CLAUDE.md: added Apprenticeship Program section');
     }
 
+    // Maturity honesty (mature-update-announcements spec). Existing agents need
+    // to know user-facing update announcements are now opt-in + maturity-tagged
+    // so they mirror that honesty when self-narrating a ship (and don't dress up
+    // a dark/infra change as finished). Content-sniffed on the same marker the
+    // template emits, so a freshly-initialized agent is never double-patched.
+    if (!content.includes('Maturity honesty (silent-by-default user announcements)')) {
+      const maturityHonestySection = `
+### Maturity honesty (silent-by-default user announcements)
+
+User-facing update announcements are *opt-in and maturity-tagged*, authored in the release's upgrade guide (\`user_announcement\` front-matter: each change is \`audience: user|agent-only\` + \`maturity: experimental|preview|stable\`). The post-update notifier stays SILENT unless a change was explicitly promoted to \`audience: user\`, and experimental/preview features are announced as such (⚗️ Experimental / 🧪 Preview) — never implied to be finished. When I narrate my own ship (via \`/telegram/post-update\`), I mirror that honesty: I do NOT announce a feature that ships dark/disabled as if it works, and I don't dress up an infra change as a finished capability. Patch-level "restarting…" notices are suppressed (only deferral warnings — "your work is holding a restart" — still surface). Spec: \`docs/specs/mature-update-announcements.md\`.
+`;
+      content += '\n' + maturityHonestySection;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Maturity honesty (silent-by-default user announcements) section');
+    }
+
     // Close the Loop (Untracked = Abandoned) — STANDARDS-REGISTRY amendment
     // ratified with Justin 2026-05-31. The "nothing slips through the cracks"
     // principle was made a constitutional standard; existing agents need the

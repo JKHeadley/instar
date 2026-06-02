@@ -26,6 +26,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { UpgradeGuideProcessor } from '../../src/core/UpgradeGuideProcessor.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { parseUserAnnouncement } from '../../src/core/upgradeAnnouncement.js';
 
 describe('UpgradeGuideProcessor', () => {
   let tmpDir: string;
@@ -283,5 +284,54 @@ Added feature C.
   it('getPendingGuide returns null when no pending guide', () => {
     const proc = createProcessor();
     expect(proc.getPendingGuide()).toBeNull();
+  });
+
+  // ── user_announcement hoisting (mature-update-announcements spec) ──
+  describe('user_announcement front-matter hoisting', () => {
+    const GUIDE_WITH_ANNOUNCE = `---
+user_announcement:
+  - audience: user
+    maturity: experimental
+    headline: Early Gemini support
+    body: landing piece by piece
+---
+# Upgrade Guide — v0.9.87
+## What Changed
+Added the Gemini wizard.
+`;
+
+    it('hoists a guide block to byte 0 so the parser can read it', () => {
+      writeGuide('0.9.87', GUIDE_WITH_ANNOUNCE);
+      const result = createProcessor({ previousVersion: '0.9.86' }).process();
+
+      // Combined guide starts with the merged front-matter (byte 0).
+      expect(result.guideContent.startsWith('---\n')).toBe(true);
+      const entries = parseUserAnnouncement(result.guideContent);
+      expect(entries).toHaveLength(1);
+      expect(entries[0]).toMatchObject({ audience: 'user', maturity: 'experimental', headline: 'Early Gemini support' });
+      // The agent-facing prose is preserved (header + body), front-matter stripped from the body.
+      expect(result.guideContent).toContain('# Instar Upgrade Guide');
+      expect(result.guideContent).toContain('Added the Gemini wizard.');
+    });
+
+    it('merges blocks across multiple guides in one batch', () => {
+      writeGuide('0.9.87', GUIDE_WITH_ANNOUNCE);
+      writeGuide(
+        '0.9.88',
+        `---\nuser_announcement:\n  - audience: agent-only\n    maturity: stable\n    headline: Infra\n    body: internal\n---\n# Upgrade Guide — v0.9.88\n## What Changed\nInternal.\n`,
+      );
+      const result = createProcessor({ previousVersion: '0.9.86' }).process();
+      const entries = parseUserAnnouncement(result.guideContent);
+      expect(entries).toHaveLength(2);
+      expect(entries.map((e) => e.audience)).toEqual(['user', 'agent-only']);
+    });
+
+    it('is a no-op when no guide carries a block (byte-identical, no leading front-matter)', () => {
+      writeGuide('0.9.87', GUIDE_C);
+      const result = createProcessor({ previousVersion: '0.9.86' }).process();
+      expect(result.guideContent.startsWith('---')).toBe(false);
+      expect(result.guideContent.startsWith('# Instar Upgrade Guide')).toBe(true);
+      expect(parseUserAnnouncement(result.guideContent)).toEqual([]);
+    });
   });
 });

@@ -747,26 +747,40 @@ export class AutoUpdater {
           // When no handshake is wired (older agents, tests), fall back to
           // the previous immediate-notify behavior so nothing regresses.
           const previousVersion = this.updateChecker.getInstalledVersion();
+          // Fork 3 (mature-update-announcements spec): the bare "Just updated…
+          // restarting" line is pure noise for a patch-only bump. Suppress the
+          // user-facing narration when major.minor is unchanged — but STILL
+          // write the handshake (with an empty notification) so the NEW
+          // process's restart-verification + failed-restart escalation is
+          // preserved for patch updates too. The deferral warnings (max-deferral
+          // above, threshold warnings below) are untouched, because "your work
+          // is holding a restart" stays genuinely useful. crossesBreaking()
+          // === false ⇒ same major.minor ⇒ patch-only; malformed ⇒ true (narrate).
+          const patchOnly = !crossesBreaking(previousVersion, newVersion);
+          const restartNote = patchOnly
+            ? ''
+            : `Just updated to v${newVersion}. Restarting to pick up the changes.`;
           if (this.config.restartHandshake) {
             try {
               this.config.restartHandshake.writePendingHandshake({
                 expectedVersion: newVersion,
                 previousVersion,
-                deferredNotification: `Just updated to v${newVersion}. Restarting to pick up the changes.`,
+                deferredNotification: restartNote,
               });
             } catch (err) {
               // Handshake write failed — fall back to immediate notify so
-              // the user isn't left without any signal.
+              // the user isn't left without any signal (unless suppressed).
               console.warn(
                 `[AutoUpdater] Handshake write failed; falling back to immediate notify: ${err instanceof Error ? err.message : String(err)}`,
               );
-              await this.notify(
-                `Just updated to v${newVersion}. Restarting to pick up the changes.`,
-              );
+              if (restartNote) await this.notify(restartNote);
             }
-          } else {
-            await this.notify(
-              `Just updated to v${newVersion}. Restarting to pick up the changes.`,
+          } else if (restartNote) {
+            await this.notify(restartNote);
+          }
+          if (patchOnly) {
+            console.log(
+              `[AutoUpdater] Patch-only restart (v${previousVersion} → v${newVersion}) with ${runningSessions.length} active session(s) — suppressing restart narration (Fork 3); handshake verification preserved.`,
             );
           }
         }

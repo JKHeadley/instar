@@ -514,9 +514,26 @@ describe('Phase 2B+E: AutoUpdater with session gating', () => {
     expect(fs.existsSync(flagPath)).toBe(true);
   });
 
-  it('sends pre-restart notification when idle sessions exist', async () => {
+  it('sends pre-restart notification when idle sessions exist (minor+ bump)', async () => {
     const telegram = createMockTelegram();
-    const mockChecker = createMockUpdateChecker();
+    // crossesBreaking('0.9.8','0.10.0') === true ⇒ narration fires (Fork 3 only
+    // suppresses patch-only bumps).
+    const mockChecker = createMockUpdateChecker({
+      check: vi.fn().mockResolvedValue({
+        currentVersion: '0.9.8',
+        latestVersion: '0.10.0',
+        updateAvailable: true,
+        checkedAt: new Date().toISOString(),
+      }),
+      applyUpdate: vi.fn().mockResolvedValue({
+        success: true,
+        previousVersion: '0.9.8',
+        newVersion: '0.10.0',
+        message: 'Updated',
+        restartNeeded: true,
+        healthCheck: 'skipped',
+      }),
+    } as Partial<UpdateChecker>);
     const sm = createMockSessionManager([{ name: 'idle-session' }]);
     const monitor = createMockSessionMonitor([
       { topicId: 100, sessionName: 'idle-session', status: 'idle', idleMinutes: 30 },
@@ -539,6 +556,35 @@ describe('Phase 2B+E: AutoUpdater with session gating', () => {
     expect(messages.some((m: string) => m.includes('restarting in') || m.includes('will resume') || m.includes('Restarting to pick up') || m.includes('updated to'))).toBe(true);
 
     // Restart should have proceeded (idle sessions don't block)
+    const flagPath = path.join(tmpDir, 'state', 'restart-requested.json');
+    expect(fs.existsSync(flagPath)).toBe(true);
+  });
+
+  it('suppresses the "just updated… restarting" narration for a patch-only bump (Fork 3), but still restarts', async () => {
+    const telegram = createMockTelegram();
+    // Default mock is a patch bump: 0.9.8 → 0.9.9 (same major.minor).
+    const mockChecker = createMockUpdateChecker();
+    const sm = createMockSessionManager([{ name: 'idle-session' }]);
+    const monitor = createMockSessionMonitor([
+      { topicId: 100, sessionName: 'idle-session', status: 'idle', idleMinutes: 30 },
+    ]);
+
+    const updater = new AutoUpdater(
+      mockChecker,
+      createMockState(),
+      tmpDir,
+      { autoApply: true, applyDelayMinutes: 0, preRestartDelaySecs: 0 },
+      telegram,
+    );
+    updater.setSessionDeps(sm, monitor);
+
+    await (updater as any).tick();
+
+    // No "just updated / restarting" narration for a patch bump.
+    const messages = (telegram.sendToTopic as any).mock.calls.map((c: any[]) => c[1] as string);
+    expect(messages.some((m: string) => m.includes('Restarting to pick up') || m.includes('updated to v'))).toBe(false);
+
+    // …but the restart still proceeds (suppression is narration-only).
     const flagPath = path.join(tmpDir, 'state', 'restart-requested.json');
     expect(fs.existsSync(flagPath)).toBe(true);
   });

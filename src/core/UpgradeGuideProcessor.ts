@@ -34,6 +34,12 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { SafeFsExecutor } from './SafeFsExecutor.js';
+import {
+  parseUserAnnouncement,
+  stripAnnouncementFrontmatter,
+  serializeUserAnnouncement,
+  type AnnouncementEntry,
+} from './upgradeAnnouncement.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -133,12 +139,20 @@ export class UpgradeGuideProcessor {
       return result;
     }
 
-    // Concatenate pending guides in version order
+    // Concatenate pending guides in version order. Each guide may carry a
+    // `user_announcement` front-matter block (mature-update-announcements spec).
+    // We HOIST + MERGE those blocks to the very top of the combined guide (the
+    // only place parseUserAnnouncement reads them) and keep each guide's prose
+    // as the agent-facing body. When no guide carries a block, the merged
+    // front-matter is empty and the assembled guide is byte-identical to the
+    // pre-feature output.
     const sections: string[] = [];
+    const mergedEntries: AnnouncementEntry[] = [];
     for (const guide of pending) {
       try {
         const content = fs.readFileSync(guide.filePath, 'utf-8');
-        sections.push(content);
+        mergedEntries.push(...parseUserAnnouncement(content));
+        sections.push(stripAnnouncementFrontmatter(content).replace(/^\n+/, ''));
       } catch {
         // Skip unreadable files
       }
@@ -157,7 +171,8 @@ export class UpgradeGuideProcessor {
       `> After processing, these guides won't appear again.\n\n` +
       `---\n\n`;
 
-    result.guideContent = header + sections.join('\n\n---\n\n');
+    const announcementFrontmatter = serializeUserAnnouncement(mergedEntries);
+    result.guideContent = announcementFrontmatter + header + sections.join('\n\n---\n\n');
 
     // Write to pending file
     try {
