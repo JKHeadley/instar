@@ -212,7 +212,18 @@ export class OutputActivityTracker {
     for (const s of running) {
       seen.add(s.tmuxSession);
       const output = this.sessions.captureOutput(s.tmuxSession, SILENCE_CAPTURE_LINES) ?? '';
-      const hash = cheapHash(output);
+      // Hash a SPINNER-IMMUNE view of the frame. The host's "working" spinner
+      // (e.g. Claude's `✻ Sautéed for 26m 16s · (esc to interrupt)`) ticks its
+      // elapsed-time counter every second, so a raw hash changes on every poll
+      // even when the turn has produced no real output for many minutes — which
+      // made `lastChangeAt` perpetually fresh and blinded ActiveWorkSilenceSentinel
+      // to a stalled-but-spinning turn (the 26-min API-stall incident). Stripping
+      // the volatile status region means only REAL scrollback changes refresh the
+      // activity timestamp. Safe: the silence nudge is a non-destructive `Enter`
+      // (sendKey 'Enter'), so a false-positive on a genuinely-long turn is harmless;
+      // the only destructive recovery (Ctrl-C) lives in SocketDisconnectSentinel,
+      // gated on a positive error-string marker. (Cross-model reviewed, task #63.)
+      const hash = cheapHash(stripVolatileStatus(output, s.framework));
       const prev = this.last.get(s.tmuxSession);
       let lastChangeAt: number;
       if (!prev) {
@@ -374,6 +385,43 @@ export function buildRateLimitRecoveryDeps(s: RateLimitRecoverySurface): {
 }
 
 /** FNV-1a — enough to detect that captured output changed. Not security-sensitive. */
+/**
+ * Spinner-immune view of a captured pane for the change-detector hash. Removes
+ * the host's animated working-status region — the rotating Braille glyph, the
+ * ticking elapsed-time counter, the token/context counters, and the
+ * `esc to interrupt` footer line — so only REAL scrollback content affects the
+ * hash. Without this, the spinner's per-second clock made every poll look like
+ * fresh output and blinded the silence sentinel to a stalled-but-spinning turn.
+ * Conservative + anchored: real assistant/tool text is never stripped; unknown
+ * frameworks still get the shared footer/glyph/timer stripping. (task #63)
+ */
+export function stripVolatileStatus(
+  output: string,
+  framework: Parameters<typeof getActivitySignal>[0],
+): string {
+  if (!output) return output;
+  const sig = getActivitySignal(framework);
+  // Strip volatile TOKENS from each line (not the whole line): real hosts put
+  // genuine progress on the same line as the spinner/affordance — e.g.
+  // `Bash(npm test) step 2 (esc to interrupt)` — so dropping the line would erase
+  // the real active→silent signal. We remove only the parts that change without
+  // real progress: the rotating glyph, the `esc to interrupt` affordance phrase,
+  // the elapsed-time and token/context counters.
+  const escPhrase = new RegExp(sig.escapeToInterrupt.source, 'gi');
+  return output
+    .split('\n')
+    .map((line) =>
+      line
+        .replace(/[⠀-⣿]/g, '') // Braille spinner glyphs
+        .replace(escPhrase, '') // the "esc to interrupt" affordance phrase
+        .replace(/\b\d+m\s*\d+s\b/g, '') // elapsed "26m 16s"
+        .replace(/\(\s*\d+\s*s\b/g, '(') // "(12s …" working-status seconds
+        .replace(/[↑↓]\s*[\d.,]+\s*k?\s*tokens?/gi, '') // token counter
+        .replace(/\b\d+%\s*context\b/gi, ''), // "N% context"
+    )
+    .join('\n');
+}
+
 function cheapHash(s: string): string {
   let h = 0x811c9dc5;
   for (let i = 0; i < s.length; i++) {
