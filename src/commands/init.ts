@@ -126,6 +126,26 @@ export function resolveEnabledFrameworks(
 }
 
 /**
+ * Canonical set of frameworks instar knows how to install. Keep in sync with
+ * `IntelligenceFramework`. Used to validate the `enabledFrameworks` array read
+ * back from config.json: a hardcoded `f === 'claude-code' || f === 'codex-cli'`
+ * filter silently DROPPED `gemini-cli`, so a gemini-only config produced an empty
+ * filtered list and fell through to the `['claude-code']` default — which made
+ * refreshHooksAndSettings scaffold a Claude `.claude/settings.json` into a
+ * gemini-only agent (framework-issue: gemini-cli scaffold leak). Using a complete
+ * known-framework guard makes this drift-proof as new frameworks are added.
+ */
+export const KNOWN_FRAMEWORKS: ReadonlyArray<'claude-code' | 'codex-cli' | 'gemini-cli'> = [
+  'claude-code',
+  'codex-cli',
+  'gemini-cli',
+];
+
+export function isKnownFramework(f: unknown): f is 'claude-code' | 'codex-cli' | 'gemini-cli' {
+  return typeof f === 'string' && (KNOWN_FRAMEWORKS as readonly string[]).includes(f);
+}
+
+/**
  * Main init entry point. Handles both fresh and existing project modes.
  */
 export async function initProject(options: InitOptions): Promise<void> {
@@ -3501,9 +3521,7 @@ export function refreshHooksAndSettings(projectDir: string, stateDir: string): v
       };
       serverPort = config.port;
       if (Array.isArray(config.enabledFrameworks) && config.enabledFrameworks.length > 0) {
-        const filtered = config.enabledFrameworks.filter(
-          (f): f is 'claude-code' | 'codex-cli' => f === 'claude-code' || f === 'codex-cli',
-        );
+        const filtered = config.enabledFrameworks.filter(isKnownFramework);
         if (filtered.length > 0) enabledFrameworks = filtered;
       }
     }
@@ -3686,9 +3704,7 @@ function refreshScripts(projectDir: string, stateDir: string): void {
   const enabled = ((): ReadonlyArray<string> => {
     const raw = (config as { enabledFrameworks?: unknown }).enabledFrameworks;
     if (Array.isArray(raw) && raw.length > 0) {
-      const filtered = raw.filter(
-        (f): f is 'claude-code' | 'codex-cli' => f === 'claude-code' || f === 'codex-cli',
-      );
+      const filtered = raw.filter(isKnownFramework);
       if (filtered.length > 0) return filtered;
     }
     return ['claude-code'];
