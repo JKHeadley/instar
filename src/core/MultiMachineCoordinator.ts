@@ -639,7 +639,17 @@ export class MultiMachineCoordinator extends EventEmitter {
       // the real feature intact (a standby pulling a higher-epoch holder still
       // demotes) while removing the spurious solo demotion.
       if (this.leaseCoordinator!.observedPeerLease()) {
-        this.reconcileRoleToLease('lease-pull');
+        // DEMOTE via the pull loop ONLY when a peer genuinely supersedes us — a
+        // LIVE, strictly-higher-epoch lease (peerLeaseSupersedes()). A stale/expired
+        // or lower-or-equal-epoch observed peer must NOT flip a legitimate holder to
+        // read-only when its own lease merely lapsed transiently between renewals —
+        // that re-acquisition is tickLease's job. Without this guard, a 2-day-expired
+        // epoch-150 peer lease flapped the real laptop holder to read-only ~50% of
+        // the time (live incident 2026-06-02). Promotion stays tickLease's job; the
+        // same-epoch contested tie is handled by the resolver below regardless.
+        if (this.leaseCoordinator!.peerLeaseSupersedes()) {
+          this.reconcileRoleToLease('lease-pull');
+        }
         this.surfacePullDiscoveredSplitBrain();
         // §Problem A — ACT on a same-epoch contested tie (not just surface it):
         // deterministic tie-break → loser relinquishes / winner advances once.
