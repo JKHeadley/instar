@@ -1698,6 +1698,15 @@ export interface MultiMachineConfig {
    * against the < failoverThresholdMs/3 AND < leaseTtlMs invariants on startup.
    */
   standbyPullIntervalMs?: number;
+  /**
+   * Cross-Machine Coherence — active lease-PULL cadence over the low-latency
+   * tunnel (POST /api/lease/pull). A standby asks each peer for its current
+   * lease at this constant interval REGARDLESS of holder liveness, so a quiet
+   * or one-way (NAT) network can't blind it to a takeover or a same-epoch
+   * split-brain. Distinct from standbyPullIntervalMs (the durable git pull).
+   * Default 5000ms. Jittered ±20% to de-synchronize peers.
+   */
+  leasePullIntervalMs?: number;
   /** Lease expiry; bounds worst-case transfer overlap. Default 2 × ingressHeartbeatMs. */
   leaseTtlMs?: number;
   /** Live-tail transport: 'tunnel' (low-latency) | 'git' (durable-only, cheaper N>3). Default 'tunnel'. */

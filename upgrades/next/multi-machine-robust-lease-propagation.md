@@ -1,0 +1,32 @@
+# Upgrade Guide — vNEXT
+
+<!-- bump: minor -->
+
+## What Changed
+
+Multi-machine agents now actively **pull** the lease that decides which machine is "awake," instead of only waiting to be told.
+
+Previously a standby machine learned about a takeover only when the awake machine could push a message to it. On a quiet network, or one where traffic only flows one direction (a common home-network situation), that push might never arrive — so a standby could be left blind, and two machines could each believe they were in charge without noticing each other.
+
+Now every machine, on a steady cadence and regardless of whether the other looks alive, asks its peers for their current lease. If it learns a newer one, it steps down automatically. If it discovers a genuine tie — both machines holding the same generation of the lease — it records that as a contested state visible on the dashboard rather than silently carrying on. This is the robustness-under-poor-conditions half of the cross-machine work, and it ships build-and-test only: nothing in a live deployment is switched on by this change.
+
+The session-pool rollout control was also tightened so it can only roll a stage back (on a failed end-to-end check for the running build), never advance on its own — advancing stays a deliberate operator action.
+
+## What to Tell Your User
+
+- **No more blind standby**: "If I'm running on more than one of your machines, the backup now actively checks in with the others on its own schedule — so even on a quiet or one-way home network it won't get stuck thinking it's in charge when it isn't."
+- **Honest about confusion**: "If two of my machines ever end up both believing they're the active one, I now surface that as a flagged, contested state you can see — instead of quietly double-acting."
+- **Nothing to set up**: "This is on by default with sensible timing and changes nothing about how you talk to me; it only makes the multi-machine setup steadier when conditions are bad."
+
+## Summary of New Capabilities
+
+- An active lease-pull path on the machine-to-machine channel (a new authenticated pull endpoint plus a pull method on the lease transport) so a standby can ask for a peer's current lease instead of only being pushed to.
+- A constant-cadence, jittered standby pull loop that runs independent of holder liveness, auto-demotes a fenced holder on a newer lease, and surfaces a same-epoch split-brain near-silently to the sync status / dashboard.
+- A configurable pull cadence with a startup-validated bound (pull at least once per lease lifetime), resolved alongside the other cross-machine timing knobs and noted in the agent's own capability docs.
+- A revert-only rollout reconcile tick for the session pool, with the running commit identifier resolved from git at boot.
+
+## Evidence
+
+- 108 tests green across the touched area and all three tiers: unit (lease transport pull cases, lease-coordinator pull accessors and same-epoch masking, the pull-cadence config invariant, the coordinator pull-loop contested surface), integration (the new pull endpoint: serve, empty, and unauthenticated), and end-to-end (a two-machine partition produces two awake machines, and on heal the active pull converges back to one — over the real lease components and a mock HTTP wire). Type-check clean.
+- Test-writing caught a real setup bug (a lease builder's third argument is the nonce, not the epoch) before it reached an assertion.
+- Spec: docs/specs/MULTI-MACHINE-ROBUST-LEASE-PROPAGATION-SPEC.md (approved). Side-effects review: upgrades/side-effects/multi-machine-robust-lease-propagation.md.

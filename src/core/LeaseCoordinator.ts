@@ -54,6 +54,14 @@ export interface LeaseTransport {
   observed(): { lease: LeaseRecord | null; lastNonceByHolder: Record<string, number> };
   /** Whether the tunnel medium is currently reachable. */
   isReachable(): boolean;
+  /**
+   * Cross-Machine Coherence — active PULL of a single peer's current lease over
+   * the authenticated channel, folding the result into observed() via the same
+   * receive path. Optional: a git-only mesh has no pull-capable transport.
+   */
+  pullPeer?(peer: { machineId: string; url: string }): Promise<LeaseRecord | null>;
+  /** Best-effort fan-out pull of every peer's lease. Optional (see pullPeer). */
+  pullAllPeers?(): Promise<void>;
 }
 
 export interface LeaseCoordinatorDeps {
@@ -216,6 +224,45 @@ export class LeaseCoordinator {
 
   currentHolder(): string | null {
     return this.effectiveView().lease?.holder ?? null;
+  }
+
+  /**
+   * The current effective-view signed lease (max of tunnel-observed, git-committed,
+   * and this machine's self-issued renewal), or null. Used to SERVE an active PULL
+   * (POST /api/lease/pull, Cross-Machine Coherence): a peer asks for our lease and
+   * we return this. Includes the holder's self-issued lease (which the transport's
+   * observed() — receive-only — does not), so a holder serves its own current lease.
+   */
+  currentLease(): LeaseRecord | null {
+    return this.effectiveView().lease;
+  }
+
+  /**
+   * Whether the attached transport can actively PULL peer leases (Cross-Machine
+   * Coherence). False on a git-only mesh — the standby pull loop is then a no-op.
+   */
+  canPullPeers(): boolean {
+    return typeof this.d.tunnel?.pullAllPeers === 'function';
+  }
+
+  /**
+   * Active-pull every peer's current lease over the tunnel and fold the freshest
+   * into our observed view (the transport's recordObserved path). Safe no-op when
+   * the transport has no pull capability. Awaiting this then reading holdsLease()/
+   * observedPeerLease() reflects whatever a peer just disclosed.
+   */
+  async pullFromPeers(): Promise<void> {
+    if (this.d.tunnel?.pullAllPeers) await this.d.tunnel.pullAllPeers();
+  }
+
+  /**
+   * The RAW lease most-recently observed from a peer (push or pull), independent
+   * of our own self-issued/git view. effectiveView()'s max() masks a *same-epoch*
+   * peer (our self-issued wins the tie), so the standby pull loop reads this to
+   * detect a same-epoch contested split-brain that currentHolder() would hide.
+   */
+  observedPeerLease(): LeaseRecord | null {
+    return this.d.tunnel?.observed().lease ?? null;
   }
 
   /**

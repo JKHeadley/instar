@@ -58,6 +58,14 @@ export interface MachineRouteContext {
    */
   onLeaseReceived?: (lease: unknown, fromMachineId: string) => void;
   /**
+   * Callback to serve this machine's current effective-view lease for an active
+   * PULL (`POST /api/lease/pull`, Cross-Machine Coherence). Returns the signed
+   * effective-view `LeaseRecord` (which may name a THIRD machine as holder —
+   * re-served) or null when this machine has no lease. The puller re-verifies via
+   * `FencedLease.acceptTunnelLease`, so re-serving a third-party lease is safe.
+   */
+  onLeasePullRequest?: () => unknown | null;
+  /**
    * Callback when the holder streams an encrypted live-tail flush over the wire
    * (spec §8 G3b/c). The server lifecycle decrypts it with this machine's X25519
    * private key, then applies it to the LiveTailBuffer (sequence-deduped). Throws
@@ -131,6 +139,19 @@ export function createMachineRoutes(ctx: MachineRouteContext): Router {
     }
     ctx.onLeaseReceived?.(lease, auth.machineId);
     res.json({ ok: true });
+  });
+
+  // ── POST /api/lease/pull — Serve this machine's effective-view lease (active PULL) ──
+  // The READ-side counterpart of POST /api/lease (Cross-Machine Coherence): a peer
+  // (typically a standby) ASKS for our current lease instead of only waiting to be
+  // pushed to, so a quiet or one-way network cannot blind it. Auth-verified via a
+  // signed empty body (machine-auth is body-hash based). Returns the responder's
+  // effective-view lease — which MAY name a third machine as holder (re-served); the
+  // puller re-verifies via FencedLease.acceptTunnelLease, so there is NO
+  // holder==responder guard here (that guard is push-only).
+  router.post('/api/lease/pull', authMiddleware, (_req, res) => {
+    const lease = ctx.onLeasePullRequest ? ctx.onLeasePullRequest() : null;
+    res.json({ lease: lease ?? null });
   });
 
   // ── POST /api/live-tail — Receive an encrypted live-tail flush (spec §8 G3b/c) ──

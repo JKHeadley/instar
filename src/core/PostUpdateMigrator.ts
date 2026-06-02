@@ -2705,7 +2705,7 @@ What this means for how I behave:
 Where to look (never guess mesh state — read it):
 - \`GET /health\` → \`multiMachine.syncStatus\` = \`{ leaseHolder, leaseEpoch, holdsLease, splitBrainState, awakeMachineCount, protocolVersion }\`. \`instar doctor\` surfaces the same.
 - A genuinely **unresolvable split-brain** (a machine looks alive but unreachable, so the lease can't move) surfaces as a single **Attention-queue** item with a Y/N decision ("demote machine X?") — it is deduped per partition episode, never per heartbeat. If I see one, I present the data and the decision to the user; I do not silently pick.
-- Dials live under \`.instar/config.json\` → \`multiMachine\` (ingressHeartbeatMs, leaseTtlMs, liveTailMaxStalenessMs, handoffAckTimeoutMs, …). A nonsensical combination is rejected at startup with a clear message rather than degrading silently.
+- Dials live under \`.instar/config.json\` → \`multiMachine\` (ingressHeartbeatMs, leaseTtlMs, leasePullIntervalMs, liveTailMaxStalenessMs, handoffAckTimeoutMs, …). A nonsensical combination is rejected at startup with a clear message rather than degrading silently.
 `;
       content += '\n' + seamlessnessSection;
       patched = true;

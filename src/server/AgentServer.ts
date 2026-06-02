@@ -240,6 +240,12 @@ export class AgentServer {
     /** Lease wire transport — receives peer lease broadcasts at /api/lease (spec §6). */
     leaseTransport?: { recordObserved: (lease: any) => void };
     /**
+     * Serve this machine's current effective-view signed lease for an active PULL
+     * (POST /api/lease/pull, Cross-Machine Coherence). Returns the signed lease (may
+     * name a third machine — re-served) or null. Wired to LeaseCoordinator.currentLease().
+     */
+    onLeasePullRequest?: () => unknown | null;
+    /**
      * Handoff wire transport — the point-to-point ack/yield channel for the
      * planned handoff (spec §8 G3d/G3e). The /api/handoff/ack route delivers the
      * incoming machine's verified echo via recordAck (resolves the outgoing's
@@ -502,6 +508,7 @@ export class AgentServer {
         onLeaseReceived: options.leaseTransport
           ? (lease: unknown) => options.leaseTransport!.recordObserved(lease as any)
           : undefined,
+        onLeasePullRequest: options.onLeasePullRequest,
         onLiveTailReceived: options.liveTailReceiver,
         onHandoffAck: options.handoffWireTransport
           ? (ack: unknown) => options.handoffWireTransport!.recordAck(ack)

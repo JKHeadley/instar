@@ -25,6 +25,8 @@ export interface ResolvedSeamlessnessConfig {
   ingressHeartbeatMs: number;
   registrySyncDebounceMs: number;
   standbyPullIntervalMs: number;
+  /** Cross-Machine Coherence — active lease-PULL cadence over the tunnel. */
+  leasePullIntervalMs: number;
   failoverThresholdMs: number;
   leaseTtlMs: number;
   liveTailTransport: 'tunnel' | 'git';
@@ -88,6 +90,10 @@ export function resolveSeamlessnessConfig(mm?: MultiMachineConfig): ResolvedSeam
     standbyPullIntervalMs:
       mm?.standbyPullIntervalMs ??
       Math.min(Math.floor(failoverThresholdMs / 4), Math.floor(leaseTtlMs / 2)),
+    // Cross-Machine Coherence active lease-pull cadence. Default 5s — matches
+    // MultiMachineCoordinator.DEFAULT_LEASE_PULL_INTERVAL_MS (the coordinator
+    // reads the raw knob; this resolution governs startup validation).
+    leasePullIntervalMs: mm?.leasePullIntervalMs ?? 5_000,
     failoverThresholdMs,
     leaseTtlMs,
     liveTailTransport: mm?.liveTailTransport ?? 'tunnel',
@@ -129,6 +135,7 @@ export function validateSeamlessnessInvariants(c: ResolvedSeamlessnessConfig): s
     ['ingressHeartbeatMs', c.ingressHeartbeatMs],
     ['registrySyncDebounceMs', c.registrySyncDebounceMs],
     ['standbyPullIntervalMs', c.standbyPullIntervalMs],
+    ['leasePullIntervalMs', c.leasePullIntervalMs],
     ['failoverThresholdMs', c.failoverThresholdMs],
     ['leaseTtlMs', c.leaseTtlMs],
     ['liveTailMaxStalenessMs', c.liveTailMaxStalenessMs],
@@ -155,6 +162,16 @@ export function validateSeamlessnessInvariants(c: ResolvedSeamlessnessConfig): s
     errors.push(
       `multiMachine.liveTailPushRateMs (${c.liveTailPushRateMs}ms) must be ≤ liveTailMaxStalenessMs ` +
       `(${c.liveTailMaxStalenessMs}ms) so the promised RPO bound is achievable.`,
+    );
+  }
+  // Invariant 4 (Cross-Machine Coherence): a standby must ACTIVELY pull at least
+  // once per lease lifetime, so a takeover or same-epoch contention is observed
+  // within one TTL even on a push-blind (one-way NAT) network where broadcasts
+  // never arrive. A pull cadence ≥ the lease TTL defeats the anti-blinding purpose.
+  if (c.leasePullIntervalMs >= c.leaseTtlMs) {
+    errors.push(
+      `multiMachine.leasePullIntervalMs (${c.leasePullIntervalMs}ms) must be < leaseTtlMs ` +
+      `(${c.leaseTtlMs}ms) so a standby actively pulls a peer's lease at least once per lease lifetime.`,
     );
   }
 
