@@ -1,7 +1,10 @@
 ---
 title: Threadline Agent-to-Agent Coherence
 status: draft
-approved: false
+approved: true
+approved-by: Justin (operator)
+approved-date: 2026-06-02
+approval-note: "yes to all 5 decisions + silence-breaker heartbeat refinement (folded into Layer 4)"
 author: Echo (Instar agent)
 created: 2026-06-01
 revised: 2026-06-02
@@ -171,6 +174,16 @@ Conversational check-in to the bound topic, on the PresenceProxy pattern — **b
   Threadline **hub / pull surface**, NOT the user's topic — mirroring the PromiseBeacon
   a2a-reply-wait fix. Reuse `CollaborationSurfacer.notify`'s parent-or-hub routing; don't add a
   parallel push path. Dedup on a **stable incidentKey (threadId)**, never a per-cycle id.
+- **Silence-breaker heartbeat (operator refinement, 2026-06-02).** In addition to the salience
+  surface above, a **time-based** check-in fires when an a2a conversation is **still active AND
+  nothing has surfaced to the user's bound topic for a configured interval (default 5–10 min)**:
+  a brief "still talking to *<peer>* — here's the gist." It **resets on any salience surface**
+  (the user never gets both for the same gap). This is a silence-*breaker*, not routine churn:
+  it fires only to fill a gap where the user would otherwise be in the dark — the exact
+  two-hour-silence that motivated this spec (§4) — bounded by the interval, and subject to the
+  same redaction / attribution / `LlmQueue`-budget guards as every other check-in. It is the
+  a2a analog of the PresenceProxy standby heartbeat (which fires when a *user* message goes
+  unanswered past a threshold). Configurable interval; silent while the layer is off.
 - **LLM budget (circuit-breaker storm).** The summarizer routes through the shared **`LlmQueue`
   on a *background* lane** (strictly below the `interactive` lane PresenceProxy uses), under the
   daily spend cap; when the breaker is open it **skips** (no doomed queueing). Declares a
@@ -303,18 +316,18 @@ resumed on the machine that doesn't own its tmux pane.
 
 ---
 
-## 10. Open decisions for Justin
+## 10. Decisions (RESOLVED by operator, 2026-06-02 — "yes to all" + a refinement)
 
-1. **UUID capture** — confirmed: authoritative `claudeSessionId` hook path (mtime forbidden for
-   multi-thread). *(Round closed the original "both?" question — recommendation is hook-path
-   primary.)*
-2. **Check-in policy (Layer 4)** — default action-required/usable-result only, routine→hub. OK,
-   or do you want a quieter/louder default?
-3. **Warm-session model (Layer 2)** — recommended per-peer + global cap + TTL. Confirm caps.
-4. **Phase 1 scope** — Layer 1 + **Layer 7 floor** + Layer 4 (default-off). Confirm Layer 7-floor
-   as a Phase-1 prerequisite (the round says it must be).
-5. **Layer 6 direction** — "one session owns both tracks" with provenance labeling, vs. an
-   alternative (two sessions + a shared coherence bus). Thumbs-up before its sub-spec.
+1. **UUID capture** — authoritative `claudeSessionId` hook path (mtime forbidden for
+   multi-thread). ✅ *(round-closed.)*
+2. **Check-in policy (Layer 4)** — ✅ action-required/usable-result only **PLUS** a silence-breaker
+   heartbeat every 5–10 min while a conversation is active and nothing has reached the user (the
+   operator's refinement; folded into Layer 4).
+3. **Warm-session model (Layer 2)** — ✅ per-peer + global cap + TTL.
+4. **Phase 1 scope** — ✅ Layer 1 + **Layer 7 sensitive-completion floor (prerequisite)** + Layer 4
+   (default-off).
+5. **Layer 6 direction** — ✅ "one session owns both tracks" with provenance labeling. Proceed to
+   its own converged sub-spec before build.
 
 ---
 
