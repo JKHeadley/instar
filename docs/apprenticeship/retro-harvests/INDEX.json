@@ -1,0 +1,16 @@
+{
+  "schema": "apprenticeship-retro-harvest-index/v1",
+  "note": "Latest retro-harvest per instance-pair. The onboarding knowledge for the next instance = the latest harvest here + the framework-issue playbook. Step 0 writes this index; Step 1's gate enforces its use.",
+  "harvests": {
+    "echo-to-codey-mentorship": {
+      "artifact": "docs/apprenticeship/retro-harvests/echo-to-codey-mentorship.md",
+      "from": "echo",
+      "to": "codey",
+      "instanceType": "mentorship",
+      "framework": "codex-cli",
+      "harvestedAt": "2026-06-02T03:30:00Z",
+      "scopeMode": "full",
+      "completeness": "partial-accepted"
+    }
+  }
+}
