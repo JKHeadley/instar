@@ -5407,8 +5407,11 @@ INSTAR_DIR="\${CLAUDE_PROJECT_DIR:-.}/.instar"
 CONFIG="\$INSTAR_DIR/config.json"
 [ -f "\$CONFIG" ] || exit 0
 
-# DARK by default — opt in via config.mcpAutoRefresh.enabled === true
-ENABLED=\$(python3 -c "import json;print(json.load(open('\$CONFIG')).get('mcpAutoRefresh',{}).get('enabled') is True)" 2>/dev/null || echo False)
+# Enablement: explicit config.mcpAutoRefresh.enabled wins; if UNSET, a DEVELOPMENT
+# agent (config.developmentAgent === true — e.g. echo, the dogfooding ground) gets
+# it ENABLED, while production agents stay DARK. So "ships dark" means dark on the
+# fleet but live on dev agents that prove features first. Explicit false always wins.
+ENABLED=\$(python3 -c "import json;c=json.load(open('\$CONFIG'));e=c.get('mcpAutoRefresh',{}).get('enabled');print(e is True or (e is None and c.get('developmentAgent') is True))" 2>/dev/null || echo False)
 [ "\$ENABLED" = "True" ] || exit 0
 
 SESSION_ID="\${CLAUDE_CODE_SESSION_ID:-}"

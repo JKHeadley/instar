@@ -15,7 +15,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { PostUpdateMigrator } from '../../src/core/PostUpdateMigrator.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
@@ -101,5 +101,49 @@ describe('PostUpdateMigrator — mcp-health-autorefresh.sh (auto-restart-on-MCP-
     // and it is wired into session-start.sh (the invocation)
     const sessionStart = fs.readFileSync(path.join(projectDir, '.instar', 'hooks', 'instar', 'session-start.sh'), 'utf-8');
     expect(sessionStart).toContain('mcp-health-autorefresh.sh');
+  });
+
+  // ── developmentAgent gate: dev agents auto-enable; production stays dark ──
+  // A mock `claude` reports playwright as "Failed to connect"; config uses a DEAD
+  // port so the session-name-resolution curl always fails — the script then exits
+  // with "could not resolve own session name" IFF it passed the dark gate. That
+  // stderr line is our observable proxy for "enabled". Never touches a real server;
+  // never writes the refresh marker (session resolution fails first).
+  function runWithMockClaude(cfg: Record<string, unknown>): string {
+    const binDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mock-claude-bin-'));
+    fs.writeFileSync(
+      path.join(binDir, 'claude'),
+      '#!/bin/bash\necho "playwright: npx -y @playwright/mcp@latest - x Failed to connect"\necho "threadline: node entry - Connected"\n',
+      { mode: 0o755 },
+    );
+    fs.writeFileSync(path.join(projectDir, '.instar', 'config.json'), JSON.stringify({ port: 59999, ...cfg }));
+    const env = {
+      ...process.env,
+      PATH: binDir + path.delimiter + (process.env.PATH || ''),
+      CLAUDE_PROJECT_DIR: projectDir,
+      CLAUDE_CODE_SESSION_ID: 'test-sid',
+    };
+    const r = spawnSync('bash', [scriptPath], { env, encoding: 'utf-8' });
+    SafeFsExecutor.safeRmSync(binDir, { recursive: true, force: true, operation: 'test mock-claude bin' });
+    return (r.stderr || '') + (r.stdout || '');
+  }
+  const PASSED_GATE = /could not resolve own session name/i;
+
+  it('DEV agent auto-enables when mcpAutoRefresh is unset (developmentAgent:true)', () => {
+    const out = runWithMockClaude({ developmentAgent: true });
+    expect(out).toMatch(PASSED_GATE);                // passed the dark gate -> would have refreshed
+    expect(markerExists(projectDir)).toBe(false);    // but never reached a real refresh (dead port)
+  });
+
+  it('PRODUCTION agent stays dark when mcpAutoRefresh is unset (no developmentAgent)', () => {
+    const out = runWithMockClaude({});
+    expect(out).not.toMatch(PASSED_GATE);            // exited at the dark gate
+    expect(markerExists(projectDir)).toBe(false);
+  });
+
+  it('explicit mcpAutoRefresh.enabled:false overrides developmentAgent (stays dark)', () => {
+    const out = runWithMockClaude({ developmentAgent: true, mcpAutoRefresh: { enabled: false } });
+    expect(out).not.toMatch(PASSED_GATE);
+    expect(markerExists(projectDir)).toBe(false);
   });
 });
