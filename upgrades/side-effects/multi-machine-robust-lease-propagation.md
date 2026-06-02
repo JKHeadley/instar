@@ -110,3 +110,11 @@ simply skips the loop (the intended git-only-mesh / partial-double behavior) ins
 crashing. Caught by the full CI unit matrix (shard 4/4, both Node 20 and 22) after the
 merge with main brought the existing coordinator test into scope; 28 multi-machine tests
 green, `tsc --noEmit` clean.
+
+Also regenerated the generated `src/data/builtin-manifest.json` (via
+`npm run generate:manifest`): an earlier revert to drop version churn from the PR diff
+left it stale at v1.3.154, but `builtin-manifest.test.ts` ("is up-to-date with current
+source") compares against the regenerated manifest for current source (now v1.3.192
+post-merge). No behavior change — it is a generated data file. (`esm-compliance.test.ts`'s
+local `require()` findings are byte-identical to main and present on main, so they are
+pre-existing and pass in CI — not introduced here.)
