@@ -6207,6 +6207,15 @@ if [ -z "\$AUTH_TOKEN" ] && [ -f "\$CONFIG_FILE" ]; then
   AUTH_TOKEN=\$(python3 -c "import json; v=json.load(open('\$CONFIG_FILE')).get('authToken',''); print(v if isinstance(v, str) else '')" 2>/dev/null)
 fi
 
+# Session-clock injection (query mode) — surface elapsed/remaining for an active
+# time-boxed session on this user turn too (not just autonomous continuations),
+# so the agent quotes the real clock instead of guessing. Signal-only: emits
+# nothing when no time-boxed session is active or the server is unreachable.
+# Spec: docs/specs/ROBUST-SESSION-TIME-AWARENESS-SPEC.md (Component 2, query mode).
+if [ -f "\$INSTAR_DIR/scripts/emit-session-clock.sh" ]; then
+  bash "\$INSTAR_DIR/scripts/emit-session-clock.sh" query "\$TOPIC_ID" "\$PORT" "\$AUTH_TOKEN" 2>/dev/null
+fi
+
 # Fetch recent messages for this topic
 if [ -n "\$AUTH_TOKEN" ]; then
   RECENT_MSGS=\$(curl -s \\
