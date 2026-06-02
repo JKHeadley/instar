@@ -36,6 +36,7 @@ import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
 import path from 'node:path';
 import { findNewestRolloutSync } from '../providers/adapters/openai-codex/observability/sessionPaths.js';
+import { findNewestGeminiSessionSync } from '../providers/adapters/gemini-cli/observability/sessionPaths.js';
 
 export type CompactionTrigger = 'PreCompact' | 'watchdog-poll' | 'recovery-hook' | string;
 
@@ -94,6 +95,9 @@ export interface CompactionSentinelDeps {
 
   /** Override $CODEX_HOME (tests). Defaults to ~/.codex. Only used for codex sessions. */
   codexHome?: string;
+
+  /** Override ~/.gemini (tests). Defaults to ~/.gemini. Only used for gemini-cli sessions. */
+  geminiHome?: string;
 
   /**
    * Override for the JSONL lookup root. Primarily for tests. Defaults to
@@ -443,6 +447,15 @@ export class CompactionSentinel extends EventEmitter {
     // behavior byte-for-byte preserved). Mirrors the RateLimitSentinel codex fix (#33).
     if (this.deps.getSessionFramework?.(sessionName) === 'codex-cli') {
       return findNewestRolloutSync(this.deps.codexHome);
+    }
+    // Gemini parity (apprenticeship Step 2 §4.0.2): a gemini session's transcript
+    // is the newest session file under ~/.gemini/tmp/<hash>/chats. Compaction-
+    // recovery is verified by post-recovery output growth; for gemini "producing
+    // output again" == "the newest gemini session file grew". Only taken for
+    // gemini sessions; everything else falls through to the unchanged Claude path
+    // (Claude behavior byte-for-byte preserved). Mirrors the codex fix (#33).
+    if (this.deps.getSessionFramework?.(sessionName) === 'gemini-cli') {
+      return findNewestGeminiSessionSync(this.deps.geminiHome);
     }
     try {
       const root = this.deps.jsonlRoot

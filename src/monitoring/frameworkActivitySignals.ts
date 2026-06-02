@@ -96,9 +96,28 @@ const CODEX_CLI_SIGNAL: FrameworkActivitySignal = {
     'the working status line "Working (Ns • esc to interrupt)", action bullets ("• Ran ..."), spinner characters (⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏), "generating". IDLE (NOT work): the model-name status line "gpt-5.3-codex medium · <dir>" and the placeholder prompt "Find and fix a bug in @filename".',
 };
 
+const GEMINI_CLI_SIGNAL: FrameworkActivitySignal = {
+  displayName: 'Gemini CLI',
+  // CONSERVATIVE (apprenticeship Step 2): the minimal Gemini body runs ONE-SHOT
+  // (`gemini -p`), not a long-lived TUI, so the precise interactive-pane
+  // signatures are not yet live-characterized (a §6 build-time discovery item
+  // when the TUI/loop-driver path is taken up). This entry matches the generic
+  // "actively working" indicators (the dot/Braille spinner glyphs + the bare
+  // word "Generating"/"Thinking" Gemini shows during a turn) plus the
+  // "esc to interrupt" hint shared across CLIs. It deliberately does NOT match
+  // the bare word "gemini" (which appears in idle status / the model name) to
+  // avoid the codex idle-status false-positive that hid stuck sessions.
+  toolCallOrSpinner: /⠋|⠙|⠹|⠸|⠼|⠴|⠦|⠧|⠇|⠏|\b(generating|thinking)\b/i,
+  escapeToInterrupt: /esc to interrupt/i,
+  runningIndicator: /\((running|executing|streaming)\)/i,
+  promptSignaturesLine:
+    'spinner characters (⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏), "Generating"/"Thinking" during a turn, "esc to interrupt". NOTE: the Gemini interactive-TUI signatures are not yet live-characterized (the minimal Step-2 body runs one-shot); this is a conservative default refined when the loop-driver/TUI path lands.',
+};
+
 const ACTIVITY_SIGNALS: Record<IntelligenceFramework, FrameworkActivitySignal> = {
   'claude-code': CLAUDE_CODE_SIGNAL,
   'codex-cli': CODEX_CLI_SIGNAL,
+  'gemini-cli': GEMINI_CLI_SIGNAL,
 };
 
 /**

@@ -112,10 +112,10 @@ describe('frameworkActivitySignals', () => {
   });
 
   describe('listActivitySignals', () => {
-    it('enumerates both supported frameworks', () => {
+    it('enumerates every supported framework', () => {
       const signals = listActivitySignals();
       const frameworks = signals.map(s => s.framework).sort();
-      expect(frameworks).toEqual(['claude-code', 'codex-cli']);
+      expect(frameworks).toEqual(['claude-code', 'codex-cli', 'gemini-cli']);
     });
 
     it('each entry exposes the full signal shape', () => {

@@ -66,6 +66,17 @@ export function resolveModelForFramework(
     if (key === 'capable' || key === 'opus') return 'gpt-5.5';      // heavy — frontier reasoning
     return modelOrTier;
   }
+  if (framework === 'gemini-cli') {
+    // Generic tiers map to the verified-working Gemini model ids (kept in sync
+    // with src/providers/adapters/gemini-cli/models.ts — single source of truth).
+    // Claude-style tier names from legacy callers map to a sensible Gemini
+    // equivalent so an unported call site doesn't crash for a Gemini agent.
+    // gemini-2.5-flash is the verified one-shot default (v0.25.2, cached-OAuth).
+    if (key === 'fast' || key === 'haiku') return 'gemini-2.5-flash';
+    if (key === 'balanced' || key === 'sonnet') return 'gemini-2.5-flash';
+    if (key === 'capable' || key === 'opus') return 'gemini-2.5-pro';
+    return modelOrTier;
+  }
   return modelOrTier;
 }
 
@@ -239,9 +250,43 @@ const codexCliBuilder: Builder = (options) => {
   };
 };
 
+const geminiCliBuilder: Builder = (options) => {
+  // Gemini CLI interactive launch (apprenticeship Step 2 minimal body).
+  // Resume is a FLAG (`--resume latest|<index>`), unlike Codex's `resume`
+  // subcommand.
+  //
+  // APPROVAL MODE — the agentic launch auto-approves, exactly like the rest of
+  // the fleet: Claude agents launch with `--dangerously-skip-permissions` and
+  // codex agents with `--dangerously-bypass-approvals-and-sandbox`. A Gemini
+  // *agent* doing autonomous work (Codey drives it through real tasks in the
+  // apprenticeship's Step 4) must not block on per-tool confirmation, so the
+  // interactive autonomous launch uses `--yolo` (Gemini's equivalent of
+  // skip-permissions/bypass). This is the SESSION path. The lockdown
+  // (`--approval-mode default`, no tools) lives ONLY on the one-shot
+  // intelligence-provider EVALUATION path (GeminiCliIntelligenceProvider —
+  // the analog of `codex exec --sandbox read-only`), never here.
+  const resolvedModel =
+    resolveModelForFramework('gemini-cli', options.defaultModel) ?? 'gemini-2.5-flash';
+  const argv: string[] = [options.binaryPath, '-m', resolvedModel, '--yolo'];
+  if (options.resumeSessionId) {
+    // Gemini resumes by `latest` or a numeric index. The tracked resume id is
+    // passed through verbatim (callers store whatever --list-sessions surfaced).
+    argv.push('--resume', options.resumeSessionId);
+  }
+  return {
+    argv,
+    envOverrides: {
+      // Defense-in-depth: clear CLAUDECODE so a Gemini session can't be
+      // mis-detected as a Claude one by env-grepping tooling.
+      CLAUDECODE: '',
+    },
+  };
+};
+
 const BUILDERS: Record<IntelligenceFramework, Builder> = {
   'claude-code': claudeCodeBuilder,
   'codex-cli': codexCliBuilder,
+  'gemini-cli': geminiCliBuilder,
 };
 
 /**
@@ -426,9 +471,37 @@ const codexCliHeadlessBuilder: HeadlessBuilder = (options) => {
   };
 };
 
+const geminiCliHeadlessBuilder: HeadlessBuilder = (options) => {
+  // Gemini CLI headless (prompt-and-exit) — the CANONICAL one-shot argv:
+  //   gemini -m <model> --approval-mode default -p <prompt>
+  // This mirrors the gemini adapter's transport (buildGeminiOneShotArgv).
+  // --approval-mode default is pinned (NEVER --yolo / --approval-mode yolo on
+  // this path); the prompt is exactly one argv element (the value of -p), so a
+  // leading-dash prompt can't be re-parsed as a flag.
+  const model = resolveModelForFramework('gemini-cli', options.model) ?? 'gemini-2.5-flash';
+  const argv: string[] = [
+    options.binaryPath,
+    '-m', model,
+    '--approval-mode', 'default',
+    '-p', options.prompt,
+  ];
+  return {
+    argv,
+    envOverrides: {
+      // The canonical Google/Gemini billing-var scrubbing happens when
+      // SessionManager merges these with the universal block + the
+      // framework-specific provider-env logic (the Rule-1a analog lives in
+      // providers/adapters/gemini-cli/transport/geminiSpawn.ts for the
+      // direct-spawn path). Clear CLAUDECODE as defense-in-depth.
+      CLAUDECODE: '',
+    },
+  };
+};
+
 const HEADLESS_BUILDERS: Record<IntelligenceFramework, HeadlessBuilder> = {
   'claude-code': claudeCodeHeadlessBuilder,
   'codex-cli': codexCliHeadlessBuilder,
+  'gemini-cli': geminiCliHeadlessBuilder,
 };
 
 /**

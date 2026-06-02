@@ -283,6 +283,17 @@ export function detectCodexPath(): string | null {
   return detectFrameworkBinary('codex');
 }
 
+/**
+ * Detect the Gemini CLI. Apprenticeship Step 2 sibling of
+ * detectClaudePath / detectCodexPath. The known-location probe
+ * (`~/.gemini/bin/gemini`) + the standard install search are already
+ * wired in `detectFrameworkBinary('gemini')`; this is the convenience
+ * wrapper the gemini-cli intelligence provider + config consume.
+ */
+export function detectGeminiPath(): string | null {
+  return detectFrameworkBinary('gemini');
+}
+
 // ── Framework Prerequisite Check ───────────────────────────────────────
 
 /**
@@ -292,11 +303,13 @@ export function detectCodexPath(): string | null {
  */
 export interface FrameworkPrerequisiteInput {
   /** Framework selected by config or env. */
-  configuredFramework: 'claude-code' | 'codex-cli';
+  configuredFramework: 'claude-code' | 'codex-cli' | 'gemini-cli';
   /** Path to claude binary if detected, else null. */
   claudePathDetected: string | null;
   /** Path to codex binary if detected, else null. */
   codexPathDetected: string | null;
+  /** Path to gemini binary if detected, else null. */
+  geminiPathDetected?: string | null;
 }
 
 export interface FrameworkPrerequisiteResult {
@@ -342,6 +355,16 @@ export function checkFrameworkPrerequisite(
         };
       }
       return { satisfied: true };
+    case 'gemini-cli':
+      if (!input.geminiPathDetected) {
+        return {
+          satisfied: false,
+          error:
+            'Gemini CLI not found. INSTAR_FRAMEWORK is set to gemini-cli. '
+            + 'Install with: npm install -g @google/gemini-cli',
+        };
+      }
+      return { satisfied: true };
     default: {
       const _exhaustive: never = input.configuredFramework;
       void _exhaustive;
@@ -356,27 +379,28 @@ export function checkFrameworkPrerequisite(
  * unit-test the resolution independently.
  */
 export function resolveConfiguredFramework(
-  configValue: 'claude-code' | 'codex-cli' | undefined,
+  configValue: 'claude-code' | 'codex-cli' | 'gemini-cli' | undefined,
   envValue: string | undefined,
-  enabledFrameworks?: ('claude-code' | 'codex-cli')[],
-): 'claude-code' | 'codex-cli' {
+  enabledFrameworks?: ('claude-code' | 'codex-cli' | 'gemini-cli')[],
+): 'claude-code' | 'codex-cli' | 'gemini-cli' {
   // Precedence:
   //   1. sessions.framework (explicit per-install runtime override)
   //   2. INSTAR_FRAMEWORK env (explicit runtime override for this boot)
   //   3. enabledFrameworks[0] (the persisted install choice the wizard
-  //      writes — this is what a codex-cli-only agent actually has set;
-  //      added in the framework-spawn-portability fix so the runtime
-  //      honors the wizard's framework choice even when sessions.framework
-  //      and the env are both unset)
+  //      writes — this is what a codex-cli-only / gemini-cli-only agent
+  //      actually has set; added in the framework-spawn-portability fix so
+  //      the runtime honors the wizard's framework choice even when
+  //      sessions.framework and the env are both unset)
   //   4. 'claude-code' (historical default)
-  if (configValue === 'claude-code' || configValue === 'codex-cli') {
+  if (configValue === 'claude-code' || configValue === 'codex-cli' || configValue === 'gemini-cli') {
     return configValue;
   }
   const env = envValue?.trim().toLowerCase();
   if (env === 'codex-cli' || env === 'codex') return 'codex-cli';
+  if (env === 'gemini-cli' || env === 'gemini') return 'gemini-cli';
   if (env === 'claude-code' || env === 'claude') return 'claude-code';
   const first = enabledFrameworks?.[0];
-  if (first === 'claude-code' || first === 'codex-cli') return first;
+  if (first === 'claude-code' || first === 'codex-cli' || first === 'gemini-cli') return first;
   return 'claude-code';
 }
 
@@ -663,10 +687,11 @@ export function loadConfig(projectDir?: string): InstarConfig {
     // agent (sessions.framework + INSTAR_FRAMEWORK both unset) would
     // resolve to claude-code and spawn Claude sessions on every
     // message — the framework-portability bug.
-    fileConfig.enabledFrameworks as ('claude-code' | 'codex-cli')[] | undefined,
+    fileConfig.enabledFrameworks as ('claude-code' | 'codex-cli' | 'gemini-cli')[] | undefined,
   );
   const claudePathDetected = fileConfig.sessions?.claudePath || detectClaudePath();
   const codexPathDetected = detectCodexPath();
+  const geminiPathDetected = detectGeminiPath();
 
   if (!tmuxPath) {
     throw new Error('tmux not found. Install with: brew install tmux (macOS) or apt install tmux (Linux)');
@@ -675,19 +700,22 @@ export function loadConfig(projectDir?: string): InstarConfig {
     configuredFramework,
     claudePathDetected,
     codexPathDetected,
+    geminiPathDetected,
   });
   if (!prereq.satisfied) {
     throw new Error(prereq.error!);
   }
 
   // The SessionManagerConfig's claudePath field is kept for backwards-compat
-  // with existing spawn paths; for codex-cli installs it carries the codex
-  // binary path. Spawn paths will be migrated to read `frameworkBinaryPath`
-  // (or similar) in a follow-up slice.
+  // with existing spawn paths; for codex-cli / gemini-cli installs it carries
+  // the selected framework's binary path. Spawn paths will be migrated to read
+  // `frameworkBinaryPath` (or similar) in a follow-up slice.
   const claudePath =
     configuredFramework === 'codex-cli'
       ? (codexPathDetected ?? claudePathDetected ?? '')
-      : (claudePathDetected ?? '');
+      : configuredFramework === 'gemini-cli'
+        ? (geminiPathDetected ?? claudePathDetected ?? '')
+        : (claudePathDetected ?? '');
 
   const projectName = fileConfig.projectName || path.basename(resolvedProjectDir);
 
@@ -699,6 +727,7 @@ export function loadConfig(projectDir?: string): InstarConfig {
     frameworkBinaryPaths: {
       ...(claudePathDetected ? { 'claude-code': claudePathDetected } : {}),
       ...(codexPathDetected ? { 'codex-cli': codexPathDetected } : {}),
+      ...(geminiPathDetected ? { 'gemini-cli': geminiPathDetected } : {}),
     },
     // The resolved runtime framework. Both spawn paths read this as
     // the default when no per-call framework override is given, so a

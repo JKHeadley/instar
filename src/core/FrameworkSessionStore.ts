@@ -21,8 +21,9 @@
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { findGeminiSessionFileSync } from '../providers/adapters/gemini-cli/observability/sessionPaths.js';
 
-export type SessionFramework = 'claude-code' | 'codex-cli';
+export type SessionFramework = 'claude-code' | 'codex-cli' | 'gemini-cli';
 
 export interface ResolveTranscriptOptions {
   framework: SessionFramework;
@@ -34,7 +35,7 @@ export interface ResolveTranscriptOptions {
   /**
    * Root override (testing). For claude-code this replaces
    * `<home>/.claude/projects`; for codex-cli it replaces
-   * `<home>/.codex/sessions`.
+   * `<home>/.codex/sessions`; for gemini-cli it replaces `<home>/.gemini`.
    */
   rootOverride?: string;
 }
@@ -96,11 +97,27 @@ function safeReaddir(dir: string): string[] {
  * as "nothing to flush/validate", so the failure mode is a safe no-op,
  * identical to the pre-Gap-3 Claude behavior.
  */
+/**
+ * Gemini CLI: `<home>/.gemini/tmp/<projectHash>/chats/session-*-<short8>.json[l]`.
+ * Resolved by session UUID through the gemini adapter's sessionPaths helper
+ * (the single source of gemini-layout truth — apprenticeship Step 2 §4.0.1).
+ * Returns the matched file path, or '' when not found / not a gemini tree.
+ */
+function geminiTranscriptPath(opts: ResolveTranscriptOptions): string {
+  const home = opts.homeDir ?? os.homedir();
+  // rootOverride, when given, replaces `<home>/.gemini`; findGeminiSessionFileSync
+  // takes the geminiHome (the `.gemini` dir) directly.
+  const geminiHome = opts.rootOverride ?? path.join(home, '.gemini');
+  return findGeminiSessionFileSync(opts.sessionId, geminiHome) ?? '';
+}
+
 export function resolveFrameworkTranscriptPath(opts: ResolveTranscriptOptions): string {
   if (!opts.sessionId) return '';
   switch (opts.framework) {
     case 'codex-cli':
       return codexTranscriptPath(opts);
+    case 'gemini-cli':
+      return geminiTranscriptPath(opts);
     case 'claude-code':
     default:
       return claudeTranscriptPath(opts);

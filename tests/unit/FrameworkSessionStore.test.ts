@@ -102,12 +102,28 @@ describe('FrameworkSessionStore', () => {
 
   it('unknown framework falls back to the claude-code resolver', () => {
     const p = resolveFrameworkTranscriptPath({
-      // @ts-expect-error — exercising the defensive default branch
-      framework: 'gemini-cli',
+      // @ts-expect-error — exercising the defensive default branch with a
+      // genuinely-unknown framework value (gemini-cli is now a real framework
+      // with its own resolver, so it is no longer the "unknown" placeholder).
+      framework: 'aider-cli',
       sessionId: 's',
       projectDir: '/p',
       homeDir: '/h',
     });
     expect(p).toBe(path.join('/h', '.claude', 'projects', '-p', 's.jsonl'));
+  });
+
+  it('gemini-cli routes to the gemini resolver (no fixture → empty)', () => {
+    // gemini-cli is now a real framework: it resolves through the gemini
+    // sessionPaths helper under <home>/.gemini/tmp/**, NOT the claude tree.
+    // With no fixture present it returns '' (a safe no-op), proving it does
+    // NOT fall through to the claude path.
+    const p = resolveFrameworkTranscriptPath({
+      framework: 'gemini-cli',
+      sessionId: 's',
+      projectDir: '/p',
+      homeDir: '/nonexistent-home-for-test',
+    });
+    expect(p).toBe('');
   });
 });

@@ -98,7 +98,7 @@ interface InitOptions {
    * a Codex-only install with no `.claude/` writes. `'both'` enables
    * dual-runtime use.
    */
-  framework?: 'claude-code' | 'codex-cli' | 'both';
+  framework?: 'claude-code' | 'codex-cli' | 'gemini-cli' | 'both';
 }
 
 /**
@@ -109,11 +109,13 @@ interface InitOptions {
  * users and the historical `npx instar` flow.
  */
 export function resolveEnabledFrameworks(
-  choice: 'claude-code' | 'codex-cli' | 'both' | undefined,
-): ReadonlyArray<'claude-code' | 'codex-cli'> {
+  choice: 'claude-code' | 'codex-cli' | 'gemini-cli' | 'both' | undefined,
+): ReadonlyArray<'claude-code' | 'codex-cli' | 'gemini-cli'> {
   switch (choice) {
     case 'codex-cli':
       return ['codex-cli'];
+    case 'gemini-cli':
+      return ['gemini-cli'];
     case 'both':
       return ['claude-code', 'codex-cli'];
     case 'claude-code':

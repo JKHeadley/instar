@@ -12,6 +12,7 @@ import {
 } from '../../src/core/intelligenceProviderFactory.js';
 import { CodexCliIntelligenceProvider } from '../../src/core/CodexCliIntelligenceProvider.js';
 import { ClaudeCliIntelligenceProvider } from '../../src/core/ClaudeCliIntelligenceProvider.js';
+import { GeminiCliIntelligenceProvider } from '../../src/core/GeminiCliIntelligenceProvider.js';
 import { CircuitBreakingIntelligenceProvider } from '../../src/core/CircuitBreakingIntelligenceProvider.js';
 import type { IntelligenceProvider } from '../../src/core/types.js';
 
@@ -42,6 +43,14 @@ describe('buildIntelligenceProvider', () => {
       binaryPath: '/usr/bin/codex',
     });
     expectWraps(p, CodexCliIntelligenceProvider);
+  });
+
+  it('returns a circuit-breaker-wrapped GeminiCliIntelligenceProvider when framework=gemini-cli and binary path supplied (the ALIVE path)', () => {
+    const p = buildIntelligenceProvider({
+      framework: 'gemini-cli',
+      binaryPath: '/usr/bin/gemini',
+    });
+    expectWraps(p, GeminiCliIntelligenceProvider);
   });
 
   it('defaults to claude-code when framework is omitted', () => {
@@ -99,8 +108,14 @@ describe('frameworkFromEnv', () => {
     expect(frameworkFromEnv({ INSTAR_FRAMEWORK: 'CODEX' })).toBe('codex-cli');
   });
 
+  it('parses gemini-cli and the alias gemini', () => {
+    expect(frameworkFromEnv({ INSTAR_FRAMEWORK: 'gemini-cli' })).toBe('gemini-cli');
+    expect(frameworkFromEnv({ INSTAR_FRAMEWORK: 'gemini' })).toBe('gemini-cli');
+    expect(frameworkFromEnv({ INSTAR_FRAMEWORK: 'GEMINI' })).toBe('gemini-cli');
+  });
+
   it('returns null for unrecognized values rather than throwing', () => {
-    expect(frameworkFromEnv({ INSTAR_FRAMEWORK: 'gemini' })).toBeNull();
+    expect(frameworkFromEnv({ INSTAR_FRAMEWORK: 'aider' })).toBeNull();
     expect(frameworkFromEnv({ INSTAR_FRAMEWORK: 'whatever' })).toBeNull();
   });
 });

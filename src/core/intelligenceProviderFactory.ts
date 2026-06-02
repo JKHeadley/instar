@@ -15,17 +15,25 @@
  */
 
 import type { IntelligenceProvider } from './types.js';
-import { detectClaudePath, detectCodexPath } from './Config.js';
+import { detectClaudePath, detectCodexPath, detectGeminiPath } from './Config.js';
 import { ClaudeCliIntelligenceProvider } from './ClaudeCliIntelligenceProvider.js';
 import { CodexCliIntelligenceProvider } from './CodexCliIntelligenceProvider.js';
+import { GeminiCliIntelligenceProvider } from './GeminiCliIntelligenceProvider.js';
 import { wrapIntelligenceWithCircuitBreaker } from './CircuitBreakingIntelligenceProvider.js';
 
 /**
  * Stable framework identifiers the factory recognizes. Adding a new
  * framework requires (a) extending this union and (b) wiring up a case
  * in `buildIntelligenceProvider`.
+ *
+ * NOTE (apprenticeship Step 2): extending this union is the ONLY
+ * compiler-forced wiring — it forces the `never`-exhaustive switch below
+ * and every `Record<IntelligenceFramework, …>` map. The ~10 parallel
+ * hardcoded `'claude-code' | 'codex-cli'` unions across the tree are NOT
+ * related to this type by the compiler; they are a hand-audit checklist
+ * (see APPRENTICESHIP-STEP2-GEMINI-RUNTIME-ADAPTER-SPEC §4.3).
  */
-export type IntelligenceFramework = 'claude-code' | 'codex-cli';
+export type IntelligenceFramework = 'claude-code' | 'codex-cli' | 'gemini-cli';
 
 export interface BuildIntelligenceProviderOptions {
   /**
@@ -81,6 +89,16 @@ export function buildIntelligenceProvider(
         }),
       );
     }
+    case 'gemini-cli': {
+      const path = options.binaryPath ?? detectGeminiPath();
+      if (!path) return null;
+      return wrapIntelligenceWithCircuitBreaker(
+        new GeminiCliIntelligenceProvider({
+          geminiPath: path,
+          ...(options.workingDirectory ? { workingDirectory: options.workingDirectory } : {}),
+        }),
+      );
+    }
     default: {
       // Exhaustiveness check — extending IntelligenceFramework without
       // adding a case here is a type error.
@@ -101,5 +119,6 @@ export function frameworkFromEnv(env: NodeJS.ProcessEnv = process.env): Intellig
   if (!raw) return null;
   if (raw === 'claude-code' || raw === 'claude') return 'claude-code';
   if (raw === 'codex-cli' || raw === 'codex') return 'codex-cli';
+  if (raw === 'gemini-cli' || raw === 'gemini') return 'gemini-cli';
   return null;
 }

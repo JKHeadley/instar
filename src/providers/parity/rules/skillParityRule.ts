@@ -584,6 +584,14 @@ async function removeOrphanSkillDirs(
 const FRAMEWORK_RENDERERS: Record<IntelligenceFramework, FrameworkRenderer> = {
   'claude-code': claudeCodeRenderer,
   'codex-cli': codexCliRenderer,
+  // Gemini CLI (apprenticeship Step 2 minimal body): reuses the non-Claude
+  // `.agents/skills` shared-layout renderer. Skill-rendering PARITY for gemini
+  // (a gemini-specific sibling YAML if/when one is needed) is §9 ongoing
+  // apprenticeship work — the parity harness is dormant in production
+  // (src/providers/registry is unregistered), so this entry keeps the
+  // compiler-forced Record total without overclaiming a gemini-native artifact
+  // that the minimal body does not yet produce.
+  'gemini-cli': codexCliRenderer,
 };
 
 // ─── The exported ParityRule ───────────────────────────────────────────

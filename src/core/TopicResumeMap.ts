@@ -15,6 +15,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { findRolloutFileSync } from '../providers/adapters/openai-codex/observability/sessionPaths.js';
+import { findGeminiSessionFileSync } from '../providers/adapters/gemini-cli/observability/sessionPaths.js';
 
 interface ResumeEntry {
   uuid: string;
@@ -295,6 +296,16 @@ export class TopicResumeMap {
       if (findRolloutFileSync(uuid) !== null) return true;
     } catch {
       // Can't check the codex layout — treat as not found.
+    }
+    // Gemini: ~/.gemini/tmp/<projectHash>/chats/session-<ts>-<short8>.json[l].
+    // Without this every gemini session looks expired/missing and resume breaks
+    // fleet-wide for gemini agents (the gemini analog of the codex-compat resume
+    // root — apprenticeship Step 2 §4.0.1; the parallel TopicResumeMap the
+    // harvest names alongside ThreadResumeMap).
+    try {
+      if (findGeminiSessionFileSync(uuid) !== null) return true;
+    } catch {
+      // Can't check the gemini layout — treat as not found.
     }
     return false;
   }

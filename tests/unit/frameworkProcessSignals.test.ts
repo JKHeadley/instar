@@ -22,7 +22,7 @@ describe('frameworkProcessSignals', () => {
   describe('listProcessSignals', () => {
     it('enumerates every framework supported by the factory', () => {
       const frameworks = listProcessSignals().map(s => s.framework).sort();
-      expect(frameworks).toEqual(['claude-code', 'codex-cli']);
+      expect(frameworks).toEqual(['claude-code', 'codex-cli', 'gemini-cli']);
     });
 
     it('every signal has a populated grep needle, binary pattern, and display name', () => {

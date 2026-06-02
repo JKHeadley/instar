@@ -308,9 +308,9 @@ program
   .option('--scenario <number>', 'Scenario number 1-8 (non-interactive)')
   .option(
     '--framework <name>',
-    'AI runtime to host the setup wizard: claude-code (default) or codex-cli',
+    'AI runtime to host the setup wizard: claude-code (default), codex-cli, or gemini-cli',
     (v: string) => {
-      const allowed = ['claude-code', 'codex-cli'];
+      const allowed = ['claude-code', 'codex-cli', 'gemini-cli'];
       if (!allowed.includes(v)) {
         console.error(`\n  --framework must be one of: ${allowed.join(', ')}\n`);
         process.exit(1);
@@ -343,9 +343,9 @@ program
   .option('--standalone', 'Create a standalone agent at ~/.instar/agents/<name>/')
   .option(
     '--framework <name>',
-    'AI runtime to target: claude-code (default), codex-cli, or both',
+    'AI runtime to target: claude-code (default), codex-cli, gemini-cli, or both',
     (v: string) => {
-      const allowed = ['claude-code', 'codex-cli', 'both'];
+      const allowed = ['claude-code', 'codex-cli', 'gemini-cli', 'both'];
       if (!allowed.includes(v)) {
         console.error(`\n  --framework must be one of: ${allowed.join(', ')}\n`);
         process.exit(1);

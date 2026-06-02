@@ -62,7 +62,7 @@ export interface Session {
   /** The AI framework/engine powering this session. Carried so the dashboard
    *  renders engine-aware (a Codex session must not display as a Claude one).
    *  Populated at spawn from the resolved framework; undefined on legacy records. */
-  framework?: 'claude-code' | 'codex-cli';
+  framework?: 'claude-code' | 'codex-cli' | 'gemini-cli';
   /** The initial prompt/instruction sent to the framework's CLI */
   prompt?: string;
   /** Maximum duration in minutes before the session is killed */
@@ -111,7 +111,7 @@ export interface SessionManagerConfig {
    * without re-running detection. Missing keys mean that framework
    * isn't installed.
    */
-  frameworkBinaryPaths?: { 'claude-code'?: string; 'codex-cli'?: string };
+  frameworkBinaryPaths?: { 'claude-code'?: string; 'codex-cli'?: string; 'gemini-cli'?: string };
   /**
    * Per-framework default model override. Lets the agent's
    * `instar.config.json` choose a specific Codex / Claude model id
@@ -120,7 +120,7 @@ export interface SessionManagerConfig {
    * raw model ids. Missing keys fall back to each builder's hardcoded
    * subscription-safe default.
    */
-  frameworkDefaultModels?: { 'claude-code'?: string; 'codex-cli'?: string };
+  frameworkDefaultModels?: { 'claude-code'?: string; 'codex-cli'?: string; 'gemini-cli'?: string };
   /**
    * The agent's resolved runtime framework — the single source of
    * truth for which CLI a spawned session uses when no per-call
@@ -131,7 +131,7 @@ export interface SessionManagerConfig {
    * EVERY path — scheduled jobs AND user messages. Before this
    * field existed, spawnInteractiveSession hardcoded 'claude-code',
    * so messaging a Codex-only agent spawned a Claude session. */
-  framework?: 'claude-code' | 'codex-cli';
+  framework?: 'claude-code' | 'codex-cli' | 'gemini-cli';
   /** Project directory (where CLAUDE.md lives) */
   projectDir: string;
   /** Maximum concurrent sessions */
@@ -2052,7 +2052,7 @@ export interface InstarConfig {
    * Lets you flip a single topic to Codex without changing the whole
    * agent's framework.
    */
-  topicFrameworks?: Record<string, 'claude-code' | 'codex-cli'>;
+  topicFrameworks?: Record<string, 'claude-code' | 'codex-cli' | 'gemini-cli'>;
   /**
    * Topic-intent auto-capture loop config (rung 0 of continuous-working-awareness).
    * `capture.enabled` (default true) is the kill-switch for the per-turn extraction
@@ -2133,7 +2133,7 @@ export interface InstarConfig {
    * `enabledFrameworks`; this is the persisted, operator-settable
    * source of truth the migrator reads.)
    */
-  enabledFrameworks?: ('claude-code' | 'codex-cli')[];
+  enabledFrameworks?: ('claude-code' | 'codex-cli' | 'gemini-cli')[];
   /** Job scheduler config */
   scheduler: JobSchedulerConfig;
   /** Registered users */

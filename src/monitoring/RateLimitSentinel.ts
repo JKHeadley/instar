@@ -40,6 +40,7 @@ import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
 import path from 'node:path';
 import { findNewestRolloutSync } from '../providers/adapters/openai-codex/observability/sessionPaths.js';
+import { findNewestGeminiSessionSync } from '../providers/adapters/gemini-cli/observability/sessionPaths.js';
 
 export type RateLimitTrigger = 'watchdog-poll' | 'idle-error' | string;
 
@@ -107,6 +108,9 @@ export interface RateLimitSentinelDeps {
 
   /** Override $CODEX_HOME (tests). Defaults to ~/.codex. Only used for codex sessions. */
   codexHome?: string;
+
+  /** Override ~/.gemini (tests). Defaults to ~/.gemini. Only used for gemini-cli sessions. */
+  geminiHome?: string;
 
   /** Defer (skip starting) recovery when this returns true — e.g. compaction recovery in flight. */
   deferIf?: (sessionName: string) => boolean;
@@ -460,8 +464,12 @@ export class RateLimitSentinel extends EventEmitter {
    * Claude-facing messages are byte-for-byte unchanged.
    */
   private vendor(sessionName: string): { provider: string; agent: string; statusUrl: string } {
-    if (this.deps.getSessionFramework?.(sessionName) === 'codex-cli') {
+    const fw = this.deps.getSessionFramework?.(sessionName);
+    if (fw === 'codex-cli') {
       return { provider: 'OpenAI', agent: 'Codex', statusUrl: 'status.openai.com' };
+    }
+    if (fw === 'gemini-cli') {
+      return { provider: 'Google', agent: 'Gemini', statusUrl: 'status.cloud.google.com' };
     }
     return { provider: 'Anthropic', agent: 'Claude', statusUrl: 'status.claude.com' };
   }
@@ -474,6 +482,15 @@ export class RateLimitSentinel extends EventEmitter {
     // below (Claude behavior is byte-for-byte preserved).
     if (this.deps.getSessionFramework?.(sessionName) === 'codex-cli') {
       return findNewestRolloutSync(this.deps.codexHome);
+    }
+    // Gemini parity (apprenticeship Step 2 §4.0.2): a gemini session's transcript
+    // is the newest session file under ~/.gemini/tmp/<hash>/chats — NOT the Claude
+    // projects tree or a codex rollout. "Is gemini producing output again?" ==
+    // "did the newest gemini session file grow?". Only taken for gemini sessions;
+    // everything else falls through to the unchanged Claude path below (Claude
+    // behavior byte-for-byte preserved). Mirrors the codex fix (#33).
+    if (this.deps.getSessionFramework?.(sessionName) === 'gemini-cli') {
+      return findNewestGeminiSessionSync(this.deps.geminiHome);
     }
     try {
       const root = this.deps.jsonlRoot

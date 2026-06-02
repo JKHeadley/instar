@@ -110,7 +110,7 @@ export class PostUpdateMigrator {
    * the parity-renderings backfill and the legacy `.claude/`-specific
    * steps consult this.
    */
-  private getEnabledFrameworks(): ReadonlyArray<'claude-code' | 'codex-cli'> {
+  private getEnabledFrameworks(): ReadonlyArray<'claude-code' | 'codex-cli' | 'gemini-cli'> {
     try {
       const configPath = path.join(this.config.stateDir, 'config.json');
       const config = JSON.parse(fs.readFileSync(configPath, 'utf-8')) as {
@@ -118,9 +118,15 @@ export class PostUpdateMigrator {
       };
       const enabled = config.enabledFrameworks;
       if (Array.isArray(enabled) && enabled.length > 0) {
+        // Apprenticeship Step 2 (§4.3): include 'gemini-cli' in the predicate.
+        // The prior filter silently DROPPED gemini-cli, so any migration gated
+        // on "gemini enabled" would never fire for an existing gemini-bound
+        // agent — a correctness bug for existing agents, the Migration-Parity
+        // heart of this spec (the structural twin of the codex getEnabledFrameworks
+        // gating).
         const filtered = enabled.filter(
-          (f): f is 'claude-code' | 'codex-cli' =>
-            f === 'claude-code' || f === 'codex-cli',
+          (f): f is 'claude-code' | 'codex-cli' | 'gemini-cli' =>
+            f === 'claude-code' || f === 'codex-cli' || f === 'gemini-cli',
         );
         if (filtered.length > 0) return filtered;
       }

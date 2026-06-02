@@ -40,7 +40,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
  */
 export const WIZARD_CODEX_MODEL = 'gpt-5.3-codex';
 
-import { detectClaudePath, detectCodexPath, detectGhPath, checkFrameworkPrerequisite } from '../core/Config.js';
+import { detectClaudePath, detectCodexPath, detectGeminiPath, detectGhPath, checkFrameworkPrerequisite } from '../core/Config.js';
 import { ensurePrerequisites } from '../core/Prerequisites.js';
 import { allocatePort } from '../core/AgentRegistry.js';
 import type { SecretBackend } from '../core/SecretManager.js';
@@ -133,24 +133,26 @@ async function promptForFramework(
   }
 }
 
-export async function runSetup(opts?: { framework?: 'claude-code' | 'codex-cli' }): Promise<void> {
+export async function runSetup(opts?: { framework?: 'claude-code' | 'codex-cli' | 'gemini-cli' }): Promise<void> {
   // Check and install prerequisites (tmux + the chosen framework's CLI)
   console.log();
   const prereqs = await ensurePrerequisites();
 
-  // Detect both binaries first so the framework-choice prompt can offer
+  // Detect framework binaries first so the framework-choice prompt can offer
   // only what's actually installed and surface a single clean install
-  // message if neither is present.
+  // message if none is present.
   const claudePath = detectClaudePath();
   const codexPath = detectCodexPath();
+  const geminiPath = detectGeminiPath();
 
   // Resolve framework. Precedence:
   //   1. Explicit --framework flag from the subcommand parser.
   //   2. Interactive prompt when stdin is a TTY and the flag was omitted —
   //      this is the bareword `npx instar` path so a fresh user gets asked
-  //      which runtime to use.
+  //      which runtime to use. (gemini-cli is selectable via the explicit
+  //      --framework flag; the interactive prompt covers claude/codex for now.)
   //   3. Default 'claude-code' otherwise (non-interactive / piped / CI).
-  const framework: 'claude-code' | 'codex-cli' = opts?.framework
+  const framework: 'claude-code' | 'codex-cli' | 'gemini-cli' = opts?.framework
     ?? (process.stdin.isTTY
       ? await promptForFramework(claudePath, codexPath)
       : 'claude-code');
@@ -158,6 +160,7 @@ export async function runSetup(opts?: { framework?: 'claude-code' | 'codex-cli' 
     configuredFramework: framework,
     claudePathDetected: claudePath,
     codexPathDetected: codexPath,
+    geminiPathDetected: geminiPath,
   });
   if (!prereq.satisfied) {
     console.log();
@@ -169,7 +172,11 @@ export async function runSetup(opts?: { framework?: 'claude-code' | 'codex-cli' 
   // The binary the wizard will spawn for both the secret-setup micro-session
   // and the main wizard. checkFrameworkPrerequisite has already guaranteed
   // the chosen framework's binary was detected.
-  const binaryPath = framework === 'codex-cli' ? codexPath! : claudePath!;
+  const binaryPath = framework === 'codex-cli'
+    ? codexPath!
+    : framework === 'gemini-cli'
+      ? geminiPath!
+      : claudePath!;
 
   if (!prereqs.allMet) {
     console.log(pc.red('  Some prerequisites are still missing. Please install them and try again.'));
@@ -191,10 +198,16 @@ export async function runSetup(opts?: { framework?: 'claude-code' | 'codex-cli' 
   console.log();
   console.log(pc.bold('  Welcome to Instar'));
   console.log();
-  const runtimeLabel = framework === 'codex-cli' ? 'Codex CLI' : 'Claude Code';
+  const runtimeLabel = framework === 'codex-cli'
+    ? 'Codex CLI'
+    : framework === 'gemini-cli'
+      ? 'Gemini CLI'
+      : 'Claude Code';
   const sandboxFlag = framework === 'codex-cli'
     ? '--dangerously-bypass-approvals-and-sandbox'
-    : '--dangerously-skip-permissions';
+    : framework === 'gemini-cli'
+      ? '--approval-mode default'
+      : '--dangerously-skip-permissions';
   console.log(pc.yellow(`  Note: Instar runs ${runtimeLabel} with ${sandboxFlag}.`));
   console.log(pc.dim('  This allows your agent to operate autonomously — reading, writing, and'));
   console.log(pc.dim('  executing within your project without per-action approval prompts.'));
@@ -369,10 +382,23 @@ ${agentSummary}
   }
 
   const wizardPrompt = `The project to set up is at: ${projectDir}.${gitContext}${detectionContext}${secretContext}`;
-  const launchArgs: string[] = [
-    '--dangerously-skip-permissions',
-    `/setup-wizard ${wizardPrompt}`,
-  ];
+  // Gemini, like Codex, has no slash commands — point it at the wizard SKILL.md
+  // via prose using the canonical one-shot argv. (A richer gemini-native wizard
+  // driver, parallel to the codex-driver, is §9 apprenticeship parity work; the
+  // minimal body uses the prose one-shot so `--framework gemini-cli` is not a
+  // broken setup path.)
+  const wizardSkillPath = path.join(instarRoot, '.claude', 'skills', 'setup-wizard', 'SKILL.md');
+  const launchArgs: string[] = framework === 'gemini-cli'
+    ? [
+        '-m', 'gemini-2.5-flash',
+        '--approval-mode', 'default',
+        '-p',
+        `Read ${wizardSkillPath} and follow its instructions to set up this Instar agent. ${wizardPrompt}`,
+      ]
+    : [
+        '--dangerously-skip-permissions',
+        `/setup-wizard ${wizardPrompt}`,
+      ];
   const child = spawn(binaryPath, launchArgs, {
     cwd: instarRoot,
     stdio: 'inherit',
@@ -413,7 +439,7 @@ ${agentSummary}
  */
 async function ensureSecretBackend(
   binaryPath: string,
-  framework: 'claude-code' | 'codex-cli',
+  framework: 'claude-code' | 'codex-cli' | 'gemini-cli',
   instarRoot: string,
 ): Promise<string> {
   const backendFile = path.join(os.homedir(), '.instar', 'secrets', 'backend.json');
@@ -455,6 +481,8 @@ async function ensureSecretBackend(
   // point at the skill file content via prose so the wizard reads and
   // executes the same instructions.
   const secretSkillPath = path.join(instarRoot, '.claude', 'skills', 'secret-setup', 'SKILL.md');
+  // Gemini, like Codex, has no slash commands, so it reads the skill file via
+  // prose (the canonical one-shot `-m <model> --approval-mode default -p <prompt>`).
   const secretArgs: string[] = framework === 'codex-cli'
     ? [
         'exec',
@@ -462,7 +490,14 @@ async function ensureSecretBackend(
         '-m', WIZARD_CODEX_MODEL,
         `Read ${secretSkillPath} and follow its instructions to configure a secret backend for this user.`,
       ]
-    : ['--dangerously-skip-permissions', '/secret-setup'];
+    : framework === 'gemini-cli'
+      ? [
+          '-m', 'gemini-2.5-flash',
+          '--approval-mode', 'default',
+          '-p',
+          `Read ${secretSkillPath} and follow its instructions to configure a secret backend for this user.`,
+        ]
+      : ['--dangerously-skip-permissions', '/secret-setup'];
   const child = spawn(binaryPath, secretArgs, {
     cwd: instarRoot,
     stdio: 'inherit',

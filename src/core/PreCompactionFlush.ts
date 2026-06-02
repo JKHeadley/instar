@@ -73,9 +73,11 @@ export interface PreCompactionFlushDeps {
    * 'claude-code' — the historical behavior, so Claude installs are
    * byte-for-byte unchanged.
    */
-  framework?: 'claude-code' | 'codex-cli';
+  framework?: 'claude-code' | 'codex-cli' | 'gemini-cli';
   /** Optional override for the Codex sessions root (testing). */
   codexSessionsRoot?: string;
+  /** Optional override for the Gemini home dir (testing). */
+  geminiHome?: string;
   /** Now provider — overridable for tests. */
   now?: () => Date;
 }
@@ -270,7 +272,9 @@ export class PreCompactionFlush {
       rootOverride:
         framework === 'codex-cli'
           ? this.deps.codexSessionsRoot
-          : this.deps.claudeProjectsRoot,
+          : framework === 'gemini-cli'
+            ? this.deps.geminiHome
+            : this.deps.claudeProjectsRoot,
     });
   }
 

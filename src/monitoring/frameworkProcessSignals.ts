@@ -86,9 +86,25 @@ const CODEX_CLI_SIGNAL: FrameworkProcessSignal = {
   ],
 };
 
+const GEMINI_CLI_SIGNAL: FrameworkProcessSignal = {
+  framework: 'gemini-cli',
+  displayName: 'Gemini',
+  psGrepNeedle: '[g]emini',
+  binaryPattern: /(^|\/)gemini(\s|$)/,
+  // Gemini CLI is published as @google/gemini-cli; older/experimental builds
+  // shipped under `gemini-cli/` paths. Cover both (node/npx-wrapped form).
+  nodePattern: /@google\/gemini-cli|gemini-cli\/(cli|bin)/,
+  exclusionSubstrings: [
+    // `gemini mcp` server shares the prefix and must NOT be counted as a
+    // framework session — the analog of codex's 'codex-mcp' exclusion.
+    'gemini-mcp',
+  ],
+};
+
 const PROCESS_SIGNALS: Record<IntelligenceFramework, FrameworkProcessSignal> = {
   'claude-code': CLAUDE_CODE_SIGNAL,
   'codex-cli': CODEX_CLI_SIGNAL,
+  'gemini-cli': GEMINI_CLI_SIGNAL,
 };
 
 /** Process helpers that appear at the START of command lines and are NEVER framework binaries. */

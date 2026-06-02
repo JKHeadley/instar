@@ -20,6 +20,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { findRolloutFileSync } from '../providers/adapters/openai-codex/observability/sessionPaths.js';
+import { findGeminiSessionFileSync } from '../providers/adapters/gemini-cli/observability/sessionPaths.js';
 import { ConversationStore, type Conversation, type ConversationState } from './ConversationStore.js';
 
 // ── Types ───────────────────────────────────────────────────────
@@ -370,6 +371,17 @@ export class ThreadResumeMap {
       if (findRolloutFileSync(uuid) !== null) return true;
     } catch {
       // Can't check the codex layout — treat as not found.
+    }
+    // Gemini: ~/.gemini/tmp/<projectHash>/chats/session-<ts>-<short8>.json[l].
+    // A gemini session has neither a Claude jsonl nor a codex rollout, so
+    // without this every gemini session looks expired/missing and resume
+    // breaks fleet-wide (the gemini analog of the codex-compat resume root —
+    // apprenticeship Step 2 §4.0.1). Routed through the gemini adapter's
+    // sessionPaths resolver, NOT a third hardcoded probe inline.
+    try {
+      if (findGeminiSessionFileSync(uuid) !== null) return true;
+    } catch {
+      // Can't check the gemini layout — treat as not found.
     }
     return false;
   }

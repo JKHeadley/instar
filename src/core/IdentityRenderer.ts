@@ -166,7 +166,10 @@ export function renderIdentity(options: RenderIdentityOptions): RenderIdentityRe
  * relay convention across every turn.
  */
 function buildPersistentRelayAppendix(framework: string): string {
-  const isCodex = framework === 'codex-cli';
+  // Codex AND Gemini have no SessionStart hook system, so the shadow file
+  // (AGENTS.md / GEMINI.md) is the ONLY persistent carrier of the relay
+  // convention across every turn — they get the "every turn" wording.
+  const isHooklessFramework = framework === 'codex-cli' || framework === 'gemini-cli';
   return [
     `## Telegram Relay (MANDATORY)`,
     ``,
@@ -184,8 +187,8 @@ function buildPersistentRelayAppendix(framework: string): string {
     `- Strip the \`[telegram:N]\` prefix before interpreting the message.`,
     `- Relay ONLY conversational text — not tool output, raw logs, or internal reasoning.`,
     `- Send a short ACK first ("Got it, looking into this…"), then do the work, then send the full reply.`,
-    isCodex
-      ? `- Codex CLI specifically: this convention applies to EVERY turn in a Telegram-spawned session, not just the first one. There's no per-turn reminder beyond this AGENTS.md section.`
+    isHooklessFramework
+      ? `- ${framework === 'gemini-cli' ? 'Gemini CLI' : 'Codex CLI'} specifically: this convention applies to EVERY turn in a Telegram-spawned session, not just the first one. There's no SessionStart hook reminder beyond this shadow-file section.`
       : `- Claude Code specifically: the SessionStart hook reinforces this on session start; this section is the durable backup.`,
   ].join('\n');
 }

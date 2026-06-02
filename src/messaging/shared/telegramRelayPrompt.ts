@@ -25,7 +25,12 @@
  *   differs by framework.
  */
 
-export type IntelligenceFramework = 'claude-code' | 'codex-cli';
+// NOTE: this is a SECOND, independent `IntelligenceFramework` union literal
+// (the canonical one lives in src/core/intelligenceProviderFactory.ts). The
+// compiler does NOT relate the two, so it must be widened by hand
+// (apprenticeship Step 2 §4.3). The relay script is bash and runs identically
+// under every framework; only the prompt-injection shape differs.
+export type IntelligenceFramework = 'claude-code' | 'codex-cli' | 'gemini-cli';
 
 export interface BuildTelegramRelayBlockOptions {
   /** Telegram topic id the agent should relay to. */

@@ -52,6 +52,7 @@ export interface TopicFrameworksStoreOptions {
 export const SUPPORTED_FRAMEWORKS: ReadonlyArray<IntelligenceFramework> = [
   'claude-code',
   'codex-cli',
+  'gemini-cli',
 ];
 
 export class TopicFrameworksStore {

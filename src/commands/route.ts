@@ -59,6 +59,7 @@ function resolveFramework(opt: string | undefined): IntelligenceFramework {
     const normalized = opt.toLowerCase();
     if (normalized === 'claude' || normalized === 'claude-code') return 'claude-code';
     if (normalized === 'codex' || normalized === 'codex-cli') return 'codex-cli';
+    if (normalized === 'gemini' || normalized === 'gemini-cli') return 'gemini-cli';
   }
   return frameworkFromEnv() ?? 'claude-code';
 }

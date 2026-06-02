@@ -248,7 +248,7 @@ export class SessionReaper extends EventEmitter {
    * a ready-for-input prompt AND contains no active-work marker. Conservative —
    * an undetected ready prompt returns false (→ KEEP), never a false idle.
    */
-  static isPositivelyIdle(framework: 'claude-code' | 'codex-cli' | undefined, frame: string): boolean {
+  static isPositivelyIdle(framework: 'claude-code' | 'codex-cli' | 'gemini-cli' | undefined, frame: string): boolean {
     if (!framework) return false; // unknown framework → cannot positively assert idle
     const sig = getActivitySignal(framework);
     // Any active marker anywhere in the captured buffer ⇒ not idle.
@@ -259,6 +259,13 @@ export class SessionReaper extends EventEmitter {
     if (framework === 'claude-code') {
       return /bypass permissions|\? for shortcuts|auto-accept edits|shift\+tab/i.test(frame)
         || /\n\s*>\s*$/.test(frame.trimEnd() + '\n');
+    }
+    if (framework === 'gemini-cli') {
+      // Apprenticeship Step 2: the Gemini interactive-TUI ready-prompt signature
+      // is not yet live-characterized (the minimal body runs one-shot, not a
+      // long-lived TUI). Conservatively return false → KEEP, never a false idle.
+      // Refined when the loop-driver/TUI path lands (§6 build-time discovery).
+      return false;
     }
     // codex-cli: a ready prompt with no working status line. The model-name idle
     // line is NOT a reliable positive, so require the explicit input affordance.
