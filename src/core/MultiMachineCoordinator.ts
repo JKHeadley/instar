@@ -614,8 +614,22 @@ export class MultiMachineCoordinator extends EventEmitter {
     this.leasePulling = true;
     try {
       await this.leaseCoordinator!.pullFromPeers();
-      this.reconcileRoleToLease('lease-pull');
-      this.surfacePullDiscoveredSplitBrain();
+      // Only reconcile role / surface split-brain when a peer lease was actually
+      // OBSERVED. A solo machine (no peers, or no peer lease seen this boot) must
+      // NEVER be demoted by the pull loop on a transient self-lease lapse — that
+      // is the heartbeat tickLease's job, which RE-ACQUIRES rather than just
+      // demoting. The pull's purpose is LEARNING from peers; with no peer signal
+      // there is nothing to learn and nothing to reconcile. Acting on the local
+      // lease state alone here turned the ~5s pull cadence into a demotion DoS:
+      // whenever a solo holder's lease momentarily lapsed between renewals it
+      // flipped to read-only standby, and a standby write crashed the server in a
+      // restart loop (incident 2026-06-02). Gating on an observed peer lease keeps
+      // the real feature intact (a standby pulling a higher-epoch holder still
+      // demotes) while removing the spurious solo demotion.
+      if (this.leaseCoordinator!.observedPeerLease()) {
+        this.reconcileRoleToLease('lease-pull');
+        this.surfacePullDiscoveredSplitBrain();
+      }
     } catch {
       // @silent-fallback-ok — a pull failure is retried next tick
     } finally {

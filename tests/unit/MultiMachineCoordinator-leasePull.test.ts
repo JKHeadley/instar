@@ -113,6 +113,57 @@ describe('MultiMachineCoordinator — active lease-pull split-brain surface', ()
     coord.stop();
   });
 
+  it('REGRESSION (incident 2026-06-02): a solo holder whose self-lease lapses is NOT demoted by the pull loop when no peer lease was observed', async () => {
+    // The crash-loop root cause: tickLeasePull reconciled role UNCONDITIONALLY every
+    // ~5s. A solo machine's 60s self-lease momentarily lapses between renewals →
+    // holdsLease() false → the pull loop flipped it to STANDBY → StateManager
+    // read-only → a standby write crashed the server in a restart loop. The fix:
+    // the pull loop only reconciles when a peer lease was actually OBSERVED.
+    const machineId = `m_${crypto.randomBytes(8).toString('hex')}`;
+    const identity = seedIdentity(dir, machineId);
+    new MachineIdentityManager(dir).registerMachine(identity as any, 'awake');
+
+    // Solo machine: pull-CAPABLE transport (loop arms) that NEVER observes a peer
+    // lease (no peers; nothing pushed or pulled) → observed() always null.
+    const soloTunnel: LeaseTransport = {
+      broadcast: async () => true,
+      observed: () => ({ lease: null, lastNonceByHolder: {} }),
+      isReachable: () => true,
+      pullAllPeers: async () => { /* solo: pulls nothing */ },
+    };
+    let now = 2_000;
+    const lc = new LeaseCoordinator({
+      lease: fl('A'),
+      store: new LocalLeaseStore({ filePath: path.join(dir, 'lease-local.json') }),
+      tunnel: soloTunnel,
+      presumedDeadHolders: () => new Set(),
+      now: () => now,
+      monotonicNow: () => now,
+    });
+
+    vi.useFakeTimers();
+    const state = new StateManager(dir);
+    const coord = new MultiMachineCoordinator(state, { stateDir: dir, multiMachine: { leasePullIntervalMs: 1_000 } as any });
+    coord.start();
+    coord.attachLeaseCoordinator(lc);
+    await coord.initializeLease(); // A acquires epoch 1 → awake
+    expect(coord.isAwake).toBe(true);
+    expect(lc.holdsLease()).toBe(true);
+    expect(state.readOnly).toBe(false);
+
+    // The self-lease LAPSES (TTL elapses before a renewal) — holdsLease() now false.
+    now = 2_000 + TTL + 1;
+    expect(lc.holdsLease()).toBe(false); // genuinely lapsed
+
+    // Fire a pull tick. With NO peer observed, the pull loop must NOT reconcile/demote.
+    await vi.advanceTimersByTimeAsync(1_300);
+
+    expect(coord.isAwake).toBe(true);                 // NOT demoted by the pull loop
+    expect(coord.getSyncStatus().role).toBe('awake');
+    expect(state.readOnly).toBe(false);               // never flipped to read-only (no crash path)
+    coord.stop();
+  });
+
   it('pull loop does not arm when the transport cannot pull (git-only mesh)', async () => {
     const machineId = `m_${crypto.randomBytes(8).toString('hex')}`;
     const identity = seedIdentity(dir, machineId);
