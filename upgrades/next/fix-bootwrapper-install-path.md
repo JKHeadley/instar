@@ -1,0 +1,23 @@
+# Upgrade Guide — vNEXT
+
+<!-- bump: patch -->
+
+## What Changed
+
+An agent that loses its private code copy can now actually reinstall itself at boot.
+
+When the boot wrapper detects a missing "shadow install" it runs `npm install` to self-heal. Some packages run native setup scripts that shell out to `node`/`npm` by name — and under macOS launchd the boot process often has a stripped `PATH` without them, so the reinstall died with "command not found" and the agent stayed stuck (looping on "Shadow install missing"). The reinstall now puts the resolved node directory on PATH and sets npm's scripts-prepend-node-path, so those setup scripts resolve node/npm and the self-heal completes. Existing agents get the fixed wrapper regenerated automatically on update.
+
+## What to Tell Your User
+
+Nothing to do. This makes an agent's automatic self-repair actually work when its private code copy goes missing — the case where it most needs to recover on its own, unattended. A healthy agent is completely unaffected; this only changes the recovery path.
+
+## Summary of New Capabilities
+
+- The boot-wrapper reinstall (`instar-boot.cjs` and `instar-boot.sh`) prepends the resolved node directory to PATH and sets `npm_config_scripts_prepend_node_path` so native postinstall scripts (e.g. sharp) resolve node/npm under a launchd-spawned boot child instead of failing with "command not found".
+- The post-update migration regenerates older boot wrappers that predate this fix (it now requires the install-path marker to consider a wrapper current), so deployed agents receive the fix on their next update — not just new installs.
+
+## Evidence
+
+- Root cause of a real 2026-06-02 failure: a paired test agent could not start; `instar-boot` looped on "Shadow install missing" and a manual reinstall failed on sharp's postinstall with `sh: node: command not found`; re-running with node on PATH fixed it immediately.
+- `tsc --noEmit` clean. `PostUpdateMigrator-bootWrapperAbiCheck` extended to 8 green tests (3-marker idempotency, regen-when-install-path-marker-absent, generated `.cjs` passes `node --check` + carries the env, `.sh` carries the PATH export); 30 sibling boot-wrapper tests still green. Side-effects review: upgrades/side-effects/fix-bootwrapper-install-path.md.
