@@ -17,6 +17,7 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 const HOOK = path.join(process.cwd(), '.claude', 'skills', 'autonomous', 'hooks', 'autonomous-stop-hook.sh');
 const SCRIPT_SRC = path.join(process.cwd(), 'src', 'templates', 'scripts', 'emit-session-clock.sh');
@@ -58,7 +59,7 @@ function runHook(): { decision: string | null; reason: string; exit: number } {
 const FOUR_H_AGO = new Date(Date.now() - 4 * 3600 * 1000).toISOString().replace(/\.\d+Z$/, 'Z');
 
 beforeEach(() => { tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-clock-hook-')); fs.mkdirSync(path.join(tmp, '.instar'), { recursive: true }); });
-afterEach(() => { fs.rmSync(tmp, { recursive: true, force: true }); });
+afterEach(() => { SafeFsExecutor.safeRmSync(tmp, { recursive: true, force: true, operation: 'tests/unit/autonomous-stop-hook-session-clock.test.ts:cleanup' }); });
 
 describe('autonomous stop-hook — SESSION CLOCK injection', () => {
   it('feeds back the rich SESSION CLOCK line on a blocked continuation of a timed run', () => {
