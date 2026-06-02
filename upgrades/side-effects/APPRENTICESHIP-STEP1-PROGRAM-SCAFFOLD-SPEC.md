@@ -74,3 +74,9 @@ relocation matches the `BackfillCore` precedent (pure logic in `src/`, the `.mjs
 ## 6. Rollback
 Revert the commit; `.instar/apprenticeship/instances.json` is runtime state with no migration to undo;
 the validator relocation is behavior-preserving (Step-0 tests pass against the relocated logic).
+
+## 7. Follow-up (CI fix)
+The `capabilities-discoverability` lint requires every new route prefix to be classified. The
+`/apprenticeship` prefix is **agent-facing**, so it is added to `CAPABILITY_INDEX` in
+`src/server/CapabilityIndex.ts` (surfaces in `/capabilities`) rather than `INTERNAL_PREFIXES`. No
+new behavior — classification metadata + the endpoint list for discovery.
