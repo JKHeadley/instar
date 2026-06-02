@@ -582,7 +582,9 @@ export class MultiMachineCoordinator extends EventEmitter {
    * (git-only mesh). Tier-0: no LLM; a failed pull is data, retried next tick.
    */
   private startLeasePullLoop(): void {
-    if (!this.leaseCoordinator || !this.leaseCoordinator.canPullPeers()) return;
+    // Defensive: an injected coordinator may not implement the pull API (a
+    // partial test double, or a build predating active-pull) — never assume it.
+    if (!this.leaseCoordinator || typeof this.leaseCoordinator.canPullPeers !== 'function' || !this.leaseCoordinator.canPullPeers()) return;
     if (this.leasePullTimer) return; // already running
     this.leasePullStopped = false;
     const base = this.config.multiMachine?.leasePullIntervalMs ?? DEFAULT_LEASE_PULL_INTERVAL_MS;

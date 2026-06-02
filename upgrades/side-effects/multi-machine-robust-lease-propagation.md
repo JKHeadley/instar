@@ -98,3 +98,15 @@ lease components + mock HTTP). `tsc --noEmit` clean. Test-writing caught a real 
 `buildAcquisition` 3rd arg is the NONCE not the epoch (the first draft built epoch-1
 leases when it meant epoch-5), and the same-epoch split-brain only forms when the peer
 lease appears AFTER local acquisition.
+
+## Follow-up (CI shard 4/4, post-merge-with-main)
+
+`initializeLease()` → `startLeasePullLoop()` called `leaseCoordinator.canPullPeers()`
+unconditionally, which threw for an injected coordinator that does not implement the
+pull API — the existing `multi-machine-coordinator.test.ts` partial double (`fakeLease`)
+lacks it, and so would any build predating active-pull. Hardened the loop start with a
+`typeof this.leaseCoordinator.canPullPeers === 'function'` guard so such a coordinator
+simply skips the loop (the intended git-only-mesh / partial-double behavior) instead of
+crashing. Caught by the full CI unit matrix (shard 4/4, both Node 20 and 22) after the
+merge with main brought the existing coordinator test into scope; 28 multi-machine tests
+green, `tsc --noEmit` clean.
