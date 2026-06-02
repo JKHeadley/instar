@@ -3953,6 +3953,11 @@ function installHooks(stateDir: string): void {
   );
   fs.writeFileSync(path.join(hooksDir, 'session-start.sh'), migrator.getHookContent('session-start'), { mode: 0o755 });
 
+  // Auto-restart-on-MCP-inaccessible — fired backgrounded by session-start.sh.
+  // Dark by default; enabled on development agents. Install on fresh init too so
+  // new agents have parity with updated ones (migration-parity-hooks guard).
+  fs.writeFileSync(path.join(hooksDir, 'mcp-health-autorefresh.sh'), migrator.getHookContent('mcp-health-autorefresh'), { mode: 0o755 });
+
   // Dangerous command guard — supports safety levels 1 (ask user) and 2 (self-verify)
   fs.writeFileSync(path.join(hooksDir, 'dangerous-command-guard.sh'), `#!/bin/bash
 # Dangerous command guard — safety infrastructure for autonomous agents.

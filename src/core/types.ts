@@ -2042,6 +2042,16 @@ export interface InstarConfig {
   port: number;
   /** HTTP server bind address (default: '127.0.0.1' for security) */
   host?: string;
+  /**
+   * Marks this agent as a DEVELOPMENT agent (e.g. echo — the dogfooding/proving
+   * ground). Dark-by-default features consult this so they ship ENABLED on a dev
+   * agent (proven live first) while staying dark on production agents, then roll
+   * out. Per-feature opt-in: a gate resolves `explicitConfig ?? (developmentAgent
+   * ? enabled : dark)`. Default unset/false = production (dark). NOT a blanket
+   * "enable everything" — each feature decides whether dev-default-enable is safe.
+   * (Introduced 2026-06-02 — Justin's ask, topic 13481.)
+   */
+  developmentAgent?: boolean;
   /** Session manager config */
   sessions: SessionManagerConfig;
   /**
