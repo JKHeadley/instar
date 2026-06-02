@@ -1,0 +1,38 @@
+# Upgrade Guide — vNEXT
+
+<!-- bump: patch -->
+
+## What Changed
+
+The instar-*developing* agent is now aware of the **tier system** that shipped earlier in
+the tiered-development project. The `/instar-dev` skill gains a focused "Tiered development
+(tier signal → you decide → audited)" section, and the constitution
+(`docs/STANDARDS-REGISTRY.md`) gains a **Tiered Development** standard deriving from *The
+Body and the Mind*. Documentation-only — no runtime, gate, classifier, or trace-writer
+change. This is Steps C + D (the final steps) of the tiered-development project.
+
+## What to Tell Your User
+
+Nothing to do — this only affects how the agent develops instar itself. It records, in the
+developer's own playbook and constitution, the rule already enforced by the commit gate:
+process scales with a change's size and risk, the gate *informs* the tier, the agent
+*decides*, and the decision is *audited*.
+
+## Summary of New Capabilities
+
+- `skills/instar-dev/SKILL.md` — new section: the gate prints a tier SIGNAL; the agent
+  DECLARES the tier in its trace; the Tier-1 light path (ELI16 + side-effects, no converged
+  spec) vs the Tier-2+ full chain; the Tier-1 auto-merge policy; the `belowFloor` decision
+  audit (`.instar/instar-dev-decisions.jsonl`).
+- `docs/STANDARDS-REGISTRY.md` — new "Tiered Development" standard in the Building family,
+  cross-linked to *The Body and the Mind*.
+
+## Evidence
+
+- `npx tsc --noEmit` exit 0; `npm run lint` green. Documentation-only — no runtime behavior
+  changed, so no new tests; the new skill section was verified against the live gate
+  (`scripts/instar-dev-precommit.js` + `scripts/lib/classify-tier.mjs`).
+- **Migration parity: none.** `instar-dev` is dev-repo-only — not in `package.json`
+  `files[]`, not installed by `installBuiltinSkills()`, and `generateClaudeMd()` is
+  untouched — so no agent-installed file changed and no `PostUpdateMigrator` migration is
+  required.
