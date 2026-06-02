@@ -172,6 +172,15 @@ If any check fails, the commit is rejected. This is not a warning — it's a blo
 
 The pre-push gate (`scripts/pre-push-gate.js`) re-verifies at push time: any release commit whose upgrade notes claim a fix or feature must have a matching artifact in `upgrades/side-effects/`.
 
+## Tiered development (tier signal → you decide → audited)
+
+Not every change is the same size or risk, so not every change pays the same process cost. The commit gate (`scripts/instar-dev-precommit.js`) prints a **tier SIGNAL** — a suggested tier from the change's size (LOC + files) and a **risk floor** raised by any safety-invariant, irreversibility, migration/fleet-rollout, or new-capability signal (`scripts/lib/classify-tier.mjs`). The signal **informs**; it never decides. **You DECLARE the tier** in the trace via `write-trace.mjs --tier <1|2|3> --tier-reasoning "<why>"`. This is the constitution's **The Body and the Mind** made executable (`docs/STANDARDS-REGISTRY.md` → The Substrate): the gate (body) informs, the agent (mind) decides, the decision is audited.
+
+- **Tier 1 (small / low-risk):** lighter requirement set — a staged **ELI16** + a staged **side-effects** artifact, no pre-approved converged spec. Declare it with `--tier 1 --eli16-path <path> --side-effects-path <path>` (`--spec` is optional at Tier 1). The PR is the review surface, and **Echo auto-merges a clean Tier-1 on green CI** with operator spot-check.
+- **Tier 2+ (everything else):** the full chain above — converged + approved spec, ELI16, side-effects, fresh trace. A **Tier-3 project step** is just a Tier-2 spec; nothing extra is enforced at the gate. **No declared tier → Tier-2** (back-compatible).
+
+**The decision is audited.** Every in-scope commit appends one line to `.instar/instar-dev-decisions.jsonl` (signal, declared tier, risk floor + reasons). When you declare **under** the risk-signaled floor, the gate prints a loud `belowFloor` notice and records `belowFloor:true` — it does **not** block (you hold authority), but the override is now a reviewable record. Per **Close the Loop**, those `belowFloor` rates get reviewed on a cadence so the risk-floor list grows.
+
 ## What this skill explicitly does NOT do
 
 - **It does not replace `/build`.** Build is invoked internally as the execution engine; this skill only adds phases around it.
