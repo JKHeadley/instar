@@ -729,6 +729,32 @@ describe('ThreadlineRouter', () => {
       expect(data[threadId].boundSessionName).toBe('instar-codey-msg-spawn-1234567890');
     });
 
+    it('Layer 1 (continuity linchpin): a non-JSONL placeholder uuid is NOT resumable, but after onSessionComplete with the authoritative Claude UUID the thread IS resumable', () => {
+      const threadId = crypto.randomUUID();
+      // The B1 state: spawnNewThread stamped a non-transcript placeholder (the tmux/session id
+      // or a random uuid). get() nulls it because jsonlExists() can never resolve it → the
+      // router cold-spawns a memoryless session on every inbound (spec §3).
+      threadResumeMap.save(threadId, makeEntry({
+        uuid: 'tmux-placeholder-not-a-transcript-uuid',
+        state: 'active',
+        sessionName: 'a2a-worker-session',
+      }));
+      expect(threadResumeMap.get(threadId)).toBeNull();
+
+      // The session completes; Layer 1 wires the AUTHORITATIVE claudeSessionId through
+      // (server.ts passes session.claudeSessionId, not session.id). onSessionComplete persists it.
+      const authoritativeUuid = 'realclde-2222-3333-4444-555555555555';
+      createFakeJsonl(authoritativeUuid);
+      router.onSessionComplete('a2a-worker-session', authoritativeUuid);
+
+      // Now get() returns a resumable entry carrying the real UUID — the next inbound RESUMES
+      // instead of cold-spawning. This is the whole point of Layer 1.
+      const resumable = threadResumeMap.get(threadId);
+      expect(resumable).not.toBeNull();
+      expect(resumable?.uuid).toBe(authoritativeUuid);
+      expect(resumable?.state).toBe('idle');
+    });
+
     it('does not demote awaiting-reply threads when their session completes', () => {
       const threadId = crypto.randomUUID();
       const oldUuid = existingUuid;

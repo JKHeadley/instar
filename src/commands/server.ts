@@ -7652,7 +7652,16 @@ export async function startServer(options: StartOptions): Promise<void> {
     sessionManager.on('sessionComplete', (session: import('../core/types.js').Session) => {
       const sessionName = session.tmuxSession || session.name;
       if (!sessionName) return;
-      const result = threadlineRouter.onSessionComplete(sessionName, session.id || session.claudeSessionId);
+      // A2A Coherence Layer 1 (the continuity linchpin): persist the AUTHORITATIVE Claude
+      // transcript UUID (`session.claudeSessionId`, populated from Claude session-hook events),
+      // NOT `session.id` (the SessionManager/tmux id). The old `session.id || claudeSessionId`
+      // stamped the tmux id, which `ThreadResumeMap.get()`'s `jsonlExists()` check can never
+      // resolve — so every entry was nulled and every inbound cold-spawned a memoryless session
+      // (spec §3, B1). Passing only `claudeSessionId` means: present → a resumable entry is
+      // saved; absent (hook not yet fired) → `onSessionComplete` leaves the existing uuid intact
+      // (it still demotes via sessionName) and `get()` fails open to a fresh respawn. Never the
+      // tmux id. (THREADLINE-A2A-COHERENCE-SPEC.md Layer 1.)
+      const result = threadlineRouter.onSessionComplete(sessionName, session.claudeSessionId);
       if (result.demoted > 0 || result.skippedAwaitingReply > 0) {
         console.log(
           `[ThreadlineRouter] sessionComplete ${sessionName}: demoted ${result.demoted} thread(s), skipped ${result.skippedAwaitingReply} awaiting-reply thread(s)`,
