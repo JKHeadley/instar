@@ -4055,6 +4055,7 @@ fi
   // Deferral detector, post-action reflection, external communication guard
   // All use shared templates from PostUpdateMigrator for DRY maintenance.
   fs.writeFileSync(path.join(hooksDir, 'deferral-detector.js'), migrator.getHookContent('deferral-detector'), { mode: 0o755 });
+  fs.writeFileSync(path.join(hooksDir, 'self-stop-guard.js'), migrator.getHookContent('self-stop-guard'), { mode: 0o755 });
   fs.writeFileSync(path.join(hooksDir, 'post-action-reflection.js'), migrator.getHookContent('post-action-reflection'), { mode: 0o755 });
   fs.writeFileSync(path.join(hooksDir, 'external-communication-guard.js'), migrator.getHookContent('external-communication-guard'), { mode: 0o755 });
 

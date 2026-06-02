@@ -61,6 +61,11 @@ export const INSTAR_BASH_PRETOOLUSE_HOOKS: ReadonlyArray<InstarSettingsHookEntry
   },
   {
     type: 'command',
+    command: `node ${PD}/.instar/hooks/instar/self-stop-guard.js`,
+    timeout: 5000,
+  },
+  {
+    type: 'command',
     command: `node ${PD}/.instar/hooks/instar/external-communication-guard.js`,
     timeout: 5000,
   },

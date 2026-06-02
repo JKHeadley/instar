@@ -56,6 +56,7 @@ function scanHooks() {
     { file: 'compaction-recovery.sh', domain: 'identity' },
     { file: 'external-operation-gate.js', domain: 'safety' },
     { file: 'deferral-detector.js', domain: 'safety' },
+    { file: 'self-stop-guard.js', domain: 'coherence' },
     { file: 'post-action-reflection.js', domain: 'evolution' },
     { file: 'external-communication-guard.js', domain: 'safety' },
     { file: 'scope-coherence-collector.js', domain: 'coherence' },
