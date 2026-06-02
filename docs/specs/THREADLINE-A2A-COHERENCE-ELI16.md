@@ -49,6 +49,24 @@ So this is mostly **connecting wires that exist**, not building from scratch.
   *right*. So even with memory, anything truly sensitive still bounces to you for the OK.
   Coherence and safety stack — they don't trade off.
 
+## We pressure-tested it
+
+This version went through a full review panel — security, adversarial ("how would a bad agent
+abuse this?"), scalability, deployment, and a lessons-aware pass that checks it against mistakes
+I've already made. The panel found real, serious problems, and they're now fixed in the spec:
+
+- The "give me memory back" wiring had a race that could splice two different conversations
+  together — now it uses the authoritative session ID, not a guess.
+- Letting a context-full me finish a sensitive handoff (like a credential) would have re-opened
+  exactly the door Dawn correctly shut — so the "bounce anything sensitive to you" safety brake
+  is now a *first-phase requirement*, shipped alongside memory, not later.
+- The check-ins won't leak secrets or flood you (routine "going fine" goes to a quiet log, not
+  your chat), and they won't pile onto the LLM-overload problem we already have.
+- The "hold both conversations at once" piece keeps a hard wall between *your* instructions and
+  *the other agent's* words, so a peer can never impersonate you.
+
+So it's not just an idea anymore — it's been adversarially reviewed and hardened.
+
 ## What I need from you
 
 A few choices in §8 of the full spec: how to capture the conversation ID, how often I should
