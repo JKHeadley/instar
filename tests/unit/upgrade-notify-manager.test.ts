@@ -342,7 +342,8 @@ Added hybrid search and MEMORY.md export.
     expect(prompt).toContain('instar upgrade-ack');
   });
 
-  // 10. Prompt includes concrete details
+  // 10. Prompt includes concrete details (silent-by-default: only when the
+  // guide carries a user-facing announcement, per mature-update-announcements).
   it('prompt includes dashboard URL, PIN, version, and Telegram details', () => {
     const manager = new UpgradeNotifyManager(
       config,
@@ -351,7 +352,17 @@ Added hybrid search and MEMORY.md export.
       createLogger(),
     );
 
-    const prompt = manager.buildPrompt(GUIDE_CONTENT);
+    const announceGuide = [
+      '---',
+      'user_announcement:',
+      '  - audience: user',
+      '    maturity: stable',
+      '    headline: A user-facing thing',
+      '    body: you can use it now',
+      '---',
+      GUIDE_CONTENT,
+    ].join('\n');
+    const prompt = manager.buildPrompt(announceGuide);
 
     expect(prompt).toContain('https://test.tunnel.dev/dashboard');
     expect(prompt).toContain('1234'); // PIN

@@ -5381,13 +5381,20 @@ export async function startServer(options: StartOptions): Promise<void> {
         runningVersion: processIntegrity.runningVersion,
       });
       if (outcome.kind === 'verified') {
+        // An empty deferredNotification means the bump was patch-only and the
+        // restart narration was deliberately suppressed (Fork 3,
+        // mature-update-announcements) — verification still ran, we just emit
+        // nothing. Still clear the handshake either way.
+        const note = (outcome.deferredNotification || '').trim();
         const topicId = state.get<number>('agent-updates-topic') || 0;
-        if (telegram && topicId) {
+        if (note && telegram && topicId) {
           try {
-            await telegram.sendToTopic(topicId, outcome.deferredNotification);
+            await telegram.sendToTopic(topicId, note);
           } catch (err) {
             console.warn(`[restart-handshake] verified notification failed: ${err instanceof Error ? err.message : String(err)}`);
           }
+        } else if (!note) {
+          console.log(`[restart-handshake] verified v${outcome.expectedVersion} (patch-level restart narration suppressed — Fork 3)`);
         } else {
           console.log(`[restart-handshake] verified v${outcome.expectedVersion} (no telegram/topic — skipping notification)`);
         }
