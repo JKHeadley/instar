@@ -139,8 +139,14 @@ export class RevertDetector {
       if (!this.isLeaseHolder()) return 0;
       let logOut = '';
       try {
+        // NOTE: do NOT add `--regexp-ignore-case=false` here. git's --grep
+        // case flags (--regexp-ignore-case / -i / --no-regexp-ignore-case) take
+        // no `=value` form; git rejects `--regexp-ignore-case=false` with
+        // `fatal: unrecognized argument`, which made this whole call throw every
+        // tick and silently no-op'd revert detection (EVO-003). Case-sensitive
+        // matching is git's default for --grep, which is exactly what we want.
         logOut = this.git([
-          'log', `-n`, String(this.scanWindow), '--grep=^Revert', '--regexp-ignore-case=false',
+          'log', `-n`, String(this.scanWindow), '--grep=^Revert',
           `--format=%H${SEP_FIELD}%s${SEP_FIELD}%b${SEP_REC}`,
         ]);
       } catch (err) { this.onError(err); return 0; }
