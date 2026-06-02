@@ -2,8 +2,10 @@
 title: "Re-platform cross-model review onto the installed codex CLI (Step B of the tiered development process)"
 date: 2026-06-01
 author: echo
-review-convergence: pending
-approved: false
+review-convergence: abbreviated-internal-2026-06-01
+approved: true
+approved-by: Justin
+approved-via: "Telegram topic 13435 (2026-06-01) 'Approved'; abbreviated convergence (internal panel) returned MINOR ISSUES, 5 findings folded in (§2/§4/cost). External cross-model review is itself what this step builds, so its own convergence uses the internal path. Findings were refinements, not a redesign."
 eli16-overview: codex-crossreview-stepB-spec.eli16.md
 ---
 
@@ -12,8 +14,11 @@ eli16-overview: codex-crossreview-stepB-spec.eli16.md
 > **Status:** Step B of the **Tiered Development Process** project
 > (`docs/projects/tiered-dev-process/PROJECT.md`, §4 cross-model review re-platform; §6
 > decisions D3/D4). This is a **Tier-2** change: it needs spec-review-convergence and
-> Justin's approval before build. `review-convergence: pending` and `approved: false`
-> are intentional — they flip when convergence runs and Justin approves.
+> Justin's approval before build. Convergence ran the **abbreviated internal panel** (the
+> external cross-model reviewer is itself what this step *builds*, so its own convergence
+> uses the internal path) on 2026-06-01; it returned MINOR ISSUES and the 5 findings (F1–F5)
+> were folded into §2/§4/cost. Justin approved (Telegram topic 13435), so
+> `review-convergence` and `approved: true` are now set in the frontmatter.
 
 ## Goal
 
@@ -190,10 +195,39 @@ cross-model reviewer driver**:
    sandbox, foreign cwd), so the context must be **inlined into the prompt**, not left as
    on-disk paths for codex to open. The driver reads each referenced doc from the repo
    (instar-side, before the spawn) and concatenates it under a clear `--- CONTEXT: <path>
-   ---` header. A per-call **context budget** (default 60 KB total, tunable) bounds the
-   prompt; if referenced docs exceed it, the driver includes the spec in full + as much
-   context as fits and notes the truncation in the prompt so the reviewer knows its view
-   was partial (a partial review is still signal; a silently-truncated one is a trap).
+   ---` header.
+
+   **The reviewer template matches the inlined reality (F3).** `reviewer-cross-model.md`
+   does **not** tell the model to "read the spec at `{SPEC_PATH}`" or to open any file —
+   codex has no repo access, so a file-reading instruction would be a dead end that wastes
+   a turn or invites a hallucinated read. Instead the template states that the spec and all
+   context are **inlined below** (under the `--- SPEC UNDER REVIEW: ... ---` and
+   `--- CONTEXT: <path> ---` markers), and that the model must review only what is inlined.
+   The template also drops the stale "GPT / Gemini / Grok" three-phantom-model framing: Step
+   B runs **one** cross-model pass through the first available supported framework (codex
+   today), so the prompt frames a single non-Claude GPT-tier reviewer, not three. The
+   `{SPEC_PATH}` token is retained purely as a label so the reviewer can cite the spec by
+   path; `assembleReviewerPrompt()` substitutes it and then inlines the spec body, so there
+   is no contradictory "open the file" instruction reaching codex.
+
+   **A per-call context budget** (default 60 KB total, tunable) bounds the prompt; if
+   referenced docs exceed it, the driver includes the spec in full + as much context as fits
+   and notes the truncation in the prompt so the reviewer knows its view was partial (a
+   partial review is still signal; a silently-truncated one is a trap).
+
+   **Truncation is deterministic and names what it dropped (F4).** When the budget can't
+   hold every referenced doc, the drop is **not** "whatever happened to come last in an
+   arbitrary order." `assembleReviewerPrompt()` first orders the referenced docs by a fixed
+   priority (`orderContextDeterministically`): the constitutional / lessons docs
+   (`signal-vs-authority`, `INSTAR-DESIGN-PRINCIPLES-AND-LESSONS`, `STANDARDS-REGISTRY`,
+   `integrated-being`) sort **first** — they are the highest-value context for a reviewer and
+   what the lessons-aware internal reviewer reads — and the remaining docs keep the
+   **spec-declared link order** (the order the caller passed them, which is the order they
+   appear in the spec). A stable sort means the same spec + same docs **always** drop the
+   same docs (a review is reproducible). And the truncation note **names the affected docs**
+   — which doc was cut mid-document (`PARTIAL`) and which were `FULLY OMITTED` — so the
+   reviewer knows exactly which context it could not see, not merely that "something" was
+   cut.
 2. **Invoke.** `provider.evaluate(prompt, { model: 'capable', timeoutMs: REVIEW_TIMEOUT_MS })`.
    `REVIEW_TIMEOUT_MS` default **120_000** (a reasoning review of a full spec is far heavier
    than the 30s judgment-call default; the value is a tunable constant). The provider's
@@ -281,10 +315,43 @@ installed/authed), convergence proceeds **internal-only**:
 - **Convergence still completes and is still taggable.** D4 is explicit: never block.
   `unavailable` is a disclosed reduction in assurance, not a gate.
 
+**Every non-ran state carries the loud banner (F1).** The `cross-model-review:` field has
+several non-`ran` states (`unavailable`, `degraded`, `degraded-all-rounds`,
+`skipped-abbreviated`), and **none of them may read as a clean pass.** The report banner
+(SKILL.md Phase 4) renders the loud `⚠` marker for **all** of them — including
+`skipped-abbreviated` (the author chose the fast path) — exactly as loudly as `unavailable`.
+The clean `## Cross-model review: codex-cli:<model>` form (no `⚠`) is reserved for the one
+state where a real external pass actually ran. A deliberately-skipped or all-degraded
+external review is a real reduction in assurance and must be as visible to the approving
+human as a missing reviewer — never a quiet footnote.
+
 A `degraded` external call (§2 — codex present but this round's call failed) is treated as
-a *partial* cross-model pass for that round: the flag reads
-`cross-model-review: codex-cli:gpt-5.5 (degraded: <reason>)`, and the report notes which
-round(s) degraded. It does not collapse to `unavailable` (the framework IS there).
+a *partial* cross-model pass for that round: the per-round flag reads
+`cross-model-review: codex-cli:gpt-5.5 (degraded: <reason>)`. It does not collapse to
+`unavailable` (the framework IS there).
+
+**Spec-level aggregation across rounds — `degraded-all-rounds` (F2).** Convergence runs
+**multiple rounds**, but the spec gets exactly **one** final `cross-model-review:` value.
+Each round produces a per-round `ReviewerResult` (`ok` / `degraded` / `unavailable`); the
+skill tracks the per-round outcomes and computes the final flag via
+`aggregateRoundOutcomes(rounds, { skippedAbbreviated })` (exported from
+`crossModelReviewer.ts`), per these rules:
+
+- **`codex-cli:<model>`** — **any** round got a successful external pass. One genuine outside
+  opinion is enough to say the spec received real cross-model review (the freshest successful
+  round's flag is used).
+- **`degraded-all-rounds`** — a framework was present in the rounds but **zero** rounds
+  succeeded (every attempt degraded). This is treated **as loud as `unavailable`**: the spec
+  converged having **never once received a real external opinion**, and that fact must surface
+  at the **spec level** (the banner + the frontmatter flag) — not hide inside per-round
+  degraded notes that, read individually, make it look like the review "tried."
+- **`unavailable`** — no supported framework was ever available across the rounds.
+- **`skipped-abbreviated`** — the author opted out of the external pass entirely.
+
+The motivation for `degraded-all-rounds` is precisely the trap it closes: a spec that
+degraded on every round looks, from per-round notes alone, like it attempted cross-model
+review — but it converged with the SAME assurance as one that had no reviewer at all. The
+spec-level aggregate makes "converged with no real external opinion" impossible to miss.
 
 ### 5. How it threads into spec-converge
 
@@ -302,12 +369,15 @@ reviewer step** (~line 74) and Phase 5 (tag) / Phase 4 (report):
 - **Internal reviewers + Standards-Conformance Gate: unchanged.** All five internal
   reviewers and the auto-invoked `POST /spec/conformance-check` still run on every round in
   every mode. The lessons-aware reviewer remains non-skippable.
-- **Phase 4 (report).** Add the cross-model status banner (§4) — `codex-cli:gpt-5.5`,
-  `degraded`, or `UNAVAILABLE` — so the human handoff always states the external-review
-  posture.
-- **Phase 5 (tag).** `write-convergence-tag.mjs` writes the `cross-model-review:` (+
-  `-reason`) frontmatter field. This is **additive** to the existing tag write (it already
-  rewrites frontmatter; we add one or two lines), and it does **not** change the
+- **Phase 4 (report).** Add the cross-model status banner (§4) — `codex-cli:<model>`,
+  `degraded`, `degraded-all-rounds`, `UNAVAILABLE`, or `SKIPPED` — so the human handoff
+  always states the external-review posture. **Every non-ran state carries the loud `⚠`
+  marker (F1)**; only the real-pass `codex-cli:<model>` form is unmarked.
+- **Phase 5 (tag).** `write-convergence-tag.mjs` writes the **aggregated, spec-level**
+  `cross-model-review:` (+ `-reason`) frontmatter field — the `aggregateRoundOutcomes`
+  result across all rounds (F2), not a single round's status. This is **additive** to the
+  existing tag write (it already rewrites frontmatter; we add one or two lines), and it does
+  **not** change the
   convergence/approval gate logic in `scripts/instar-dev-precommit.js` — that gate still
   keys only on `review-convergence` + `approved: true` (`instar-dev-precommit.js:417-435`).
   The cross-model flag is **disclosure, not a gate**: an `unavailable` spec can still be
@@ -342,6 +412,18 @@ be present but the author chose the fast path; the flag records that choice hone
 - **Driver parse**: a well-formed reviewer reply (`Verdict: SERIOUS ISSUES` + findings)
   parses into the structured record; an unparseable reply yields exactly one raw
   "unstructured external review" finding (never zero, never thrown).
+- **Spec-level aggregation across rounds (F2)** — `aggregateRoundOutcomes`: any successful
+  round → the clean `codex-cli:<model>` flag (last success wins); a framework present every
+  round but zero successes → `degraded-all-rounds` (carries the last degraded reason); all
+  rounds unavailable → `unavailable` (NOT `degraded-all-rounds`); `skippedAbbreviated` wins
+  over everything; empty rounds → `unavailable`. Plus `buildCrossModelFlag('degraded-all-rounds')`
+  emits the exact frontmatter string.
+- **Deterministic context truncation (F4)** — `assembleReviewerPrompt` /
+  `orderContextDeterministically`: constitutional/lessons docs (`signal-vs-authority`,
+  `INSTAR-DESIGN-PRINCIPLES-AND-LESSONS`, …) are kept FIRST regardless of caller order; the
+  truncation note **names** the partial doc and the fully-omitted docs (not just
+  "truncated"); identical inputs produce byte-identical prompts (reproducible); the ordering
+  function is pure (does not mutate its input).
 
 ### Integration (`tests/integration/`)
 
@@ -419,11 +501,16 @@ Two parity points to keep honest:
   + the internal lessons-aware reviewer are the cross-checks). It cannot exfiltrate or
   mutate anything (no write sandbox, allowlist env). This is the same trust posture as
   every other codex judgment call in instar.
-- **Cost.** One `capable`-tier (`gpt-5.5`, a heavy reasoning model) call per convergence
-  round, bounded by the 120s timeout and the account-global circuit breaker. The context
-  budget (60 KB) bounds prompt size. Convergence is a deliberate, infrequent, pre-build
-  action (not a hot path), so a heavyweight model per round is acceptable; the breaker is
-  the backstop if a burst of spec reviews hits the account limit.
+- **Cost (worst case stated explicitly).** One `capable`-tier (`gpt-5.5`, a heavy reasoning
+  model) call per convergence round. Convergence loops up to the **10-iteration hard cap**
+  (SKILL.md Phase 3), so the worst case for a single spec's convergence is **~10 rounds × 1
+  `gpt-5.5` call = ~10 capable-tier calls** before the cap forces a stop. Each call is
+  bounded by the 120s timeout and the account-global circuit breaker; the context budget
+  (60 KB) bounds prompt size. Convergence is a deliberate, infrequent, pre-build action (not
+  a hot path), so even the 10-call ceiling per spec is acceptable; the breaker is the
+  backstop if a burst of spec reviews hits the account limit (and once the breaker opens,
+  the remaining rounds degrade rather than spend — see the `degraded-all-rounds` aggregate
+  in §2/§4).
 
 ## Out of scope (later steps)
 

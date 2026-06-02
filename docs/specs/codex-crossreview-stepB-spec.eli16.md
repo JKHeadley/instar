@@ -46,6 +46,21 @@ panel but NOT the outside second opinion, because no external reviewer was insta
 skipped — the lessons-aware reviewer — still runs no matter what, because it's our defense
 against approving something that quietly contradicts a hard-won lesson.
 
+There are a few other ways the outside opinion can come up short, and **every one of them
+gets the same loud warning banner** — none of them is allowed to quietly look like a clean
+pass. If codex was there but every single review attempt failed (it timed out or hit a usage
+limit on each round), the spec ends up flagged **`degraded-all-rounds`** — meaning it
+converged without ever actually getting a real outside opinion, which is just as serious as
+having no reviewer at all. And if the author deliberately took the fast path and skipped the
+outside review to save cost, that gets a loud banner too (**skipped**), not a quiet footnote
+— "I chose to skip the second opinion" should be just as visible to the person approving as
+"no second opinion was available." Only one banner has no warning mark on it: the one that
+says a real outside review genuinely ran. One more detail under the hood: when the outside
+reviewer is run, the spec and its supporting documents are pasted directly into the request
+(codex can't open files itself), and if there's too much to fit, the least-important
+documents are dropped in a fixed, predictable order — and the request says exactly which
+documents were trimmed, so the reviewer always knows what it couldn't see.
+
 ## Built to grow
 
 codex is the *first* supported outside reviewer, but it won't be the last. There's a little

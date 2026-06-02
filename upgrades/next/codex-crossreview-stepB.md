@@ -1,0 +1,36 @@
+# Upgrade Guide — vNEXT
+
+<!-- bump: patch -->
+
+## What Changed
+
+Spec-review-convergence's external **cross-model reviewer** is now real and framework-native:
+instead of a placeholder API path, it detects the installed **codex CLI** and runs a
+GPT-tier second opinion through the existing hardened codex provider — so any instar agent
+with codex gets cross-model review for free, no API keys. When no supported reviewer is
+installed (or a call fails, or convergence is abbreviated) the spec carries a loud,
+honest `cross-model-review:` flag; the review is **signal, never a gate**. Step B of the
+tiered-development project.
+
+## What to Tell Your User
+
+Nothing to do — this only affects how the agent reviews its own instar specs. Specs now get
+a real outside-model opinion when codex is present, and a clearly-marked note when they
+don't, so a spec that never got an external review can't quietly look like it did.
+
+## Summary of New Capabilities
+
+- `src/core/crossModelReviewer.ts` — codex-CLI reviewer detection + a supported-reviewer
+  registry + the reviewer driver (via the existing codex provider) + the honest flag
+  machinery (`codex-cli:<model>` / `degraded` / `degraded-all-rounds` / `unavailable` /
+  `skipped-abbreviated`), with deterministic, named context truncation.
+- `skills/spec-converge/scripts/cross-model-review.mjs` — the CLI the convergence skill
+  calls; `write-convergence-tag.mjs` gains `--cross-model-review`; `SKILL.md` + the reviewer
+  prompt template now describe the real, inlined-context, single-codex-pass mechanism.
+
+## Evidence
+
+- `npx tsc --noEmit` exit 0; Step-B tests 53 green (45 + 5 unit, 3 integration); `npm run
+  lint` green. Detection live-validated on this host: `{"available":true,
+  "framework":"codex-cli","model":"gpt-5.5"}`.
+- Dev-only tooling: `/spec-converge` is not shipped to end-agent homes, so no migration.
