@@ -11,7 +11,29 @@
  *   node skills/spec-converge/scripts/write-convergence-tag.mjs \
  *     --spec docs/specs/<slug>.md \
  *     --iterations 3 \
- *     --report docs/specs/reports/<slug>-convergence.md
+ *     --report docs/specs/reports/<slug>-convergence.md \
+ *     [--cross-model-review "<flag value>"] \
+ *     [--cross-model-reason "<reason>"]
+ *
+ * The optional --cross-model-review flag records the external (non-Claude)
+ * reviewer posture on the spec frontmatter (Step B of the tiered-dev process,
+ * docs/specs/codex-crossreview-stepB-spec.md §2/§4). This is the FINAL
+ * spec-level value the skill computes via aggregateRoundOutcomes() across all
+ * convergence rounds (a single round's status is per-round; the spec gets one).
+ * Valid values:
+ *   - codex-cli:<model>                       (a supported reviewer ran in >=1 round)
+ *   - codex-cli:<model> (degraded: <reason>)  (present but a given round's call failed)
+ *   - degraded-all-rounds                     (present every round, ZERO succeeded —
+ *                                              as loud as unavailable; spec converged
+ *                                              with no real external opinion)
+ *   - unavailable                             (no supported framework)
+ *   - skipped-abbreviated                     (author chose the fast path)
+ * This script does NOT enum-validate the value (it accepts any string and
+ * quotes it safely) — the canonical accepted set lives in crossModelReviewer.ts
+ * (CrossModelFlagStatus) and is documented here for the caller.
+ * It is DISCLOSURE, not a gate — it does not change /instar-dev's
+ * review-convergence + approved enforcement. Idempotent (re-run strips and
+ * rewrites the field, like the review-* fields).
  *
  * Does NOT write `approved: true` — that tag is the user's structural
  * contribution. /spec-converge only ever writes the machine-verifiable
@@ -28,12 +50,20 @@ import { checkEli16Overview } from '../../../scripts/eli16-overview-check.mjs';
 
 function parseArgs() {
   const args = process.argv.slice(2);
-  const out = { spec: null, iterations: null, report: null };
+  const out = {
+    spec: null,
+    iterations: null,
+    report: null,
+    crossModelReview: null,
+    crossModelReason: null,
+  };
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     if (a === '--spec') out.spec = args[++i];
     else if (a === '--iterations') out.iterations = parseInt(args[++i], 10);
     else if (a === '--report') out.report = args[++i];
+    else if (a === '--cross-model-review') out.crossModelReview = args[++i];
+    else if (a === '--cross-model-reason') out.crossModelReason = args[++i];
     else {
       console.error(`Unknown arg: ${a}`);
       process.exit(1);
@@ -41,14 +71,21 @@ function parseArgs() {
   }
   if (!out.spec || !out.report || !Number.isFinite(out.iterations)) {
     console.error(
-      'Usage: write-convergence-tag.mjs --spec PATH --iterations N --report PATH',
+      'Usage: write-convergence-tag.mjs --spec PATH --iterations N --report PATH ' +
+        '[--cross-model-review VALUE] [--cross-model-reason REASON]',
     );
     process.exit(1);
   }
   return out;
 }
 
-const { spec: specArg, iterations, report: reportArg } = parseArgs();
+const {
+  spec: specArg,
+  iterations,
+  report: reportArg,
+  crossModelReview,
+  crossModelReason,
+} = parseArgs();
 
 const ROOT = path.resolve(new URL('../../..', import.meta.url).pathname);
 const specPath = path.resolve(ROOT, specArg);
@@ -106,7 +143,8 @@ if (!match) {
 }
 const [, fmBody, rest] = match;
 
-// Strip any existing review-convergence / review-iterations / review-completed-at / review-report lines
+// Strip any existing managed lines (review-* chain + cross-model-review chain)
+// so re-runs are idempotent — the field is rewritten, never duplicated.
 const preservedLines = fmBody
   .split('\n')
   .filter(
@@ -114,7 +152,9 @@ const preservedLines = fmBody
       !/^\s*review-convergence\s*:/.test(l) &&
       !/^\s*review-iterations\s*:/.test(l) &&
       !/^\s*review-completed-at\s*:/.test(l) &&
-      !/^\s*review-report\s*:/.test(l),
+      !/^\s*review-report\s*:/.test(l) &&
+      !/^\s*cross-model-review\s*:/.test(l) &&
+      !/^\s*cross-model-review-reason\s*:/.test(l),
   )
   .join('\n')
   .trim();
@@ -124,13 +164,29 @@ const reportRel = path
   .relative(ROOT, reportPath)
   .replace(/\\/g, '/');
 
-const newFm = [
+// Double-quote a YAML scalar value, escaping embedded quotes/backslashes so a
+// flag like `codex-cli:gpt-5.5 (degraded: timeout)` (colon + parens) parses.
+function yamlQuote(v) {
+  return `"${String(v).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+}
+
+const newFmLines = [
   preservedLines,
   `review-convergence: "${ts}"`,
   `review-iterations: ${iterations}`,
   `review-completed-at: "${ts}"`,
   `review-report: "${reportRel}"`,
-].join('\n');
+];
+
+// Cross-model review posture (Step B). Disclosure-only; additive.
+if (crossModelReview) {
+  newFmLines.push(`cross-model-review: ${yamlQuote(crossModelReview)}`);
+  if (crossModelReason) {
+    newFmLines.push(`cross-model-review-reason: ${yamlQuote(crossModelReason)}`);
+  }
+}
+
+const newFm = newFmLines.join('\n');
 
 const newContent = `---\n${newFm}\n---\n${rest}`;
 fs.writeFileSync(specPath, newContent, 'utf-8');

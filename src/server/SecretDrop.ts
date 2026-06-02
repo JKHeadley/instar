@@ -52,6 +52,20 @@ export interface SecretRequest {
   onReceive?: (values: Record<string, string>) => void;
   /** Agent name (shown in the form) */
   agentName: string;
+  /**
+   * Sealed-handoff sender authentication (R1a). When set, the submission MUST
+   * carry a `_sig` field — an Ed25519 signature, by the pinned sender key, over
+   * the canonical message {@link canonicalSubmitMessage} (token + declared field
+   * values). A submission that is unsigned, signed by the wrong key, or whose
+   * values were tampered after signing is REJECTED before storage. This closes
+   * the "first-POST-wins" race on a write-only URL: possession of the URL is no
+   * longer sufficient — the submitter must prove possession of the sender key.
+   * Omitted for ordinary (human) Secret Drops, which stay unchanged.
+   */
+  senderVerification?: {
+    /** Raw 32-byte Ed25519 public key of the expected sender, hex-encoded. */
+    senderPubKeyHex: string;
+  };
 }
 
 export interface SecretSubmission {
@@ -78,6 +92,11 @@ export interface CreateSecretRequestOptions {
   ttlMs?: number;
   /** Callback when secret is received */
   onReceive?: (values: Record<string, string>) => void;
+  /** Sealed-handoff sender authentication (R1a) — see {@link SecretRequest.senderVerification}. */
+  senderVerification?: {
+    /** Raw 32-byte Ed25519 public key of the expected sender, hex-encoded. */
+    senderPubKeyHex: string;
+  };
 }
 
 // ── Service ────────────────────────────────────────────────────────
@@ -87,6 +106,46 @@ const MAX_PENDING = 20;
 const TOKEN_BYTES = 32; // 256-bit
 const RECEIVED_TTL_MS = 5 * 60 * 1000; // 5 minutes — auto-cleanup window for stored submissions
 const STUCK_CONSUMER_GRACE_MS = 60 * 1000; // 60 seconds — emit a warning if a submission sits unconsumed past this
+
+/**
+ * Canonical message an R1a sealed-handoff sender signs (and the server verifies):
+ * the one-time `token`, then each DECLARED field as `name=value`, keys sorted, all
+ * joined by newlines. Deterministic on both sides so the Ed25519 signature matches
+ * exactly. Binding the token prevents replaying a signature to a different request;
+ * binding the values prevents post-signing tampering. The `_sig` field itself is
+ * never part of the signed message (it carries the signature, not signed content).
+ */
+export function canonicalSubmitMessage(token: string, declaredValues: Record<string, string>): Buffer {
+  const keys = Object.keys(declaredValues).sort();
+  const body = keys.map((k) => `${k}=${declaredValues[k]}`).join('\n');
+  return Buffer.from(`${token}\n${body}`, 'utf8');
+}
+
+/**
+ * Sender-side counterpart to R1a: build a signed sealed-handoff submission body.
+ * Given the one-time `token`, the declared field values, and the sender's raw
+ * 32-byte Ed25519 private seed (hex), returns the values plus a `_sig` that the
+ * receiver's {@link SecretDrop.submit} verifies against the pinned sender key.
+ * The sender POSTs the returned object as the submission body. Keeping the signer
+ * and verifier in one module guarantees they share {@link canonicalSubmitMessage}.
+ */
+export function buildSignedSubmission(
+  token: string,
+  declaredValues: Record<string, string>,
+  senderEd25519SeedHex: string,
+): Record<string, string> {
+  const seed = Buffer.from(senderEd25519SeedHex, 'hex');
+  if (seed.length !== 32) {
+    throw new Error('buildSignedSubmission: sender Ed25519 seed must be 32 bytes (hex)');
+  }
+  const privateKey = crypto.createPrivateKey({
+    key: Buffer.concat([Buffer.from('302e020100300506032b657004220420', 'hex'), seed]),
+    format: 'der',
+    type: 'pkcs8',
+  });
+  const sig = crypto.sign(null, canonicalSubmitMessage(token, declaredValues), privateKey);
+  return { ...declaredValues, _sig: sig.toString('hex') };
+}
 
 /**
  * Event emitted when a submission has been sitting in `received` for longer
@@ -171,6 +230,7 @@ export class SecretDrop {
       expiresAt: now + ttlMs,
       onReceive: options.onReceive,
       agentName: this.agentName,
+      senderVerification: options.senderVerification,
     };
 
     this.pending.set(token, request);
@@ -218,6 +278,32 @@ export class SecretDrop {
     const cleanValues: Record<string, string> = {};
     for (const field of request.fields) {
       cleanValues[field.name] = values[field.name].trim();
+    }
+
+    // R1a — sealed-handoff sender authentication. When the request pins a sender
+    // key, the submission must carry a valid Ed25519 `_sig` over the canonical
+    // (token + declared values) message. Reject unsigned / wrong-key / tampered
+    // submissions BEFORE consuming the request, so a failed attempt does not burn
+    // the one-time token (a real sender can retry). No verification = unchanged
+    // behavior for ordinary human Secret Drops.
+    if (request.senderVerification) {
+      const sigHex = values['_sig'];
+      if (!sigHex || typeof sigHex !== 'string') return null;
+      let verified = false;
+      try {
+        const pubRaw = Buffer.from(request.senderVerification.senderPubKeyHex, 'hex');
+        if (pubRaw.length === 32) {
+          const pub = crypto.createPublicKey({
+            key: Buffer.concat([Buffer.from('302a300506032b6570032100', 'hex'), pubRaw]),
+            format: 'der',
+            type: 'spki',
+          });
+          verified = crypto.verify(null, canonicalSubmitMessage(token, cleanValues), pub, Buffer.from(sigHex, 'hex'));
+        }
+      } catch {
+        verified = false;
+      }
+      if (!verified) return null;
     }
 
     // Consume the request (one-time use)

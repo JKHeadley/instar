@@ -178,6 +178,18 @@ Validates incoming relay messages against trust levels. Blocks oversized payload
 ### Relay Client
 WebSocket connection to the cloud relay for cross-machine agent communication.
 
+### SecureInvitation
+Ed25519-signed, single-use, recipient-bound invitation tokens used to bootstrap a Sealed Handoff. The invitation binds the submit host and TLS cert fingerprint inside the signed payload (endpoint pinning), so a sender validates the destination against the receiver's key rather than trusting whatever host it is handed — defeating a relay-swapped collector.
+
+### SecretDrop
+In-memory, one-time, never-on-disk store for collecting a credential from a user or peer agent. The submit URL is the auth; the secret value lives only in memory until consumed and is never written to disk or routed to Telegram. Supports optional sender-signature verification (an Ed25519 `_sig` over the canonical payload, checked before the request is consumed) so an intercepted URL cannot be poisoned by a first-POST-wins race. The receiver self-mints a request over a localhost-only loopback route, so no externalized bearer is needed.
+
+### OperatorConfirmGate
+Code-enforced requester-≠-authorizer gate for an agent-to-agent credential transfer: the agent requesting a secret cannot self-authorize. A relayed "operator said go" is not valid authorization — an operator-auth record scoped to the specific request, naming the holder, with requester ≠ authorizer and holder ≠ authorizer, must exist before the transfer is allowed.
+
+### ThreadlineGroundingGate
+"Ground Before You Assert" pre-send check for outbound agent-to-agent messages. Flags a scheme-qualified URL to a host the agent has not verified this session, so an unverified claim does not propagate to a peer as fact. Known/infra hosts and bare-host references are exempt; the gate is wired into `threadline_send` as a block-with-override.
+
 </details>
 
 ---

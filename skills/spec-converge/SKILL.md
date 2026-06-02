@@ -1,6 +1,6 @@
 ---
 name: spec-converge
-description: Iteratively review an instar-development spec with multi-angle internal reviewers (security, scalability, adversarial, integration) and cross-model external reviewers (GPT, Gemini, Grok) until convergence, then produce a comprehensive ELI10 convergence report. Output is a spec tagged review-convergence — one of the two tags /instar-dev requires before it will touch instar source. NOT user-invocable; run by the instar-developing agent before any spec-driven /instar-dev work.
+description: Iteratively review an instar-development spec with multi-angle internal reviewers (security, scalability, adversarial, integration, lessons-aware) and a real cross-model external reviewer routed through the agent's own installed codex CLI (GPT-tier) until convergence, then produce a comprehensive ELI10 convergence report. Output is a spec tagged review-convergence — one of the two tags /instar-dev requires before it will touch instar source. NOT user-invocable; run by the instar-developing agent before any spec-driven /instar-dev work.
 metadata:
   user_invocable: "false"
   audience: "instar-developing agent only — NOT end users"
@@ -71,17 +71,31 @@ The skill spawns reviewers in parallel:
 - **Integration/deployment.** Migration, backup/restore, multi-machine, config knobs, dashboard surface, rollback.
 - **Lessons-aware.** Loads the canonical Instar Design Principles + Lessons Learned index (`docs/INSTAR-DESIGN-PRINCIPLES-AND-LESSONS.md`) plus the running agent's local `.instar/memory/feedback_*.md` entries, then checks the spec for (a) direct contradictions of documented principles/lessons, (b) applicable lessons the spec fails to engage with, and (c) behavioral lessons violated by agent-facing surfaces the spec proposes. Catches the "Phase 2" anti-pattern and the spec-converge-pre-auth-circular failure mode (see `feedback_spec_converge_pre_auth_circular`).
 
-**External reviewers (cross-model, via the /crossreview pattern):**
+**External reviewer (cross-model, via the agent's own installed codex CLI):**
 
-- GPT-tier model — independent read on architecture and clarity.
-- Gemini-tier model — independent read.
-- Grok-tier model — independent read.
+The external "cross-model" pass is a single independent GPT-tier read that sits *outside* the Claude family to catch the blind spots Claude models share. It is **real**, routed through the agent's own `codex login` (no new API key, no new network dependency), and implemented in code — NOT a hand-wave. Run it like this:
 
-Each reviewer receives the spec, the architectural context docs referenced in the spec (`docs/signal-vs-authority.md`, `docs/integrated-being.md`, relevant subsystem docs), and a prompt specific to their perspective. Each produces a structured finding list.
+1. **Detect** whether a supported reviewer framework is installed + authed:
+   ```bash
+   node skills/spec-converge/scripts/cross-model-review.mjs --spec <spec-path> --detect-only
+   ```
+   Returns `{ available, framework?, model?, reason? }`. `available:false` → skip the external pass, set the fallback flag (see §"No-codex fallback" below / Phase 5), and continue internal-only. **Never block.**
 
-All **eight** reviewers run in parallel. Their findings are collected.
+2. **Run** the external review when available — pass the spec plus the same architectural context docs the internal reviewers receive (the docs the spec references):
+   ```bash
+   node skills/spec-converge/scripts/cross-model-review.mjs \
+     --spec <spec-path> \
+     --context docs/foo.md --context docs/bar.md
+   ```
+   It emits a JSON `ReviewerResult` on stdout: `{ status, framework?, model?, verdict?, findings?, reason?, flag }`. Fold its `findings` into the round alongside the internal reviewers'. `status:'degraded'` (codex present but the call failed — timeout / error / rate-limited) is a *partial* cross-model pass for the round: fold in whatever came back and record the `degraded` flag — it does **not** collapse to `unavailable`.
 
-**Code-backed reviewer — the Standards-Conformance Gate (auto-invoked).** Alongside the eight, call the live gate: `POST /spec/conformance-check` with the spec (body `{ "specPath": "<path-within-specsDir>" }`, or `{ "markdown": "<spec text>" }`). Unlike the prompt-driven reviewers, the gate is *code that reads the living constitution* (`docs/STANDARDS-REGISTRY.md`) and returns a per-standard report — `ok` / `at-risk` / `n/a` + a reason for every standing standard. Fold its `at-risk` entries into the round's findings. It is the structural complement to the Lessons-aware reviewer: lessons-aware reads the lessons doc + local memory (prompt-driven); the gate reads the constitution itself (code), so a registry edit can never be silently missed. **Signal-only:** advisory — it surfaces violations, it does not block (blocking authority is the separate, later `scg-blocking-authority` follow-up, per *Signal vs. Authority*). **Fail-open:** if the gate is disabled/unreachable (503) or returns `degraded: true`, note that the constitutional pass was not authoritative and continue — a down gate must never stall spec review. (This auto-invocation is the dogfood-to-ship enforcement of the **Self-Hosting** standard — the gate now *runs* at spec-review rather than being a step the author must remember.)
+The detection + invocation + parsing live in the unit-tested `src/core/crossModelReviewer.ts` module (built to `dist/core/crossModelReviewer.js`); the script is a thin file-I/O wrapper. codex is the **first** supported framework in an extensible registry (`SUPPORTED_REVIEWER_FRAMEWORKS`) — gemini-cli and others plug in there later with **no skill change**.
+
+Each internal reviewer receives the spec, the architectural context docs referenced in the spec (`docs/signal-vs-authority.md`, `docs/integrated-being.md`, relevant subsystem docs), and a prompt specific to their perspective. Each produces a structured finding list.
+
+The **five internal reviewers + the cross-model external pass** run in parallel (the external pass is one cross-model read through the first available supported framework — the honest mechanism, not three phantom API models). Their findings are collected.
+
+**Code-backed reviewer — the Standards-Conformance Gate (auto-invoked).** Alongside the internal reviewers + the cross-model external pass, call the live gate: `POST /spec/conformance-check` with the spec (body `{ "specPath": "<path-within-specsDir>" }`, or `{ "markdown": "<spec text>" }`). Unlike the prompt-driven reviewers, the gate is *code that reads the living constitution* (`docs/STANDARDS-REGISTRY.md`) and returns a per-standard report — `ok` / `at-risk` / `n/a` + a reason for every standing standard. Fold its `at-risk` entries into the round's findings. It is the structural complement to the Lessons-aware reviewer: lessons-aware reads the lessons doc + local memory (prompt-driven); the gate reads the constitution itself (code), so a registry edit can never be silently missed. **Signal-only:** advisory — it surfaces violations, it does not block (blocking authority is the separate, later `scg-blocking-authority` follow-up, per *Signal vs. Authority*). **Fail-open:** if the gate is disabled/unreachable (503) or returns `degraded: true`, note that the constitutional pass was not authoritative and continue — a down gate must never stall spec review. (This auto-invocation is the dogfood-to-ship enforcement of the **Self-Hosting** standard — the gate now *runs* at spec-review rather than being a step the author must remember.)
 
 **The lessons-aware reviewer is not optional**, even in pattern-instance abbreviated convergence. Abbreviated convergence may skip external models (one round instead of multiple) but must NOT skip the lessons-aware pass — that's the only defense against the circular self-verify problem documented at `feedback_spec_converge_pre_auth_circular`. When a spec author runs convergence on their own spec, the lessons-aware reviewer is the structural check that catches what the author missed.
 
@@ -89,13 +103,13 @@ All **eight** reviewers run in parallel. Their findings are collected.
 
 The skill reads all findings, groups duplicates, prioritizes by severity, and rewrites the spec to address each substantive finding. Trivial/cosmetic findings are noted but may be batched.
 
-The spec update is ONE coherent edit of the spec document — not eight separate patches. The agent treats the findings as a single synthesis input.
+The spec update is ONE coherent edit of the spec document — not one patch per reviewer. The agent treats the findings as a single synthesis input.
 
 Every update preserves the spec's structure. Changes are additive (new sections for new concerns) or rewrites of existing sections (when a finding reveals a design flaw).
 
 ### Phase 3 — Convergence check
 
-After the spec is updated, the skill runs another full review round (all eight reviewers, in parallel, on the updated spec).
+After the spec is updated, the skill runs another full review round (the five internal reviewers + the cross-model external pass, in parallel, on the updated spec).
 
 Convergence criterion: **the new round produces no material new issues.** "Material" means any finding that would require a spec change if unaddressed. Cosmetic findings, repeats of already-addressed concerns, and minor phrasing quibbles are non-material.
 
@@ -106,12 +120,33 @@ A lightweight LLM (Haiku-class) compares the new round's findings to the prior r
 
 Hard cap: 10 iterations. If the skill hits 10 iterations without convergence, it exits with a `convergence-failed` status and a report explaining why. Human input is required before retry.
 
+#### Aggregating per-round cross-model outcomes into ONE spec-level flag
+
+Convergence runs **multiple rounds**, but the spec gets **one** final `cross-model-review:` value. Each round's cross-model pass returns a `ReviewerResult` with a per-round status (`ok` / `degraded` / `unavailable`); the skill **tracks the per-round outcomes** and computes the final flag with `aggregateRoundOutcomes(rounds, { skippedAbbreviated })` (exported from `src/core/crossModelReviewer.ts`). The rule:
+
+- **`skipped-abbreviated`** — the author opted out of the external pass entirely (abbreviated mode). No round attempted it. (Wins over everything; nothing was tried.)
+- **`codex-cli:<model>`** (the clean RAN flag) — **any** round got a successful external pass. One genuine outside opinion is enough to say the spec received real cross-model review; the freshest successful round's flag is used.
+- **`degraded-all-rounds`** — a framework was present in the rounds but **zero** rounds succeeded (every attempt degraded: timeout / error / rate-limited). This is the case the aggregate exists to surface: **"converged having never once received a real external opinion."** It is treated **as loud as `unavailable`** — it must show up at SPEC level (the banner above + the frontmatter flag), not hide in per-round degraded notes.
+- **`unavailable`** — no supported framework was ever available across the rounds.
+
+The point of the aggregate: a spec that degraded on every single round looks, from the per-round notes alone, like it "tried" — but it converged with the SAME assurance as one that had no reviewer at all. `degraded-all-rounds` makes that fact impossible to miss at the spec level. The skill passes the aggregated `flag`/`reason` to `write-convergence-tag.mjs` (Phase 5) and renders the matching banner (Phase 4).
+
 ### Phase 4 — Convergence report
 
 Produce a final report at `docs/specs/reports/<slug>-convergence.md` with the following structure:
 
 ```markdown
 # Convergence Report — <spec title>
+
+## Cross-model review: <STATUS>
+
+[A can't-miss banner stating the external (non-Claude) reviewer posture for this convergence — taken from the FINAL spec-level `cross-model-review:` value (see "Aggregating per-round outcomes" below: a single round produces an `ok`/`degraded`/`unavailable` result, but the SPEC gets one final value). **Every non-ran state carries the loud ⚠ marker** — a non-ran state must NEVER read as a clean pass. One of:
+
+- `## Cross-model review: codex-cli:<model>` — RAN. A real GPT-tier external pass ran through the agent's codex CLI in at least one round. The ONLY state with no ⚠ (it is the clean pass).
+- `## ⚠ Cross-model review: codex-cli:<model> (degraded: <reason>)` — codex is installed but THIS round's call failed (timeout / error / rate-limited); the external pass was partial. State the reason. (Per-round status; if some OTHER round succeeded, the spec-level flag is the clean `codex-cli:<model>` instead.)
+- `## ⚠ Cross-model review: DEGRADED — ALL ROUNDS (degraded-all-rounds)` — codex was present every round but **ZERO rounds succeeded** (every attempt degraded). The spec converged having **never once received a real external opinion** — as loud as UNAVAILABLE. State the last round's reason. The user reads THIS before applying `approved: true`.
+- `## ⚠ Cross-model review: UNAVAILABLE` — no supported external (non-Claude) reviewer was installed/authed. Convergence ran on the internal Claude reviewers + the constitutional gate ONLY. State the specific reason (`codex-not-installed` / `codex-not-authed` / `codex-auth-apikey-forbidden`) and the one-line remediation (`codex login`, or install `@openai/codex`). The user reads THIS before applying `approved: true`, so the reduced-assurance state is an informed choice, not a silent one.
+- `## ⚠ Cross-model review: SKIPPED (abbreviated convergence)` — the author chose the fast path; the framework may be present but was deliberately skipped (the lessons-aware reviewer still ran). This is a **non-ran** state, so it carries the ⚠ too — "I skipped the outside opinion to save cost" must be as visible as "I had no outside opinion available," not a quiet footnote.]
 
 ## ELI10 Overview
 
@@ -147,7 +182,20 @@ review-convergence: "<ISO timestamp>"
 review-iterations: <N>
 review-completed-at: "<ISO timestamp>"
 review-report: "docs/specs/reports/<slug>-convergence.md"
+cross-model-review: "<flag>"          # codex-cli:<model> | unavailable | degraded-all-rounds | skipped-abbreviated
+cross-model-review-reason: "<reason>" # only when unavailable / degraded / degraded-all-rounds
 ```
+
+The `cross-model-review` field records the **final spec-level** external-reviewer posture (the `aggregateRoundOutcomes` result — see "Aggregating per-round cross-model outcomes" in Phase 3) so the spec self-documents which external pass it received (or didn't). Pass it through the tag writer with the aggregated `flag`/`reason` (strip the leading `cross-model-review: ` prefix — the script writes the field name itself):
+
+```bash
+node skills/spec-converge/scripts/write-convergence-tag.mjs \
+  --spec <spec-path> --iterations <N> --report <report-path> \
+  --cross-model-review "codex-cli:gpt-5.5"          # or "unavailable" / "degraded-all-rounds" / "skipped-abbreviated" / "codex-cli:gpt-5.5 (degraded: timeout)"
+  [--cross-model-reason "codex-not-installed"]
+```
+
+This is **DISCLOSURE, not a gate** — it does NOT change `/instar-dev`'s `review-convergence` + `approved: true` enforcement. An `unavailable` spec can still be approved (the user reads the report banner and makes an informed choice).
 
 **Structural prerequisite — ELI16 overview.** Before the convergence tag is written, `skills/spec-converge/scripts/write-convergence-tag.mjs` verifies the spec ships with a plain-English ELI16 companion at `docs/specs/<slug>.eli16.md` (or the path declared via `eli16-overview:` frontmatter). The companion must be at least 800 characters. If the overview is missing or stub-length, convergence is refused — no tag is written. The dense technical spec is for reviewers; the ELI16 overview is the entry point for any reader who has to make a real decision. See `skills/instar-dev/templates/eli16-overview.md` for the expected shape.
 
@@ -163,7 +211,7 @@ The skill does NOT auto-apply `approved: true`. That requires explicit human act
 
 - It does not build code. That's `/instar-dev`'s job, after both tags are present.
 - It does not relax convergence criteria to avoid iteration. 10-iteration cap exists to surface "this design is too confused to review" rather than to force false convergence.
-- It does not skip reviewer perspectives. All eight run on every round.
+- It does not skip reviewer perspectives. The five internal reviewers + the cross-model external pass run on every round (subject to the abbreviated-convergence exception, which still runs the non-skippable lessons-aware reviewer).
 - It does not auto-approve on behalf of the user. Approval is the user's structural contribution to the process.
 
 ## Bootstrap exception
@@ -181,7 +229,7 @@ The convergence check is structural. If the LLM comparator finds new material is
 A smaller finding count is NOT convergence. Convergence is zero material findings in a new round.
 
 ### Skipping a reviewer perspective to ship faster
-All five internal reviewers (security, scalability, adversarial, integration, lessons-aware) AND all three external reviewers run on every round. Skipping is visible in the iteration log and fails the report validation. During pattern-instance abbreviated convergence, the externals (GPT/Gemini/Grok) may be skipped to save cost, but the lessons-aware reviewer MUST run — it's the only structural defense against the spec-converge-pre-auth-circular failure mode.
+All five internal reviewers (security, scalability, adversarial, integration, lessons-aware) AND the cross-model external pass run on every round. Skipping is visible in the iteration log and fails the report validation. During pattern-instance abbreviated convergence, the external cross-model pass may be skipped to save cost — record that honestly as `cross-model-review: skipped-abbreviated` (distinct from `unavailable`: the framework may be present, but the author chose the fast path) — but the lessons-aware reviewer MUST run; it's the only structural defense against the spec-converge-pre-auth-circular failure mode.
 
 ### Rewriting the spec between iterations to hide findings
 Spec edits must address findings, not evade them. The iteration log records both the finding and the resolution. An edit that changes the spec to make the finding "not applicable" without actually solving the concern is caught at the next review round.
