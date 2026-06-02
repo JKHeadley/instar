@@ -4145,6 +4145,22 @@ Create worktrees for collaborator repos with \`instar worktree create <branch>\`
     } catch (err) {
       result.errors.push(`secret-drop-retrieve.mjs: ${err instanceof Error ? err.message : String(err)}`);
     }
+
+    // Session-clock injector — always overwrite. New, non-customizable shared
+    // routine (docs/specs/ROBUST-SESSION-TIME-AWARENESS-SPEC.md Component 2):
+    // renders the SESSION CLOCK line (render mode for the autonomous-stop-hook,
+    // query mode via GET /session/clock for UserPromptSubmit) so an agent always
+    // sees elapsed/remaining and never winds down a timed run early. Existing
+    // agents must get it on update without a manual install.
+    try {
+      const clockContent = this.loadRelayTemplate('emit-session-clock.sh');
+      if (clockContent) {
+        fs.writeFileSync(path.join(instarScriptsDir, 'emit-session-clock.sh'), clockContent, { mode: 0o755 });
+        result.upgraded.push('scripts/emit-session-clock.sh (session time-awareness injector)');
+      }
+    } catch (err) {
+      result.errors.push(`emit-session-clock.sh: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 
   /**

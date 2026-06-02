@@ -402,6 +402,8 @@ async function initFreshProject(projectName: string, options: InitOptions): Prom
   console.log(`  ${pc.green('✓')} Created .instar/scripts/serendipity-capture.sh`);
   installSecretDropRetrieve(projectDir);
   console.log(`  ${pc.green('✓')} Created .instar/scripts/secret-drop-retrieve.mjs`);
+  installEmitSessionClock(projectDir);
+  console.log(`  ${pc.green('✓')} Created .instar/scripts/emit-session-clock.sh`);
 
   // Create .claude/skills/ directory and install built-in skills (gated)
   if (claudeEnabled) {
@@ -4597,6 +4599,35 @@ function installSecretDropRetrieve(projectDir: string): void {
     return;
   }
 
+  fs.writeFileSync(scriptPath, scriptContent, { mode: 0o755 });
+}
+
+/**
+ * Install the session-clock injector (.instar/scripts/emit-session-clock.sh).
+ * Shared routine for the time-awareness feature: renders the SESSION CLOCK line
+ * (render mode for the autonomous-stop-hook, query mode via GET /session/clock)
+ * so an agent always sees elapsed/remaining. New, non-customizable — always
+ * installed. Spec: docs/specs/ROBUST-SESSION-TIME-AWARENESS-SPEC.md.
+ */
+function installEmitSessionClock(projectDir: string): void {
+  const scriptsDir = path.join(projectDir, '.instar', 'scripts');
+  fs.mkdirSync(scriptsDir, { recursive: true });
+  const scriptPath = path.join(scriptsDir, 'emit-session-clock.sh');
+  const modDir = __dirname;
+  const candidates = [
+    path.resolve(modDir, '..', 'templates', 'scripts', 'emit-session-clock.sh'),
+    path.resolve(modDir, '..', '..', 'src', 'templates', 'scripts', 'emit-session-clock.sh'),
+  ];
+  let scriptContent = '';
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) {
+      scriptContent = fs.readFileSync(candidate, 'utf-8');
+      break;
+    }
+  }
+  if (!scriptContent) {
+    return;
+  }
   fs.writeFileSync(scriptPath, scriptContent, { mode: 0o755 });
 }
 
