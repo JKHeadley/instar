@@ -15,7 +15,8 @@
  * default-off config (start() is a no-op when disabled).
  */
 
-import type { CheckInRequest, CheckInOutcome } from './A2ACheckInProxy.js';
+import { runCheckIn, type CheckInRequest, type CheckInOutcome } from './A2ACheckInProxy.js';
+import type { SummaryKind } from './A2ACheckInSummarizer.js';
 
 export interface ActiveThreadRef {
   threadId: string;
@@ -98,4 +99,35 @@ export class A2ACheckInScheduler {
       }
     }
   }
+}
+
+/**
+ * Factory — compose the concrete I/O deps into a wired scheduler. The server provides:
+ *   listActiveThreads — from ThreadResumeMap.listActive() (filtered to topic-bound threads)
+ *   summarize         — sharedLlmQueue.enqueue('background', () => intelligence.evaluate(prompt,{model:'fast'}))
+ *   surface           — telegram.sendToTopic(topicId, body) (or the hub for parentless)
+ *   getHistory        — formatted thread messages from MessageStore
+ * Keeping this here (vs inline in server.ts) makes the full Layer 4 logic exercisable
+ * end-to-end with mock deps — the wiring-integrity test the convergence round asked for.
+ */
+export interface A2ACheckInWiring {
+  listActiveThreads: () => ActiveThreadRef[];
+  summarize: (prompt: string) => Promise<string>;
+  surface: (args: { threadId: string; topicId?: number; peerName: string; body: string; kind: SummaryKind }) => Promise<void>;
+  getHistory: (threadId: string) => Promise<string> | string;
+  config: A2ACheckInSchedulerConfig;
+  now?: () => number;
+  log?: (msg: string) => void;
+}
+
+export function createA2ACheckInScheduler(w: A2ACheckInWiring): A2ACheckInScheduler {
+  const checkIn = (req: CheckInRequest): Promise<CheckInOutcome> =>
+    runCheckIn(req, { summarize: w.summarize, surface: w.surface, getHistory: w.getHistory });
+  return new A2ACheckInScheduler({
+    listActiveThreads: w.listActiveThreads,
+    checkIn,
+    now: w.now ?? (() => Date.now()),
+    config: w.config,
+    log: w.log,
+  });
 }
