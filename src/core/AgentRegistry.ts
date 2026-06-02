@@ -31,6 +31,32 @@ function legacyRegistryPath(): string { return path.join(registryDir(), 'port-re
 const DEFAULT_PORT_RANGE_START = 4040;
 const DEFAULT_PORT_RANGE_END = 4099;
 
+/**
+ * WHATWG Fetch "bad ports" — node's global `fetch` (undici) throws
+ * `TypeError: fetch failed { cause: 'bad port' }` for any URL on one of these
+ * ports. Instar's multi-machine mesh does ALL of its cross-machine I/O over node
+ * fetch (pairing `POST /api/pair`, lease broadcast/pull, heartbeat), so an agent
+ * whose server lands on a blocked port is SILENTLY unreachable over the mesh —
+ * curl works (it ignores the blocklist), so the failure is invisible. Observed
+ * live 2026-06-02: a paired test agent on port 4045 (NFS `lockd`, on this list)
+ * could never be joined ("fetch failed: bad port") despite curl reaching it. The
+ * default allocation range (4040–4099) contains 4045, so the allocator MUST skip
+ * these. Source: the WHATWG Fetch spec "bad ports" table.
+ */
+export const FETCH_BLOCKED_PORTS: ReadonlySet<number> = new Set([
+  1, 7, 9, 11, 13, 15, 17, 19, 20, 21, 22, 23, 25, 37, 42, 43, 53, 69, 77, 79, 87,
+  95, 101, 102, 103, 104, 109, 110, 111, 113, 115, 117, 119, 123, 135, 137, 139,
+  143, 161, 179, 389, 427, 465, 512, 513, 514, 515, 526, 530, 531, 532, 540, 548,
+  554, 556, 563, 587, 601, 636, 989, 990, 993, 995, 1719, 1720, 1723, 2049, 3659,
+  4045, 4190, 5060, 5061, 6000, 6566, 6665, 6666, 6667, 6668, 6669, 6679, 6697,
+  10080,
+]);
+
+/** True if `port` is on the WHATWG fetch bad-ports list (node `fetch` refuses it). */
+export function isFetchBlockedPort(port: number): boolean {
+  return FETCH_BLOCKED_PORTS.has(port);
+}
+
 /** Agent name validation: alphanumeric, underscore, hyphen. Max 64 chars. */
 const AGENT_NAME_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/;
 
@@ -539,7 +565,7 @@ export function allocatePort(
     // agents that may still be running but have stale registry entries
     const usedPorts = new Set(registry.entries.map(e => e.port));
     for (let port = rangeStart; port <= rangeEnd; port++) {
-      if (!usedPorts.has(port) && isPortFreeSync(port)) {
+      if (!usedPorts.has(port) && !FETCH_BLOCKED_PORTS.has(port) && isPortFreeSync(port)) {
         return port;
       }
     }
@@ -644,7 +670,7 @@ export function allocatePortByName(
     // agents that may still be running but have stale registry entries
     const usedPorts = new Set(registry.entries.map(e => e.port));
     for (let port = rangeStart; port <= rangeEnd; port++) {
-      if (!usedPorts.has(port) && isPortFreeSync(port)) {
+      if (!usedPorts.has(port) && !FETCH_BLOCKED_PORTS.has(port) && isPortFreeSync(port)) {
         return port;
       }
     }

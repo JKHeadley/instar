@@ -40,7 +40,7 @@ import { AutoUpdater } from '../core/AutoUpdater.js';
 import { UpdateRestartHandshake, verifyRestartHandshake } from '../core/UpdateRestartHandshake.js';
 import { AutoDispatcher } from '../core/AutoDispatcher.js';
 import { DispatchExecutor } from '../core/DispatchExecutor.js';
-import { registerAgent, unregisterAgent, startHeartbeat } from '../core/AgentRegistry.js';
+import { registerAgent, unregisterAgent, startHeartbeat, isFetchBlockedPort } from '../core/AgentRegistry.js';
 import { TelegraphService } from '../publishing/TelegraphService.js';
 import { PrivateViewer } from '../publishing/PrivateViewer.js';
 import { TunnelManager } from '../tunnel/TunnelManager.js';
@@ -2222,6 +2222,20 @@ export async function startServer(options: StartOptions): Promise<void> {
   // which overwrites our intentional autoApply: false setting.
 
   const serverSessionName = `${config.projectName}-server`;
+
+  // Migration-parity warning: an EXISTING agent whose port predates the
+  // fetch-blocked-port allocator guard (or was set by hand) silently can't mesh —
+  // node fetch refuses WHATWG bad ports (e.g. 4045 = NFS lockd). New agents now
+  // skip these at allocation; surface it loudly for ones already on a bad port so
+  // the operator can re-port. (2026-06-02 incident.)
+  if (typeof config.port === 'number' && isFetchBlockedPort(config.port)) {
+    console.warn(pc.yellow(
+      `  ⚠ Port ${config.port} is on the WHATWG fetch "bad ports" list — multi-machine ` +
+      `mesh (pairing/lease/heartbeat use node fetch) CANNOT reach this agent on this port. ` +
+      `Change "port" in .instar/config.json to a non-blocked port (e.g. 4040–4044, 4046–4099) ` +
+      `and restart if you use multi-machine.`,
+    ));
+  }
 
   if (options.foreground) {
     // Run in foreground — useful for development

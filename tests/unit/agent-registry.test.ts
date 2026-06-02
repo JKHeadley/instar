@@ -463,4 +463,43 @@ describe('AgentRegistry', () => {
       expect(agentC).toBeDefined();
     });
   });
+
+  // ── Fetch-blocked port avoidance (2026-06-02 incident) ──────────────
+  // The mesh does all cross-machine I/O over node `fetch`, which throws
+  // "bad port" for WHATWG-blocked ports (e.g. 4045 = NFS lockd). The default
+  // allocation range 4040–4099 contains 4045, so the allocator must never hand
+  // it out, or the agent silently can't mesh.
+  describe('fetch-blocked port avoidance', () => {
+    it('isFetchBlockedPort flags WHATWG bad ports on both sides of the boundary', async () => {
+      const { isFetchBlockedPort } = await getRegistry();
+      // Blocked (on the WHATWG list):
+      expect(isFetchBlockedPort(4045)).toBe(true);  // NFS lockd — the live incident port
+      expect(isFetchBlockedPort(6000)).toBe(true);  // X11
+      expect(isFetchBlockedPort(6697)).toBe(true);  // IRC+TLS
+      expect(isFetchBlockedPort(2049)).toBe(true);  // NFS
+      // Not blocked (normal agent ports):
+      expect(isFetchBlockedPort(4040)).toBe(false);
+      expect(isFetchBlockedPort(4046)).toBe(false);
+      expect(isFetchBlockedPort(4050)).toBe(false);
+      expect(isFetchBlockedPort(4099)).toBe(false);
+    });
+
+    it('allocatePort never returns a fetch-blocked port (skips it even as the sole candidate)', async () => {
+      const { allocatePort } = await getRegistry();
+      // The only candidate in the range is the blocked port 4045 → the blocklist
+      // check precedes the lsof probe, so allocation must fail rather than return
+      // a port the mesh can never reach. (Deterministic regardless of whether
+      // 4045 is actually free on the host.)
+      expect(() => allocatePort('/tmp/blocked-port-agent', 4045, 4045)).toThrow(/No free ports/);
+    });
+
+    it('allocatePort skips a blocked port and returns the next usable one', async () => {
+      const { allocatePort } = await getRegistry();
+      // Range [4045, 4099]: 4045 is blocked and must be skipped; the allocator
+      // returns the first free, non-blocked port — never 4045.
+      const port = allocatePort('/tmp/skip-blocked-agent', 4045, 4099);
+      expect(port).not.toBe(4045);
+      expect(port).toBeGreaterThan(4045);
+    });
+  });
 });
