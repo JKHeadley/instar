@@ -55,6 +55,7 @@ import {
   isEvidenceVisibleAtScope as rendererIsEvidenceVisibleAtScope,
 } from './EvidenceRenderer.js';
 import { NativeModuleHealer } from './NativeModuleHealer.js';
+import { registerSqliteHandle } from '../core/SqliteRegistry.js';
 
 // Dynamic import for better-sqlite3 (optional dependency)
 type Database = import('better-sqlite3').Database;
@@ -566,6 +567,10 @@ export class SemanticMemory {
     });
 
     this.db = constructor(this.config.dbPath) as Database;
+    // Close-on-exit registry (SqliteRegistry.ts) — the closeFn reads this.db live
+    // so a corruption-recovery reopen later in open() is still covered. Closed
+    // once at shutdown via closeAllSqlite().
+    registerSqliteHandle(() => { try { this.db?.close(); } catch { /* already closed */ } });
 
     // Integrity check — auto-recover from corruption (JSONL is source of truth).
     // Corrupt DBs are quarantined (renamed) not deleted, and a marker file is written

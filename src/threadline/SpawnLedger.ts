@@ -21,6 +21,7 @@
  */
 
 import Database from 'better-sqlite3';
+import { registerSqliteHandle } from '../core/SqliteRegistry.js';
 import crypto from 'node:crypto';
 import path from 'node:path';
 import fs from 'node:fs';
@@ -73,6 +74,7 @@ const DEFAULTS = {
 export class SpawnLedger {
   private db: Database.Database;
   private opts: Required<SpawnLedgerOptions>;
+  private _unregisterSqlite?: () => void;
 
   constructor(dbPath: string, opts: SpawnLedgerOptions = {}) {
     fs.mkdirSync(path.dirname(dbPath), { recursive: true });
@@ -82,6 +84,10 @@ export class SpawnLedger {
     this.db.pragma('foreign_keys = ON');
     this.opts = { ...DEFAULTS, ...opts };
     this.applySchema();
+    // Close-on-exit registry (SqliteRegistry.ts). Registered after the db is open.
+    this._unregisterSqlite = registerSqliteHandle(() => {
+      try { this.db?.close(); } catch { /* already closed — fine */ }
+    });
   }
 
   private applySchema(): void {
@@ -256,6 +262,7 @@ export class SpawnLedger {
   }
 
   close(): void {
+    if (this._unregisterSqlite) { this._unregisterSqlite(); this._unregisterSqlite = undefined; }
     try {
       this.db.pragma('wal_checkpoint(TRUNCATE)');
     } catch {

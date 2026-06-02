@@ -23,6 +23,7 @@ import path from 'node:path';
 import readline from 'node:readline';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 import { NativeModuleHealer } from './NativeModuleHealer.js';
+import { registerSqliteHandle } from '../core/SqliteRegistry.js';
 
 // Dynamic import for better-sqlite3
 type Database = import('better-sqlite3').Database;
@@ -190,6 +191,9 @@ export class TopicMemory {
     this.db!.pragma('busy_timeout = 5000');
 
     this.createSchema();
+    // Close-on-exit registry (SqliteRegistry.ts) — closed once at shutdown; the
+    // closeFn reads this.db live so a corruption-rebuild reopen is still covered.
+    registerSqliteHandle(() => { try { this.db?.close(); } catch { /* already closed */ } });
 
     // Auto-rebuild from JSONL after corruption recovery
     if (this._needsRebuild) {

@@ -26,6 +26,7 @@
 
 import Database from 'better-sqlite3';
 import type { Database as BetterSqliteDatabase } from 'better-sqlite3';
+import { registerSqliteHandle } from '../core/SqliteRegistry.js';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -86,6 +87,9 @@ export class MessageProcessingLedger {
   private constructor(db: BetterSqliteDatabase, dbPath: string) {
     this.db = db;
     this.path = dbPath;
+    // Close-on-exit registry (SqliteRegistry.ts) — covers both open() and
+    // openMemory(); closed once at shutdown via closeAllSqlite().
+    registerSqliteHandle(() => { try { this.db?.close(); } catch { /* already closed */ } });
   }
 
   static open(agentId: string, stateDir: string): MessageProcessingLedger {

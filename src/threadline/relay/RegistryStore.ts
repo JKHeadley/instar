@@ -9,6 +9,7 @@
  */
 
 import Database from 'better-sqlite3';
+import { registerSqliteHandle } from '../../core/SqliteRegistry.js';
 import crypto from 'node:crypto';
 import path from 'node:path';
 import fs from 'node:fs';
@@ -183,6 +184,8 @@ export class RegistryStore {
 
     this.initSchema();
     this.resetOnlineStatus();
+    // Close-on-exit registry (SqliteRegistry.ts) — closed once at shutdown.
+    registerSqliteHandle(() => { try { this.db?.close(); } catch { /* already closed */ } });
 
     // Start stale cleanup cron (every 24 hours)
     this.staleCronTimer = setInterval(() => this.runStaleCron(), 24 * 60 * 60 * 1000);

@@ -18,6 +18,7 @@ import pc from 'picocolors';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 import { loadConfig, ensureStateDir, detectTmuxPath } from '../core/Config.js';
 import { isNonFatalUncaught } from '../core/uncaughtExceptionPolicy.js';
+import { closeAllSqlite } from '../core/SqliteRegistry.js';
 import { SessionManager } from '../core/SessionManager.js';
 import { StateManager } from '../core/StateManager.js';
 import { StuckInputSentinel } from '../core/StuckInputSentinel.js';
@@ -10014,7 +10015,13 @@ export async function startServer(options: StartOptions): Promise<void> {
     }
 
     // Graceful shutdown
+    let _shuttingDown = false;
     const shutdown = async () => {
+      // Re-entrancy guard: SIGINT+SIGTERM (or a restartDetected racing a signal)
+      // must not run the teardown twice. closeAllSqlite() is itself idempotent,
+      // but the resume-UUID save + sidecar flush should run once.
+      if (_shuttingDown) return;
+      _shuttingDown = true;
       console.log('\nShutting down...');
 
       // Save resume UUIDs for ALL active topic-linked sessions before exit.
@@ -10090,13 +10097,20 @@ export async function startServer(options: StartOptions): Promise<void> {
       if (telegram) await telegram.stop();
       sessionManager.stopMonitoring();
       stuckInputSentinel.stop();
-      // Close SQLite databases before exit — prevents "mutex lock failed" crash
-      // when better-sqlite3 destructors fire during process teardown.
-      topicMemory?.close();
-      semanticMemory?.close();
-      // Integrated-Being v1 — flush stats sidecar (coalesces pending writes).
+      // Integrated-Being v1 — flush stats sidecar (coalesces pending writes)
+      // BEFORE closing SQLite, so no unflushed write is lost.
       try { sharedStateLedger?.shutdown(); } catch { /* best effort */ }
       await server.stop();
+      // Close EVERY registered SQLite handle LAST — after all writers (server,
+      // scheduler, sentinels, telegram) have stopped — to prevent the
+      // "mutex lock failed" SIGABRT when better-sqlite3 static destructors fire
+      // during process teardown. The structural registry (SqliteRegistry.ts)
+      // replaces the old hand-maintained topicMemory/semanticMemory close-list,
+      // which covered only 2 of the 15 long-lived stores.
+      try {
+        const closed = closeAllSqlite();
+        console.log(`[shutdown] closed ${closed} sqlite handle(s)`);
+      } catch { /* best effort */ }
       process.exit(0);
     };
 
@@ -10118,8 +10132,10 @@ export async function startServer(options: StartOptions): Promise<void> {
       }
 
       console.error('[FATAL] Uncaught exception — closing databases before crash:', err.message);
-      try { topicMemory?.close(); } catch { /* best effort */ }
-      try { semanticMemory?.close(); } catch { /* best effort */ }
+      // Close ALL registered SQLite handles (not just topic/semantic memory) so
+      // the crash exit doesn't compound into a "mutex lock failed" SIGABRT on top
+      // of the original error. closeAllSqlite() is best-effort + idempotent.
+      try { closeAllSqlite(); } catch { /* best effort */ }
       process.exit(1);
     });
 

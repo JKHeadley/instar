@@ -19,6 +19,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import Database from 'better-sqlite3';
+import { registerSqliteHandle } from '../core/SqliteRegistry.js';
 import type { Database as BetterSqliteDatabase } from 'better-sqlite3';
 import { NativeModuleHealer } from '../memory/NativeModuleHealer.js';
 
@@ -137,6 +138,8 @@ export class FeatureMetricsLedger {
     this.db.pragma('journal_mode = WAL');
     this.db.pragma('synchronous = NORMAL');
     for (const ddl of SCHEMA) this.db.exec(ddl);
+    // Close-on-exit registry (SqliteRegistry.ts) — closed once at shutdown.
+    registerSqliteHandle(() => { try { this.db?.close(); } catch { /* already closed */ } });
     this.insertStmt = this.db.prepare(
       `INSERT INTO feature_metrics
          (ts, feature, kind, outcome, tokens_in, tokens_out, latency_ms, model, waited, wait_ms, verdict_id)

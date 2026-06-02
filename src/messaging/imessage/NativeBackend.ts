@@ -19,6 +19,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import type { IMessageIncoming, IMessageChat, ConnectionState } from './types.js';
+import { registerSqliteHandle } from '../../core/SqliteRegistry.js';
 
 // Apple Cocoa epoch: 2001-01-01T00:00:00Z in Unix epoch seconds
 const APPLE_EPOCH_OFFSET = 978307200;
@@ -97,6 +98,8 @@ export class NativeBackend extends EventEmitter {
       // while still allowing WAL reads.
       this.db = new Database(this.dbPath, { fileMustExist: true });
       this.db.pragma('query_only = ON');
+      // Close-on-exit registry (SqliteRegistry.ts) — closed once at shutdown.
+      registerSqliteHandle(() => { try { this.db?.close(); } catch { /* already closed */ } });
 
       // Scope poll query to authorized contacts for defense-in-depth.
       // Even if the adapter's auth check is bypassed, the SQL itself won't return

@@ -25,6 +25,7 @@
  * allowlists on write.
  */
 import Database from 'better-sqlite3';
+import { registerSqliteHandle } from '../core/SqliteRegistry.js';
 import type { Database as BetterSqliteDatabase } from 'better-sqlite3';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -303,6 +304,8 @@ export class FrameworkIssueLedger {
     this.db.pragma('journal_mode = WAL');
     this.db.pragma('synchronous = NORMAL');
     this.db.pragma('busy_timeout = 5000');
+    // Close-on-exit registry (SqliteRegistry.ts) — closed once at shutdown.
+    registerSqliteHandle(() => { try { this.db?.close(); } catch { /* already closed */ } });
     for (const ddl of SCHEMA) {
       try {
         this.db.exec(ddl);

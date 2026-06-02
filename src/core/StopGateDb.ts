@@ -25,6 +25,7 @@
 
 import Database from 'better-sqlite3';
 import type { Database as BetterSqliteDatabase } from 'better-sqlite3';
+import { registerSqliteHandle } from './SqliteRegistry.js';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -168,7 +169,15 @@ export class StopGateDb {
 
     for (const ddl of SCHEMA) this.db.exec(ddl);
     this.prepareStatements();
+    // Close-on-exit registry — see SqliteRegistry.ts. Registered AFTER the db is
+    // fully open so closeAllSqlite() never targets a half-constructed handle.
+    this._unregisterSqlite = registerSqliteHandle(() => {
+      try { this.db?.close(); } catch { /* already closed — fine */ }
+    });
   }
+
+  private _unregisterSqlite?: () => void;
+  private _closed = false;
 
   private prepareStatements(): void {
     this.stmts = {
@@ -367,6 +376,13 @@ export class StopGateDb {
   }
 
   close(): void {
+    // Unregister BEFORE closing our own handle so closeAllSqlite() never
+    // double-closes it. Idempotent via the _closed guard (the spec flagged
+    // StopGateDb.close() as lacking one — better-sqlite3 .close() throws on a
+    // second call).
+    if (this._unregisterSqlite) { this._unregisterSqlite(); this._unregisterSqlite = undefined; }
+    if (this._closed) return;
+    this._closed = true;
     this.db.close();
   }
 }

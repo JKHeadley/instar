@@ -29,6 +29,7 @@
 
 import Database from 'better-sqlite3';
 import type { Database as BetterSqliteDatabase } from 'better-sqlite3';
+import { registerSqliteHandle } from '../core/SqliteRegistry.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
@@ -143,6 +144,8 @@ export class PendingRelayStore {
   private constructor(db: BetterSqliteDatabase, dbPath: string) {
     this.db = db;
     this.path = dbPath;
+    // Close-on-exit registry (SqliteRegistry.ts) — closed once at shutdown.
+    registerSqliteHandle(() => { try { this.db?.close(); } catch { /* already closed */ } });
   }
 
   static open(agentId: string, stateDir: string): PendingRelayStore {

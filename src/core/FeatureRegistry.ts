@@ -16,6 +16,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 
+import { registerSqliteHandle } from './SqliteRegistry.js';
+
 // Dynamic import for better-sqlite3
 type Database = import('better-sqlite3').Database;
 
@@ -225,6 +227,8 @@ export class FeatureRegistry {
     this.db.pragma('busy_timeout = 5000');
 
     this.createSchema();
+    // Close-on-exit registry (SqliteRegistry.ts) — closed once at shutdown.
+    registerSqliteHandle(() => { try { this.db?.close(); } catch { /* already closed */ } });
   }
 
   /**

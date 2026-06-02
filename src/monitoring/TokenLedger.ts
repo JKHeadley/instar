@@ -13,6 +13,7 @@
  * observes. Routes expose summaries to the dashboard.
  */
 import Database from 'better-sqlite3';
+import { registerSqliteHandle } from '../core/SqliteRegistry.js';
 import type { Database as BetterSqliteDatabase } from 'better-sqlite3';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -354,6 +355,10 @@ export class TokenLedger {
     );
     this.db.pragma('journal_mode = WAL');
     this.db.pragma('synchronous = NORMAL');
+    // Close-on-exit registry (SqliteRegistry.ts) — closed once at shutdown via
+    // closeAllSqlite(). The registry's at-most-once closed-set + this idempotent
+    // closeFn make an explicit unregister unnecessary for this lifetime singleton.
+    registerSqliteHandle(() => { try { this.db?.close(); } catch { /* already closed */ } });
     for (const ddl of SCHEMA) {
       try {
         this.db.exec(ddl);

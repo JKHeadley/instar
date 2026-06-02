@@ -26,6 +26,7 @@
  * gate keys on (spec §3.5). llm_confidence is LLM-set + advisory only.
  */
 import Database from 'better-sqlite3';
+import { registerSqliteHandle } from '../core/SqliteRegistry.js';
 import type { Database as BetterSqliteDatabase } from 'better-sqlite3';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -226,6 +227,8 @@ export class CorrectionLedger {
     this.db.pragma('journal_mode = WAL');
     this.db.pragma('synchronous = NORMAL');
     for (const ddl of SCHEMA) this.db.exec(ddl);
+    // Close-on-exit registry (SqliteRegistry.ts) — closed once at shutdown.
+    registerSqliteHandle(() => { try { this.db?.close(); } catch { /* already closed */ } });
   }
 
   /**

@@ -28,6 +28,7 @@
  *    back into the commit / reconciler / route that observed the failure.
  */
 import Database from 'better-sqlite3';
+import { registerSqliteHandle } from '../core/SqliteRegistry.js';
 import type { Database as BetterSqliteDatabase } from 'better-sqlite3';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -345,6 +346,8 @@ export class FailureLedger {
     this.db.pragma('journal_mode = WAL');
     this.db.pragma('synchronous = NORMAL');
     for (const ddl of SCHEMA) this.db.exec(ddl);
+    // Close-on-exit registry (SqliteRegistry.ts) — closed once at shutdown.
+    registerSqliteHandle(() => { try { this.db?.close(); } catch { /* already closed */ } });
   }
 
   /** Deterministic dedupe key (spec §4.2 M5). */
