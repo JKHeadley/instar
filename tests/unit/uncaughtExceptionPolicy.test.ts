@@ -22,6 +22,19 @@ describe('isNonFatalUncaught', () => {
     expect(isNonFatalUncaught(new Error('ERR_STREAM_WRITE_AFTER_END'))).toBe(true);
   });
 
+  it('treats a standby read-only write as recoverable (must not crash-loop on a peer-held lease)', () => {
+    // The exact throw from StateManager.guardWrite() on a standby machine.
+    expect(
+      isNonFatalUncaught(
+        new Error('StateManager is read-only (this machine is on standby). Blocked: appendEvent'),
+      ),
+    ).toBe(true);
+    // Any blocked operation name, decorated message — substring match.
+    expect(
+      isNonFatalUncaught(new Error('FATAL: StateManager is read-only (this machine is on standby). Blocked: write')),
+    ).toBe(true);
+  });
+
   it('treats an UNKNOWN error as fatal (crash is the safe default)', () => {
     expect(isNonFatalUncaught(new Error('mutex lock failed'))).toBe(false);
     expect(isNonFatalUncaught(new Error('Cannot read properties of undefined'))).toBe(false);

@@ -28,6 +28,17 @@ const NON_FATAL_UNCAUGHT_PATTERNS = [
   // that sleeps/wakes often, where reconnects are frequent). The root cause is
   // also guarded at the ack send site; this is the defense-in-depth backstop.
   'Sent before connected',
+  // Standby read-only write: when this machine is on standby (a peer holds the
+  // multi-machine lease), StateManager.guardWrite() throws on any stray
+  // write ("StateManager is read-only (this machine is on standby)"). That is a
+  // KNOWN, ISOLATED, recoverable condition — the active machine owns the
+  // canonical state; the standby machine simply should not have written. The
+  // throw has already unwound the offending write; the server stays useful in
+  // send-only mode. Crashing the whole agent here turns a benign dropped write
+  // into a crash-loop (boot → demote-to-standby → stray write → FATAL → respawn).
+  // This is a crash backstop ONLY — it does not change lease/standby behavior;
+  // it stops a standby write from taking the process down.
+  'StateManager is read-only',
 ];
 
 /**
