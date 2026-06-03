@@ -71,6 +71,10 @@ Array fields are stored as JSON and returned as arrays.
   `cycleNumber`, `task`, and `menteeOutput`; array fields are optional arrays of strings.
 - `GET /apprenticeship/cycles?instanceId=&limit=` — list recent cycles, optionally scoped to one
   instance and bounded by `limit`.
+- `GET /apprenticeship/cycles/overdue?instanceId=` — read the observe-only overdue-cycle SLA
+  signal. It returns open cycles older than `monitoring.apprenticeshipCycleSla.overdueAfterMinutes`
+  (default 120 minutes), optionally scoped to one instance. The monitor ships disabled by default;
+  when it is unavailable, this route returns 503.
 - `GET /apprenticeship/cycles/:id` — fetch one recorded cycle, returning 404 when the id is
   unknown.
 - `POST /apprenticeship/cycles/:id/close` — mark an open cycle as closed and return the updated
@@ -78,6 +82,12 @@ Array fields are stored as JSON and returned as arrays.
 
 If the SQLite store is unavailable, the cycle routes return 503 instead of pretending the feature
 is alive.
+
+`ApprenticeshipCycleSlaMonitor` is observe-only. When enabled, it reads open cycles from
+`ApprenticeshipCycleStore`, computes age from `createdAt`, and raises at most one attention item per
+overdue cycle id. It never closes cycles, edits cycle rows, or emits a repeated alert on every
+monitoring tick. The server wires it into the existing token-ledger poller cadence so this signal
+does not add a new background timer.
 
 ```bash
 # Preview whether an instance may start (the retro-gate)

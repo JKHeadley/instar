@@ -727,6 +727,8 @@ export interface RouteContext {
   /** Apprenticeship differential-cycle store. Null when SQLite/state init fails
    *  → /apprenticeship/cycles* 503s. */
   apprenticeshipCycleStore?: import('../monitoring/ApprenticeshipCycleStore.js').ApprenticeshipCycleStore | null;
+  /** Observe-only overdue-cycle SLA monitor. Null when disabled/unavailable. */
+  apprenticeshipCycleSlaMonitor?: import('../monitoring/ApprenticeshipCycleSlaMonitor.js').ApprenticeshipCycleSlaMonitor | null;
   /** SessionReaper — pressure-aware idle-session reaper. Null when not wired
    *  (older boot paths). Powers GET /sessions/reaper observability. */
   sessionReaper?: import('../monitoring/SessionReaper.js').SessionReaper | null;
@@ -11578,6 +11580,7 @@ export function createRoutes(ctx: RouteContext): Router {
   // Differential-cycle capture (structural companion store):
   //   POST /apprenticeship/cycles             — record one cycle row
   //   GET  /apprenticeship/cycles             — list rows; optional instanceId, limit
+  //   GET  /apprenticeship/cycles/overdue     — read-only overdue SLA view
   //   GET  /apprenticeship/cycles/:id         — fetch one row (404 missing)
   //   POST /apprenticeship/cycles/:id/close   — mark row closed (404 missing)
   router.post('/apprenticeship/cycles', (req, res) => {
@@ -11597,6 +11600,14 @@ export function createRoutes(ctx: RouteContext): Router {
       : undefined;
     const limit = typeof req.query.limit === 'string' ? req.query.limit : undefined;
     res.json({ cycles: ctx.apprenticeshipCycleStore.list({ instanceId, limit }) });
+  });
+
+  router.get('/apprenticeship/cycles/overdue', (req, res) => {
+    if (!ctx.apprenticeshipCycleSlaMonitor) { res.status(503).json({ error: 'apprenticeship cycle SLA monitor disabled' }); return; }
+    const instanceId = typeof req.query.instanceId === 'string' && req.query.instanceId.trim() !== ''
+      ? req.query.instanceId
+      : undefined;
+    res.json({ overdue: ctx.apprenticeshipCycleSlaMonitor.listOverdue(instanceId) });
   });
 
   router.get('/apprenticeship/cycles/:id', (req, res) => {

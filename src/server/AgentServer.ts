@@ -51,6 +51,7 @@ import { RevertDetector } from '../monitoring/RevertDetector.js';
 import { CorrectionLedger } from '../monitoring/CorrectionLedger.js';
 import { ApprenticeshipProgram } from '../core/ApprenticeshipProgram.js';
 import { ApprenticeshipCycleStore } from '../monitoring/ApprenticeshipCycleStore.js';
+import { ApprenticeshipCycleSlaMonitor } from '../monitoring/ApprenticeshipCycleSlaMonitor.js';
 import { SafeGitExecutor } from '../core/SafeGitExecutor.js';
 import { createSpecReviewRoutes } from './specReviewRoutes.js';
 import { createUsherRoutes } from './usherRoutes.js';
@@ -169,6 +170,7 @@ export class AgentServer {
   private correctionLedger: CorrectionLedger | null = null;
   private apprenticeshipProgram: ApprenticeshipProgram | null = null;
   private apprenticeshipCycleStore: ApprenticeshipCycleStore | null = null;
+  private apprenticeshipCycleSlaMonitor: ApprenticeshipCycleSlaMonitor | null = null;
   // Burn-detection-and-self-heal system (six-phase umbrella spec at
   // docs/specs/token-burn-detection-and-self-heal.md). Lazy-initialised
   // after the TokenLedger comes up — burn detection without a ledger is
@@ -859,6 +861,26 @@ export class AgentServer {
       this.apprenticeshipCycleStore = null;
     }
 
+    // Apprenticeship overdue-cycle SLA signal — observe-only and ships OFF.
+    // When enabled, it rides TokenLedgerPoller's existing cadence via afterTick;
+    // it never owns a timer and never mutates the cycle store.
+    try {
+      const cfg = options.config.monitoring?.apprenticeshipCycleSla;
+      if (cfg?.enabled === true && this.apprenticeshipCycleStore) {
+        const telegram = this.telegramAdapter;
+        this.apprenticeshipCycleSlaMonitor = new ApprenticeshipCycleSlaMonitor({
+          store: this.apprenticeshipCycleStore,
+          config: cfg,
+          raiseAttention: telegram
+            ? (item) => telegram.createAttentionItem(item)
+            : undefined,
+        });
+      }
+    } catch (err) {
+      console.warn('[instar] apprenticeship cycle SLA monitor init failed (non-fatal):', err);
+      this.apprenticeshipCycleSlaMonitor = null;
+    }
+
     // Routes
     const routeCtx = {
       config: options.config,
@@ -960,6 +982,7 @@ export class AgentServer {
       correctionLedger: this.correctionLedger,
       apprenticeshipProgram: this.apprenticeshipProgram,
       apprenticeshipCycleStore: this.apprenticeshipCycleStore,
+      apprenticeshipCycleSlaMonitor: this.apprenticeshipCycleSlaMonitor,
       sessionReaper: options.sessionReaper ?? null,
       agentWorktreeReaper: options.agentWorktreeReaper ?? null,
       sleepController: options.sleepController ?? null,
@@ -2095,6 +2118,9 @@ export class AgentServer {
               // JSONL scan while no sessions are running — there are no new
               // tokens to attribute, so the full-cadence scan is wasted.
               isIdle: () => this.sessionManager.listRunningSessions().length === 0,
+              afterTick: async () => {
+                await this.apprenticeshipCycleSlaMonitor?.tick();
+              },
             });
             this.tokenLedgerPoller.start();
           } catch (err) {
@@ -2350,6 +2376,7 @@ export class AgentServer {
       }
       this.apprenticeshipCycleStore = null;
     }
+    this.apprenticeshipCycleSlaMonitor = null;
 
     // Shutdown WebSocket manager first
     if (this.wsManager) {

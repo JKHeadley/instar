@@ -10,8 +10,10 @@
  * and verifies:
  *   1. GET /apprenticeship/instances returns 200 through AgentServer (not 503).
  *   2. POST /apprenticeship/cycles returns 201 through AgentServer (not 503).
- *   2. The route requires Bearer auth.
- *   3. The full lifecycle works end-to-end through the wired program: create →
+ *   3. GET /apprenticeship/cycles/overdue returns 200 through AgentServer
+ *      when the default-off SLA monitor is explicitly enabled.
+ *   4. The route requires Bearer auth.
+ *   5. The full lifecycle works end-to-end through the wired program: create →
  *      transition pending→active gated on a real on-disk harvest at the
  *      canonical path.
  */
@@ -84,7 +86,7 @@ describe('Apprenticeship Program E2E lifecycle (feature is alive)', () => {
       requestTimeoutMs: 10000, version: '0.0.0',
       sessions: { claudePath: '/usr/bin/echo', maxSessions: 3, defaultMaxDurationMinutes: 30, protectedSessions: [], monitorIntervalMs: 5000 },
       scheduler: { enabled: false, jobsFile: '', maxParallelJobs: 1 },
-      messaging: [], monitoring: {}, updates: {},
+      messaging: [], monitoring: { apprenticeshipCycleSla: { enabled: true, overdueAfterMinutes: 120 } }, updates: {},
     } as InstarConfig;
 
     server = new AgentServer({ config, sessionManager: createMockSessionManager() as any, state: new StateManager(stateDir) });
@@ -124,6 +126,25 @@ describe('Apprenticeship Program E2E lifecycle (feature is alive)', () => {
     expect(res.status).toBe(201);
     expect(res.body.status).toBe('open');
     expect(res.body.overseerDifferential).toEqual(['overseer finding']);
+  });
+
+  it('GET /apprenticeship/cycles/overdue is alive (200, not 503) through AgentServer when enabled', async () => {
+    await request(app)
+      .post('/apprenticeship/cycles')
+      .set(auth())
+      .send({
+        id: 'e2e-cycle-overdue',
+        instanceId: 'echo-to-codey',
+        cycleNumber: 2,
+        createdAt: '2026-06-02T00:00:00.000Z',
+        task: 'Run an older apprenticeship differential cycle',
+        menteeOutput: 'old output',
+      })
+      .expect(201);
+
+    const res = await request(app).get('/apprenticeship/cycles/overdue').set(auth());
+    expect(res.status).toBe(200);
+    expect(res.body.overdue.some((c: { id: string }) => c.id === 'e2e-cycle-overdue')).toBe(true);
   });
 
   it('requires Bearer auth', async () => {

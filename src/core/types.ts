@@ -3298,6 +3298,18 @@ export interface MonitoringConfig {
     feedbackPostDelayMs?: number;
   };
   /**
+   * ApprenticeshipCycleSlaMonitor — observe-only signal for open apprenticeship
+   * differential cycles older than the configured SLA. Ships OFF; when enabled
+   * it raises at most one Attention item per overdue cycle id and never mutates
+   * the cycle store.
+   */
+  apprenticeshipCycleSla?: {
+    /** Master kill switch (default: false). */
+    enabled: boolean;
+    /** Open-cycle age threshold in minutes (default: 120). */
+    overdueAfterMinutes?: number;
+  };
+  /**
    * ReleaseReadinessSentinel (docs/specs/RELEASE-READINESS-VISIBILITY-SPEC.md §4.2)
    * — Layer B. A repo-gated dev-environment watchdog: evaluates the canonical
    * `main` of the instar checkout and surfaces a stalled/blocked release as a

@@ -25,6 +25,7 @@ import { ApprenticeshipProgram, type GateDeps } from '../../src/core/Apprentices
 import { validateRetroHarvest } from '../../src/core/retroHarvestValidator.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { ApprenticeshipCycleStore } from '../../src/monitoring/ApprenticeshipCycleStore.js';
+import { ApprenticeshipCycleSlaMonitor } from '../../src/monitoring/ApprenticeshipCycleSlaMonitor.js';
 
 const AUTH = 'apprenticeship-routes-token';
 const auth = () => ({ Authorization: `Bearer ${AUTH}` });
@@ -62,6 +63,7 @@ function ctxFor(
   stateDir: string,
   program: ApprenticeshipProgram | null,
   cycleStore: ApprenticeshipCycleStore | null = null,
+  cycleSlaMonitor: ApprenticeshipCycleSlaMonitor | null = null,
 ): RouteContext {
   return {
     config: {
@@ -75,7 +77,7 @@ function ctxFor(
     quotaTracker: null, publisher: null, viewer: null, tunnel: null, evolution: null,
     watchdog: null, triageNurse: null, topicMemory: null, feedbackAnomalyDetector: null,
     discoveryEvaluator: null, correctionLedger: null, apprenticeshipProgram: program,
-    apprenticeshipCycleStore: cycleStore,
+    apprenticeshipCycleStore: cycleStore, apprenticeshipCycleSlaMonitor: cycleSlaMonitor,
     startTime: new Date(),
   } as unknown as RouteContext;
 }
@@ -112,6 +114,14 @@ describe('/apprenticeship routes (integration)', () => {
     return new ApprenticeshipCycleStore({
       dbPath: path.join(stateDir, 'server-data', 'apprenticeship-cycles.db'),
       now: () => new Date('2026-06-03T08:00:00.000Z'),
+    });
+  }
+
+  function makeCycleSlaMonitor(store: ApprenticeshipCycleStore): ApprenticeshipCycleSlaMonitor {
+    return new ApprenticeshipCycleSlaMonitor({
+      store,
+      config: { enabled: true, overdueAfterMinutes: 120 },
+      now: () => new Date('2026-06-03T12:00:00.000Z'),
     });
   }
 
@@ -203,6 +213,65 @@ describe('/apprenticeship routes (integration)', () => {
 
     const closeMissing = await request(app).post('/apprenticeship/cycles/no-such/close').set(auth());
     expect(closeMissing.status).toBe(404);
+    store.close();
+  });
+
+  it('overdue route requires bearer, 503s when SLA monitor is disabled, and returns the overdue set', async () => {
+    const unavailable = appWith(ctxFor(stateDir, makeProgram(), null, null));
+    const unauth = await request(unavailable).get('/apprenticeship/cycles/overdue');
+    expect(unauth.status).toBe(401);
+
+    const disabled = await request(unavailable).get('/apprenticeship/cycles/overdue').set(auth());
+    expect(disabled.status).toBe(503);
+    expect(disabled.body.error).toContain('SLA monitor disabled');
+
+    const store = makeCycleStore();
+    store.record({
+      id: 'old-open',
+      instanceId: 'echo-to-codey',
+      cycleNumber: 1,
+      createdAt: '2026-06-03T09:00:00.000Z',
+      task: 'old open',
+      menteeOutput: 'output',
+    });
+    store.record({
+      id: 'young-open',
+      instanceId: 'echo-to-codey',
+      cycleNumber: 2,
+      createdAt: '2026-06-03T11:30:00.000Z',
+      task: 'young open',
+      menteeOutput: 'output',
+    });
+    store.record({
+      id: 'old-closed',
+      instanceId: 'echo-to-codey',
+      cycleNumber: 3,
+      createdAt: '2026-06-03T08:00:00.000Z',
+      task: 'old closed',
+      menteeOutput: 'output',
+      status: 'closed',
+    });
+    store.record({
+      id: 'other-old-open',
+      instanceId: 'other-instance',
+      cycleNumber: 1,
+      createdAt: '2026-06-03T08:00:00.000Z',
+      task: 'other old',
+      menteeOutput: 'output',
+    });
+
+    const app = appWith(ctxFor(stateDir, makeProgram(), store, makeCycleSlaMonitor(store)));
+    const res = await request(app).get('/apprenticeship/cycles/overdue?instanceId=echo-to-codey').set(auth());
+    expect(res.status).toBe(200);
+    expect(res.body.overdue).toEqual([
+      {
+        id: 'old-open',
+        instanceId: 'echo-to-codey',
+        cycleNumber: 1,
+        ageMinutes: 180,
+        createdAt: '2026-06-03T09:00:00.000Z',
+      },
+    ]);
     store.close();
   });
 

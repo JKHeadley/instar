@@ -184,6 +184,13 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       maxRoutesPerTick: 5,
       feedbackPostDelayMs: 7000,
     },
+    // ApprenticeshipCycleSlaMonitor — observe-only overdue-cycle signal. Ships
+    // OFF so no install starts raising Attention topics until the operator opts
+    // in. Dedup is per cycle id and the monitor never mutates the cycle store.
+    apprenticeshipCycleSla: {
+      enabled: false,
+      overdueAfterMinutes: 120,
+    },
     // ReleaseReadinessSentinel (docs/specs/RELEASE-READINESS-VISIBILITY-SPEC.md
     // §4.2). Ships OFF — Echo dogfoods first. Repo-gated: inert unless the
     // install has an analyzable instar git repo. Thresholds default to
