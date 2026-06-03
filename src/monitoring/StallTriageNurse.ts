@@ -609,6 +609,7 @@ export class StallTriageNurse extends EventEmitter {
       rawResponse = await this.intelligence.evaluate(prompt, {
         model: 'balanced',
         maxTokens: this.config.maxTokens,
+        attribution: { component: 'StallTriageNurse' }, // attribution for /metrics/features
       });
 
       return this.parseDiagnosis(rawResponse);

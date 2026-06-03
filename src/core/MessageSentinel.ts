@@ -512,6 +512,7 @@ export class MessageSentinel {
       const response = await this.config.intelligence.evaluate(prompt, {
         maxTokens: 10,
         temperature: 0,
+        attribution: { component: 'MessageSentinel' }, // attribution for /metrics/features
       });
 
       const parsed = this.extractCategory(response);

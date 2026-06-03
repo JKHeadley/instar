@@ -208,7 +208,7 @@ If there's not enough information to tell, say MISMATCH (fail-safe).
 
 Respond with ONLY one word: MATCH or MISMATCH`;
 
-    const evaluate = deps.evaluateFn ?? ((p: string) => intelligence!.evaluate(p, { model: 'fast' }));
+    const evaluate = deps.evaluateFn ?? ((p: string) => intelligence!.evaluate(p, { model: 'fast', attribution: { component: 'ResumeValidator' } })); // attribution for /metrics/features
     const response = await evaluate(prompt);
     const text = response.trim().toUpperCase();
 

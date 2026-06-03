@@ -311,6 +311,7 @@ const codexReviewer: SupportedReviewerFramework = {
       raw = await provider.evaluate(args.promptText, {
         model: REVIEW_MODEL_TIER,
         timeoutMs: args.timeoutMs,
+        attribution: { component: 'crossModelReviewer' }, // attribution for /metrics/features
       });
     } catch (err) {
       const reason = classifyReviewFailure(err);

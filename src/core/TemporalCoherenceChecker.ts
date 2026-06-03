@@ -183,6 +183,7 @@ export class TemporalCoherenceChecker {
         model: 'fast',
         temperature: 0.1,
         maxTokens: 2048,
+        attribution: { component: 'TemporalCoherenceChecker' }, // attribution for /metrics/features
       });
 
       const result = this.parseResponse(response);

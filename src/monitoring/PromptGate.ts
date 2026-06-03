@@ -479,6 +479,7 @@ When in doubt, respond NO_PROMPT. False positives cause spam.`;
         model: 'fast',
         maxTokens: 500,
         temperature: 0,
+        attribution: { component: 'PromptGate' }, // attribution for /metrics/features
       });
 
       const trimmed = response.trim();

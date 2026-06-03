@@ -353,6 +353,7 @@ export class ProjectDriftChecker {
             maxTokens: 2048,
             temperature: 0,
             timeoutMs,
+            attribution: { component: 'ProjectDriftChecker' }, // attribution for /metrics/features
           }),
           timeoutMs
         );
