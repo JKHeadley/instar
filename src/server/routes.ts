@@ -704,6 +704,7 @@ export interface RouteContext {
    *  transcripts). Null when stateDir is unavailable. */
   tokenLedger: import('../monitoring/TokenLedger.js').TokenLedger | null;
   featureMetricsLedger: import('../monitoring/FeatureMetricsLedger.js').FeatureMetricsLedger | null;
+  resourceLedger: import('../monitoring/ResourceLedger.js').ResourceLedger | null;
   /** Framework-Onboarding Mentor System issue ledger (read-only observability;
    *  signal-only — never gates). Null when stateDir is unavailable. Powers
    *  GET /framework-issues and /framework-issues/playbook. */
@@ -4621,6 +4622,25 @@ export function createRoutes(ctx: RouteContext): Router {
       ? summary.features.filter((f) => f.feature === feature)
       : summary.features;
     res.json({ ...summary, features });
+  });
+
+  // ── Per-agent ResourceLedger (Phase A: durable rate-limit events) ────
+  // Read-only. 503 when the ledger is unavailable (no stateDir / init failed /
+  // monitoring.resourceLedger.enabled:false leaves it null). Never gates.
+  router.get('/resources/rate-limits', (req, res) => {
+    if (!ctx.resourceLedger) {
+      res.status(503).json({ error: 'resource ledger unavailable (disabled or not initialized)' });
+      return;
+    }
+    const sinceHours = req.query.sinceHours ? Number(req.query.sinceHours) : 24;
+    const windowMs = (sinceHours && sinceHours > 0 ? sinceHours : 24) * 3_600_000;
+    const now = Date.now();
+    res.json({
+      windowHours: windowMs / 3_600_000,
+      summary: ctx.resourceLedger.rateLimitSummary(now, windowMs),
+      byKind: ctx.resourceLedger.rateLimitByKind(now, windowMs),
+      events: ctx.resourceLedger.rateLimitEvents({ sinceMs: now - windowMs, limit: 200 }),
+    });
   });
 
   // ── Release-readiness (Layer B of release-readiness-visibility) ──────

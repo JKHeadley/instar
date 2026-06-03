@@ -30,6 +30,14 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
     rateLimitSentinel: {
       enabled: true,
     },
+    // ResourceLedger (Phase A) — default-on so every agent durably records its
+    // rate-limit events (breaker trips + sentinel detections) instead of losing
+    // them on restart. Read-only observability; never gates. Event-driven,
+    // negligible cost. enabled:false leaves the ledger null (route 503s).
+    // See docs/specs/per-agent-resource-ledger.md.
+    resourceLedger: {
+      enabled: true,
+    },
     // SocketDisconnectSentinel + ActiveWorkSilenceSentinel — default-on so
     // every agent recovers from connection drops and silent mid-task freezes
     // without anyone having to notice manually. enabled:false restores

@@ -69,6 +69,9 @@ import { TokenLedger } from '../monitoring/TokenLedger.js';
 import { FeatureMetricsLedger } from '../monitoring/FeatureMetricsLedger.js';
 import { setFeatureMetricsRecorder } from '../core/CircuitBreakingIntelligenceProvider.js';
 import { TokenLedgerPoller } from '../monitoring/TokenLedgerPoller.js';
+import { ResourceLedger } from '../monitoring/ResourceLedger.js';
+import { ResourceLedgerPoller } from '../monitoring/ResourceLedgerPoller.js';
+import { getLlmCircuitBreaker } from '../core/LlmCircuitBreaker.js';
 import { FrameworkIssueLedger } from '../monitoring/FrameworkIssueLedger.js';
 import { MentorOnboardingRunner, DEFAULT_MENTOR_CONFIG, resolveMentorDeliveryTopic, type MentorConfig } from '../scheduler/MentorOnboardingRunner.js';
 import { buildAutoloopGoal } from '../scheduler/MentorAutonomousGuardian.js';
@@ -142,6 +145,8 @@ export class AgentServer {
   private tokenLedger: TokenLedger | null = null;
   private featureMetricsLedger: FeatureMetricsLedger | null = null;
   private tokenLedgerPoller: TokenLedgerPoller | null = null;
+  private resourceLedger: ResourceLedger | null = null;
+  private resourceLedgerPoller: ResourceLedgerPoller | null = null;
   private frameworkIssueLedger: FrameworkIssueLedger | null = null;
   private mentorRunner: MentorOnboardingRunner | null = null;
   /** Wall-clock of the last mentor tick that ran, for the min-interval floor. */
@@ -664,6 +669,34 @@ export class AgentServer {
       }
     }
 
+    // Per-agent ResourceLedger (Phase A: durable rate-limit-event capture). Its
+    // OWN try/catch, independent of the other ledgers (cascade-isolation — a
+    // chained init failure must not 503 the others). Read-only observability;
+    // never gates. The poller subscribes to the global LlmCircuitBreaker's
+    // trip/recover observer so breaker trips survive restart. Ships ON
+    // (negligible, event-driven cost); opt out with
+    // monitoring.resourceLedger.enabled:false. (CPU/mem sampling is Phase B.)
+    if (options.config.stateDir &&
+        (options.config as { monitoring?: { resourceLedger?: { enabled?: boolean } } })
+          .monitoring?.resourceLedger?.enabled !== false) {
+      try {
+        const serverDataDir = path.join(options.config.stateDir, 'server-data');
+        fs.mkdirSync(serverDataDir, { recursive: true });
+        this.resourceLedger = new ResourceLedger({
+          dbPath: path.join(serverDataDir, 'resource-ledger.db'),
+        });
+        this.resourceLedgerPoller = new ResourceLedgerPoller({
+          ledger: this.resourceLedger,
+          breaker: getLlmCircuitBreaker(),
+        });
+        this.resourceLedgerPoller.start();
+      } catch (err) {
+        console.warn('[instar] resource-ledger init failed (non-fatal):', err);
+        this.resourceLedger = null;
+        this.resourceLedgerPoller = null;
+      }
+    }
+
     // Failure-Learning Loop (docs/specs/FAILURE-LEARNING-LOOP-SPEC.md) — instar
     // self-hosting dev-process forensics. Ships OFF; constructed only when
     // enabled (else the inline /failures routes 503-stub via the null ledger).
@@ -996,6 +1029,7 @@ export class AgentServer {
       machineHeartbeat: options.machineHeartbeat ?? null,
       tokenLedger: this.tokenLedger,
       featureMetricsLedger: this.featureMetricsLedger,
+      resourceLedger: this.resourceLedger,
       frameworkIssueLedger: this.frameworkIssueLedger,
       mentorRunner: this.mentorRunner,
       failureLedger: this.failureLedger,
@@ -2410,6 +2444,15 @@ export class AgentServer {
         // best-effort
       }
       this.tokenLedgerPoller = null;
+    }
+    // Stop the resource-ledger poller (unsubscribes the breaker observer) + close.
+    if (this.resourceLedgerPoller) {
+      try { this.resourceLedgerPoller.stop(); } catch { /* best-effort */ }
+      this.resourceLedgerPoller = null;
+    }
+    if (this.resourceLedger) {
+      try { this.resourceLedger.close(); } catch { /* best-effort */ }
+      this.resourceLedger = null;
     }
     if (this.tokenLedger) {
       try {

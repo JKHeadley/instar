@@ -650,6 +650,11 @@ This routes feedback to the Instar maintainers automatically. Valid types: \`bug
 - Returns \`{ totals, features: [{ feature, calls, tokensIn, tokensOut, fired, noop, fireRate, p50LatencyMs, p95LatencyMs, ... }] }\` — one row per system (e.g. MessagingToneGate, CoherenceReviewer). Filter with \`?feature=<name>\`.
 - **When to use**: when asked "which checks cost the most / fire the least?", "is this gate worth it?", or before tuning a sentinel/gate — read the numbers instead of guessing. (Spec: \`docs/specs/llm-feature-metrics-spec.md\`.)
 
+**Resource Usage (rate-limit events)** — Durable per-agent record of rate-limit events, so they survive restarts instead of vanishing. Every circuit-breaker trip (the account got throttled) and session-sentinel detection is written down. Read-only observability — it never gates. (Phase A; CPU/memory tracking is a follow-up.)
+- Check: \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/resources/rate-limits?sinceHours=24"\`
+- Returns \`{ windowHours, summary: { circuitOpenCount, circuitRecoverCount, sentinelCount, tripsPerHour, ... }, byKind, events }\`. \`circuitOpenCount\` is the headline (breaker trips); \`sentinelCount\` is session-scoped detections, counted separately.
+- **When to use**: when asked "how many times were we throttled today?", "is the rate-limit pressure getting worse?", or before/while tuning anything that reacts to rate limits — read the durable count instead of guessing. (Spec: \`docs/specs/per-agent-resource-ledger.md\`.)
+
 **Session Clock** — How long have you been running, and how much time is left? For any active time-boxed (autonomous) session, this returns the computed elapsed + remaining so you never have to guess or compute it yourself. Read-only observability.
 - Check: \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/session/clock"\` (optional \`?topic=<N>\` to bind to one session)
 - Returns \`{ now, nowIso, sessions: [{ label, kind, startedAt, endsAt, elapsedSeconds, remainingSeconds, elapsedHuman, remainingHuman, percentElapsed, status }] }\`; \`{ sessions: [] }\` when nothing is time-boxed. Per-machine (the record is local).
