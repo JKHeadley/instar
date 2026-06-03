@@ -25,6 +25,16 @@
  *     → opt into one-shot semantics (the submission is removed after read).
  *     Default is peek (non-destructive) per the 2026-05-20 hardening.
  *
+ *   node .instar/scripts/secret-drop-retrieve.mjs <token> <field> --run -- <cmd...>
+ *     → ATOMIC use-and-consume. Retrieves the field value, runs <cmd> with the
+ *     value piped to its stdin, and consumes the submission ONLY if <cmd> exits
+ *     0. On any non-zero exit the secret is left intact for retry. This makes it
+ *     structurally impossible to drop a secret on a failed handoff — the
+ *     2026-06-02 failure mode where a standalone `--consume` was fired after a
+ *     step that had not actually succeeded. Prefer this over a separate
+ *     retrieve-then-consume whenever the value feeds a single command.
+ *     Example: `... <token> github_token --run -- gh auth login --with-token`
+ *
  * Config:
  *   Reads `authToken` and `port` from `.instar/config.json` relative to cwd.
  *   `INSTAR_PORT` env var overrides the config port.
@@ -36,14 +46,31 @@
  */
 
 import * as fs from 'node:fs';
+import { spawnSync } from 'node:child_process';
 
 const args = process.argv.slice(2);
 const token = args[0];
 const mode = args[1];
 const consume = args.includes('--consume');
 
-if (!token || !mode || mode === '--consume') {
-  process.stderr.write('usage: secret-drop-retrieve.mjs <token> <field-name|--names> [--consume]\n');
+// Atomic use-and-consume: `<token> <field> --run -- <cmd...>`. Everything after
+// the first `--` (which must follow `--run`) is the command to run with the
+// field value piped to its stdin. The submission is consumed only if the
+// command exits 0, so a failed handoff never destroys the secret.
+const runIdx = args.indexOf('--run');
+const runMode = runIdx !== -1;
+let runCmd = [];
+if (runMode) {
+  const sep = args.indexOf('--', runIdx + 1);
+  runCmd = sep !== -1 ? args.slice(sep + 1) : [];
+}
+
+if (!token || !mode || mode === '--consume' || mode === '--run') {
+  process.stderr.write('usage: secret-drop-retrieve.mjs <token> <field-name|--names> [--consume | --run -- <cmd...>]\n');
+  process.exit(2);
+}
+if (runMode && runCmd.length === 0) {
+  process.stderr.write('usage: --run requires a command after `--`, e.g. --run -- gh auth login --with-token\n');
   process.exit(2);
 }
 
@@ -125,6 +152,42 @@ if (typeof v !== 'string') {
   process.stderr.write(`retrieve: field '${mode}' not found (available: `
     + Object.keys(values).join(', ') + ')\n');
   process.exit(1);
+}
+
+// Helper: consume the submission (idempotent best-effort). Used only after a
+// verified-successful handoff in --run mode.
+async function consumeSubmission() {
+  try {
+    await fetch(`http://localhost:${resolvedPort}/secrets/retrieve/${token}?consume=true`, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${authToken}` },
+    });
+  } catch {
+    // Non-fatal — the sliding/absolute-cap cleanup will reclaim it regardless.
+  }
+}
+
+if (runMode) {
+  // Pipe the value into the command's stdin; never let it touch argv (process
+  // listings / shell history) or stdout (transcript). Inherit stdout/stderr so
+  // the operator sees the command's own (non-secret) output.
+  const child = spawnSync(runCmd[0], runCmd.slice(1), {
+    input: v,
+    stdio: ['pipe', 'inherit', 'inherit'],
+    encoding: 'utf-8',
+  });
+  if (child.error) {
+    process.stderr.write(`run: failed to launch '${runCmd[0]}': ${child.error.message} — secret NOT consumed (safe to retry)\n`);
+    process.exit(1);
+  }
+  const code = child.status ?? 1;
+  if (code === 0) {
+    await consumeSubmission();
+    process.stderr.write('run: command succeeded — secret consumed.\n');
+  } else {
+    process.stderr.write(`run: command exited ${code} — secret NOT consumed (safe to retry).\n`);
+  }
+  process.exit(code);
 }
 
 // Stream the value to stdout, no trailing newline so it pipes cleanly into

@@ -4,7 +4,7 @@
  * Tests creation, retrieval, submission, expiry, CSRF, and one-time-use behavior.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import crypto from 'node:crypto';
 import { SecretDrop, canonicalSubmitMessage, buildSignedSubmission } from '../../src/server/SecretDrop.js';
 
@@ -351,5 +351,68 @@ describe('SecretDrop', () => {
     it('buildSignedSubmission rejects a non-32-byte seed', () => {
       expect(() => buildSignedSubmission('t', { secret: 'x' }, 'aabb')).toThrow(/32 bytes/);
     });
+  });
+});
+
+/**
+ * Sliding retrieval window — a stored submission must not be deleted out from
+ * under an active consumer. The window slides on every retrieve and is bounded
+ * only by an absolute cap. Regression guard for the 2026-06-02 incident where a
+ * fixed 5-minute window kept expiring a secret mid-handoff, forcing the user to
+ * resubmit repeatedly.
+ */
+describe('SecretDrop — sliding retrieval window', () => {
+  const MIN = 60 * 1000;
+  let drop: SecretDrop;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    drop = new SecretDrop('TestAgent');
+  });
+
+  afterEach(() => {
+    drop.shutdown();
+    vi.useRealTimers();
+  });
+
+  // Submit a secret and return its token.
+  function submitOne(): string {
+    const { token } = drop.create({ label: 'Key' });
+    const pending = drop.getPending(token)!;
+    drop.submit(token, pending.csrfToken, { secret: 'v' });
+    return token;
+  }
+
+  it('stays alive past the idle window when retrieved before it lapses', () => {
+    const token = submitOne();
+    // 14 min < 15-min idle window: still here, and the peek SLIDES the window.
+    vi.advanceTimersByTime(14 * MIN);
+    expect(drop.peekReceived(token)).not.toBeNull();
+    // Another 14 min (28 total) — without the slide the original timer would
+    // have purged it at 15 min. The slide keeps it alive.
+    vi.advanceTimersByTime(14 * MIN);
+    expect(drop.peekReceived(token)).not.toBeNull();
+  });
+
+  it('is purged at the absolute cap even under continuous retrieval', () => {
+    const token = submitOne();
+    // Peek every 10 min; the 30-min absolute cap must still win.
+    for (let i = 0; i < 5; i++) {
+      vi.advanceTimersByTime(10 * MIN);
+      drop.peekReceived(token);
+    }
+    expect(drop.peekReceived(token)).toBeNull();
+  });
+
+  it('cleans up an untouched submission after the idle window', () => {
+    const token = submitOne();
+    vi.advanceTimersByTime(15 * MIN + 1000);
+    expect(drop.peekReceived(token)).toBeNull();
+  });
+
+  it('consumeReceived removes the submission immediately', () => {
+    const token = submitOne();
+    expect(drop.consumeReceived(token)).not.toBeNull();
+    expect(drop.peekReceived(token)).toBeNull();
   });
 });
