@@ -154,11 +154,11 @@ describe('gemini-cli adapter — model resolution', () => {
     expect(GEMINI_DEFAULT_MODEL).toBe('gemini-2.5-flash');
   });
 
-  it('tiers map to gemini ids; raw model ids pass through', () => {
+  it('tiers map to known gemini ids; unknown raw model ids fall back to default', () => {
     expect(resolveCliModelFlag('fast')).toBe('gemini-2.5-flash');
     expect(resolveCliModelFlag('balanced')).toBe('gemini-2.5-flash');
     expect(resolveCliModelFlag('capable')).toBe('gemini-2.5-pro');
-    expect(resolveCliModelFlag('gemini-2.5-pro-exp')).toBe('gemini-2.5-pro-exp');
+    expect(resolveCliModelFlag('gemini-2.5-pro-exp')).toBe('gemini-2.5-flash');
   });
 });
 
