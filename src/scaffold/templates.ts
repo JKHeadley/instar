@@ -744,6 +744,8 @@ curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/capabilities
 
 This returns your full capability matrix: scripts, hooks, Telegram status, jobs, git sync status, relationships, and more. **This is the source of truth about what you can do — not the prose descriptions in this file.**
 
+Instar contributors can run \`instar dev:preflight\` before opening PRs to run lint, CapabilityIndex discoverability checks, and an advisory new-route-prefix scan against the diff.
+
 **Critical rule**: If this CLAUDE.md says a feature is "for standalone agents" or "when configured" or uses any qualifier — do NOT conclude you lack the feature. Check \`/capabilities\` instead. Documentation describes features in general; the API tells you what's actually running for YOU right now. When they conflict, the API wins.
 
 ### Registry First, Explore Second

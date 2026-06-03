@@ -241,6 +241,7 @@ instar listener logs            # Tail listener logs
 
 ```bash
 instar route <task>             # One-shot framework + model routing for a task description
+instar dev:preflight            # Verify-only contributor guard: lint, CapabilityIndex tests, route-prefix warning
 instar jobMigrate               # Migrate jobs between schema versions
 instar ledgerCleanup            # Token ledger cleanup
 instar memoryBackfillEvidence   # Backfill evidence rows into the memory index
