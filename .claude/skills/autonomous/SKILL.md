@@ -57,11 +57,19 @@ import json
 with open('.claude/settings.json') as f:
     s = json.load(f)
 hooks = s.setdefault('hooks', {}).setdefault('Stop', [])
-if not any('autonomous-stop-hook' in str(h) for h in hooks):
-    hooks.append({'matcher': '', 'hooks': [{'type': 'command', 'command': 'bash .instar/hooks/instar/autonomous-stop-hook.sh', 'timeout': 10000}]})
+# The stop hook ships ONLY in the skill dir — register THAT path. (A legacy bug
+# registered '.instar/hooks/instar/autonomous-stop-hook.sh', where the file is
+# never deployed, so the hook silently failed every Stop and the loop never
+# re-engaged.) Self-heal: drop any prior autonomous-stop-hook entry (incl. the
+# legacy wrong path), then add exactly one correct-path entry.
+correct = 'bash \${CLAUDE_PROJECT_DIR}/.claude/skills/autonomous/hooks/autonomous-stop-hook.sh'
+before = json.dumps(hooks)
+hooks[:] = [e for e in hooks if not any('autonomous-stop-hook' in str(h.get('command','')) for h in e.get('hooks', []))]
+hooks.append({'matcher': '', 'hooks': [{'type': 'command', 'command': correct, 'timeout': 10000}]})
+if json.dumps(hooks) != before:
     with open('.claude/settings.json', 'w') as f:
         json.dump(s, f, indent=2)
-    print('Stop hook registered')
+    print('Stop hook registered (correct skill path)')
 "
 ```
 

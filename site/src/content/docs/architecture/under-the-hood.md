@@ -58,6 +58,17 @@ The proactive eye. Polls every 60 seconds to classify each session as healthy, i
 
 **How they connect:** SessionMonitor detects the problem → SessionRecovery tries a fast fix → if that doesn't work, TriageOrchestrator runs heuristics → if those don't match, it spawns an LLM diagnosis. Meanwhile, SessionWatchdog independently catches stuck commands at the process level.
 
+### Codex wedge self-recovery (StuckInputSentinel escalation)
+
+A codex conversational session can **wedge**: the server is healthy and a message was delivered, but the session sits paused with the injected message stuck at the prompt, never draining into a turn. The **StuckInputSentinel** already detects this (marker-based) and nudges the prompt with keypresses — but live, keypresses weren't always enough; the session needed a full server restart + queue replay.
+
+This escalation lets a codex agent heal itself with no external nudge, across a process boundary: the detector runs in the server process, but the restart authority (`ServerSupervisor` + queue replay) runs in the lifeline process.
+
+- **SessionRecoveryChannel** — the cross-process request/ack channel. The server-side sentinel writes recovery *requests* (sole writer of the request file); the lifeline writes *acks* (sole writer of the ack file) — single-writer-per-file, atomic, so the two processes never race. It also holds a **durable** restart cooldown: a server restart wipes the sentinel's in-memory loop-guard, so the cooldown that prevents a restart loop has to survive on disk.
+- **SessionRecoveryConsumer** — the lifeline-side executor. Reads tier-C requests and performs `ServerSupervisor.performGracefulRestart` + queue replay, **dry-run-first**, refusing to restart while the durable cooldown is active and deduping on attempt id. It is the *authority* half: the sentinel only signals; the consumer decides and acts.
+
+Ships **dark** behind `monitoring.codexWedgeRecovery` (default off, dry-run first) on the Graduated-Feature-Rollout track. With no config it is byte-for-byte the legacy keypress-only behavior.
+
 </details>
 
 ---
