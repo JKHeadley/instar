@@ -243,6 +243,7 @@ instar listener logs            # Tail listener logs
 instar route <task>             # One-shot framework + model routing for a task description
 instar dev:preflight            # Verify-only contributor guard: lint, CapabilityIndex tests, route-prefix warning
 instar dev:ci-failures <pr>     # Print a PR's exact failing tests (file:line + assertion) via the check-run annotations API
+instar dev:profile-node [pid]   # CPU-profile a running node process (SIGUSR1 + inspector + CDP) and print its hottest JS functions
 instar jobMigrate               # Migrate jobs between schema versions
 instar ledgerCleanup            # Token ledger cleanup
 instar memoryBackfillEvidence   # Backfill evidence rows into the memory index

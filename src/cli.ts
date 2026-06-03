@@ -2425,6 +2425,19 @@ program
     process.exit(exitCode);
   });
 
+// ── `instar dev:profile-node [pid]` — CPU-profile a hot node process's JS ──
+
+program
+  .command('dev:profile-node [pid]')
+  .description("CPU-profile a running node process (via SIGUSR1 + the inspector) and print its hottest JS functions — sees the JS frames macOS `sample` can't")
+  .option('--duration <sec>', 'Sampling duration in seconds (default 5)', (v) => parseInt(v, 10))
+  .option('--top <n>', 'Number of hot frames to print (default 15)', (v) => parseInt(v, 10))
+  .action(async (pid: string | undefined, opts: { duration?: number; top?: number }) => {
+    const { runDevProfileNode } = await import('./commands/devProfileNode.js');
+    const exitCode = await runDevProfileNode({ pid, durationSec: opts.duration, top: opts.top });
+    process.exit(exitCode);
+  });
+
 // ── `instar route` — Phase 5b suggest-and-confirm composition root (CLI) ─
 
 program

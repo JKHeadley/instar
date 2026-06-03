@@ -17,3 +17,9 @@
 {"ts":"2026-06-03T12:52:08.277Z","slug":"unknown","suggestedTier":2,"declaredTier":2,"riskFloor":2,"riskFloorReasons":["new capability: new route (router.<verb>() added"],"belowFloor":false,"files":4,"loc":181}
 {"ts":"2026-06-03T12:52:28.137Z","slug":"unknown","suggestedTier":2,"declaredTier":2,"riskFloor":2,"riskFloorReasons":["new capability: new route (router.<verb>() added"],"belowFloor":false,"files":4,"loc":181}
 {"ts":"2026-06-03T12:53:02.696Z","slug":"unknown","suggestedTier":2,"declaredTier":2,"riskFloor":2,"riskFloorReasons":["new capability: new route (router.<verb>() added"],"belowFloor":false,"files":4,"loc":181}
+{"ts":"2026-06-03T22:12:27.013Z","slug":"url-pathname-path-encoding-fix","suggestedTier":2,"declaredTier":null,"riskFloor":1,"riskFloorReasons":[],"belowFloor":false,"files":5,"loc":313}
+{"ts":"2026-06-03T22:14:24.891Z","slug":"unknown","suggestedTier":2,"declaredTier":1,"riskFloor":1,"riskFloorReasons":[],"belowFloor":false,"files":5,"loc":313}
+{"ts":"2026-06-03T22:26:05.024Z","slug":"unknown","suggestedTier":1,"declaredTier":1,"riskFloor":1,"riskFloorReasons":[],"belowFloor":false,"files":1,"loc":18}
+{"ts":"2026-06-03T22:26:50.605Z","slug":"unknown","suggestedTier":1,"declaredTier":1,"riskFloor":1,"riskFloorReasons":[],"belowFloor":false,"files":1,"loc":18}
+{"ts":"2026-06-03T22:27:56.444Z","slug":"unknown","suggestedTier":1,"declaredTier":1,"riskFloor":1,"riskFloorReasons":[],"belowFloor":false,"files":1,"loc":18}
+{"ts":"2026-06-03T22:28:57.934Z","slug":"unknown","suggestedTier":2,"declaredTier":1,"riskFloor":1,"riskFloorReasons":[],"belowFloor":false,"files":6,"loc":331}
