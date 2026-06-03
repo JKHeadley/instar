@@ -50,6 +50,7 @@ class GeminiCliOneShotCompletion implements OneShotCompletion {
   ): Promise<OneShotCompletionResult> {
     const timeoutMs = options?.timeoutMs ?? this.config.defaultOneShotTimeoutMs ?? 60_000;
     const model = resolveCliModelFlag(options?.model ?? this.config.defaultModel);
+    let currentModel = model;
     const gate = getGeminiCapacityGate();
     if (!gate.allow) {
       throw new QuotaError(
@@ -66,10 +67,6 @@ class GeminiCliOneShotCompletion implements OneShotCompletion {
       ? `${options.system}\n\n${prompt}`
       : prompt;
 
-    // CANONICAL argv — the only form this primitive ever emits.
-    // --approval-mode default is pinned here; the prompt is exactly one slot.
-    const args = buildGeminiOneShotArgv(model, effectivePrompt);
-
     const childEnv = buildGeminiChildEnv();
 
     const abortSignal = options?.signal;
@@ -81,6 +78,7 @@ class GeminiCliOneShotCompletion implements OneShotCompletion {
       let attempt = 0;
       // eslint-disable-next-line no-constant-condition
       while (true) {
+      const args = buildGeminiOneShotArgv(currentModel, effectivePrompt);
       const result = await spawnGeminiAndWait(this.config.geminiPath, args, {
         timeoutMs,
         env: childEnv,
@@ -99,10 +97,11 @@ class GeminiCliOneShotCompletion implements OneShotCompletion {
         const capacity = decideGeminiCapacityPolicy({
           errorMessage: `${mapped.message}\n${result.stderr}`,
           attempt,
-          model,
+          model: currentModel,
           config: this.config.capacityPolicy,
         });
         if (capacity.action === 'retry' && capacity.retryAfterMs !== undefined) {
+          currentModel = capacity.model;
           attempt += 1;
           await sleep(capacity.retryAfterMs);
           continue;

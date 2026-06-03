@@ -8,7 +8,7 @@
   "tierReasoning": "The change adds an optional Gemini capacity-policy config surface and shared provider behavior, so it follows the Tier 2 spec/artifact path.",
   "specPath": "docs/specs/gemini-capacity-policy.md",
   "artifactPath": "upgrades/side-effects/gemini-capacity-policy.md",
-  "artifactSha256": "3e5a67271cdbe0a6ff7681d18897d459d54dcdef9991c957350c1b1552e4c953",
+  "artifactSha256": "7beb07a1a34542372802c28cf16f3f090f157b55438e3f37da93c69f4c20186e",
   "eli16Path": "upgrades/gemini-capacity-policy.eli16.md",
   "sideEffectsPath": "upgrades/side-effects/gemini-capacity-policy.md",
   "coveredFiles": [

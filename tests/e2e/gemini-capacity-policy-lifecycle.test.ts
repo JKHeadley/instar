@@ -39,4 +39,40 @@ process.exit(1);
     await expect(provider.evaluate('p', { timeoutMs: 10_000 })).rejects.toThrow(/deferred|retry after/i);
     expect(fs.readFileSync(countFile, 'utf8')).toBe('1');
   });
+
+  it('the live Gemini provider applies fallbackModel to the spawned retry argv', async () => {
+    const countFile = path.join(tmpDir, 'count');
+    const argvFile = path.join(tmpDir, 'argv.jsonl');
+    const bin = path.join(tmpDir, 'fake-gemini');
+    fs.writeFileSync(bin, `#!/usr/bin/env node
+const fs = require('fs');
+const countFile = ${JSON.stringify(countFile)};
+const argvFile = ${JSON.stringify(argvFile)};
+const n = fs.existsSync(countFile) ? Number(fs.readFileSync(countFile, 'utf8')) : 0;
+fs.writeFileSync(countFile, String(n + 1));
+fs.appendFileSync(argvFile, JSON.stringify(process.argv.slice(2)) + '\\n');
+if (n === 0) {
+  process.stderr.write('Error: 429 resource exhausted, retry after 1s');
+  process.exit(1);
+}
+process.stdout.write('OK_WITH_FALLBACK');
+`);
+    fs.chmodSync(bin, 0o755);
+
+    const provider = new GeminiCliIntelligenceProvider({
+      geminiPath: bin,
+      capacityPolicy: {
+        maxImmediateRetries: 1,
+        immediateRetryMaxMs: 2_000,
+        fallbackModel: 'gemini-2.5-flash',
+      },
+    });
+    const result = await provider.evaluate('p', { model: 'gemini-2.5-pro', timeoutMs: 10_000 });
+
+    expect(result).toBe('OK_WITH_FALLBACK');
+    const argvLines = fs.readFileSync(argvFile, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+    expect(argvLines).toHaveLength(2);
+    expect(argvLines[0]).toContain('gemini-2.5-pro');
+    expect(argvLines[1]).toContain('gemini-2.5-flash');
+  });
 });

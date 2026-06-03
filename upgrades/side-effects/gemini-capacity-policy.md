@@ -15,6 +15,12 @@ longer quota exhaustion. While deferred, later calls fail locally with a retry
 hint instead of spawning another Gemini CLI process that would hit the same
 quota wall.
 
+Review update: the optional `capacityPolicy.fallbackModel` is now wired into
+the retry loop instead of only being resolved in the policy decision. Both
+Gemini execution paths rebuild `gemini -m <model>` on each retry attempt from
+the current policy-selected model, so a configured fallback actually changes
+the spawned CLI argv.
+
 The change also constrains Gemini model resolution to verified known models:
 `gemini-2.5-flash` and `gemini-2.5-pro`. Unknown Gemini model ids, including the
 bad `gemini-2.0-flash` fallback observed during the mentor loop, resolve to the
@@ -32,6 +38,9 @@ verified default instead of being passed through to the CLI.
   they fall back to `gemini-2.5-flash`.
 - `GeminiCliIntelligenceProvider` and adapter one-shot transport — modify — both
   apply the policy before and after spawning Gemini.
+- Retry argv rebuild — modify — short-window retries rebuild the Gemini argv
+  from `decision.model`, so `capacityPolicy.fallbackModel` is applied to the
+  next spawned process.
 
 ---
 

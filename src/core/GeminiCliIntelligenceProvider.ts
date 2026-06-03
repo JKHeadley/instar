@@ -69,6 +69,7 @@ export class GeminiCliIntelligenceProvider implements IntelligenceProvider {
 
   async evaluate(prompt: string, options?: IntelligenceOptions): Promise<string> {
     const model = resolveCliModelFlag(options?.model);
+    let currentModel = model;
     const gate = getGeminiCapacityGate();
     if (!gate.allow) {
       throw new Error(
@@ -77,12 +78,6 @@ export class GeminiCliIntelligenceProvider implements IntelligenceProvider {
       );
     }
 
-    // CANONICAL argv — the only form this provider emits:
-    //   gemini -m <model> --approval-mode default -p <prompt>
-    // --approval-mode default is pinned (yolo/auto_edit never reachable here);
-    // the prompt is exactly one argv element (the value of -p).
-    const args = buildGeminiOneShotArgv(model, prompt);
-
     // Rule-1a analog: env allowlist + UNCONDITIONAL hard-delete of the
     // Google/Gemini billing vars (never inherit process.env wholesale).
     const childEnv = buildGeminiChildEnv();
@@ -90,6 +85,7 @@ export class GeminiCliIntelligenceProvider implements IntelligenceProvider {
     let attempt = 0;
     // eslint-disable-next-line no-constant-condition
     while (true) {
+    const args = buildGeminiOneShotArgv(currentModel, prompt);
     const result = await spawnGeminiAndWait(this.geminiPath, args, {
       timeoutMs: options?.timeoutMs ?? DEFAULT_TIMEOUT_MS,
       env: childEnv,
@@ -111,10 +107,11 @@ export class GeminiCliIntelligenceProvider implements IntelligenceProvider {
       const capacity = decideGeminiCapacityPolicy({
         errorMessage: message,
         attempt,
-        model,
+        model: currentModel,
         config: this.capacityPolicy,
       });
       if (capacity.action === 'retry' && capacity.retryAfterMs !== undefined) {
+        currentModel = capacity.model;
         attempt += 1;
         await sleep(capacity.retryAfterMs);
         continue;

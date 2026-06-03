@@ -13,6 +13,11 @@ Gemini model selection is also constrained to the verified Gemini model set
 to the verified default instead of being passed through to the CLI, which avoids
 the bad `gemini-2.0-flash` fallback path that produced 404s.
 
+The optional `capacityPolicy.fallbackModel` now changes the retry spawn itself:
+both Gemini execution paths rebuild `gemini -m <model>` on retry from the
+policy-selected model, so fallback configuration is not just resolved, it is
+actually applied to the next CLI invocation.
+
 ## What to Tell Your User
 
 - **Gemini quota handling is calmer:** "When Gemini says its quota is exhausted,
@@ -31,4 +36,5 @@ the bad `gemini-2.0-flash` fallback path that produced 404s.
 ## Evidence
 
 - `npx vitest run tests/unit/geminiCapacityPolicy.test.ts tests/unit/frameworkSessionLaunch.test.ts tests/integration/gemini-capacity-policy-integration.test.ts tests/e2e/gemini-capacity-policy-lifecycle.test.ts`
+  — 4 files / 63 tests passed, including spawned retry argv assertions.
 - `npx tsc --noEmit`
