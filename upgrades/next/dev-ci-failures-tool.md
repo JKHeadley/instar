@@ -30,7 +30,7 @@ Pairs with `instar dev:preflight` (#716) as the contributor dev-loop toolkit.
 ## What to Tell Your User
 
 Nothing required — it's a developer/agent tool for working **on** Instar. When a PR's
-CI goes red, `instar dev:ci-failures <pr>` prints the exact failing tests instead of
+CI goes red, the new developer command prints the exact failing tests instead of
 an unreadable log.
 
 ## Summary of New Capabilities
