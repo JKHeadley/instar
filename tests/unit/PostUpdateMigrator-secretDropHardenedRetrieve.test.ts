@@ -162,6 +162,45 @@ describe('PostUpdateMigrator — CLAUDE.md Secret Drop rewrite', () => {
     expect(result.skipped.some(s => s.includes('Secret Drop already documents hardened helper'))).toBe(true);
   });
 
+  // A CLAUDE.md that already has the hardened helper (so the rewrite above is
+  // skipped) must still LEARN about the new --run atomic use-and-consume mode.
+  // Anchors on the stable leak-class sentence shipped with the hardened bullet.
+  const hardenedWithAnchor = [
+    '# CLAUDE.md — test',
+    '',
+    '**Secret Drop** — secure secret intake.',
+    '- **Retrieve the secret (HARDENED — required)**: `node .instar/scripts/secret-drop-retrieve.mjs TOKEN field-name`',
+    '- **NEVER use `curl /secrets/retrieve` directly** — leaks the value. The hardened script exists specifically to close that leak class (origin: 2026-05-20 incident).',
+    '- List pending: ...',
+    '',
+  ].join('\n');
+
+  it('ADDS the --run atomic use-and-consume guidance when the hardened helper is already documented', () => {
+    fs.writeFileSync(claudeMdPath, hardenedWithAnchor);
+
+    const result = runMigrateClaudeMd(createMigrator(projectDir));
+    expect(result.errors).toEqual([]);
+
+    const after = fs.readFileSync(claudeMdPath, 'utf-8');
+    expect(after).toContain('--run -- ');
+    expect(after).toContain('Atomic use-and-consume');
+    // Inserted right after the leak-class anchor sentence, before "List pending".
+    expect(after.indexOf('Atomic use-and-consume')).toBeGreaterThan(after.indexOf('2026-05-20 incident'));
+    expect(after.indexOf('Atomic use-and-consume')).toBeLessThan(after.indexOf('List pending'));
+    expect(result.upgraded.some(u => u.includes('--run atomic use-and-consume'))).toBe(true);
+  });
+
+  it('is idempotent — re-running does not insert a second --run bullet', () => {
+    fs.writeFileSync(claudeMdPath, hardenedWithAnchor);
+    runMigrateClaudeMd(createMigrator(projectDir)); // first pass inserts it
+    const result = runMigrateClaudeMd(createMigrator(projectDir)); // second pass
+
+    const after = fs.readFileSync(claudeMdPath, 'utf-8');
+    // Exactly one --run bullet — the guard (!includes('--run -- ')) blocks re-insert.
+    expect(after.split('Atomic use-and-consume').length - 1).toBe(1);
+    expect(result.upgraded.some(u => u.includes('--run atomic use-and-consume'))).toBe(false);
+  });
+
   it('ADDS the full Secret Drop section when a stale CLAUDE.md lacks it entirely', () => {
     // codey's exact situation: CLAUDE.md predates the Secret Drop template
     // section, so it has Private Viewing + Tunnel but no Secret Drop at all.

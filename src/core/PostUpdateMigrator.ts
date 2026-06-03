@@ -3899,6 +3899,24 @@ The user has been talking to you (possibly for days). A generic greeting like "H
       result.skipped.push('CLAUDE.md: Secret Drop already documents hardened helper');
     }
 
+    // Secret Drop --run atomic use-and-consume awareness (2026-06-02
+    // sliding-window spec). Agents that already have the hardened-helper
+    // bullet skip the rewrite above, so they would never learn about --run.
+    // Idempotent: anchors on the stable leak-class sentence and inserts the
+    // --run bullet only when it isn't already present.
+    if (
+      content.includes('secret-drop-retrieve.mjs') &&
+      !content.includes('--run -- ')
+    ) {
+      const anchor = 'The hardened script exists specifically to close that leak class (origin: 2026-05-20 incident).';
+      const runBullet = "\n- **Atomic use-and-consume (PREFERRED when the value feeds one command)**: `node .instar/scripts/secret-drop-retrieve.mjs TOKEN field --run -- <cmd...>` — pipes the value to `<cmd>`'s stdin and consumes the submission ONLY if `<cmd>` exits 0, so a failed handoff never destroys the secret. Do NOT fire a standalone `--consume` after a step that has not verified success.";
+      if (content.includes(anchor)) {
+        content = content.replace(anchor, anchor + runBullet);
+        patched = true;
+        result.upgraded.push('CLAUDE.md: added Secret Drop --run atomic use-and-consume guidance');
+      }
+    }
+
     // Worktree Convention section (Migration Parity Standard backfill for
     // Layer 2 of the agent worktree convention — fresh inits get this via
     // generateClaudeMd; existing agents get it here on update).
