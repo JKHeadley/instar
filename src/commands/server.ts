@@ -9009,6 +9009,9 @@ export async function startServer(options: StartOptions): Promise<void> {
         return {
           ...rcfg,
           cpuAwareActiveProcessKeep: rcfg.cpuAwareActiveProcessKeep ?? !!config.developmentAgent,
+          // Observe-only busy-orphan detection rides the same dev-gate (dark fleet,
+          // live on dev agents). Zero risk — it never changes a keep/kill verdict.
+          busyOrphanDetection: rcfg.busyOrphanDetection ?? !!config.developmentAgent,
         };
       })(),
     );

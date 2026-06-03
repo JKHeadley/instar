@@ -88,6 +88,11 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       // via developmentAgent. No-op off-pressure / when CPU can't be sampled.
       cpuAwareActiveProcessKeep: false,
       cpuActiveMinRatePerSec: 0.02,
+      // Observe-only busy-orphan detection (inverse of the above): audit a
+      // `busy-orphan-suspected` row when an idle session is pinned by a
+      // CPU-burning child. Never changes the verdict. Ships dark; dev agents on.
+      busyOrphanDetection: false,
+      busyOrphanConfirmTicks: 5,
     },
     // Reap-notification (UNIFIED-SESSION-LIFECYCLE §P3). Default ON — the single
     // coalescing listener that surfaces "your session was shut down" so a reap is

@@ -66,6 +66,20 @@ export interface SessionReaperConfig {
    *  process (≈0 progress) from one doing real work. Only consulted when
    *  `cpuAwareActiveProcessKeep` is on and the box is under CPU pressure. */
   cpuActiveMinRatePerSec: number;
+  /** OBSERVE-ONLY busy-orphan detection (the inverse of cpuAwareActiveProcessKeep,
+   *  closing the gap where a *busy* useless process defeats the CPU-progress
+   *  proxy). Under CPU pressure, when a session is kept ONLY by an `active-process`
+   *  veto whose child is provably BURNING CPU (cpuFlat===false) yet the session
+   *  itself looks fully idle (positive idle prompt + flat transcript) across an
+   *  extended dwell, the reaper records a `busy-orphan-suspected` audit row. It
+   *  NEVER changes the keep/kill decision — it only makes the "useless-but-busy
+   *  child pins an idle session" case measurable, so auto-reclaim can graduate
+   *  later with real data. Ships dark; dev agents enable via `developmentAgent`. */
+  busyOrphanDetection: boolean;
+  /** Consecutive suspect ticks before a `busy-orphan-suspected` row is emitted —
+   *  the dwell that avoids flagging a brief legitimate background job. Default 5
+   *  (~10 min at the default 120s tick). */
+  busyOrphanConfirmTicks: number;
 }
 
 export const DEFAULT_SESSION_REAPER_CONFIG: SessionReaperConfig = {
@@ -88,6 +102,8 @@ export const DEFAULT_SESSION_REAPER_CONFIG: SessionReaperConfig = {
   cpuCriticalLoadPerCore: 1.5,
   cpuAwareActiveProcessKeep: false,
   cpuActiveMinRatePerSec: 0.02,
+  busyOrphanDetection: false,
+  busyOrphanConfirmTicks: 5,
 };
 
 /** Memory-pressure thresholds (freePct). Kept as constants — the existing
@@ -153,6 +169,11 @@ export interface SessionEvaluation {
    *  the session's descendants were CPU-flat under pressure (cpuAwareActiveProcessKeep).
    *  Observability only — tick() emits a `cpu-keep-tightened` audit row. */
   cpuTightened?: boolean;
+  /** True when this eval looks like a busy-orphan suspect: kept by `active-process`
+   *  with a CPU-BURNING child, yet the session itself is idle (idle prompt + flat
+   *  transcript). Observe-only — the verdict is unchanged; tick() tracks the dwell
+   *  and emits a `busy-orphan-suspected` audit row past busyOrphanConfirmTicks. */
+  busyOrphanSuspect?: boolean;
 }
 
 export interface PressureReading {
@@ -224,6 +245,9 @@ export class SessionReaper extends EventEmitter {
   /** Prior descendant-CPU sample per session, for the cross-tick CPU-progress
    *  delta that backs `cpuAwareActiveProcessKeep`. GC'd alongside `obs`. */
   private cpuSamples = new Map<string, { sec: number; at: number }>();
+  /** Consecutive busy-orphan-suspect ticks per session (observe-only dwell for
+   *  `busyOrphanDetection`). Resets to 0 on any non-suspect tick. GC'd with obs. */
+  private busyOrphanStreak = new Map<string, number>();
   /** Last audited `verdict:keptBy` per session — so the decision audit logs only
    *  on a CHANGE, not every tick (auditability without per-tick log spam). */
   private lastAuditedDecision = new Map<string, string>();
@@ -314,9 +338,10 @@ export class SessionReaper extends EventEmitter {
     const frame = safeCapture(this.deps, session.tmuxSession, this.cfg.paneCaptureLines);
     const transcript = this.probe(session);
     let cpuTightened = false;
+    let busyOrphanSuspect = false;
 
     const keep = (reason: string, confidence: Confidence = 'high'): SessionEvaluation =>
-      ({ verdict: 'keep', keptBy: reason, confidence, frame, transcript, cpuTightened });
+      ({ verdict: 'keep', keptBy: reason, confidence, frame, transcript, cpuTightened, busyOrphanSuspect });
 
     // ── Stateless KEEP-guards (§P2): protected, spawn-grace, recovery,
     //    pending-injection, relay-lease, recent-user, open-commitment,
@@ -336,6 +361,20 @@ export class SessionReaper extends EventEmitter {
       if (blocked.reason === 'active-process' && opts?.cpuFlat === true) {
         cpuTightened = true; // relax this veto only; fall through (no return)
       } else {
+        // OBSERVE-ONLY busy-orphan detection — the inverse of the relax above.
+        // A child is keeping this session, but if that child is provably BURNING
+        // CPU (opts.cpuFlat===false) while the session ITSELF looks fully idle
+        // (positive idle prompt + flat transcript), it's a candidate useless-but-
+        // busy orphan — the gap cpuAwareActiveProcessKeep can't catch. Flag it for
+        // the dwell tracker; the keep verdict is UNCHANGED (never reaps on this).
+        if (
+          this.cfg.busyOrphanDetection
+          && blocked.reason === 'active-process'
+          && opts?.cpuFlat === false
+          && this.looksIdleApartFromBusyChild(framework, frame, transcript, session)
+        ) {
+          busyOrphanSuspect = true;
+        }
         return keep(blocked.reason, blocked.confidence);
       }
     }
@@ -356,7 +395,7 @@ export class SessionReaper extends EventEmitter {
     if (!SessionReaper.isPositivelyIdle(framework, frame)) return keep('no-positive-idle');
 
     // All gates clear: this tick the session is a reap candidate.
-    return { verdict: 'reap-eligible', keptBy: 'all-clear', confidence: 'high', frame, transcript, cpuTightened };
+    return { verdict: 'reap-eligible', keptBy: 'all-clear', confidence: 'high', frame, transcript, cpuTightened, busyOrphanSuspect };
   }
 
   /**
@@ -371,7 +410,11 @@ export class SessionReaper extends EventEmitter {
    * per session per tick (from tick(), never from the observational report()).
    */
   private cpuProgressFlat(session: Session, tier: PressureTier): boolean | undefined {
-    if (!this.cfg.cpuAwareActiveProcessKeep || tier === 'normal' || !this.deps.descendantCpuSeconds) {
+    // Sample when EITHER consumer needs the signal: cpuAwareActiveProcessKeep
+    // (uses cpuFlat===true to relax) or busyOrphanDetection (uses cpuFlat===false
+    // to flag). Off-pressure / no dep ⇒ undefined (no tighten, no flag).
+    if ((!this.cfg.cpuAwareActiveProcessKeep && !this.cfg.busyOrphanDetection)
+        || tier === 'normal' || !this.deps.descendantCpuSeconds) {
       return undefined;
     }
     let sec: number;
@@ -389,6 +432,26 @@ export class SessionReaper extends EventEmitter {
     // flat ⇒ can't-tell ⇒ KEEP.
     if (ratePerSec < 0) return undefined;
     return ratePerSec < this.cfg.cpuActiveMinRatePerSec;
+  }
+
+  /**
+   * Does this session look fully idle EXCEPT for the busy child keeping it alive?
+   * True only when its transcript is provably STATIC (resolved + not grown vs the
+   * previous tick) AND its pane is positively idle (a ready prompt, no working
+   * footer). Conservative: a first sighting (no prior transcript), an unresolved/
+   * rotated transcript, or any growth → false. Reuses the already-captured frame
+   * and transcript (no extra tmux/fs work). Pure observation — never reaps.
+   */
+  private looksIdleApartFromBusyChild(
+    framework: 'claude-code' | 'codex-cli' | 'gemini-cli' | undefined,
+    frame: string,
+    transcript: TranscriptProbe,
+    session: Session,
+  ): boolean {
+    const prev = this.obs.get(session.id)?.lastTranscript;
+    if (!prev) return false; // first sighting — no growth comparison yet
+    if (transcriptDelta(prev, transcript) !== 'static') return false; // grew/unknown ⇒ not idle
+    return SessionReaper.isPositivelyIdle(framework, frame);
   }
 
   /** Active idle threshold (ms) for the current pressure tier. */
@@ -417,6 +480,7 @@ export class SessionReaper extends EventEmitter {
       for (const id of [...this.obs.keys()]) if (!live.has(id)) { this.obs.delete(id); this.deps.clearReaping(id); }
       for (const id of [...this.lastAuditedDecision.keys()]) if (!live.has(id)) this.lastAuditedDecision.delete(id);
       for (const id of [...this.cpuSamples.keys()]) if (!live.has(id)) this.cpuSamples.delete(id);
+      for (const id of [...this.busyOrphanStreak.keys()]) if (!live.has(id)) this.busyOrphanStreak.delete(id);
 
       let reapedThisTick = 0;
       for (const session of sessions) {
@@ -446,6 +510,29 @@ export class SessionReaper extends EventEmitter {
             tier: pressure.tier, verdict: evaln.verdict, keptBy: evaln.keptBy,
             cpuActiveMinRatePerSec: this.cfg.cpuActiveMinRatePerSec,
           });
+        }
+        // Observe-only busy-orphan dwell tracker: count consecutive suspect ticks;
+        // emit ONE `busy-orphan-suspected` audit row the tick the streak crosses
+        // busyOrphanConfirmTicks (not every tick after — avoids a per-tick flood),
+        // and a `busy-orphan-cleared` row when a confirmed suspect recovers. Never
+        // changes the verdict — purely makes the gap measurable.
+        if (this.cfg.busyOrphanDetection) {
+          const prevStreak = this.busyOrphanStreak.get(session.id) ?? 0;
+          if (evaln.busyOrphanSuspect) {
+            const streak = prevStreak + 1;
+            this.busyOrphanStreak.set(session.id, streak);
+            if (streak === this.cfg.busyOrphanConfirmTicks) {
+              this.audit('busy-orphan-suspected', session, {
+                tier: pressure.tier, streakTicks: streak, keptBy: evaln.keptBy,
+                dwellMs: streak * this.cfg.tickIntervalSec * 1000,
+              });
+            }
+          } else if (prevStreak > 0) {
+            if (prevStreak >= this.cfg.busyOrphanConfirmTicks) {
+              this.audit('busy-orphan-cleared', session, { tier: pressure.tier, afterTicks: prevStreak });
+            }
+            this.busyOrphanStreak.set(session.id, 0);
+          }
         }
         const prior = this.obs.get(session.id);
         const now = this.now();

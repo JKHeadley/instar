@@ -41,6 +41,8 @@ describe('SessionReaper wiring integrity', () => {
     // The flag is gated by developmentAgent (dark fleet-wide, live on dev agents);
     // an explicit config value wins via ??.
     expect(/cpuAwareActiveProcessKeep:\s*rcfg\.cpuAwareActiveProcessKeep\s*\?\?\s*!!config\.developmentAgent/.test(src)).toBe(true);
+    // The observe-only busy-orphan detection rides the same dev-gate.
+    expect(/busyOrphanDetection:\s*rcfg\.busyOrphanDetection\s*\?\?\s*!!config\.developmentAgent/.test(src)).toBe(true);
   });
 
   it('AgentServer threads options.sessionReaper into the route context', () => {

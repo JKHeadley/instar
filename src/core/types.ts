@@ -3171,6 +3171,16 @@ export interface MonitoringConfig {
     /** Idle floor (CPU-seconds per wall-second) below which descendant CPU
      *  progress counts as "flat" for `cpuAwareActiveProcessKeep`. Default 0.02. */
     cpuActiveMinRatePerSec?: number;
+    /** OBSERVE-ONLY busy-orphan detection (inverse of cpuAwareActiveProcessKeep):
+     *  under pressure, when a session is kept by an `active-process` veto whose
+     *  child is BURNING CPU yet the session itself is idle (idle prompt + flat
+     *  transcript) across an extended dwell, record a `busy-orphan-suspected`
+     *  audit row. Never changes the keep/kill decision. Ships dark; dev agents
+     *  enable via `developmentAgent`. */
+    busyOrphanDetection?: boolean;
+    /** Consecutive suspect ticks before a `busy-orphan-suspected` row is emitted.
+     *  Default 5 (~10 min at the default 120s tick). */
+    busyOrphanConfirmTicks?: number;
   };
   /**
    * Reap-notification (UNIFIED-SESSION-LIFECYCLE §P3). The single coalescing
