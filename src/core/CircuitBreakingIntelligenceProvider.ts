@@ -43,7 +43,7 @@ export interface FeatureMetricsRecorder {
   record(entry: {
     feature: string;
     kind?: 'llm' | 'event';
-    outcome: 'fired' | 'noop' | 'error';
+    outcome: 'fired' | 'noop' | 'error' | 'shed';
     latencyMs?: number;
     waited?: boolean;
     waitMs?: number;
@@ -81,11 +81,15 @@ export class CircuitBreakingIntelligenceProvider implements IntelligenceProvider
    * side-channel: it MUST never throw into the LLM path (observability must not
    * break what it observes — the Close the Loop principle applied to itself).
    * outcome here is funnel-level: 'noop' = the call completed (the fired-vs-noop
-   * VERDICT is the caller's interpretation → Phase 2); 'error' = it failed.
+   * VERDICT is the caller's interpretation → Phase 2); 'error' = it failed;
+   * 'shed' = the circuit was open so NO call ran (no token cost, no network
+   * round-trip). Keeping 'shed' distinct from 'noop' is what makes the metric
+   * honest: 'calls' minus 'shed' = real round-trips, so the breaker shedding
+   * load can't masquerade as completed work (the 0ms-latency confound).
    */
   private recordMetric(
     feature: string,
-    outcome: 'noop' | 'error',
+    outcome: 'noop' | 'error' | 'shed',
     latencyMs: number,
     waited: boolean,
     waitMs: number | undefined,
@@ -122,8 +126,10 @@ export class CircuitBreakingIntelligenceProvider implements IntelligenceProvider
       if (!gate.allow) {
         // Circuit open, no LLM call ran (no cost) — but the throttle itself is a
         // signal worth measuring per feature (how often a gate hits the open
-        // window). Recorded as a no-op; `waited` marks whether a bounded wait was engaged.
-        this.recordMetric(feature, 'noop', Date.now() - startedAt, waited, options?.rateLimitWaitMs);
+        // window). Recorded as 'shed' (NOT 'noop'): no round-trip happened, so it
+        // must not count toward real calls. `waited` marks whether a bounded wait
+        // was engaged.
+        this.recordMetric(feature, 'shed', Date.now() - startedAt, waited, options?.rateLimitWaitMs);
         throw new LlmCircuitOpenError(gate.retryAfterMs);
       }
     }

@@ -1706,6 +1706,13 @@ IMPORTANT BIAS: Default to "working" or "waiting" unless there is STRONG evidenc
     priority: 'low' | 'high',
     timeoutMs: number,
   ): Promise<string> {
+    // Default attribution so every PresenceProxy LLM call is labeled in
+    // /metrics/features (this is a high-frequency monitor); a caller that already
+    // set attribution wins.
+    const opts: IntelligenceOptions = {
+      ...options,
+      attribution: options.attribution ?? { component: 'PresenceProxy' },
+    };
     // Prefer the shared cross-monitor queue when wired (spec follow-up). Both
     // 'low' and 'high' priorities for PresenceProxy map to the `interactive`
     // lane — PresenceProxy is the user-facing monitor and always outranks
@@ -1717,7 +1724,7 @@ IMPORTANT BIAS: Default to "working" or "waiting" unless there is STRONG evidenc
           'interactive',
           async (signal) => {
             const result = await Promise.race([
-              this.config.intelligence.evaluate(prompt, options),
+              this.config.intelligence.evaluate(prompt, opts),
               new Promise<never>((_, reject) => {
                 const t = setTimeout(() => reject(new Error('LLM timeout')), timeoutMs);
                 signal.addEventListener('abort', () => {
@@ -1739,7 +1746,7 @@ IMPORTANT BIAS: Default to "working" or "waiting" unless there is STRONG evidenc
     }
     return this.llmQueue.enqueue(async () => {
       const result = await Promise.race([
-        this.config.intelligence.evaluate(prompt, options),
+        this.config.intelligence.evaluate(prompt, opts),
         new Promise<never>((_, reject) =>
           setTimeout(() => reject(new Error('LLM timeout')), timeoutMs)
         ),

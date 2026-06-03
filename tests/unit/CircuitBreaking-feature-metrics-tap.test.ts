@@ -79,14 +79,16 @@ describe('CircuitBreakingIntelligenceProvider — feature metrics tap (Phase 1b)
     expect(recorded[0]).toMatchObject({ feature: 'CoherenceGate', outcome: 'noop', waited: true, waitMs: 500 });
   });
 
-  it('records the circuit-open skip as a no-op (waited) and throws LlmCircuitOpenError', async () => {
+  it('records the circuit-open skip as outcome=shed (no call ran) and throws LlmCircuitOpenError', async () => {
     setFeatureMetricsRecorder(recorder);
     const inner: IntelligenceProvider = { evaluate: vi.fn(async () => 'should-not-run') };
     const p = new CircuitBreakingIntelligenceProvider(inner, fakeBreaker({ allow: false, waitAllow: false }));
 
     await expect(p.evaluate('x', { attribution: { component: 'X' }, rateLimitWaitMs: 200 } as any)).rejects.toBeInstanceOf(LlmCircuitOpenError);
     expect(inner.evaluate).not.toHaveBeenCalled();
-    expect(recorded[0]).toMatchObject({ feature: 'X', outcome: 'noop', waited: true });
+    // 'shed' (NOT 'noop'): the breaker refused the call, nothing ran — so it must
+    // not count toward real round-trips. This is the 0ms-latency confound fix.
+    expect(recorded[0]).toMatchObject({ feature: 'X', outcome: 'shed', waited: true });
   });
 
   it('is a safe no-op when no recorder is set (and never breaks the call)', async () => {
@@ -114,10 +116,17 @@ describe('CircuitBreakingIntelligenceProvider — feature metrics tap (Phase 1b)
       await new CircuitBreakingIntelligenceProvider(ok, fakeBreaker()).evaluate('a', { attribution: { component: 'ToneGate' } });
       await new CircuitBreakingIntelligenceProvider(ok, fakeBreaker()).evaluate('b', { attribution: { component: 'ToneGate' } });
       await expect(new CircuitBreakingIntelligenceProvider(bad, fakeBreaker()).evaluate('c', { attribution: { component: 'ToneGate' } })).rejects.toThrow();
+      // Two circuit-OPEN skips: no call runs → recorded as 'shed', excluded from realCalls.
+      await expect(new CircuitBreakingIntelligenceProvider(ok, fakeBreaker({ allow: false, waitAllow: false }))
+        .evaluate('d', { attribution: { component: 'ToneGate' }, rateLimitWaitMs: 50 } as any)).rejects.toThrow();
+      await expect(new CircuitBreakingIntelligenceProvider(ok, fakeBreaker({ allow: false, waitAllow: false }))
+        .evaluate('e', { attribution: { component: 'ToneGate' }, rateLimitWaitMs: 50 } as any)).rejects.toThrow();
 
       const tone = ledger.byFeature().find(f => f.feature === 'ToneGate')!;
-      expect(tone.calls).toBe(3);
-      expect(tone.llmCalls).toBe(3);
+      expect(tone.calls).toBe(5);       // all funnel rows (incl. shed)
+      expect(tone.shed).toBe(2);        // breaker refused 2 — no round-trip
+      expect(tone.realCalls).toBe(3);   // calls − shed = honest call count
+      expect(tone.llmCalls).toBe(5);
       expect(tone.errors).toBe(1);
       expect(tone.noop).toBe(2);
     } finally {
