@@ -22,6 +22,7 @@ import { closeAllSqlite } from '../core/SqliteRegistry.js';
 import { SessionManager } from '../core/SessionManager.js';
 import { StateManager } from '../core/StateManager.js';
 import { StuckInputSentinel } from '../core/StuckInputSentinel.js';
+import { SessionRecoveryChannel } from '../core/SessionRecoveryChannel.js';
 import { JobScheduler } from '../scheduler/JobScheduler.js';
 import { IntegrationGate } from '../scheduler/IntegrationGate.js';
 import { JobRunHistory } from '../scheduler/JobRunHistory.js';
@@ -4509,8 +4510,18 @@ export async function startServer(options: StartOptions): Promise<void> {
     // StuckInputSentinel — persistent, restart-safe recovery for tmux prompts
     // that hold text but never submitted Enter. Complements the in-process
     // verifyInjection timers (PR #159) which die when the server crashes.
+    //
+    // Codex session-wedge self-recovery (dark by default): when enabled, the
+    // sentinel escalates PAST the keypress ladder by requesting a tier-C recovery
+    // (server restart + replay) via SessionRecoveryChannel — executed by the
+    // lifeline-process consumer (SessionRecoveryConsumer). See
+    // docs/specs/CODEX-SESSION-WEDGE-SELF-RECOVERY.md.
+    const codexWedgeCfg = config.monitoring?.codexWedgeRecovery;
     const stuckInputSentinel = new StuckInputSentinel(sessionManager, {
       stateDir: config.stateDir,
+      recoveryChannel: new SessionRecoveryChannel(config.stateDir),
+      escalationEnabled: codexWedgeCfg?.enabled ?? false,
+      escalationTimeoutTicks: codexWedgeCfg?.escalationTimeoutTicks,
     });
     stuckInputSentinel.start();
 

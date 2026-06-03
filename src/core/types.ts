@@ -3069,6 +3069,29 @@ export interface MonitoringConfig {
     };
   };
   /**
+   * Codex session-wedge SELF-recovery — escalates PAST the StuckInputSentinel
+   * keypress ladder when a codex injection is still stuck at the prompt. The
+   * server-process sentinel requests a tier-C recovery (server restart + queue
+   * replay) via SessionRecoveryChannel; the lifeline-process consumer executes
+   * it (that's where ServerSupervisor lives). Highest blast radius (restarts the
+   * agent server), so it ships dark + dry-run and rides the Graduated-Feature-
+   * Rollout track. Absence of this block = OFF (read with fallback defaults, so
+   * no config migration is needed). See docs/specs/CODEX-SESSION-WEDGE-SELF-RECOVERY.md.
+   */
+  codexWedgeRecovery?: {
+    /** Master gate: when true the sentinel escalates to a tier-C request AND the
+     *  lifeline consumer runs (default: false → legacy exhaust-and-stop). */
+    enabled: boolean;
+    /** When true (default), the lifeline logs the would-restart and acks recovered
+     *  WITHOUT restarting. Flip to false only after a dry-run soak. */
+    dryRun?: boolean;
+    /** Minimum gap (ms) between tier-C restarts for the same session — the durable
+     *  cross-restart loop guard (default: 600_000 = 10min). */
+    restartCooldownMs?: number;
+    /** Ticks the sentinel waits for an ack before giving up, bounded (default: 6). */
+    escalationTimeoutTicks?: number;
+  };
+  /**
    * SleepWakeDetector CPU-starvation guard tuning. All optional — the class ships
    * sane defaults, so absence of this block (every existing agent) still gets the
    * fix on update with no config migration. Read at runtime as a fallback against
