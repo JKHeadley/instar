@@ -9122,6 +9122,8 @@ export async function startServer(options: StartOptions): Promise<void> {
               transcriptTailHash: tailHash,
               mainProcessActive: sessionManager.hasActiveProcesses(session.tmuxSession),
               idleStateToken: hash(frame),
+              descendantCpuSeconds: sessionManager.descendantCpuSeconds(session.tmuxSession),
+              isJobSession: !!session.jobSlug,
             };
           },
           raiseAttention: makeAttentionPoster({ port: config.port, authToken: config.authToken ?? '' }),

@@ -46,6 +46,16 @@ export interface ProgressSnapshot {
   mainProcessActive: boolean | undefined;
   /** Opaque token for the positive-idle / prompt state — ANY change ⇒ progress. */
   idleStateToken: string;
+  /** Accumulated CPU-seconds of non-baseline descendant processes. Compared as a
+   *  DELTA across snapshots — real CPU used in the interval. For JOB sessions this
+   *  replaces the existence-based `mainProcessActive` progress test, so a
+   *  wedged-but-alive job (process up, 0% CPU) reads as no-progress. Default 0. */
+  descendantCpuSeconds: number;
+  /** True when this session was spawned by a job (`Session.jobSlug` set). A job
+   *  has no legitimate-idle state (it runs to completion), so it is held to the
+   *  stricter cpu-seconds-delta progress test; conversational sessions keep the
+   *  existence-based test (which correctly exempts idle-with-bg-process). */
+  isJobSession: boolean;
 }
 
 export interface LivenessBatch {
@@ -72,6 +82,11 @@ export interface StaleBackstopOptions {
   unverifiableEscalateMinutes: number;
   indeterminateEscalateCount: number;
   progressFloorBytes: number;
+  /** Minimum CPU-seconds a JOB session's descendants must accumulate between two
+   *  snapshots to count as forward progress. Below this, a job with a live but
+   *  idle (0% CPU) process is treated as making no progress. Small to catch a
+   *  genuinely-wedged job while ignoring sampling jitter. */
+  cpuFloorSeconds: number;
 }
 
 export const DEFAULT_STALE_BACKSTOP_OPTIONS: StaleBackstopOptions = {
@@ -80,6 +95,7 @@ export const DEFAULT_STALE_BACKSTOP_OPTIONS: StaleBackstopOptions = {
   unverifiableEscalateMinutes: 30,
   indeterminateEscalateCount: 15,
   progressFloorBytes: 512,
+  cpuFloorSeconds: 1,
 };
 
 interface Obs {
@@ -215,10 +231,20 @@ export class StaleSessionBackstop {
     ) {
       return true;
     }
-    // (ii) Main process doing CPU/IO work. `undefined` (uninspectable) is NOT progress
-    //      here — the escalation is a question to the operator, never a kill, so erring
-    //      toward "ask" on a truly-uninspectable session is safe.
-    if (cur.mainProcessActive === true) return true;
+    // (ii) Real work by the main process.
+    //      For JOB sessions (which have no legitimate-idle state — a job runs to
+    //      completion) require actual CPU USED in the interval: the cpu-seconds
+    //      delta past a small floor. A wedged-but-alive job (process up, 0% CPU)
+    //      reads as no-progress here, where the old existence-based check
+    //      false-positived it as "active" (the 12h-undetected codex-job wedge).
+    //      Conversational sessions keep the existence-based check, which correctly
+    //      exempts a legitimately-idle session that happens to have a background
+    //      process. `undefined` (uninspectable) is never progress.
+    if (cur.isJobSession) {
+      if (cur.descendantCpuSeconds - prev.descendantCpuSeconds > this.opts.cpuFloorSeconds) return true;
+    } else if (cur.mainProcessActive === true) {
+      return true;
+    }
     // (iii) Positive-idle / prompt state changed.
     if (cur.idleStateToken !== prev.idleStateToken) return true;
     return false;
