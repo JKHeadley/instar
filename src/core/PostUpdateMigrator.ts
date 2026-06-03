@@ -1555,6 +1555,21 @@ export class PostUpdateMigrator {
       'autonomous-state.local.md',
       'skills/autonomous/scripts/setup-autonomous.sh (codex native /goal auto-wire)',
     );
+    // SKILL.md Step 2a registration-path fix: the prior bundled SKILL.md registered the
+    // stop hook at `.instar/hooks/instar/autonomous-stop-hook.sh` (a path where the hook is
+    // never deployed → silent Stop-hook failure → the autonomous loop never re-engaged and
+    // the session went idle). The fixed SKILL.md registers the deployed skill path and
+    // self-heals any stale entry. Marker `Stop hook registered (correct skill path)` is
+    // present ONLY in the fixed version (the old printed plain `Stop hook registered`), so
+    // bumping to it re-deploys the corrected prompt to existing agents; customized SKILL.md
+    // files (missing the stock `ALL_TASKS_COMPLETE` fingerprint) are left untouched. Pairs
+    // with the settings.json wrong-path repair in ensureAutonomousStopHook().
+    upgrade(
+      '.claude/skills/autonomous/SKILL.md',
+      'Stop hook registered (correct skill path)',
+      'ALL_TASKS_COMPLETE',
+      'skills/autonomous/SKILL.md (autonomous stop-hook registration path fix — loop re-engages)',
+    );
   }
 
   /**
@@ -2466,6 +2481,30 @@ export class PostUpdateMigrator {
       hooks.Stop = [];
     }
     const stopEntries = hooks.Stop as Array<{ matcher?: string; hooks?: Array<{ command?: string }> }>;
+
+    // Repair the legacy wrong-path registration. A prior autonomous SKILL.md Step 2a
+    // registered the stop hook at `.instar/hooks/instar/autonomous-stop-hook.sh` — a
+    // path where the hook is NEVER deployed (it ships only in the skill dir). That
+    // dead reference fails silently on every Stop, so the autonomous loop never
+    // re-injects and the session goes idle (the "I stopped self-driving" bug). The
+    // `hasAutonomousHook` check below treats any autonomous-stop-hook entry as
+    // "present", so without this repair a wrong-path entry blocks the correct
+    // registration forever. Rewrite any such command to the deployed skill path.
+    const correctStopHookCmd = 'bash ${CLAUDE_PROJECT_DIR}/.claude/skills/autonomous/hooks/autonomous-stop-hook.sh';
+    for (const e of stopEntries) {
+      for (const h of e.hooks ?? []) {
+        if (
+          h.command?.includes('autonomous-stop-hook') &&
+          h.command.includes('.instar/hooks/instar/autonomous-stop-hook') &&
+          h.command !== correctStopHookCmd
+        ) {
+          h.command = correctStopHookCmd;
+          result.upgraded.push('.claude/settings.json: repaired autonomous stop-hook path (.instar/hooks/instar → skill dir; loop never re-engaged)');
+          patched = true;
+        }
+      }
+    }
+
     const hasAutonomousHook = stopEntries.some(e =>
       e.hooks?.some(h => h.command?.includes('autonomous-stop-hook')),
     );
