@@ -247,6 +247,7 @@ export class InputClassifier {
         model: 'fast',
         maxTokens: 10,
         temperature: 0,
+        attribution: { component: 'InputClassifier' }, // attribution for /metrics/features
       });
 
       const normalized = response.trim().toUpperCase();

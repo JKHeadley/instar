@@ -418,6 +418,7 @@ export class UnjustifiedStopGate {
         maxTokens: this.config.maxTokens,
         temperature: 0,
         rateLimitWaitMs: RATE_LIMIT_WAIT_MS,
+        attribution: { component: 'UnjustifiedStopGate' }, // attribution for /metrics/features
       });
       return await Promise.race([call, abortRace]);
     } finally {

@@ -283,6 +283,7 @@ IMPORTANT: Only return genuine commitments where the agent explicitly agreed. Do
         model: 'fast',
         maxTokens: 500,
         temperature: 0,
+        attribution: { component: 'CommitmentSentinel' }, // attribution for /metrics/features
       });
 
       // Parse JSON from response

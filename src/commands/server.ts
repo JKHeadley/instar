@@ -6876,7 +6876,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                   distill: (prompt) =>
                     correctionLlmQueue.enqueue(
                       'background',
-                      () => sharedIntelligence.evaluate(prompt, { model: 'fast', maxTokens: 400, temperature: 0 }),
+                      () => sharedIntelligence.evaluate(prompt, { model: 'fast', maxTokens: 400, temperature: 0, attribution: { component: 'server:correction-learning' } }), // attribution for /metrics/features
                       0.3,
                     ),
                   shouldShed: () => {
@@ -7725,7 +7725,7 @@ export async function startServer(options: StartOptions): Promise<void> {
             .listActive()
             .map(({ threadId, entry }) => ({ threadId, peerName: entry.remoteAgent ?? 'peer', topicId: entry.originTopicId }))
             .filter((t): t is { threadId: string; peerName: string; topicId: number } => typeof t.topicId === 'number'),
-        summarize: (prompt) => sharedLlmQueue.enqueue('background', () => intelligence.evaluate(prompt, { model: 'fast' })),
+        summarize: (prompt) => sharedLlmQueue.enqueue('background', () => intelligence.evaluate(prompt, { model: 'fast', attribution: { component: 'server:a2a-checkin' } })), // attribution for /metrics/features
         surface: async ({ topicId, body }) => {
           if (typeof topicId === 'number') await tg.sendToTopic(topicId, body);
         },

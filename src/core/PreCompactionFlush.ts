@@ -161,7 +161,7 @@ export class PreCompactionFlush {
     try {
       llmResponse = await this.deps.intelligence.evaluate(
         this.buildPrompt(transcriptTail),
-        { maxTokens: 800, temperature: 0 },
+        { maxTokens: 800, temperature: 0, attribution: { component: 'PreCompactionFlush' } }, // attribution for /metrics/features
       );
     } catch (err) {
       return audit('provider-error', { reason: String(err).slice(0, 200) });

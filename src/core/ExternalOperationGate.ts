@@ -490,6 +490,7 @@ export class ExternalOperationGate {
       const response = await this.config.intelligence.evaluate(prompt, {
         maxTokens: 10,
         temperature: 0,
+        attribution: { component: 'ExternalOperationGate' }, // attribution for /metrics/features
       });
 
       const cleaned = response.trim().toLowerCase();
