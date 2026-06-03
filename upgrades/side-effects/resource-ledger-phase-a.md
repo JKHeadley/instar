@@ -40,6 +40,13 @@ Correct. The ledger is a recorder, not an authority; it FEEDS the read-only
 `/resources` surface and never gates. The breaker observer is a pure side-channel
 on a component that DOES hold gating authority — see §4.
 
+> CI-fix addendum (full-suite caught two regressions the local subset missed,
+> both no-behavior-change): (a) the new `/resources` route prefix was unclassified
+> in `CapabilityIndex` — added a read-only `resourceLedger` capability entry
+> (enabled only when `ctx.resourceLedger` exists); (b) `ResourceLedger.ts`
+> registers a SQLite handle so it was added to the `SqliteRegistry-wiring` test's
+> `LONG_LIVED_STORES` allowlist. No new surface; purely discoverability/test wiring.
+
 ## 4. Signal vs authority compliance
 **Required reference:** docs/signal-vs-authority.md
 - [x] No — this change has no block/allow surface of its own.

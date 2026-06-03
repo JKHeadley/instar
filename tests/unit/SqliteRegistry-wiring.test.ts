@@ -40,6 +40,7 @@ const LONG_LIVED_STORES = [
   'src/monitoring/CorrectionLedger.ts',
   'src/monitoring/FailureLedger.ts',
   'src/monitoring/FeatureMetricsLedger.ts',
+  'src/monitoring/ResourceLedger.ts',
   'src/monitoring/FrameworkIssueLedger.ts',
   'src/monitoring/ApprenticeshipCycleStore.ts',
   'src/memory/TopicMemory.ts',
