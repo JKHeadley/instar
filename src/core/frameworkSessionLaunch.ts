@@ -62,10 +62,13 @@ export function resolveModelForFramework(
     // sensible Codex equivalent (haiku→fast, sonnet→balanced,
     // opus→capable) so an unported call site doesn't immediately
     // crash for a Codex agent.
-    // Confirmed light/medium/heavy mapping (Justin, 2026-05-23): the ChatGPT
-    // subscription meters by token-weighted credits, so non-reasoning gpt-5.2
-    // is genuinely the lightest. See models.ts for the full rationale.
-    if (key === 'fast' || key === 'haiku') return 'gpt-5.2';        // light — non-reasoning
+    // Light/medium/heavy mapping. NOTE (2026-06-03): OpenAI retired gpt-5.2 from
+    // the ChatGPT-account Codex surface (it now 400s "not supported … with a
+    // ChatGPT account"), so the `fast` tier moved off it onto the cheapest model
+    // still accepted — gpt-5.4-mini (== balanced). Keep this in lockstep with
+    // src/providers/adapters/openai-codex/models.ts (the single source of the
+    // full rationale + the drift-resilience follow-up).
+    if (key === 'fast' || key === 'haiku') return 'gpt-5.4-mini';   // light tier — gpt-5.2 retired 2026-06-03
     if (key === 'balanced' || key === 'sonnet') return 'gpt-5.4-mini'; // medium — cheapest reasoning
     if (key === 'capable' || key === 'opus') return 'gpt-5.5';      // heavy — frontier reasoning
     return modelOrTier;
