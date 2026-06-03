@@ -3135,6 +3135,16 @@ export interface MonitoringConfig {
     /** CPU pressure: load-per-core at/above which pressure is `critical`.
      *  Default 1.5. */
     cpuCriticalLoadPerCore?: number;
+    /** Under CPU pressure, require positive descendant-CPU progress before the
+     *  `active-process` existence-veto keeps a session — so a wedged/idle child
+     *  (live PID, ~0 CPU) no longer holds an otherwise-reapable idle session
+     *  hostage under host load. No-op off-pressure and when CPU can't be sampled;
+     *  falls through to the transcript-growth + positive-idle checks (which still
+     *  must clear). Ships dark; dev agents enable it via `developmentAgent`. */
+    cpuAwareActiveProcessKeep?: boolean;
+    /** Idle floor (CPU-seconds per wall-second) below which descendant CPU
+     *  progress counts as "flat" for `cpuAwareActiveProcessKeep`. Default 0.02. */
+    cpuActiveMinRatePerSec?: number;
   };
   /**
    * Reap-notification (UNIFIED-SESSION-LIFECYCLE §P3). The single coalescing

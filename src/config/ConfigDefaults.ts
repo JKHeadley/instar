@@ -82,6 +82,12 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       // ÷ cores), so a CPU-bound box raises pressure even when memory is fine.
       cpuModerateLoadPerCore: 1.0,
       cpuCriticalLoadPerCore: 1.5,
+      // Under CPU pressure, require positive descendant-CPU progress before the
+      // active-process existence-veto keeps a session (a wedged/idle child no
+      // longer holds an idle session hostage). Ships dark; dev agents enable it
+      // via developmentAgent. No-op off-pressure / when CPU can't be sampled.
+      cpuAwareActiveProcessKeep: false,
+      cpuActiveMinRatePerSec: 0.02,
     },
     // Reap-notification (UNIFIED-SESSION-LIFECYCLE §P3). Default ON — the single
     // coalescing listener that surfaces "your session was shut down" so a reap is

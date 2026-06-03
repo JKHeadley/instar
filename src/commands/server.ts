@@ -8994,9 +8994,23 @@ export async function startServer(options: StartOptions): Promise<void> {
         terminate: (id, reason) => sessionManager.terminateSession(id, reason),
         markReaping: (id) => sessionManager.markReaping(id),
         clearReaping: (id) => sessionManager.clearReaping(id),
+        // Backs cpuAwareActiveProcessKeep: lets the reaper tell a wedged/idle
+        // child (CPU-flat) from a working one, so an idle MCP child no longer
+        // holds an otherwise-reapable session hostage under host load.
+        descendantCpuSeconds: (s) => sessionManager.descendantCpuSeconds(s),
         audit: reaperAuditSink(config.stateDir),
       },
-      config.monitoring?.sessionReaper,
+      // developmentAgent gate (standard_development_agent_dark_feature_gate):
+      // cpuAwareActiveProcessKeep ships dark fleet-wide and live on dev agents
+      // (echo) for dogfooding. An explicit config value always wins.
+      (() => {
+        const rcfg = config.monitoring?.sessionReaper;
+        if (!rcfg) return rcfg; // reaper config absent ⇒ reaper disabled ⇒ flag moot
+        return {
+          ...rcfg,
+          cpuAwareActiveProcessKeep: rcfg.cpuAwareActiveProcessKeep ?? !!config.developmentAgent,
+        };
+      })(),
     );
     sessionReaper.start();
 

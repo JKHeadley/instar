@@ -33,6 +33,16 @@ describe('SessionReaper wiring integrity', () => {
     expect(/composedRecoveryActive[\s\S]{0,400}rateLimitSentinel\.isRecoveryActive/.test(src)).toBe(true);
   });
 
+  it('reaper deps wire descendantCpuSeconds + the cpuAwareActiveProcessKeep dev-gate', () => {
+    const src = read('src/commands/server.ts');
+    // The CPU-progress dep that backs cpuAwareActiveProcessKeep must actually be
+    // passed (else the tightening silently never engages — the dead-dep trap).
+    expect(/descendantCpuSeconds:\s*\(s\)\s*=>\s*sessionManager\.descendantCpuSeconds\(s\)/.test(src)).toBe(true);
+    // The flag is gated by developmentAgent (dark fleet-wide, live on dev agents);
+    // an explicit config value wins via ??.
+    expect(/cpuAwareActiveProcessKeep:\s*rcfg\.cpuAwareActiveProcessKeep\s*\?\?\s*!!config\.developmentAgent/.test(src)).toBe(true);
+  });
+
   it('AgentServer threads options.sessionReaper into the route context', () => {
     const src = read('src/server/AgentServer.ts');
     expect(src).toContain('sessionReaper: options.sessionReaper ?? null');

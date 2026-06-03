@@ -50,6 +50,22 @@ export interface SessionReaperConfig {
   cpuModerateLoadPerCore: number;
   /** CPU pressure: load-per-core at/above which pressure is `critical`. */
   cpuCriticalLoadPerCore: number;
+  /** When true, under CPU pressure the `active-process` existence-veto is
+   *  tightened: a session kept ONLY by a child process that EXISTS but burns
+   *  ~no CPU (a wedged/idle MCP child) no longer holds the session hostage —
+   *  the reaper falls through to its stateful transcript-growth + positive-idle
+   *  checks, which STILL must all clear before the session is reap-eligible. A
+   *  strict no-op off-pressure (zero behavior change at `normal`) and whenever
+   *  CPU progress can't be measured. Ships dark; dev agents enable it via the
+   *  `developmentAgent` gate. Leaves the shared ReapGuard / ReapAuthority path
+   *  (terminateSession's veto for OTHER killers) untouched — reaper-only. */
+  cpuAwareActiveProcessKeep: boolean;
+  /** Idle floor (CPU-seconds per wall-second — i.e. fraction of one core)
+   *  below which a session's descendant CPU progress counts as "flat". Default
+   *  0.02 (2% of a core averaged over a tick) robustly separates a wedged
+   *  process (≈0 progress) from one doing real work. Only consulted when
+   *  `cpuAwareActiveProcessKeep` is on and the box is under CPU pressure. */
+  cpuActiveMinRatePerSec: number;
 }
 
 export const DEFAULT_SESSION_REAPER_CONFIG: SessionReaperConfig = {
@@ -70,6 +86,8 @@ export const DEFAULT_SESSION_REAPER_CONFIG: SessionReaperConfig = {
   protectOpenCommitments: true,
   cpuModerateLoadPerCore: 1.0,
   cpuCriticalLoadPerCore: 1.5,
+  cpuAwareActiveProcessKeep: false,
+  cpuActiveMinRatePerSec: 0.02,
 };
 
 /** Memory-pressure thresholds (freePct). Kept as constants — the existing
@@ -131,6 +149,10 @@ export interface SessionEvaluation {
   frame: string;
   /** Transcript probe this tick (for growth comparison across ticks). */
   transcript: TranscriptProbe;
+  /** True when the `active-process` existence-veto was relaxed this eval because
+   *  the session's descendants were CPU-flat under pressure (cpuAwareActiveProcessKeep).
+   *  Observability only — tick() emits a `cpu-keep-tightened` audit row. */
+  cpuTightened?: boolean;
 }
 
 export interface PressureReading {
@@ -151,6 +173,11 @@ export interface SessionReaperDeps {
   /** Optional main-process liveness (CPU/IO delta). `undefined` return = cannot
    *  inspect → treated as POSSIBLY active (KEEP), per the confidence contract. */
   mainProcessActive?: (tmuxSession: string) => boolean | undefined;
+  /** Accumulated CPU-seconds of a session's non-baseline descendants (#706).
+   *  The reaper samples this across ticks to derive CPU progress for the
+   *  `cpuAwareActiveProcessKeep` tightening. Absent ⇒ tightening disabled (the
+   *  active-process veto is never relaxed — the conservative default). */
+  descendantCpuSeconds?: (tmuxSession: string) => number;
   frameworkForSession: (tmuxSession: string) => 'claude-code' | 'codex-cli' | undefined;
   /** Resolve+stat the session's transcript. Defaults to {@link probeTranscript}. */
   probeTranscript?: (session: Session) => TranscriptProbe;
@@ -194,6 +221,9 @@ export class SessionReaper extends EventEmitter {
   private timer?: NodeJS.Timeout;
   private running = false;
   private obs = new Map<string, Obs>();
+  /** Prior descendant-CPU sample per session, for the cross-tick CPU-progress
+   *  delta that backs `cpuAwareActiveProcessKeep`. GC'd alongside `obs`. */
+  private cpuSamples = new Map<string, { sec: number; at: number }>();
   /** Last audited `verdict:keptBy` per session — so the decision audit logs only
    *  on a CHANGE, not every tick (auditability without per-tick log spam). */
   private lastAuditedDecision = new Map<string, string>();
@@ -279,13 +309,14 @@ export class SessionReaper extends EventEmitter {
    * high confidence. Order: cheap protect-gates first (short-circuit), then the
    * positive-idle + activeness checks.
    */
-  evaluate(session: Session): SessionEvaluation {
+  evaluate(session: Session, opts?: { cpuFlat?: boolean }): SessionEvaluation {
     const framework = session.framework ?? this.deps.frameworkForSession(session.tmuxSession);
     const frame = safeCapture(this.deps, session.tmuxSession, this.cfg.paneCaptureLines);
     const transcript = this.probe(session);
+    let cpuTightened = false;
 
     const keep = (reason: string, confidence: Confidence = 'high'): SessionEvaluation =>
-      ({ verdict: 'keep', keptBy: reason, confidence, frame, transcript });
+      ({ verdict: 'keep', keptBy: reason, confidence, frame, transcript, cpuTightened });
 
     // ── Stateless KEEP-guards (§P2): protected, spawn-grace, recovery,
     //    pending-injection, relay-lease, recent-user, open-commitment,
@@ -293,7 +324,21 @@ export class SessionReaper extends EventEmitter {
     //    Extracted to the shared ReapGuard so terminateSession() enforces the
     //    identical chain. Order + reasons preserved exactly. ──
     const blocked = this.guard.blockedReason(session);
-    if (blocked) return keep(blocked.reason, blocked.confidence);
+    if (blocked) {
+      // Host-load-gated tightening of the `active-process` existence-veto.
+      // `opts.cpuFlat===true` (computed by tick() from the descendant CPU-seconds
+      // delta) means the ONLY thing keeping this session is a child that EXISTS
+      // but burns ~no CPU under pressure (a wedged/idle MCP child). In that one
+      // case, don't honor the veto — fall through to the stateful transcript-
+      // growth + positive-idle checks below, which STILL must all clear before
+      // the session is reap-eligible. Every other keep-reason — and the
+      // off-pressure / can't-measure cases (cpuFlat !== true) — is unchanged.
+      if (blocked.reason === 'active-process' && opts?.cpuFlat === true) {
+        cpuTightened = true; // relax this veto only; fall through (no return)
+      } else {
+        return keep(blocked.reason, blocked.confidence);
+      }
+    }
 
     // ── Stateful checks (stay in the reaper; need per-tick obs / captured frame) ──
     // E. Transcript growth this tick (vs last tick). 'grew' ⇒ working;
@@ -311,7 +356,39 @@ export class SessionReaper extends EventEmitter {
     if (!SessionReaper.isPositivelyIdle(framework, frame)) return keep('no-positive-idle');
 
     // All gates clear: this tick the session is a reap candidate.
-    return { verdict: 'reap-eligible', keptBy: 'all-clear', confidence: 'high', frame, transcript };
+    return { verdict: 'reap-eligible', keptBy: 'all-clear', confidence: 'high', frame, transcript, cpuTightened };
+  }
+
+  /**
+   * CPU-progress probe backing `cpuAwareActiveProcessKeep`. Returns:
+   *  - `true`  → the session's descendants are CPU-flat (progress below the idle
+   *    floor) over the sample window — i.e. existing-but-not-working;
+   *  - `false` → descendants used CPU (genuinely working);
+   *  - `undefined` → DO NOT tighten (the conservative default = KEEP): the
+   *    feature is off, the box is at `normal` pressure, CPU can't be sampled, or
+   *    there's no prior sample yet to delta against.
+   * Records the current reading for the next tick's delta. Stateful — call once
+   * per session per tick (from tick(), never from the observational report()).
+   */
+  private cpuProgressFlat(session: Session, tier: PressureTier): boolean | undefined {
+    if (!this.cfg.cpuAwareActiveProcessKeep || tier === 'normal' || !this.deps.descendantCpuSeconds) {
+      return undefined;
+    }
+    let sec: number;
+    try { sec = this.deps.descendantCpuSeconds(session.tmuxSession); }
+    catch { return undefined; }
+    if (!Number.isFinite(sec)) return undefined;
+    const at = this.now();
+    const prior = this.cpuSamples.get(session.id);
+    this.cpuSamples.set(session.id, { sec, at });
+    if (!prior) return undefined; // first sighting — no delta yet, can't tell
+    const elapsedSec = (at - prior.at) / 1000;
+    if (elapsedSec <= 0) return undefined;
+    const ratePerSec = (sec - prior.sec) / elapsedSec; // CPU-seconds per wall-second
+    // Accumulated CPU went backwards (pid reuse / process restart) ⇒ not provably
+    // flat ⇒ can't-tell ⇒ KEEP.
+    if (ratePerSec < 0) return undefined;
+    return ratePerSec < this.cfg.cpuActiveMinRatePerSec;
   }
 
   /** Active idle threshold (ms) for the current pressure tier. */
@@ -339,12 +416,17 @@ export class SessionReaper extends EventEmitter {
       // GC obs for vanished sessions.
       for (const id of [...this.obs.keys()]) if (!live.has(id)) { this.obs.delete(id); this.deps.clearReaping(id); }
       for (const id of [...this.lastAuditedDecision.keys()]) if (!live.has(id)) this.lastAuditedDecision.delete(id);
+      for (const id of [...this.cpuSamples.keys()]) if (!live.has(id)) this.cpuSamples.delete(id);
 
       let reapedThisTick = 0;
       for (const session of sessions) {
+        // CPU-progress probe for the active-process keep-tightening. Sampled here
+        // (once per session per tick) so the cross-tick delta lives in one place;
+        // undefined off-pressure / when the feature is off ⇒ evaluate() unchanged.
+        const cpuFlat = this.cpuProgressFlat(session, pressure.tier);
         let evaln: SessionEvaluation;
         try {
-          evaln = this.evaluate(session);
+          evaln = this.evaluate(session, { cpuFlat });
         } catch {
           // A protect-signal threw — we cannot reason about this session, so
           // KEEP it (abort any reap-pending) and reset candidacy. Never reap on
@@ -356,6 +438,15 @@ export class SessionReaper extends EventEmitter {
         // Decision audit (transition-only): record what we decided + WHY, stamped
         // with the pressure context, the first time we see it and on every change.
         this.auditDecisionIfChanged(session, evaln, pressure);
+        // Kill-path observability: whenever the new behavior actually relaxed the
+        // active-process existence-veto this tick, leave a durable breadcrumb
+        // (every tick it applies — this is a behavior change to a reap decision).
+        if (evaln.cpuTightened) {
+          this.audit('cpu-keep-tightened', session, {
+            tier: pressure.tier, verdict: evaln.verdict, keptBy: evaln.keptBy,
+            cpuActiveMinRatePerSec: this.cfg.cpuActiveMinRatePerSec,
+          });
+        }
         const prior = this.obs.get(session.id);
         const now = this.now();
 
