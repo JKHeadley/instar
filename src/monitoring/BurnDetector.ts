@@ -33,6 +33,17 @@ export interface BurnDetectionConfig {
   enabled: boolean;
   /** Default 0.25 (25%). */
   absoluteShareThreshold: number;
+  /**
+   * Minimum last-1h tokens for the ABSOLUTE-SHARE trigger to fire. A key whose
+   * trailing-24h share is high but whose CURRENT (last-1h) spend is at or below
+   * this floor is not actively burning — it is a finished burst still sitting
+   * inside the 24h window. Gating on it closes the "consumed 67% of 24h spend …
+   * Projected 0 tokens in next 24h" false alarm that otherwise re-fires every
+   * cooldown for a full day after one heavy session ends. Default 0 → require
+   * strictly positive recent activity. (The baseline-divergence trigger already
+   * has its own activity floor, `rollingBaselineFloor`.)
+   */
+  absoluteShareActivityFloorTokens: number;
   /** Default 2 (2x). */
   rollingBaselineMultiplier: number;
   /** Default 10_000_000 tokens/hour. */
@@ -48,6 +59,7 @@ export interface BurnDetectionConfig {
 export const DEFAULT_BURN_DETECTION_CONFIG: BurnDetectionConfig = {
   enabled: true,
   absoluteShareThreshold: 0.25,
+  absoluteShareActivityFloorTokens: 0,
   rollingBaselineMultiplier: 2,
   rollingBaselineFloor: 10_000_000,
   perKeyAlertCooldownMs: 3_600_000,
@@ -177,8 +189,20 @@ export class BurnDetector {
       // (trigger 2) is intentionally still allowed on the sentinel: a sudden
       // spike of NEW unattributed spend vs its own 7-day history is worth
       // surfacing even though its absolute share is not.
+      //
+      // ACTIVITY GATE: absolute-share also requires the key to be actively
+      // spending right now (last-1h tokens above absoluteShareActivityFloorTokens).
+      // A burn alert means "something is spending heavily NOW" — a key whose
+      // 24h share is high but whose current rate is ~zero is a FINISHED burst
+      // still inside the trailing window, not a live burn. Without this gate one
+      // heavy session re-tripped the 25% alarm every cooldown for a full 24h
+      // with a self-contradictory "consumed 67% of 24h spend … Projected 0
+      // tokens" message (the 2026-06-03 noise incident). The baseline-divergence
+      // trigger already gates on rollingBaselineFloor; this brings the
+      // absolute-share trigger to parity.
       const isPreAttributionSentinel = key24h.attributionKey === PRE_ATTRIBUTION_KEY;
-      if (!isPreAttributionSentinel && share > this.config.absoluteShareThreshold) {
+      const isActivelySpending = tokens1h > this.config.absoluteShareActivityFloorTokens;
+      if (!isPreAttributionSentinel && isActivelySpending && share > this.config.absoluteShareThreshold) {
         trigger = 'absolute-share';
       }
 
@@ -228,8 +252,7 @@ export class BurnDetector {
             ? `${key24h.attributionKey} consumed ${(share * 100).toFixed(1)}% of 24h spend (threshold ${(this.config.absoluteShareThreshold * 100).toFixed(0)}%)`
             : `${key24h.attributionKey} last-1h rate ${tokens1h.toLocaleString()} tok/h, baseline ${baselineMedian7d?.toLocaleString() ?? '?'} tok/h (multiplier ${this.config.rollingBaselineMultiplier}x)`,
         impact:
-          `Projected ${projectedDaily.toLocaleString()} tokens in next 24h at current rate. ` +
-          `Phase 3 is observation-only; Phase 4 wires alerting and bounded auto-throttle.`,
+          `Projected ${projectedDaily.toLocaleString()} tokens in next 24h at the current rate.`,
       });
     }
 

@@ -3029,6 +3029,32 @@ export interface MonitoringConfig {
     verifyWindowMs?: number;
   };
   /**
+   * BurnDetection — the token-burn detection + bounded auto-heal system
+   * (docs/specs/token-burn-detection-and-self-heal.md). All fields optional;
+   * absence preserves the shipped defaults. The system starts unconditionally
+   * unless `enabled` is explicitly false.
+   */
+  burnDetection?: {
+    /** Master kill-switch for the whole burn-detection + auto-heal system (default: true). */
+    enabled?: boolean;
+    /** Single attribution_key share of trailing-24h spend that trips the absolute-share trigger (default: 0.25). */
+    absoluteShareThreshold?: number;
+    /**
+     * Minimum last-1h tokens for the absolute-share trigger to fire (activity
+     * gate, default: 0 → require strictly positive recent spend). A key whose
+     * 24h share is high but whose current rate is at/below this floor is a
+     * finished burst, not a live burn — gating on it stops the "consumed X% of
+     * 24h spend … Projected 0 tokens" re-alarm.
+     */
+    absoluteShareActivityFloorTokens?: number;
+    /** Telegram topic the runbook posts burn alerts to (default: 8615). */
+    alertTopicId?: number;
+    /** Auto-install a bounded throttle when a KNOWN component is flagged (default: true). */
+    autoThrottle?: boolean;
+    /** Auto-throttle even on unknown:: keys (default: false → alert-only on unknown). */
+    autoThrottleOnUnknown?: boolean;
+  };
+  /**
    * ContextWedgeSentinel — detects the Claude Code "thinking/redacted_thinking
    * blocks in the latest assistant message cannot be modified" 400 fast-fail
    * wedge (a cancelled tool call inside a parallel batch corrupts the latest
