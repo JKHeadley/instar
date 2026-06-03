@@ -119,7 +119,7 @@ Background worker (default 60s cadence), gated on `monitoring.resourceLedger.ena
 
 ### Dashboard
 A "Resources" tab (plain-language headline + live numbers + recent rate-limit
-events). Follow-up PR.
+events) is part of Phase B (see the Phasing section below).
 
 ## Phasing (each a small gated PR)
 - **Phase A:** breaker `trip`/`recover` emitter + `ResourceLedger` +
