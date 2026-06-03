@@ -42,9 +42,9 @@ gate (same as #722), so it's dogfooded on a real loaded box.
 
 ## What to Tell Your User
 
-Nothing — `busyOrphanDetection` is **dark by default** and observe-only (it never
-changes behavior, just writes audit rows). If surfaced at all, surface it as
-**⚗️ Experimental** observability that makes the busy-orphan case visible.
+Nothing — it is dark by default and observe-only (it never changes behavior, just
+writes audit rows). If surfaced at all, surface it as Experimental observability
+that makes the busy-orphan case visible.
 
 ## Summary of New Capabilities
 
