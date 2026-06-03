@@ -6801,8 +6801,10 @@ export async function startServer(options: StartOptions): Promise<void> {
             const {
               CaptureRing,
               captureAndDistill,
+              drainBacklog,
               makeCaptureRateState,
             } = await import('../monitoring/CorrectionCaptureLoop.js');
+            const { llmCircuitAvailable } = await import('../core/LlmCircuitBreaker.js');
 
             const correctionLedger = new CorrectionLedger({
               dbPath: path.join(config.stateDir, 'correction-ledger.db'),
@@ -6834,6 +6836,22 @@ export async function startServer(options: StartOptions): Promise<void> {
               topicTtlMs: (cl.captureTopicTtlMinutes ?? 60) * 60_000,
             });
             const rateState = makeCaptureRateState();
+            // Durable capture-backlog with retry (resilience extension). When the
+            // Tier-1 distill is rate-limited/capacity-throttled, the pre-scrubbed
+            // capture is PERSISTED here instead of dropped, then drained into the
+            // ledger in a later LLM headroom window — so corrections survive
+            // sustained throttling. ON when the feature is enabled; maxEntries:0
+            // disables it (preserves the old drop-on-throttle behavior).
+            const backlogMaxEntries = cl.captureBacklogMaxEntries ?? 200;
+            const captureBacklog = backlogMaxEntries > 0
+              ? new (await import('../monitoring/CorrectionCaptureBacklog.js')).CorrectionCaptureBacklog({
+                  dbPath: path.join(config.stateDir, 'correction-capture-backlog.db'),
+                  maxEntries: backlogMaxEntries,
+                  maxRetries: cl.captureBacklogMaxRetries ?? 3,
+                })
+              : null;
+            const backlogTtlMs = (cl.captureBacklogTtlHours ?? 24) * 3_600_000;
+            const backlogDrainPerTick = cl.captureBacklogDrainPerTick ?? 5;
             // Audit sink — one structured line per capture decision. The rollout
             // evidence filter keys on `correction-loop` in this file.
             const correctionAuditPath = path.join(config.stateDir, 'logs', 'correction-learning-audit.jsonl');
@@ -6846,6 +6864,44 @@ export async function startServer(options: StartOptions): Promise<void> {
                   { mode: 0o600 },
                 );
               } catch { /* @silent-fallback-ok — audit is best-effort */ }
+            };
+
+            // Shared distill fn — used by BOTH the hot-path capture and the
+            // off-hot-path backlog drainer (same per-sentinel LlmQueue + cap).
+            const correctionDistill = (prompt: string) =>
+              correctionLlmQueue.enqueue(
+                'background',
+                () => sharedIntelligence.evaluate(prompt, { model: 'fast', maxTokens: 400, temperature: 0 }),
+                0.3,
+              );
+
+            // Off-hot-path drainer. Single-flight (a `draining` guard prevents an
+            // overlapping drain from a near-simultaneous trigger) and fail-open
+            // (drainBacklog itself never throws). Skips internally when the LLM
+            // circuit is open / shedding (it would just re-fail every entry).
+            let draining = false;
+            const maybeDrainBacklog = () => {
+              if (!captureBacklog || draining) return;
+              if (!llmCircuitAvailable()) return; // breaker open — don't even claim.
+              draining = true;
+              // void: NEVER awaited on any seam — fully detached.
+              void (async () => {
+                try {
+                  await drainBacklog(
+                    {
+                      backlog: captureBacklog,
+                      ledger: correctionLedger,
+                      distill: correctionDistill,
+                      llmAvailable: () => llmCircuitAvailable(),
+                      ttlMs: backlogTtlMs,
+                      audit: (e) => correctionAudit({ decision: e.decision, topicId: e.topicId, detail: e.detail }),
+                    },
+                    backlogDrainPerTick,
+                  );
+                } finally {
+                  draining = false;
+                }
+              })();
             };
 
             const beforeCorrectionCb = telegram.onMessageLogged;
@@ -6862,17 +6918,13 @@ export async function startServer(options: StartOptions): Promise<void> {
                 {
                   ring,
                   ledger: correctionLedger,
-                  distill: (prompt) =>
-                    correctionLlmQueue.enqueue(
-                      'background',
-                      () => sharedIntelligence.evaluate(prompt, { model: 'fast', maxTokens: 400, temperature: 0 }),
-                      0.3,
-                    ),
+                  distill: correctionDistill,
                   shouldShed: () => {
                     const r = quotaTracker?.getRecommendation();
                     return r === 'critical' || r === 'stop';
                   },
                   rateCeiling: { maxPerWindow: cl.distillPerTopicRatePerMinute ?? 8, windowMs: 60_000 },
+                  backlog: captureBacklog,
                   audit: correctionAudit,
                 },
                 {
@@ -6884,9 +6936,26 @@ export async function startServer(options: StartOptions): Promise<void> {
                   isLearningSignal: verdict?.learningKind != null,
                 },
                 rateState,
-              );
+              ).then((decision) => {
+                // DRAIN TRIGGER (off-hot-path): a real distill just succeeded →
+                // the LLM has headroom RIGHT NOW, so opportunistically work down
+                // the backlog. .then runs AFTER the fire-and-forget capture
+                // resolves — it never blocks delivery. Skips internally if the
+                // breaker is open.
+                if (decision === 'recorded' || decision === 'noise') maybeDrainBacklog();
+              }).catch(() => { /* @silent-fallback-ok — capture is fail-open */ });
             };
+
+            // Belt-and-suspenders periodic tick: even with no live captures, a
+            // throttle that has since lifted gets drained. Bounded + off-hot-path
+            // + skipped while the breaker is open. unref()'d so it never holds the
+            // process open. Only armed when the backlog is active.
+            if (captureBacklog) {
+              const backlogTimer = setInterval(() => maybeDrainBacklog(), 5 * 60_000);
+              if (typeof backlogTimer.unref === 'function') backlogTimer.unref();
+            }
             (globalThis as Record<string, unknown>).__instarCorrectionLearningWired = true;
+            (globalThis as Record<string, unknown>).__instarCorrectionCaptureBacklogWired = !!captureBacklog;
             console.log(pc.green('  Correction & Preference Learning Sentinel wired (capture → distill → ledger; dark by default)'));
           } catch (err) {
             console.warn('[CorrectionLearning] init failed:', (err as Error).message);
