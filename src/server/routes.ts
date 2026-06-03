@@ -4337,6 +4337,86 @@ export function createRoutes(ctx: RouteContext): Router {
     }, 500);
   });
 
+  // POST /sessions/restart-all — bulk config-apply restart.
+  //
+  // After a config change (default model, disabled features, a newly-added
+  // hook), running sessions keep their OLD config until they restart — and
+  // Claude Code only loads hooks/settings at session START, so a hook added
+  // mid-session never engages on the live session. Previously the only way to
+  // push every session onto the new config was to wait for the reaper or
+  // refresh each session by hand. This refreshes every running, Telegram-bound
+  // session through SessionRefresh (kill + `claude --resume`, preserving each
+  // conversation), staggered so we don't kill+respawn the whole fleet at once.
+  //
+  // Non-Telegram-bound sessions (Slack, iMessage, headless) are skipped — the
+  // respawn path is topic-routed, the same v1 limitation as /sessions/refresh.
+  router.post('/sessions/restart-all', spawnLimiter, (req, res) => {
+    if (!ctx.sessionRefresh) {
+      res.status(503).json({ error: 'Session refresh not enabled (no Telegram adapter wired)' });
+      return;
+    }
+
+    const { reason, excludeSession, followUpPrompt } = req.body || {};
+    if (reason !== undefined && (typeof reason !== 'string' || reason.length > 1000)) {
+      res.status(400).json({ error: '"reason" must be a string under 1000 chars' });
+      return;
+    }
+    if (excludeSession !== undefined && (typeof excludeSession !== 'string' || !SESSION_NAME_RE.test(excludeSession))) {
+      res.status(400).json({ error: '"excludeSession" must contain only letters, numbers, hyphens, underscores (max 200)' });
+      return;
+    }
+    if (followUpPrompt !== undefined && (typeof followUpPrompt !== 'string' || followUpPrompt.length > 500_000)) {
+      res.status(400).json({ error: '"followUpPrompt" must be a string under 500KB' });
+      return;
+    }
+
+    // Snapshot running sessions NOW, before any kills. Filter to Telegram-bound
+    // up front (checking in-memory AND disk, mirroring SessionRefresh's own
+    // resolution) so the "scheduled" list we return is honest — the rest would
+    // only come back not_telegram_bound.
+    const running = ctx.state.listSessions({ status: 'running' });
+    const targets = running
+      .map(s => s.tmuxSession)
+      .filter((name): name is string => !!name && name !== excludeSession)
+      .filter(name => {
+        const topic = ctx.telegram?.getTopicForSession?.(name)
+          ?? ctx.telegram?.resolveTopicForSessionFromDisk?.(name)
+          ?? null;
+        return topic !== null;
+      });
+
+    res.status(202).json({
+      ok: true,
+      message: 'Bulk restart scheduled',
+      scheduled: targets,
+      count: targets.length,
+      skipped: running.length - targets.length,
+    });
+
+    // Stagger the refreshes so we don't kill+respawn the whole fleet in one
+    // burst (a tmux storm + a model-load CPU spike). Each refresh is
+    // independent and self-rate-limited inside SessionRefresh, so a repeated
+    // restart-all inside the rate window is harmlessly refused per session.
+    const sessionRefresh = ctx.sessionRefresh;
+    const STAGGER_MS = 750;
+    targets.forEach((sessionName, i) => {
+      setTimeout(() => {
+        sessionRefresh
+          .refreshSession({ sessionName, followUpPrompt, reason: reason ?? 'bulk restart-all (config apply)' })
+          .then(result => {
+            if (!result.ok) {
+              console.warn(`[sessions/restart-all] refused sessionName=${sessionName} code=${result.code} message="${result.message}"`);
+            } else {
+              console.log(`[sessions/restart-all] refreshed sessionName=${sessionName} -> ${result.newSessionName} (topic ${result.topicId})`);
+            }
+          })
+          .catch(err => {
+            console.error(`[sessions/restart-all] unexpected error for sessionName=${sessionName}:`, err);
+          });
+      }, 500 + i * STAGGER_MS);
+    });
+  });
+
   router.delete('/sessions/:id', async (req, res) => {
     if (!SESSION_NAME_RE.test(req.params.id)) {
       res.status(400).json({ error: 'Invalid session ID format' });

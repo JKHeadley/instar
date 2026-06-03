@@ -1,0 +1,63 @@
+<!-- bump: patch -->
+
+## What Changed
+
+Three connected session-lifecycle fixes, all surfaced by a token-efficiency audit
+on a deployed agent:
+
+1. **The Claude session builder now honors the configured default model.**
+   `claudeCodeBuilder` resolved `frameworkDefaultModels['claude-code']` but never
+   passed `--model` to the `claude` CLI — unlike the Codex and Gemini builders,
+   which both do. So a configured default model was silently dropped for every
+   interactive Claude session; they always ran the CLI's account default. The
+   builder now pins `--model <resolved>` when a default is set (tier aliases
+   `fast|balanced|capable` → `haiku|sonnet|opus`; raw model ids pass through), and
+   pushes nothing when unset so the account default is preserved. This matches the
+   documented contract on `InteractiveLaunchOptions.defaultModel`.
+
+2. **`GET /sessions` now reports the real launched model for interactive sessions.**
+   The session record stores the model the session was *actually* launched with
+   (post Codex rate-limit swap), so after a config change you can confirm which
+   model a running session picked up.
+
+3. **New `POST /sessions/restart-all` bulk-restart endpoint.** A running session
+   keeps the config it was spawned with — and Claude Code loads hooks/settings only
+   at session start, so a newly-added hook never engages on a live session. There
+   was no way to push every session onto new config short of waiting for the reaper
+   or refreshing each by hand. `POST /sessions/restart-all` refreshes every running,
+   Telegram-bound session through the existing `SessionRefresh` path (kill +
+   `claude --resume`, each conversation preserved), staggered to avoid a respawn
+   storm. Pass `{"excludeSession":"<tmux-name>"}` to keep the caller alive;
+   non-Telegram-bound sessions are skipped and reported in `skipped`.
+
+## What to Tell Your User
+
+- **Your configured default model now actually applies to Claude sessions.** "If
+  you set a default model, my Claude sessions will launch with it now — previously
+  that setting was quietly ignored for Claude and only worked for Codex/Gemini."
+- **One command to apply a config or hook change to everything running.** "After
+  you change my default model, disable a feature, or add a hook, I don't pick it up
+  on a session that's already running — Claude only loads settings when a session
+  starts. I can now restart all my live sessions in one go (each conversation is
+  preserved) so the new config takes effect, then confirm what each one is running."
+
+## Summary of New Capabilities
+
+| Capability | How to Use |
+|-----------|-----------|
+| Configured default model applies to Claude sessions | Automatic (set `frameworkDefaultModels['claude-code']`) |
+| Per-session launched model in `GET /sessions` | `GET /sessions` → each session's `model` field |
+| Bulk restart all running sessions onto new config | `POST /sessions/restart-all` (one session: `POST /sessions/refresh`) |
+
+## Evidence
+
+- **Root cause (model):** `src/core/frameworkSessionLaunch.ts` `claudeCodeBuilder`
+  built `[binary, --dangerously-skip-permissions, (--resume id)]` with no `--model`,
+  while `codexCliBuilder`/`geminiBuilder` both push `--model`. Unit-proven in
+  `tests/unit/frameworkSessionLaunch.test.ts` (now asserts `--model` present when a
+  default is set, absent when unset, tier→model and raw-id pass-through).
+- **`restart-all`:** `tests/unit/sessions-restart-all-route.test.ts` drives the real
+  Express route — validation, 202 ack with honest `scheduled`/`skipped`, exclusion,
+  and that each target is refreshed through `SessionRefresh` after the stagger.
+- **Migration parity:** `tests/unit/PostUpdateMigrator-applyConfigToRunningSessions.test.ts`
+  proves existing agents get the awareness section on update (idempotent).

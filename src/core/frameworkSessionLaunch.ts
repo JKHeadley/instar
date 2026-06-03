@@ -154,6 +154,21 @@ const claudeCodeBuilder: Builder = (options) => {
   if (options.resumeSessionId) {
     argv.push('--resume', options.resumeSessionId);
   }
+  // Honor the configured default model when one is set. Previously this
+  // builder silently dropped options.defaultModel — unlike the Codex and
+  // Gemini builders, which both push --model — so frameworkDefaultModels
+  // ['claude-code'] had NO effect on interactive Claude sessions (they
+  // always ran the CLI's account default). That contradicted the documented
+  // contract on InteractiveLaunchOptions.defaultModel ("Claude inherits its
+  // CLI's account default" only WHEN UNSET). When a default IS set we resolve
+  // the tier→model alias (fast/balanced/capable → haiku/sonnet/opus; raw ids
+  // pass through) and pin it via --model. When unset we push nothing, so the
+  // CLI's own account default is preserved — the user can still /model-switch
+  // within the session.
+  const resolvedModel = resolveModelForFramework('claude-code', options.defaultModel);
+  if (resolvedModel) {
+    argv.push('--model', resolvedModel);
+  }
   return {
     argv,
     envOverrides: {

@@ -2133,10 +2133,14 @@ rm()  { "${shimRunner}" rm  "$@"; }
       startedAt: new Date().toISOString(),
       // Carry the framework so the dashboard renders engine-aware (a Codex
       // interactive session must not display as a Claude one). Model is the
-      // framework-resolved defaultModel when one is set; left undefined when
-      // the CLI uses its own account default.
+      // framework-resolved model THIS session was actually launched with —
+      // we use launchDefaultModel (post Codex rate-limit swap), not the raw
+      // config default, so GET /sessions reports the real running model and an
+      // operator can confirm what a session picked up after a config change.
+      // Left undefined only when no model was pinned (the CLI uses its own
+      // account default).
       framework,
-      ...(resolveModelForFramework(framework, defaultModel) ? { model: resolveModelForFramework(framework, defaultModel) } : {}),
+      ...(resolveModelForFramework(framework, launchDefaultModel) ? { model: resolveModelForFramework(framework, launchDefaultModel) } : {}),
       prompt: initialMessage,
       maxDurationMinutes: this.effectiveMaxDurationMinutes,
     };

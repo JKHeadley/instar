@@ -59,6 +59,49 @@ describe('frameworkSessionLaunch.buildInteractiveLaunch', () => {
       const spec = buildInteractiveLaunch('claude-code', { binaryPath: '/x/claude' });
       expect(spec.envOverrides).toEqual({ CLAUDECODE: '' });
     });
+
+    it('does NOT push --model when no defaultModel is set (account default preserved)', () => {
+      const spec = buildInteractiveLaunch('claude-code', { binaryPath: '/x/claude' });
+      expect(spec.argv).not.toContain('--model');
+    });
+
+    it('pins --model from a generic tier (balanced → sonnet) when defaultModel is set', () => {
+      const spec = buildInteractiveLaunch('claude-code', {
+        binaryPath: '/usr/local/bin/claude',
+        defaultModel: 'balanced',
+      });
+      expect(spec.argv).toEqual([
+        '/usr/local/bin/claude',
+        '--dangerously-skip-permissions',
+        '--model',
+        'sonnet',
+      ]);
+    });
+
+    it('passes a raw model id through verbatim to --model', () => {
+      const spec = buildInteractiveLaunch('claude-code', {
+        binaryPath: '/usr/local/bin/claude',
+        defaultModel: 'claude-opus-4-8',
+      });
+      expect(spec.argv).toContain('--model');
+      expect(spec.argv[spec.argv.indexOf('--model') + 1]).toBe('claude-opus-4-8');
+    });
+
+    it('combines --resume and --model when both are provided', () => {
+      const spec = buildInteractiveLaunch('claude-code', {
+        binaryPath: '/usr/local/bin/claude',
+        resumeSessionId: 'abc-123',
+        defaultModel: 'capable',
+      });
+      expect(spec.argv).toEqual([
+        '/usr/local/bin/claude',
+        '--dangerously-skip-permissions',
+        '--resume',
+        'abc-123',
+        '--model',
+        'opus',
+      ]);
+    });
   });
 
   describe('codex-cli', () => {

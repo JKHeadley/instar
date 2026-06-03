@@ -3907,6 +3907,26 @@ Create worktrees for collaborator repos with \`instar worktree create <branch>\`
       result.upgraded.push('CLAUDE.md: added Process Health dashboard tab awareness section');
     }
 
+    // Applying config & hook changes to running sessions — Agent Awareness
+    // backfill for POST /sessions/restart-all (and the existing /sessions/refresh).
+    // A running session keeps its spawn-time config until it restarts, and Claude
+    // Code loads hooks/settings only at session start — so an agent must know to
+    // restart sessions to apply a model/feature/hook change. Fresh inits get this
+    // via generateClaudeMd; existing agents get it here. Copy mirrors the template.
+    // Idempotent via content-sniff on the section title.
+    if (!content.includes('Applying config & hook changes to running sessions')) {
+      const section = `
+**Applying config & hook changes to running sessions** — A running session keeps the config it was *spawned* with. Claude Code loads \`.claude/settings.json\` (hooks, model) **once, at session start** — so a config change (default model, a disabled feature) or a newly-added hook does NOT reach an already-running session. It only takes effect on the next session, OR when you restart the existing one. (This is why a UserPromptSubmit hook added mid-session never fires for that live session — the session was launched before the hook existed.)
+- Restart ONE session (preserves the conversation via \`claude --resume\`): \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/sessions/refresh -H 'Content-Type: application/json' -d '{"sessionName":"<tmux-name>","reason":"config change"}'\`
+- Restart EVERY running Telegram-bound session in one call (staggered, each conversation preserved): \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/sessions/restart-all -H 'Content-Type: application/json' -d '{"reason":"applied new default model"}'\` → \`{ scheduled: [...], count, skipped }\`. Pass \`{"excludeSession":"<tmux-name>"}\` to keep the calling session alive. Non-Telegram-bound (Slack/iMessage/headless) sessions are skipped.
+- \`GET /sessions\` reports each session's \`model\` — the model it was actually launched with — so after a restart you can confirm running sessions picked up the new default. (Note: \`frameworkDefaultModels['claude-code']\` is only honored when set; left unset, Claude uses its CLI account default and \`model\` is blank.)
+- Proactive: user changes a model/feature/hook and asks "did the running sessions pick it up?" / "apply this now" → they didn't pick it up automatically; offer POST /sessions/restart-all (or /sessions/refresh for one), then confirm via GET /sessions.
+`;
+      content += '\n' + section;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added "applying config & hook changes to running sessions" awareness section');
+    }
+
     if (patched) {
       try {
         fs.writeFileSync(claudeMdPath, content);
