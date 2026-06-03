@@ -90,6 +90,7 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
       endpoints: [
         'GET /apprenticeship/instances',
         'GET /apprenticeship/instances/:id',
+        'GET /apprenticeship/instances/:id/role-coverage',
         'POST /apprenticeship/instances',
         'POST /apprenticeship/instances/:id/transition',
         'POST /apprenticeship/instances/:id/can-start',

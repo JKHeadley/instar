@@ -178,9 +178,10 @@ describe('/apprenticeship routes (integration)', () => {
         overseerDifferential: ['surface env issue'],
         coaching: 'Keep reasoning and infra findings separate.',
         infraItems: ['ripgrep missing'],
-        kind: 'mentorship',
+        kind: 'mentor-mentee-differential',
       });
     expect(created.status).toBe(201);
+    expect(created.body.kind).toBe('mentor-mentee-differential');
     expect(created.body.mentorFlagged).toEqual(['compressed principles']);
     expect(created.body.infraItems).toEqual(['ripgrep missing']);
 
@@ -213,6 +214,72 @@ describe('/apprenticeship routes (integration)', () => {
 
     const closeMissing = await request(app).post('/apprenticeship/cycles/no-such/close').set(auth());
     expect(closeMissing.status).toBe(404);
+    store.close();
+  });
+
+  it('role-coverage route requires bearer, 503s without the store, and detects role drift', async () => {
+    const unavailable = appWith(ctxFor(stateDir, makeProgram(), null, null));
+    const unauth = await request(unavailable).get('/apprenticeship/instances/echo-to-codey/role-coverage');
+    expect(unauth.status).toBe(401);
+
+    const disabled = await request(unavailable).get('/apprenticeship/instances/echo-to-codey/role-coverage').set(auth());
+    expect(disabled.status).toBe(503);
+    expect(disabled.body.error).toContain('cycle store disabled');
+
+    const store = makeCycleStore();
+    store.record({
+      id: 'review-1',
+      instanceId: 'echo-to-codey',
+      cycleNumber: 1,
+      createdAt: '2026-06-03T08:00:00.000Z',
+      task: 'review 1',
+      menteeOutput: 'output',
+      kind: 'overseer-apprentice-devreview',
+    });
+    store.record({
+      id: 'review-2',
+      instanceId: 'echo-to-codey',
+      cycleNumber: 2,
+      createdAt: '2026-06-03T09:00:00.000Z',
+      task: 'review 2',
+      menteeOutput: 'output',
+      kind: 'overseer-apprentice-devreview',
+    });
+    store.record({
+      id: 'healthy-mentor',
+      instanceId: 'healthy',
+      cycleNumber: 1,
+      createdAt: '2026-06-03T10:00:00.000Z',
+      task: 'mentor loop',
+      menteeOutput: 'output',
+      kind: 'mentor-mentee-differential',
+    });
+    store.record({
+      id: 'healthy-review',
+      instanceId: 'healthy',
+      cycleNumber: 2,
+      createdAt: '2026-06-03T11:00:00.000Z',
+      task: 'review loop',
+      menteeOutput: 'output',
+      kind: 'overseer-apprentice-devreview',
+    });
+
+    const app = appWith(ctxFor(stateDir, makeProgram(), store, null));
+    const drift = await request(app).get('/apprenticeship/instances/echo-to-codey/role-coverage').set(auth());
+    expect(drift.status).toBe(200);
+    expect(drift.body.driftWarning).toBe(true);
+    expect(drift.body.axes['overseer-apprentice-devreview'].cycleCount).toBe(2);
+    expect(drift.body.dormantAxes).toContain('mentor-mentee-differential');
+
+    const healthy = await request(app).get('/apprenticeship/instances/healthy/role-coverage').set(auth());
+    expect(healthy.status).toBe(200);
+    expect(healthy.body.driftWarning).toBe(false);
+    expect(healthy.body.axes['mentor-mentee-differential'].cycleCount).toBe(1);
+
+    const empty = await request(app).get('/apprenticeship/instances/empty/role-coverage').set(auth());
+    expect(empty.status).toBe(200);
+    expect(empty.body.driftWarning).toBe(false);
+    expect(empty.body.axes['mentor-mentee-differential'].cycleCount).toBe(0);
     store.close();
   });
 

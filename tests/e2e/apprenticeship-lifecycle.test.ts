@@ -12,8 +12,10 @@
  *   2. POST /apprenticeship/cycles returns 201 through AgentServer (not 503).
  *   3. GET /apprenticeship/cycles/overdue returns 200 through AgentServer
  *      when the default-off SLA monitor is explicitly enabled.
- *   4. The route requires Bearer auth.
- *   5. The full lifecycle works end-to-end through the wired program: create →
+ *   4. GET /apprenticeship/instances/:id/role-coverage returns 200 through
+ *      AgentServer (not 503) and reports drift for a dormant mentor loop.
+ *   5. The route requires Bearer auth.
+ *   6. The full lifecycle works end-to-end through the wired program: create →
  *      transition pending→active gated on a real on-disk harvest at the
  *      canonical path.
  */
@@ -145,6 +147,41 @@ describe('Apprenticeship Program E2E lifecycle (feature is alive)', () => {
     const res = await request(app).get('/apprenticeship/cycles/overdue').set(auth());
     expect(res.status).toBe(200);
     expect(res.body.overdue.some((c: { id: string }) => c.id === 'e2e-cycle-overdue')).toBe(true);
+  });
+
+  it('GET /apprenticeship/instances/:id/role-coverage is alive and observe-only through AgentServer', async () => {
+    await request(app)
+      .post('/apprenticeship/cycles')
+      .set(auth())
+      .send({
+        id: 'e2e-role-review-1',
+        instanceId: 'role-drift',
+        cycleNumber: 1,
+        createdAt: '2026-06-03T08:00:00.000Z',
+        task: 'Overseer review 1',
+        menteeOutput: 'review output',
+        kind: 'overseer-apprentice-devreview',
+      })
+      .expect(201);
+    await request(app)
+      .post('/apprenticeship/cycles')
+      .set(auth())
+      .send({
+        id: 'e2e-role-review-2',
+        instanceId: 'role-drift',
+        cycleNumber: 2,
+        createdAt: '2026-06-03T09:00:00.000Z',
+        task: 'Overseer review 2',
+        menteeOutput: 'review output',
+        kind: 'overseer-apprentice-devreview',
+      })
+      .expect(201);
+
+    const res = await request(app).get('/apprenticeship/instances/role-drift/role-coverage').set(auth());
+    expect(res.status).toBe(200);
+    expect(res.body.driftWarning).toBe(true);
+    expect(res.body.axes['mentor-mentee-differential'].fired).toBe(false);
+    expect(res.body.axes['overseer-apprentice-devreview'].cycleCount).toBe(2);
   });
 
   it('requires Bearer auth', async () => {

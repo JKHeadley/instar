@@ -67,6 +67,11 @@ Each cycle records `id`, `instanceId`, `cycleNumber`, `createdAt`, `task`, `ment
 `mentorFlagged`, `overseerDifferential`, `coaching`, `infraItems`, `kind`, and `status`.
 Array fields are stored as JSON and returned as arrays.
 
+Cycle `kind` is the source of truth for role-axis visibility. New writes use the explicit axis
+vocabulary `mentor-mentee-differential`, `overseer-apprentice-devreview`, or
+`overseer-mentee-direct`; historical `differential-cycle` rows are treated as `unknown` so the
+program never fabricates coverage it cannot prove.
+
 - `POST /apprenticeship/cycles` — record one cycle. Required fields are `instanceId`,
   `cycleNumber`, `task`, and `menteeOutput`; array fields are optional arrays of strings.
 - `GET /apprenticeship/cycles?instanceId=&limit=` — list recent cycles, optionally scoped to one
@@ -79,6 +84,10 @@ Array fields are stored as JSON and returned as arrays.
   unknown.
 - `POST /apprenticeship/cycles/:id/close` — mark an open cycle as closed and return the updated
   record.
+- `GET /apprenticeship/instances/:id/role-coverage` — read the observe-only role coverage surface
+  for one instance. It returns per-axis `{ fired, cycleCount, lastAt }`, an `unknown` bucket,
+  `dormantAxes`, and `driftWarning`. The warning is true when the mentor-mentee differential axis is
+  dormant while the overseer-apprentice dev-review axis has fired at least twice.
 
 If the SQLite store is unavailable, the cycle routes return 503 instead of pretending the feature
 is alive.

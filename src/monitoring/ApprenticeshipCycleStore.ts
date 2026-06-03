@@ -36,6 +36,29 @@ export interface ApprenticeshipCycleRecordInput {
   status?: string;
 }
 
+export const APPRENTICESHIP_CYCLE_AXES = [
+  'mentor-mentee-differential',
+  'overseer-apprentice-devreview',
+  'overseer-mentee-direct',
+] as const;
+
+export type ApprenticeshipCycleAxis = typeof APPRENTICESHIP_CYCLE_AXES[number];
+export type ApprenticeshipCycleKind = ApprenticeshipCycleAxis | 'unknown';
+
+export interface ApprenticeshipRoleAxisCoverage {
+  fired: boolean;
+  cycleCount: number;
+  lastAt: string | null;
+}
+
+export interface ApprenticeshipRoleCoverage {
+  instanceId: string;
+  axes: Record<ApprenticeshipCycleAxis, ApprenticeshipRoleAxisCoverage>;
+  unknown: ApprenticeshipRoleAxisCoverage;
+  dormantAxes: ApprenticeshipCycleAxis[];
+  driftWarning: boolean;
+}
+
 export interface ApprenticeshipCycleRecord {
   id: string;
   instanceId: string;
@@ -47,7 +70,7 @@ export interface ApprenticeshipCycleRecord {
   overseerDifferential: string[];
   coaching: string;
   infraItems: string[];
-  kind: string;
+  kind: ApprenticeshipCycleKind;
   status: string;
 }
 
@@ -106,6 +129,15 @@ function clampLimit(raw: unknown): number {
   return Math.max(1, Math.min(500, Math.floor(n)));
 }
 
+function normalizeKind(raw: unknown): ApprenticeshipCycleKind {
+  if (raw === undefined || raw === null || raw === '') return 'mentor-mentee-differential';
+  if (raw === 'differential-cycle') return 'unknown';
+  if (raw === 'unknown' || APPRENTICESHIP_CYCLE_AXES.includes(raw as ApprenticeshipCycleAxis)) {
+    return raw as ApprenticeshipCycleKind;
+  }
+  throw new Error(`kind must be one of ${[...APPRENTICESHIP_CYCLE_AXES, 'unknown'].join(', ')}`);
+}
+
 interface Row {
   id: string;
   instance_id: string;
@@ -129,6 +161,7 @@ export class ApprenticeshipCycleStore {
     insert: Database.Statement;
     listAll: Database.Statement;
     listByInstance: Database.Statement;
+    listAllByInstance: Database.Statement;
     get: Database.Statement;
     close: Database.Statement;
   };
@@ -149,6 +182,9 @@ export class ApprenticeshipCycleStore {
       try { this.db.close(); } catch { /* already closed */ }
     });
     for (const ddl of SCHEMA) this.db.exec(ddl);
+    // Legacy rows pre-date axis vocabulary. Keep them visible, but never
+    // fabricate an axis from the old catch-all label.
+    this.db.prepare(`UPDATE apprenticeship_cycles SET kind = 'unknown' WHERE kind = 'differential-cycle'`).run();
     this.prepareStatements();
   }
 
@@ -175,6 +211,11 @@ export class ApprenticeshipCycleStore {
         ORDER BY created_at DESC, cycle_number DESC
         LIMIT ?
       `),
+      listAllByInstance: this.db.prepare(`
+        SELECT * FROM apprenticeship_cycles
+        WHERE instance_id = ?
+        ORDER BY created_at DESC, cycle_number DESC
+      `),
       get: this.db.prepare(`SELECT * FROM apprenticeship_cycles WHERE id = ?`),
       close: this.db.prepare(`
         UPDATE apprenticeship_cycles
@@ -199,7 +240,7 @@ export class ApprenticeshipCycleStore {
       overseerDifferential: stringArray(input.overseerDifferential, 'overseerDifferential'),
       coaching: typeof input.coaching === 'string' ? input.coaching : '',
       infraItems: stringArray(input.infraItems, 'infraItems'),
-      kind: optionalString(input.kind, 'differential-cycle'),
+      kind: normalizeKind(input.kind),
       status: optionalString(input.status, 'open'),
     };
 
@@ -223,6 +264,31 @@ export class ApprenticeshipCycleStore {
   get(id: string): ApprenticeshipCycleRecord | null {
     const row = this.stmts.get.get(id) as Row | undefined;
     return row ? this.rowToRecord(row) : null;
+  }
+
+  roleCoverage(instanceId: string): ApprenticeshipRoleCoverage {
+    const id = requireString(instanceId, 'instanceId');
+    const rows = this.stmts.listAllByInstance.all(id) as Row[];
+    const blank = (): ApprenticeshipRoleAxisCoverage => ({ fired: false, cycleCount: 0, lastAt: null });
+    const axes = Object.fromEntries(
+      APPRENTICESHIP_CYCLE_AXES.map((axis) => [axis, blank()]),
+    ) as Record<ApprenticeshipCycleAxis, ApprenticeshipRoleAxisCoverage>;
+    const unknown = blank();
+
+    for (const row of rows) {
+      const kind = normalizeKind(row.kind);
+      const target = kind === 'unknown' ? unknown : axes[kind];
+      target.fired = true;
+      target.cycleCount += 1;
+      if (!target.lastAt || row.created_at > target.lastAt) target.lastAt = row.created_at;
+    }
+
+    const dormantAxes = APPRENTICESHIP_CYCLE_AXES.filter((axis) => !axes[axis].fired);
+    const driftWarning =
+      !axes['mentor-mentee-differential'].fired &&
+      axes['overseer-apprentice-devreview'].cycleCount >= 2;
+
+    return { instanceId: id, axes, unknown, dormantAxes, driftWarning };
   }
 
   closeCycle(id: string): ApprenticeshipCycleRecord | null {
@@ -252,7 +318,7 @@ export class ApprenticeshipCycleStore {
       overseerDifferential: parseJsonArray(row.overseer_diff_json),
       coaching: row.coaching,
       infraItems: parseJsonArray(row.infra_items_json),
-      kind: row.kind,
+      kind: normalizeKind(row.kind),
       status: row.status,
     };
   }

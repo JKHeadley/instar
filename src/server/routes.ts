@@ -11575,6 +11575,7 @@ export function createRoutes(ctx: RouteContext): Router {
   //
   //   GET  /apprenticeship/instances            — list
   //   GET  /apprenticeship/instances/:id        — one instance (404 missing)
+  //   GET  /apprenticeship/instances/:id/role-coverage — read-only axis coverage
   //   POST /apprenticeship/instances            — create (charset-clamped, dup-rejected)
   //   POST /apprenticeship/instances/:id/transition {to} — gated status change
   //   POST /apprenticeship/instances/:id/can-start    — read-only start-gate preview
@@ -11589,7 +11590,11 @@ export function createRoutes(ctx: RouteContext): Router {
   router.post('/apprenticeship/cycles', (req, res) => {
     if (!ctx.apprenticeshipCycleStore) { res.status(503).json({ error: 'apprenticeship cycle store disabled' }); return; }
     try {
-      const cycle = ctx.apprenticeshipCycleStore.record(req.body ?? {});
+      const body = req.body ?? {};
+      const cycle = ctx.apprenticeshipCycleStore.record({
+        ...body,
+        kind: typeof body.kind === 'string' ? body.kind : 'mentor-mentee-differential',
+      });
       res.status(201).json(cycle);
     } catch (err) {
       res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
@@ -11638,6 +11643,15 @@ export function createRoutes(ctx: RouteContext): Router {
   router.get('/apprenticeship/instances', (_req, res) => {
     if (!ctx.apprenticeshipProgram) { res.status(503).json({ error: 'apprenticeship program disabled' }); return; }
     res.json({ instances: ctx.apprenticeshipProgram.list() });
+  });
+
+  router.get('/apprenticeship/instances/:id/role-coverage', (req, res) => {
+    if (!ctx.apprenticeshipCycleStore) { res.status(503).json({ error: 'apprenticeship cycle store disabled' }); return; }
+    try {
+      res.json(ctx.apprenticeshipCycleStore.roleCoverage(req.params.id));
+    } catch (err) {
+      res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+    }
   });
 
   router.get('/apprenticeship/instances/:id', (req, res) => {
