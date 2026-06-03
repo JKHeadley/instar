@@ -3254,6 +3254,24 @@ export interface MonitoringConfig {
     preferencesInjectionPriority?: string;
     /** Max times a closed-loop verification may reopen the same dedupeKey (Slice 1b). */
     maxReopens?: number;
+    /**
+     * Durable capture-backlog with retry (resilience extension). When the Tier-1
+     * distill is rate-limited / capacity-throttled, the pre-scrubbed capture is
+     * persisted to a bounded SQLite backlog and distilled later in a headroom
+     * window — so corrections survive sustained throttling instead of being
+     * dropped. ON by default WHEN the feature is enabled (pure resilience).
+     * `captureBacklogMaxEntries: 0` disables the backlog (preserves the old
+     * drop-on-throttle behavior). Persists ONLY pre-scrubbed turns; bounded by a
+     * max-entries cap AND a TTL; entries deleted once distilled or retry-exhausted.
+     */
+    /** Max stored backlog entries; oldest evicted on overflow. 0 disables the backlog. Default 200. */
+    captureBacklogMaxEntries?: number;
+    /** TTL (hours) — backlog entries older than this are discarded. Default 24. */
+    captureBacklogTtlHours?: number;
+    /** Max backlog entries distilled per drain pass. Default 5. */
+    captureBacklogDrainPerTick?: number;
+    /** Max failed drain attempts before a backlog entry is dropped. Default 3. */
+    captureBacklogMaxRetries?: number;
     /** Max learnings the analyzer routes per run (Slice 2 NEW-5). Overflow stays
      *  `open` and re-routes next run. Default 5. */
     maxRoutesPerTick?: number;

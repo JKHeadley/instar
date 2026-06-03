@@ -183,6 +183,14 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       maxReopens: 2,
       maxRoutesPerTick: 5,
       feedbackPostDelayMs: 7000,
+      // Durable capture-backlog with retry (resilience extension). ON when the
+      // feature is enabled — a rate-limited distill persists the pre-scrubbed
+      // capture instead of dropping it. captureBacklogMaxEntries: 0 disables it
+      // (old drop-on-throttle behavior). Backfilled via applyDefaults deep-merge.
+      captureBacklogMaxEntries: 200,
+      captureBacklogTtlHours: 24,
+      captureBacklogDrainPerTick: 5,
+      captureBacklogMaxRetries: 3,
     },
     // ReleaseReadinessSentinel (docs/specs/RELEASE-READINESS-VISIBILITY-SPEC.md
     // §4.2). Ships OFF — Echo dogfoods first. Repo-gated: inert unless the
