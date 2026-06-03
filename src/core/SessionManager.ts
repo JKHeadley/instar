@@ -136,6 +136,33 @@ export function shouldErrorNudge(armedThisEpisode: boolean, totalNudges: number,
 }
 
 /**
+ * Parse a `ps -o time` accumulated-CPU-time string to seconds. Handles the
+ * formats ps emits across platforms: `MM:SS`, `MM:SS.ss`, `HH:MM:SS`, and the
+ * day-prefixed `DD-HH:MM:SS` (Linux/BSD). Returns 0 on anything unparseable —
+ * used as a CPU-progress delta signal, so a bad sample just reads as no growth.
+ * Exported for unit tests.
+ */
+export function parseProcTimeToSeconds(raw: string): number {
+  if (!raw) return 0;
+  let rest = raw.trim();
+  let days = 0;
+  // Optional leading "DD-" day count (only when it looks like `<digits>-`).
+  const dashMatch = /^(\d+)-(.+)$/.exec(rest);
+  if (dashMatch) {
+    days = parseInt(dashMatch[1], 10) || 0;
+    rest = dashMatch[2];
+  }
+  const parts = rest.split(':');
+  let seconds = 0;
+  for (const part of parts) {
+    const n = parseFloat(part);
+    if (Number.isNaN(n)) return 0;
+    seconds = seconds * 60 + n; // sexagesimal accumulate: [HH,MM,SS] → HH*3600+MM*60+SS
+  }
+  return days * 86400 + seconds;
+}
+
+/**
  * Process names that are always running in a Claude Code session (MCP servers, etc.)
  * These do NOT indicate activity — they're background infrastructure.
  */
@@ -1516,6 +1543,64 @@ rm()  { "${shimRunner}" rm  "$@"; }
     } catch {
       // If we can't check processes, assume active (fail-safe: don't kill)
       return true;
+    }
+  }
+
+  /**
+   * Accumulated CPU-seconds of a session's non-baseline descendant processes.
+   *
+   * Unlike `hasActiveProcesses` (which checks process EXISTENCE only), this reads
+   * each descendant's accumulated CPU time. Comparing two samples across a window
+   * reveals whether the process actually USED CPU in the interval — the signal
+   * StaleSessionBackstop needs to tell a wedged-but-ALIVE session (0% CPU, e.g. a
+   * hung `codex exec --json` job) from one genuinely working. A wedged codex job
+   * keeps a live process (so `hasActiveProcesses` reads true and the stale-session
+   * escalation never fires), but its CPU-seconds stay flat — which this exposes.
+   *
+   * Returns 0 on any failure; callers compare DELTAS, so a flat/zero reading just
+   * reads as "no CPU progress" (the backstop's other signals + the operator-ask
+   * escalation make that safe — it never auto-kills).
+   */
+  descendantCpuSeconds(tmuxSession: string): number {
+    try {
+      const panePid = execFileSync(
+        this.config.tmuxPath,
+        ['list-panes', '-t', `=${tmuxSession}:`, '-F', '#{pane_pid}'],
+        { encoding: 'utf-8', timeout: 5000 },
+      ).trim();
+      if (!panePid || !/^\d+$/.test(panePid)) return 0;
+
+      const psOutput = execFileSync(
+        'ps', ['-eo', 'pid,ppid,time,command'],
+        { encoding: 'utf-8', timeout: 5000 },
+      );
+      const procs = new Map<string, { ppid: string; time: string; command: string }>();
+      for (const line of psOutput.split('\n').slice(1)) {
+        const m = line.trim().match(/^(\d+)\s+(\d+)\s+(\S+)\s+(.*)$/);
+        if (m) procs.set(m[1], { ppid: m[2], time: m[3], command: m[4] });
+      }
+
+      // Same descendant tree-walk as hasActiveProcesses.
+      const descendants: Array<{ time: string; command: string }> = [];
+      const queue = [panePid];
+      while (queue.length > 0) {
+        const parent = queue.shift()!;
+        for (const [pid, info] of procs) {
+          if (info.ppid === parent && pid !== panePid) {
+            descendants.push({ time: info.time, command: info.command });
+            queue.push(pid);
+          }
+        }
+      }
+
+      let total = 0;
+      for (const p of descendants) {
+        if (BASELINE_PROCESS_PATTERNS.some(pattern => pattern.test(p.command))) continue;
+        total += parseProcTimeToSeconds(p.time);
+      }
+      return total;
+    } catch {
+      return 0;
     }
   }
 
