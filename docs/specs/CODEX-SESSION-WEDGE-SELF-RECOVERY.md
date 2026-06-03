@@ -142,6 +142,30 @@ in-process. This shrinks the cross-process surface to the single dangerous actio
 5. **Tests** — unit (state machine + channel), integration (request→ack dry-run),
    E2E (wired path alive).
 
+## Load-bearing finding: the restart-loop bound MUST be durable (grounded 2026-06-03, mid-Increment-3)
+
+Tier C restarts the SERVER — and the server is where StuckInputSentinel's escalation
+state machine lives. **A server restart wipes the sentinel's in-memory records,
+including the `escalationTimeoutTicks` bound.** So if the session is STILL stuck
+after the restart, the fresh sentinel re-detects → re-runs the keypress ladder →
+re-escalates → requests another restart → **restart loop**, because the in-memory
+bound reset to zero on the very restart it was meant to bound.
+
+Fix: the restart bound must be **durable** (survive the server restart). The
+LIFELINE consumer (which executes tier C and does NOT restart with the server)
+enforces a per-session **durable cooldown**: before executing a tier-C restart it
+checks `lastRestartAt(sessionId)`; if within `restartCooldownMs` it does NOT
+restart — it acks `failed` (cooldown), and the (fresh) sentinel then gives up
+bounded. Storage: extend `SessionRecoveryChannel` with `recordRestart/lastRestartAt`
+backed by a durable file the lifeline owns. This is the real guard against the
+highest-blast-radius failure mode (a wedge that restart can't fix → infinite
+restarts). Increment 3 implements the executor AND this durable cooldown together.
+
+Verification model: the lifeline acks `recovered` on MECHANICAL success (restart +
+replay completed) — it cannot see panes, so it does not verify semantic drain. The
+new sentinel verifies semantically: drained → no new request; still stuck → one
+more request → lifeline's durable cooldown blocks the re-restart → bounded stop.
+
 ## Open (for spec-formalization + cross-model review)
 1. The exact "no turn progress" signal for codex `exec --json` vs interactive TUI (jsonl growth + child-proc + prompt-state, per StaleSessionBackstop's ProgressSnapshot).
 2. Server-restart blast radius: L3 restarts the whole agent — gate it hard (only on a high-confidence, verified input-not-draining stall past a long threshold) to avoid restart loops.

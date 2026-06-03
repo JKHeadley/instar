@@ -16,6 +16,8 @@ import * as path from 'node:path';
 import { SessionRecoveryChannel, type RecoveryRequest, type RecoveryAck } from '../../src/core/SessionRecoveryChannel.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
+const SESS = 'echo-codey-mentor';
+
 function req(overrides: Partial<RecoveryRequest> = {}): RecoveryRequest {
   return {
     sessionId: 'echo-codey-mentor',
@@ -148,5 +150,36 @@ describe('SessionRecoveryChannel', () => {
     } finally {
       SafeFsExecutor.safeRmSync(dir2, { recursive: true, force: true, operation: 'tests/unit/SessionRecoveryChannel.test.ts:inverse' });
     }
+  });
+
+  // ---- durable restart cooldown (the restart-loop guard) ----
+
+  it('records a restart and reports it as the last-restart timestamp', () => {
+    expect(channel.lastRestartAt(SESS)).toBeNull();
+    channel.recordRestart(SESS, 1_000_000);
+    expect(channel.lastRestartAt(SESS)).toBe(1_000_000);
+  });
+
+  it('isInCooldown is true within the window and false after it', () => {
+    channel.recordRestart(SESS, 1_000_000);
+    expect(channel.isInCooldown(SESS, 1_000_000 + 5_000, 60_000)).toBe(true);   // 5s after, 60s window
+    expect(channel.isInCooldown(SESS, 1_000_000 + 120_000, 60_000)).toBe(false); // 120s after, 60s window
+  });
+
+  it('isInCooldown is false for a session that never restarted', () => {
+    expect(channel.isInCooldown('never-restarted', 9_999_999, 60_000)).toBe(false);
+  });
+
+  it('the latest restart overwrites the prior timestamp', () => {
+    channel.recordRestart(SESS, 1_000_000);
+    channel.recordRestart(SESS, 2_000_000);
+    expect(channel.lastRestartAt(SESS)).toBe(2_000_000);
+    expect(channel.isInCooldown(SESS, 2_000_000 + 1_000, 60_000)).toBe(true);
+  });
+
+  it('cooldown is isolated per session', () => {
+    channel.recordRestart('sess-a', 1_000_000);
+    expect(channel.isInCooldown('sess-a', 1_000_500, 60_000)).toBe(true);
+    expect(channel.isInCooldown('sess-b', 1_000_500, 60_000)).toBe(false);
   });
 });
