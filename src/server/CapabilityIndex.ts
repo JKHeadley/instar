@@ -527,6 +527,17 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     }),
   },
   {
+    key: 'geminiCapacity',
+    prefixes: ['/gemini'],
+    description: 'Gemini capacity — live view of whether Gemini calls are currently deferred by the capacity policy (quota/rate-limit) and for how long. The escalation monitor (observe-only, ships OFF behind monitoring.geminiCapacityEscalation) raises one attention item per long block. Read-only.',
+    build: () => ({
+      enabled: true,
+      endpoints: [
+        'GET /gemini/capacity — live capacity gate: { enabled, blocked, remainingMs, deferredUntil, reason }; 503 when the escalation monitor is disabled',
+      ],
+    }),
+  },
+  {
     key: 'featureMetrics',
     prefixes: ['/metrics'],
     description: 'FeatureMetricsLedger — read-only per-feature LLM observability: per gate/sentinel cost + hit-rate, so tuning the LLM checks is evidence-based. Phase 1a (the funnel tap that feeds it is Phase 1b). Never gates.',
