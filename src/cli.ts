@@ -2413,6 +2413,18 @@ program
     process.exit(exitCode);
   });
 
+// ── `instar dev:ci-failures <pr>` — print a PR's exact failing tests ─────
+
+program
+  .command('dev:ci-failures <pr>')
+  .description("Print a PR's exact failing tests (file:line + assertion) via the GitHub check-run annotations API")
+  .option('--repo <owner/repo>', 'Repository (default: JKHeadley/instar)')
+  .action(async (pr: string, opts: { repo?: string }) => {
+    const { runDevCiFailures } = await import('./commands/devCiFailures.js');
+    const exitCode = await runDevCiFailures({ pr, repo: opts.repo });
+    process.exit(exitCode);
+  });
+
 // ── `instar route` — Phase 5b suggest-and-confirm composition root (CLI) ─
 
 program

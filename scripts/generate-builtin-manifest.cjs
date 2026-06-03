@@ -307,6 +307,7 @@ function scanCliCommands() {
     { name: 'nuke', domain: 'operations' },
     { name: 'playbook', domain: 'context' },
     { name: 'dev-preflight', domain: 'development' },
+    { name: 'dev-ci-failures', domain: 'development' },
   ];
 
   for (const cmd of commands) {
