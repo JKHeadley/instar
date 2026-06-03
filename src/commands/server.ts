@@ -17,7 +17,7 @@ import pc from 'picocolors';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 import { loadConfig, ensureStateDir, detectTmuxPath } from '../core/Config.js';
-import { isNonFatalUncaught } from '../core/uncaughtExceptionPolicy.js';
+import { isNonFatalUncaught, shouldLogStackForUncaught } from '../core/uncaughtExceptionPolicy.js';
 import { closeAllSqlite } from '../core/SqliteRegistry.js';
 import { SessionManager } from '../core/SessionManager.js';
 import { StateManager } from '../core/StateManager.js';
@@ -10204,7 +10204,15 @@ export async function startServer(options: StartOptions): Promise<void> {
       // work). See isNonFatalUncaught for the allowlist + rationale (HTTP
       // double-response races, Slack Socket Mode reconnect races).
       if (isNonFatalUncaught(err)) {
-        console.warn(`[WARN] Non-fatal uncaught exception (suppressed): ${err.message}`);
+        // Attach the stack the first time a given origin is seen so the offending
+        // call site (e.g. a route that double-responds → "Cannot set headers")
+        // is diagnosable; repeats log message-only to avoid flooding the log
+        // (these isolated races recur ~10-20x/hour).
+        const stackSuffix =
+          shouldLogStackForUncaught(err) && err.stack
+            ? `\n  first-seen stack (for diagnosis):\n${err.stack}`
+            : '';
+        console.warn(`[WARN] Non-fatal uncaught exception (suppressed): ${err.message}${stackSuffix}`);
         return; // Don't crash — the server is fine
       }
 

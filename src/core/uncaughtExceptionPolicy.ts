@@ -52,3 +52,41 @@ export function isNonFatalUncaught(err: unknown): boolean {
   if (!msg) return false;
   return NON_FATAL_UNCAUGHT_PATTERNS.some((p) => msg.includes(p));
 }
+
+/**
+ * Decides whether to attach the FULL stack trace when logging a suppressed
+ * non-fatal uncaught exception. These isolated races recur (the HTTP
+ * double-response one — "Cannot set headers after they are sent" — fires
+ * ~10-20x/hour), so logging the stack on EVERY occurrence would flood the log.
+ * Yet without ANY stack the offending call site is undiagnosable: the throw
+ * originates in node's http internals, so the suppressed message alone carries
+ * no location — the route that double-responded is invisible.
+ *
+ * The fix: log the full stack the FIRST time a given stack is seen, then
+ * message-only for repeats. That surfaces each distinct originating call path
+ * exactly once (enough to find + fix the real double-send) without the flood.
+ *
+ * Dedup key is the full `err.stack` (not just the top frames): the distinguishing
+ * frame for an HTTP double-response is the application route DEEP in the stack —
+ * the top frames are always the same node internals — so only the whole stack
+ * separates one origin from another. Process-local + bounded (cleared past
+ * MAX_TRACKED_STACKS so a pathological variety of stacks can't grow it without
+ * limit). Returns false for non-Error / stackless input.
+ */
+const seenUncaughtStacks = new Set<string>();
+const MAX_TRACKED_STACKS = 200;
+
+export function shouldLogStackForUncaught(err: unknown): boolean {
+  if (!(err instanceof Error) || !err.stack) return false;
+  if (seenUncaughtStacks.has(err.stack)) return false;
+  // Bound memory: if a pathological variety of distinct stacks accumulates,
+  // reset rather than grow without limit (re-surfacing after the reset is fine).
+  if (seenUncaughtStacks.size >= MAX_TRACKED_STACKS) seenUncaughtStacks.clear();
+  seenUncaughtStacks.add(err.stack);
+  return true;
+}
+
+/** Test-only: reset the dedup memory so each test starts from a clean slate. */
+export function __resetUncaughtStackDedupeForTests(): void {
+  seenUncaughtStacks.clear();
+}

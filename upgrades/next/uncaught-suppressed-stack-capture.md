@@ -1,0 +1,45 @@
+# Upgrade Guide — vNEXT
+
+<!-- bump: patch -->
+
+## What Changed
+
+Makes suppressed non-fatal uncaught exceptions **diagnosable** by logging their stack
+trace once per origin.
+
+**The problem.** The server's `uncaughtException` handler logs a small allowlist of
+isolated/recoverable errors and continues (instead of crashing) — chiefly the HTTP
+double-response race `Cannot set headers after they are sent`. But it logged only
+`err.message`, no stack. Observed live: echo (~34×/2h) and codey (~26×/2h) emit
+`[WARN] Non-fatal uncaught exception (suppressed): Cannot set headers after they are sent`
+with **no location** — and since that error is thrown deep in node's http internals, the
+message alone can't tell you which route double-responded. The real double-send bug is
+therefore un-findable from the logs.
+
+**The fix.** A new `shouldLogStackForUncaught(err)` in `uncaughtExceptionPolicy.ts`: the
+handler now attaches the **full stack the first time a given stack is seen**, then logs
+message-only for repeats. That surfaces each distinct offending call path exactly once —
+enough to find and fix the real double-send — without flooding the log (these races recur
+~10–20×/hour). The dedup key is the whole `err.stack` (the distinguishing route frame is
+deep, not at the top); the tracking set is bounded (cleared past 200 distinct stacks).
+
+This is a **diagnostic** change — it does not alter which exceptions are suppressed vs.
+fatal (`isNonFatalUncaught` is unchanged), only how the suppressed ones are logged.
+
+## What to Tell Your User
+
+Nothing required — internal observability (agent-only). The next time the harmless-but-noisy
+"Cannot set headers" race fires, the log will include the originating stack once, so the
+underlying double-respond can be located and fixed.
+
+## Summary of New Capabilities
+
+None — observability/diagnostic only. No new routes, config, or surfaces.
+
+## Evidence
+
+- Live: echo/codey `logs/server.log` — `[WARN] Non-fatal uncaught exception (suppressed):
+  Cannot set headers after they are sent` recurring with no stack.
+- `src/commands/server.ts` uncaughtException handler now calls `shouldLogStackForUncaught`.
+- Tests: `tests/unit/uncaughtExceptionPolicy.test.ts` — first-logs-then-suppresses,
+  distinct-origin-surfaced-once, non-Error/stackless → false, reset re-surfaces, cap bound.
