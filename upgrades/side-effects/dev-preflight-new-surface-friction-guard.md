@@ -23,3 +23,7 @@ The source of truth remains the existing CapabilityIndex registry and its unit t
 Operational risk: running the command can be slow because it runs lint and a targeted Vitest
 invocation. This is deliberate; the command is a contributor preflight, not a server path or
 background job.
+
+CI follow-up: manifest IDs must keep the `type:name` shape, so the built-in manifest registers this
+surface as `cli:dev-preflight` while the actual command remains `instar dev:preflight`. Integration
+assertions strip ANSI color before checking summary text because CI may enable color output.

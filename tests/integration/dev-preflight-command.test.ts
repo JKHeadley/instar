@@ -14,6 +14,10 @@ class FixtureRunner implements DevPreflightRunner {
   }
 }
 
+function stripAnsi(text: string): string {
+  return text.replace(/\x1b\[[0-9;]*m/g, '');
+}
+
 describe('dev preflight command integration', () => {
   it('runs lint, discoverability tests, and reports advisory route warnings without failing', async () => {
     const runner = new FixtureRunner();
@@ -33,6 +37,7 @@ describe('dev preflight command integration', () => {
 
     expect(exitCode).toBe(0);
     expect(stderr).toBe('');
+    const plainStdout = stripAnsi(stdout);
     expect(runner.calls.map((call) => [call.command, ...call.args])).toEqual([
       ['pnpm', 'lint'],
       [
@@ -43,10 +48,10 @@ describe('dev preflight command integration', () => {
         'tests/unit/CapabilityIndex.test.ts',
       ],
     ]);
-    expect(stdout).toContain('lint: PASS');
-    expect(stdout).toContain('capabilities-discoverability/CapabilityIndex: PASS');
-    expect(stdout).toContain('/new-surface');
-    expect(stdout).toContain('Tier-2 ship-gate checklist reminder');
+    expect(plainStdout).toContain('lint: PASS');
+    expect(plainStdout).toContain('capabilities-discoverability/CapabilityIndex: PASS');
+    expect(plainStdout).toContain('/new-surface');
+    expect(plainStdout).toContain('Tier-2 ship-gate checklist reminder');
   });
 
   it('returns nonzero when lint fails', async () => {
