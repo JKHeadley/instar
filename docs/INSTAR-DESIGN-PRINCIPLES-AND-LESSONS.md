@@ -343,6 +343,45 @@ Jobs support a `supervision` field on `JobDefinition` so the level is declarativ
 
 ---
 
+### P14. Distrust Temporary Success (a recurrence is a root cause; a patch that resets a symptom is not a fix)
+
+**Statement:** When a fix keeps working but the problem keeps returning, the recurrence is the signal: a self-healing system's own resilience is hiding the root cause. A patch that resets a symptom is not a fix. Before declaring a thing fixed, verify the *cause* is gone — not just the symptom.
+
+**Source:** constitution standard "Distrust Temporary Success — A Recurrence Is a Root Cause" (The Substrate family); `docs/lessons/2026-06-03-listsessions-hotloop-success-story.md`. Earned 2026-06-03 (topic 13435).
+
+**Translation:**
+- The inverse-facing cousin of the P11/P12/P13 surrender family. They distrust an apparent *obstacle* (feasibility / agency / continuation); P14 distrusts an apparent *success* — same discipline, pointed the other way.
+- The training bias is RLHF's pull toward closure: a symptom resetting *feels* like done. That feeling is the gravity well.
+- The structural counter is to encode the distinction into the *definition of done* — a completion criterion that says "a symptom-reset that recurs does NOT count as done" — not to remember it.
+- Counterweight: not every recovery is a cover-up. A fix verified *at the root* and holding is done; the discipline is the verification, not perpetual suspicion.
+
+**Enforcement (structural):**
+- The autonomous-completion criterion pattern (a definition of done that names the symptom-reset and refuses it), enforced at the same `/autonomous/evaluate-completion` surface as P13. No dedicated `MessagingToneGate` behavior yet (honest gap, noted not claimed).
+- This catalog entry, so the `/spec-converge` lessons-aware reviewer flags a plan that treats a recurring symptom as fixed.
+
+**Earned from:** 2026-06-03 (topic 13435) — three agent servers burning 50–67% CPU; bouncing them dropped the load for ~80 seconds every time, because the servers self-heal by respawning, making a real code bug look transient and nearly closing the investigation three separate times. The run's completion criterion ("a bounce that re-spikes within the hour does NOT count as done") drove the work to the root: `StateManager.listSessions` re-read every session file from disk on every call, called each tick by the reaper and sentinels. A 1-second write-invalidated cache held flat for 8+ minutes where every bounce had lasted 80 seconds.
+
+---
+
+### P15. Friction Is a Spec (productize the workaround — a trick in a transcript is lost)
+
+**Statement:** When a hard-won manual workaround saves the day — a debugging trick, an undocumented invocation, a sequence that finally cut through — turn it into a permanent tool. A trick that lives only in a transcript dies with the session; as a command, hook, or skill it is compounding leverage for every instance after.
+
+**Source:** constitution standard "Friction Is a Spec — Productize the Workaround" (Building); `docs/lessons/2026-06-03-listsessions-hotloop-success-story.md`. Earned 2026-06-03.
+
+**Translation:**
+- Friction is a specification in disguise: the pain you just pushed through describes a capability that should exist, and the run that strained against the missing tool is best positioned to build it.
+- "Structure beats Willpower" for your own toolkit (a remembered trick is willpower; a command is structure) + "Documentation IS Being" for tooling (an un-captured workaround did not happen) + the "Self-Hosting" dogfood-to-ship test at the moment of friction.
+- Counterweight: a one-off genuinely used once does not earn a tool — the trigger is friction that *recurred* or is *likely to*.
+
+**Enforcement (structural):**
+- The `instar dev:*` power-user command family (`dev:ci-failures`, `dev:profile-node`, `dev:preflight`) is the growing catalogue. No blocking gate (this governs an instinct, surfaced as a reminder).
+- This catalog entry, so the `/spec-converge` reviewer surfaces it when a spec re-derives a workaround a tool could own.
+
+**Earned from:** 2026-06-03 — a single autonomous run turned its own pain into capability twice: `gh run view --log` returned zero bytes → `instar dev:ci-failures` (read failing tests via the check-run annotations API); macOS `sample` could not symbolicate node JS frames → `instar dev:profile-node` (`SIGUSR1` + a CDP CPU profile). Each had been a hand-typed trick minutes before it became a command.
+
+---
+
 ## Part 2 — Architectural Lessons (L1-L17)
 
 These are patterns Instar has *already built infrastructure for*. Any new spec that touches the same surface area must engage with the existing infrastructure, not reinvent or contradict it.
@@ -808,7 +847,7 @@ Before any high-risk action (deploying, pushing to git, modifying files outside 
 
 The 8th `/spec-converge` reviewer (see `skills/spec-converge/SKILL.md`) loads this document plus the linked `feedback_*.md` files and the principles in `CLAUDE.md`, then asks for each spec under review:
 
-For each Part 1 principle (P1-P10):
+For each Part 1 principle (P1-P15):
 - Does the spec engage with this principle?
 - Does it contradict it?
 - If contradicting, is there an explicit, defended rationale in the spec?
@@ -832,3 +871,4 @@ Output: structured findings per category, with citations to this index. Findings
 |---|---|
 | 2026-05-19 | Initial creation. Cataloged 5 foundational principles, 10 architectural lessons, 31 behavioral lessons. Sourced from CLAUDE.md + 45 `.instar/memory/feedback_*.md` files + `docs/specs/`. |
 | 2026-05-19 | Comprehensive audit pass (per Justin 2026-05-19). Added P6 Zero-Failure, P7 LLM-Supervised Execution, P8 UX & Agent Agency, P9 Intent Engineering, P10 Comprehensive-First Directive. Added L11 External Operation Safety, L12 Destructive-Tool Containment, L13 Parallel Dev Isolation, L14 PR Review Hardening, L15 Authorization Policy, L16 Project Scope, L17 Integrated-Being Ledger. Added B32 No Interactive CLI, B33 No AskUserQuestion free-text, B34 Initiative Hierarchy, B35 Defensive Fabrication / Escalation-as-default, B36 USER.md "decide and do", B37 Dawn patterns, B38 Two memory systems, B39 Coherence Gate. Expanded P4 with StallTriageNurse origin + canonical category names. Expanded L1 with recurrence-corrected dates. Expanded L2 with topic-6931 origin. Expanded L6 to seven canonical dimensions (was five). Now: 10 principles + 17 architectural lessons + 39 behavioral lessons. |
+| 2026-06-03 | Added P14 Distrust Temporary Success (a recurrence is a root cause) and P15 Friction Is a Spec (productize the workaround), mirroring the two new constitution standards earned from the listSessions hot-loop incident (topic 13435; full account in `docs/lessons/2026-06-03-listsessions-hotloop-success-story.md`). Updated the spec-converge review template's Part-1 range from P1-P10 to P1-P15 (it had not been updated when P11-P13 were added — latent under-enforcement). |
