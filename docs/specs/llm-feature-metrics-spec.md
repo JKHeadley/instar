@@ -2,6 +2,7 @@
 title: "Per-feature LLM metrics — measure every gate/sentinel so tuning is evidence-based"
 date: 2026-05-31
 author: echo
+parent-principle: "Observability — you can't tune what you can't see"
 review-convergence: internal-plus-conformance-2026-05-31
 approved: true
 approved-by: Justin
