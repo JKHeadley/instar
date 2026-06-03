@@ -83,7 +83,7 @@ describe('QuotaTracker — warnings and staleness', () => {
     expect(tracker.getState()).not.toBeNull();
 
     // 3) File removed again → warns once more (re-armed).
-    fs.rmSync(quotaFile);
+    SafeFsExecutor.safeRmSync(quotaFile, { force: true, operation: 'tests/unit/quota-tracker-warnings.test.ts:re-arm' });
     vi.advanceTimersByTime(6000);
     expect(tracker.getState()).toBeNull();
 
