@@ -1,0 +1,34 @@
+<!-- bump: patch -->
+
+## What Changed
+
+`QuotaTracker.getState()` now logs the "No quota state file found — all jobs will run (fail-open)"
+warning **once per missing-file episode** instead of on every call.
+
+The previous `if (!this.cachedState)` guard was ineffective for the missing-file case: when the quota
+file is absent, `cachedState` is never populated and `lastRead` is never set, so the read-cooldown
+never engaged and the warning fired on **every** `getState()` — observed at **902 identical lines/day**
+on the gemini-cli agent, drowning real signal in the logs. A one-shot `warnedNoFile` flag now gates the
+warning and re-arms when the file reappears, so a later disappearance still surfaces exactly one warning.
+
+No behavior change: quota is still fail-open when the file is absent. Only the log spam is removed.
+
+## What to Tell Your User
+
+- **Quieter logs**: "An agent with no quota-state file was logging the same 'fail-open' warning hundreds
+  of times a day. It now says it once, so real log signals aren't buried."
+
+## Summary of New Capabilities
+
+| Capability | How to Use |
+|-----------|-----------|
+| One-shot missing-quota-file warning | Automatic — the warning logs once per absence episode instead of per call. |
+
+## Evidence
+
+Verification:
+
+- Unit: warns exactly once across 10 repeated `getState()` calls while the file stays missing;
+  re-arms after the file reappears then disappears (warns twice total across the episode boundary);
+  existing missing/stale/fresh-data warning tests unchanged.
+- 88 quota-tracker tests green; `tsc --noEmit` clean.

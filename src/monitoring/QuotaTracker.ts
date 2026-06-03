@@ -32,6 +32,12 @@ export class QuotaTracker {
   private cachedState: QuotaState | null = null;
   private lastRead: number = 0;
   private readCooldownMs = 5000; // Don't re-read more than every 5s
+  // Warn ONCE per no-file episode, not on every getState() call. The
+  // `!this.cachedState` guard below was ineffective: when the file is absent,
+  // cachedState is never populated, so the warn fired on every call (observed
+  // 902×/day on the gemini-cli agent — pure log spam that drowns real signal).
+  // Re-armed when the file reappears so a later disappearance warns once more.
+  private warnedNoFile = false;
 
   constructor(config: QuotaTrackerConfig) {
     this.config = config;
@@ -51,11 +57,14 @@ export class QuotaTracker {
 
     try {
       if (!fs.existsSync(this.config.quotaFile)) {
-        if (!this.cachedState) {
+        if (!this.warnedNoFile) {
           console.warn('[quota] No quota state file found — all jobs will run (fail-open)');
+          this.warnedNoFile = true;
         }
         return null;
       }
+      // File present again → re-arm the one-shot warning for a future absence.
+      this.warnedNoFile = false;
 
       const raw = fs.readFileSync(this.config.quotaFile, 'utf-8');
       const state: QuotaState = JSON.parse(raw);
