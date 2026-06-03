@@ -41,7 +41,7 @@ gate), so it's dogfooded on a real loaded box before any wider rollout.
 
 ## What to Tell Your User
 
-Nothing — `cpuAwareActiveProcessKeep` is **dark by default** (off everywhere
+Nothing — the new under-load reaper refinement is **dark by default** (off everywhere
 except development agents). It changes no user-visible behavior on a normal
 install. If surfaced at all, surface it as **⚗️ Experimental**: it refines the
 reaper's idle-detection under load and is still being validated on dev agents.
