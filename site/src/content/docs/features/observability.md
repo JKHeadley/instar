@@ -98,6 +98,37 @@ Read-only token-usage observability. The ledger scans Claude Code's JSONL sessio
 
 The ledger never mutates source files — it only reads. The poller is the only writer (to its own SQLite index), and even that is restartable from any state.
 
+## Resource ledger
+
+Components: `ResourceLedger`, `ResourceLedgerPoller`.
+
+Read-only, durable per-agent rate-limit-event observability (Phase A). Until now,
+every time the account got throttled — a circuit-breaker trip, or a session
+hitting Anthropic's server-side rate limit — was counted only in process-local
+memory and lost on restart, so "how many times were we throttled today?" had no
+answer. The `ResourceLedger` is a SQLite store (same pattern as the `TokenLedger`)
+that persists each rate-limit event durably; the `ResourceLedgerPoller` feeds it
+event-driven from the `LlmCircuitBreaker`'s trip/recover observer plus the existing
+`RateLimitSentinel`, writing one row per emission.
+
+It exposes `GET /resources/rate-limits?sinceHours=N`, which returns a
+`RateLimitSummaryRow` (breaker trips as the headline `circuitOpenCount` +
+`tripsPerHour`; session-sentinel detections counted separately), a per-kind
+breakdown (`RateLimitKindRow`), and recent events (`RateLimitEventRow`). The event
+shape is `RateLimitEventInput` — a `RateLimitEventKind`
+(`circuit-open` / `circuit-recover` / `throttle` / `quota` / `529`) tagged by its
+`RateLimitEventSource` (`circuit-breaker` vs `session-sentinel`), so the two
+signals never silently merge.
+
+The `ResourceLedger` never gates, throttles, or mutates any flow — it only records
+(constructed via `ResourceLedgerOptions`, registered for close-on-exit, writes
+swallow their own errors so observability can never break the observed path). The
+breaker observer it subscribes to (`TripObservableBreaker`) and the sentinel
+surface (`RateLimitEventSentinel`) are pure side-channels: a listener error can
+never affect the `LlmCircuitBreaker` that gates real work. The poller
+(`ResourceLedgerPollerOptions`) is event-driven and default-on at negligible cost.
+CPU and memory sampling (a durable per-agent history) is the planned Phase B.
+
 ## Session clock
 
 Components: `SessionClock`, `SessionClockReader`.
