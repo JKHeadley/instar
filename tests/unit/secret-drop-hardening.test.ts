@@ -161,13 +161,15 @@ describe('SecretDrop — stuck-consumer event', () => {
   });
 
   it('fires once at 60s, even when the cleanup timer runs later', () => {
-    // The 60s stuck timer fires first; the 5-minute cleanup timer fires
-    // later. The listener should see exactly one event, not two.
+    // The 60s stuck timer fires first; the idle cleanup timer (15-minute
+    // sliding window) fires later. The listener should see exactly one event,
+    // not two. No intermediate peek here, so the window does not slide and the
+    // submission is purged at the idle deadline.
     const events: StuckConsumerEvent[] = [];
     drop.onStuckConsumer((e) => events.push(e));
     const { token } = submitOne(drop);
 
-    vi.advanceTimersByTime(5 * 60_000 + 100);
+    vi.advanceTimersByTime(15 * 60_000 + 100);
 
     expect(drop.peekReceived(token)).toBeNull();
     expect(events).toHaveLength(1);
@@ -203,18 +205,20 @@ describe('SecretDrop — auto-cleanup timer interactions', () => {
     vi.useRealTimers();
   });
 
-  it('submission disappears after 5 minutes even if never consumed', () => {
+  it('submission disappears after the idle window (15 min) even if never consumed', () => {
     const { token } = submitOne(drop);
     expect(drop.peekReceived(token)).not.toBeNull();
-    vi.advanceTimersByTime(5 * 60_000 + 100);
+    // Idle window is now 15 min (was a fixed 5 min). The peek above slides it,
+    // but with no further activity it is purged one idle window later.
+    vi.advanceTimersByTime(15 * 60_000 + 100);
     expect(drop.peekReceived(token)).toBeNull();
   });
 
   it('cleanup timer does not double-fire if consume happened first', () => {
     const { token } = submitOne(drop);
     drop.consumeReceived(token);
-    // Advance past cleanup — nothing should throw.
-    vi.advanceTimersByTime(5 * 60_000 + 100);
+    // Advance past cleanup — nothing should throw (consume already removed it).
+    vi.advanceTimersByTime(15 * 60_000 + 100);
     expect(drop.peekReceived(token)).toBeNull();
   });
 });
