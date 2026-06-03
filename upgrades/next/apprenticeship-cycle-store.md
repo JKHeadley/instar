@@ -1,0 +1,44 @@
+# Upgrade Guide — Apprenticeship Cycle Store
+
+<!-- bump: patch -->
+
+## What Changed
+
+Apprenticeship differential cycles now have a structural SQLite-backed store.
+Each captured cycle records the instance id, cycle number, task, mentee output,
+mentor-flagged issues, overseer differentials, coaching, infrastructure items,
+kind, and status.
+
+The server opens `server-data/apprenticeship-cycles.db` beside the existing
+server state, registers the handle with the `SqliteRegistry`, and exposes the
+store through bearer-protected routes:
+
+- `POST /apprenticeship/cycles`
+- `GET /apprenticeship/cycles?instanceId=&limit=`
+- `GET /apprenticeship/cycles/:id`
+- `POST /apprenticeship/cycles/:id/close`
+
+When the store cannot be opened, those routes return 503 so monitoring and
+e2e tests can distinguish an unavailable feature from an empty dataset.
+
+## What to Tell Your User
+
+- **Apprenticeship learning loops are now durable:** "When a mentee completes
+  a cycle, I can persist what the mentee did, what the mentor noticed, what the
+  overseer saw differently, the coaching response, and any infrastructure
+  follow-ups in a queryable store."
+
+## Summary of New Capabilities
+
+| Capability | How to Use |
+|-----------|------------|
+| Record a differential cycle | `POST /apprenticeship/cycles` |
+| List recent cycles | `GET /apprenticeship/cycles?instanceId=&limit=` |
+| Fetch one cycle | `GET /apprenticeship/cycles/:id` |
+| Close a cycle | `POST /apprenticeship/cycles/:id/close` |
+
+## Evidence
+
+- `npx vitest run tests/unit/apprenticeship-cycle-store.test.ts tests/unit/SqliteRegistry-wiring.test.ts tests/integration/apprenticeship-routes.test.ts tests/e2e/apprenticeship-lifecycle.test.ts`
+- `npx tsc --noEmit`
+

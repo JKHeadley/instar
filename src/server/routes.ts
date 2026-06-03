@@ -724,6 +724,9 @@ export interface RouteContext {
    *  instance-as-project registry, the retro-gate (pending→active) and the
    *  doc-as-required-artifact gate (active→complete). */
   apprenticeshipProgram?: import('../core/ApprenticeshipProgram.js').ApprenticeshipProgram | null;
+  /** Apprenticeship differential-cycle store. Null when SQLite/state init fails
+   *  → /apprenticeship/cycles* 503s. */
+  apprenticeshipCycleStore?: import('../monitoring/ApprenticeshipCycleStore.js').ApprenticeshipCycleStore | null;
   /** SessionReaper — pressure-aware idle-session reaper. Null when not wired
    *  (older boot paths). Powers GET /sessions/reaper observability. */
   sessionReaper?: import('../monitoring/SessionReaper.js').SessionReaper | null;
@@ -11571,6 +11574,45 @@ export function createRoutes(ctx: RouteContext): Router {
   //   POST /apprenticeship/instances/:id/transition {to} — gated status change
   //   POST /apprenticeship/instances/:id/can-start    — read-only start-gate preview
   //   POST /apprenticeship/instances/:id/can-complete — read-only completion-gate preview
+  //
+  // Differential-cycle capture (structural companion store):
+  //   POST /apprenticeship/cycles             — record one cycle row
+  //   GET  /apprenticeship/cycles             — list rows; optional instanceId, limit
+  //   GET  /apprenticeship/cycles/:id         — fetch one row (404 missing)
+  //   POST /apprenticeship/cycles/:id/close   — mark row closed (404 missing)
+  router.post('/apprenticeship/cycles', (req, res) => {
+    if (!ctx.apprenticeshipCycleStore) { res.status(503).json({ error: 'apprenticeship cycle store disabled' }); return; }
+    try {
+      const cycle = ctx.apprenticeshipCycleStore.record(req.body ?? {});
+      res.status(201).json(cycle);
+    } catch (err) {
+      res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  router.get('/apprenticeship/cycles', (req, res) => {
+    if (!ctx.apprenticeshipCycleStore) { res.status(503).json({ error: 'apprenticeship cycle store disabled' }); return; }
+    const instanceId = typeof req.query.instanceId === 'string' && req.query.instanceId.trim() !== ''
+      ? req.query.instanceId
+      : undefined;
+    const limit = typeof req.query.limit === 'string' ? req.query.limit : undefined;
+    res.json({ cycles: ctx.apprenticeshipCycleStore.list({ instanceId, limit }) });
+  });
+
+  router.get('/apprenticeship/cycles/:id', (req, res) => {
+    if (!ctx.apprenticeshipCycleStore) { res.status(503).json({ error: 'apprenticeship cycle store disabled' }); return; }
+    const cycle = ctx.apprenticeshipCycleStore.get(req.params.id);
+    if (!cycle) { res.status(404).json({ error: 'not found' }); return; }
+    res.json(cycle);
+  });
+
+  router.post('/apprenticeship/cycles/:id/close', (req, res) => {
+    if (!ctx.apprenticeshipCycleStore) { res.status(503).json({ error: 'apprenticeship cycle store disabled' }); return; }
+    const cycle = ctx.apprenticeshipCycleStore.closeCycle(req.params.id);
+    if (!cycle) { res.status(404).json({ error: 'not found' }); return; }
+    res.json(cycle);
+  });
+
   router.get('/apprenticeship/instances', (_req, res) => {
     if (!ctx.apprenticeshipProgram) { res.status(503).json({ error: 'apprenticeship program disabled' }); return; }
     res.json({ instances: ctx.apprenticeshipProgram.list() });

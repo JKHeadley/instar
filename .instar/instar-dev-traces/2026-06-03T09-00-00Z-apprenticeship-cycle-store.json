@@ -1,0 +1,30 @@
+{
+  "version": 2,
+  "sessionId": "telegram-1052-apprenticeship-cycle-store",
+  "timestamp": "2026-06-03T09:00:00.000Z",
+  "phase": "complete",
+  "tier": 1,
+  "declaredTier": 1,
+  "tierReasoning": "The change adds a small additive SQLite store and authenticated routes for apprenticeship cycle capture without modifying existing lifecycle semantics.",
+  "artifactPath": "upgrades/side-effects/apprenticeship-cycle-store.md",
+  "artifactSha256": "4f75d2f2404328f4a8f1b1191e9d5320ad0546f72716d4e973941e97f2121625",
+  "eli16Path": "upgrades/apprenticeship-cycle-store.eli16.md",
+  "eli16Sha256": "7ef0218911d9e4c0523c30dac842028ba8eca08e75c5a6ba0ed47a3f88c2cc76",
+  "sideEffectsPath": "upgrades/side-effects/apprenticeship-cycle-store.md",
+  "upgradeGuidePath": "upgrades/next/apprenticeship-cycle-store.md",
+  "upgradeGuideSha256": "0b8666cb63297794944bab01a78cddbab460c0e9db93462926c1a9236cd29493",
+  "coveredFiles": [
+    "src/monitoring/ApprenticeshipCycleStore.ts",
+    "src/server/AgentServer.ts",
+    "src/server/routes.ts",
+    "tests/unit/apprenticeship-cycle-store.test.ts",
+    "tests/unit/SqliteRegistry-wiring.test.ts",
+    "tests/integration/apprenticeship-routes.test.ts",
+    "tests/e2e/apprenticeship-lifecycle.test.ts",
+    "site/src/content/docs/features/apprenticeship-program.md",
+    "upgrades/next/apprenticeship-cycle-store.md",
+    "upgrades/side-effects/apprenticeship-cycle-store.md",
+    "upgrades/apprenticeship-cycle-store.eli16.md"
+  ],
+  "summary": "Apprenticeship differential cycles now persist to a registered SQLite store and are available through bearer-authenticated record/list/get/close routes with unit, integration, and e2e liveness coverage."
+}

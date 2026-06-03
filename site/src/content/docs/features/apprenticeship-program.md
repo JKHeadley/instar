@@ -43,6 +43,8 @@ verdict is appended to `logs/apprenticeship-decisions.jsonl`.
 
 All routes require a Bearer token.
 
+### Instance lifecycle
+
 - `GET /apprenticeship/instances` — list every tracked instance.
 - `GET /apprenticeship/instances/:id` — fetch one instance.
 - `POST /apprenticeship/instances` — create an instance (the id and role names are charset-clamped;
@@ -53,6 +55,29 @@ All routes require a Bearer token.
 - `POST /apprenticeship/instances/:id/can-start` — a read-only preview of the retro-gate verdict.
 - `POST /apprenticeship/instances/:id/can-complete` — a read-only preview of the doc-gate verdict
   (returns the list of missing artifacts).
+
+### Differential cycles
+
+`ApprenticeshipCycleStore` persists the mentor/overseer learning loop in SQLite so each
+apprenticeship cycle has durable, queryable evidence instead of living only in chat transcripts.
+The server opens `server-data/apprenticeship-cycles.db`, registers the handle with the
+`SqliteRegistry`, and exposes the store through authenticated routes.
+
+Each cycle records `id`, `instanceId`, `cycleNumber`, `createdAt`, `task`, `menteeOutput`,
+`mentorFlagged`, `overseerDifferential`, `coaching`, `infraItems`, `kind`, and `status`.
+Array fields are stored as JSON and returned as arrays.
+
+- `POST /apprenticeship/cycles` — record one cycle. Required fields are `instanceId`,
+  `cycleNumber`, `task`, and `menteeOutput`; array fields are optional arrays of strings.
+- `GET /apprenticeship/cycles?instanceId=&limit=` — list recent cycles, optionally scoped to one
+  instance and bounded by `limit`.
+- `GET /apprenticeship/cycles/:id` — fetch one recorded cycle, returning 404 when the id is
+  unknown.
+- `POST /apprenticeship/cycles/:id/close` — mark an open cycle as closed and return the updated
+  record.
+
+If the SQLite store is unavailable, the cycle routes return 503 instead of pretending the feature
+is alive.
 
 ```bash
 # Preview whether an instance may start (the retro-gate)

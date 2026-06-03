@@ -50,6 +50,7 @@ import { CiFailurePoller } from '../monitoring/CiFailurePoller.js';
 import { RevertDetector } from '../monitoring/RevertDetector.js';
 import { CorrectionLedger } from '../monitoring/CorrectionLedger.js';
 import { ApprenticeshipProgram } from '../core/ApprenticeshipProgram.js';
+import { ApprenticeshipCycleStore } from '../monitoring/ApprenticeshipCycleStore.js';
 import { SafeGitExecutor } from '../core/SafeGitExecutor.js';
 import { createSpecReviewRoutes } from './specReviewRoutes.js';
 import { createUsherRoutes } from './usherRoutes.js';
@@ -167,6 +168,7 @@ export class AgentServer {
   private revertDetector: RevertDetector | null = null;
   private correctionLedger: CorrectionLedger | null = null;
   private apprenticeshipProgram: ApprenticeshipProgram | null = null;
+  private apprenticeshipCycleStore: ApprenticeshipCycleStore | null = null;
   // Burn-detection-and-self-heal system (six-phase umbrella spec at
   // docs/specs/token-burn-detection-and-self-heal.md). Lazy-initialised
   // after the TokenLedger comes up — burn detection without a ledger is
@@ -841,6 +843,22 @@ export class AgentServer {
       this.apprenticeshipProgram = null;
     }
 
+    // Apprenticeship differential-cycle capture — durable, queryable records for
+    // mentee output → mentor flags → overseer differential → coaching. Ships ON
+    // whenever stateDir exists; route layer returns 503 if this store fails.
+    try {
+      if (options.config.stateDir) {
+        const serverDataDir = path.join(options.config.stateDir, 'server-data');
+        fs.mkdirSync(serverDataDir, { recursive: true });
+        this.apprenticeshipCycleStore = new ApprenticeshipCycleStore({
+          dbPath: path.join(serverDataDir, 'apprenticeship-cycles.db'),
+        });
+      }
+    } catch (err) {
+      console.warn('[instar] apprenticeship cycle store init failed (non-fatal):', err);
+      this.apprenticeshipCycleStore = null;
+    }
+
     // Routes
     const routeCtx = {
       config: options.config,
@@ -941,6 +959,7 @@ export class AgentServer {
       failureAttributionEngine: this.failureAttributionEngine,
       correctionLedger: this.correctionLedger,
       apprenticeshipProgram: this.apprenticeshipProgram,
+      apprenticeshipCycleStore: this.apprenticeshipCycleStore,
       sessionReaper: options.sessionReaper ?? null,
       agentWorktreeReaper: options.agentWorktreeReaper ?? null,
       sleepController: options.sleepController ?? null,
@@ -2322,6 +2341,14 @@ export class AgentServer {
         // best-effort
       }
       this.tokenLedger = null;
+    }
+    if (this.apprenticeshipCycleStore) {
+      try {
+        this.apprenticeshipCycleStore.close();
+      } catch {
+        // best-effort
+      }
+      this.apprenticeshipCycleStore = null;
     }
 
     // Shutdown WebSocket manager first

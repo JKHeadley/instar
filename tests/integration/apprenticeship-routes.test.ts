@@ -24,6 +24,7 @@ import { authMiddleware } from '../../src/server/middleware.js';
 import { ApprenticeshipProgram, type GateDeps } from '../../src/core/ApprenticeshipProgram.js';
 import { validateRetroHarvest } from '../../src/core/retroHarvestValidator.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { ApprenticeshipCycleStore } from '../../src/monitoring/ApprenticeshipCycleStore.js';
 
 const AUTH = 'apprenticeship-routes-token';
 const auth = () => ({ Authorization: `Bearer ${AUTH}` });
@@ -57,7 +58,11 @@ function buildHarvest(): string {
   return `---\n${yamlLines}\n---\n\n${body}\n`;
 }
 
-function ctxFor(stateDir: string, program: ApprenticeshipProgram | null): RouteContext {
+function ctxFor(
+  stateDir: string,
+  program: ApprenticeshipProgram | null,
+  cycleStore: ApprenticeshipCycleStore | null = null,
+): RouteContext {
   return {
     config: {
       projectName: 'apprenticeship-routes', projectDir: path.dirname(stateDir), stateDir, port: 0,
@@ -70,6 +75,7 @@ function ctxFor(stateDir: string, program: ApprenticeshipProgram | null): RouteC
     quotaTracker: null, publisher: null, viewer: null, tunnel: null, evolution: null,
     watchdog: null, triageNurse: null, topicMemory: null, feedbackAnomalyDetector: null,
     discoveryEvaluator: null, correctionLedger: null, apprenticeshipProgram: program,
+    apprenticeshipCycleStore: cycleStore,
     startTime: new Date(),
   } as unknown as RouteContext;
 }
@@ -102,6 +108,13 @@ describe('/apprenticeship routes (integration)', () => {
     return new ApprenticeshipProgram({ stateDir, projectDir, deps });
   }
 
+  function makeCycleStore(): ApprenticeshipCycleStore {
+    return new ApprenticeshipCycleStore({
+      dbPath: path.join(stateDir, 'server-data', 'apprenticeship-cycles.db'),
+      now: () => new Date('2026-06-03T08:00:00.000Z'),
+    });
+  }
+
   // ── auth-negative ─────────────────────────────────────────────────────
   it('401 without a bearer token', async () => {
     const res = await request(appWith(ctxFor(stateDir, makeProgram()))).get('/apprenticeship/instances');
@@ -119,6 +132,78 @@ describe('/apprenticeship routes (integration)', () => {
     const res = await request(appWith(ctxFor(stateDir, null))).get('/apprenticeship/instances').set(auth());
     expect(res.status).toBe(503);
     expect(res.body.error).toContain('apprenticeship program disabled');
+  });
+
+  // ── cycle capture ───────────────────────────────────────────────────
+  it('cycle routes require bearer auth and 503 when the store is unavailable', async () => {
+    const app = appWith(ctxFor(stateDir, makeProgram(), null));
+    const unauth = await request(app).get('/apprenticeship/cycles');
+    expect(unauth.status).toBe(401);
+
+    const unavailable = await request(app).get('/apprenticeship/cycles').set(auth());
+    expect(unavailable.status).toBe(503);
+    expect(unavailable.body.error).toContain('cycle store disabled');
+  });
+
+  it('records, lists, gets, filters, and closes cycle rows over HTTP', async () => {
+    const store = makeCycleStore();
+    const app = appWith(ctxFor(stateDir, makeProgram(), store));
+
+    const bad = await request(app)
+      .post('/apprenticeship/cycles')
+      .set(auth())
+      .send({ instanceId: 'echo-to-codey' });
+    expect(bad.status).toBe(400);
+
+    const created = await request(app)
+      .post('/apprenticeship/cycles')
+      .set(auth())
+      .send({
+        id: 'cycle-http-1',
+        instanceId: 'echo-to-codey',
+        cycleNumber: 1,
+        task: 'Run Gemini identity review',
+        menteeOutput: 'raw output',
+        mentorFlagged: ['compressed principles'],
+        overseerDifferential: ['surface env issue'],
+        coaching: 'Keep reasoning and infra findings separate.',
+        infraItems: ['ripgrep missing'],
+        kind: 'mentorship',
+      });
+    expect(created.status).toBe(201);
+    expect(created.body.mentorFlagged).toEqual(['compressed principles']);
+    expect(created.body.infraItems).toEqual(['ripgrep missing']);
+
+    await request(app)
+      .post('/apprenticeship/cycles')
+      .set(auth())
+      .send({
+        id: 'cycle-other',
+        instanceId: 'other-instance',
+        cycleNumber: 1,
+        task: 'Other task',
+        menteeOutput: 'other output',
+      })
+      .expect(201);
+
+    const list = await request(app).get('/apprenticeship/cycles?instanceId=echo-to-codey&limit=10').set(auth());
+    expect(list.status).toBe(200);
+    expect(list.body.cycles.map((c: { id: string }) => c.id)).toEqual(['cycle-http-1']);
+
+    const fetched = await request(app).get('/apprenticeship/cycles/cycle-http-1').set(auth());
+    expect(fetched.status).toBe(200);
+    expect(fetched.body.overseerDifferential).toEqual(['surface env issue']);
+
+    const missing = await request(app).get('/apprenticeship/cycles/no-such').set(auth());
+    expect(missing.status).toBe(404);
+
+    const closed = await request(app).post('/apprenticeship/cycles/cycle-http-1/close').set(auth());
+    expect(closed.status).toBe(200);
+    expect(closed.body.status).toBe('closed');
+
+    const closeMissing = await request(app).post('/apprenticeship/cycles/no-such/close').set(auth());
+    expect(closeMissing.status).toBe(404);
+    store.close();
   });
 
   // ── create ────────────────────────────────────────────────────────────
