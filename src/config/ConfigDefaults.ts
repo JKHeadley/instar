@@ -191,6 +191,14 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       enabled: false,
       overdueAfterMinutes: 120,
     },
+    // GeminiCapacityEscalationMonitor — observe-only escalation when Gemini is
+    // capacity-blocked (deferred by #708) longer than escalateAfterMinutes.
+    // Ships OFF; raises one Attention item per deferral episode, never mutates
+    // the gate. Closes item-3's "escalate, not silently stall" half.
+    geminiCapacityEscalation: {
+      enabled: false,
+      escalateAfterMinutes: 60,
+    },
     // ReleaseReadinessSentinel (docs/specs/RELEASE-READINESS-VISIBILITY-SPEC.md
     // §4.2). Ships OFF — Echo dogfoods first. Repo-gated: inert unless the
     // install has an analyzable instar git repo. Thresholds default to

@@ -52,6 +52,7 @@ import { CorrectionLedger } from '../monitoring/CorrectionLedger.js';
 import { ApprenticeshipProgram } from '../core/ApprenticeshipProgram.js';
 import { ApprenticeshipCycleStore } from '../monitoring/ApprenticeshipCycleStore.js';
 import { ApprenticeshipCycleSlaMonitor } from '../monitoring/ApprenticeshipCycleSlaMonitor.js';
+import { GeminiCapacityEscalationMonitor } from '../monitoring/GeminiCapacityEscalationMonitor.js';
 import { SafeGitExecutor } from '../core/SafeGitExecutor.js';
 import { createSpecReviewRoutes } from './specReviewRoutes.js';
 import { createUsherRoutes } from './usherRoutes.js';
@@ -171,6 +172,7 @@ export class AgentServer {
   private apprenticeshipProgram: ApprenticeshipProgram | null = null;
   private apprenticeshipCycleStore: ApprenticeshipCycleStore | null = null;
   private apprenticeshipCycleSlaMonitor: ApprenticeshipCycleSlaMonitor | null = null;
+  private geminiCapacityEscalationMonitor: GeminiCapacityEscalationMonitor | null = null;
   // Burn-detection-and-self-heal system (six-phase umbrella spec at
   // docs/specs/token-burn-detection-and-self-heal.md). Lazy-initialised
   // after the TokenLedger comes up — burn detection without a ledger is
@@ -881,6 +883,25 @@ export class AgentServer {
       this.apprenticeshipCycleSlaMonitor = null;
     }
 
+    // Gemini long-capacity-block escalation — observe-only, ships OFF. Reads the
+    // capacity gate module-global; rides the same afterTick cadence below; never
+    // mutates the gate or blocks a call.
+    try {
+      const cfg = options.config.monitoring?.geminiCapacityEscalation;
+      if (cfg?.enabled === true) {
+        const telegram = this.telegramAdapter;
+        this.geminiCapacityEscalationMonitor = new GeminiCapacityEscalationMonitor({
+          config: cfg,
+          raiseAttention: telegram
+            ? (item) => telegram.createAttentionItem(item)
+            : undefined,
+        });
+      }
+    } catch (err) {
+      console.warn('[instar] gemini capacity escalation monitor init failed (non-fatal):', err);
+      this.geminiCapacityEscalationMonitor = null;
+    }
+
     // Routes
     const routeCtx = {
       config: options.config,
@@ -983,6 +1004,7 @@ export class AgentServer {
       apprenticeshipProgram: this.apprenticeshipProgram,
       apprenticeshipCycleStore: this.apprenticeshipCycleStore,
       apprenticeshipCycleSlaMonitor: this.apprenticeshipCycleSlaMonitor,
+      geminiCapacityEscalationMonitor: this.geminiCapacityEscalationMonitor,
       sessionReaper: options.sessionReaper ?? null,
       agentWorktreeReaper: options.agentWorktreeReaper ?? null,
       sleepController: options.sleepController ?? null,
@@ -2120,6 +2142,7 @@ export class AgentServer {
               isIdle: () => this.sessionManager.listRunningSessions().length === 0,
               afterTick: async () => {
                 await this.apprenticeshipCycleSlaMonitor?.tick();
+                await this.geminiCapacityEscalationMonitor?.tick();
               },
             });
             this.tokenLedgerPoller.start();
@@ -2377,6 +2400,7 @@ export class AgentServer {
       this.apprenticeshipCycleStore = null;
     }
     this.apprenticeshipCycleSlaMonitor = null;
+    this.geminiCapacityEscalationMonitor = null;
 
     // Shutdown WebSocket manager first
     if (this.wsManager) {

@@ -3310,6 +3310,18 @@ export interface MonitoringConfig {
     overdueAfterMinutes?: number;
   };
   /**
+   * GeminiCapacityEscalationMonitor — observe-only escalation when Gemini is
+   * capacity/quota-blocked (deferred by #708's policy) for longer than
+   * escalateAfterMinutes. Raises one Attention item per deferral episode so a
+   * multi-hour block isn't a silent outage. Never mutates the gate. Ships OFF.
+   */
+  geminiCapacityEscalation?: {
+    /** Master kill switch (default: false). */
+    enabled: boolean;
+    /** Escalate only when the remaining defer window >= this many minutes (default: 60). */
+    escalateAfterMinutes?: number;
+  };
+  /**
    * ReleaseReadinessSentinel (docs/specs/RELEASE-READINESS-VISIBILITY-SPEC.md §4.2)
    * — Layer B. A repo-gated dev-environment watchdog: evaluates the canonical
    * `main` of the instar checkout and surfaces a stalled/blocked release as a

@@ -729,6 +729,9 @@ export interface RouteContext {
   apprenticeshipCycleStore?: import('../monitoring/ApprenticeshipCycleStore.js').ApprenticeshipCycleStore | null;
   /** Observe-only overdue-cycle SLA monitor. Null when disabled/unavailable. */
   apprenticeshipCycleSlaMonitor?: import('../monitoring/ApprenticeshipCycleSlaMonitor.js').ApprenticeshipCycleSlaMonitor | null;
+  /** Observe-only Gemini long-capacity-block escalation monitor. Null when disabled.
+   *  → GET /gemini/capacity 503s. */
+  geminiCapacityEscalationMonitor?: import('../monitoring/GeminiCapacityEscalationMonitor.js').GeminiCapacityEscalationMonitor | null;
   /** SessionReaper — pressure-aware idle-session reaper. Null when not wired
    *  (older boot paths). Powers GET /sessions/reaper observability. */
   sessionReaper?: import('../monitoring/SessionReaper.js').SessionReaper | null;
@@ -11608,6 +11611,14 @@ export function createRoutes(ctx: RouteContext): Router {
       ? req.query.instanceId
       : undefined;
     res.json({ overdue: ctx.apprenticeshipCycleSlaMonitor.listOverdue(instanceId) });
+  });
+
+  // GET /gemini/capacity — observe-only live view of the Gemini capacity gate
+  // (whether calls are deferred + remaining window). 503 when the escalation
+  // monitor is disabled/unavailable. Mirrors the sibling observe-only routes.
+  router.get('/gemini/capacity', (_req, res) => {
+    if (!ctx.geminiCapacityEscalationMonitor) { res.status(503).json({ error: 'gemini capacity escalation monitor disabled' }); return; }
+    res.json({ enabled: ctx.geminiCapacityEscalationMonitor.enabled, ...ctx.geminiCapacityEscalationMonitor.status() });
   });
 
   router.get('/apprenticeship/cycles/:id', (req, res) => {
