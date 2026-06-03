@@ -21,6 +21,8 @@ import { createRoutes } from '../../src/server/routes.js';
 import type { RouteContext } from '../../src/server/routes.js';
 import { authMiddleware } from '../../src/server/middleware.js';
 import { CorrectionLedger } from '../../src/monitoring/CorrectionLedger.js';
+import { CorrectionCaptureBacklog } from '../../src/monitoring/CorrectionCaptureBacklog.js';
+import { drainBacklog } from '../../src/monitoring/CorrectionCaptureLoop.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 const AUTH = 'corr-routes-token';
@@ -199,6 +201,45 @@ describe('/corrections routes (integration)', () => {
       expect(serialized).not.toContain('RING-SECRET-SHOULD-NEVER-APPEAR');
       expect(serialized).not.toContain('captureRing');
       expect(serialized).not.toContain('capture_ring');
+    });
+  });
+
+  describe('capture-backlog drain surfaces a throttled capture on /corrections (full pipeline)', () => {
+    it('a drained backlog entry becomes a record served over the real /corrections route', async () => {
+      // The SAME ledger handle the route reads from, fed by a sibling backlog.
+      ledger = new CorrectionLedger({ dbPath: ':memory:', machineId: 't' });
+      const backlog = new CorrectionCaptureBacklog({ dbPath: ':memory:' });
+      try {
+        // A capture that was throttled at distill time sits in the backlog.
+        backlog.enqueue({
+          topicId: 11,
+          turns: [{ fromUser: true, text: 'lead with the action, skip the preamble', at: 0 }],
+          deterministicWeight: 4,
+        });
+        // Headroom: drainBacklog distills it into the ledger the route serves.
+        const distill = async () =>
+          JSON.stringify({
+            learning: 'lead with the action; skip the preamble',
+            kind: 'user-preference',
+            llm_confidence: 0.9,
+            scrubbed_summary: 'Prefers the action first, no preamble.',
+          });
+        const result = await drainBacklog({ backlog, ledger, distill, llmAvailable: () => true }, 5);
+        expect(result.recorded).toBe(1);
+        expect(backlog.count()).toBe(0);
+
+        // Observable through the full HTTP pipeline (auth + real route).
+        const res = await request(appWith(ctxFor(stateDir, ledger))).get('/corrections').set(auth());
+        expect(res.status).toBe(200);
+        expect(res.body.records.length).toBe(1);
+        expect(res.body.records[0].kind).toBe('user-preference');
+        expect(res.body.records[0].scrubbedSummary).toContain('action first');
+        // Raw distilled learning never crosses HTTP.
+        expect(JSON.stringify(res.body)).not.toContain('skip the preamble');
+        expect(res.body.records[0].learning).toBeUndefined();
+      } finally {
+        backlog.close();
+      }
     });
   });
 });

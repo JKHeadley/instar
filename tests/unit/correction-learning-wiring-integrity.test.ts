@@ -29,7 +29,8 @@ import type { InstarConfig } from '../../src/core/types.js';
 import { CorrectionLedger } from '../../src/monitoring/CorrectionLedger.js';
 import { CorrectionAnalyzer } from '../../src/monitoring/CorrectionAnalyzer.js';
 import { CorrectionLoopDriver } from '../../src/monitoring/CorrectionLoopDriver.js';
-import { CaptureRing, captureAndDistill } from '../../src/monitoring/CorrectionCaptureLoop.js';
+import { CaptureRing, captureAndDistill, drainBacklog } from '../../src/monitoring/CorrectionCaptureLoop.js';
+import { CorrectionCaptureBacklog } from '../../src/monitoring/CorrectionCaptureBacklog.js';
 
 const AUTH = 'corr-wiring-token';
 const auth = () => ({ Authorization: `Bearer ${AUTH}` });
@@ -138,6 +139,66 @@ describe('Correction-learning wiring integrity (Slice 1b)', () => {
           distill: async () => { throw new Error('async boom'); },
         }, { topicId: 1, text: 'from now on x', fromUser: true, deterministicWeight: 3, isLearningSignal: true });
       }).not.toThrow();
+    });
+  });
+
+  describe('capture-backlog wiring (resilience extension)', () => {
+    // Mirrors the server.ts gate: the backlog is constructed IFF the feature is
+    // enabled AND captureBacklogMaxEntries > 0. maxEntries:0 → null (old drop).
+    function constructBacklogPerWiring(cfg: { captureBacklogMaxEntries?: number }): CorrectionCaptureBacklog | null {
+      const max = cfg.captureBacklogMaxEntries ?? 200;
+      return max > 0 ? new CorrectionCaptureBacklog({ dbPath: ':memory:', maxEntries: max }) : null;
+    }
+
+    it('constructed when enabled + maxEntries>0; NULL when maxEntries=0 (preserves old drop)', () => {
+      const withDefault = constructBacklogPerWiring({});
+      expect(withDefault).toBeInstanceOf(CorrectionCaptureBacklog);
+      withDefault?.close();
+
+      const explicit = constructBacklogPerWiring({ captureBacklogMaxEntries: 50 });
+      expect(explicit).toBeInstanceOf(CorrectionCaptureBacklog);
+      explicit?.close();
+
+      const disabled = constructBacklogPerWiring({ captureBacklogMaxEntries: 0 });
+      expect(disabled).toBeNull();
+    });
+
+    it('a rate-limited capture lands in the backlog (not dropped) and never throws into the hook', async () => {
+      const ledger = new CorrectionLedger({ dbPath: ':memory:', machineId: 't' });
+      const backlog = new CorrectionCaptureBacklog({ dbPath: ':memory:' });
+      try {
+        const ring = new CaptureRing({ captureContextTurns: 6, captureTopicMapMax: 10, topicTtlMs: 600_000 });
+        let threw = false;
+        // exactly how server.ts invokes it — void fire-and-forget on the seam.
+        try {
+          await captureAndDistill(
+            { ring, ledger, backlog, distill: async () => { throw new Error('LLM daily spend cap exceeded'); } },
+            { topicId: 9, text: 'from now on stop apologizing', fromUser: true, deterministicWeight: 3, isLearningSignal: true },
+          );
+        } catch { threw = true; }
+        expect(threw).toBe(false);     // never throws into the hook
+        expect(backlog.count()).toBe(1); // persisted, not dropped
+      } finally {
+        ledger.close(); backlog.close();
+      }
+    });
+
+    it('the drain is SKIPPED while the breaker is open and never throws', async () => {
+      const ledger = new CorrectionLedger({ dbPath: ':memory:', machineId: 't' });
+      const backlog = new CorrectionCaptureBacklog({ dbPath: ':memory:' });
+      try {
+        backlog.enqueue({ topicId: 1, turns: [{ fromUser: true, text: 'x', at: 0 }], deterministicWeight: 3 });
+        const distill = vi.fn(async () => '{}');
+        const result = await drainBacklog(
+          { backlog, ledger, distill, llmAvailable: () => false }, // breaker open
+          5,
+        );
+        expect(result.skipped).toBe('breaker-open');
+        expect(distill).not.toHaveBeenCalled();
+        expect(backlog.count()).toBe(1);
+      } finally {
+        ledger.close(); backlog.close();
+      }
     });
   });
 
