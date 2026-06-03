@@ -124,4 +124,58 @@ describe('CircuitBreakingIntelligenceProvider — feature metrics tap (Phase 1b)
       ledger.close();
     }
   });
+
+  // ── Iris-audit item 1: token usage now reaches the tap ──────────────────
+  // Before this fix the tap recorded latency/outcome/count but NO tokens, so
+  // /metrics/features always reported tokensIn:0/tokensOut:0. The provider now
+  // surfaces usage via options.onUsage, which the funnel forwards to the recorder.
+
+  it('forwards provider token usage (onUsage) into the recorder', async () => {
+    setFeatureMetricsRecorder(recorder);
+    const inner: IntelligenceProvider = {
+      evaluate: async (_p, opts) => { opts?.onUsage?.({ inputTokens: 1234, outputTokens: 56 }); return 'ok'; },
+    };
+    const p = new CircuitBreakingIntelligenceProvider(inner, fakeBreaker());
+    await p.evaluate('x', { attribution: { component: 'ToneGate' } });
+    expect(recorded[0]).toMatchObject({ feature: 'ToneGate', outcome: 'noop', tokensIn: 1234, tokensOut: 56 });
+  });
+
+  it('composes with (does not clobber) a caller-supplied onUsage', async () => {
+    setFeatureMetricsRecorder(recorder);
+    const callerSpy = vi.fn();
+    const inner: IntelligenceProvider = {
+      evaluate: async (_p, opts) => { opts?.onUsage?.({ inputTokens: 10, outputTokens: 2 }); return 'ok'; },
+    };
+    const p = new CircuitBreakingIntelligenceProvider(inner, fakeBreaker());
+    await p.evaluate('x', { onUsage: callerSpy });
+    expect(callerSpy).toHaveBeenCalledWith({ inputTokens: 10, outputTokens: 2 });
+    expect(recorded[0]).toMatchObject({ tokensIn: 10, tokensOut: 2 });
+  });
+
+  it('records no tokens when the provider surfaces none (back-compat, omitted not 0)', async () => {
+    setFeatureMetricsRecorder(recorder);
+    const inner: IntelligenceProvider = { evaluate: async () => 'ok' };
+    const p = new CircuitBreakingIntelligenceProvider(inner, fakeBreaker());
+    await p.evaluate('x');
+    expect(recorded[0].tokensIn).toBeUndefined();
+    expect(recorded[0].tokensOut).toBeUndefined();
+  });
+
+  it('sums token usage into the REAL ledger rollup (tokensIn/tokensOut no longer 0)', async () => {
+    const ledger = new FeatureMetricsLedger({ dbPath: ':memory:' });
+    try {
+      setFeatureMetricsRecorder(ledger);
+      const inner: IntelligenceProvider = {
+        evaluate: async (_p, opts) => { opts?.onUsage?.({ inputTokens: 100, outputTokens: 20 }); return 'ok'; },
+      };
+      await new CircuitBreakingIntelligenceProvider(inner, fakeBreaker()).evaluate('a', { attribution: { component: 'Tok' } });
+      await new CircuitBreakingIntelligenceProvider(inner, fakeBreaker()).evaluate('b', { attribution: { component: 'Tok' } });
+
+      const tok = ledger.byFeature().find(f => f.feature === 'Tok')!;
+      expect(tok.tokensIn).toBe(200);
+      expect(tok.tokensOut).toBe(40);
+    } finally {
+      ledger.close();
+    }
+  });
 });

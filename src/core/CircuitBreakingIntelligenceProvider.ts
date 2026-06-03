@@ -47,6 +47,14 @@ export interface FeatureMetricsRecorder {
     latencyMs?: number;
     waited?: boolean;
     waitMs?: number;
+    /**
+     * Per-call token usage (Iris-audit item 1). Surfaced by the underlying
+     * provider via IntelligenceOptions.onUsage and forwarded here so
+     * /metrics/features reports real cost instead of always-0. The ledger
+     * stores null when omitted (e.g. the circuit was open and no call ran).
+     */
+    tokensIn?: number;
+    tokensOut?: number;
   }): void;
 }
 
@@ -81,11 +89,17 @@ export class CircuitBreakingIntelligenceProvider implements IntelligenceProvider
     latencyMs: number,
     waited: boolean,
     waitMs: number | undefined,
+    tokensIn?: number,
+    tokensOut?: number,
   ): void {
     const rec = _featureMetricsRecorder;
     if (!rec) return;
     try {
-      rec.record({ feature, kind: 'llm', outcome, latencyMs, waited, waitMs: waited ? waitMs : undefined });
+      rec.record({
+        feature, kind: 'llm', outcome, latencyMs,
+        waited, waitMs: waited ? waitMs : undefined,
+        tokensIn, tokensOut,
+      });
     } catch {
       /* never break the LLM path on a metrics write */
     }
@@ -115,9 +129,24 @@ export class CircuitBreakingIntelligenceProvider implements IntelligenceProvider
     }
 
     try {
-      const result = await this.inner.evaluate(prompt, options);
+      // Capture token usage the underlying provider surfaces, composing with
+      // any caller-supplied onUsage so we don't clobber it. This is the only
+      // path token cost reaches the metrics ledger (Iris-audit item 1).
+      let usage: { inputTokens: number; outputTokens: number } | undefined;
+      const callerOnUsage = options?.onUsage;
+      const innerOptions: IntelligenceOptions = {
+        ...(options ?? {}),
+        onUsage: (u) => {
+          usage = u;
+          callerOnUsage?.(u);
+        },
+      };
+      const result = await this.inner.evaluate(prompt, innerOptions);
       this.breaker.onResolved();
-      this.recordMetric(feature, 'noop', Date.now() - startedAt, waited, options?.rateLimitWaitMs);
+      this.recordMetric(
+        feature, 'noop', Date.now() - startedAt, waited, options?.rateLimitWaitMs,
+        usage?.inputTokens, usage?.outputTokens,
+      );
       return result;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);

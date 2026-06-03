@@ -684,6 +684,18 @@ export interface IntelligenceOptions {
     /** Stable source-side component label, e.g. "InputDetector", "MessagingToneGate". */
     component: string;
   };
+  /**
+   * Optional token-usage callback (Iris-audit item 1, spec
+   * iris-audit-session-observability.md). When the underlying provider can
+   * surface usage — e.g. ClaudeCliIntelligenceProvider parsing `claude -p
+   * --output-format json` — it invokes this exactly once per successful call
+   * with the token counts. ADDITIVE and OPTIONAL: evaluate() still returns
+   * Promise<string>, so every existing caller is byte-identical. The wrapper
+   * CircuitBreakingIntelligenceProvider sets it to feed per-feature token
+   * counts into the metrics ledger (/metrics/features), which previously always
+   * reported 0 because no usage ever reached the tap.
+   */
+  onUsage?: (usage: { inputTokens: number; outputTokens: number }) => void;
 }
 
 // ── Drift Checker ───────────────────────────────────────────────────
