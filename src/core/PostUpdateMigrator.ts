@@ -2860,6 +2860,28 @@ See what each LLM-driven gate/sentinel actually costs and how often it fires, so
       result.upgraded.push('CLAUDE.md: added Per-Feature LLM Metrics (/metrics/features) awareness (llm-feature-metrics)');
     }
 
+    // correction-capture-backlog (Agent Awareness + Migration Parity): existing
+    // agents with the Correction & Preference Learning block need to learn that a
+    // rate-limited capture is now backlogged + distilled later (not dropped), so
+    // they don't assume an empty ledger under throttle means nothing was caught.
+    // Idempotent on a distinctive marker; only patches when the correction block
+    // already exists (a freshly-initialized agent gets the bullet from the
+    // template directly, never double-patched).
+    if (
+      !content.includes('Throttle-survivable capture') &&
+      content.includes("**Preferences I've learned about you**") &&
+      /- See the distilled correction\/preference records the loop has captured:[^\n]*\n/.test(content)
+    ) {
+      const backlogBullet =
+        `- **Throttle-survivable capture**: if the loop is rate-limited at distill time (LLM circuit breaker open / daily cap reached), the captured correction is NOT dropped — its already-scrubbed turns are held in a small bounded durable backlog (\`correction-capture-backlog.db\`) and distilled into the ledger later, automatically, once the LLM has headroom. So a busy/throttled stretch no longer silently loses corrections. This is on by default whenever the feature is enabled (pure resilience); it persists ONLY pre-scrubbed text, is bounded by a max-entries cap + a TTL, and exposes no raw content over any route. Disable it by setting \`monitoring.correctionLearning.captureBacklogMaxEntries\` to 0 (restores the old drop-on-throttle behavior).\n`;
+      content = content.replace(
+        /(- See the distilled correction\/preference records the loop has captured:[^\n]*\n)/,
+        `$1${backlogBullet}`,
+      );
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added throttle-survivable capture-backlog note (correction-capture-backlog)');
+    }
+
     // update-message-topic-routing §Fix 3 — existing agents need to learn that
     // self-broadcast about ships/restarts/updates must route through the
     // post-update channel (lands in the Agent Updates topic), not the active
