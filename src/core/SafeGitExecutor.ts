@@ -153,6 +153,7 @@ export const SOURCE_TREE_READ_TIER_VERBS: ReadonlySet<string> = new Set([
   'ls-tree',
   'show',
   'log',
+  'diff',
   'cat-file',
   'merge-base',
   'remote', // shape-checked to list/get-url only; needed by resolveCanonicalRemote

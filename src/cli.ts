@@ -2401,6 +2401,18 @@ gateCmd
     return gateLog(opts);
   });
 
+// ── `instar dev:preflight` — contributor ship-gate verifier ────────
+
+program
+  .command('dev:preflight')
+  .description('Run the verify-only new-surface friction guard for contributor PRs')
+  .option('--base <ref>', 'Diff base ref for the route heuristic (default: main remote candidates)')
+  .action(async (opts: { base?: string }) => {
+    const { runDevPreflight } = await import('./commands/devPreflight.js');
+    const exitCode = await runDevPreflight({ baseRef: opts.base });
+    process.exit(exitCode);
+  });
+
 // ── `instar route` — Phase 5b suggest-and-confirm composition root (CLI) ─
 
 program
