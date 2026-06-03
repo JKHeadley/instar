@@ -91,8 +91,8 @@ import { OutstandingPromptTracker } from '../scheduler/OutstandingPromptTracker.
 import { parseCodexRollout } from '../monitoring/CodexRolloutParser.js';
 import { extractCodexFinalMessage, extractClaudeFinalMessage, findClaudeTranscriptShallow } from '../monitoring/SessionReplyExtractor.js';
 import type { ForensicFinding } from '../monitoring/FrameworkIssueLedger.js';
-import { BurnDetector } from '../monitoring/BurnDetector.js';
-import { BurnThrottleRunbook } from '../monitoring/BurnThrottleRunbook.js';
+import { BurnDetector, type BurnDetectionConfig } from '../monitoring/BurnDetector.js';
+import { BurnThrottleRunbook, type BurnThrottleConfig } from '../monitoring/BurnThrottleRunbook.js';
 import { BurnVerifier } from '../monitoring/BurnVerifier.js';
 import { LlmRateGate } from '../monitoring/LlmRateGate.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
@@ -2157,32 +2157,60 @@ export class AgentServer {
           // post-throttle re-sample. The full pipeline is signal-only on
           // observation paths and Tier-2 Remediator authority on decision
           // paths — see docs/specs/token-burn-detection-and-self-heal.md.
-          try {
-            const ledger = this.tokenLedger;
-            const reporter = DegradationReporter.getInstance();
-            const gate = LlmRateGate.instance();
-            const telegram = this.telegramAdapter;
-            const sendTelegram = telegram && typeof (telegram as { sendToTopic?: unknown }).sendToTopic === 'function'
-              ? (topicId: number, text: string) => {
-                  // Fire-and-forget — the runbook and verifier do not block on
-                  // alert delivery; failed sends are logged elsewhere.
-                  const send = (telegram as { sendToTopic: (t: number, s: string) => Promise<unknown> }).sendToTopic;
-                  void send.call(telegram, topicId, text).catch((err: unknown) => {
-                    console.warn(`[burn-detection] telegram send failed (non-fatal): ${(err as Error)?.message ?? err}`);
-                  });
-                }
-              : undefined;
+          //
+          // Operator control: `monitoring.burnDetection.*` (all optional;
+          // absence preserves the shipped defaults). `enabled: false` is the
+          // master kill-switch — the whole system stays down. The other knobs
+          // (absoluteShareThreshold, absoluteShareActivityFloorTokens,
+          // alertTopicId, autoThrottle, autoThrottleOnUnknown) tune behaviour
+          // without code changes. The activity floor is the 2026-06-03 fix that
+          // stops a finished heavy session re-alarming for a full 24h.
+          const burnCfg = this.config.monitoring?.burnDetection;
+          if (burnCfg?.enabled === false) {
+            console.log('[instar] burn-detection disabled via monitoring.burnDetection.enabled=false');
+          } else {
+            try {
+              const ledger = this.tokenLedger;
+              const reporter = DegradationReporter.getInstance();
+              const gate = LlmRateGate.instance();
+              const telegram = this.telegramAdapter;
+              const sendTelegram = telegram && typeof (telegram as { sendToTopic?: unknown }).sendToTopic === 'function'
+                ? (topicId: number, text: string) => {
+                    // Fire-and-forget — the runbook and verifier do not block on
+                    // alert delivery; failed sends are logged elsewhere.
+                    const send = (telegram as { sendToTopic: (t: number, s: string) => Promise<unknown> }).sendToTopic;
+                    void send.call(telegram, topicId, text).catch((err: unknown) => {
+                      console.warn(`[burn-detection] telegram send failed (non-fatal): ${(err as Error)?.message ?? err}`);
+                    });
+                  }
+                : undefined;
 
-            this.burnThrottleRunbook = new BurnThrottleRunbook({ gate, sendTelegram });
-            this.burnVerifier = new BurnVerifier({ ledger, sendTelegram });
-            registerBurnDetectionSubscriber(reporter, this.burnThrottleRunbook, (outcome, event) => {
-              this.burnVerifier!.scheduleVerification(outcome, event);
-            });
-            this.burnDetector = new BurnDetector({ ledger, reporter });
-            this.burnDetector.start();
-            console.log('[instar] burn-detection auto-heal system started');
-          } catch (err) {
-            console.warn('[instar] burn-detection start failed (non-fatal):', err);
+              // Build partial configs WITHOUT undefined keys — a `{ x: undefined }`
+              // override would clobber the constructor's default for x.
+              const runbookConfig: Partial<BurnThrottleConfig> = {};
+              if (burnCfg?.autoThrottle !== undefined) runbookConfig.autoThrottle = burnCfg.autoThrottle;
+              if (burnCfg?.autoThrottleOnUnknown !== undefined) runbookConfig.autoThrottleOnUnknown = burnCfg.autoThrottleOnUnknown;
+
+              const detectorConfig: Partial<BurnDetectionConfig> = {};
+              if (burnCfg?.absoluteShareThreshold !== undefined) detectorConfig.absoluteShareThreshold = burnCfg.absoluteShareThreshold;
+              if (burnCfg?.absoluteShareActivityFloorTokens !== undefined) detectorConfig.absoluteShareActivityFloorTokens = burnCfg.absoluteShareActivityFloorTokens;
+
+              this.burnThrottleRunbook = new BurnThrottleRunbook({
+                gate,
+                sendTelegram,
+                alertTopicId: burnCfg?.alertTopicId,
+                config: runbookConfig,
+              });
+              this.burnVerifier = new BurnVerifier({ ledger, sendTelegram });
+              registerBurnDetectionSubscriber(reporter, this.burnThrottleRunbook, (outcome, event) => {
+                this.burnVerifier!.scheduleVerification(outcome, event);
+              });
+              this.burnDetector = new BurnDetector({ ledger, reporter, config: detectorConfig });
+              this.burnDetector.start();
+              console.log('[instar] burn-detection auto-heal system started');
+            } catch (err) {
+              console.warn('[instar] burn-detection start failed (non-fatal):', err);
+            }
           }
         }
 

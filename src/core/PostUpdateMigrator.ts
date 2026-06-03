@@ -3195,6 +3195,25 @@ If the user reports they were "unresponsive for a while during updates," check \
       result.skipped.push('CLAUDE.md: Self-Heal section already present');
     }
 
+    // Token-Burn Alerts awareness (2026-06-03 activity-gate noise fix). Existing
+    // agents must learn what the "an unknown component is using more than a quarter
+    // of the token budget" alert means, that the activity gate now silences
+    // finished bursts, and how to mute/tune it via monitoring.burnDetection.
+    // Content-sniffed on a distinctive marker for idempotency.
+    if (!content.includes('Token-Burn Alerts')) {
+      const burnSection = `
+## Token-Burn Alerts
+
+The "an unknown component is using more than a quarter of the agent's token budget" heads-up. The BurnDetector watches per-component 24h token share and the 1h spend rate, and alerts when one component is *actively* burning. Two things to know when a user asks about the noise:
+- An alert only fires for a component spending **right now** (last-1h tokens above \`absoluteShareActivityFloorTokens\`, default 0 = any positive current spend). A finished heavy session — high 24h share but zero current rate — is NOT a burn and is silenced; this is the activity gate that closed the "consumed 67% of 24h spend … Projected 0 tokens" re-alarm-for-a-full-day bug. Most context-cache usage spread across many warm sessions never trips it.
+- Silence or tune it in \`.instar/config.json\` → \`monitoring.burnDetection\`: \`{"enabled": false}\` is the master off-switch; \`absoluteShareThreshold\` (default 0.25), \`absoluteShareActivityFloorTokens\`, \`alertTopicId\` (where alerts post), \`autoThrottle\` / \`autoThrottleOnUnknown\` tune behaviour without code changes. Absence preserves the shipped defaults.
+- Proactive: user says "these token alerts are noisy" / "why am I getting this" / "turn them off" → explain the activity gate (it only flags live burns now), and offer the \`monitoring.burnDetection.enabled: false\` off-switch (restart sessions to apply). Note that \`unknown::<id>\` just means that spend wasn't attributed to a named component — it's not inherently a problem.
+`;
+      content += '\n' + burnSection;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Token-Burn Alerts awareness (activity-gate noise fix)');
+    }
+
     // Correction & Preference Learning Sentinel (Slice 1a) §7 — Agent Awareness +
     // Migration Parity: existing agents must learn about the preferences read-
     // surface (the session-start hook now fetches /preferences/session-context
