@@ -1,0 +1,39 @@
+<!-- bump: patch -->
+
+## What Changed
+
+Fixes the LLM circuit breaker so it honors a provider's self-reported reset window when the
+provider phrases it as "reset **after** N seconds" — not just "reset **in** N seconds".
+
+`classifyRateLimit`'s `parseRetryAfterMs` previously matched only `resets in <N>s` / `try again in
+<N>s`. Gemini reports quota exhaustion as **"Your quota will reset after 8s"**, which did not parse
+→ `retryAfterMs` came back `undefined` → the breaker fell back to the blunt `DEFAULT_OPEN_MS`
+(15 minutes). The practical effect, observed live on the `gemini-cli` agent (2026-06-03): an
+8-second provider reset triggered a **900-second global LLM pause** — a ~110× over-correction that
+repeatedly froze the entire agent on a limit that had already cleared.
+
+The fix extends the two duration patterns from `\s+in\s+` to `\s+(?:in|after)\s+`, so "reset after
+Ns/Nm" now parses and the breaker opens for the floored provider window (min 30s) instead of the
+flat 15-minute default. No behavior change for the existing "reset in" phrasing.
+
+## What to Tell Your User
+
+- **Faster recovery from short rate limits**: "When a provider tells me its quota resets in a few
+  seconds, I now wait that short window instead of pausing all LLM work for a blunt 15 minutes. If
+  you saw a Gemini-backed agent freeze for long stretches after a brief rate limit, that's fixed."
+
+## Summary of New Capabilities
+
+| Capability | How to Use |
+|-----------|-----------|
+| Honors "reset after Ns" windows | Automatic — the circuit breaker now parses Gemini-style "reset after N" hints and opens for that window (floored to 30s) instead of the 15-minute default. |
+
+## Evidence
+
+Verification:
+
+- Unit: `classifyRateLimit('…quota will reset after 8s')` → `retryAfterMs === 8000`; `reset after 5
+  minutes` → `300000`; existing "reset in" cases unchanged.
+- Unit (end-to-end regression): the real Gemini message classified + fed to `onRateLimited` opens
+  the breaker for the floored ~30s window and recovers there, NOT at 900s.
+- Full `llm-circuit-breaker-wait` + `LlmCircuitBreaker` suites green (61 tests); `tsc --noEmit` clean.

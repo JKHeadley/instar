@@ -140,15 +140,20 @@ function parseRetryAfterMs(m: string): number | undefined {
   let match = /retry[\s-]?after:?\s*(\d+(?:\.\d+)?)\s*(?:seconds?|s)?\b/.exec(m);
   if (match) seconds = Number(match[1]);
 
-  // resets in <N>s / reset in <N> seconds / try again in <N>s
+  // resets in/after <N>s / reset in <N> seconds / try again in <N>s.
+  // "(?:in|after)" also catches Gemini's "your quota will reset after 8s"
+  // phrasing — without it the hint failed to parse and the breaker fell back
+  // to the blunt DEFAULT_OPEN_MS (15 min), turning an 8-second provider reset
+  // into a 15-minute global LLM pause (~100x over-correction; observed live on
+  // the gemini-cli agent, 2026-06-03).
   if (seconds === undefined) {
-    match = /(?:resets?|try again)\s+in\s+(\d+(?:\.\d+)?)\s*(?:seconds?|s)\b/.exec(m);
+    match = /(?:resets?|try again)\s+(?:in|after)\s+(\d+(?:\.\d+)?)\s*(?:seconds?|s)\b/.exec(m);
     if (match) seconds = Number(match[1]);
   }
 
-  // resets in <N>m / reset in <N> minutes / try again in <N> minutes
+  // resets in/after <N>m / reset in <N> minutes / try again in <N> minutes
   if (seconds === undefined) {
-    match = /(?:resets?|try again)\s+in\s+(\d+(?:\.\d+)?)\s*(?:minutes?|m)\b/.exec(m);
+    match = /(?:resets?|try again)\s+(?:in|after)\s+(\d+(?:\.\d+)?)\s*(?:minutes?|m)\b/.exec(m);
     if (match) seconds = Number(match[1]) * 60;
   }
 
