@@ -53,3 +53,13 @@ prints the exact JS function responsible, which native profilers cannot show.
   `findInspectorTarget` (first-hit / none) + `runDevProfileNode` orchestration with
   injected deps (happy path, no-pid→hottest, no-node→exit1, signal-fail→exit1,
   no-inspector→exit1, capture-throw→exit1).
+
+## Also in this change
+
+Fixes a real false-negative in `scripts/docs-coverage.mjs`: a command's coverage
+was keyed on its camelCase **file** name (`devProfileNode`), so the needle
+`instar devProfileNode` never matched the shipped colon-command
+`instar dev:profile-node` — every `dev:*` command (ci-failures, preflight,
+profile-node) read as undocumented. The matcher now also tries a kebab form and
+treats `:`/`-` as interchangeable, so colon-commands count. (The new command
+surfaced this — friction → structural fix.)

@@ -38,3 +38,5 @@ The hard part of fixing a mystery slowdown isn't the fix — it's *finding* the 
 ---
 
 **Rendered (verified HTTP 200):** https://echo.dawn-tunnel.dev/view/e5433071-bf6f-4cf0-b97a-5e16d9f7b160?sig=2c015aaeedc96ebb20d57b326f44d88eaa93dd2bcba0b4e8347a33d23f4d2b4b
+
+*See also: the full success-story + meta-insights writeup for this run.*

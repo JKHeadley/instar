@@ -73,3 +73,13 @@ orchestration is unit-tested without a real process. A live end-to-end smoke
 - Does not kill, restart, or modify the target (only SIGUSR1 + sample).
 - Does not run as part of the server or any job — invoked on demand only.
 - Does not expose a remote/public debug port (inspector is localhost).
+
+## 7. Collateral fix — docs-coverage matcher
+
+Adding the command surfaced a false-negative in `scripts/docs-coverage.mjs`: it
+matched a command by its camelCase file name, so colon-commands (`dev:*`) never
+matched their documented form and read as undocumented (the floor was sitting
+right at the limit, so the new command tipped it). The matcher now also tries a
+kebab form and normalizes `:`↔`-`. Audit-only script (the weekly docs-coverage
+report); no runtime/behavior effect. It re-classifies the three `dev:*` commands
+as documented, which is correct (they ARE in cli.md + the CLAUDE.md template).

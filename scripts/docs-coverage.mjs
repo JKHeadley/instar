@@ -208,15 +208,24 @@ function findMentions(capability, docs) {
   // Returns list of doc paths that mention this capability.
   // Coverage strategy varies per capability type.
   let needles = [];
+  // Per-type content normalizer (identity by default).
+  let normalize = (s) => s;
   switch (capability.type) {
     case 'route':
       // Match exact path (with leading /). Substring match — close enough.
       needles = [capability.path];
       break;
-    case 'command':
-      // Match either `instar <name>` (CLI usage) or just the bare name.
-      needles = [`instar ${capability.name}`];
+    case 'command': {
+      // A command's id is its camelCase FILE name (`devProfileNode`), but the
+      // shipped command is colon/kebab (`dev:profile-node`). Match BOTH the raw
+      // name AND a kebab form, and treat `:`/`-` as interchangeable, so a
+      // colon-command documented as `instar dev:profile-node` still counts (it
+      // otherwise never matched — every `dev:*` command read as undocumented).
+      const kebab = capability.name.replace(/([a-z0-9])([A-Z])/g, '$1-$2').toLowerCase();
+      needles = [`instar ${capability.name}`, `instar ${kebab}`];
+      normalize = (s) => s.replace(/:/g, '-');
       break;
+    }
     case 'job':
       needles = [capability.name];
       break;
@@ -232,8 +241,9 @@ function findMentions(capability, docs) {
   }
   const matches = [];
   for (const [docPath, content] of Object.entries(docs)) {
+    const normalized = normalize(content);
     for (const needle of needles) {
-      if (content.includes(needle)) {
+      if (normalized.includes(normalize(needle))) {
         matches.push(docPath);
         break;
       }
