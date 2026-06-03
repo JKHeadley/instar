@@ -230,9 +230,11 @@ export class StuckInputSentinel {
 
   /** Evaluate a single tmux session for stuck-input recovery. */
   private evaluateSession(tmuxSession: string): void {
+    const priorRecord = this.records.get(tmuxSession);
     let pane: string | null;
     try {
       if (!this.sessionManager.tmuxSessionExists(tmuxSession)) {
+        this.finalizePendingRecovery(tmuxSession, priorRecord, 'session-gone');
         this.records.delete(tmuxSession);
         this.sessionManager.clearStrandedDraftMarker(tmuxSession);
         return;
@@ -249,6 +251,10 @@ export class StuckInputSentinel {
     // so this shared activity check is correct for both frameworks — we never
     // fire Enter mid-turn (which would interrupt work / premature-submit).
     if (this.isPaneActivelyWorking(pane)) {
+      // A session that escalated and is now WORKING has recovered — clear its
+      // pending tier-C request (the drain means the wedge cleared; the marker-
+      // based detector won't re-enter handleEscalation once it's no longer stuck).
+      this.finalizePendingRecovery(tmuxSession, priorRecord, 'recovered-working');
       this.records.delete(tmuxSession);
       return;
     }
@@ -411,6 +417,33 @@ export class StuckInputSentinel {
     if (attempt === 0 || attempt === 1) return 'Enter';
     if (attempt === 2) return 'C-m';
     return 'Enter-sleep-Enter';
+  }
+
+  /**
+   * Clear a session's in-flight tier-C recovery request when the session has
+   * recovered out-of-band — it's now actively working (the wedge drained) or it
+   * is gone. The sentinel is the sole writer of the request file, so it (not the
+   * lifeline) does this cleanup. No-op unless a request is actually in flight.
+   * This closes the "request lingers after a successful drain" path that the
+   * stuck-detection branches would otherwise skip (they early-return before
+   * handleEscalation ever reads the ack).
+   */
+  private finalizePendingRecovery(
+    tmuxSession: string, record: SessionStuckRecord | undefined, reason: string,
+  ): void {
+    if (!record || record.recoveryPhase !== 'requested' || !this.recoveryChannel) return;
+    this.recoveryChannel.clearRequest(tmuxSession);
+    record.recoveryPhase = 'recovered';
+    this.recordEvent({
+      ts: new Date(Date.now()).toISOString(),
+      session: tmuxSession,
+      promptText: record.lastPromptText.slice(0, 200),
+      attempt: record.attempts,
+      action: 'escalate-recovered',
+      outcome: 'recovered',
+      tier: 'server-restart-replay',
+      error: reason,
+    });
   }
 
   /**
