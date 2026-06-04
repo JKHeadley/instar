@@ -55,6 +55,30 @@ describe('frameworkSessionLaunch.buildInteractiveLaunch', () => {
       ]);
     });
 
+    it('appends --session-id <id> when sessionId is set (warm-session A2A)', () => {
+      const spec = buildInteractiveLaunch('claude-code', {
+        binaryPath: '/usr/local/bin/claude',
+        sessionId: 'warm-uuid-1',
+      });
+      expect(spec.argv).toEqual([
+        '/usr/local/bin/claude',
+        '--dangerously-skip-permissions',
+        '--session-id',
+        'warm-uuid-1',
+      ]);
+    });
+
+    it('--resume wins over --session-id when both are set (mutually exclusive)', () => {
+      const spec = buildInteractiveLaunch('claude-code', {
+        binaryPath: '/usr/local/bin/claude',
+        resumeSessionId: 'resume-uuid',
+        sessionId: 'warm-uuid-1',
+      });
+      // Reloading an existing transcript precludes setting a fresh id.
+      expect(spec.argv).toContain('--resume');
+      expect(spec.argv).not.toContain('--session-id');
+    });
+
     it('emits CLAUDECODE= override so nested Claude detection stays off', () => {
       const spec = buildInteractiveLaunch('claude-code', { binaryPath: '/x/claude' });
       expect(spec.envOverrides).toEqual({ CLAUDECODE: '' });
