@@ -2219,10 +2219,10 @@ rm()  { "${shimRunner}" rm  "$@"; }
     const launchSpec = buildInteractiveLaunch(framework, {
       binaryPath,
       ...(options?.resumeSessionId ? { resumeSessionId: options.resumeSessionId } : {}),
+      ...(launchDefaultModel ? { defaultModel: launchDefaultModel } : {}),
       // Warm-session A2A: pin a deterministic --session-id (claude-only, ignored
       // when resuming) so eviction mid-thread falls back to --resume losslessly.
       ...(options?.sessionId && !options?.resumeSessionId ? { sessionId: options.sessionId } : {}),
-      ...(launchDefaultModel ? { defaultModel: launchDefaultModel } : {}),
       ...(options?.codexLocalProvider ? { codexLocalProvider: options.codexLocalProvider } : {}),
       // Per-agent codex threadline MCP override (ignored by non-codex builders).
       ...(this.config.codexThreadlineMcp ? { codexThreadlineMcp: this.config.codexThreadlineMcp } : {}),
