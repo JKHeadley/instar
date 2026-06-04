@@ -16,7 +16,7 @@ import { fileURLToPath } from 'node:url';
 import pc from 'picocolors';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-import { loadConfig, ensureStateDir, detectTmuxPath } from '../core/Config.js';
+import { loadConfig, ensureStateDir, detectTmuxPath, detectGeminiPath } from '../core/Config.js';
 import { isNonFatalUncaught, shouldLogStackForUncaught } from '../core/uncaughtExceptionPolicy.js';
 import { closeAllSqlite } from '../core/SqliteRegistry.js';
 import { SessionManager } from '../core/SessionManager.js';
@@ -9180,6 +9180,41 @@ export async function startServer(options: StartOptions): Promise<void> {
       ));
     }
 
+    // ── GeminiLoopRunner (need-gem-002) — multi-turn gemini loop-driver ──────────
+    // Lets the gemini mentee sustain a multi-turn task: turn 1 one-shot establishes
+    // a session, later turns re-spawn `gemini -r <handle>` so context restores
+    // natively (no transcript re-send → quota-efficient). Subscription-auth is
+    // structural (the transport strips billing env). Ships DARK
+    // (autonomousSessions.geminiLoopDriver.enabled); the developmentAgent gate turns
+    // it on for dev agents only. Powers POST + GET /gemini-loop/runs.
+    let geminiLoopRunner: import('../monitoring/GeminiLoopRunner.js').GeminiLoopRunner | null = null;
+    {
+      const gcfg = config.autonomousSessions?.geminiLoopDriver;
+      const enabled = gcfg?.enabled ?? !!config.developmentAgent; // dark fleet-wide; live on dev agents
+      if (enabled) {
+        const { GeminiLoopRunner } = await import('../monitoring/GeminiLoopRunner.js');
+        const { createGeminiLoopSpawn, createGeminiHandleCapture, createQuotaBudgetGate } =
+          await import('../monitoring/geminiLoopProduction.js');
+        const geminiPath = detectGeminiPath() ?? 'gemini';
+        const turnTimeoutMs = gcfg?.turnTimeoutMs ?? 180_000;
+        geminiLoopRunner = new GeminiLoopRunner({
+          config: {
+            enabled: true,
+            model: gcfg?.model ?? 'gemini-2.5-flash',
+            maxTurns: gcfg?.maxTurns ?? 12,
+            minTurnIntervalMs: gcfg?.minTurnIntervalMs ?? 2_000,
+            maxConcurrent: gcfg?.maxConcurrent ?? 1,
+            maxRetainedRuns: gcfg?.maxRetainedRuns ?? 50,
+          },
+          spawn: createGeminiLoopSpawn(geminiPath, turnTimeoutMs),
+          captureHandle: createGeminiHandleCapture(geminiPath),
+          budgetGate: createQuotaBudgetGate(quotaTracker ?? null),
+          log: (msg) => console.log(pc.dim(msg)),
+        });
+        console.log(pc.green('  GeminiLoopRunner enabled (multi-turn gemini mentee, subscription auth)'));
+      }
+    }
+
     // ── Agent hard-sleep — SleepController (RESPONSIBLE-RESOURCE-USAGE, Stage B) ──
     // Decides "is it safe for this idle agent to drop to near-zero footprint?" with
     // every safety guard. Ships OFF + dry-run: observes + audits to
@@ -9933,7 +9968,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       console.log(pc.dim(`  [session-pool] rollout gate not wired: ${err instanceof Error ? err.message : String(err)}`));
     }
 
-    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, semanticMemory, activitySentinel, rateLimitSentinel, releaseReadinessSentinel: releaseReadinessSentinel ?? undefined, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, localSigningKeyPem, leaseTransport, onLeasePullRequest: () => leaseCoordinatorRef?.currentLease() ?? null, liveTailReceiver, handoffWireTransport, onHandoffBegin, onHandoffInitiate: handoffInitiate, handoffInProgress: handoffSentinelInProgress, messageLedger, currentInboundByTopic, replyMarkerTransport, onReplyMarker: messageLedger ? (marker: unknown) => { const m = marker as { dedupeKey: string; platform: string; replyIdempotencyKey: string; epoch: number; topic?: string | null }; messageLedger!.applyRemoteReplyMarker(m.dedupeKey, { platform: m.platform, replyIdempotencyKey: m.replyIdempotencyKey, epoch: m.epoch, topic: m.topic ?? null }); } : undefined, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, warrantsReplyGate, collaborationSurfacer, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, responseReviewGate, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, machinePoolRegistry, meshRpcDispatcher, sessionOwnershipRegistry, sessionPoolE2EResultStore, proxyCoordinator, topicIntentStore, topicIntentArcCheck, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, briefDeps, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, agentWorktreeReaper, mcpProcessReaper, sleepController, agentActivityState, reapLog, sleepWakeDetector, unjustifiedStopGate, stopGateDb, stopNotifier });
+    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, semanticMemory, activitySentinel, rateLimitSentinel, releaseReadinessSentinel: releaseReadinessSentinel ?? undefined, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, localSigningKeyPem, leaseTransport, onLeasePullRequest: () => leaseCoordinatorRef?.currentLease() ?? null, liveTailReceiver, handoffWireTransport, onHandoffBegin, onHandoffInitiate: handoffInitiate, handoffInProgress: handoffSentinelInProgress, messageLedger, currentInboundByTopic, replyMarkerTransport, onReplyMarker: messageLedger ? (marker: unknown) => { const m = marker as { dedupeKey: string; platform: string; replyIdempotencyKey: string; epoch: number; topic?: string | null }; messageLedger!.applyRemoteReplyMarker(m.dedupeKey, { platform: m.platform, replyIdempotencyKey: m.replyIdempotencyKey, epoch: m.epoch, topic: m.topic ?? null }); } : undefined, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, warrantsReplyGate, collaborationSurfacer, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, responseReviewGate, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, machinePoolRegistry, meshRpcDispatcher, sessionOwnershipRegistry, sessionPoolE2EResultStore, proxyCoordinator, topicIntentStore, topicIntentArcCheck, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, briefDeps, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, agentWorktreeReaper, mcpProcessReaper, geminiLoopRunner, sleepController, agentActivityState, reapLog, sleepWakeDetector, unjustifiedStopGate, stopGateDb, stopNotifier });
     // Boot-recovery (tunnel-failure-resilience spec Part 6): if the agent
     // died mid-relay-episode, the persisted tunnel.json carries
     // rotationPending=true. Rotate the dashboard PIN + authToken BEFORE
