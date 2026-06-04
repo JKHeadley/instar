@@ -82,6 +82,15 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     }),
   },
   {
+    key: 'parallelWork',
+    prefixes: ['/parallel-work'],
+    description: 'Parallel-Work Awareness — a cross-topic read index over the Topic-Intent layer: every topic, its current focus, high-specificity tags, and whether a session is live on it. Lets the agent see what all its hands are doing across topics/sessions (the overlap-councilor read surface; the proactive ParallelWorkSentinel is Phase B, ships dark). Signal-only; never gates.',
+    build: ({ ctx }) => ({
+      configured: !!ctx.parallelActivityIndex,
+      endpoints: ['GET /parallel-work/activities'],
+    }),
+  },
+  {
     key: 'apprenticeshipProgram',
     prefixes: ['/apprenticeship'],
     description: 'Apprenticeship Program — instance registry + lifecycle gates for onboarding agent frameworks. Each onboarding is a tracked instance (overseer / mentor / mentee). The retro-gate refuses starting an instance without a valid prior retro-harvest; the doc-as-required-artifact gate refuses completing one without its lessons captured. Gates are structural preconditions on objective artifacts; verdicts audited to logs/apprenticeship-decisions.jsonl.',

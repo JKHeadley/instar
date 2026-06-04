@@ -705,6 +705,8 @@ export interface RouteContext {
   tokenLedger: import('../monitoring/TokenLedger.js').TokenLedger | null;
   featureMetricsLedger: import('../monitoring/FeatureMetricsLedger.js').FeatureMetricsLedger | null;
   resourceLedger: import('../monitoring/ResourceLedger.js').ResourceLedger | null;
+  /** Cross-topic activity index (Parallel-Work Awareness Phase A). Backs GET /parallel-work/activities. */
+  parallelActivityIndex?: import('../core/ParallelActivityIndex.js').ParallelActivityIndex | null;
   /** Framework-Onboarding Mentor System issue ledger (read-only observability;
    *  signal-only — never gates). Null when stateDir is unavailable. Powers
    *  GET /framework-issues and /framework-issues/playbook. */
@@ -4701,6 +4703,24 @@ export function createRoutes(ctx: RouteContext): Router {
       sinceMs,
       limit,
       samples: ctx.resourceLedger.recentSamples({ sinceMs, limit, source }),
+    });
+  });
+
+  // ── Parallel-Work Awareness (docs/specs/parallel-activity-coherence.md, Phase A) ──
+  // Read-only cross-topic index: every topic with intent state + its current focus +
+  // high-specificity tags + whether a session is live on it. Signal-only; never gates.
+  // 503 when the index is unavailable (no stateDir / init failed).
+  router.get('/parallel-work/activities', (_req, res) => {
+    if (!ctx.parallelActivityIndex) {
+      res.status(503).json({ error: 'parallel-activity index unavailable (no stateDir or init failed)' });
+      return;
+    }
+    const activities = ctx.parallelActivityIndex.activities();
+    res.json({
+      count: activities.length,
+      runningCount: activities.filter((a) => a.running).length,
+      activities,
+      note: 'Cross-topic read over the existing Topic-Intent layer. The overlap sentinel (Phase B) ships separately.',
     });
   });
 

@@ -3238,6 +3238,23 @@ The "an unknown component is using more than a quarter of the agent's token budg
       result.upgraded.push('CLAUDE.md: added Token-Burn Alerts awareness (activity-gate noise fix)');
     }
 
+    // Parallel-Work Awareness (2026-06-03) — Agent Awareness + Migration Parity:
+    // existing agents must learn they can see what all their topics are working on
+    // (the cross-topic index), the antidote to duplicating another topic's work.
+    // Content-sniffed for idempotency.
+    if (!content.includes('Parallel-Work Awareness')) {
+      const pwSection = `
+## Parallel-Work Awareness
+
+See what ALL your hands are doing across topics/sessions at once (like a king with a council). A cross-topic read index over your existing per-topic intent: every topic, its current focus, high-specificity tags, and whether a session is live on it. The antidote to self-blindness — duplicating work another of your topics already did.
+- Check: \`curl -H "Authorization: Bearer $AUTH" "http://localhost:4042/parallel-work/activities"\` → \`{ count, runningCount, activities: [{ topicId, focus, tags, running, updatedAt }] }\`.
+- Proactive: before starting substantial new work in a topic, glance here to see if another topic is already on it; when the user asks "what am I working on across topics?" / "is another session already doing this?". (The proactive overlap councilor — ParallelWorkSentinel — is Phase B, ships dark.) Read-only; never gates. Spec: \`docs/specs/parallel-activity-coherence.md\`.
+`;
+      content += '\n' + pwSection;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Parallel-Work Awareness');
+    }
+
     // Correction & Preference Learning Sentinel (Slice 1a) §7 — Agent Awareness +
     // Migration Parity: existing agents must learn about the preferences read-
     // surface (the session-start hook now fetches /preferences/session-context

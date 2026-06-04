@@ -71,6 +71,7 @@ import { setFeatureMetricsRecorder } from '../core/CircuitBreakingIntelligencePr
 import { TokenLedgerPoller } from '../monitoring/TokenLedgerPoller.js';
 import { ResourceLedger } from '../monitoring/ResourceLedger.js';
 import { ResourceLedgerPoller } from '../monitoring/ResourceLedgerPoller.js';
+import { ParallelActivityIndex } from '../core/ParallelActivityIndex.js';
 import { ResourceSampler } from '../monitoring/ResourceSampler.js';
 import { getLlmCircuitBreaker } from '../core/LlmCircuitBreaker.js';
 import { FrameworkIssueLedger } from '../monitoring/FrameworkIssueLedger.js';
@@ -148,6 +149,7 @@ export class AgentServer {
   private tokenLedgerPoller: TokenLedgerPoller | null = null;
   private resourceLedger: ResourceLedger | null = null;
   private resourceLedgerPoller: ResourceLedgerPoller | null = null;
+  private parallelActivityIndex: ParallelActivityIndex | null = null;
   private resourceSampler: ResourceSampler | null = null;
   private frameworkIssueLedger: FrameworkIssueLedger | null = null;
   private mentorRunner: MentorOnboardingRunner | null = null;
@@ -651,6 +653,31 @@ export class AgentServer {
       }
     }
 
+    // Parallel-Work Awareness, Phase A (docs/specs/parallel-activity-coherence.md):
+    // a thin CROSS-topic read index over the EXISTING Topic-Intent layer. No new
+    // store; reads {stateDir}/topic-intent/*.json. Own try/catch (cascade isolation).
+    // `running` is enriched from the live session list (which topics have a session now).
+    if (options.config.stateDir) {
+      try {
+        const runningTopics = (): Set<number> => {
+          const ids = new Set<number>();
+          try {
+            for (const s of options.sessionManager.listRunningSessions() as Array<{ topicId?: number | null }>) {
+              if (typeof s.topicId === 'number') ids.add(s.topicId);
+            }
+          } catch { /* best-effort */ }
+          return ids;
+        };
+        this.parallelActivityIndex = new ParallelActivityIndex({
+          stateDir: options.config.stateDir,
+          isRunning: (topicId) => runningTopics().has(topicId),
+        });
+      } catch (err) {
+        console.warn('[instar] parallel-activity-index init failed (non-fatal):', err);
+        this.parallelActivityIndex = null;
+      }
+    }
+
     // Per-feature LLM metrics ledger — read-only observability for every gate/
     // sentinel's cost + hit-rate (docs/specs/llm-feature-metrics-spec.md). Own
     // try/catch, independent of the other ledgers (same cascade-isolation as
@@ -1075,6 +1102,7 @@ export class AgentServer {
       tokenLedger: this.tokenLedger,
       featureMetricsLedger: this.featureMetricsLedger,
       resourceLedger: this.resourceLedger,
+      parallelActivityIndex: this.parallelActivityIndex,
       frameworkIssueLedger: this.frameworkIssueLedger,
       mentorRunner: this.mentorRunner,
       failureLedger: this.failureLedger,

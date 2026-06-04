@@ -21,9 +21,11 @@ New:
   testability (production uses the real `TopicIntentStore.getRefsAtOrAbove`).
 - `tests/unit/parallel-activity-index.test.ts` — 7 tests.
 
-Remaining for the Phase A PR (same branch): `GET /parallel-work/activities` route + its
-CapabilityIndex entry + server wiring (construct the index, inject into route ctx) +
-integration/e2e tests + CLAUDE.md agent-awareness.
+Phase A is now COMPLETE: `GET /parallel-work/activities` route + CapabilityIndex entry
+(`parallelWork`, prefixes `['/parallel-work']`) + server wiring (constructed in AgentServer
+in its OWN try/catch, injected into routeCtx, `running` enriched from the live session list)
++ integration/e2e tests + CLAUDE.md template + migrateClaudeMd agent-awareness. The overlap
+ParallelWorkSentinel is Phase B (ships dark), a separate PR.
 
 ## Decision-point inventory
 - `ParallelActivityIndex` read aggregation — **add** — pure read over existing state; no
