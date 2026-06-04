@@ -294,6 +294,29 @@ describe('ThreadlineRouter — Warm-Session A2A', () => {
     expect(touchSpy).toHaveBeenCalledWith('thread-live');
   });
 
+  // Wiring-integrity: the server's reap tick calls reapExpired() and kills each
+  // returned session via the kill primitive. Models that exact loop against a
+  // real pool + mock killer (the server tick is inline; this guards its logic).
+  it('reap tick: reapExpired returns idle sessions and each is killed', () => {
+    const killed: string[] = [];
+    const clock = { t: 0 };
+    const pool = new WarmSessionPool({ globalCap: 5, perPeerCap: 5, ttlMs: 10_000 }, () => clock.t);
+    pool.admit({ threadId: 't1', peerId: 'p1', sessionName: 'echo-s1' });
+    clock.t = 5_000;
+    pool.admit({ threadId: 't2', peerId: 'p2', sessionName: 'echo-s2' });
+    clock.t = 12_000; // t1 idle 12s (>10), t2 idle 7s (<10)
+
+    // The exact tick body the server runs.
+    const killWarmSessionByName = (name: string) => { killed.push(name); };
+    const expired = pool.reapExpired();
+    for (const rec of expired) killWarmSessionByName(rec.sessionName);
+
+    expect(expired.map(r => r.threadId)).toEqual(['t1']);
+    expect(killed).toEqual(['echo-s1']);  // only the idle-past-TTL one
+    expect(pool.size()).toBe(1);          // t2 still warm
+    expect(pool.peek('t2')).toBeDefined();
+  });
+
   it('grounding-on-inject wraps the injected follow-up body with the boundary', async () => {
     const pool = new WarmSessionPool({ globalCap: 3, perPeerCap: 1, ttlMs: 600_000 });
     threadResumeMap._set('thread-inj', {

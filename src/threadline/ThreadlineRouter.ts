@@ -960,6 +960,17 @@ export class ThreadlineRouter {
     // trust/ownership checks (the crypto fingerprint), NOT the display name.
     const peerId = relayContext.senderFingerprint;
 
+    // Pre-spawn peer-conflict check (defense-in-depth): if the threadId is
+    // already owned by a DIFFERENT peer, refuse the warm path BEFORE spending an
+    // interactive spawn (otherwise admit would throw only after the worker is
+    // launched, double-spawning). The upstream anti-hijack guard makes this rare
+    // for verified peers, but the pool must never cross-bind. → cold-spawn.
+    const existingRecord = this.warmSessionPool.peek(threadId);
+    if (existingRecord && existingRecord.peerId !== peerId) {
+      console.warn(`[ThreadlineRouter] Warm pre-spawn peer-conflict for thread ${threadId}: owned by ${existingRecord.peerId.slice(0, 16)}, sender ${peerId.slice(0, 16)}. Falling back to cold-spawn.`);
+      return null;
+    }
+
     const maxHistory = RELAY_HISTORY_LIMITS[relayContext.trustLevel];
     const historyContext = await this.buildHistoryContext(threadId, maxHistory);
 

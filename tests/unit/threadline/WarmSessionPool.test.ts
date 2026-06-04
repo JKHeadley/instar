@@ -128,6 +128,16 @@ describe('WarmSessionPool', () => {
     expect(pool.size()).toBe(1);
   });
 
+  it('peek returns the raw record IGNORING the idle TTL (unlike get)', () => {
+    const { pool, clock } = mk();
+    pool.admit({ threadId: 'a', peerId: 'p1', sessionName: 's-a' });
+    clock.t = 10_000; // past TTL — get() would return undefined
+    expect(pool.get('a')).toBeUndefined();
+    // peek still resolves the record (used for pre-spawn peer-conflict checks).
+    expect(pool.peek('a')?.peerId).toBe('p1');
+    expect(pool.peek('missing')).toBeUndefined();
+  });
+
   it('reapUnderPressure evicts the n global LRU', () => {
     const { pool, clock } = mk({ globalCap: 5, perPeerCap: 5 });
     pool.admit({ threadId: 'a', peerId: 'p1', sessionName: 's-a' }); // t0 oldest

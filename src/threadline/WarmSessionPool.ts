@@ -136,6 +136,16 @@ export class WarmSessionPool {
     if (r) r.lastUsedAt = this.now();
   }
 
+  /**
+   * The raw record for a thread, IGNORING the idle TTL (unlike `get`). Used for
+   * a pre-spawn peer-conflict check so the router can refuse a cross-peer warm
+   * spawn BEFORE spending a spawn (admit would throw, but only after the worker
+   * is already launched). Returns undefined when no record exists.
+   */
+  peek(threadId: string): WarmSessionRecord | undefined {
+    return this.byThread.get(threadId);
+  }
+
   /** The warm session for a thread, if present and not past its idle TTL; else undefined. */
   get(threadId: string): WarmSessionRecord | undefined {
     const r = this.byThread.get(threadId);
