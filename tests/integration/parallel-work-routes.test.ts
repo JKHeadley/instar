@@ -11,6 +11,7 @@ import request from 'supertest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { createRoutes, type RouteContext } from '../../src/server/routes.js';
 import { ParallelActivityIndex } from '../../src/core/ParallelActivityIndex.js';
 import type { EstablishedRef } from '../../src/core/TopicIntent.js';
