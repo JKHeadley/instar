@@ -34,6 +34,9 @@ export interface ApprenticeshipCycleRecordInput {
   infraItems?: string[];
   kind?: string;
   status?: string;
+  /** The channel this cycle's mentor↔mentee interaction ACTUALLY ran through
+   *  (the dogfooded-channel standard, APPRENTICESHIP-PROGRAM-PROJECT-DESIGN §4a). */
+  channel?: string;
 }
 
 export const APPRENTICESHIP_CYCLE_AXES = [
@@ -44,6 +47,25 @@ export const APPRENTICESHIP_CYCLE_AXES = [
 
 export type ApprenticeshipCycleAxis = typeof APPRENTICESHIP_CYCLE_AXES[number];
 export type ApprenticeshipCycleKind = ApprenticeshipCycleAxis | 'unknown';
+
+/**
+ * How a cycle's mentor↔mentee interaction actually ran (§4a "dogfooded channel").
+ *  - `telegram-playwright` — THE channel: the mentor drove the mentee through the
+ *    real Telegram UX via the dedicated Playwright profile (experiences the UX).
+ *  - `threadline-backup`   — the backup transport (only when Playwright can't reach
+ *    Telegram); still counts toward the keystone.
+ *  - `direct-shortcut`     — a CLI/API shortcut that bypassed the UX-under-test;
+ *    recorded for honesty but does NOT count toward the keystone axis.
+ *  - `unknown`             — unset / grandfathered (pre-field cycles); counts, so the
+ *    enforcement never retroactively un-fires an already-earned keystone.
+ */
+export const APPRENTICESHIP_CYCLE_CHANNELS = [
+  'telegram-playwright',
+  'threadline-backup',
+  'direct-shortcut',
+  'unknown',
+] as const;
+export type ApprenticeshipCycleChannel = typeof APPRENTICESHIP_CYCLE_CHANNELS[number];
 
 export interface ApprenticeshipRoleAxisCoverage {
   fired: boolean;
@@ -57,6 +79,10 @@ export interface ApprenticeshipRoleCoverage {
   unknown: ApprenticeshipRoleAxisCoverage;
   dormantAxes: ApprenticeshipCycleAxis[];
   driftWarning: boolean;
+  /** mentor-mentee-differential cycles that ran via a `direct-shortcut` (so they
+   *  did NOT count toward the keystone axis). Surfaced for honesty — a shortcut is
+   *  recorded but can never make the keystone look healthy (§4a enforcement). */
+  shortcutDifferentialCount: number;
 }
 
 export interface ApprenticeshipCycleRecord {
@@ -72,6 +98,7 @@ export interface ApprenticeshipCycleRecord {
   infraItems: string[];
   kind: ApprenticeshipCycleKind;
   status: string;
+  channel: ApprenticeshipCycleChannel;
 }
 
 const SCHEMA = [
@@ -87,7 +114,8 @@ const SCHEMA = [
      coaching              TEXT NOT NULL,
      infra_items_json      TEXT NOT NULL,
      kind                  TEXT NOT NULL,
-     status                TEXT NOT NULL
+     status                TEXT NOT NULL,
+     channel               TEXT NOT NULL DEFAULT 'unknown'
    )`,
   `CREATE INDEX IF NOT EXISTS idx_apprenticeship_cycles_instance_created
      ON apprenticeship_cycles(instance_id, created_at DESC)`,
@@ -138,6 +166,16 @@ function normalizeKind(raw: unknown): ApprenticeshipCycleKind {
   throw new Error(`kind must be one of ${[...APPRENTICESHIP_CYCLE_AXES, 'unknown'].join(', ')}`);
 }
 
+function normalizeChannel(raw: unknown): ApprenticeshipCycleChannel {
+  if (
+    typeof raw === 'string' &&
+    (APPRENTICESHIP_CYCLE_CHANNELS as readonly string[]).includes(raw)
+  ) {
+    return raw as ApprenticeshipCycleChannel;
+  }
+  return 'unknown';
+}
+
 interface Row {
   id: string;
   instance_id: string;
@@ -151,6 +189,7 @@ interface Row {
   infra_items_json: string;
   kind: string;
   status: string;
+  channel: string;
 }
 
 export class ApprenticeshipCycleStore {
@@ -182,6 +221,14 @@ export class ApprenticeshipCycleStore {
       try { this.db.close(); } catch { /* already closed */ }
     });
     for (const ddl of SCHEMA) this.db.exec(ddl);
+    // Migration: add the `channel` column to DBs created before the dogfooded-
+    // channel enforcement (§4a). Idempotent — only ALTER if it's missing. Existing
+    // rows default to 'unknown' (grandfathered → still count, never un-firing an
+    // already-earned keystone).
+    const cols = this.db.prepare(`PRAGMA table_info(apprenticeship_cycles)`).all() as Array<{ name: string }>;
+    if (!cols.some((c) => c.name === 'channel')) {
+      this.db.exec(`ALTER TABLE apprenticeship_cycles ADD COLUMN channel TEXT NOT NULL DEFAULT 'unknown'`);
+    }
     // Legacy rows pre-date axis vocabulary. Keep them visible, but never
     // fabricate an axis from the old catch-all label.
     this.db.prepare(`UPDATE apprenticeship_cycles SET kind = 'unknown' WHERE kind = 'differential-cycle'`).run();
@@ -194,11 +241,11 @@ export class ApprenticeshipCycleStore {
         INSERT INTO apprenticeship_cycles
           (id, instance_id, cycle_number, created_at, task, mentee_output,
            mentor_flagged_json, overseer_diff_json, coaching, infra_items_json,
-           kind, status)
+           kind, status, channel)
         VALUES
           (@id, @instanceId, @cycleNumber, @createdAt, @task, @menteeOutput,
            @mentorFlaggedJson, @overseerDifferentialJson, @coaching,
-           @infraItemsJson, @kind, @status)
+           @infraItemsJson, @kind, @status, @channel)
       `),
       listAll: this.db.prepare(`
         SELECT * FROM apprenticeship_cycles
@@ -242,6 +289,7 @@ export class ApprenticeshipCycleStore {
       infraItems: stringArray(input.infraItems, 'infraItems'),
       kind: normalizeKind(input.kind),
       status: optionalString(input.status, 'open'),
+      channel: normalizeChannel(input.channel),
     };
 
     this.stmts.insert.run({
@@ -274,9 +322,20 @@ export class ApprenticeshipCycleStore {
       APPRENTICESHIP_CYCLE_AXES.map((axis) => [axis, blank()]),
     ) as Record<ApprenticeshipCycleAxis, ApprenticeshipRoleAxisCoverage>;
     const unknown = blank();
+    let shortcutDifferentialCount = 0;
 
     for (const row of rows) {
       const kind = normalizeKind(row.kind);
+      const channel = normalizeChannel(row.channel);
+      // §4a ENFORCEMENT: a mentor-mentee-differential cycle that ran through a
+      // `direct-shortcut` (bypassing the dogfooded Telegram-Playwright UX-under-test)
+      // is recorded for honesty but does NOT count toward the keystone axis — a
+      // shortcut can never make the program look healthy. Dogfooded, backup, and
+      // grandfathered ('unknown') channels all count as before.
+      if (kind === 'mentor-mentee-differential' && channel === 'direct-shortcut') {
+        shortcutDifferentialCount += 1;
+        continue;
+      }
       const target = kind === 'unknown' ? unknown : axes[kind];
       target.fired = true;
       target.cycleCount += 1;
@@ -288,7 +347,7 @@ export class ApprenticeshipCycleStore {
       !axes['mentor-mentee-differential'].fired &&
       axes['overseer-apprentice-devreview'].cycleCount >= 2;
 
-    return { instanceId: id, axes, unknown, dormantAxes, driftWarning };
+    return { instanceId: id, axes, unknown, dormantAxes, driftWarning, shortcutDifferentialCount };
   }
 
   closeCycle(id: string): ApprenticeshipCycleRecord | null {
@@ -320,6 +379,7 @@ export class ApprenticeshipCycleStore {
       infraItems: parseJsonArray(row.infra_items_json),
       kind: normalizeKind(row.kind),
       status: row.status,
+      channel: normalizeChannel(row.channel),
     };
   }
 }

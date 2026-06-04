@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "sessionId": "telegram-1052-double-send-route-guard",
+  "timestamp": "2026-06-04T05:46:05.000Z",
+  "phase": "complete",
+  "tier": 1,
+  "declaredTier": 1,
+  "tierReasoning": "Server response-safety bug fix with no new route, config, migration, or capability surface. Runtime behavior changes only after a response is already committed; the first response remains authoritative.",
+  "eli16Path": "upgrades/double-send-route-guard.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/double-send-route-guard.md",
+  "artifactPath": "upgrades/side-effects/double-send-route-guard.md",
+  "artifactSha256": "73291697dff3accff609e863c80fecc9a0567cc7d148e0da178bf67ae0c4589e",
+  "coveredFiles": [
+    "src/server/AgentServer.ts",
+    "src/server/middleware.ts",
+    "tests/unit/duplicate-response-guard.test.ts",
+    "tests/unit/route-double-send-audit.test.ts",
+    "upgrades/double-send-route-guard.eli16.md",
+    "upgrades/next/double-send-route-guard.md",
+    "upgrades/side-effects/double-send-route-guard.md"
+  ],
+  "summary": "Adds a duplicate-response Express guard, hardens the shared error handler for late errors after committed responses, and adds runtime plus source-audit tests for the missing-return double-send class."
+}

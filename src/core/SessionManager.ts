@@ -270,6 +270,14 @@ export class SessionManager extends EventEmitter {
    *  Key = tmuxSession name. Cleared when agent replies via /telegram/reply/:topicId. */
   private pendingInjections = new Map<string, { topicId: number; injectedAt: number; text: string }>();
 
+  /** Dedup ledger for the Telegram→session delivery chokepoint.
+   *  Key = `${tmuxSession}:${messageId}` → deliveredAt(ms). A single user message
+   *  that is over-forwarded upstream (lifeline re-forward, PendingRelayStore
+   *  re-drive, sentinel pause/resume) must still reach the session at most once.
+   *  Bounded by pruning entries older than the dedup window on each delivery. */
+  private recentTelegramDeliveries = new Map<string, number>();
+  private static readonly TELEGRAM_DELIVERY_DEDUP_WINDOW_MS = 10 * 60 * 1000;
+
   /** Track sessions nudged after an API error in the CURRENT idle episode.
    *  Key = session ID. Set when we nudge; CLEARED when the session recovers (produces
    *  output / leaves idle), so the NEXT API-error episode in a long-running session
@@ -1133,6 +1141,24 @@ rm()  { "${shimRunner}" rm  "$@"; }
      *  init; with this flag a headless spawn boots in ~9s. No effect on Codex
      *  spawns (Codex MCP wiring is separate). */
     disableProjectMcp?: boolean;
+    /** Threadline A2A continuity (claude-code HEADLESS only): when set, the
+     *  headless `claude -p` spawn is launched with `--session-id <uuid>` so the
+     *  transcript is created at a deterministic, caller-chosen id. The caller
+     *  (ThreadlineRouter.spawnNewThread) stores this uuid as the thread's
+     *  resume-map entry, so the next inbound message on the same thread can
+     *  resume the exact conversation via `resumeSessionId`. Mutually exclusive
+     *  with `resumeSessionId` (sessionId wins). No effect on non-claude
+     *  frameworks or interactive spawns. */
+    sessionId?: string;
+    /** Threadline A2A continuity (claude-code HEADLESS only): when set, the
+     *  headless `claude -p` spawn is launched with `--resume <uuid>` so it
+     *  reloads the full prior transcript captured by an earlier `sessionId`
+     *  spawn. This is what makes A2A follow-ups land in a warm session with
+     *  full context instead of cold-spawning memoryless. Mutually exclusive
+     *  with `sessionId` (sessionId wins when both are present). A stale uuid is
+     *  covered by the existing resume-crash fallback. No effect on non-claude
+     *  frameworks or interactive spawns. */
+    resumeSessionId?: string;
   }): Promise<Session> {
     const runningSessions = this.listRunningSessions();
     if (runningSessions.length >= this.config.maxSessions) {
@@ -1245,6 +1271,27 @@ rm()  { "${shimRunner}" rm  "$@"; }
       const dashPIndex = headlessSpec.argv.indexOf('-p');
       if (dashPIndex > 0) {
         headlessSpec.argv.splice(dashPIndex, 0, ...extraClaudeFlags);
+      }
+    }
+
+    // Threadline A2A continuity (claude-code HEADLESS only): set/resume the
+    // conversation id so follow-up messages on the same thread land in a warm
+    // session with the full prior transcript instead of cold-spawning.
+    // Spliced before the `-p` positional, mirroring extraClaudeFlags exactly.
+    // Mutually exclusive: `sessionId` (--session-id) wins over `resumeSessionId`
+    // (--resume). Only emitted for claude-code and only when provided, so every
+    // existing spawn (jobs, topic sessions, codex) is byte-for-byte unaffected.
+    if (headlessFramework === 'claude-code') {
+      const continuityFlags: string[] = options.sessionId
+        ? ['--session-id', options.sessionId]
+        : options.resumeSessionId
+          ? ['--resume', options.resumeSessionId]
+          : [];
+      if (continuityFlags.length > 0) {
+        const dashPIndex = headlessSpec.argv.indexOf('-p');
+        if (dashPIndex > 0) {
+          headlessSpec.argv.splice(dashPIndex, 0, ...continuityFlags);
+        }
       }
     }
 
@@ -2093,7 +2140,11 @@ rm()  { "${shimRunner}" rm  "$@"; }
    * Used for Telegram-driven conversational sessions.
    * Optionally sends an initial message after Claude is ready.
    */
-  async spawnInteractiveSession(initialMessage?: string, name?: string, options?: { telegramTopicId?: number; slackChannelId?: string; resumeSessionId?: string; framework?: IntelligenceFramework; codexLocalProvider?: 'ollama' | 'lmstudio'; defaultModel?: string }): Promise<string> {
+  async spawnInteractiveSession(initialMessage?: string, name?: string, options?: { telegramTopicId?: number; slackChannelId?: string; resumeSessionId?: string; framework?: IntelligenceFramework; codexLocalProvider?: 'ollama' | 'lmstudio'; defaultModel?: string;
+    /** Warm-session A2A (claude-code only): pin a deterministic --session-id so an
+     *  eviction mid-thread can --resume losslessly (#746). Ignored when resuming. */
+    sessionId?: string;
+  }): Promise<string> {
     const sanitized = name
       ? name.toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '').slice(0, 40)
       : null;
@@ -2169,6 +2220,9 @@ rm()  { "${shimRunner}" rm  "$@"; }
       binaryPath,
       ...(options?.resumeSessionId ? { resumeSessionId: options.resumeSessionId } : {}),
       ...(launchDefaultModel ? { defaultModel: launchDefaultModel } : {}),
+      // Warm-session A2A: pin a deterministic --session-id (claude-only, ignored
+      // when resuming) so eviction mid-thread falls back to --resume losslessly.
+      ...(options?.sessionId && !options?.resumeSessionId ? { sessionId: options.sessionId } : {}),
       ...(options?.codexLocalProvider ? { codexLocalProvider: options.codexLocalProvider } : {}),
       // Per-agent codex threadline MCP override (ignored by non-codex builders).
       ...(this.config.codexThreadlineMcp ? { codexThreadlineMcp: this.config.codexThreadlineMcp } : {}),
@@ -2559,7 +2613,35 @@ rm()  { "${shimRunner}" rm  "$@"; }
     return false; // still stuck after the full recovery window
   }
 
-  injectTelegramMessage(tmuxSession: string, topicId: number, text: string, topicName?: string, senderName?: string, telegramUserId?: number): boolean {
+  injectTelegramMessage(tmuxSession: string, topicId: number, text: string, topicName?: string, senderName?: string, telegramUserId?: number, messageId?: number): boolean {
+    // Structural dedup at the delivery chokepoint: a given Telegram messageId
+    // must reach a session at most once. Upstream paths can over-forward the SAME
+    // user message (lifeline re-forward, PendingRelayStore re-drive, sentinel
+    // pause/resume) — observed 5x to one codex session, which wastes mentee LLM
+    // quota and queues the task repeatedly. Suppress the duplicate but LOG it so
+    // the upstream over-forward stays visible for root-cause. Skipped when no
+    // positive messageId is available (in-process callers that don't carry one).
+    if (typeof messageId === 'number' && messageId > 0) {
+      const now = Date.now();
+      // Prune expired entries to keep the ledger bounded.
+      for (const [k, ts] of this.recentTelegramDeliveries) {
+        if (now - ts > SessionManager.TELEGRAM_DELIVERY_DEDUP_WINDOW_MS) {
+          this.recentTelegramDeliveries.delete(k);
+        }
+      }
+      const dedupKey = `${tmuxSession}:${messageId}`;
+      const priorAt = this.recentTelegramDeliveries.get(dedupKey);
+      if (priorAt !== undefined) {
+        console.warn(
+          `[SessionManager] Suppressed duplicate Telegram delivery to "${tmuxSession}" ` +
+          `(topic ${topicId}, messageId ${messageId}, ${Math.round((now - priorAt) / 1000)}s after first) — ` +
+          `a single user message was forwarded more than once; delivering only once.`,
+        );
+        return true; // already delivered on the first call — success without re-injecting
+      }
+      this.recentTelegramDeliveries.set(dedupKey, now);
+    }
+
     // Track this injection for response verification.
     // If the session dies before the agent replies, the monitor loop will detect it.
     this.pendingInjections.set(tmuxSession, { topicId, injectedAt: Date.now(), text: text.slice(0, 200) });

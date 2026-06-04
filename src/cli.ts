@@ -34,7 +34,9 @@ import { listRelationships, importRelationships, exportRelationships } from './c
 import { listMachines, removeMachine, whoami, startPairing, joinMesh, leaveMesh, wakeup, doctor } from './commands/machine.js';
 import pc from 'picocolors';
 import { getInstarVersion } from './core/Config.js';
+import { resolveAgentDir } from './core/Config.js';
 import { listAgents } from './core/AgentRegistry.js';
+import { shouldRejectServerLifecycleFromSession } from './core/SessionServerGuard.js';
 
 /**
  * Add or update Telegram configuration in the project config.
@@ -1273,14 +1275,17 @@ telemetryCmd
 
 // ── Server ────────────────────────────────────────────────────────
 
-/** Guard: prevent sessions from inadvertently starting/stopping/restarting the server. */
-function rejectIfInsideSession(action: string): boolean {
-  if (process.env.INSTAR_SESSION_ID) {
-    console.error(pc.red(`Cannot '${action}' from inside a session (session ${process.env.INSTAR_SESSION_ID}).`));
-    console.error(pc.dim('The server is managed by the supervisor. Sessions should not start, stop, or restart it.'));
-    return true;
+/** Guard: prevent sessions from restarting their own managing server. */
+function rejectIfInsideSession(action: string, targetDir?: string): boolean {
+  const decision = shouldRejectServerLifecycleFromSession({ action, targetDir });
+  if (!decision.reject) return false;
+
+  console.error(pc.red(decision.message ?? `Cannot '${action}' from inside a session.`));
+  if (decision.detail) console.error(pc.dim(decision.detail));
+  if (decision.supervisorHint) {
+    console.error(pc.dim(`If you need to bounce this agent, use the supervisor: ${decision.supervisorHint}`));
   }
-  return false;
+  return true;
 }
 
 // ── Listener Daemon ──────────────────────────────────────────────────
@@ -1387,10 +1392,7 @@ serverCmd
   .option('--no-telegram', 'Skip Telegram polling (use when lifeline manages Telegram)')
   .option('-d, --dir <path>', 'Project directory')
   .action(async (name, opts) => {
-    if (rejectIfInsideSession('server start')) return;
     if (name && !opts.dir) {
-      // Resolve standalone agent name to directory
-      const { resolveAgentDir } = await import('./core/Config.js');
       try {
         opts.dir = resolveAgentDir(name);
       } catch (err) {
@@ -1398,6 +1400,7 @@ serverCmd
         process.exit(1);
       }
     }
+    if (rejectIfInsideSession('server start', opts.dir)) return;
     return startServer(opts);
   });
 
@@ -1406,9 +1409,7 @@ serverCmd
   .description('Stop the agent server (optional: standalone agent name)')
   .option('-d, --dir <path>', 'Project directory')
   .action(async (name, opts) => {
-    if (rejectIfInsideSession('server stop')) return;
     if (name && !opts.dir) {
-      const { resolveAgentDir } = await import('./core/Config.js');
       try {
         opts.dir = resolveAgentDir(name);
       } catch (err) {
@@ -1416,6 +1417,7 @@ serverCmd
         process.exit(1);
       }
     }
+    if (rejectIfInsideSession('server stop', opts.dir)) return;
     return stopServer(opts);
   });
 
@@ -1424,9 +1426,7 @@ serverCmd
   .description('Restart the agent server (handles launchd/systemd lifecycle)')
   .option('-d, --dir <path>', 'Project directory')
   .action(async (name, opts) => {
-    if (rejectIfInsideSession('server restart')) return;
     if (name && !opts.dir) {
-      const { resolveAgentDir } = await import('./core/Config.js');
       try {
         opts.dir = resolveAgentDir(name);
       } catch (err) {
@@ -1434,6 +1434,7 @@ serverCmd
         process.exit(1);
       }
     }
+    if (rejectIfInsideSession('server restart', opts.dir)) return;
     return restartServer(opts);
   });
 

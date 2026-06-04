@@ -2734,6 +2734,29 @@ export interface ThreadlineConfig {
   listener?: ThreadlineListenerConfig;
   /** §4.4: Spawn manager / drain loop configuration */
   spawn?: ThreadlineSpawnConfig;
+  /** Warm-session A2A keep-alive integration (Arch Y). */
+  warmSessionA2A?: ThreadlineWarmSessionConfig;
+}
+
+/**
+ * Warm-session A2A integration config (THREADLINE-WARM-SESSION-A2A-INTEGRATION-SPEC).
+ *
+ * Dark-ship: `enabled` is intentionally left undefined in ConfigDefaults so the
+ * server resolves it via the developmentAgent gate
+ * (`enabled ?? !!config.developmentAgent`) — live on Echo, dark on the fleet.
+ * The caps/TTL/floor have conservative defaults so a flood can't pin processes.
+ */
+export interface ThreadlineWarmSessionConfig {
+  /** Master flag. Undefined → resolves via the developmentAgent gate. */
+  enabled?: boolean;
+  /** Max warm sessions across all peers. Default: 3. */
+  globalCap?: number;
+  /** Max warm sessions for any one peer. Default: 1. */
+  perPeerCap?: number;
+  /** Idle TTL — a warm session unused for this long is reaped (ms). Default: 600000 (10m). */
+  ttlMs?: number;
+  /** Trust floor a peer must meet to pin a warm session (abuse/resource control). Default: 'verified'. */
+  trustFloor?: 'verified' | 'trusted' | 'autonomous';
 }
 
 /**

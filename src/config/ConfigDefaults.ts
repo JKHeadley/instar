@@ -310,6 +310,19 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       heartbeatEnabled: false,
       heartbeatIntervalMs: 420000, // 7 min — middle of the 5-10 min range
     },
+    // Warm-session A2A keep-alive (THREADLINE-WARM-SESSION-A2A-INTEGRATION-SPEC).
+    // DARK-SHIP: `enabled` is deliberately OMITTED so the server resolves it via
+    // the developmentAgent gate (`enabled ?? !!config.developmentAgent`) — live
+    // on Echo, dark on the fleet. Caps/TTL/floor are conservative so a flood
+    // can't pin processes. applyDefaults deep-merges this nested block under the
+    // existing `threadline` key on update (Migration Parity), so existing agents
+    // backfill the caps without an explicit patch.
+    warmSessionA2A: {
+      globalCap: 3,
+      perPeerCap: 1,
+      ttlMs: 600000, // 10 min
+      trustFloor: 'verified',
+    },
   },
   // Topic-intent auto-capture loop (rung 0 of continuous-working-awareness).
   // ON by default (ratified): every substantive conversation turn gets a cheap

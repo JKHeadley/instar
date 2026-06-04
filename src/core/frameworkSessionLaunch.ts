@@ -141,6 +141,15 @@ export interface InteractiveLaunchOptions {
    * resolveThreadlineMcpEntry / CODEX-MULTIAGENT-THREADLINE-SPEC.
    */
   codexThreadlineMcp?: { command: string; args: string[] };
+  /**
+   * Warm-session A2A (claude-code only): when set, the interactive claude
+   * session is launched with `--session-id <uuid>` so its transcript is created
+   * at a deterministic id. The warm keep-alive worker uses this so an eviction
+   * mid-thread can fall back losslessly to `--resume <uuid>` (#746). Mutually
+   * exclusive with `resumeSessionId` (resume wins — you cannot set a new id when
+   * reloading an existing transcript). No effect on non-claude frameworks.
+   */
+  sessionId?: string;
 }
 
 export interface InteractiveLaunchSpec {
@@ -160,6 +169,12 @@ const claudeCodeBuilder: Builder = (options) => {
   const argv: string[] = [options.binaryPath, '--dangerously-skip-permissions'];
   if (options.resumeSessionId) {
     argv.push('--resume', options.resumeSessionId);
+  } else if (options.sessionId) {
+    // Warm-session A2A: pin a deterministic conversation id (claude-only) so an
+    // eviction mid-thread can `--resume <uuid>` losslessly (#746). Mutually
+    // exclusive with --resume (resume reloads an existing transcript; you can't
+    // also set a new id), so this only fires when not resuming.
+    argv.push('--session-id', options.sessionId);
   }
   // Honor the configured default model when one is set. Previously this
   // builder silently dropped options.defaultModel — unlike the Codex and

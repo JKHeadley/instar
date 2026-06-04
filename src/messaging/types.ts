@@ -7,6 +7,11 @@
  * Derived from: docs/specs/INTER-AGENT-MESSAGING-SPEC.md v3.1
  */
 
+import {
+  INJECTION_SHELL_PROCESSES,
+  allFrameworkInjectionProcessNames,
+} from '../core/frameworkInjectionProcesses.js';
+
 // ── Message Primitives ─────────────────────────────────────────────
 
 /** Message classification — determines delivery TTL, retention, and response expectations */
@@ -249,8 +254,14 @@ export interface InjectionSafety {
  * Allowed foreground processes for injection.
  * Only inject if one of these is running — whitelist is strictly safer than blocklist.
  */
+// Framework-DERIVED so live-injection works for EVERY agentic framework, not just
+// claude-code. Shells (always safe) ∪ each framework's interactive process names
+// (incl. the macOS `claude.exe` pane-command quirk) from the single-source-of-truth
+// registry. Hardcoding a framework's process name here instead of in the registry
+// is a framework-agnosticism violation (tests/unit/framework-agnosticism.test.ts).
 export const ALLOWED_INJECTION_PROCESSES: ReadonlyArray<string> = [
-  'bash', 'zsh', 'fish', 'sh', 'dash', 'claude',
+  ...INJECTION_SHELL_PROCESSES,
+  ...allFrameworkInjectionProcessNames(),
 ];
 
 // ── Threads ────────────────────────────────────────────────────────
