@@ -86,6 +86,21 @@ describe('Pre-push gate script', () => {
     expect(content).toContain('Internal-only release fragment(s) accompany');
     expect(content).toContain('internalOnlyFragments.length > 0 && srcChanges.length > 0');
   });
+
+  it('diffs against the main merge-target ref, not @{u}, so merge-from-main updates are not false-flagged', () => {
+    // A PR updated by MERGING main in (the no-force-push path) must NOT see all of
+    // main's already-shipped files as its own changes — that produced false
+    // "src changed without a fragment" errors (forcing INSTAR_PRE_PUSH_SKIP=1).
+    // The gate now prefers the main merge-target ref over the branch's upstream,
+    // so the three-dot diff is the PR's true diff. Source-presence (like #23):
+    // the git-diff path is not executed in unit tests.
+    const content = fs.readFileSync(gatePath, 'utf-8');
+    expect(content).toContain('pickRef');
+    expect(content).toContain("'JKHeadley/main'");
+    expect(content).toContain('never UNDER-reports');
+    // still falls back to @{u} when no main ref resolves in the clone
+    expect(content).toContain('@{u}');
+  });
 });
 
 // ── Integration: malformed NEXT.md rejection ─────────────────────────
