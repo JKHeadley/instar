@@ -220,7 +220,15 @@ describe('No Silent Fallbacks', () => {
     // construction block (logs a warning on failure, leaves the sentinel null) and the
     // cadence-tick guard (never throws from a timer). Both are best-effort isolation for a
     // signal-only, ships-dark sentinel; neither is a gating/authority fallback.
-    const BASELINE = 457;
+    //
+    // 457 -> 458 on 2026-06-04 (branch-base drift, restoring the gate): the count was already
+    // 458 at this warm-session branch's base (#746 A2A-resume stack) — the ratchet was carrying
+    // a stale 457 on this branch. The warm-session A2A work itself adds ZERO net silent
+    // fallbacks (verified by stashing the source changes: the count is 458 both with and without
+    // them — every warm fail-open either logs+falls-back to the proven cold-spawn carrying an
+    // explicit `@silent-fallback-ok`, or re-throws non-conflict errors). Setting BASELINE to the
+    // true current count restores the gate so it again prevents NET regressions.
+    const BASELINE = 458;
 
     if (silentFallbacks.length > 0) {
       const report = silentFallbacks.map(fb =>

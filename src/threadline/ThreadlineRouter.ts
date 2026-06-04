@@ -1003,6 +1003,9 @@ export class ThreadlineRouter {
         interactive: true,
       });
     } catch (err) {
+      // @silent-fallback-ok — intentional + observable: the warm keep-alive path
+      // is best-effort over the PROVEN cold-spawn. A spawn-eval error degrades to
+      // cold-spawn (logged here, and the cold path has its own denial handling).
       console.warn(`[ThreadlineRouter] Warm spawn evaluate threw for thread ${threadId}: ${err instanceof Error ? err.message : String(err)} — falling back to cold-spawn`);
       return null;
     }
@@ -1028,6 +1031,9 @@ export class ThreadlineRouter {
         }
       }
     } catch (err) {
+      // @silent-fallback-ok — a peer-conflict (defense-in-depth) degrades to the
+      // PROVEN cold-spawn (logged); it must NEVER overwrite the owner's warm
+      // session. Any OTHER error re-throws (not a silent fallback).
       if (err instanceof WarmSessionPeerConflictError) {
         console.warn(`[ThreadlineRouter] Warm admit peer-conflict for thread ${threadId}: ${err.message}. Falling back to cold-spawn.`);
         return null;
