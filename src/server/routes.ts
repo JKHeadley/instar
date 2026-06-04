@@ -10136,7 +10136,7 @@ export function createRoutes(ctx: RouteContext): Router {
           }
         } catch { /* fall through without name */ }
         console.log(`[telegram-forward] Injecting into ${targetSession}: "${text.slice(0, 80)}"`);
-        const injected = ctx.sessionManager.injectTelegramMessage(targetSession, topicId, text, injectedTopicName, fromFirstName, fromUserId);
+        const injected = ctx.sessionManager.injectTelegramMessage(targetSession, topicId, text, injectedTopicName, fromFirstName, fromUserId, typeof messageId === 'number' ? messageId : undefined);
 
         if (injected === false) {
           // Injection failed — save message under stateDir (not /tmp) to avoid world-readable exposure

@@ -1400,6 +1400,7 @@ function wireTelegramRouting(
         console.log(`[telegram→session] Injecting into ${targetSession}: "${text.slice(0, 80)}"`);
         sessionManager.injectTelegramMessage(
           targetSession, topicId, text, pipeline.topicName, pipeline.sender.firstName, pipeline.sender.telegramUserId,
+          parseInt(pipeline.id.replace('tg-', ''), 10) || undefined,
         );
         // Delivery confirmation — only when WE own polling. When lifeline owns
         // polling (--no-telegram / standby), it already sends its own confirmation.

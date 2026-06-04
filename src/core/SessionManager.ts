@@ -270,6 +270,14 @@ export class SessionManager extends EventEmitter {
    *  Key = tmuxSession name. Cleared when agent replies via /telegram/reply/:topicId. */
   private pendingInjections = new Map<string, { topicId: number; injectedAt: number; text: string }>();
 
+  /** Dedup ledger for the Telegram→session delivery chokepoint.
+   *  Key = `${tmuxSession}:${messageId}` → deliveredAt(ms). A single user message
+   *  that is over-forwarded upstream (lifeline re-forward, PendingRelayStore
+   *  re-drive, sentinel pause/resume) must still reach the session at most once.
+   *  Bounded by pruning entries older than the dedup window on each delivery. */
+  private recentTelegramDeliveries = new Map<string, number>();
+  private static readonly TELEGRAM_DELIVERY_DEDUP_WINDOW_MS = 10 * 60 * 1000;
+
   /** Track sessions nudged after an API error in the CURRENT idle episode.
    *  Key = session ID. Set when we nudge; CLEARED when the session recovers (produces
    *  output / leaves idle), so the NEXT API-error episode in a long-running session
@@ -2559,7 +2567,35 @@ rm()  { "${shimRunner}" rm  "$@"; }
     return false; // still stuck after the full recovery window
   }
 
-  injectTelegramMessage(tmuxSession: string, topicId: number, text: string, topicName?: string, senderName?: string, telegramUserId?: number): boolean {
+  injectTelegramMessage(tmuxSession: string, topicId: number, text: string, topicName?: string, senderName?: string, telegramUserId?: number, messageId?: number): boolean {
+    // Structural dedup at the delivery chokepoint: a given Telegram messageId
+    // must reach a session at most once. Upstream paths can over-forward the SAME
+    // user message (lifeline re-forward, PendingRelayStore re-drive, sentinel
+    // pause/resume) — observed 5x to one codex session, which wastes mentee LLM
+    // quota and queues the task repeatedly. Suppress the duplicate but LOG it so
+    // the upstream over-forward stays visible for root-cause. Skipped when no
+    // positive messageId is available (in-process callers that don't carry one).
+    if (typeof messageId === 'number' && messageId > 0) {
+      const now = Date.now();
+      // Prune expired entries to keep the ledger bounded.
+      for (const [k, ts] of this.recentTelegramDeliveries) {
+        if (now - ts > SessionManager.TELEGRAM_DELIVERY_DEDUP_WINDOW_MS) {
+          this.recentTelegramDeliveries.delete(k);
+        }
+      }
+      const dedupKey = `${tmuxSession}:${messageId}`;
+      const priorAt = this.recentTelegramDeliveries.get(dedupKey);
+      if (priorAt !== undefined) {
+        console.warn(
+          `[SessionManager] Suppressed duplicate Telegram delivery to "${tmuxSession}" ` +
+          `(topic ${topicId}, messageId ${messageId}, ${Math.round((now - priorAt) / 1000)}s after first) — ` +
+          `a single user message was forwarded more than once; delivering only once.`,
+        );
+        return true; // already delivered on the first call — success without re-injecting
+      }
+      this.recentTelegramDeliveries.set(dedupKey, now);
+    }
+
     // Track this injection for response verification.
     // If the session dies before the agent replies, the monitor loop will detect it.
     this.pendingInjections.set(tmuxSession, { topicId, injectedAt: Date.now(), text: text.slice(0, 200) });
