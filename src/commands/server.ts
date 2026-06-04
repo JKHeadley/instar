@@ -3721,7 +3721,12 @@ export async function startServer(options: StartOptions): Promise<void> {
         const telegramConfig = config.messaging?.find(m => m.type === 'telegram');
         if (telegramConfig?.config) {
           const authIds = (telegramConfig.config.authorizedUserIds as number[]) ?? [];
-          if (!authIds.includes(telegramUserId)) {
+          // Type-tolerant membership check: config JSON may already hold ids as
+          // strings, so a strict `includes(number)` would miss an existing string
+          // entry and push a duplicate (leaving mixed-type config). Compare as
+          // strings; isAuthorized() is likewise type-tolerant.
+          const already = authIds.some(id => String(id) === String(telegramUserId));
+          if (!already) {
             authIds.push(telegramUserId);
             telegramConfig.config.authorizedUserIds = authIds;
           }
