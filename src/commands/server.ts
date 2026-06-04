@@ -128,7 +128,8 @@ import { pickupDroppedMessages } from '../messaging/DropPickup.js';
 import { pickupGitSyncMessages } from '../messaging/GitSyncTransport.js';
 import { DeliveryRetryManager } from '../messaging/DeliveryRetryManager.js';
 import { SpawnRequestManager } from '../messaging/SpawnRequestManager.js';
-import { ThreadlineRouter } from '../threadline/ThreadlineRouter.js';
+import { ThreadlineRouter, trustMeetsFloor } from '../threadline/ThreadlineRouter.js';
+import { WarmSessionPool } from '../threadline/WarmSessionPool.js';
 import { resolveThreadlineMcpEntry } from '../threadline/mcpEntry.js';
 import { ThreadResumeMap } from '../threadline/ThreadResumeMap.js';
 import { ConversationStore } from '../threadline/ConversationStore.js';
@@ -7693,6 +7694,30 @@ export async function startServer(options: StartOptions): Promise<void> {
         ?? 5,
       getActiveSessions: () => sessionManager.listRunningSessions(),
       spawnSession: async (prompt, opts) => {
+        // Warm-session A2A (Arch Y): when the SpawnRequest is flagged interactive,
+        // launch a PERSISTENT (keep-alive) interactive worker instead of the
+        // headless one-shot `claude -p`. The grounded prompt is delivered as the
+        // worker's FIRST turn (after-ready inject), and the worker stays alive so
+        // follow-ups inject into the same session. The MCP/permission flag set
+        // matches the `-p` path: claude interactive keeps the PROJECT MCP (where
+        // threadline_send lives) under --dangerously-skip-permissions, and codex
+        // interactive launches with --dangerously-bypass-approvals-and-sandbox +
+        // the per-agent threadline MCP (the bypass the `-p` codexAllowMcpTools
+        // selects) — so threadline_send is available either way.
+        if (opts?.interactive) {
+          const warmName = `msg-warm-${Date.now()}`;
+          const tmuxSession = await sessionManager.spawnInteractiveSession(prompt, warmName, {
+            // Pin a deterministic --session-id (claude-only) so an eviction
+            // mid-thread can --resume losslessly (#746). Ignored when resuming.
+            sessionId: opts?.sessionId,
+          });
+          // spawnInteractiveSession returns the tmux name; resolve the instar
+          // session id from the running set so the warm callback returns the
+          // slice-2 {sessionId, tmuxSession} shape spawnWarmThread expects.
+          const running = sessionManager.listRunningSessions();
+          const rec = running.find(s => s.tmuxSession === tmuxSession);
+          return { sessionId: rec?.id ?? tmuxSession, tmuxSession };
+        }
         const session = await sessionManager.spawnSession({
           name: `msg-spawn-${Date.now()}`,
           prompt,
@@ -7797,13 +7822,70 @@ export async function startServer(options: StartOptions): Promise<void> {
       console.log('[spawn-manager] drain loop disabled by config.threadline.spawn.drainEnabled=false');
     }
 
+    // Warm-Session A2A (Arch Y, dark-ship) — keep each A2A reply thread's session
+    // alive between messages so follow-ups inject into the live worker instead of
+    // cold-spawning. Resolved via the developmentAgent gate: `enabled ?? !!dev` →
+    // LIVE on Echo, DARK on the fleet. The pool is null when disabled, so the
+    // ThreadlineRouter falls back to the proven cold-spawn path byte-for-byte.
+    const warmCfg = config.threadline?.warmSessionA2A;
+    const warmEnabled = warmCfg?.enabled ?? !!config.developmentAgent;
+    const warmSessionPool = warmEnabled
+      ? new WarmSessionPool({
+          globalCap: warmCfg?.globalCap ?? 3,
+          perPeerCap: warmCfg?.perPeerCap ?? 1,
+          ttlMs: warmCfg?.ttlMs ?? 600000,
+        })
+      : null;
+    const warmTrustFloor = warmCfg?.trustFloor ?? 'verified';
+    // Server-owned kill primitive: resolve the tmux NAME → instar session id →
+    // killSession (sessions are filed by id, not tmux name). Used for cap-eviction
+    // on admit and the periodic reap tick. Never throws to the caller.
+    const killWarmSessionByName = (sessionName: string): void => {
+      try {
+        const rec = sessionManager.listRunningSessions().find(s => s.tmuxSession === sessionName);
+        if (rec) sessionManager.killSession(rec.id);
+        else console.log(`[warm-session] kill requested for ${sessionName} but no running session matched (already gone?)`);
+      } catch (err) {
+        console.warn(`[warm-session] kill ${sessionName} failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    };
+    if (warmEnabled) {
+      console.log(`[warm-session] A2A keep-alive ENABLED (globalCap=${warmCfg?.globalCap ?? 3}, perPeerCap=${warmCfg?.perPeerCap ?? 1}, ttlMs=${warmCfg?.ttlMs ?? 600000}, trustFloor=${warmTrustFloor})`);
+    }
+
     // Threadline Router — handles threaded cross-agent conversations via relay
     const threadlineRouter = new ThreadlineRouter(
       messageRouter, spawnManager, threadResumeMap, messageStore,
       { localAgent: config.projectName, localMachine: os.hostname() },
       null, // autonomyGate
       messageDelivery, // PR-4: live-session injection path
+      undefined, // onLedgerEvent (wired below via registerLedgerEmitters if present)
+      undefined, // nowFn
+      warmSessionPool, // Warm-Session A2A (null when disabled)
+      warmEnabled,
+      warmTrustFloor,
+      warmEnabled ? killWarmSessionByName : null,
     );
+
+    // Warm-Session A2A reap tick — kill warm sessions idle past their TTL so a
+    // flood can't pin processes. Gated on warmEnabled; .unref() so it never holds
+    // the process open; cleared on shutdown. Eviction is lossless (the next
+    // message resumes via #746).
+    let warmReapTimer: ReturnType<typeof setInterval> | null = null;
+    if (warmEnabled && warmSessionPool) {
+      warmReapTimer = setInterval(() => {
+        try {
+          const expired = warmSessionPool.reapExpired();
+          for (const rec of expired) {
+            console.log(`[warm-session] reaping idle warm session ${rec.sessionName} (thread ${rec.threadId})`);
+            killWarmSessionByName(rec.sessionName);
+          }
+        } catch (err) {
+          console.warn(`[warm-session] reap tick failed: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }, 60_000);
+      warmReapTimer.unref();
+    }
     sessionManager.on('sessionComplete', (session: import('../core/types.js').Session) => {
       const sessionName = session.tmuxSession || session.name;
       if (!sessionName) return;
@@ -8366,11 +8448,20 @@ export async function startServer(options: StartOptions): Promise<void> {
             delivery: { status: 'delivered' as const, attempts: 1, lastAttempt: new Date().toISOString() },
           } as unknown as import('../messaging/types.js').MessageEnvelope;
 
+          // Warm-Session A2A (Arch Y, dark-ship): mark this inbound as eligible for
+          // a keep-alive interactive worker when the feature is on, it's NOT a
+          // topic-bound reply (those go to TopicLinkageHandler), and the peer meets
+          // the trust floor. Trust compare via the explicit ordering array
+          // (trustMeetsFloor), NEVER string `>=`. When false (or feature off), the
+          // router takes the proven cold-spawn path byte-for-byte.
+          const preferWarmSession =
+            warmEnabled && !isTopicBoundReply && trustMeetsFloor(trustLevel, warmTrustFloor);
           const relayContext = {
             trust: { kind: 'plaintext-tofu' as const, senderFingerprint },
             senderFingerprint,
             senderName,
             trustLevel,
+            preferWarmSession,
           };
           let result = await threadlineRouter.handleInboundMessage(envelope, relayContext);
 
@@ -10364,6 +10455,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       await notificationBatcher.flushAll(); // Drain pending notifications before exit
       notificationBatcher.stop();
       retryManager.stop();
+      if (warmReapTimer) { clearInterval(warmReapTimer); warmReapTimer = null; } // Warm-Session A2A reap tick
       spawnManager.dispose(); // §4.4: stop drain loop + clear DRR state
       summarySentinel.stop();
       memoryMonitor.stop();
