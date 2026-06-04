@@ -182,6 +182,14 @@ Not every change is the same size or risk, so not every change pays the same pro
 
 **The decision is audited.** Every in-scope commit appends one line to `.instar/instar-dev-decisions.jsonl` (signal, declared tier, risk floor + reasons). When you declare **under** the risk-signaled floor, the gate prints a loud `belowFloor` notice and records `belowFloor:true` — it does **not** block (you hold authority), but the override is now a reviewable record. Per **Close the Loop**, those `belowFloor` rates get reviewed on a cadence so the risk-floor list grows.
 
+## The internal-only release-note lane
+
+For a change with no user-facing surface, a release-note fragment may opt into the internal-only release-note lane by adding `<!-- internal-only -->` near the top of `upgrades/next/<slug>.md`. That marker lets the fragment omit the two user-facing sections: `## What to Tell Your User` and `## Summary of New Capabilities`. It does not waive `## What Changed`, `## Evidence`, side-effects review, ELI16, tests, or trace requirements.
+
+The shared release-note assembler (`scripts/assemble-next-md.mjs`) auto-fills the two omitted user-facing sections with `None — internal change (no user-facing surface).` only when every contributing fragment in the release is marked internal-only. If any fragment is not internal-only, the normal user-facing section requirements still apply.
+
+The lane is objectively gated at push time: `scripts/pre-push-gate.js` rejects an internal-only fragment when the diff includes runtime `src/*.ts` changes. Use the marker for tests, docs, scripts, and other no-runtime-surface work; remove it and write the user-facing sections for shipped runtime behavior.
+
 ## What this skill explicitly does NOT do
 
 - **It does not replace `/build`.** Build is invoked internally as the execution engine; this skill only adds phases around it.

@@ -225,6 +225,7 @@ export class PostUpdateMigrator {
     this.migrateBuildSkillMethodology(result);
     this.migrateTestAsSelfSkill(result);
     this.migrateInstarDevBuildLocationRegrounding(result);
+    this.migrateInstarDevInternalOnlyReleaseNoteLane(result);
     this.migrateAutonomousStopHookTopicKeyed(result);
     this.migrateSelfKnowledgeTree(result);
     this.migrateSoulMd(result);
@@ -1514,6 +1515,38 @@ export class PostUpdateMigrator {
       if (next.includes(MARKER)) {
         fs.writeFileSync(skillFile, next);
         result.upgraded.push('skills/instar-dev/SKILL.md (Phase 2 build-location re-grounding)');
+      }
+    } catch (err) {
+      result.errors.push(`skills/instar-dev/SKILL.md migration: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  /**
+   * Update the deployed instar-dev skill so existing agents learn the
+   * internal-only release-note lane added to the shared release-note assembler
+   * and pre-push gate.
+   *
+   * Idempotent + conservative: re-copy the bundled SKILL.md only when the
+   * installed copy (a) lacks the new lane marker AND (b) still matches the
+   * stock instar-dev fingerprint. A customized skill is left untouched.
+   */
+  private migrateInstarDevInternalOnlyReleaseNoteLane(result: MigrationResult): void {
+    try {
+      const skillFile = path.join(this.config.projectDir, '.claude', 'skills', 'instar-dev', 'SKILL.md');
+      if (!fs.existsSync(skillFile)) return; // installBuiltinSkills handles fresh installs
+      const current = fs.readFileSync(skillFile, 'utf8');
+      const MARKER = 'internal-only release-note lane';
+      if (current.includes(MARKER)) return; // already updated — idempotent
+      if (!current.includes('# /instar-dev') || !current.includes('### Phase 2 — Planning')) {
+        result.skipped.push('skills/instar-dev/SKILL.md: customized - left untouched (no internal-only release-note lane update)');
+        return;
+      }
+      const bundled = path.join(__dirname, '..', '..', 'skills', 'instar-dev', 'SKILL.md');
+      if (!fs.existsSync(bundled)) return;
+      const next = fs.readFileSync(bundled, 'utf8');
+      if (next.includes(MARKER)) {
+        fs.writeFileSync(skillFile, next);
+        result.upgraded.push('skills/instar-dev/SKILL.md (internal-only release-note lane)');
       }
     } catch (err) {
       result.errors.push(`skills/instar-dev/SKILL.md migration: ${err instanceof Error ? err.message : String(err)}`);
