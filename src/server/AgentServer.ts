@@ -1894,6 +1894,35 @@ export class AgentServer {
     return new MentorOnboardingRunner(
       {
         capture: (input) => ledger.captureRun(input),
+        // Record a keystone `mentor-mentee-differential` CYCLE per tick — the
+        // structural version of the manual differential-oversight loop. No-ops
+        // unless `mentor.apprenticeshipInstanceId` is set AND the cycle store is
+        // wired. Reads `self.apprenticeshipCycleStore` LAZILY (at tick time, not
+        // construction time) because buildMentorRunner runs before the store is
+        // constructed during boot.
+        recordCycle: (input) => {
+          const instanceId = getConfig().apprenticeshipInstanceId;
+          const store = self.apprenticeshipCycleStore;
+          if (!instanceId || !store) return;
+          try {
+            const existing = store.list({ instanceId });
+            const cycleNumber = existing.length
+              ? Math.max(...existing.map((c) => c.cycleNumber)) + 1
+              : 1;
+            store.record({
+              instanceId,
+              cycleNumber,
+              task: input.task,
+              menteeOutput: input.menteeOutput,
+              overseerDifferential: input.differential,
+              kind: 'mentor-mentee-differential',
+            });
+          } catch (err) {
+            // @silent-fallback-ok — cycle capture is observability; a record
+            // failure must never crash a mentor tick. Logged, not swallowed.
+            console.warn('[mentor] recordCycle failed (non-fatal):', err instanceof Error ? err.message : String(err));
+          }
+        },
         // Stage A spawns with the EMPTY tool grant (structural two-hats boundary,
         // §4); we bounded-wait for it to finish, then capture its transcript.
         spawnStageA: async (prompt: string): Promise<string> => {
