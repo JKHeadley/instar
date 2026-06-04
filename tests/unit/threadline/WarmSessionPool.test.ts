@@ -3,7 +3,11 @@
  * Covers: caps (global + per-peer) with LRU eviction, refresh-in-place, TTL expiry, pressure reap.
  */
 import { describe, it, expect } from 'vitest';
-import { WarmSessionPool, type WarmSessionPoolConfig } from '../../../src/threadline/WarmSessionPool.js';
+import {
+  WarmSessionPool,
+  WarmSessionPeerConflictError,
+  type WarmSessionPoolConfig,
+} from '../../../src/threadline/WarmSessionPool.js';
 
 const CFG: WarmSessionPoolConfig = { globalCap: 3, perPeerCap: 2, ttlMs: 10_000 };
 
@@ -29,6 +33,43 @@ describe('WarmSessionPool', () => {
     expect(evicted).toEqual([]);
     expect(pool.get('a')?.sessionName).toBe('s-a2');
     expect(pool.size()).toBe(1);
+  });
+
+  it('refuses to cross-bind an existing thread to a DIFFERENT peer (security)', () => {
+    const { pool } = mk();
+    pool.admit({ threadId: 'a', peerId: 'p1', sessionName: 's-a' });
+    // A different peer presenting the same threadId must NOT overwrite the owner.
+    expect(() => pool.admit({ threadId: 'a', peerId: 'EVIL', sessionName: 's-evil' }))
+      .toThrow(WarmSessionPeerConflictError);
+    // Owner's record is untouched: same peer, original sessionName.
+    const rec = pool.get('a');
+    expect(rec?.peerId).toBe('p1');
+    expect(rec?.sessionName).toBe('s-a');
+    expect(pool.size()).toBe(1);
+  });
+
+  it('the peer-conflict error carries the threadId + both peer ids', () => {
+    const { pool } = mk();
+    pool.admit({ threadId: 'a', peerId: 'p1', sessionName: 's-a' });
+    try {
+      pool.admit({ threadId: 'a', peerId: 'p2', sessionName: 's-b' });
+      throw new Error('expected WarmSessionPeerConflictError');
+    } catch (err) {
+      expect(err).toBeInstanceOf(WarmSessionPeerConflictError);
+      const e = err as WarmSessionPeerConflictError;
+      expect(e.threadId).toBe('a');
+      expect(e.existingPeerId).toBe('p1');
+      expect(e.attemptedPeerId).toBe('p2');
+    }
+  });
+
+  it('same-peer refresh after a would-be conflict still works (no false positive)', () => {
+    const { pool, clock } = mk();
+    pool.admit({ threadId: 'a', peerId: 'p1', sessionName: 's-a' });
+    clock.t = 1_000;
+    // Same peer → in-place refresh, never throws.
+    expect(() => pool.admit({ threadId: 'a', peerId: 'p1', sessionName: 's-a2' })).not.toThrow();
+    expect(pool.get('a')?.sessionName).toBe('s-a2');
   });
 
   it('evicts the peer LRU when the per-peer cap would be exceeded', () => {

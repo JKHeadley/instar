@@ -250,7 +250,13 @@ export interface InjectionSafety {
  * Only inject if one of these is running — whitelist is strictly safer than blocklist.
  */
 export const ALLOWED_INJECTION_PROCESSES: ReadonlyArray<string> = [
-  'bash', 'zsh', 'fish', 'sh', 'dash', 'claude',
+  // `claude.exe` is the REAL macOS pane-command name for a live Claude Code
+  // session (`tmux #{pane_current_command}` reports `claude.exe`, not `claude`).
+  // Without it, EVERY Threadline live-injection on macOS is refused with
+  // "Unsafe foreground process: claude.exe" — the load-bearing bug that made the
+  // A2A warm-session inject path dead-on-arrival. Additive + scoped: no behavior
+  // change where the foreground is already a shell.
+  'bash', 'zsh', 'fish', 'sh', 'dash', 'claude', 'claude.exe',
 ];
 
 // ── Threads ────────────────────────────────────────────────────────
