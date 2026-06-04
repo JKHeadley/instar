@@ -1,0 +1,75 @@
+<!-- bump: patch -->
+
+## Summary of New Capabilities
+
+- **Threadline A2A continuity:** agent-to-agent threads stay coherent across rapid
+  follow-ups — a follow-up now injects into the session already handling the thread
+  instead of cold-spawning a fresh, memoryless one.
+- **WarmSessionPool foundation:** a per-peer warm-session registry (caps + TTL +
+  LRU) lands as the tested groundwork for keeping A2A sessions warm.
+
+## What Changed
+
+Fixed the production **agent-to-agent (Threadline) continuity break**: a live
+Echo↔Dawn round-trip proved that every peer-to-peer follow-up message was being
+handled by a fresh, memoryless session (2 Spawned / 0 Resumed on a single thread)
+instead of the session already in the conversation — the "crowd of fragments
+wearing my name" incoherence.
+
+Root cause funnels through one guard. `ThreadResumeMap.get()`
+(`src/threadline/ThreadResumeMap.ts`) nulled the entire resume entry whenever the
+session transcript JSONL was absent — and for relay/pipe-spawned A2A sessions the
+uuid is a spawn-time placeholder that never gets upgraded, so the guard discarded
+the entry (including the still-valid live `sessionName`) on every follow-up. With
+a null entry, `ThreadlineRouter.handleInboundMessage` skips the already-built
+`tryInjectIntoLiveSession` + `resumeThread` machinery and cold-spawns.
+
+The fix has two parts. **(1)** When the transcript is absent, `get()` now returns
+the entry anyway **if its tmux session is still alive** (new protected
+`sessionAlive()`, exact-match `tmux has-session -t =name`), so the follow-up routes
+into the running session (live-inject, or a resume that carries the conversation
+history) — no transcript needed. Dead session + no transcript still nulls (resume
+guard intact); topic-bound + pinned exemptions unchanged. **(2)** Part 1 was inert
+without the real session name: `spawnNewThread` recorded the resume entry's
+`sessionName` from the spawn result, but the `spawnSession` callback only returned
+the bare instar session id, so a useless fallback name was stored that
+`sessionAlive()`/`getBySessionName` could never match. The callback contract now
+returns `string | { sessionId, tmuxSession }` (back-compatible);
+`SpawnRequestManager.evaluate` forwards the real tmux name through to the entry. Also lands the `WarmSessionPool`
+(`src/threadline/WarmSessionPool.ts`) per-peer warm-session registry (caps + TTL +
+LRU) — the tested foundation for the follow-up that keeps A2A sessions warm so
+follow-ups inject even after the first reply completes.
+
+1511 threadline unit tests pass; tsc clean. Tier-1 (ELI16 +
+side-effects artifact).
+
+## Evidence
+
+Reproduced on this machine, before/after.
+
+**Before (live Echo↔Dawn round-trip, 2026-06-04 ~01:55Z):** sent Dawn one opener on
+a fresh non-topic thread `echo-dawn-continuity-20260604`; her inbound replies
+produced — in `logs/server.log` — `2× [relay] Spawned session`, `0× Resumed
+session`, `1× Spawn denied: Cooldown`. The resume-map never gained an entry for the
+thread; every follow-up cold-spawned a memoryless session (a parallel relay-spawn
+even answered Dawn with "No previous history available").
+
+**After (integration test against REAL tmux —
+`tests/integration/threadline-live-inject-real-tmux.test.ts`, 2026-06-04):** with a
+placeholder uuid (no transcript) on a non-topic thread —
+- while a real tmux session of that name is **alive** → `get()` returns the entry,
+  so `ThreadlineRouter.tryInjectIntoLiveSession` is reachable (was: null →
+  cold-spawn). ✓
+- after the tmux session is **killed** → `get()` returns null (resume guard intact;
+  dead session → cold-spawn). ✓
+
+The end-to-end live Dawn round-trip showing `Injected`/`Resumed` instead of
+`Spawned` runs post-deploy (Echo auto-updates on this release).
+
+## What to Tell Your User
+
+When another agent talks to me across several messages in a row, I now stay one
+coherent conversation instead of answering each message as if I'd never seen the
+earlier ones. This is the foundation the agent-to-agent collaboration (and the
+upcoming feedback-process work) relies on. It's an internal robustness fix — there
+is nothing to turn on, and it doesn't change how I talk to you directly.

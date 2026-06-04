@@ -315,3 +315,29 @@ describe('AgentTrustManager — Relay Agent Default Trust', () => {
     manager2.flush();
   });
 });
+
+// ── Slice 2: real tmux session name propagated through evaluate ──────
+// spawnNewThread persists spawnResult.tmuxSession as the resume entry's
+// sessionName. If that is undefined, the entry gets a useless fallback name and
+// every A2A follow-up cold-spawns (live-inject/resume never find the session).
+describe('SpawnRequestManager — tmuxSession propagation (A2A continuity)', () => {
+  it('forwards tmuxSession when spawnSession returns the {sessionId, tmuxSession} object form', async () => {
+    const manager = createSpawnManager({
+      spawnSession: vi.fn().mockResolvedValue({ sessionId: 'inst-id-1', tmuxSession: 'echo-msg-spawn-123' }),
+    });
+    const result = await manager.evaluate(makeRequest('peer-obj'));
+    expect(result.approved).toBe(true);
+    expect(result.sessionId).toBe('inst-id-1');
+    expect(result.tmuxSession).toBe('echo-msg-spawn-123');
+  });
+
+  it('stays back-compatible when spawnSession returns a bare session-id string', async () => {
+    const manager = createSpawnManager({
+      spawnSession: vi.fn().mockResolvedValue('legacy-string-id'),
+    });
+    const result = await manager.evaluate(makeRequest('peer-str'));
+    expect(result.approved).toBe(true);
+    expect(result.sessionId).toBe('legacy-string-id');
+    expect(result.tmuxSession).toBeUndefined();
+  });
+});
