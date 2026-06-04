@@ -158,6 +158,64 @@ by Echo. The program gets better at *making mentors* at the same time it onboard
 
 ---
 
+## 4a. The dogfooded channel — Playwright + Telegram is THE channel (LOCKED with Justin, 2026-06-04)
+
+**A mentor drives its mentee through the real Telegram UX, via the dedicated Playwright
+browser profile — and this is NOT a fallback or a convenience. It is the test.** The whole
+point of the program is to validate each framework's *user experience*; the only way to do
+that is for the mentor to live through exactly what a user lives through — the same Telegram
+client, the same latency, the same rough edges. The friction the mentor hits **is the
+signal** (it's the same reason `instar dev:preflight` and the new-surface guard exist:
+friction is a spec). A direct CLI call or an HTTP/API shortcut to the mentee produces an
+answer but **destroys the signal** — it is not a valid apprenticeship interaction.
+
+**The channel is RECURSIVE — every mentor drives its own mentee through Playwright+Telegram:**
+
+```
+Justin → (Telegram) → Echo        Echo experiences Justin's mentoring UX
+Echo   → (Playwright+Telegram) → Codey    Echo experiences Codey's UX
+Codey  → (Playwright+Telegram) → Gemini   Codey experiences Gemini's UX
+```
+
+Each mentor steps into the exact role its mentor played one level up. So **driving a mentee
+that is two levels down is the wrong layer** — when Echo (overseer of the codey-to-gemini
+instance) runs the Gemini mentee *directly*, Echo is doing *Codey's* job and the program
+loses the Codey-observes-Gemini's-UX signal entirely. The overseer orchestrates and computes
+the §4 differential; the **mentor one level above the mentee does the real driving**.
+
+**Threadline (and any other agent-to-agent transport) is BACKUP ONLY** — used solely when a
+mentor's dedicated Playwright profile genuinely cannot reach Telegram (which has not yet
+happened). It is never the default path, because it bypasses the UX-under-test.
+
+### Enforcement (Structure > Willpower, not a doc-wish)
+
+Documenting the standard is not enough — it must be enforced where the loop is recorded:
+
+1. **Every apprenticeship cycle declares its `channel`.** Add a `channel` field to the
+   `ApprenticeshipCycleStore` record (e.g. `'telegram-playwright'` | `'threadline-backup'`
+   | `'direct-shortcut'`). The mentor's tick / the overseer's cycle-record sets it from how
+   the interaction actually ran.
+2. **The keystone axis only counts dogfooded cycles.** `roleCoverage()` counts a
+   `mentor-mentee-differential` cycle toward the live keystone axis **only** when
+   `channel === 'telegram-playwright'`. A `direct-shortcut` differential is still recorded
+   (for honesty) but does **not** clear the dormant-keystone / drift state — so a shortcut
+   can never *look* like the program is healthy. (Cycles recorded before the field existed
+   are grandfathered as unknown-channel and surfaced, not counted.)
+3. **Setup is part of the capability, not an afterthought.** Standing up a mentor's
+   driving capability = giving that mentor its own Playwright MCP (`.mcp.json`) + a
+   **dedicated per-agent Telegram profile** + a mentor↔mentee channel + its mentor config
+   pointed at the mentee's framework. The one **human-only** step is the **one-time Telegram
+   login** on that profile — login codes / credentials are off-limits to agents and cannot
+   be automated (see `.instar/DESIGN-mcp-auto-restart-and-playwright-isolation.local.md`).
+   This is surfaced as the known setup step, never a silent gap.
+
+> Status: the Echo→Codey leg of this channel ran live and fired the first keystone
+> `mentor-mentee-differential` cycle (2026-06-04). The Codey→Gemini leg requires the
+> per-mentor setup above (Codey currently has no Playwright MCP and its mentor config
+> targets `codex-cli`); the `channel`-field enforcement (items 1–2) is the next code change.
+
+---
+
 ## 5. The keystone — Codey owns the full lifecycle
 
 Per Justin, the apprentice's responsibilities are not just "mentor the mentee." Codey owns
