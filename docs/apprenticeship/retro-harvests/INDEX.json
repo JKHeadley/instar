@@ -11,6 +11,16 @@
       "harvestedAt": "2026-06-02T03:30:00Z",
       "scopeMode": "full",
       "completeness": "partial-accepted"
+    },
+    "codey-to-gemini-mentorship": {
+      "artifact": "docs/apprenticeship/retro-harvests/codey-to-gemini-mentorship.md",
+      "from": "codey",
+      "to": "gemini",
+      "instanceType": "mentorship",
+      "framework": "gemini-cli",
+      "harvestedAt": "2026-06-04T01:30:00Z",
+      "scopeMode": "full",
+      "completeness": "partial-accepted"
     }
   }
 }
