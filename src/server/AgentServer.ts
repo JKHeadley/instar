@@ -254,6 +254,12 @@ export class AgentServer {
     meshRpcDispatcher?: import('../core/MeshRpc.js').MeshRpcDispatcher;
     /** Per-session ownership registry (§L3). */
     sessionOwnershipRegistry?: import('../core/SessionOwnershipRegistry.js').SessionOwnershipRegistry;
+    /** Topic placement pin store (§L4) — backs GET /pool/placement + POST /pool/transfer. */
+    topicPinStore?: import('../core/TopicPlacementPinStore.js').TopicPlacementPinStore;
+    /** This machine's mesh id. */
+    meshSelfId?: string;
+    /** Resolve the lease-holder's base URL when this machine is not the holder (else null). */
+    resolveRouterUrl?: () => string | null;
     /** Signed rollout-stage E2E result store (§Rollout). */
     sessionPoolE2EResultStore?: import('../core/SessionPoolE2EResultStore.js').SessionPoolE2EResultStore;
     localSigningKeyPem?: string;
@@ -1171,6 +1177,9 @@ export class AgentServer {
       machinePoolRegistry: options.machinePoolRegistry ?? null,
       meshRpcDispatcher: options.meshRpcDispatcher ?? null,
       sessionOwnershipRegistry: options.sessionOwnershipRegistry ?? null,
+      topicPinStore: options.topicPinStore ?? null,
+      meshSelfId: options.meshSelfId ?? null,
+      resolveRouterUrl: options.resolveRouterUrl ?? null,
       sessionPoolE2EResultStore: options.sessionPoolE2EResultStore ?? null,
       messageLedger: options.messageLedger ?? null,
       currentInboundByTopic: options.currentInboundByTopic ?? null,

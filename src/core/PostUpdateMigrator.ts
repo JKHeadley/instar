@@ -3099,13 +3099,28 @@ Beyond the one-awake-machine model: with the pool enabled I run conversations ac
 
 - **See the pool:** the **Machines tab** in the dashboard, or \`GET /pool\` (Bearer-auth) → which machine is the router ("dispatcher") + every machine's nickname, hardware, online status, load, and clock-skew status.
 - **Machine nicknames** are the user-facing handle (auto-assigned, editable). Rename via \`PATCH /pool/machines/:machineId\` with \`{"nickname":"the mini"}\`, or inline on the Machines tab.
-- **Proactive triggers:** when the user says "run this on <nickname>" / "move this to <nickname>" → placement/transfer-by-nickname (the session moves to the named machine, resuming like a session restart). "where is this running?" → \`GET /pool\`. Deep mechanics: the Machines tab + \`docs/specs/MULTI-MACHINE-SESSION-POOL-SPEC.md\`.
+- **Which machine + WHY (never guess):** \`GET /pool/placement?topic=N\` → the owning machine + nickname, the **reason** (\`pinned\` = a deliberate move vs \`placed\` = load-balanced vs \`unowned\`), and the lease-holder. Answerable from ANY machine (a standby proxies to the holder). Running ON a machine does NOT mean a topic was deliberately moved there — read this instead of inferring.
+- **Reliable transfer (phrasing-independent):** \`POST /pool/transfer\` with \`{"topic":N,"to":"<nickname|machineId>"}\` runs the same validated planner as "move this to <nickname>" but deterministically. 404 unknown · 409 rate-limited · 409 \`needsConfirmation\` for an offline target (re-send with \`"confirm":true\`). The lever to call directly when a natural-language move didn't catch.
+- **Proactive triggers:** when the user says "run this on <nickname>" / "move this to <nickname>" → placement/transfer-by-nickname (the session moves to the named machine, resuming like a session restart). "where is this running / why?" → \`GET /pool/placement?topic=N\`. "move it reliably / it didn't move" → \`POST /pool/transfer\`. Deep mechanics: the Machines tab + \`docs/specs/MULTI-MACHINE-SESSION-POOL-SPEC.md\`.
 `;
       content += '\n' + section;
       patched = true;
       result.upgraded.push('CLAUDE.md: added Multi-Machine Session Pool section');
     } else {
       result.skipped.push('CLAUDE.md: Multi-Machine Session Pool section already present');
+    }
+
+    // Multi-machine robustness (2026-06-04): agents that ALREADY have the pool
+    // section predate the placement-observability + deterministic-transfer routes.
+    // Append those two lines so deployed agents learn "which machine + why" and the
+    // reliable transfer lever. Idempotent via the unique `/pool/placement` marker.
+    if (content.includes('Multi-Machine Session Pool (active-active') && !content.includes('/pool/placement')) {
+      const robustness = `
+- **Which machine + WHY (never guess):** \`GET /pool/placement?topic=N\` → the owning machine + nickname, the **reason** (\`pinned\` = a deliberate move vs \`placed\` = load-balanced vs \`unowned\`), and the lease-holder. Answerable from ANY machine (a standby proxies to the holder). Running ON a machine does NOT mean a topic was deliberately moved there — read this instead of inferring.
+- **Reliable transfer (phrasing-independent):** \`POST /pool/transfer\` with \`{"topic":N,"to":"<nickname|machineId>"}\` runs the same validated planner as "move this to <nickname>" but deterministically. 404 unknown · 409 rate-limited · 409 \`needsConfirmation\` for an offline target (re-send with \`"confirm":true\`). The lever to call directly when a natural-language move didn't catch.`;
+      content += '\n' + robustness + '\n';
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added pool placement/transfer robustness lines');
     }
 
     // ContextWedgeSentinel — the 4th silently-stopped sentinel. Tells the agent
