@@ -7706,6 +7706,13 @@ export async function startServer(options: StartOptions): Promise<void> {
           // do NOT set this and stay sandboxed. Bounded: Threadline only accepts
           // messages from trusted agents.
           codexAllowMcpTools: true,
+          // Threadline A2A continuity: forward the conversation-id intent so a
+          // claude-code A2A reply spawn sets (--session-id) a deterministic
+          // transcript on a fresh thread, or resumes (--resume) the prior
+          // transcript on a follow-up. Both undefined on every non-Threadline
+          // spawn, so existing behavior is unaffected.
+          sessionId: opts?.sessionId,
+          resumeSessionId: opts?.resumeSessionId,
         });
         // Return BOTH ids: spawnNewThread persists `tmuxSession` as the resume
         // entry's sessionName (the REAL `echo-msg-spawn-<ts>`), so live-inject /

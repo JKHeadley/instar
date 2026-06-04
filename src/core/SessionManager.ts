@@ -1133,6 +1133,24 @@ rm()  { "${shimRunner}" rm  "$@"; }
      *  init; with this flag a headless spawn boots in ~9s. No effect on Codex
      *  spawns (Codex MCP wiring is separate). */
     disableProjectMcp?: boolean;
+    /** Threadline A2A continuity (claude-code HEADLESS only): when set, the
+     *  headless `claude -p` spawn is launched with `--session-id <uuid>` so the
+     *  transcript is created at a deterministic, caller-chosen id. The caller
+     *  (ThreadlineRouter.spawnNewThread) stores this uuid as the thread's
+     *  resume-map entry, so the next inbound message on the same thread can
+     *  resume the exact conversation via `resumeSessionId`. Mutually exclusive
+     *  with `resumeSessionId` (sessionId wins). No effect on non-claude
+     *  frameworks or interactive spawns. */
+    sessionId?: string;
+    /** Threadline A2A continuity (claude-code HEADLESS only): when set, the
+     *  headless `claude -p` spawn is launched with `--resume <uuid>` so it
+     *  reloads the full prior transcript captured by an earlier `sessionId`
+     *  spawn. This is what makes A2A follow-ups land in a warm session with
+     *  full context instead of cold-spawning memoryless. Mutually exclusive
+     *  with `sessionId` (sessionId wins when both are present). A stale uuid is
+     *  covered by the existing resume-crash fallback. No effect on non-claude
+     *  frameworks or interactive spawns. */
+    resumeSessionId?: string;
   }): Promise<Session> {
     const runningSessions = this.listRunningSessions();
     if (runningSessions.length >= this.config.maxSessions) {
@@ -1245,6 +1263,27 @@ rm()  { "${shimRunner}" rm  "$@"; }
       const dashPIndex = headlessSpec.argv.indexOf('-p');
       if (dashPIndex > 0) {
         headlessSpec.argv.splice(dashPIndex, 0, ...extraClaudeFlags);
+      }
+    }
+
+    // Threadline A2A continuity (claude-code HEADLESS only): set/resume the
+    // conversation id so follow-up messages on the same thread land in a warm
+    // session with the full prior transcript instead of cold-spawning.
+    // Spliced before the `-p` positional, mirroring extraClaudeFlags exactly.
+    // Mutually exclusive: `sessionId` (--session-id) wins over `resumeSessionId`
+    // (--resume). Only emitted for claude-code and only when provided, so every
+    // existing spawn (jobs, topic sessions, codex) is byte-for-byte unaffected.
+    if (headlessFramework === 'claude-code') {
+      const continuityFlags: string[] = options.sessionId
+        ? ['--session-id', options.sessionId]
+        : options.resumeSessionId
+          ? ['--resume', options.resumeSessionId]
+          : [];
+      if (continuityFlags.length > 0) {
+        const dashPIndex = headlessSpec.argv.indexOf('-p');
+        if (dashPIndex > 0) {
+          headlessSpec.argv.splice(dashPIndex, 0, ...continuityFlags);
+        }
       }
     }
 

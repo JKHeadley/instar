@@ -81,6 +81,23 @@ export interface SpawnRequest {
    * (e.g., `spawn-request-retry`).
    */
   triggeredBy?: 'spawn-request' | 'spawn-request-drain';
+  /**
+   * Threadline A2A continuity (claude-code only): when set, the spawned
+   * session is launched with `--session-id <uuid>` so its transcript is
+   * created at a deterministic, caller-chosen id. ThreadlineRouter.spawnNewThread
+   * passes the uuid it stores as the thread's resume-map entry. Forwarded
+   * verbatim into the `spawnSession` callback options. Mutually exclusive with
+   * `resumeSessionId` (sessionId wins).
+   */
+  sessionId?: string;
+  /**
+   * Threadline A2A continuity (claude-code only): when set, the spawned
+   * session is launched with `--resume <uuid>` so it reloads the full prior
+   * transcript captured by an earlier `sessionId` spawn. ThreadlineRouter.resumeThread
+   * passes the resume-map entry's uuid here. Forwarded verbatim into the
+   * `spawnSession` callback options.
+   */
+  resumeSessionId?: string;
 }
 
 export interface SpawnResult {
@@ -168,6 +185,12 @@ export interface SpawnRequestManagerConfig {
     model?: string;
     maxDurationMinutes?: number;
     triggeredBy?: 'spawn-request' | 'spawn-request-drain';
+    /** Threadline A2A continuity: forwarded to `--session-id` (set a
+     *  deterministic conversation id). Mutually exclusive with resumeSessionId. */
+    sessionId?: string;
+    /** Threadline A2A continuity: forwarded to `--resume` (reload the prior
+     *  transcript captured by an earlier sessionId spawn). */
+    resumeSessionId?: string;
   }) => Promise<string | { sessionId: string; tmuxSession?: string }>;
   /** Function to check memory pressure. Returns true if pressure is too high. */
   isMemoryPressureHigh?: () => boolean;
@@ -565,6 +588,11 @@ export class SpawnRequestManager {
         maxDurationMinutes: request.suggestedMaxDuration,
         // §4.5: forward provenance tag (defaults to 'spawn-request' on inline path).
         triggeredBy: request.triggeredBy ?? 'spawn-request',
+        // Threadline A2A continuity: forward the conversation-id intent so the
+        // claude-code spawn sets (--session-id) or resumes (--resume) the
+        // transcript. Both undefined on every non-Threadline spawn path.
+        sessionId: request.sessionId,
+        resumeSessionId: request.resumeSessionId,
       });
       // Accept both the legacy bare-id return and the {sessionId, tmuxSession}
       // object form. The tmuxSession (when provided) is forwarded so callers

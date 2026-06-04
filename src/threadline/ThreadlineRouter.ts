@@ -672,24 +672,25 @@ export class ThreadlineRouter {
   ): Promise<ThreadlineHandleResult> {
     const { message } = envelope;
 
-    // Build history context (trust-level-aware depth for relay)
-    const maxHistory = relayContext
-      ? RELAY_HISTORY_LIMITS[relayContext.trustLevel]
-      : this.config.maxHistoryMessages;
-    const historyContext = await this.buildHistoryContext(threadId, maxHistory);
-
-    // Build the resume prompt (with grounding preamble if relay)
+    // Threadline A2A continuity: this thread already has a claude-code
+    // transcript (created with `--session-id entry.uuid` by spawnNewThread).
+    // We resume it via `--resume entry.uuid`, which reloads the FULL prior
+    // conversation from disk. So the prompt must carry ONLY the new message +
+    // the relay grounding preamble — NOT buildHistoryContext, which would
+    // double the history (it's already in the resumed transcript). Pass an
+    // empty history so buildPrompt renders "No previous history available."
+    // and the spawn argument stays small.
     const prompt = this.buildPrompt(
       message,
       threadId,
       entry.subject,
       entry.messageCount,
       entry.remoteAgent,
-      historyContext,
+      '',
       relayContext,
     );
 
-    // Spawn with resume UUID
+    // Spawn with resume UUID — `--resume entry.uuid` reloads the transcript.
     const spawnResult = await this.spawnManager.evaluate({
       requester: message.from,
       target: { agent: this.config.localAgent, machine: this.config.localMachine },
@@ -697,6 +698,7 @@ export class ThreadlineRouter {
       context: prompt,
       priority: message.priority === 'critical' ? 'critical' : 'medium',
       pendingMessages: [message.id],
+      resumeSessionId: entry.uuid,
     });
 
     if (!spawnResult.approved) {
@@ -760,6 +762,17 @@ export class ThreadlineRouter {
       relayContext,
     );
 
+    // Threadline A2A continuity: mint the conversation id up front and launch
+    // the headless claude-code spawn with `--session-id <claudeUuid>` so its
+    // transcript is created at THIS exact id. We then persist claudeUuid as the
+    // thread's resume-map entry, so the next inbound message on this thread can
+    // `--resume` the precise conversation (resumeThread). Previously the entry
+    // uuid was a placeholder (the bare instar session id or a throwaway random
+    // uuid), which never matched any real transcript → every follow-up
+    // cold-spawned memoryless. (No effect for codex spawns — sessionId is
+    // claude-only in SessionManager.)
+    const claudeUuid = crypto.randomUUID();
+
     // Request spawn
     const spawnResult = await this.spawnManager.evaluate({
       requester: message.from,
@@ -768,6 +781,7 @@ export class ThreadlineRouter {
       context: prompt,
       priority: message.priority === 'critical' ? 'critical' : 'medium',
       pendingMessages: [message.id],
+      sessionId: claudeUuid,
     });
 
     if (!spawnResult.approved) {
@@ -788,10 +802,12 @@ export class ThreadlineRouter {
       };
     }
 
-    // Create the thread resume entry
+    // Create the thread resume entry. The uuid is the claudeUuid we passed as
+    // `--session-id`, NOT spawnResult.sessionId (the instar session id) — only
+    // claudeUuid matches the real claude-code transcript that `--resume` reloads.
     const now = new Date().toISOString();
     const newEntry: ThreadResumeEntry = {
-      uuid: spawnResult.sessionId || crypto.randomUUID(),
+      uuid: claudeUuid,
       sessionName: spawnResult.tmuxSession || `thread-${threadId.slice(0, 8)}`,
       createdAt: now,
       savedAt: now,

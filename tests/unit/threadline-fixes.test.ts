@@ -341,3 +341,46 @@ describe('SpawnRequestManager — tmuxSession propagation (A2A continuity)', () 
     expect(result.tmuxSession).toBeUndefined();
   });
 });
+
+// ── Path-1 continuity: sessionId / resumeSessionId forwarding ────────
+
+describe('SpawnRequestManager — continuity flag forwarding (A2A Path-1)', () => {
+  it('forwards request.sessionId into the spawnSession callback options', async () => {
+    const spawnFn = vi.fn().mockResolvedValue({ sessionId: 'inst-id', tmuxSession: 'echo-msg-spawn-1' });
+    const manager = createSpawnManager({ spawnSession: spawnFn });
+
+    const req: SpawnRequest = { ...makeRequest('peer-new'), sessionId: 'claude-uuid-aaa' };
+    const result = await manager.evaluate(req);
+
+    expect(result.approved).toBe(true);
+    // Second arg of the callback carries the forwarded options.
+    const opts = spawnFn.mock.calls[0][1];
+    expect(opts.sessionId).toBe('claude-uuid-aaa');
+    expect(opts.resumeSessionId).toBeUndefined();
+  });
+
+  it('forwards request.resumeSessionId into the spawnSession callback options', async () => {
+    const spawnFn = vi.fn().mockResolvedValue({ sessionId: 'inst-id', tmuxSession: 'echo-msg-spawn-2' });
+    const manager = createSpawnManager({ spawnSession: spawnFn });
+
+    const req: SpawnRequest = { ...makeRequest('peer-resume'), resumeSessionId: 'claude-uuid-bbb' };
+    const result = await manager.evaluate(req);
+
+    expect(result.approved).toBe(true);
+    const opts = spawnFn.mock.calls[0][1];
+    expect(opts.resumeSessionId).toBe('claude-uuid-bbb');
+    expect(opts.sessionId).toBeUndefined();
+  });
+
+  it('passes both as undefined on a plain (non-continuity) request', async () => {
+    const spawnFn = vi.fn().mockResolvedValue({ sessionId: 'inst-id', tmuxSession: 'echo-msg-spawn-3' });
+    const manager = createSpawnManager({ spawnSession: spawnFn });
+
+    const result = await manager.evaluate(makeRequest('peer-plain'));
+
+    expect(result.approved).toBe(true);
+    const opts = spawnFn.mock.calls[0][1];
+    expect(opts.sessionId).toBeUndefined();
+    expect(opts.resumeSessionId).toBeUndefined();
+  });
+});
