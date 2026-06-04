@@ -132,4 +132,61 @@ describe('ApprenticeshipCycleStore', () => {
     })).toThrow(/mentorFlagged/);
     store.close();
   });
+
+  describe('dogfooded-channel enforcement (§4a keystone gating)', () => {
+    const diff = (over: Record<string, unknown> = {}) => ({
+      instanceId: 'codey-to-gemini',
+      cycleNumber: 1,
+      task: 't',
+      menteeOutput: 'm',
+      kind: 'mentor-mentee-differential',
+      ...over,
+    });
+
+    it('a telegram-playwright differential FIRES the keystone axis', () => {
+      const store = makeStore();
+      store.record(diff({ channel: 'telegram-playwright' }));
+      const cov = store.roleCoverage('codey-to-gemini');
+      expect(cov.axes['mentor-mentee-differential'].fired).toBe(true);
+      expect(cov.shortcutDifferentialCount).toBe(0);
+      store.close();
+    });
+
+    it('a direct-shortcut differential is RECORDED but does NOT fire the keystone', () => {
+      const store = makeStore();
+      store.record(diff({ channel: 'direct-shortcut' }));
+      const cov = store.roleCoverage('codey-to-gemini');
+      expect(cov.axes['mentor-mentee-differential'].fired).toBe(false);
+      expect(cov.axes['mentor-mentee-differential'].cycleCount).toBe(0);
+      expect(cov.shortcutDifferentialCount).toBe(1);
+      // still stored (honesty) — visible via list()
+      expect(store.list({ instanceId: 'codey-to-gemini' })).toHaveLength(1);
+      store.close();
+    });
+
+    it('an unset (grandfathered) channel FIRES the keystone — never un-fires an earned one', () => {
+      const store = makeStore();
+      store.record(diff()); // no channel → normalizeChannel → 'unknown' → counts
+      const cov = store.roleCoverage('codey-to-gemini');
+      expect(cov.axes['mentor-mentee-differential'].fired).toBe(true);
+      const id = store.list({ instanceId: 'codey-to-gemini' })[0].id;
+      expect(store.get(id)!.channel).toBe('unknown');
+      store.close();
+    });
+
+    it('threadline-backup counts toward the keystone (legit backup channel)', () => {
+      const store = makeStore();
+      store.record(diff({ channel: 'threadline-backup' }));
+      expect(store.roleCoverage('codey-to-gemini').axes['mentor-mentee-differential'].fired).toBe(true);
+      store.close();
+    });
+
+    it('the channel round-trips through record/get and normalizes garbage to unknown', () => {
+      const store = makeStore();
+      const r = store.record(diff({ channel: 'not-a-real-channel' }));
+      expect(r.channel).toBe('unknown');
+      expect(store.get(r.id)!.channel).toBe('unknown');
+      store.close();
+    });
+  });
 });
