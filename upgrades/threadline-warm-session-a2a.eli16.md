@@ -37,6 +37,24 @@ shared to leak. The trust gate stops being a secrecy control and becomes a simpl
 "who's allowed to keep a session warm" resource control. Injected follow-ups also
 now get the same untrusted-data grounding wrapper that spawns/resumes already use.
 
+## Works for every framework — not just Claude (your note)
+
+The first cut leaned Claude-specific in two spots, and both are now routed through
+the framework abstraction so a Codex or Gemini agent gets the same warm sessions:
+- The "is this process safe to type into?" allowlist used to be hardcoded to
+  `claude`/`claude.exe`. It's now **derived** from a per-framework registry
+  (`claude → claude/claude.exe`, `codex → codex`, `gemini → gemini`), typed so the
+  compiler refuses to add a framework without giving it a process name.
+- The warm worker now launches in **the local agent's framework**, not always
+  Claude — so on a Codex agent it spins up a Codex session, with Codex's own
+  resume mechanism.
+
+And — the part you actually asked for — this is enforced by the **review process**,
+not by remembering: a CI test fails if any framework lacks coverage or the allowlist
+drifts, and the `/instar-dev` precommit gate makes any change to the launch/inject
+layer state, in writing, whether it works for Codex and Gemini. So "works for all
+frameworks" is now a gate, not a good intention.
+
 ## How it ships
 Dark on the fleet, **live only on the development agent**, behind a flag, with the
 proven resume path as the fallback if a warm session is ever evicted. With the flag

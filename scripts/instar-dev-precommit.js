@@ -714,10 +714,50 @@ if (!promotionGateResult.ok) {
 
 // ─── Pass ────────────────────────────────────────────────────────────────
 
+assertFrameworkGenerality(inScopeFiles, validTrace.trace);
+
 console.error(
   `[instar-dev-precommit] OK — trace ${path.basename(validTrace.entry.file)} covers ${inScopeFiles.length} in-scope file(s), artifact ${validTrace.trace.artifactPath} verified, spec ${spec} is converged + approved, ELI16 overview ${eli16Rel} present (${eli16Result.charCount} chars), promotion-gate: ${promotionGateResult.reason}.`,
 );
 process.exit(0);
+
+// Framework-generality review gate. Changes to the session launch/inject
+// ABSTRACTION surface must explicitly state whether they work for ALL agentic
+// frameworks (claude-code / codex-cli / gemini-cli / future), not just Claude.
+// The CI test tests/unit/framework-agnosticism.test.ts catches the concrete
+// "a framework lacks injection coverage" regression; THIS gate makes the review
+// state the framework-generality reasoning in the side-effects artifact so the
+// subtler Claude-specific assumptions get caught too. Scoped tight (these files
+// change rarely) so normal commits pay nothing.
+function assertFrameworkGenerality(inScopeFiles, trace) {
+  const SURFACE = /(^|\/)(frameworkSessionLaunch|frameworkInjectionProcesses)\.ts$|(^|\/)messaging\/MessageDelivery\.ts$/;
+  const touched = inScopeFiles.filter((f) => SURFACE.test(f));
+  if (touched.length === 0) return;
+  const artifactRel = trace.sideEffectsPath || trace.artifactPath;
+  if (!artifactRel) return; // a missing artifact is already blocked upstream
+  const artifactAbs = path.resolve(ROOT, artifactRel);
+  if (!fs.existsSync(artifactAbs)) return;
+  const content = fs.readFileSync(artifactAbs, 'utf8');
+  const ADDRESSED =
+    /framework[- ]?(general|agnostic)|all (current and future )?frameworks|every framework|per-framework|codex[- ]?cli|gemini[- ]?cli/i;
+  if (!ADDRESSED.test(content)) {
+    blockCommit(
+      touched,
+      [
+        'Framework-generality review gate:',
+        `  ${touched.join(', ')} change the session launch/inject ABSTRACTION,`,
+        '  but the side-effects artifact never addresses whether this works for ALL',
+        '  agentic frameworks (claude-code / codex-cli / gemini-cli / future) — not',
+        '  just Claude.',
+        '',
+        '  Add a "## Framework generality" section: does this route through the',
+        '  framework abstraction? Is it correct for codex-cli and gemini-cli, or is',
+        '  it a Claude-specific assumption? (Standard: docs/STANDARDS-REGISTRY.md →',
+        '  "Framework-Agnostic — and Framework-Optimizing".)',
+      ].join('\n'),
+    );
+  }
+}
 
 function blockCommit(files, reason) {
   console.error('');
@@ -868,6 +908,8 @@ function enforceTier1(trace, traceFile) {
       );
     }
   }
+
+  assertFrameworkGenerality(inScopeFiles, trace);
 
   console.error(
     `[instar-dev-precommit] OK (Tier 1) — trace ${traceName} covers ${inScopeFiles.length} in-scope file(s), ` +

@@ -42,6 +42,15 @@ Dark-shipped behind `threadline.warmSessionA2A.enabled`, resolved via the
 development agent, dark on the fleet**. With the flag absent and `developmentAgent`
 false, behavior is byte-for-byte the current cold-spawn path.
 
+**Framework-general (not Claude-specific).** The warm worker runs in the LOCAL
+agent's framework (claude-code / codex-cli / gemini-cli / future), not hardcoded
+Claude: the inject allowlist is now DERIVED from a per-framework process-name
+registry (`Record<IntelligenceFramework, …>`), and the warm spawn passes the local
+framework so the right CLI + resume mechanism applies. Enforced by compiler
+exhaustiveness + `tests/unit/framework-agnosticism.test.ts` + a new `/instar-dev`
+precommit gate that requires any launch/inject-abstraction change to state its
+framework generality (standard: **Framework-Agnostic — and Framework-Optimizing**).
+
 ## Evidence
 
 **The `claude.exe` bug (reproduced in dev):** `ALLOWED_INJECTION_PROCESSES`

@@ -103,6 +103,33 @@ path — proven by flag-off tests. Full revert = the listed source files; no per
 format change (the pool is in-memory only). `claude.exe` allowlist + grounding-on-
 inject are independently safe to keep even if the warm path is reverted.
 
+## Framework generality
+
+Per the **Framework-Agnostic — and Framework-Optimizing** standard, the warm path
+must work for EVERY agentic framework (claude-code / codex-cli / gemini-cli /
+future), not just Claude. Two parts were initially Claude-leaning and are now
+routed through the framework abstraction:
+
+- **Inject allowlist.** `ALLOWED_INJECTION_PROCESSES` was a hardcoded shells +
+  `claude`/`claude.exe` list — a non-Claude warm worker's pane process (`codex`,
+  `gemini`) would be refused. It is now DERIVED: `shells ∪ FRAMEWORK_INJECTION_
+  PROCESS_NAMES` (new `src/core/frameworkInjectionProcesses.ts`), a
+  `Record<IntelligenceFramework, …>` so the compiler forces an entry per framework.
+- **Warm spawn framework.** The interactive keep-alive spawn now passes
+  `framework: _defaultFramework` (the local agent's framework) to
+  `spawnInteractiveSession`, so a codex/gemini agent's warm worker launches in its
+  own framework with its own MCP/permission flags. The deterministic `sessionId`
+  is mapped per-framework by `frameworkSessionLaunch` (claude pins `--session-id`;
+  codex/gemini ignore it and resume by their own mechanism) — not a Claude
+  assumption, it's the abstraction's job.
+
+**Enforced (structure, not willpower):** (1) compiler exhaustiveness on the two
+`Record<IntelligenceFramework, …>` maps; (2) `tests/unit/framework-agnosticism.test.ts`
+fails if any framework's injection-process entry is empty, a launch builder is
+missing, or the allowlist drifts from `shells ∪ registry`; (3) the `/instar-dev`
+precommit gate (`assertFrameworkGenerality`) requires this very section for any
+change to the launch/inject abstraction surface.
+
 ## Conclusion
 
 Low-risk, additive, dark-gated. Completes the rapid-fire A2A continuity case on top

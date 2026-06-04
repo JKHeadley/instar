@@ -7706,9 +7706,21 @@ export async function startServer(options: StartOptions): Promise<void> {
         // selects) — so threadline_send is available either way.
         if (opts?.interactive) {
           const warmName = `msg-warm-${Date.now()}`;
+          // Framework-GENERAL: the warm worker runs in the LOCAL agent's
+          // framework (claude-code / codex-cli / gemini-cli), NOT hardcoded
+          // Claude. spawnInteractiveSession + frameworkSessionLaunch compose the
+          // right argv + MCP/permission flags per framework (claude keeps PROJECT
+          // MCP under --dangerously-skip-permissions; codex launches under
+          // --dangerously-bypass-approvals-and-sandbox with its per-agent
+          // threadline MCP) so threadline_send works regardless of framework.
+          // A2A reply threads have no topic, so the agent default framework
+          // applies (mirrors resolveTopicFramework's own fallback).
           const tmuxSession = await sessionManager.spawnInteractiveSession(prompt, warmName, {
-            // Pin a deterministic --session-id (claude-only) so an eviction
-            // mid-thread can --resume losslessly (#746). Ignored when resuming.
+            framework: _defaultFramework,
+            // Deterministic conversation id for lossless eviction→resume (#746).
+            // frameworkSessionLaunch maps this per framework: claude-code pins
+            // `--session-id`; codex/gemini ignore it (they resume by their own
+            // mechanism). NOT a Claude assumption — it's the abstraction's job.
             sessionId: opts?.sessionId,
           });
           // spawnInteractiveSession returns the tmux name; resolve the instar

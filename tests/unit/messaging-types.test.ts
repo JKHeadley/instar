@@ -240,10 +240,18 @@ describe('ALLOWED_INJECTION_PROCESSES', () => {
     expect(ALLOWED_INJECTION_PROCESSES).not.toContain('node');
   });
 
-  it('is an array with the expected length', () => {
+  it('is a framework-DERIVED array (shells + every framework process name)', () => {
     // ReadonlyArray is a compile-time constraint; runtime check verifies it's a real array
     expect(Array.isArray(ALLOWED_INJECTION_PROCESSES)).toBe(true);
-    expect(ALLOWED_INJECTION_PROCESSES.length).toBe(7);
+    // Derived = 5 shells (bash/zsh/fish/sh/dash) ∪ the framework registry
+    // (claude, claude.exe, codex, gemini). NOT a hardcoded single-framework list —
+    // see tests/unit/framework-agnosticism.test.ts for the registry invariant.
+    for (const shell of ['bash', 'zsh', 'fish', 'sh', 'dash']) {
+      expect(ALLOWED_INJECTION_PROCESSES).toContain(shell);
+    }
+    for (const fw of ['claude', 'claude.exe', 'codex', 'gemini']) {
+      expect(ALLOWED_INJECTION_PROCESSES).toContain(fw);
+    }
   });
 });
 

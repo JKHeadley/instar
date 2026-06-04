@@ -7,6 +7,11 @@
  * Derived from: docs/specs/INTER-AGENT-MESSAGING-SPEC.md v3.1
  */
 
+import {
+  INJECTION_SHELL_PROCESSES,
+  allFrameworkInjectionProcessNames,
+} from '../core/frameworkInjectionProcesses.js';
+
 // ── Message Primitives ─────────────────────────────────────────────
 
 /** Message classification — determines delivery TTL, retention, and response expectations */
@@ -249,14 +254,14 @@ export interface InjectionSafety {
  * Allowed foreground processes for injection.
  * Only inject if one of these is running — whitelist is strictly safer than blocklist.
  */
+// Framework-DERIVED so live-injection works for EVERY agentic framework, not just
+// claude-code. Shells (always safe) ∪ each framework's interactive process names
+// (incl. the macOS `claude.exe` pane-command quirk) from the single-source-of-truth
+// registry. Hardcoding a framework's process name here instead of in the registry
+// is a framework-agnosticism violation (tests/unit/framework-agnosticism.test.ts).
 export const ALLOWED_INJECTION_PROCESSES: ReadonlyArray<string> = [
-  // `claude.exe` is the REAL macOS pane-command name for a live Claude Code
-  // session (`tmux #{pane_current_command}` reports `claude.exe`, not `claude`).
-  // Without it, EVERY Threadline live-injection on macOS is refused with
-  // "Unsafe foreground process: claude.exe" — the load-bearing bug that made the
-  // A2A warm-session inject path dead-on-arrival. Additive + scoped: no behavior
-  // change where the foreground is already a shell.
-  'bash', 'zsh', 'fish', 'sh', 'dash', 'claude', 'claude.exe',
+  ...INJECTION_SHELL_PROCESSES,
+  ...allFrameworkInjectionProcessNames(),
 ];
 
 // ── Threads ────────────────────────────────────────────────────────
