@@ -79,14 +79,16 @@ describe('CircuitBreakingIntelligenceProvider — feature metrics tap (Phase 1b)
     expect(recorded[0]).toMatchObject({ feature: 'CoherenceGate', outcome: 'noop', waited: true, waitMs: 500 });
   });
 
-  it('records the circuit-open skip as a no-op (waited) and throws LlmCircuitOpenError', async () => {
+  it('records the circuit-open skip as outcome=shed (no call ran) and throws LlmCircuitOpenError', async () => {
     setFeatureMetricsRecorder(recorder);
     const inner: IntelligenceProvider = { evaluate: vi.fn(async () => 'should-not-run') };
     const p = new CircuitBreakingIntelligenceProvider(inner, fakeBreaker({ allow: false, waitAllow: false }));
 
     await expect(p.evaluate('x', { attribution: { component: 'X' }, rateLimitWaitMs: 200 } as any)).rejects.toBeInstanceOf(LlmCircuitOpenError);
     expect(inner.evaluate).not.toHaveBeenCalled();
-    expect(recorded[0]).toMatchObject({ feature: 'X', outcome: 'noop', waited: true });
+    // 'shed' (NOT 'noop'): the breaker refused the call, nothing ran — so it must
+    // not count toward real round-trips. This is the 0ms-latency confound fix.
+    expect(recorded[0]).toMatchObject({ feature: 'X', outcome: 'shed', waited: true });
   });
 
   it('is a safe no-op when no recorder is set (and never breaks the call)', async () => {
@@ -114,12 +116,73 @@ describe('CircuitBreakingIntelligenceProvider — feature metrics tap (Phase 1b)
       await new CircuitBreakingIntelligenceProvider(ok, fakeBreaker()).evaluate('a', { attribution: { component: 'ToneGate' } });
       await new CircuitBreakingIntelligenceProvider(ok, fakeBreaker()).evaluate('b', { attribution: { component: 'ToneGate' } });
       await expect(new CircuitBreakingIntelligenceProvider(bad, fakeBreaker()).evaluate('c', { attribution: { component: 'ToneGate' } })).rejects.toThrow();
+      // Two circuit-OPEN skips: no call runs → recorded as 'shed', excluded from realCalls.
+      await expect(new CircuitBreakingIntelligenceProvider(ok, fakeBreaker({ allow: false, waitAllow: false }))
+        .evaluate('d', { attribution: { component: 'ToneGate' }, rateLimitWaitMs: 50 } as any)).rejects.toThrow();
+      await expect(new CircuitBreakingIntelligenceProvider(ok, fakeBreaker({ allow: false, waitAllow: false }))
+        .evaluate('e', { attribution: { component: 'ToneGate' }, rateLimitWaitMs: 50 } as any)).rejects.toThrow();
 
       const tone = ledger.byFeature().find(f => f.feature === 'ToneGate')!;
-      expect(tone.calls).toBe(3);
-      expect(tone.llmCalls).toBe(3);
+      expect(tone.calls).toBe(5);       // all funnel rows (incl. shed)
+      expect(tone.shed).toBe(2);        // breaker refused 2 — no round-trip
+      expect(tone.realCalls).toBe(3);   // calls − shed = honest call count
+      expect(tone.llmCalls).toBe(5);
       expect(tone.errors).toBe(1);
       expect(tone.noop).toBe(2);
+    } finally {
+      ledger.close();
+    }
+  });
+
+  // ── Iris-audit item 1: token usage now reaches the tap ──────────────────
+  // Before this fix the tap recorded latency/outcome/count but NO tokens, so
+  // /metrics/features always reported tokensIn:0/tokensOut:0. The provider now
+  // surfaces usage via options.onUsage, which the funnel forwards to the recorder.
+
+  it('forwards provider token usage (onUsage) into the recorder', async () => {
+    setFeatureMetricsRecorder(recorder);
+    const inner: IntelligenceProvider = {
+      evaluate: async (_p, opts) => { opts?.onUsage?.({ inputTokens: 1234, outputTokens: 56 }); return 'ok'; },
+    };
+    const p = new CircuitBreakingIntelligenceProvider(inner, fakeBreaker());
+    await p.evaluate('x', { attribution: { component: 'ToneGate' } });
+    expect(recorded[0]).toMatchObject({ feature: 'ToneGate', outcome: 'noop', tokensIn: 1234, tokensOut: 56 });
+  });
+
+  it('composes with (does not clobber) a caller-supplied onUsage', async () => {
+    setFeatureMetricsRecorder(recorder);
+    const callerSpy = vi.fn();
+    const inner: IntelligenceProvider = {
+      evaluate: async (_p, opts) => { opts?.onUsage?.({ inputTokens: 10, outputTokens: 2 }); return 'ok'; },
+    };
+    const p = new CircuitBreakingIntelligenceProvider(inner, fakeBreaker());
+    await p.evaluate('x', { onUsage: callerSpy });
+    expect(callerSpy).toHaveBeenCalledWith({ inputTokens: 10, outputTokens: 2 });
+    expect(recorded[0]).toMatchObject({ tokensIn: 10, tokensOut: 2 });
+  });
+
+  it('records no tokens when the provider surfaces none (back-compat, omitted not 0)', async () => {
+    setFeatureMetricsRecorder(recorder);
+    const inner: IntelligenceProvider = { evaluate: async () => 'ok' };
+    const p = new CircuitBreakingIntelligenceProvider(inner, fakeBreaker());
+    await p.evaluate('x');
+    expect(recorded[0].tokensIn).toBeUndefined();
+    expect(recorded[0].tokensOut).toBeUndefined();
+  });
+
+  it('sums token usage into the REAL ledger rollup (tokensIn/tokensOut no longer 0)', async () => {
+    const ledger = new FeatureMetricsLedger({ dbPath: ':memory:' });
+    try {
+      setFeatureMetricsRecorder(ledger);
+      const inner: IntelligenceProvider = {
+        evaluate: async (_p, opts) => { opts?.onUsage?.({ inputTokens: 100, outputTokens: 20 }); return 'ok'; },
+      };
+      await new CircuitBreakingIntelligenceProvider(inner, fakeBreaker()).evaluate('a', { attribution: { component: 'Tok' } });
+      await new CircuitBreakingIntelligenceProvider(inner, fakeBreaker()).evaluate('b', { attribution: { component: 'Tok' } });
+
+      const tok = ledger.byFeature().find(f => f.feature === 'Tok')!;
+      expect(tok.tokensIn).toBe(200);
+      expect(tok.tokensOut).toBe(40);
     } finally {
       ledger.close();
     }

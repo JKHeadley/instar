@@ -20,7 +20,18 @@
 
 import type { ModelTier } from '../../types.js';
 
-const TIER_TO_MODEL: Record<ModelTier, string> = {
+export const KNOWN_GEMINI_MODELS = [
+  'gemini-2.5-flash',
+  'gemini-2.5-pro',
+] as const;
+
+export type KnownGeminiModel = typeof KNOWN_GEMINI_MODELS[number];
+
+export function isKnownGeminiModel(model: string | undefined): model is KnownGeminiModel {
+  return typeof model === 'string' && (KNOWN_GEMINI_MODELS as readonly string[]).includes(model);
+}
+
+const TIER_TO_MODEL: Record<ModelTier, KnownGeminiModel> = {
   // light/fast — the verified-working one-shot default.
   fast: 'gemini-2.5-flash',
   // medium — balanced; same flash model (verified one-shot path).
@@ -30,12 +41,12 @@ const TIER_TO_MODEL: Record<ModelTier, string> = {
 };
 
 /** The default model when no tier or id is supplied. */
-export const GEMINI_DEFAULT_MODEL = 'gemini-2.5-flash';
+export const GEMINI_DEFAULT_MODEL: KnownGeminiModel = 'gemini-2.5-flash';
 
 /**
- * Resolve a tier or raw model string to a concrete model name to pass to
- * the gemini CLI's `-m` flag. If `tierOrModel` doesn't match a known tier,
- * it's returned verbatim (treated as a raw model name).
+ * Resolve a tier or raw model string to a concrete model name to pass to the
+ * gemini CLI's `-m` flag. Explicit caller model ids pass through; automatic
+ * fallback selection is constrained separately by resolveKnownGeminiFallback.
  */
 export function resolveCliModelFlag(tierOrModel: string | ModelTier | undefined): string {
   if (!tierOrModel) return GEMINI_DEFAULT_MODEL;

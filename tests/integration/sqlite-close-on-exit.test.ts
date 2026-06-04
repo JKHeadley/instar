@@ -95,7 +95,10 @@ describe('SQLite close-on-exit — server.ts wiring (ordering)', () => {
   it('the uncaughtException handler closes ALL sqlite (not just topic/semantic memory)', () => {
     const uncaughtStart = serverSrc.indexOf("process.on('uncaughtException'");
     expect(uncaughtStart).toBeGreaterThan(0);
-    const body = serverSrc.slice(uncaughtStart, uncaughtStart + 1200);
+    // Window generous enough to span the whole handler (the suppressed-error
+    // branch now logs a first-seen stack before the FATAL branch's
+    // closeAllSqlite() call — so a tight window would miss it).
+    const body = serverSrc.slice(uncaughtStart, uncaughtStart + 2000);
     expect(body).toMatch(/closeAllSqlite\(\)/);
   });
 

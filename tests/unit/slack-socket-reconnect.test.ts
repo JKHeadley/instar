@@ -108,7 +108,12 @@ describe('Ack send guard against a mid-reconnect socket (#43 — no whole-agent 
   it('server routes uncaught exceptions through the isNonFatalUncaught policy (defense-in-depth)', () => {
     // The recoverable-error allowlist (HTTP races + the Slack WS race) is now a
     // testable module, used by the process-level handler instead of an inline list.
-    expect(serverSource).toContain("import { isNonFatalUncaught } from '../core/uncaughtExceptionPolicy.js'");
+    // Tolerate additional named imports from the policy module (e.g.
+    // shouldLogStackForUncaught) — the intent is "server imports the
+    // isNonFatalUncaught policy", not a byte-exact import line.
+    expect(serverSource).toMatch(
+      /import \{[^}]*\bisNonFatalUncaught\b[^}]*\} from '\.\.\/core\/uncaughtExceptionPolicy\.js'/,
+    );
     expect(serverSource).toMatch(/if \(isNonFatalUncaught\(err\)\) \{[\s\S]*?return;/);
   });
 });

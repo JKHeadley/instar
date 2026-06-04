@@ -684,6 +684,18 @@ export interface IntelligenceOptions {
     /** Stable source-side component label, e.g. "InputDetector", "MessagingToneGate". */
     component: string;
   };
+  /**
+   * Optional token-usage callback (Iris-audit item 1, spec
+   * iris-audit-session-observability.md). When the underlying provider can
+   * surface usage — e.g. ClaudeCliIntelligenceProvider parsing `claude -p
+   * --output-format json` — it invokes this exactly once per successful call
+   * with the token counts. ADDITIVE and OPTIONAL: evaluate() still returns
+   * Promise<string>, so every existing caller is byte-identical. The wrapper
+   * CircuitBreakingIntelligenceProvider sets it to feed per-feature token
+   * counts into the metrics ledger (/metrics/features), which previously always
+   * reported 0 because no usage ever reached the tap.
+   */
+  onUsage?: (usage: { inputTokens: number; outputTokens: number }) => void;
 }
 
 // ── Drift Checker ───────────────────────────────────────────────────
@@ -3017,6 +3029,32 @@ export interface MonitoringConfig {
     verifyWindowMs?: number;
   };
   /**
+   * BurnDetection — the token-burn detection + bounded auto-heal system
+   * (docs/specs/token-burn-detection-and-self-heal.md). All fields optional;
+   * absence preserves the shipped defaults. The system starts unconditionally
+   * unless `enabled` is explicitly false.
+   */
+  burnDetection?: {
+    /** Master kill-switch for the whole burn-detection + auto-heal system (default: true). */
+    enabled?: boolean;
+    /** Single attribution_key share of trailing-24h spend that trips the absolute-share trigger (default: 0.25). */
+    absoluteShareThreshold?: number;
+    /**
+     * Minimum last-1h tokens for the absolute-share trigger to fire (activity
+     * gate, default: 0 → require strictly positive recent spend). A key whose
+     * 24h share is high but whose current rate is at/below this floor is a
+     * finished burst, not a live burn — gating on it stops the "consumed X% of
+     * 24h spend … Projected 0 tokens" re-alarm.
+     */
+    absoluteShareActivityFloorTokens?: number;
+    /** Telegram topic the runbook posts burn alerts to (default: 8615). */
+    alertTopicId?: number;
+    /** Auto-install a bounded throttle when a KNOWN component is flagged (default: true). */
+    autoThrottle?: boolean;
+    /** Auto-throttle even on unknown:: keys (default: false → alert-only on unknown). */
+    autoThrottleOnUnknown?: boolean;
+  };
+  /**
    * ContextWedgeSentinel — detects the Claude Code "thinking/redacted_thinking
    * blocks in the latest assistant message cannot be modified" 400 fast-fail
    * wedge (a cancelled tool call inside a parallel batch corrupts the latest
@@ -3055,6 +3093,29 @@ export interface MonitoringConfig {
       /** When true, log the would-respawn decision but kill nothing (default: true). */
       dryRun?: boolean;
     };
+  };
+  /**
+   * Codex session-wedge SELF-recovery — escalates PAST the StuckInputSentinel
+   * keypress ladder when a codex injection is still stuck at the prompt. The
+   * server-process sentinel requests a tier-C recovery (server restart + queue
+   * replay) via SessionRecoveryChannel; the lifeline-process consumer executes
+   * it (that's where ServerSupervisor lives). Highest blast radius (restarts the
+   * agent server), so it ships dark + dry-run and rides the Graduated-Feature-
+   * Rollout track. Absence of this block = OFF (read with fallback defaults, so
+   * no config migration is needed). See docs/specs/CODEX-SESSION-WEDGE-SELF-RECOVERY.md.
+   */
+  codexWedgeRecovery?: {
+    /** Master gate: when true the sentinel escalates to a tier-C request AND the
+     *  lifeline consumer runs (default: false → legacy exhaust-and-stop). */
+    enabled: boolean;
+    /** When true (default), the lifeline logs the would-restart and acks recovered
+     *  WITHOUT restarting. Flip to false only after a dry-run soak. */
+    dryRun?: boolean;
+    /** Minimum gap (ms) between tier-C restarts for the same session — the durable
+     *  cross-restart loop guard (default: 600_000 = 10min). */
+    restartCooldownMs?: number;
+    /** Ticks the sentinel waits for an ack before giving up, bounded (default: 6). */
+    escalationTimeoutTicks?: number;
   };
   /**
    * SleepWakeDetector CPU-starvation guard tuning. All optional — the class ships
@@ -3100,6 +3161,26 @@ export interface MonitoringConfig {
     /** CPU pressure: load-per-core at/above which pressure is `critical`.
      *  Default 1.5. */
     cpuCriticalLoadPerCore?: number;
+    /** Under CPU pressure, require positive descendant-CPU progress before the
+     *  `active-process` existence-veto keeps a session — so a wedged/idle child
+     *  (live PID, ~0 CPU) no longer holds an otherwise-reapable idle session
+     *  hostage under host load. No-op off-pressure and when CPU can't be sampled;
+     *  falls through to the transcript-growth + positive-idle checks (which still
+     *  must clear). Ships dark; dev agents enable it via `developmentAgent`. */
+    cpuAwareActiveProcessKeep?: boolean;
+    /** Idle floor (CPU-seconds per wall-second) below which descendant CPU
+     *  progress counts as "flat" for `cpuAwareActiveProcessKeep`. Default 0.02. */
+    cpuActiveMinRatePerSec?: number;
+    /** OBSERVE-ONLY busy-orphan detection (inverse of cpuAwareActiveProcessKeep):
+     *  under pressure, when a session is kept by an `active-process` veto whose
+     *  child is BURNING CPU yet the session itself is idle (idle prompt + flat
+     *  transcript) across an extended dwell, record a `busy-orphan-suspected`
+     *  audit row. Never changes the keep/kill decision. Ships dark; dev agents
+     *  enable via `developmentAgent`. */
+    busyOrphanDetection?: boolean;
+    /** Consecutive suspect ticks before a `busy-orphan-suspected` row is emitted.
+     *  Default 5 (~10 min at the default 120s tick). */
+    busyOrphanConfirmTicks?: number;
   };
   /**
    * Reap-notification (UNIFIED-SESSION-LIFECYCLE §P3). The single coalescing
@@ -3279,6 +3360,30 @@ export interface MonitoringConfig {
      *  infra-gap batch serializes under the route's 10/min IP limit (Slice 2
      *  NEW-2). Default 7000. */
     feedbackPostDelayMs?: number;
+  };
+  /**
+   * ApprenticeshipCycleSlaMonitor — observe-only signal for open apprenticeship
+   * differential cycles older than the configured SLA. Ships OFF; when enabled
+   * it raises at most one Attention item per overdue cycle id and never mutates
+   * the cycle store.
+   */
+  apprenticeshipCycleSla?: {
+    /** Master kill switch (default: false). */
+    enabled: boolean;
+    /** Open-cycle age threshold in minutes (default: 120). */
+    overdueAfterMinutes?: number;
+  };
+  /**
+   * GeminiCapacityEscalationMonitor — observe-only escalation when Gemini is
+   * capacity/quota-blocked (deferred by #708's policy) for longer than
+   * escalateAfterMinutes. Raises one Attention item per deferral episode so a
+   * multi-hour block isn't a silent outage. Never mutates the gate. Ships OFF.
+   */
+  geminiCapacityEscalation?: {
+    /** Master kill switch (default: false). */
+    enabled: boolean;
+    /** Escalate only when the remaining defer window >= this many minutes (default: 60). */
+    escalateAfterMinutes?: number;
   };
   /**
    * ReleaseReadinessSentinel (docs/specs/RELEASE-READINESS-VISIBILITY-SPEC.md §4.2)

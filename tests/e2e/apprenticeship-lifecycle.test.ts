@@ -9,8 +9,13 @@
  * not 404/503)? This boots the REAL AgentServer (the same path server.ts uses)
  * and verifies:
  *   1. GET /apprenticeship/instances returns 200 through AgentServer (not 503).
- *   2. The route requires Bearer auth.
- *   3. The full lifecycle works end-to-end through the wired program: create →
+ *   2. POST /apprenticeship/cycles returns 201 through AgentServer (not 503).
+ *   3. GET /apprenticeship/cycles/overdue returns 200 through AgentServer
+ *      when the default-off SLA monitor is explicitly enabled.
+ *   4. GET /apprenticeship/instances/:id/role-coverage returns 200 through
+ *      AgentServer (not 503) and reports drift for a dormant mentor loop.
+ *   5. The route requires Bearer auth.
+ *   6. The full lifecycle works end-to-end through the wired program: create →
  *      transition pending→active gated on a real on-disk harvest at the
  *      canonical path.
  */
@@ -83,7 +88,7 @@ describe('Apprenticeship Program E2E lifecycle (feature is alive)', () => {
       requestTimeoutMs: 10000, version: '0.0.0',
       sessions: { claudePath: '/usr/bin/echo', maxSessions: 3, defaultMaxDurationMinutes: 30, protectedSessions: [], monitorIntervalMs: 5000 },
       scheduler: { enabled: false, jobsFile: '', maxParallelJobs: 1 },
-      messaging: [], monitoring: {}, updates: {},
+      messaging: [], monitoring: { apprenticeshipCycleSla: { enabled: true, overdueAfterMinutes: 120 } }, updates: {},
     } as InstarConfig;
 
     server = new AgentServer({ config, sessionManager: createMockSessionManager() as any, state: new StateManager(stateDir) });
@@ -102,6 +107,81 @@ describe('Apprenticeship Program E2E lifecycle (feature is alive)', () => {
     const res = await request(app).get('/apprenticeship/instances').set(auth());
     expect(res.status).toBe(200);
     expect(Array.isArray(res.body.instances)).toBe(true);
+  });
+
+  it('POST /apprenticeship/cycles is alive (201, not 503) through AgentServer', async () => {
+    const res = await request(app)
+      .post('/apprenticeship/cycles')
+      .set(auth())
+      .send({
+        id: 'e2e-cycle-1',
+        instanceId: 'echo-to-codey',
+        cycleNumber: 1,
+        task: 'Run an apprenticeship differential cycle',
+        menteeOutput: 'raw mentee output',
+        mentorFlagged: ['mentor finding'],
+        overseerDifferential: ['overseer finding'],
+        coaching: 'coaching note',
+        infraItems: ['infra follow-up'],
+      });
+
+    expect(res.status).toBe(201);
+    expect(res.body.status).toBe('open');
+    expect(res.body.overseerDifferential).toEqual(['overseer finding']);
+  });
+
+  it('GET /apprenticeship/cycles/overdue is alive (200, not 503) through AgentServer when enabled', async () => {
+    await request(app)
+      .post('/apprenticeship/cycles')
+      .set(auth())
+      .send({
+        id: 'e2e-cycle-overdue',
+        instanceId: 'echo-to-codey',
+        cycleNumber: 2,
+        createdAt: '2026-06-02T00:00:00.000Z',
+        task: 'Run an older apprenticeship differential cycle',
+        menteeOutput: 'old output',
+      })
+      .expect(201);
+
+    const res = await request(app).get('/apprenticeship/cycles/overdue').set(auth());
+    expect(res.status).toBe(200);
+    expect(res.body.overdue.some((c: { id: string }) => c.id === 'e2e-cycle-overdue')).toBe(true);
+  });
+
+  it('GET /apprenticeship/instances/:id/role-coverage is alive and observe-only through AgentServer', async () => {
+    await request(app)
+      .post('/apprenticeship/cycles')
+      .set(auth())
+      .send({
+        id: 'e2e-role-review-1',
+        instanceId: 'role-drift',
+        cycleNumber: 1,
+        createdAt: '2026-06-03T08:00:00.000Z',
+        task: 'Overseer review 1',
+        menteeOutput: 'review output',
+        kind: 'overseer-apprentice-devreview',
+      })
+      .expect(201);
+    await request(app)
+      .post('/apprenticeship/cycles')
+      .set(auth())
+      .send({
+        id: 'e2e-role-review-2',
+        instanceId: 'role-drift',
+        cycleNumber: 2,
+        createdAt: '2026-06-03T09:00:00.000Z',
+        task: 'Overseer review 2',
+        menteeOutput: 'review output',
+        kind: 'overseer-apprentice-devreview',
+      })
+      .expect(201);
+
+    const res = await request(app).get('/apprenticeship/instances/role-drift/role-coverage').set(auth());
+    expect(res.status).toBe(200);
+    expect(res.body.driftWarning).toBe(true);
+    expect(res.body.axes['mentor-mentee-differential'].fired).toBe(false);
+    expect(res.body.axes['overseer-apprentice-devreview'].cycleCount).toBe(2);
   });
 
   it('requires Bearer auth', async () => {

@@ -288,6 +288,7 @@ export abstract class CoherenceReviewer {
       // High-stakes reviewers wait (bounded) for a rate-limit window to clear
       // rather than fail open; undefined for best-effort reviewers.
       rateLimitWaitMs: this.options.rateLimitWaitMs,
+      attribution: { component: 'CoherenceReviewer' }, // attribution for /metrics/features
     };
     // IntelligenceProvider implementations set their own timeouts; wrap here too.
     return await Promise.race([

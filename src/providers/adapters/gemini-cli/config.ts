@@ -12,6 +12,7 @@
 
 import { detectGeminiPath } from '../../../core/Config.js';
 import { GEMINI_DEFAULT_MODEL } from './models.js';
+import type { GeminiCapacityPolicyConfig } from './observability/geminiCapacityPolicy.js';
 
 /** Gemini's native approval surface (analog of Codex's sandbox modes). */
 export type GeminiApprovalMode = 'default' | 'auto_edit' | 'yolo';
@@ -38,6 +39,8 @@ export interface GeminiCliConfig {
   maxOutputBytes?: number;
   /** Working directory for tools that need one. */
   defaultWorkingDirectory?: string;
+  /** Gemini quota/rate-limit handling. Defaults enabled. */
+  capacityPolicy?: GeminiCapacityPolicyConfig;
 }
 
 /**

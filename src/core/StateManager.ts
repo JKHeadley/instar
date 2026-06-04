@@ -49,14 +49,33 @@ function describeReadError(err: unknown, filePath: string): {
   };
 }
 
+/** TTL for the listSessions read cache. Short enough that read-only staleness is
+ *  negligible for the reaper/scheduler/sentinels (which poll on far longer cycles),
+ *  long enough to collapse the many sub-second redundant calls into one disk read. */
+const SESSIONS_CACHE_TTL_MS = 1000;
+
 export class StateManager {
   private stateDir: string;
   private _readOnly: boolean = false;
   private _sessionPoolActive: boolean = false;
   private _machineId: string | null = null;
+  private readonly _now: () => number;
+  /** Memoized full session list — the fix for the systemic CPU hot-loop where
+   *  `listSessions` re-read + re-parsed EVERY session file from disk on EVERY call,
+   *  and is called each tick by the reaper + sentinels via `listRunningSessions`
+   *  (O(sessions × pollers × tick-rate) disk reads). Invalidated on any session
+   *  write so spawns/terminations remain instantly visible. */
+  private _sessionsCache: Session[] | null = null;
+  private _sessionsCacheAt = 0;
 
-  constructor(stateDir: string) {
+  constructor(stateDir: string, opts?: { now?: () => number }) {
     this.stateDir = stateDir;
+    this._now = opts?.now ?? (() => Date.now());
+  }
+
+  /** Drop the listSessions cache so the next read reflects a just-written change. */
+  private invalidateSessionsCache(): void {
+    this._sessionsCache = null;
   }
 
   /**
@@ -146,12 +165,35 @@ export class StateManager {
     this.validateKey(session.id, 'sessionId');
     const filePath = path.join(this.stateDir, 'state', 'sessions', `${session.id}.json`);
     this.atomicWrite(filePath, JSON.stringify(session, null, 2));
+    this.invalidateSessionsCache(); // a write must be visible to the next list
   }
 
   listSessions(filter?: { status?: Session['status'] }): Session[] {
-    const dir = path.join(this.stateDir, 'state', 'sessions');
-    if (!fs.existsSync(dir)) return [];
+    const all = this.readAllSessionsCached();
+    const filtered = filter?.status ? all.filter(s => s.status === filter.status) : all;
+    // Return shallow copies so a caller mutating a result can't corrupt the shared
+    // cache; listSessions output is treated as a read-only snapshot by all consumers.
+    return filtered.map(s => ({ ...s }));
+  }
 
+  /**
+   * Read every session file (readdir + readFileSync + JSON.parse), memoized for
+   * SESSIONS_CACHE_TTL_MS. THIS is the hot path: the reaper and every sentinel call
+   * `listRunningSessions` → `listSessions` on each tick, so without the cache the
+   * server re-read + re-parsed the FULL session directory many times per second
+   * (the systemic ~30%-CPU `readFileUtf8` hot-loop). Writes invalidate the cache, so
+   * a freshly spawned or removed session is visible on the very next call.
+   */
+  private readAllSessionsCached(): Session[] {
+    if (this._sessionsCache && (this._now() - this._sessionsCacheAt) < SESSIONS_CACHE_TTL_MS) {
+      return this._sessionsCache;
+    }
+    const dir = path.join(this.stateDir, 'state', 'sessions');
+    if (!fs.existsSync(dir)) {
+      this._sessionsCache = [];
+      this._sessionsCacheAt = this._now();
+      return this._sessionsCache;
+    }
     const files = fs.readdirSync(dir).filter(f => f.endsWith('.json'));
     const sessions: Session[] = [];
     for (const f of files) {
@@ -170,10 +212,8 @@ export class StateManager {
         });
       }
     }
-
-    if (filter?.status) {
-      return sessions.filter(s => s.status === filter.status);
-    }
+    this._sessionsCache = sessions;
+    this._sessionsCacheAt = this._now();
     return sessions;
   }
 
@@ -184,6 +224,7 @@ export class StateManager {
     if (!fs.existsSync(filePath)) return false;
     try {
       SafeFsExecutor.safeUnlinkSync(filePath, { operation: 'src/core/StateManager.ts:166' });
+      this.invalidateSessionsCache(); // removal must be visible to the next list
       return true;
     } catch {
       return false;

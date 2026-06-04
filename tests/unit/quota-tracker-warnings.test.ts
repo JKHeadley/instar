@@ -42,6 +42,58 @@ describe('QuotaTracker — warnings and staleness', () => {
     );
   });
 
+  it('warns only ONCE across repeated getState() calls while the file stays missing', () => {
+    // Regression: the old `!this.cachedState` guard was ineffective (cachedState
+    // is never populated when the file is absent), so the warn fired on EVERY
+    // call — 902×/day observed on the gemini-cli agent.
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const tracker = new QuotaTracker({
+      quotaFile,
+      thresholds: { normal: 50, elevated: 70, critical: 85, shutdown: 95 },
+    });
+
+    for (let i = 0; i < 10; i++) {
+      expect(tracker.getState()).toBeNull();
+    }
+
+    const noFileWarns = warnSpy.mock.calls.filter(
+      (c) => typeof c[0] === 'string' && c[0].includes('No quota state file found'),
+    );
+    expect(noFileWarns).toHaveLength(1);
+  });
+
+  it('re-arms the missing-file warning after the file reappears then disappears', () => {
+    vi.useFakeTimers();
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const tracker = new QuotaTracker({
+      quotaFile,
+      thresholds: { normal: 50, elevated: 70, critical: 85, shutdown: 95 },
+    });
+
+    // 1) Absent → warns once.
+    expect(tracker.getState()).toBeNull();
+
+    // 2) File appears (fresh) → reading it re-arms the one-shot flag, no warn.
+    fs.writeFileSync(quotaFile, JSON.stringify({
+      usagePercent: 10,
+      lastUpdated: new Date().toISOString(),
+      recommendation: 'normal',
+    }));
+    vi.advanceTimersByTime(6000); // past the 5s read cooldown so it re-reads
+    expect(tracker.getState()).not.toBeNull();
+
+    // 3) File removed again → warns once more (re-armed).
+    SafeFsExecutor.safeRmSync(quotaFile, { force: true, operation: 'tests/unit/quota-tracker-warnings.test.ts:re-arm' });
+    vi.advanceTimersByTime(6000);
+    expect(tracker.getState()).toBeNull();
+
+    const noFileWarns = warnSpy.mock.calls.filter(
+      (c) => typeof c[0] === 'string' && c[0].includes('No quota state file found'),
+    );
+    expect(noFileWarns).toHaveLength(2);
+    vi.useRealTimers();
+  });
+
   it('logs warning for stale data', () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 

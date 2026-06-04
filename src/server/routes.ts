@@ -704,6 +704,7 @@ export interface RouteContext {
    *  transcripts). Null when stateDir is unavailable. */
   tokenLedger: import('../monitoring/TokenLedger.js').TokenLedger | null;
   featureMetricsLedger: import('../monitoring/FeatureMetricsLedger.js').FeatureMetricsLedger | null;
+  resourceLedger: import('../monitoring/ResourceLedger.js').ResourceLedger | null;
   /** Framework-Onboarding Mentor System issue ledger (read-only observability;
    *  signal-only — never gates). Null when stateDir is unavailable. Powers
    *  GET /framework-issues and /framework-issues/playbook. */
@@ -724,6 +725,14 @@ export interface RouteContext {
    *  instance-as-project registry, the retro-gate (pending→active) and the
    *  doc-as-required-artifact gate (active→complete). */
   apprenticeshipProgram?: import('../core/ApprenticeshipProgram.js').ApprenticeshipProgram | null;
+  /** Apprenticeship differential-cycle store. Null when SQLite/state init fails
+   *  → /apprenticeship/cycles* 503s. */
+  apprenticeshipCycleStore?: import('../monitoring/ApprenticeshipCycleStore.js').ApprenticeshipCycleStore | null;
+  /** Observe-only overdue-cycle SLA monitor. Null when disabled/unavailable. */
+  apprenticeshipCycleSlaMonitor?: import('../monitoring/ApprenticeshipCycleSlaMonitor.js').ApprenticeshipCycleSlaMonitor | null;
+  /** Observe-only Gemini long-capacity-block escalation monitor. Null when disabled.
+   *  → GET /gemini/capacity 503s. */
+  geminiCapacityEscalationMonitor?: import('../monitoring/GeminiCapacityEscalationMonitor.js').GeminiCapacityEscalationMonitor | null;
   /** SessionReaper — pressure-aware idle-session reaper. Null when not wired
    *  (older boot paths). Powers GET /sessions/reaper observability. */
   sessionReaper?: import('../monitoring/SessionReaper.js').SessionReaper | null;
@@ -4337,6 +4346,86 @@ export function createRoutes(ctx: RouteContext): Router {
     }, 500);
   });
 
+  // POST /sessions/restart-all — bulk config-apply restart.
+  //
+  // After a config change (default model, disabled features, a newly-added
+  // hook), running sessions keep their OLD config until they restart — and
+  // Claude Code only loads hooks/settings at session START, so a hook added
+  // mid-session never engages on the live session. Previously the only way to
+  // push every session onto the new config was to wait for the reaper or
+  // refresh each session by hand. This refreshes every running, Telegram-bound
+  // session through SessionRefresh (kill + `claude --resume`, preserving each
+  // conversation), staggered so we don't kill+respawn the whole fleet at once.
+  //
+  // Non-Telegram-bound sessions (Slack, iMessage, headless) are skipped — the
+  // respawn path is topic-routed, the same v1 limitation as /sessions/refresh.
+  router.post('/sessions/restart-all', spawnLimiter, (req, res) => {
+    if (!ctx.sessionRefresh) {
+      res.status(503).json({ error: 'Session refresh not enabled (no Telegram adapter wired)' });
+      return;
+    }
+
+    const { reason, excludeSession, followUpPrompt } = req.body || {};
+    if (reason !== undefined && (typeof reason !== 'string' || reason.length > 1000)) {
+      res.status(400).json({ error: '"reason" must be a string under 1000 chars' });
+      return;
+    }
+    if (excludeSession !== undefined && (typeof excludeSession !== 'string' || !SESSION_NAME_RE.test(excludeSession))) {
+      res.status(400).json({ error: '"excludeSession" must contain only letters, numbers, hyphens, underscores (max 200)' });
+      return;
+    }
+    if (followUpPrompt !== undefined && (typeof followUpPrompt !== 'string' || followUpPrompt.length > 500_000)) {
+      res.status(400).json({ error: '"followUpPrompt" must be a string under 500KB' });
+      return;
+    }
+
+    // Snapshot running sessions NOW, before any kills. Filter to Telegram-bound
+    // up front (checking in-memory AND disk, mirroring SessionRefresh's own
+    // resolution) so the "scheduled" list we return is honest — the rest would
+    // only come back not_telegram_bound.
+    const running = ctx.state.listSessions({ status: 'running' });
+    const targets = running
+      .map(s => s.tmuxSession)
+      .filter((name): name is string => !!name && name !== excludeSession)
+      .filter(name => {
+        const topic = ctx.telegram?.getTopicForSession?.(name)
+          ?? ctx.telegram?.resolveTopicForSessionFromDisk?.(name)
+          ?? null;
+        return topic !== null;
+      });
+
+    res.status(202).json({
+      ok: true,
+      message: 'Bulk restart scheduled',
+      scheduled: targets,
+      count: targets.length,
+      skipped: running.length - targets.length,
+    });
+
+    // Stagger the refreshes so we don't kill+respawn the whole fleet in one
+    // burst (a tmux storm + a model-load CPU spike). Each refresh is
+    // independent and self-rate-limited inside SessionRefresh, so a repeated
+    // restart-all inside the rate window is harmlessly refused per session.
+    const sessionRefresh = ctx.sessionRefresh;
+    const STAGGER_MS = 750;
+    targets.forEach((sessionName, i) => {
+      setTimeout(() => {
+        sessionRefresh
+          .refreshSession({ sessionName, followUpPrompt, reason: reason ?? 'bulk restart-all (config apply)' })
+          .then(result => {
+            if (!result.ok) {
+              console.warn(`[sessions/restart-all] refused sessionName=${sessionName} code=${result.code} message="${result.message}"`);
+            } else {
+              console.log(`[sessions/restart-all] refreshed sessionName=${sessionName} -> ${result.newSessionName} (topic ${result.topicId})`);
+            }
+          })
+          .catch(err => {
+            console.error(`[sessions/restart-all] unexpected error for sessionName=${sessionName}:`, err);
+          });
+      }, 500 + i * STAGGER_MS);
+    });
+  });
+
   router.delete('/sessions/:id', async (req, res) => {
     if (!SESSION_NAME_RE.test(req.params.id)) {
       res.status(400).json({ error: 'Invalid session ID format' });
@@ -4533,6 +4622,25 @@ export function createRoutes(ctx: RouteContext): Router {
       ? summary.features.filter((f) => f.feature === feature)
       : summary.features;
     res.json({ ...summary, features });
+  });
+
+  // ── Per-agent ResourceLedger (Phase A: durable rate-limit events) ────
+  // Read-only. 503 when the ledger is unavailable (no stateDir / init failed /
+  // monitoring.resourceLedger.enabled:false leaves it null). Never gates.
+  router.get('/resources/rate-limits', (req, res) => {
+    if (!ctx.resourceLedger) {
+      res.status(503).json({ error: 'resource ledger unavailable (disabled or not initialized)' });
+      return;
+    }
+    const sinceHours = req.query.sinceHours ? Number(req.query.sinceHours) : 24;
+    const windowMs = (sinceHours && sinceHours > 0 ? sinceHours : 24) * 3_600_000;
+    const now = Date.now();
+    res.json({
+      windowHours: windowMs / 3_600_000,
+      summary: ctx.resourceLedger.rateLimitSummary(now, windowMs),
+      byKind: ctx.resourceLedger.rateLimitByKind(now, windowMs),
+      events: ctx.resourceLedger.rateLimitEvents({ sinceMs: now - windowMs, limit: 200 }),
+    });
   });
 
   // ── Release-readiness (Layer B of release-readiness-visibility) ──────
@@ -11487,13 +11595,83 @@ export function createRoutes(ctx: RouteContext): Router {
   //
   //   GET  /apprenticeship/instances            — list
   //   GET  /apprenticeship/instances/:id        — one instance (404 missing)
+  //   GET  /apprenticeship/instances/:id/role-coverage — read-only axis coverage
   //   POST /apprenticeship/instances            — create (charset-clamped, dup-rejected)
   //   POST /apprenticeship/instances/:id/transition {to} — gated status change
   //   POST /apprenticeship/instances/:id/can-start    — read-only start-gate preview
   //   POST /apprenticeship/instances/:id/can-complete — read-only completion-gate preview
+  //
+  // Differential-cycle capture (structural companion store):
+  //   POST /apprenticeship/cycles             — record one cycle row
+  //   GET  /apprenticeship/cycles             — list rows; optional instanceId, limit
+  //   GET  /apprenticeship/cycles/overdue     — read-only overdue SLA view
+  //   GET  /apprenticeship/cycles/:id         — fetch one row (404 missing)
+  //   POST /apprenticeship/cycles/:id/close   — mark row closed (404 missing)
+  router.post('/apprenticeship/cycles', (req, res) => {
+    if (!ctx.apprenticeshipCycleStore) { res.status(503).json({ error: 'apprenticeship cycle store disabled' }); return; }
+    try {
+      const body = req.body ?? {};
+      const cycle = ctx.apprenticeshipCycleStore.record({
+        ...body,
+        kind: typeof body.kind === 'string' ? body.kind : 'mentor-mentee-differential',
+      });
+      res.status(201).json(cycle);
+    } catch (err) {
+      res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  router.get('/apprenticeship/cycles', (req, res) => {
+    if (!ctx.apprenticeshipCycleStore) { res.status(503).json({ error: 'apprenticeship cycle store disabled' }); return; }
+    const instanceId = typeof req.query.instanceId === 'string' && req.query.instanceId.trim() !== ''
+      ? req.query.instanceId
+      : undefined;
+    const limit = typeof req.query.limit === 'string' ? req.query.limit : undefined;
+    res.json({ cycles: ctx.apprenticeshipCycleStore.list({ instanceId, limit }) });
+  });
+
+  router.get('/apprenticeship/cycles/overdue', (req, res) => {
+    if (!ctx.apprenticeshipCycleSlaMonitor) { res.status(503).json({ error: 'apprenticeship cycle SLA monitor disabled' }); return; }
+    const instanceId = typeof req.query.instanceId === 'string' && req.query.instanceId.trim() !== ''
+      ? req.query.instanceId
+      : undefined;
+    res.json({ overdue: ctx.apprenticeshipCycleSlaMonitor.listOverdue(instanceId) });
+  });
+
+  // GET /gemini/capacity — observe-only live view of the Gemini capacity gate
+  // (whether calls are deferred + remaining window). 503 when the escalation
+  // monitor is disabled/unavailable. Mirrors the sibling observe-only routes.
+  router.get('/gemini/capacity', (_req, res) => {
+    if (!ctx.geminiCapacityEscalationMonitor) { res.status(503).json({ error: 'gemini capacity escalation monitor disabled' }); return; }
+    res.json({ enabled: ctx.geminiCapacityEscalationMonitor.enabled, ...ctx.geminiCapacityEscalationMonitor.status() });
+  });
+
+  router.get('/apprenticeship/cycles/:id', (req, res) => {
+    if (!ctx.apprenticeshipCycleStore) { res.status(503).json({ error: 'apprenticeship cycle store disabled' }); return; }
+    const cycle = ctx.apprenticeshipCycleStore.get(req.params.id);
+    if (!cycle) { res.status(404).json({ error: 'not found' }); return; }
+    res.json(cycle);
+  });
+
+  router.post('/apprenticeship/cycles/:id/close', (req, res) => {
+    if (!ctx.apprenticeshipCycleStore) { res.status(503).json({ error: 'apprenticeship cycle store disabled' }); return; }
+    const cycle = ctx.apprenticeshipCycleStore.closeCycle(req.params.id);
+    if (!cycle) { res.status(404).json({ error: 'not found' }); return; }
+    res.json(cycle);
+  });
+
   router.get('/apprenticeship/instances', (_req, res) => {
     if (!ctx.apprenticeshipProgram) { res.status(503).json({ error: 'apprenticeship program disabled' }); return; }
     res.json({ instances: ctx.apprenticeshipProgram.list() });
+  });
+
+  router.get('/apprenticeship/instances/:id/role-coverage', (req, res) => {
+    if (!ctx.apprenticeshipCycleStore) { res.status(503).json({ error: 'apprenticeship cycle store disabled' }); return; }
+    try {
+      res.json(ctx.apprenticeshipCycleStore.roleCoverage(req.params.id));
+    } catch (err) {
+      res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+    }
   });
 
   router.get('/apprenticeship/instances/:id', (req, res) => {
@@ -16770,7 +16948,7 @@ export function createRoutes(ctx: RouteContext): Router {
       const KNOWN_FRAMEWORKS = ['claude-code', 'codex-cli', 'gemini-cli'];
       const KNOWN_MODELS = [
         'opus-4.7', 'sonnet-4.6', 'haiku-4.5',
-        'gpt-5.3-codex', 'gemini-2.5-pro', 'deepseek-v4',
+        'gpt-5.3-codex', 'gemini-2.5-flash', 'gemini-2.5-pro', 'deepseek-v4',
       ];
 
       const classifier = new TaskClassifier({ intelligence: stubIntelligence });

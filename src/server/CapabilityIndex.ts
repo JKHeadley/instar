@@ -90,6 +90,7 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
       endpoints: [
         'GET /apprenticeship/instances',
         'GET /apprenticeship/instances/:id',
+        'GET /apprenticeship/instances/:id/role-coverage',
         'POST /apprenticeship/instances',
         'POST /apprenticeship/instances/:id/transition',
         'POST /apprenticeship/instances/:id/can-start',
@@ -527,6 +528,17 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     }),
   },
   {
+    key: 'geminiCapacity',
+    prefixes: ['/gemini'],
+    description: 'Gemini capacity — live view of whether Gemini calls are currently deferred by the capacity policy (quota/rate-limit) and for how long. The escalation monitor (observe-only, ships OFF behind monitoring.geminiCapacityEscalation) raises one attention item per long block. Read-only.',
+    build: () => ({
+      enabled: true,
+      endpoints: [
+        'GET /gemini/capacity — live capacity gate: { enabled, blocked, remainingMs, deferredUntil, reason }; 503 when the escalation monitor is disabled',
+      ],
+    }),
+  },
+  {
     key: 'featureMetrics',
     prefixes: ['/metrics'],
     description: 'FeatureMetricsLedger — read-only per-feature LLM observability: per gate/sentinel cost + hit-rate, so tuning the LLM checks is evidence-based. Phase 1a (the funnel tap that feeds it is Phase 1b). Never gates.',
@@ -534,6 +546,17 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
       enabled: true,
       endpoints: [
         'GET /metrics/features — per-feature rollup (calls, tokens, fired/no-op, fire-rate, p50/p95 latency, wait-stats); ?sinceHours= / ?feature= filters',
+      ],
+    }),
+  },
+  {
+    key: 'resourceLedger',
+    prefixes: ['/resources'],
+    description: 'Per-agent ResourceLedger — read-only durable rate-limit-event observability: breaker trips + session-sentinel detections persisted across restarts (Phase A). Never gates. (CPU/memory sampling is Phase B.)',
+    build: ({ ctx }) => ({
+      enabled: !!ctx.resourceLedger,
+      endpoints: [
+        'GET /resources/rate-limits?sinceHours=N — durable rate-limit-event count + rate (breaker trips headline; session-sentinel detections separate) + recent events',
       ],
     }),
   },

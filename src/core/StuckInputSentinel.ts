@@ -54,6 +54,7 @@ import path from 'node:path';
 import type { SessionManager } from './SessionManager.js';
 import { CLAUDE_WORKING_INDICATORS } from './claudeActivityIndicators.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
+import { SessionRecoveryChannel, type RecoveryTier } from './SessionRecoveryChannel.js';
 
 export interface StuckInputSentinelOptions {
   /** Poll interval. Default 10s. */
@@ -69,6 +70,18 @@ export interface StuckInputSentinelOptions {
   stateDir: string;
   /** Disable persistence to disk (used by unit tests). */
   noPersist?: boolean;
+  /** Cross-process recovery channel. When provided AND escalationEnabled, the
+   *  sentinel escalates PAST the keypress ladder (tier C: it requests a server
+   *  restart + replay from the lifeline, which owns ServerSupervisor). When
+   *  absent the sentinel keeps its legacy behavior (exhaust → stop). */
+  recoveryChannel?: SessionRecoveryChannel;
+  /** Master gate for the deeper-tier escalation. Default false (dark): the
+   *  sentinel marks the record exhausted after the keypress ladder, exactly as
+   *  before. Set true (via config) to enable tier-C recovery requests. */
+  escalationEnabled?: boolean;
+  /** How many ticks to wait for the lifeline to ack a tier-C request before
+   *  giving up (bounded — no restart loop). Default 6. */
+  escalationTimeoutTicks?: number;
 }
 
 /** In-memory record of what the sentinel has seen for a given session. */
@@ -84,6 +97,16 @@ interface SessionStuckRecord {
   /** Whether this record is exhausted (max attempts reached, won't fire
    *  again until the prompt text changes). */
   exhausted: boolean;
+  /** Deeper-tier escalation phase (after the keypress ladder exhausts).
+   *   - 'none': not escalating (keypress ladder still running or escalation off).
+   *   - 'requested': a tier-C recovery request is in flight to the lifeline;
+   *     subsequent ticks read the ack.
+   *   - 'recovered'/'gave-up': terminal. */
+  recoveryPhase: 'none' | 'requested' | 'recovered' | 'gave-up';
+  /** attemptId of the in-flight recovery request (matches the channel ack). */
+  recoveryAttemptId?: string;
+  /** tickCounter value when the request was emitted (for the bounded wait). */
+  recoveryRequestedTick?: number;
 }
 
 /** Event row written to stuck-input-events.jsonl on each fire. */
@@ -92,8 +115,11 @@ export interface StuckInputEvent {
   session: string;
   promptText: string;
   attempt: number;
-  action: 'Enter' | 'C-m' | 'Enter-sleep-Enter';
-  outcome: 'fired' | 'fire-error';
+  action: 'Enter' | 'C-m' | 'Enter-sleep-Enter'
+    | 'escalate-request' | 'escalate-recovered' | 'escalate-failed' | 'escalate-timeout';
+  outcome: 'fired' | 'fire-error' | 'escalated' | 'recovered' | 'gave-up';
+  /** Recovery tier for escalation events (absent for keypress events). */
+  tier?: RecoveryTier;
   error?: string;
 }
 
@@ -118,6 +144,9 @@ export class StuckInputSentinel {
   private readonly stateDir: string;
   private readonly noPersist: boolean;
   private readonly eventsLogPath: string;
+  private readonly recoveryChannel: SessionRecoveryChannel | null;
+  private readonly escalationEnabled: boolean;
+  private readonly escalationTimeoutTicks: number;
 
   /** Per-session sticky state. Keyed by tmuxSession. */
   private readonly records: Map<string, SessionStuckRecord> = new Map();
@@ -125,6 +154,8 @@ export class StuckInputSentinel {
   private intervalHandle: NodeJS.Timeout | null = null;
   private tickInProgress = false;
   private degradationReportedOnce = false;
+  /** Monotonic tick counter — drives the bounded escalation wait. */
+  private tickCounter = 0;
 
   constructor(sessionManager: SessionManager, opts: StuckInputSentinelOptions) {
     this.sessionManager = sessionManager;
@@ -134,6 +165,9 @@ export class StuckInputSentinel {
     this.stateDir = opts.stateDir;
     this.noPersist = opts.noPersist ?? false;
     this.eventsLogPath = path.join(this.stateDir, 'stuck-input-events.jsonl');
+    this.recoveryChannel = opts.recoveryChannel ?? null;
+    this.escalationEnabled = opts.escalationEnabled ?? false;
+    this.escalationTimeoutTicks = opts.escalationTimeoutTicks ?? 6;
   }
 
   start(): void {
@@ -168,6 +202,7 @@ export class StuckInputSentinel {
    * tick (escalating across ticks).
    */
   tick(): void {
+    this.tickCounter += 1;
     const running = this.sessionManager.listRunningSessions();
     const seenSessions = new Set<string>();
 
@@ -195,9 +230,11 @@ export class StuckInputSentinel {
 
   /** Evaluate a single tmux session for stuck-input recovery. */
   private evaluateSession(tmuxSession: string): void {
+    const priorRecord = this.records.get(tmuxSession);
     let pane: string | null;
     try {
       if (!this.sessionManager.tmuxSessionExists(tmuxSession)) {
+        this.finalizePendingRecovery(tmuxSession, priorRecord, 'session-gone');
         this.records.delete(tmuxSession);
         this.sessionManager.clearStrandedDraftMarker(tmuxSession);
         return;
@@ -214,6 +251,10 @@ export class StuckInputSentinel {
     // so this shared activity check is correct for both frameworks — we never
     // fire Enter mid-turn (which would interrupt work / premature-submit).
     if (this.isPaneActivelyWorking(pane)) {
+      // A session that escalated and is now WORKING has recovered — clear its
+      // pending tier-C request (the drain means the wedge cleared; the marker-
+      // based detector won't re-enter handleEscalation once it's no longer stuck).
+      this.finalizePendingRecovery(tmuxSession, priorRecord, 'recovered-working');
       this.records.delete(tmuxSession);
       return;
     }
@@ -253,6 +294,7 @@ export class StuckInputSentinel {
         consecutiveTicks: 1,
         attempts: 0,
         exhausted: false,
+        recoveryPhase: 'none',
       });
       return;
     }
@@ -263,7 +305,10 @@ export class StuckInputSentinel {
     if (existing.exhausted) return;
     if (existing.consecutiveTicks < this.minTicksBeforeFire) return;
     if (existing.attempts >= this.maxAttempts) {
-      existing.exhausted = true;
+      // Keypress ladder (tier A) exhausted. Either escalate to deeper-tier
+      // recovery (tier C: cross-process server restart + replay request) when
+      // enabled, or fall back to the legacy "mark exhausted, stop" behavior.
+      this.handleEscalation(existing, tmuxSession, stuckText, now);
       return;
     }
 
@@ -372,6 +417,121 @@ export class StuckInputSentinel {
     if (attempt === 0 || attempt === 1) return 'Enter';
     if (attempt === 2) return 'C-m';
     return 'Enter-sleep-Enter';
+  }
+
+  /**
+   * Clear a session's in-flight tier-C recovery request when the session has
+   * recovered out-of-band — it's now actively working (the wedge drained) or it
+   * is gone. The sentinel is the sole writer of the request file, so it (not the
+   * lifeline) does this cleanup. No-op unless a request is actually in flight.
+   * This closes the "request lingers after a successful drain" path that the
+   * stuck-detection branches would otherwise skip (they early-return before
+   * handleEscalation ever reads the ack).
+   */
+  private finalizePendingRecovery(
+    tmuxSession: string, record: SessionStuckRecord | undefined, reason: string,
+  ): void {
+    if (!record || record.recoveryPhase !== 'requested' || !this.recoveryChannel) return;
+    this.recoveryChannel.clearRequest(tmuxSession);
+    record.recoveryPhase = 'recovered';
+    this.recordEvent({
+      ts: new Date(Date.now()).toISOString(),
+      session: tmuxSession,
+      promptText: record.lastPromptText.slice(0, 200),
+      attempt: record.attempts,
+      action: 'escalate-recovered',
+      outcome: 'recovered',
+      tier: 'server-restart-replay',
+      error: reason,
+    });
+  }
+
+  /**
+   * Deeper-tier escalation, invoked once the keypress ladder (tier A) is
+   * exhausted but the prompt is still stuck. This is the codex session-wedge
+   * SELF-recovery path: the sentinel (server process) cannot restart the server
+   * itself — ServerSupervisor lives in the lifeline process — so it REQUESTS a
+   * tier-C recovery (server restart + queue replay) through SessionRecoveryChannel
+   * and the lifeline executes + acks. The sentinel here only signals, polls the
+   * ack, verifies, and bounds the wait (no restart loop). Spec:
+   * docs/specs/CODEX-SESSION-WEDGE-SELF-RECOVERY.md.
+   *
+   * Dark by default: with escalation disabled or no channel, this reproduces the
+   * legacy behavior exactly (mark the record exhausted and stop).
+   *
+   * NOTE: a gentler server-side tier B (re-inject the full pending message before
+   * requesting a restart) is a planned refinement; this first cut goes A→C.
+   */
+  private handleEscalation(
+    record: SessionStuckRecord, tmuxSession: string, stuckText: string, now: number,
+  ): void {
+    const channel = this.recoveryChannel;
+    if (!this.escalationEnabled || !channel) {
+      record.exhausted = true; // legacy behavior
+      return;
+    }
+
+    const isoNow = new Date(now).toISOString();
+    const promptText = stuckText.slice(0, 200);
+
+    if (record.recoveryPhase === 'none') {
+      // First escalation — request tier C from the lifeline.
+      const attemptId = `${tmuxSession}#${record.firstSeenAt}`;
+      const tier: RecoveryTier = 'server-restart-replay';
+      try {
+        channel.requestRecovery({
+          sessionId: tmuxSession,
+          tier,
+          reason: `keypress ladder exhausted (${this.maxAttempts} attempts); prompt still stuck`,
+          observedAt: isoNow,
+          attemptId,
+          requestedBy: 'StuckInputSentinel',
+        });
+        record.recoveryPhase = 'requested';
+        record.recoveryAttemptId = attemptId;
+        record.recoveryRequestedTick = this.tickCounter;
+        this.recordEvent({ ts: isoNow, session: tmuxSession, promptText, attempt: record.attempts, action: 'escalate-request', outcome: 'escalated', tier });
+      } catch (err) {
+        record.exhausted = true; // couldn't even emit the request — stop
+        this.recordEvent({ ts: isoNow, session: tmuxSession, promptText, attempt: record.attempts, action: 'escalate-request', outcome: 'fire-error', tier, error: err instanceof Error ? err.message : String(err) });
+      }
+      return;
+    }
+
+    if (record.recoveryPhase === 'requested') {
+      // Poll the lifeline's ack for THIS attempt.
+      const ack = channel.readAck(tmuxSession);
+      if (ack && ack.attemptId === record.recoveryAttemptId) {
+        if (ack.outcome === 'recovered') {
+          record.recoveryPhase = 'recovered';
+          record.exhausted = true; // terminal; a prompt-text change resets the record
+          channel.clearRequest(tmuxSession);
+          this.recordEvent({ ts: isoNow, session: tmuxSession, promptText, attempt: record.attempts, action: 'escalate-recovered', outcome: 'recovered', tier: ack.tier });
+          return;
+        }
+        if (ack.outcome === 'failed') {
+          record.recoveryPhase = 'gave-up';
+          record.exhausted = true;
+          channel.clearRequest(tmuxSession);
+          this.recordEvent({ ts: isoNow, session: tmuxSession, promptText, attempt: record.attempts, action: 'escalate-failed', outcome: 'gave-up', tier: ack.tier });
+          return;
+        }
+        // 'in-progress' → keep waiting (fall through to the bounded-wait check).
+      }
+      // Bounded wait: give up after escalationTimeoutTicks with no terminal ack,
+      // so a never-acked request can't loop forever.
+      const waited = this.tickCounter - (record.recoveryRequestedTick ?? this.tickCounter);
+      if (waited >= this.escalationTimeoutTicks) {
+        record.recoveryPhase = 'gave-up';
+        record.exhausted = true;
+        channel.clearRequest(tmuxSession);
+        this.recordEvent({ ts: isoNow, session: tmuxSession, promptText, attempt: record.attempts, action: 'escalate-timeout', outcome: 'gave-up', tier: 'server-restart-replay' });
+      }
+      return;
+    }
+
+    // 'recovered' | 'gave-up' → terminal.
+    record.exhausted = true;
   }
 
   /** Append one event row to the JSONL log. Best-effort. */

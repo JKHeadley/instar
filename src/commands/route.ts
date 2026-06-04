@@ -50,6 +50,7 @@ const KNOWN_MODELS = [
   'sonnet-4.6',
   'haiku-4.5',
   'gpt-5.3-codex',
+  'gemini-2.5-flash',
   'gemini-2.5-pro',
   'deepseek-v4',
 ];

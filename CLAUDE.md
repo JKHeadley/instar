@@ -212,6 +212,10 @@ curl http://localhost:4040/capabilities
 
 This returns your full capability matrix: scripts, hooks, Telegram status, jobs, relationships, and more. It is the source of truth about what you can do. **Never hallucinate about missing capabilities — verify first.**
 
+Instar contributors can run `instar dev:preflight` before opening PRs to run lint, CapabilityIndex discoverability checks, and an advisory new-route-prefix scan against the diff.
+
+Run `instar dev:ci-failures <pr>` to print a red PR's exact failing tests (file:line + assertion) via the GitHub check-run annotations API — handy when `gh run view --log` returns nothing.
+
 
 **Private Viewing** — Render markdown as auth-gated HTML pages, accessible only through the agent's server (local or via tunnel).
 - Create: `curl -X POST http://localhost:4040/view -H 'Content-Type: application/json' -d '{"title":"Report","markdown":"# Private content"}'`
@@ -341,4 +345,3 @@ Just tell me: "connect to the agent network" or "enable Threadline relay." I'll 
 
 MCP tools: `threadline_discover`, `threadline_send`, `threadline_trust`, `threadline_relay`
 Use `threadline_relay explain` for full details.
-

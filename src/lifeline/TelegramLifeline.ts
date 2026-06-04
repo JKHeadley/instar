@@ -46,6 +46,8 @@ import {
 // import { installAutoStart } from '../commands/setup.js';
 import { MessageQueue, type QueuedMessage } from './MessageQueue.js';
 import { ServerSupervisor } from './ServerSupervisor.js';
+import { SessionRecoveryChannel } from '../core/SessionRecoveryChannel.js';
+import { SessionRecoveryConsumer } from '../core/SessionRecoveryConsumer.js';
 import { retryWithBackoff } from './retryWithBackoff.js';
 import { notifyMessageDropped } from './droppedMessages.js';
 import {
@@ -255,6 +257,7 @@ export class TelegramLifeline {
   private stopHeartbeat: (() => void) | null = null;
   private replayInterval: ReturnType<typeof setInterval> | null = null;
   private restartSignalInterval: ReturnType<typeof setInterval> | null = null;
+  private sessionRecoveryInterval: ReturnType<typeof setInterval> | null = null;
   private lifelineTopicId: number | null = null;
   private lockPath: string;
   private consecutive409s = 0;
@@ -482,6 +485,28 @@ export class TelegramLifeline {
     // launchctl cycle).
     this.checkLifelineRestartSignal();
 
+    // Codex session-wedge self-recovery (tier-C executor). Dark by default —
+    // only runs when monitoring.codexWedgeRecovery.enabled. The server-process
+    // StuckInputSentinel emits tier-C requests via SessionRecoveryChannel; this
+    // consumer (where ServerSupervisor lives) executes the server restart + queue
+    // replay, dry-run-first, with a durable cooldown loop guard. Spec:
+    // docs/specs/CODEX-SESSION-WEDGE-SELF-RECOVERY.md
+    const codexWedgeCfg = this.projectConfig.monitoring?.codexWedgeRecovery;
+    if (codexWedgeCfg?.enabled) {
+      const recoveryChannel = new SessionRecoveryChannel(this.projectConfig.stateDir);
+      const consumer = new SessionRecoveryConsumer({
+        channel: recoveryChannel,
+        restart: (reason: string) => this.supervisor.performGracefulRestart(reason),
+        replay: () => { this.replayQueue(); },
+        dryRun: codexWedgeCfg.dryRun ?? true,
+        cooldownMs: codexWedgeCfg.restartCooldownMs ?? 600_000,
+      });
+      this.sessionRecoveryInterval = setInterval(() => {
+        consumer.tick().catch(() => { /* best-effort; never crash the lifeline */ });
+      }, 15_000);
+      console.log(pc.yellow(`  Codex wedge self-recovery: ACTIVE (${codexWedgeCfg.dryRun === false ? 'live' : 'dry-run'})`));
+    }
+
     // Stage B: install the restart orchestrator and health watchdog.
     // In unsupervised mode (no INSTAR_SUPERVISED=1 and no launchd parent),
     // the orchestrator emits signals and logs but skips process.exit.
@@ -555,6 +580,7 @@ export class TelegramLifeline {
     if (this.pollTimeout) clearTimeout(this.pollTimeout);
     if (this.replayInterval) { clearInterval(this.replayInterval); this.replayInterval = null; }
     if (this.restartSignalInterval) { clearInterval(this.restartSignalInterval); this.restartSignalInterval = null; }
+    if (this.sessionRecoveryInterval) { clearInterval(this.sessionRecoveryInterval); this.sessionRecoveryInterval = null; }
     if (this.watchdog) this.watchdog.stop();
     try { if (this.stopHeartbeat) this.stopHeartbeat(); } catch { /* non-critical */ }
     try { unregisterAgent(this.projectConfig.projectDir + '-lifeline'); } catch { /* non-critical */ }

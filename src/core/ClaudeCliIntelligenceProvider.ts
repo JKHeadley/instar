@@ -40,7 +40,12 @@ export class ClaudeCliIntelligenceProvider implements IntelligenceProvider {
         '-p', prompt,
         '--model', model,
         '--max-turns', '1',
-        '--output-format', 'text',
+        // JSON (not text) so the response carries a `usage` block. We extract the
+        // answer from `.result` and surface token counts via options.onUsage —
+        // the only way per-feature token cost reaches /metrics/features (the tap
+        // had no usage to record under text output, so it always logged 0).
+        // Iris-audit item 1, spec iris-audit-session-observability.md.
+        '--output-format', 'json',
         // Exclude project/local CLAUDE.md to prevent identity context
         // from contaminating classification and evaluation prompts.
         '--setting-sources', 'user',
@@ -67,16 +72,66 @@ export class ClaudeCliIntelligenceProvider implements IntelligenceProvider {
           // Timeout or other error — reject so caller can fall back. Include a
           // generous stderr slice so the circuit breaker's rate-limit
           // classifier (isRateLimitError) can see usage/limit language that
-          // often appears past the first 200 chars.
+          // often appears past the first 200 chars. (Rate-limit detection reads
+          // stderr, so the stdout text→json switch does not affect it.)
           reject(new Error(`Claude CLI error: ${error.message}${stderr ? ` — ${stderr.slice(0, 600)}` : ''}`));
           return;
         }
 
-        resolve(stdout.trim());
+        resolve(parseJsonResult(stdout, options?.onUsage));
       });
 
       // Write prompt via stdin for very long prompts (belt and suspenders)
       child.stdin?.end();
     });
   }
+}
+
+/**
+ * Parse `claude -p --output-format json` stdout into the response text, and
+ * surface token usage via onUsage. The CLI emits a single JSON object shaped
+ * `{ result: string, usage: { input_tokens, cache_creation_input_tokens,
+ * cache_read_input_tokens, output_tokens, ... }, ... }`.
+ *
+ * Defensive by design — usage observability must never break the LLM path:
+ *  - If stdout isn't valid JSON, or has no string `result`, fall back to the
+ *    raw trimmed stdout (degraded, but non-crashing — same shape as the old
+ *    text path would have produced).
+ *  - tokensIn sums the input components actually processed (fresh + cache
+ *    creation + cache read), since each is a real cost; tokensOut is
+ *    output_tokens. Missing fields count as 0. onUsage fires only when at least
+ *    one token count is present, and never throws into the caller.
+ */
+export function parseJsonResult(
+  stdout: string,
+  onUsage?: (usage: { inputTokens: number; outputTokens: number }) => void,
+): string {
+  const trimmed = stdout.trim();
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(trimmed);
+  } catch {
+    // Not JSON (truncated / unexpected) — return raw text, no usage.
+    return trimmed;
+  }
+  const obj = (parsed && typeof parsed === 'object') ? (parsed as Record<string, unknown>) : null;
+  if (onUsage && obj && obj.usage && typeof obj.usage === 'object') {
+    try {
+      const u = obj.usage as Record<string, unknown>;
+      const num = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
+      const inputTokens =
+        num(u.input_tokens) + num(u.cache_creation_input_tokens) + num(u.cache_read_input_tokens);
+      const outputTokens = num(u.output_tokens);
+      if (inputTokens > 0 || outputTokens > 0) {
+        onUsage({ inputTokens, outputTokens });
+      }
+    } catch {
+      /* usage extraction must never break the result path */
+    }
+  }
+  if (obj && typeof obj.result === 'string') {
+    return obj.result.trim();
+  }
+  // Valid JSON but no string result — best effort, return raw.
+  return trimmed;
 }

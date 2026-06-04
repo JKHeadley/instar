@@ -2,8 +2,10 @@
  * FeatureMetricsLedger — per-feature observability for LLM-driven systems.
  *
  * Records, per call, which system (sentinel/gate) invoked the LLM, what it
- * cost (tokens, latency), and what it decided (fired/noop/error), so that every
- * gate's cost and hit-rate becomes a tracked number instead of a guess. Read-
+ * cost (tokens, latency), and what it decided (fired/noop/error/shed), so that
+ * every gate's cost and hit-rate becomes a tracked number instead of a guess.
+ * 'shed' (circuit-open, no call) is counted separately so `realCalls` reflects
+ * only real round-trips. Read-
  * only observability — it NEVER gates, blocks, or mutates any flow (same
  * guarantee as TokenLedger). Spec: docs/specs/llm-feature-metrics-spec.md.
  *
@@ -24,14 +26,25 @@ import type { Database as BetterSqliteDatabase } from 'better-sqlite3';
 import { NativeModuleHealer } from '../memory/NativeModuleHealer.js';
 
 export type FeatureMetricKind = 'llm' | 'event';
-export type FeatureMetricOutcome = 'fired' | 'noop' | 'error';
+/**
+ * Outcome of a funnel call:
+ *  - 'fired' — the gate acted (blocked/flagged). The fired-vs-noop verdict is
+ *    Phase 2; today the funnel never sets this (the caller would).
+ *  - 'noop'  — a REAL call completed and the gate took no action.
+ *  - 'error' — a real call failed.
+ *  - 'shed'  — the circuit was OPEN so no call ran (no token cost, no network
+ *    round-trip). Distinct from 'noop' so `realCalls` (= calls − shed) reflects
+ *    only real round-trips; otherwise breaker-shed load (0ms latency) inflates
+ *    the call count and reads as completed work.
+ */
+export type FeatureMetricOutcome = 'fired' | 'noop' | 'error' | 'shed';
 
 export interface FeatureMetricRecord {
   /** Source-side component label (IntelligenceOptions.attribution.component). */
   feature: string;
   /** 'llm' for a provider call; 'event' for a programmatic guard invocation. */
   kind?: FeatureMetricKind;
-  /** What the system decided: fired (blocked/flagged/acted) vs noop (allow) vs error. */
+  /** What happened: fired (acted) vs noop (real call, no action) vs error vs shed (circuit-open, no call). */
   outcome: FeatureMetricOutcome;
   tokensIn?: number;
   tokensOut?: number;
@@ -48,7 +61,10 @@ export interface FeatureMetricRecord {
 
 export interface FeatureRollup {
   feature: string;
+  /** All recorded funnel rows (includes 'shed' no-calls). */
   calls: number;
+  /** Real round-trips only (calls − shed) — the honest call count. */
+  realCalls: number;
   llmCalls: number;
   events: number;
   tokensIn: number;
@@ -56,7 +72,9 @@ export interface FeatureRollup {
   fired: number;
   noop: number;
   errors: number;
-  /** fired / calls (0..1) — how often the system actually does something. */
+  /** Circuit-open no-calls: the breaker refused the call, nothing ran. */
+  shed: number;
+  /** fired / realCalls (0..1) — how often the system acts on a call that actually ran. */
   fireRate: number;
   avgLatencyMs: number;
   p50LatencyMs: number;
@@ -70,6 +88,7 @@ export interface FeatureMetricsSummary {
   sinceMs: number;
   totals: {
     calls: number;
+    realCalls: number;
     llmCalls: number;
     events: number;
     tokensIn: number;
@@ -77,6 +96,7 @@ export interface FeatureMetricsSummary {
     fired: number;
     noop: number;
     errors: number;
+    shed: number;
   };
   features: FeatureRollup[];
 }
@@ -190,6 +210,7 @@ export class FeatureMetricsLedger {
            SUM(CASE WHEN outcome='fired' THEN 1 ELSE 0 END)   AS fired,
            SUM(CASE WHEN outcome='noop'  THEN 1 ELSE 0 END)   AS noop,
            SUM(CASE WHEN outcome='error' THEN 1 ELSE 0 END)   AS errors,
+           SUM(CASE WHEN outcome='shed'  THEN 1 ELSE 0 END)   AS shed,
            SUM(waited)                                        AS waitedCalls,
            COALESCE(AVG(CASE WHEN waited=1 THEN wait_ms END), 0) AS avgWaitMs,
            COALESCE(AVG(latency_ms), 0)                       AS avgLatencyMs,
@@ -219,10 +240,13 @@ export class FeatureMetricsLedger {
     return agg.map((a) => {
       const calls = Number(a.calls) || 0;
       const fired = Number(a.fired) || 0;
+      const shed = Number(a.shed) || 0;
+      const realCalls = calls - shed;
       const lats = latByFeature.get(String(a.feature)) ?? [];
       return {
         feature: String(a.feature),
         calls,
+        realCalls,
         llmCalls: Number(a.llmCalls) || 0,
         events: Number(a.events) || 0,
         tokensIn: Number(a.tokensIn) || 0,
@@ -230,7 +254,8 @@ export class FeatureMetricsLedger {
         fired,
         noop: Number(a.noop) || 0,
         errors: Number(a.errors) || 0,
-        fireRate: calls > 0 ? fired / calls : 0,
+        shed,
+        fireRate: realCalls > 0 ? fired / realCalls : 0,
         avgLatencyMs: Math.round(Number(a.avgLatencyMs) || 0),
         p50LatencyMs: percentile(lats, 0.5),
         p95LatencyMs: percentile(lats, 0.95),
@@ -248,6 +273,7 @@ export class FeatureMetricsLedger {
     const totals = features.reduce(
       (acc, f) => {
         acc.calls += f.calls;
+        acc.realCalls += f.realCalls;
         acc.llmCalls += f.llmCalls;
         acc.events += f.events;
         acc.tokensIn += f.tokensIn;
@@ -255,9 +281,10 @@ export class FeatureMetricsLedger {
         acc.fired += f.fired;
         acc.noop += f.noop;
         acc.errors += f.errors;
+        acc.shed += f.shed;
         return acc;
       },
-      { calls: 0, llmCalls: 0, events: 0, tokensIn: 0, tokensOut: 0, fired: 0, noop: 0, errors: 0 },
+      { calls: 0, realCalls: 0, llmCalls: 0, events: 0, tokensIn: 0, tokensOut: 0, fired: 0, noop: 0, errors: 0, shed: 0 },
     );
     return { sinceMs, totals, features };
   }

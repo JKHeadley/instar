@@ -30,6 +30,14 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
     rateLimitSentinel: {
       enabled: true,
     },
+    // ResourceLedger (Phase A) — default-on so every agent durably records its
+    // rate-limit events (breaker trips + sentinel detections) instead of losing
+    // them on restart. Read-only observability; never gates. Event-driven,
+    // negligible cost. enabled:false leaves the ledger null (route 503s).
+    // See docs/specs/per-agent-resource-ledger.md.
+    resourceLedger: {
+      enabled: true,
+    },
     // SocketDisconnectSentinel + ActiveWorkSilenceSentinel — default-on so
     // every agent recovers from connection drops and silent mid-task freezes
     // without anyone having to notice manually. enabled:false restores
@@ -82,6 +90,17 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       // ÷ cores), so a CPU-bound box raises pressure even when memory is fine.
       cpuModerateLoadPerCore: 1.0,
       cpuCriticalLoadPerCore: 1.5,
+      // Under CPU pressure, require positive descendant-CPU progress before the
+      // active-process existence-veto keeps a session (a wedged/idle child no
+      // longer holds an idle session hostage). Ships dark; dev agents enable it
+      // via developmentAgent. No-op off-pressure / when CPU can't be sampled.
+      cpuAwareActiveProcessKeep: false,
+      cpuActiveMinRatePerSec: 0.02,
+      // Observe-only busy-orphan detection (inverse of the above): audit a
+      // `busy-orphan-suspected` row when an idle session is pinned by a
+      // CPU-burning child. Never changes the verdict. Ships dark; dev agents on.
+      busyOrphanDetection: false,
+      busyOrphanConfirmTicks: 5,
     },
     // Reap-notification (UNIFIED-SESSION-LIFECYCLE §P3). Default ON — the single
     // coalescing listener that surfaces "your session was shut down" so a reap is
@@ -191,6 +210,21 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       captureBacklogTtlHours: 24,
       captureBacklogDrainPerTick: 5,
       captureBacklogMaxRetries: 3,
+    },
+    // ApprenticeshipCycleSlaMonitor — observe-only overdue-cycle signal. Ships
+    // OFF so no install starts raising Attention topics until the operator opts
+    // in. Dedup is per cycle id and the monitor never mutates the cycle store.
+    apprenticeshipCycleSla: {
+      enabled: false,
+      overdueAfterMinutes: 120,
+    },
+    // GeminiCapacityEscalationMonitor — observe-only escalation when Gemini is
+    // capacity-blocked (deferred by #708) longer than escalateAfterMinutes.
+    // Ships OFF; raises one Attention item per deferral episode, never mutates
+    // the gate. Closes item-3's "escalate, not silently stall" half.
+    geminiCapacityEscalation: {
+      enabled: false,
+      escalateAfterMinutes: 60,
     },
     // ReleaseReadinessSentinel (docs/specs/RELEASE-READINESS-VISIBILITY-SPEC.md
     // §4.2). Ships OFF — Echo dogfoods first. Repo-gated: inert unless the

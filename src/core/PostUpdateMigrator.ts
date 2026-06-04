@@ -1555,6 +1555,21 @@ export class PostUpdateMigrator {
       'autonomous-state.local.md',
       'skills/autonomous/scripts/setup-autonomous.sh (codex native /goal auto-wire)',
     );
+    // SKILL.md Step 2a registration-path fix: the prior bundled SKILL.md registered the
+    // stop hook at `.instar/hooks/instar/autonomous-stop-hook.sh` (a path where the hook is
+    // never deployed → silent Stop-hook failure → the autonomous loop never re-engaged and
+    // the session went idle). The fixed SKILL.md registers the deployed skill path and
+    // self-heals any stale entry. Marker `Stop hook registered (correct skill path)` is
+    // present ONLY in the fixed version (the old printed plain `Stop hook registered`), so
+    // bumping to it re-deploys the corrected prompt to existing agents; customized SKILL.md
+    // files (missing the stock `ALL_TASKS_COMPLETE` fingerprint) are left untouched. Pairs
+    // with the settings.json wrong-path repair in ensureAutonomousStopHook().
+    upgrade(
+      '.claude/skills/autonomous/SKILL.md',
+      'Stop hook registered (correct skill path)',
+      'ALL_TASKS_COMPLETE',
+      'skills/autonomous/SKILL.md (autonomous stop-hook registration path fix — loop re-engages)',
+    );
   }
 
   /**
@@ -2466,6 +2481,30 @@ export class PostUpdateMigrator {
       hooks.Stop = [];
     }
     const stopEntries = hooks.Stop as Array<{ matcher?: string; hooks?: Array<{ command?: string }> }>;
+
+    // Repair the legacy wrong-path registration. A prior autonomous SKILL.md Step 2a
+    // registered the stop hook at `.instar/hooks/instar/autonomous-stop-hook.sh` — a
+    // path where the hook is NEVER deployed (it ships only in the skill dir). That
+    // dead reference fails silently on every Stop, so the autonomous loop never
+    // re-injects and the session goes idle (the "I stopped self-driving" bug). The
+    // `hasAutonomousHook` check below treats any autonomous-stop-hook entry as
+    // "present", so without this repair a wrong-path entry blocks the correct
+    // registration forever. Rewrite any such command to the deployed skill path.
+    const correctStopHookCmd = 'bash ${CLAUDE_PROJECT_DIR}/.claude/skills/autonomous/hooks/autonomous-stop-hook.sh';
+    for (const e of stopEntries) {
+      for (const h of e.hooks ?? []) {
+        if (
+          h.command?.includes('autonomous-stop-hook') &&
+          h.command.includes('.instar/hooks/instar/autonomous-stop-hook') &&
+          h.command !== correctStopHookCmd
+        ) {
+          h.command = correctStopHookCmd;
+          result.upgraded.push('.claude/settings.json: repaired autonomous stop-hook path (.instar/hooks/instar → skill dir; loop never re-engaged)');
+          patched = true;
+        }
+      }
+    }
+
     const hasAutonomousHook = stopEntries.some(e =>
       e.hooks?.some(h => h.command?.includes('autonomous-stop-hook')),
     );
@@ -3178,6 +3217,25 @@ If the user reports they were "unresponsive for a while during updates," check \
       result.skipped.push('CLAUDE.md: Self-Heal section already present');
     }
 
+    // Token-Burn Alerts awareness (2026-06-03 activity-gate noise fix). Existing
+    // agents must learn what the "an unknown component is using more than a quarter
+    // of the token budget" alert means, that the activity gate now silences
+    // finished bursts, and how to mute/tune it via monitoring.burnDetection.
+    // Content-sniffed on a distinctive marker for idempotency.
+    if (!content.includes('Token-Burn Alerts')) {
+      const burnSection = `
+## Token-Burn Alerts
+
+The "an unknown component is using more than a quarter of the agent's token budget" heads-up. The BurnDetector watches per-component 24h token share and the 1h spend rate, and alerts when one component is *actively* burning. Two things to know when a user asks about the noise:
+- An alert only fires for a component spending **right now** (last-1h tokens above \`absoluteShareActivityFloorTokens\`, default 0 = any positive current spend). A finished heavy session — high 24h share but zero current rate — is NOT a burn and is silenced; this is the activity gate that closed the "consumed 67% of 24h spend … Projected 0 tokens" re-alarm-for-a-full-day bug. Most context-cache usage spread across many warm sessions never trips it.
+- Silence or tune it in \`.instar/config.json\` → \`monitoring.burnDetection\`: \`{"enabled": false}\` is the master off-switch; \`absoluteShareThreshold\` (default 0.25), \`absoluteShareActivityFloorTokens\`, \`alertTopicId\` (where alerts post), \`autoThrottle\` / \`autoThrottleOnUnknown\` tune behaviour without code changes. Absence preserves the shipped defaults.
+- Proactive: user says "these token alerts are noisy" / "why am I getting this" / "turn them off" → explain the activity gate (it only flags live burns now), and offer the \`monitoring.burnDetection.enabled: false\` off-switch (restart sessions to apply). Note that \`unknown::<id>\` just means that spend wasn't attributed to a named component — it's not inherently a problem.
+`;
+      content += '\n' + burnSection;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Token-Burn Alerts awareness (activity-gate noise fix)');
+    }
+
     // Correction & Preference Learning Sentinel (Slice 1a) §7 — Agent Awareness +
     // Migration Parity: existing agents must learn about the preferences read-
     // surface (the session-start hook now fetches /preferences/session-context
@@ -3882,6 +3940,24 @@ The user has been talking to you (possibly for days). A generic greeting like "H
       result.skipped.push('CLAUDE.md: Secret Drop already documents hardened helper');
     }
 
+    // Secret Drop --run atomic use-and-consume awareness (2026-06-02
+    // sliding-window spec). Agents that already have the hardened-helper
+    // bullet skip the rewrite above, so they would never learn about --run.
+    // Idempotent: anchors on the stable leak-class sentence and inserts the
+    // --run bullet only when it isn't already present.
+    if (
+      content.includes('secret-drop-retrieve.mjs') &&
+      !content.includes('--run -- ')
+    ) {
+      const anchor = 'The hardened script exists specifically to close that leak class (origin: 2026-05-20 incident).';
+      const runBullet = "\n- **Atomic use-and-consume (PREFERRED when the value feeds one command)**: `node .instar/scripts/secret-drop-retrieve.mjs TOKEN field --run -- <cmd...>` — pipes the value to `<cmd>`'s stdin and consumes the submission ONLY if `<cmd>` exits 0, so a failed handoff never destroys the secret. Do NOT fire a standalone `--consume` after a step that has not verified success.";
+      if (content.includes(anchor)) {
+        content = content.replace(anchor, anchor + runBullet);
+        patched = true;
+        result.upgraded.push('CLAUDE.md: added Secret Drop --run atomic use-and-consume guidance');
+      }
+    }
+
     // Worktree Convention section (Migration Parity Standard backfill for
     // Layer 2 of the agent worktree convention — fresh inits get this via
     // generateClaudeMd; existing agents get it here on update).
@@ -3927,6 +4003,26 @@ Create worktrees for collaborator repos with \`instar worktree create <branch>\`
       content += '\n' + section;
       patched = true;
       result.upgraded.push('CLAUDE.md: added Process Health dashboard tab awareness section');
+    }
+
+    // Applying config & hook changes to running sessions — Agent Awareness
+    // backfill for POST /sessions/restart-all (and the existing /sessions/refresh).
+    // A running session keeps its spawn-time config until it restarts, and Claude
+    // Code loads hooks/settings only at session start — so an agent must know to
+    // restart sessions to apply a model/feature/hook change. Fresh inits get this
+    // via generateClaudeMd; existing agents get it here. Copy mirrors the template.
+    // Idempotent via content-sniff on the section title.
+    if (!content.includes('Applying config & hook changes to running sessions')) {
+      const section = `
+**Applying config & hook changes to running sessions** — A running session keeps the config it was *spawned* with. Claude Code loads \`.claude/settings.json\` (hooks, model) **once, at session start** — so a config change (default model, a disabled feature) or a newly-added hook does NOT reach an already-running session. It only takes effect on the next session, OR when you restart the existing one. (This is why a UserPromptSubmit hook added mid-session never fires for that live session — the session was launched before the hook existed.)
+- Restart ONE session (preserves the conversation via \`claude --resume\`): \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/sessions/refresh -H 'Content-Type: application/json' -d '{"sessionName":"<tmux-name>","reason":"config change"}'\`
+- Restart EVERY running Telegram-bound session in one call (staggered, each conversation preserved): \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/sessions/restart-all -H 'Content-Type: application/json' -d '{"reason":"applied new default model"}'\` → \`{ scheduled: [...], count, skipped }\`. Pass \`{"excludeSession":"<tmux-name>"}\` to keep the calling session alive. Non-Telegram-bound (Slack/iMessage/headless) sessions are skipped.
+- \`GET /sessions\` reports each session's \`model\` — the model it was actually launched with — so after a restart you can confirm running sessions picked up the new default. (Note: \`frameworkDefaultModels['claude-code']\` is only honored when set; left unset, Claude uses its CLI account default and \`model\` is blank.)
+- Proactive: user changes a model/feature/hook and asks "did the running sessions pick it up?" / "apply this now" → they didn't pick it up automatically; offer POST /sessions/restart-all (or /sessions/refresh for one), then confirm via GET /sessions.
+`;
+      content += '\n' + section;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added "applying config & hook changes to running sessions" awareness section');
     }
 
     if (patched) {

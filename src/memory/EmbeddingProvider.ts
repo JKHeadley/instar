@@ -15,6 +15,19 @@
 
 type Database = import('better-sqlite3').Database;
 
+/**
+ * ONNX Runtime session options for the embedding pipeline. Caps the intra/inter-op
+ * thread pools to 1: all-MiniLM-L6 is tiny and memory embeds are sporadic, so one
+ * thread is plenty — and it stops the multi-thread ORT pool from busy-spinning
+ * ~50% of a core while the model sits RESIDENT between embeds. This is the
+ * fleet-wide idle-CPU root (task #17): profiled on a live agent server, the
+ * default (unbounded) pool kept ~6 extra threads busy-spinning; verified via a
+ * thread-count probe that this cap drops the resident pool (18→12 threads) with
+ * identical 384-dim output. The existing idle-unload only helps a truly-idle
+ * agent; this fixes the resident case (semantic-search queries re-arm the timer).
+ */
+export const ONNX_SESSION_OPTIONS = { intraOpNumThreads: 1, interOpNumThreads: 1 } as const;
+
 export interface EmbeddingProviderConfig {
   /** Model name for @huggingface/transformers (default: 'Xenova/all-MiniLM-L6-v2') */
   modelName?: string;
@@ -88,7 +101,8 @@ export class EmbeddingProvider {
     const { pipeline: createPipeline } = await import('@huggingface/transformers');
     this.pipeline = await createPipeline('feature-extraction', this.modelName, {
       dtype: 'fp32',
-    });
+      session_options: ONNX_SESSION_OPTIONS,
+    } as Parameters<typeof createPipeline>[2]);
   }
 
   /**

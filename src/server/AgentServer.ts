@@ -50,6 +50,9 @@ import { CiFailurePoller } from '../monitoring/CiFailurePoller.js';
 import { RevertDetector } from '../monitoring/RevertDetector.js';
 import { CorrectionLedger } from '../monitoring/CorrectionLedger.js';
 import { ApprenticeshipProgram } from '../core/ApprenticeshipProgram.js';
+import { ApprenticeshipCycleStore } from '../monitoring/ApprenticeshipCycleStore.js';
+import { ApprenticeshipCycleSlaMonitor } from '../monitoring/ApprenticeshipCycleSlaMonitor.js';
+import { GeminiCapacityEscalationMonitor } from '../monitoring/GeminiCapacityEscalationMonitor.js';
 import { SafeGitExecutor } from '../core/SafeGitExecutor.js';
 import { createSpecReviewRoutes } from './specReviewRoutes.js';
 import { createUsherRoutes } from './usherRoutes.js';
@@ -66,6 +69,9 @@ import { TokenLedger } from '../monitoring/TokenLedger.js';
 import { FeatureMetricsLedger } from '../monitoring/FeatureMetricsLedger.js';
 import { setFeatureMetricsRecorder } from '../core/CircuitBreakingIntelligenceProvider.js';
 import { TokenLedgerPoller } from '../monitoring/TokenLedgerPoller.js';
+import { ResourceLedger } from '../monitoring/ResourceLedger.js';
+import { ResourceLedgerPoller } from '../monitoring/ResourceLedgerPoller.js';
+import { getLlmCircuitBreaker } from '../core/LlmCircuitBreaker.js';
 import { FrameworkIssueLedger } from '../monitoring/FrameworkIssueLedger.js';
 import { MentorOnboardingRunner, DEFAULT_MENTOR_CONFIG, resolveMentorDeliveryTopic, type MentorConfig } from '../scheduler/MentorOnboardingRunner.js';
 import { buildAutoloopGoal } from '../scheduler/MentorAutonomousGuardian.js';
@@ -88,8 +94,8 @@ import { OutstandingPromptTracker } from '../scheduler/OutstandingPromptTracker.
 import { parseCodexRollout } from '../monitoring/CodexRolloutParser.js';
 import { extractCodexFinalMessage, extractClaudeFinalMessage, findClaudeTranscriptShallow } from '../monitoring/SessionReplyExtractor.js';
 import type { ForensicFinding } from '../monitoring/FrameworkIssueLedger.js';
-import { BurnDetector } from '../monitoring/BurnDetector.js';
-import { BurnThrottleRunbook } from '../monitoring/BurnThrottleRunbook.js';
+import { BurnDetector, type BurnDetectionConfig } from '../monitoring/BurnDetector.js';
+import { BurnThrottleRunbook, type BurnThrottleConfig } from '../monitoring/BurnThrottleRunbook.js';
 import { BurnVerifier } from '../monitoring/BurnVerifier.js';
 import { LlmRateGate } from '../monitoring/LlmRateGate.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
@@ -139,6 +145,8 @@ export class AgentServer {
   private tokenLedger: TokenLedger | null = null;
   private featureMetricsLedger: FeatureMetricsLedger | null = null;
   private tokenLedgerPoller: TokenLedgerPoller | null = null;
+  private resourceLedger: ResourceLedger | null = null;
+  private resourceLedgerPoller: ResourceLedgerPoller | null = null;
   private frameworkIssueLedger: FrameworkIssueLedger | null = null;
   private mentorRunner: MentorOnboardingRunner | null = null;
   /** Wall-clock of the last mentor tick that ran, for the min-interval floor. */
@@ -167,6 +175,9 @@ export class AgentServer {
   private revertDetector: RevertDetector | null = null;
   private correctionLedger: CorrectionLedger | null = null;
   private apprenticeshipProgram: ApprenticeshipProgram | null = null;
+  private apprenticeshipCycleStore: ApprenticeshipCycleStore | null = null;
+  private apprenticeshipCycleSlaMonitor: ApprenticeshipCycleSlaMonitor | null = null;
+  private geminiCapacityEscalationMonitor: GeminiCapacityEscalationMonitor | null = null;
   // Burn-detection-and-self-heal system (six-phase umbrella spec at
   // docs/specs/token-burn-detection-and-self-heal.md). Lazy-initialised
   // after the TokenLedger comes up — burn detection without a ledger is
@@ -658,6 +669,34 @@ export class AgentServer {
       }
     }
 
+    // Per-agent ResourceLedger (Phase A: durable rate-limit-event capture). Its
+    // OWN try/catch, independent of the other ledgers (cascade-isolation — a
+    // chained init failure must not 503 the others). Read-only observability;
+    // never gates. The poller subscribes to the global LlmCircuitBreaker's
+    // trip/recover observer so breaker trips survive restart. Ships ON
+    // (negligible, event-driven cost); opt out with
+    // monitoring.resourceLedger.enabled:false. (CPU/mem sampling is Phase B.)
+    if (options.config.stateDir &&
+        (options.config as { monitoring?: { resourceLedger?: { enabled?: boolean } } })
+          .monitoring?.resourceLedger?.enabled !== false) {
+      try {
+        const serverDataDir = path.join(options.config.stateDir, 'server-data');
+        fs.mkdirSync(serverDataDir, { recursive: true });
+        this.resourceLedger = new ResourceLedger({
+          dbPath: path.join(serverDataDir, 'resource-ledger.db'),
+        });
+        this.resourceLedgerPoller = new ResourceLedgerPoller({
+          ledger: this.resourceLedger,
+          breaker: getLlmCircuitBreaker(),
+        });
+        this.resourceLedgerPoller.start();
+      } catch (err) {
+        console.warn('[instar] resource-ledger init failed (non-fatal):', err);
+        this.resourceLedger = null;
+        this.resourceLedgerPoller = null;
+      }
+    }
+
     // Failure-Learning Loop (docs/specs/FAILURE-LEARNING-LOOP-SPEC.md) — instar
     // self-hosting dev-process forensics. Ships OFF; constructed only when
     // enabled (else the inline /failures routes 503-stub via the null ledger).
@@ -841,6 +880,61 @@ export class AgentServer {
       this.apprenticeshipProgram = null;
     }
 
+    // Apprenticeship differential-cycle capture — durable, queryable records for
+    // mentee output → mentor flags → overseer differential → coaching. Ships ON
+    // whenever stateDir exists; route layer returns 503 if this store fails.
+    try {
+      if (options.config.stateDir) {
+        const serverDataDir = path.join(options.config.stateDir, 'server-data');
+        fs.mkdirSync(serverDataDir, { recursive: true });
+        this.apprenticeshipCycleStore = new ApprenticeshipCycleStore({
+          dbPath: path.join(serverDataDir, 'apprenticeship-cycles.db'),
+        });
+      }
+    } catch (err) {
+      console.warn('[instar] apprenticeship cycle store init failed (non-fatal):', err);
+      this.apprenticeshipCycleStore = null;
+    }
+
+    // Apprenticeship overdue-cycle SLA signal — observe-only and ships OFF.
+    // When enabled, it rides TokenLedgerPoller's existing cadence via afterTick;
+    // it never owns a timer and never mutates the cycle store.
+    try {
+      const cfg = options.config.monitoring?.apprenticeshipCycleSla;
+      if (cfg?.enabled === true && this.apprenticeshipCycleStore) {
+        const telegram = this.telegramAdapter;
+        this.apprenticeshipCycleSlaMonitor = new ApprenticeshipCycleSlaMonitor({
+          store: this.apprenticeshipCycleStore,
+          config: cfg,
+          raiseAttention: telegram
+            ? (item) => telegram.createAttentionItem(item)
+            : undefined,
+        });
+      }
+    } catch (err) {
+      console.warn('[instar] apprenticeship cycle SLA monitor init failed (non-fatal):', err);
+      this.apprenticeshipCycleSlaMonitor = null;
+    }
+
+    // Gemini long-capacity-block escalation — observe-only, ships OFF. Reads the
+    // capacity gate module-global; rides the same afterTick cadence below; never
+    // mutates the gate or blocks a call.
+    try {
+      const cfg = options.config.monitoring?.geminiCapacityEscalation;
+      if (cfg?.enabled === true) {
+        const telegram = this.telegramAdapter;
+        this.geminiCapacityEscalationMonitor = new GeminiCapacityEscalationMonitor({
+          config: cfg,
+          raiseAttention: telegram
+            ? (item) => telegram.createAttentionItem(item)
+            : undefined,
+        });
+      }
+    } catch (err) {
+      console.warn('[instar] gemini capacity escalation monitor init failed (non-fatal):', err);
+      this.geminiCapacityEscalationMonitor = null;
+    }
+
     // Routes
     const routeCtx = {
       config: options.config,
@@ -935,12 +1029,16 @@ export class AgentServer {
       machineHeartbeat: options.machineHeartbeat ?? null,
       tokenLedger: this.tokenLedger,
       featureMetricsLedger: this.featureMetricsLedger,
+      resourceLedger: this.resourceLedger,
       frameworkIssueLedger: this.frameworkIssueLedger,
       mentorRunner: this.mentorRunner,
       failureLedger: this.failureLedger,
       failureAttributionEngine: this.failureAttributionEngine,
       correctionLedger: this.correctionLedger,
       apprenticeshipProgram: this.apprenticeshipProgram,
+      apprenticeshipCycleStore: this.apprenticeshipCycleStore,
+      apprenticeshipCycleSlaMonitor: this.apprenticeshipCycleSlaMonitor,
+      geminiCapacityEscalationMonitor: this.geminiCapacityEscalationMonitor,
       sessionReaper: options.sessionReaper ?? null,
       agentWorktreeReaper: options.agentWorktreeReaper ?? null,
       sleepController: options.sleepController ?? null,
@@ -2076,6 +2174,10 @@ export class AgentServer {
               // JSONL scan while no sessions are running — there are no new
               // tokens to attribute, so the full-cadence scan is wasted.
               isIdle: () => this.sessionManager.listRunningSessions().length === 0,
+              afterTick: async () => {
+                await this.apprenticeshipCycleSlaMonitor?.tick();
+                await this.geminiCapacityEscalationMonitor?.tick();
+              },
             });
             this.tokenLedgerPoller.start();
           } catch (err) {
@@ -2089,32 +2191,60 @@ export class AgentServer {
           // post-throttle re-sample. The full pipeline is signal-only on
           // observation paths and Tier-2 Remediator authority on decision
           // paths — see docs/specs/token-burn-detection-and-self-heal.md.
-          try {
-            const ledger = this.tokenLedger;
-            const reporter = DegradationReporter.getInstance();
-            const gate = LlmRateGate.instance();
-            const telegram = this.telegramAdapter;
-            const sendTelegram = telegram && typeof (telegram as { sendToTopic?: unknown }).sendToTopic === 'function'
-              ? (topicId: number, text: string) => {
-                  // Fire-and-forget — the runbook and verifier do not block on
-                  // alert delivery; failed sends are logged elsewhere.
-                  const send = (telegram as { sendToTopic: (t: number, s: string) => Promise<unknown> }).sendToTopic;
-                  void send.call(telegram, topicId, text).catch((err: unknown) => {
-                    console.warn(`[burn-detection] telegram send failed (non-fatal): ${(err as Error)?.message ?? err}`);
-                  });
-                }
-              : undefined;
+          //
+          // Operator control: `monitoring.burnDetection.*` (all optional;
+          // absence preserves the shipped defaults). `enabled: false` is the
+          // master kill-switch — the whole system stays down. The other knobs
+          // (absoluteShareThreshold, absoluteShareActivityFloorTokens,
+          // alertTopicId, autoThrottle, autoThrottleOnUnknown) tune behaviour
+          // without code changes. The activity floor is the 2026-06-03 fix that
+          // stops a finished heavy session re-alarming for a full 24h.
+          const burnCfg = this.config.monitoring?.burnDetection;
+          if (burnCfg?.enabled === false) {
+            console.log('[instar] burn-detection disabled via monitoring.burnDetection.enabled=false');
+          } else {
+            try {
+              const ledger = this.tokenLedger;
+              const reporter = DegradationReporter.getInstance();
+              const gate = LlmRateGate.instance();
+              const telegram = this.telegramAdapter;
+              const sendTelegram = telegram && typeof (telegram as { sendToTopic?: unknown }).sendToTopic === 'function'
+                ? (topicId: number, text: string) => {
+                    // Fire-and-forget — the runbook and verifier do not block on
+                    // alert delivery; failed sends are logged elsewhere.
+                    const send = (telegram as { sendToTopic: (t: number, s: string) => Promise<unknown> }).sendToTopic;
+                    void send.call(telegram, topicId, text).catch((err: unknown) => {
+                      console.warn(`[burn-detection] telegram send failed (non-fatal): ${(err as Error)?.message ?? err}`);
+                    });
+                  }
+                : undefined;
 
-            this.burnThrottleRunbook = new BurnThrottleRunbook({ gate, sendTelegram });
-            this.burnVerifier = new BurnVerifier({ ledger, sendTelegram });
-            registerBurnDetectionSubscriber(reporter, this.burnThrottleRunbook, (outcome, event) => {
-              this.burnVerifier!.scheduleVerification(outcome, event);
-            });
-            this.burnDetector = new BurnDetector({ ledger, reporter });
-            this.burnDetector.start();
-            console.log('[instar] burn-detection auto-heal system started');
-          } catch (err) {
-            console.warn('[instar] burn-detection start failed (non-fatal):', err);
+              // Build partial configs WITHOUT undefined keys — a `{ x: undefined }`
+              // override would clobber the constructor's default for x.
+              const runbookConfig: Partial<BurnThrottleConfig> = {};
+              if (burnCfg?.autoThrottle !== undefined) runbookConfig.autoThrottle = burnCfg.autoThrottle;
+              if (burnCfg?.autoThrottleOnUnknown !== undefined) runbookConfig.autoThrottleOnUnknown = burnCfg.autoThrottleOnUnknown;
+
+              const detectorConfig: Partial<BurnDetectionConfig> = {};
+              if (burnCfg?.absoluteShareThreshold !== undefined) detectorConfig.absoluteShareThreshold = burnCfg.absoluteShareThreshold;
+              if (burnCfg?.absoluteShareActivityFloorTokens !== undefined) detectorConfig.absoluteShareActivityFloorTokens = burnCfg.absoluteShareActivityFloorTokens;
+
+              this.burnThrottleRunbook = new BurnThrottleRunbook({
+                gate,
+                sendTelegram,
+                alertTopicId: burnCfg?.alertTopicId,
+                config: runbookConfig,
+              });
+              this.burnVerifier = new BurnVerifier({ ledger, sendTelegram });
+              registerBurnDetectionSubscriber(reporter, this.burnThrottleRunbook, (outcome, event) => {
+                this.burnVerifier!.scheduleVerification(outcome, event);
+              });
+              this.burnDetector = new BurnDetector({ ledger, reporter, config: detectorConfig });
+              this.burnDetector.start();
+              console.log('[instar] burn-detection auto-heal system started');
+            } catch (err) {
+              console.warn('[instar] burn-detection start failed (non-fatal):', err);
+            }
           }
         }
 
@@ -2315,6 +2445,15 @@ export class AgentServer {
       }
       this.tokenLedgerPoller = null;
     }
+    // Stop the resource-ledger poller (unsubscribes the breaker observer) + close.
+    if (this.resourceLedgerPoller) {
+      try { this.resourceLedgerPoller.stop(); } catch { /* best-effort */ }
+      this.resourceLedgerPoller = null;
+    }
+    if (this.resourceLedger) {
+      try { this.resourceLedger.close(); } catch { /* best-effort */ }
+      this.resourceLedger = null;
+    }
     if (this.tokenLedger) {
       try {
         this.tokenLedger.close();
@@ -2323,6 +2462,16 @@ export class AgentServer {
       }
       this.tokenLedger = null;
     }
+    if (this.apprenticeshipCycleStore) {
+      try {
+        this.apprenticeshipCycleStore.close();
+      } catch {
+        // best-effort
+      }
+      this.apprenticeshipCycleStore = null;
+    }
+    this.apprenticeshipCycleSlaMonitor = null;
+    this.geminiCapacityEscalationMonitor = null;
 
     // Shutdown WebSocket manager first
     if (this.wsManager) {

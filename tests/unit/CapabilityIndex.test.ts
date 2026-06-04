@@ -117,4 +117,15 @@ describe('CapabilityIndex — invariants on the registry itself', () => {
     expect(block.retrievalHint).toMatch(/secret-drop-retrieve\.mjs/);
     expect(block.retrievalHint).toMatch(/NEVER prints the response body/);
   });
+
+  it('apprenticeshipProgram surfaces the role-coverage route', () => {
+    const apprenticeship = CAPABILITY_INDEX.find((e) => e.key === 'apprenticeshipProgram');
+    expect(apprenticeship, 'no apprenticeshipProgram entry in CAPABILITY_INDEX').toBeDefined();
+    const block = apprenticeship!.build({
+      ctx: { apprenticeshipProgram: {}, apprenticeshipCycleStore: {} } as any,
+      scripts: [],
+      secretDrop: { listPending: () => [] } as any,
+    }) as { endpoints: string[] };
+    expect(block.endpoints).toContain('GET /apprenticeship/instances/:id/role-coverage');
+  });
 });

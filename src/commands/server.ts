@@ -17,11 +17,12 @@ import pc from 'picocolors';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 import { loadConfig, ensureStateDir, detectTmuxPath } from '../core/Config.js';
-import { isNonFatalUncaught } from '../core/uncaughtExceptionPolicy.js';
+import { isNonFatalUncaught, shouldLogStackForUncaught } from '../core/uncaughtExceptionPolicy.js';
 import { closeAllSqlite } from '../core/SqliteRegistry.js';
 import { SessionManager } from '../core/SessionManager.js';
 import { StateManager } from '../core/StateManager.js';
 import { StuckInputSentinel } from '../core/StuckInputSentinel.js';
+import { SessionRecoveryChannel } from '../core/SessionRecoveryChannel.js';
 import { JobScheduler } from '../scheduler/JobScheduler.js';
 import { IntegrationGate } from '../scheduler/IntegrationGate.js';
 import { JobRunHistory } from '../scheduler/JobRunHistory.js';
@@ -4509,8 +4510,18 @@ export async function startServer(options: StartOptions): Promise<void> {
     // StuckInputSentinel — persistent, restart-safe recovery for tmux prompts
     // that hold text but never submitted Enter. Complements the in-process
     // verifyInjection timers (PR #159) which die when the server crashes.
+    //
+    // Codex session-wedge self-recovery (dark by default): when enabled, the
+    // sentinel escalates PAST the keypress ladder by requesting a tier-C recovery
+    // (server restart + replay) via SessionRecoveryChannel — executed by the
+    // lifeline-process consumer (SessionRecoveryConsumer). See
+    // docs/specs/CODEX-SESSION-WEDGE-SELF-RECOVERY.md.
+    const codexWedgeCfg = config.monitoring?.codexWedgeRecovery;
     const stuckInputSentinel = new StuckInputSentinel(sessionManager, {
       stateDir: config.stateDir,
+      recoveryChannel: new SessionRecoveryChannel(config.stateDir),
+      escalationEnabled: codexWedgeCfg?.enabled ?? false,
+      escalationTimeoutTicks: codexWedgeCfg?.escalationTimeoutTicks,
     });
     stuckInputSentinel.start();
 
@@ -6871,7 +6882,7 @@ export async function startServer(options: StartOptions): Promise<void> {
             const correctionDistill = (prompt: string) =>
               correctionLlmQueue.enqueue(
                 'background',
-                () => sharedIntelligence.evaluate(prompt, { model: 'fast', maxTokens: 400, temperature: 0 }),
+                () => sharedIntelligence.evaluate(prompt, { model: 'fast', maxTokens: 400, temperature: 0, attribution: { component: 'server:correction-learning' } }), // attribution for /metrics/features
                 0.3,
               );
 
@@ -7783,7 +7794,7 @@ export async function startServer(options: StartOptions): Promise<void> {
             .listActive()
             .map(({ threadId, entry }) => ({ threadId, peerName: entry.remoteAgent ?? 'peer', topicId: entry.originTopicId }))
             .filter((t): t is { threadId: string; peerName: string; topicId: number } => typeof t.topicId === 'number'),
-        summarize: (prompt) => sharedLlmQueue.enqueue('background', () => intelligence.evaluate(prompt, { model: 'fast' })),
+        summarize: (prompt) => sharedLlmQueue.enqueue('background', () => intelligence.evaluate(prompt, { model: 'fast', attribution: { component: 'server:a2a-checkin' } })), // attribution for /metrics/features
         surface: async ({ topicId, body }) => {
           if (typeof topicId === 'number') await tg.sendToTopic(topicId, body);
         },
@@ -9052,9 +9063,26 @@ export async function startServer(options: StartOptions): Promise<void> {
         terminate: (id, reason) => sessionManager.terminateSession(id, reason),
         markReaping: (id) => sessionManager.markReaping(id),
         clearReaping: (id) => sessionManager.clearReaping(id),
+        // Backs cpuAwareActiveProcessKeep: lets the reaper tell a wedged/idle
+        // child (CPU-flat) from a working one, so an idle MCP child no longer
+        // holds an otherwise-reapable session hostage under host load.
+        descendantCpuSeconds: (s) => sessionManager.descendantCpuSeconds(s),
         audit: reaperAuditSink(config.stateDir),
       },
-      config.monitoring?.sessionReaper,
+      // developmentAgent gate (standard_development_agent_dark_feature_gate):
+      // cpuAwareActiveProcessKeep ships dark fleet-wide and live on dev agents
+      // (echo) for dogfooding. An explicit config value always wins.
+      (() => {
+        const rcfg = config.monitoring?.sessionReaper;
+        if (!rcfg) return rcfg; // reaper config absent ⇒ reaper disabled ⇒ flag moot
+        return {
+          ...rcfg,
+          cpuAwareActiveProcessKeep: rcfg.cpuAwareActiveProcessKeep ?? !!config.developmentAgent,
+          // Observe-only busy-orphan detection rides the same dev-gate (dark fleet,
+          // live on dev agents). Zero risk — it never changes a keep/kill verdict.
+          busyOrphanDetection: rcfg.busyOrphanDetection ?? !!config.developmentAgent,
+        };
+      })(),
     );
     sessionReaper.start();
 
@@ -9180,6 +9208,8 @@ export async function startServer(options: StartOptions): Promise<void> {
               transcriptTailHash: tailHash,
               mainProcessActive: sessionManager.hasActiveProcesses(session.tmuxSession),
               idleStateToken: hash(frame),
+              descendantCpuSeconds: sessionManager.descendantCpuSeconds(session.tmuxSession),
+              isJobSession: !!session.jobSlug,
             };
           },
           raiseAttention: makeAttentionPoster({ port: config.port, authToken: config.authToken ?? '' }),
@@ -10260,7 +10290,15 @@ export async function startServer(options: StartOptions): Promise<void> {
       // work). See isNonFatalUncaught for the allowlist + rationale (HTTP
       // double-response races, Slack Socket Mode reconnect races).
       if (isNonFatalUncaught(err)) {
-        console.warn(`[WARN] Non-fatal uncaught exception (suppressed): ${err.message}`);
+        // Attach the stack the first time a given origin is seen so the offending
+        // call site (e.g. a route that double-responds → "Cannot set headers")
+        // is diagnosable; repeats log message-only to avoid flooding the log
+        // (these isolated races recur ~10-20x/hour).
+        const stackSuffix =
+          shouldLogStackForUncaught(err) && err.stack
+            ? `\n  first-seen stack (for diagnosis):\n${err.stack}`
+            : '';
+        console.warn(`[WARN] Non-fatal uncaught exception (suppressed): ${err.message}${stackSuffix}`);
         return; // Don't crash — the server is fine
       }
 

@@ -2334,6 +2334,7 @@ export class TelegramAdapter implements MessagingAdapter {
       const response = await this.intelligence.evaluate(prompt, {
         maxTokens: 5,
         temperature: 0,
+        attribution: { component: 'TelegramAdapter' }, // attribution for /metrics/features
       });
       const answer = response.trim().toLowerCase();
       if (answer === 'no') {

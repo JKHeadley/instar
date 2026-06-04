@@ -301,6 +301,7 @@ export class SessionActivitySentinel {
       model: 'fast',      // Haiku tier for cost efficiency
       maxTokens: 1500,
       temperature: 0.3,
+      attribution: { component: 'SessionActivitySentinel' }, // attribution for /metrics/features
     });
 
     const parsed = this.parseDigestResponse(response);
@@ -552,6 +553,7 @@ export class SessionActivitySentinel {
       model: 'fast',
       maxTokens: 2000,
       temperature: 0.3,
+      attribution: { component: 'SessionActivitySentinel' }, // attribution for /metrics/features
     });
 
     const parsed = this.parseSynthesisResponse(response);
@@ -658,6 +660,7 @@ export class SessionActivitySentinel {
             model: 'fast',
             maxTokens: 1500,
             temperature: 0.3,
+            attribution: { component: 'SessionActivitySentinel' }, // attribution for /metrics/features
           });
 
           const parsed = this.parseDigestResponse(response);

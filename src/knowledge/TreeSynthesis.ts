@@ -64,6 +64,7 @@ Write as if the agent is describing itself. Use "I" voice.`;
         model: 'fast',
         maxTokens: DEFAULT_MAX_SYNTHESIS_OUTPUT_TOKENS,
         temperature: 0.3,
+        attribution: { component: 'TreeSynthesis' }, // attribution for /metrics/features
       });
 
       // Rough token estimate for tracking

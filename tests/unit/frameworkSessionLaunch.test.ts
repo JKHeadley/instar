@@ -59,6 +59,49 @@ describe('frameworkSessionLaunch.buildInteractiveLaunch', () => {
       const spec = buildInteractiveLaunch('claude-code', { binaryPath: '/x/claude' });
       expect(spec.envOverrides).toEqual({ CLAUDECODE: '' });
     });
+
+    it('does NOT push --model when no defaultModel is set (account default preserved)', () => {
+      const spec = buildInteractiveLaunch('claude-code', { binaryPath: '/x/claude' });
+      expect(spec.argv).not.toContain('--model');
+    });
+
+    it('pins --model from a generic tier (balanced → sonnet) when defaultModel is set', () => {
+      const spec = buildInteractiveLaunch('claude-code', {
+        binaryPath: '/usr/local/bin/claude',
+        defaultModel: 'balanced',
+      });
+      expect(spec.argv).toEqual([
+        '/usr/local/bin/claude',
+        '--dangerously-skip-permissions',
+        '--model',
+        'sonnet',
+      ]);
+    });
+
+    it('passes a raw model id through verbatim to --model', () => {
+      const spec = buildInteractiveLaunch('claude-code', {
+        binaryPath: '/usr/local/bin/claude',
+        defaultModel: 'claude-opus-4-8',
+      });
+      expect(spec.argv).toContain('--model');
+      expect(spec.argv[spec.argv.indexOf('--model') + 1]).toBe('claude-opus-4-8');
+    });
+
+    it('combines --resume and --model when both are provided', () => {
+      const spec = buildInteractiveLaunch('claude-code', {
+        binaryPath: '/usr/local/bin/claude',
+        resumeSessionId: 'abc-123',
+        defaultModel: 'capable',
+      });
+      expect(spec.argv).toEqual([
+        '/usr/local/bin/claude',
+        '--dangerously-skip-permissions',
+        '--resume',
+        'abc-123',
+        '--model',
+        'opus',
+      ]);
+    });
   });
 
   describe('codex-cli', () => {
@@ -361,20 +404,28 @@ describe('frameworkSessionLaunch.resolveModelForFramework', () => {
 
   describe('codex-cli', () => {
     it('maps generic tiers to subscription-safe Codex model ids', () => {
-      // Confirmed light/medium/heavy mapping (Justin, 2026-05-23):
-      // light=gpt-5.2 (non-reasoning), medium=gpt-5.4-mini (cheapest reasoning),
-      // heavy=gpt-5.5 (frontier). See models.ts for the subscription rationale.
-      expect(resolveModelForFramework('codex-cli', 'fast')).toBe('gpt-5.2');
+      // light/medium/heavy mapping. NOTE: gpt-5.2 was retired from ChatGPT-account
+      // Codex on 2026-06-03 (now 400s), so `fast`/`haiku` moved to gpt-5.4-mini —
+      // the cheapest still-accepted model (== balanced). See models.ts.
+      expect(resolveModelForFramework('codex-cli', 'fast')).toBe('gpt-5.4-mini');
       expect(resolveModelForFramework('codex-cli', 'balanced')).toBe('gpt-5.4-mini');
       expect(resolveModelForFramework('codex-cli', 'capable')).toBe('gpt-5.5');
     });
     it('maps legacy Claude tier names to Codex equivalents (cross-port back-compat)', () => {
-      expect(resolveModelForFramework('codex-cli', 'haiku')).toBe('gpt-5.2');
+      expect(resolveModelForFramework('codex-cli', 'haiku')).toBe('gpt-5.4-mini');
       expect(resolveModelForFramework('codex-cli', 'sonnet')).toBe('gpt-5.4-mini');
       expect(resolveModelForFramework('codex-cli', 'opus')).toBe('gpt-5.5');
     });
     it('passes raw Codex model ids through verbatim', () => {
       expect(resolveModelForFramework('codex-cli', 'gpt-5.4-codex')).toBe('gpt-5.4-codex');
+    });
+  });
+
+  describe('gemini-cli', () => {
+    it('keeps raw Gemini model ids inside the verified known-model set', () => {
+      expect(resolveModelForFramework('gemini-cli', 'gemini-2.5-flash')).toBe('gemini-2.5-flash');
+      expect(resolveModelForFramework('gemini-cli', 'gemini-2.5-pro')).toBe('gemini-2.5-pro');
+      expect(resolveModelForFramework('gemini-cli', 'gemini-2.0-flash')).toBe('gemini-2.5-flash');
     });
   });
 

@@ -15,6 +15,10 @@
 
 import type { IntelligenceFramework } from './intelligenceProviderFactory.js';
 import { codexSupportsHookTrustBypass } from './codexCapabilities.js';
+import {
+  GEMINI_DEFAULT_MODEL,
+  isKnownGeminiModel,
+} from '../providers/adapters/gemini-cli/models.js';
 
 /**
  * Cross-framework generic model tiers. Higher-level code (UpgradeNotify,
@@ -58,10 +62,13 @@ export function resolveModelForFramework(
     // sensible Codex equivalent (haiku→fast, sonnet→balanced,
     // opus→capable) so an unported call site doesn't immediately
     // crash for a Codex agent.
-    // Confirmed light/medium/heavy mapping (Justin, 2026-05-23): the ChatGPT
-    // subscription meters by token-weighted credits, so non-reasoning gpt-5.2
-    // is genuinely the lightest. See models.ts for the full rationale.
-    if (key === 'fast' || key === 'haiku') return 'gpt-5.2';        // light — non-reasoning
+    // Light/medium/heavy mapping. NOTE (2026-06-03): OpenAI retired gpt-5.2 from
+    // the ChatGPT-account Codex surface (it now 400s "not supported … with a
+    // ChatGPT account"), so the `fast` tier moved off it onto the cheapest model
+    // still accepted — gpt-5.4-mini (== balanced). Keep this in lockstep with
+    // src/providers/adapters/openai-codex/models.ts (the single source of the
+    // full rationale + the drift-resilience follow-up).
+    if (key === 'fast' || key === 'haiku') return 'gpt-5.4-mini';   // light tier — gpt-5.2 retired 2026-06-03
     if (key === 'balanced' || key === 'sonnet') return 'gpt-5.4-mini'; // medium — cheapest reasoning
     if (key === 'capable' || key === 'opus') return 'gpt-5.5';      // heavy — frontier reasoning
     return modelOrTier;
@@ -75,7 +82,7 @@ export function resolveModelForFramework(
     if (key === 'fast' || key === 'haiku') return 'gemini-2.5-flash';
     if (key === 'balanced' || key === 'sonnet') return 'gemini-2.5-flash';
     if (key === 'capable' || key === 'opus') return 'gemini-2.5-pro';
-    return modelOrTier;
+    return isKnownGeminiModel(modelOrTier) ? modelOrTier : GEMINI_DEFAULT_MODEL;
   }
   return modelOrTier;
 }
@@ -153,6 +160,21 @@ const claudeCodeBuilder: Builder = (options) => {
   const argv: string[] = [options.binaryPath, '--dangerously-skip-permissions'];
   if (options.resumeSessionId) {
     argv.push('--resume', options.resumeSessionId);
+  }
+  // Honor the configured default model when one is set. Previously this
+  // builder silently dropped options.defaultModel — unlike the Codex and
+  // Gemini builders, which both push --model — so frameworkDefaultModels
+  // ['claude-code'] had NO effect on interactive Claude sessions (they
+  // always ran the CLI's account default). That contradicted the documented
+  // contract on InteractiveLaunchOptions.defaultModel ("Claude inherits its
+  // CLI's account default" only WHEN UNSET). When a default IS set we resolve
+  // the tier→model alias (fast/balanced/capable → haiku/sonnet/opus; raw ids
+  // pass through) and pin it via --model. When unset we push nothing, so the
+  // CLI's own account default is preserved — the user can still /model-switch
+  // within the session.
+  const resolvedModel = resolveModelForFramework('claude-code', options.defaultModel);
+  if (resolvedModel) {
+    argv.push('--model', resolvedModel);
   }
   return {
     argv,

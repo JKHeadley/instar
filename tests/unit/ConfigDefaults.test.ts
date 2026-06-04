@@ -63,6 +63,29 @@ describe('ConfigDefaults', () => {
       expect(config.monitoring.sessionReaper.dryRun).toBe(false);
     });
 
+    it('ships apprenticeshipCycleSla OFF by default and migrates it add-missing', () => {
+      for (const t of ['managed-project', 'standalone'] as const) {
+        const sla = (getInitDefaults(t).monitoring as any).apprenticeshipCycleSla;
+        expect(sla).toBeDefined();
+        expect(sla.enabled).toBe(false);
+        expect(sla.overdueAfterMinutes).toBe(120);
+      }
+
+      const config: any = { monitoring: {} };
+      const { patched, changes } = applyDefaults(config, getMigrationDefaults('managed-project'));
+      expect(patched).toBe(true);
+      expect(config.monitoring.apprenticeshipCycleSla.enabled).toBe(false);
+      expect(config.monitoring.apprenticeshipCycleSla.overdueAfterMinutes).toBe(120);
+      expect(changes.some((c: string) => c.includes('apprenticeshipCycleSla'))).toBe(true);
+
+      const enabled: any = {
+        monitoring: { apprenticeshipCycleSla: { enabled: true, overdueAfterMinutes: 30 } },
+      };
+      applyDefaults(enabled, getMigrationDefaults('managed-project'));
+      expect(enabled.monitoring.apprenticeshipCycleSla.enabled).toBe(true);
+      expect(enabled.monitoring.apprenticeshipCycleSla.overdueAfterMinutes).toBe(30);
+    });
+
     // ── Multi-Machine Session Pool dark defaults (Track A — migration parity) ──
     it('ships multiMachine.sessionPool DARK by default (enabled:false, stage:dark, dryRun:true)', () => {
       for (const t of ['managed-project', 'standalone'] as const) {

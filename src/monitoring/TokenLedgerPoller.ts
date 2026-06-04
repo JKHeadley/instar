@@ -22,6 +22,8 @@ export interface TokenLedgerPollerOptions {
   idleIntervalMs?: number;
   /** Optional logger (defaults to console.warn for errors only). */
   onError?: (err: unknown) => void;
+  /** Optional hook that rides the existing token-ledger cadence after each scan. */
+  afterTick?: () => void | Promise<void>;
   /**
    * When set, each tick ALSO scans this agent's Codex rollouts (attributed by
    * cwd) into the ledger's separate codex_token_sessions table. Leave unset on
@@ -41,6 +43,7 @@ export class TokenLedgerPoller {
   private cadence: IdleAwareCadence | null = null;
   private running = false;
   private onError: (err: unknown) => void;
+  private afterTick: (() => void | Promise<void>) | null;
   private codexProjectDir: string | null;
   private codexMaxFileAgeMs: number;
 
@@ -56,6 +59,7 @@ export class TokenLedgerPoller {
     this.onError = opts.onError ?? ((err) => {
       console.warn('[token-ledger] scan error:', err);
     });
+    this.afterTick = opts.afterTick ?? null;
   }
 
   start(): void {
@@ -108,6 +112,11 @@ export class TokenLedgerPoller {
       })
       .finally(() => {
         this.running = false;
+        if (this.afterTick) {
+          Promise.resolve()
+            .then(() => this.afterTick!())
+            .catch((err) => this.onError(err));
+        }
       });
   }
 }

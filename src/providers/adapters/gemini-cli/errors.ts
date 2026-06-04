@@ -17,6 +17,7 @@ import {
   type ProviderError,
 } from '../../errors.js';
 import type { ProviderId } from '../../types.js';
+import { parseGeminiRetryAfterMs } from './observability/geminiCapacityPolicy.js';
 
 export const GEMINI_CLI_ID = 'gemini-cli' as ProviderId;
 
@@ -52,11 +53,12 @@ export function mapExecError(
   if (/unauthor|forbidden|invalid.*token|invalid.*key|401|403/i.test(stderr)) {
     return new AuthError(message, GEMINI_CLI_ID, err);
   }
+  const retryAfterMs = parseGeminiRetryAfterMs(stderr);
   if (/rate.?limit|429|too many requests|resource.?exhausted/i.test(stderr)) {
-    return new RateLimitError(message, GEMINI_CLI_ID, { cause: err });
+    return new RateLimitError(message, GEMINI_CLI_ID, { retryAfterMs, cause: err });
   }
   if (/quota|usage.?limit/i.test(stderr)) {
-    return new QuotaError(message, GEMINI_CLI_ID, { cause: err });
+    return new QuotaError(message, GEMINI_CLI_ID, { retryAfterMs, limitKind: 'unknown', cause: err });
   }
   if (/network|ECONN|ETIMEDOUT|dns/i.test(stderr)) {
     return new NetworkError(message, GEMINI_CLI_ID, err);

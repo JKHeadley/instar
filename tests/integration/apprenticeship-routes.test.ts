@@ -24,6 +24,8 @@ import { authMiddleware } from '../../src/server/middleware.js';
 import { ApprenticeshipProgram, type GateDeps } from '../../src/core/ApprenticeshipProgram.js';
 import { validateRetroHarvest } from '../../src/core/retroHarvestValidator.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { ApprenticeshipCycleStore } from '../../src/monitoring/ApprenticeshipCycleStore.js';
+import { ApprenticeshipCycleSlaMonitor } from '../../src/monitoring/ApprenticeshipCycleSlaMonitor.js';
 
 const AUTH = 'apprenticeship-routes-token';
 const auth = () => ({ Authorization: `Bearer ${AUTH}` });
@@ -57,7 +59,12 @@ function buildHarvest(): string {
   return `---\n${yamlLines}\n---\n\n${body}\n`;
 }
 
-function ctxFor(stateDir: string, program: ApprenticeshipProgram | null): RouteContext {
+function ctxFor(
+  stateDir: string,
+  program: ApprenticeshipProgram | null,
+  cycleStore: ApprenticeshipCycleStore | null = null,
+  cycleSlaMonitor: ApprenticeshipCycleSlaMonitor | null = null,
+): RouteContext {
   return {
     config: {
       projectName: 'apprenticeship-routes', projectDir: path.dirname(stateDir), stateDir, port: 0,
@@ -70,6 +77,7 @@ function ctxFor(stateDir: string, program: ApprenticeshipProgram | null): RouteC
     quotaTracker: null, publisher: null, viewer: null, tunnel: null, evolution: null,
     watchdog: null, triageNurse: null, topicMemory: null, feedbackAnomalyDetector: null,
     discoveryEvaluator: null, correctionLedger: null, apprenticeshipProgram: program,
+    apprenticeshipCycleStore: cycleStore, apprenticeshipCycleSlaMonitor: cycleSlaMonitor,
     startTime: new Date(),
   } as unknown as RouteContext;
 }
@@ -102,6 +110,21 @@ describe('/apprenticeship routes (integration)', () => {
     return new ApprenticeshipProgram({ stateDir, projectDir, deps });
   }
 
+  function makeCycleStore(): ApprenticeshipCycleStore {
+    return new ApprenticeshipCycleStore({
+      dbPath: path.join(stateDir, 'server-data', 'apprenticeship-cycles.db'),
+      now: () => new Date('2026-06-03T08:00:00.000Z'),
+    });
+  }
+
+  function makeCycleSlaMonitor(store: ApprenticeshipCycleStore): ApprenticeshipCycleSlaMonitor {
+    return new ApprenticeshipCycleSlaMonitor({
+      store,
+      config: { enabled: true, overdueAfterMinutes: 120 },
+      now: () => new Date('2026-06-03T12:00:00.000Z'),
+    });
+  }
+
   // ── auth-negative ─────────────────────────────────────────────────────
   it('401 without a bearer token', async () => {
     const res = await request(appWith(ctxFor(stateDir, makeProgram()))).get('/apprenticeship/instances');
@@ -119,6 +142,204 @@ describe('/apprenticeship routes (integration)', () => {
     const res = await request(appWith(ctxFor(stateDir, null))).get('/apprenticeship/instances').set(auth());
     expect(res.status).toBe(503);
     expect(res.body.error).toContain('apprenticeship program disabled');
+  });
+
+  // ── cycle capture ───────────────────────────────────────────────────
+  it('cycle routes require bearer auth and 503 when the store is unavailable', async () => {
+    const app = appWith(ctxFor(stateDir, makeProgram(), null));
+    const unauth = await request(app).get('/apprenticeship/cycles');
+    expect(unauth.status).toBe(401);
+
+    const unavailable = await request(app).get('/apprenticeship/cycles').set(auth());
+    expect(unavailable.status).toBe(503);
+    expect(unavailable.body.error).toContain('cycle store disabled');
+  });
+
+  it('records, lists, gets, filters, and closes cycle rows over HTTP', async () => {
+    const store = makeCycleStore();
+    const app = appWith(ctxFor(stateDir, makeProgram(), store));
+
+    const bad = await request(app)
+      .post('/apprenticeship/cycles')
+      .set(auth())
+      .send({ instanceId: 'echo-to-codey' });
+    expect(bad.status).toBe(400);
+
+    const created = await request(app)
+      .post('/apprenticeship/cycles')
+      .set(auth())
+      .send({
+        id: 'cycle-http-1',
+        instanceId: 'echo-to-codey',
+        cycleNumber: 1,
+        task: 'Run Gemini identity review',
+        menteeOutput: 'raw output',
+        mentorFlagged: ['compressed principles'],
+        overseerDifferential: ['surface env issue'],
+        coaching: 'Keep reasoning and infra findings separate.',
+        infraItems: ['ripgrep missing'],
+        kind: 'mentor-mentee-differential',
+      });
+    expect(created.status).toBe(201);
+    expect(created.body.kind).toBe('mentor-mentee-differential');
+    expect(created.body.mentorFlagged).toEqual(['compressed principles']);
+    expect(created.body.infraItems).toEqual(['ripgrep missing']);
+
+    await request(app)
+      .post('/apprenticeship/cycles')
+      .set(auth())
+      .send({
+        id: 'cycle-other',
+        instanceId: 'other-instance',
+        cycleNumber: 1,
+        task: 'Other task',
+        menteeOutput: 'other output',
+      })
+      .expect(201);
+
+    const list = await request(app).get('/apprenticeship/cycles?instanceId=echo-to-codey&limit=10').set(auth());
+    expect(list.status).toBe(200);
+    expect(list.body.cycles.map((c: { id: string }) => c.id)).toEqual(['cycle-http-1']);
+
+    const fetched = await request(app).get('/apprenticeship/cycles/cycle-http-1').set(auth());
+    expect(fetched.status).toBe(200);
+    expect(fetched.body.overseerDifferential).toEqual(['surface env issue']);
+
+    const missing = await request(app).get('/apprenticeship/cycles/no-such').set(auth());
+    expect(missing.status).toBe(404);
+
+    const closed = await request(app).post('/apprenticeship/cycles/cycle-http-1/close').set(auth());
+    expect(closed.status).toBe(200);
+    expect(closed.body.status).toBe('closed');
+
+    const closeMissing = await request(app).post('/apprenticeship/cycles/no-such/close').set(auth());
+    expect(closeMissing.status).toBe(404);
+    store.close();
+  });
+
+  it('role-coverage route requires bearer, 503s without the store, and detects role drift', async () => {
+    const unavailable = appWith(ctxFor(stateDir, makeProgram(), null, null));
+    const unauth = await request(unavailable).get('/apprenticeship/instances/echo-to-codey/role-coverage');
+    expect(unauth.status).toBe(401);
+
+    const disabled = await request(unavailable).get('/apprenticeship/instances/echo-to-codey/role-coverage').set(auth());
+    expect(disabled.status).toBe(503);
+    expect(disabled.body.error).toContain('cycle store disabled');
+
+    const store = makeCycleStore();
+    store.record({
+      id: 'review-1',
+      instanceId: 'echo-to-codey',
+      cycleNumber: 1,
+      createdAt: '2026-06-03T08:00:00.000Z',
+      task: 'review 1',
+      menteeOutput: 'output',
+      kind: 'overseer-apprentice-devreview',
+    });
+    store.record({
+      id: 'review-2',
+      instanceId: 'echo-to-codey',
+      cycleNumber: 2,
+      createdAt: '2026-06-03T09:00:00.000Z',
+      task: 'review 2',
+      menteeOutput: 'output',
+      kind: 'overseer-apprentice-devreview',
+    });
+    store.record({
+      id: 'healthy-mentor',
+      instanceId: 'healthy',
+      cycleNumber: 1,
+      createdAt: '2026-06-03T10:00:00.000Z',
+      task: 'mentor loop',
+      menteeOutput: 'output',
+      kind: 'mentor-mentee-differential',
+    });
+    store.record({
+      id: 'healthy-review',
+      instanceId: 'healthy',
+      cycleNumber: 2,
+      createdAt: '2026-06-03T11:00:00.000Z',
+      task: 'review loop',
+      menteeOutput: 'output',
+      kind: 'overseer-apprentice-devreview',
+    });
+
+    const app = appWith(ctxFor(stateDir, makeProgram(), store, null));
+    const drift = await request(app).get('/apprenticeship/instances/echo-to-codey/role-coverage').set(auth());
+    expect(drift.status).toBe(200);
+    expect(drift.body.driftWarning).toBe(true);
+    expect(drift.body.axes['overseer-apprentice-devreview'].cycleCount).toBe(2);
+    expect(drift.body.dormantAxes).toContain('mentor-mentee-differential');
+
+    const healthy = await request(app).get('/apprenticeship/instances/healthy/role-coverage').set(auth());
+    expect(healthy.status).toBe(200);
+    expect(healthy.body.driftWarning).toBe(false);
+    expect(healthy.body.axes['mentor-mentee-differential'].cycleCount).toBe(1);
+
+    const empty = await request(app).get('/apprenticeship/instances/empty/role-coverage').set(auth());
+    expect(empty.status).toBe(200);
+    expect(empty.body.driftWarning).toBe(false);
+    expect(empty.body.axes['mentor-mentee-differential'].cycleCount).toBe(0);
+    store.close();
+  });
+
+  it('overdue route requires bearer, 503s when SLA monitor is disabled, and returns the overdue set', async () => {
+    const unavailable = appWith(ctxFor(stateDir, makeProgram(), null, null));
+    const unauth = await request(unavailable).get('/apprenticeship/cycles/overdue');
+    expect(unauth.status).toBe(401);
+
+    const disabled = await request(unavailable).get('/apprenticeship/cycles/overdue').set(auth());
+    expect(disabled.status).toBe(503);
+    expect(disabled.body.error).toContain('SLA monitor disabled');
+
+    const store = makeCycleStore();
+    store.record({
+      id: 'old-open',
+      instanceId: 'echo-to-codey',
+      cycleNumber: 1,
+      createdAt: '2026-06-03T09:00:00.000Z',
+      task: 'old open',
+      menteeOutput: 'output',
+    });
+    store.record({
+      id: 'young-open',
+      instanceId: 'echo-to-codey',
+      cycleNumber: 2,
+      createdAt: '2026-06-03T11:30:00.000Z',
+      task: 'young open',
+      menteeOutput: 'output',
+    });
+    store.record({
+      id: 'old-closed',
+      instanceId: 'echo-to-codey',
+      cycleNumber: 3,
+      createdAt: '2026-06-03T08:00:00.000Z',
+      task: 'old closed',
+      menteeOutput: 'output',
+      status: 'closed',
+    });
+    store.record({
+      id: 'other-old-open',
+      instanceId: 'other-instance',
+      cycleNumber: 1,
+      createdAt: '2026-06-03T08:00:00.000Z',
+      task: 'other old',
+      menteeOutput: 'output',
+    });
+
+    const app = appWith(ctxFor(stateDir, makeProgram(), store, makeCycleSlaMonitor(store)));
+    const res = await request(app).get('/apprenticeship/cycles/overdue?instanceId=echo-to-codey').set(auth());
+    expect(res.status).toBe(200);
+    expect(res.body.overdue).toEqual([
+      {
+        id: 'old-open',
+        instanceId: 'echo-to-codey',
+        cycleNumber: 1,
+        ageMinutes: 180,
+        createdAt: '2026-06-03T09:00:00.000Z',
+      },
+    ]);
+    store.close();
   });
 
   // ── create ────────────────────────────────────────────────────────────

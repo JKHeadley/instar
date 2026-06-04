@@ -27,12 +27,13 @@ function harness(opts?: { snapshots?: Map<string, ProgressSnapshot> }) {
       snapshot: (s) => snaps.get(s.id) ?? {
         transcriptResolved: false, transcriptSize: 0, transcriptTailHash: null,
         mainProcessActive: false, idleStateToken: 'x',
+        descendantCpuSeconds: 0, isJobSession: false,
       },
       raiseAttention: async (item) => { raised.push({ id: item.id, title: item.title }); return true; },
       setLongIndeterminate: (id, isLong) => longFlags.set(id, isLong),
       now: () => clock,
     },
-    { enabled: true, tickIntervalSec: 120, unverifiableEscalateMinutes: M, indeterminateEscalateCount: N, progressFloorBytes: 512 },
+    { enabled: true, tickIntervalSec: 120, unverifiableEscalateMinutes: M, indeterminateEscalateCount: N, progressFloorBytes: 512, cpuFloorSeconds: 1 },
   );
 
   return {
@@ -48,6 +49,15 @@ function harness(opts?: { snapshots?: Map<string, ProgressSnapshot> }) {
 const idleSnap = (token = 'frame-static'): ProgressSnapshot => ({
   transcriptResolved: true, transcriptSize: 1000, transcriptTailHash: 'tail-A',
   mainProcessActive: false, idleStateToken: token,
+  descendantCpuSeconds: 0, isJobSession: false,
+});
+
+/** A JOB session's snapshot — transcript static, idle token static (no output),
+ *  with a configurable accumulated cpu-seconds. A wedged job keeps cpu flat. */
+const jobSnap = (cpuSeconds: number, mainProcessActive = true): ProgressSnapshot => ({
+  transcriptResolved: false, transcriptSize: 0, transcriptTailHash: null,
+  mainProcessActive, idleStateToken: 'job-frame-static',
+  descendantCpuSeconds: cpuSeconds, isJobSession: true,
 });
 
 describe('StaleSessionBackstop (§P5)', () => {
@@ -168,5 +178,48 @@ describe('StaleSessionBackstop (§P5)', () => {
     });
     expect(deps).not.toContain('terminate');
     expect(deps).not.toContain('kill');
+  });
+
+  // ── Job-session CPU-stall detection (codex wedged-job) ──────────────────────
+
+  it('JOB session: a live process with FLAT cpu-seconds is no-progress → escalates (the wedged-codex-job fix)', async () => {
+    const h = harness();
+    h.addSession('s1'); h.allAlive();
+    // Wedged job: process ALIVE (mainProcessActive true) but cpu-seconds never grow.
+    h.setSnap('s1', jobSnap(42, /* mainProcessActive */ true));
+    await h.backstop.tick();             // baseline
+    expect(h.raised).toHaveLength(0);
+    h.advanceMin(M + 1);
+    h.setSnap('s1', jobSnap(42, true));  // SAME cpu-seconds → no CPU used → stale
+    await h.backstop.tick();
+    expect(h.raised).toHaveLength(1);    // existence alone no longer counts for a job
+  });
+
+  it('JOB session: growing cpu-seconds is forward progress → no escalation', async () => {
+    const h = harness();
+    h.addSession('s1'); h.allAlive();
+    h.setSnap('s1', jobSnap(42, true));
+    await h.backstop.tick();
+    h.advanceMin(M + 1);
+    h.setSnap('s1', jobSnap(99, true));  // +57 cpu-seconds > floor → real work
+    await h.backstop.tick();
+    expect(h.raised).toHaveLength(0);
+  });
+
+  it('CONVERSATIONAL session: a live process (existence) still counts as progress — no regression', async () => {
+    const h = harness();
+    h.addSession('s1'); h.allAlive();
+    // Conversational (isJobSession=false) idle-with-bg: mainProcessActive true, cpu flat.
+    const convoBg = (): ProgressSnapshot => ({
+      transcriptResolved: false, transcriptSize: 0, transcriptTailHash: null,
+      mainProcessActive: true, idleStateToken: 'static',
+      descendantCpuSeconds: 7, isJobSession: false,
+    });
+    h.setSnap('s1', convoBg());
+    await h.backstop.tick();
+    h.advanceMin(M + 1);
+    h.setSnap('s1', convoBg());           // flat cpu, but existence-based check still applies
+    await h.backstop.tick();
+    expect(h.raised).toHaveLength(0);     // conversational unchanged — no false-positive
   });
 });

@@ -29,8 +29,15 @@ import {
   buildGeminiOneShotArgv,
   spawnGeminiAndWait,
 } from '../providers/adapters/gemini-cli/transport/geminiSpawn.js';
+import {
+  decideGeminiCapacityPolicy,
+  getGeminiCapacityGate,
+  recordGeminiCapacityDeferral,
+  type GeminiCapacityPolicyConfig,
+} from '../providers/adapters/gemini-cli/observability/geminiCapacityPolicy.js';
 
 const DEFAULT_TIMEOUT_MS = 30_000;
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 export interface GeminiCliIntelligenceProviderOptions {
   /** Absolute path to the `gemini` CLI binary. */
@@ -44,32 +51,41 @@ export interface GeminiCliIntelligenceProviderOptions {
   workingDirectory?: string;
   /** Optional override for the captured-output byte cap (per stream). */
   maxOutputBytes?: number;
+  capacityPolicy?: GeminiCapacityPolicyConfig;
 }
 
 export class GeminiCliIntelligenceProvider implements IntelligenceProvider {
   private readonly geminiPath: string;
   private readonly maxOutputBytes: number | undefined;
+  private readonly capacityPolicy: GeminiCapacityPolicyConfig | undefined;
 
   constructor(options: GeminiCliIntelligenceProviderOptions) {
     this.geminiPath = options.geminiPath;
     this.maxOutputBytes = options.maxOutputBytes;
+    this.capacityPolicy = options.capacityPolicy;
     // options.workingDirectory is intentionally not stored — one-shot judgment
     // calls carry their full context in the prompt and don't read cwd content.
   }
 
   async evaluate(prompt: string, options?: IntelligenceOptions): Promise<string> {
     const model = resolveCliModelFlag(options?.model);
-
-    // CANONICAL argv — the only form this provider emits:
-    //   gemini -m <model> --approval-mode default -p <prompt>
-    // --approval-mode default is pinned (yolo/auto_edit never reachable here);
-    // the prompt is exactly one argv element (the value of -p).
-    const args = buildGeminiOneShotArgv(model, prompt);
+    let currentModel = model;
+    const gate = getGeminiCapacityGate();
+    if (!gate.allow) {
+      throw new Error(
+        `Gemini capacity deferred; retry after ${Math.ceil(gate.retryAfterMs / 1000)}s` +
+          (gate.reason ? ` — ${gate.reason}` : ''),
+      );
+    }
 
     // Rule-1a analog: env allowlist + UNCONDITIONAL hard-delete of the
     // Google/Gemini billing vars (never inherit process.env wholesale).
     const childEnv = buildGeminiChildEnv();
 
+    let attempt = 0;
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+    const args = buildGeminiOneShotArgv(currentModel, prompt);
     const result = await spawnGeminiAndWait(this.geminiPath, args, {
       timeoutMs: options?.timeoutMs ?? DEFAULT_TIMEOUT_MS,
       env: childEnv,
@@ -86,12 +102,33 @@ export class GeminiCliIntelligenceProvider implements IntelligenceProvider {
     if (result.exitCode !== 0) {
       // The benign `Loaded cached credentials` stderr line only appears on a
       // SUCCESSFUL (exit 0) call; a non-zero exit means a real failure.
-      throw new Error(
-        `Gemini CLI exited ${result.exitCode}` +
-          (result.stderr ? ` — ${result.stderr.slice(0, 600)}` : ''),
-      );
+      const message = `Gemini CLI exited ${result.exitCode}` +
+        (result.stderr ? ` — ${result.stderr.slice(0, 600)}` : '');
+      const capacity = decideGeminiCapacityPolicy({
+        errorMessage: message,
+        attempt,
+        model: currentModel,
+        config: this.capacityPolicy,
+      });
+      if (capacity.action === 'retry' && capacity.retryAfterMs !== undefined) {
+        currentModel = capacity.model;
+        attempt += 1;
+        await sleep(capacity.retryAfterMs);
+        continue;
+      }
+      if (capacity.action === 'defer' && capacity.retryAfterMs !== undefined) {
+        recordGeminiCapacityDeferral({
+          retryAfterMs: capacity.retryAfterMs,
+          reason: capacity.reason ?? message,
+        });
+        throw new Error(
+          `${capacity.reason}; retry after ${Math.ceil(capacity.retryAfterMs / 1000)}s — ${message}`,
+        );
+      }
+      throw new Error(message);
     }
 
     return result.stdout.trim();
+    }
   }
 }

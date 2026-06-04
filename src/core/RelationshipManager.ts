@@ -253,7 +253,7 @@ Respond with ONLY one of:
 - NEW (if this is a different person)`;
 
     try {
-      const response = await intelligence.evaluate(prompt, { model: 'fast', maxTokens: 20, temperature: 0 });
+      const response = await intelligence.evaluate(prompt, { model: 'fast', maxTokens: 20, temperature: 0, attribution: { component: 'RelationshipManager' } }); // attribution for /metrics/features
       const trimmed = response.trim().toUpperCase();
 
       const matchResult = trimmed.match(/^MATCH:(\d+)/);
@@ -306,7 +306,7 @@ Are these the same person? Consider:
 Respond with ONLY: YES or NO`;
 
     try {
-      const response = await intelligence.evaluate(prompt, { model: 'fast', maxTokens: 10, temperature: 0 });
+      const response = await intelligence.evaluate(prompt, { model: 'fast', maxTokens: 10, temperature: 0, attribution: { component: 'RelationshipManager' } }); // attribution for /metrics/features
       return response.trim().toUpperCase().startsWith('YES');
     } catch {
       // @silent-fallback-ok — fail-closed on LLM error
