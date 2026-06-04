@@ -20,6 +20,12 @@ import { ClaudeCliIntelligenceProvider } from '../core/ClaudeCliIntelligenceProv
 import { wrapIntelligenceWithCircuitBreaker } from '../core/CircuitBreakingIntelligenceProvider.js';
 import type { IntelligenceProvider } from '../core/types.js';
 import type { DetectedPattern, PatternReport } from '../core/PatternAnalyzer.js';
+import { createRequire } from 'node:module';
+
+// ESM module (package "type":"module" / tsconfig Node16): a bare CJS `require`
+// is undefined and throws at runtime. Bind a real require via createRequire so
+// the lazy load below is genuinely ESM-legal (mirrors NativeModuleHealer.ts).
+const require = createRequire(import.meta.url);
 
 interface ReflectJobOptions {
   dir?: string;

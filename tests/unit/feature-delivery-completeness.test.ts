@@ -185,6 +185,7 @@ describe('Feature Delivery Completeness', () => {
     const legacyMigratorSections = [
       'Coherence Gate',           // absorbed into base template
       'External Operation Safety', // absorbed into base template
+      'Token-Burn Alerts',        // operational self-heal awareness (BurnDetector throttle runbook) — migrator-only, no user-invokable capability / shadow parity. (Was untracked — a pre-existing red in this guard, fixed here.)
       '/capabilities',            // alternate check for Self-Discovery
       'POST /view',               // alternate check for Private Viewing
       '/dashboard',               // alternate check for Dashboard

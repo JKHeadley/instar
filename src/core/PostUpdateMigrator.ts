@@ -1132,9 +1132,11 @@ export class PostUpdateMigrator {
     // hard-refuse phase ever rolls back, the user can restore the
     // pre-migration state.
     const detectedCodex = (() => {
+      // detectCodexPath is already statically imported at the top of this module
+      // (from './Config.js'); the previous lazy `require('./Config.js')` was both
+      // redundant and an ESM violation (bare CJS require in a "type":"module"
+      // package throws at runtime).
       try {
-        // eslint-disable-next-line @typescript-eslint/no-require-imports
-        const { detectCodexPath } = require('./Config.js') as typeof import('./Config.js');
         return detectCodexPath();
       } catch { return null; }
     })();
