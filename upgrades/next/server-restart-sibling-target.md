@@ -9,6 +9,10 @@ directory or agent name is now allowed from inside a session.
 Self-targeted server lifecycle commands are still blocked, and the error now
 points operators to the supervisor path for bouncing that agent safely.
 
+The CLI import shape remains compatible with the version-detection regression
+test, and the exported guard is documented so docs coverage stays above the core
+floor.
+
 ## What to Tell Your User
 
 - **Sibling agent restarts**: "I can now bounce another agent's server during

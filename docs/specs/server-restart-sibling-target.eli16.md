@@ -50,4 +50,7 @@ This removes a real fleet-operations friction point without weakening the
 original safety invariant. A mentoring agent can maintain a sibling agent, while
 the current conversation remains protected from self-stranding restarts.
 
+The CLI reference and README now also name the guard so the exported core helper
+is covered by the docs-coverage gate.
+
 Framework-ledger ref: `57ecfb92`.

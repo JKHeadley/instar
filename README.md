@@ -146,6 +146,10 @@ An agent that forgets what you discussed yesterday, doesn't recognize someone it
 
 > **Reference:** [CLI Commands](https://instar.sh/reference/cli/) · [API Endpoints](https://instar.sh/reference/api/) · [Configuration](https://instar.sh/reference/configuration/) · [File Structure](https://instar.sh/reference/file-structure/)
 
+Server lifecycle commands use `SessionServerGuard` so an active agent session
+cannot restart its own managing server, while sibling agent targets can still be
+started, stopped, or restarted for fleet maintenance.
+
 ## Agent Skills
 
 Instar ships fourteen skills total — twelve user-facing, plus two internal skills (`instar-dev` and `spec-converge`) used only by the agent that develops instar itself. The standard is the [Agent Skills open standard](https://agentskills.io) -- portable across Claude Code, Codex, Cursor, VS Code, and 35+ other platforms.

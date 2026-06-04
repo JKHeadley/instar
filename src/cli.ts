@@ -33,7 +33,8 @@ import { addJob, listJobs } from './commands/job.js';
 import { listRelationships, importRelationships, exportRelationships } from './commands/relationship.js';
 import { listMachines, removeMachine, whoami, startPairing, joinMesh, leaveMesh, wakeup, doctor } from './commands/machine.js';
 import pc from 'picocolors';
-import { getInstarVersion, resolveAgentDir } from './core/Config.js';
+import { getInstarVersion } from './core/Config.js';
+import { resolveAgentDir } from './core/Config.js';
 import { listAgents } from './core/AgentRegistry.js';
 import { shouldRejectServerLifecycleFromSession } from './core/SessionServerGuard.js';
 

@@ -84,6 +84,8 @@ Narrow regression coverage checks:
 - current managing server rejects;
 - sibling target allows;
 - symlink target resolving to the current managing server rejects.
+- docs coverage documents `SessionServerGuard` in two indexed docs so the core
+  category stays at its configured floor.
 
 Local verification intentionally uses targeted tests and static gates under the
 current host load; CI remains the full matrix authority.

@@ -23,6 +23,10 @@ instar server status [name]     # Show server status
 instar status                   # Show agent infrastructure status
 ```
 
+`SessionServerGuard` protects an active session from restarting its own
+managing server while still allowing server lifecycle commands that target a
+sibling agent by name or directory.
+
 ## Lifeline
 
 ```bash
