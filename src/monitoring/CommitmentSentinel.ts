@@ -89,17 +89,12 @@ export function isBareContinuation(text: string): boolean {
     .replace(/\s+/g, ' ')
     .trim();
   if (!norm) return true; // emoji-only / punctuation-only
+  // EXACT-match only — deliberately precise. A heuristic that filtered by an
+  // opener word ("do…", "go…") wrongly dropped real requests ("do something",
+  // "go deploy"); the safe direction for a detection pre-filter is to drop ONLY
+  // known-bare phrases and let anything ambiguous reach the LLM (favor false-
+  // negatives on the filter). Multi-word bare variants are enumerated above.
   if (BARE_CONTINUATION_PHRASES.has(norm)) return true;
-  // Short pure-approval openers ("yes please proceed", "ok go ahead") that carry
-  // no imperative/durable verb. The verb guard keeps real requests ("please
-  // change max sessions to 5", "go ahead and deploy") OUT of the filter.
-  if (
-    norm.length <= 30 &&
-    /^(yes|ok|okay|sure|please|go|do|proceed|continue|thanks?|great|perfect|awesome|sounds)\b/.test(norm) &&
-    !/\b(change|set|turn|enable|disable|stop|always|never|deploy|delete|remove|add|update|make|build|create|send|run|fix|report|check|review|write|spec|implement|email|message|schedule|rename|move|kill|restart|pause|resume|configure)\b/.test(norm)
-  ) {
-    return true;
-  }
   return false;
 }
 
