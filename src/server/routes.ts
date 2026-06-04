@@ -747,6 +747,9 @@ export interface RouteContext {
   /** McpProcessReaper — reclaims leaked MCP-server children. Null when not wired.
    *  Powers GET /processes/mcp-reaper observability. */
   mcpProcessReaper?: import('../monitoring/McpProcessReaper.js').McpProcessReaper | null;
+  /** GeminiLoopRunner — multi-turn gemini loop-driver (need-gem-002). Null when not
+   *  wired / dark. Powers POST + GET /gemini-loop/runs. */
+  geminiLoopRunner?: import('../monitoring/GeminiLoopRunner.js').GeminiLoopRunner | null;
   /** SleepController — agent hard-sleep decision (Stage B). Powers GET /sleep. */
   sleepController?: import('../monitoring/SleepController.js').SleepController | null;
   /** AgentActivityState — shared idle signal; bumped at the inbound chokepoint. */
@@ -4078,6 +4081,54 @@ export function createRoutes(ctx: RouteContext): Router {
       return;
     }
     res.json(ctx.mcpProcessReaper.snapshot());
+  });
+
+  // GeminiLoopRunner (need-gem-002) — the multi-turn gemini loop-driver. Lets a
+  // caller hand the gemini mentee a goal it works across turns (turn 1 one-shot →
+  // resume by handle, no transcript re-send). A run can take minutes, so POST
+  // ADMITS + launches async and returns a runId immediately; GET polls the result.
+  // Subscription-auth only (the transport strips billing env). Ships DARK
+  // (autonomousSessions.geminiLoopDriver.enabled; developmentAgent gate turns it on
+  // for dev agents). 503 when not wired; 409 when disabled / at capacity / budget.
+  router.post('/gemini-loop/runs', (req, res) => {
+    if (!ctx.geminiLoopRunner) {
+      res.status(503).json({ error: 'gemini loop runner unavailable' });
+      return;
+    }
+    const { goalPrompt, model, maxTurns } = req.body ?? {};
+    if (!goalPrompt || typeof goalPrompt !== 'string') {
+      res.status(400).json({ error: 'goalPrompt (string) is required' });
+      return;
+    }
+    const outcome = ctx.geminiLoopRunner.startRun({ goalPrompt, model, maxTurns });
+    if (!outcome.ok) {
+      // disabled / at-capacity / budget / invalid → 409 (cannot admit right now)
+      const code = outcome.reason === 'invalid' ? 400 : 409;
+      res.status(code).json({ error: outcome.reason, detail: outcome.detail });
+      return;
+    }
+    res.status(202).json({ runId: outcome.runId, status: 'running' });
+  });
+
+  router.get('/gemini-loop/runs', (_req, res) => {
+    if (!ctx.geminiLoopRunner) {
+      res.status(503).json({ error: 'gemini loop runner unavailable' });
+      return;
+    }
+    res.json({ runs: ctx.geminiLoopRunner.listRuns(), active: ctx.geminiLoopRunner.activeRuns() });
+  });
+
+  router.get('/gemini-loop/runs/:id', (req, res) => {
+    if (!ctx.geminiLoopRunner) {
+      res.status(503).json({ error: 'gemini loop runner unavailable' });
+      return;
+    }
+    const run = ctx.geminiLoopRunner.getRun(req.params.id);
+    if (!run) {
+      res.status(404).json({ error: 'run not found' });
+      return;
+    }
+    res.json(run);
   });
 
   // SleepController (RESPONSIBLE-RESOURCE-USAGE — agent hard-sleep, Stage B). The

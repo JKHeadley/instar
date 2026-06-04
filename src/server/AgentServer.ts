@@ -395,6 +395,9 @@ export class AgentServer {
     /** McpProcessReaper — reclaims leaked MCP-server children of dead/stale
      *  sessions. Powers GET /processes/mcp-reaper. */
     mcpProcessReaper?: import('../monitoring/McpProcessReaper.js').McpProcessReaper;
+    /** GeminiLoopRunner — multi-turn gemini loop-driver (need-gem-002). Powers
+     *  POST + GET /gemini-loop/runs. */
+    geminiLoopRunner?: import('../monitoring/GeminiLoopRunner.js').GeminiLoopRunner | null;
     /** SleepController — agent hard-sleep decision (Stage B). Powers GET /sleep. */
     sleepController?: import('../monitoring/SleepController.js').SleepController;
     /** AgentActivityState — shared idle signal bumped at the inbound chokepoint. */
@@ -1087,6 +1090,7 @@ export class AgentServer {
       sessionReaper: options.sessionReaper ?? null,
       agentWorktreeReaper: options.agentWorktreeReaper ?? null,
       mcpProcessReaper: options.mcpProcessReaper ?? null,
+      geminiLoopRunner: options.geminiLoopRunner ?? null,
       sleepController: options.sleepController ?? null,
       agentActivityState: options.agentActivityState ?? null,
       reapLog: options.reapLog ?? null,
