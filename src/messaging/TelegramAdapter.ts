@@ -1820,7 +1820,15 @@ export class TelegramAdapter implements MessagingAdapter {
 
     const authorized = this.config.authorizedUserIds;
     if (!authorized || authorized.length === 0) return true;
-    return authorized.includes(userId);
+    // Type-tolerant comparison: the field is typed `number[]` but config JSON is
+    // untyped at runtime, so an operator (or an onboarding agent) can write an id
+    // as a string ("7812716706"). `Array.prototype.includes` uses SameValueZero
+    // (no coercion), so a string-configured id would NOT match the numeric userId
+    // and the authorized user would be silently treated as unknown (hitting the
+    // registration gate). Compare as strings so number- and string-configured ids
+    // both authorize. Mirrors the shared-AuthGate path above, which is string-based.
+    const target = String(userId);
+    return authorized.some(id => String(id) === target);
   }
 
   /**
