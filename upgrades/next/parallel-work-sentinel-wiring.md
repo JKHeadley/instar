@@ -18,9 +18,8 @@ quiet. When on, it scans every ~15 minutes, audits every transition to
 ## What to Tell Your User
 
 Optional: if your agent works across many topics and you want it to proactively notice when
-two topics are doing the same work, you can turn on the overlap councilor under
-`monitoring.parallelWorkSentinel`. It's off by default and only ever sends a gentle
-heads-up — it never blocks anything.
+two topics are doing the same work, you can turn on the overlap councilor in your monitoring
+config. It is off by default and only ever sends a gentle heads-up -- it never blocks anything.
 
 ## Summary of New Capabilities
 
