@@ -30,6 +30,14 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
     rateLimitSentinel: {
       enabled: true,
     },
+    // ResourceLedger (Phase A) — default-on so every agent durably records its
+    // rate-limit events (breaker trips + sentinel detections) instead of losing
+    // them on restart. Read-only observability; never gates. Event-driven,
+    // negligible cost. enabled:false leaves the ledger null (route 503s).
+    // See docs/specs/per-agent-resource-ledger.md.
+    resourceLedger: {
+      enabled: true,
+    },
     // SocketDisconnectSentinel + ActiveWorkSilenceSentinel — default-on so
     // every agent recovers from connection drops and silent mid-task freezes
     // without anyone having to notice manually. enabled:false restores
@@ -113,6 +121,22 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       reapIntervalMs: 86_400_000,
       maxReapsPerPass: 20,
     },
+    // McpProcessReaper (Responsible Resource Usage — MCP-leak fix, Option B).
+    // Reaps leaked MCP-server children (playwright-mcp / mcp-remote / instar
+    // stdio) whose owning session is dead/stale or fully orphaned — killing a
+    // session's main pid does NOT cascade to these children, so they re-parent
+    // and accumulate for days (the fleet hit ~80, up to 5 days old). Ships OFF +
+    // dry-run (it kills processes); review a dry-run pass (GET /processes/mcp-
+    // reaper) before enabling. NEVER touches a proc under a live/tracked session
+    // or an external (non-instar) tmux session.
+    mcpProcessReaper: {
+      enabled: false,
+      dryRun: true,
+      minAgeMs: 7_200_000,
+      reapIntervalMs: 1_800_000,
+      maxReapsPerPass: 25,
+      maxAncestorHops: 30,
+    },
     // Agent hard-sleep — SleepController decision foundation (Stage B, slice 1;
     // docs/specs/agent-hard-sleep-controller.md). Decides "is it safe for this
     // idle agent to drop its server to near-zero footprint?" with every safety
@@ -194,6 +218,14 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       maxReopens: 2,
       maxRoutesPerTick: 5,
       feedbackPostDelayMs: 7000,
+      // Durable capture-backlog with retry (resilience extension). ON when the
+      // feature is enabled — a rate-limited distill persists the pre-scrubbed
+      // capture instead of dropping it. captureBacklogMaxEntries: 0 disables it
+      // (old drop-on-throttle behavior). Backfilled via applyDefaults deep-merge.
+      captureBacklogMaxEntries: 200,
+      captureBacklogTtlHours: 24,
+      captureBacklogDrainPerTick: 5,
+      captureBacklogMaxRetries: 3,
     },
     // ApprenticeshipCycleSlaMonitor — observe-only overdue-cycle signal. Ships
     // OFF so no install starts raising Attention topics until the operator opts

@@ -58,6 +58,46 @@ interface DetectedCommitment {
   behavioralRule?: string;
 }
 
+// ── Over-detection guard ──────────────────────────────────────────
+// The #1 source of false-positive commitments is a bare approval/continuation
+// user message ("please proceed", "yes please") paired with an agent reply —
+// the LLM then registers a "commitment" for a message that asked for nothing
+// durable. A deterministic pre-filter drops those exchanges before the LLM ever
+// sees them, killing the worst of the noise without weakening genuine detection.
+
+const BARE_CONTINUATION_PHRASES = new Set<string>([
+  'yes', 'yes please', 'yep', 'yeah', 'ya', 'sure', 'ok', 'okay', 'k', 'kk',
+  'proceed', 'please proceed', 'go ahead', 'go for it', 'do it', 'please do', 'please',
+  'continue', 'keep going', 'carry on', 'next', 'go', 'yes go', 'yes go ahead',
+  'sounds good', 'sounds great', 'looks good', 'lgtm', 'great', 'perfect', 'awesome',
+  'nice', 'cool', 'excellent', 'wonderful', 'amazing', 'thanks', 'thank you', 'ty', 'thx',
+  'got it', 'makes sense', 'agreed', 'approved', 'yes approved', 'ship it', 'merge it',
+  'no', 'nope', 'not now', 'stop', 'wait', 'hold on', 'done', 'cool thanks',
+]);
+
+/**
+ * True when a user message is a bare approval / acknowledgement / continuation
+ * that requests nothing durable — so it must NOT seed a commitment. Pure +
+ * exported for unit tests of both sides of the boundary.
+ */
+export function isBareContinuation(text: string): boolean {
+  if (!text) return true;
+  const norm = text
+    .toLowerCase()
+    .replace(/[^\x00-\x7F]/g, ' ') // strip emoji / non-ASCII
+    .replace(/[^a-z0-9\s]/g, ' ')  // strip punctuation
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!norm) return true; // emoji-only / punctuation-only
+  // EXACT-match only — deliberately precise. A heuristic that filtered by an
+  // opener word ("do…", "go…") wrongly dropped real requests ("do something",
+  // "go deploy"); the safe direction for a detection pre-filter is to drop ONLY
+  // known-bare phrases and let anything ambiguous reach the LLM (favor false-
+  // negatives on the filter). Multi-word bare variants are enumerated above.
+  if (BARE_CONTINUATION_PHRASES.has(norm)) return true;
+  return false;
+}
+
 // ── Implementation ────────────────────────────────────────────────
 
 export class CommitmentSentinel {
@@ -229,6 +269,10 @@ export class CommitmentSentinel {
 
     for (let i = 0; i < messages.length - 1; i++) {
       if (messages[i].fromUser && !messages[i + 1].fromUser) {
+        // Drop bare approval/continuation exchanges before the LLM sees them —
+        // the dominant false-positive source (#49). A message that asks for
+        // nothing durable cannot seed a commitment.
+        if (isBareContinuation(messages[i].text)) continue;
         pairs.push({
           user: messages[i].text,
           agent: messages[i + 1].text,
@@ -276,7 +320,7 @@ Example response:
 For behavioral commitments, include a "behavioralRule" field with a clear imperative rule.
 For one-time-action, omit configPath.
 
-IMPORTANT: Only return genuine commitments where the agent explicitly agreed. Do not flag questions, status updates, or informational responses. Return ONLY the JSON array, nothing else.`;
+IMPORTANT: Only return genuine commitments where the user asked for something durable AND the agent explicitly agreed. Do NOT flag: questions, status updates, informational responses, or bare approvals / continuations ("yes", "please proceed", "go ahead", "sounds good") — those request nothing durable and are never commitments. Return ONLY the JSON array, nothing else.`;
 
     try {
       const response = await this.config.intelligence.evaluate(prompt, {

@@ -20,10 +20,17 @@
  * `kind` is enum-validated (the LLM cannot widen it); llm_confidence is advisory.
  *
  * LlmQueue discipline (spec §3.1): every enqueue() is wrapped in try/catch for
- * ALL THREE throw paths (daily-cap, reserve-breach, LlmAbortedError) → DROP
- * silently, no retry, no backlog.
+ * ALL FOUR capacity throw paths (daily-cap, reserve-breach, LlmAbortedError,
+ * breaker-open). Previously these DROPPED the capture silently. Now, when a
+ * bounded durable backlog is wired (default-on when the feature is enabled), a
+ * capacity throw PERSISTS the already-pre-scrubbed capture to the backlog so a
+ * later headroom window can distill it ('distill-backlogged'). A non-capacity
+ * throw (e.g. a malformed provider error) still drops ('distill-dropped'), and
+ * if the backlog enqueue itself fails the capture falls back to the old drop —
+ * the fire-and-forget seam never throws regardless.
  */
 import type { CorrectionLedger, CorrectionKind } from './CorrectionLedger.js';
+import type { CorrectionCaptureBacklog } from './CorrectionCaptureBacklog.js';
 import { scrubSecrets } from './scrubSecrets.js';
 
 // ── Ephemeral capture ring ──────────────────────────────────────────────
@@ -202,6 +209,42 @@ export function parseDistillEnvelope(raw: string): DistillEnvelope | null {
   };
 }
 
+// ── Capacity-throw classification ────────────────────────────────────────
+
+/**
+ * Is this distill rejection a rate-limit / capacity / backpressure condition
+ * (i.e. "the LLM is unavailable RIGHT NOW, try later") rather than a genuine
+ * fault (malformed output, programmer error)? Only capacity throws are worth
+ * backlogging — a later headroom window can succeed where they failed. The four
+ * shapes the per-sentinel distill path can throw:
+ *   - LlmQueue daily-cap:       Error('LLM daily spend cap exceeded')
+ *   - LlmQueue reserve breach:  Error('...breach interactive reserve')
+ *   - LlmQueue abort:           LlmAbortedError (name === 'LlmAbortedError')
+ *   - circuit breaker open:     LlmCircuitOpenError (`circuitOpen === true`)
+ * Plus a defensive net for provider rate-limit strings (429 / quota / "rate
+ * limit"). Conservative: an unrecognized error is NOT treated as capacity (it
+ * drops, preserving the old behavior for genuine faults).
+ */
+export function isCapacityThrow(err: unknown): boolean {
+  if (!err) return false;
+  const e = err as { name?: unknown; message?: unknown; circuitOpen?: unknown; isRateLimit?: unknown };
+  if (e.circuitOpen === true) return true;
+  if (e.isRateLimit === true) return true;
+  if (e.name === 'LlmAbortedError' || e.name === 'LlmCircuitOpenError') return true;
+  const msg = typeof e.message === 'string' ? e.message.toLowerCase() : '';
+  if (!msg) return false;
+  return (
+    msg.includes('daily spend cap') ||
+    msg.includes('interactive reserve') ||
+    msg.includes('rate limit') ||
+    msg.includes('rate-limit') ||
+    msg.includes('circuit breaker open') ||
+    msg.includes('too many requests') ||
+    /\b429\b/.test(msg) ||
+    msg.includes('quota')
+  );
+}
+
 // ── captureAndDistill (VOID fire-and-forget entrypoint) ──────────────────
 
 export type DistillFn = (prompt: string) => Promise<string>;
@@ -216,6 +259,10 @@ export interface CaptureAndDistillDeps {
   shouldShed?: () => boolean;
   /** Per-topic distill rate ceiling. */
   rateCeiling?: { maxPerWindow: number; windowMs: number };
+  /** Durable retry backlog. When wired, a CAPACITY distill throw persists the
+   *  pre-scrubbed capture here ('distill-backlogged') instead of dropping it, so
+   *  a later headroom window can distill it. null/undefined → old drop behavior. */
+  backlog?: CorrectionCaptureBacklog | null;
   /** Audit sink — one structured line per capture decision. Never throws. */
   audit?: (event: { decision: string; topicId: number | null; detail?: string }) => void;
   now?: () => number;
@@ -228,7 +275,8 @@ export type CaptureDecision =
   | 'no-topic'
   | 'shed'
   | 'rate-limited'
-  | 'distill-dropped'   // LlmQueue threw (cap | reserve | abort) — silently dropped
+  | 'distill-dropped'    // distill threw a NON-capacity fault — silently dropped
+  | 'distill-backlogged' // distill threw a CAPACITY fault — pre-scrubbed capture persisted for retry
   | 'distill-malformed'
   | 'error';
 
@@ -315,8 +363,32 @@ export async function captureAndDistill(
     let response: string;
     try {
       response = await deps.distill(prompt);
-    } catch {
-      // @silent-fallback-ok — cap / reserve / abort all mean "skip this capture".
+    } catch (distillErr) {
+      // A CAPACITY throw (daily-cap / reserve / abort / breaker-open) means "the
+      // LLM is unavailable right now" — persist the pre-scrubbed capture to the
+      // durable backlog so a later headroom window distills it (instead of the
+      // old silent drop that left a throttled agent's ledger permanently empty).
+      // enqueue() re-scrubs every turn defensively, so ONLY pre-scrubbed text is
+      // ever persisted. Wrapped in try/catch → any backlog fault falls back to
+      // the old drop. A NON-capacity fault still drops.
+      if (deps.backlog && isCapacityThrow(distillErr)) {
+        try {
+          const id = deps.backlog.enqueue({
+            topicId: input.topicId,
+            turns: window,
+            deterministicWeight: input.deterministicWeight,
+            sessionId: input.sessionId ?? null,
+            capturedAt: now(),
+          });
+          if (id) {
+            deps.audit?.({ decision: 'distill-backlogged', topicId: input.topicId, detail: id });
+            return 'distill-backlogged';
+          }
+        } catch {
+          // @silent-fallback-ok — backlog fault must never break capture; drop.
+        }
+      }
+      // @silent-fallback-ok — non-capacity fault, or backlog absent/failed.
       deps.audit?.({ decision: 'distill-dropped', topicId: input.topicId });
       return 'distill-dropped';
     }
@@ -354,4 +426,138 @@ export async function captureAndDistill(
     deps.audit?.({ decision: 'error', topicId: input.topicId, detail: err instanceof Error ? err.message : String(err) });
     return 'error';
   }
+}
+
+// ── drainBacklog (opportunistic retry of throttled captures) ─────────────
+
+export interface DrainBacklogDeps {
+  backlog: CorrectionCaptureBacklog;
+  ledger: CorrectionLedger;
+  distill: DistillFn;
+  /** Pure, NON-mutating "is the LLM available right now?" gate (breaker closed +
+   *  not load-shedding). The drainer NEVER runs while this is false — draining
+   *  into an open breaker would just re-fail every entry. Wire to
+   *  llmCircuitAvailable() (which does not consume a half-open probe slot). */
+  llmAvailable: () => boolean;
+  /** TTL (ms) — entries older than this are pruned before draining. */
+  ttlMs?: number;
+  /** Audit sink — one structured line per drain decision. Never throws. */
+  audit?: (event: { decision: string; topicId: number | null; detail?: string }) => void;
+}
+
+export interface DrainResult {
+  /** Why the drain stopped without processing (when applicable). */
+  skipped?: 'breaker-open' | 'empty';
+  claimed: number;
+  distilled: number;
+  recorded: number;
+  failed: number;
+  dropped: number;
+  pruned: number;
+}
+
+/**
+ * Opportunistically distill up to `batchSize` backlogged captures into the
+ * CorrectionLedger. OFF-HOT-PATH (call via void/async, NEVER on the message
+ * seam). Bounded (batchSize), fail-open (a per-entry fault bumps that entry, a
+ * top-level fault returns a safe result), and SKIPPED when the LLM is
+ * unavailable (breaker open / shedding) — draining into an open breaker would
+ * only re-trip it and waste the entries' retry budget.
+ *
+ * Per entry: build the SAME distill prompt (turns are already scrubbed on
+ * persist; buildDistillPrompt re-scrubs harmlessly), parse the envelope, and —
+ * on a real, non-noise learning — record it to the ledger then DELETE the
+ * backlog row (markDistilled). A capacity throw OR a malformed/failed distill
+ * bumps the entry's attempt count (dropped once it exceeds maxRetries). A 'noise'
+ * verdict is terminal: the row is deleted (markDistilled) — it carried no lesson.
+ */
+export async function drainBacklog(
+  deps: DrainBacklogDeps,
+  batchSize: number,
+): Promise<DrainResult> {
+  const result: DrainResult = { claimed: 0, distilled: 0, recorded: 0, failed: 0, dropped: 0, pruned: 0 };
+  try {
+    // Prune stale entries first (bounded retention).
+    if (deps.ttlMs && deps.ttlMs > 0) {
+      result.pruned = deps.backlog.pruneExpired(deps.ttlMs);
+    }
+    // NEVER drain while the breaker is open / shedding.
+    if (!deps.llmAvailable()) {
+      result.skipped = 'breaker-open';
+      deps.audit?.({ decision: 'drain-skipped-breaker-open', topicId: null });
+      return result;
+    }
+    const batch = deps.backlog.claimBatch(batchSize);
+    result.claimed = batch.length;
+    if (batch.length === 0) {
+      result.skipped = 'empty';
+      return result;
+    }
+
+    for (const entry of batch) {
+      // Re-check availability between entries — a mid-drain trip stops the batch
+      // cleanly (remaining entries keep their attempt budget for next time).
+      if (!deps.llmAvailable()) {
+        deps.audit?.({ decision: 'drain-stopped-breaker-open', topicId: entry.topicId });
+        break;
+      }
+      try {
+        const prompt = buildDistillPrompt(entry.turns);
+        const response = await deps.distill(prompt);
+        result.distilled++;
+        const envelope = parseDistillEnvelope(response);
+        if (!envelope) {
+          // Malformed — count a failed attempt (a later retry may parse).
+          const dropped = deps.backlog.bumpAttempt(entry.id);
+          result.failed++;
+          if (dropped) result.dropped++;
+          deps.audit?.({ decision: dropped ? 'drain-malformed-dropped' : 'drain-malformed', topicId: entry.topicId });
+          continue;
+        }
+        if (envelope.kind === 'noise') {
+          // Terminal — no lesson; delete the row.
+          deps.backlog.markDistilled(entry.id);
+          deps.audit?.({ decision: 'drain-noise', topicId: entry.topicId });
+          continue;
+        }
+        const rec = deps.ledger.record({
+          kind: envelope.kind,
+          learning: envelope.learning,
+          scrubbedSummary: envelope.scrubbed_summary,
+          deterministicWeight: entry.deterministicWeight,
+          llmConfidence: envelope.llm_confidence,
+          topicId: entry.topicId,
+          sessionId: entry.sessionId ?? null,
+        });
+        if (rec) {
+          deps.backlog.markDistilled(entry.id);
+          result.recorded++;
+          deps.audit?.({ decision: 'drain-recorded', topicId: entry.topicId, detail: `${envelope.kind} ${rec.dedupeKey.slice(0, 24)}` });
+        } else {
+          // Ledger write failed — keep the entry, count an attempt.
+          const dropped = deps.backlog.bumpAttempt(entry.id);
+          result.failed++;
+          if (dropped) result.dropped++;
+          deps.audit?.({ decision: dropped ? 'drain-ledger-failed-dropped' : 'drain-ledger-failed', topicId: entry.topicId });
+        }
+      } catch (entryErr) {
+        // A capacity throw or any other per-entry fault: bump the attempt and
+        // move on (the seam never throws). If this was a fresh breaker trip the
+        // next-entry availability check stops the batch.
+        const dropped = deps.backlog.bumpAttempt(entry.id);
+        result.failed++;
+        if (dropped) result.dropped++;
+        deps.audit?.({
+          decision: dropped ? 'drain-failed-dropped' : 'drain-failed',
+          topicId: entry.topicId,
+          detail: entryErr instanceof Error ? entryErr.message.slice(0, 80) : undefined,
+        });
+        if (isCapacityThrow(entryErr)) break; // breaker likely tripped — stop the batch.
+      }
+    }
+  } catch (err) {
+    // Top-level fault — never propagates (off-hot-path, fail-open).
+    deps.audit?.({ decision: 'drain-error', topicId: null, detail: err instanceof Error ? err.message : String(err) });
+  }
+  return result;
 }

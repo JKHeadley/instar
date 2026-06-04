@@ -218,6 +218,13 @@ export class LlmCircuitBreaker {
   private lastReason: string | null = null;
   private lastTrippedAt: number | null = null;
 
+  // Decoupled trip/recover observers (Phase A of the per-agent ResourceLedger).
+  // A durable ledger subscribes here to persist rate-limit events without the
+  // breaker depending on monitoring/. Listener errors are SWALLOWED — an
+  // observer must NEVER affect the breaker, which gates real work.
+  private tripListeners: Array<(e: { reason: string; retryAfterMs?: number; ts: number; tripCount: number }) => void> = [];
+  private recoverListeners: Array<(e: { ts: number }) => void> = [];
+
   private openMs: number;
   private enabled: boolean;
   private readonly now: () => number;
@@ -295,9 +302,34 @@ export class LlmCircuitBreaker {
    * fallback — it is not the breaker's concern, and staying open on unrelated
    * errors would needlessly keep all LLM features down.
    */
+  /** Subscribe to circuit-open (trip) events. Returns an unsubscribe fn. */
+  onTrip(cb: (e: { reason: string; retryAfterMs?: number; ts: number; tripCount: number }) => void): () => void {
+    this.tripListeners.push(cb);
+    return () => { this.tripListeners = this.tripListeners.filter((l) => l !== cb); };
+  }
+
+  /** Subscribe to circuit-recover (open→closed) events. Returns an unsubscribe fn. */
+  onRecover(cb: (e: { ts: number }) => void): () => void {
+    this.recoverListeners.push(cb);
+    return () => { this.recoverListeners = this.recoverListeners.filter((l) => l !== cb); };
+  }
+
+  private emitTrip(e: { reason: string; retryAfterMs?: number; ts: number; tripCount: number }): void {
+    for (const l of this.tripListeners) {
+      try { l(e); } catch { /* an observer must never affect the breaker */ }
+    }
+  }
+
+  private emitRecover(e: { ts: number }): void {
+    for (const l of this.recoverListeners) {
+      try { l(e); } catch { /* an observer must never affect the breaker */ }
+    }
+  }
+
   onResolved(): void {
     if (!this.enabled) return;
-    if (this.state !== 'closed') {
+    const wasOpen = this.state !== 'closed';
+    if (wasOpen) {
       this.log(`[llm-circuit] closing: provider responded (was ${this.state})`);
     }
     this.state = 'closed';
@@ -305,6 +337,7 @@ export class LlmCircuitBreaker {
     this.openUntil = 0;
     // Clean slate — the next trip with no retry-after hint gets the full window.
     this.currentOpenMs = this.openMs;
+    if (wasOpen) this.emitRecover({ ts: this.now() });
   }
 
   /**
@@ -344,6 +377,7 @@ export class LlmCircuitBreaker {
         this.currentOpenMs / 1000,
       )}s (trip #${this.tripCount}); reason: ${this.lastReason}`,
     );
+    this.emitTrip({ reason: this.lastReason, retryAfterMs, ts: now, tripCount: this.tripCount });
   }
 
   /**

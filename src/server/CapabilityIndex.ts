@@ -550,6 +550,17 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     }),
   },
   {
+    key: 'resourceLedger',
+    prefixes: ['/resources'],
+    description: 'Per-agent ResourceLedger — read-only durable rate-limit-event observability: breaker trips + session-sentinel detections persisted across restarts (Phase A). Never gates. (CPU/memory sampling is Phase B.)',
+    build: ({ ctx }) => ({
+      enabled: !!ctx.resourceLedger,
+      endpoints: [
+        'GET /resources/rate-limits?sinceHours=N — durable rate-limit-event count + rate (breaker trips headline; session-sentinel detections separate) + recent events',
+      ],
+    }),
+  },
+  {
     key: 'frameworkIssues',
     prefixes: ['/framework-issues'],
     description: 'Framework-Onboarding Mentor System — read-only issue-ledger observability (never gates)',
@@ -906,6 +917,7 @@ export const INTERNAL_PREFIXES: ReadonlyArray<{ prefix: string; reason: string }
   { prefix: 'build', reason: 'operator-only build endpoint' },
   { prefix: 'sessions', reason: 'operator/dashboard-only session listing (no agent-facing API)' },
   { prefix: 'worktrees', reason: 'AgentWorktreeReaper read-only report (reclaimable stale worktrees) — operational observability the agent READS, like /sessions/reap-log; not a user-invokable capability' },
+  { prefix: 'processes', reason: 'McpProcessReaper read-only report (reclaimable leaked MCP-server procs + per-proc keep/reap verdict) — operational observability the agent READS, like /worktrees/agent-reaper; not a user-invokable capability' },
   { prefix: 'sleep', reason: 'SleepController read-only verdict (agent hard-sleep decision + which guard holds it awake) — operational observability the agent READS; not a user-invokable capability' },
   { prefix: 'ci', reason: 'operator-only CI status surface' },
   { prefix: 'session', reason: 'single-session context surfaced via topicMemory endpoints' },

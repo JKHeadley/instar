@@ -182,11 +182,17 @@ describe('No Silent Fallbacks', () => {
     //   "added" entries are the SAME catch blocks at line numbers shifted by intervening edits
     //   (e.g. server/AgentServer.ts:616/637/661 ≡ d0fe838's 610/631/655, all +6; the lists are
     //   near-symmetric add/remove pairs). No genuine new silent fallback was introduced.
-    // Setting the baseline to the true current count (437) restores the gate so it once again
+    // Setting the baseline to the true current count restores the gate so it once again
     // catches NET-NEW regressions from this point forward. Actually WIRING DegradationReporter
-    // across these ~437 catch blocks remains a dedicated workstream (as the 174->186 note above
+    // across these catch blocks remains a dedicated workstream (as the 174->186 note above
     // already established) — tracked as a follow-up, not folded into this CI-recovery change.
-    const BASELINE = 437;
+    //
+    // 437 -> 447 on 2026-06-03 (rebase onto hyperactive main): merging current main into
+    // this branch pulled in main's own newly-added catch blocks (+10), deterministic count.
+    // These are main's additions, not regressions in this PR; the count reflects current
+    // reality. (Confirms the known fragility of an exact-count ratchet on a fast-moving main —
+    // the bump-with-justification escape valve, used 3x before, is the designed mechanism.)
+    const BASELINE = 447;
 
     if (silentFallbacks.length > 0) {
       const report = silentFallbacks.map(fb =>

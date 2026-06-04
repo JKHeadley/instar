@@ -704,6 +704,7 @@ export interface RouteContext {
    *  transcripts). Null when stateDir is unavailable. */
   tokenLedger: import('../monitoring/TokenLedger.js').TokenLedger | null;
   featureMetricsLedger: import('../monitoring/FeatureMetricsLedger.js').FeatureMetricsLedger | null;
+  resourceLedger: import('../monitoring/ResourceLedger.js').ResourceLedger | null;
   /** Framework-Onboarding Mentor System issue ledger (read-only observability;
    *  signal-only — never gates). Null when stateDir is unavailable. Powers
    *  GET /framework-issues and /framework-issues/playbook. */
@@ -739,6 +740,9 @@ export interface RouteContext {
   /** AgentWorktreeReaper — reclaims stale CLI worktrees. Null when not wired.
    *  Powers GET /worktrees/agent-reaper observability. */
   agentWorktreeReaper?: import('../monitoring/AgentWorktreeReaper.js').AgentWorktreeReaper | null;
+  /** McpProcessReaper — reclaims leaked MCP-server children. Null when not wired.
+   *  Powers GET /processes/mcp-reaper observability. */
+  mcpProcessReaper?: import('../monitoring/McpProcessReaper.js').McpProcessReaper | null;
   /** SleepController — agent hard-sleep decision (Stage B). Powers GET /sleep. */
   sleepController?: import('../monitoring/SleepController.js').SleepController | null;
   /** AgentActivityState — shared idle signal; bumped at the inbound chokepoint. */
@@ -4058,6 +4062,20 @@ export function createRoutes(ctx: RouteContext): Router {
     res.json(ctx.agentWorktreeReaper.snapshot());
   });
 
+  // McpProcessReaper (RESPONSIBLE-RESOURCE-USAGE — MCP-leak fix, Option B). The
+  // pull-surface answer to "which leaked MCP-server procs can be reclaimed, and
+  // why is each kept?": every matched MCP proc's verdict (session-live /
+  // external-session / *-too-young / stale-instar-session / orphaned-no-session)
+  // + its owning session + the reap-eligible count + whether reaping is armed
+  // (enabled, dryRun). Read-only, Bearer-auth. 503 when not wired/disabled.
+  router.get('/processes/mcp-reaper', (_req, res) => {
+    if (!ctx.mcpProcessReaper) {
+      res.status(503).json({ error: 'mcp process reaper unavailable' });
+      return;
+    }
+    res.json(ctx.mcpProcessReaper.snapshot());
+  });
+
   // SleepController (RESPONSIBLE-RESOURCE-USAGE — agent hard-sleep, Stage B). The
   // pull-surface answer to "would this idle agent sleep right now, and if not,
   // which guard is holding it awake?": the live verdict (awake / idle-shallow /
@@ -4621,6 +4639,25 @@ export function createRoutes(ctx: RouteContext): Router {
       ? summary.features.filter((f) => f.feature === feature)
       : summary.features;
     res.json({ ...summary, features });
+  });
+
+  // ── Per-agent ResourceLedger (Phase A: durable rate-limit events) ────
+  // Read-only. 503 when the ledger is unavailable (no stateDir / init failed /
+  // monitoring.resourceLedger.enabled:false leaves it null). Never gates.
+  router.get('/resources/rate-limits', (req, res) => {
+    if (!ctx.resourceLedger) {
+      res.status(503).json({ error: 'resource ledger unavailable (disabled or not initialized)' });
+      return;
+    }
+    const sinceHours = req.query.sinceHours ? Number(req.query.sinceHours) : 24;
+    const windowMs = (sinceHours && sinceHours > 0 ? sinceHours : 24) * 3_600_000;
+    const now = Date.now();
+    res.json({
+      windowHours: windowMs / 3_600_000,
+      summary: ctx.resourceLedger.rateLimitSummary(now, windowMs),
+      byKind: ctx.resourceLedger.rateLimitByKind(now, windowMs),
+      events: ctx.resourceLedger.rateLimitEvents({ sinceMs: now - windowMs, limit: 200 }),
+    });
   });
 
   // ── Release-readiness (Layer B of release-readiness-visibility) ──────
