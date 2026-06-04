@@ -37,3 +37,9 @@ On top of that, two new HTTP surfaces:
 ## Spec lineage
 
 This is §L4 (Session Router / placement + TopicPlacement metadata) and §L5 (Transfer orchestrator) of the approved `docs/specs/MULTI-MACHINE-SESSION-POOL-SPEC.md` — surfacing observability + a deterministic lever over machinery the spec already defines. No new primitives, no new authority.
+
+## CI follow-up (same PR #750)
+
+Two CI gates flagged the additive surface; both fixed without behavior change:
+- **Docs Coverage** (`route`/`class` floors): documented the new routes + helper classes (and several related pool/mesh ones) in `site/src/content/docs/architecture/multi-machine-session-pool.md` and `features/multi-machine.md` — real feature docs the area lacked. Both floors back ≥55%.
+- **no-silent-fallbacks ratchet** (457): the proxy/best-effort `catch` blocks added by the two new routes + the self-nickname resolver are annotated `@silent-fallback-ok` with honest justifications (the proxy fallbacks are explicitly labelled in the response or surface a 502; the ownership-release catch is a best-effort optimization the pin already covers). Count back to the 457 baseline — no new genuine silent fallbacks.

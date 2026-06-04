@@ -129,3 +129,13 @@ reachable URL. The pairing code (carried over the TLS tunnel) is the shared
 secret; it is single-use, attempt-capped, and time-limited, and a joiner can only
 ever register as standby. The persisted session that `PairingSessionStore` holds
 is what lets the *running server* validate a join without an interactive step.
+
+### Knowing where a topic runs, and moving it reliably
+
+Once conversations can live on more than one machine, two everyday questions need solid answers: *where is this topic running and why*, and *how do I move it without guessing the magic words*.
+
+**Where + why.** `GET /pool/placement?topic=N` returns the machine currently running a topic, its nickname, the lease-holder, and the **reason**: `pinned` (you deliberately moved it), `placed` (the `SessionRouter` load-balanced it there via `MachinePoolRegistry` — not a deliberate move), or `unowned`. You can ask from any machine — a standby proxies to the lease-holder, whose `TopicPlacementPinStore` holds the authoritative pin. Internally the answer is computed by the pure `TopicPlacementDescription` helper. This means an agent never has to *infer* its placement from which host it happens to be running on.
+
+**Reliable move.** Saying "move this to the mini" still works (parsed by `NicknameCommand` → `TransferByNickname`), and the recognizer now always includes the local machine's own nickname via `RelocationNicknameSet` — so "move it back here" can't silently fall through. When you want a move that doesn't depend on phrasing at all, `POST /pool/transfer` with `{topic, to}` (a nickname *or* a machineId) runs the same validated planner — rate-limit, online, already-there, and offline-confirmation checks — sets the pin via `TopicPlacementPinStore`, and hands the topic over. A non-holder proxies to the holder automatically.
+
+Both endpoints sit alongside `GET /pool`, `GET /pool/machines/:id`, and `GET /session-pool/e2e-results`, and like the rest of the pool they stay inert (`503`) until the pool is enabled.

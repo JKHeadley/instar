@@ -7688,7 +7688,9 @@ export function createRoutes(ctx: RouteContext): Router {
         }
         // proxy returned non-2xx → fall through to a labelled local best-effort answer
       } catch {
-        // holder unreachable → fall through to local
+        // @silent-fallback-ok — holder unreachable → fall through to the local best-effort
+        // answer, which is explicitly labelled `answeredBy: 'local-fallback'` in the response
+        // (the caller sees it is degraded; nothing is silently masked).
       }
     }
     const sync = ctx.coordinator ? ctx.coordinator.getSyncStatus() : null;
@@ -7736,9 +7738,13 @@ export function createRoutes(ctx: RouteContext): Router {
           headers: { Authorization: `Bearer ${ctx.config.authToken}`, 'Content-Type': 'application/json' },
           body: JSON.stringify({ topic: topicId, to, confirm: body.confirm === true }),
         });
+        // @silent-fallback-ok — if the holder's body isn't JSON we still forward its
+        // status code with an empty object; the status is the signal, not the body.
         const j = (await r.json().catch(() => ({}))) as Record<string, unknown>;
         res.status(r.status).json({ ...j, handledBy: 'holder-proxy' });
       } catch (err) {
+        // @silent-fallback-ok — NOT silent: a failed proxy surfaces an explicit 502 with the
+        // reason to the caller (the transfer did not happen), rather than masking the failure.
         res.status(502).json({ error: `could not reach lease-holder to perform transfer: ${err instanceof Error ? err.message : String(err)}` });
       }
       return;
@@ -7797,7 +7803,9 @@ export function createRoutes(ctx: RouteContext): Router {
         releasedLocalOwnership = r.ok;
       }
     } catch {
-      // best-effort; route() re-places once the owner is cleared
+      // @silent-fallback-ok — the pin (set above) is what drives re-placement; releasing local
+      // ownership is a best-effort optimization. If it throws, route() re-places off the pin on
+      // the next message regardless, and `releasedLocalOwnership:false` is reported to the caller.
     }
     res.json({
       ok: true,

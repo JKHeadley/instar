@@ -9886,7 +9886,9 @@ export async function startServer(options: StartOptions): Promise<void> {
               const derived = nickAssignMod.deriveBaseNickname(id?.name, selfEntry?.hardware?.platform);
               if (derived) return derived;
             } catch {
-              /* best-effort self-nickname resolution */
+              /* @silent-fallback-ok — best-effort self-nickname resolution; on any failure we
+                 return undefined and the recognizer simply falls back to the capacities-derived
+                 set (the pre-existing behavior), so this can only ever ADD a nickname, never break. */
             }
             return undefined;
           };
