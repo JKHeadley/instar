@@ -40,9 +40,12 @@ process.exit(1);
       geminiPath: bin,
       capacityPolicy: { quotaStateFile: quotaFile },
     });
-    await expect(provider.evaluate('p', { timeoutMs: 10_000 })).rejects.toThrow(/deferring|quota/i);
+    await expect(provider.evaluate('p', { timeoutMs: 10_000 })).rejects.toThrow(/deferring|quota|exhausted/i);
     await expect(provider.evaluate('p', { timeoutMs: 10_000 })).rejects.toThrow(/deferred|retry after/i);
-    expect(fs.readFileSync(countFile, 'utf8')).toBe('1');
+    // First evaluate spawns Gemini twice (flash exhausts → switch to pro → pro
+    // exhausts → genuine account-wide defer). Second evaluate is refused locally
+    // by the gate, so the count stays at 2 — Gemini is NOT respawned again.
+    expect(fs.readFileSync(countFile, 'utf8')).toBe('2');
 
     const written = JSON.parse(fs.readFileSync(quotaFile, 'utf8')) as {
       source: string;
@@ -50,11 +53,14 @@ process.exit(1);
       fiveHourPercent: number;
       blockedUntil: string;
       recommendation: string;
+      scope: string;
     };
     expect(written.source).toBe('gemini-cli-capacity');
-    expect(written.model).toBe('gemini-2.5-flash');
+    // Last model confirmed exhausted; account-scoped (every known model is out).
+    expect(written.model).toBe('gemini-2.5-pro');
     expect(written.fiveHourPercent).toBe(100);
     expect(written.recommendation).toBe('stop');
+    expect(written.scope).toBe('account');
     expect(new Date(written.blockedUntil).getTime()).toBeGreaterThan(Date.now());
 
     const tracker = new QuotaTracker({

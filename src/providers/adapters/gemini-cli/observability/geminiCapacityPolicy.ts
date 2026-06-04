@@ -12,7 +12,7 @@
  * - fallback models must be in the verified Gemini model set.
  */
 
-import { GEMINI_DEFAULT_MODEL, isKnownGeminiModel } from '../models.js';
+import { GEMINI_DEFAULT_MODEL, isKnownGeminiModel, KNOWN_GEMINI_MODELS } from '../models.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { SafeFsExecutor } from '../../../../core/SafeFsExecutor.js';
@@ -54,11 +54,22 @@ export interface GeminiCapacityGate {
 const DEFAULT_IMMEDIATE_RETRIES = 1;
 const DEFAULT_IMMEDIATE_RETRY_MAX_MS = 30_000;
 const DEFAULT_BACKOFF_MS = 5_000;
+// Switching to a DIFFERENT model (separate quota) needs no real backoff — the
+// wait the exhausted model wanted does not apply to the fresh one. Use a tiny
+// delay only to avoid a tight loop in pathological cases.
+const DEFAULT_MODEL_SWITCH_BACKOFF_MS = 250;
 const DEFAULT_UNKNOWN_RESET_MS = 15 * 60_000;
 const RESET_GRACE_MS = 5_000;
 
 let deferredUntil = 0;
 let deferredReason: string | null = null;
+
+// Per-model exhaustion windows (model id → epoch ms its quota is expected to
+// reset). The known Gemini models draw on SEPARATE quotas, so a single model
+// exhausting is NOT an account-wide block: we record the exhausted model here
+// and switch to a model with headroom before globally deferring. Time-based, so
+// entries self-clear once a model's reported reset window has passed.
+const modelExhaustedUntil = new Map<string, number>();
 
 export function isGeminiCapacityError(message: string | null | undefined): boolean {
   if (!message) return false;
@@ -111,11 +122,37 @@ export function resolveKnownGeminiFallback(
   return fallback;
 }
 
+/**
+ * Pick a known Gemini model to switch to when `exhaustedModel` hit its capacity
+ * limit. A candidate qualifies when it is (a) a known Gemini model, (b) not the
+ * just-exhausted model, and (c) not itself inside a recorded exhaustion window
+ * at `now`. Prefers an operator-configured fallback when it qualifies, otherwise
+ * the first known model with headroom. Returns undefined when every known model
+ * is exhausted — the genuine account-wide block case.
+ */
+export function pickGeminiFallbackModel(
+  exhaustedModel: string,
+  config: GeminiCapacityPolicyConfig | undefined,
+  now: number,
+): string | undefined {
+  const hasHeadroom = (m: string | undefined): m is string =>
+    !!m &&
+    isKnownGeminiModel(m) &&
+    m !== exhaustedModel &&
+    (modelExhaustedUntil.get(m) ?? 0) <= now;
+  if (hasHeadroom(config?.fallbackModel)) return config?.fallbackModel;
+  for (const m of KNOWN_GEMINI_MODELS) {
+    if (hasHeadroom(m)) return m;
+  }
+  return undefined;
+}
+
 export function decideGeminiCapacityPolicy(params: {
   errorMessage: string;
   attempt: number;
   model: string;
   config?: GeminiCapacityPolicyConfig;
+  now?: number;
 }): GeminiCapacityDecision {
   const { errorMessage, attempt, model, config } = params;
   if (config?.enabled === false || !isGeminiCapacityError(errorMessage)) {
@@ -140,11 +177,29 @@ export function decideGeminiCapacityPolicy(params: {
   }
 
   const deferMs = retryAfterMs ?? DEFAULT_UNKNOWN_RESET_MS;
+  const now = params.now ?? Date.now();
+  // Per-model exhaustion is NOT an account-wide block — the known Gemini models
+  // (flash, pro) draw on SEPARATE quotas. Record this model's window, then switch
+  // to a model with headroom before globally deferring. The switch also means we
+  // do NOT write the global stop-state for a single-model exhaustion (the caller
+  // only records a deferral on action:'defer'), which is what made instar report
+  // a fully-available account as "blocked". Mirrors the codex auto-swap policy.
+  modelExhaustedUntil.set(model, now + deferMs);
+  const fallback = pickGeminiFallbackModel(model, config, now);
+  if (fallback) {
+    return {
+      action: 'retry',
+      retryAfterMs: DEFAULT_MODEL_SWITCH_BACKOFF_MS,
+      model: fallback,
+      reason: `gemini model ${model} exhausted; switching to ${fallback} (separate quota may have headroom)`,
+    };
+  }
+  // Every known model is exhausted — a genuine account-wide block.
   return {
     action: 'defer',
     retryAfterMs: deferMs,
     model,
-    reason: `gemini capacity exhausted; deferring calls for ${deferMs}ms`,
+    reason: `gemini capacity exhausted on all known models; deferring calls for ${deferMs}ms`,
   };
 }
 
@@ -201,6 +256,12 @@ function writeGeminiQuotaState(params: {
     usagePercent: 0,
     fiveHourPercent: 100,
     source: 'gemini-cli-capacity',
+    // 'account': this stop-state is only written once EVERY known model is
+    // exhausted (the genuine account-wide block). A single model exhausting no
+    // longer reaches here — the policy switches to a model with headroom first —
+    // so a reader can trust `recommendation:'stop'` here means the agent really
+    // is out of capacity, not just one model.
+    scope: 'account',
     model: params.model,
     blockedUntil: new Date(params.blockedUntil).toISOString(),
     blockReason: params.reason,
@@ -227,4 +288,5 @@ function writeGeminiQuotaState(params: {
 export function resetGeminiCapacityPolicyForTests(): void {
   deferredUntil = 0;
   deferredReason = null;
+  modelExhaustedUntil.clear();
 }

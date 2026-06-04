@@ -1,0 +1,53 @@
+<!-- bump: patch -->
+
+## What Changed
+
+When a Gemini call hit a per-model capacity limit (e.g. "You have exhausted your
+capacity on this model. Quota resets after 46m"), instar's Gemini capacity policy
+globally deferred on that model and wrote a `quota-state.json` snapshot with
+`recommendation: 'stop'` / `fiveHourPercent: 100`. But the known Gemini models
+(`gemini-2.5-flash`, `gemini-2.5-pro`) draw on SEPARATE quotas, so one model
+exhausting was mis-recorded as a full account-wide block — and every reader of that
+file (the agent, the mentor, the escalation monitor) concluded the whole Gemini
+agent was down, even when the account had headroom on the other model. This produced
+repeated false "agent is blocked" reports.
+
+The policy now switches to a known model with headroom and retries before deferring
+(mirroring the codex auto-swap-on-limit policy). Only when EVERY known model is
+exhausted does it globally defer and write the stop-state — now tagged
+`scope: 'account'`. The per-model exhaustion windows are tracked time-based and
+self-clear, so there is no switch loop and no stale state. The model switch uses a
+short 250ms backoff (a different model needs no wait).
+
+## What to Tell Your User
+
+If you run a Gemini-backed agent: when one Gemini model hits its limit, the agent now
+quietly switches to the other model and keeps working, instead of going dark for the
+length of that model's reset window. It only reports itself as out of capacity when
+every model is genuinely exhausted. Nothing to do — it just stops the false "blocked"
+reports and keeps the agent productive.
+
+## Summary of New Capabilities
+
+Gemini agents auto-fall-back across models on a per-model capacity limit (parity with
+the codex auto-swap), and the durable quota-state now distinguishes a single-model
+deferral from a genuine account-wide block (`scope: 'account'`).
+
+## Evidence
+
+- **Reproduction (live this session):** a Gemini agent's `gemini -p` probe returned
+  "You have exhausted your capacity on this model. Your quota will reset after 46m11s"
+  while the account `/stats` showed 20% remaining on the Auto model — i.e. one model
+  exhausted, account fine. The old policy wrote `recommendation: 'stop'` for this,
+  which read as a full block.
+- **Before:** single-model exhaustion → global defer + `recommendation:'stop'` /
+  `fiveHourPercent:100`; the agent appeared fully blocked for the whole reset window.
+- **After:** single-model exhaustion → switch to the model with headroom and keep
+  working; global stop-state (now `scope:'account'`) is written ONLY when every known
+  model is exhausted.
+- **Tests:** 21 across three tiers — `tests/unit/geminiCapacityPolicy.test.ts`
+  (switch-then-defer, single-model-no-global-stop, `pickGeminiFallbackModel`,
+  self-clearing windows), `tests/integration/gemini-capacity-policy-integration.test.ts`,
+  and `tests/e2e/gemini-capacity-policy-lifecycle.test.ts` (both updated to assert the
+  two-model attempt + account scope), plus the escalation-monitor suite. `tsc --noEmit`
+  clean.
