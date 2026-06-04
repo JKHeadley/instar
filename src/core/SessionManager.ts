@@ -1605,6 +1605,39 @@ rm()  { "${shimRunner}" rm  "$@"; }
   }
 
   /**
+   * Pane (shell) PID for each RUNNING session, keyed by instar session id.
+   * Read-only: it issues a single `tmux list-panes` per running session and
+   * returns whatever resolves — sessions whose pane can't be read are simply
+   * omitted (never throws). Consumed by ResourceSampler to attribute per-session
+   * CPU/RSS. The pane shell PID is the root of the session's process tree, so a
+   * caller measuring it (and its descendants, via `ps`) sees the session's load.
+   */
+  getRunningSessionPanePids(): Array<{ id: string; pid: number }> {
+    const out: Array<{ id: string; pid: number }> = [];
+    let running: Session[];
+    try {
+      running = this.state.listSessions({ status: 'running' });
+    } catch {
+      return out;
+    }
+    for (const s of running) {
+      try {
+        const panePid = execFileSync(
+          this.config.tmuxPath,
+          ['list-panes', '-t', `=${s.tmuxSession}:`, '-F', '#{pane_pid}'],
+          { encoding: 'utf-8', timeout: 5000 },
+        ).trim();
+        if (panePid && /^\d+$/.test(panePid)) {
+          out.push({ id: s.id, pid: Number(panePid) });
+        }
+      } catch {
+        /* pane gone / tmux busy — omit this session, never throw */
+      }
+    }
+    return out;
+  }
+
+  /**
    * Pure check: does this already-captured pane show Claude Code actively
    * working? Footer-hint based (see CLAUDE_WORKING_INDICATORS). Exposed so
    * callers that already hold a pane capture (e.g. verifyInjection) can reuse
