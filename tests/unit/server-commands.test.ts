@@ -7,7 +7,11 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { execFileSync } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { shouldRejectServerLifecycleFromSession } from '../../src/core/SessionServerGuard.js';
 
 describe('server command security', () => {
   it('execFileSync prevents shell injection in session names', () => {
@@ -63,5 +67,71 @@ describe('server session name derivation', () => {
     const projectName = 'agente-español';
     const serverSessionName = `${projectName}-server`;
     expect(serverSessionName).toBe('agente-español-server');
+  });
+});
+
+describe('session server lifecycle guard', () => {
+  it('allows server lifecycle commands outside a session', () => {
+    const decision = shouldRejectServerLifecycleFromSession({
+      action: 'server restart',
+      currentProjectDir: '/tmp/codey',
+      targetDir: '/tmp/codey',
+      sessionId: '',
+    });
+
+    expect(decision.reject).toBe(false);
+  });
+
+  it('rejects restarting the current managing server and includes a supervisor hint', () => {
+    const decision = shouldRejectServerLifecycleFromSession({
+      action: 'server restart',
+      currentProjectDir: '/tmp/codey',
+      targetDir: '/tmp/codey',
+      sessionId: 'session-123',
+      uid: 501,
+      projectName: 'codey',
+    });
+
+    expect(decision.reject).toBe(true);
+    expect(decision.message).toContain("Cannot 'server restart' for this agent");
+    expect(decision.supervisorHint).toBe('launchctl kickstart -k gui/501/ai.instar.codey');
+  });
+
+  it('allows restarting a sibling agent server from inside a session', () => {
+    const decision = shouldRejectServerLifecycleFromSession({
+      action: 'server restart',
+      currentProjectDir: '/tmp/codey',
+      targetDir: '/tmp/gemini',
+      sessionId: 'session-123',
+    });
+
+    expect(decision.reject).toBe(false);
+  });
+
+  it('rejects a symlink target that resolves to the current managing server', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-session-guard-'));
+    try {
+      const currentProjectDir = path.join(root, 'codey');
+      const linkedProjectDir = path.join(root, 'codey-link');
+      fs.mkdirSync(currentProjectDir);
+      fs.symlinkSync(currentProjectDir, linkedProjectDir);
+
+      const decision = shouldRejectServerLifecycleFromSession({
+        action: 'server restart',
+        currentProjectDir,
+        targetDir: linkedProjectDir,
+        sessionId: 'session-123',
+        uid: 501,
+        projectName: 'codey',
+      });
+
+      expect(decision.reject).toBe(true);
+    } finally {
+      SafeFsExecutor.safeRmSync(root, {
+        recursive: true,
+        force: true,
+        operation: 'tests/unit/server-commands.test.ts:session-server-lifecycle-guard',
+      });
+    }
   });
 });
