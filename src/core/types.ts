@@ -3012,6 +3012,28 @@ export interface MonitoringConfig {
     tickIntervalMs?: number;
   };
   /**
+   * Per-agent ResourceLedger — read-only CPU/memory + rate-limit-event
+   * observability (mirrors TokenLedger). Phase A persists rate-limit events;
+   * Phase B adds continuous CPU% + RSS sampling of the agent's own server
+   * process and its spawned sessions. Never gates, throttles, or mutates any
+   * runtime flow. See docs/specs/per-agent-resource-ledger.md.
+   */
+  resourceLedger?: {
+    /**
+     * Master kill switch. `undefined` resolves via the developmentAgent gate
+     * for CPU/mem SAMPLING (live on echo, dark on the fleet); the Phase-A
+     * rate-limit ledger is default-on regardless (only `enabled:false` disables
+     * it). `false` → the ledger is null and `/resources/*` route 503s.
+     */
+    enabled?: boolean;
+    /** CPU/memory sampling cadence (ms) while active (default: 60_000). */
+    sampleIntervalMs?: number;
+    /** Sampling cadence (ms) while idle — backs off the idle CPU floor (default: 5min). */
+    idleSampleIntervalMs?: number;
+    /** Retain CPU/mem samples for this many days; older rows pruned (default: 7). */
+    retentionDays?: number;
+  };
+  /**
    * ActiveWorkSilenceSentinel — topic-independent watchdog: a session that was
    * actively producing output goes silent for N minutes. Covers the gap left
    * by SessionWatchdog (needs a running child), SessionMonitor (topic-bound

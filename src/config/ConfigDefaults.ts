@@ -30,13 +30,23 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
     rateLimitSentinel: {
       enabled: true,
     },
-    // ResourceLedger (Phase A) — default-on so every agent durably records its
-    // rate-limit events (breaker trips + sentinel detections) instead of losing
-    // them on restart. Read-only observability; never gates. Event-driven,
-    // negligible cost. enabled:false leaves the ledger null (route 503s).
+    // ResourceLedger — default-on so every agent durably records its rate-limit
+    // events (breaker trips + sentinel detections) instead of losing them on
+    // restart. Read-only observability; never gates. Event-driven, negligible
+    // cost. enabled:false leaves the ledger null (route 503s).
+    //   Phase A = rate-limit events (always on with the ledger).
+    //   Phase B = continuous CPU% + RSS SAMPLING of the agent's server + its
+    //     spawned sessions. The sampler itself rides the developmentAgent gate
+    //     (live on echo, dark on the fleet) — these dials only tune it once on.
+    //     sampleIntervalMs is the active cadence; it backs off to
+    //     idleSampleIntervalMs when no sessions are running (idle-CPU-floor
+    //     friendly); retentionDays bounds the sample table.
     // See docs/specs/per-agent-resource-ledger.md.
     resourceLedger: {
       enabled: true,
+      sampleIntervalMs: 60_000,
+      idleSampleIntervalMs: 5 * 60_000,
+      retentionDays: 7,
     },
     // SocketDisconnectSentinel + ActiveWorkSilenceSentinel — default-on so
     // every agent recovers from connection drops and silent mid-task freezes

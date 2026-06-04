@@ -87,6 +87,7 @@ export default defineConfig({
             { label: 'Self-Healing', slug: 'features/self-healing' },
             { label: 'AutoUpdater', slug: 'features/autoupdater' },
             { label: 'Observability', slug: 'features/observability' },
+            { label: 'Resource Ledger (CPU + Memory)', slug: 'features/resource-ledger' },
             { label: 'Cross-Framework Portability', slug: 'features/portability' },
             { label: 'Paste Handling', slug: 'features/paste-handling' },
             { label: 'Privacy Routing', slug: 'features/privacy-routing' },
