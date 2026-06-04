@@ -38,6 +38,7 @@ const LONG_LIVED_STORES = [
   'src/threadline/relay/RegistryStore.ts',
   'src/monitoring/TokenLedger.ts',
   'src/monitoring/CorrectionLedger.ts',
+  'src/monitoring/CorrectionCaptureBacklog.ts',
   'src/monitoring/FailureLedger.ts',
   'src/monitoring/FeatureMetricsLedger.ts',
   'src/monitoring/FrameworkIssueLedger.ts',
