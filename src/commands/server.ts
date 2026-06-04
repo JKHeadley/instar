@@ -28,6 +28,7 @@ import { IntegrationGate } from '../scheduler/IntegrationGate.js';
 import { JobRunHistory } from '../scheduler/JobRunHistory.js';
 import { AgentServer } from '../server/AgentServer.js';
 import { TelegramAdapter, TOPIC_STYLE, selectTopicEmoji } from '../messaging/TelegramAdapter.js';
+import { getTelegramInboundDir } from '../messaging/shared/telegramInboundFiles.js';
 import { RelationshipManager } from '../core/RelationshipManager.js';
 import { ClaudeCliIntelligenceProvider } from '../core/ClaudeCliIntelligenceProvider.js';
 import { wrapIntelligenceWithCircuitBreaker } from '../core/CircuitBreakingIntelligenceProvider.js';
@@ -536,7 +537,7 @@ async function spawnSessionForTopic(
   // Fix: Inline the context directly, put it BEFORE the user's message, with strong
   // continuation framing. Claude processes the context first, then responds to the
   // user's message WITH that context loaded.
-  const tmpDir = '/tmp/instar-telegram';
+  const tmpDir = getTelegramInboundDir(_projectDir);
   fs.mkdirSync(tmpDir, { recursive: true });
 
   let bootstrapMessage: string;
@@ -2019,11 +2020,11 @@ async function ensureSqliteBindings(): Promise<boolean> {
 }
 
 /**
- * Clean up stale temp files from /tmp/instar-telegram/.
+ * Clean up stale project-local Telegram inbound files.
  * Removes files older than 7 days to prevent unbounded accumulation.
  */
 function cleanupTelegramTempFiles(): void {
-  const tmpDir = '/tmp/instar-telegram';
+  const tmpDir = getTelegramInboundDir(_projectDir);
   try {
     if (!fs.existsSync(tmpDir)) return;
     const maxAge = 7 * 24 * 60 * 60 * 1000; // 7 days
