@@ -17,7 +17,7 @@ import type { EstablishedRef } from '../../src/core/TopicIntent.js';
 
 let tmp: string;
 beforeEach(() => { tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'pw-routes-')); fs.mkdirSync(path.join(tmp, 'topic-intent')); });
-afterEach(() => { fs.rmSync(tmp, { recursive: true, force: true }); });
+afterEach(() => { SafeFsExecutor.safeRmSync(tmp, { recursive: true, force: true, operation: 'tests/integration/parallel-work-routes.test.ts' }); });
 
 function ref(kind: EstablishedRef['kind'], text: string): EstablishedRef {
   return {

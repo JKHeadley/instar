@@ -10,6 +10,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import {
   ParallelActivityIndex,
   extractTags,
@@ -64,7 +65,7 @@ describe('extractTags specificity boundary', () => {
 describe('ParallelActivityIndex', () => {
   let tmp: string;
   beforeEach(() => { tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'pai-')); fs.mkdirSync(path.join(tmp, 'topic-intent')); });
-  afterEach(() => { fs.rmSync(tmp, { recursive: true, force: true }); });
+  afterEach(() => { SafeFsExecutor.safeRmSync(tmp, { recursive: true, force: true, operation: 'tests/unit/parallel-activity-index.test.ts' }); });
 
   function writeTopicFiles(ids: number[]) {
     for (const id of ids) fs.writeFileSync(path.join(tmp, 'topic-intent', `${id}.json`), JSON.stringify({ topicId: id, refs: {} }));
