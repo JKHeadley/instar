@@ -15,6 +15,9 @@ import path from 'node:path';
 import type { SessionManager } from '../core/SessionManager.js';
 import type { SessionRefresh } from '../core/SessionRefresh.js';
 import type { StateManager } from '../core/StateManager.js';
+import { describeTopicPlacement } from '../core/TopicPlacementDescription.js';
+import { buildRelocationNicknameSet } from '../core/RelocationNicknameSet.js';
+import { planTransferByNickname } from '../core/TransferByNickname.js';
 import type { JobScheduler } from '../scheduler/JobScheduler.js';
 import type { InstarConfig, JobPriority } from '../core/types.js';
 import { IntelligenceRouter } from '../core/IntelligenceRouter.js';
@@ -781,6 +784,17 @@ export interface RouteContext {
   /** Per-session ownership registry (§L3) — exactly-one-owner CAS + ownerOf/
    *  placementTargetOf. Read by L4 placement + observability. Null/absent (dark). */
   sessionOwnershipRegistry?: import('../core/SessionOwnershipRegistry.js').SessionOwnershipRegistry | null;
+  /** Topic placement pin store (§L4) — the holder-local hard-pin file. Backs the
+   *  pinned-vs-load-placed distinction in GET /pool/placement and the deterministic
+   *  POST /pool/transfer. Null/absent when the pool is not wired (dark). */
+  topicPinStore?: import('../core/TopicPlacementPinStore.js').TopicPlacementPinStore | null;
+  /** This machine's mesh id (machineId). Used by placement/transfer routes to tell
+   *  whether the answering machine owns the topic. Null/absent (single-machine/dark). */
+  meshSelfId?: string | null;
+  /** Resolve the lease-holder's base URL when this machine is NOT the holder (else
+   *  null). Lets the placement/transfer routes proxy to the authoritative holder so
+   *  they are answerable/callable from ANY machine. Null/absent (single-machine/dark). */
+  resolveRouterUrl?: (() => string | null) | null;
   /** Signed, append-only rollout-stage E2E results (§Rollout) — backs GET
    *  /session-pool/e2e-results so the gate state is observable. Null/absent (dark). */
   sessionPoolE2EResultStore?: import('../core/SessionPoolE2EResultStore.js').SessionPoolE2EResultStore | null;
@@ -7637,6 +7651,172 @@ export function createRoutes(ctx: RouteContext): Router {
           }
         : null,
       machines,
+    });
+  });
+
+  // GET /pool/placement?topic=N — authoritative "which machine is this topic running
+  // on, and WHY (deliberately pinned vs. load-placed)" + the current lease-holder.
+  // Answerable from ANY machine: a non-holder PROXIES to the holder, whose local pin
+  // store is authoritative for the pinned-vs-placed distinction. Closes the gap where
+  // a standby session could only INFER its placement and narrate a guess as fact.
+  // Read-only — never moves a session. 503 when the pool isn't wired (dark/single).
+  router.get('/pool/placement', async (req, res) => {
+    const topicRaw = req.query.topic;
+    const topicId =
+      typeof topicRaw === 'string'
+        ? topicRaw.trim()
+        : Array.isArray(topicRaw) && topicRaw.length
+          ? String(topicRaw[0]).trim()
+          : '';
+    if (!topicId) {
+      res.status(400).json({ error: 'topic (query param) is required, e.g. /pool/placement?topic=13481' });
+      return;
+    }
+    if (!ctx.sessionOwnershipRegistry) {
+      res.status(503).json({ error: 'session pool not available (dark / single-machine install)' });
+      return;
+    }
+    // Proxy to the holder when this machine isn't it (its pin store is authoritative).
+    const holderUrl = ctx.resolveRouterUrl?.() ?? null;
+    if (holderUrl) {
+      try {
+        const r = await fetch(`${holderUrl}/pool/placement?topic=${encodeURIComponent(topicId)}`, {
+          headers: { Authorization: `Bearer ${ctx.config.authToken}` },
+        });
+        if (r.ok) {
+          const j = (await r.json()) as Record<string, unknown>;
+          res.json({ ...j, answeredBy: 'holder-proxy' });
+          return;
+        }
+        // proxy returned non-2xx → fall through to a labelled local best-effort answer
+      } catch {
+        // @silent-fallback-ok — holder unreachable → fall through to the local best-effort
+        // answer, which is explicitly labelled `answeredBy: 'local-fallback'` in the response
+        // (the caller sees it is degraded; nothing is silently masked).
+      }
+    }
+    const sync = ctx.coordinator ? ctx.coordinator.getSyncStatus() : null;
+    const owner = ctx.sessionOwnershipRegistry.ownerOf(topicId);
+    const pin = ctx.topicPinStore?.get(topicId) ?? null;
+    const pinnedTo = pin && pin.pinned ? pin.preferredMachine : null;
+    const nicknameOf = (id: string | null): string | null =>
+      id ? (ctx.machinePoolRegistry?.getCapacity(id)?.nickname ?? null) : null;
+    const description = describeTopicPlacement({
+      topicId,
+      owner,
+      pinnedTo,
+      leaseHolder: sync?.leaseHolder ?? null,
+      selfMachineId: ctx.meshSelfId ?? null,
+      nicknameOf,
+    });
+    res.json({ ...description, answeredBy: holderUrl ? 'local-fallback' : 'local' });
+  });
+
+  // POST /pool/transfer — deterministic topic transfer that does NOT depend on
+  // natural-language phrasing. Body: { topic, to: "<nickname|machineId>", confirm? }.
+  // Runs the SAME validated planner as "move this to <nickname>" (rate-limit, online,
+  // already-there checks), sets the placement pin, and releases local ownership so the
+  // next message re-places onto the target. A non-holder PROXIES to the holder (whose
+  // pin store drives routing). This is the reliable lever a session can call directly
+  // instead of hoping a phrase is recognized. 503 when the pool isn't wired (dark).
+  router.post('/pool/transfer', async (req, res) => {
+    const body = (req.body ?? {}) as { topic?: unknown; to?: unknown; confirm?: unknown };
+    const topicId = body.topic != null ? String(body.topic).trim() : '';
+    const to = typeof body.to === 'string' ? body.to.trim() : '';
+    if (!topicId || !to) {
+      res.status(400).json({ error: 'topic and to are required, e.g. {"topic":13481,"to":"Laptop"}' });
+      return;
+    }
+    if (!ctx.sessionOwnershipRegistry || !ctx.topicPinStore) {
+      res.status(503).json({ error: 'session pool not available (dark / single-machine install)' });
+      return;
+    }
+    // The holder's pin store drives routing — proxy there when this machine isn't it.
+    const holderUrl = ctx.resolveRouterUrl?.() ?? null;
+    if (holderUrl) {
+      try {
+        const r = await fetch(`${holderUrl}/pool/transfer`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${ctx.config.authToken}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ topic: topicId, to, confirm: body.confirm === true }),
+        });
+        // @silent-fallback-ok — if the holder's body isn't JSON we still forward its
+        // status code with an empty object; the status is the signal, not the body.
+        const j = (await r.json().catch(() => ({}))) as Record<string, unknown>;
+        res.status(r.status).json({ ...j, handledBy: 'holder-proxy' });
+      } catch (err) {
+        // @silent-fallback-ok — NOT silent: a failed proxy surfaces an explicit 502 with the
+        // reason to the caller (the transfer did not happen), rather than masking the failure.
+        res.status(502).json({ error: `could not reach lease-holder to perform transfer: ${err instanceof Error ? err.message : String(err)}` });
+      }
+      return;
+    }
+    // We are the holder (or single-machine) — perform authoritatively.
+    const self = ctx.meshSelfId ?? null;
+    const caps = ctx.machinePoolRegistry?.getCapacities() ?? [];
+    const selfNickname = self ? (caps.find((c) => c.machineId === self)?.nickname ?? null) : null;
+    const { nickToMachine, knownNicknames } = buildRelocationNicknameSet({ capacities: caps, selfMachineId: self, selfNickname });
+    const knownMachineIds = new Set(caps.map((c) => c.machineId));
+    // Resolve `to` as a nickname OR a raw machineId, so callers can use either.
+    const resolveTarget = (n: string): string | null => {
+      const byNick = nickToMachine.get(n.trim().toLowerCase());
+      if (byNick) return byNick;
+      if (knownMachineIds.has(n)) return n;
+      if (self && n === self) return self;
+      return null;
+    };
+    const plan = planTransferByNickname(
+      { intent: 'transfer', nickname: to, matchedVerb: 'transfer' },
+      {
+        resolveNickname: resolveTarget,
+        validNicknames: () => knownNicknames,
+        isOnline: (m) => m === self || (ctx.machinePoolRegistry?.getCapacity(m)?.online ?? false),
+        currentOwnerOf: (sk) => ctx.sessionOwnershipRegistry!.ownerOf(sk),
+        isMidReply: () => false,
+        lastPlacementUpdateAt: (sk) => ctx.topicPinStore!.lastUpdatedAtMs(sk) ?? null,
+        now: () => Date.now(),
+      },
+      topicId,
+    );
+    if (plan.action === 'reject') {
+      res.status(plan.rejectReason === 'unknown-machine-nickname' ? 404 : 409).json({
+        error:
+          plan.rejectReason === 'unknown-machine-nickname'
+            ? `unknown machine "${to}". Known: ${(plan.validNicknames ?? []).join(', ') || '(none)'}`
+            : `cannot transfer right now (${plan.rejectReason})`,
+        rejectReason: plan.rejectReason,
+      });
+      return;
+    }
+    if (plan.action === 'confirm-required' && body.confirm !== true) {
+      res.status(409).json({ needsConfirmation: true, prompt: plan.confirmationPrompt, targetMachine: plan.targetMachine });
+      return;
+    }
+    // transfer | noop | confirmed → set the pin and release local ownership if we hold it.
+    const target = plan.targetMachine!;
+    ctx.topicPinStore.set(topicId, target, plan.setPin ?? true);
+    let releasedLocalOwnership = false;
+    try {
+      if (self && ctx.sessionOwnershipRegistry.ownerOf(topicId) === self) {
+        const r = ctx.sessionOwnershipRegistry.cas(
+          { type: 'release', machineId: self },
+          { sessionKey: topicId, sender: self, nonce: `${self}:rel:${topicId}:${Date.now()}` },
+        );
+        releasedLocalOwnership = r.ok;
+      }
+    } catch {
+      // @silent-fallback-ok — the pin (set above) is what drives re-placement; releasing local
+      // ownership is a best-effort optimization. If it throws, route() re-places off the pin on
+      // the next message regardless, and `releasedLocalOwnership:false` is reported to the caller.
+    }
+    res.json({
+      ok: true,
+      topicId,
+      targetMachine: target,
+      targetNickname: ctx.machinePoolRegistry?.getCapacity(target)?.nickname ?? null,
+      action: plan.action,
+      pinned: plan.setPin ?? true,
+      releasedLocalOwnership,
     });
   });
 
