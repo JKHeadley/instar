@@ -30,7 +30,7 @@ move-back bug (shipped in #750; this fragment cuts the release that carries it).
 
 - **You can now ask where a conversation is running, and move it reliably**: "where is
   this running / why?" reports the machine and whether it was deliberately moved there
-  or just load-balanced, and "move this to `<machine>`" now always works — including
+  or just load-balanced, and "move this to that machine" now always works — including
   moving it *back* to the machine you're already on (which used to silently do nothing).
 
 ## Evidence
