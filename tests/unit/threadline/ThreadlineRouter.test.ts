@@ -261,7 +261,15 @@ describe('ThreadlineRouter', () => {
       expect(result.injected).toBe(true);
       expect(result.resumed).toBeUndefined();
       expect(result.spawned).toBeUndefined();
-      expect(mockDelivery.deliverToSession).toHaveBeenCalledWith('live-sess', envelope);
+      // Grounding-on-inject (spec §3.5): the injected follow-up is now delivered
+      // into 'live-sess' with the body wrapped in the relay grounding boundary
+      // (untrusted-data framing), so the call carries a GROUNDED envelope rather
+      // than the raw one. Assert the target session + the grounded body.
+      expect(mockDelivery.deliverToSession).toHaveBeenCalledTimes(1);
+      const [calledSession, calledEnvelope] = mockDelivery.deliverToSession.mock.calls[0];
+      expect(calledSession).toBe('live-sess');
+      expect(calledEnvelope.message.body).toContain('[EXTERNAL MESSAGE — Trust:');
+      expect(calledEnvelope.message.body).toContain(envelope.message.body); // original body still present, now framed
       expect(mockSpawnManager.evaluate).not.toHaveBeenCalled();
     });
 
