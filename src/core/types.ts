@@ -606,6 +606,14 @@ export interface QuotaState {
   usagePercent: number;
   /** 5-hour rolling rate limit utilization (0-100), if available */
   fiveHourPercent?: number;
+  /** Provider/framework that produced this quota snapshot, if known */
+  source?: 'anthropic-oauth' | 'claude-jsonl' | 'gemini-cli-capacity';
+  /** Provider model whose capacity window is currently blocked, if known */
+  model?: string;
+  /** When a provider-specific capacity block is expected to clear */
+  blockedUntil?: string;
+  /** Human-readable reason from the provider capacity signal */
+  blockReason?: string;
   /** When usage data was last updated */
   lastUpdated: string;
   /** Per-account breakdown if multi-account */

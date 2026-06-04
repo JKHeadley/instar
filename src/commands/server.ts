@@ -2961,10 +2961,20 @@ export async function startServer(options: StartOptions): Promise<void> {
       const built = buildIntelligenceProvider({
         framework,
         binaryPath: framework === 'claude-code' ? config.sessions.claudePath : undefined,
+        ...(framework === 'gemini-cli' && config.monitoring?.quotaTracking
+          ? {
+              quotaStateFile: (config.monitoring as { quotaStateFile?: string }).quotaStateFile
+                || path.join(config.stateDir, 'quota-state.json'),
+            }
+          : {}),
       });
       if (built) {
         sharedIntelligence = built;
-        intelligenceSource = framework === 'codex-cli' ? 'Codex CLI' : 'Claude CLI subscription';
+        intelligenceSource = framework === 'codex-cli'
+          ? 'Codex CLI'
+          : framework === 'gemini-cli'
+            ? 'Gemini CLI'
+            : 'Claude CLI subscription';
       } else {
         // Fall back to the legacy Claude path for backwards-compat. Wrap with
         // the circuit breaker (the factory path above is already wrapped).
@@ -3612,8 +3622,12 @@ export async function startServer(options: StartOptions): Promise<void> {
         try {
           const { QuotaCollector } = await import('../monitoring/QuotaCollector.js');
           const { createDefaultProvider } = await import('../monitoring/CredentialProvider.js');
-          const provider = createDefaultProvider();
-          collector = new QuotaCollector(provider, quotaTracker);
+          if (resolvedFramework === 'claude-code') {
+            const provider = createDefaultProvider();
+            collector = new QuotaCollector(provider, quotaTracker);
+          } else {
+            console.log(pc.yellow(`  QuotaCollector skipped for ${resolvedFramework} (no framework usage meter)`));
+          }
         } catch (err) {
           console.log(pc.yellow(`  QuotaCollector not available: ${err instanceof Error ? err.message : err}`));
         }

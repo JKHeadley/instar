@@ -53,6 +53,18 @@ describe('buildIntelligenceProvider', () => {
     expectWraps(p, GeminiCliIntelligenceProvider);
   });
 
+  it('passes quotaStateFile only to the gemini provider capacity policy', () => {
+    const p = buildIntelligenceProvider({
+      framework: 'gemini-cli',
+      binaryPath: '/usr/bin/gemini',
+      quotaStateFile: '/tmp/gemini-quota-state.json',
+    });
+    expectWraps(p, GeminiCliIntelligenceProvider);
+    const inner = (p as unknown as { inner: GeminiCliIntelligenceProvider }).inner;
+    expect((inner as unknown as { capacityPolicy?: { quotaStateFile?: string } }).capacityPolicy?.quotaStateFile)
+      .toBe('/tmp/gemini-quota-state.json');
+  });
+
   it('defaults to claude-code when framework is omitted', () => {
     const p = buildIntelligenceProvider({ binaryPath: '/usr/bin/claude' });
     expectWraps(p, ClaudeCliIntelligenceProvider);

@@ -110,6 +110,8 @@ class GeminiCliOneShotCompletion implements OneShotCompletion {
           recordGeminiCapacityDeferral({
             retryAfterMs: capacity.retryAfterMs,
             reason: capacity.reason ?? mapped.message,
+            model: currentModel,
+            quotaStateFile: this.config.capacityPolicy?.quotaStateFile,
           });
           throw new QuotaError(
             `${capacity.reason}: ${mapped.message}`,
