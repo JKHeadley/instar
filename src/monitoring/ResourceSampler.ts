@@ -96,6 +96,9 @@ export class ResourceSampler {
       this.lastCpu = this.cpuUsageFn();
       this.lastCpuAtMs = this.now();
     } catch {
+      // @silent-fallback-ok: priming the CPU baseline is best-effort. If cpuUsage
+      // is unavailable we leave the baseline null so the first real tick reports
+      // 0% rather than crashing the sampler at start.
       this.lastCpu = null;
       this.lastCpuAtMs = null;
     }
@@ -215,7 +218,9 @@ export class ResourceSampler {
         /* swallow */
       }
     } catch (err) {
-      // A sampling error NEVER crashes the poller — log once, keep going.
+      // @silent-fallback-ok: a sampling error NEVER crashes the poller — log once
+      // and keep going; the next tick retries. Observability must not break the
+      // observed path.
       try { this.onError(err); } catch { /* ignore */ }
     } finally {
       this.running = false;
@@ -234,6 +239,8 @@ export class ResourceSampler {
     try {
       cpu = this.cpuUsageFn();
     } catch {
+      // @silent-fallback-ok: a CPU reading we can't take degrades to 0% for this
+      // tick (read-only observability); it must never throw into the sample loop.
       return 0;
     }
     const prev = this.lastCpu;

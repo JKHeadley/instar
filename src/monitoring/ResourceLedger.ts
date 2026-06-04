@@ -417,6 +417,8 @@ export class ResourceLedger {
       const row = this.db.prepare(`SELECT COUNT(*) AS n FROM resource_samples`).get() as { n: number };
       return Number(row?.n ?? 0);
     } catch {
+      // @silent-fallback-ok: read-only observability count. A DB read error must
+      // never break the observed path; "unknown count" degrades to 0, not a throw.
       return 0;
     }
   }
@@ -428,6 +430,9 @@ export class ResourceLedger {
       const res = this.db.prepare(`DELETE FROM resource_samples WHERE ts < ?`).run(cutoffMs);
       return Number(res.changes ?? 0);
     } catch {
+      // @silent-fallback-ok: retention prune is best-effort housekeeping. A failed
+      // prune just leaves older rows for the next tick; it must not throw into the
+      // sampler's hot path.
       return 0;
     }
   }
