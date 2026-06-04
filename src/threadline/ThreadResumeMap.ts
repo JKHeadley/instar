@@ -160,6 +160,20 @@ export class ThreadResumeMap {
     // topic-linkage entries still expire via ConversationStore's TTL, and the
     // topic's real liveness is re-checked at route time (TopicLinkageHandler.topicActive).
     if (!entry.pinned && entry.originTopicId === undefined && !this.jsonlExists(entry.uuid)) {
+      // The session JSONL doesn't exist — usually because the uuid is still the
+      // spawn-time placeholder that onSessionComplete / the resume heartbeat never
+      // upgraded to a real transcript id (the production A2A continuity break: every
+      // peer-to-peer follow-up cold-spawned a memoryless session). Normally
+      // unrecoverable → null → cold-spawn. BUT if the entry's tmux session is still
+      // ALIVE, the live-inject path (ThreadlineRouter.tryInjectIntoLiveSession →
+      // messageDelivery.deliverToSession) can deliver the follow-up straight into the
+      // running session — no transcript needed. Returning the entry here is what lets
+      // a rapid A2A follow-up inject into the session already handling the thread
+      // instead of cold-spawning a fresh one (spec Layer 2, warm-inject). If the
+      // session is gone too, it is genuinely unrecoverable → null.
+      if (entry.sessionName && this.sessionAlive(entry.sessionName)) {
+        return entry;
+      }
       return null;
     }
     return entry;
@@ -347,6 +361,22 @@ export class ThreadResumeMap {
     }
     const ref = entry.lastAccessedAt || entry.savedAt;
     return now - new Date(ref).getTime() > MAX_AGE_MS;
+  }
+
+  /**
+   * True if a tmux session by this EXACT name currently exists. Used by get() to
+   * keep a resume entry alive for the live-inject path even when its transcript
+   * JSONL doesn't exist yet (placeholder uuid). `=name` forces an exact tmux match
+   * (no prefix/fnmatch) — the same idiom as the resume heartbeat and cli.ts.
+   * Protected so unit tests can stub liveness deterministically via a subclass.
+   */
+  protected sessionAlive(sessionName: string): boolean {
+    if (!sessionName) return false;
+    try {
+      return spawnSync(this.tmuxPath, ['has-session', '-t', `=${sessionName}`], { stdio: 'ignore' }).status === 0;
+    } catch {
+      return false;
+    }
   }
 
   /** Check if a JSONL file exists for the given session UUID. (protected so
