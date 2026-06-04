@@ -19,6 +19,35 @@ import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 const SKIP = process.env.SKIP_E2E === '1';
 
+/**
+ * Telegraph's public API occasionally returns transient errors (PAGE_SAVE_FAILED,
+ * network blips, 5xx, rate-limit) that are no fault of ours. Those must NOT fail
+ * the build on unrelated PRs — a transient external hiccup once failed CI on a
+ * Gemini quota change that touches zero Telegraph code. Retry a few times with
+ * backoff, then fail only if the service is genuinely down. Non-transient errors
+ * (real bugs / assertion-worthy failures) throw immediately so they still surface.
+ */
+const TRANSIENT_API_ERROR =
+  /PAGE_SAVE_FAILED|FLOOD_WAIT|ENOTFOUND|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|socket hang up|network|fetch failed|\b5\d\d\b|\b429\b/i;
+
+async function withTransientRetry<T>(label: string, fn: () => Promise<T>, attempts = 4): Promise<T> {
+  let lastErr: unknown;
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastErr = err;
+      const msg = err instanceof Error ? err.message : String(err);
+      if (!TRANSIENT_API_ERROR.test(msg)) throw err; // real failure — surface immediately
+      if (attempt < attempts) await new Promise((r) => setTimeout(r, 400 * attempt));
+    }
+  }
+  throw new Error(
+    `Telegraph ${label} failed after ${attempts} attempts (transient external API): ` +
+      `${lastErr instanceof Error ? lastErr.message : String(lastErr)}`,
+  );
+}
+
 describe('Telegraph E2E publish flow', () => {
   let stateDir: string;
   let service: TelegraphService;
@@ -39,12 +68,12 @@ describe('Telegraph E2E publish flow', () => {
   });
 
   it.skipIf(SKIP)('creates a Telegraph account', async () => {
-    const token = await service.ensureAccount();
+    const token = await withTransientRetry('ensureAccount', () => service.ensureAccount());
     expect(token).toBeTruthy();
     expect(typeof token).toBe('string');
 
     // Subsequent calls return the same token
-    const token2 = await service.ensureAccount();
+    const token2 = await withTransientRetry('ensureAccount', () => service.ensureAccount());
     expect(token2).toBe(token);
   });
 
@@ -79,7 +108,7 @@ describe('Telegraph E2E publish flow', () => {
       'Final paragraph with ~~strikethrough~~ text.',
     ].join('\n');
 
-    const page = await service.publishPage('Instar E2E Test', markdown);
+    const page = await withTransientRetry('publishPage', () => service.publishPage('Instar E2E Test', markdown));
 
     expect(page.url).toMatch(/^https:\/\/telegra\.ph\//);
     expect(page.path).toBeTruthy();
@@ -99,14 +128,14 @@ describe('Telegraph E2E publish flow', () => {
 
   it.skipIf(SKIP)('edits a published page', async () => {
     // Publish first
-    const original = await service.publishPage('Edit Test', '# Original\n\nOriginal content.');
+    const original = await withTransientRetry('publishPage', () => service.publishPage('Edit Test', '# Original\n\nOriginal content.'));
 
     // Edit it
-    const updated = await service.editPage(
+    const updated = await withTransientRetry('editPage', () => service.editPage(
       original.path,
       'Edit Test (Updated)',
       '# Updated\n\nThis content has been updated by the E2E test.',
-    );
+    ));
 
     expect(updated.url).toMatch(/^https:\/\/telegra\.ph\//);
     expect(updated.title).toBe('Edit Test (Updated)');
@@ -124,7 +153,7 @@ describe('Telegraph E2E publish flow', () => {
     const pages = service.listPages();
     expect(pages.length).toBeGreaterThan(0);
 
-    const views = await service.getPageViews(pages[0].path);
+    const views = await withTransientRetry('getPageViews', () => service.getPageViews(pages[0].path));
     expect(typeof views).toBe('number');
     expect(views).toBeGreaterThanOrEqual(0);
   });
