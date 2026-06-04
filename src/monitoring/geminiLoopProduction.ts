@@ -109,6 +109,10 @@ export function createGeminiHandleCapture(
       if (r.exitCode !== 0) return null;
       return parseLatestGeminiSessionHandle(r.stdout);
     } catch {
+      // @silent-fallback-ok — intentional fail-closed: if `--list-sessions` errors
+      // we return null, and the GeminiLoopDriver ABORTS the run (stopReason
+      // 'handle-capture-failure') rather than guessing a handle. Not a degraded
+      // silent continue — it is the safe stop, surfaced in the run's stopReason.
       return null;
     }
   };
