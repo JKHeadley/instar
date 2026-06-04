@@ -181,8 +181,12 @@ export class CircuitBreakingIntelligenceProvider implements IntelligenceProvider
  */
 export function wrapIntelligenceWithCircuitBreaker(
   provider: IntelligenceProvider | null | undefined,
+  breaker?: LlmCircuitBreaker,
 ): IntelligenceProvider | null {
   if (!provider) return null;
   if (provider instanceof CircuitBreakingIntelligenceProvider) return provider;
-  return new CircuitBreakingIntelligenceProvider(provider);
+  // breaker===undefined ⇒ the constructor default (the account-global singleton)
+  // applies, preserving today's behavior. A caller (the IntelligenceRouter) passes
+  // a DISTINCT breaker per framework so one framework's trip can't pause another.
+  return new CircuitBreakingIntelligenceProvider(provider, breaker);
 }
