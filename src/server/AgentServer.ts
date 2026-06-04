@@ -59,7 +59,7 @@ import { createUsherRoutes } from './usherRoutes.js';
 import { createHandoffInitiateRoutes } from './handoffInitiateRoutes.js';
 import type { TopicIntentStore } from '../core/TopicIntent.js';
 import type { WorktreeManager } from '../core/WorktreeManager.js';
-import { corsMiddleware, authMiddleware, requestTimeout, buildRequestTimeoutOverrides, errorHandler, dashboardSecurityHeaders } from './middleware.js';
+import { corsMiddleware, authMiddleware, requestTimeout, buildRequestTimeoutOverrides, errorHandler, dashboardSecurityHeaders, duplicateResponseGuard } from './middleware.js';
 import { WebSocketManager } from './WebSocketManager.js';
 import { assertSqliteAvailable, PendingRelayStore } from '../messaging/pending-relay-store.js';
 import { getOrCreateBootId } from './boot-id.js';
@@ -437,6 +437,7 @@ export class AgentServer {
 
     // Middleware
     this.app.use(express.json({ limit: '12mb' }));
+    this.app.use(duplicateResponseGuard);
     this.app.use(corsMiddleware);
 
     // Dashboard security headers — set before static serving so they apply to all dashboard responses
