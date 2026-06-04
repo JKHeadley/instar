@@ -86,6 +86,64 @@ describe('ConfigDefaults', () => {
       expect(enabled.monitoring.apprenticeshipCycleSla.overdueAfterMinutes).toBe(30);
     });
 
+    // ── Warm-Session A2A defaults (dark-ship via developmentAgent gate) ──
+    it('ships threadline.warmSessionA2A with caps but NO `enabled` (resolves via dev-gate)', () => {
+      for (const t of ['managed-project', 'standalone'] as const) {
+        const warm = (getInitDefaults(t).threadline as any).warmSessionA2A;
+        expect(warm).toBeDefined();
+        // `enabled` MUST be omitted so the server resolves it via
+        // `enabled ?? !!config.developmentAgent` — the dark-ship invariant.
+        expect('enabled' in warm).toBe(false);
+        expect(warm.globalCap).toBe(3);
+        expect(warm.perPeerCap).toBe(1);
+        expect(warm.ttlMs).toBe(600000);
+        expect(warm.trustFloor).toBe('verified');
+      }
+      const mig = (getMigrationDefaults('managed-project').threadline as any).warmSessionA2A;
+      expect(mig).toBeDefined();
+      expect('enabled' in mig).toBe(false);
+    });
+
+    it('migration deep-merges warmSessionA2A into an existing threadline block (parity)', () => {
+      // Existing agent already has a threadline block (relayEnabled) but no warm block.
+      const config: any = { threadline: { relayEnabled: true, visibility: 'public' } };
+      const { patched, changes } = applyDefaults(config, getMigrationDefaults('managed-project'));
+      expect(patched).toBe(true);
+      // The nested block backfilled WITHOUT touching the existing fields.
+      expect(config.threadline.relayEnabled).toBe(true);
+      expect(config.threadline.warmSessionA2A).toBeDefined();
+      expect(config.threadline.warmSessionA2A.globalCap).toBe(3);
+      expect(config.threadline.warmSessionA2A.trustFloor).toBe('verified');
+      expect('enabled' in config.threadline.warmSessionA2A).toBe(false);
+      expect(changes.some((c: string) => c.includes('warmSessionA2A'))).toBe(true);
+    });
+
+    it('migration does NOT overwrite an operator-set warm enabled/caps', () => {
+      const config: any = {
+        threadline: { warmSessionA2A: { enabled: true, globalCap: 9 } },
+      };
+      applyDefaults(config, getMigrationDefaults('managed-project'));
+      // Operator's explicit values survive; only missing fields are backfilled.
+      expect(config.threadline.warmSessionA2A.enabled).toBe(true);
+      expect(config.threadline.warmSessionA2A.globalCap).toBe(9);
+      expect(config.threadline.warmSessionA2A.perPeerCap).toBe(1); // backfilled
+      expect(config.threadline.warmSessionA2A.ttlMs).toBe(600000); // backfilled
+    });
+
+    it('the dev-gate resolution: enabled ?? !!developmentAgent (both sides)', () => {
+      // Models the exact server-side resolution. Config block lacks `enabled`.
+      const resolve = (warm: any, developmentAgent: boolean) =>
+        warm?.enabled ?? !!developmentAgent;
+      const warm = (getInitDefaults('managed-project').threadline as any).warmSessionA2A;
+      // developmentAgent agent (Echo) → ON.
+      expect(resolve(warm, true)).toBe(true);
+      // fleet agent (no dev flag) → dark.
+      expect(resolve(warm, false)).toBe(false);
+      // explicit enabled wins regardless of dev flag.
+      expect(resolve({ ...warm, enabled: false }, true)).toBe(false);
+      expect(resolve({ ...warm, enabled: true }, false)).toBe(true);
+    });
+
     // ── Multi-Machine Session Pool dark defaults (Track A — migration parity) ──
     it('ships multiMachine.sessionPool DARK by default (enabled:false, stage:dark, dryRun:true)', () => {
       for (const t of ['managed-project', 'standalone'] as const) {

@@ -226,6 +226,12 @@ describe('ALLOWED_INJECTION_PROCESSES', () => {
     expect(ALLOWED_INJECTION_PROCESSES).toContain('claude');
   });
 
+  it('includes claude.exe (the real macOS pane-command name — load-bearing for A2A inject)', () => {
+    // On macOS `tmux #{pane_current_command}` reports `claude.exe`, NOT `claude`.
+    // Without this entry every Threadline live-injection on macOS is refused.
+    expect(ALLOWED_INJECTION_PROCESSES).toContain('claude.exe');
+  });
+
   it('does not include editors or REPLs', () => {
     expect(ALLOWED_INJECTION_PROCESSES).not.toContain('vim');
     expect(ALLOWED_INJECTION_PROCESSES).not.toContain('nano');
@@ -237,7 +243,7 @@ describe('ALLOWED_INJECTION_PROCESSES', () => {
   it('is an array with the expected length', () => {
     // ReadonlyArray is a compile-time constraint; runtime check verifies it's a real array
     expect(Array.isArray(ALLOWED_INJECTION_PROCESSES)).toBe(true);
-    expect(ALLOWED_INJECTION_PROCESSES.length).toBe(6);
+    expect(ALLOWED_INJECTION_PROCESSES.length).toBe(7);
   });
 });
 

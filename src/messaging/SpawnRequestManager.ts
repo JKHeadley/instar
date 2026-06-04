@@ -98,6 +98,15 @@ export interface SpawnRequest {
    * `spawnSession` callback options.
    */
   resumeSessionId?: string;
+  /**
+   * Warm-session A2A (a.k.a. keepAlive): when true, the spawnSession callback
+   * routes to an INTERACTIVE persistent worker (REPL that stays alive between
+   * messages) instead of the headless one-shot `claude -p`. The grounded prompt
+   * is delivered as the worker's first turn. ThreadlineRouter.spawnWarmThread
+   * sets this; forwarded verbatim into the spawnSession callback options. Absent
+   * on every existing spawn path → headless behavior is byte-for-byte unchanged.
+   */
+  interactive?: boolean;
 }
 
 export interface SpawnResult {
@@ -191,6 +200,10 @@ export interface SpawnRequestManagerConfig {
     /** Threadline A2A continuity: forwarded to `--resume` (reload the prior
      *  transcript captured by an earlier sessionId spawn). */
     resumeSessionId?: string;
+    /** Warm-session A2A: when true, spawn an INTERACTIVE persistent worker
+     *  (keep-alive REPL) instead of headless `claude -p`. The prompt becomes
+     *  the worker's first turn. Absent on every non-warm spawn. */
+    interactive?: boolean;
   }) => Promise<string | { sessionId: string; tmuxSession?: string }>;
   /** Function to check memory pressure. Returns true if pressure is too high. */
   isMemoryPressureHigh?: () => boolean;
@@ -593,6 +606,9 @@ export class SpawnRequestManager {
         // transcript. Both undefined on every non-Threadline spawn path.
         sessionId: request.sessionId,
         resumeSessionId: request.resumeSessionId,
+        // Warm-session A2A: route to the interactive keep-alive path when set.
+        // Undefined on every non-warm spawn → headless behavior unchanged.
+        interactive: request.interactive,
       });
       // Accept both the legacy bare-id return and the {sessionId, tmuxSession}
       // object form. The tmuxSession (when provided) is forwarded so callers
