@@ -1,0 +1,37 @@
+# Gemini Quota State Framework Awareness
+
+<!-- bump: patch -->
+
+## What Changed
+
+Gemini quota-state reporting is now framework-aware. Gemini agents no longer run
+the Claude/Anthropic quota collector, so they cannot accidentally display Claude
+usage as Gemini usage. When Gemini CLI itself reports a long model capacity reset,
+the Gemini adapter now writes a Gemini-authored stop-state into the existing quota
+file with source, model, reset-window, and reason metadata. That lets the
+scheduler see the same live capacity block the CLI enforced instead of repeatedly
+spawning doomed Gemini work.
+
+## What to Tell Your User
+
+When Gemini is throttled, I now treat the live Gemini CLI limit as the reliable
+signal and stop showing unrelated Claude quota as if it were Gemini's quota. That
+means fewer misleading "looks available" moments when Gemini itself is actually
+waiting for a reset.
+
+## Summary of New Capabilities
+
+| Capability | How to Use |
+|-----------|-----------|
+| Gemini quota-state attribution | Automatic. Gemini agents skip Claude quota collection and persist live Gemini CLI capacity blocks into the existing quota gate. |
+
+## Evidence
+
+The bug was reproduced during the Codey to Gemini mentorship loop: the quota
+state showed 15% usage, but a live Gemini CLI spawn reported a usage limit for
+the active Gemini model. Source tracing on current main showed the 15% value came
+from the Claude-specific quota collector, while Gemini capacity deferrals only
+lived in memory. After this change, focused unit, integration, and E2E tests
+verify that Gemini capacity deferrals persist a Gemini-authored quota stop-state
+and that the existing quota tracker blocks future low-priority spawns from that
+state.

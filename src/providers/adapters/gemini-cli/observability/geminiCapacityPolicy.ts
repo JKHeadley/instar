@@ -13,6 +13,9 @@
  */
 
 import { GEMINI_DEFAULT_MODEL, isKnownGeminiModel } from '../models.js';
+import fs from 'node:fs';
+import path from 'node:path';
+import { SafeFsExecutor } from '../../../../core/SafeFsExecutor.js';
 
 export interface GeminiCapacityPolicyConfig {
   enabled?: boolean;
@@ -24,6 +27,12 @@ export interface GeminiCapacityPolicyConfig {
   backoffMs?: number;
   /** Optional operator-selected fallback. Ignored unless it is a known Gemini model. */
   fallbackModel?: string;
+  /**
+   * Optional quota-state output path. When set, long Gemini capacity deferrals
+   * are written as stop-state snapshots so the existing quota gate blocks
+   * doomed scheduler spawns until the CLI-reported reset window passes.
+   */
+  quotaStateFile?: string;
 }
 
 export type GeminiCapacityAction = 'none' | 'retry' | 'defer';
@@ -154,12 +163,65 @@ export function getGeminiCapacityGate(now = Date.now()): GeminiCapacityGate {
 export function recordGeminiCapacityDeferral(params: {
   retryAfterMs: number;
   reason: string;
+  model?: string;
+  quotaStateFile?: string;
   now?: number;
 }): GeminiCapacityGate {
   const now = params.now ?? Date.now();
   deferredUntil = now + Math.max(1, params.retryAfterMs) + RESET_GRACE_MS;
   deferredReason = params.reason;
+  if (params.quotaStateFile) {
+    try {
+      writeGeminiQuotaState({
+        quotaStateFile: params.quotaStateFile,
+        blockedUntil: deferredUntil,
+        reason: params.reason,
+        model: params.model ?? GEMINI_DEFAULT_MODEL,
+        now,
+      });
+    } catch (err) {
+      console.warn(
+        `[gemini-capacity-policy] failed to persist quota state: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
+  }
   return getGeminiCapacityGate(now);
+}
+
+function writeGeminiQuotaState(params: {
+  quotaStateFile: string;
+  blockedUntil: number;
+  reason: string;
+  model: string;
+  now: number;
+}): void {
+  const state = {
+    usagePercent: 0,
+    fiveHourPercent: 100,
+    source: 'gemini-cli-capacity',
+    model: params.model,
+    blockedUntil: new Date(params.blockedUntil).toISOString(),
+    blockReason: params.reason,
+    lastUpdated: new Date(params.now).toISOString(),
+    recommendation: 'stop',
+  };
+
+  const dir = path.dirname(params.quotaStateFile);
+  fs.mkdirSync(dir, { recursive: true });
+  const tmp = `${params.quotaStateFile}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`;
+  try {
+    fs.writeFileSync(tmp, JSON.stringify(state, null, 2));
+    fs.renameSync(tmp, params.quotaStateFile);
+  } catch (err) {
+    try {
+      SafeFsExecutor.safeUnlinkSync(tmp, {
+        operation: 'geminiCapacityPolicy.writeGeminiQuotaState.cleanup',
+      });
+    } catch { /* best-effort cleanup */ }
+    throw err;
+  }
 }
 
 export function resetGeminiCapacityPolicyForTests(): void {

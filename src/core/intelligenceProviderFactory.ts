@@ -58,6 +58,12 @@ export interface BuildIntelligenceProviderOptions {
    * actually holds (docs/specs/per-component-framework-routing.md, D3).
    */
   breaker?: LlmCircuitBreaker;
+  /**
+   * Optional quota-state path for providers whose live capacity signal is only
+   * available after invoking the CLI. Currently used by gemini-cli to persist
+   * CLI-reported usage-limit windows into the existing quota gate.
+   */
+  quotaStateFile?: string;
 }
 
 /**
@@ -105,6 +111,7 @@ export function buildIntelligenceProvider(
         new GeminiCliIntelligenceProvider({
           geminiPath: path,
           ...(options.workingDirectory ? { workingDirectory: options.workingDirectory } : {}),
+          ...(options.quotaStateFile ? { capacityPolicy: { quotaStateFile: options.quotaStateFile } } : {}),
         }),
         options.breaker,
       );
