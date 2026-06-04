@@ -1,0 +1,37 @@
+# Upgrade Guide — vNEXT
+
+<!-- bump: patch -->
+
+## What Changed
+
+**Long Telegram inbound messages now land inside the agent project instead of `/tmp`.**
+When Telegram sends a message too large to inject directly, instar writes the
+full payload to a file and injects a short "read this file" reference into the
+agent session. That file used to live under `/tmp/instar-telegram`, which is
+outside Gemini CLI's workspace sandbox. Gemini agents could receive the
+reference but could not read the file. The Telegram inbound file directory is
+now shared through one helper and resolves to `.instar/telegram-inbound/` under
+the target project directory.
+
+## What to Tell Your User
+
+Nothing to configure. Long Telegram messages and Telegram auto-spawn context
+files remain transient, but sandboxed agents can now read the referenced files
+because they live under the project they are already allowed to access.
+
+## Summary of New Capabilities
+
+- `getTelegramInboundDir(projectDir)` centralizes the Telegram inbound file
+  location at `<projectDir>/.instar/telegram-inbound`.
+- Telegram injection, Telegram bootstrap context files, Secret Drop-triggered
+  Telegram session context, Telegram forward auto-spawn context, and stale-file
+  cleanup all use the same helper.
+- `.instar/telegram-inbound/` is ignored by git because inbound message payloads
+  are transient runtime data.
+
+## Evidence
+
+- Focused tests: `npm test -- --run tests/unit/session-telegram-inject.test.ts tests/e2e/input-guard-e2e.test.ts tests/unit/server-temp-cleanup.test.ts tests/unit/bootstrap-file-threshold.test.ts tests/unit/telegram-message-injection.test.ts`
+- The regression coverage verifies a long Telegram message writes under the
+  project-local inbound directory, the injected reference points there, and the
+  referenced file contains the tagged full message.

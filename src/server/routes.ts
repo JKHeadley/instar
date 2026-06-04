@@ -38,6 +38,7 @@ import { CorrectionLedger } from '../monitoring/CorrectionLedger.js';
 import { scrubSecrets as scrubCorrectionSecrets } from '../monitoring/scrubSecrets.js';
 import { HumanAsDetectorLog, LEARNING_DETERMINISTIC_THRESHOLD } from '../monitoring/HumanAsDetectorLog.js';
 import { APPRENTICESHIP_CYCLE_CHANNELS } from '../monitoring/ApprenticeshipCycleStore.js';
+import { getTelegramInboundDir } from '../messaging/shared/telegramInboundFiles.js';
 import { parseVersion, compareVersions } from '../lifeline/versionHandshake.js';
 import { readLatestCodexUsage } from '../providers/adapters/openai-codex/observability/codexRateLimitReader.js';
 import {
@@ -9843,7 +9844,7 @@ export function createRoutes(ctx: RouteContext): Router {
           ``,
           systemMsg,
         ];
-        const tmpDir = '/tmp/instar-telegram';
+        const tmpDir = getTelegramInboundDir(ctx.config.projectDir);
         fs.mkdirSync(tmpDir, { recursive: true });
         const ctxPath = path.join(tmpDir, `ctx-${topicId}-${Date.now()}.txt`);
         fs.writeFileSync(ctxPath, contextLines.join('\n'));
@@ -10425,7 +10426,7 @@ export function createRoutes(ctx: RouteContext): Router {
           ``,
           `This session was auto-created for Telegram topic ${topicId}.`,
         ];
-        const tmpDir = '/tmp/instar-telegram';
+        const tmpDir = getTelegramInboundDir(ctx.config.projectDir);
         fs.mkdirSync(tmpDir, { recursive: true });
         const ctxPath = path.join(tmpDir, `ctx-${topicId}-${Date.now()}.txt`);
         fs.writeFileSync(ctxPath, contextLines.join('\n'));
