@@ -43,8 +43,12 @@ const FLAKY_TESTS = [
   'tests/e2e/memory-exporter-lifecycle.test.ts',
   'tests/e2e/dispatch-update-feedback.test.ts',
 
-  // ── ESM compliance — catches new require() from dependencies ────
-  'tests/unit/esm-compliance.test.ts',
+  // ── ESM compliance — RE-ARMED 2026-06-03. Was quarantined here, which let
+  //    3 latent bare-require() bugs reach main (reflect.ts/SessionWatchdog.ts/
+  //    PostUpdateMigrator.ts — ReferenceError in this "type":"module" pkg). Those
+  //    are fixed and the guard now recognizes the legitimate createRequire pattern,
+  //    so it gates again instead of silently allowing the exact bug class it exists
+  //    to catch. (Structure > Willpower: a parked gate is no gate.)
 
   // ── HTTP response corruption / parse errors ───────────────────────
   'tests/e2e/system-reviewer-e2e.test.ts',
@@ -118,7 +122,9 @@ const FLAKY_TESTS = [
   'tests/unit/gdpr-commands.test.ts',
   'tests/unit/memory-index.test.ts',
   'tests/unit/topic-summarizer.test.ts',
-  'tests/unit/no-silent-fallbacks.test.ts',
+  // no-silent-fallbacks RE-ARMED 2026-06-03 (was misfiled in this sqlite section —
+  // it's a pure regex-over-src guard, no native binding). Baseline corrected to the
+  // true count (was a bogus 186 set by a [skip ci] release while reality was 431).
   'tests/integration/user-agent-topology.test.ts',
   'tests/integration/output-privacy-routing.test.ts',
   'tests/integration/privacy-scoping.test.ts',

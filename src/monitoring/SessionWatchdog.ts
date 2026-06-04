@@ -32,6 +32,12 @@ function shellExec(cmd: string, timeout = 5000): string {
 import type { SessionManager } from '../core/SessionManager.js';
 import type { StateManager } from '../core/StateManager.js';
 import type { InstarConfig, IntelligenceProvider } from '../core/types.js';
+import { createRequire } from 'node:module';
+
+// ESM module: a bare CJS `require` is undefined and throws at runtime. Bind a
+// real require via createRequire so the lazy load below is genuinely ESM-legal
+// (mirrors NativeModuleHealer.ts).
+const require = createRequire(import.meta.url);
 
 export enum EscalationLevel {
   Monitoring = 0,

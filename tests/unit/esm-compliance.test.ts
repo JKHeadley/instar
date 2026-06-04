@@ -28,6 +28,13 @@ describe('ESM compliance', () => {
 
     for (const file of files) {
       const content = fs.readFileSync(file, 'utf-8');
+      // A file that binds `require` via createRequire(import.meta.url) has a
+      // genuinely ESM-legal `require` (e.g. NativeModuleHealer.ts,
+      // node-abi-mismatch.ts re-loading a native module after an ABI rebuild —
+      // which static `import` cannot express). Those calls are NOT the CJS-global
+      // require this guard targets, so skip such files for the require() check.
+      // (The "all source files use ESM imports" check below still applies.)
+      if (/\brequire\s*=\s*createRequire\s*\(/.test(content)) continue;
       // Match require('...') but exclude template strings and comments
       const lines = content.split('\n');
       let templateDepth = 0;
