@@ -17,6 +17,7 @@ import type { SessionRefresh } from '../core/SessionRefresh.js';
 import type { StateManager } from '../core/StateManager.js';
 import { describeTopicPlacement } from '../core/TopicPlacementDescription.js';
 import { buildRelocationNicknameSet } from '../core/RelocationNicknameSet.js';
+import { resolveSelfNickname } from '../core/SelfNicknameResolver.js';
 import { planTransferByNickname } from '../core/TransferByNickname.js';
 import type { JobScheduler } from '../scheduler/JobScheduler.js';
 import type { InstarConfig, JobPriority } from '../core/types.js';
@@ -7754,7 +7755,11 @@ export function createRoutes(ctx: RouteContext): Router {
     // We are the holder (or single-machine) — perform authoritatively.
     const self = ctx.meshSelfId ?? null;
     const caps = ctx.machinePoolRegistry?.getCapacities() ?? [];
-    const selfNickname = self ? (caps.find((c) => c.machineId === self)?.nickname ?? null) : null;
+    // Resolve THIS machine's own nickname robustly (not caps-only): a machine's capacity
+    // view can omit its own nickname (the live-caught self-nickname gap). The
+    // self-nickname convergence task persists it into caps; this resolver is the
+    // consistent path + boot-window backstop.
+    const selfNickname = resolveSelfNickname({ selfMachineId: self, localCapacities: caps });
     const { nickToMachine, knownNicknames } = buildRelocationNicknameSet({ capacities: caps, selfMachineId: self, selfNickname });
     const knownMachineIds = new Set(caps.map((c) => c.machineId));
     // Resolve `to` as a nickname OR a raw machineId, so callers can use either.

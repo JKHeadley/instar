@@ -9862,6 +9862,47 @@ export async function startServer(options: StartOptions): Promise<void> {
             const h = coordinator.getSyncStatus().leaseHolder;
             return h && h !== meshSelfId ? peerUrl(h) : null;
           };
+          // ── Self-nickname convergence (§L4, 2026-06-04 live-caught fix) ──
+          // `updateNickname` (PATCH /pool/machines) is local-only, so a rename applied on a
+          // PEER's registry never reaches the owning machine — leaving that machine unable to
+          // resolve its OWN nickname (the laptop's self-entry was nickname=None, so "move it
+          // back to the laptop" silently failed on the very machine that runs the relocation
+          // check). Periodically adopt our own nickname from a peer's authoritative /pool view
+          // and persist it, making getCapacities() SYMMETRIC so the recognizer, the transfer
+          // route, and /pool all resolve self. No-ops once the local nickname is known.
+          const selfNickMod = await import('../core/SelfNicknameResolver.js');
+          const convergeSelfNickname = async (): Promise<void> => {
+            try {
+              if (!machinePoolRegistry) return;
+              const localCaps = machinePoolRegistry.getCapacities();
+              if (localCaps.find((c) => c.machineId === meshSelfId)?.nickname?.trim()) return; // already known
+              // Collect peers' authoritative /pool views (they carry this machine's nickname).
+              const peerCapacities: { machineId: string; nickname?: string }[][] = [];
+              for (const m of meshIdMgr.getActiveMachines()) {
+                if (m.machineId === meshSelfId) continue;
+                const url = peerUrl(m.machineId);
+                if (!url) continue;
+                try {
+                  const r = await fetch(`${url}/pool`, { headers: { Authorization: `Bearer ${config.authToken}` } });
+                  if (!r.ok) continue;
+                  const j = (await r.json()) as { machines?: { machineId: string; nickname?: string }[] };
+                  if (j.machines) peerCapacities.push(j.machines);
+                } catch {
+                  /* @silent-fallback-ok — best-effort peer fetch; convergence retries on the timer */
+                }
+              }
+              const resolved = selfNickMod.resolveSelfNickname({ selfMachineId: meshSelfId, localCapacities: localCaps, peerCapacities });
+              if (resolved) {
+                meshIdMgr.updateNickname(meshSelfId, resolved);
+                console.log(pc.green(`  [self-nickname] adopted "${resolved}" for ${meshSelfId} from a peer's view (was unset locally)`));
+              }
+            } catch {
+              /* @silent-fallback-ok — convergence is best-effort; never blocks startup */
+            }
+          };
+          void convergeSelfNickname();
+          const selfNickTimer = setInterval(() => { void convergeSelfNickname(); }, 60_000);
+          if (typeof selfNickTimer.unref === 'function') selfNickTimer.unref();
           // This machine participates in the session pool, so a read-only standby may
           // persist the PER-SESSION state of sessions it's handed (the pool's owner-side
           // resume only fires for CAS-confirmed owned sessions, and only past 'dark').

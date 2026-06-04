@@ -112,6 +112,18 @@ describe('E2E: pool placement + transfer routes are ALIVE through the real Agent
     expect((await after.json()).reason).toBe('pinned');
   });
 
+  // The live-caught self-nickname bug: a machine must resolve its OWN nickname.
+  // SELF here is "Mac Mini" — transferring to "Mac Mini" exercises self-resolution
+  // through the real stack (this 404'd as "unknown machine" before the fix).
+  it('POST /pool/transfer resolves THIS machine\'s OWN nickname (self-nickname fix)', async () => {
+    const res = await fetch(`${base}/pool/transfer`, { method: 'POST', headers: auth, body: JSON.stringify({ topic: 502, to: 'Mac Mini' }) });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.ok).toBe(true);
+    expect(body.targetMachine).toBe(SELF);
+    expect(body.targetNickname).toBe('Mac Mini');
+  });
+
   it('routes sit behind auth (401/403 without a Bearer token) — proves the real middleware stack', async () => {
     const res = await fetch(`${base}/pool/placement?topic=500`);
     expect([401, 403]).toContain(res.status);
