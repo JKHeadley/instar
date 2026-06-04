@@ -24,3 +24,4 @@
 {"ts":"2026-06-03T22:27:56.444Z","slug":"unknown","suggestedTier":1,"declaredTier":1,"riskFloor":1,"riskFloorReasons":[],"belowFloor":false,"files":1,"loc":18}
 {"ts":"2026-06-03T22:28:57.934Z","slug":"unknown","suggestedTier":2,"declaredTier":1,"riskFloor":1,"riskFloorReasons":[],"belowFloor":false,"files":6,"loc":331}
 {"ts":"2026-06-04T05:48:03.164Z","slug":"url-pathname-path-encoding-fix","suggestedTier":2,"declaredTier":null,"riskFloor":1,"riskFloorReasons":[],"belowFloor":false,"files":3,"loc":41}
+{"ts":"2026-06-04T06:49:10.168Z","slug":"unknown","suggestedTier":2,"declaredTier":1,"riskFloor":2,"riskFloorReasons":["irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator","migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)"],"belowFloor":true,"files":5,"loc":148}

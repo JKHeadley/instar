@@ -33,6 +33,7 @@ import { FailureLoopDriver } from '../monitoring/FailureLoopDriver.js';
 import { CorrectionLedger } from '../monitoring/CorrectionLedger.js';
 import { scrubSecrets as scrubCorrectionSecrets } from '../monitoring/scrubSecrets.js';
 import { HumanAsDetectorLog, LEARNING_DETERMINISTIC_THRESHOLD } from '../monitoring/HumanAsDetectorLog.js';
+import { APPRENTICESHIP_CYCLE_CHANNELS } from '../monitoring/ApprenticeshipCycleStore.js';
 import { parseVersion, compareVersions } from '../lifeline/versionHandshake.js';
 import { readLatestCodexUsage } from '../providers/adapters/openai-codex/observability/codexRateLimitReader.js';
 import {
@@ -78,6 +79,7 @@ const execFile = promisify(execFileCb);
  * requiring operator intervention.
  */
 const CONTINUE_CEILING = 2;
+const APPRENTICESHIP_CYCLE_CHANNEL_SET = new Set<string>(APPRENTICESHIP_CYCLE_CHANNELS);
 
 /**
  * Server-side post-verifier for a continue decision (spec § (b) lines 273-281).
@@ -11773,6 +11775,15 @@ export function createRoutes(ctx: RouteContext): Router {
     if (!ctx.apprenticeshipCycleStore) { res.status(503).json({ error: 'apprenticeship cycle store disabled' }); return; }
     try {
       const body = req.body ?? {};
+      if (!body || typeof body !== 'object' || Array.isArray(body)) {
+        throw new Error('request body must be an object');
+      }
+      if (
+        'channel' in body &&
+        (typeof body.channel !== 'string' || !APPRENTICESHIP_CYCLE_CHANNEL_SET.has(body.channel))
+      ) {
+        throw new Error(`channel must be one of: ${APPRENTICESHIP_CYCLE_CHANNELS.join(', ')}`);
+      }
       const cycle = ctx.apprenticeshipCycleStore.record({
         ...body,
         kind: typeof body.kind === 'string' ? body.kind : 'mentor-mentee-differential',

@@ -165,6 +165,19 @@ describe('/apprenticeship routes (integration)', () => {
       .send({ instanceId: 'echo-to-codey' });
     expect(bad.status).toBe(400);
 
+    const badChannel = await request(app)
+      .post('/apprenticeship/cycles')
+      .set(auth())
+      .send({
+        instanceId: 'echo-to-codey',
+        cycleNumber: 1,
+        task: 'Manual review',
+        menteeOutput: 'raw output',
+        channel: 'email',
+      });
+    expect(badChannel.status).toBe(400);
+    expect(badChannel.body.error).toContain('channel must be one of');
+
     const created = await request(app)
       .post('/apprenticeship/cycles')
       .set(auth())
@@ -179,9 +192,11 @@ describe('/apprenticeship routes (integration)', () => {
         coaching: 'Keep reasoning and infra findings separate.',
         infraItems: ['ripgrep missing'],
         kind: 'mentor-mentee-differential',
+        channel: 'telegram-playwright',
       });
     expect(created.status).toBe(201);
     expect(created.body.kind).toBe('mentor-mentee-differential');
+    expect(created.body.channel).toBe('telegram-playwright');
     expect(created.body.mentorFlagged).toEqual(['compressed principles']);
     expect(created.body.infraItems).toEqual(['ripgrep missing']);
 
@@ -214,6 +229,41 @@ describe('/apprenticeship routes (integration)', () => {
 
     const closeMissing = await request(app).post('/apprenticeship/cycles/no-such/close').set(auth());
     expect(closeMissing.status).toBe(404);
+    store.close();
+  });
+
+  it('records manual overseer cycle rows with their execution channel', async () => {
+    const store = makeCycleStore();
+    const app = appWith(ctxFor(stateDir, makeProgram(), store));
+
+    const created = await request(app)
+      .post('/apprenticeship/cycles')
+      .set(auth())
+      .send({
+        id: 'cycle-overseer-manual',
+        instanceId: 'echo-to-codey',
+        cycleNumber: 1,
+        task: 'Manual overseer review of Codey output',
+        menteeOutput: 'Codey shipped the route.',
+        overseerDifferential: ['route existed but was not surfaced in capabilities'],
+        coaching: 'Check live main before assuming the missing layer.',
+        infraItems: ['add capability awareness for cycle writes'],
+        kind: 'overseer-apprentice-devreview',
+        channel: 'direct-shortcut',
+      });
+
+    expect(created.status).toBe(201);
+    expect(created.body.kind).toBe('overseer-apprentice-devreview');
+    expect(created.body.channel).toBe('direct-shortcut');
+
+    const fetched = await request(app).get('/apprenticeship/cycles/cycle-overseer-manual').set(auth());
+    expect(fetched.status).toBe(200);
+    expect(fetched.body.overseerDifferential).toEqual(['route existed but was not surfaced in capabilities']);
+
+    const coverage = await request(app).get('/apprenticeship/instances/echo-to-codey/role-coverage').set(auth());
+    expect(coverage.status).toBe(200);
+    expect(coverage.body.axes['overseer-apprentice-devreview'].fired).toBe(true);
+    expect(coverage.body.axes['mentor-mentee-differential'].fired).toBe(false);
     store.close();
   });
 
