@@ -168,7 +168,7 @@ export interface SpawnRequestManagerConfig {
     model?: string;
     maxDurationMinutes?: number;
     triggeredBy?: 'spawn-request' | 'spawn-request-drain';
-  }) => Promise<string>;
+  }) => Promise<string | { sessionId: string; tmuxSession?: string }>;
   /** Function to check memory pressure. Returns true if pressure is too high. */
   isMemoryPressureHigh?: () => boolean;
   /** Cooldown between spawn requests per agent (ms). Default: 30s */
@@ -560,12 +560,18 @@ export class SpawnRequestManager {
     try {
       const queuedMessages = this.#drainQueue(agent);
       const prompt = this.#buildSpawnPrompt(request, queuedMessages);
-      const sessionId = await this.#config.spawnSession(prompt, {
+      const spawned = await this.#config.spawnSession(prompt, {
         model: request.suggestedModel,
         maxDurationMinutes: request.suggestedMaxDuration,
         // §4.5: forward provenance tag (defaults to 'spawn-request' on inline path).
         triggeredBy: request.triggeredBy ?? 'spawn-request',
       });
+      // Accept both the legacy bare-id return and the {sessionId, tmuxSession}
+      // object form. The tmuxSession (when provided) is forwarded so callers
+      // (spawnNewThread) persist the REAL tmux name as the resume entry's
+      // sessionName — load-bearing for Threadline continuity.
+      const sessionId = typeof spawned === 'string' ? spawned : spawned.sessionId;
+      const tmuxSession = typeof spawned === 'string' ? undefined : spawned.tmuxSession;
 
       // Success — clear penalty state and pending retries.
       this.#clearFailureAttribution(agent);
@@ -575,6 +581,7 @@ export class SpawnRequestManager {
       return {
         approved: true,
         sessionId,
+        tmuxSession,
         reason: `Session spawned for: ${request.reason}`,
       };
     } catch (err) {

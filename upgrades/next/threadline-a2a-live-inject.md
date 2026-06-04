@@ -24,12 +24,18 @@ the entry (including the still-valid live `sessionName`) on every follow-up. Wit
 a null entry, `ThreadlineRouter.handleInboundMessage` skips the already-built
 `tryInjectIntoLiveSession` + `resumeThread` machinery and cold-spawns.
 
-The fix is surgical: when the transcript is absent, `get()` now returns the entry
-anyway **if its tmux session is still alive** (new protected `sessionAlive()`,
-exact-match `tmux has-session -t =name`), so the live-inject path delivers the
-follow-up straight into the running session — no transcript needed. Dead session +
-no transcript still nulls (the resume guard is intact); topic-bound and pinned
-exemptions are unchanged. Also lands the `WarmSessionPool`
+The fix has two parts. **(1)** When the transcript is absent, `get()` now returns
+the entry anyway **if its tmux session is still alive** (new protected
+`sessionAlive()`, exact-match `tmux has-session -t =name`), so the follow-up routes
+into the running session (live-inject, or a resume that carries the conversation
+history) — no transcript needed. Dead session + no transcript still nulls (resume
+guard intact); topic-bound + pinned exemptions unchanged. **(2)** Part 1 was inert
+without the real session name: `spawnNewThread` recorded the resume entry's
+`sessionName` from the spawn result, but the `spawnSession` callback only returned
+the bare instar session id, so a useless fallback name was stored that
+`sessionAlive()`/`getBySessionName` could never match. The callback contract now
+returns `string | { sessionId, tmuxSession }` (back-compatible);
+`SpawnRequestManager.evaluate` forwards the real tmux name through to the entry. Also lands the `WarmSessionPool`
 (`src/threadline/WarmSessionPool.ts`) per-peer warm-session registry (caps + TTL +
 LRU) — the tested foundation for the follow-up that keeps A2A sessions warm so
 follow-ups inject even after the first reply completes.

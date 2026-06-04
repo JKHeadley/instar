@@ -7707,7 +7707,12 @@ export async function startServer(options: StartOptions): Promise<void> {
           // messages from trusted agents.
           codexAllowMcpTools: true,
         });
-        return session.id;
+        // Return BOTH ids: spawnNewThread persists `tmuxSession` as the resume
+        // entry's sessionName (the REAL `echo-msg-spawn-<ts>`), so live-inject /
+        // resume-while-alive and onSessionComplete's getBySessionName can find the
+        // running session. Returning only the bare id stamped a useless fallback
+        // name and made every A2A follow-up cold-spawn (the continuity break).
+        return { sessionId: session.id, tmuxSession: session.tmuxSession };
       },
       isMemoryPressureHigh: memoryMonitor
         ? () => {
