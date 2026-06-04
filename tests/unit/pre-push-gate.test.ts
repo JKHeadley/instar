@@ -73,6 +73,19 @@ describe('Pre-push gate script', () => {
     expect(content).toContain('SILENTLY SKIPS');
     expect(content).toContain("f.startsWith('upgrades/next/')");
   });
+
+  it('verifies the internal-only lane marker against the diff (objective gate)', () => {
+    // Like #23 above, the git-diff path is exercised by source inspection here;
+    // the behavioural core (marker detection + assembler auto-fill) is covered by
+    // tests/unit/assemble-next-md.test.ts. This asserts the gate REJECTS an
+    // <!-- internal-only --> fragment that accompanies a runtime src/ change, so
+    // the marker (which lets a fragment skip the user-facing sections) can't be
+    // misused to hide a user-facing change.
+    const content = fs.readFileSync(gatePath, 'utf-8');
+    expect(content).toContain('hasInternalOnlyMarker');
+    expect(content).toContain('Internal-only release fragment(s) accompany');
+    expect(content).toContain('internalOnlyFragments.length > 0 && srcChanges.length > 0');
+  });
 });
 
 // ── Integration: malformed NEXT.md rejection ─────────────────────────

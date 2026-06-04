@@ -24,8 +24,12 @@ import {
   parseBumpType,
   parseSections,
   gatherFragmentInputs,
+  hasInternalOnlyMarker,
+  INTERNAL_ONLY_FILL,
   CANONICAL_SECTIONS,
 } from '../../scripts/assemble-next-md.mjs';
+// @ts-expect-error — .mjs script, no type declarations
+import { validateGuideContent } from '../../scripts/upgrade-guide-validator.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..', '..');
@@ -348,5 +352,96 @@ describe('CANONICAL_SECTIONS export', () => {
       'Summary of New Capabilities',
       'Evidence',
     ]);
+  });
+});
+
+describe('internal-only ship lane', () => {
+  // An internal/test-only fragment opts in with <!-- internal-only --> and may
+  // omit the two user-facing sections.
+  const INTERNAL = [
+    '<!-- bump: patch -->',
+    '<!-- internal-only -->',
+    '',
+    '## What Changed',
+    '',
+    'Refactored an internal test helper; no shipped behavior change.',
+    '',
+    '## Evidence',
+    '',
+    'Unit tests pass; tsc clean.',
+    '',
+  ].join('\n');
+
+  const USER_FACING = [
+    '<!-- bump: patch -->',
+    '',
+    '## What Changed',
+    '',
+    'Added a user-visible widget.',
+    '',
+    '## What to Tell Your User',
+    '',
+    'You can now use the widget.',
+    '',
+    '## Summary of New Capabilities',
+    '',
+    'Widget support.',
+    '',
+    '## Evidence',
+    '',
+    'Tests.',
+    '',
+  ].join('\n');
+
+  it('detects the <!-- internal-only --> marker', () => {
+    expect(hasInternalOnlyMarker(INTERNAL)).toBe(true);
+    expect(hasInternalOnlyMarker(USER_FACING)).toBe(false);
+    expect(hasInternalOnlyMarker('<!--internal-only-->\n## What Changed\nx')).toBe(true);
+  });
+
+  it('auto-fills both user-facing sections when EVERY fragment is internal-only', () => {
+    const out = assembleNextMd([frag('a.md', INTERNAL)]);
+    expect(out).toContain('## What to Tell Your User');
+    expect(out).toContain('## Summary of New Capabilities');
+    // both missing sections filled with the canonical internal text
+    expect(out.match(new RegExp(INTERNAL_ONLY_FILL.replace(/[().]/g, '\\$&'), 'g'))).toHaveLength(2);
+  });
+
+  it('the auto-filled all-internal guide passes the shared publish validator', () => {
+    const out = assembleNextMd([frag('a.md', INTERNAL)]);
+    expect(validateGuideContent(out)).toEqual([]);
+  });
+
+  it('does NOT auto-fill when any fragment is user-facing (real content wins)', () => {
+    const out = assembleNextMd([frag('a.md', INTERNAL), frag('b.md', USER_FACING)]);
+    expect(out).toContain('You can now use the widget.');
+    expect(out).toContain('Widget support.');
+    expect(out).not.toContain(INTERNAL_ONLY_FILL);
+    // and the mixed guide is still valid (user sections came from the user fragment)
+    expect(validateGuideContent(out)).toEqual([]);
+  });
+
+  it('preserves a user section an internal fragment DID write, and fills only the missing one', () => {
+    const internalWithOneUserSection = [
+      '<!-- bump: patch -->',
+      '<!-- internal-only -->',
+      '',
+      '## What Changed',
+      '',
+      'Internal change that happens to note one thing.',
+      '',
+      '## What to Tell Your User',
+      '',
+      'A genuine note.',
+      '',
+      '## Evidence',
+      '',
+      'Tests.',
+      '',
+    ].join('\n');
+    const out = assembleNextMd([frag('a.md', internalWithOneUserSection)]);
+    expect(out).toContain('A genuine note.'); // preserved, not overwritten
+    expect(out).toContain(INTERNAL_ONLY_FILL); // Summary was missing → filled
+    expect(validateGuideContent(out)).toEqual([]);
   });
 });

@@ -1,0 +1,29 @@
+<!-- bump: patch -->
+<!-- internal-only -->
+
+## What Changed
+
+Added an internal-only release-note lane to the instar-dev ship gate. A release-note
+fragment that has no user-facing surface (test-only, docs-only, or build/CI scripts
+with no `src/` runtime change) can now carry an `<!-- internal-only -->` marker and
+OMIT the two user-facing sections ("What to Tell Your User", "Summary of New
+Capabilities"). The shared assembler (`scripts/assemble-next-md.mjs`) auto-fills those
+sections with "None — internal change (no user-facing surface)." — but ONLY when every
+fragment in the release is internal-only, so a real user-facing change can never skip
+telling the user.
+
+The marker is verified objectively: `scripts/pre-push-gate.js` rejects an
+`<!-- internal-only -->` fragment whose diff touches a runtime `src/` file. The
+side-effects review and decision-trace are unchanged — only the user-facing release
+boilerplate is lifted, and only for changes that provably have no user-facing surface.
+
+This very fragment uses the new lane (this PR is scripts + tests only), dogfooding it.
+
+## Evidence
+
+- 45 tests green across `tests/unit/assemble-next-md.test.ts` (auto-fill on all-internal,
+  validator passes the auto-filled guide, real content preserved when any fragment is
+  user-facing, marker detection, self-... ) and `tests/unit/pre-push-gate.test.ts` (the
+  objective §3c marker-vs-diff gate). `node --check scripts/pre-push-gate.js` clean.
+- The auto-fill lives in the assembler shared by BOTH the pre-push gate and the publish
+  gate (`check-upgrade-guide.js`), so the two can never disagree about a release note.

@@ -84,6 +84,22 @@ export function parseBumpType(content) {
 }
 
 /**
+ * Does this fragment opt into the internal-only ship lane via an
+ * `<!-- internal-only -->` marker? Such a fragment has no user-facing surface,
+ * so it may omit the "What to Tell Your User" / "Summary of New Capabilities"
+ * sections — the assembler auto-fills them ONLY when EVERY contributing fragment
+ * is internal-only (see assembleNextMd). The pre-push gate independently verifies
+ * the marker against the staged diff (an internal-only fragment whose PR touches
+ * runtime `src/` is rejected), so the marker cannot be misused.
+ */
+export function hasInternalOnlyMarker(content) {
+  return /<!--\s*internal-only\s*-->/i.test(String(content));
+}
+
+/** Canonical text auto-filled into the user-facing sections of an all-internal release. */
+export const INTERNAL_ONLY_FILL = 'None — internal change (no user-facing surface).';
+
+/**
  * Split a fragment body into H2 sections: [{ title, body }] in source order.
  * `body` excludes the heading line itself and is right-trimmed.
  * Content before the first H2 (H1 header, bump comment, stray prose) is dropped
@@ -140,9 +156,15 @@ export function assembleNextMd(fragments) {
   const extraOrder = [];
   let maxBumpRank = 0;
   let sawAnyBump = false;
+  // The internal-only lane auto-fills the user-facing sections ONLY when every
+  // contributing fragment opts in. Starts true for a non-empty input set and is
+  // cleared by the first fragment WITHOUT an <!-- internal-only --> marker, so a
+  // single user-facing fragment keeps the full user-section requirement.
+  let allInternal = effective.length > 0;
 
   for (const frag of effective) {
     const content = frag.content ?? '';
+    if (!hasInternalOnlyMarker(content)) allInternal = false;
     const bump = parseBumpType(content);
     if (bump) {
       sawAnyBump = true;
@@ -181,6 +203,20 @@ export function assembleNextMd(fragments) {
       'release-note fragments produced no content — every section was empty. ' +
       'Fill in at least "## What Changed" in one fragment.',
     );
+  }
+
+  // Internal-only lane: when EVERY contributing fragment is marked
+  // <!-- internal-only -->, the change has no user-facing surface, so the two
+  // user-facing sections are auto-filled rather than hand-written. This keeps the
+  // shared validator (pre-push AND publish) satisfied without forcing
+  // "None — internal" boilerplate by hand. We auto-fill ONLY missing sections, so
+  // an internal fragment that DOES say something user-facing is preserved as-is;
+  // and because `allInternal` is false whenever any fragment lacks the marker, a
+  // genuinely user-facing change that omits these sections still fails validation.
+  if (allInternal) {
+    for (const title of ['What to Tell Your User', 'Summary of New Capabilities']) {
+      if (!merged.has(title)) merged.set(title, [INTERNAL_ONLY_FILL]);
+    }
   }
 
   // Emit canonical sections first (only when present), then extras in

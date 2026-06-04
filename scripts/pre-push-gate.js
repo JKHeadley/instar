@@ -14,7 +14,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { validateGuideContent } from './upgrade-guide-validator.mjs';
-import { assembleNextMd, gatherFragmentInputs } from './assemble-next-md.mjs';
+import { assembleNextMd, gatherFragmentInputs, hasInternalOnlyMarker } from './assemble-next-md.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
@@ -183,6 +183,29 @@ try {
       `release — your change would merge but never ship. Add a fragment describing the change:\n` +
       srcChanges.slice(0, 5).map(f => `      • ${f}`).join('\n') +
       (srcChanges.length > 5 ? `\n      • ...and ${srcChanges.length - 5} more` : '')
+    );
+  }
+
+  // ── 3c. Internal-only lane verification (objective gate) ──────────────
+  // A release fragment marked <!-- internal-only --> may omit the user-facing
+  // sections — the assembler auto-fills "None — internal" for an all-internal
+  // release. That is ONLY valid for changes with no shipped runtime surface.
+  // Verify against the diff: if any staged internal-only fragment accompanies a
+  // runtime src/ change, REJECT — a user-facing change must not skip
+  // "What to Tell Your User" / "Summary of New Capabilities". This is the
+  // objective gate that keeps the marker from being misused (the agent sets it,
+  // the diff verifies it). tests/docs/scripts-only changes are fine.
+  const internalOnlyFragments = fragmentChanges.filter(f => {
+    try { return hasInternalOnlyMarker(fs.readFileSync(path.join(ROOT, f), 'utf-8')); }
+    catch { return false; }
+  });
+  if (internalOnlyFragments.length > 0 && srcChanges.length > 0) {
+    errors.push(
+      `Internal-only release fragment(s) accompany ${srcChanges.length} runtime src/ change(s):\n` +
+      internalOnlyFragments.slice(0, 5).map(f => `      • ${f} (marked <!-- internal-only -->)`).join('\n') + '\n' +
+      `      The internal-only lane (which auto-fills the user-facing release sections) is ONLY for changes ` +
+      `with no shipped runtime surface (tests / docs / scripts). Either remove the marker and write the ` +
+      `"What to Tell Your User" + "Summary of New Capabilities" sections, or split the src/ change into its own PR.`
     );
   }
 
