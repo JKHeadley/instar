@@ -32,6 +32,24 @@ import type { CaptureRunInput, CaptureRunResult, ForensicFinding } from '../moni
  *  everything except deliver a message to the mentee; `live` is the full loop. */
 export type MentorMode = 'dry-run' | 'live';
 
+/**
+ * One mentor↔mentee differential cycle captured from a tick — the raw materials
+ * for an ApprenticeshipCycleStore `mentor-mentee-differential` record. The tick
+ * produces these; the host's injected `recordCycle` decides whether/where to
+ * persist them (it no-ops unless an apprenticeship instance is configured). This
+ * is what makes the AUTOMATED mentor loop fire the keystone differential axis,
+ * the structural fix for the program's #1 drift failure.
+ */
+export interface MentorCycleCapture {
+  framework: string;
+  /** Short descriptor of the work the mentee was driven through this tick. */
+  task: string;
+  /** The mentee's Stage-A transcript (its output). */
+  menteeOutput: string;
+  /** The overseer/forensics differential — one string per finding. */
+  differential: string[];
+}
+
 export interface MentorTickDeps {
   framework: string;
   mode: MentorMode;
@@ -55,6 +73,14 @@ export interface MentorTickDeps {
   runStageBForensics: () => Promise<ForensicFinding[]>;
   /** Write findings + log the run to the ledger funnel (§19.2). */
   capture: (input: CaptureRunInput) => CaptureRunResult;
+  /**
+   * Record one mentor↔mentee differential CYCLE (in addition to the per-finding
+   * ledger capture above). Injected + optional: the host wires it to the
+   * ApprenticeshipCycleStore only when a `mentor.apprenticeshipInstanceId` is
+   * configured, so by default it no-ops. This is the keystone-axis hook — the
+   * automated loop records `mentor-mentee-differential` cycles, not just findings.
+   */
+  recordCycle?: (input: MentorCycleCapture) => void;
   /**
    * Deliver the Stage-A message to the mentee — called ONLY in `live` mode (§6).
    * The host's implementation MUST be persist-only (queue to a durable outbox the
@@ -177,6 +203,20 @@ export async function runMentorTick(deps: MentorTickDeps): Promise<MentorTickRes
   // 7. Capture — writes findings + logs the run to the funnel (§19.2),
   //    even if findings is empty (inert-writer guard).
   const captured = deps.capture({ framework: deps.framework, tickId, findings });
+
+  // 7b. Record the differential CYCLE (the keystone `mentor-mentee-differential`
+  //     axis) alongside the per-finding ledger capture. The mentee's transcript is
+  //     its output; the forensics findings ARE the differential. No-ops unless the
+  //     host wired `recordCycle` (i.e. a `mentor.apprenticeshipInstanceId` is set).
+  //     Guarded on a non-empty transcript — an empty/failed Stage A is not a cycle.
+  if (deps.recordCycle && transcript.trim()) {
+    deps.recordCycle({
+      framework: deps.framework,
+      task: `mentor-onboarding tick (${deps.framework})`,
+      menteeOutput: transcript,
+      differential: findings.map((f) => f.title),
+    });
+  }
 
   // 8. Deliver — ONLY in live mode, and ONLY via the host's persist-only path
   //    (§6). In dry-run we observe + capture but never contact the mentee.

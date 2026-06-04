@@ -12,7 +12,7 @@
  *
  * Ships dormant: `mentor.enabled=false` / `mentor.mode='off'` by default (§16).
  */
-import { runMentorTick, type MentorTickResult, type MentorMode } from './MentorOnboardingTick.js';
+import { runMentorTick, type MentorTickResult, type MentorMode, type MentorCycleCapture } from './MentorOnboardingTick.js';
 import { llmCircuitAvailable } from '../core/LlmCircuitBreaker.js';
 import {
   runAutonomousGuardian,
@@ -58,6 +58,11 @@ export interface MentorConfig {
    *  (codex-rollout parsing keys on framework). NOT necessarily the mentee's
    *  agent-registry name — see menteeAgentName. */
   menteeFramework: string;
+  /** Apprenticeship instance this mentor job serves (e.g. 'codey-to-gemini').
+   *  When set AND an ApprenticeshipCycleStore is wired, each tick records a
+   *  `mentor-mentee-differential` CYCLE (the keystone axis) — not just findings.
+   *  Unset (default) ⇒ no cycle recording (back-compat; the job just observes). */
+  apprenticeshipInstanceId?: string;
   /** The mentee's actual agent-registry name (e.g. 'instar-codey'). Used for
    *  same-machine peer lookup + the a2a marker `to=`/reply-allowlist. Defaults
    *  to `instar-${menteeFramework}` when unset (back-compat), but framework and
@@ -138,6 +143,10 @@ export const DEFAULT_MENTOR_CONFIG: MentorConfig = {
 export interface MentorRunnerServices {
   /** Write findings + log the run to the ledger funnel (§19.2). */
   capture: (input: CaptureRunInput) => CaptureRunResult;
+  /** Record a `mentor-mentee-differential` cycle (keystone axis). Optional —
+   *  the host wires it to the ApprenticeshipCycleStore only when
+   *  `apprenticeshipInstanceId` is configured; otherwise undefined ⇒ no-op. */
+  recordCycle?: (input: MentorCycleCapture) => void;
   /** Spawn Stage A with the empty tool grant; return its transcript. */
   spawnStageA: (prompt: string) => Promise<string>;
   /** Stage-B forensics for the framework; return findings. */
@@ -269,6 +278,7 @@ export class MentorOnboardingRunner {
       spawnStageA: this.services.spawnStageA,
       runStageBForensics: () => this.services.runStageBForensics(framework),
       capture: this.services.capture,
+      recordCycle: this.services.recordCycle,
       deliverToMentee: this.services.deliverToMentee,
       now: this.services.now,
     });
