@@ -30,6 +30,14 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
     rateLimitSentinel: {
       enabled: true,
     },
+    // Parallel-Work Awareness sentinel (Phase B) — the proactive overlap councilor.
+    // Ships DARK (enabled:false): a false-positive nudge is worse than silence, so it
+    // graduates only after it's proven quiet. When enabled it ticks on a cadence
+    // (lease-holder only), detects cross-topic work overlap, and emits ONE deduped
+    // councilor nudge. Signal-only; never gates. docs/specs/parallel-activity-coherence.md.
+    parallelWorkSentinel: {
+      enabled: false,
+    },
     // ResourceLedger — default-on so every agent durably records its rate-limit
     // events (breaker trips + sentinel detections) instead of losing them on
     // restart. Read-only observability; never gates. Event-driven, negligible

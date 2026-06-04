@@ -72,6 +72,7 @@ import { TokenLedgerPoller } from '../monitoring/TokenLedgerPoller.js';
 import { ResourceLedger } from '../monitoring/ResourceLedger.js';
 import { ResourceLedgerPoller } from '../monitoring/ResourceLedgerPoller.js';
 import { ParallelActivityIndex } from '../core/ParallelActivityIndex.js';
+import { ParallelWorkSentinel } from '../monitoring/ParallelWorkSentinel.js';
 import { ResourceSampler } from '../monitoring/ResourceSampler.js';
 import { getLlmCircuitBreaker } from '../core/LlmCircuitBreaker.js';
 import { FrameworkIssueLedger } from '../monitoring/FrameworkIssueLedger.js';
@@ -150,6 +151,8 @@ export class AgentServer {
   private resourceLedger: ResourceLedger | null = null;
   private resourceLedgerPoller: ResourceLedgerPoller | null = null;
   private parallelActivityIndex: ParallelActivityIndex | null = null;
+  private parallelWorkSentinel: ParallelWorkSentinel | null = null;
+  private parallelWorkSentinelTimer: ReturnType<typeof setInterval> | null = null;
   private resourceSampler: ResourceSampler | null = null;
   private frameworkIssueLedger: FrameworkIssueLedger | null = null;
   private mentorRunner: MentorOnboardingRunner | null = null;
@@ -675,6 +678,41 @@ export class AgentServer {
       } catch (err) {
         console.warn('[instar] parallel-activity-index init failed (non-fatal):', err);
         this.parallelActivityIndex = null;
+      }
+    }
+
+    // Parallel-Work Awareness, Phase B — the proactive overlap councilor sentinel.
+    // Ships DARK (monitoring.parallelWorkSentinel.enabled defaults false). When on, it
+    // ticks on a cadence over the index, detects cross-topic overlap, and emits ONE
+    // deduped nudge. Signal-only. Own try/catch (cascade isolation). Every transition is
+    // audited to logs/sentinel-events.jsonl (house pattern); a nudge additionally surfaces
+    // to the user via the post-update channel if Telegram is wired.
+    const pwsEnabled = options.config.monitoring?.parallelWorkSentinel?.enabled === true;
+    if (pwsEnabled && this.parallelActivityIndex && options.config.stateDir) {
+      try {
+        const index = this.parallelActivityIndex;
+        const auditPath = path.join(options.config.stateDir, 'logs', 'sentinel-events.jsonl');
+        this.parallelWorkSentinel = new ParallelWorkSentinel({
+          getActivities: (nowMs) => index.activities(nowMs),
+          audit: (ev) => {
+            try {
+              fs.appendFileSync(
+                auditPath,
+                JSON.stringify({ ts: new Date(ev.atMs).toISOString(), kind: `parallel-work:${ev.kind}`, pair: ev.pair }) + '\n',
+              );
+            } catch { /* best-effort audit; never break the tick */ }
+          },
+        });
+        // Cadence (default 15 min). Lease-gating for multi-machine is a refinement;
+        // shipping dark + single-machine common, so the tick runs when enabled.
+        const cadenceMs = (options.config.monitoring?.parallelWorkSentinel?.cadenceMinutes ?? 15) * 60 * 1000;
+        this.parallelWorkSentinelTimer = setInterval(() => {
+          try { this.parallelWorkSentinel?.tick(Date.now()); } catch { /* never throw from the cadence */ }
+        }, cadenceMs);
+        if (typeof this.parallelWorkSentinelTimer.unref === 'function') this.parallelWorkSentinelTimer.unref();
+      } catch (err) {
+        console.warn('[instar] parallel-work-sentinel init failed (non-fatal):', err);
+        this.parallelWorkSentinel = null;
       }
     }
 
@@ -2532,6 +2570,11 @@ export class AgentServer {
       try { this.resourceLedgerPoller.stop(); } catch { /* best-effort */ }
       this.resourceLedgerPoller = null;
     }
+    if (this.parallelWorkSentinelTimer) {
+      try { clearInterval(this.parallelWorkSentinelTimer); } catch { /* best-effort */ }
+      this.parallelWorkSentinelTimer = null;
+    }
+    this.parallelWorkSentinel = null;
     if (this.resourceLedger) {
       try { this.resourceLedger.close(); } catch { /* best-effort */ }
       this.resourceLedger = null;

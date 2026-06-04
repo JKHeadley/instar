@@ -40,6 +40,15 @@ ParallelWorkSentinel is Phase B (ships dark), a separate PR.
   gates/mutates). 6 tests. The cadence + lease-gating + server wiring + config (ships dark) +
   the nudge→Telegram/sentinel-events routing are the remaining wiring on this branch.
 
+## Phase B wiring (the on-switch)
+- `src/config/ConfigDefaults.ts` — `monitoring.parallelWorkSentinel: { enabled: false }` — ships
+  DARK (false-positive nudge worse than silence; graduate after proven quiet). Add-missing-only
+  via applyDefaults ⇒ free migration; never a destructive sub-flag default.
+- `src/core/types.ts` — `MonitoringConfig.parallelWorkSentinel?: { enabled, cadenceMinutes? }`.
+- `src/server/AgentServer.ts` — when enabled, construct `ParallelWorkSentinel` over the index in
+  its OWN try/catch (cascade isolation), tick on an unref'd cadence (default 15min), audit each
+  transition to `logs/sentinel-events.jsonl`; cleared on `stop()`. Signal-only.
+
 ## Decision-point inventory
 - `ParallelActivityIndex` read aggregation — **add** — pure read over existing state; no
   block/allow surface, no mutation.

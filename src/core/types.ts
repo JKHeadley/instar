@@ -2997,6 +2997,17 @@ export interface MonitoringConfig {
    * backoff-before-nudge, user check-ins, and escalation, instead of dropping
    * the session. See docs/specs/rate-limit-sentinel.md.
    */
+  /**
+   * Parallel-Work Awareness sentinel (Phase B; docs/specs/parallel-activity-coherence.md).
+   * The proactive overlap councilor — ships DARK (enabled defaults false). When on it ticks
+   * on a cadence over the cross-topic activity index and nudges on genuine overlap. Signal-only.
+   */
+  parallelWorkSentinel?: {
+    /** Master switch (default: false — ships dark). */
+    enabled: boolean;
+    /** Cadence between overlap scans, in minutes (default 15). */
+    cadenceMinutes?: number;
+  };
   rateLimitSentinel?: {
     /** Master kill switch (default: true). false → pre-feature behavior. */
     enabled: boolean;
