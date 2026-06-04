@@ -3255,6 +3255,25 @@ See what ALL your hands are doing across topics/sessions at once (like a king wi
       result.upgraded.push('CLAUDE.md: added Parallel-Work Awareness');
     }
 
+    // Per-Component Framework Routing (2026-06-03) — Agent Awareness + Migration
+    // Parity: existing agents must learn they can route internal components
+    // (sentinels/gates) to a different framework (e.g. sentinels on Codex) to
+    // spread LLM load off a single account's rate limit. Content-sniffed for idempotency.
+    if (!content.includes('Per-Component Framework Routing')) {
+      const routingSection = `
+## Per-Component Framework Routing
+
+Run different INTERNAL components on different agentic frameworks to spread LLM load off a single account's rate limit — e.g. you run on Claude Code but ALL your sentinels/gates run on Codex, so that background chatter stops spending your Claude quota. Model "size" is preserved automatically (a \`fast\` check becomes Haiku on Claude or a small GPT model on Codex). Opt-in; with no config, everything stays on your default framework.
+- See current routing: \`curl -H "Authorization: Bearer $AUTH" "http://localhost:4042/intelligence/routing"\` → \`{ defaultFramework, components: [{ component, category, framework, available }], coverage }\`.
+- Turn it on in \`.instar/config.json\` → \`sessions.componentFrameworks\`, e.g. \`{ "categories": { "sentinel": "codex-cli" }, "overrides": { "CoherenceReviewer": "claude-code" }, "fallback": "default" }\`. Categories: \`sentinel | gate | job | reflector | other\`. Resolution: \`overrides[name] → categories[category] → default\`.
+- Each framework gets its own circuit breaker (a Claude trip can't pause Codex). A missing CLI degrades to default + reports; a rate-limited framework falls back to the component's heuristic (no herd). Routes INTERNAL calls only — spawned sessions stay on \`topicFrameworks\`. Restart sessions to apply.
+- Proactive: user hitting rate limits / "run my sentinels on Codex" / "move background checks off Claude" → point them at \`sessions.componentFrameworks\` + \`GET /intelligence/routing\`. (Spec: \`docs/specs/per-component-framework-routing.md\`.)
+`;
+      content += '\n' + routingSection;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Per-Component Framework Routing awareness');
+    }
+
     // Correction & Preference Learning Sentinel (Slice 1a) §7 — Agent Awareness +
     // Migration Parity: existing agents must learn about the preferences read-
     // surface (the session-start hook now fetches /preferences/session-context

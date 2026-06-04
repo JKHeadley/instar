@@ -1,0 +1,92 @@
+/**
+ * Component → category registry for per-component framework routing
+ * (docs/specs/per-component-framework-routing.md, D1/D2).
+ *
+ * Framework routing keys on a component's CATEGORY (so an operator can say "all
+ * sentinels on Codex" in one line) with a per-component override. The component
+ * NAME is the `attribution.component` string each LLM caller already passes at
+ * the funnel; this module maps those names to a category so the router does NOT
+ * need every call site to also pass a category (Structure > Willpower — one
+ * central registry, not 38 edited call sites). A caller MAY still pass an
+ * explicit `attribution.category` to override the registry for an ad-hoc label.
+ *
+ * IMPORTANT: this registry is the single source of truth for what counts as a
+ * "sentinel" vs "gate" vs "reflector". When you add a new LLM-backed component,
+ * add its `attribution.component` name here so framework routing can see it.
+ * Anything not listed resolves to 'other' (and thus the `default` framework) —
+ * which is the safe, behavior-preserving fallback.
+ */
+
+export type ComponentCategory = 'sentinel' | 'gate' | 'job' | 'reflector' | 'other';
+
+export const COMPONENT_CATEGORIES: ReadonlyArray<ComponentCategory> = [
+  'sentinel', 'gate', 'job', 'reflector', 'other',
+];
+
+export function isComponentCategory(v: unknown): v is ComponentCategory {
+  return typeof v === 'string' && (COMPONENT_CATEGORIES as readonly string[]).includes(v);
+}
+
+/**
+ * Known component-name → category map. Names match the `attribution.component`
+ * label set at each LLM call site (the funnel reads `options.attribution.component`).
+ * Some call sites suffix the label (e.g. "CompletionEvaluator/P13") — resolution
+ * strips a trailing "/segment" before lookup (see categoryForComponent).
+ */
+export const COMPONENT_CATEGORY: Readonly<Record<string, ComponentCategory>> = {
+  // ── Sentinels (background watchers that make small judgment calls) ──
+  InputDetector: 'sentinel',
+  InputGuard: 'sentinel',
+  SessionActivitySentinel: 'sentinel',
+  StallTriageNurse: 'sentinel',
+  CommitmentSentinel: 'sentinel',
+  PresenceProxy: 'sentinel',
+  PromiseBeacon: 'sentinel',
+  MessageSentinel: 'sentinel',
+  ProjectDriftChecker: 'sentinel',
+  TemporalCoherenceChecker: 'sentinel',
+  CompletionEvaluator: 'sentinel',
+  SessionWatchdog: 'sentinel',
+  TopicIntentArcCheck: 'sentinel',
+
+  // ── Gates (pre-action allow/deny advisories) ──
+  PromptGate: 'gate',
+  AutoApprover: 'gate',
+  IntegrationGate: 'gate',
+  ExternalOperationGate: 'gate',
+  WarrantsReplyGate: 'gate',
+  UnjustifiedStopGate: 'gate',
+  CoherenceGate: 'gate',
+  MessagingToneGate: 'gate',
+  CoherenceReviewer: 'gate',
+
+  // ── Reflectors / reviewers (deeper after-the-fact analysis) ──
+  JobReflector: 'reflector',
+  crossModelReviewer: 'reflector',
+  SelfKnowledgeTree: 'reflector',
+  TreeTriage: 'reflector',
+  TopicSummarizer: 'reflector',
+  ContextualEvaluator: 'reflector',
+  RelationshipManager: 'reflector',
+  StandardsConformanceReviewer: 'reflector',
+  DiscoveryEvaluator: 'reflector',
+
+  // ── Jobs (scheduled work) ──
+  PipeSessionSpawner: 'job',
+};
+
+/**
+ * Resolve a component's category. Strips a trailing "/segment" call-site suffix
+ * (e.g. "CompletionEvaluator/P13" → "CompletionEvaluator") and a leading
+ * "server:" inline-closure prefix before lookup. Unknown → 'other'.
+ */
+export function categoryForComponent(component: string | undefined): ComponentCategory {
+  if (!component) return 'other';
+  const base = component.split('/')[0].replace(/^server:/, '').trim();
+  return COMPONENT_CATEGORY[base] ?? 'other';
+}
+
+/** The known component names (registry keys) — drives the GET /intelligence/routing surface. */
+export function knownComponents(): string[] {
+  return Object.keys(COMPONENT_CATEGORY).sort();
+}

@@ -20,6 +20,7 @@ import { ClaudeCliIntelligenceProvider } from './ClaudeCliIntelligenceProvider.j
 import { CodexCliIntelligenceProvider } from './CodexCliIntelligenceProvider.js';
 import { GeminiCliIntelligenceProvider } from './GeminiCliIntelligenceProvider.js';
 import { wrapIntelligenceWithCircuitBreaker } from './CircuitBreakingIntelligenceProvider.js';
+import type { LlmCircuitBreaker } from './LlmCircuitBreaker.js';
 
 /**
  * Stable framework identifiers the factory recognizes. Adding a new
@@ -50,6 +51,13 @@ export interface BuildIntelligenceProviderOptions {
    * Optional working directory (currently used only by Codex).
    */
   workingDirectory?: string;
+  /**
+   * Optional circuit breaker to wrap the provider with. When omitted, the
+   * account-global singleton is used (today's behavior). The IntelligenceRouter
+   * passes a DISTINCT breaker per framework so per-framework rate-limit isolation
+   * actually holds (docs/specs/per-component-framework-routing.md, D3).
+   */
+  breaker?: LlmCircuitBreaker;
 }
 
 /**
@@ -77,7 +85,7 @@ export function buildIntelligenceProvider(
     case 'claude-code': {
       const path = options.binaryPath ?? detectClaudePath();
       if (!path) return null;
-      return wrapIntelligenceWithCircuitBreaker(new ClaudeCliIntelligenceProvider(path));
+      return wrapIntelligenceWithCircuitBreaker(new ClaudeCliIntelligenceProvider(path), options.breaker);
     }
     case 'codex-cli': {
       const path = options.binaryPath ?? detectCodexPath();
@@ -87,6 +95,7 @@ export function buildIntelligenceProvider(
           codexPath: path,
           ...(options.workingDirectory ? { workingDirectory: options.workingDirectory } : {}),
         }),
+        options.breaker,
       );
     }
     case 'gemini-cli': {
@@ -97,6 +106,7 @@ export function buildIntelligenceProvider(
           geminiPath: path,
           ...(options.workingDirectory ? { workingDirectory: options.workingDirectory } : {}),
         }),
+        options.breaker,
       );
     }
     default: {

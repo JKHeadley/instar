@@ -890,6 +890,7 @@ export const INTERNAL_PREFIXES: ReadonlyArray<{ prefix: string; reason: string }
   { prefix: 'status', reason: 'legacy status endpoint, superseded by /capabilities' },
   { prefix: 'shared-state', reason: 'legacy state primitive, superseded by canonicalState' },
   { prefix: 'backups', reason: 'backup listing is operator-only, not agent-facing' },
+  { prefix: 'intelligence', reason: 'GET /intelligence/routing — operator/observability read of per-component framework routing; the capability itself is surfaced to agents via the CLAUDE.md template, not /capabilities' },
   { prefix: 'episodes', reason: 'legacy episode log, replaced by topicMemory' },
   { prefix: 'reflection', reason: 'legacy reflection log, replaced by topicMemory' },
   { prefix: 'serendipity', reason: 'operator review surface, not agent-facing' },

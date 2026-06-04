@@ -2972,6 +2972,46 @@ export async function startServer(options: StartOptions): Promise<void> {
       }
     } catch { /* CLI not available */ }
 
+    // Per-component framework routing (docs/specs/per-component-framework-routing.md).
+    // Wrap the shared provider in an IntelligenceRouter so internal components
+    // (sentinels, gates, …) can be routed to different frameworks via
+    // sessions.componentFrameworks. Unconfigured ⇒ the router delegates straight to
+    // the shared provider, so behavior is byte-identical to before. Own try/catch so
+    // a router-build failure can never 503 the boot (it just leaves the raw provider).
+    if (sharedIntelligence) {
+      try {
+        const { IntelligenceRouter } = await import('../core/IntelligenceRouter.js');
+        const { buildIntelligenceProvider: buildIP } = await import('../core/intelligenceProviderFactory.js');
+        const { LlmCircuitBreaker } = await import('../core/LlmCircuitBreaker.js');
+        const defaultFw = resolvedFramework;
+        const rawDefault = sharedIntelligence;
+        sharedIntelligence = new IntelligenceRouter({
+          defaultProvider: rawDefault,
+          defaultFramework: defaultFw,
+          // Live read: each call sees the current config object's componentFrameworks
+          // (a config edit that mutates the in-memory object is hot; a file reload is
+          // out of B1 scope — same semantics as the rest of instar's config).
+          resolveConfig: () => config.sessions?.componentFrameworks,
+          // Each non-default framework gets its OWN breaker → a Claude trip can't
+          // pause Codex (the whole point). Default framework keeps the shared one.
+          buildProvider: (fw) => buildIP({ framework: fw, breaker: new LlmCircuitBreaker() }),
+          onDegrade: (info) => {
+            try {
+              DegradationReporter.getInstance().report({
+                feature: 'IntelligenceRouter',
+                primary: `component '${info.component}' (${info.category}) on framework ${info.from}`,
+                fallback: `routed to ${info.to}`,
+                reason: info.reason,
+                impact: `LLM calls for '${info.component}' run on ${info.to} instead of the configured ${info.from} until that framework is available.`,
+              });
+            } catch { /* never break the LLM path on a degradation report */ }
+          },
+        });
+      } catch (err) {
+        console.warn(`[server] IntelligenceRouter failed to initialize, using unrouted provider: ${err}`);
+      }
+    }
+
     _sharedIntelligence = sharedIntelligence ?? null;
     if (sharedIntelligence) {
       console.log(pc.gray(`  Intelligence: ${intelligenceSource}`));

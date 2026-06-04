@@ -1133,6 +1133,9 @@ export class AgentServer {
       messageLedger: options.messageLedger ?? null,
       currentInboundByTopic: options.currentInboundByTopic ?? null,
       replyMarkerTransport: options.replyMarkerTransport ?? null,
+      // The shared intelligence provider (an IntelligenceRouter when per-component
+      // framework routing is wired) — backs GET /intelligence/routing.
+      intelligence: options.intelligence ?? null,
       startTime: this.startTime,
     };
     this.routeContext = routeCtx;

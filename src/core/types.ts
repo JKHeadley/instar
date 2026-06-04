@@ -122,6 +122,24 @@ export interface SessionManagerConfig {
    */
   frameworkDefaultModels?: { 'claude-code'?: string; 'codex-cli'?: string; 'gemini-cli'?: string };
   /**
+   * Per-component framework routing (docs/specs/per-component-framework-routing.md):
+   * route different INTERNAL LLM-driven components (sentinels, gates, …) to
+   * different frameworks — e.g. all sentinels on Codex while the agent stays on
+   * Claude — to move that LLM chatter off the Claude rate-limit budget. ABSENT by
+   * default ⇒ behavior is identical to today (one framework for everything). This
+   * is TYPE-ONLY and intentionally NOT added to ConfigDefaults: applyDefaults
+   * deep-merges, so a default here would inject the block into every existing
+   * config and break the absent-equals-unchanged guarantee. Governs internal
+   * component calls ONLY — spawned interactive sessions stay governed by
+   * topicFrameworks/resolveTopicFramework.
+   */
+  componentFrameworks?: {
+    default?: 'claude-code' | 'codex-cli' | 'gemini-cli';
+    categories?: Partial<Record<'sentinel' | 'gate' | 'job' | 'reflector' | 'other', 'claude-code' | 'codex-cli' | 'gemini-cli'>>;
+    overrides?: Record<string, 'claude-code' | 'codex-cli' | 'gemini-cli'>;
+    fallback?: 'default' | 'none';
+  };
+  /**
    * The agent's resolved runtime framework — the single source of
    * truth for which CLI a spawned session uses when no per-call
    * override is given. Derived at config-load time from
@@ -683,6 +701,14 @@ export interface IntelligenceOptions {
   attribution?: {
     /** Stable source-side component label, e.g. "InputDetector", "MessagingToneGate". */
     component: string;
+    /**
+     * Optional explicit category for per-component framework routing
+     * (docs/specs/per-component-framework-routing.md). When omitted, the router
+     * derives the category from `component` via the central componentCategories
+     * registry — so most callers never set this. Set it only to override the
+     * registry for an ad-hoc label.
+     */
+    category?: 'sentinel' | 'gate' | 'job' | 'reflector' | 'other';
   };
   /**
    * Optional token-usage callback (Iris-audit item 1, spec
