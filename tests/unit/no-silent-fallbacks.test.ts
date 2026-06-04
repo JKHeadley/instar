@@ -214,7 +214,13 @@ describe('No Silent Fallbacks', () => {
     // silent error worth a DegradationReporter event per topic. Plus its AgentServer construction
     // is in its own cascade-isolation try/catch (logs a warning). +5 = those new best-effort
     // read catches + line-shift drift from merging current main. No gating/authority fallback added.
-    const BASELINE = 455;
+    //
+    // 455 -> 457 on 2026-06-03 (Parallel-Work Awareness Phase B wiring): +2 from the
+    // ParallelWorkSentinel's two cascade-isolation try/catch blocks in AgentServer — the
+    // construction block (logs a warning on failure, leaves the sentinel null) and the
+    // cadence-tick guard (never throws from a timer). Both are best-effort isolation for a
+    // signal-only, ships-dark sentinel; neither is a gating/authority fallback.
+    const BASELINE = 457;
 
     if (silentFallbacks.length > 0) {
       const report = silentFallbacks.map(fb =>

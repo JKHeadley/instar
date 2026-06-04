@@ -2637,4 +2637,9 @@ export class AgentServer {
   getApp(): Express {
     return this.app;
   }
+
+  /** Wiring-integrity accessor: the ParallelWorkSentinel when constructed (enabled), else null. */
+  getParallelWorkSentinel(): ParallelWorkSentinel | null {
+    return this.parallelWorkSentinel;
+  }
 }
