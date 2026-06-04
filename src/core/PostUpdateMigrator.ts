@@ -224,6 +224,7 @@ export class PostUpdateMigrator {
     this.migrateSkillPortHardcoding(result);
     this.migrateBuildSkillMethodology(result);
     this.migrateTestAsSelfSkill(result);
+    this.migrateInstarDevBuildLocationRegrounding(result);
     this.migrateAutonomousStopHookTopicKeyed(result);
     this.migrateSelfKnowledgeTree(result);
     this.migrateSoulMd(result);
@@ -1468,7 +1469,7 @@ export class PostUpdateMigrator {
       if (!fs.existsSync(skillFile)) return; // installBuiltinSkills handles fresh installs
       const current = fs.readFileSync(skillFile, 'utf8');
       const MARKER = 'The one-button path (Part 2.1';
-      if (current.includes(MARKER)) return; // already updated — idempotent
+      if (current.includes(MARKER)) return; // already updated - idempotent
       // Stock-fingerprint guard: don't clobber a customized test-as-self skill.
       if (!current.includes('Throwaway-Deploy Harness') || !current.includes('verify.mjs')) {
         result.skipped.push('skills/test-as-self/SKILL.md: customized — left untouched (no Part 2.1 update)');
@@ -1483,6 +1484,39 @@ export class PostUpdateMigrator {
       }
     } catch (err) {
       result.errors.push(`skills/test-as-self/SKILL.md migration: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  /**
+   * Update the deployed instar-dev skill so every fleet-development cycle
+   * re-grounds its build location before source edits. This backfills the
+   * mentor-onboarding hardening learned from Codey building a PR from a stale
+   * agent-home checkout instead of current JKHeadley/main.
+   *
+   * Idempotent + conservative: re-copy the bundled SKILL.md only when the
+   * installed copy (a) lacks the build-location marker AND (b) still matches
+   * the stock instar-dev fingerprint. A customized skill is left untouched.
+   */
+  private migrateInstarDevBuildLocationRegrounding(result: MigrationResult): void {
+    try {
+      const skillFile = path.join(this.config.projectDir, '.claude', 'skills', 'instar-dev', 'SKILL.md');
+      if (!fs.existsSync(skillFile)) return; // installBuiltinSkills handles fresh installs
+      const current = fs.readFileSync(skillFile, 'utf8');
+      const MARKER = 'Build location re-grounding';
+      if (current.includes(MARKER)) return; // already updated — idempotent
+      if (!current.includes('# /instar-dev') || !current.includes('### Phase 2 — Planning')) {
+        result.skipped.push('skills/instar-dev/SKILL.md: customized - left untouched (no build-location re-grounding update)');
+        return;
+      }
+      const bundled = path.join(__dirname, '..', '..', 'skills', 'instar-dev', 'SKILL.md');
+      if (!fs.existsSync(bundled)) return;
+      const next = fs.readFileSync(bundled, 'utf8');
+      if (next.includes(MARKER)) {
+        fs.writeFileSync(skillFile, next);
+        result.upgraded.push('skills/instar-dev/SKILL.md (Phase 2 build-location re-grounding)');
+      }
+    } catch (err) {
+      result.errors.push(`skills/instar-dev/SKILL.md migration: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 

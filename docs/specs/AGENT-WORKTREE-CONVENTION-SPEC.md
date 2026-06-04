@@ -10,6 +10,7 @@ review-completed-at: "2026-05-17T22:48:00Z"
 review-report: "docs/specs/reports/agent-worktree-convention-convergence.md"
 created: 2026-05-17
 owner: echo
+parent-principle: Structure beats Willpower
 companion-eli16: AGENT-WORKTREE-CONVENTION-ELI16.md
 eli16-overview: AGENT-WORKTREE-CONVENTION-ELI16.md
 ---

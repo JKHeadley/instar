@@ -72,6 +72,7 @@ The agent answers, in writing: "Does the change about to be made involve a decis
 
 The agent uses the standard planning patterns from `/build`: state the problem, the proposed fix, the acceptance criteria. Specifically required in the plan:
 
+- **Build location re-grounding:** confirm the change is being built in a FRESH worktree off current `JKHeadley/main`, created with `instar worktree create` (or an equivalent fresh clone when repairing the worktree helper itself), NOT the current working directory / agent-home checkout, which may be on a stale version line. Verify and record `git remote -v` and the `package.json` version before writing any code.
 - The decision points the change touches (if any).
 - What existing detectors or authorities the change interacts with.
 - The rollback path if the change turns out wrong.
