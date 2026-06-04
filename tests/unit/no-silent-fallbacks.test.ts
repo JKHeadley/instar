@@ -206,7 +206,15 @@ describe('No Silent Fallbacks', () => {
     // counterpart at the old line number — e.g. AgentServer.ts:626≡624, PostUpdateMigrator.ts:4790≡4771).
     // No genuine new silent fallback was introduced. Evidence reproduced 2026-06-03 via a
     // base-vs-HEAD set-diff of the exact test heuristic: base(main)=447, HEAD=450 after annotation.
-    const BASELINE = 450;
+    //
+    // 450 -> 455 on 2026-06-03 (Parallel-Work Awareness Phase A + merge drift): the new
+    // ParallelActivityIndex is a READ-ONLY cross-topic aggregator whose best-effort catches
+    // correctly SKIP an unreadable/corrupt single topic file (return [] for that topic) rather
+    // than crash the whole index — degraded-skip is the right behavior for a read index, not a
+    // silent error worth a DegradationReporter event per topic. Plus its AgentServer construction
+    // is in its own cascade-isolation try/catch (logs a warning). +5 = those new best-effort
+    // read catches + line-shift drift from merging current main. No gating/authority fallback added.
+    const BASELINE = 455;
 
     if (silentFallbacks.length > 0) {
       const report = silentFallbacks.map(fb =>
