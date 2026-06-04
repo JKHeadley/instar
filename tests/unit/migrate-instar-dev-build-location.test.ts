@@ -69,6 +69,9 @@ describe('migrateInstarDevBuildLocationRegrounding', () => {
     const updated = fs.readFileSync(file, 'utf8');
     expect(updated).toContain('Build location re-grounding');
     expect(updated).toContain('FRESH worktree off current `JKHeadley/main`');
+    expect(updated).toContain('git config user.email "<agent>@instar.local"');
+    expect(updated).toContain('git config user.name "Instar Agent (<agent>)"');
+    expect(updated).toContain("commits fall back to the operator's global git config");
     expect(result.upgraded.some((u) => u.includes('skills/instar-dev/SKILL.md'))).toBe(true);
   });
 
