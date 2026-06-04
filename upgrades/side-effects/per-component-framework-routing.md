@@ -70,13 +70,17 @@ Pure additive + opt-in. Remove `componentFrameworks` (or revert) → every call 
 single shared provider exactly as today. No state, no migration.
 
 ## Conclusion
-Core routing engine complete + unit-tested (11 tests, tsc clean): per-call funnel resolution,
+B1 complete across all three test tiers (tsc clean): per-call funnel resolution,
 per-framework breaker isolation, circuit-aware fallback, live-config (hot), the category
-registry, the factory breaker-threading, the config type, and the server wiring. Remaining
-for the full B1 PR (same branch): the `GET /intelligence/routing` route + CapabilityIndex
-entry + integration/e2e tests + CLAUDE.md agent-awareness. The design was converged (2-reviewer
+registry, factory breaker-threading, config type, server wiring, the `GET /intelligence/routing`
+read surface (+ CapabilityIndex INTERNAL_PREFIXES classification — the #727 lesson),
+CLAUDE.md agent-awareness (template + migrateClaudeMd for existing agents). Tests: 11 unit
+(`intelligence-router.test.ts`) + 3 integration (`intelligence-routing-routes.test.ts`,
+200/503) + 3 e2e (`intelligence-routing-lifecycle.test.ts`, feature-alive on the real
+AgentServer init path + Bearer-auth + read-only). The design was converged (2-reviewer
 adversarial+integration) which corrected the breaker-isolation and resolution-point design
-before any code — see the spec's Convergence Report.
+before any code — see the spec's Convergence Report. B2 (gates/reflectors + per-framework
+spend accounting + dashboard view) is a deliberate follow-up.
 
 ## Evidence pointers
 - `tsc --noEmit` clean.

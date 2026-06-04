@@ -85,3 +85,8 @@ export function categoryForComponent(component: string | undefined): ComponentCa
   const base = component.split('/')[0].replace(/^server:/, '').trim();
   return COMPONENT_CATEGORY[base] ?? 'other';
 }
+
+/** The known component names (registry keys) — drives the GET /intelligence/routing surface. */
+export function knownComponents(): string[] {
+  return Object.keys(COMPONENT_CATEGORY).sort();
+}

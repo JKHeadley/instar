@@ -17,6 +17,8 @@ import type { SessionRefresh } from '../core/SessionRefresh.js';
 import type { StateManager } from '../core/StateManager.js';
 import type { JobScheduler } from '../scheduler/JobScheduler.js';
 import type { InstarConfig, JobPriority } from '../core/types.js';
+import { IntelligenceRouter } from '../core/IntelligenceRouter.js';
+import { knownComponents } from '../core/componentCategories.js';
 import { rateLimiter, signViewPath } from './middleware.js';
 import type { WriteOperation, WriteToken } from '../core/StateWriteAuthority.js';
 import { writeLifelineRestartSignal } from '../core/version-skew.js';
@@ -705,6 +707,8 @@ export interface RouteContext {
   tokenLedger: import('../monitoring/TokenLedger.js').TokenLedger | null;
   featureMetricsLedger: import('../monitoring/FeatureMetricsLedger.js').FeatureMetricsLedger | null;
   resourceLedger: import('../monitoring/ResourceLedger.js').ResourceLedger | null;
+  /** The shared intelligence provider (an IntelligenceRouter when per-component routing is wired). Backs GET /intelligence/routing. */
+  intelligence?: import('../core/types.js').IntelligenceProvider | null;
   /** Framework-Onboarding Mentor System issue ledger (read-only observability;
    *  signal-only — never gates). Null when stateDir is unavailable. Powers
    *  GET /framework-issues and /framework-issues/playbook. */
@@ -4657,6 +4661,32 @@ export function createRoutes(ctx: RouteContext): Router {
       summary: ctx.resourceLedger.rateLimitSummary(now, windowMs),
       byKind: ctx.resourceLedger.rateLimitByKind(now, windowMs),
       events: ctx.resourceLedger.rateLimitEvents({ sinceMs: now - windowMs, limit: 200 }),
+    });
+  });
+
+  // ── Per-component framework routing (docs/specs/per-component-framework-routing.md) ──
+  // Read-only: what framework each known component resolves to right now (live config),
+  // whether that framework is available, and the per-framework breaker isolation. 503
+  // when no IntelligenceRouter is wired (e.g. no LLM CLI available).
+  router.get('/intelligence/routing', (_req, res) => {
+    const intel = ctx.intelligence;
+    if (!intel || !(intel instanceof IntelligenceRouter)) {
+      res.status(503).json({ error: 'intelligence router unavailable (no LLM provider configured)' });
+      return;
+    }
+    // '__nonexistent__' is not in the registry, so it resolves to category 'other'
+    // → the effective DEFAULT framework (what an unrouted call gets).
+    const defaultFramework = intel.for('__nonexistent__').framework;
+    const components = knownComponents().map((name) => intel.for(name));
+    res.json({
+      defaultFramework,
+      components,
+      coverage: {
+        known: components.length,
+        // how many known components are routed OFF the default framework right now
+        routedOffDefault: components.filter((c) => c.framework !== defaultFramework).length,
+      },
+      note: 'Routes INTERNAL component LLM calls only; spawned interactive sessions use topicFrameworks.',
     });
   });
 
