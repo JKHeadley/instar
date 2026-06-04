@@ -922,6 +922,7 @@ export const INTERNAL_PREFIXES: ReadonlyArray<{ prefix: string; reason: string }
   { prefix: 'worktrees', reason: 'AgentWorktreeReaper read-only report (reclaimable stale worktrees) — operational observability the agent READS, like /sessions/reap-log; not a user-invokable capability' },
   { prefix: 'processes', reason: 'McpProcessReaper read-only report (reclaimable leaked MCP-server procs + per-proc keep/reap verdict) — operational observability the agent READS, like /worktrees/agent-reaper; not a user-invokable capability' },
   { prefix: 'sleep', reason: 'SleepController read-only verdict (agent hard-sleep decision + which guard holds it awake) — operational observability the agent READS; not a user-invokable capability' },
+  { prefix: 'gemini-loop', reason: 'GeminiLoopRunner (need-gem-002) multi-turn loop-driver — the dark, developmentAgent-gated mechanism the apprenticeship machinery uses to drive a Gemini mentee across turns. 503 on the fleet (dark); not a general user-invokable capability yet. Reclassify under apprenticeshipProgram if/when it graduates live.' },
   { prefix: 'ci', reason: 'operator-only CI status surface' },
   { prefix: 'session', reason: 'single-session context surfaced via topicMemory endpoints' },
   { prefix: 'identity', reason: 'identity files surfaced via the top-level `identity` field of the response' },
