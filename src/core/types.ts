@@ -2275,6 +2275,32 @@ export interface InstarConfig {
     codexLoopDriver?: {
       enabled?: boolean;
     };
+    /**
+     * Gemini multi-turn loop-driver (need-gem-002; docs/specs/gemini-multi-turn-
+     * loop-driver.md). When enabled, the GeminiLoopRunner can drive a gemini
+     * mentee across turns via the native resume path (turn 1 one-shot establishes
+     * a session; later turns re-spawn `gemini -r <handle>` so context restores
+     * natively — no transcript re-send). Subscription auth is structural (reuses
+     * the billing-env-stripping transport). Ships DARK (`enabled: false`); the
+     * developmentAgent gate turns it on for dev agents only. Rollback = set
+     * `enabled: false` (instant). Budget is gated by the shared QuotaTracker
+     * spawn-admission signal; `maxConcurrent: 1` keeps handle capture unambiguous.
+     */
+    geminiLoopDriver?: {
+      enabled?: boolean;
+      /** Model for every turn (explicit -m bypasses the router classifier). */
+      model?: string;
+      /** Hard cap on turns per run (default 12). */
+      maxTurns?: number;
+      /** Min ms between turns, anti-spin (default 2000). */
+      minTurnIntervalMs?: number;
+      /** Max concurrent runs (default 1). */
+      maxConcurrent?: number;
+      /** Bounded in-memory run registry size (default 50). */
+      maxRetainedRuns?: number;
+      /** Per-turn gemini spawn timeout in ms (default 180000). */
+      turnTimeoutMs?: number;
+    };
   };
   /** Notification preferences for autonomy events */
   notifications?: NotificationPreferences;
