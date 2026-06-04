@@ -44,6 +44,27 @@ export function buildGeminiOneShotArgv(model: string, prompt: string): string[] 
 }
 
 /**
+ * Argv for a RESUME turn — continue an existing gemini session by its stable
+ * handle (a session UUID, or `latest`/index per `gemini --resume`).
+ *
+ * Empirically proven (gemini-cli 0.25.2, 2026-06-04): `gemini -m <model> -r
+ * <uuid> -p "<next>"` restores the full prior context of that session across a
+ * SEPARATE process invocation — so a multi-turn driver re-prompts with only the
+ * next instruction, never the accumulated transcript (the quota-efficient path;
+ * see `docs/specs/gemini-multi-turn-loop-driver.md`). The explicit `-m` is kept
+ * because it ALSO bypasses gemini-cli's flaky pre-turn ModelRouterService
+ * classifier (`generateJson` can exhaust retries on invalid-content and kill the
+ * turn pre-generation); mirroring `buildGeminiOneShotArgv` keeps that bypass.
+ */
+export function buildGeminiResumeArgv(
+  model: string,
+  sessionHandle: string,
+  prompt: string,
+): string[] {
+  return ['-m', model, '-r', sessionHandle, '--approval-mode', 'default', '-p', prompt];
+}
+
+/**
  * Rule-1a analog — env allowlist for Gemini child processes.
  *
  * Gemini auths via `~/.gemini` cached OAuth credentials (the

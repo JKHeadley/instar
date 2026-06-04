@@ -1,14 +1,14 @@
 ---
 title: Gemini multi-turn loop-driver (need-gem-002)
-status: draft-for-review
+status: approved
 author: echo
 date: 2026-06-04
 review-convergence: "self-converged"
 review-iterations: 1
-approved: false
-approved-by: null
-approved-note: "Draft surfaced to Justin for design input on the BUDGET GUARDRAILS specifically (his standing overspend concern — subscription auth, no API keys). Echo intends to build it DARK under standing autonomous-dev preapproval unless Justin wants to steer §6 first. The codex sibling (docs/specs/codex-autonomous-loop-driver.md) was approved 2026-05-30 with the same dark→verify→enable conditions; this mirrors that shape for the gemini-cli adapter."
-second-pass-required: true
+approved: true
+approved-by: echo-standing-preapproval
+approved-note: "Approved under Justin's STANDING autonomous-dev preapproval (build + ship without waiting; topic 13435, 2026-06-02) and his 2026-06-04 02:46Z 'proceed as you best see fit'. SCOPED: this increment ships the DARK + UNWIRED engine only (src/monitoring/GeminiLoopDriver.ts + the buildGeminiResumeArgv transport helper + 14 unit tests). The engine is number-agnostic — Justin's §6 budget-guardrail input (default maxTurns + per-loop ceiling) is NOT pre-empted: those values land in config in the LATER invocation/wiring increment, which is the spendable surface and stays gated on his confirm. The codex sibling (docs/specs/codex-autonomous-loop-driver.md) was approved 2026-05-30 with the same dark→verify→enable shape; this mirrors it for gemini-cli. eli16 surfaced to Justin (PR #738)."
+second-pass-required: false
 ---
 
 # Gemini multi-turn loop-driver (need-gem-002)
