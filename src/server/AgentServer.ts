@@ -343,6 +343,7 @@ export class AgentServer {
     listenerManager?: import('../threadline/ListenerSessionManager.js').ListenerSessionManager;
     responseReviewGate?: import('../core/CoherenceGate.js').CoherenceGate;
     messagingToneGate?: import('../core/MessagingToneGate.js').MessagingToneGate;
+    updateRelevanceGate?: import('../core/UpdateRelevanceGate.js').UpdateRelevanceGate;
     outboundDedupGate?: import('../core/OutboundDedupGate.js').OutboundDedupGate;
     telemetryHeartbeat?: import('../monitoring/TelemetryHeartbeat.js').TelemetryHeartbeat;
     pasteManager?: import('../paste/PasteManager.js').PasteManager;
@@ -1119,6 +1120,7 @@ export class AgentServer {
       listenerManager: options.listenerManager ?? null,
       responseReviewGate: options.responseReviewGate ?? null,
       messagingToneGate: options.messagingToneGate ?? null,
+      updateRelevanceGate: options.updateRelevanceGate ?? null,
       topicIntentArcCheck: options.topicIntentArcCheck ?? null,
       usherSignalStore: options.usherSignalStore ?? null,
       outboundDedupGate: options.outboundDedupGate ?? null,

@@ -622,6 +622,14 @@ export interface RouteContext {
    *  Uses the shared IntelligenceProvider (Claude CLI subscription or Anthropic API).
    *  Catches CLI commands, file paths, config syntax leaking to users. */
   messagingToneGate: MessagingToneGate | null;
+  /** Relevance gate for DISCRETIONARY update-class messages bound for the Agent
+   *  Updates topic. After PR #698 made user-facing announcements opt-in +
+   *  maturity-tagged, the user still saw updates referencing internal features
+   *  they have no clue about; this gate withholds agent-internal-plumbing
+   *  narration, rewrites relevant-but-jargony updates into plain language, and
+   *  passes genuine user-facing news through. Strict no-op off the Updates topic;
+   *  fail-open on any LLM error. Spec: docs/specs/update-relevance-gate.md. */
+  updateRelevanceGate: import('../core/UpdateRelevanceGate.js').UpdateRelevanceGate | null;
   /** Layer 3 of the Topic Intent Layer — pre-send arc-check. Same instance
    *  is wired behind the HTTP route (createTopicIntentRoutes) and consumed
    *  in-process by checkOutboundMessage so the tone gate sees ArcCheck's
@@ -1361,6 +1369,101 @@ export function createRoutes(ctx: RouteContext): Router {
       process.stderr.write(`[tone-gate] ${JSON.stringify(line)}\n`);
     } catch {
       // Logging must never throw
+    }
+  }
+
+  /**
+   * Update-Relevance Gate seam — applied to DISCRETIONARY update-class messages
+   * destined for the Agent Updates topic, the chokepoint that BOTH leak paths
+   * (the self-narration `POST /telegram/post-update` route and the upgrade-notify
+   * session's reply to the Updates topic) already share. Gating here covers every
+   * update emitter without any of them needing to remember (Structure > Willpower).
+   *
+   * Returns:
+   *   - { suppressed: true }            — the message is agent-internal plumbing
+   *       the user cannot notice/use/care about. The caller's response has ALREADY
+   *       been written (200 {ok,suppressed:true,reason}); the caller MUST return.
+   *       Suppression is a SUCCESS, never an error, so the caller never retries.
+   *   - { suppressed: false, text }     — deliver `text` (which may be a plain-
+   *       language rewrite of a jargony-but-relevant update, or the original).
+   *
+   * Strict no-op off the Updates topic, when the feature is disabled, or when the
+   * gate is unwired — in every one of those cases it returns the ORIGINAL text
+   * untouched so the normal reply path stays byte-identical. Fail-open: the
+   * underlying gate never throws (it resolves to deliver-original on any error).
+   */
+  async function applyUpdateRelevanceGate(
+    text: string,
+    topicId: number | undefined,
+    res: import('express').Response,
+  ): Promise<{ suppressed: boolean; text: string }> {
+    // Strict no-op anywhere but the Agent Updates topic. If state is unavailable
+    // (or the topic isn't configured) the Updates topic can't be resolved, so the
+    // gate is a no-op — the safe default (an unresolvable topic must never swallow
+    // a reply on the normal conversation path).
+    const updatesTopicId =
+      typeof ctx.state?.get === 'function' ? ctx.state.get<number>('agent-updates-topic') : undefined;
+    if (!updatesTopicId || typeof topicId !== 'number' || topicId !== updatesTopicId) {
+      return { suppressed: false, text };
+    }
+
+    // Enablement resolves via the developmentAgent gate — live on Echo, dark on
+    // the fleet, no config migration needed (runtime fallback against the shipped
+    // default; a future default flip propagates fleet-wide automatically).
+    const enabled =
+      ctx.config.monitoring?.updateRelevanceGate?.enabled ?? !!ctx.config.developmentAgent;
+    if (!enabled || !ctx.updateRelevanceGate) {
+      return { suppressed: false, text };
+    }
+
+    const result = await ctx.updateRelevanceGate.review(text);
+    logUpdateRelevanceDecision({ text, topicId, result });
+
+    if (!result.deliver) {
+      // Suppression is a SUCCESS (200), never an error — the caller (AutoUpdater,
+      // /telegram/post-update, the upgrade-notify session) must not retry/escalate.
+      res.json({ ok: true, suppressed: true, reason: result.reason });
+      return { suppressed: true, text };
+    }
+
+    // jargon → send the plain-language rewrite instead of the original; otherwise
+    // (user-relevant / fail-open) send the original untouched.
+    const finalText = result.verdict === 'jargon' && result.plainText ? result.plainText : text;
+    return { suppressed: false, text: finalText };
+  }
+
+  /**
+   * Audit trail for the Update-Relevance Gate — one JSON line per deliver/
+   * suppress/rewrite decision at `logs/update-relevance.jsonl`. The "nothing
+   * vanishes silently" guarantee: a suppressed capability is still recorded here
+   * (and still LEARNED by the agent — the upgrade-notify Step-2 MEMORY update is
+   * independent of the Step-1 user message). Never throws.
+   */
+  function logUpdateRelevanceDecision(entry: {
+    text: string;
+    topicId?: number;
+    result: import('../core/UpdateRelevanceGate.js').UpdateRelevanceResult;
+  }): void {
+    try {
+      const line = {
+        t: new Date().toISOString(),
+        kind: 'update-relevance-decision',
+        topicId: entry.topicId,
+        textLen: entry.text.length,
+        textHead: entry.text.slice(0, 120),
+        verdict: entry.result.verdict,
+        deliver: entry.result.deliver,
+        rewritten: entry.result.verdict === 'jargon' && !!entry.result.plainText,
+        reason: entry.result.reason,
+        failedOpen: entry.result.failedOpen || false,
+        latencyMs: entry.result.latencyMs,
+      };
+      process.stderr.write(`[update-relevance] ${JSON.stringify(line)}\n`);
+      const auditPath = path.join(ctx.config.stateDir, '..', 'logs', 'update-relevance.jsonl');
+      fs.mkdirSync(path.dirname(auditPath), { recursive: true });
+      fs.appendFileSync(auditPath, JSON.stringify(line) + '\n');
+    } catch {
+      // Logging must never throw — observability is never load-bearing.
     }
   }
 
@@ -6193,11 +6296,27 @@ export function createRoutes(ctx: RouteContext): Router {
     // relaying). The holder is the single Telegram owner and the correct place to
     // gate. (Direct, non-relay sends still gate locally — unchanged.)
     const willRelay = typeof ctx.telegram.willRelay === 'function' && ctx.telegram.willRelay();
+
+    // ── Update-Relevance Gate (Agent Updates topic only) ──
+    // Strict no-op for any topic that isn't the Updates topic, so the normal
+    // user-conversation reply path is byte-identical. On the Updates topic it
+    // withholds agent-internal plumbing (responds 200 {suppressed:true}) or swaps
+    // in a plain-language rewrite of a jargony-but-relevant update. Skipped for
+    // the same proxy/system-template/relay cases the tone gate is: system
+    // templates bypass by design, and a relayed reply is re-gated by the lease
+    // holder on receipt (gating on the tokenless standby is redundant + slow).
+    let replyText = text;
+    if (!isProxy && !isSystemTemplate && !willRelay) {
+      const relevance = await applyUpdateRelevanceGate(text, topicId, res);
+      if (relevance.suppressed) return;
+      replyText = relevance.text;
+    }
+
     if (
       !isProxy &&
       !isSystemTemplate &&
       !willRelay &&
-      (await checkOutboundMessage(text, 'telegram', res, {
+      (await checkOutboundMessage(replyText, 'telegram', res, {
         topicId,
         allowDebugText,
         allowDuplicate,
@@ -6211,7 +6330,7 @@ export function createRoutes(ctx: RouteContext): Router {
       // whether the reply actually landed — without it the relay could only
       // ever return a placeholder 0 and so reported "ok" even when nothing was
       // delivered (the false-success-under-load class).
-      const sendResult = await ctx.telegram.sendToTopic(topicId, text, { skipStallClear: isProxy });
+      const sendResult = await ctx.telegram.sendToTopic(topicId, replyText, { skipStallClear: isProxy });
       // Clear injection tracker — but NOT for proxy messages (PresenceProxy)
       // Proxy messages should not reset stall detection timers
       if (!isProxy) {
@@ -6459,10 +6578,20 @@ export function createRoutes(ctx: RouteContext): Router {
       return;
     }
 
+    // ── Update-Relevance Gate (runs BEFORE the tone gate) ──
+    // Decide whether this update-class message should reach the user at all, and
+    // get the final text (a plain-language rewrite for jargony-but-relevant news).
+    // An `internal` verdict suppresses it here — a 200 {suppressed:true} has been
+    // written, so we return without tone-gating or sending. The tone gate then
+    // runs on the FINAL (possibly-rewritten) text that actually goes out.
+    const relevance = await applyUpdateRelevanceGate(text, updatesTopicId, res);
+    if (relevance.suppressed) return;
+    const updateText = relevance.text;
+
     const updateAllowDebugText = metadata?.allowDebugText === true;
     const updateAllowDuplicate = metadata?.allowDuplicate === true;
     if (
-      await checkOutboundMessage(text, 'telegram', res, {
+      await checkOutboundMessage(updateText, 'telegram', res, {
         topicId: updatesTopicId,
         allowDebugText: updateAllowDebugText,
         allowDuplicate: updateAllowDuplicate,
@@ -6471,7 +6600,7 @@ export function createRoutes(ctx: RouteContext): Router {
       return;
 
     try {
-      await ctx.telegram.sendToTopic(updatesTopicId, text);
+      await ctx.telegram.sendToTopic(updatesTopicId, updateText);
       // Note: intentionally do NOT clear the injection tracker for the Updates
       // topic. Update posts are proactive broadcasts, not replies to a stuck
       // session — resetting stall timers here would mask real hangs elsewhere.

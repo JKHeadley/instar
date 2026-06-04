@@ -3163,6 +3163,25 @@ export interface MonitoringConfig {
     autoThrottleOnUnknown?: boolean;
   };
   /**
+   * UpdateRelevanceGate — relevance enforcement for DISCRETIONARY update-class
+   * messages bound for the Agent Updates topic. After PR #698 made user-facing
+   * announcements opt-in + maturity-tagged, the user still saw updates
+   * referencing internal features they have no clue about; #698 fixed the
+   * framing, not the relevance. This gate withholds agent-internal-plumbing
+   * narration ("Sibling Agent Server Control", "apprenticeship cycle recording"),
+   * rewrites relevant-but-jargony updates into plain language, and passes genuine
+   * user-facing news through unchanged. Strict no-op off the Updates topic.
+   *
+   * Enablement resolves via the developmentAgent gate
+   * (`enabled ?? !!config.developmentAgent`) — live on Echo, dark on the fleet,
+   * no config migration needed. Fail-open on any LLM error. Spec:
+   * docs/specs/update-relevance-gate.md.
+   */
+  updateRelevanceGate?: {
+    /** Master flag. `undefined` resolves via the developmentAgent gate. */
+    enabled?: boolean;
+  };
+  /**
    * ContextWedgeSentinel — detects the Claude Code "thinking/redacted_thinking
    * blocks in the latest assistant message cannot be modified" 400 fast-fail
    * wedge (a cancelled tool call inside a parallel batch corrupts the latest
