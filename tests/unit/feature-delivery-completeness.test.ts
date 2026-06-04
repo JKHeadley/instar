@@ -186,6 +186,7 @@ describe('Feature Delivery Completeness', () => {
       'Coherence Gate',           // absorbed into base template
       'External Operation Safety', // absorbed into base template
       'Token-Burn Alerts',        // operational self-heal awareness (BurnDetector throttle runbook) — migrator-only, no user-invokable capability / shadow parity. (Was untracked — a pre-existing red in this guard, fixed here.)
+      'Per-Component Framework Routing', // capability present in the template as a bold **entry** (matching Token-Burn Alerts / Resource Usage style); the migrator adds the same content as a `## ` section for existing agents. Tracked here like its bold-entry siblings.
       '/capabilities',            // alternate check for Self-Discovery
       'POST /view',               // alternate check for Private Viewing
       '/dashboard',               // alternate check for Dashboard
