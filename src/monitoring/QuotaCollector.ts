@@ -15,6 +15,20 @@
  * - Request budget enforcement (max N requests per 5-minute window)
  *
  * Part of Phase 2 of the Instar Quota Migration spec.
+ *
+ * RULE 3.1 RATIONALE
+ *   Criticality: high — wrong quota state silently misroutes scheduler/spawn
+ *                decisions and can make a framework look available when it is
+ *                actually blocked.
+ *   Frequency:   per-poll (adaptive interval; normally minutes, not per-turn).
+ *   Stability:   semi-stable — the Anthropic OAuth usage response is external
+ *                provider state, while JSONL fallback parsing reads local
+ *                provider log shape.
+ *   Fallback:    OAuth failures degrade to JSONL estimates; stale/missing
+ *                quota state fails open in QuotaTracker.
+ *   Verdict:     deterministic collector with explicit source attribution and
+ *                registry coverage in specs/provider-portability/06-state-
+ *                detector-registry.md.
  */
 
 import fs from 'node:fs';
@@ -788,6 +802,7 @@ export class QuotaCollector extends EventEmitter {
     const state: QuotaState = {
       usagePercent: weeklyUtil,
       fiveHourPercent: fiveHourUtil,
+      source: 'anthropic-oauth',
       lastUpdated: new Date().toISOString(),
     };
 
@@ -894,6 +909,7 @@ export class QuotaCollector extends EventEmitter {
 
     return {
       usagePercent: estimatedPercent,
+      source: 'claude-jsonl',
       lastUpdated: new Date().toISOString(),
     };
   }
