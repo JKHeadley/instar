@@ -28,10 +28,17 @@ move-back bug (shipped in #750; this fragment cuts the release that carries it).
 
 ## What to Tell Your User
 
-- **You can now ask where a conversation is running, and move it reliably**: "where is
-  this running / why?" reports the machine and whether it was deliberately moved there
-  or just load-balanced, and "move this to `<machine>`" now always works — including
-  moving it *back* to the machine you're already on (which used to silently do nothing).
+- **You can now ask where a conversation is running, and move it reliably.** Ask "where
+  is this running, and why?" and I'll tell you which machine has it and whether it was
+  deliberately moved there or just load-balanced. And "move this to the mini" (or any
+  machine) now always works — including moving it back to the machine you're already on,
+  which used to silently do nothing.
+
+## Summary of New Capabilities
+
+- Ask which machine a topic runs on and why (pinned vs load-placed), from any machine.
+- Reliable "move this to <machine>" — including the move-back that previously failed.
+- A deterministic transfer option that doesn't depend on phrasing.
 
 ## Evidence
 
