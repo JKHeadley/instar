@@ -5,6 +5,49 @@
 import type { Request, Response, NextFunction } from 'express';
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 
+const guardedResponses = new WeakSet<Response>();
+const GUARDED_RESPONSE_METHODS = ['json', 'send', 'sendStatus', 'redirect', 'download', 'sendFile'] as const;
+
+function responseAlreadyCommitted(res: Response): boolean {
+  return res.headersSent || res.writableEnded;
+}
+
+function logDuplicateResponse(req: Request, method: string): void {
+  const stack = new Error().stack?.split('\n').slice(2).join('\n');
+  console.warn(
+    `[server] Suppressed duplicate response send: ${req.method} ${req.originalUrl || req.url} via res.${method}()`
+    + (stack ? `\n${stack}` : ''),
+  );
+}
+
+/**
+ * Prevent a late duplicate Express response from throwing
+ * ERR_HTTP_HEADERS_SENT after a handler has already committed a response.
+ *
+ * This is a last-resort process guard; route handlers should still return
+ * immediately after early response branches.
+ */
+export function duplicateResponseGuard(req: Request, res: Response, next: NextFunction): void {
+  if (guardedResponses.has(res)) {
+    next();
+    return;
+  }
+  guardedResponses.add(res);
+
+  for (const method of GUARDED_RESPONSE_METHODS) {
+    const original = res[method].bind(res) as (...args: unknown[]) => Response;
+    (res[method] as unknown as (...args: unknown[]) => Response) = (...args: unknown[]) => {
+      if (responseAlreadyCommitted(res)) {
+        logDuplicateResponse(req, method);
+        return res;
+      }
+      return original(...args);
+    };
+  }
+
+  next();
+}
+
 export function corsMiddleware(req: Request, res: Response, next: NextFunction): void {
   // Restrict CORS to localhost origins only — this is a local management API
   const origin = req.headers.origin;
@@ -420,9 +463,17 @@ export function dashboardSecurityHeaders(req: Request, res: Response, next: Next
   next();
 }
 
-export function errorHandler(err: unknown, _req: Request, res: Response, _next: NextFunction): void {
+export function errorHandler(err: unknown, req: Request, res: Response, _next: NextFunction): void {
   const message = err instanceof Error ? err.message : String(err);
-  console.error(`[server] Error: ${message}`);
+  const stack = err instanceof Error ? err.stack : undefined;
+  if (responseAlreadyCommitted(res)) {
+    console.warn(
+      `[server] Error after response was already sent for ${req.method} ${req.originalUrl || req.url}: ${message}`
+      + (stack ? `\n${stack}` : ''),
+    );
+    return;
+  }
+  console.error(`[server] Error: ${message}` + (stack ? `\n${stack}` : ''));
   // Never leak internal error details to clients
   res.status(500).json({
     error: 'Internal server error',
