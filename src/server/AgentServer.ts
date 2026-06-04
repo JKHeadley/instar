@@ -71,6 +71,7 @@ import { setFeatureMetricsRecorder } from '../core/CircuitBreakingIntelligencePr
 import { TokenLedgerPoller } from '../monitoring/TokenLedgerPoller.js';
 import { ResourceLedger } from '../monitoring/ResourceLedger.js';
 import { ResourceLedgerPoller } from '../monitoring/ResourceLedgerPoller.js';
+import { ResourceSampler } from '../monitoring/ResourceSampler.js';
 import { getLlmCircuitBreaker } from '../core/LlmCircuitBreaker.js';
 import { FrameworkIssueLedger } from '../monitoring/FrameworkIssueLedger.js';
 import { MentorOnboardingRunner, DEFAULT_MENTOR_CONFIG, resolveMentorDeliveryTopic, type MentorConfig } from '../scheduler/MentorOnboardingRunner.js';
@@ -147,6 +148,7 @@ export class AgentServer {
   private tokenLedgerPoller: TokenLedgerPoller | null = null;
   private resourceLedger: ResourceLedger | null = null;
   private resourceLedgerPoller: ResourceLedgerPoller | null = null;
+  private resourceSampler: ResourceSampler | null = null;
   private frameworkIssueLedger: FrameworkIssueLedger | null = null;
   private mentorRunner: MentorOnboardingRunner | null = null;
   /** Wall-clock of the last mentor tick that ran, for the min-interval floor. */
@@ -678,10 +680,19 @@ export class AgentServer {
     // never gates. The poller subscribes to the global LlmCircuitBreaker's
     // trip/recover observer so breaker trips survive restart. Ships ON
     // (negligible, event-driven cost); opt out with
-    // monitoring.resourceLedger.enabled:false. (CPU/mem sampling is Phase B.)
-    if (options.config.stateDir &&
-        (options.config as { monitoring?: { resourceLedger?: { enabled?: boolean } } })
-          .monitoring?.resourceLedger?.enabled !== false) {
+    // monitoring.resourceLedger.enabled:false. (Phase B = CPU/mem sampling,
+    // gated separately below by the developmentAgent standard.)
+    const rlCfg = (options.config as {
+      monitoring?: {
+        resourceLedger?: {
+          enabled?: boolean;
+          sampleIntervalMs?: number;
+          idleSampleIntervalMs?: number;
+          retentionDays?: number;
+        };
+      };
+    }).monitoring?.resourceLedger;
+    if (options.config.stateDir && rlCfg?.enabled !== false) {
       try {
         const serverDataDir = path.join(options.config.stateDir, 'server-data');
         fs.mkdirSync(serverDataDir, { recursive: true });
@@ -693,10 +704,41 @@ export class AgentServer {
           breaker: getLlmCircuitBreaker(),
         });
         this.resourceLedgerPoller.start();
+
+        // Phase B: continuous CPU% + RSS sampling of the agent's own server
+        // process and its spawned sessions. Rides the developmentAgent dark-
+        // feature gate (standard_development_agent_dark_feature_gate): when the
+        // sampling switch is unset it resolves to ON for dev agents (echo) and
+        // OFF on the fleet, so this dogfoods on echo before fleet rollout. This
+        // is read-only observability — the sampler only reads ps/process.* and
+        // writes the ledger; it never gates, throttles, or mutates anything.
+        const samplingEnabled = rlCfg?.enabled ?? !!options.config.developmentAgent;
+        if (samplingEnabled) {
+          const sessionManager = options.sessionManager;
+          this.resourceSampler = new ResourceSampler({
+            ledger: this.resourceLedger,
+            getSessionPids: () => {
+              try {
+                return sessionManager.getRunningSessionPanePids();
+              } catch {
+                return [];
+              }
+            },
+            intervalMs: rlCfg?.sampleIntervalMs,
+            idleIntervalMs: rlCfg?.idleSampleIntervalMs,
+            retentionMs:
+              rlCfg?.retentionDays && rlCfg.retentionDays > 0
+                ? rlCfg.retentionDays * 24 * 60 * 60 * 1000
+                : undefined,
+          });
+          this.resourceSampler.start();
+        }
       } catch (err) {
         console.warn('[instar] resource-ledger init failed (non-fatal):', err);
+        try { this.resourceSampler?.stop(); } catch { /* best-effort */ }
         this.resourceLedger = null;
         this.resourceLedgerPoller = null;
+        this.resourceSampler = null;
       }
     }
 
@@ -2452,7 +2494,12 @@ export class AgentServer {
       }
       this.tokenLedgerPoller = null;
     }
-    // Stop the resource-ledger poller (unsubscribes the breaker observer) + close.
+    // Stop the resource-ledger poller (unsubscribes the breaker observer) + the
+    // Phase-B CPU/mem sampler + close the ledger.
+    if (this.resourceSampler) {
+      try { this.resourceSampler.stop(); } catch { /* best-effort */ }
+      this.resourceSampler = null;
+    }
     if (this.resourceLedgerPoller) {
       try { this.resourceLedgerPoller.stop(); } catch { /* best-effort */ }
       this.resourceLedgerPoller = null;

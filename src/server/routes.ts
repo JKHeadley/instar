@@ -4664,6 +4664,50 @@ export function createRoutes(ctx: RouteContext): Router {
     });
   });
 
+  // ── Per-agent ResourceLedger (Phase B: CPU + memory samples) ─────────
+  // Read-only. Mirrors /tokens/summary: current + windowed CPU%/RSS per source
+  // (agent-server, each session, aggregate) + the total sample count. 503 when
+  // the ledger is unavailable (disabled / not initialized). Never gates.
+  router.get('/resources/summary', (req, res) => {
+    if (!ctx.resourceLedger) {
+      res.status(503).json({ error: 'resource ledger unavailable (disabled or not initialized)' });
+      return;
+    }
+    const sinceHours = req.query.sinceHours ? Number(req.query.sinceHours) : 1;
+    const windowHours = sinceHours && sinceHours > 0 ? sinceHours : 1;
+    const sinceMs = Date.now() - windowHours * 3_600_000;
+    res.json({
+      windowHours,
+      sinceMs,
+      sampleCount: ctx.resourceLedger.sampleCount(),
+      sources: ctx.resourceLedger.summary(sinceMs),
+    });
+  });
+
+  // Recent raw CPU/mem samples, newest first (paginated; ?limit= / ?source= /
+  // ?sinceHours=). Read-only.
+  router.get('/resources/samples', (req, res) => {
+    if (!ctx.resourceLedger) {
+      res.status(503).json({ error: 'resource ledger unavailable (disabled or not initialized)' });
+      return;
+    }
+    const sinceHours = req.query.sinceHours ? Number(req.query.sinceHours) : 1;
+    const windowHours = sinceHours && sinceHours > 0 ? sinceHours : 1;
+    const sinceMs = Date.now() - windowHours * 3_600_000;
+    let limit = 200;
+    if (typeof req.query.limit === 'string' && /^\d+$/.test(req.query.limit)) {
+      const n = Number(req.query.limit);
+      if (n > 0 && n <= 2000) limit = n;
+    }
+    const source = typeof req.query.source === 'string' ? req.query.source : undefined;
+    res.json({
+      windowHours,
+      sinceMs,
+      limit,
+      samples: ctx.resourceLedger.recentSamples({ sinceMs, limit, source }),
+    });
+  });
+
   // ── Per-component framework routing (docs/specs/per-component-framework-routing.md) ──
   // Read-only: what framework each known component resolves to right now (live config),
   // whether that framework is available, and the per-framework breaker isolation. 503

@@ -192,7 +192,21 @@ describe('No Silent Fallbacks', () => {
     // These are main's additions, not regressions in this PR; the count reflects current
     // reality. (Confirms the known fragility of an exact-count ratchet on a fast-moving main —
     // the bump-with-justification escape valve, used 3x before, is the designed mechanism.)
-    const BASELINE = 447;
+    //
+    // 447 -> 450 on 2026-06-03 (ResourceLedger Phase B — CPU/mem sampling, PR #736):
+    // This PR adds ResourceSampler + ResourceLedger Phase B, whose intentional fail-open
+    // observability catches (sampleCount/pruneOlderThan return 0, the CPU-baseline reset, the
+    // computeOwnCpuPercent return 0, and the tick error handler) are ALL explicitly tagged
+    // `@silent-fallback-ok` — so the heuristic counts ZERO genuine new fallbacks from this PR's
+    // new files (verified: no monitoring/Resource* entries appear in the match list). The +3
+    // delta is purely detection-window artifacts: inserting the ResourceSampler boot wiring and
+    // the /resources routes shifts line numbers in AgentServer.ts / routes.ts / PostUpdateMigrator.ts
+    // / SessionManager.ts, which reshapes the 20-line catch-block window so a handful of
+    // PRE-EXISTING catch blocks newly match (each "added" entry has a near-symmetric "removed"
+    // counterpart at the old line number — e.g. AgentServer.ts:626≡624, PostUpdateMigrator.ts:4790≡4771).
+    // No genuine new silent fallback was introduced. Evidence reproduced 2026-06-03 via a
+    // base-vs-HEAD set-diff of the exact test heuristic: base(main)=447, HEAD=450 after annotation.
+    const BASELINE = 450;
 
     if (silentFallbacks.length > 0) {
       const report = silentFallbacks.map(fb =>

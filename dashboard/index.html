@@ -2633,6 +2633,7 @@
           <button class="tab" data-tab="initiatives" onclick="switchTab('initiatives')">Initiatives <span class="tab-count" id="tabInitiativeCount">0</span></button>
           <button class="tab" data-tab="commitments" onclick="switchTab('commitments')">Commitments <span class="tab-count" id="tabCommitmentCount">0</span></button>
           <button class="tab" data-tab="tokens" onclick="switchTab('tokens')">Tokens</button>
+          <button class="tab" data-tab="resources" onclick="switchTab('resources')">Resource Usage</button>
           <button class="tab" data-tab="threadline" onclick="switchTab('threadline')">Threadline</button>
           <button class="tab" data-tab="evidence" onclick="switchTab('evidence')">Evidence</button>
           <button class="tab" data-tab="process-health" onclick="switchTab('process-health')">Process Health</button>
@@ -3114,6 +3115,42 @@
       <div style="border:1px solid var(--border);border-radius:8px;padding:16px;display:flex;flex-direction:column;gap:8px">
         <div style="font-weight:600">Idle Sessions (&gt; 30 min)</div>
         <div id="tokensOrphansBody" style="font-size:13px">
+          <div style="color:var(--text-dim)">Loading...</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Resource Usage tab — per-agent CPU + memory (ResourceLedger Phase B).
+         Read-only observability; mirrors the Tokens tab. -->
+    <div id="resourcesPanel" style="display:none;flex-direction:column;padding:20px;gap:16px;overflow-y:auto">
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <h2 style="margin:0">Resource Usage</h2>
+        <button onclick="loadResources()" style="padding:6px 12px">Refresh</button>
+      </div>
+      <div style="font-size:12px;color:var(--text-dim);line-height:1.4">
+        How much CPU and memory this agent is using right now — the server process and each running session — sampled continuously. Last hour unless noted.
+      </div>
+
+      <!-- Right-now headline (aggregate) -->
+      <div id="resourcesHeadlineCard" style="border:1px solid var(--border);border-radius:8px;padding:16px;display:flex;flex-direction:column;gap:8px">
+        <div style="font-weight:600">Right now (all processes)</div>
+        <div id="resourcesHeadlineBody" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;font-size:13px">
+          <div style="color:var(--text-dim)">Loading...</div>
+        </div>
+      </div>
+
+      <!-- Per-source breakdown (server vs each session) -->
+      <div style="border:1px solid var(--border);border-radius:8px;padding:16px;display:flex;flex-direction:column;gap:8px">
+        <div style="font-weight:600">By process</div>
+        <div id="resourcesSourcesBody" style="font-size:13px">
+          <div style="color:var(--text-dim)">Loading...</div>
+        </div>
+      </div>
+
+      <!-- Recent trend (last samples of the aggregate) -->
+      <div style="border:1px solid var(--border);border-radius:8px;padding:16px;display:flex;flex-direction:column;gap:8px">
+        <div style="font-weight:600">Recent trend</div>
+        <div id="resourcesTrendBody" style="font-size:13px">
           <div style="color:var(--text-dim)">Loading...</div>
         </div>
       </div>
@@ -4403,6 +4440,12 @@
         onActivate: () => { if (typeof loadTokens === 'function') loadTokens(); },
       },
       {
+        id: 'resources',
+        panels: ['resourcesPanel'],
+        display: ['flex'],
+        onActivate: () => { if (typeof loadResources === 'function') loadResources(); },
+      },
+      {
         id: 'threadline',
         panels: ['threadlineTab'],
         display: ['flex'],
@@ -4925,6 +4968,103 @@
         summaryEl.innerHTML = msg;
         sessionsEl.innerHTML = '';
         orphansEl.innerHTML = '';
+      }
+    }
+
+    // ── Resource Usage Tab (ResourceLedger Phase B: CPU + memory) ────
+    function fmtBytes(n) {
+      if (n == null || !isFinite(n) || n <= 0) return '0 B';
+      if (n >= 1073741824) return (n / 1073741824).toFixed(2) + ' GB';
+      if (n >= 1048576) return (n / 1048576).toFixed(1) + ' MB';
+      if (n >= 1024) return (n / 1024).toFixed(1) + ' KB';
+      return Math.round(n) + ' B';
+    }
+    function fmtCpu(n) {
+      if (n == null || !isFinite(n)) return '0%';
+      return n.toFixed(1) + '%';
+    }
+    // Friendly label for a sample source string ('agent-server' | 'aggregate' |
+    // 'session:<id>'). All values are escaped before insertion.
+    function resourceSourceLabel(src) {
+      if (src === 'agent-server') return 'Agent server';
+      if (src === 'aggregate') return 'Everything (total)';
+      if (typeof src === 'string' && src.indexOf('session:') === 0) {
+        return 'Session ' + src.slice('session:'.length, 'session:'.length + 8);
+      }
+      return String(src || '—');
+    }
+    async function loadResources() {
+      const headlineEl = document.getElementById('resourcesHeadlineBody');
+      const sourcesEl = document.getElementById('resourcesSourcesBody');
+      const trendEl = document.getElementById('resourcesTrendBody');
+      try {
+        const [summaryResp, samplesResp] = await Promise.all([
+          apiFetch('/resources/summary?sinceHours=1'),
+          apiFetch('/resources/samples?sinceHours=1&source=aggregate&limit=20'),
+        ]);
+        const sources = summaryResp.sources || [];
+        const agg = sources.find(s => s.source === 'aggregate');
+        if (agg) {
+          headlineEl.innerHTML =
+            '<div><div style="color:var(--text-dim)">CPU now</div><div style="font-size:18px;font-weight:600">' + escapeHtml(fmtCpu(agg.currentCpuPercent)) + '</div></div>' +
+            '<div><div style="color:var(--text-dim)">Memory now (RSS)</div><div style="font-size:18px;font-weight:600">' + escapeHtml(fmtBytes(agg.currentRssBytes)) + '</div></div>' +
+            '<div><div style="color:var(--text-dim)">Avg CPU (1h)</div><div>' + escapeHtml(fmtCpu(agg.avgCpuPercent)) + '</div></div>' +
+            '<div><div style="color:var(--text-dim)">Peak CPU (1h)</div><div>' + escapeHtml(fmtCpu(agg.peakCpuPercent)) + '</div></div>' +
+            '<div><div style="color:var(--text-dim)">Peak memory (1h)</div><div>' + escapeHtml(fmtBytes(agg.peakRssBytes)) + '</div></div>' +
+            '<div><div style="color:var(--text-dim)">Samples</div><div>' + escapeHtml(String(summaryResp.sampleCount || 0)) + '</div></div>';
+        } else {
+          headlineEl.innerHTML = '<div style="color:var(--text-dim)">No samples collected yet — give it a minute.</div>';
+        }
+
+        // Per-source breakdown (server + each session), aggregate listed last.
+        const breakdown = sources.filter(s => s.source !== 'aggregate');
+        if (breakdown.length === 0) {
+          sourcesEl.innerHTML = '<div style="color:var(--text-dim)">No process samples in the last hour.</div>';
+        } else {
+          sourcesEl.innerHTML =
+            '<table style="width:100%;border-collapse:collapse;font-size:13px">' +
+              '<thead><tr style="text-align:left;color:var(--text-dim)">' +
+                '<th style="padding:6px 8px">Process</th>' +
+                '<th style="padding:6px 8px;text-align:right">CPU now</th>' +
+                '<th style="padding:6px 8px;text-align:right">Avg CPU</th>' +
+                '<th style="padding:6px 8px;text-align:right">Memory (RSS)</th>' +
+                '<th style="padding:6px 8px;text-align:right">Peak CPU</th>' +
+              '</tr></thead><tbody>' +
+              breakdown.map(s =>
+                '<tr style="border-top:1px solid var(--border)">' +
+                  '<td style="padding:6px 8px">' + escapeHtml(resourceSourceLabel(s.source)) + '</td>' +
+                  '<td style="padding:6px 8px;text-align:right">' + escapeHtml(fmtCpu(s.currentCpuPercent)) + '</td>' +
+                  '<td style="padding:6px 8px;text-align:right">' + escapeHtml(fmtCpu(s.avgCpuPercent)) + '</td>' +
+                  '<td style="padding:6px 8px;text-align:right">' + escapeHtml(fmtBytes(s.currentRssBytes)) + '</td>' +
+                  '<td style="padding:6px 8px;text-align:right">' + escapeHtml(fmtCpu(s.peakCpuPercent)) + '</td>' +
+                '</tr>'
+              ).join('') +
+              '</tbody></table>';
+        }
+
+        // Recent trend: the last aggregate samples (newest first).
+        const samples = samplesResp.samples || [];
+        if (samples.length === 0) {
+          trendEl.innerHTML = '<div style="color:var(--text-dim)">No trend yet.</div>';
+        } else {
+          trendEl.innerHTML = samples.map(s =>
+            '<div style="padding:5px 0;border-top:1px solid var(--border);display:flex;justify-content:space-between;font-size:12px">' +
+              '<span style="color:var(--text-dim)">' + escapeHtml(fmtRelTime(s.ts)) + '</span>' +
+              '<span>' + escapeHtml(fmtCpu(s.cpuPercent)) + ' CPU</span>' +
+              '<span>' + escapeHtml(fmtBytes(s.rssBytes)) + ' RSS</span>' +
+            '</div>'
+          ).join('');
+        }
+      } catch (err) {
+        const m = err && err.message ? String(err.message) : String(err);
+        // 503 / "unavailable" → the sampler isn't turned on for this agent.
+        if (/503|unavailable|disabled|not initialized/i.test(m)) {
+          headlineEl.innerHTML = '<div style="color:var(--text-dim)">Resource tracking isn\'t turned on for this agent yet.</div>';
+        } else {
+          headlineEl.innerHTML = '<div style="color:var(--red)">Error: ' + escapeHtml(m) + '</div>';
+        }
+        sourcesEl.innerHTML = '';
+        trendEl.innerHTML = '';
       }
     }
 

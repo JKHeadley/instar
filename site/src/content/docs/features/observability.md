@@ -100,7 +100,11 @@ The ledger never mutates source files — it only reads. The poller is the only 
 
 ## Resource ledger
 
-Components: `ResourceLedger`, `ResourceLedgerPoller`.
+Components: `ResourceLedger`, `ResourceLedgerPoller`, `ResourceSampler`.
+
+See the dedicated [Resource ledger (CPU + memory)](/features/resource-ledger/)
+page for the full Phase B CPU/memory tracking story; the summary below covers how
+it fits the broader observability surface.
 
 Read-only, durable per-agent rate-limit-event observability (Phase A). Until now,
 every time the account got throttled — a circuit-breaker trip, or a session
@@ -127,7 +131,20 @@ breaker observer it subscribes to (`TripObservableBreaker`) and the sentinel
 surface (`RateLimitEventSentinel`) are pure side-channels: a listener error can
 never affect the `LlmCircuitBreaker` that gates real work. The poller
 (`ResourceLedgerPollerOptions`) is event-driven and default-on at negligible cost.
-CPU and memory sampling (a durable per-agent history) is the planned Phase B.
+
+**Phase B — CPU + memory sampling.** The `ResourceSampler` (mirroring
+`TokenLedgerPoller`) closes the gap where Instar tracked *zero* CPU and *zero*
+memory per agent. On a cadence it samples the agent's own server process (CPU%
+via a `process.cpuUsage()` delta over the interval, RSS + heapUsed via
+`process.memoryUsage()`) and each spawned session by its pane PID (one batched
+`ps` call, dead-PID tolerant), plus a computed aggregate, into the same
+`ResourceLedger` (a `resource_samples` table, bounded by a retention prune). It
+exposes `GET /resources/summary` (current + windowed avg/peak CPU%/RSS per source)
+and `GET /resources/samples` (recent raw samples), and the dashboard "Resource
+Usage" tab renders both in plain language. The sampler rides the
+`developmentAgent` dark-feature gate (live on dev agents, dark on the fleet) and
+is fail-open: a sampling error never throws or crashes the poller, and it never
+gates, throttles, or mutates anything — strictly observation.
 
 ## Session clock
 

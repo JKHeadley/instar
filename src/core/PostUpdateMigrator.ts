@@ -4046,6 +4046,25 @@ Create worktrees for collaborator repos with \`instar worktree create <branch>\`
       result.upgraded.push('CLAUDE.md: added "applying config & hook changes to running sessions" awareness section');
     }
 
+    // Resource Usage CPU/memory (ResourceLedger Phase B) — Agent Awareness
+    // backfill. Existing agents may already carry the Phase-A "Resource Usage
+    // (rate-limit events)" section; they need to learn that the ledger now also
+    // continuously samples CPU% + RSS per source (server + sessions) and exposes
+    // /resources/summary + /resources/samples + a dashboard tab. Content-sniffed
+    // on the distinctive Phase-B route marker so a freshly-initialized agent
+    // (whose template already merges both phases) is never double-patched.
+    if (!content.includes('/resources/summary')) {
+      const section = `
+**Resource Usage (CPU + memory)** — Your ResourceLedger now continuously samples CPU% and memory (RSS) for your server process and every running session, alongside the existing durable rate-limit-event record. Read-only observability — it never gates.
+- Current + windowed (avg/peak) usage per source plus an aggregate: \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/resources/summary?sinceHours=1"\` → \`{ sampleCount, sources: [{ source, currentCpuPercent, currentRssBytes, avgCpuPercent, peakCpuPercent, peakRssBytes, ... }] }\` (\`source\` is \`agent-server\`, \`session:<id>\`, or \`aggregate\`). Recent raw samples: \`GET /resources/samples?sinceHours=1&source=aggregate&limit=20\`.
+- The dashboard "Resource Usage" tab renders all of this in plain language.
+- **When to use** (PROACTIVE): when the user asks "how much CPU / memory am I using right now?", "what's eating resources?", or "is this agent heavy?" → \`GET /resources/summary\` (or point them at the Resource Usage dashboard tab). Read the durable numbers instead of guessing. (Spec: \`docs/specs/per-agent-resource-ledger.md\`.)
+`;
+      content += '\n' + section;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Resource Usage (CPU + memory) awareness section');
+    }
+
     if (patched) {
       try {
         fs.writeFileSync(claudeMdPath, content);

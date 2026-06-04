@@ -66,3 +66,95 @@ describe('ResourceLedger — rate-limit event store (Phase A)', () => {
     expect(() => l.recordRateLimitEvent({ ts: 1, kind: 'circuit-open', source: 'circuit-breaker', seq: 1 })).not.toThrow();
   });
 });
+
+describe('ResourceLedger — CPU/memory samples (Phase B)', () => {
+  let ledger: ResourceLedger | null = null;
+  afterEach(() => { ledger?.close(); ledger = null; });
+  const mk = () => { ledger = new ResourceLedger({ dbPath: ':memory:' }); return ledger; };
+
+  it('records a sample and counts it', () => {
+    const l = mk();
+    l.record({ ts: 1000, source: 'agent-server', pid: 42, cpuPercent: 12.5, rssBytes: 100 * 1024 * 1024, heapUsedBytes: 40 * 1024 * 1024 });
+    expect(l.sampleCount()).toBe(1);
+  });
+
+  it('summary reports current (latest), avg, and peak per source', () => {
+    const l = mk();
+    const now = 1_000_000;
+    // agent-server: three samples in window → current is the newest (ts highest).
+    l.record({ ts: now - 200, source: 'agent-server', pid: 1, cpuPercent: 10, rssBytes: 100, heapUsedBytes: 50 });
+    l.record({ ts: now - 100, source: 'agent-server', pid: 1, cpuPercent: 30, rssBytes: 200, heapUsedBytes: 60 });
+    l.record({ ts: now - 50,  source: 'agent-server', pid: 1, cpuPercent: 20, rssBytes: 150, heapUsedBytes: 55 });
+    const rows = l.summary(now - 1000);
+    const srv = rows.find(r => r.source === 'agent-server')!;
+    expect(srv.currentCpuPercent).toBe(20);   // newest sample
+    expect(srv.currentRssBytes).toBe(150);
+    expect(srv.currentHeapUsedBytes).toBe(55);
+    expect(srv.avgCpuPercent).toBe(20);        // (10+30+20)/3
+    expect(srv.peakCpuPercent).toBe(30);
+    expect(srv.peakRssBytes).toBe(200);
+    expect(srv.sampleCount).toBe(3);
+  });
+
+  it('summary separates each source (server / session / aggregate)', () => {
+    const l = mk();
+    const now = 500_000;
+    l.record({ ts: now, source: 'agent-server', pid: 1, cpuPercent: 5, rssBytes: 100 });
+    l.record({ ts: now, source: 'session:abc', pid: 2, cpuPercent: 25, rssBytes: 300 });
+    l.record({ ts: now, source: 'aggregate', pid: 0, cpuPercent: 30, rssBytes: 400 });
+    const rows = l.summary(now - 1000);
+    expect(rows.map(r => r.source).sort()).toEqual(['agent-server', 'aggregate', 'session:abc']);
+    expect(rows.find(r => r.source === 'session:abc')!.currentCpuPercent).toBe(25);
+    // session sources never carry heapUsed
+    expect(rows.find(r => r.source === 'session:abc')!.currentHeapUsedBytes).toBeNull();
+  });
+
+  it('recentSamples returns newest first, honors window + source filter + limit', () => {
+    const l = mk();
+    l.record({ ts: 1000, source: 'aggregate', pid: 0, cpuPercent: 1, rssBytes: 10 });
+    l.record({ ts: 3000, source: 'aggregate', pid: 0, cpuPercent: 3, rssBytes: 30 });
+    l.record({ ts: 2000, source: 'agent-server', pid: 1, cpuPercent: 2, rssBytes: 20 });
+    const agg = l.recentSamples({ sinceMs: 1500, source: 'aggregate' });
+    expect(agg.map(r => r.ts)).toEqual([3000]); // only aggregate ≥ 1500
+    const all = l.recentSamples({ sinceMs: 0, limit: 2 });
+    expect(all.length).toBe(2);
+    expect(all[0].ts).toBe(3000); // newest first
+  });
+
+  it('pruneOlderThan deletes only rows older than the cutoff', () => {
+    const l = mk();
+    l.record({ ts: 1000, source: 'aggregate', pid: 0, cpuPercent: 1, rssBytes: 10 });
+    l.record({ ts: 5000, source: 'aggregate', pid: 0, cpuPercent: 5, rssBytes: 50 });
+    const deleted = l.pruneOlderThan(3000);
+    expect(deleted).toBe(1);
+    expect(l.sampleCount()).toBe(1);
+    expect(l.recentSamples({ sinceMs: 0 })[0].ts).toBe(5000);
+  });
+
+  it('clamps negative/NaN readings so a bad sample cannot poison aggregates', () => {
+    const l = mk();
+    l.record({ ts: 1000, source: 'agent-server', pid: 1, cpuPercent: -5, rssBytes: -10, heapUsedBytes: NaN });
+    const row = l.recentSamples({ sinceMs: 0 })[0];
+    expect(row.cpuPercent).toBe(0);
+    expect(row.rssBytes).toBe(0);
+    expect(row.heapUsedBytes).toBe(0);
+  });
+
+  it('record/prune never throw after close (observability safety)', () => {
+    const l = mk();
+    l.close();
+    expect(() => l.record({ ts: 1, source: 'agent-server', pid: 1, cpuPercent: 1, rssBytes: 1 })).not.toThrow();
+    expect(() => l.pruneOlderThan(0)).not.toThrow();
+    expect(l.pruneOlderThan(0)).toBe(0);
+  });
+
+  it('recordSamples writes a batch in one transaction', () => {
+    const l = mk();
+    l.recordSamples([
+      { ts: 1, source: 'agent-server', pid: 1, cpuPercent: 1, rssBytes: 10 },
+      { ts: 1, source: 'session:x', pid: 2, cpuPercent: 2, rssBytes: 20 },
+      { ts: 1, source: 'aggregate', pid: 0, cpuPercent: 3, rssBytes: 30 },
+    ]);
+    expect(l.sampleCount()).toBe(3);
+  });
+});
