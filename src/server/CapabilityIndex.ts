@@ -552,11 +552,13 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
   {
     key: 'resourceLedger',
     prefixes: ['/resources'],
-    description: 'Per-agent ResourceLedger — read-only durable rate-limit-event observability: breaker trips + session-sentinel detections persisted across restarts (Phase A). Never gates. (CPU/memory sampling is Phase B.)',
+    description: 'Per-agent ResourceLedger — read-only CPU/memory + rate-limit-event observability (mirrors TokenLedger). Phase A persists rate-limit events (breaker trips + session-sentinel detections) across restarts; Phase B continuously samples CPU% + RSS of the agent server + its spawned sessions. Never gates.',
     build: ({ ctx }) => ({
       enabled: !!ctx.resourceLedger,
       endpoints: [
-        'GET /resources/rate-limits?sinceHours=N — durable rate-limit-event count + rate (breaker trips headline; session-sentinel detections separate) + recent events',
+        'GET /resources/summary?sinceHours=N — current + windowed CPU%/RSS per source (agent-server, each session, aggregate) + sample count (Phase B)',
+        'GET /resources/samples?sinceHours=N&limit=N&source=X — recent raw CPU/mem samples, newest first (Phase B)',
+        'GET /resources/rate-limits?sinceHours=N — durable rate-limit-event count + rate (breaker trips headline; session-sentinel detections separate) + recent events (Phase A)',
       ],
     }),
   },
