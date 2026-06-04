@@ -150,3 +150,39 @@ describe('WarmSessionPool', () => {
     expect(pool.size()).toBe(1);
   });
 });
+
+describe('WarmSessionPool.selectBootOrphanNames — boot-time orphan reap', () => {
+  it('selects only warm-named sessions (agent-prefixed and bare), ignoring non-warm', () => {
+    const sessions = [
+      { tmuxSession: 'echo-msg-warm-1780600528973' }, // prefixed warm worker
+      { tmuxSession: 'msg-warm-1780601111111' }, // bare warm worker
+      { tmuxSession: 'topic-12476' }, // a Telegram session — NOT warm
+      { tmuxSession: 'echo-instar-evolution' }, // a topic session — NOT warm
+      { tmuxSession: 'msg-spawn-123' }, // a cold -p spawn — NOT warm
+    ];
+    expect(WarmSessionPool.selectBootOrphanNames(sessions)).toEqual([
+      'echo-msg-warm-1780600528973',
+      'msg-warm-1780601111111',
+    ]);
+  });
+
+  it('returns empty when there are no warm sessions (no false reaping)', () => {
+    expect(
+      WarmSessionPool.selectBootOrphanNames([
+        { tmuxSession: 'topic-1' },
+        { tmuxSession: 'msg-spawn-9' },
+        {}, // missing tmuxSession → ignored, not matched
+      ]),
+    ).toEqual([]);
+  });
+
+  it('the spawn marker and the scan marker are the same constant (no drift)', () => {
+    // The warm worker is spawned as `${NAME_MARKER}${Date.now()}`, so a session
+    // built from the marker must be selected — guards against the spawn name and
+    // the orphan-scan pattern silently diverging.
+    const spawned = `${WarmSessionPool.NAME_MARKER}${1780600000000}`;
+    expect(
+      WarmSessionPool.selectBootOrphanNames([{ tmuxSession: `echo-${spawned}` }]),
+    ).toEqual([`echo-${spawned}`]);
+  });
+});

@@ -7710,7 +7710,7 @@ export async function startServer(options: StartOptions): Promise<void> {
         // the per-agent threadline MCP (the bypass the `-p` codexAllowMcpTools
         // selects) — so threadline_send is available either way.
         if (opts?.interactive) {
-          const warmName = `msg-warm-${Date.now()}`;
+          const warmName = `${WarmSessionPool.NAME_MARKER}${Date.now()}`;
           // Framework-GENERAL: the warm worker runs in the LOCAL agent's
           // framework (claude-code / codex-cli / gemini-cli), NOT hardcoded
           // Claude. spawnInteractiveSession + frameworkSessionLaunch compose the
@@ -7868,6 +7868,30 @@ export async function startServer(options: StartOptions): Promise<void> {
     };
     if (warmEnabled) {
       console.log(`[warm-session] A2A keep-alive ENABLED (globalCap=${warmCfg?.globalCap ?? 3}, perPeerCap=${warmCfg?.perPeerCap ?? 1}, ttlMs=${warmCfg?.ttlMs ?? 600000}, trustFloor=${warmTrustFloor})`);
+      // Boot-time orphan reap. The WarmSessionPool is in-memory, so on a server
+      // restart it starts EMPTY while `msg-warm-*` tmux sessions spawned by a
+      // PREVIOUS instance may still be alive. Those are orphaned: the fresh pool
+      // has no record to reap them via the TTL tick, so they linger until the
+      // idle-session reaper eventually catches them — and under a load-induced
+      // restart churn they accumulate. With a fresh, empty pool, EVERY live
+      // `msg-warm-*` session is definitionally an orphan from a prior instance,
+      // so reap them now. Framework-agnostic: keyed on the warm-session NAME
+      // pattern, never a framework-specific process name. Lossless: a peer's next
+      // message resumes via the #746 `--resume` path (the resume-map is durable).
+      try {
+        const warmOrphanNames = WarmSessionPool.selectBootOrphanNames(
+          sessionManager.listRunningSessions(),
+        );
+        if (warmOrphanNames.length > 0) {
+          console.log(`[warm-session] boot orphan reap: ${warmOrphanNames.length} orphaned warm session(s) from a prior instance (in-memory pool is empty on boot) — reaping`);
+          for (const name of warmOrphanNames) {
+            console.log(`[warm-session] reaping boot-orphan ${name}`);
+            killWarmSessionByName(name);
+          }
+        }
+      } catch (err) {
+        console.warn(`[warm-session] boot orphan reap failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+      }
     }
 
     // Threadline Router — handles threaded cross-agent conversations via relay
