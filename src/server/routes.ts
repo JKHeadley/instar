@@ -740,6 +740,9 @@ export interface RouteContext {
   /** AgentWorktreeReaper — reclaims stale CLI worktrees. Null when not wired.
    *  Powers GET /worktrees/agent-reaper observability. */
   agentWorktreeReaper?: import('../monitoring/AgentWorktreeReaper.js').AgentWorktreeReaper | null;
+  /** McpProcessReaper — reclaims leaked MCP-server children. Null when not wired.
+   *  Powers GET /processes/mcp-reaper observability. */
+  mcpProcessReaper?: import('../monitoring/McpProcessReaper.js').McpProcessReaper | null;
   /** SleepController — agent hard-sleep decision (Stage B). Powers GET /sleep. */
   sleepController?: import('../monitoring/SleepController.js').SleepController | null;
   /** AgentActivityState — shared idle signal; bumped at the inbound chokepoint. */
@@ -4057,6 +4060,20 @@ export function createRoutes(ctx: RouteContext): Router {
       return;
     }
     res.json(ctx.agentWorktreeReaper.snapshot());
+  });
+
+  // McpProcessReaper (RESPONSIBLE-RESOURCE-USAGE — MCP-leak fix, Option B). The
+  // pull-surface answer to "which leaked MCP-server procs can be reclaimed, and
+  // why is each kept?": every matched MCP proc's verdict (session-live /
+  // external-session / *-too-young / stale-instar-session / orphaned-no-session)
+  // + its owning session + the reap-eligible count + whether reaping is armed
+  // (enabled, dryRun). Read-only, Bearer-auth. 503 when not wired/disabled.
+  router.get('/processes/mcp-reaper', (_req, res) => {
+    if (!ctx.mcpProcessReaper) {
+      res.status(503).json({ error: 'mcp process reaper unavailable' });
+      return;
+    }
+    res.json(ctx.mcpProcessReaper.snapshot());
   });
 
   // SleepController (RESPONSIBLE-RESOURCE-USAGE — agent hard-sleep, Stage B). The

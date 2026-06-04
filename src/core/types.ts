@@ -3207,6 +3207,22 @@ export interface MonitoringConfig {
     maxReapsPerPass?: number;
   };
   /**
+   * McpProcessReaper (RESPONSIBLE-RESOURCE-USAGE — MCP-leak fix, Option B).
+   * Reaps leaked MCP-server children (playwright-mcp / mcp-remote / instar
+   * stdio) whose owning session is dead/stale or fully orphaned. Killing a
+   * session's main pid doesn't cascade to MCP children, so they accumulate for
+   * days. Ships OFF + dry-run; GET /processes/mcp-reaper exposes the dry-run
+   * verdict. NEVER reaps a proc under a live/tracked or external tmux session.
+   */
+  mcpProcessReaper?: {
+    enabled?: boolean;
+    dryRun?: boolean;
+    minAgeMs?: number;
+    reapIntervalMs?: number;
+    maxReapsPerPass?: number;
+    maxAncestorHops?: number;
+  };
+  /**
    * Agent hard-sleep — SleepController decision foundation (RESPONSIBLE-RESOURCE-
    * USAGE, Stage B; docs/specs/agent-hard-sleep-controller.md). Decides whether a
    * deeply-idle agent may drop its server to near-zero footprint, with safety

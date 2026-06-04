@@ -390,6 +390,9 @@ export class AgentServer {
     /** AgentWorktreeReaper — reclaims stale CLI worktrees. Powers
      *  GET /worktrees/agent-reaper. */
     agentWorktreeReaper?: import('../monitoring/AgentWorktreeReaper.js').AgentWorktreeReaper;
+    /** McpProcessReaper — reclaims leaked MCP-server children of dead/stale
+     *  sessions. Powers GET /processes/mcp-reaper. */
+    mcpProcessReaper?: import('../monitoring/McpProcessReaper.js').McpProcessReaper;
     /** SleepController — agent hard-sleep decision (Stage B). Powers GET /sleep. */
     sleepController?: import('../monitoring/SleepController.js').SleepController;
     /** AgentActivityState — shared idle signal bumped at the inbound chokepoint. */
@@ -1041,6 +1044,7 @@ export class AgentServer {
       geminiCapacityEscalationMonitor: this.geminiCapacityEscalationMonitor,
       sessionReaper: options.sessionReaper ?? null,
       agentWorktreeReaper: options.agentWorktreeReaper ?? null,
+      mcpProcessReaper: options.mcpProcessReaper ?? null,
       sleepController: options.sleepController ?? null,
       agentActivityState: options.agentActivityState ?? null,
       reapLog: options.reapLog ?? null,

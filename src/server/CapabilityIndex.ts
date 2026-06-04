@@ -917,6 +917,7 @@ export const INTERNAL_PREFIXES: ReadonlyArray<{ prefix: string; reason: string }
   { prefix: 'build', reason: 'operator-only build endpoint' },
   { prefix: 'sessions', reason: 'operator/dashboard-only session listing (no agent-facing API)' },
   { prefix: 'worktrees', reason: 'AgentWorktreeReaper read-only report (reclaimable stale worktrees) — operational observability the agent READS, like /sessions/reap-log; not a user-invokable capability' },
+  { prefix: 'processes', reason: 'McpProcessReaper read-only report (reclaimable leaked MCP-server procs + per-proc keep/reap verdict) — operational observability the agent READS, like /worktrees/agent-reaper; not a user-invokable capability' },
   { prefix: 'sleep', reason: 'SleepController read-only verdict (agent hard-sleep decision + which guard holds it awake) — operational observability the agent READS; not a user-invokable capability' },
   { prefix: 'ci', reason: 'operator-only CI status surface' },
   { prefix: 'session', reason: 'single-session context surfaced via topicMemory endpoints' },

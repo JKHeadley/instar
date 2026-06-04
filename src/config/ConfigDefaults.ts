@@ -121,6 +121,22 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       reapIntervalMs: 86_400_000,
       maxReapsPerPass: 20,
     },
+    // McpProcessReaper (Responsible Resource Usage — MCP-leak fix, Option B).
+    // Reaps leaked MCP-server children (playwright-mcp / mcp-remote / instar
+    // stdio) whose owning session is dead/stale or fully orphaned — killing a
+    // session's main pid does NOT cascade to these children, so they re-parent
+    // and accumulate for days (the fleet hit ~80, up to 5 days old). Ships OFF +
+    // dry-run (it kills processes); review a dry-run pass (GET /processes/mcp-
+    // reaper) before enabling. NEVER touches a proc under a live/tracked session
+    // or an external (non-instar) tmux session.
+    mcpProcessReaper: {
+      enabled: false,
+      dryRun: true,
+      minAgeMs: 7_200_000,
+      reapIntervalMs: 1_800_000,
+      maxReapsPerPass: 25,
+      maxAncestorHops: 30,
+    },
     // Agent hard-sleep — SleepController decision foundation (Stage B, slice 1;
     // docs/specs/agent-hard-sleep-controller.md). Decides "is it safe for this
     // idle agent to drop its server to near-zero footprint?" with every safety
