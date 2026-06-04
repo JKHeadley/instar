@@ -27,9 +27,24 @@ in its OWN try/catch, injected into routeCtx, `running` enriched from the live s
 + integration/e2e tests + CLAUDE.md template + migrateClaudeMd agent-awareness. The overlap
 ParallelWorkSentinel is Phase B (ships dark), a separate PR.
 
+## Phase B (overlap sentinel core — added to this PR)
+- `src/monitoring/ParallelWorkOverlap.ts` — the PURE cross-topic overlap detector: activity
+  gate (only recently-worked topics), IDF/specificity weighting over the already-boilerplate-
+  filtered tags, ≥1 shared high-specificity tag required, self-exclusion, signature = sorted
+  shared-tag set, + `signatureChangedMaterially` (hysteresis) and `pairKey`. No I/O, no real
+  time (injected nowMs) ⇒ exhaustively unit-tested (11 tests).
+- `src/monitoring/ParallelWorkSentinel.ts` — the stateful councilor: `tick(nowMs)` reads the
+  activities, runs the detector, and emits ONE `overlap` nudge per genuinely-fresh overlap.
+  Containment: PAIR-KEYED cooldown (survives focus edits), signature hysteresis (no re-nag on
+  a one-token tweak), audit sink for every transition. SIGNAL-ONLY (emits an event; never
+  gates/mutates). 6 tests. The cadence + lease-gating + server wiring + config (ships dark) +
+  the nudge→Telegram/sentinel-events routing are the remaining wiring on this branch.
+
 ## Decision-point inventory
 - `ParallelActivityIndex` read aggregation — **add** — pure read over existing state; no
   block/allow surface, no mutation.
+- `ParallelWorkOverlap` / `ParallelWorkSentinel` — **add** — pure detector + a signal-only
+  EventEmitter; no block/allow surface, no mutation. The nudge informs; the agent decides.
 
 ## 1./2. Over/Under-block
 No block/allow surface. Signal-only observability over existing data.
