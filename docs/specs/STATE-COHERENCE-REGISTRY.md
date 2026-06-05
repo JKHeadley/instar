@@ -3,7 +3,9 @@ title: "State-Coherence Registry — the census of every durable state category"
 slug: "state-coherence-registry"
 author: "echo"
 eli16-overview: "STATE-COHERENCE-REGISTRY.eli16.md"
-status: "draft"
+status: "approved"
+approved: true
+principal-signoff: 'Justin, 2026-06-05 (topic 13481): "Perfect I approve all of this, including your recommendations" — recommendations locked: commitments-store convergence as P1.5 follow-up spec; topic memory stays derived-cache until P3 review; working-set transport = peer-HTTP pull primary'
 layer: "core-instar-primitive"
 parent-principle: "Structure > Willpower — state declares its coherence class at birth; the sync layer enforces it"
 project: "multimachine-coherence"

@@ -3,10 +3,11 @@ title: "Multi-Machine Coherence — Master Plan (single coherent agent)"
 slug: "multi-machine-coherence-master"
 author: "echo"
 eli16-overview: "MULTI-MACHINE-COHERENCE-MASTER-SPEC.eli16.md"
-status: "draft"
+status: "approved"
+approved: true
 layer: "core-instar-primitive"
 parent-principle: "Structure > Willpower — coherence is enforced by a declared registry and structural sync machinery, never by per-feature discipline"
-principal-signoff: "pending — P0 deliverable for Justin's review (Option A census-first approved 2026-06-05, topic 13481)"
+principal-signoff: 'Justin, 2026-06-05 (topic 13481): "Perfect I approve all of this, including your recommendations" — recommendations locked: commitments-store convergence as P1.5 follow-up spec; topic memory stays derived-cache until P3 review; working-set transport = peer-HTTP pull primary'
 project: "multimachine-coherence"
 ---
 
