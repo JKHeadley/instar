@@ -882,11 +882,29 @@ Before any high-risk action (deploying, pushing to git, modifying files outside 
 
 ---
 
+### P18. Observation Needs Structure (a duty to notice requires an unskippable artifact)
+
+**Statement:** A standing responsibility to observe something is a wish unless a required artifact proves the looking happened. Duties of perception get gates, not adjectives: if a system is supposed to observe X, a record must exist that CANNOT exist without the observation — because an observation without a required artifact is indistinguishable from no observation at all. Two corollaries ride it: **silent compensation is a swallowed finding** (a workaround you perform is a finding you must file — an unrecorded compensation is an empty catch block in behavior), and **your record schema is your perception** (a missing category/field is a designed-in blindspot; when a whole class goes unrecorded, audit the schema before blaming the observers).
+
+**Source:** constitution article "Observation Needs Structure" (Substrate); ratified by Justin 2026-06-05 from the UX-blindspot arc (topic 13435) — the placement assessment deliberately held three candidate standards against the amendment bar and admitted ONE article + two corollary revisions, not three articles.
+
+**Translation:**
+- For every observation duty in a spec, ask: "if this duty were silently skipped, what artifact would fail to exist?" If the answer is "none," the duty is decorative — require the artifact at the state-mutating transition (the operatorSeatUx block on cycle records is the canonical pattern; refusal message teaches the shape).
+- Agents do not feel friction: any design that relies on an agent NOTICING annoyance (resends, duplicates, retries) must convert the compensation itself into the required record.
+- When reviewing any learning/recording system: enumerate what its schema makes UNRECORDABLE — every missing bucket/field is a blindspot somebody will live in.
+
+**Enforcement (structural):**
+- `ApprenticeshipCycleStore.record()` refuses cycle records without an `operatorSeatUx` verdict (#856) — gate + HTTP 400 with self-describing shape.
+- Dev-gate decision-audit entries finalize a pass/blocked verdict (#844); fix-class commits carry a `causalAutopsy` origin (#854, advisory→hard track).
+- This catalog entry, so the `/spec-converge` reviewer asks the artifact question of every spec.
+
+**Earned from:** The 2026-06-05 UX-blindspot — "observe the Telegram UX" lived as prose in the mentor prompt for weeks while the ledger collected 35 engineering findings and ZERO experience-framed ones; the operator hit resend-asks, duplicate notices, and a failed photo within ten minutes of manual driving. Same-week recurrences: undiagnosable mentor heartbeat (#838), verdict-less gate audits (#844), chat-only cause analysis (#854), and the commitment auto-delivery bug recurring unpinned (no test had ever asserted the correct behavior — the observation had no artifact either).
+
 ## Part 4 — How the lessons-aware reviewer uses this index
 
 The 8th `/spec-converge` reviewer (see `skills/spec-converge/SKILL.md`) loads this document plus the linked `feedback_*.md` files and the principles in `CLAUDE.md`, then asks for each spec under review:
 
-For each Part 1 principle (P1-P17):
+For each Part 1 principle (P1-P18):
 - Does the spec engage with this principle?
 - Does it contradict it?
 - If contradicting, is there an explicit, defended rationale in the spec?
@@ -913,3 +931,4 @@ Output: structured findings per category, with citations to this index. Findings
 | 2026-06-03 | Added P14 Distrust Temporary Success (a recurrence is a root cause) and P15 Friction Is a Spec (productize the workaround), mirroring the two new constitution standards earned from the listSessions hot-loop incident (topic 13435; full account in `docs/lessons/2026-06-03-listsessions-hotloop-success-story.md`). Updated the spec-converge review template's Part-1 range from P1-P10 to P1-P15 (it had not been updated when P11-P13 were added — latent under-enforcement). |
 | 2026-06-05 | Added P16 Notice + Solve Inefficiencies (efficiency is a standing search — the proactive sibling of P15), mirroring the new constitution standard ratified by Justin during the recursive apprenticeship run (topic 13435), earned from the merge-churn throughput inefficiency (strict branch protection + fast main + slow CI = rebase loops). Updated the spec-converge review template's Part-1 range from P1-P15 to P1-P16. |
 | 2026-06-05 | Added P17 Bounded Notification Surface (no feature may flood the user), mirroring the new constitution standard proposed after the third topic-spam flood (topic 11960; worktree-detector false-positive mass-flag dodged the per-source budget via unique sourceContexts). Enforcement is structural from day one: burst-invariant test + funnel lint + in-chokepoint budget. Updated the spec-converge review template's Part-1 range from P1-P16 to P1-P17. |
+| 2026-06-05 | Added P18 Observation Needs Structure (a duty to notice requires an unskippable artifact) + two corollaries (silent compensation is a swallowed finding → Friction-Is-a-Spec revision; record schema is perception → Observability revision), mirroring the constitution amendment ratified by Justin during apprenticeship run 2 (topic 13435, UX-blindspot arc). Enforcement structural from day one: #856 cycle gate, #844 verdict finalization, #854 causalAutopsy field. Updated the spec-converge review template's Part-1 range from P1-P17 to P1-P18. |
