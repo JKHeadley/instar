@@ -7852,6 +7852,8 @@ export function createRoutes(ctx: RouteContext): Router {
     }
     res.json({
       enabled: true,
+      pushEnabled: ss.pushEnabled,
+      mode: ss.pushEnabled ? 'full' : 'receive-only',
       localKeyPaths: ss.localKeyPaths(),
       syncTargets: ss.syncTargets(),
     });
@@ -7865,6 +7867,15 @@ export function createRoutes(ctx: RouteContext): Router {
     const ss = ctx.secretSync;
     if (!ss || !ss.enabled) {
       res.status(503).json({ error: 'secret-sync not available (dark / single-machine install)' });
+      return;
+    }
+    // Receive-only machines refuse to push (safety): they must not send their possibly-stale
+    // set to peers. Set multiMachine.secretSync.pushEnabled=true on the AUTHORITATIVE machine.
+    if (!ss.pushEnabled) {
+      res.status(409).json({
+        error: 'push disabled (receive-only). Set multiMachine.secretSync.pushEnabled=true on the machine whose secret store is authoritative.',
+        mode: 'receive-only',
+      });
       return;
     }
     try {

@@ -3203,11 +3203,20 @@ A secret you give me on one machine — a Telegram token, an API key, a GitHub P
 
 - **Status (NAMES only, never values):** \`curl -H "Authorization: Bearer $AUTH" http://localhost:4042/secrets/sync-status\` → which secret key-paths this machine holds + the online peers it would sync to.
 - **Push now (deterministic lever):** \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:4042/secrets/sync-now\` → encrypts the secret set per online peer and pushes it; returns a per-peer result. The reliable lever for a manual re-sync or live-verify.
+- **SAFETY — push is opt-in (receive-only by default):** \`multiMachine.secretSync.enabled\` alone only RECEIVES. Outbound push needs \`multiMachine.secretSync.pushEnabled: true\`, set ONLY on the machine whose secret store is authoritative. A receive-only machine refuses \`sync-now\` with 409 — preventing a machine with a stale/divergent store from clobbering good secrets on its peers. \`GET /secrets/sync-status\` reports \`mode\` (\`full\` | \`receive-only\`).
 - **Proactive trigger:** when the user starts re-entering a secret they already gave me on another machine, or asks "do I have to set this up on each machine?" — the answer is no; confirm it synced via \`GET /secrets/sync-status\`. Spec: \`docs/specs/cross-machine-secret-sync-spec.md\`.
 `;
       content += '\n' + secretSync;
       patched = true;
       result.upgraded.push('CLAUDE.md: added Cross-Machine Secret Sync section');
+    } else if (content.includes('Cross-Machine Secret Sync') && !content.includes('receive-only by default')) {
+      // Agents that already got the secret-sync section (from the #771 migration) predate the
+      // push-opt-in safety guard. Append the one safety line so they learn push is receive-only
+      // by default. Idempotent via the 'receive-only by default' marker.
+      const guardLine = '\n- **SAFETY — push is opt-in (receive-only by default):** for Cross-Machine Secret Sync, `multiMachine.secretSync.enabled` alone only RECEIVES. Outbound push needs `multiMachine.secretSync.pushEnabled: true`, set ONLY on the machine whose secret store is authoritative. A receive-only machine refuses `POST /secrets/sync-now` with 409 — preventing a machine with a stale/divergent store from clobbering good secrets on its peers. `GET /secrets/sync-status` reports `mode` (`full` | `receive-only`).\n';
+      content += '\n' + guardLine;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added secret-sync push-opt-in safety line');
     }
 
     // ContextWedgeSentinel — the 4th silently-stopped sentinel. Tells the agent
