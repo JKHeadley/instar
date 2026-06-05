@@ -1,8 +1,23 @@
 ---
 title: "Coordination Mandate — bounded autonomous agent-to-agent authority without a per-action human operator"
-status: draft — awaiting Justin's directional sign-off (this touches the security model)
-author: Echo (autonomous session 3, 2026-06-05)
+status: approved
+approved: true
+approver: justin
+approved-at: 2026-06-05T03:47:00Z
+approval-mode: approved-as-is
+review-convergence: 2026-06-05T03:00:00Z
+review-iterations: 1
+author: echo
+created: 2026-06-05
+parent-principle: "Signal vs. Authority"
+spec-class: governance-safety
 relates-to: feedback-factory-migration.md, sealed-handoff, threadline A2A
+decision-record: >
+  Justin's directional sign-off (topic 12476, 2026-06-05, "go with your picks") resolved the
+  three §6 decisions A / A / B: (1) the irreversible cutover stays Justin's manual click — the
+  mandate covers everything UP TO the flip, not the flip itself; (2) issuance is via the
+  dashboard behind his PIN; (3) the first mandate carries only authorities 1–2
+  (exchange-read-credential + sign-code-review) — execute-cutover is NOT delegated yet.
 ---
 
 # Coordination Mandate
@@ -122,22 +137,24 @@ Justin authors one mandate, then steps out:
 >    (the Phase-4 one-way door fires only when both objective gates are green).
 > Revocable any time; every action audited.
 
-## 6. Open decisions for Justin (why this needs sign-off, not a solo build)
+## 6. Decisions (RESOLVED by Justin's sign-off — topic 12476, 2026-06-05, "go with your picks" = A / A / B)
 
-1. **Cutover delegation depth (the key one).** Do you want the **execute-cutover** authority
-   delegated to the structural condition (agents flip it autonomously the instant
-   integrity+parity are green), OR do you want the mandate to cover everything *up to* the
-   cutover, with the irreversible flip itself remaining your one explicit human click?
-   (Recommendation: start with the latter — mandate automates everything up to the door, you
-   click the door — then graduate to full auto-cutover once the parity monitor has a track
-   record. Lowest-regret.)
-2. **Authorship mechanism.** How do you want to *issue* a mandate so it's un-forgeable but
-   ergonomic — a signed CLI command, a dashboard action behind your PIN, or an authenticated
-   API call? (Recommendation: dashboard-behind-PIN for issuance + revocation; it's the
-   existing human-authenticated surface.)
-3. **Scope of the first mandate.** Is the three-authority mandate in §5 the right initial
-   bound, or do you want to start with only authorities 1–2 (credential + review) and hold
-   cutover entirely manual for now?
+1. **Cutover delegation depth (the key one).** → **A.** The mandate covers everything *up to*
+   the cutover; the irreversible flip itself remains Justin's one explicit human click.
+   `execute-cutover` is therefore NOT an autonomously-fireable authority — the agents prepare
+   and gate-check, but a human authorizes the one-way door. (We may graduate to full
+   auto-cutover later once the parity monitor has a track record; that is a separate future
+   decision, not part of this mandate.)
+2. **Authorship mechanism.** → **A.** Issuance + revocation are dashboard actions behind
+   Justin's PIN — the existing human-authenticated surface. An agent's Bearer token cannot
+   issue or widen a mandate; only a PIN-authenticated request can.
+3. **Scope of the first mandate.** → **B.** The first mandate carries only authorities 1–2
+   (**exchange-read-credential** + **sign-code-review**). **execute-cutover is NOT delegated**;
+   the cutover stays entirely Justin's manual call for now (consistent with decision 1).
+
+These resolutions are load-bearing for the build (§7): the enforcement ships with the
+`execute-cutover` authority DEFINED but never issued in the first mandate, and the issuance
+route is PIN-gated, not Bearer-gated.
 
 ## 7. Build plan (after sign-off)
 

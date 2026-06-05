@@ -718,6 +718,14 @@ export interface RouteContext {
   /** Approval-as-Data ledger (spec Part B / Phase 2). Records operator approval
    *  decisions + per-class agreement ratios. Null when stateDir is unavailable. */
   approvalLedger: import('../core/ApprovalLedger.js').ApprovalLedger | null;
+  /** Coordination Mandate enforcement (docs/specs/coordination-mandate.md §4).
+   *  Deny-by-default gate + signed store + hash-chained audit. Null when stateDir
+   *  is unavailable. Issuance/revocation are PIN-gated, never Bearer-only. */
+  coordination: {
+    store: import('../coordination/MandateStore.js').MandateStore;
+    gate: import('../coordination/MandateGate.js').MandateGate;
+    audit: import('../coordination/MandateAudit.js').MandateAudit;
+  } | null;
   /** Cross-topic activity index (Parallel-Work Awareness Phase A). Backs GET /parallel-work/activities. */
   parallelActivityIndex?: import('../core/ParallelActivityIndex.js').ParallelActivityIndex | null;
   /** The shared intelligence provider (an IntelligenceRouter when per-component routing is wired). Backs GET /intelligence/routing. */
@@ -4873,6 +4881,170 @@ export function createRoutes(ctx: RouteContext): Router {
     if (surface) rows = rows.filter((r) => r.surface === surface);
     const recent = rows.slice(-limit).reverse();
     res.json({ count: recent.length, total: rows.length, rows: recent });
+  });
+
+  // ── Coordination Mandate (docs/specs/coordination-mandate.md §4) ──
+  // Deny-by-default enforcement for autonomous A2A authority. The mandate (a
+  // human-authored, signed policy) is the AUTHORIZER — never the agent. Justin's
+  // resolved decisions (A/A/B, 2026-06-05): issuance + revocation are PIN-gated
+  // (the human-authenticated dashboard surface — an agent's Bearer token CANNOT
+  // issue/revoke); the first mandate carries only exchange-read-credential +
+  // sign-code-review; execute-cutover is not delegated (the flip stays human).
+  //
+  // PIN verification mirrors /dashboard/unlock: sha256 + timingSafeEqual + a
+  // per-IP attempt limit. Read paths + /mandate/evaluate are Bearer-gated.
+
+  const mandatePinAttempts = new Map<string, { count: number; resetAt: number }>();
+  const MANDATE_PIN_MAX_ATTEMPTS = 5;
+  const MANDATE_PIN_WINDOW_MS = 5 * 60 * 1000;
+
+  /** Verify the operator PIN for mandate issuance/revocation. Returns an error
+   *  string (already sent) or null when the PIN is valid. */
+  function checkMandatePin(req: import('express').Request, res: import('express').Response): boolean {
+    if (!ctx.config.dashboardPin) {
+      res.status(503).json({ error: 'PIN authentication not available (no dashboardPin configured)' });
+      return false;
+    }
+    const ip = req.ip || req.socket?.remoteAddress || 'unknown';
+    const now = Date.now();
+    let entry = mandatePinAttempts.get(ip);
+    if (entry && now > entry.resetAt) { mandatePinAttempts.delete(ip); entry = undefined; }
+    if (entry && entry.count >= MANDATE_PIN_MAX_ATTEMPTS) {
+      res.status(429).json({ error: 'Too many attempts. Try again later.' });
+      return false;
+    }
+    const pin = (req.body ?? {}).pin;
+    if (!pin || typeof pin !== 'string') {
+      res.status(403).json({ error: 'Operator PIN required — mandate issuance/revocation is a human action, not an agent action' });
+      return false;
+    }
+    const ha = createHash('sha256').update(pin).digest();
+    const hb = createHash('sha256').update(ctx.config.dashboardPin).digest();
+    if (ha.length !== hb.length || !timingSafeEqual(ha, hb)) {
+      if (!entry) { entry = { count: 0, resetAt: now + MANDATE_PIN_WINDOW_MS }; mandatePinAttempts.set(ip, entry); }
+      entry.count++;
+      res.status(403).json({ error: 'Incorrect PIN', attemptsRemaining: MANDATE_PIN_MAX_ATTEMPTS - entry.count });
+      return false;
+    }
+    return true;
+  }
+
+  // Evaluate an action against a mandate (the enforcement consumption point).
+  // Every call — allow AND deny — lands in the hash-chained audit.
+  router.post('/mandate/evaluate', (req, res) => {
+    if (!ctx.coordination) {
+      res.status(503).json({ error: 'coordination mandate engine unavailable (no stateDir or init failed)' });
+      return;
+    }
+    const b = req.body ?? {};
+    if (typeof b.action !== 'string' || !b.action || typeof b.agentFp !== 'string' || !b.agentFp || typeof b.mandateId !== 'string' || !b.mandateId) {
+      res.status(400).json({ error: 'action, agentFp, and mandateId are required' });
+      return;
+    }
+    const result = ctx.coordination.gate.evaluate({
+      action: b.action,
+      params: (b.params && typeof b.params === 'object') ? b.params : {},
+      agentFp: b.agentFp,
+      mandateId: b.mandateId,
+    });
+    res.json({ decision: result.decision, reason: result.reason, conditionResult: result.conditionResult });
+  });
+
+  // Read-only audit trail + chain integrity. MUST be registered before /mandate/:id.
+  router.get('/mandate/audit', (req, res) => {
+    if (!ctx.coordination) {
+      res.status(503).json({ error: 'coordination mandate engine unavailable (no stateDir or init failed)' });
+      return;
+    }
+    let limit = 100;
+    if (typeof req.query.limit === 'string' && /^\d+$/.test(req.query.limit)) {
+      const n = Number(req.query.limit);
+      if (n > 0 && n <= 1000) limit = n;
+    }
+    const all = ctx.coordination.audit.all();
+    res.json({
+      total: all.length,
+      chain: ctx.coordination.audit.verifyChain(),
+      headHash: ctx.coordination.audit.headHash(),
+      entries: all.slice(-limit).reverse(),
+    });
+  });
+
+  // List mandates (each with its live authorship-verification status). Read-only.
+  router.get('/mandate', (_req, res) => {
+    if (!ctx.coordination) {
+      res.status(503).json({ error: 'coordination mandate engine unavailable (no stateDir or init failed)' });
+      return;
+    }
+    const { store } = ctx.coordination;
+    res.json({
+      mandates: store.list().map((m) => ({ ...m, authorshipValid: store.verifyAuthorship(m) })),
+    });
+  });
+
+  // One mandate + its verification status. Read-only.
+  router.get('/mandate/:id', (req, res) => {
+    if (!ctx.coordination) {
+      res.status(503).json({ error: 'coordination mandate engine unavailable (no stateDir or init failed)' });
+      return;
+    }
+    const m = ctx.coordination.store.get(req.params.id);
+    if (!m) {
+      res.status(404).json({ error: `mandate "${req.params.id}" not found` });
+      return;
+    }
+    res.json({ mandate: { ...m, authorshipValid: ctx.coordination.store.verifyAuthorship(m) } });
+  });
+
+  // Issue a mandate — PIN-GATED (decision 2A: the human-authenticated surface).
+  router.post('/mandate/issue', (req, res) => {
+    if (!ctx.coordination) {
+      res.status(503).json({ error: 'coordination mandate engine unavailable (no stateDir or init failed)' });
+      return;
+    }
+    if (!checkMandatePin(req, res)) return;
+    const b = req.body ?? {};
+    if (typeof b.scope !== 'string' || !b.scope.trim()) {
+      res.status(400).json({ error: 'scope is required' });
+      return;
+    }
+    if (!Array.isArray(b.agents) || b.agents.length !== 2 || b.agents.some((a: unknown) => typeof a !== 'string' || !a)) {
+      res.status(400).json({ error: 'agents must be a pair of two agent fingerprints' });
+      return;
+    }
+    if (!Array.isArray(b.authorities) || b.authorities.length === 0
+      || b.authorities.some((a: any) => typeof a?.action !== 'string' || !a.action || typeof a?.bounds !== 'object' || a.bounds === null)) {
+      res.status(400).json({ error: 'authorities must be a non-empty array of { action, bounds, requiresCondition? }' });
+      return;
+    }
+    if (typeof b.expiresAt !== 'string' || isNaN(Date.parse(b.expiresAt)) || Date.parse(b.expiresAt) <= Date.now()) {
+      res.status(400).json({ error: 'expiresAt must be a future ISO timestamp (mandates always expire)' });
+      return;
+    }
+    const mandate = ctx.coordination.store.issue({
+      scope: b.scope,
+      agents: [b.agents[0], b.agents[1]],
+      authorities: b.authorities,
+      author: typeof b.author === 'string' && b.author ? b.author : 'justin',
+      expiresAt: b.expiresAt,
+    });
+    res.status(201).json({ issued: true, mandate });
+  });
+
+  // Revoke a mandate — PIN-GATED (the operator kill switch; checked on every action).
+  router.post('/mandate/:id/revoke', (req, res) => {
+    if (!ctx.coordination) {
+      res.status(503).json({ error: 'coordination mandate engine unavailable (no stateDir or init failed)' });
+      return;
+    }
+    if (!checkMandatePin(req, res)) return;
+    const reason = typeof (req.body ?? {}).reason === 'string' && req.body.reason ? req.body.reason : 'operator revocation';
+    const m = ctx.coordination.store.revoke(req.params.id, reason);
+    if (!m) {
+      res.status(404).json({ error: `mandate "${req.params.id}" not found` });
+      return;
+    }
+    res.json({ revoked: true, mandate: m });
   });
 
   // ── Parallel-Work Awareness (docs/specs/parallel-activity-coherence.md, Phase A) ──

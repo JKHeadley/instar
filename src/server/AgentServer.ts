@@ -14,6 +14,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import { ApprovalLedger } from '../core/ApprovalLedger.js';
+import { MandateStore } from '../coordination/MandateStore.js';
+import { MandateGate } from '../coordination/MandateGate.js';
+import { MandateAudit } from '../coordination/MandateAudit.js';
+import { ConditionsRegistry } from '../coordination/conditions.js';
 import { fileURLToPath } from 'node:url';
 import type { SessionManager } from '../core/SessionManager.js';
 import type { StateManager } from '../core/StateManager.js';
@@ -154,6 +158,9 @@ export class AgentServer {
   /** Approval-as-Data ledger (spec Part B, Phase 2). Read-only observability over
    *  operator approval decisions. Null when stateDir is unavailable. */
   private approvalLedger: ApprovalLedger | null = null;
+  /** Coordination Mandate enforcement (spec §4): deny-by-default gate + signed
+   *  store + hash-chained audit. Null when stateDir is unavailable. */
+  private coordination: { store: MandateStore; gate: MandateGate; audit: MandateAudit; conditions: ConditionsRegistry } | null = null;
   private parallelActivityIndex: ParallelActivityIndex | null = null;
   private parallelWorkSentinel: ParallelWorkSentinel | null = null;
   private parallelWorkSentinelTimer: ReturnType<typeof setInterval> | null = null;
@@ -853,6 +860,49 @@ export class AgentServer {
       this.approvalLedger = null;
     }
 
+    // Coordination Mandate enforcement (docs/specs/coordination-mandate.md §4).
+    // Deny-by-default: with NO valid mandate issued, the gate denies every
+    // autonomous A2A action — the system is inert until the operator authors a
+    // mandate through the PIN-gated issuance route. The issuance proof is an HMAC
+    // over the server's issuance secret (authToken): the proof stops a forged or
+    // edited AUTHORED mandate (T1/T2); local-file tamper by an attacker with disk
+    // access is the same trust root as today (T12, out of scope, stated in-spec).
+    // Conditions resolve from REAL state; unwired conditions evaluate false
+    // (deny-safe) — the future execute-cutover authority wires real resolvers.
+    // Own try/catch so a failure here can never cascade into the other inits.
+    try {
+      if (options.config.stateDir) {
+        const issuanceKey = this.config.authToken || 'mandate-issuance-unsigned-dev-key';
+        const mSign = (canonical: string) => createHmac('sha256', issuanceKey).update(canonical).digest('hex');
+        const mVerify = (canonical: string, proof: string) => {
+          const expected = mSign(canonical);
+          try {
+            return expected.length === proof.length
+              && timingSafeEqual(Buffer.from(expected), Buffer.from(proof));
+          } catch { return false; }
+        };
+        const store = new MandateStore({
+          filePath: path.join(options.config.stateDir, 'state', 'coordination-mandates.json'),
+          sign: mSign,
+          verifySig: mVerify,
+        });
+        const audit = new MandateAudit({
+          filePath: path.join(options.config.stateDir, 'state', 'mandate-audit.jsonl'),
+        });
+        const conditions = new ConditionsRegistry();
+        // Registered deny-safe: these return false until the real integrity/parity
+        // state is wired (the first mandate has no conditioned authority, so they
+        // are not exercised — built + tested for the future cutover authority).
+        conditions.register('integrity-gate-pass', () => false);
+        conditions.register('parity-zero-divergence', () => false);
+        const gate = new MandateGate({ store, conditions, audit });
+        this.coordination = { store, gate, audit, conditions };
+      }
+    } catch (err) {
+      console.warn('[instar] coordination-mandate init failed (non-fatal):', err);
+      this.coordination = null;
+    }
+
     // Failure-Learning Loop (docs/specs/FAILURE-LEARNING-LOOP-SPEC.md) — instar
     // self-hosting dev-process forensics. Ships OFF; constructed only when
     // enabled (else the inline /failures routes 503-stub via the null ledger).
@@ -1187,6 +1237,7 @@ export class AgentServer {
       featureMetricsLedger: this.featureMetricsLedger,
       resourceLedger: this.resourceLedger,
       approvalLedger: this.approvalLedger,
+      coordination: this.coordination,
       parallelActivityIndex: this.parallelActivityIndex,
       frameworkIssueLedger: this.frameworkIssueLedger,
       mentorRunner: this.mentorRunner,
