@@ -169,4 +169,74 @@ describe('instar-dev pre-commit — decision-audit line rides the commit (self-s
       expect(JSON.parse(fs.readFileSync(path.join(sandbox, '.instar', 'instar-dev-decisions', e), 'utf8')).slug).toBe('audit-fixture');
     }
   });
+
+  // ── Verdict finalization (the mislabeled rode-along entry, 2026-06-05) ──
+  // Riding-the-retry is deliberate: a blocked evaluation's entry rides the
+  // next successful commit. But without a verdict, an entry written under a
+  // stale/unresolved trace slug READS as a real shipped decision for that
+  // slug — both echo (#836) and codey (#842) shipped mislabeled
+  // "unknown"/foreign-slug entries in one day. The exit handler finalizes
+  // every entry with 'pass' or 'blocked' so each is self-describing.
+
+  it('a BLOCKED evaluation finalizes its entry with verdict "blocked" (staged copy included)', async () => {
+    const srcRel = 'src/touched.ts';
+    fs.writeFileSync(path.join(sandbox, srcRel), '// touched\n');
+    fs.writeFileSync(
+      path.join(sandbox, '.instar', 'instar-dev-traces', `${Date.now()}-audit-fixture.json`),
+      JSON.stringify({
+        phase: 'complete',
+        slug: 'audit-fixture',
+        tier: 1,
+        coveredFiles: [srcRel],
+        createdAt: new Date().toISOString(),
+      }, null, 2),
+    );
+    execFileSync('git', ['add', srcRel], { cwd: sandbox });
+
+    const result = await runHook(process.env, sandbox);
+    expect(result.status).not.toBe(0);
+
+    const entries = listEntryFiles();
+    expect(entries.length).toBe(1);
+    const entryRel = path.join('.instar', 'instar-dev-decisions', entries[0]);
+    expect(JSON.parse(fs.readFileSync(path.join(sandbox, entryRel), 'utf8')).verdict).toBe('blocked');
+    // The STAGED copy carries the finalized verdict too (the exit handler
+    // re-stages after the rewrite) — the rode-along record is truthful.
+    const staged = execFileSync('git', ['show', `:${entryRel}`], { cwd: sandbox, encoding: 'utf8' });
+    expect(JSON.parse(staged).verdict).toBe('blocked');
+  });
+
+  it('a PASSING Tier-1 evaluation finalizes its entry with verdict "pass"', async () => {
+    const srcRel = 'src/touched.ts';
+    const eli16Rel = 'upgrades/pass-fixture.eli16.md';
+    const seRel = 'upgrades/side-effects/pass-fixture.md';
+    fs.writeFileSync(path.join(sandbox, srcRel), '// touched\n');
+    fs.writeFileSync(path.join(sandbox, eli16Rel), 'E'.repeat(900)); // ≥ MIN_ELI16_CHARS
+    // ≥ 200 chars — the Tier-1 side-effects artifact length floor.
+    fs.writeFileSync(path.join(sandbox, seRel), `# Side-Effects Review — pass fixture\n\n${'S'.repeat(250)}\n`);
+    fs.writeFileSync(
+      path.join(sandbox, '.instar', 'instar-dev-traces', `${Date.now()}-pass-fixture.json`),
+      JSON.stringify({
+        phase: 'complete',
+        slug: 'pass-fixture',
+        tier: 1,
+        coveredFiles: [srcRel, eli16Rel, seRel],
+        eli16Path: eli16Rel,
+        sideEffectsPath: seRel,
+        createdAt: new Date().toISOString(),
+      }, null, 2),
+    );
+    execFileSync('git', ['add', srcRel, eli16Rel, seRel], { cwd: sandbox });
+
+    const result = await runHook(process.env, sandbox);
+    expect(result.status).toBe(0); // complete Tier-1 bundle passes
+
+    const entries = listEntryFiles();
+    expect(entries.length).toBe(1);
+    const entry = JSON.parse(
+      fs.readFileSync(path.join(sandbox, '.instar', 'instar-dev-decisions', entries[0]), 'utf8'),
+    );
+    expect(entry.verdict).toBe('pass');
+    expect(entry.slug).toBe('pass-fixture');
+  });
 });
