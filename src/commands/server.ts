@@ -10064,6 +10064,16 @@ export async function startServer(options: StartOptions): Promise<void> {
                   ? provisioner.provisionAll()
                   : Promise.resolve([]),
                 localKeyPaths: () => secretSyncMod.secretKeyPaths(readSecrets()),
+                // Vault readability probe — NEVER mask a decrypt failure as "empty"
+                // (the 2026-06-05 bifurcation hid behind localKeyPaths: []).
+                vaultStatus: () => {
+                  try {
+                    const secrets = provStore.read();
+                    return { status: Object.keys(secrets).length > 0 ? 'ok' as const : 'empty' as const };
+                  } catch (err) {
+                    return { status: 'decrypt-failed' as const, error: err instanceof Error ? err.message : String(err) };
+                  }
+                },
                 syncTargets: onlinePeers,
               };
               if (_secretSyncPushEnabled) {
