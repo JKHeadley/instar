@@ -468,7 +468,11 @@ probe_server_identity() {
   if [ -n "$auth_token" ]; then
     auth_args=(-H "Authorization: Bearer $auth_token" -H "X-Instar-AgentId: $agent_id")
   fi
-  resp=$(curl -sS --max-time 5 -w '\n%{http_code}' "${auth_args[@]}" "http://localhost:${port}/health" 2>/dev/null || echo $'\n000')
+  if [ -n "$auth_token" ]; then
+    resp=$(curl -sS --max-time 5 -w '\n%{http_code}' "${auth_args[@]}" "http://localhost:${port}/health" 2>/dev/null || echo $'\n000')
+  else
+    resp=$(curl -sS --max-time 5 -w '\n%{http_code}' "http://localhost:${port}/health" 2>/dev/null || echo $'\n000')
+  fi
   http_code=$(echo "$resp" | tail -n1)
   body=$(echo "$resp" | sed '$d')
 

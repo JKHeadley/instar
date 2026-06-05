@@ -517,7 +517,8 @@ export class GitSyncManager {
    * Stage files and commit with machine signing.
    */
   commitAndPush(message: string, paths?: string[]): boolean {
-    const filesToAdd = paths || [this.stateDir];
+    const filesToAdd = this.syncEligibleDirtyPaths(paths || [this.stateDir]);
+    if (filesToAdd.length === 0) return false;
 
     try {
       for (const p of filesToAdd) {
@@ -539,6 +540,66 @@ export class GitSyncManager {
       // @silent-fallback-ok — push failure boolean return
       return false;
     }
+  }
+
+  /**
+   * Return dirty paths that are eligible for git-sync staging.
+   *
+   * The important distinction: `.instar/` contains both source-like state that
+   * should sync (jobs, identity docs, durable registries) and local runtime or
+   * secret material that must never be swept into Git. `git add .instar` erases
+   * that boundary, especially for repos that already tracked bad paths before a
+   * newer .gitignore existed. Enumerating porcelain status first lets the
+   * FileClassifier make the sync decision path-by-path.
+   */
+  private syncEligibleDirtyPaths(paths: string[]): string[] {
+    const args = ['status', '--porcelain', '-z', '--', ...paths];
+    let raw = '';
+    try {
+      raw = this.gitExecRaw(args);
+    } catch {
+      // @silent-fallback-ok — status preflight failure preserves the previous
+      // broad add/diff behavior rather than disabling GitSync entirely.
+      return paths;
+    }
+
+    const eligible: string[] = [];
+    const seen = new Set<string>();
+    const entries = raw.split('\0').filter(Boolean);
+    if (entries.length === 0) return paths;
+
+    for (let i = 0; i < entries.length; i++) {
+      const entry = entries[i];
+      if (entry.length < 4) continue;
+
+      const status = entry.slice(0, 2);
+      let relPath = entry.slice(3);
+      if ((status[0] === 'R' || status[0] === 'C') && entries[i + 1]) {
+        // In porcelain -z mode, rename/copy records emit the destination path
+        // first, followed by the source path as the next NUL-delimited field.
+        i++;
+      }
+
+      if (!relPath || seen.has(relPath)) continue;
+      seen.add(relPath);
+
+      const deleting = status.includes('D');
+      const classification = this.fileClassifier.classify(path.join(this.projectDir, relPath));
+      if (!deleting && (classification.strategy === 'never-sync' || classification.strategy === 'exclude')) {
+        DegradationReporter.getInstance().report({
+          feature: 'GitSync.gitHygiene',
+          primary: `Stage ${relPath}`,
+          fallback: 'Skip local-only or secret path',
+          reason: classification.reason,
+          impact: `${relPath} remains local and is not included in git-sync commits.`,
+        });
+        continue;
+      }
+
+      eligible.push(relPath);
+    }
+
+    return eligible;
   }
 
   /**
@@ -1129,6 +1190,16 @@ export class GitSyncManager {
       stdio: ['pipe', 'pipe', 'pipe'],
       operation: 'src/core/GitSync.ts:gitExec',
     }).trim();
+  }
+
+  private gitExecRaw(args: string[]): string {
+    return SafeGitExecutor.run(args, {
+      cwd: this.projectDir,
+      encoding: 'utf-8',
+      timeout: 30_000,
+      stdio: ['pipe', 'pipe', 'pipe'],
+      operation: 'src/core/GitSync.ts:gitExecRaw',
+    });
   }
 
   private gitConfig(key: string, value: string): void {

@@ -657,7 +657,7 @@ describe('CommitmentTracker', () => {
       expect(result!.passed).toBe(true);
     });
 
-    it('manual verification transitions to delivered (terminal) with trust note', () => {
+    it('manual verification stays PENDING — sweeps never auto-deliver a trust-only promise (CMT-1101 fix)', () => {
       const tracker = makeTracker(stateDir);
       const c = tracker.record({
         type: 'one-time-action',
@@ -666,33 +666,33 @@ describe('CommitmentTracker', () => {
         verificationMethod: 'manual',
       });
 
-      const result = tracker.verifyOne(c.id);
-      expect(result!.passed).toBe(true);
-      expect(result!.detail).toContain('Trusted');
+      // Sweep is a strict no-op: no delivery, no violation, no completion signal.
+      expect(tracker.verifyOne(c.id)).toBeNull();
 
       const updated = tracker.get(c.id)!;
-      expect(updated.status).toBe('delivered');
-      expect(updated.resolvedAt).toBeTruthy();
-      expect(updated.resolution).toMatch(/No automated verification/);
+      expect(updated.status).toBe('pending');
+      expect(updated.resolvedAt).toBeUndefined();
+      // Explicit closure still works — the intended path.
+      tracker.deliver(c.id);
+      expect(tracker.get(c.id)!.status).toBe('delivered');
     });
 
-    it('one-time-action with no verificationMethod transitions to delivered instead of accumulating violations', () => {
+    it('one-time-action with no verificationMethod stays PENDING across sweeps with zero violations (#76 spam + CMT-1101 evaporation both dead)', () => {
       const tracker = makeTracker(stateDir);
       const c = tracker.record({
         type: 'one-time-action',
-        userRequest: 'bump the version and deploy',
-        agentResponse: '✓ Delivered',
+        userRequest: 'review the fix-B PR when it lands',
+        agentResponse: 'Will review when his PR lands',
       });
 
-      // Simulate 10 sweep ticks
+      // Simulate 10 sweep ticks — the exact window where CMT-1101 evaporated
       for (let i = 0; i < 10; i++) tracker.verifyOne(c.id);
 
       const updated = tracker.get(c.id)!;
-      expect(updated.status).toBe('delivered');
-      expect(updated.violationCount).toBe(0);
-      // Delivered commitments are not active — sweeps skip them
-      const active = tracker.getActive().find(x => x.id === c.id);
-      expect(active).toBeUndefined();
+      expect(updated.status).toBe('pending'); // not silently delivered (terminal would be unrevivable)
+      expect(updated.violationCount).toBe(0); // and not violation-spammed either
+      // Still active: the beacon can beat and the overdue sweep can surface it.
+      expect(tracker.getActive().some(x => x.id === c.id)).toBe(true);
     });
 
     it('verifyOne returns null for already-delivered commitments', () => {
@@ -1281,7 +1281,7 @@ describe('CommitmentTracker', () => {
       expect(tracker.getActive().some(x => x.id === c.id)).toBe(true);
     });
 
-    it('a NON-beacon unverifiable one-time action is still auto-delivered (no regression)', () => {
+    it('a NON-beacon unverifiable one-time action also stays pending (generalized 2026-06-05 — auto-deliver evaporated real promises)', () => {
       const tracker = makeTracker(stateDir);
       const c = tracker.record({
         type: 'one-time-action',
@@ -1289,9 +1289,9 @@ describe('CommitmentTracker', () => {
         agentResponse: 'done',
         beaconEnabled: false,
       });
-      const result = tracker.verifyOne(c.id);
-      expect(result?.passed).toBe(true);
-      expect(tracker.get(c.id)?.status).toBe('delivered');
+      expect(tracker.verifyOne(c.id)).toBeNull();
+      expect(tracker.get(c.id)?.status).toBe('pending');
+      expect(tracker.getActive().some(x => x.id === c.id)).toBe(true);
     });
 
     it('a full verify() sweep leaves the beacon commitment pending', () => {
