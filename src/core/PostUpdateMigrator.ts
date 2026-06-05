@@ -2843,6 +2843,20 @@ Rule: I do not state that work landed inside another agent's state unless I have
       result.upgraded.push('CLAUDE.md: added Session Boot Self-Knowledge section');
     }
 
+    // Agent-Readiness Scoring (EXO 3.0 G2): the coordination-vs-judgment
+    // diagnostic. Existing agents need to know /agent-readiness/score exists
+    // before delegating work. Content-sniffed on a distinctive marker.
+    if (!content.includes('Agent-Readiness Scoring (EXO 3.0')) {
+      const agentReadinessSection = `
+**Agent-Readiness Scoring (EXO 3.0 task-decomposition matrix).** Score a task or workflow on its coordination-vs-judgment ratio to decide whether it's a good agent candidate. Coordination work (routing, approvals, scheduling, status-tracking, prescriptive steps) is agent-ready; judgment work (ambiguity, exceptions, relationships, no-playbook calls) stays human.
+- \`curl -X POST -H "Authorization: Bearer $AUTH" -H 'Content-Type: application/json' -d '{"task":{"description":"Route invoices, schedule approvals, track status"}}' http://localhost:${port}/agent-readiness/score\` (or \`{"workflow":{"steps":[...]}}\`) → \`{ coordinationRatio, overallReadiness (0-100), recommendation, matched }\`. \`recommendation\`: deploy-agent (75+) / agent-with-oversight (55-74) / hybrid (40-54) / human-led (<40). Deterministic + advisory.
+- **When to use** (PROACTIVE): before delegating a task/workflow to an agent, or when deciding what to automate vs keep human. Skill: \`/agent-readiness\`.
+`;
+      content += '\n' + agentReadinessSection;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Agent-Readiness Scoring section');
+    }
+
     // Apprenticeship Program (Step 1, APPRENTICESHIP-STEP1-PROGRAM-SCAFFOLD-SPEC.md).
     // Existing agents need to know the program registry + lifecycle gates exist —
     // an agent that doesn't know about a capability effectively doesn't have it.
@@ -4471,6 +4485,11 @@ Create worktrees for collaborator repos with \`instar worktree create <branch>\`
       // never learns the facts writer + secret-get retrieval will re-ask the
       // user for stored credentials — the exact loop this feature closes.
       '**Session Boot Self-Knowledge**',
+      // Agent-Readiness Scoring (EXO 3.0 G2): the coordination-vs-judgment
+      // diagnostic. A Codex/Gemini agent that never learns
+      // /agent-readiness/score can't run the task-decomposition matrix before
+      // delegating work.
+      '**Agent-Readiness Scoring (EXO 3.0',
     ];
 
     for (const shadowName of ['AGENTS.md', 'GEMINI.md']) {
