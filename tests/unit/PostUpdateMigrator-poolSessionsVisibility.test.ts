@@ -100,3 +100,78 @@ describe('PostUpdateMigrator — pool-wide session visibility line', () => {
     expect(after.split('Every session, every machine').length - 1).toBe(1);
   });
 });
+
+describe('PostUpdateMigrator — post-transfer closeout line', () => {
+  let projectDir: string;
+  let claudeMdPath: string;
+
+  beforeEach(() => {
+    projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-closeout-line-'));
+    fs.mkdirSync(path.join(projectDir, '.instar'), { recursive: true });
+    claudeMdPath = path.join(projectDir, 'CLAUDE.md');
+  });
+
+  afterEach(() => {
+    SafeFsExecutor.safeRmSync(projectDir, {
+      recursive: true,
+      force: true,
+      operation: 'tests/unit/PostUpdateMigrator-poolSessionsVisibility.test.ts',
+    });
+  });
+
+  it('appends the closeout line to a pool section that has scope=pool but predates the closeout', () => {
+    fs.writeFileSync(claudeMdPath, [
+      '# CLAUDE.md — test',
+      '',
+      '## Multi-Machine Session Pool (active-active — spread conversations across machines)',
+      '',
+      '- **Which machine + WHY (never guess):** `GET /pool/placement?topic=N`.',
+      '- **Every session, every machine:** API: `GET /sessions?scope=pool`.',
+      '',
+    ].join('\n'));
+
+    const result = runMigrateClaudeMd(createMigrator(projectDir));
+    expect(result.errors).toEqual([]);
+
+    const after = fs.readFileSync(claudeMdPath, 'utf-8');
+    expect(after).toContain('Post-transfer closeout');
+    expect(after).toContain('no duplicate sessions doing duplicate work');
+    expect(result.upgraded.some(u => u.includes('post-transfer closeout'))).toBe(true);
+  });
+
+  it('is idempotent — the closeout marker blocks a second append', () => {
+    fs.writeFileSync(claudeMdPath, [
+      '# CLAUDE.md — test',
+      '',
+      '## Multi-Machine Session Pool (active-active — spread conversations across machines)',
+      '',
+      '- **Every session, every machine:** API: `GET /sessions?scope=pool`.',
+      '- **Post-transfer closeout (automatic):** old sessions close on move.',
+      '',
+    ].join('\n'));
+
+    const result = runMigrateClaudeMd(createMigrator(projectDir));
+    expect(result.errors).toEqual([]);
+    const after = fs.readFileSync(claudeMdPath, 'utf-8');
+    expect(after.split('Post-transfer closeout').length - 1).toBe(1);
+    expect(result.upgraded.some(u => u.includes('post-transfer closeout'))).toBe(false);
+  });
+
+  it('the scope=pool append now carries the closeout line in one shot (no double-append)', () => {
+    fs.writeFileSync(claudeMdPath, [
+      '# CLAUDE.md — test',
+      '',
+      '## Multi-Machine Session Pool (active-active — spread conversations across machines)',
+      '',
+      '- **Which machine + WHY (never guess):** `GET /pool/placement?topic=N`.',
+      '',
+    ].join('\n'));
+
+    const result = runMigrateClaudeMd(createMigrator(projectDir));
+    expect(result.errors).toEqual([]);
+    const after = fs.readFileSync(claudeMdPath, 'utf-8');
+    // Both lines present, each exactly once.
+    expect(after.split('scope=pool').length - 1).toBe(1);
+    expect(after.split('Post-transfer closeout').length - 1).toBe(1);
+  });
+});

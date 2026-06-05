@@ -669,9 +669,13 @@ rm()  { "${shimRunner}" rm  "$@"; }
 
     // ── Authority gates (autonomous only; operator bypasses) ──
     // An `origin:'operator'` kill — stamped ONLY by the Bearer-authed HTTP route
-    // layer — must always happen: the user clicked "kill". It bypasses protected,
-    // the lease gate, and the KEEP-guard. Autonomous killers (the default) can
-    // only *request*; the authority holds the safety checks.
+    // layer and by the transfer handler executing the user's explicit
+    // "move this to <machine>" command (post-transfer closeout, 2026-06-05) —
+    // must always happen: the user commanded it. It bypasses protected, the
+    // lease gate, and the KEEP-guard. (The transfer handler additionally skips
+    // protected sessions BEFORE calling, so the bypass never reaches them on
+    // that path.) Autonomous killers (the default) can only *request*; the
+    // authority holds the safety checks.
     if (origin === 'autonomous') {
       // Protected set — never autonomously reap a protected session.
       if (this.config.protectedSessions.includes(session.tmuxSession)) {

@@ -3344,6 +3344,16 @@ export interface MonitoringConfig {
     /** Consecutive suspect ticks before a `busy-orphan-suspected` row is emitted.
      *  Default 5 (~10 min at the default 120s tick). */
     busyOrphanConfirmTicks?: number;
+    /** Post-transfer closeout (2026-06-05): close a topic-bound session whose
+     *  topic is now OWNED BY ANOTHER MACHINE in the session pool — otherwise
+     *  the old machine keeps a duplicate session doing duplicate work after a
+     *  move/failover. The close goes through the guarded terminate authority
+     *  (KEEP-guard vetoes are audited and retried). Default true; inert on
+     *  single-machine installs (no ownership registry → rule never fires). */
+    topicMovedCloseout?: boolean;
+    /** Consecutive ticks a topic must be observed owned-elsewhere before the
+     *  closeout fires (absorbs transfer races). Default 2 (~4 min). */
+    topicMovedConfirmTicks?: number;
   };
   /**
    * Reap-notification (UNIFIED-SESSION-LIFECYCLE §P3). The single coalescing

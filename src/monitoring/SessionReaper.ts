@@ -80,6 +80,17 @@ export interface SessionReaperConfig {
    *  the dwell that avoids flagging a brief legitimate background job. Default 5
    *  (~10 min at the default 120s tick). */
   busyOrphanConfirmTicks: number;
+  /** Post-transfer closeout (2026-06-05, operator-named issue): close a
+   *  topic-bound session whose topic is now OWNED BY ANOTHER MACHINE in the
+   *  session pool — otherwise the old machine keeps a duplicate session doing
+   *  duplicate work after a move/failover. The close goes through the guarded
+   *  `terminate` authority (KEEP-guards still apply; a veto retries next tick).
+   *  Inert without the `topicOwnerElsewhere` dep (single-machine / pool dark). */
+  topicMovedCloseout: boolean;
+  /** Consecutive ticks a topic must be observed owned-elsewhere before the
+   *  closeout fires — absorbs transfer races and brief ownership churn.
+   *  Default 2 (~4 min at the default 120s tick). */
+  topicMovedConfirmTicks: number;
 }
 
 export const DEFAULT_SESSION_REAPER_CONFIG: SessionReaperConfig = {
@@ -104,6 +115,8 @@ export const DEFAULT_SESSION_REAPER_CONFIG: SessionReaperConfig = {
   cpuActiveMinRatePerSec: 0.02,
   busyOrphanDetection: false,
   busyOrphanConfirmTicks: 5,
+  topicMovedCloseout: true,
+  topicMovedConfirmTicks: 2,
 };
 
 /** Memory-pressure thresholds (freePct). Kept as constants — the existing
@@ -207,6 +220,11 @@ export interface SessionReaperDeps {
   hasPendingInjection: (tmuxSession: string) => boolean;
   /** Bound topic id for a session, or null. */
   topicBinding: (tmuxSession: string) => number | null;
+  /** When the session pool is live: a DISPLAY identifier (nickname or machineId)
+   *  of the OTHER machine that currently owns this topic, or null when the topic
+   *  is unowned / owned by this machine / the pool is dark. Absent ⇒ the
+   *  topic-moved closeout rule is inert. */
+  topicOwnerElsewhere?: (topicId: number) => string | null;
   recentUserMessage: (topicId: number, withinMs: number) => boolean;
   activeCommitmentForTopic: (topicId: number) => boolean;
   /** Count of active subagents for a session's claudeSessionId (0 when absent). */
@@ -248,6 +266,9 @@ export class SessionReaper extends EventEmitter {
   /** Consecutive busy-orphan-suspect ticks per session (observe-only dwell for
    *  `busyOrphanDetection`). Resets to 0 on any non-suspect tick. GC'd with obs. */
   private busyOrphanStreak = new Map<string, number>();
+  /** Consecutive owned-elsewhere ticks per session (the topicMovedCloseout
+   *  dwell). Resets when the topic returns to this machine / unowned. GC'd with obs. */
+  private topicMovedStreak = new Map<string, number>();
   /** Last audited `verdict:keptBy` per session — so the decision audit logs only
    *  on a CHANGE, not every tick (auditability without per-tick log spam). */
   private lastAuditedDecision = new Map<string, string>();
@@ -481,9 +502,54 @@ export class SessionReaper extends EventEmitter {
       for (const id of [...this.lastAuditedDecision.keys()]) if (!live.has(id)) this.lastAuditedDecision.delete(id);
       for (const id of [...this.cpuSamples.keys()]) if (!live.has(id)) this.cpuSamples.delete(id);
       for (const id of [...this.busyOrphanStreak.keys()]) if (!live.has(id)) this.busyOrphanStreak.delete(id);
+      for (const id of [...this.topicMovedStreak.keys()]) if (!live.has(id)) this.topicMovedStreak.delete(id);
 
       let reapedThisTick = 0;
       for (const session of sessions) {
+        // ── Post-transfer closeout (operator-named issue, 2026-06-05) ──────
+        // A topic-bound session whose topic is now OWNED BY ANOTHER MACHINE is
+        // a leftover from a move/failover: the conversation continues on the
+        // owning machine, and this one only does duplicate work. Independent of
+        // the idle pipeline (a duplicate is wrong even when busy), but the kill
+        // still goes through the guarded `terminate` authority — a KEEP-guard
+        // veto is audited and retried next tick (eventual closeout, never a
+        // forced kill). Dwell of `topicMovedConfirmTicks` absorbs ownership
+        // churn mid-transfer.
+        if (this.cfg.topicMovedCloseout && this.deps.topicOwnerElsewhere) {
+          let otherOwner: string | null = null;
+          try {
+            const topicId = this.deps.topicBinding(session.tmuxSession);
+            otherOwner = topicId != null ? this.deps.topicOwnerElsewhere(topicId) : null;
+          } catch { otherOwner = null; /* signal failed → cannot reason → skip rule */ }
+          if (otherOwner) {
+            const streak = (this.topicMovedStreak.get(session.id) ?? 0) + 1;
+            this.topicMovedStreak.set(session.id, streak);
+            if (streak >= this.cfg.topicMovedConfirmTicks) {
+              const reason = `topic moved to ${otherOwner} — closing the leftover session on this machine (post-transfer closeout)`;
+              if (!this.killsEnabled) {
+                if (streak === this.cfg.topicMovedConfirmTicks) {
+                  this.audit('would-reap', session, { rule: 'topic-moved-away', otherOwner, dryRun: true });
+                }
+              } else if (reapedThisTick < this.cfg.maxReapsPerTick && this.hourlyBudgetRemaining() > 0) {
+                const res = await this.deps.terminate(session.id, reason);
+                if (res.terminated) {
+                  reapedThisTick++;
+                  this.reapTimestamps.push(this.now());
+                  this.audit('reaped', session, { rule: 'topic-moved-away', otherOwner });
+                  this.topicMovedStreak.delete(session.id);
+                  continue; // session is gone — skip the idle pipeline
+                }
+                // Guard veto / already-terminal — audit once per streak crossing,
+                // keep the streak so next tick retries.
+                if (streak === this.cfg.topicMovedConfirmTicks) {
+                  this.audit('reap-skipped-topic-moved', session, { rule: 'topic-moved-away', otherOwner, skipped: res.skipped });
+                }
+              }
+            }
+          } else if ((this.topicMovedStreak.get(session.id) ?? 0) > 0) {
+            this.topicMovedStreak.set(session.id, 0);
+          }
+        }
         // CPU-progress probe for the active-process keep-tightening. Sampled here
         // (once per session per tick) so the cross-tick delta lives in one place;
         // undefined off-pressure / when the feature is off ⇒ evaluate() unchanged.

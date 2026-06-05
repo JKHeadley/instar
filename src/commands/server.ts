@@ -9253,6 +9253,22 @@ export async function startServer(options: StartOptions): Promise<void> {
         // child (CPU-flat) from a working one, so an idle MCP child no longer
         // holds an otherwise-reapable session hostage under host load.
         descendantCpuSeconds: (s) => sessionManager.descendantCpuSeconds(s),
+        // Post-transfer closeout (2026-06-05): the OTHER machine that owns this
+        // topic per the session-pool ownership registry, as a display identifier
+        // (nickname when resolvable). Late-binds the pool objects — they are
+        // constructed AFTER the reaper in this function; until the mesh block
+        // wires them (and on single-machine installs forever) this returns null
+        // and the rule is inert. try/catch also absorbs the TDZ window.
+        topicOwnerElsewhere: (topicId) => {
+          try {
+            const reg = sessionOwnershipRegistry;
+            const self = _meshSelfId;
+            if (!reg || !self) return null;
+            const owner = reg.ownerOf(String(topicId));
+            if (!owner || owner === self) return null;
+            return machinePoolRegistry?.getCapacity(owner)?.nickname ?? owner;
+          } catch { return null; /* @silent-fallback-ok — pool not wired yet → rule inert */ }
+        },
         audit: reaperAuditSink(config.stateDir),
       },
       // developmentAgent gate (standard_development_agent_dark_feature_gate):
@@ -10239,6 +10255,31 @@ export async function startServer(options: StartOptions): Promise<void> {
                   ownReg.cas({ type: 'release', machineId: meshSelfId }, { sessionKey, sender: meshSelfId, nonce: `${meshSelfId}:rel:${sessionKey}:${Math.round(performance.now())}` });
                 }
               } catch { /* best-effort; route() re-places regardless once the owner is cleared */ }
+              // ── Post-transfer closeout, immediate half (2026-06-05) ───────
+              // The user's explicit move means this machine's topic session is
+              // now a leftover — left running it does duplicate work alongside
+              // the target machine's session. Close it NOW (origin 'operator':
+              // this executes the user's direct command, arrived through the
+              // authed Telegram pipeline; disposition 'recovery-bounce' keeps
+              // the §P3 notifier silent — the user already got the "Moving…"
+              // reply, and the conversation continues on the target). Protected
+              // sessions are never auto-closed (skipped here AND vetoed in the
+              // reaper sweeper that backstops non-explicit move paths).
+              if (plan.action === 'transfer' && target !== meshSelfId) {
+                try {
+                  const tmuxName = telegram?.getSessionForTopic(topicId);
+                  const rec = tmuxName ? sessionManager.listRunningSessions().find((s) => s.tmuxSession === tmuxName) : undefined;
+                  if (rec && !sessionManager.getProtectedSessions().includes(rec.tmuxSession)) {
+                    void sessionManager.terminateSession(
+                      rec.id,
+                      `topic ${topicId} moved to ${cmd.nickname} (user-commanded transfer) — closing the leftover local session`,
+                      { origin: 'operator', disposition: 'recovery-bounce' },
+                    ).then((r) => {
+                      console.log(pc.dim(`  [session-pool] post-transfer closeout: ${rec.tmuxSession} → ${r.terminated ? 'closed' : `skipped (${r.skipped})`}`));
+                    });
+                  }
+                } catch { /* @silent-fallback-ok — the reaper's topic-moved sweeper backstops this */ }
+              }
               await telegram?.sendToTopic(topicId, plan.action === 'noop'
                 ? (plan.detail === 'already-on-target'
                   ? `This conversation is already running on ${cmd.nickname} — nothing to move.`
