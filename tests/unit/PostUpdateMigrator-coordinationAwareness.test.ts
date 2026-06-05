@@ -79,12 +79,43 @@ describe('PostUpdateMigrator — coordination-surface CLAUDE.md backfill (mandat
   });
 
   it('does not double-patch a freshly-initialized agent that already carries the sections', () => {
-    // Simulate a new agent whose template already includes the markers.
+    // Simulate a new agent whose template already includes the markers — including
+    // the import-dryrun rehearsal line a CURRENT template ships (an agent missing
+    // that line is the deployed-agent splice case, covered below).
     fs.writeFileSync(path.join(projectDir, 'CLAUDE.md'),
-      '# CLAUDE.md\n\n/mandate/evaluate … /review-exchange … /cutover-readiness …\n');
+      '# CLAUDE.md\n\n/mandate/evaluate … /review-exchange … /cutover-readiness … /cutover-readiness/import-dryrun …\n');
     const result = runClaudeMdMigration(migrator);
     expect(result.upgraded.some((u) => u.includes('Coordination Mandate'))).toBe(false);
     expect(result.upgraded.some((u) => u.includes('ReviewExchange'))).toBe(false);
     expect(result.upgraded.some((u) => u.includes('Cutover Readiness'))).toBe(false);
+  });
+
+  it('splices the import-dryrun line into an agent carrying the PRE-rehearsal Cutover Readiness section', () => {
+    // The deployed-agent case: the section shipped before the import rehearsal
+    // existed — has the route prefix and the door line, but no dry-run line.
+    fs.writeFileSync(path.join(projectDir, 'CLAUDE.md'), [
+      '# CLAUDE.md',
+      '',
+      '/mandate/evaluate … /review-exchange …',
+      '**Cutover Readiness** — read surface.',
+      '- Check: `curl http://localhost:4042/cutover-readiness`.',
+      '- **The door is NOT yours**: the cutover click belongs to the operator.',
+      '',
+    ].join('\n'));
+    const result = runClaudeMdMigration(migrator);
+    expect(result.upgraded.some((u) => u.includes('import dry-run'))).toBe(true);
+
+    const content = fs.readFileSync(path.join(projectDir, 'CLAUDE.md'), 'utf-8');
+    expect(content).toContain('/cutover-readiness/import-dryrun');
+    // Spliced AHEAD of the door-discipline line (workflow order preserved).
+    expect(content.indexOf('/cutover-readiness/import-dryrun'))
+      .toBeLessThan(content.indexOf('**The door is NOT yours**'));
+    // NEVER-greens honesty copy travels with the line.
+    expect(content).toContain('NEVER greens the canonical integrity condition');
+
+    // Idempotent: a second run leaves the file byte-identical.
+    const result2 = runClaudeMdMigration(migrator);
+    expect(result2.upgraded.some((u) => u.includes('import dry-run'))).toBe(false);
+    expect(fs.readFileSync(path.join(projectDir, 'CLAUDE.md'), 'utf-8')).toBe(content);
   });
 });
