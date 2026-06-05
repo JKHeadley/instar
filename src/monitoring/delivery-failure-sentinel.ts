@@ -250,6 +250,21 @@ export class DeliveryFailureSentinel extends EventEmitter {
       this.watchdog.unref();
     }
 
+    // Immediate first drain — start() leaves no stale backlog. setInterval
+    // fires FIRST at +interval (5 min); under a restart cascade (frequent
+    // fleet releases) every boot resets the sentinel, and when up-windows are
+    // shorter than boot-time + 5 min the queue NEVER drains: live 2026-06-05
+    // ~15:40-16:50Z, five queued user messages survived four short up-windows
+    // undelivered while FRESH sends in those same windows succeeded. Awaited
+    // (not fire-and-forget): tick() already bounds its own per-delivery I/O,
+    // and a deterministic "started ⇒ backlog drained once" contract is what
+    // makes the cascade behavior testable.
+    try {
+      await this.tick();
+    } catch (err) {
+      console.warn('[delivery-sentinel] startup tick failed:', err);
+    }
+
     this.emit('sentinel:started');
   }
 
