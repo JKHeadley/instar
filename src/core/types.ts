@@ -1801,8 +1801,13 @@ export interface MultiMachineConfig {
    * recipient machine's X25519 key, never on disk in plaintext, only ever pushed
    * to registered peers). Ships DARK; on the dev agent it defaults on via the
    * `developmentAgent` gate. Backs GET /secrets/sync-status + POST /secrets/sync-now.
+   *
+   * SAFETY: `enabled` alone is RECEIVE-ONLY. Outbound push (boot best-effort +
+   * POST /secrets/sync-now) is gated SEPARATELY on `pushEnabled` (default false), so a
+   * machine with a stale/divergent store cannot auto-push and clobber peers' good secrets.
+   * Set `pushEnabled: true` only on the machine whose secret store is authoritative.
    */
-  secretSync?: { enabled?: boolean };
+  secretSync?: { enabled?: boolean; pushEnabled?: boolean };
   /**
    * Whether THIS machine's lifeline owns the Telegram long-poll. Telegram allows
    * exactly one getUpdates poller per bot token, so a second machine that also

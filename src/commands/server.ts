@@ -9826,9 +9826,16 @@ export async function startServer(options: StartOptions): Promise<void> {
         // by the mesh acceptance layer before this runs; confidentiality is enforced by the
         // decryption (a payload not sealed to our key fails). The OUTBOUND provisioner is wired
         // after the MeshRpcClient is constructed (below).
-        const _secretSyncEnabled =
-          (config.multiMachine as { secretSync?: { enabled?: boolean } } | undefined)?.secretSync?.enabled
-          ?? !!config.developmentAgent;
+        const _secretSyncCfg =
+          (config.multiMachine as { secretSync?: { enabled?: boolean; pushEnabled?: boolean } } | undefined)?.secretSync;
+        const _secretSyncEnabled = _secretSyncCfg?.enabled ?? !!config.developmentAgent;
+        // SAFETY: pushing is opt-in SEPARATELY from receiving and DEFAULTS OFF. A machine
+        // whose local secret store is stale/divergent (e.g. recovered from a key drift) would
+        // otherwise auto-push its stale set to peers on boot and CLOBBER their good secrets —
+        // the exact corruption class this guard prevents. So `enabled` alone = RECEIVE-ONLY;
+        // outbound (boot best-effort + POST /secrets/sync-now) requires `pushEnabled: true`,
+        // which you set only on the machine whose store is authoritative.
+        const _secretSyncPushEnabled = _secretSyncEnabled && (_secretSyncCfg?.pushEnabled ?? false);
         let _secretShareHandler: import('../core/SecretSync.js').SecretShareHandler | undefined;
         if (_secretSyncEnabled) {
           try {
@@ -9995,16 +10002,25 @@ export async function startServer(options: StartOptions): Promise<void> {
               });
               _secretSyncHandle = {
                 enabled: true,
-                provisionAll: () => provisioner.provisionAll(),
+                pushEnabled: _secretSyncPushEnabled,
+                // Outbound is gated on pushEnabled: a receive-only machine NEVER pushes its
+                // (possibly stale) set to peers. The route surfaces a clear refusal instead.
+                provisionAll: () => _secretSyncPushEnabled
+                  ? provisioner.provisionAll()
+                  : Promise.resolve([]),
                 localKeyPaths: () => secretSyncMod.secretKeyPaths(readSecrets()),
                 syncTargets: onlinePeers,
               };
-              // Boot best-effort: push current secrets to any peer already online.
-              // @silent-fallback-ok — fire-and-forget; per-peer failures are already captured
-              // in provisionAll's result array, and a fresh push fires on the next provision /
-              // the deterministic POST /secrets/sync-now. Boot must never block on a peer.
-              void provisioner.provisionAll().catch(() => {});
-              console.log(pc.dim('  [secret-sync] enabled — outbound provisioner wired'));
+              if (_secretSyncPushEnabled) {
+                // Boot best-effort: push current secrets to any peer already online.
+                // @silent-fallback-ok — fire-and-forget; per-peer failures are already captured
+                // in provisionAll's result array, and a fresh push fires on the next provision /
+                // the deterministic POST /secrets/sync-now. Boot must never block on a peer.
+                void provisioner.provisionAll().catch(() => {});
+                console.log(pc.dim('  [secret-sync] enabled — outbound provisioner wired (push ON)'));
+              } else {
+                console.log(pc.dim('  [secret-sync] enabled — RECEIVE-ONLY (push disabled; set multiMachine.secretSync.pushEnabled=true on the authoritative machine to push)'));
+              }
             } catch (err) {
               console.log(pc.dim(`  [secret-sync] outbound provisioner not wired: ${err instanceof Error ? err.message : String(err)}`));
             }

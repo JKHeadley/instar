@@ -68,9 +68,14 @@ export function secretKeyPaths(secrets: Secrets, prefix = ''): string[] {
  * push-on-provision lever and read-only status WITHOUT ever exposing a secret value.
  */
 export interface SecretSyncHandle {
-  /** Whether secret-sync is enabled on this machine. */
+  /** Whether secret-sync is enabled on this machine (receive path active). */
   enabled: boolean;
-  /** Push the current secret set to every online peer (the deterministic sync lever). */
+  /**
+   * Whether OUTBOUND push is enabled. Defaults off: `enabled` alone is RECEIVE-ONLY so a
+   * machine with a stale/divergent store can't clobber peers. Set on the authoritative machine.
+   */
+  pushEnabled: boolean;
+  /** Push the current secret set to every online peer (no-op when pushEnabled is false). */
   provisionAll: () => Promise<{ machineId: string; ok: boolean; reason?: string }[]>;
   /** Leaf key-paths of secrets present in this machine's vault — NAMES only, never values. */
   localKeyPaths: () => string[];
