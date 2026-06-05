@@ -70,8 +70,33 @@ RISKY_PATTERNS=(
   "prisma migrate deploy"
 )
 
+# --- Safe-case carve-out: `git push --force-with-lease` to a NON-protected branch ---
+# `--force-with-lease` is the SAFE force-push: it refuses to overwrite work the
+# local clone hasn't seen. To one's OWN feature/PR branch (not shared history)
+# this is the legitimate way to update an amended/rebased branch — and a recurring
+# friction when the guard blocks it (a dev session resolving its own PR). We allow
+# ONLY this narrow case. We still block:
+#   - plain `--force` / `-f` (no lease) — always risky,
+#   - any force-push that explicitly targets a protected branch (main/master/
+#     develop/release*).
+# Residual edge (force-with-lease while checked out ON main, no branch named) is
+# double-protected: agents work in worktrees on feature branches (never main), and
+# main carries remote branch protection that rejects a force-push regardless.
+FORCE_WITH_LEASE_OWN_BRANCH=0
+if echo "$INPUT" | grep -qiE 'git +push[^|;&]*--force-with-lease'; then
+  if echo "$INPUT" | grep -qiE '(^|[[:space:]:/])(main|master|develop|release[A-Za-z0-9._/-]*)([[:space:]]|:|$)'; then
+    FORCE_WITH_LEASE_OWN_BRANCH=0   # explicit protected target — keep blocking
+  else
+    FORCE_WITH_LEASE_OWN_BRANCH=1   # safe: force-with-lease to a non-protected branch
+  fi
+fi
+
 for pattern in "${RISKY_PATTERNS[@]}"; do
   if echo "$INPUT" | grep -qi "$pattern"; then
+    # Allow the safe force-with-lease-to-own-branch case past the force-push patterns.
+    if [ "$FORCE_WITH_LEASE_OWN_BRANCH" -eq 1 ] && echo "$pattern" | grep -qiE 'git push (--force|-f)'; then
+      continue
+    fi
     if [ "$SAFETY_LEVEL" -eq 1 ]; then
       # Level 1: Block and require authorization — agent executes after user confirms
       echo "BLOCKED: Potentially destructive command detected: $pattern" >&2

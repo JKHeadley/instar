@@ -24,6 +24,7 @@ import { detectTmuxPath } from '../../src/core/Config.js';
 import type { SessionManagerConfig } from '../../src/core/types.js';
 import { cleanupTmuxSessions, waitFor } from '../helpers/setup.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { getTelegramInboundDir } from '../../src/messaging/shared/telegramInboundFiles.js';
 
 // ── Test Constants ──────────────────────────────────────────────────
 
@@ -556,7 +557,7 @@ describeMaybe('Session Management E2E', () => {
 
       // Then a temp file should be created
       await new Promise(r => setTimeout(r, 1000));
-      const tmpDir = '/tmp/instar-telegram';
+      const tmpDir = getTelegramInboundDir(project.dir);
       if (fs.existsSync(tmpDir)) {
         const files = fs.readdirSync(tmpDir).filter(f => f.startsWith('msg-99-'));
         expect(files.length).toBeGreaterThan(0);

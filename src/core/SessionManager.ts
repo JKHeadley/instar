@@ -68,6 +68,7 @@ import {
 import { StateManager } from './StateManager.js';
 import { buildInjectionTag } from '../types/pipeline.js';
 import { sanitizeSenderName, sanitizeTopicName } from '../utils/sanitize.js';
+import { getTelegramInboundDir } from '../messaging/shared/telegramInboundFiles.js';
 
 /** Absolute maximum session duration (4 hours) — safety net for sessions without explicit timeout */
 const DEFAULT_MAX_DURATION_MINUTES = 240;
@@ -2686,8 +2687,8 @@ rm()  { "${shimRunner}" rm  "$@"; }
       return this.injectMessage(tmuxSession, taggedText) !== false;
     }
 
-    // Write full message to temp file
-    const tmpDir = path.join('/tmp', 'instar-telegram');
+    // Write full message to a project-local inbound file readable by sandboxed agents.
+    const tmpDir = getTelegramInboundDir(this.config.projectDir);
     fs.mkdirSync(tmpDir, { recursive: true });
     const filename = `msg-${topicId}-${Date.now()}-${randomUUID().slice(0, 8)}.txt`;
     const filepath = path.join(tmpDir, filename);
