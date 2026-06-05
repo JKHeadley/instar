@@ -907,7 +907,7 @@ export class AgentServer {
         const parityMonitor = new DurableParityMonitor(
           new JsonlPassPersistence(path.join(options.config.stateDir, 'state', 'feedback-parity-passes.jsonl')),
         );
-        const migrationCfg = (this.config as { feedbackMigration?: { paritySource?: { baseUrl?: string; secretKey?: string; pageSize?: number; status?: string } } }).feedbackMigration;
+        const migrationCfg = (this.config as { feedbackMigration?: { paritySource?: { baseUrl?: string; secretKey?: string; pageSize?: number; status?: string; pageTimeoutMs?: number; totalTimeoutMs?: number } } }).feedbackMigration;
         const paritySourceCfg = migrationCfg?.paritySource;
         const runParityCheck = paritySourceCfg?.baseUrl
           ? async () => {
@@ -918,6 +918,8 @@ export class AgentServer {
               token,
               ...(paritySourceCfg.pageSize ? { pageSize: paritySourceCfg.pageSize } : {}),
               ...(paritySourceCfg.status ? { status: paritySourceCfg.status } : {}),
+              ...(paritySourceCfg.pageTimeoutMs ? { pageTimeoutMs: paritySourceCfg.pageTimeoutMs } : {}),
+              ...(paritySourceCfg.totalTimeoutMs ? { totalTimeoutMs: paritySourceCfg.totalTimeoutMs } : {}),
             });
             await source.prepare();
             return runDryRunCompare(source);

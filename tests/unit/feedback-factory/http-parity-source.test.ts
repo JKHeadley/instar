@@ -184,6 +184,72 @@ describe('HttpParitySource — error mapping', () => {
   });
 });
 
+describe('HttpParitySource — fetch timeouts (the 2026-06-05 hang fix)', () => {
+  it('a stalled page fetch aborts at pageTimeoutMs and maps to HttpParitySourceError 504', async () => {
+    // Stub mirrors real fetch abort semantics: never resolves, rejects with the
+    // signal's reason (a DOMException named TimeoutError for AbortSignal.timeout).
+    const fetchStub: FetchLike = vi.fn(
+      (_url, init) =>
+        new Promise((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () => reject(init.signal!.reason));
+        }),
+    );
+    const source = new HttpParitySource({ baseUrl: 'https://p', token: 't', fetchImpl: fetchStub, pageTimeoutMs: 30 });
+    try {
+      await source.prepare();
+      throw new Error('expected throw');
+    } catch (e) {
+      expect(e).toBeInstanceOf(HttpParitySourceError);
+      expect((e as HttpParitySourceError).status).toBe(504);
+      expect((e as Error).message).toContain('timed out after');
+      expect((e as Error).message).toContain('page 0');
+    }
+  });
+
+  it('every page fetch carries an AbortSignal (no unbounded request can be issued)', async () => {
+    const signals: Array<AbortSignal | undefined> = [];
+    const fetchStub: FetchLike = vi.fn(async (_url, init) => {
+      signals.push(init?.signal);
+      return okResponse({ data: { clusters: [] }, meta: { returned_count: 0 } });
+    });
+    const source = new HttpParitySource({ baseUrl: 'https://p', token: 't', fetchImpl: fetchStub });
+    await source.prepare();
+    expect(signals).toHaveLength(1);
+    expect(signals[0]).toBeInstanceOf(AbortSignal);
+  });
+
+  it('enforces the total budget between pages (504 before issuing the next page)', async () => {
+    let calls = 0;
+    const fetchStub: FetchLike = vi.fn(async () => {
+      calls++;
+      await new Promise((r) => setTimeout(r, 15));
+      // always a full page → wants to keep paginating
+      return okResponse({
+        data: { clusters: [sampleCluster(calls)], feedback: new Array(10).fill({}), dispatches: [] },
+        meta: { returned_count: 10 },
+      });
+    });
+    const source = new HttpParitySource({ baseUrl: 'https://p', token: 't', pageSize: 10, fetchImpl: fetchStub, totalTimeoutMs: 1 });
+    try {
+      await source.prepare();
+      throw new Error('expected throw');
+    } catch (e) {
+      expect(e).toBeInstanceOf(HttpParitySourceError);
+      expect((e as HttpParitySourceError).status).toBe(504);
+      expect((e as Error).message).toContain('exceeded the total budget');
+    }
+    expect(calls).toBe(1); // page 0 ran; page 1 was refused before issue
+  });
+
+  it('non-abort fetch failures propagate unchanged (not masked as 504)', async () => {
+    const fetchStub: FetchLike = vi.fn(async () => {
+      throw new TypeError('network down');
+    });
+    const source = new HttpParitySource({ baseUrl: 'https://p', token: 't', fetchImpl: fetchStub });
+    await expect(source.prepare()).rejects.toThrow(TypeError);
+  });
+});
+
 describe('HttpParitySource — prepare-before-read invariant', () => {
   it('readPortalClusters() before prepare() throws (no silent empty)', () => {
     const fetchStub: FetchLike = vi.fn(async () => okResponse({ data: { clusters: [] }, meta: { returned_count: 0 } }));
