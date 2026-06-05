@@ -366,6 +366,16 @@ export const OUTBOUND_MESSAGING_TIMEOUT_MS = 120_000;
 export const SPEC_REVIEW_TIMEOUT_MS = 180_000;
 
 /**
+ * Extended budget for the cutover-readiness parity-pass trigger
+ * (`/cutover-readiness/parity-pass`). One pass fetches the FULL live Portal
+ * cluster set (paginated) and compares server-side — measured at ~3.5 minutes
+ * against the real endpoint under load (2026-06-05). Under the 30s default the
+ * client always got a 408 while the handler kept running, and a late failure's
+ * 409 then crashed into ERR_HTTP_HEADERS_SENT with no trace of the outcome.
+ */
+export const PARITY_PASS_TIMEOUT_MS = 360_000;
+
+/**
  * The production per-path request-timeout overrides. Exported as the single
  * source of truth so wiring-integrity tests assert against the SAME map the
  * server actually wires — never a hand-rolled copy that could pass while the
@@ -380,6 +390,7 @@ export function buildRequestTimeoutOverrides(): Record<string, number> {
     '/imessage/reply': OUTBOUND_MESSAGING_TIMEOUT_MS,
     '/imessage/validate-send': OUTBOUND_MESSAGING_TIMEOUT_MS,
     '/spec/conformance-check': SPEC_REVIEW_TIMEOUT_MS,
+    '/cutover-readiness/parity-pass': PARITY_PASS_TIMEOUT_MS,
   };
 }
 

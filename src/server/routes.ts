@@ -5237,13 +5237,24 @@ export function createRoutes(ctx: RouteContext): Router {
 
   // TRIGGER a server-side parity pass (T7: the agent may ask; the server computes).
   // The request body contributes NOTHING to the result. 409 when no source is
-  // configured or the live check fails (nothing recorded on failure).
+  // configured or the live check fails (nothing recorded on failure). A real pass
+  // takes minutes (full live cluster fetch) — the route has a per-path timeout
+  // override (PARITY_PASS_TIMEOUT_MS); if the response window is EVER outlived
+  // anyway, the outcome is logged server-side and the late response is skipped
+  // (never a double-respond crash, never a silent outcome).
   router.post('/cutover-readiness/parity-pass', async (_req, res) => {
     if (!ctx.cutoverReadiness) {
       res.status(503).json({ error: 'cutover-readiness unavailable (no stateDir or init failed)' });
       return;
     }
     const outcome = await ctx.cutoverReadiness.runParityPass();
+    // The outcome always leaves a trace, even when the client's response timed out.
+    if (outcome.ok) {
+      console.log(`[cutover-readiness] parity pass recorded: divergent=${outcome.pass.divergent} clusters=${outcome.pass.clustersCompared} gateCleared=${outcome.gate.cleared}`);
+    } else {
+      console.warn(`[cutover-readiness] parity pass FAILED (nothing recorded): ${outcome.reason}`);
+    }
+    if (res.headersSent) return; // 408 already went out — outcome logged above
     if (!outcome.ok) {
       res.status(409).json({ error: outcome.reason });
       return;
