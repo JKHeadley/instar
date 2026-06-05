@@ -17,6 +17,7 @@ import { fileURLToPath } from 'node:url';
 import { SessionLivenessOracle, type SessionLivenessOracleConfig } from './SessionLivenessOracle.js';
 import type { ReapGuard } from './ReapGuard.js';
 import { paneShowsClaudeWorking } from './claudeActivityIndicators.js';
+import { meaningfulTail } from './paneText.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -888,7 +889,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
           const limit = maxMinutes + buffer;
           if (elapsed > limit && !this.config.protectedSessions.includes(session.tmuxSession)) {
             // Activity check — defer kill if the session is doing real work.
-            const ageGateOutput = this.captureOutput(session.tmuxSession, 5);
+            const ageGateOutput = this.captureMeaningfulTail(session.tmuxSession, 5);
             const ageGateIsIdle = ageGateOutput && IDLE_PROMPT_PATTERNS.some(p => ageGateOutput.includes(p));
             const ageGateHasProcs = this.hasActiveProcesses(session.tmuxSession);
             const ageGateTrulyIdle = ageGateIsIdle && !ageGateHasProcs;
@@ -944,7 +945,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
         // Skip sessions the SessionReaper has leased for a two-phase reap — it
         // is the single actor on them while reaping (§3.6).
         if (!this.config.protectedSessions.includes(session.tmuxSession) && !this.isReaping(session.id)) {
-          const output = this.captureOutput(session.tmuxSession, 5);
+          const output = this.captureMeaningfulTail(session.tmuxSession, 5);
           const isIdleAtPrompt = output && IDLE_PROMPT_PATTERNS.some(p => output.includes(p));
 
           // ── Prompt Gate: feed captured output to InputDetector ──
@@ -1753,6 +1754,24 @@ rm()  { "${shimRunner}" rm  "$@"; }
       // @silent-fallback-ok — capture output, null handled by caller
       return null;
     }
+  }
+
+  /**
+   * The last `lines` MEANINGFUL rows of a session's pane — blank-fill-immune.
+   *
+   * `capture-pane -S -N` returns the last N PHYSICAL rows, so in a tall pane
+   * the meaningful text (idle prompt, modal, readiness marker) can sit above a
+   * run of trailing blank rows and a small-N capture comes back entirely blank.
+   * That made genuinely-idle sessions read as ACTIVE forever in the n=5 idle/
+   * age checks (the #20/#47 inflated-blocker family; cycle-2 finding, task #77;
+   * same class PR #818 fixed inside PromptGate). This captures a wider physical
+   * window, trims trailing blanks (shared core/paneText semantics — interior
+   * blanks preserved), and returns the last `lines` meaningful rows.
+   */
+  captureMeaningfulTail(tmuxSession: string, lines: number): string | null {
+    const raw = this.captureOutput(tmuxSession, Math.max(lines * 4, 50));
+    if (raw === null) return null;
+    return meaningfulTail(raw, lines);
   }
 
   private currentPaneCwd(tmuxSession: string): string | null {
