@@ -1,4 +1,4 @@
-node_modules/
+node_modules
 dist/
 *.js.map
 *.d.ts.map
