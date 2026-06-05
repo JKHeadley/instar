@@ -14,7 +14,7 @@ are policed.
 ## What to Tell Your User
 
 Nothing to configure. If you ever asked your agent for a dashboard or view
-link and received a `localhost` address you couldn't open — that mistake is
+link and received a localhost address you couldn't open — that mistake is
 now structurally impossible; you'll always get the public tunnel link.
 
 ## Summary of New Capabilities
