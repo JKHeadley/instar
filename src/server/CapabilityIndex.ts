@@ -593,6 +593,22 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     }),
   },
   {
+    key: 'reviewExchange',
+    prefixes: ['/review-exchange'],
+    description: 'ReviewExchange — the autonomous code-review protocol (coordination-mandate spec §7 G2.3). One mutual, mandate-gated sign-off of a review artifact between the two agents named in a mandate: owner delivers the package over Threadline, peer returns an authenticated verdict, and BOTH sign-offs are evaluated through the mandate gate (sign-code-review authority) before acceptance. Linear states: proposed → delivered → verdict-recorded → complete (or changes-requested). Deny-by-default inherited: no mandate → every sign-off refuses.',
+    build: ({ ctx }) => ({
+      enabled: !!ctx.coordination,
+      endpoints: [
+        'POST /review-exchange — create { mandateId, artifact, packageRef, packageSha256, parties:[ownerFp,peerFp] } (content-addressed; sha fixed at creation)',
+        'GET /review-exchange — list exchanges',
+        'GET /review-exchange/:id — one exchange with its signatures + audit hashes',
+        'POST /review-exchange/:id/delivered — record the Threadline delivery evidence',
+        'POST /review-exchange/:id/peer-verdict — record the peer\'s authenticated verdict; "approve" is their sign-off → mandate-gated (deny → 403)',
+        'POST /review-exchange/:id/sign — the owner\'s countersignature → mandate-gated; completes the mutual exchange',
+      ],
+    }),
+  },
+  {
     key: 'resourceLedger',
     prefixes: ['/resources'],
     description: 'Per-agent ResourceLedger — read-only CPU/memory + rate-limit-event observability (mirrors TokenLedger). Phase A persists rate-limit events (breaker trips + session-sentinel detections) across restarts; Phase B continuously samples CPU% + RSS of the agent server + its spawned sessions. Never gates.',

@@ -642,6 +642,22 @@ never the agent. With no mandate issued, every evaluation denies. Every decision
 - `POST /review/evaluate`
 - `POST /review/test`
 
+## /review-exchange
+
+ReviewExchange (coordination-mandate spec §7 G2.3): one mutual, mandate-gated
+sign-off of a review artifact between the two agents named in a mandate. Both
+sign-offs run through the mandate gate's `sign-code-review` authority; every
+accepted signature carries the audit hash of the gate decision that authorized
+it. Linear lifecycle: proposed → delivered → verdict-recorded → complete (or
+changes-requested, terminal). Deny-by-default inherited: no mandate → 403.
+
+- `POST /review-exchange` — create `{ mandateId, artifact, packageRef, packageSha256, parties:[ownerFp,peerFp] }` (content-addressed)
+- `GET /review-exchange` — list exchanges
+- `GET /review-exchange/:id` — one exchange + signatures with audit hashes
+- `POST /review-exchange/:id/delivered` — record the Threadline delivery evidence
+- `POST /review-exchange/:id/peer-verdict` — the peer's authenticated verdict; `approve` is their sign-off → mandate-gated (deny → 403)
+- `POST /review-exchange/:id/sign` — the owner's countersignature → mandate-gated; completes the exchange
+
 ## /scope-coherence
 - `GET /scope-coherence`
 - `GET /scope-coherence/check`

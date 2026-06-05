@@ -725,6 +725,8 @@ export interface RouteContext {
     store: import('../coordination/MandateStore.js').MandateStore;
     gate: import('../coordination/MandateGate.js').MandateGate;
     audit: import('../coordination/MandateAudit.js').MandateAudit;
+    /** ReviewExchange engine (spec §7 G2.3) — mandate-gated mutual code-review sign-offs. */
+    reviews: import('../coordination/ReviewExchange.js').ReviewExchangeEngine;
   } | null;
   /** Cross-topic activity index (Parallel-Work Awareness Phase A). Backs GET /parallel-work/activities. */
   parallelActivityIndex?: import('../core/ParallelActivityIndex.js').ParallelActivityIndex | null;
@@ -5045,6 +5047,109 @@ export function createRoutes(ctx: RouteContext): Router {
       return;
     }
     res.json({ revoked: true, mandate: m });
+  });
+
+  // ── ReviewExchange — autonomous code-review protocol (coordination-mandate spec §7 G2.3) ──
+  // One mutual, MANDATE-GATED sign-off of a review artifact between the two agents named
+  // in a mandate. Both sign-offs run through /the same/ MandateGate (named party, bounds,
+  // expiry, revocation — every decision in the hash-chained audit). Deny-by-default is
+  // inherited: with no mandate issued, every sign/verdict path refuses. Bearer-gated
+  // (creating/recording an exchange delegates nothing; the GATE is what authorizes
+  // sign-offs — there is no PIN path here by design).
+
+  const reviewsUnavailable = (res: import('express').Response): boolean => {
+    if (!ctx.coordination) {
+      res.status(503).json({ error: 'coordination mandate engine unavailable (no stateDir or init failed)' });
+      return true;
+    }
+    return false;
+  };
+
+  // Create an exchange (state: proposed).
+  router.post('/review-exchange', (req, res) => {
+    if (reviewsUnavailable(res)) return;
+    const b = req.body ?? {};
+    if (!Array.isArray(b.parties) || b.parties.length !== 2 || b.parties.some((p: unknown) => typeof p !== 'string' || !p)) {
+      res.status(400).json({ error: 'parties must be [ownerFp, peerFp] — two agent fingerprints' });
+      return;
+    }
+    const result = ctx.coordination!.reviews.create({
+      mandateId: String(b.mandateId ?? ''), artifact: String(b.artifact ?? ''),
+      packageRef: String(b.packageRef ?? ''), packageSha256: String(b.packageSha256 ?? ''),
+      parties: [b.parties[0], b.parties[1]],
+      ...(typeof b.id === 'string' && b.id ? { id: b.id } : {}),
+    });
+    if (!result.ok) {
+      res.status(400).json({ error: result.reason });
+      return;
+    }
+    res.status(201).json({ created: true, exchange: result.record });
+  });
+
+  // List exchanges. Read-only.
+  router.get('/review-exchange', (_req, res) => {
+    if (reviewsUnavailable(res)) return;
+    res.json({ exchanges: ctx.coordination!.reviews.list() });
+  });
+
+  // One exchange. Read-only.
+  router.get('/review-exchange/:id', (req, res) => {
+    if (reviewsUnavailable(res)) return;
+    const record = ctx.coordination!.reviews.get(req.params.id);
+    if (!record) {
+      res.status(404).json({ error: `exchange "${req.params.id}" not found` });
+      return;
+    }
+    res.json({ exchange: record });
+  });
+
+  // proposed → delivered (record the Threadline delivery evidence).
+  router.post('/review-exchange/:id/delivered', (req, res) => {
+    if (reviewsUnavailable(res)) return;
+    const result = ctx.coordination!.reviews.markDelivered(req.params.id, String((req.body ?? {}).evidence ?? ''));
+    if (!result.ok) {
+      res.status(result.reason.includes('not found') ? 404 : 409).json({ error: result.reason });
+      return;
+    }
+    res.json({ delivered: true, exchange: result.record });
+  });
+
+  // delivered → verdict-recorded | changes-requested. An 'approve' verdict is the
+  // PEER's sign-off → mandate-gated for the peer's fingerprint (deny → 403).
+  router.post('/review-exchange/:id/peer-verdict', (req, res) => {
+    if (reviewsUnavailable(res)) return;
+    const b = req.body ?? {};
+    if (b.verdict !== 'approve' && b.verdict !== 'request-changes') {
+      res.status(400).json({ error: 'verdict must be "approve" or "request-changes"' });
+      return;
+    }
+    const result = ctx.coordination!.reviews.recordPeerVerdict(req.params.id, {
+      verdict: b.verdict, summary: String(b.summary ?? ''),
+      evidence: String(b.evidence ?? ''), peerFp: String(b.peerFp ?? ''),
+    });
+    if (!result.ok) {
+      // Gate denials are 403 FIRST — a deny may itself say "mandate not found"
+      // (deny-by-default), which must not masquerade as an exchange 404.
+      const status = result.reason.startsWith('mandate denied') ? 403
+        : result.reason.includes('not found') ? 404 : 409;
+      res.status(status).json({ error: result.reason });
+      return;
+    }
+    res.json({ recorded: true, exchange: result.record });
+  });
+
+  // verdict-recorded → complete. The OWNER's countersignature → mandate-gated (deny → 403).
+  router.post('/review-exchange/:id/sign', (req, res) => {
+    if (reviewsUnavailable(res)) return;
+    const result = ctx.coordination!.reviews.sign(req.params.id, String((req.body ?? {}).agentFp ?? ''));
+    if (!result.ok) {
+      // Same precedence as peer-verdict: gate deny (403) before not-found (404).
+      const status = result.reason.startsWith('mandate denied') ? 403
+        : result.reason.includes('not found') ? 404 : 409;
+      res.status(status).json({ error: result.reason });
+      return;
+    }
+    res.json({ signed: true, exchange: result.record });
   });
 
   // ── Parallel-Work Awareness (docs/specs/parallel-activity-coherence.md, Phase A) ──

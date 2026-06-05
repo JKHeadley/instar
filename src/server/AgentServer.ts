@@ -18,6 +18,7 @@ import { MandateStore } from '../coordination/MandateStore.js';
 import { MandateGate } from '../coordination/MandateGate.js';
 import { MandateAudit } from '../coordination/MandateAudit.js';
 import { ConditionsRegistry } from '../coordination/conditions.js';
+import { ReviewExchangeEngine } from '../coordination/ReviewExchange.js';
 import { fileURLToPath } from 'node:url';
 import type { SessionManager } from '../core/SessionManager.js';
 import type { StateManager } from '../core/StateManager.js';
@@ -160,7 +161,7 @@ export class AgentServer {
   private approvalLedger: ApprovalLedger | null = null;
   /** Coordination Mandate enforcement (spec §4): deny-by-default gate + signed
    *  store + hash-chained audit. Null when stateDir is unavailable. */
-  private coordination: { store: MandateStore; gate: MandateGate; audit: MandateAudit; conditions: ConditionsRegistry } | null = null;
+  private coordination: { store: MandateStore; gate: MandateGate; audit: MandateAudit; conditions: ConditionsRegistry; reviews: ReviewExchangeEngine } | null = null;
   private parallelActivityIndex: ParallelActivityIndex | null = null;
   private parallelWorkSentinel: ParallelWorkSentinel | null = null;
   private parallelWorkSentinelTimer: ReturnType<typeof setInterval> | null = null;
@@ -896,7 +897,13 @@ export class AgentServer {
         conditions.register('integrity-gate-pass', () => false);
         conditions.register('parity-zero-divergence', () => false);
         const gate = new MandateGate({ store, conditions, audit });
-        this.coordination = { store, gate, audit, conditions };
+        // ReviewExchange (spec §7 G2.3): mutual code-review sign-offs, every
+        // signature evaluated through the SAME gate (same audit chain).
+        const reviews = new ReviewExchangeEngine({
+          filePath: path.join(options.config.stateDir, 'state', 'review-exchanges.json'),
+          gate,
+        });
+        this.coordination = { store, gate, audit, conditions, reviews };
       }
     } catch (err) {
       // @silent-fallback-ok — reported via console.warn; init failure leaves the engine null → routes 503 (deny-safe), never blocks boot.
