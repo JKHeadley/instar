@@ -615,8 +615,10 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     build: ({ ctx }) => ({
       enabled: !!ctx.cutoverReadiness,
       endpoints: [
-        'GET /cutover-readiness — { ready, door:"manual-operator-click", integrity, parity } from durable state (read-only)',
+        'GET /cutover-readiness — { ready, door:"manual-operator-click", integrity, parity, importDryRun } from durable state (read-only)',
         'POST /cutover-readiness/parity-pass — TRIGGER a server-side live parity check (fetch+compare server-side; the body contributes nothing); records the pass into the durable window',
+        'POST /cutover-readiness/import-dryrun — TRIGGER a server-side import REHEARSAL (live source fetch → AS-IS import into an in-memory target → integrity gate over readback); zero durable data writes; NEVER greens the canonical integrity condition',
+        'GET /cutover-readiness/import-dryrun — the last rehearsal\'s verdict (read-only, informational — not a `ready` input)',
       ],
     }),
   },

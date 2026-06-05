@@ -313,8 +313,10 @@ REAL durable state — the persisted import IntegrityReport and the durable
 zero-divergence parity window (with a readiness-layer freshness bound). The flip
 itself is the operator's manual click; there is no fire-cutover route by design.
 
-- `GET /cutover-readiness` — `{ ready, door: "manual-operator-click", integrity, parity }` (read-only)
+- `GET /cutover-readiness` — `{ ready, door: "manual-operator-click", integrity, parity, importDryRun }` (read-only)
 - `POST /cutover-readiness/parity-pass` — trigger a server-side live parity check; the request contributes nothing to the result; a failed check records nothing
+- `POST /cutover-readiness/import-dryrun` — trigger a server-side import REHEARSAL (live source fetch → AS-IS import into an in-memory target → integrity gate over what the target reads back); zero durable data writes; persists to a separate dry-run report and never greens the canonical integrity condition
+- `GET /cutover-readiness/import-dryrun` — the last rehearsal's verdict (read-only, informational — not a `ready` input)
 
 ## /context
 - `GET /context`
