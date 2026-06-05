@@ -3010,6 +3010,14 @@ export interface UpdateConfig {
    *  instar developer's own agent, not the general fleet.
    *  Spec: docs/specs/restart-immediately-spec.md. */
   restartImmediately?: boolean;
+  /** Option B for user-facing update messaging (per-agent opt-in; default false
+   *  = option A, full silence). When true, the single post-restart "I just
+   *  refreshed in the background, I'm current" confirmation surfaces as a quiet,
+   *  version-free heartbeat instead of being silent. Update *mechanics* (raw
+   *  version numbers, restart coordination, self-healing version skew) are
+   *  housekeeping and go to the logs only regardless of this flag — it can never
+   *  re-introduce the version-churn flood. Spec: docs/specs/quiet-update-mechanics.md. */
+  backgroundRefreshHeartbeat?: boolean;
 }
 
 export interface MessagingAdapterConfig {

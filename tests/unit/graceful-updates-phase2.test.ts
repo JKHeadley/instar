@@ -550,10 +550,15 @@ describe('Phase 2B+E: AutoUpdater with session gating', () => {
 
     await (updater as any).tick();
 
-    // Should have notified about the upcoming restart
+    // Should have sent a plain, version-free interruption heads-up about the
+    // restart (quiet-update-mechanics spec — no "v1.3.X" version churn).
     const calls = (telegram.sendToTopic as any).mock.calls;
     const messages = calls.map((c: any[]) => c[1] as string);
-    expect(messages.some((m: string) => m.includes('restarting in') || m.includes('will resume') || m.includes('Restarting to pick up') || m.includes('updated to'))).toBe(true);
+    expect(messages.some((m: string) =>
+      m.includes('Back in a few seconds') || m.includes('restart to pick it up'),
+    )).toBe(true);
+    // And it must NOT leak a raw version number to the user.
+    expect(messages.some((m: string) => /v?\d+\.\d+\.\d+/.test(m))).toBe(false);
 
     // Restart should have proceeded (idle sessions don't block)
     const flagPath = path.join(tmpDir, 'state', 'restart-requested.json');
@@ -625,12 +630,15 @@ describe('Phase 2C: Notify-only mode (autoApply: false)', () => {
     expect(mockChecker.applyUpdate).not.toHaveBeenCalled();
     expect(updater.getStatus().pendingUpdate).toBe('0.9.9');
 
-    // Should have sent notification with instructions
+    // Should have sent an actionable notice (auto-updates off → user must act).
+    // Version-free per quiet-update-mechanics spec — the action matters, not the
+    // version number.
     const calls = (telegram.sendToTopic as any).mock.calls;
     expect(calls.length).toBeGreaterThan(0);
     const msg = calls[0][1] as string;
-    expect(msg).toContain('Auto-updates are off');
-    expect(msg).toContain('apply the update');
+    expect(msg).toMatch(/auto-updates are off/i);
+    expect(msg).toMatch(/say "update"/i);
+    expect(msg).not.toMatch(/v?\d+\.\d+\.\d+/);
   });
 
   it('does not re-notify on subsequent ticks for same version', async () => {

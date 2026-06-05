@@ -98,7 +98,9 @@ describe('update announcement topic lock', () => {
         telegram,
       );
 
-      await (updater as any).notify('update available');
+      // Use a user-reaching kind ('interruption') so this exercises TOPIC
+      // ROUTING, not the silent-mechanics default (quiet-update-mechanics spec).
+      await (updater as any).notify('update available', 'interruption');
 
       expect(telegram.sendToTopic).toHaveBeenCalledTimes(1);
       expect(telegram.sendToTopic).toHaveBeenCalledWith(4242, 'update available');
@@ -119,7 +121,9 @@ describe('update announcement topic lock', () => {
         telegram,
       );
 
-      await (updater as any).notify('update available');
+      // 'interruption' WOULD reach the user — proving the not-called assertion
+      // is about the missing Updates topic, not the silent-mechanics default.
+      await (updater as any).notify('update available', 'interruption');
 
       expect(telegram.sendToTopic).not.toHaveBeenCalled();
     });
@@ -136,7 +140,7 @@ describe('update announcement topic lock', () => {
         telegram,
       );
 
-      await (updater as any).notify('update available');
+      await (updater as any).notify('update available', 'interruption');
 
       expect(telegram.sendToTopic).not.toHaveBeenCalled();
     });

@@ -185,7 +185,13 @@ describe('AutoUpdater — failure paths', () => {
       expect(saved.lastError).toBe('npm install threw ENOMEM');
     });
 
-    it('still sends failure notification via Telegram', async () => {
+    it('keeps a transient (self-healing) apply failure SILENT — logs only', async () => {
+      // quiet-update-mechanics spec: a transient apply failure that retries on
+      // the next cycle ("still running fine, will retry") is update mechanics,
+      // not something the user must act on — so it goes to the logs, not the
+      // Updates topic. A genuinely STUCK update (restart won't take after
+      // repeated retries) still reaches the user as 'failure-escalated' from the
+      // restart handshake in server.ts.
       const telegram = createMockTelegram();
 
       const mockChecker = createMockUpdateChecker({
@@ -209,10 +215,8 @@ describe('AutoUpdater — failure paths', () => {
 
       await (updater as any).tick();
 
-      // Notification about the failure was sent
-      expect(telegram.sendToTopic).toHaveBeenCalled();
-      const callArg = (telegram.sendToTopic as any).mock.calls[0][1] as string;
-      expect(callArg).toContain('didn\'t work out');
+      // The transient failure is housekeeping — it must NOT reach the user.
+      expect(telegram.sendToTopic).not.toHaveBeenCalled();
     });
   });
 

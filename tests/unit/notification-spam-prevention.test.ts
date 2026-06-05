@@ -182,15 +182,17 @@ describe('AutoUpdater loop prevention', () => {
 
     updater.start();
 
-    // First tick — should send mismatch notification
+    // First tick — version-skew mismatch is now SILENT update mechanics
+    // (quiet-update-mechanics spec): it self-heals on the next restart, so it
+    // goes to the logs only, never the user's Updates topic. The original
+    // anti-spam concern ("send once, not repeatedly") is satisfied even more
+    // strongly — it never reaches the user at all.
     await vi.advanceTimersByTimeAsync(15_000);
-    const firstCallCount = telegram.sendToTopic.mock.calls.length;
-    expect(firstCallCount).toBe(1);
-    expect(telegram.sendToTopic.mock.calls[0][1]).toContain('still running v0.9.8');
+    expect(telegram.sendToTopic.mock.calls.length).toBe(0);
 
-    // Second tick — should NOT send duplicate mismatch notification
+    // Second tick — still silent.
     await vi.advanceTimersByTimeAsync(65_000);
-    expect(telegram.sendToTopic.mock.calls.length).toBe(firstCallCount);
+    expect(telegram.sendToTopic.mock.calls.length).toBe(0);
 
     updater.stop();
   });
