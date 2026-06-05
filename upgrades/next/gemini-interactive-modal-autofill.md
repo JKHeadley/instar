@@ -1,0 +1,52 @@
+<!-- bump: patch -->
+
+## What Changed
+
+Gemini CLI can still stop on framework-level interactive modals even when an
+autonomous session is otherwise running in YOLO mode. Instar already detected
+and relayed those prompts to Telegram, but the Gemini process remained blocked
+until somebody pressed a key in the tmux pane.
+
+Prompt Gate now recognizes Gemini CLI's known safe-default modals before the
+generic relay/classifier path:
+
+- loop-detection prompt: keep loop detection enabled;
+- workspace-trust prompt: trust the workspace;
+- install-confirm prompt: accept Gemini CLI's highlighted/default path.
+
+The existing Prompt Gate auto-response hook sends the deterministic key directly
+to the session and clears detector state, so autonomous Gemini sessions do not
+freeze on these modals and the prompt does not spam Telegram.
+
+Tests cover the loop-detection modal with explicit options and the live no-option
+shape, workspace trust, install confirm, and a generic non-Gemini install prompt
+that must not receive an auto-answer.
+
+## Evidence
+
+Reproduced from the live apprenticeship report: Gemini CLI stopped at the modal
+"A potential loop was detected" and stayed blocked until Justin manually pressed
+Enter. The Prompt Gate path was confirmed in source: detected prompts with
+`autoDismissKey` are answered through `SessionManager.sendKey` before Telegram
+relay/classification.
+
+Before: Gemini modals could be relayed to Telegram while the tmux session stayed
+frozen at the modal. After: the known Gemini modal fixtures emit deterministic
+keys in `PromptGate`, so the existing session-send hook answers the modal and
+clears detector state.
+
+Verification: focused Prompt Gate/classifier/approver unit tests passed, lint
+passed, the stall-recovery integration suite passed, and Gemini loop/capacity
+e2e lifecycle suites passed.
+
+## What to Tell Your User
+
+Gemini should stop freezing on its own safety/setup modals during autonomous
+work. I now answer the known Gemini defaults directly, while generic install or
+human-judgment questions still go through the normal review path.
+
+## Summary of New Capabilities
+
+- Gemini loop-detection modal is answered by keeping loop detection enabled.
+- Gemini workspace-trust modal is answered by trusting the current workspace.
+- Gemini install-confirm modal uses Gemini CLI's highlighted/default answer.

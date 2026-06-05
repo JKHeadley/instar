@@ -278,6 +278,94 @@ describe('InputDetector.pattern.sessionFeedbackSurvey', () => {
   });
 });
 
+// ── Gemini CLI safe-default modals (auto-answer) ──────────────────
+
+describe('InputDetector.pattern.geminiSafeDefaultModals', () => {
+  it('detects Gemini loop-detection modal and keeps loop detection enabled', () => {
+    const detector = makeDetector();
+    const output = [
+      'Gemini is working...',
+      '',
+      'A potential loop was detected. Keep loop detection enabled or disable it?',
+      '1. Keep loop detection enabled',
+      '2. Disable loop detection',
+      '',
+    ].join('\n');
+
+    const prompt = detectWithDebounce(detector, 'gemini', output);
+    expect(prompt).not.toBeNull();
+    expect(prompt!.type).toBe('confirmation');
+    expect(prompt!.summary).toMatch(/loop-detection/i);
+    expect(prompt!.autoDismissKey).toBe('1');
+  });
+
+  it('falls back to Enter for the live Gemini loop modal when no numbered option row is visible', () => {
+    const detector = makeDetector();
+    const output = [
+      '╭────────────────────────────────────────────╮',
+      '│ A potential loop was detected              │',
+      '│ Keep loop detection enabled or disable it? │',
+      '╰────────────────────────────────────────────╯',
+      '',
+    ].join('\n');
+
+    const prompt = detectWithDebounce(detector, 'gemini', output);
+    expect(prompt).not.toBeNull();
+    expect(prompt!.autoDismissKey).toBe('Enter');
+  });
+
+  it('detects Gemini workspace-trust modal and chooses the trust option', () => {
+    const detector = makeDetector();
+    const output = [
+      'Gemini CLI needs to know whether this workspace is trusted.',
+      '',
+      'Do you trust this workspace folder?',
+      '1. Yes, trust this workspace',
+      '2. No, keep it untrusted',
+      '',
+    ].join('\n');
+
+    const prompt = detectWithDebounce(detector, 'gemini', output);
+    expect(prompt).not.toBeNull();
+    expect(prompt!.type).toBe('confirmation');
+    expect(prompt!.summary).toMatch(/workspace-trust/i);
+    expect(prompt!.autoDismissKey).toBe('1');
+  });
+
+  it('detects Gemini install-confirm modal and sends the highlighted default', () => {
+    const detector = makeDetector();
+    const output = [
+      'Gemini CLI wants to install an MCP server required by this task.',
+      '',
+      'Do you want to install the MCP server?',
+      '1. Install',
+      '2. Cancel',
+      '',
+    ].join('\n');
+
+    const prompt = detectWithDebounce(detector, 'gemini', output);
+    expect(prompt).not.toBeNull();
+    expect(prompt!.type).toBe('confirmation');
+    expect(prompt!.summary).toMatch(/install-confirm/i);
+    expect(prompt!.autoDismissKey).toBe('Enter');
+  });
+
+  it('does NOT auto-answer a generic non-Gemini install question', () => {
+    const detector = makeDetector();
+    const output = [
+      'npm output:',
+      '',
+      'Do you want to install the dependency?',
+      '1. Yes',
+      '2. No',
+      '',
+    ].join('\n');
+
+    const prompt = detectWithDebounce(detector, 'shell', output);
+    if (prompt) expect(prompt.autoDismissKey).toBeUndefined();
+  });
+});
+
 // ── onInputSent clears LLM relay cooldown ──────────────────────────
 
 describe('InputDetector.onInputSent', () => {
