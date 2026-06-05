@@ -67,6 +67,28 @@ describe('Route validation edge cases', () => {
       expect(res.body.error).toContain('model');
     });
 
+    it('rejects invalid framework values and lists all supported frameworks', async () => {
+      const res = await request(app)
+        .post('/sessions/spawn')
+        .send({ name: 'test-invalid-framework', prompt: 'hello', framework: 'bogus-cli' });
+      expect(res.status).toBe(400);
+      expect(res.body.error).toContain('claude-code');
+      expect(res.body.error).toContain('codex-cli');
+      expect(res.body.error).toContain('gemini-cli');
+    });
+
+    it('accepts gemini-cli model values', async () => {
+      const res = await request(app)
+        .post('/sessions/spawn')
+        .send({
+          name: 'test-gemini-model',
+          prompt: 'hello',
+          framework: 'gemini-cli',
+          model: 'gemini-2.5-flash',
+        });
+      expect(res.status).not.toBe(400);
+    });
+
     it('rejects name over 200 characters', async () => {
       const res = await request(app)
         .post('/sessions/spawn')

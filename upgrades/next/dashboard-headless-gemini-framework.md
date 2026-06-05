@@ -1,0 +1,23 @@
+<!-- bump: patch -->
+
+## What Changed
+
+Fixed the dashboard headless session-spawn route so it accepts `framework: gemini-cli` instead of rejecting it before the request reaches `SessionManager`. The route framework allowlist now matches the framework set that the headless launcher already supports, and Gemini-specific model validation accepts the known Gemini CLI model ids alongside the generic model tiers.
+
+This is deliberately route-scoped: it does not change how Gemini sessions launch, how models are resolved inside the headless launcher, or how Claude/Codex framework validation behaves.
+
+## What to Tell Your User
+
+- **Dashboard Gemini launches**: "When I start a Gemini-backed headless session from the dashboard, the request now reaches the Gemini launcher instead of being rejected by the dashboard first."
+
+## Summary of New Capabilities
+
+| Capability | How to Use |
+|-----------|-----------|
+| Dashboard headless Gemini session spawn | Use the existing dashboard session-spawn flow with the Gemini framework selected. |
+
+## Evidence
+
+Observed before: the dashboard headless spawn API rejected Gemini requests with `"framework" must be one of: claude-code, codex-cli`, even though `SessionManager` and the headless launcher already supported Gemini.
+
+Observed after: focused route tests verify that a Gemini framework request returns success and passes `framework: gemini-cli` plus `gemini-2.5-flash` through to the session manager. Focused validation tests also verify that invalid framework errors now list Gemini and that Gemini model ids are accepted for Gemini requests.
