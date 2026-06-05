@@ -1796,6 +1796,14 @@ export interface MultiMachineConfig {
    */
   sessionPool?: SessionPoolConfig;
   /**
+   * Cross-machine secret-sync (spec Phase 4): a secret given to the agent on one
+   * machine becomes usable on its other machines automatically (encrypted to the
+   * recipient machine's X25519 key, never on disk in plaintext, only ever pushed
+   * to registered peers). Ships DARK; on the dev agent it defaults on via the
+   * `developmentAgent` gate. Backs GET /secrets/sync-status + POST /secrets/sync-now.
+   */
+  secretSync?: { enabled?: boolean };
+  /**
    * Whether THIS machine's lifeline owns the Telegram long-poll. Telegram allows
    * exactly one getUpdates poller per bot token, so a second machine that also
    * polls causes a permanent 409-conflict war and nondeterministic message

@@ -790,6 +790,8 @@ export interface RouteContext {
    *  pinned-vs-load-placed distinction in GET /pool/placement and the deterministic
    *  POST /pool/transfer. Null/absent when the pool is not wired (dark). */
   topicPinStore?: import('../core/TopicPlacementPinStore.js').TopicPlacementPinStore | null;
+  /** Cross-machine secret-sync (spec Phase 4) — backs GET /secrets/sync-status + POST /secrets/sync-now. */
+  secretSync?: import('../core/SecretSync.js').SecretSyncHandle | null;
   /** This machine's mesh id (machineId). Used by placement/transfer routes to tell
    *  whether the answering machine owns the topic. Null/absent (single-machine/dark). */
   meshSelfId?: string | null;
@@ -6789,6 +6791,10 @@ export function createRoutes(ctx: RouteContext): Router {
     const summary = typeof req.body.summary === 'string' ? req.body.summary : req.body.body;
     const sourceContext = typeof req.body.sourceContext === 'string' ? req.body.sourceContext : req.body.source;
     const priority = normalizeAttentionPriority(req.body.priority);
+    // Agent-Health lane: a routine self-health notice routed into the ONE calm
+    // "🩺 Agent Health" topic (never a per-item topic). Opt-in via lane.
+    const lane = req.body.lane === 'agent-health' ? 'agent-health' as const : undefined;
+    const healthKey = typeof req.body.healthKey === 'string' && req.body.healthKey ? req.body.healthKey : undefined;
     if (!id || typeof id !== 'string' || id.length > 200) {
       res.status(400).json({ error: '"id" must be a string under 200 characters' });
       return;
@@ -6814,14 +6820,21 @@ export function createRoutes(ctx: RouteContext): Router {
     // self-healed-event messages get suppressed instead of spawning topics.
     const isHealthAlert = typeof category === 'string' && /^(degradation|health|health-alert|alert)$/i.test(category);
     const candidate = [title, summary, description].filter((s): s is string => typeof s === 'string' && s.length > 0).join('\n\n');
-    const blocked = await checkOutboundMessage(candidate, 'telegram', res, {
-      messageKind: isHealthAlert ? 'health-alert' : 'reply',
-      jargon: isHealthAlert,
-      // No topicId — attention items create new topics; no prior thread context applies.
-    });
-    if (blocked) {
-      // checkOutboundMessage already wrote the 422 response.
-      return;
+    // Agent-Health-lane notices do NOT spawn a per-item topic — they land in the
+    // ONE opt-in calm lane and are already named + next-step-bearing by
+    // construction, so they bypass the per-topic outbound gate (which exists to
+    // suppress jargon/no-CTA topic spawns). Skipping it here prevents a
+    // well-formed lane heads-up from being silently 422'd and never delivered.
+    if (!lane) {
+      const blocked = await checkOutboundMessage(candidate, 'telegram', res, {
+        messageKind: isHealthAlert ? 'health-alert' : 'reply',
+        jargon: isHealthAlert,
+        // No topicId — attention items create new topics; no prior thread context applies.
+      });
+      if (blocked) {
+        // checkOutboundMessage already wrote the 422 response.
+        return;
+      }
     }
 
     // CMT-519 — structural guard: threadline/agent-messaging-class attention
@@ -6855,6 +6868,8 @@ export function createRoutes(ctx: RouteContext): Router {
         priority,
         description: description || undefined,
         sourceContext: sourceContext || undefined,
+        lane,
+        healthKey,
       });
       res.status(201).json(item);
     } catch (err) {
@@ -7824,6 +7839,40 @@ export function createRoutes(ctx: RouteContext): Router {
       pinned: plan.setPin ?? true,
       releasedLocalOwnership,
     });
+  });
+
+  // GET /secrets/sync-status — read-only view of cross-machine secret-sync (spec Phase 4).
+  // Returns WHICH secret key-paths this machine holds (NAMES only — never a value) and the
+  // online peers it would sync to. Never exposes a secret value. 503 when sync is disabled.
+  router.get('/secrets/sync-status', (_req, res) => {
+    const ss = ctx.secretSync;
+    if (!ss || !ss.enabled) {
+      res.status(503).json({ error: 'secret-sync not available (dark / single-machine install)' });
+      return;
+    }
+    res.json({
+      enabled: true,
+      localKeyPaths: ss.localKeyPaths(),
+      syncTargets: ss.syncTargets(),
+    });
+  });
+
+  // POST /secrets/sync-now — deterministic push-on-provision lever (spec Phase 4). Encrypts
+  // the current secret set per online peer (to that peer's X25519 key) and pushes it. Returns
+  // a per-peer result — NEVER a secret value. This is the reliable lever (the analog of
+  // POST /pool/transfer) for live-verify and for a manual re-sync. 503 when sync is disabled.
+  router.post('/secrets/sync-now', async (_req, res) => {
+    const ss = ctx.secretSync;
+    if (!ss || !ss.enabled) {
+      res.status(503).json({ error: 'secret-sync not available (dark / single-machine install)' });
+      return;
+    }
+    try {
+      const results = await ss.provisionAll();
+      res.json({ ok: true, pushed: results.length, results });
+    } catch (err) {
+      res.status(500).json({ error: `sync failed: ${err instanceof Error ? err.message : String(err)}` });
+    }
   });
 
   // GET /session-pool/e2e-results — the rollout gate's observable state (§Rollout).
