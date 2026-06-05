@@ -34,7 +34,7 @@ import {
 } from './telegramFormatMetrics.js';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 import { stopAutonomousTopic } from '../core/AutonomousSessions.js';
-import { AttentionTopicGuard, type AttentionTopicGuardConfig } from './AttentionTopicGuard.js';
+import { AttentionTopicGuard, TopicFloodBudgetError, type AttentionTopicGuardConfig } from './AttentionTopicGuard.js';
 
 export interface TelegramConfig {
   /** Bot token from @BotFather */
@@ -102,6 +102,20 @@ export interface TelegramConfig {
    * topic-flood lockdown. See AttentionTopicGuard.
    */
   attentionTopicGuard?: Partial<AttentionTopicGuardConfig>;
+  /**
+   * The LAST-RESORT ceiling on automatic forum-topic creation, enforced INSIDE
+   * `createForumTopic` itself — the one place topics are born — so it covers
+   * EVERY caller, current and future, regardless of what source labels they
+   * pass (the 2026-06-05 flood dodged the attention guard's per-source budget
+   * by giving every item a unique sourceContext; only the global ceiling
+   * caught it after 8 leaked topics). Origins `user` and `system` are exempt
+   * (operator-initiated topics and bounded create-once system topics);
+   * everything else — including any caller that doesn't say — is counted.
+   * Per-label budget + global ceiling, same engine as the attention guard.
+   * Defaults are deliberately LOOSER than the attention guard (this is the
+   * backstop, not the shaper): per-label 8, global 12, 10-min window.
+   */
+  topicCreationBudget?: Partial<AttentionTopicGuardConfig>;
   /**
    * The calm "Agent Health" lane. Routine self-health/housekeeping notices
    * (attention items with `lane:'agent-health'`) are collected into ONE named,
@@ -439,6 +453,9 @@ export class TelegramAdapter implements MessagingAdapter {
   private attentionFilePath: string;
   // Per-source forum-topic circuit breaker (2026-05-28 topic-flood lockdown).
   private attentionTopicGuard!: AttentionTopicGuard;
+  // LAST-RESORT auto-topic ceiling enforced inside createForumTopic itself
+  // (2026-06-05 flood lesson — covers every caller, not just attention items).
+  private topicCreationGuard!: AttentionTopicGuard;
   // bucket -> the single reused "notices coalesced" topic for that bucket.
   private floodNoticeTopicByBucket: Map<string, number> = new Map();
   // bucket -> in-flight createForumTopic promise, so concurrent coalesced items
@@ -718,6 +735,15 @@ export class TelegramAdapter implements MessagingAdapter {
     this.attentionFilePath = path.join(this.botStateDir, 'state', 'attention-items.json');
     this.attentionSuppressedLogPath = path.join(this.botStateDir, 'state', 'attention-suppressed.jsonl');
     this.attentionTopicGuard = new AttentionTopicGuard(config.attentionTopicGuard ?? {});
+    // Backstop ceiling: looser than the attention guard by design (the
+    // attention guard SHAPES politely per-source; this is the absolute bound
+    // a mis-wired or future caller cannot dodge). Config can tighten/loosen.
+    this.topicCreationGuard = new AttentionTopicGuard({
+      windowMs: 10 * 60 * 1000,
+      maxTopicsPerSource: 8,
+      maxTopicsGlobal: 12,
+      ...(config.topicCreationBudget ?? {}),
+    });
     const alc = config.agentHealthLane ?? {};
     this.agentHealthLaneCfg = {
       enabled: alc.enabled !== false,
@@ -1275,10 +1301,46 @@ export class TelegramAdapter implements MessagingAdapter {
 
   /**
    * Create a forum topic in the supergroup.
+   *
+   * THE TOPIC-CREATION CHOKEPOINT. Every topic this process creates is born
+   * here, so the last-resort flood ceiling lives here (see
+   * `topicCreationBudget` on the config). `opts.origin` declares who is
+   * asking:
+   *   - 'user'   — a human asked for this topic (operator command, inbound
+   *                conversation). Exempt: humans are self-rate-limiting.
+   *   - 'system' — a bounded, create-once-then-reuse infrastructure topic
+   *                (Lifeline, Dashboard, Updates, the flood-notice topic
+   *                itself). Exempt: cardinality is fixed by design.
+   *   - 'auto'   — anything a feature decided to create on its own. Counted.
+   *                THIS IS THE DEFAULT — a caller that doesn't declare an
+   *                origin is budgeted, so a future mis-wired feature is
+   *                bounded without having to know this mechanism exists.
+   * Past the budget this throws TopicFloodBudgetError — the same failure
+   * shape as a Telegram 429, which every caller already survives.
    */
-  async createForumTopic(name: string, iconColor?: number): Promise<{ topicId: number; name: string }> {
+  async createForumTopic(
+    name: string,
+    iconColor?: number,
+    opts?: { origin?: 'user' | 'system' | 'auto'; label?: string },
+  ): Promise<{ topicId: number; name: string }> {
     if (this.notAForum) {
       throw new Error('Chat is not a forum — topic creation skipped');
+    }
+
+    const origin = opts?.origin ?? 'auto';
+    if (origin === 'auto') {
+      const label = opts?.label ?? 'unlabeled-auto';
+      const decision = this.topicCreationGuard.decide(label, undefined);
+      if (decision.action === 'coalesce') {
+        console.warn(
+          `[telegram] topic-creation budget: REFUSED auto topic "${name}" ` +
+          `(label=${label}, bucket=${decision.bucket}, #${decision.suppressedCount} in episode) — ` +
+          `the last-resort flood ceiling. If this label is legitimate at this volume, ` +
+          `raise messaging[].config.topicCreationBudget; if it is operator/system-driven, ` +
+          `pass an explicit origin.`,
+        );
+        throw new TopicFloodBudgetError(name, label, decision.bucket);
+      }
     }
 
     const params: Record<string, unknown> = {
@@ -1343,7 +1405,11 @@ export class TelegramAdapter implements MessagingAdapter {
    * Find an existing topic by name, or create a new one if none exists.
    * Prevents duplicate topics when sessions respawn or the server restarts.
    */
-  async findOrCreateForumTopic(name: string, iconColor?: number): Promise<{ topicId: number; name: string; reused: boolean }> {
+  async findOrCreateForumTopic(
+    name: string,
+    iconColor?: number,
+    opts?: { origin?: 'user' | 'system' | 'auto'; label?: string },
+  ): Promise<{ topicId: number; name: string; reused: boolean }> {
     const normalizedName = name.toLowerCase().trim();
     for (const [topicId, existingName] of this.topicToName) {
       if (existingName.toLowerCase().trim() === normalizedName) {
@@ -1351,7 +1417,7 @@ export class TelegramAdapter implements MessagingAdapter {
         return { topicId, name: existingName, reused: true };
       }
     }
-    const result = await this.createForumTopic(name, iconColor);
+    const result = await this.createForumTopic(name, iconColor, opts);
     return { ...result, reused: false };
   }
 
@@ -1424,7 +1490,7 @@ export class TelegramAdapter implements MessagingAdapter {
     if (!this.config.lifelineTopicId) {
       // No lifeline topic configured — create one
       try {
-        const topic = await this.createForumTopic(styledName, TOPIC_STYLE.SYSTEM.color);
+        const topic = await this.createForumTopic(styledName, TOPIC_STYLE.SYSTEM.color, { origin: 'system' });
         this.config.lifelineTopicId = topic.topicId;
         this.persistLifelineTopicId(topic.topicId);
         console.log(`[telegram] Created Lifeline topic: ${topic.topicId}`);
@@ -1458,7 +1524,7 @@ export class TelegramAdapter implements MessagingAdapter {
           errStr.includes('TOPIC_CLOSED') || errStr.includes('not found')) {
         console.log(`[telegram] Lifeline topic ${this.config.lifelineTopicId} was deleted — recreating`);
         try {
-          const topic = await this.createForumTopic(styledName, TOPIC_STYLE.SYSTEM.color);
+          const topic = await this.createForumTopic(styledName, TOPIC_STYLE.SYSTEM.color, { origin: 'system' });
           this.config.lifelineTopicId = topic.topicId;
           this.persistLifelineTopicId(topic.topicId);
           console.log(`[telegram] Recreated Lifeline topic: ${topic.topicId}`);
@@ -1564,7 +1630,7 @@ export class TelegramAdapter implements MessagingAdapter {
     const styledName = `${TOPIC_STYLE.INFO.emoji} Dashboard`;
     if (!this.config.dashboardTopicId) {
       try {
-        const topic = await this.createForumTopic(styledName, TOPIC_STYLE.INFO.color);
+        const topic = await this.createForumTopic(styledName, TOPIC_STYLE.INFO.color, { origin: 'system' });
         this.config.dashboardTopicId = topic.topicId;
         this.persistDashboardTopicId(topic.topicId);
         console.log(`[telegram] Created Dashboard topic: ${topic.topicId}`);
@@ -1616,7 +1682,7 @@ export class TelegramAdapter implements MessagingAdapter {
           errStr.includes('TOPIC_CLOSED') || errStr.includes('not found')) {
         console.log(`[telegram] Dashboard topic ${this.config.dashboardTopicId} was deleted — recreating`);
         try {
-          const topic = await this.createForumTopic(styledName, TOPIC_STYLE.INFO.color);
+          const topic = await this.createForumTopic(styledName, TOPIC_STYLE.INFO.color, { origin: 'system' });
           this.config.dashboardTopicId = topic.topicId;
           this.persistDashboardTopicId(topic.topicId);
           return topic.topicId;
@@ -3532,7 +3598,13 @@ export class TelegramAdapter implements MessagingAdapter {
       const color = PRIORITY_COLOR[item.priority] || PRIORITY_COLOR.NORMAL;
       const topicTitle = `${emoji} ${item.title}`.slice(0, 128);
 
-      const topic = await this.createForumTopic(topicTitle, color);
+      // HIGH/URGENT are 'system' (the guard's critical-never-coalesced
+      // invariant holds at both layers); everything else is budgeted 'auto'.
+      const critical = item.priority === 'HIGH' || item.priority === 'URGENT';
+      const topic = await this.createForumTopic(topicTitle, color, {
+        origin: critical ? 'system' : 'auto',
+        label: 'attention-item',
+      });
 
       const topicId = topic.topicId;
       attention.topicId = topicId;
@@ -3668,7 +3740,8 @@ export class TelegramAdapter implements MessagingAdapter {
 
     this.agentHealthPending = (async (): Promise<number | null> => {
       const name = this.agentHealthLaneCfg.topicName;
-      const topic = await this.findOrCreateForumTopic(name, TOPIC_STYLE.SYSTEM.color);
+      // 'system': single named lane topic, create-once-then-reuse by design.
+      const topic = await this.findOrCreateForumTopic(name, TOPIC_STYLE.SYSTEM.color, { origin: 'system' });
       this.agentHealthTopicId = topic.topicId;
       if (!topic.reused) {
         const intro = [
@@ -3771,7 +3844,9 @@ export class TelegramAdapter implements MessagingAdapter {
     const creation = (async (): Promise<number | null> => {
       const label = bucket === '*' ? 'multiple sources' : bucket;
       const title = `🔁 ${label}: notices coalesced (flood guard)`.slice(0, 128);
-      const topic = await this.createForumTopic(title, PRIORITY_COLOR.LOW ?? PRIORITY_COLOR.NORMAL);
+      // 'system': the coalesce surface itself must never be refused by the
+      // budget it exists to absorb (one topic per bucket, create-once-reuse).
+      const topic = await this.createForumTopic(title, PRIORITY_COLOR.LOW ?? PRIORITY_COLOR.NORMAL, { origin: 'system' });
       const topicId = topic.topicId;
       this.floodNoticeTopicByBucket.set(bucket, topicId);
       this.topicToName.set(topicId, title);

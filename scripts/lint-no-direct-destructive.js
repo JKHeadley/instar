@@ -70,6 +70,10 @@ const ALLOWLIST = new Set([
   // Cannot depend on the TS funnel because TS is not compiled when the
   // lint runs in pre-push.
   'scripts/lint-no-direct-llm-http.js',
+  // Same bootstrap-escape pattern — a read-only `git diff --cached
+  // --name-only` for staged-file detection. Cannot depend on the TS funnel
+  // because TS is not compiled when the lint runs in pre-push.
+  'scripts/lint-no-unfunneled-topic-creation.js',
   // Postinstall bootstrap script — runs before TypeScript is compiled and
   // before SafeFsExecutor is available. CommonJS, can't use ESM imports.
   'scripts/fix-better-sqlite3.cjs',

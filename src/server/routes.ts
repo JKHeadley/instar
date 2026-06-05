@@ -4665,7 +4665,7 @@ export function createRoutes(ctx: RouteContext): Router {
     // Create Telegram topic
     if (resolvedPlatform === 'telegram' && ctx.telegram) {
       try {
-        const topic = await ctx.telegram.findOrCreateForumTopic(topicName);
+        const topic = await ctx.telegram.findOrCreateForumTopic(topicName, undefined, { origin: 'user' });
         topicId = topic.topicId;
       } catch (err) {
         console.error(`[sessions/create] Telegram topic creation failed, proceeding headless: ${err}`);
@@ -6644,7 +6644,7 @@ export function createRoutes(ctx: RouteContext): Router {
     const iconColor = typeof color === 'number' ? color : 9367192;
 
     try {
-      const topic = await ctx.telegram.findOrCreateForumTopic(name.trim(), iconColor);
+      const topic = await ctx.telegram.findOrCreateForumTopic(name.trim(), iconColor, { origin: 'user' });
 
       // Send initial message if provided — goes through sendToTopic so it's
       // properly logged to JSONL + TopicMemory. This ensures new sessions

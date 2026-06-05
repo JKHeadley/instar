@@ -243,6 +243,7 @@ export class PostUpdateMigrator {
     this.migrateStaleLifelineSignal(result);
     this.migrateThreadlineConversationStore(result);
     this.migrateThreadlineAgentInfoIdentity(result);
+    this.migrateWorktreeMisplacedFloodItems(result);
 
     return result;
   }
@@ -589,6 +590,42 @@ export class PostUpdateMigrator {
       result.upgraded.push(`threadline-agent-info-identity: repaired agent-info.json to canonical fingerprint ${canonicalFingerprint.slice(0, 8)}…`);
     } catch (err) {
       result.errors.push(`threadline-agent-info-identity write: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  /**
+   * 2026-06-05 worktree-misplaced flood cleanup (Bounded Notification
+   * Surface). The pre-fix AgentWorktreeDetector emitted one attention item
+   * PER worktree with ids `worktree-misplaced:<sha256>`; a transiently-wrong
+   * safe-root read mass-created 110 false-positive OPEN items on flooded
+   * agents. The fixed detector emits a single `worktree-misplaced-summary:*`
+   * item, so the old per-path items are permanently stale — purge them.
+   * Idempotent: a store with no old-format ids is left untouched.
+   */
+  private migrateWorktreeMisplacedFloodItems(result: MigrationResult): void {
+    const storePath = path.join(this.config.stateDir, 'state', 'attention-items.json');
+    if (!fs.existsSync(storePath)) {
+      result.skipped.push('worktree-misplaced flood items: no attention store');
+      return;
+    }
+    try {
+      const data = JSON.parse(fs.readFileSync(storePath, 'utf-8')) as { items?: Array<{ id?: string }> };
+      const items = Array.isArray(data.items) ? data.items : [];
+      // Old per-path format only: `worktree-misplaced:<hash>`. The new
+      // aggregated format is `worktree-misplaced-summary:<hash>` — kept.
+      const isStale = (id: unknown) => typeof id === 'string' && id.startsWith('worktree-misplaced:');
+      const staleCount = items.filter((i) => isStale(i.id)).length;
+      if (staleCount === 0) {
+        result.skipped.push('worktree-misplaced flood items: none present');
+        return;
+      }
+      const kept = items.filter((i) => !isStale(i.id));
+      const tmp = `${storePath}.${process.pid}.tmp`;
+      fs.writeFileSync(tmp, JSON.stringify({ ...data, items: kept }, null, 2));
+      fs.renameSync(tmp, storePath);
+      result.upgraded.push(`worktree-misplaced flood items: purged ${staleCount} stale per-path item(s) from the attention store`);
+    } catch (err) {
+      result.errors.push(`worktree-misplaced flood items: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
@@ -3153,6 +3190,26 @@ The attention queue spawns ONE Telegram forum topic per item — right for a gen
       result.upgraded.push('CLAUDE.md: added Topic-Flood Guard section');
     } else {
       result.skipped.push('CLAUDE.md: Topic-Flood Guard section already present');
+    }
+
+    // Bounded Notification Surface (2026-06-05, flood #3) — extends the
+    // flood-guard awareness with the universal last-resort budget INSIDE
+    // createForumTopic (covers every caller, not just attention items) and the
+    // aggregate-at-the-emitter rule. Idempotent via the unique marker phrase.
+    if (!content.includes('Bounded Notification Surface')) {
+      const section = `
+### Bounded Notification Surface (universal auto-topic budget)
+
+Beyond the attention-queue breaker above, the topic-creation primitive itself (\`TelegramAdapter.createForumTopic\`) enforces a LAST-RESORT budget on every automatically-created topic — covering every caller, current and future, no matter what source labels it passes (the 2026-06-05 worktree-detector flood dodged the per-source budget by giving every item a unique source; this ceiling is the layer that cannot be dodged). User-initiated and bounded create-once system topics are exempt; everything else is budgeted by default. Tune via \`messaging[].config.topicCreationBudget\` = \`{ "windowMs": 600000, "maxTopicsPerSource": 8, "maxTopicsGlobal": 12 }\`.
+
+- If I am building a feature that notifies per-element over a collection: AGGREGATE — one summary item carrying the count and the list, never one item per element. The burst-invariant CI test (\`tests/integration/notification-flood-burst-invariant.test.ts\`) fails any build that violates the bound.
+- If a topic creation fails with "topic-creation budget exceeded": that is the flood ceiling doing its job — fix the calling feature's volume (aggregate), don't raise the budget.
+`;
+      content += '\n' + section;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Bounded Notification Surface section');
+    } else {
+      result.skipped.push('CLAUDE.md: Bounded Notification Surface section already present');
     }
 
     // Multi-Machine Session Pool (§L2) — tells the agent about the active-active

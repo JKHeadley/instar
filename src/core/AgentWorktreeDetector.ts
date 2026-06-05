@@ -9,10 +9,12 @@
  * AgentWorktreeDetector — Layer 4 of the agent worktree convention.
  *
  * Runs once per agent startup as part of the lifeline health-check surface.
- * Inspects the canonical instar repo's worktree list and emits an
- * AttentionItem (or, when no Telegram adapter is configured, appends to a
- * dedicated JSONL fallback) for every worktree that lives outside an
- * agent's `<agent_home>/.worktrees/` area.
+ * Inspects the canonical instar repo's worktree list and emits AT MOST ONE
+ * aggregated AttentionItem (or, when no Telegram adapter is configured, one
+ * JSONL fallback line) summarizing every worktree that lives outside an
+ * agent's `<agent_home>/.worktrees/` area. Never one item per worktree —
+ * per-element emission is a notification flood by construction (the
+ * 2026-06-05 incident: 110 false-positive items in one boot).
  *
  * Signal-only by design. Never blocks, never moves, never deletes. The
  * operator decides what to do with each surfaced item — `git worktree
@@ -33,8 +35,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { resolveInstarRepo, worktreeDedupeKey } from './InstarWorktreeManager.js';
-import { loadRegistry } from './AgentRegistry.js';
+import { resolveInstarRepo } from './InstarWorktreeManager.js';
 
 // ── Types ────────────────────────────────────────────────────────────────
 
@@ -63,7 +64,7 @@ export interface DetectorOptions {
 }
 
 export interface AttentionItemInput {
-  /** Stable id used for AttentionQueue dedupe — `worktree-misplaced:<sha256>`. */
+  /** Stable id used for AttentionQueue dedupe — `worktree-misplaced-summary:<set-hash>`. */
   id: string;
   title: string;
   summary: string;
@@ -78,7 +79,9 @@ export interface DetectorResult {
   enumerated: number;
   /** Entries skipped because they were the main checkout / bare / stale. */
   skipped: number;
-  /** Items emitted (Telegram path or JSONL path). */
+  /** Misplaced worktrees found (the count INSIDE the single aggregated item). */
+  misplacedCount: number;
+  /** Items emitted (Telegram path or JSONL path) — at most 1 per run. */
   emitted: number;
   /** Items deduped against the 24h fallback-file window (JSONL path only). */
   deduped: number;
@@ -208,6 +211,7 @@ export async function runDetection(opts: DetectorOptions): Promise<DetectorResul
   const result: DetectorResult = {
     enumerated: 0,
     skipped: 0,
+    misplacedCount: 0,
     emitted: 0,
     deduped: 0,
     timedOut: false,
@@ -236,7 +240,7 @@ export async function runDetection(opts: DetectorOptions): Promise<DetectorResul
           summary: `git worktree list against ${opts.instarRepo} did not return within ${opts.gitTimeoutMs ?? DEFAULT_GIT_TIMEOUT_MS}ms`,
           category: 'worktree-misplaced',
           priority: 'LOW',
-          sourceContext: opts.instarRepo,
+          sourceContext: 'agent-worktree-detector',
         },
         opts,
         result,
@@ -253,6 +257,7 @@ export async function runDetection(opts: DetectorOptions): Promise<DetectorResul
   const instarRepoReal = realpathOrInput(opts.instarRepo);
   const safeRootsReal = opts.safeRoots.map((r) => realpathOrInput(r));
 
+  const misplaced: string[] = [];
   for (const entry of entries) {
     const entryReal = realpathOrInput(entry.path);
     // Skip the main checkout entry.
@@ -264,19 +269,46 @@ export async function runDetection(opts: DetectorOptions): Promise<DetectorResul
     // Properly-placed under some agent home — skip.
     if (isUnderAnySafeRoot(entryReal, safeRootsReal)) { result.skipped++; continue; }
 
-    const dedupeKey = worktreeDedupeKey(entryReal);
+    misplaced.push(entryReal);
+  }
+  result.misplacedCount = misplaced.length;
+
+  // AGGREGATE EMISSION (2026-06-05 flood lesson): the detector emits at most
+  // ONE attention item per run, no matter how many worktrees are misplaced.
+  // The pre-fix per-worktree emission turned a transiently-wrong safe-root
+  // list (the agent registry's lost-update race returned a list without this
+  // agent) into 110 false-positive items in a single boot — 8 leaked forum
+  // topics + a 103-ping coalesced topic. A detector that loops over a
+  // collection MUST aggregate; per-element notification is a flood by
+  // construction. See docs/STANDARDS-REGISTRY.md "Bounded Notification
+  // Surface".
+  if (misplaced.length > 0) {
+    const sorted = [...misplaced].sort();
+    // The id hashes the SET of misplaced paths: the same set never re-notifies
+    // (AttentionQueue id-collision dedupe); a changed set is one new item.
+    const setHash = crypto.createHash('sha256').update(sorted.join('\n')).digest('hex').slice(0, 16);
+    const sample = sorted.slice(0, 3).join(', ');
+    const listed = sorted.slice(0, 20).map((p) => `• ${p}`).join('\n');
+    const emptyRootsCaveat = safeRootsReal.length === 0
+      ? ' NOTE: the safe-root list was EMPTY for this run — if agent homes exist on disk, treat this as a detector input problem, not a placement problem.'
+      : '';
     await emitOrFallback(
       {
-        id: dedupeKey,
-        title: 'Worktree placed outside agent home',
-        summary: `${entryReal} is not inside any registered agent's .worktrees/ — sandbox-revoke risk.`,
+        id: `worktree-misplaced-summary:${setHash}`,
+        title: `${misplaced.length} worktree(s) placed outside agent homes`,
+        summary: `${sample}${misplaced.length > 3 ? ` … and ${misplaced.length - 3} more` : ''} — sandbox-revoke risk.${emptyRootsCaveat}`,
         description:
           'Per docs/specs/AGENT-WORKTREE-CONVENTION-SPEC.md, worktrees of the shared instar repo should live at <agent_home>/.worktrees/<slug>/. ' +
-          'Use `instar worktree create <branch>` for new worktrees, or `git worktree move <old> <new>` to relocate this one. ' +
-          'The detector does not move or delete anything.',
+          'Use `instar worktree create <branch>` for new worktrees, or `git worktree move <old> <new>` to relocate. ' +
+          'The detector does not move or delete anything.\n' +
+          listed +
+          (sorted.length > 20 ? `\n… and ${sorted.length - 20} more` : ''),
         category: 'worktree-misplaced',
         priority: 'LOW',
-        sourceContext: entryReal,
+        // STABLE feature-scoped source key. The pre-fix code put each
+        // worktree's own path here, which made the flood guard's per-source
+        // budget unable to trip (every item was its own "source").
+        sourceContext: 'agent-worktree-detector',
       },
       opts,
       result,
@@ -320,17 +352,43 @@ async function emitOrFallback(
   result.emitted++;
 }
 
-// ── Public helper: enumerate safe roots from the registry ────────────────
+// ── Public helper: enumerate safe roots from the agents directory ────────
 
-export function enumerateSafeRoots(): string[] {
+/**
+ * Enumerates safe roots by scanning `~/.instar/agents/<name>/.worktrees`
+ * directories DIRECTLY on disk — NOT via the agent registry.
+ *
+ * 2026-06-05 flood root cause: the previous implementation iterated
+ * `loadRegistry().entries`. The registry is rewritten concurrently by every
+ * agent/lifeline on the machine, and a reader that catches a lost-update
+ * window (or any parse failure, which `loadRegistry` silently maps to an
+ * EMPTY entry list) sees a registry without this agent — so this agent's own
+ * `.worktrees/` stopped being a safe root and every properly-placed worktree
+ * was flagged as misplaced (110 false positives in one boot).
+ *
+ * The disk IS the ground truth here: a safe root is "an agent home's
+ * `.worktrees` directory", and those are directly observable. No shared
+ * mutable file in the read path → the transient-empty failure class is gone.
+ */
+export function enumerateSafeRoots(agentsDir?: string): string[] {
+  const base = agentsDir ?? path.join(os.homedir(), '.instar', 'agents');
+  let agentNames: string[] = [];
+  try {
+    agentNames = fs.readdirSync(base, { withFileTypes: true })
+      .filter((d) => d.isDirectory() || d.isSymbolicLink())
+      .map((d) => d.name);
+  } catch {
+    // @silent-fallback-ok — no agents dir on this machine (project-bound-only
+    //   install). No agent homes → no safe roots to enumerate.
+    return [];
+  }
   const roots: string[] = [];
-  const instarHome = path.join(os.homedir(), '.instar');
-  for (const entry of loadRegistry().entries) {
+  for (const name of agentNames) {
     // Only agents that live under ~/.instar/agents/<name>/ qualify — those
     // are the ones the convention applies to. Project-bound agents have
     // worktrees in the project dir, which the lifeline detector doesn't
     // police.
-    const candidate = path.join(instarHome, 'agents', entry.name, '.worktrees');
+    const candidate = path.join(base, name, '.worktrees');
     try {
       const real = fs.realpathSync(candidate);
       roots.push(real);
@@ -352,6 +410,12 @@ export interface ResolveDetectorRepoOptions {
   fallbackChain?: ReadonlyArray<string>;
   /** Override the home directory used for default fallbacks. */
   homeDir?: string;
+  /**
+   * Override `process.cwd()` for current-checkout discovery (for tests —
+   * without this seam the tests silently depend on whether the machine
+   * running them has an allowlisted checkout at cwd).
+   */
+  cwd?: string;
 }
 
 /**
@@ -392,6 +456,7 @@ export function resolveDetectorInstarRepo(opts: ResolveDetectorRepoOptions = {})
   try {
     const repo = resolveInstarRepo({
       env: {},
+      ...(opts.cwd ? { cwd: opts.cwd } : {}),
       fallbackChain: candidateChain,
       configPath: resolved,
     });

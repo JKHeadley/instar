@@ -1281,6 +1281,7 @@ export class JobScheduler {
         const topic = await this.telegram.findOrCreateForumTopic(
           `${TOPIC_STYLE.JOB.emoji} Job: ${job.name}`,
           TOPIC_STYLE.JOB.color,
+          { label: 'job-topics' },
         );
         job.topicId = topic.topicId;
         this.saveJobTopicMapping(job.slug, topic.topicId);
@@ -1300,6 +1301,7 @@ export class JobScheduler {
           const newTopic = await this.telegram.findOrCreateForumTopic(
             `${TOPIC_STYLE.JOB.emoji} Job: ${job.name}`,
             TOPIC_STYLE.JOB.color,
+            { label: 'job-topics' },
           );
           job.topicId = newTopic.topicId;
           this.saveJobTopicMapping(job.slug, newTopic.topicId);
@@ -1379,6 +1381,7 @@ export class JobScheduler {
         const topic = await this.telegram.findOrCreateForumTopic(
           `${TOPIC_STYLE.JOB.emoji} Job: ${job.name}`,
           TOPIC_STYLE.JOB.color,
+          { label: 'job-topics' },
         );
         job.topicId = topic.topicId;
         mappings[job.slug] = topic.topicId;
