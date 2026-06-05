@@ -426,6 +426,8 @@ async function initFreshProject(projectName: string, options: InitOptions): Prom
   console.log(`  ${pc.green('✓')} Created .instar/scripts/serendipity-capture.sh`);
   installSecretDropRetrieve(projectDir);
   console.log(`  ${pc.green('✓')} Created .instar/scripts/secret-drop-retrieve.mjs`);
+  installSecretGet(projectDir);
+  console.log(`  ${pc.green('✓')} Created .instar/scripts/secret-get.mjs`);
   installEmitSessionClock(projectDir);
   console.log(`  ${pc.green('✓')} Created .instar/scripts/emit-session-clock.sh`);
 
@@ -814,6 +816,8 @@ async function initExistingProject(options: InitOptions): Promise<void> {
   console.log(pc.green('  Created:') + ' .instar/scripts/serendipity-capture.sh');
   installSecretDropRetrieve(projectDir);
   console.log(pc.green('  Created:') + ' .instar/scripts/secret-drop-retrieve.mjs');
+  installSecretGet(projectDir);
+  console.log(pc.green('  Created:') + ' .instar/scripts/secret-get.mjs');
 
   // Create .claude/skills/ directory and install built-in skills (gated)
   if (claudeEnabled) {
@@ -4627,6 +4631,40 @@ function installSecretDropRetrieve(projectDir: string): void {
   const candidates = [
     path.resolve(modDir, '..', 'templates', 'scripts', 'secret-drop-retrieve.mjs'),
     path.resolve(modDir, '..', '..', 'src', 'templates', 'scripts', 'secret-drop-retrieve.mjs'),
+  ];
+
+  let scriptContent = '';
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) {
+      scriptContent = fs.readFileSync(candidate, 'utf-8');
+      break;
+    }
+  }
+
+  if (!scriptContent) {
+    return;
+  }
+
+  fs.writeFileSync(scriptPath, scriptContent, { mode: 0o755 });
+}
+
+/**
+ * Install the hardened vault retrieval helper (.instar/scripts/secret-get.mjs).
+ * Sibling of installSecretDropRetrieve: the Session Boot Self-Knowledge block
+ * names vault secrets and points at this script as the read path (value →
+ * stdout for piping, names/diagnostics → stderr, never echoed). Spec:
+ * docs/specs/session-boot-self-knowledge.md §Retrieval affordance.
+ */
+function installSecretGet(projectDir: string): void {
+  const scriptsDir = path.join(projectDir, '.instar', 'scripts');
+  fs.mkdirSync(scriptsDir, { recursive: true });
+
+  const scriptPath = path.join(scriptsDir, 'secret-get.mjs');
+
+  const modDir = __dirname;
+  const candidates = [
+    path.resolve(modDir, '..', 'templates', 'scripts', 'secret-get.mjs'),
+    path.resolve(modDir, '..', '..', 'src', 'templates', 'scripts', 'secret-get.mjs'),
   ];
 
   let scriptContent = '';

@@ -9,13 +9,15 @@
  * detector (in v1, signal only)".
  *
  * Covers:
- *   - Emits one item per misplaced worktree.
+ *   - Emits AT MOST ONE aggregated item per run, regardless of how many
+ *     worktrees are misplaced (the 2026-06-05 flood invariant).
  *   - Skips the main checkout entry.
  *   - Skips bare entries.
  *   - Silent when all worktrees are correctly placed.
  *   - Times out at the configured threshold; emits a skipped attention.
  *   - JSONL fallback dedupe within the 24h rolling window.
  *   - Signal-only invariant: never throws on misplaced (returns counts).
+ *   - enumerateSafeRoots reads the DISK (agents dir), not the registry.
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
@@ -26,6 +28,7 @@ import path from 'node:path';
 import {
   runDetection,
   resolveDetectorInstarRepo,
+  enumerateSafeRoots,
   type DetectorOptions,
   type AttentionItemInput,
 } from '../../src/core/AgentWorktreeDetector.js';
@@ -93,7 +96,7 @@ describe('runDetection', () => {
     expect(result.emitted).toBe(0);
   });
 
-  it('emits one AttentionItem per misplaced worktree (Telegram path)', async () => {
+  it('emits ONE aggregated AttentionItem for a misplaced worktree (Telegram path)', async () => {
     // Create a misplaced worktree somewhere outside any safe root.
     const misplaced = path.join(fix.tmpRoot, 'misplaced-wt');
     git(['worktree', 'add', '-b', 'feat-a', misplaced], fix.bareRepo);
@@ -106,9 +109,68 @@ describe('runDetection', () => {
       emitAttention: (item) => { emitted.push(item); },
     });
     expect(result.emitted).toBe(1);
+    expect(result.misplacedCount).toBe(1);
     expect(emitted).toHaveLength(1);
-    expect(emitted[0].id).toMatch(/^worktree-misplaced:[a-f0-9]{64}$/);
+    expect(emitted[0].id).toMatch(/^worktree-misplaced-summary:[a-f0-9]{16}$/);
     expect(emitted[0].category).toBe('worktree-misplaced');
+    // Stable feature-scoped source key — NOT the worktree's own path (a
+    // per-item unique source dodges the flood guard's per-source budget).
+    expect(emitted[0].sourceContext).toBe('agent-worktree-detector');
+    expect(emitted[0].summary).toContain(fs.realpathSync(misplaced));
+  });
+
+  it('FLOOD INVARIANT: many misplaced worktrees still emit exactly ONE item (2026-06-05 regression)', async () => {
+    // The live incident: a transiently-wrong safe-root list made 110
+    // properly-placed worktrees look misplaced — and the per-worktree
+    // emission turned that into 110 attention items in one boot. The
+    // detector must aggregate: N misplaced → 1 item, with the count in the
+    // title and the paths in the description.
+    const N = 25;
+    for (let i = 0; i < N; i++) {
+      git(['worktree', 'add', '-b', `flood-${i}`, path.join(fix.tmpRoot, `flood-wt-${i}`)], fix.bareRepo);
+    }
+
+    const emitted: AttentionItemInput[] = [];
+    const result = await runDetection({
+      instarRepo: fix.bareRepo,
+      stateDir: fix.stateDir,
+      safeRoots: [], // worst case: NO safe roots (the incident's shape)
+      emitAttention: (item) => { emitted.push(item); },
+    });
+    expect(result.misplacedCount).toBe(N);
+    expect(result.emitted).toBe(1);       // ← the invariant
+    expect(emitted).toHaveLength(1);      // ← the invariant
+    expect(emitted[0].title).toContain(`${N} worktree(s)`);
+    expect(emitted[0].priority).toBe('LOW');
+    // Empty safe-root list is called out as a possible detector input problem.
+    expect(emitted[0].summary).toContain('safe-root list was EMPTY');
+    // Description lists at most 20 paths, then truncates honestly.
+    expect((emitted[0].description ?? '').split('•').length - 1).toBeLessThanOrEqual(20);
+    expect(emitted[0].description).toContain('… and 5 more');
+  });
+
+  it('same misplaced SET produces the same item id across runs (dedupe); a changed set produces a new id', async () => {
+    const wt1 = path.join(fix.tmpRoot, 'set-wt-1');
+    git(['worktree', 'add', '-b', 'set-1', wt1], fix.bareRepo);
+
+    const run = async () => {
+      const emitted: AttentionItemInput[] = [];
+      await runDetection({
+        instarRepo: fix.bareRepo,
+        stateDir: fix.stateDir,
+        safeRoots: [],
+        emitAttention: (item) => { emitted.push(item); },
+      });
+      return emitted[0]?.id;
+    };
+
+    const idA = await run();
+    const idB = await run();
+    expect(idA).toBe(idB); // AttentionQueue id-collision dedupe holds across boots
+
+    git(['worktree', 'add', '-b', 'set-2', path.join(fix.tmpRoot, 'set-wt-2')], fix.bareRepo);
+    const idC = await run();
+    expect(idC).not.toBe(idA); // a different set is a different (single) item
   });
 
   it('does NOT emit when the worktree is under a safe root', async () => {
@@ -141,7 +203,7 @@ describe('runDetection', () => {
     const content = fs.readFileSync(fix.fallbackPath, 'utf-8');
     const parsed = JSON.parse(content.trim());
     expect(parsed.category).toBe('worktree-misplaced');
-    expect(parsed.dedupeKey).toMatch(/^worktree-misplaced:/);
+    expect(parsed.dedupeKey).toMatch(/^worktree-misplaced-summary:/);
   });
 
   it('JSONL fallback dedupes a second run within the 24h window', async () => {
@@ -215,6 +277,34 @@ describe('runDetection', () => {
   });
 });
 
+describe('enumerateSafeRoots (disk-scan — registry-free)', () => {
+  let tmp: string;
+  beforeEach(() => { tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'awd-roots-')); });
+  afterEach(() => fs.rmSync(tmp, { recursive: true, force: true }));
+
+  it('finds each agent home with a .worktrees dir, skipping homes without one', () => {
+    // 2026-06-05 root cause: the registry-based enumeration could
+    // transiently return a list WITHOUT this agent (lost-update race /
+    // silent parse-failure → empty entries), so the agent's own worktrees
+    // were flagged as misplaced. The disk IS the ground truth — verify the
+    // scan never consults the registry.
+    const agents = path.join(tmp, 'agents');
+    fs.mkdirSync(path.join(agents, 'echo', '.worktrees'), { recursive: true });
+    fs.mkdirSync(path.join(agents, 'codey', '.worktrees'), { recursive: true });
+    fs.mkdirSync(path.join(agents, 'no-worktrees-yet'), { recursive: true });
+
+    const roots = enumerateSafeRoots(agents);
+    expect(roots.sort()).toEqual([
+      fs.realpathSync(path.join(agents, 'codey', '.worktrees')),
+      fs.realpathSync(path.join(agents, 'echo', '.worktrees')),
+    ].sort());
+  });
+
+  it('returns [] when the agents dir does not exist (project-bound-only install)', () => {
+    expect(enumerateSafeRoots(path.join(tmp, 'nope'))).toEqual([]);
+  });
+});
+
 describe('resolveDetectorInstarRepo', () => {
   let tmp: string;
   beforeEach(() => { tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'awd-resolve-')); });
@@ -225,6 +315,7 @@ describe('resolveDetectorInstarRepo', () => {
       configPath: path.join(tmp, 'nonexistent.json'),
       fallbackChain: [path.join(tmp, 'not-a-repo')],
       homeDir: tmp,
+      cwd: tmp, // deterministic: don't let the machine's checkout at process.cwd() leak in
     });
     expect(result).toBeNull();
   });
@@ -248,6 +339,7 @@ describe('resolveDetectorInstarRepo', () => {
       configPath,
       fallbackChain: [],
       homeDir: tmp,
+      cwd: tmp, // deterministic: don't let the machine's checkout at process.cwd() leak in
     });
     expect(result).toBe(fs.realpathSync(repo));
   });
