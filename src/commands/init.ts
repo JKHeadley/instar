@@ -59,6 +59,7 @@ import {
 import type { InstarConfig } from '../core/types.js';
 import { SafeGitExecutor } from '../core/SafeGitExecutor.js';
 import { installBuiltinJobs } from '../scheduler/InstallBuiltinJobs.js';
+import { dashboardRefreshGateScript, dashboardRefreshScript } from '../server/DashboardRefreshDiagnostics.js';
 import { renderNonClaudeIdentityShadows } from '../core/IdentityRenderer.js';
 import { installCodexHooks } from '../core/installCodexHooks.js';
 import { armCodexHooks, makeTmuxTrustDriver } from '../core/codexHookArm.js';
@@ -3406,10 +3407,10 @@ If everything is coherent and no reflection is needed, exit silently. Only repor
       expectedDurationMinutes: 1,
       model: 'haiku',
       enabled: true,
-      gate: `curl -sf http://localhost:\${INSTAR_PORT:-${port}}/health >/dev/null 2>&1`,
+      gate: dashboardRefreshGateScript(port),
       execute: {
         type: 'script',
-        value: `AUTH=$(python3 -c "import json; print(json.load(open('.instar/config.json')).get('authToken','')).strip()" 2>/dev/null) && curl -sf -X POST -H "Authorization: Bearer $AUTH" http://localhost:\${INSTAR_PORT:-${port}}/telegram/dashboard-refresh`,
+        value: dashboardRefreshScript(port),
       },
       tags: ['cat:infrastructure', 'role:worker', 'exec:script'],
       telegramNotify: false,
