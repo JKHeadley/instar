@@ -142,6 +142,7 @@ describe('Feature Delivery Completeness', () => {
       'Coordination Mandate',           // mandate gate awareness (/mandate/evaluate; deny-by-default; requester≠authorizer)
       'ReviewExchange (autonomous code review)', // mandate-gated two-party review sign-off protocol
       'Cutover Readiness',              // migration readiness read surface (/cutover-readiness; the door stays the operator's)
+      '**Session Boot Self-Knowledge**', // vault secret NAMES + operational facts at boot (spec session-boot-self-knowledge; templates.ts + migrator + shadow-marker parity)
     ];
 
     for (const section of featureSections) {
@@ -244,6 +245,7 @@ describe('Feature Delivery Completeness', () => {
       'Applying config & hook changes to running sessions', // /sessions/restart-all + /sessions/refresh: session-lifecycle operational knowledge in the /sessions/* family (operator/dashboard-facing — CapabilityIndex denylists /sessions/*, like /sessions/reap-log + /sessions/reaper/audit). Templated + migrated for awareness, but not a framework-shadowed user-invokable capability.
       '/worktrees/agent-reaper',                          // RESPONSIBLE-RESOURCE-USAGE stale-worktree reclaim report: operational observability the agent READS to answer "which worktrees can I reclaim?" — like /sessions/reap-log, migrator-only (no template/shadow parity)
       'Topic-Flood Guard',                                // 2026-05-28 attention-queue circuit breaker: operational housekeeping the agent READS (state/attention-suppressed.jsonl) to answer "why are my notices grouped?" — like Sentinel Notifications, migrator-only (no template/shadow parity)
+      'Bounded Notification Surface',                     // 2026-06-05 flood #3 (worktree-detector unique-source dodge): the universal last-resort auto-topic budget inside createForumTopic + aggregate-at-the-emitter guidance — operational behavioral knowledge extending 'Topic-Flood Guard', migrator-only (no template/shadow parity)
       'Autonomous-fix loop ("just be Echo")',             // mentor.autonomousFix dark dogfooding-loop awareness: developer-layer operational knowledge added via migrator only (like Framework-Onboarding Mentor System), gated off by default — no new-agent template/shadow parity required
       'Multi-Machine Session Pool (active-active',         // multi-machine session-pool awareness: ships DARK (multiMachine.sessionPool.stage default 'dark'), no-op on a single-machine agent; discoverable via GET /pool + GET /capabilities — operational/dark capability, migrator-tracked like ContextWedgeSentinel/Topic-Flood Guard
       'Correction & Preference Learning Sentinel',         // the content-sniff marker migrateClaudeMd uses for the "Preferences I've learned about you" section (tracked as a featureSection above); this is the alternate-phrase check, like '/release-readiness' for Release Readiness

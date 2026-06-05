@@ -240,3 +240,158 @@ describe('instar-dev pre-commit — decision-audit line rides the commit (self-s
     expect(entry.slug).toBe('pass-fixture');
   });
 });
+
+// ── Causal autopsy (directive 2026-06-05) ─────────────────────────────────
+// Low-ceremony lanes ship without an independent reviewer; the compensating
+// control is a durable causal record per fix: what caused the issue — a
+// prior PR, an environment shift, new code, a latent bug, or unknown. The
+// field rides the decision audit so meta-analysis (convergence vs
+// whack-a-mole) is a query over entries. Slice 1 contract pinned here:
+// present+valid → recorded verbatim; present+malformed → BLOCKED (a corrupt
+// record is worse than none) with the attempt recorded; absent → never
+// blocks, advisory warning only on fix-class signals.
+
+describe('instar-dev pre-commit — causalAutopsy (advisory slice)', () => {
+  let sandbox: string;
+
+  beforeEach(() => {
+    sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'audit-autopsy-hook-'));
+    execFileSync('git', ['init', '-q'], { cwd: sandbox });
+    execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: sandbox });
+    execFileSync('git', ['config', 'user.name', 'test'], { cwd: sandbox });
+    fs.mkdirSync(path.join(sandbox, 'scripts', 'lib'), { recursive: true });
+    fs.mkdirSync(path.join(sandbox, 'docs', 'specs'), { recursive: true });
+    fs.mkdirSync(path.join(sandbox, 'upgrades', 'side-effects'), { recursive: true });
+    fs.mkdirSync(path.join(sandbox, 'upgrades', 'next'), { recursive: true });
+    fs.mkdirSync(path.join(sandbox, '.instar', 'instar-dev-traces'), { recursive: true });
+    fs.mkdirSync(path.join(sandbox, 'src'), { recursive: true });
+    fs.mkdirSync(path.join(sandbox, 'skills', 'instar-dev', 'scripts'), { recursive: true });
+    fs.writeFileSync(
+      path.join(sandbox, 'scripts', 'eli16-overview-check.mjs'),
+      `import path from 'node:path';\n` +
+      `export const MIN_ELI16_CHARS = 800;\n` +
+      `export function checkEli16Overview(specPath) {\n` +
+      `  const eli16Path = path.join(path.dirname(specPath), path.basename(specPath, '.md') + '.eli16.md');\n` +
+      `  return { ok: true, eli16Path, charCount: 9999, minChars: 1 };\n` +
+      `}\n`,
+    );
+    fs.writeFileSync(
+      path.join(sandbox, 'skills', 'instar-dev', 'scripts', 'verify-proposal-derived-runbook.mjs'),
+      'export function verifyProposalDerivedRunbooks() { return { ok: true, reason: "ok" }; }\n',
+    );
+    fs.copyFileSync(
+      path.join(path.dirname(HOOK_SCRIPT), 'lib', 'classify-tier.mjs'),
+      path.join(sandbox, 'scripts', 'lib', 'classify-tier.mjs'),
+    );
+    fs.copyFileSync(HOOK_SCRIPT, path.join(sandbox, 'scripts', 'instar-dev-precommit.js'));
+  });
+
+  afterEach(() => {
+    try { SafeFsExecutor.safeRmSync(sandbox, { recursive: true, force: true, operation: 'tests/unit/instar-dev-precommit-audit-staging.test.ts:cleanup' }); } catch { /* ignore */ }
+  });
+
+  function entryFiles(): string[] {
+    const dir = path.join(sandbox, '.instar', 'instar-dev-decisions');
+    if (!fs.existsSync(dir)) return [];
+    return fs.readdirSync(dir).filter(f => f.endsWith('.json')).sort();
+  }
+
+  function writePassingTier1Fixture(extraTrace: Record<string, unknown> = {}): void {
+    const srcRel = 'src/touched.ts';
+    const eli16Rel = 'upgrades/autopsy-fixture.eli16.md';
+    const seRel = 'upgrades/side-effects/autopsy-fixture.md';
+    fs.writeFileSync(path.join(sandbox, srcRel), '// touched\n');
+    fs.writeFileSync(path.join(sandbox, eli16Rel), 'E'.repeat(900));
+    fs.writeFileSync(path.join(sandbox, seRel), `# Side-Effects Review — autopsy fixture\n\n${'S'.repeat(250)}\n`);
+    fs.writeFileSync(
+      path.join(sandbox, '.instar', 'instar-dev-traces', `${Date.now()}-autopsy-fixture.json`),
+      JSON.stringify({
+        phase: 'complete',
+        slug: 'autopsy-fixture',
+        tier: 1,
+        coveredFiles: [srcRel, eli16Rel, seRel],
+        eli16Path: eli16Rel,
+        sideEffectsPath: seRel,
+        createdAt: new Date().toISOString(),
+        ...extraTrace,
+      }, null, 2),
+    );
+    execFileSync('git', ['add', srcRel, eli16Rel, seRel], { cwd: sandbox });
+  }
+
+  it('a valid causalAutopsy is recorded VERBATIM in the decision entry', async () => {
+    writePassingTier1Fixture({
+      causalAutopsy: {
+        origin: 'prior-pr',
+        relatedPrs: [839, 840],
+        notes: 'release-cadence shift invalidated retry budgets tuned for rare restarts',
+      },
+    });
+    const result = await runHook(process.env, sandbox);
+    expect(result.status).toBe(0);
+
+    const entries = entryFiles();
+    expect(entries.length).toBe(1);
+    const entry = JSON.parse(
+      fs.readFileSync(path.join(sandbox, '.instar', 'instar-dev-decisions', entries[0]), 'utf8'),
+    );
+    expect(entry.causalAutopsy).toEqual({
+      origin: 'prior-pr',
+      relatedPrs: [839, 840],
+      notes: 'release-cadence shift invalidated retry budgets tuned for rare restarts',
+    });
+    expect(entry.verdict).toBe('pass');
+  });
+
+  it('a MALFORMED causalAutopsy blocks the commit and the attempt is recorded as blocked', async () => {
+    writePassingTier1Fixture({
+      causalAutopsy: { origin: 'because-reasons' }, // invalid origin enum
+    });
+    const result = await runHook(process.env, sandbox);
+    expect(result.status).not.toBe(0);
+    expect(result.stderr + result.stdout).toMatch(/causalAutopsy\.origin must be one of/);
+
+    const entries = entryFiles();
+    expect(entries.length).toBe(1);
+    const entry = JSON.parse(
+      fs.readFileSync(path.join(sandbox, '.instar', 'instar-dev-decisions', entries[0]), 'utf8'),
+    );
+    expect(entry.verdict).toBe('blocked');
+    expect(entry.causalAutopsy).toBeNull(); // a corrupt declaration is never recorded as data
+  });
+
+  it('origin "prior-pr" without relatedPrs blocks with a specific message', async () => {
+    writePassingTier1Fixture({ causalAutopsy: { origin: 'prior-pr' } });
+    const result = await runHook(process.env, sandbox);
+    expect(result.status).not.toBe(0);
+    expect(result.stderr + result.stdout).toMatch(/"prior-pr" requires relatedPrs/);
+  });
+
+  it('ABSENT causalAutopsy never blocks; fix-class signal (fragment change_type: fix) warns advisory', async () => {
+    writePassingTier1Fixture(); // no causalAutopsy
+    const fragRel = 'upgrades/next/autopsy-fixture.md';
+    fs.writeFileSync(
+      path.join(sandbox, fragRel),
+      '---\nchange_type: fix\n---\n\n## What Changed\n\nfix fixture\n',
+    );
+    execFileSync('git', ['add', fragRel], { cwd: sandbox });
+
+    const result = await runHook(process.env, sandbox);
+    expect(result.status).toBe(0); // NEVER blocks on absence
+    expect(result.stderr).toMatch(/ADVISORY — fix-class commit with no causalAutopsy/);
+
+    const entries = entryFiles();
+    const entry = JSON.parse(
+      fs.readFileSync(path.join(sandbox, '.instar', 'instar-dev-decisions', entries[0]), 'utf8'),
+    );
+    expect(entry.causalAutopsy).toBeNull();
+    expect(entry.verdict).toBe('pass');
+  });
+
+  it('ABSENT causalAutopsy with no fix-class signal passes with NO advisory noise', async () => {
+    writePassingTier1Fixture();
+    const result = await runHook(process.env, sandbox);
+    expect(result.status).toBe(0);
+    expect(result.stderr).not.toMatch(/causalAutopsy/);
+  });
+});

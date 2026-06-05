@@ -2142,6 +2142,28 @@ export interface InstarConfig {
    * (Introduced 2026-06-02 — Justin's ask, topic 13481.)
    */
   developmentAgent?: boolean;
+  /**
+   * Session Boot Self-Knowledge (spec: session-boot-self-knowledge.md) — the
+   * deterministic "what I already have" block injected at session start: vault
+   * secret NAMES (never values) + self-asserted operational facts. DISTINCT
+   * from the SelfKnowledgeTree metadata on AgentContextSnapshot (different
+   * type, different system — a type-distinctness test pins this).
+   */
+  selfKnowledge?: {
+    sessionContext?: {
+      /** Resolved as `enabled ?? !!developmentAgent` (graduated rollout — dark fleet / live dev-agent). */
+      enabled?: boolean;
+      /** Byte bound for the injected block (default 2000). */
+      maxInjectedBytes?: number;
+    };
+    /**
+     * Durable per-agent/per-machine operational facts. Written by
+     * POST/DELETE /self-knowledge/facts (stamped {fact, updatedAt, machine});
+     * bare strings (hand-authored/legacy) are accepted by the reader.
+     * Per-machine by design — config.json does not sync across machines.
+     */
+    operationalFacts?: Array<string | { fact: string; updatedAt?: string; machine?: string }>;
+  };
   /** Session manager config */
   sessions: SessionManagerConfig;
   /**

@@ -1261,7 +1261,7 @@ function wireTelegramRouting(
 
       (async () => {
         try {
-          const topic = await telegram.findOrCreateForumTopic(topicDisplayName, TOPIC_STYLE.SESSION.color);
+          const topic = await telegram.findOrCreateForumTopic(topicDisplayName, TOPIC_STYLE.SESSION.color, { origin: 'user' });
           // Don't create a session — findOrCreateForumTopic already stored the topic name.
           // The first message in this topic will trigger auto-spawn with real content.
           await telegram.sendToTopic(topic.topicId, `Ready — send your first message to start.`);
@@ -1782,6 +1782,7 @@ async function ensureAgentAttentionTopic(
     const topic = await telegram.createForumTopic(
       `${TOPIC_STYLE.ALERT.emoji} Attention`,
       TOPIC_STYLE.ALERT.color, // Yellow — needs user action
+      { origin: 'system' }, // bounded create-once boot topic
     );
     state.set('agent-attention-topic', topic.topicId);
     await telegram.sendToTopic(topic.topicId,
@@ -1861,6 +1862,7 @@ async function ensureAgentUpdatesTopic(
     const topic = await telegram.createForumTopic(
       `${TOPIC_STYLE.INFO.emoji} Updates`,
       TOPIC_STYLE.INFO.color, // Blue — informational
+      { origin: 'system' }, // bounded create-once boot topic
     );
     state.set('agent-updates-topic', topic.topicId);
     await telegram.sendToTopic(topic.topicId,
@@ -3855,10 +3857,11 @@ export async function startServer(options: StartOptions): Promise<void> {
           safeRoots,
           emitAttention,
         });
-        if (detectionResult.emitted > 0) {
+        if (detectionResult.misplacedCount > 0 || detectionResult.timedOut) {
           const channel = telegram ? 'Telegram' : 'JSONL fallback';
           console.log(pc.yellow(
-            `  Worktree detector: ${detectionResult.emitted} misplaced worktree(s) flagged via ${channel} (` +
+            `  Worktree detector: ${detectionResult.misplacedCount} misplaced worktree(s) flagged via ${channel} ` +
+              `(${detectionResult.emitted} aggregated item(s), ` +
               `enumerated=${detectionResult.enumerated} skipped=${detectionResult.skipped}` +
               `${detectionResult.deduped ? ` deduped=${detectionResult.deduped}` : ''}` +
               `${detectionResult.timedOut ? ' [timeout]' : ''})`,
