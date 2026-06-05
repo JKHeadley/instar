@@ -37,6 +37,42 @@ export interface ApprenticeshipCycleRecordInput {
   /** The channel this cycle's mentor↔mentee interaction ACTUALLY ran through
    *  (the dogfooded-channel standard, APPRENTICESHIP-PROGRAM-PROJECT-DESIGN §4a). */
   channel?: string;
+  /** REQUIRED operator-seat UX verdict (2026-06-05 UX-blindspot directive).
+   *  Typed loose here so the runtime gate — not the compiler — produces the
+   *  self-describing refusal callers actually see over HTTP. */
+  operatorSeatUx?: unknown;
+}
+
+/**
+ * The operator-seat UX verdict — what a HUMAN sitting in the user's chair
+ * would have experienced during this cycle's drive.
+ *
+ * WHY THIS IS REQUIRED (the 2026-06-05 UX-blindspot incident): the mentor
+ * prompt had instructed "observe the Telegram UX" for weeks as prose; 35
+ * ledger findings later, not one was experience-framed — the operator found
+ * the resend-asks / duplicate notices / photo failures himself. A standing
+ * responsibility to NOTICE something is a wish unless an unskippable artifact
+ * proves the looking happened. record() refuses cycles without this block.
+ *
+ * The counts are the agent's antidote to its own pain-threshold asymmetry:
+ * an agent compensates for friction at zero felt cost (resends, ignores
+ * duplicates), so the block forces it to COUNT what it compensated for.
+ */
+export interface OperatorSeatUx {
+  /** Duplicate deliveries/notices observed in the drive window ("actively working" x2, replayed messages). */
+  dupNotices: number;
+  /** Infra-noise messages a human user shouldn't have to see (restart/queue chatter, internal status leaks). */
+  infraNoiseMsgs: number;
+  /** Times the mentee asked the USER to do machine work (resend, retry, re-paste). Each one is a finding. */
+  asksOfUser: number;
+  /** Updates carrying no information a user could act on ("still working, nothing to report" filler). */
+  contentFreeUpdates: number;
+  /** Modalities actually exercised this drive (e.g. 'text', 'photo', 'file'). Coverage = what's listed here, nothing more. */
+  modalitiesExercised: string[];
+  /** Whether the drive overlapped restart churn / degraded infra — bad-weather coverage is part of the job. */
+  duringRestartChurn: boolean;
+  /** Free-form observations from the user's chair. */
+  notes?: string;
 }
 
 export const APPRENTICESHIP_CYCLE_AXES = [
@@ -99,6 +135,8 @@ export interface ApprenticeshipCycleRecord {
   kind: ApprenticeshipCycleKind;
   status: string;
   channel: ApprenticeshipCycleChannel;
+  /** null only on legacy rows recorded before the gate (grandfathered, like channel='unknown'). */
+  operatorSeatUx: OperatorSeatUx | null;
 }
 
 const SCHEMA = [
@@ -115,7 +153,8 @@ const SCHEMA = [
      infra_items_json      TEXT NOT NULL,
      kind                  TEXT NOT NULL,
      status                TEXT NOT NULL,
-     channel               TEXT NOT NULL DEFAULT 'unknown'
+     channel               TEXT NOT NULL DEFAULT 'unknown',
+     operator_seat_ux_json TEXT NOT NULL DEFAULT ''
    )`,
   `CREATE INDEX IF NOT EXISTS idx_apprenticeship_cycles_instance_created
      ON apprenticeship_cycles(instance_id, created_at DESC)`,
@@ -176,6 +215,78 @@ function normalizeChannel(raw: unknown): ApprenticeshipCycleChannel {
   return 'unknown';
 }
 
+/** The exact shape named in the refusal so a blocked caller can self-serve the fix. */
+const OPERATOR_SEAT_UX_SHAPE =
+  '{ dupNotices: int>=0, infraNoiseMsgs: int>=0, asksOfUser: int>=0, contentFreeUpdates: int>=0, ' +
+  "modalitiesExercised: string[] (e.g. ['text','photo']), duringRestartChurn: boolean, notes?: string }";
+
+function nonNegativeInt(value: unknown, field: string): number {
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) {
+    throw new Error(
+      `operatorSeatUx.${field} must be a non-negative integer (got ${JSON.stringify(value)}). Required shape: ${OPERATOR_SEAT_UX_SHAPE}`,
+    );
+  }
+  return value;
+}
+
+/**
+ * THE GATE (2026-06-05 UX-blindspot directive, Justin-approved): a cycle
+ * record without an operator-seat UX verdict is refused — observation without
+ * a required artifact is indistinguishable from no observation. The refusal
+ * message carries the full required shape so the blocked caller (the mentor
+ * loop, over HTTP) can fix its next attempt without archaeology.
+ */
+function requireOperatorSeatUx(raw: unknown): OperatorSeatUx {
+  if (raw === undefined || raw === null) {
+    throw new Error(
+      'operatorSeatUx is required: every apprenticeship cycle must record what a human in the ' +
+        "user's seat experienced during the drive (UX-blindspot gate, 2026-06-05). " +
+        `Required shape: ${OPERATOR_SEAT_UX_SHAPE}`,
+    );
+  }
+  if (typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new Error(`operatorSeatUx must be an object. Required shape: ${OPERATOR_SEAT_UX_SHAPE}`);
+  }
+  const o = raw as Record<string, unknown>;
+  const modalities = o.modalitiesExercised;
+  if (!Array.isArray(modalities) || modalities.length === 0 || !modalities.every((m) => typeof m === 'string' && m.trim() !== '')) {
+    throw new Error(
+      `operatorSeatUx.modalitiesExercised must be a non-empty string array — coverage equals what is listed, nothing more. Required shape: ${OPERATOR_SEAT_UX_SHAPE}`,
+    );
+  }
+  if (typeof o.duringRestartChurn !== 'boolean') {
+    throw new Error(
+      `operatorSeatUx.duringRestartChurn must be a boolean (was the drive during restart churn / degraded infra?). Required shape: ${OPERATOR_SEAT_UX_SHAPE}`,
+    );
+  }
+  if (o.notes !== undefined && typeof o.notes !== 'string') {
+    throw new Error(`operatorSeatUx.notes must be a string when present. Required shape: ${OPERATOR_SEAT_UX_SHAPE}`);
+  }
+  return {
+    dupNotices: nonNegativeInt(o.dupNotices, 'dupNotices'),
+    infraNoiseMsgs: nonNegativeInt(o.infraNoiseMsgs, 'infraNoiseMsgs'),
+    asksOfUser: nonNegativeInt(o.asksOfUser, 'asksOfUser'),
+    contentFreeUpdates: nonNegativeInt(o.contentFreeUpdates, 'contentFreeUpdates'),
+    modalitiesExercised: modalities as string[],
+    duringRestartChurn: o.duringRestartChurn,
+    ...(typeof o.notes === 'string' ? { notes: o.notes } : {}),
+  };
+}
+
+/** Legacy rows (pre-gate) parse to null — grandfathered, mirroring channel='unknown'. */
+function parseOperatorSeatUx(json: string | null | undefined): OperatorSeatUx | null {
+  if (!json || json.trim() === '') return null;
+  try {
+    return requireOperatorSeatUx(JSON.parse(json));
+  } catch {
+    // A corrupt stored block must not brick reads of historical cycles; the
+    // gate guarantees new writes are valid, so this only fires on legacy/
+    // hand-edited rows. Degrading to null is the honest representation.
+    // @silent-fallback-ok corrupt legacy row reads as "no UX block recorded"
+    return null;
+  }
+}
+
 interface Row {
   id: string;
   instance_id: string;
@@ -190,6 +301,7 @@ interface Row {
   kind: string;
   status: string;
   channel: string;
+  operator_seat_ux_json: string;
 }
 
 export class ApprenticeshipCycleStore {
@@ -229,6 +341,12 @@ export class ApprenticeshipCycleStore {
     if (!cols.some((c) => c.name === 'channel')) {
       this.db.exec(`ALTER TABLE apprenticeship_cycles ADD COLUMN channel TEXT NOT NULL DEFAULT 'unknown'`);
     }
+    // operator-seat UX gate (2026-06-05). Same idempotent pattern as channel:
+    // existing rows default to '' (grandfathered → read as null), only NEW
+    // records pass through the requireOperatorSeatUx refusal in record().
+    if (!cols.some((c) => c.name === 'operator_seat_ux_json')) {
+      this.db.exec(`ALTER TABLE apprenticeship_cycles ADD COLUMN operator_seat_ux_json TEXT NOT NULL DEFAULT ''`);
+    }
     // Legacy rows pre-date axis vocabulary. Keep them visible, but never
     // fabricate an axis from the old catch-all label.
     this.db.prepare(`UPDATE apprenticeship_cycles SET kind = 'unknown' WHERE kind = 'differential-cycle'`).run();
@@ -241,11 +359,11 @@ export class ApprenticeshipCycleStore {
         INSERT INTO apprenticeship_cycles
           (id, instance_id, cycle_number, created_at, task, mentee_output,
            mentor_flagged_json, overseer_diff_json, coaching, infra_items_json,
-           kind, status, channel)
+           kind, status, channel, operator_seat_ux_json)
         VALUES
           (@id, @instanceId, @cycleNumber, @createdAt, @task, @menteeOutput,
            @mentorFlaggedJson, @overseerDifferentialJson, @coaching,
-           @infraItemsJson, @kind, @status, @channel)
+           @infraItemsJson, @kind, @status, @channel, @operatorSeatUxJson)
       `),
       listAll: this.db.prepare(`
         SELECT * FROM apprenticeship_cycles
@@ -290,13 +408,18 @@ export class ApprenticeshipCycleStore {
       kind: normalizeKind(input.kind),
       status: optionalString(input.status, 'open'),
       channel: normalizeChannel(input.channel),
+      // THE UX GATE — refuses the whole record when the block is missing or
+      // malformed (self-describing error names the exact required shape).
+      operatorSeatUx: requireOperatorSeatUx(input.operatorSeatUx),
     };
 
+    const { operatorSeatUx, ...flatRecord } = record;
     this.stmts.insert.run({
-      ...record,
+      ...flatRecord,
       mentorFlaggedJson: JSON.stringify(record.mentorFlagged),
       overseerDifferentialJson: JSON.stringify(record.overseerDifferential),
       infraItemsJson: JSON.stringify(record.infraItems),
+      operatorSeatUxJson: JSON.stringify(operatorSeatUx),
     });
     return record;
   }
@@ -380,6 +503,7 @@ export class ApprenticeshipCycleStore {
       kind: normalizeKind(row.kind),
       status: row.status,
       channel: normalizeChannel(row.channel),
+      operatorSeatUx: parseOperatorSeatUx(row.operator_seat_ux_json),
     };
   }
 }

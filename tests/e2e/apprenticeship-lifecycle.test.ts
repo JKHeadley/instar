@@ -119,6 +119,7 @@ describe('Apprenticeship Program E2E lifecycle (feature is alive)', () => {
         cycleNumber: 1,
         task: 'Run an apprenticeship differential cycle',
         menteeOutput: 'raw mentee output',
+        operatorSeatUx: { dupNotices: 0, infraNoiseMsgs: 0, asksOfUser: 0, contentFreeUpdates: 0, modalitiesExercised: ['text'], duringRestartChurn: false },
         mentorFlagged: ['mentor finding'],
         overseerDifferential: ['overseer finding'],
         coaching: 'coaching note',
@@ -141,6 +142,7 @@ describe('Apprenticeship Program E2E lifecycle (feature is alive)', () => {
         createdAt: '2026-06-02T00:00:00.000Z',
         task: 'Run an older apprenticeship differential cycle',
         menteeOutput: 'old output',
+        operatorSeatUx: { dupNotices: 0, infraNoiseMsgs: 0, asksOfUser: 0, contentFreeUpdates: 0, modalitiesExercised: ['text'], duringRestartChurn: false },
       })
       .expect(201);
 
@@ -160,6 +162,7 @@ describe('Apprenticeship Program E2E lifecycle (feature is alive)', () => {
         createdAt: '2026-06-03T08:00:00.000Z',
         task: 'Overseer review 1',
         menteeOutput: 'review output',
+        operatorSeatUx: { dupNotices: 0, infraNoiseMsgs: 0, asksOfUser: 0, contentFreeUpdates: 0, modalitiesExercised: ['text'], duringRestartChurn: false },
         kind: 'overseer-apprentice-devreview',
       })
       .expect(201);
@@ -173,6 +176,7 @@ describe('Apprenticeship Program E2E lifecycle (feature is alive)', () => {
         createdAt: '2026-06-03T09:00:00.000Z',
         task: 'Overseer review 2',
         menteeOutput: 'review output',
+        operatorSeatUx: { dupNotices: 0, infraNoiseMsgs: 0, asksOfUser: 0, contentFreeUpdates: 0, modalitiesExercised: ['text'], duringRestartChurn: false },
         kind: 'overseer-apprentice-devreview',
       })
       .expect(201);
