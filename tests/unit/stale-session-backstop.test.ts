@@ -15,7 +15,7 @@ const N = 15; // indeterminateEscalateCount
 function harness(opts?: { snapshots?: Map<string, ProgressSnapshot> }) {
   let clock = 1_000_000;
   const sessions: Session[] = [];
-  const raised: Array<{ id: string; title: string }> = [];
+  const raised: Array<{ id: string; title: string; summary?: string; lane?: string; healthKey?: string; priority?: string }> = [];
   const longFlags = new Map<string, boolean>();
   let batch: LivenessBatch = { reachable: true, liveness: new Map() };
   const snaps = opts?.snapshots ?? new Map<string, ProgressSnapshot>();
@@ -29,7 +29,13 @@ function harness(opts?: { snapshots?: Map<string, ProgressSnapshot> }) {
         mainProcessActive: false, idleStateToken: 'x',
         descendantCpuSeconds: 0, isJobSession: false,
       },
-      raiseAttention: async (item) => { raised.push({ id: item.id, title: item.title }); return true; },
+      raiseAttention: async (item) => {
+        raised.push({ id: item.id, title: item.title, summary: item.summary, lane: item.lane, healthKey: item.healthKey, priority: item.priority });
+        return true;
+      },
+      // Map session ids ending in a number to a friendly name so the heads-up
+      // tests can assert "names the topic, never topic-<n>". A bare id resolves null.
+      resolveTopicName: (s) => (s.name === 'exo' ? 'EXO 3.0' : null),
       setLongIndeterminate: (id, isLong) => longFlags.set(id, isLong),
       now: () => clock,
     },
@@ -72,7 +78,27 @@ describe('StaleSessionBackstop (§P5)', () => {
     h.setSnap('s1', idleSnap());        // identical → no progress
     await h.backstop.tick();
     expect(h.raised).toHaveLength(1);
-    expect(h.raised[0].title).toMatch(/stale but unkillable/);
+    // Calm Agent-Health-lane heads-up: named, NORMAL, lane-routed, reply-able.
+    expect(h.raised[0].title).toMatch(/Heads-up on the/);
+    expect(h.raised[0].lane).toBe('agent-health');
+    expect(h.raised[0].priority).toBe('NORMAL');
+    expect(h.raised[0].healthKey).toBe('stale-s1');
+    expect(h.raised[0].summary).toMatch(/Reply "check /);
+  });
+
+  it('names the topic in the heads-up (never a bare topic-<n>) when a friendly name resolves', async () => {
+    const h = harness();
+    h.addSession('exo'); // harness resolveTopicName maps name 'exo' -> 'EXO 3.0'
+    h.allAlive();
+    h.setSnap('exo', idleSnap());
+    await h.backstop.tick();
+    h.advanceMin(M + 1);
+    h.setSnap('exo', idleSnap());
+    await h.backstop.tick();
+    expect(h.raised).toHaveLength(1);
+    expect(h.raised[0].title).toContain('EXO 3.0');
+    expect(h.raised[0].title).not.toMatch(/topic-\d+/);
+    expect(h.raised[0].summary).toContain('check EXO 3.0');
   });
 
   it('does not re-raise within the same episode', async () => {
@@ -163,7 +189,7 @@ describe('StaleSessionBackstop (§P5)', () => {
     h.setSnap('s2', idleSnap());
     for (let i = 0; i < N; i++) await h.backstop.tick();
     expect(h.longFlags.get('s1')).toBe(true);
-    expect(h.raised.some(r => r.title.match(/stale but unkillable/))).toBe(true);
+    expect(h.raised.some(r => r.title.match(/Heads-up on the/) && r.lane === 'agent-health')).toBe(true);
     // s1 recovers
     h.setLiveness({ reachable: true, liveness: new Map([['s1', 'alive'], ['s2', 'alive']]) });
     h.setSnap('s1', idleSnap());

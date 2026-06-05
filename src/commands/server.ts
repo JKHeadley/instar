@@ -9459,6 +9459,13 @@ export async function startServer(options: StartOptions): Promise<void> {
           },
           raiseAttention: makeAttentionPoster({ port: config.port, authToken: config.authToken ?? '' }),
           setLongIndeterminate: (id, isLong) => sessionManager.markLongIndeterminate(id, isLong),
+          resolveTopicName: (session) => {
+            // session.name is "topic-<id>"; resolve that topic to its human name
+            // so the Agent-Health heads-up reads "the 'EXO 3.0' session".
+            const m = /^topic-(\d+)$/.exec(session.name);
+            const tid = m ? Number(m[1]) : (telegram?.getTopicForSession?.(session.tmuxSession) ?? null);
+            return (typeof tid === 'number' && telegram) ? (telegram.getTopicName?.(tid) ?? null) : null;
+          },
         },
         staleCfg,
       );

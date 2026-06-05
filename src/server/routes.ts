@@ -6789,6 +6789,10 @@ export function createRoutes(ctx: RouteContext): Router {
     const summary = typeof req.body.summary === 'string' ? req.body.summary : req.body.body;
     const sourceContext = typeof req.body.sourceContext === 'string' ? req.body.sourceContext : req.body.source;
     const priority = normalizeAttentionPriority(req.body.priority);
+    // Agent-Health lane: a routine self-health notice routed into the ONE calm
+    // "🩺 Agent Health" topic (never a per-item topic). Opt-in via lane.
+    const lane = req.body.lane === 'agent-health' ? 'agent-health' as const : undefined;
+    const healthKey = typeof req.body.healthKey === 'string' && req.body.healthKey ? req.body.healthKey : undefined;
     if (!id || typeof id !== 'string' || id.length > 200) {
       res.status(400).json({ error: '"id" must be a string under 200 characters' });
       return;
@@ -6814,14 +6818,21 @@ export function createRoutes(ctx: RouteContext): Router {
     // self-healed-event messages get suppressed instead of spawning topics.
     const isHealthAlert = typeof category === 'string' && /^(degradation|health|health-alert|alert)$/i.test(category);
     const candidate = [title, summary, description].filter((s): s is string => typeof s === 'string' && s.length > 0).join('\n\n');
-    const blocked = await checkOutboundMessage(candidate, 'telegram', res, {
-      messageKind: isHealthAlert ? 'health-alert' : 'reply',
-      jargon: isHealthAlert,
-      // No topicId — attention items create new topics; no prior thread context applies.
-    });
-    if (blocked) {
-      // checkOutboundMessage already wrote the 422 response.
-      return;
+    // Agent-Health-lane notices do NOT spawn a per-item topic — they land in the
+    // ONE opt-in calm lane and are already named + next-step-bearing by
+    // construction, so they bypass the per-topic outbound gate (which exists to
+    // suppress jargon/no-CTA topic spawns). Skipping it here prevents a
+    // well-formed lane heads-up from being silently 422'd and never delivered.
+    if (!lane) {
+      const blocked = await checkOutboundMessage(candidate, 'telegram', res, {
+        messageKind: isHealthAlert ? 'health-alert' : 'reply',
+        jargon: isHealthAlert,
+        // No topicId — attention items create new topics; no prior thread context applies.
+      });
+      if (blocked) {
+        // checkOutboundMessage already wrote the 422 response.
+        return;
+      }
     }
 
     // CMT-519 — structural guard: threadline/agent-messaging-class attention
@@ -6855,6 +6866,8 @@ export function createRoutes(ctx: RouteContext): Router {
         priority,
         description: description || undefined,
         sourceContext: sourceContext || undefined,
+        lane,
+        healthKey,
       });
       res.status(201).json(item);
     } catch (err) {

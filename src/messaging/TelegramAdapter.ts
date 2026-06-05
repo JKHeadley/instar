@@ -102,6 +102,24 @@ export interface TelegramConfig {
    * topic-flood lockdown. See AttentionTopicGuard.
    */
   attentionTopicGuard?: Partial<AttentionTopicGuardConfig>;
+  /**
+   * The calm "Agent Health" lane. Routine self-health/housekeeping notices
+   * (attention items with `lane:'agent-health'`) are collected into ONE named,
+   * low-key topic that never spawns topic-after-topic — the antidote to a feature
+   * hijacking Telegram with a wall of "stale but unkillable"-style notices. Only
+   * items that explicitly opt in (`lane:'agent-health'`) are affected; every other
+   * item is unchanged. Enabled by default; set `enabled:false` for pre-lane
+   * behavior.
+   */
+  agentHealthLane?: {
+    enabled?: boolean;
+    /** Display name of the lane topic. Default '🩺 Agent Health'. */
+    topicName?: string;
+    /** Bounded ring of recently-seen entity keys (memory cap). Default 256. */
+    maxTrackedKeys?: number;
+    /** Suppress a same-key re-escalation posted within this window. Default 30 min. */
+    dedupWindowMs?: number;
+  };
 }
 
 /** Tracks a pending text reply for a Prompt Gate relay (no-button prompts) */
@@ -228,6 +246,23 @@ export interface AttentionItem {
    * not per-topic /ack — so resolving one never closes the shared notice topic.
    */
   coalesced?: boolean;
+  /**
+   * Routing lane. When `'agent-health'`, this is a routine SELF-HEALTH /
+   * housekeeping notice about the agent's OWN internal state (a stale-looking
+   * session, a peer it can't reach, etc.) rather than something the USER must act
+   * on. Such items are routed into ONE calm, persistently-named "🩺 Agent Health"
+   * topic from the very first item — they never spawn their own per-item topic
+   * (even under budget, even if mis-tagged HIGH), and same-entity re-escalations
+   * are suppression-deduped so the lane stays quiet. Absent ⇒ today's behavior.
+   */
+  lane?: 'agent-health';
+  /**
+   * Stable per-entity key for Agent-Health-lane suppression dedup (e.g. a session
+   * id). Decoupled from `id` (which may carry a per-episode suffix) so the same
+   * entity re-escalating within the dedup window is suppressed rather than
+   * reposted. Falls back to `sourceContext`, then `id`, when unset.
+   */
+  healthKey?: string;
 }
 
 /**
@@ -401,6 +436,15 @@ export class TelegramAdapter implements MessagingAdapter {
   // for one bucket share ONE topic creation (no double-create race).
   private floodNoticePending: Map<string, Promise<number | null>> = new Map();
   private attentionSuppressedLogPath!: string;
+  // ── Agent-Health lane (the calm self-health notice lane) ──────────────────
+  /** Resolved lane config (defaults applied in the constructor). */
+  private agentHealthLaneCfg!: { enabled: boolean; topicName: string; maxTrackedKeys: number; dedupWindowMs: number };
+  /** The single reused lane topic id (created lazily, once). */
+  private agentHealthTopicId: number | null = null;
+  /** In-flight single creation guard (no double-create race). */
+  private agentHealthPending: Promise<number | null> | null = null;
+  /** entity key -> last-posted epoch ms (suppression-dedup ring, insertion-ordered). */
+  private agentHealthKeyRing: Map<string, number> = new Map();
 
   // Stall detection
   private pendingMessages: Map<string, PendingMessage> = new Map(); // key = topicId-timestamp
@@ -653,6 +697,13 @@ export class TelegramAdapter implements MessagingAdapter {
     this.attentionFilePath = path.join(this.botStateDir, 'state', 'attention-items.json');
     this.attentionSuppressedLogPath = path.join(this.botStateDir, 'state', 'attention-suppressed.jsonl');
     this.attentionTopicGuard = new AttentionTopicGuard(config.attentionTopicGuard ?? {});
+    const alc = config.agentHealthLane ?? {};
+    this.agentHealthLaneCfg = {
+      enabled: alc.enabled !== false,
+      topicName: (typeof alc.topicName === 'string' && alc.topicName.trim()) ? alc.topicName : '🩺 Agent Health',
+      maxTrackedKeys: Number.isFinite(alc.maxTrackedKeys) && (alc.maxTrackedKeys as number) > 0 ? Math.floor(alc.maxTrackedKeys as number) : 256,
+      dedupWindowMs: Number.isFinite(alc.dedupWindowMs) && (alc.dedupWindowMs as number) > 0 ? (alc.dedupWindowMs as number) : 30 * 60 * 1000,
+    };
     this.loadRegistry();
     this.loadOffset();
     this.loadAttentionItems();
@@ -3394,6 +3445,22 @@ export class TelegramAdapter implements MessagingAdapter {
       updatedAt: now,
     };
 
+    // ── Agent-Health lane (calm self-health notices) ─────────────────────
+    // A routine self-health/housekeeping notice routes into ONE named "🩺 Agent
+    // Health" topic from the very first item — it never spawns its own topic
+    // (even under budget, even if mis-tagged HIGH) and same-entity re-escalations
+    // are suppression-deduped. This runs BEFORE the flood guard and bypasses it
+    // entirely, so a stale-session/peer-unreachable feature can never flood
+    // topic-after-topic. Only items that explicitly opt in are affected.
+    if (this.agentHealthLaneCfg.enabled && item.lane === 'agent-health') {
+      const laneTopicId = await this.routeToAgentHealthLane(attention);
+      attention.coalesced = true;
+      if (laneTopicId !== null) attention.topicId = laneTopicId;
+      this.attentionItems.set(item.id, attention);
+      this.saveAttentionItems();
+      return attention;
+    }
+
     // ── Topic-flood circuit breaker (2026-05-28 lockdown) ──────────────
     // Before spawning a per-item forum topic, consult the per-source guard.
     // HIGH/URGENT always pass (critical items must always be visible). A
@@ -3471,6 +3538,120 @@ export class TelegramAdapter implements MessagingAdapter {
     this.attentionItems.set(item.id, attention);
     this.saveAttentionItems();
     return attention;
+  }
+
+  /**
+   * Build a calm, named, actionable self-health notice. Resolves a session's
+   * topic id to its HUMAN topic name (never emits a bare `topic-<n>`), and ends
+   * with a plain-language next step the user can just reply to. Used by the
+   * self-health escalators so every Agent-Health notice reads like
+   * "Heads-up on the 'EXO 3.0' session — … reply 'check EXO 3.0' …".
+   */
+  buildHealthNotice(opts: { sessionName: string; topicId?: number; what: string; nextStep: string }):
+    { title: string; summary: string } {
+    const resolved = (typeof opts.topicId === 'number' ? this.getTopicName(opts.topicId) : null);
+    // Prefer a real human name; fall back to the session name only if it isn't the
+    // useless `topic-<n>` form.
+    const display = (resolved && !/^topic-\d+$/.test(resolved))
+      ? resolved
+      : (!/^topic-\d+$/.test(opts.sessionName) ? opts.sessionName : (resolved ?? opts.sessionName));
+    return {
+      title: `Heads-up on the "${display}" session`,
+      summary: `${opts.what}. It's still running — reply "${opts.nextStep}" and I'll take a look, or ignore this if you know it's fine.`,
+    };
+  }
+
+  /** Derive the suppression-dedup entity key for an Agent-Health-lane item. */
+  private healthKeyFor(item: AttentionItem): string {
+    if (item.healthKey && item.healthKey.trim()) return item.healthKey.trim();
+    if (item.sourceContext && item.sourceContext.trim()) return item.sourceContext.trim();
+    // Strip a trailing -<n> episode suffix from the id so episodes of one entity
+    // share a key (e.g. "stale-abc123-2" -> "stale-abc123").
+    return item.id.replace(/-\d+$/, '');
+  }
+
+  /**
+   * Route a self-health notice into the ONE calm "🩺 Agent Health" lane topic.
+   * Per-entity suppression dedup: a same-key re-escalation within the dedup
+   * window is logged + suppressed (not reposted) so the lane stays quiet. The
+   * lane topic is created lazily once and reused. Returns the lane topic id, or
+   * null if Telegram is unavailable (the item is still recorded in the store).
+   */
+  private async routeToAgentHealthLane(item: AttentionItem): Promise<number | null> {
+    const key = this.healthKeyFor(item);
+    const now = Date.now();
+    const last = this.agentHealthKeyRing.get(key);
+    const suppressed = last !== undefined && (now - last) < this.agentHealthLaneCfg.dedupWindowMs;
+
+    // Refresh recency + maintain insertion order (delete then set moves to newest).
+    this.agentHealthKeyRing.delete(key);
+    this.agentHealthKeyRing.set(key, now);
+    while (this.agentHealthKeyRing.size > this.agentHealthLaneCfg.maxTrackedKeys) {
+      const oldest = this.agentHealthKeyRing.keys().next().value;
+      if (oldest === undefined) break;
+      this.agentHealthKeyRing.delete(oldest);
+    }
+
+    if (suppressed) {
+      // Same entity re-escalating while its prior notice is still fresh — keep the
+      // lane calm: record it to the audit trail, do not repost.
+      this.writeSuppressedAttentionLog(item, `agent-health:${key}`, 0);
+      console.log(`[telegram] agent-health lane: suppressed duplicate "${item.title}" (key=${key}) — within dedup window`);
+      return this.agentHealthTopicId;
+    }
+
+    let topicId: number | null;
+    try {
+      topicId = await this.ensureAgentHealthLaneTopic();
+    } catch (err) {
+      console.error(`[telegram] agent-health lane topic creation failed: ${err}`);
+      topicId = this.agentHealthTopicId;
+    }
+    if (topicId === null) return null;
+
+    const line = [
+      `<b>${this.escapeHtml(item.title)}</b>`,
+      this.escapeHtml(String(item.summary ?? '').slice(0, 400)),
+    ].filter(Boolean).join('\n');
+    // @silent-fallback-ok — best-effort lane post; the item is already recorded in
+    // the attention store, so a transient send failure is non-fatal. If the topic
+    // was deleted out from under us, drop the cached id so it's recreated next time.
+    await this.sendToTopic(topicId, line).catch(() => { this.agentHealthTopicId = null; });
+    return topicId;
+  }
+
+  /** Lazily create (once) and return the reused "🩺 Agent Health" lane topic id. */
+  private async ensureAgentHealthLaneTopic(): Promise<number | null> {
+    if (this.agentHealthTopicId !== null) return this.agentHealthTopicId;
+    if (this.agentHealthPending) return this.agentHealthPending;
+
+    this.agentHealthPending = (async (): Promise<number | null> => {
+      const name = this.agentHealthLaneCfg.topicName;
+      const topic = await this.findOrCreateForumTopic(name, TOPIC_STYLE.SYSTEM.color);
+      this.agentHealthTopicId = topic.topicId;
+      if (!topic.reused) {
+        const intro = [
+          `This is your <b>calm agent-health lane</b>. When I notice something about my OWN sessions — one that looks stuck, a peer I can't reach — the routine heads-up lands HERE instead of spawning a new topic each time.`,
+          ``,
+          `These are low-key and never urgent. Each names the session and ends with a plain next step you can just reply to. Nothing here blocks anything; ignore what you know is fine.`,
+        ].join('\n');
+        const introParams: Record<string, unknown> = {
+          chat_id: this.config.chatId,
+          text: intro,
+          parse_mode: 'HTML',
+          _formatMode: 'html',
+        };
+        if (!isGeneralTopic(topic.topicId)) introParams.message_thread_id = topic.topicId;
+        await this.apiCall('sendMessage', introParams);
+      }
+      return this.agentHealthTopicId;
+    })();
+
+    try {
+      return await this.agentHealthPending;
+    } finally {
+      this.agentHealthPending = null;
+    }
   }
 
   /**
