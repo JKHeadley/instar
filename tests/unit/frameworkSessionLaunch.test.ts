@@ -449,7 +449,29 @@ describe('frameworkSessionLaunch.resolveModelForFramework', () => {
     it('keeps raw Gemini model ids inside the verified known-model set', () => {
       expect(resolveModelForFramework('gemini-cli', 'gemini-2.5-flash')).toBe('gemini-2.5-flash');
       expect(resolveModelForFramework('gemini-cli', 'gemini-2.5-pro')).toBe('gemini-2.5-pro');
-      expect(resolveModelForFramework('gemini-cli', 'gemini-2.0-flash')).toBe('gemini-2.5-flash');
+    });
+    it('passes explicit raw Gemini model ids through so bad overrides fail loudly upstream', () => {
+      expect(resolveModelForFramework('gemini-cli', 'gemini-2.0-flash')).toBe('gemini-2.0-flash');
+      expect(resolveModelForFramework('gemini-cli', 'gemini-2.5-pro-exp')).toBe('gemini-2.5-pro-exp');
+    });
+    it('uses the raw Gemini model id in interactive and headless launch argv', () => {
+      const interactive = buildInteractiveLaunch('gemini-cli', {
+        binaryPath: '/x/gemini',
+        defaultModel: 'gemini-2.5-pro-exp',
+      });
+      expect(interactive.argv).toEqual(['/x/gemini', '-m', 'gemini-2.5-pro-exp', '--yolo']);
+
+      const headless = buildHeadlessLaunch('gemini-cli', {
+        binaryPath: '/x/gemini',
+        prompt: 'p',
+        model: 'gemini-2.5-pro-exp',
+      });
+      expect(headless.argv).toEqual([
+        '/x/gemini',
+        '-m', 'gemini-2.5-pro-exp',
+        '--approval-mode', 'default',
+        '-p', 'p',
+      ]);
     });
   });
 
