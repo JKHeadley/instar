@@ -3403,7 +3403,11 @@ export async function startServer(options: StartOptions): Promise<void> {
     // token, and dual-polling would 409. Fail-OPEN: any read miss/stale/
     // mismatch ⇒ false ⇒ server polls as today, so setups without a lifeline
     // are unaffected. Reads only — never writes the lease here.
-    const telegramBotToken = telegramConfig ? (telegramConfig.config as { token?: string }).token : undefined;
+    // HARDENED (v1.3.270 boot-crash incident): an unresolved `{ secret: true }`
+    // placeholder is a truthy OBJECT — only a real string token may reach
+    // tokenHash(), or the whole boot dies with ERR_INVALID_ARG_TYPE.
+    const rawTelegramToken = telegramConfig ? (telegramConfig.config as { token?: unknown }).token : undefined;
+    const telegramBotToken = typeof rawTelegramToken === 'string' && rawTelegramToken ? rawTelegramToken : undefined;
     const lifelineOwnsPolling = telegramConfig && telegramBotToken
       ? lifelineOwnsTelegramPoll(config.stateDir, telegramBotToken)
       : false;

@@ -398,7 +398,7 @@ export class TelegramAdapter implements MessagingAdapter {
   private consecutivePollErrors = 0;
   // Diagnostics surfaced via getStatus() so health probes can explain WHY polling stopped.
   private lastPollError: string | null = null;
-  private fatalPollReason: '401' | 'network' | null = null;
+  private fatalPollReason: '401' | 'network' | 'no-usable-bot-token' | null = null;
   private pollStoppedAt: Date | null = null;
   private pending401Retry = false;
 
@@ -688,6 +688,18 @@ export class TelegramAdapter implements MessagingAdapter {
         `Update messaging.config.chatId in your instar.config.json with a valid numeric ID.`,
       );
     }
+    // HARDENED (v1.3.270 boot-crash incident): when the secrets merge fails, the
+    // externalized token arrives as the truthy `{ secret: true }` placeholder OBJECT.
+    // Polling with it stringified into the bot URL 404-zombies forever. Normalize a
+    // non-string token to '' — the well-defined TOKENLESS state every guard in this
+    // adapter already handles (standby/relay) — and say so loudly.
+    if (config.token != null && typeof config.token !== 'string') {
+      console.warn(
+        '[telegram] Bot token is not a string (unresolved secret placeholder — secret store unavailable at boot?). ' +
+        'Running TOKENLESS this boot: no polling, sends only via relay if available. A restart after the secret store recovers restores full service.',
+      );
+      config = { ...config, token: '' };
+    }
     this.config = config;
     this.stateDir = stateDir;
     this.suppressLifelineAutoCreate = opts?.suppressLifelineAutoCreate ?? false;
@@ -951,6 +963,19 @@ export class TelegramAdapter implements MessagingAdapter {
 
   async start(): Promise<void> {
     if (this.polling) return;
+    // HARDENED (v1.3.270 incident): without a usable bot token (empty/normalized
+    // placeholder), getUpdates 404s forever — a zombie poll loop that looks alive
+    // but never serves a message. Refuse to start polling and say why; send-only
+    // paths (relay) keep working, and the supervisor's next restart recovers full
+    // service once the secret store is readable again.
+    if (typeof this.config.token !== 'string' || this.config.token.length === 0) {
+      this.fatalPollReason = 'no-usable-bot-token';
+      console.error(
+        '[telegram] NOT starting long-polling: no usable bot token (unresolved secret placeholder or empty token). ' +
+        'The secret store was likely unavailable at boot — restart after it recovers to restore polling.',
+      );
+      return;
+    }
     this.polling = true;
     this.startedAt = new Date();
     this.consecutivePollErrors = 0;
@@ -2749,7 +2774,7 @@ export class TelegramAdapter implements MessagingAdapter {
     topicMappings: number;
     lastError: string | null;
     consecutivePollErrors: number;
-    fatalReason: '401' | 'network' | null;
+    fatalReason: '401' | 'network' | 'no-usable-bot-token' | null;
     stoppedAt: string | null;
   } {
     const stallStatus = this.sharedStallDetector
