@@ -397,6 +397,39 @@ describe('internal-only ship lane', () => {
     expect(hasInternalOnlyMarker(INTERNAL)).toBe(true);
     expect(hasInternalOnlyMarker(USER_FACING)).toBe(false);
     expect(hasInternalOnlyMarker('<!--internal-only-->\n## What Changed\nx')).toBe(true);
+    // a standalone directive line still counts even when indented
+    expect(hasInternalOnlyMarker('  <!-- internal-only -->\n## What Changed\nx')).toBe(true);
+  });
+
+  it('does NOT detect an inline/backtick mention of the marker (docs fragment, not a directive)', () => {
+    // A fragment that DOCUMENTS the lane quotes the literal marker in prose; that
+    // must NOT be misread as USING the lane. Regression: the lane-docs fragment
+    // tripped its own §3c src-conflict gate because the matcher caught the quoted
+    // marker in a backtick-wrapped sentence.
+    const DOCS = [
+      '<!-- bump: patch -->',
+      '',
+      '## What Changed',
+      '',
+      'Documented the `<!-- internal-only -->` fragment marker and the lane it opts into.',
+      '',
+      '## What to Tell Your User',
+      '',
+      'Nothing changes.',
+      '',
+      '## Summary of New Capabilities',
+      '',
+      'Docs only.',
+      '',
+      '## Evidence',
+      '',
+      'Tests.',
+      '',
+    ].join('\n');
+    expect(hasInternalOnlyMarker(DOCS)).toBe(false);
+    // an inline mention mid-sentence / in a list is not a directive
+    expect(hasInternalOnlyMarker('- the <!-- internal-only --> marker explains the lane')).toBe(false);
+    expect(hasInternalOnlyMarker('the `<!-- internal-only -->` marker')).toBe(false);
   });
 
   it('auto-fills both user-facing sections when EVERY fragment is internal-only', () => {
