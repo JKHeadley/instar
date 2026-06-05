@@ -15,7 +15,7 @@ The skill text documents four operational facts grounded in #765: `<!-- internal
 
 - `/instar-dev` skill text — modify — teaches agents when the internal-only lane is valid.
 - `PostUpdateMigrator` built-in skill migration — modify — copies the bundled stock skill into existing stock deployed copies when the new marker is missing.
-- Release gates — reference only — no change to assembler or pre-push behavior in this PR.
+- Release gates — `hasInternalOnlyMarker` (`scripts/assemble-next-md.mjs`) hardened to match the marker only as a standalone directive line (see §8); pre-push behavior otherwise unchanged.
 
 ---
 
@@ -81,6 +81,23 @@ This touches development-skill documentation and an idempotent post-update skill
 
 ---
 
+## 8. Marker-detection hardening (surfaced while building this PR)
+
+Building this docs PR surfaced a false-positive in `hasInternalOnlyMarker`
+(`scripts/assemble-next-md.mjs`): the matcher used a whole-content regex, so a
+fragment that merely *documents* the `<!-- internal-only -->` marker in prose (as
+this PR's own release fragment does, quoting the literal marker in backticks) was
+misread as *using* the internal-only lane — and tripped its own §3c src-conflict
+gate (this PR touches `PostUpdateMigrator.ts`). Hardened the matcher to recognize
+the marker ONLY as a standalone directive line (like `<!-- bump: -->`), never an
+inline/backtick mention. Pure script + test change; no `src/` runtime surface.
+Behavior for genuine internal-only fragments (marker on its own line) is unchanged
+— all three prior `detects the marker` assertions stay green. Regression test
+added (`does NOT detect an inline/backtick mention…`).
+
+---
+
 ## Evidence pointers
 
 - `npm test -- --run tests/unit/migrate-instar-dev-build-location.test.ts tests/unit/migrate-instar-dev-internal-only-lane.test.ts`
+- `npm test -- --run tests/unit/assemble-next-md.test.ts tests/unit/pre-push-gate.test.ts` (47 tests — marker false-positive regression)

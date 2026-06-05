@@ -1,30 +1,25 @@
 {
-  "version": 3,
-  "sessionId": "45610377-b671-4264-a9fd-192d16f767c6",
-  "timestamp": "2026-06-04T23:13:14.528Z",
+  "version": 2,
+  "sessionId": "6b3a4359-6111-477e-9b4c-6dcf1620a9b5",
+  "timestamp": "2026-06-05T00:41:24.624Z",
   "artifactPath": "upgrades/side-effects/instar-dev-internal-only-lane-docs.md",
-  "artifactSha256": "03b4138254ae2cfd63990e4295ed421b72d26bb37ef86fd1ac970ac47e7e4905",
+  "artifactSha256": "6fbc1c1f52f1a35c8ef7a6641c7dab75c9d39cf5a15a56919e9c7a01431d1d7b",
   "coveredFiles": [
     "docs/specs/instar-dev-internal-only-lane-docs.eli16.md",
+    "scripts/assemble-next-md.mjs",
     "skills/instar-dev/SKILL.md",
     "src/core/PostUpdateMigrator.ts",
     "src/data/builtin-manifest.json",
+    "tests/unit/assemble-next-md.test.ts",
     "tests/unit/migrate-instar-dev-internal-only-lane.test.ts",
     "upgrades/next/instar-dev-internal-only-lane-docs.md",
     "upgrades/side-effects/instar-dev-internal-only-lane-docs.md"
   ],
   "phase": "complete",
   "tier": 1,
-  "tierReasoning": "Scoped documentation plus an idempotent PostUpdateMigrator skill-copy backfill with a focused unit test and regenerated built-in manifest; no new runtime gate or user-facing behavior.",
+  "tierReasoning": "Scoped instar-dev skill docs + idempotent PostUpdateMigrator backfill, plus a same-PR false-positive fix to the internal-only marker matcher (standalone-line only) with a regression test; no new runtime gate or user-facing behavior.",
   "eli16Path": "docs/specs/instar-dev-internal-only-lane-docs.eli16.md",
   "sideEffectsPath": "upgrades/side-effects/instar-dev-internal-only-lane-docs.md",
   "secondPass": "not-required",
-  "reviewerConcurred": null,
-  "toolchain": {
-    "buildSkill": {
-      "name": "instar-dev",
-      "version": "60db4f60c4e0",
-      "verified": true
-    }
-  }
+  "reviewerConcurred": null
 }

@@ -91,9 +91,15 @@ export function parseBumpType(content) {
  * is internal-only (see assembleNextMd). The pre-push gate independently verifies
  * the marker against the staged diff (an internal-only fragment whose PR touches
  * runtime `src/` is rejected), so the marker cannot be misused.
+ *
+ * The marker is recognized ONLY as a standalone directive line (like the
+ * `<!-- bump: -->` line) — never an inline mention inside prose or backticks. A
+ * fragment that merely DOCUMENTS the lane (e.g. this lane's own docs fragment,
+ * which quotes the literal `<!-- internal-only -->` marker in backticks) must not
+ * be misread as USING it and trip the §3c src-conflict gate.
  */
 export function hasInternalOnlyMarker(content) {
-  return /<!--\s*internal-only\s*-->/i.test(String(content));
+  return /^[ \t]*<!--\s*internal-only\s*-->[ \t]*$/im.test(String(content));
 }
 
 /** Canonical text auto-filled into the user-facing sections of an all-internal release. */
