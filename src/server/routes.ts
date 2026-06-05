@@ -14812,14 +14812,28 @@ export function createRoutes(ctx: RouteContext): Router {
      * existing commitment when one already exists for this threadId, so 4
      * call-sites below are safe.
      */
-    const captureOrigin = async (effThreadId: string, remoteAgentDisplay: string): Promise<void> => {
+    // `canonicalRemoteAgent` MUST be the peer's resolved FULL fingerprint (the
+    // same identity used for routing) — NOT a display name or a "name:fpPrefix"
+    // address. The inbound anti-hijack guard (ThreadlineRouter) compares a reply's
+    // senderFingerprint against the stored thread owner (`remoteAgent`); if we
+    // stored a composite/display string instead of the full fingerprint, a known
+    // peer's reply fails the match and gets false-isolated to a fresh cold-spawn
+    // thread — breaking A2A continuity (the "one coherent individual" property).
+    // The human-facing display name is preserved separately. Mirrors
+    // telegramBridge.mirrorOutbound, which already stores the resolved fingerprint
+    // as `remoteAgent` and the raw target as `remoteAgentName`.
+    const captureOrigin = async (
+      effThreadId: string,
+      canonicalRemoteAgent: string,
+      displayName?: string,
+    ): Promise<void> => {
       if (!ctx.topicLinkageHandler) return;
       if (!resolvedOriginTopicId) return;
       try {
         ctx.topicLinkageHandler.captureOriginOnSend({
           threadId: effThreadId,
-          remoteAgent: remoteAgentDisplay,
-          remoteAgentDisplayName: remoteAgentDisplay,
+          remoteAgent: canonicalRemoteAgent,
+          remoteAgentDisplayName: displayName ?? canonicalRemoteAgent,
           originTopicId: resolvedOriginTopicId,
           purpose: resolvedPurpose,
           subject: 'Threadline conversation',
@@ -15130,7 +15144,14 @@ export function createRoutes(ctx: RouteContext): Router {
                       outcome,
                     }).catch(() => { /* swallow — bridge is relay-only */ });
                   }
-                  await captureOrigin(effectiveThreadId, localTarget.name);
+                  // Store the resolved full fingerprint as the canonical thread
+                  // owner (display = the local agent's name) so a reply matches
+                  // the anti-hijack guard instead of being false-isolated.
+                  await captureOrigin(
+                    effectiveThreadId,
+                    localTarget.fingerprint || localTarget.publicKey?.substring(0, 32) || localTarget.name,
+                    localTarget.name,
+                  );
                   if (waitForReply) {
                     const reply = await waitForThreadlineReply(ctx, localTarget.name, effectiveThreadId, timeoutSeconds);
                     res.json({
@@ -15245,7 +15266,12 @@ export function createRoutes(ctx: RouteContext): Router {
         }).catch(() => { /* swallow — bridge is relay-only */ });
       }
 
-      await captureOrigin(effectiveRelayThreadId, targetAgent);
+      // `resolvedId` is the peer's full routing fingerprint; store IT as the
+      // canonical thread owner (display = the raw target the caller typed) so a
+      // reply matches the anti-hijack guard instead of being false-isolated.
+      // This is the fix for the composite "name:fpPrefix" address being stored
+      // un-resolved and causing a known peer's replies to cold-spawn.
+      await captureOrigin(effectiveRelayThreadId, resolvedId, targetAgent);
       if (waitForReply) {
         const reply = await waitForThreadlineReply(ctx, resolvedId, effectiveRelayThreadId, timeoutSeconds);
         res.json({
