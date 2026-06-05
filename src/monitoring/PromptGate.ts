@@ -11,6 +11,7 @@
 
 import { EventEmitter } from 'node:events';
 import { createHash, randomBytes } from 'node:crypto';
+import { trimTrailingBlankRows } from '../core/paneText.js';
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -113,11 +114,9 @@ function findOptionKey(options: PromptOption[], accept: RegExp, reject?: RegExp)
   return option?.key ?? null;
 }
 
-function trimTrailingBlankRows(lines: string[]): string[] {
-  let end = lines.length;
-  while (end > 0 && lines[end - 1].trim() === '') end--;
-  return end === 0 ? [''] : lines.slice(0, end);
-}
+// trimTrailingBlankRows now lives in core/paneText.ts (shared with
+// SessionManager's idle/age small-tail checks — task #77) so the blank-fill
+// semantics can never drift between detectors.
 
 function detectGeminiSafeDefaultModal(lines: string[], fullWindow?: string[]): PatternMatch | null {
   const windowLines = fullWindow ?? lines;
