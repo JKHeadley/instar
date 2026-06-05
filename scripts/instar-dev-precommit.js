@@ -278,6 +278,41 @@ try {
 const slug = (freshestTrace && (freshestTrace.slug || freshestTrace.name)) || 'unknown';
 const decision = decideRequirementSet(declaredTier);
 
+// ─── Step 4.55: causal autopsy (directive 2026-06-05) ───────────────────
+// Low-ceremony lanes (Tier-1) ship without an independent reviewer, so the
+// compensating control is a durable causal record per issue: every fix-class
+// commit SHOULD declare what caused the issue it fixes — a prior PR, an
+// environment shift that invalidated old assumptions, plain new code, a
+// latent bug, or honestly unknown. The field rides the decision audit so
+// meta-analysis ("are we converging or playing whack-a-mole?") is a query
+// over .instar/instar-dev-decisions/, not archaeology. ADVISORY in this
+// slice: absence warns on fix-class signals, never blocks. A PRESENT but
+// malformed autopsy blocks — a corrupt record is worse than none.
+const AUTOPSY_ORIGINS = ['prior-pr', 'environment-shift', 'new-code', 'latent', 'unknown'];
+let causalAutopsy = null;
+let autopsyError = null;
+if (freshestTrace && freshestTrace.causalAutopsy !== undefined) {
+  const ca = freshestTrace.causalAutopsy;
+  const validPrs = (a) => Array.isArray(a) && a.length > 0 && a.every((n) => Number.isInteger(n) && n > 0);
+  if (!ca || typeof ca !== 'object' || Array.isArray(ca)) {
+    autopsyError = 'causalAutopsy must be an object: { origin, relatedPrs?, notes? }';
+  } else if (!AUTOPSY_ORIGINS.includes(ca.origin)) {
+    autopsyError = `causalAutopsy.origin must be one of ${AUTOPSY_ORIGINS.join(' | ')} (got ${JSON.stringify(ca.origin)})`;
+  } else if (ca.origin === 'prior-pr' && !validPrs(ca.relatedPrs)) {
+    autopsyError = 'causalAutopsy.origin "prior-pr" requires relatedPrs: a non-empty array of positive PR numbers';
+  } else if (ca.relatedPrs !== undefined && !validPrs(ca.relatedPrs)) {
+    autopsyError = 'causalAutopsy.relatedPrs must be a non-empty array of positive integers when present';
+  } else if (ca.notes !== undefined && typeof ca.notes !== 'string') {
+    autopsyError = 'causalAutopsy.notes must be a string when present';
+  } else {
+    causalAutopsy = {
+      origin: ca.origin,
+      ...(ca.relatedPrs !== undefined ? { relatedPrs: ca.relatedPrs } : {}),
+      ...(ca.notes !== undefined ? { notes: ca.notes } : {}),
+    };
+  }
+}
+
 // AUDIT (all in-scope cases): one JSON line, written regardless of branch.
 // belowFloor = the agent declared UNDER the risk-signaled floor. We never
 // block on it (the mind holds authority) — the record is the backstop.
@@ -291,7 +326,54 @@ const decisionEntryPath = writeDecisionAudit({
   belowFloor,
   files: inScopeFiles.length,
   loc: totalChangedLoc,
+  causalAutopsy,
 });
+// Malformed autopsy blocks AFTER the audit write — the blocked attempt is
+// recorded (verdict 'blocked' via the exit handler), same as every gate
+// refusal. Validated-when-present: absence never reaches this.
+if (autopsyError) {
+  blockCommit(
+    inScopeFiles,
+    `Invalid causalAutopsy in trace: ${autopsyError}\n` +
+    `  Shape: { "origin": "prior-pr|environment-shift|new-code|latent|unknown", "relatedPrs": [123], "notes": "..." }\n` +
+    `  (origin "prior-pr" requires relatedPrs; the field is otherwise optional-but-validated.)`,
+  );
+}
+// Advisory (never blocks): a fix-class commit with NO autopsy gets a loud
+// nudge. Fix-class signal = branch name says fix, or a staged release-note
+// fragment declares change_type: fix.
+if (!causalAutopsy) {
+  let fixClassSignal = false;
+  try {
+    const branch = execSync('git rev-parse --abbrev-ref HEAD', { cwd: ROOT, encoding: 'utf8' }).trim();
+    if (/(^|[\/-])fix([\/-]|$)/i.test(branch)) fixClassSignal = true;
+  } catch { /* detached HEAD / no commits — stay quiet, advisory only */ }
+  if (!fixClassSignal) {
+    try {
+      const staged = execSync('git diff --cached --name-only', { cwd: ROOT, encoding: 'utf8' })
+        .split('\n').map((s) => s.trim()).filter(Boolean);
+      for (const f of staged) {
+        if (!/^upgrades\/next\/.+\.md$/.test(f)) continue;
+        const fp = path.join(ROOT, f);
+        if (fs.existsSync(fp) && /change_type:\s*fix/.test(fs.readFileSync(fp, 'utf8'))) {
+          fixClassSignal = true;
+          break;
+        }
+      }
+    } catch { /* advisory only */ }
+  }
+  if (fixClassSignal) {
+    console.error('');
+    console.error('┌──────────────────────────────────────────────────────────────────┐');
+    console.error('│  ⚠ ADVISORY — fix-class commit with no causalAutopsy in trace.    │');
+    console.error('│    What caused the issue this fixes? Add to your trace JSON:      │');
+    console.error('│    "causalAutopsy": { "origin": "prior-pr|environment-shift|      │');
+    console.error('│      new-code|latent|unknown", "relatedPrs": [N], "notes": "…" }  │');
+    console.error('│    NOT blocked — but the meta-analysis record stays blind here.   │');
+    console.error('└──────────────────────────────────────────────────────────────────┘');
+    console.error('');
+  }
+}
 if (belowFloor) {
   console.error('');
   console.error('┌──────────────────────────────────────────────────────────────────┐');
@@ -814,7 +896,7 @@ function blockCommit(files, reason) {
 // fire, the line just evaporated with the worktree). If the commit is later
 // blocked by the gate, the staged line simply rides the retry commit — both
 // lines describe real gate evaluations.
-function writeDecisionAudit({ slug, suggestedTier, declaredTier, riskFloor, riskFloorReasons, belowFloor, files, loc }) {
+function writeDecisionAudit({ slug, suggestedTier, declaredTier, riskFloor, riskFloorReasons, belowFloor, files, loc, causalAutopsy = null }) {
   try {
     fs.mkdirSync(DECISIONS_DIR, { recursive: true });
     const ts = new Date().toISOString();
@@ -840,6 +922,12 @@ function writeDecisionAudit({ slug, suggestedTier, declaredTier, riskFloor, risk
       belowFloor,
       files,
       loc,
+      // Causal autopsy (directive 2026-06-05): what caused the issue this
+      // commit fixes — prior-pr / environment-shift / new-code / latent /
+      // unknown, with linked PRs. null = not declared (advisory in slice 1).
+      // This is THE meta-analysis substrate: convergence vs whack-a-mole is
+      // a query over these entries, not archaeology.
+      causalAutopsy,
       // Finalized by the process exit handler below: 'pass' when the gate
       // allowed the commit, 'blocked' otherwise. The riding-the-retry design
       // (a blocked evaluation's entry rides the next successful commit, see
