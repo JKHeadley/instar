@@ -625,7 +625,13 @@ export class AgentServer {
     // tests/e2e/standards-conformance-gate-lifecycle.test.ts; the budget itself
     // is verified at the unit level (AgentServer-outbound-timeout.test.ts via the
     // extracted production map/matcher). A 150s/180s budget is not E2E-observable.
-    this.app.use(requestTimeout(options.config.requestTimeoutMs, buildRequestTimeoutOverrides()));
+    // The parity-pass/import-dryrun route budgets derive from the configured
+    // live-source TOTAL fetch budget (feedbackMigration.paritySource.totalTimeoutMs)
+    // so widening the source budget for a degraded source widens the response
+    // window with it — see buildRequestTimeoutOverrides() for the live incident.
+    const paritySourceTotalTimeoutMs = (options.config as { feedbackMigration?: { paritySource?: { totalTimeoutMs?: number } } })
+      .feedbackMigration?.paritySource?.totalTimeoutMs;
+    this.app.use(requestTimeout(options.config.requestTimeoutMs, buildRequestTimeoutOverrides({ paritySourceTotalTimeoutMs })));
 
     // ── Token Ledger ──────────────────────────────────────────────────
     // Read-only token-usage observability. Reads Claude Code's per-session
