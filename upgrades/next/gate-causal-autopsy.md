@@ -1,0 +1,20 @@
+---
+bump: patch
+---
+
+## What Changed
+
+The instar-dev pre-commit gate accepts an optional `causalAutopsy` field in the trace JSON — { origin: prior-pr | environment-shift | new-code | latent | unknown, relatedPrs, notes } — validates it when present (malformed blocks; absence never does), copies it verbatim into the per-commit decision-audit entry, and prints an advisory nudge on fix-class commits that omit it.
+
+## What to Tell Your User
+
+Every fix can now carry a durable record of what actually caused the issue it fixes. Over time that record shows whether the system is genuinely converging toward stability or just trading one bug for another — analysis that used to require digging through old conversations.
+
+## Summary of New Capabilities
+
+- Causal autopsy per fix, riding the existing decision-audit files — meta-analysis over causes becomes a one-line query.
+- Advisory-first rollout: fix-class commits without an autopsy get a loud nudge, never a block.
+
+## Evidence
+
+Directive from Justin (2026-06-05): with the Tier-1 lane shipping fixes without an independent reviewer, causal autopsies of every issue are the compensating control for convergence. Day-one retro-autopsy of 6 issues found 5 were prior-PR assumptions invalidated by the release-cadence shift — a pattern that currently lives only in session memory. 5 new gate tests pin the contract (valid recorded verbatim / malformed blocks with attempt recorded / prior-pr requires linked PRs / absent never blocks + advisory on fix signal / no noise on non-fix commits); 9/9 in the gate audit suite.
