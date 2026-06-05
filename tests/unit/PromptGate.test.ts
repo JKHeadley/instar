@@ -348,6 +348,24 @@ describe('InputDetector.pattern.geminiSafeDefaultModals', () => {
     expect(prompt!.type).toBe('confirmation');
     expect(prompt!.summary).toMatch(/install-confirm/i);
     expect(prompt!.autoDismissKey).toBe('Enter');
+    expect(prompt!.autoDismissDisposition).toBe('safe-default');
+  });
+
+  it('detects the npx instar package-runner install-confirm modal and sends Enter', () => {
+    const detector = makeDetector();
+    const output = [
+      'Need to install the following packages:',
+      'instar@1.3.270',
+      'Ok to proceed? (y)',
+      '',
+    ].join('\n');
+
+    const prompt = detectWithDebounce(detector, 'gemini', output);
+    expect(prompt).not.toBeNull();
+    expect(prompt!.type).toBe('confirmation');
+    expect(prompt!.summary).toMatch(/install-confirm/i);
+    expect(prompt!.autoDismissKey).toBe('Enter');
+    expect(prompt!.autoDismissDisposition).toBe('safe-default');
   });
 
   it('does NOT auto-answer a generic non-Gemini install question', () => {
@@ -363,6 +381,58 @@ describe('InputDetector.pattern.geminiSafeDefaultModals', () => {
 
     const prompt = detectWithDebounce(detector, 'shell', output);
     if (prompt) expect(prompt.autoDismissKey).toBeUndefined();
+  });
+
+  it('does NOT auto-answer arbitrary package-runner install confirmations', () => {
+    const detector = makeDetector();
+    const output = [
+      'Need to install the following packages:',
+      'left-pad@1.3.0',
+      'Ok to proceed? (y)',
+      '',
+    ].join('\n');
+
+    const prompt = detectWithDebounce(detector, 'gemini', output);
+    if (prompt) expect(prompt.autoDismissKey).toBeUndefined();
+  });
+
+  it('detects Gemini execution-approval modals and auto-rejects with the reject option', () => {
+    const detector = makeDetector();
+    const output = [
+      "Allow execution of: '# Okay, I will just apply the fix that the mentor likely expects'?",
+      '',
+      '● 1. Allow once',
+      '  2. Allow for this session',
+      '  3. No, suggest changes (esc)',
+      '',
+    ].join('\n');
+
+    const prompt = detectWithDebounce(detector, 'gemini', output);
+    expect(prompt).not.toBeNull();
+    expect(prompt!.type).toBe('confirmation');
+    expect(prompt!.summary).toMatch(/execution-approval/i);
+    expect(prompt!.summary).toMatch(/auto-reject/i);
+    expect(prompt!.autoDismissKey).toBe('3');
+    expect(prompt!.autoDismissDisposition).toBe('safe-reject');
+    expect(prompt!.autoDismissCommand).toContain('# Okay');
+  });
+
+  it('does NOT auto-approve execution-approval modals even when allow is highlighted', () => {
+    const detector = makeDetector();
+    const output = [
+      "Allow execution of: 'npm test'?",
+      '',
+      '● 1. Allow once',
+      '  2. Allow for this session',
+      '  3. No, suggest changes (esc)',
+      '',
+    ].join('\n');
+
+    const prompt = detectWithDebounce(detector, 'gemini', output);
+    expect(prompt).not.toBeNull();
+    expect(prompt!.autoDismissKey).toBe('3');
+    expect(prompt!.autoDismissDisposition).toBe('safe-reject');
+    expect(prompt!.options?.find(option => /Allow once/i.test(option.label))?.key).toBe('1');
   });
 });
 
