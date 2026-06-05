@@ -714,6 +714,9 @@ export interface RouteContext {
   tokenLedger: import('../monitoring/TokenLedger.js').TokenLedger | null;
   featureMetricsLedger: import('../monitoring/FeatureMetricsLedger.js').FeatureMetricsLedger | null;
   resourceLedger: import('../monitoring/ResourceLedger.js').ResourceLedger | null;
+  /** Approval-as-Data ledger (spec Part B / Phase 2). Records operator approval
+   *  decisions + per-class agreement ratios. Null when stateDir is unavailable. */
+  approvalLedger: import('../core/ApprovalLedger.js').ApprovalLedger | null;
   /** Cross-topic activity index (Parallel-Work Awareness Phase A). Backs GET /parallel-work/activities. */
   parallelActivityIndex?: import('../core/ParallelActivityIndex.js').ParallelActivityIndex | null;
   /** The shared intelligence provider (an IntelligenceRouter when per-component routing is wired). Backs GET /intelligence/routing. */
@@ -4779,6 +4782,96 @@ export function createRoutes(ctx: RouteContext): Router {
       limit,
       samples: ctx.resourceLedger.recentSamples({ sinceMs, limit, source }),
     });
+  });
+
+  // ── Approval-as-Data (docs/specs/AUTONOMOUS-OPERATION-JUDGMENT-AND-APPROVAL-AS-DATA-SPEC.md, Part B / Phase 2) ──
+  // Durable, signed record of every operator approval decision, and the per-class
+  // agreement ratios computed from it. Tracks approvals WHEREVER they occur (a spec
+  // sign-off, a decision approved in chat, …) — operator extension 2026-06-05.
+  //
+  // AUTHORITY INVARIANT: `mode` + `divergences` MUST reflect an EXPLICIT operator
+  // statement (the approve control, or words like "go with your picks" = as-is vs
+  // "change X because Y" = with-change). The agent must NOT infer/self-classify the
+  // operator's intent; an ambiguous/silent decision is NOT recorded. Any row is
+  // operator-correctable (append a row with `corrects` set). Read paths never gate.
+
+  // Record an approval decision. The caller passes operator-sourced mode+divergences.
+  router.post('/approvals', (req, res) => {
+    if (!ctx.approvalLedger) {
+      res.status(503).json({ error: 'approval ledger unavailable (no stateDir or init failed)' });
+      return;
+    }
+    const b = req.body ?? {};
+    if (typeof b.subject !== 'string' || !b.subject.trim()) {
+      res.status(400).json({ error: 'subject is required' });
+      return;
+    }
+    if (typeof b.decisionClass !== 'string' || !b.decisionClass.trim()) {
+      res.status(400).json({ error: 'decisionClass is required' });
+      return;
+    }
+    try {
+      const row = ctx.approvalLedger.recordApproval({
+        subject: b.subject,
+        decisionClass: b.decisionClass,
+        surface: b.surface ?? 'chat',
+        approver: typeof b.approver === 'string' && b.approver ? b.approver : 'justin',
+        mode: b.mode,
+        divergences: Array.isArray(b.divergences) ? b.divergences : undefined,
+        reviewIterations: typeof b.reviewIterations === 'number' ? b.reviewIterations : undefined,
+        commitSha: typeof b.commitSha === 'string' ? b.commitSha : undefined,
+        evidenceRef: typeof b.evidenceRef === 'string' ? b.evidenceRef : undefined,
+        corrects: typeof b.corrects === 'string' ? b.corrects : undefined,
+        decidedAt: typeof b.decidedAt === 'string' ? b.decidedAt : undefined,
+      });
+      res.status(201).json({ recorded: true, row });
+    } catch (err) {
+      // The store throws on an internally-inconsistent row (e.g. as-is WITH a
+      // divergence, or a change WITHOUT one) — that's a 400, not a 500.
+      res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  // Per-class agreement summary + an overall surface breakdown. Read-only; never gates.
+  router.get('/approvals/summary', (_req, res) => {
+    if (!ctx.approvalLedger) {
+      res.status(503).json({ error: 'approval ledger unavailable (no stateDir or init failed)' });
+      return;
+    }
+    const classes = ctx.approvalLedger.summarize();
+    const rows = ctx.approvalLedger.all();
+    const bySurface: Record<string, { total: number; approvedAsIs: number }> = {};
+    for (const r of rows) {
+      const s = (bySurface[r.surface] ??= { total: 0, approvedAsIs: 0 });
+      s.total++;
+      if (r.mode === 'approved-as-is') s.approvedAsIs++;
+    }
+    res.json({
+      total: rows.length,
+      classes,
+      bySurface,
+      note: 'Read-only. The ratio is a SIGNAL; auto-approval (Phase 3) routes through a full-context authority, not the arithmetic.',
+    });
+  });
+
+  // List recorded rows, newest-first (paginated; ?limit= / ?decisionClass= / ?surface=).
+  router.get('/approvals', (req, res) => {
+    if (!ctx.approvalLedger) {
+      res.status(503).json({ error: 'approval ledger unavailable (no stateDir or init failed)' });
+      return;
+    }
+    let limit = 100;
+    if (typeof req.query.limit === 'string' && /^\d+$/.test(req.query.limit)) {
+      const n = Number(req.query.limit);
+      if (n > 0 && n <= 1000) limit = n;
+    }
+    const decisionClass = typeof req.query.decisionClass === 'string' ? req.query.decisionClass : undefined;
+    const surface = typeof req.query.surface === 'string' ? req.query.surface : undefined;
+    let rows = ctx.approvalLedger.all();
+    if (decisionClass) rows = rows.filter((r) => r.decisionClass === decisionClass);
+    if (surface) rows = rows.filter((r) => r.surface === surface);
+    const recent = rows.slice(-limit).reverse();
+    res.json({ count: recent.length, total: rows.length, rows: recent });
   });
 
   // ── Parallel-Work Awareness (docs/specs/parallel-activity-coherence.md, Phase A) ──

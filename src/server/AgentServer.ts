@@ -12,7 +12,8 @@ import express, { type Express, type Request, type Response } from 'express';
 import type { Server } from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
-import { createHash, timingSafeEqual } from 'node:crypto';
+import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
+import { ApprovalLedger } from '../core/ApprovalLedger.js';
 import { fileURLToPath } from 'node:url';
 import type { SessionManager } from '../core/SessionManager.js';
 import type { StateManager } from '../core/StateManager.js';
@@ -150,6 +151,9 @@ export class AgentServer {
   private tokenLedgerPoller: TokenLedgerPoller | null = null;
   private resourceLedger: ResourceLedger | null = null;
   private resourceLedgerPoller: ResourceLedgerPoller | null = null;
+  /** Approval-as-Data ledger (spec Part B, Phase 2). Read-only observability over
+   *  operator approval decisions. Null when stateDir is unavailable. */
+  private approvalLedger: ApprovalLedger | null = null;
   private parallelActivityIndex: ParallelActivityIndex | null = null;
   private parallelWorkSentinel: ParallelWorkSentinel | null = null;
   private parallelWorkSentinelTimer: ReturnType<typeof setInterval> | null = null;
@@ -819,6 +823,35 @@ export class AgentServer {
       }
     }
 
+    // Approval-as-Data ledger (docs/specs/AUTONOMOUS-OPERATION-JUDGMENT-AND-APPROVAL-AS-DATA-SPEC.md,
+    // Part B / Phase 2). Durable, signed, append-only record of operator approval
+    // decisions + per-class agreement ratios. Always constructed when stateDir is
+    // available (read-only, low-cost; an empty ledger does nothing). The signer is
+    // HMAC over the state secret (authToken) — integrity only; correctness is the
+    // operator-authoritative-source rule documented on ApprovalLedger. Own try/catch
+    // so it can never cascade into the other ledgers' init.
+    try {
+      if (options.config.stateDir) {
+        const signKey = this.config.authToken || 'approval-ledger-unsigned-dev-key';
+        const sign = (canonical: string) => createHmac('sha256', signKey).update(canonical).digest('hex');
+        const verifySig = (canonical: string, signature: string) => {
+          const expected = sign(canonical);
+          try {
+            return expected.length === signature.length
+              && timingSafeEqual(Buffer.from(expected), Buffer.from(signature));
+          } catch { return false; }
+        };
+        this.approvalLedger = new ApprovalLedger({
+          filePath: path.join(options.config.stateDir, 'approval-ledger.jsonl'),
+          sign,
+          verifySig,
+        });
+      }
+    } catch (err) {
+      console.warn('[instar] approval-ledger init failed (non-fatal):', err);
+      this.approvalLedger = null;
+    }
+
     // Failure-Learning Loop (docs/specs/FAILURE-LEARNING-LOOP-SPEC.md) — instar
     // self-hosting dev-process forensics. Ships OFF; constructed only when
     // enabled (else the inline /failures routes 503-stub via the null ledger).
@@ -1152,6 +1185,7 @@ export class AgentServer {
       tokenLedger: this.tokenLedger,
       featureMetricsLedger: this.featureMetricsLedger,
       resourceLedger: this.resourceLedger,
+      approvalLedger: this.approvalLedger,
       parallelActivityIndex: this.parallelActivityIndex,
       frameworkIssueLedger: this.frameworkIssueLedger,
       mentorRunner: this.mentorRunner,
