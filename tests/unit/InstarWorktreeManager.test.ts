@@ -301,6 +301,65 @@ describe('resolveInstarRepo', () => {
     expect(result.remoteUrl).toBe('git@example.com:fork/instar.git');
   });
 
+  it('accepts a fork origin via second remote even when the repo IS the instar source tree (the guard-safe enumeration)', () => {
+    // The live #777 regression: agent homes ARE the instar source tree, and
+    // SafeGitExecutor's source-tree guard only passes a narrow verb set there
+    // (`remote` is not in it). The old `git remote -v` enumeration threw
+    // inside tryGit, was swallowed as {ok:false}, and the any-remote check
+    // silently no-oped — every agent's own checkout was rejected and agents
+    // fell back to raw `git worktree add` (which skips identity + husky
+    // wiring). The enumeration must therefore use read-only `config
+    // --get-regexp`, which the guard allows. sourceSignature:true makes the
+    // fixture trip the guard exactly like a real agent home.
+    const repo = makeRepo({
+      remote: 'https://github.com/owner/instar-echo.git',
+      sourceSignature: true,
+    });
+    execFileSync('git', ['remote', 'add', 'upstream', 'git@github.com:instar-ai/instar.git'], { cwd: repo, stdio: 'pipe' });
+    const result = resolveInstarRepo({
+      env: { INSTAR_REPO: repo },
+      fallbackChain: [],
+      urlAllowlist: DEFAULT_INSTAR_REPO_URL_ALLOWLIST,
+    });
+    expect(result.remoteUrl).toBe('git@github.com:instar-ai/instar.git');
+  });
+
+  it('accepts a fork-fetch/canonical-push origin via its allowlisted pushurl (the live Echo agent-home shape)', () => {
+    // remote.origin.url = personal fork (fetch), remote.origin.pushurl =
+    // canonical instar (push). `git remote -v` surfaced the push url only
+    // incidentally; the config enumeration must cover `pushurl` explicitly.
+    const repo = makeRepo({
+      remote: 'https://github.com/owner/instar-echo.git',
+      sourceSignature: true,
+    });
+    execFileSync('git', ['config', 'remote.origin.pushurl', 'git@github.com:instar-ai/instar.git'], { cwd: repo, stdio: 'pipe' });
+    const result = resolveInstarRepo({
+      env: { INSTAR_REPO: repo },
+      fallbackChain: [],
+      urlAllowlist: DEFAULT_INSTAR_REPO_URL_ALLOWLIST,
+    });
+    expect(result.remoteUrl).toBe('git@github.com:instar-ai/instar.git');
+  });
+
+  it('still rejects a source-tree repo when NO remote url or pushurl is allowlisted', () => {
+    const repo = makeRepo({
+      remote: 'https://github.com/owner/instar-echo.git',
+      sourceSignature: true,
+    });
+    execFileSync('git', ['config', 'remote.origin.pushurl', 'git@example.com:attacker/evil.git'], { cwd: repo, stdio: 'pipe' });
+    // cwd must be a non-repo: otherwise candidate discovery falls through to
+    // the test process's own (valid) instar checkout and resolves THAT.
+    const elsewhere = fs.mkdtempSync(path.join(tmp, 'elsewhere-'));
+    expect(() =>
+      resolveInstarRepo({
+        env: { INSTAR_REPO: repo },
+        cwd: elsewhere,
+        fallbackChain: [],
+        urlAllowlist: DEFAULT_INSTAR_REPO_URL_ALLOWLIST,
+      }),
+    ).toThrow(/not in worktree.repoUrlAllowlist/);
+  });
+
   it('discovers a valid instar repo from cwd before hardcoded fallbacks', () => {
     const repo = makeRepo({
       remote: 'git@github.com:instar-ai/instar.git',

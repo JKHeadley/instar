@@ -333,15 +333,32 @@ function validateInstarRepoCandidate(
   // keeping a canonical remote (e.g. JKHeadley → upstream instar) that the worktree
   // actually builds against. An origin-only check rejected every agent's own checkout
   // from `instar worktree create`, defeating the worktree convention for the whole fleet.
+  //
+  // IMPORTANT: the enumeration must go through `git config --get-regexp`, NOT
+  // `git remote -v`. All git here runs through SafeGitExecutor, whose
+  // source-tree guard only passes a narrow verb set against the agent's own
+  // instar checkout (rev-parse / show-ref / read-only config / ...). `remote`
+  // is not in that set, so a `remote -v` call against the agent home — the
+  // EXACT layout this any-remote check exists for — threw inside tryGit, was
+  // swallowed as {ok:false}, and the whole check silently no-oped: #777
+  // shipped dead on arrival, and agents fell back to raw `git worktree add`,
+  // which skips identity + husky-hook wiring (the silent local-gate bypass).
+  // `config --get-regexp` is in the guard's read-only-config allowance and
+  // additionally surfaces `pushurl` (a fork-fetch/canonical-push origin is
+  // allowlisted by its push url — `remote -v`'s parser caught that shape only
+  // incidentally).
   const remote = tryGit(['-C', repoPath, 'config', '--get', 'remote.origin.url'], repoPath, op, 'read');
   let allowedUrl: string | null =
     remote.ok && remote.stdout && allowlist.has(remote.stdout) ? remote.stdout : null;
   if (!allowedUrl) {
-    const allRemotes = tryGit(['-C', repoPath, 'remote', '-v'], repoPath, op, 'read');
+    const allRemotes = tryGit(
+      ['-C', repoPath, 'config', '--get-regexp', String.raw`^remote\..*\.(url|pushurl)$`],
+      repoPath, op, 'read',
+    );
     if (allRemotes.ok && allRemotes.stdout) {
       for (const line of allRemotes.stdout.split('\n')) {
-        // git remote -v line: "<name>\t<url> (fetch|push)"
-        const m = line.match(/^\S+\s+(\S+)\s+\((?:fetch|push)\)$/);
+        // git config --get-regexp line: "remote.<name>.url <url>"
+        const m = line.match(/^remote\.\S+\.(?:url|pushurl)\s+(\S+)$/);
         if (m && allowlist.has(m[1])) {
           allowedUrl = m[1];
           break;
