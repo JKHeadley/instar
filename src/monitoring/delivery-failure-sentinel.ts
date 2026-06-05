@@ -77,7 +77,16 @@ export interface SentinelConfig {
   circuitBreakerWindowMs?: number;
   /**
    * Restore-purge threshold — entries older than this at startup are
-   * dropped, not recovered (spec §3h). Default 5 minutes.
+   * dropped, not recovered (spec §3h). Default 60 minutes.
+   *
+   * Was 5 minutes — tuned for a world where restarts are rare. On a
+   * frequent-release day (restarts every ~15 min), the one-shot purge ran
+   * at EVERY boot and deleted legitimately queued-undelivered messages
+   * that simply hadn't gotten a drain window yet (live 2026-06-05: five
+   * "restore-purged 1 stale rows" deletions on echo in one day, each a
+   * real outbound message — including a milestone report — silently
+   * gone). 60 minutes still prevents redelivering genuinely ancient
+   * messages after a long outage while surviving restart churn.
    */
   restorePurgeAgeMs?: number;
 }
@@ -124,7 +133,7 @@ const DEFAULTS: Required<SentinelConfig> = {
   stampedeThreshold: 5,
   circuitBreakerCount: 5,
   circuitBreakerWindowMs: 60 * 60 * 1000,
-  restorePurgeAgeMs: 5 * 60 * 1000,
+  restorePurgeAgeMs: 60 * 60 * 1000,
 };
 
 // ── Sentinel ─────────────────────────────────────────────────────────
@@ -639,10 +648,31 @@ export class DeliveryFailureSentinel extends EventEmitter {
   private purgeStaleRows(): void {
     const cutoff = new Date(this.deps.now() - this.cfg.restorePurgeAgeMs).toISOString();
     try {
-      const deleted = this.deps.store.purgeStaleClaimable(cutoff);
-      if (deleted > 0) {
-        console.log(`[delivery-sentinel] restore-purged ${deleted} stale rows (older than ${this.cfg.restorePurgeAgeMs}ms)`);
+      // LOUD purge: a restore-purge deletes a queued-undelivered outbound
+      // message — the only silent-deletion path left in the delivery stack
+      // until 2026-06-05, when five legitimate messages (including a user
+      // milestone report) vanished this way during restart churn. List the
+      // victims first so every loss is traceable, and report the
+      // degradation so the agent learns its outbound message evaporated
+      // (and can decide to resend) instead of believing it delivered.
+      const victims = this.deps.store.listStaleClaimable(cutoff);
+      if (victims.length === 0) return;
+      for (const v of victims) {
+        console.warn(
+          `[delivery-sentinel] restore-purge dropping ${v.delivery_id} (topic ${v.topic_id}, queued since ${v.attempted_at}): "${(v.text ?? '').slice(0, 60)}"`,
+        );
       }
+      const deleted = this.deps.store.purgeStaleClaimable(cutoff);
+      console.log(`[delivery-sentinel] restore-purged ${deleted} stale rows (older than ${this.cfg.restorePurgeAgeMs}ms)`);
+      try {
+        DegradationReporter.getInstance().report({
+          feature: 'delivery-restore-purge',
+          primary: 'pending-relay rows recovered and delivered after restart',
+          fallback: `purged ${deleted} queued-undelivered outbound message(s) older than ${Math.round(this.cfg.restorePurgeAgeMs / 60000)}min at boot`,
+          reason: `restore-purge cutoff ${cutoff}; victims: ${victims.map((v) => `${v.delivery_id}@topic${v.topic_id}`).join(', ')}`,
+          impact: 'These outbound messages were never delivered and will not be retried — the intended recipients never saw them.',
+        });
+      } catch { /* best-effort — the per-row warns above are the floor */ }
     } catch (err) {
       console.warn('[delivery-sentinel] purgeStaleRows raised:', err);
     }
