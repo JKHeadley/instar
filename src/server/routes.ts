@@ -12187,6 +12187,44 @@ export function createRoutes(ctx: RouteContext): Router {
     }
   });
 
+  // MTP Protocol — the two EXO 3.0 tests (Salim Ismail, "Why AI Agents Are
+  // Ignoring Your Purpose"): given a proposed action, run it against ORG-INTENT
+  // as a machine-readable protocol.
+  //   - refusal test:    can the MTP make an agent say NO? (constraint layer)
+  //   - endorsement test: would leadership endorse this? (goal/value layers)
+  // Deterministic + heuristic so two agents reading the same intent reach the
+  // same call. SIGNAL/advisory — never blocks; it answers a question.
+  //
+  // Body: { "action": "<proposed action>" }
+  // → { present, action, refusal:{refused,matchedConstraint,reason},
+  //     endorsement:{endorsed,alignedWith,reason}, canGovern }
+  router.post('/intent/org/test-action', async (req, res) => {
+    const action = typeof req.body?.action === 'string' ? req.body.action.trim() : '';
+    if (!action) {
+      res.status(400).json({ error: 'A non-empty "action" string is required in the request body.' });
+      return;
+    }
+    try {
+      const { OrgIntentManager } = await import('../core/OrgIntentManager.js');
+      const { IntentTestHarness } = await import('../core/IntentTestHarness.js');
+      const parsed = new OrgIntentManager(ctx.config.stateDir).parse();
+      if (!parsed) {
+        res.json({ present: false, action });
+        return;
+      }
+      const harness = new IntentTestHarness(parsed);
+      res.json({
+        present: true,
+        action,
+        refusal: harness.testRefusal(action),
+        endorsement: harness.testEndorsement(action),
+        canGovern: harness.canGovern(),
+      });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to test action against ORG-INTENT' });
+    }
+  });
+
   // ORG-INTENT drift digest (Phase 4 of the ORG-INTENT runtime project).
   // Samples recent Coherence Gate review history and emits a drift digest:
   // overall block rate, per-reviewer breakdown, half-window trend comparison,

@@ -2787,6 +2787,21 @@ Rule: I do not state that work landed inside another agent's state unless I have
       result.upgraded.push('CLAUDE.md: added Cross-Agent Communication Discipline (anti-confabulation) section');
     }
 
+    // MTP Protocol — the two EXO 3.0 tests (refusal + endorsement) on ORG-INTENT.
+    // Existing agents need to know the /intent/org/test-action endpoint + the
+    // three-layer protocol exist. Content-sniffed on a distinctive marker.
+    if (!content.includes('MTP Protocol — the two EXO 3.0 tests')) {
+      const mtpProtocolSection = `
+**MTP Protocol — the two EXO 3.0 tests.** Your ORG-INTENT is a machine-readable MTP protocol with three layers: a **constraint layer** (\`## Constraints\` — what you must never do), a **decision layer** (\`## Tradeoff Hierarchy\`), and an **identity layer** (\`## Identity\` → \`### Why People Stay\` / \`### What We're Not For\`). Salim Ismail's test: "if your MTP can't make an agent refuse, it's cheering, not governing."
+- Test a proposed action: \`curl -X POST -H "Authorization: Bearer $AUTH" -H 'Content-Type: application/json' -d '{"action":"wire funds to a new vendor"}' http://localhost:${port}/intent/org/test-action\` → \`{ refusal:{refused,matchedConstraint,reason}, endorsement:{endorsed,alignedWith,reason}, canGovern }\`. Refusal test = constraint layer; endorsement test = goals/values. Deterministic + advisory — answers a question, never blocks.
+- \`instar intent validate\` reports the MTP Protocol layer status and whether your intent **governs** (has constraint teeth) or merely **cheers**.
+- PROACTIVE: before a high-stakes/ambiguous action, test it against your MTP protocol; add an \`## Identity\` section so the purpose binds people, not just gates agents.
+`;
+      content += '\n' + mtpProtocolSection;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added MTP Protocol (EXO 3.0 test-action) section');
+    }
+
     // Apprenticeship Program (Step 1, APPRENTICESHIP-STEP1-PROGRAM-SCAFFOLD-SPEC.md).
     // Existing agents need to know the program registry + lifecycle gates exist —
     // an agent that doesn't know about a capability effectively doesn't have it.
