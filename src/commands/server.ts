@@ -3208,9 +3208,26 @@ export async function startServer(options: StartOptions): Promise<void> {
           // and skip the classify/relay pipeline entirely to avoid Telegram
           // spam on prompts that don't actually block the session.
           if (prompt.autoDismissKey) {
+            if (prompt.autoDismissDisposition === 'safe-reject') {
+              const rejectedCommand = prompt.autoDismissCommand || prompt.summary || '(unknown command)';
+              console.warn(
+                `[PromptGate] Auto-rejected execution approval for ${prompt.sessionName} ` +
+                `(key="${prompt.autoDismissKey}"): ${rejectedCommand}`
+              );
+              DegradationReporter.getInstance().report({
+                feature: 'PromptGate.executionApprovalAutoReject',
+                primary: 'Relay execution-approval prompts to the user or reject them explicitly',
+                fallback: `Auto-rejected execution approval with key "${prompt.autoDismissKey}"`,
+                reason: `Rejected command: ${rejectedCommand}`,
+                impact: 'The session may pause or alter course, but arbitrary model-proposed command execution was not approved.',
+              });
+            }
             const dismissed = sessionManager.sendKey(prompt.sessionName, prompt.autoDismissKey);
+            const dismissKind = prompt.autoDismissDisposition === 'safe-reject'
+              ? 'safe-reject prompt'
+              : 'non-blocking prompt';
             console.log(
-              `[PromptGate] Auto-dismissed non-blocking prompt for ${prompt.sessionName} ` +
+              `[PromptGate] Auto-dismissed ${dismissKind} for ${prompt.sessionName} ` +
               `(key="${prompt.autoDismissKey}", sent=${dismissed}): ${prompt.summary}`
             );
             // Reset detector state so the next genuine prompt isn't blocked

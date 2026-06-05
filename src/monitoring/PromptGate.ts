@@ -32,6 +32,15 @@ export interface DetectedPrompt {
    * SKIP the relay/classify pipeline entirely.
    */
   autoDismissKey?: string;
+  /**
+   * Safety disposition for deterministic auto-dismisses. `safe-default`
+   * answers a framework-owned non-risky prompt with its known default.
+   * `safe-reject` explicitly refuses an execution prompt; it must never
+   * approve code execution and must be logged by the consumer.
+   */
+  autoDismissDisposition?: 'safe-default' | 'safe-reject';
+  /** Command text rejected by an execution-approval safe-reject prompt. */
+  autoDismissCommand?: string;
 }
 
 export interface PromptOption {
@@ -76,6 +85,8 @@ interface PatternMatch {
   summary: string;
   options?: PromptOption[];
   autoDismissKey?: string;
+  autoDismissDisposition?: 'safe-default' | 'safe-reject';
+  autoDismissCommand?: string;
 }
 
 function extractNumberedOptions(lines: string[]): PromptOption[] {
@@ -117,6 +128,7 @@ function detectGeminiSafeDefaultModal(lines: string[], fullWindow?: string[]): P
         { key: 'Escape', label: 'Cancel' },
       ],
       autoDismissKey: key,
+      autoDismissDisposition: 'safe-default',
     };
   }
 
@@ -134,6 +146,23 @@ function detectGeminiSafeDefaultModal(lines: string[], fullWindow?: string[]): P
         { key: 'Escape', label: 'Cancel' },
       ],
       autoDismissKey: key,
+      autoDismissDisposition: 'safe-default',
+    };
+  }
+
+  const isNpxInstarPackageInstall = (
+    /Need to install the following packages:\s*\n\s*instar@\d+\.\d+\.\d+(?:[-+.\w]*)?\s*\n\s*Ok to proceed\?\s*\(y\)/i.test(haystack)
+  );
+  if (isNpxInstarPackageInstall) {
+    return {
+      type: 'confirmation',
+      summary: 'Gemini CLI install-confirm modal (auto-answer: npx instar default)',
+      options: [
+        { key: 'Enter', label: 'Use highlighted default' },
+        { key: 'Escape', label: 'Cancel' },
+      ],
+      autoDismissKey: 'Enter',
+      autoDismissDisposition: 'safe-default',
     };
   }
 
@@ -150,10 +179,38 @@ function detectGeminiSafeDefaultModal(lines: string[], fullWindow?: string[]): P
         { key: 'Escape', label: 'Cancel' },
       ],
       autoDismissKey: 'Enter',
+      autoDismissDisposition: 'safe-default',
     };
   }
 
   return null;
+}
+
+function detectExecutionApprovalSafeReject(lines: string[], fullWindow?: string[]): PatternMatch | null {
+  const windowLines = fullWindow ?? lines;
+  const haystack = windowLines.join('\n');
+  if (!/Allow execution of:/i.test(haystack)) return null;
+
+  const options = extractNumberedOptions(windowLines);
+  const rejectKey = findOptionKey(options, /\b(no|reject|suggest changes|deny|cancel)\b/i);
+  if (!rejectKey) return null;
+
+  const commandMatch = haystack.match(/Allow execution of:\s*([\s\S]*?)(?:\n\s*[●○◉]?\s*1[.)]\s+Allow once|\n\s*1[.)]\s+Allow once|$)/i);
+  const rejectedCommand = (commandMatch?.[1] ?? '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 500);
+
+  return {
+    type: 'confirmation',
+    summary: rejectedCommand
+      ? `Gemini CLI execution-approval modal (auto-reject): ${rejectedCommand.slice(0, 120)}`
+      : 'Gemini CLI execution-approval modal (auto-reject)',
+    options,
+    autoDismissKey: rejectKey,
+    autoDismissDisposition: 'safe-reject',
+    autoDismissCommand: rejectedCommand || undefined,
+  };
 }
 
 /**
@@ -171,6 +228,16 @@ const PROMPT_PATTERNS: Array<{
     type: 'confirmation',
     test(lines, fullWindow) {
       return detectGeminiSafeDefaultModal(lines, fullWindow);
+    },
+  },
+
+  // Gemini CLI execution approval. This is deliberately separate from the
+  // safe-default modal detector above: approving here would execute arbitrary
+  // model-proposed shell text. The only deterministic action is rejection.
+  {
+    type: 'confirmation',
+    test(lines, fullWindow) {
+      return detectExecutionApprovalSafeReject(lines, fullWindow);
     },
   },
 
@@ -467,6 +534,8 @@ export class InputDetector extends EventEmitter {
       detectedAt: Date.now(),
       id: randomBytes(6).toString('base64url'),
       autoDismissKey: match.autoDismissKey,
+      autoDismissDisposition: match.autoDismissDisposition,
+      autoDismissCommand: match.autoDismissCommand,
     };
 
     emitted.add(fingerprint);
