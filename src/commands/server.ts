@@ -10208,6 +10208,10 @@ export async function startServer(options: StartOptions): Promise<void> {
                 isOnline: (m) => machinePoolRegistry?.getCapacity(m)?.online ?? false,
                 currentOwnerOf: (sk) => ownReg.ownerOf(sk),
                 isMidReply: () => false, // best-effort; the pin takes effect on the next routed message
+                // Pin-aware idempotency: a duplicate "move to X" while already pinned
+                // to X (e.g. a lifeline retry / post-restart replay of the same
+                // message) no-ops as "already there" instead of burning the rate limit.
+                currentPinOf: (sk) => _topicPinStore?.get(sk)?.preferredMachine ?? null,
                 lastPlacementUpdateAt: (sk) => _topicPinStore?.lastUpdatedAtMs(sk) ?? null,
                 now: () => Date.now(),
               },
@@ -10223,7 +10227,9 @@ export async function startServer(options: StartOptions): Promise<void> {
                 }
               } catch { /* best-effort; route() re-places regardless once the owner is cleared */ }
               await telegram?.sendToTopic(topicId, plan.action === 'noop'
-                ? `This conversation is already pinned to ${cmd.nickname} — it'll keep running there.`
+                ? (plan.detail === 'already-on-target'
+                  ? `This conversation is already running on ${cmd.nickname} — nothing to move.`
+                  : `This conversation is already pinned to ${cmd.nickname} — it'll keep running there.`)
                 : `Moving this conversation to ${cmd.nickname} — it'll pick up there on your next message.`).catch(() => {});
               console.log(pc.green(`  [session-pool] topic ${topicId} pinned to ${target} (${plan.action}) via "${cmd.matchedVerb}"`));
               return { handled: true };
