@@ -9694,12 +9694,34 @@ export async function startServer(options: StartOptions): Promise<void> {
           try {
             poolIdMgr.recordSelfHardware(poolSelfId, poolMod.captureHardware());
           } catch { /* best-effort hardware self-attest */ }
+          // Quota-aware placement (2026-06-05): self-report whether a NEW
+          // session on THIS machine could work right now. Blocked = a provider
+          // block is in effect (blockedUntil in the future) or the 5-hour
+          // window is exhausted (>= 95%, the same bar QuotaTracker.canRunJob
+          // uses to block all spawns). Sourced from THIS machine's own
+          // QuotaTracker — never another machine's file (the gemini
+          // quota-conflation lesson). Absent/unreadable state = not blocked.
+          const selfQuotaState = (): { blocked: boolean; blockedUntil?: string; reason?: string } | undefined => {
+            try {
+              const q = quotaTracker?.getState();
+              if (!q) return undefined;
+              const blockActive = !!q.blockedUntil && Date.parse(q.blockedUntil) > Date.now();
+              const fiveHourExhausted = (q.fiveHourPercent ?? 0) >= 95;
+              if (!blockActive && !fiveHourExhausted) return { blocked: false };
+              return {
+                blocked: true,
+                blockedUntil: q.blockedUntil,
+                reason: q.blockReason ?? (fiveHourExhausted ? `5-hour window at ${q.fiveHourPercent}%` : 'provider block'),
+              };
+            } catch { return undefined; /* unknown ≠ blocked */ }
+          };
           const refreshPool = (): void => {
             try {
               machinePoolRegistry!.recordHeartbeat({
                 machineId: poolSelfId,
                 selfReportedLastSeen: new Date().toISOString(),
                 loadAvg: osMod.loadavg()[0],
+                quotaState: selfQuotaState(),
               });
               const hbApi = machineHeartbeat?.api;
               if (hbApi) {

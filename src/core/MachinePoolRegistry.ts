@@ -106,6 +106,9 @@ export interface HeartbeatObservation {
   memPressure?: MachineCapacity['memPressure'];
   activeSessionCount?: number;
   maxSessions?: number;
+  /** The machine's self-reported LLM-account quota state (quota-aware placement,
+   *  2026-06-05). Absent = unknown (older heartbeats) = treated as not blocked. */
+  quotaState?: MachineCapacity['quotaState'];
 }
 
 export interface MachinePoolRegistryDeps {
@@ -224,6 +227,7 @@ export class MachinePoolRegistry {
       agentsResident: known.agentsResident,
       hardware: known.hardware,
       clockSkewStatus: live?.skew.status ?? 'ok',
+      quotaState: live?.obs.quotaState,
     };
   }
 }

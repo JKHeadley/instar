@@ -3168,6 +3168,7 @@ Beyond the one-awake-machine model: with the pool enabled I run conversations ac
 - **See the pool:** the **Machines tab** in the dashboard, or \`GET /pool\` (Bearer-auth) → which machine is the router ("dispatcher") + every machine's nickname, hardware, online status, load, and clock-skew status.
 - **Every session, every machine:** the dashboard sessions list shows ALL sessions across the pool, each tagged with the machine it runs on. API: \`GET /sessions?scope=pool\` → \`{ sessions: [...each with machineId/machineNickname...], pool: { peersOk, failed } }\`. An unreachable peer degrades to a \`failed\` entry — local sessions always answer.
 - **Post-transfer closeout (automatic):** when a topic moves to another machine, the OLD machine's session for it is closed automatically (immediately on an explicit "move", or within ~2 reaper ticks for any other path) — no duplicate sessions doing duplicate work. The close is recorded in the reap-log with reason "topic moved to <machine>"; protected sessions are never auto-closed.
+- **Quota-aware placement (automatic):** capacity heartbeats carry each machine's LLM-account quota state, and placement avoids machines whose account is currently rate-limited/blocked (no more topics placed onto a silent machine). A hard pin still wins (flagged \`pinned-machine-quota-blocked\`); if EVERY machine is blocked, placement proceeds least-loaded with \`all-machines-quota-blocked\` flagged. \`GET /pool\` shows each machine's \`quotaState\`.
 - **Machine nicknames** are the user-facing handle (auto-assigned, editable). Rename via \`PATCH /pool/machines/:machineId\` with \`{"nickname":"the mini"}\`, or inline on the Machines tab.
 - **Which machine + WHY (never guess):** \`GET /pool/placement?topic=N\` → the owning machine + nickname, the **reason** (\`pinned\` = a deliberate move vs \`placed\` = load-balanced vs \`unowned\`), and the lease-holder. Answerable from ANY machine (a standby proxies to the holder). Running ON a machine does NOT mean a topic was deliberately moved there — read this instead of inferring.
 - **Reliable transfer (phrasing-independent):** \`POST /pool/transfer\` with \`{"topic":N,"to":"<nickname|machineId>"}\` runs the same validated planner as "move this to <nickname>" but deterministically. 404 unknown · 409 rate-limited · 409 \`needsConfirmation\` for an offline target (re-send with \`"confirm":true\`). The lever to call directly when a natural-language move didn't catch.
@@ -3201,7 +3202,8 @@ Beyond the one-awake-machine model: with the pool enabled I run conversations ac
     if (content.includes('Multi-Machine Session Pool (active-active') && !content.includes('scope=pool')) {
       const poolSessions = `
 - **Every session, every machine:** the dashboard sessions list shows ALL sessions across the pool, each tagged with the machine it runs on. API: \`GET /sessions?scope=pool\` → \`{ sessions: [...each with machineId/machineNickname...], pool: { peersOk, failed } }\`. An unreachable peer degrades to a \`failed\` entry — local sessions always answer.
-- **Post-transfer closeout (automatic):** when a topic moves to another machine, the OLD machine's session for it is closed automatically (immediately on an explicit "move", or within ~2 reaper ticks for any other path) — no duplicate sessions doing duplicate work. The close is recorded in the reap-log with reason "topic moved to <machine>"; protected sessions are never auto-closed.`;
+- **Post-transfer closeout (automatic):** when a topic moves to another machine, the OLD machine's session for it is closed automatically (immediately on an explicit "move", or within ~2 reaper ticks for any other path) — no duplicate sessions doing duplicate work. The close is recorded in the reap-log with reason "topic moved to <machine>"; protected sessions are never auto-closed.
+- **Quota-aware placement (automatic):** capacity heartbeats carry each machine's LLM-account quota state, and placement avoids machines whose account is currently rate-limited/blocked (no more topics placed onto a silent machine). A hard pin still wins (flagged \`pinned-machine-quota-blocked\`); if EVERY machine is blocked, placement proceeds least-loaded with \`all-machines-quota-blocked\` flagged. \`GET /pool\` shows each machine's \`quotaState\`.`;
       content += '\n' + poolSessions + '\n';
       patched = true;
       result.upgraded.push('CLAUDE.md: added pool-wide session visibility line');
@@ -3213,10 +3215,21 @@ Beyond the one-awake-machine model: with the pool enabled I run conversations ac
     // guessing). Idempotent via the unique 'Post-transfer closeout' marker.
     if (content.includes('Multi-Machine Session Pool (active-active') && !content.includes('Post-transfer closeout')) {
       const closeout = `
-- **Post-transfer closeout (automatic):** when a topic moves to another machine, the OLD machine's session for it is closed automatically (immediately on an explicit "move", or within ~2 reaper ticks for any other path) — no duplicate sessions doing duplicate work. The close is recorded in the reap-log with reason "topic moved to <machine>"; protected sessions are never auto-closed.`;
+- **Post-transfer closeout (automatic):** when a topic moves to another machine, the OLD machine's session for it is closed automatically (immediately on an explicit "move", or within ~2 reaper ticks for any other path) — no duplicate sessions doing duplicate work. The close is recorded in the reap-log with reason "topic moved to <machine>"; protected sessions are never auto-closed.
+- **Quota-aware placement (automatic):** capacity heartbeats carry each machine's LLM-account quota state, and placement avoids machines whose account is currently rate-limited/blocked (no more topics placed onto a silent machine). A hard pin still wins (flagged \`pinned-machine-quota-blocked\`); if EVERY machine is blocked, placement proceeds least-loaded with \`all-machines-quota-blocked\` flagged. \`GET /pool\` shows each machine's \`quotaState\`.`;
       content += '\n' + closeout + '\n';
       patched = true;
       result.upgraded.push('CLAUDE.md: added post-transfer closeout line');
+    }
+
+    // Quota-aware placement awareness (2026-06-05). Idempotent via the unique
+    // 'Quota-aware placement' marker.
+    if (content.includes('Multi-Machine Session Pool (active-active') && !content.includes('Quota-aware placement')) {
+      const quotaLine = `
+- **Quota-aware placement (automatic):** capacity heartbeats carry each machine's LLM-account quota state, and placement avoids machines whose account is currently rate-limited/blocked (no more topics placed onto a silent machine). A hard pin still wins (flagged \`pinned-machine-quota-blocked\`); if EVERY machine is blocked, placement proceeds least-loaded with \`all-machines-quota-blocked\` flagged. \`GET /pool\` shows each machine's \`quotaState\`.`;
+      content += '\n' + quotaLine + '\n';
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added quota-aware placement line');
     }
 
     // Cross-Machine Secret Sync (spec Phase 4, 2026-06-04): deployed agents don't know

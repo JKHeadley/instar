@@ -1725,6 +1725,13 @@ export interface MachineCapacity {
   hardware?: MachineHardware;
   /** Clock-skew quarantine state (§L2 FSM). */
   clockSkewStatus: ClockSkewStatus;
+  /** The machine's LLM-account quota/rate-limit state, self-reported in its
+   *  capacity heartbeat (2026-06-05, quota-aware placement). `blocked: true`
+   *  means a NEW session on this machine could not work right now (provider
+   *  block in effect or the 5-hour window is exhausted) — placement avoids it
+   *  unless every machine is blocked or the user hard-pinned here. Absent =
+   *  unknown = treated as not blocked (heartbeats from older versions). */
+  quotaState?: { blocked: boolean; blockedUntil?: string; reason?: string };
 }
 
 export interface MultiMachineConfig {
