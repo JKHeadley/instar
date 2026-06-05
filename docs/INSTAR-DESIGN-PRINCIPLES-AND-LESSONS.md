@@ -382,6 +382,24 @@ Jobs support a `supervision` field on `JobDefinition` so the level is declarativ
 
 ---
 
+### P16. Notice + Solve Inefficiencies (efficiency is a standing search, not only a reaction)
+
+**Statement:** Don't only fix the inefficiency that blocks *you* — actively look for inefficiencies and eliminate them, continuously. The moment you observe a process slower, more wasteful, or more repetitive than it needs to be — even one you can personally route around — treat it as a defect to solve, not a cost to absorb.
+
+**Source:** constitution standard "Notice + Solve Inefficiencies — Efficiency Is a Standing Search" (Building); ratified by Justin 2026-06-05 (topic 13435).
+
+**Translation:**
+- The PROACTIVE sibling of P15: Friction Is a Spec is reactive (productize the workaround you were *forced* to find); P16 is the standing search — notice the inefficiency *before* it forces a workaround, even one you can route around.
+- Solve at the right layer; surface to the operator when the lever is theirs (a security/config setting you must not flip yourself — e.g. GitHub branch protection).
+- Counterweight: scope the fix to the inefficiency's real cost; a micro-optimization nobody feels, or a "fix" that adds more friction than it removes, fails it.
+
+**Enforcement (structural):**
+- This catalog entry, so the `/spec-converge` reviewer surfaces it. No blocking gate (governs an instinct, like P15 — honest gap, noted not claimed).
+
+**Earned from:** 2026-06-05 (recursive apprenticeship run, topic 13435) — fleet PR throughput was throttled by merge mechanics, not the work: strict "require branches up to date" branch protection + a fast main + slow CI = endless rebases; the mentor agent burned 40+ min rebase-looping a green PR. Echo could personally route around it (admin-merge-when-green) but the standing inefficiency throttled everyone. Justin ratified: "let's definitely solve any efficiency problems like this that you notice. This should be a fundamental standard and requirement of INSTAR behavior and development... This is part of recursive self improvement."
+
+---
+
 ## Part 2 — Architectural Lessons (L1-L17)
 
 These are patterns Instar has *already built infrastructure for*. Any new spec that touches the same surface area must engage with the existing infrastructure, not reinvent or contradict it.
@@ -847,7 +865,7 @@ Before any high-risk action (deploying, pushing to git, modifying files outside 
 
 The 8th `/spec-converge` reviewer (see `skills/spec-converge/SKILL.md`) loads this document plus the linked `feedback_*.md` files and the principles in `CLAUDE.md`, then asks for each spec under review:
 
-For each Part 1 principle (P1-P15):
+For each Part 1 principle (P1-P16):
 - Does the spec engage with this principle?
 - Does it contradict it?
 - If contradicting, is there an explicit, defended rationale in the spec?
@@ -872,3 +890,4 @@ Output: structured findings per category, with citations to this index. Findings
 | 2026-05-19 | Initial creation. Cataloged 5 foundational principles, 10 architectural lessons, 31 behavioral lessons. Sourced from CLAUDE.md + 45 `.instar/memory/feedback_*.md` files + `docs/specs/`. |
 | 2026-05-19 | Comprehensive audit pass (per Justin 2026-05-19). Added P6 Zero-Failure, P7 LLM-Supervised Execution, P8 UX & Agent Agency, P9 Intent Engineering, P10 Comprehensive-First Directive. Added L11 External Operation Safety, L12 Destructive-Tool Containment, L13 Parallel Dev Isolation, L14 PR Review Hardening, L15 Authorization Policy, L16 Project Scope, L17 Integrated-Being Ledger. Added B32 No Interactive CLI, B33 No AskUserQuestion free-text, B34 Initiative Hierarchy, B35 Defensive Fabrication / Escalation-as-default, B36 USER.md "decide and do", B37 Dawn patterns, B38 Two memory systems, B39 Coherence Gate. Expanded P4 with StallTriageNurse origin + canonical category names. Expanded L1 with recurrence-corrected dates. Expanded L2 with topic-6931 origin. Expanded L6 to seven canonical dimensions (was five). Now: 10 principles + 17 architectural lessons + 39 behavioral lessons. |
 | 2026-06-03 | Added P14 Distrust Temporary Success (a recurrence is a root cause) and P15 Friction Is a Spec (productize the workaround), mirroring the two new constitution standards earned from the listSessions hot-loop incident (topic 13435; full account in `docs/lessons/2026-06-03-listsessions-hotloop-success-story.md`). Updated the spec-converge review template's Part-1 range from P1-P10 to P1-P15 (it had not been updated when P11-P13 were added — latent under-enforcement). |
+| 2026-06-05 | Added P16 Notice + Solve Inefficiencies (efficiency is a standing search — the proactive sibling of P15), mirroring the new constitution standard ratified by Justin during the recursive apprenticeship run (topic 13435), earned from the merge-churn throughput inefficiency (strict branch protection + fast main + slow CI = rebase loops). Updated the spec-converge review template's Part-1 range from P1-P15 to P1-P16. |
