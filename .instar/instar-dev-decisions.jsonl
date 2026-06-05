@@ -30,3 +30,4 @@
 {"ts":"2026-06-05T00:36:30.597Z","slug":"unknown","suggestedTier":1,"declaredTier":1,"riskFloor":1,"riskFloorReasons":[],"belowFloor":false,"files":1,"loc":8}
 {"ts":"2026-06-05T00:39:11.267Z","slug":"unknown","suggestedTier":1,"declaredTier":1,"riskFloor":1,"riskFloorReasons":[],"belowFloor":false,"files":1,"loc":8}
 {"ts":"2026-06-05T00:40:23.586Z","slug":"unknown","suggestedTier":1,"declaredTier":1,"riskFloor":1,"riskFloorReasons":[],"belowFloor":false,"files":1,"loc":8}
+{"ts":"2026-06-05T04:31:21.695Z","slug":"unknown","suggestedTier":2,"declaredTier":1,"riskFloor":2,"riskFloorReasons":["safety-invariant proximity: src/messaging/TelegramAdapter.ts matches Telegram adapter","new capability: new config key added"],"belowFloor":true,"files":4,"loc":149}
