@@ -24,6 +24,16 @@ A new endpoint runs Salim's two tests against a proposed action:
 your intent **governs** (has constraint teeth) or merely **cheers** — Salim's line:
 "if your MTP can't cause an agent to refuse, it's cheering, not governing."
 
+## What to Tell Your User
+
+Your organization's purpose (ORG-INTENT.md) just grew teeth. It's now a machine-readable "MTP Protocol" — your agent can take any proposed action and run two tests against it: would this be REFUSED (does it violate a constraint?) and would leadership ENDORSE it (does it align with the goals and values?). Ask your agent to "test this action against our org intent" before anything high-stakes. There's also a new optional Identity section for capturing why your best people stay — so the purpose binds people, not just gates agents.
+
+## Summary of New Capabilities
+
+- `POST /intent/org/test-action` — run the refusal + endorsement tests against any proposed action; returns `{ refusal, endorsement, canGovern }`, deterministic and advisory (never blocks).
+- `## Identity` section in ORG-INTENT.md (`### Why People Stay` / `### What We're Not For`) — parsed, validated, injected at session start.
+- `instar intent validate` now reports MTP Protocol layer status and whether the intent governs (constraint teeth) or merely cheers.
+
 ## Evidence
 
 Full three-tier coverage, all green, `tsc --noEmit` clean (0 errors):

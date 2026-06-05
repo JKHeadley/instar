@@ -4486,6 +4486,12 @@ Create worktrees for collaborator repos with \`instar worktree create <branch>\`
       // never learns the facts writer + secret-get retrieval will re-ask the
       // user for stored credentials — the exact loop this feature closes.
       '**Session Boot Self-Knowledge**',
+      // MTP Protocol (EXO 3.0 G1): the refusal/endorsement test-action endpoint
+      // on ORG-INTENT. A Codex/Gemini agent that never learns
+      // /intent/org/test-action can't run the two tests before high-stakes
+      // actions. Marker omits the trailing punctuation so it matches both the
+      // template variant ("…tests (Phase 5).") and the migrator variant ("…tests.").
+      '**MTP Protocol — the two EXO 3.0 tests',
     ];
 
     for (const shadowName of ['AGENTS.md', 'GEMINI.md']) {

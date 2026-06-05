@@ -16,6 +16,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { createRoutes } from '../../src/server/routes.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 interface TestServer { url: string; close: () => Promise<void>; }
 async function listen(app: express.Express): Promise<TestServer> {
@@ -63,7 +64,7 @@ describe('POST /intent/org/test-action — MTP Protocol (E2E over HTTP)', () => 
 
   afterEach(async () => {
     await server?.close();
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/e2e/mtp-protocol-test-action-lifecycle.test.ts:66' });
   });
 
   async function testAction(action: unknown) {
