@@ -3371,6 +3371,9 @@ export interface MonitoringConfig {
     enabled?: boolean;
     tickIntervalSec?: number;
     unverifiableEscalateMinutes?: number;
+    /** No-progress window for conversational/autonomous sessions (default 180,
+     *  forgiving — they idle between turns + while waiting on long tool calls). */
+    conversationalEscalateMinutes?: number;
     indeterminateEscalateCount?: number;
     progressFloorBytes?: number;
   };

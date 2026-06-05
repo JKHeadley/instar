@@ -12,11 +12,12 @@ function mkSession(id: string): Session {
 const M = 30; // unverifiableEscalateMinutes
 const N = 15; // indeterminateEscalateCount
 
-function harness(opts?: { snapshots?: Map<string, ProgressSnapshot> }) {
+function harness(opts?: { snapshots?: Map<string, ProgressSnapshot>; convMin?: number }) {
   let clock = 1_000_000;
   const sessions: Session[] = [];
   const raised: Array<{ id: string; title: string; summary?: string; lane?: string; healthKey?: string; priority?: string }> = [];
   const longFlags = new Map<string, boolean>();
+  const protectedIds = new Set<string>();
   let batch: LivenessBatch = { reachable: true, liveness: new Map() };
   const snaps = opts?.snapshots ?? new Map<string, ProgressSnapshot>();
 
@@ -36,15 +37,19 @@ function harness(opts?: { snapshots?: Map<string, ProgressSnapshot> }) {
       // Map session ids ending in a number to a friendly name so the heads-up
       // tests can assert "names the topic, never topic-<n>". A bare id resolves null.
       resolveTopicName: (s) => (s.name === 'exo' ? 'EXO 3.0' : null),
+      isProtectedSession: (s) => protectedIds.has(s.id),
       setLongIndeterminate: (id, isLong) => longFlags.set(id, isLong),
       now: () => clock,
     },
-    { enabled: true, tickIntervalSec: 120, unverifiableEscalateMinutes: M, indeterminateEscalateCount: N, progressFloorBytes: 512, cpuFloorSeconds: 1 },
+    // conversationalEscalateMinutes: M keeps these mechanism tests on the 30-min
+    // window (the threshold-SPLIT is covered by its own tests below).
+    { enabled: true, tickIntervalSec: 120, unverifiableEscalateMinutes: M, conversationalEscalateMinutes: opts?.convMin ?? M, indeterminateEscalateCount: N, progressFloorBytes: 512, cpuFloorSeconds: 1 },
   );
 
   return {
     backstop, raised, longFlags,
-    addSession: (id: string) => { sessions.push(mkSession(id)); },
+    addSession: (id: string, jobSlug?: string) => { const s = mkSession(id); if (jobSlug) (s as Session).jobSlug = jobSlug; sessions.push(s); },
+    protect: (id: string) => { protectedIds.add(id); },
     setLiveness: (b: LivenessBatch) => { batch = b; },
     setSnap: (id: string, s: ProgressSnapshot) => { snaps.set(id, s); },
     advanceMin: (mins: number) => { clock += mins * 60_000; },
@@ -99,6 +104,38 @@ describe('StaleSessionBackstop (§P5)', () => {
     expect(h.raised[0].title).toContain('EXO 3.0');
     expect(h.raised[0].title).not.toMatch(/topic-\d+/);
     expect(h.raised[0].summary).toContain('check EXO 3.0');
+  });
+
+  it('NEVER escalates an operator-protected session as stale (no crying wolf)', async () => {
+    const h = harness();
+    h.addSession('prot');
+    h.protect('prot');
+    h.allAlive();
+    h.setSnap('prot', idleSnap());
+    await h.backstop.tick();             // baseline
+    h.advanceMin(M + 5);                 // well past the window
+    h.setSnap('prot', idleSnap());       // no progress
+    await h.backstop.tick();
+    expect(h.raised).toHaveLength(0);    // protected → never flagged
+  });
+
+  it('conversational sessions get the forgiving window; jobs keep the strict one', async () => {
+    // conversational window = 180 min, job window = unverifiableEscalateMinutes (30).
+    const h = harness({ convMin: 180 });
+    h.addSession('chat');               // conversational (no jobSlug)
+    h.addSession('job1', 'nightly');    // job session
+    h.allAlive();
+    h.setSnap('chat', idleSnap());
+    h.setSnap('job1', jobSnap(0, false));
+    await h.backstop.tick();            // baseline both
+    // Advance past the JOB window but NOT the conversational window.
+    h.advanceMin(M + 5);               // 35 min: > 30 (job) but < 180 (chat)
+    h.setSnap('chat', idleSnap());
+    h.setSnap('job1', jobSnap(0, false));
+    await h.backstop.tick();
+    // Only the job escalated; the healthy long conversational session did NOT.
+    expect(h.raised.map(r => r.healthKey)).toContain('stale-job1');
+    expect(h.raised.map(r => r.healthKey)).not.toContain('stale-chat');
   });
 
   it('does not re-raise within the same episode', async () => {

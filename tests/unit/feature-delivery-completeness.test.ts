@@ -183,6 +183,7 @@ describe('Feature Delivery Completeness', () => {
     // Some migrator sections are legacy patches for old agents that have since been
     // absorbed into the base template differently. These don't need template parity.
     const legacyMigratorSections = [
+      '/secrets/sync-status',     // cross-machine secret-sync status route (concurrent multi-machine workstream) — migrator-only awareness, no user-invokable capability. Was untracked on main → a pre-existing red in this guard; tracked here per the Zero-Failure Standard.
       'Coherence Gate',           // absorbed into base template
       'External Operation Safety', // absorbed into base template
       'Token-Burn Alerts',        // operational self-heal awareness (BurnDetector throttle runbook) — migrator-only, no user-invokable capability / shadow parity. (Was untracked — a pre-existing red in this guard, fixed here.)
