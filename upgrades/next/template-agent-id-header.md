@@ -1,6 +1,5 @@
-# Upgrade Guide — vNEXT
+# Template Agent ID Header
 
-<!-- assembled-by: assemble-next-md -->
 <!-- bump: patch -->
 
 ## What Changed
