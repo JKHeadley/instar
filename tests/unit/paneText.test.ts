@@ -9,7 +9,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { meaningfulTail, trimTrailingBlankRows } from '../../src/core/paneText.js';
+import { extractGeminiFinalAssistantBlock, meaningfulTail, trimTrailingBlankRows } from '../../src/core/paneText.js';
 
 describe('trimTrailingBlankRows', () => {
   it('trims trailing blanks only — interior blanks are modal structure and stay', () => {
@@ -51,6 +51,41 @@ describe('meaningfulTail', () => {
   it('interior blank lines within the tail are preserved', () => {
     const pane = ['header', 'a', '', 'b', '', ''].join('\n');
     expect(meaningfulTail(pane, 3)).toBe('a\n\nb');
+  });
+});
+
+describe('extractGeminiFinalAssistantBlock', () => {
+  it('extracts the completed Gemini assistant block before the idle footer', () => {
+    const pane = [
+      '[telegram:1 "topic-1" from Codey mentor] stop and report',
+      '',
+      '✦ GEMI_TASK_REPORT_1780640360',
+      '  what you checked',
+      '  result',
+      '  smallest proper fix',
+      '',
+      ' 2 GEMINI.md files                                      YOLO mode (ctrl + y to toggle)',
+      '╭────────────────────────────────────────────────────────╮',
+      '│ *   Type your message or @path/to/file                 │',
+      '╰────────────────────────────────────────────────────────╯',
+      ' ~/.instar/agents/gemini          no sandbox          gemini-2.5-flash-lite /model',
+    ].join('\n');
+
+    expect(extractGeminiFinalAssistantBlock(pane)).toBe([
+      'GEMI_TASK_REPORT_1780640360',
+      'what you checked',
+      'result',
+      'smallest proper fix',
+    ].join('\n'));
+  });
+
+  it('returns null while Gemini has not returned to the input footer', () => {
+    const pane = [
+      '[telegram:1] answer me',
+      '✦ Partial answer still streaming',
+      '  more content',
+    ].join('\n');
+    expect(extractGeminiFinalAssistantBlock(pane)).toBeNull();
   });
 });
 
