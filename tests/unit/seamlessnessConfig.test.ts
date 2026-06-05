@@ -126,3 +126,28 @@ describe('assertSeamlessnessInvariants', () => {
     );
   });
 });
+
+// ── exactlyOnceIngress ↔ session-pool stage coupling (2026-06-05) ────────
+// Running a LIVE multi-machine pool without the ingress dedupe ledger is the
+// incoherent configuration that let one "move to laptop" execute 4×. The
+// default now follows the pool stage; an explicit value always wins.
+describe('exactlyOnceIngress default coupling', () => {
+  it('defaults OFF with no multiMachine config at all', () => {
+    expect(resolveSeamlessnessConfig(undefined).exactlyOnceIngress).toBe(false);
+  });
+
+  it('defaults OFF while the pool ships dark/shadow', () => {
+    expect(resolveSeamlessnessConfig({ sessionPool: { stage: 'dark' } } as never).exactlyOnceIngress).toBe(false);
+    expect(resolveSeamlessnessConfig({ sessionPool: { stage: 'shadow' } } as never).exactlyOnceIngress).toBe(false);
+  });
+
+  it('defaults ON once the pool routes real traffic (live-transfer / rebalance)', () => {
+    expect(resolveSeamlessnessConfig({ sessionPool: { stage: 'live-transfer' } } as never).exactlyOnceIngress).toBe(true);
+    expect(resolveSeamlessnessConfig({ sessionPool: { stage: 'rebalance' } } as never).exactlyOnceIngress).toBe(true);
+  });
+
+  it('an explicit value always wins over the stage-derived default', () => {
+    expect(resolveSeamlessnessConfig({ exactlyOnceIngress: false, sessionPool: { stage: 'live-transfer' } } as never).exactlyOnceIngress).toBe(false);
+    expect(resolveSeamlessnessConfig({ exactlyOnceIngress: true, sessionPool: { stage: 'dark' } } as never).exactlyOnceIngress).toBe(true);
+  });
+});

@@ -2,6 +2,7 @@ import { describe, it, expect, afterEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import DatabaseCtor from 'better-sqlite3';
 import { ApprenticeshipCycleStore } from '../../src/monitoring/ApprenticeshipCycleStore.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
@@ -27,6 +28,19 @@ describe('ApprenticeshipCycleStore', () => {
     });
   }
 
+  /** A minimal valid operator-seat UX block (the 2026-06-05 gate). */
+  function ux(over: Record<string, unknown> = {}) {
+    return {
+      dupNotices: 0,
+      infraNoiseMsgs: 0,
+      asksOfUser: 0,
+      contentFreeUpdates: 0,
+      modalitiesExercised: ['text'],
+      duringRestartChurn: false,
+      ...over,
+    };
+  }
+
   it('records, lists, gets, and closes a cycle with JSON fields intact', () => {
     const store = makeStore();
     const recorded = store.record({
@@ -40,7 +54,19 @@ describe('ApprenticeshipCycleStore', () => {
       coaching: 'Separate reasoning findings from tooling anomalies.',
       infraItems: ['ripgrep missing', 'TERM=dumb'],
       kind: 'mentor-mentee-differential',
+      operatorSeatUx: ux({ asksOfUser: 1, modalitiesExercised: ['text', 'photo'], notes: 'one resend ask' }),
     });
+
+    expect(recorded.operatorSeatUx).toEqual({
+      dupNotices: 0,
+      infraNoiseMsgs: 0,
+      asksOfUser: 1,
+      contentFreeUpdates: 0,
+      modalitiesExercised: ['text', 'photo'],
+      duringRestartChurn: false,
+      notes: 'one resend ask',
+    });
+    expect(store.get('cycle-1')?.operatorSeatUx?.asksOfUser).toBe(1);
 
     expect(recorded.createdAt).toBe('2026-06-03T08:00:00.000Z');
     expect(recorded.status).toBe('open');
@@ -60,21 +86,21 @@ describe('ApprenticeshipCycleStore', () => {
 
   it('defaults new writes to mentor-mentee differential and maps legacy rows to unknown', () => {
     const store = makeStore();
-    const current = store.record({ id: 'current', instanceId: 'i', cycleNumber: 1, task: 't', menteeOutput: 'm' });
-    const legacy = store.record({ id: 'legacy', instanceId: 'i', cycleNumber: 2, task: 't', menteeOutput: 'm', kind: 'differential-cycle' });
+    const current = store.record({ id: 'current', instanceId: 'i', cycleNumber: 1, task: 't', menteeOutput: 'm', operatorSeatUx: ux() });
+    const legacy = store.record({ id: 'legacy', instanceId: 'i', cycleNumber: 2, task: 't', menteeOutput: 'm', kind: 'differential-cycle', operatorSeatUx: ux() });
 
     expect(current.kind).toBe('mentor-mentee-differential');
     expect(legacy.kind).toBe('unknown');
     expect(store.get('legacy')?.kind).toBe('unknown');
-    expect(() => store.record({ id: 'bad', instanceId: 'i', cycleNumber: 3, task: 't', menteeOutput: 'm', kind: 'mentorship' })).toThrow(/kind must be one of/);
+    expect(() => store.record({ id: 'bad', instanceId: 'i', cycleNumber: 3, task: 't', menteeOutput: 'm', kind: 'mentorship', operatorSeatUx: ux() })).toThrow(/kind must be one of/);
     store.close();
   });
 
   it('roleCoverage warns when mentor-mentee is dormant while overseer-apprentice has multiple cycles', () => {
     const store = makeStore();
-    store.record({ id: 'review-1', instanceId: 'i', cycleNumber: 1, createdAt: '2026-06-03T08:00:00.000Z', task: 't', menteeOutput: 'm', kind: 'overseer-apprentice-devreview' });
-    store.record({ id: 'review-2', instanceId: 'i', cycleNumber: 2, createdAt: '2026-06-03T09:00:00.000Z', task: 't', menteeOutput: 'm', kind: 'overseer-apprentice-devreview' });
-    store.record({ id: 'unknown', instanceId: 'i', cycleNumber: 3, createdAt: '2026-06-03T10:00:00.000Z', task: 't', menteeOutput: 'm', kind: 'unknown' });
+    store.record({ id: 'review-1', instanceId: 'i', cycleNumber: 1, createdAt: '2026-06-03T08:00:00.000Z', task: 't', menteeOutput: 'm', kind: 'overseer-apprentice-devreview', operatorSeatUx: ux() });
+    store.record({ id: 'review-2', instanceId: 'i', cycleNumber: 2, createdAt: '2026-06-03T09:00:00.000Z', task: 't', menteeOutput: 'm', kind: 'overseer-apprentice-devreview', operatorSeatUx: ux() });
+    store.record({ id: 'unknown', instanceId: 'i', cycleNumber: 3, createdAt: '2026-06-03T10:00:00.000Z', task: 't', menteeOutput: 'm', kind: 'unknown', operatorSeatUx: ux() });
 
     const coverage = store.roleCoverage('i');
     expect(coverage.axes['overseer-apprentice-devreview']).toEqual({ fired: true, cycleCount: 2, lastAt: '2026-06-03T09:00:00.000Z' });
@@ -87,9 +113,9 @@ describe('ApprenticeshipCycleStore', () => {
 
   it('roleCoverage does not warn for a healthy mix or an empty instance', () => {
     const store = makeStore();
-    store.record({ id: 'mentor-1', instanceId: 'healthy', cycleNumber: 1, createdAt: '2026-06-03T08:00:00.000Z', task: 't', menteeOutput: 'm', kind: 'mentor-mentee-differential' });
-    store.record({ id: 'review-1', instanceId: 'healthy', cycleNumber: 2, createdAt: '2026-06-03T09:00:00.000Z', task: 't', menteeOutput: 'm', kind: 'overseer-apprentice-devreview' });
-    store.record({ id: 'direct-1', instanceId: 'healthy', cycleNumber: 3, createdAt: '2026-06-03T10:00:00.000Z', task: 't', menteeOutput: 'm', kind: 'overseer-mentee-direct' });
+    store.record({ id: 'mentor-1', instanceId: 'healthy', cycleNumber: 1, createdAt: '2026-06-03T08:00:00.000Z', task: 't', menteeOutput: 'm', kind: 'mentor-mentee-differential', operatorSeatUx: ux() });
+    store.record({ id: 'review-1', instanceId: 'healthy', cycleNumber: 2, createdAt: '2026-06-03T09:00:00.000Z', task: 't', menteeOutput: 'm', kind: 'overseer-apprentice-devreview', operatorSeatUx: ux() });
+    store.record({ id: 'direct-1', instanceId: 'healthy', cycleNumber: 3, createdAt: '2026-06-03T10:00:00.000Z', task: 't', menteeOutput: 'm', kind: 'overseer-mentee-direct', operatorSeatUx: ux() });
 
     const healthy = store.roleCoverage('healthy');
     expect(healthy.driftWarning).toBe(false);
@@ -108,9 +134,9 @@ describe('ApprenticeshipCycleStore', () => {
 
   it('filters list results by instanceId and applies the limit', () => {
     const store = makeStore();
-    store.record({ id: 'a1', instanceId: 'a', cycleNumber: 1, task: 'a1', menteeOutput: 'out' });
-    store.record({ id: 'b1', instanceId: 'b', cycleNumber: 1, task: 'b1', menteeOutput: 'out' });
-    store.record({ id: 'a2', instanceId: 'a', cycleNumber: 2, task: 'a2', menteeOutput: 'out' });
+    store.record({ id: 'a1', instanceId: 'a', cycleNumber: 1, task: 'a1', menteeOutput: 'out', operatorSeatUx: ux() });
+    store.record({ id: 'b1', instanceId: 'b', cycleNumber: 1, task: 'b1', menteeOutput: 'out', operatorSeatUx: ux() });
+    store.record({ id: 'a2', instanceId: 'a', cycleNumber: 2, task: 'a2', menteeOutput: 'out', operatorSeatUx: ux() });
 
     expect(store.list({ instanceId: 'a' }).map((c) => c.id)).toEqual(['a2', 'a1']);
     expect(store.list({ limit: 2 })).toHaveLength(2);
@@ -140,6 +166,7 @@ describe('ApprenticeshipCycleStore', () => {
       task: 't',
       menteeOutput: 'm',
       kind: 'mentor-mentee-differential',
+      operatorSeatUx: ux(),
       ...over,
     });
 
@@ -186,6 +213,72 @@ describe('ApprenticeshipCycleStore', () => {
       const r = store.record(diff({ channel: 'not-a-real-channel' }));
       expect(r.channel).toBe('unknown');
       expect(store.get(r.id)!.channel).toBe('unknown');
+      store.close();
+    });
+  });
+
+  describe('operator-seat UX gate (2026-06-05 UX-blindspot directive)', () => {
+    const base = (over: Record<string, unknown> = {}) => ({
+      instanceId: 'echo-to-codey',
+      cycleNumber: 1,
+      task: 't',
+      menteeOutput: 'm',
+      ...over,
+    });
+
+    it('REFUSES a record without the block, naming the required shape', () => {
+      const store = makeStore();
+      expect(() => store.record(base())).toThrow(/operatorSeatUx is required/);
+      expect(() => store.record(base())).toThrow(/dupNotices: int>=0/); // self-describing
+      expect(store.list()).toHaveLength(0); // nothing persisted on refusal
+      store.close();
+    });
+
+    it('REFUSES malformed blocks on both sides of each boundary', () => {
+      const store = makeStore();
+      expect(() => store.record(base({ operatorSeatUx: ux({ asksOfUser: -1 }) }))).toThrow(/asksOfUser must be a non-negative integer/);
+      expect(() => store.record(base({ operatorSeatUx: ux({ dupNotices: 1.5 }) }))).toThrow(/dupNotices/);
+      expect(() => store.record(base({ operatorSeatUx: ux({ modalitiesExercised: [] }) }))).toThrow(/modalitiesExercised must be a non-empty/);
+      expect(() => store.record(base({ operatorSeatUx: ux({ duringRestartChurn: 'yes' }) }))).toThrow(/duringRestartChurn must be a boolean/);
+      expect(() => store.record(base({ operatorSeatUx: 'looked fine' }))).toThrow(/must be an object/);
+      store.close();
+    });
+
+    it('ACCEPTS a valid block and persists it through close/reopen semantics (get)', () => {
+      const store = makeStore();
+      const r = store.record(base({
+        operatorSeatUx: ux({ dupNotices: 2, infraNoiseMsgs: 3, duringRestartChurn: true }),
+      }));
+      const read = store.get(r.id)!.operatorSeatUx!;
+      expect(read.dupNotices).toBe(2);
+      expect(read.infraNoiseMsgs).toBe(3);
+      expect(read.duringRestartChurn).toBe(true);
+      store.close();
+    });
+
+    it('legacy rows (pre-gate, empty column) read as operatorSeatUx: null — grandfathered like channel=unknown', () => {
+      const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'apprenticeship-cycles-'));
+      tmpDirs.push(tmp);
+      const dbPath = path.join(tmp, 'cycles.db');
+
+      // Simulate a pre-gate database: same table WITHOUT the UX column, one legacy row.
+      const legacy = new DatabaseCtor(dbPath);
+      legacy.exec(`CREATE TABLE apprenticeship_cycles (
+        id TEXT PRIMARY KEY, instance_id TEXT NOT NULL, cycle_number INTEGER NOT NULL,
+        created_at TEXT NOT NULL, task TEXT NOT NULL, mentee_output TEXT NOT NULL,
+        mentor_flagged_json TEXT NOT NULL, overseer_diff_json TEXT NOT NULL,
+        coaching TEXT NOT NULL, infra_items_json TEXT NOT NULL,
+        kind TEXT NOT NULL, status TEXT NOT NULL, channel TEXT NOT NULL DEFAULT 'unknown'
+      )`);
+      legacy.prepare(`INSERT INTO apprenticeship_cycles VALUES
+        ('old-1','i',1,'2026-06-01T00:00:00.000Z','t','m','[]','[]','','[]','unknown','open','unknown')`).run();
+      legacy.close();
+
+      // Opening the store migrates (ALTER ... DEFAULT '') and the legacy row reads as null.
+      const store = new ApprenticeshipCycleStore({ dbPath, now: () => new Date('2026-06-03T08:00:00.000Z') });
+      expect(store.get('old-1')!.operatorSeatUx).toBeNull();
+      // And NEW writes through the migrated store are still gated.
+      expect(() => store.record(base())).toThrow(/operatorSeatUx is required/);
       store.close();
     });
   });

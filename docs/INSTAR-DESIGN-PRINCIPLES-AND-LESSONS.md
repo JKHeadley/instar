@@ -400,6 +400,27 @@ Jobs support a `supervision` field on `JobDefinition` so the level is declarativ
 
 ---
 
+### P17. Bounded Notification Surface (no feature may flood the user)
+
+**Statement:** Any code path that can create user-facing notification containers must be bounded by a hard budget at the creation chokepoint, and any emitter that loops over a collection must aggregate (one summary notification, never one per element). A feature whose failure mode includes "notify N times for N inputs" may not ship without a burst test proving the bound holds.
+
+**Source:** constitution standard "Bounded Notification Surface — no feature may flood the user" (Building); proposed 2026-06-05 after the THIRD topic-spam flood (topic 11960), at Justin's direct request ("we need some more fundamental requirement/test to make sure features can't ship that have a possibility of causing this").
+
+**Translation:**
+- Aggregate at the emitter: N findings → ONE item with the count + list (`AgentWorktreeDetector.runDetection` is the canonical pattern).
+- The bound lives at the chokepoint, not in feature cooperation: `createForumTopic` budgets every `origin: 'auto'` creation — and 'auto' is the DEFAULT, so a feature that never heard of the budget is still bounded.
+- Per-source budgets alone are dodgeable (flood #3 gave every item a unique source); a global ceiling + chokepoint enforcement are load-bearing.
+- New notification surfaces (email, Slack, whatever) must ship WITH their chokepoint budget + burst test — that's the review question to ask every time.
+
+**Enforcement (structural):**
+- `tests/integration/notification-flood-burst-invariant.test.ts` — fails the build if a 1,000-item burst creates more than the budget of topics (shipped defaults, real pipeline).
+- `scripts/lint-no-unfunneled-topic-creation.js` in `pnpm lint` — no raw `createForumTopic` API calls outside the budgeted funnel.
+- The `topicCreationBudget` ceiling inside `TelegramAdapter.createForumTopic` (runtime).
+
+**Earned from:** Three floods of the same shape: 2026-05-22 (sentinel escalations → SentinelNotifier), 2026-05-28 (collaboration-redrive → AttentionTopicGuard per-source budgets), 2026-06-05 (worktree detector false-positive mass-flag → unique-source dodge → 8 leaked topics + a 103-ping coalesced topic). The second patch was a temporary success (P14): the root cause was the bound living in each feature's good intentions instead of at the one place topics are born.
+
+---
+
 ## Part 2 — Architectural Lessons (L1-L17)
 
 These are patterns Instar has *already built infrastructure for*. Any new spec that touches the same surface area must engage with the existing infrastructure, not reinvent or contradict it.
@@ -865,7 +886,7 @@ Before any high-risk action (deploying, pushing to git, modifying files outside 
 
 The 8th `/spec-converge` reviewer (see `skills/spec-converge/SKILL.md`) loads this document plus the linked `feedback_*.md` files and the principles in `CLAUDE.md`, then asks for each spec under review:
 
-For each Part 1 principle (P1-P16):
+For each Part 1 principle (P1-P17):
 - Does the spec engage with this principle?
 - Does it contradict it?
 - If contradicting, is there an explicit, defended rationale in the spec?
@@ -891,3 +912,4 @@ Output: structured findings per category, with citations to this index. Findings
 | 2026-05-19 | Comprehensive audit pass (per Justin 2026-05-19). Added P6 Zero-Failure, P7 LLM-Supervised Execution, P8 UX & Agent Agency, P9 Intent Engineering, P10 Comprehensive-First Directive. Added L11 External Operation Safety, L12 Destructive-Tool Containment, L13 Parallel Dev Isolation, L14 PR Review Hardening, L15 Authorization Policy, L16 Project Scope, L17 Integrated-Being Ledger. Added B32 No Interactive CLI, B33 No AskUserQuestion free-text, B34 Initiative Hierarchy, B35 Defensive Fabrication / Escalation-as-default, B36 USER.md "decide and do", B37 Dawn patterns, B38 Two memory systems, B39 Coherence Gate. Expanded P4 with StallTriageNurse origin + canonical category names. Expanded L1 with recurrence-corrected dates. Expanded L2 with topic-6931 origin. Expanded L6 to seven canonical dimensions (was five). Now: 10 principles + 17 architectural lessons + 39 behavioral lessons. |
 | 2026-06-03 | Added P14 Distrust Temporary Success (a recurrence is a root cause) and P15 Friction Is a Spec (productize the workaround), mirroring the two new constitution standards earned from the listSessions hot-loop incident (topic 13435; full account in `docs/lessons/2026-06-03-listsessions-hotloop-success-story.md`). Updated the spec-converge review template's Part-1 range from P1-P10 to P1-P15 (it had not been updated when P11-P13 were added — latent under-enforcement). |
 | 2026-06-05 | Added P16 Notice + Solve Inefficiencies (efficiency is a standing search — the proactive sibling of P15), mirroring the new constitution standard ratified by Justin during the recursive apprenticeship run (topic 13435), earned from the merge-churn throughput inefficiency (strict branch protection + fast main + slow CI = rebase loops). Updated the spec-converge review template's Part-1 range from P1-P15 to P1-P16. |
+| 2026-06-05 | Added P17 Bounded Notification Surface (no feature may flood the user), mirroring the new constitution standard proposed after the third topic-spam flood (topic 11960; worktree-detector false-positive mass-flag dodged the per-source budget via unique sourceContexts). Enforcement is structural from day one: burst-invariant test + funnel lint + in-chokepoint budget. Updated the spec-converge review template's Part-1 range from P1-P16 to P1-P17. |

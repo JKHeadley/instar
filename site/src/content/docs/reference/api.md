@@ -213,6 +213,18 @@ The sections above describe the most commonly-used endpoints with curl examples 
 - `GET /agents`
 - `POST /agents/:name/restart`
 
+## /approvals
+
+Approval-as-Data (spec Part B / Phase 2): every operator approval recorded as
+durable, signed data — approved-as-is vs approved-with-change (with the why of
+each divergence) vs rejected — and the per-class agreement ratios computed from
+it. Tracks approvals wherever they occur (spec sign-off, chat, other). Read-only
+with respect to behavior; the ratio is a signal, never a gate.
+
+- `POST /approvals` — record an operator decision (mode + divergences MUST be operator-sourced; inconsistent rows 400)
+- `GET /approvals` — list recorded decisions (`?limit` / `?decisionClass` / `?surface`)
+- `GET /approvals/summary` — per-class `{ total, approvedAsIs, ratio, streak, autoApprovalEligible, divergenceCounts }` + a `bySurface` breakdown
+
 ## /apprenticeship
 - `GET /apprenticeship/instances`
 - `GET /apprenticeship/instances/:id`
@@ -292,6 +304,19 @@ The sections above describe the most commonly-used endpoints with curl examples 
 ## /config
 - `PATCH /config`
 - `POST /config/telemetry`
+
+## /cutover-readiness
+
+Cutover-READINESS (coordination-mandate spec §7 G2.4, decision 1A): everything UP
+TO the cutover door, never the door. The two objective conditions resolve from
+REAL durable state — the persisted import IntegrityReport and the durable
+zero-divergence parity window (with a readiness-layer freshness bound). The flip
+itself is the operator's manual click; there is no fire-cutover route by design.
+
+- `GET /cutover-readiness` — `{ ready, door: "manual-operator-click", integrity, parity, importDryRun }` (read-only)
+- `POST /cutover-readiness/parity-pass` — trigger a server-side live parity check; the request contributes nothing to the result; a failed check records nothing
+- `POST /cutover-readiness/import-dryrun` — trigger a server-side import REHEARSAL (live source fetch → AS-IS import into an in-memory target → integrity gate over what the target reads back); zero durable data writes; persists to a separate dry-run report and never greens the canonical integrity condition
+- `GET /cutover-readiness/import-dryrun` — the last rehearsal's verdict (read-only, informational — not a `ready` input)
 
 ## /context
 - `GET /context`
@@ -491,6 +516,21 @@ The sections above describe the most commonly-used endpoints with curl examples 
 - `GET /listener/metrics`
 - `POST /listener/restart`
 
+## /mandate
+
+Coordination Mandate (spec: coordination-mandate.md): a deny-by-default authority
+gate for autonomous agent-to-agent actions. The operator's bounded, expiring,
+revocable mandate — issued from the dashboard behind their PIN — is the authorizer,
+never the agent. With no mandate issued, every evaluation denies. Every decision
+(allow AND deny) lands in a hash-chained, tamper-evident audit.
+
+- `POST /mandate/evaluate` — check an intended action `{ action, params, agentFp, mandateId }` → `{ decision, reason }`
+- `GET /mandate` — list mandates (each with live `authorshipValid`)
+- `GET /mandate/:id` — one mandate + verification status
+- `GET /mandate/audit` — the chained audit (`chain.ok:false` = tampering)
+- `POST /mandate/issue` — PIN-GATED (operator only; Bearer alone is refused)
+- `POST /mandate/:id/revoke` — PIN-GATED (the operator kill switch)
+
 ## /memory
 - `GET /memory/entities/by-evidence`
 - `GET /memory/evidence/by-entity/:id`
@@ -615,6 +655,22 @@ The sections above describe the most commonly-used endpoints with curl examples 
 - `POST /review/evaluate`
 - `POST /review/test`
 
+## /review-exchange
+
+ReviewExchange (coordination-mandate spec §7 G2.3): one mutual, mandate-gated
+sign-off of a review artifact between the two agents named in a mandate. Both
+sign-offs run through the mandate gate's `sign-code-review` authority; every
+accepted signature carries the audit hash of the gate decision that authorized
+it. Linear lifecycle: proposed → delivered → verdict-recorded → complete (or
+changes-requested, terminal). Deny-by-default inherited: no mandate → 403.
+
+- `POST /review-exchange` — create `{ mandateId, artifact, packageRef, packageSha256, parties:[ownerFp,peerFp] }` (content-addressed)
+- `GET /review-exchange` — list exchanges
+- `GET /review-exchange/:id` — one exchange + signatures with audit hashes
+- `POST /review-exchange/:id/delivered` — record the Threadline delivery evidence
+- `POST /review-exchange/:id/peer-verdict` — the peer's authenticated verdict; `approve` is their sign-off → mandate-gated (deny → 403)
+- `POST /review-exchange/:id/sign` — the owner's countersignature → mandate-gated; completes the exchange
+
 ## /scope-coherence
 - `GET /scope-coherence`
 - `GET /scope-coherence/check`
@@ -632,8 +688,11 @@ The sections above describe the most commonly-used endpoints with curl examples 
 ## /self-knowledge
 - `GET /self-knowledge/health`
 - `GET /self-knowledge/search`
+- `GET /self-knowledge/session-context` — the boot self-knowledge block: vault secret NAMES (never values) + operational facts; `?full=1` bypasses display caps. Dark on the fleet (`enabled ?? developmentAgent`).
 - `GET /self-knowledge/tree`
 - `GET /self-knowledge/validate`
+- `POST /self-knowledge/facts` — append a durable operational fact (auto-stamped with date + machine)
+- `DELETE /self-knowledge/facts` — remove a fact by `{match}` or `{index, expect}`
 
 ## /semantic
 - `DELETE /semantic/forget/:id`

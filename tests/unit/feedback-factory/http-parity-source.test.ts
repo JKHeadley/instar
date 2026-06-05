@@ -184,6 +184,169 @@ describe('HttpParitySource — error mapping', () => {
   });
 });
 
+describe('HttpParitySource — fetch timeouts (the 2026-06-05 hang fix)', () => {
+  it('a stalled page fetch aborts at pageTimeoutMs and maps to HttpParitySourceError 504', async () => {
+    // Stub mirrors real fetch abort semantics: never resolves, rejects with the
+    // signal's reason (a DOMException named TimeoutError for AbortSignal.timeout).
+    const fetchStub: FetchLike = vi.fn(
+      (_url, init) =>
+        new Promise((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () => reject(init.signal!.reason));
+        }),
+    );
+    const source = new HttpParitySource({ baseUrl: 'https://p', token: 't', fetchImpl: fetchStub, pageTimeoutMs: 30 });
+    try {
+      await source.prepare();
+      throw new Error('expected throw');
+    } catch (e) {
+      expect(e).toBeInstanceOf(HttpParitySourceError);
+      expect((e as HttpParitySourceError).status).toBe(504);
+      expect((e as Error).message).toContain('timed out after');
+      expect((e as Error).message).toContain('page 0');
+    }
+  });
+
+  it('every page fetch carries an AbortSignal (no unbounded request can be issued)', async () => {
+    const signals: Array<AbortSignal | undefined> = [];
+    const fetchStub: FetchLike = vi.fn(async (_url, init) => {
+      signals.push(init?.signal);
+      return okResponse({ data: { clusters: [] }, meta: { returned_count: 0 } });
+    });
+    const source = new HttpParitySource({ baseUrl: 'https://p', token: 't', fetchImpl: fetchStub });
+    await source.prepare();
+    expect(signals).toHaveLength(1);
+    expect(signals[0]).toBeInstanceOf(AbortSignal);
+  });
+
+  it('enforces the total budget between pages (504 before issuing the next page)', async () => {
+    let calls = 0;
+    const fetchStub: FetchLike = vi.fn(async () => {
+      calls++;
+      await new Promise((r) => setTimeout(r, 15));
+      // always a full page → wants to keep paginating
+      return okResponse({
+        data: { clusters: [sampleCluster(calls)], feedback: new Array(10).fill({}), dispatches: [] },
+        meta: { returned_count: 10 },
+      });
+    });
+    const source = new HttpParitySource({ baseUrl: 'https://p', token: 't', pageSize: 10, fetchImpl: fetchStub, totalTimeoutMs: 1 });
+    try {
+      await source.prepare();
+      throw new Error('expected throw');
+    } catch (e) {
+      expect(e).toBeInstanceOf(HttpParitySourceError);
+      expect((e as HttpParitySourceError).status).toBe(504);
+      expect((e as Error).message).toContain('exceeded the total budget');
+    }
+    expect(calls).toBe(1); // page 0 ran; page 1 was refused before issue
+  });
+
+  it('non-abort fetch failures propagate unchanged (not masked as 504)', async () => {
+    const fetchStub: FetchLike = vi.fn(async () => {
+      throw new TypeError('network down');
+    });
+    const source = new HttpParitySource({ baseUrl: 'https://p', token: 't', fetchImpl: fetchStub });
+    await expect(source.prepare()).rejects.toThrow(TypeError);
+  });
+
+  it('a BODY read that aborts maps to the classified 504 naming the page (the 2026-06-05 11:01Z live finding)', async () => {
+    // Headers arrive in time; the body stream aborts (slow body > remaining budget).
+    const abortErr = Object.assign(new Error('The operation was aborted due to timeout'), { name: 'TimeoutError' });
+    const fetchStub: FetchLike = vi.fn(async () => ({
+      ok: true, status: 200, statusText: 'OK',
+      json: async () => { throw abortErr; },
+      text: async () => '',
+    }));
+    const source = new HttpParitySource({ baseUrl: 'https://p', token: 't', fetchImpl: fetchStub, pageTimeoutMs: 30 });
+    try {
+      await source.prepare();
+      throw new Error('expected throw');
+    } catch (e) {
+      expect(e).toBeInstanceOf(HttpParitySourceError);
+      expect((e as HttpParitySourceError).status).toBe(504);
+      expect((e as Error).message).toContain('body read timed out');
+      expect((e as Error).message).toContain('page 0');
+    }
+  });
+
+  it('a non-abort BODY parse failure propagates unchanged (not masked as 504)', async () => {
+    const fetchStub: FetchLike = vi.fn(async () => ({
+      ok: true, status: 200, statusText: 'OK',
+      json: async () => { throw new SyntaxError('bad json'); },
+      text: async () => '',
+    }));
+    const source = new HttpParitySource({ baseUrl: 'https://p', token: 't', fetchImpl: fetchStub });
+    await expect(source.prepare()).rejects.toThrow(SyntaxError);
+  });
+});
+
+describe('HttpParitySource — raw capture (captureRaw, the AS-IS import read)', () => {
+  it('keeps cluster + feedback rows VERBATIM, including fields the coercer never reads', async () => {
+    const fetchStub: FetchLike = vi.fn(async () =>
+      okResponse({
+        data: {
+          clusters: [{ ...sampleCluster(1), governanceNotes: 'curated judgment', unknownField: { deep: [1, 2] } }],
+          feedback: [{ feedbackId: 'f1', title: 'r1', someRawThing: 'kept' }],
+          dispatches: [],
+        },
+        meta: { returned_count: 0 },
+      }),
+    );
+    const source = new HttpParitySource({ baseUrl: 'https://p', token: 't', pageSize: 10, fetchImpl: fetchStub, captureRaw: true });
+    await source.prepare();
+
+    const rawClusters = source.readRawClusters();
+    expect(rawClusters).toHaveLength(1);
+    expect(rawClusters[0].governanceNotes).toBe('curated judgment');
+    expect(rawClusters[0].unknownField).toEqual({ deep: [1, 2] });
+
+    const rawFeedback = source.readRawFeedback();
+    expect(rawFeedback).toHaveLength(1);
+    expect(rawFeedback[0].someRawThing).toBe('kept');
+  });
+
+  it('accumulates feedback across pages and dedupes repeats by id (clusters too)', async () => {
+    const fetchStub: FetchLike = vi.fn(async (url) => {
+      const offset = Number(new URL(url).searchParams.get('offset'));
+      if (offset === 0) {
+        return okResponse({
+          data: {
+            clusters: [sampleCluster(1)],
+            feedback: [{ feedbackId: 'f1' }, { feedbackId: 'f2' }],
+          },
+          meta: { returned_count: 2 },
+        });
+      }
+      return okResponse({
+        data: {
+          clusters: [sampleCluster(1)], // repeats — must dedupe
+          feedback: [{ feedbackId: 'f2' }, { feedback_id: 'f3' }], // f2 repeats; f3 arrives snake_case
+        },
+        meta: { returned_count: 1 },
+      });
+    });
+    const source = new HttpParitySource({ baseUrl: 'https://p', token: 't', pageSize: 2, fetchImpl: fetchStub, captureRaw: true });
+    await source.prepare();
+    expect(source.readRawClusters()).toHaveLength(1);
+    const ids = source.readRawFeedback().map((f) => f.feedbackId ?? f.feedback_id).sort();
+    expect(ids).toEqual(['f1', 'f2', 'f3']);
+  });
+
+  it('throws on raw reads without captureRaw (parity mode never silently returns empty)', async () => {
+    const fetchStub: FetchLike = vi.fn(async () => okResponse({ data: { clusters: [] }, meta: { returned_count: 0 } }));
+    const source = new HttpParitySource({ baseUrl: 'https://p', token: 't', fetchImpl: fetchStub });
+    await source.prepare();
+    expect(() => source.readRawClusters()).toThrow(HttpParitySourceError);
+    expect(() => source.readRawFeedback()).toThrow(HttpParitySourceError);
+  });
+
+  it('throws on raw reads before prepare() even with captureRaw set', () => {
+    const fetchStub: FetchLike = vi.fn(async () => okResponse({ data: { clusters: [] }, meta: { returned_count: 0 } }));
+    const source = new HttpParitySource({ baseUrl: 'https://p', token: 't', fetchImpl: fetchStub, captureRaw: true });
+    expect(() => source.readRawClusters()).toThrow(HttpParitySourceError);
+  });
+});
+
 describe('HttpParitySource — prepare-before-read invariant', () => {
   it('readPortalClusters() before prepare() throws (no silent empty)', () => {
     const fetchStub: FetchLike = vi.fn(async () => okResponse({ data: { clusters: [] }, meta: { returned_count: 0 } }));

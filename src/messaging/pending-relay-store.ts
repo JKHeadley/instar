@@ -345,6 +345,37 @@ export class PendingRelayStore {
   }
 
   /**
+   * List the rows a restore-purge at `cutoffIso` WOULD delete — so the
+   * caller can make the loss traceable (per-row log + degradation report)
+   * before purging. A restore-purge deletes queued-undelivered outbound
+   * messages; until 2026-06-05 it was the delivery stack's only silent
+   * deletion path.
+   */
+  listStaleClaimable(
+    cutoffIso: string,
+  ): Array<{ delivery_id: string; topic_id: number; attempted_at: string; text: string }> {
+    const stmt = this.db.prepare(
+      `SELECT delivery_id, topic_id, attempted_at, text
+         FROM entries
+         WHERE state IN ('queued', 'claimed')
+           AND attempted_at < @cutoff
+         ORDER BY attempted_at ASC`,
+    );
+    const rows = stmt.all({ cutoff: cutoffIso }) as Array<{
+      delivery_id: string;
+      topic_id: number;
+      attempted_at: string;
+      text: Buffer | string;
+    }>;
+    return rows.map((r) => ({
+      delivery_id: r.delivery_id,
+      topic_id: r.topic_id,
+      attempted_at: r.attempted_at,
+      text: Buffer.isBuffer(r.text) ? r.text.toString('utf-8') : String(r.text ?? ''),
+    }));
+  }
+
+  /**
    * Layer 3 restore-purge — drops queued/claimed rows whose
    * `attempted_at` is older than `cutoffIso`. Called once at sentinel
    * startup (spec §3h). Returns the number of rows deleted so the

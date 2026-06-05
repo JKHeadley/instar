@@ -11,6 +11,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -306,5 +307,79 @@ describe('GlobalSecretStore', () => {
       expect(fs.existsSync(encFile)).toBe(false);
       expect(fs.existsSync(keyFile)).toBe(false);
     });
+  });
+});
+
+// ── Generation guard (spec keychain-per-agent-master-key §5) ─────────
+// Earned from the 2026-06-05 incident: generate-on-miss over an existing
+// ciphertext silently orphans all stored data behind an undecryptable file.
+describe('GlobalSecretStore keychain generation guard', () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'global-keychain-guard-'));
+  });
+
+  afterEach(() => {
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'global-keychain-guard:afterEach' });
+  });
+
+  function makeFakeKeychain(initial: Record<string, Buffer> = {}) {
+    const entries = new Map<string, Buffer>(Object.entries(initial));
+    // Platform-agnostic: macOS `security` + Linux `secret-tool` (CI runners)
+    const exec = ((cmd: string, args?: readonly string[], opts?: { input?: string }) => {
+      const a = [...(args ?? [])];
+      if (cmd === 'security') {
+        const account = a[a.indexOf('-a') + 1];
+        if (a[0] === 'find-generic-password') {
+          const found = entries.get(account);
+          if (!found) throw new Error('not found');
+          return found.toString('base64');
+        }
+        if (a[0] === 'delete-generic-password') { entries.delete(account); return ''; }
+        if (a[0] === 'add-generic-password') { entries.set(account, Buffer.from(a[a.indexOf('-w') + 1], 'base64')); return ''; }
+        throw new Error(`unsupported op: ${a[0]}`);
+      }
+      if (cmd === 'secret-tool') {
+        const account = a[a.indexOf('account') + 1];
+        if (a[0] === 'lookup') {
+          const found = entries.get(account);
+          if (!found) throw new Error('No such secret');
+          return found.toString('base64');
+        }
+        if (a[0] === 'store') { entries.set(account, Buffer.from(String(opts?.input ?? ''), 'base64')); return ''; }
+        throw new Error(`unsupported op: ${a[0]}`);
+      }
+      throw new Error(`unsupported: ${cmd}`);
+    }) as unknown as typeof import('node:child_process').execFileSync;
+    return { entries, exec };
+  }
+
+  it('refuses to generate a fresh key over an EXISTING encrypted store (no silent orphaning)', () => {
+    // Seed a store via the platform-independent password path (the keychain
+    // write path is darwin-only, so seeding through it would fail on CI).
+    const store1 = new GlobalSecretStore(tmpDir, { forceKeychain: true });
+    store1.initWithPassword('seed-password-123');
+    store1.setSecret('agent-x', 'tok', 'value-1');
+
+    // A later process with NO usable key and an EXISTING store: the guard
+    // must refuse to generate a fresh key over it — regardless of platform,
+    // the `this.exists` check fires BEFORE any keychain interaction.
+    const fake2 = makeFakeKeychain();
+    const store2 = new GlobalSecretStore(tmpDir, { keychainExec: fake2.exec, forceKeychain: true });
+    expect(store2.initWithKeychain()).toBe(false); // guarded: locked, NOT regenerated
+    expect(fake2.entries.size).toBe(0); // no fresh key was written
+  });
+
+  // The generate-on-first-run path writes the OS keychain, which is
+  // darwin-only in GlobalSecretStore (platform check precedes the exec),
+  // so this test only asserts the full true-path on macOS.
+  it.skipIf(process.platform !== 'darwin')('still generates on TRUE first-run (no existing store)', () => {
+    const fake = makeFakeKeychain();
+    const store = new GlobalSecretStore(tmpDir, { keychainExec: fake.exec, forceKeychain: true });
+    expect(store.initWithKeychain()).toBe(true);
+    expect(fake.entries.has('master-key')).toBe(true);
+    store.setSecret('agent-y', 'tok', 'fresh');
+    expect(store.getSecret('agent-y', 'tok')).toBe('fresh');
   });
 });

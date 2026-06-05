@@ -23,6 +23,8 @@ import {
   resolveRequestTimeout,
   OUTBOUND_MESSAGING_TIMEOUT_MS,
   SPEC_REVIEW_TIMEOUT_MS,
+  PARITY_PASS_TIMEOUT_MS,
+  PARITY_ROUTE_SLACK_MS,
 } from '../../src/server/middleware.js';
 import { CONFORMANCE_REVIEW_TIMEOUT_MS } from '../../src/core/reviewers/standards-conformance.js';
 
@@ -79,8 +81,54 @@ describe('request-timeout override map (production wiring)', () => {
       'utf-8',
     );
     // Regression guard: the global default is still passed as the first arg, and
-    // the overrides come from the shared builder (so this test's map == prod's).
-    expect(agentServerSrc).toMatch(/requestTimeout\(options\.config\.requestTimeoutMs,\s*buildRequestTimeoutOverrides\(\)\)/);
+    // the overrides come from the shared builder (so this test's map == prod's) —
+    // fed the configured parity-source total budget so the parity routes' windows
+    // track the operator's degraded-source tuning.
+    expect(agentServerSrc).toMatch(/requestTimeout\(options\.config\.requestTimeoutMs,\s*buildRequestTimeoutOverrides\(\{ paritySourceTotalTimeoutMs \}\)\)/);
+    expect(agentServerSrc).toMatch(/feedbackMigration\?\.paritySource\?\.totalTimeoutMs/);
+  });
+
+  describe('parity-pass/import-dryrun route budgets track the configured source budget', () => {
+    const parityRoutes = ['/cutover-readiness/parity-pass', '/cutover-readiness/import-dryrun'];
+
+    it('without config, both resolve to the constant floor', () => {
+      for (const route of parityRoutes) {
+        expect(resolveRequestTimeout(route, DEFAULT_MS, buildRequestTimeoutOverrides())).toBe(PARITY_PASS_TIMEOUT_MS);
+      }
+    });
+
+    it('a configured total budget ABOVE the floor widens the route window (total + slack) — the live 2026-06-05 mismatch', () => {
+      // Live incident: source budgets widened to 600s/page + 4200s total for a
+      // degraded Portal, but the route still 408'd at the 360s constant — every
+      // feeder retry piled a CONCURRENT full fetch onto the degraded source.
+      const totalMs = 4_200_000;
+      const o = buildRequestTimeoutOverrides({ paritySourceTotalTimeoutMs: totalMs });
+      for (const route of parityRoutes) {
+        expect(resolveRequestTimeout(route, DEFAULT_MS, o)).toBe(totalMs + PARITY_ROUTE_SLACK_MS);
+      }
+    });
+
+    it('a configured total budget BELOW the floor never shrinks the window', () => {
+      const o = buildRequestTimeoutOverrides({ paritySourceTotalTimeoutMs: 60_000 });
+      for (const route of parityRoutes) {
+        expect(resolveRequestTimeout(route, DEFAULT_MS, o)).toBe(PARITY_PASS_TIMEOUT_MS);
+      }
+    });
+
+    it('zero / non-finite configured totals fall back to the floor (no NaN windows)', () => {
+      for (const bogus of [0, Number.NaN, Number.POSITIVE_INFINITY, -5_000]) {
+        const o = buildRequestTimeoutOverrides({ paritySourceTotalTimeoutMs: bogus });
+        for (const route of parityRoutes) {
+          expect(resolveRequestTimeout(route, DEFAULT_MS, o)).toBe(PARITY_PASS_TIMEOUT_MS);
+        }
+      }
+    });
+
+    it('the derived budget never disturbs unrelated routes', () => {
+      const o = buildRequestTimeoutOverrides({ paritySourceTotalTimeoutMs: 4_200_000 });
+      expect(resolveRequestTimeout('/telegram/reply', DEFAULT_MS, o)).toBe(OUTBOUND_MESSAGING_TIMEOUT_MS);
+      expect(resolveRequestTimeout('/health', DEFAULT_MS, o)).toBe(DEFAULT_MS);
+    });
   });
 });
 

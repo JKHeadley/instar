@@ -203,6 +203,19 @@
     .model-badge.sonnet { background: #1b2e4e; color: #60a5fa; }
     .model-badge.haiku { background: #1b3e3e; color: #5eead4; }
 
+    /* Which machine a session runs on (multi-machine pool). */
+    .machine-badge {
+      padding: 1px 6px;
+      border-radius: 4px;
+      font-size: 10px;
+      font-weight: 600;
+      background: #3a2a1b;
+      color: #fbbf24;
+    }
+    /* A session running on ANOTHER machine — visible, but its terminal can't
+       stream here (open that machine's dashboard to interact). */
+    .session-item.remote { opacity: 0.8; cursor: default; }
+
     .type-badge {
       padding: 1px 6px;
       border-radius: 4px;
@@ -777,6 +790,40 @@
       display: none !important;
     }
 
+    /* Mandates tab */
+    .mnd-card { border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; margin-bottom: 12px; display: flex; flex-direction: column; gap: 8px; }
+    .mnd-card-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+    .mnd-scope { font-size: 17px; font-weight: 600; color: var(--text-bright); }
+    .mnd-badge { font-size: 12px; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--border); }
+    .mnd-ok { color: #3fb950; border-color: #3fb95055; }
+    .mnd-bad { color: #f85149; border-color: #f8514955; font-weight: 700; }
+    .mnd-deny { color: #d29922; border-color: #d2992255; }
+    .mnd-dead { color: var(--text-dim); }
+    .mnd-meta { font-size: 13px; color: var(--text-dim); }
+    .mnd-authorities { margin: 0; padding-left: 18px; font-size: 13px; line-height: 1.7; }
+    .mnd-empty { font-size: 16px; color: var(--text-dim); line-height: 1.6; padding: 12px 0; }
+    .mnd-revoke-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .mnd-pin { width: 110px; } .mnd-reason { flex: 1; min-width: 160px; }
+    .mnd-btn { padding: 6px 14px; cursor: pointer; }
+    .mnd-btn-danger { color: #f85149; }
+    .mnd-dead-note { font-size: 13px; color: var(--text-dim); font-style: italic; }
+    .mnd-notice { min-height: 20px; font-size: 14px; color: #3fb950; }
+    .mnd-issue-form { display: flex; flex-direction: column; gap: 14px; max-width: 640px; padding: 12px 0; }
+    .mnd-issue-form label { display: flex; flex-direction: column; gap: 4px; font-size: 15px; color: var(--text-bright); }
+    .mnd-issue-form input, .mnd-issue-form textarea { font: inherit; padding: 8px 10px; border-radius: 6px; }
+    .mnd-issue-form textarea { font-family: ui-monospace, monospace; font-size: 13px; }
+    .mnd-hint { font-size: 13px; color: var(--text-dim); font-weight: 400; line-height: 1.45; }
+    .mnd-prefilled { font-size: 12px; color: var(--ph-accent, #4ade80); }
+    /* Issue-form feedback: PERSISTENT, not a transient toast. A failed issuance
+       the operator never sees (the 2026-06-05 incident) is worse than no form. */
+    .mnd-notice-err { border: 1px solid #b91c1c; background: rgba(185, 28, 28, 0.12); color: #fca5a5; padding: 12px 14px; border-radius: 8px; font-size: 15px; line-height: 1.5; white-space: pre-line; }
+    .mnd-notice-ok { border: 1px solid #15803d; background: rgba(21, 128, 61, 0.12); color: #86efac; padding: 12px 14px; border-radius: 8px; font-size: 17px; font-weight: 600; line-height: 1.5; }
+    .mnd-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    .mnd-table th, .mnd-table td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
+    .mnd-reason-cell { color: var(--text-dim); max-width: 420px; }
+    .mnd-audit-head { display: flex; gap: 12px; align-items: center; margin-bottom: 8px; }
+    .mnd-dim { font-size: 13px; color: var(--text-dim); }
+
     /* ── process-health tab (PROCESS-HEALTH-DASHBOARD-TAB-SPEC §4.1) ──
        Large, readable, calm. No monospace, no tables, no alarm colors.
        Measurable bars: headline ≥24px, section headers ≥20px, body ≥17px,
@@ -784,7 +831,13 @@
        maturation "you're here" marker. */
     .ph-root {
       --ph-accent: #4ade80;
+      /* These panels are declared after </main>, making them direct .app grid
+         children. switchTab() hides the sidebar too, so without explicit
+         placement the lone visible panel auto-places into the 280px sidebar
+         COLUMN — the "squashed to the side" bug. Span the full grid. */
+      grid-column: 1 / -1;
       max-width: 760px;
+      width: 100%;
       font-size: 18px;
       line-height: 1.55;
       color: var(--text-bright);
@@ -2639,6 +2692,7 @@
           <button class="tab" data-tab="process-health" onclick="switchTab('process-health')">Process Health</button>
           <button class="tab" data-tab="preferences-learning" onclick="switchTab('preferences-learning')">Preferences</button>
           <button class="tab" data-tab="machines" onclick="switchTab('machines')">Machines</button>
+          <button class="tab" data-tab="mandates" onclick="switchTab('mandates')">Mandates</button>
         </nav>
       </div>
       <div class="vital-signs" id="vitalSigns">
@@ -3187,6 +3241,56 @@
       </details>
     </div>
 
+    <!-- mandates tab (coordination-mandate spec, decision 2A — the operator's PIN-gated surface) -->
+    <div id="mandatesPanel" class="ph-root" style="display:none;flex-direction:column;padding:28px;gap:24px;overflow-y:auto">
+      <div style="display:flex;justify-content:space-between;align-items:baseline">
+        <h2 class="ph-title">Coordination Mandates</h2>
+        <div id="mndStamp" class="ph-stamp" aria-live="polite"></div>
+      </div>
+      <p class="ph-intro">Your bounded "permission slips" for autonomous agent-to-agent work. The slip — never the agent — is the authorizer. Issuing and revoking require <strong>your dashboard PIN</strong>; agent credentials alone are refused by design. With no slip issued, every delegated action is denied.</p>
+      <div id="mndNotice" class="mnd-notice" aria-live="polite"></div>
+      <section class="ph-section">
+        <h3 class="ph-h">Issued mandates</h3>
+        <div id="mndList"></div>
+      </section>
+      <details class="ph-detail" id="mndIssueDetails">
+        <summary class="ph-detail-summary">Issue a new mandate (PIN required)</summary>
+        <div class="mnd-issue-form">
+          <label>What is this permission slip for?
+            <span class="mnd-hint">A short name for the project the two agents may work on together, e.g. feedback-migration.</span>
+            <input type="text" id="mndIssueScope" value="feedback-migration" />
+          </label>
+          <label>This agent (Agent A)
+            <span class="mnd-hint">Pre-filled with this agent's own routing fingerprint — you normally don't need to touch it.</span>
+            <input type="text" id="mndIssueAgentA" placeholder="filling in automatically…" />
+            <span class="mnd-prefilled" id="mndAgentAPrefillNote"></span>
+          </label>
+          <label>The other agent (Agent B)
+            <span class="mnd-hint">The peer agent's routing fingerprint — find it on that agent's Threadline tab, or ask the agent "what's your routing fingerprint?".</span>
+            <input type="text" id="mndIssueAgentB" placeholder="e.g. 8c7928aa9f04fbda947172a2f9b2d81a" />
+          </label>
+          <label>What exactly may they do? (the authorities)
+            <span class="mnd-hint">Each entry is one delegated action with its bounds. The template below covers the standard credential-handoff + code-review pair — edit only if you know you need different bounds.</span>
+            <textarea id="mndIssueAuthorities" rows="9" spellcheck="false"></textarea>
+          </label>
+          <label>When does it expire?
+            <span class="mnd-hint">Pre-filled to one week from now. Every mandate expires; expired means denied.</span>
+            <input type="datetime-local" id="mndIssueExpires" />
+          </label>
+          <label>Your dashboard PIN
+            <span class="mnd-hint">Issuing is a human action — only your PIN can do it. Sent once, never stored.</span>
+            <input type="password" id="mndIssuePin" autocomplete="off" placeholder="typed at issuance, never stored" />
+          </label>
+          <button id="mndIssueBtn" class="mnd-btn">Issue mandate</button>
+        </div>
+      </details>
+      <section class="ph-section">
+        <h3 class="ph-h">Decision audit</h3>
+        <p class="ph-h-sub">Every allow and deny, hash-chained. A broken chain means tampering — treat it as an incident.</p>
+        <div id="mndAudit"></div>
+      </section>
+    </div>
+
     <!-- preferences-learning tab (Correction & Preference Learning Sentinel §10 Slice-2) -->
     <div id="preferencesLearningPanel" class="ph-root" style="display:none;flex-direction:column;padding:28px;gap:24px;overflow-y:auto">
       <div style="display:flex;justify-content:space-between;align-items:baseline">
@@ -3472,6 +3576,11 @@
     let ws = null;
     let token = '';
     let sessions = [];
+    // Sessions running on OTHER machines in the pool (GET /sessions?scope=pool).
+    // Kept separate from `sessions` because the WebSocket replaces that array
+    // with LOCAL sessions on every broadcast — merging would be wiped each tick.
+    let remoteSessions = [];
+    let selfMachineNickname = null;
     let activeSession = null;
     let term = null;
     let fitAddon = null;
@@ -3518,6 +3627,7 @@
             connectWebSocket();
             startWaPolling();
             startVitalSigns();
+            startPoolSessionsPolling();
           } else {
             showAuthError('Incorrect PIN');
           }
@@ -3543,6 +3653,7 @@
             connectWebSocket();
             startWaPolling();
             startVitalSigns();
+            startPoolSessionsPolling();
           }
         })
         .catch(() => {});
@@ -3681,17 +3792,31 @@
     }
 
     // ── Session List ─────────────────────────────────────────
+    // Stable per-row key. Remote sessions are namespaced by machine so a tmux
+    // name reused on two machines never collides with a local row.
+    function sessionRowKey(s) {
+      return s.remote ? `remote:${s.machineId || '?'}:${s.tmuxSession}` : s.tmuxSession;
+    }
+
     function renderSessionList() {
       const list = document.getElementById('sessionList');
       const empty = document.getElementById('emptyState');
       const count = document.getElementById('sessionCount');
 
-      count.textContent = sessions.length;
+      // Local sessions (live via WebSocket) + every other machine's sessions
+      // (via the /sessions?scope=pool poll). Local rows inherit this machine's
+      // nickname so EVERY row states where it runs once the pool is live.
+      const all = [
+        ...sessions.map(s => (s.machineNickname || !selfMachineNickname) ? s : { ...s, machineNickname: selfMachineNickname }),
+        ...remoteSessions,
+      ];
+
+      count.textContent = all.length;
       // Keep tab bar count in sync
       const tabCount = document.getElementById('tabSessionCount');
-      if (tabCount) tabCount.textContent = sessions.length;
+      if (tabCount) tabCount.textContent = all.length;
 
-      if (sessions.length === 0) {
+      if (all.length === 0) {
         empty.style.display = 'flex';
         // Clear any existing session items
         list.querySelectorAll('.session-item').forEach(el => el.remove());
@@ -3708,29 +3833,35 @@
 
       // Remove sessions no longer running
       for (const [name, el] of existing) {
-        if (!sessions.find(s => s.tmuxSession === name)) {
+        if (!all.find(s => sessionRowKey(s) === name)) {
           el.remove();
         }
       }
 
       // Add/update sessions
-      for (const session of sessions) {
-        let el = existing.get(session.tmuxSession);
+      for (const session of all) {
+        let el = existing.get(sessionRowKey(session));
         if (!el) {
           el = document.createElement('div');
           el.className = 'session-item';
-          el.dataset.session = session.tmuxSession;
-          el.onclick = () => selectSession(session.tmuxSession, session);
+          el.dataset.session = sessionRowKey(session);
+          if (session.remote) {
+            // A remote session's terminal streams on ITS machine's dashboard —
+            // clicking here can't subscribe to it, so the row is informational.
+            el.title = `Running on ${session.machineNickname || session.machineId || 'another machine'} — open that machine's dashboard to interact.`;
+          } else {
+            el.onclick = () => selectSession(session.tmuxSession, session);
+          }
           list.appendChild(el);
         }
 
         const elapsed = formatElapsed(session.startedAt);
         const model = session.model || 'opus';
-        const isActive = session.tmuxSession === activeSession;
+        const isActive = !session.remote && session.tmuxSession === activeSession;
         const sType = session.type || (session.jobSlug ? 'job' : 'interactive');
         const tele = session.telemetry;
 
-        el.className = `session-item${isActive ? ' active' : ''}`;
+        el.className = `session-item${isActive ? ' active' : ''}${session.remote ? ' remote' : ''}`;
 
         let telemetryHtml = '';
         if (tele) {
@@ -3765,12 +3896,13 @@
         el.innerHTML = `
           <div class="session-name-row">
             <div class="session-name">${escapeHtml(session.platformName || session.name)}</div>
-            <button class="session-close-btn" data-tmux="${escapeHtml(session.tmuxSession)}" data-name="${escapeHtml(session.name)}" onclick="event.stopPropagation();closeSession(this.dataset.tmux,this.dataset.name)" title="Close session">&times;</button>
+            ${session.remote ? '' : `<button class="session-close-btn" data-tmux="${escapeHtml(session.tmuxSession)}" data-name="${escapeHtml(session.name)}" onclick="event.stopPropagation();closeSession(this.dataset.tmux,this.dataset.name)" title="Close session">&times;</button>`}
           </div>
           <div class="session-meta">
             <span class="type-badge ${sType}">${sType}</span>
             <span class="model-badge ${model}">${model}</span>
             <span class="platform-badge ${platform}" title="${platformLabel}">${platformIcon}</span>
+            ${session.machineNickname ? `<span class="machine-badge" title="Machine this session runs on">${escapeHtml(session.machineNickname)}</span>` : ''}
             <span>${elapsed}</span>
           </div>
           ${telemetryHtml}
@@ -4210,6 +4342,27 @@
     const WA_QR_TIMEOUT_MS = 30000; // 30s timeout for QR appearance
     let waLastError = ''; // last error message for display
 
+    // ── Pool-wide sessions (multi-machine) ───────────────────
+    // The WebSocket only carries THIS machine's sessions. When the agent runs a
+    // multi-machine pool, poll the aggregated view so every session — on every
+    // machine — shows in the list, each tagged with the machine it runs on.
+    let poolPollTimer = null;
+    function startPoolSessionsPolling() {
+      if (poolPollTimer) return;
+      const poll = async () => {
+        try {
+          const r = await fetch('/sessions?scope=pool', { headers: { 'Authorization': `Bearer ${token}` } });
+          if (!r.ok) return;
+          const j = await r.json();
+          selfMachineNickname = (j.pool && j.pool.selfMachineNickname) || null;
+          remoteSessions = (j.sessions || []).filter(s => s.remote === true);
+          renderSessionList();
+        } catch { /* best-effort — peers may be offline; next tick retries */ }
+      };
+      poll();
+      poolPollTimer = setInterval(poll, 15000);
+    }
+
     function startWaPolling() {
       if (waQrInterval) return;
       waQrPollingStarted = Date.now();
@@ -4480,6 +4633,13 @@
         display: ['flex'],
         onActivate: () => { if (typeof startMachines === 'function') startMachines(); },
         onDeactivate: () => { if (typeof stopMachines === 'function') stopMachines(); },
+      },
+      {
+        id: 'mandates',
+        panels: ['mandatesPanel'],
+        display: ['flex'],
+        onActivate: () => { if (typeof startMandates === 'function') startMandates(); },
+        onDeactivate: () => { if (typeof stopMandates === 'function') stopMandates(); },
       },
       {
         id: 'secrets',
@@ -8410,6 +8570,44 @@
     }
     function stopProcessHealth() {
       if (__phController) __phController.stop();
+    }
+
+    // ── Mandates tab (coordination-mandate spec, decision 2A) ──
+    // Same lazy dynamic-import pattern as Process Health. The PIN typed in this
+    // tab is sent once per action and never stored anywhere.
+    let __mndController = null;
+    let __mndModule = null;
+    async function startMandates() {
+      if (!__mndModule) {
+        try { __mndModule = await import('/dashboard/mandates.js'); }
+        catch (e) { console.error('[mandates] module load failed', e); return; }
+      }
+      if (!__mndController) {
+        const els = {
+          list: document.getElementById('mndList'),
+          audit: document.getElementById('mndAudit'),
+          notice: document.getElementById('mndNotice'),
+          stamp: document.getElementById('mndStamp'),
+          issueScope: document.getElementById('mndIssueScope'),
+          issueAgentA: document.getElementById('mndIssueAgentA'),
+          issueAgentB: document.getElementById('mndIssueAgentB'),
+          issueAuthorities: document.getElementById('mndIssueAuthorities'),
+          issueExpires: document.getElementById('mndIssueExpires'),
+          issuePin: document.getElementById('mndIssuePin'),
+          issueBtn: document.getElementById('mndIssueBtn'),
+          issueDetails: document.getElementById('mndIssueDetails'),
+          agentAPrefillNote: document.getElementById('mndAgentAPrefillNote'),
+        };
+        const fetchImpl = (url, opts = {}) => fetch(url, {
+          ...opts,
+          headers: { 'Authorization': `Bearer ${token}`, ...(opts.headers || {}) },
+        });
+        __mndController = __mndModule.createController({ doc: document, els, fetchImpl });
+      }
+      __mndController.start();
+    }
+    function stopMandates() {
+      if (__mndController) __mndController.stop();
     }
 
     // ── Preferences tab (Correction & Preference Learning Sentinel §10 Slice-2) ──

@@ -153,3 +153,29 @@ describe('MachinePoolRegistry', () => {
     expect(reg.getCapacity('m_unknown')).toBeNull();
   });
 });
+
+describe('MachinePoolRegistry — quotaState passthrough (quota-aware placement)', () => {
+  it('a heartbeat-reported quotaState surfaces on the assembled MachineCapacity', () => {
+    const machines = [{ machineId: 'm1', nickname: 'Laptop' }];
+    let now = 1_000_000;
+    const reg = new MachinePoolRegistry({
+      listMachines: () => machines,
+      clockSkewToleranceMs: 60_000,
+      failoverThresholdMs: 120_000,
+      now: () => now,
+    });
+    reg.recordHeartbeat({
+      machineId: 'm1',
+      selfReportedLastSeen: new Date(now).toISOString(),
+      loadAvg: 1.5,
+      quotaState: { blocked: true, blockedUntil: '2099-01-01T00:00:00Z', reason: '5-hour window at 100%' },
+    });
+    const cap = reg.getCapacity('m1');
+    expect(cap?.quotaState).toEqual({ blocked: true, blockedUntil: '2099-01-01T00:00:00Z', reason: '5-hour window at 100%' });
+
+    // A later heartbeat WITHOUT quotaState clears it (unknown ≠ blocked).
+    now += 1000;
+    reg.recordHeartbeat({ machineId: 'm1', selfReportedLastSeen: new Date(now).toISOString(), loadAvg: 1.2 });
+    expect(reg.getCapacity('m1')?.quotaState).toBeUndefined();
+  });
+});
