@@ -14,6 +14,7 @@ tags:
 gate: "curl -sf -H \"Authorization: Bearer $INSTAR_AUTH_TOKEN\" http://localhost:${INSTAR_PORT:-4042}/evolution/proposals?status=proposed 2>/dev/null | python3 -c \"import sys,json; d=json.load(sys.stdin); exit(0 if len(d.get('proposals',[])) > 0 else 1)\""
 toolAllowlist: "*"
 unrestrictedTools: true
+mcpAccess: none
 ---
 Review pending evolution proposals: curl -s http://localhost:${INSTAR_PORT:-4042}/evolution/proposals?status=proposed
 

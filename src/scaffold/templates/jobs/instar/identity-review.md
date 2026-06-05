@@ -13,6 +13,7 @@ tags:
 gate: curl -sf http://localhost:${INSTAR_PORT:-4042}/health >/dev/null 2>&1 && test -f .instar/soul.md
 toolAllowlist: "*"
 unrestrictedTools: true
+mcpAccess: none
 ---
 Identity review — check your identity coherence and growth.
 

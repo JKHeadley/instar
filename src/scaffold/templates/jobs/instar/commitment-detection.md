@@ -14,6 +14,7 @@ tags:
 gate: curl -sf http://localhost:${INSTAR_PORT:-4042}/health >/dev/null 2>&1
 toolAllowlist: "*"
 unrestrictedTools: true
+mcpAccess: none
 ---
 Scan recent messages for commitments and promises.
 

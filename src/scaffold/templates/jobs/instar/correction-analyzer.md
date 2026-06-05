@@ -12,6 +12,7 @@ tags:
   - audit
 toolAllowlist: "*"
 unrestrictedTools: true
+mcpAccess: none
 ---
 Run the weekly Correction & Preference Learning analysis. This job exists because a correction the user makes in three different sessions over a week looks like three unrelated one-offs — the recurring ones, the ones that matter most, are exactly the ones no single session can see. This turns the accumulated, distilled record into a routed lesson, and closes the loop on the preference path.
 
