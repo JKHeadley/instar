@@ -135,6 +135,14 @@ describe('Feature Delivery Completeness', () => {
       'Multi-Session Autonomy',    // per-topic concurrent autonomous jobs (templates.ts + migrator parity)
       'Process Health (Dashboard Tab)', // Failure-Learning Loop read surface (templates.ts + migrator + shadow-marker parity)
       "Preferences I've learned about you", // Correction & Preference Learning Sentinel Slice 1a read surface (templates.ts + migrator + shadow-marker parity)
+      // Coordination-mandate family (coordination-mandate spec §7, G2.2–G2.4): framework-agnostic
+      // agent-facing capabilities in BOTH templates.ts and the migrator. Were untracked — a latent
+      // red this guard never caught while it sat quarantined in vitest.push.config.ts; tracked here
+      // as part of re-arming the gate (2026-06-05 suite triage).
+      'Coordination Mandate',           // mandate gate awareness (/mandate/evaluate; deny-by-default; requester≠authorizer)
+      'ReviewExchange (autonomous code review)', // mandate-gated two-party review sign-off protocol
+      'Cutover Readiness',              // migration readiness read surface (/cutover-readiness; the door stays the operator's)
+      '**Session Boot Self-Knowledge**', // vault secret NAMES + operational facts at boot (spec session-boot-self-knowledge; templates.ts + migrator + shadow-marker parity)
     ];
 
     for (const section of featureSections) {
@@ -237,6 +245,7 @@ describe('Feature Delivery Completeness', () => {
       'Applying config & hook changes to running sessions', // /sessions/restart-all + /sessions/refresh: session-lifecycle operational knowledge in the /sessions/* family (operator/dashboard-facing — CapabilityIndex denylists /sessions/*, like /sessions/reap-log + /sessions/reaper/audit). Templated + migrated for awareness, but not a framework-shadowed user-invokable capability.
       '/worktrees/agent-reaper',                          // RESPONSIBLE-RESOURCE-USAGE stale-worktree reclaim report: operational observability the agent READS to answer "which worktrees can I reclaim?" — like /sessions/reap-log, migrator-only (no template/shadow parity)
       'Topic-Flood Guard',                                // 2026-05-28 attention-queue circuit breaker: operational housekeeping the agent READS (state/attention-suppressed.jsonl) to answer "why are my notices grouped?" — like Sentinel Notifications, migrator-only (no template/shadow parity)
+      'Bounded Notification Surface',                     // 2026-06-05 flood #3 (worktree-detector unique-source dodge): the universal last-resort auto-topic budget inside createForumTopic + aggregate-at-the-emitter guidance — operational behavioral knowledge extending 'Topic-Flood Guard', migrator-only (no template/shadow parity)
       'Autonomous-fix loop ("just be Echo")',             // mentor.autonomousFix dark dogfooding-loop awareness: developer-layer operational knowledge added via migrator only (like Framework-Onboarding Mentor System), gated off by default — no new-agent template/shadow parity required
       'Multi-Machine Session Pool (active-active',         // multi-machine session-pool awareness: ships DARK (multiMachine.sessionPool.stage default 'dark'), no-op on a single-machine agent; discoverable via GET /pool + GET /capabilities — operational/dark capability, migrator-tracked like ContextWedgeSentinel/Topic-Flood Guard
       'Correction & Preference Learning Sentinel',         // the content-sniff marker migrateClaudeMd uses for the "Preferences I've learned about you" section (tracked as a featureSection above); this is the alternate-phrase check, like '/release-readiness' for Release Readiness
@@ -248,6 +257,10 @@ describe('Feature Delivery Completeness', () => {
       '/session/clock',                                    // ROBUST-SESSION-TIME-AWARENESS read surface (templated "Session Clock" + migrator): observability the agent READS to answer "how long have I been running / how much is left?" — like /codex/usage and /metrics/features, not a framework-shadowed user-invokable capability
       'Token-Burn Alerts',                                 // BurnDetector noise/activity-gate awareness (monitoring.burnDetection): operational observability the agent READS to answer "why am I getting these token alerts / turn them off" — migrator-only behavioral/config guidance like 'Topic-Flood Guard' / Sentinel Notifications, no user-invokable route / template-shadow parity. (Was previously untracked — a pre-existing red in this guard, fixed here.)
       '/resources/summary',                                // per-agent ResourceLedger Phase B (CPU/memory) READ surface (templated "Resource Usage (CPU + memory + rate-limit events)" + migrator): observability the agent READS to answer "how much CPU/memory am I using right now?" — like /codex/usage, /metrics/features, /session/clock, and /resources/rate-limits, not a framework-shadowed user-invokable capability
+      '/mandate/evaluate',                                 // alternate (content-sniff) check for Coordination Mandate — tracked as a featureSection above
+      '/review-exchange',                                  // alternate (content-sniff) check for ReviewExchange — tracked as a featureSection above
+      '/cutover-readiness',                                // alternate (content-sniff) check for Cutover Readiness — tracked as a featureSection above
+      '/cutover-readiness/import-dryrun',                  // sub-line splice sniff key: the migrateClaudeMd else-if branch inserts the import-rehearsal line INTO the already-tracked Cutover Readiness section for agents that predate it (like '/corrections' for Preferences)
     ];
 
     it('all new migrator CLAUDE.md sections are tracked', () => {

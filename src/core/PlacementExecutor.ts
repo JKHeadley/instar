@@ -132,24 +132,47 @@ export class PlacementExecutor {
     const tp = req.topicMetadata ?? {};
     // Eligible = online (clock-ok machines are already excluded upstream via the registry,
     // but we also honor an explicit offline flag here for determinism).
-    let candidates = req.machineRegistry.filter((m) => m.online && m.clockSkewStatus !== 'suspect-clock-removed');
+    let eligible = req.machineRegistry.filter((m) => m.online && m.clockSkewStatus !== 'suspect-clock-removed');
+
+    // Quota gate (2026-06-05, quota-aware placement): a machine whose LLM
+    // account is blocked (provider block in effect / 5-hour window exhausted,
+    // self-reported in its capacity heartbeat) cannot do the work a NEW
+    // placement needs — placing a topic there is silence the user has to
+    // discover. Drop quota-blocked machines from the candidate pool UNLESS
+    // every otherwise-eligible machine is blocked (placing somewhere beats
+    // placing nowhere; the decision carries escalationReason so the caller can
+    // surface it). A HARD PIN still wins below — the user's explicit pin is
+    // honored on a blocked machine, with the reason saying so. Absent
+    // quotaState (older heartbeats) = not blocked.
+    const quotaOk = eligible.filter((m) => m.quotaState?.blocked !== true);
+    const allQuotaBlocked = eligible.length > 0 && quotaOk.length === 0;
+    let candidates = allQuotaBlocked ? eligible : quotaOk;
+    const quotaNote = allQuotaBlocked ? 'all-machines-quota-blocked' : undefined;
 
     for (const step of this.policy.ordering) {
       if (step === 'hard-constraint') {
         // Required capabilities.
         if (tp.requiredCapabilities && tp.requiredCapabilities.length > 0) {
-          candidates = candidates.filter((m) => tp.requiredCapabilities!.every((c) => (m.capabilities ?? []).includes(c)));
+          const capOk = (m: MachineCapacity): boolean => tp.requiredCapabilities!.every((c) => (m.capabilities ?? []).includes(c));
+          candidates = candidates.filter(capOk);
+          eligible = eligible.filter(capOk); // the pin path below is quota-blind but never capability-blind
           if (candidates.length === 0) {
             return { chosenMachine: null, score: 0, reason: 'no-capable-machine', outcome: 'queued', escalationReason: 'capabilities-unsatisfiable' };
           }
         }
         // Hard pin: the named machine MUST run it; queue+escalate if unavailable (never re-route).
+        // Quota-blind by design — the user's explicit pin beats the quota gate;
+        // the decision reason carries the quota note so the caller can surface it.
         if (tp.pinned && tp.preferredMachine) {
-          const pinned = candidates.find((m) => m.machineId === tp.preferredMachine);
+          const pinned = eligible.find((m) => m.machineId === tp.preferredMachine);
           if (!pinned) {
             return { chosenMachine: null, score: 0, reason: 'hard-pin-unavailable', outcome: 'queued', escalationReason: 'hard-pin-unsatisfiable' };
           }
-          return { chosenMachine: pinned.machineId, score: this.score(pinned), reason: 'hard-pin', outcome: 'placed' };
+          return {
+            chosenMachine: pinned.machineId, score: this.score(pinned),
+            reason: 'hard-pin', outcome: 'placed',
+            escalationReason: pinned.quotaState?.blocked === true ? 'pinned-machine-quota-blocked' : undefined,
+          };
         }
       } else if (step === 'pin') {
         // Soft preference: prefer the named machine if eligible; else fall through (degrade).
@@ -174,7 +197,7 @@ export class PlacementExecutor {
           return { chosenMachine: null, score: 0, reason: 'no-online-machine', outcome: 'queued', escalationReason: 'no-capable-online-machine' };
         }
         const best = candidates.reduce((a, b) => (this.score(b) < this.score(a) ? b : a), candidates[0]);
-        return { chosenMachine: best.machineId, score: this.score(best), reason: 'least-loaded', outcome: 'placed' };
+        return { chosenMachine: best.machineId, score: this.score(best), reason: 'least-loaded', outcome: 'placed', escalationReason: quotaNote };
       }
     }
     // Ordering exhausted with no placement (e.g. no least-loaded step + no pin matched).
@@ -182,6 +205,6 @@ export class PlacementExecutor {
       return { chosenMachine: null, score: 0, reason: 'no-online-machine', outcome: 'queued', escalationReason: 'no-capable-online-machine' };
     }
     const best = candidates.reduce((a, b) => (this.score(b) < this.score(a) ? b : a), candidates[0]);
-    return { chosenMachine: best.machineId, score: this.score(best), reason: 'fallback-least-loaded', outcome: 'placed' };
+    return { chosenMachine: best.machineId, score: this.score(best), reason: 'fallback-least-loaded', outcome: 'placed', escalationReason: quotaNote };
   }
 }

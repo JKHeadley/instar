@@ -40,10 +40,12 @@ describe('Activity-aware session-timeout gate', () => {
   });
 
   it('gates the wall-clock kill on a true-idle check', () => {
-    // The kill block must consult both captureOutput (for idle-prompt) and
-    // hasActiveProcesses (for process-tree activity). Either signal of work
-    // defers the kill.
-    expect(SM_SOURCE).toMatch(/ageGateOutput\s*=\s*this\.captureOutput/);
+    // The kill block must consult both a pane-text idle check (for the
+    // idle-prompt) and hasActiveProcesses (for process-tree activity). Either
+    // signal of work defers the kill. Since task #77 the text check reads the
+    // blank-fill-immune MEANINGFUL tail (captureMeaningfulTail), not raw
+    // physical rows — tall-pane trailing blanks no longer blind the gate.
+    expect(SM_SOURCE).toMatch(/ageGateOutput\s*=\s*this\.captureMeaningfulTail/);
     expect(SM_SOURCE).toMatch(/ageGateHasProcs\s*=\s*this\.hasActiveProcesses/);
     expect(SM_SOURCE).toMatch(/IDLE_PROMPT_PATTERNS\.some\(p\s*=>\s*ageGateOutput\.includes\(p\)\)/);
   });

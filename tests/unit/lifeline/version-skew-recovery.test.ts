@@ -162,6 +162,55 @@ describe('Version-skew recovery — stuck-lock detection', () => {
   });
 });
 
+describe('Down-server replay drop-policy — restart windows must not burn replay budget', () => {
+  // Failure shape (2026-06-05, codey): each fleet-release restart window made
+  // every forwardToServer fail; 30s replay ticks burned all 3 replay attempts
+  // in ~90s and DROPPED head-of-queue messages. 39 records in codey's
+  // dropped-messages.json, 9 on 2026-06-05 alone, every one
+  // "Handoff to server failed after 3 replay attempts" — including the
+  // mentor's coaching messages. The drop policy exists for message-specific
+  // (poison) failures; a down server says nothing about the message — the
+  // same class the versionSkewActive exemption already covers.
+
+  it('replay failure increments the budget ONLY when the supervisor believes the server is healthy', () => {
+    const src = fs.readFileSync(
+      path.join(repoRoot, 'src', 'lifeline', 'TelegramLifeline.ts'),
+      'utf-8',
+    );
+    const replayLoop = extractSectionAroundFirstMatch(
+      src,
+      /private async replayQueue\(/,
+      8000,
+    );
+    expect(replayLoop).toBeTruthy();
+    // The healthy-gated increment must be present in the failure branch…
+    expect(replayLoop).toMatch(
+      /replayFailures\s*=\s*this\.supervisor\.healthy\s*\?\s*failures\s*\+\s*1\s*:\s*failures/,
+    );
+    // …and the old unconditional increment must be gone.
+    expect(replayLoop).not.toMatch(/replayFailures\s*=\s*failures\s*\+\s*1\s*;/);
+  });
+
+  it('the healthy-gated increment lives in the same loop as the drop check (one policy, one place)', () => {
+    const src = fs.readFileSync(
+      path.join(repoRoot, 'src', 'lifeline', 'TelegramLifeline.ts'),
+      'utf-8',
+    );
+    const replayLoop = extractSectionAroundFirstMatch(
+      src,
+      /private async replayQueue\(/,
+      8000,
+    );
+    expect(replayLoop).toBeTruthy();
+    const guardIdx = replayLoop!.indexOf('this.supervisor.healthy ? failures + 1');
+    const dropIdx = replayLoop!.indexOf('MAX_REPLAY_FAILURES');
+    expect(guardIdx).toBeGreaterThan(0);
+    expect(dropIdx).toBeGreaterThan(0);
+    // Drop check first (top of loop), guarded increment in the failure branch.
+    expect(dropIdx).toBeLessThan(guardIdx);
+  });
+});
+
 /**
  * Helper: pull a region of the file starting at the first regex match,
  * returning up to `length` characters of context. Lets us scope source

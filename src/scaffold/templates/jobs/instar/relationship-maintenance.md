@@ -12,5 +12,6 @@ tags:
   - exec:prompt
 toolAllowlist: "*"
 unrestrictedTools: true
+mcpAccess: none
 ---
 Review all relationship files in .instar/relationships/. Note anyone you haven't heard from in over 2 weeks who has significance >= 3. If there are observations worth surfacing, report them. If everything looks fine, do nothing.

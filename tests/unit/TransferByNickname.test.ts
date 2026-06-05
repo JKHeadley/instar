@@ -68,3 +68,59 @@ describe('planTransferByNickname (§L4/§L5)', () => {
     expect(p.action).toBe('noop');
   });
 });
+
+// ── Idempotency before the rate limit (2026-06-05 incident) ─────────────
+// A retried/replayed "move to laptop" hit the transfer cooldown and told the
+// user "I can't move this right now (rate-limited)" SECONDS after "Moving this
+// conversation to Laptop" — for one request that had already succeeded. A
+// duplicate of an already-satisfied move must read as "already there", never
+// as a rate-limit rejection.
+describe('planTransferByNickname — duplicate-move idempotency', () => {
+  it('already ON the target within the rate window → noop, NOT rate-limited (the incident)', () => {
+    const p = planTransferByNickname(CMD, state({
+      currentOwnerOf: () => 'm_mini',
+      lastPlacementUpdateAt: () => 999_995, // 5ms ago — inside the 10s window
+      now: () => 1_000_000,
+    }), 's1');
+    expect(p).toMatchObject({ action: 'noop', detail: 'already-on-target' });
+  });
+
+  it('already PINNED to the target (ownership not yet re-placed) within the rate window → noop, NOT rate-limited', () => {
+    const p = planTransferByNickname(CMD, state({
+      currentOwnerOf: () => 'm_ws',          // still owned by the old machine
+      currentPinOf: () => 'm_mini',          // but the pin already points at the target
+      lastPlacementUpdateAt: () => 999_995,
+      now: () => 1_000_000,
+    }), 's1');
+    expect(p).toMatchObject({ action: 'noop', detail: 'already-pinned-to-target' });
+  });
+
+  it('a move to a DIFFERENT machine within the window is still rate-limited (the guard keeps its job)', () => {
+    const p = planTransferByNickname(CMD, state({
+      currentOwnerOf: () => 'm_ws',
+      currentPinOf: () => 'm_ws',            // pinned elsewhere — this is a real move
+      lastPlacementUpdateAt: () => 999_995,
+      now: () => 1_000_000,
+    }), 's1');
+    expect(p).toMatchObject({ action: 'reject', rejectReason: 'rate-limited' });
+  });
+
+  it('without currentPinOf (backward compat) a pin-only duplicate still rate-limits as before', () => {
+    const p = planTransferByNickname(CMD, state({
+      currentOwnerOf: () => 'm_ws',
+      // currentPinOf absent — pre-existing consumers
+      lastPlacementUpdateAt: () => 999_995,
+      now: () => 1_000_000,
+    }), 's1');
+    expect(p).toMatchObject({ action: 'reject', rejectReason: 'rate-limited' });
+  });
+
+  it('already-pinned noop still respects an offline target (no confirm prompt needed — nothing moves)', () => {
+    const p = planTransferByNickname(CMD, state({
+      currentOwnerOf: () => 'm_ws',
+      currentPinOf: () => 'm_mini',
+      isOnline: () => false,
+    }), 's1');
+    expect(p.action).toBe('noop');
+  });
+});

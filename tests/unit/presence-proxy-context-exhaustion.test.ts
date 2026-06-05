@@ -62,6 +62,39 @@ Build successful`;
     const result = detectContextExhaustion(snapshot);
     expect(result.matched).toBe(false);
   });
+
+  it('does not treat normal compaction resume banners as context exhaustion', () => {
+    const snapshot = `Your session paused for context compaction and has now resumed.
+
+--- IDENTITY RECOVERY (post-compaction) ---
+The context below is what you had before the reset.
+
+❯`;
+    const result = detectContextExhaustion(snapshot);
+    expect(result.matched).toBe(false);
+  });
+
+  it('does not treat Conversation compacted prompt banners as context exhaustion', () => {
+    const snapshot = `✱ Conversation compacted (ctrl+o for history)
+
+> /compact
+  Compacted
+
+❯`;
+    const result = detectContextExhaustion(snapshot);
+    expect(result.matched).toBe(false);
+  });
+
+  it('still detects context exhaustion when a compaction banner includes the real failure text', () => {
+    const snapshot = `✱ Conversation compacted (ctrl+o for history)
+
+└ Error: Error during compaction: Conversation too long. Press esc twice to go up a few messages and try again.
+
+❯`;
+    const result = detectContextExhaustion(snapshot);
+    expect(result.matched).toBe(true);
+    expect(result.confidence).toBe('high');
+  });
 });
 
 describe('PresenceProxy source — context exhaustion integration', () => {

@@ -1,0 +1,41 @@
+# decision-audit-gate — a PR that changes in-scope code must carry gate evidence.
+#
+# The instar-dev pre-commit gate runs LOCALLY (husky). When the hook wiring is
+# silently absent (live case 2026-06-05: raw `git worktree add` worktrees have
+# no husky shim — task #81), commits bypass the gate entirely and nothing
+# notices. This check makes the bypass visible at the PR boundary: in-scope
+# changes must be accompanied by a decision-audit record — a per-entry
+# `.instar/instar-dev-decisions/<ts>-<slug>.json` (post-#827) or a legacy
+# `.instar/instar-dev-decisions.jsonl` modification (transition grace).
+#
+# Exemptions (bot authors, the release-cut PR) live in
+# scripts/decision-audit-presence-check.mjs.
+
+name: decision-audit-gate
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  decision-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: In-scope changes must carry a decision-audit record
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_AUTHOR_TYPE: ${{ github.event.pull_request.user.type }}
+        run: node scripts/decision-audit-presence-check.mjs

@@ -731,6 +731,12 @@ export class ServerSupervisor extends EventEmitter {
         timeout: 5000,
         cwd: this.projectDir,
         operation: 'src/lifeline/ServerSupervisor.ts:378',
+        // Read-only check. On a dogfooding agent (projectDir IS the instar
+        // source tree) the SourceTreeGuard otherwise rejects this call and
+        // the thrown error aborts recovery — prolonging the exact outage the
+        // preflight exists to end (live: echo, 2026-06-05). Same opt-in class
+        // as the failure-learning loop's git reads (#550).
+        sourceTreeReadOk: true,
       });
       if (statusText.includes('rebase in progress') || statusText.includes('interactive rebase in progress')) {
         console.log('[Supervisor] Preflight: stuck git rebase detected — aborting');

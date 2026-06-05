@@ -53,6 +53,7 @@ export interface TelegramSink {
   findOrCreateForumTopic(
     name: string,
     iconColor?: number,
+    opts?: { origin?: 'user' | 'system' | 'auto'; label?: string },
   ): Promise<{ topicId: number; name: string; reused: boolean }>;
   sendToTopic(
     topicId: number,
@@ -222,7 +223,7 @@ export class TelegramBridge {
     const topicName = this.buildTopicName(matcher, evt.subject ?? evt.text);
     let topicId: number | undefined;
     try {
-      const created = await this.telegram.findOrCreateForumTopic(topicName);
+      const created = await this.telegram.findOrCreateForumTopic(topicName, undefined, { label: 'threadline-bridge' });
       topicId = created.topicId;
       this.bindings.set(evt.threadId, {
         threadId: evt.threadId,

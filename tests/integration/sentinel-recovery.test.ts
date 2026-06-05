@@ -85,12 +85,16 @@ describe('DeliveryFailureSentinel — recovery happy path', () => {
       whoamiCache,
     });
 
+    // start() now performs the FIRST drain itself (startup tick — the
+    // restart-cascade fix: short up-windows must not wait out the 5-min
+    // watchdog interval). The pre-existing queued row is recovered by
+    // start(); a subsequent explicit tick finds nothing left.
     await sentinel.start();
-    const counters = await sentinel.tick();
-    expect(counters.recovered).toBe(1);
-
     const row = store.findByDeliveryId(id);
     expect(row?.state).toBe('delivered-recovered');
+
+    const counters = await sentinel.tick();
+    expect(counters.recovered).toBe(0); // backlog already drained by start()
 
     // First call is the recovery POST.
     const first = calls[0];
@@ -151,4 +155,55 @@ describe('DeliveryFailureSentinel — recovery happy path', () => {
     await sentinel.stop();
     store.close();
   });
+
+  it('start() drains a pre-existing backlog immediately (restart-cascade survival — no 5-min wait)', async () => {
+    // Live failure shape (2026-06-05 ~15:40-16:50Z): a restart cascade gave
+    // up-windows shorter than boot-time + the 5-min watchdog interval, so
+    // five queued user messages survived FOUR up-windows undelivered while
+    // fresh sends in the same windows succeeded. The contract pinned here:
+    // start() itself performs the first drain — a booted sentinel means a
+    // drained backlog, with no dependency on the watchdog timer firing.
+    const store = PendingRelayStore.open('echo', stateDir);
+    const ids = [
+      '33333333-3333-4333-8333-333333333333',
+      '44444444-4444-4444-8444-444444444444',
+    ];
+    // Distinct topics — the sentinel's per-topic rate limit (30s) is its own
+    // tested behavior; this test pins the START-TIME drain, not pacing.
+    ids.forEach((id, i) => {
+      store.enqueue({
+        delivery_id: id,
+        topic_id: 9 + i,
+        text_hash: id[0].repeat(64),
+        text: Buffer.from(`backlog ${id.slice(0, 8)}`, 'utf-8'),
+        http_code: 0, // connection-refused class — the cascade signature
+        attempted_port: 4042,
+      });
+    });
+
+    const postReply = vi.fn(async () => ({ status: 200, body: '{"ok":true}' }));
+    const whoamiCache = new WhoamiCache({
+      fetchFn: async () => ({ agentId: 'echo', port: 4042 }),
+    });
+    const bootId = getOrCreateBootId(stateDir, '0.28.0');
+    const sentinel = new DeliveryFailureSentinel({
+      store,
+      configPath,
+      readConfig: () => ({ port: 4042, authToken: 'tok', agentId: 'echo' }),
+      bootId,
+      toneGate: null,
+      postReply,
+      whoamiCache,
+    });
+
+    // No explicit tick. start() alone must deliver the backlog.
+    await sentinel.start();
+    for (const id of ids) {
+      expect(store.findByDeliveryId(id)?.state).toBe('delivered-recovered');
+    }
+    expect(postReply.mock.calls.length).toBeGreaterThanOrEqual(2);
+
+    await sentinel.stop();
+    store.close();
+  }, 10_000);
 });

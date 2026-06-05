@@ -416,7 +416,16 @@ export class TelegramLifeline {
       );
     } catch { /* non-critical */ }
     try {
-      this.stopHeartbeat = startHeartbeat(this.projectConfig.projectDir + '-lifeline');
+      // reRegister callback: if an old lifeline generation's shutdown deleted
+      // this generation's registration (coordinated version-skew restart,
+      // drift auto-promote), the next heartbeat resurrects the entry.
+      this.stopHeartbeat = startHeartbeat(this.projectConfig.projectDir + '-lifeline', undefined, () => {
+        registerAgent(
+          this.projectConfig.projectDir + '-lifeline',
+          `${this.projectConfig.projectName}-lifeline`,
+          this.projectConfig.port + 1000,
+        );
+      });
     } catch (err) {
       console.error(`[Lifeline] Registry heartbeat failed to start (non-critical): ${err instanceof Error ? err.message : err}`);
     }
@@ -583,7 +592,10 @@ export class TelegramLifeline {
     if (this.sessionRecoveryInterval) { clearInterval(this.sessionRecoveryInterval); this.sessionRecoveryInterval = null; }
     if (this.watchdog) this.watchdog.stop();
     try { if (this.stopHeartbeat) this.stopHeartbeat(); } catch { /* non-critical */ }
-    try { unregisterAgent(this.projectConfig.projectDir + '-lifeline'); } catch { /* non-critical */ }
+    // pid-guarded: only remove our OWN registration — an old lifeline
+    // generation's late shutdown must not delete the successor's fresh entry
+    // (registry lost-update race; same shape as the server-side fix).
+    try { unregisterAgent(this.projectConfig.projectDir + '-lifeline', { onlyIfPid: process.pid }); } catch { /* non-critical */ }
     try { releaseLockFile(this.lockPath); } catch { /* non-critical */ }
     try { await this.supervisor.stop(); } catch { /* best-effort */ }
   }
@@ -1839,8 +1851,16 @@ export class TelegramLifeline {
       if (forwarded) {
         replayed++;
       } else {
-        // Re-queue with incremented failure counter
-        msg.replayFailures = failures + 1;
+        // Re-queue — but only burn replay budget when the server is believed
+        // HEALTHY and still refused the message (a message-specific/poison
+        // failure, which is what the drop policy exists for). A forward that
+        // fails because the server is DOWN (update restart, crash window) says
+        // nothing about the message — same class as the versionSkewActive
+        // exemption above. Without this guard, a multi-minute restart window
+        // with 30s replay ticks burned all 3 attempts in ~90s and dropped
+        // head-of-queue messages (live: 39 dropped on codey, 9 on 2026-06-05
+        // alone, every one "Handoff to server failed" during a bounce).
+        msg.replayFailures = this.supervisor.healthy ? failures + 1 : failures;
         this.queue.enqueue(msg);
         failed++;
         // If the server just went down during replay, stop replaying —

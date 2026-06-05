@@ -133,6 +133,67 @@ describe('MentorOnboardingRunner', () => {
   });
 });
 
+describe('MentorOnboardingRunner — durable lastResult (restart-survivable observability)', () => {
+  // Restart cadence ≈ tick cadence on a frequent-release day wiped the
+  // in-memory lastResult essentially always — the loop was undiagnosable from
+  // GET /mentor/status. These pin the load/save service contract.
+
+  it('hydrates lastResult from loadLastResult at construction (restart keeps the record)', () => {
+    const persisted = { ran: false, reason: 'disabled' as const, at: 1717000000000 };
+    const svc = fakeServices({ loadLastResult: vi.fn(() => persisted) });
+    const runner = new MentorOnboardingRunner(svc, () => ({ ...DEFAULT_MENTOR_CONFIG }));
+    expect(runner.status().lastResult).toEqual(persisted);
+    expect(svc.loadLastResult).toHaveBeenCalledTimes(1);
+  });
+
+  it('absent persistence services keep the old in-memory behavior (lastResult starts null)', () => {
+    const runner = new MentorOnboardingRunner(fakeServices(), () => ({ ...DEFAULT_MENTOR_CONFIG }));
+    expect(runner.status().lastResult).toBeNull();
+  });
+
+  it('a throwing loadLastResult is contained (starts null, does not crash construction)', () => {
+    const svc = fakeServices({ loadLastResult: vi.fn(() => { throw new Error('corrupt state file'); }) });
+    const runner = new MentorOnboardingRunner(svc, () => ({ ...DEFAULT_MENTOR_CONFIG }));
+    expect(runner.status().lastResult).toBeNull();
+  });
+
+  it('saveLastResult is invoked on every lastResult write: disabled, success, and failure', async () => {
+    // Disabled short-circuit
+    const saved: unknown[] = [];
+    const save = vi.fn((r: unknown) => { saved.push(r); });
+    const svcOff = fakeServices({ saveLastResult: save });
+    new MentorOnboardingRunner(svcOff, () => ({ ...DEFAULT_MENTOR_CONFIG })).startTick();
+    expect(saved).toHaveLength(1);
+    expect((saved[0] as { reason: string }).reason).toBe('disabled');
+
+    // Success path
+    const svcOk = fakeServices({ saveLastResult: save });
+    const cfgOn: MentorConfig = { ...DEFAULT_MENTOR_CONFIG, enabled: true, mode: 'dry-run' };
+    new MentorOnboardingRunner(svcOk, () => cfgOn).startTick();
+    await new Promise((res) => setTimeout(res, 10));
+    expect((saved[saved.length - 1] as { ran: boolean }).ran).toBe(true);
+
+    // Failure path
+    const svcFail = fakeServices({
+      saveLastResult: save,
+      spawnStageA: vi.fn(async () => { throw new Error('boom'); }),
+    });
+    new MentorOnboardingRunner(svcFail, () => cfgOn).startTick();
+    await new Promise((res) => setTimeout(res, 10));
+    expect((saved[saved.length - 1] as { reason: string }).reason).toBe('stage-a-failed');
+  });
+
+  it('a throwing saveLastResult is contained (in-memory value still lands, tick completes)', async () => {
+    const svc = fakeServices({ saveLastResult: vi.fn(() => { throw new Error('disk full'); }) });
+    const cfg: MentorConfig = { ...DEFAULT_MENTOR_CONFIG, enabled: true, mode: 'dry-run' };
+    const runner = new MentorOnboardingRunner(svc, () => cfg);
+    expect(runner.startTick().accepted).toBe(true);
+    await new Promise((res) => setTimeout(res, 10));
+    expect(runner.status().lastResult?.ran).toBe(true);
+    expect(runner.status().inFlight).toBe(false);
+  });
+});
+
 describe('MentorOnboardingRunner — autonomous-fix guardian branch ("just be Echo")', () => {
   function autoCfg(over: Partial<MentorConfig> = {}): MentorConfig {
     return {

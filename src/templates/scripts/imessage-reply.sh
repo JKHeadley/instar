@@ -47,8 +47,12 @@ PORT="${INSTAR_PORT:-4042}"
 # string-type guard so the { "secret": true } placeholder produced by
 # SecretMigrator cannot leak through as a bogus Bearer.
 AUTH_TOKEN="${INSTAR_AUTH_TOKEN:-}"
+AGENT_ID="${INSTAR_AGENT_ID:-}"
 if [ -z "$AUTH_TOKEN" ] && [ -f ".instar/config.json" ]; then
   AUTH_TOKEN=$(python3 -c "import json; v=json.load(open('.instar/config.json')).get('authToken',''); print(v if isinstance(v, str) else '')" 2>/dev/null)
+fi
+if [ -z "$AGENT_ID" ] && [ -f ".instar/config.json" ]; then
+  AGENT_ID=$(python3 -c "import json; print(json.load(open('.instar/config.json')).get('projectName',''))" 2>/dev/null)
 fi
 
 # Escape message for JSON
@@ -67,12 +71,17 @@ AUTH_HEADER=""
 if [ -n "$AUTH_TOKEN" ]; then
   AUTH_HEADER="Authorization: Bearer ${AUTH_TOKEN}"
 fi
+AGENT_HEADER=""
+if [ -n "$AGENT_ID" ]; then
+  AGENT_HEADER="X-Instar-AgentId: ${AGENT_ID}"
+fi
 
 # ── Step 1: Validate with server BEFORE sending (get single-use token) ──
 
 VALIDATE_RESPONSE=$(curl -s -w "\n%{http_code}" \
   -X POST "http://localhost:${PORT}/imessage/validate-send/${ENCODED_RECIPIENT}" \
   ${AUTH_HEADER:+-H "$AUTH_HEADER"} \
+  ${AGENT_HEADER:+-H "$AGENT_HEADER"} \
   -H 'Content-Type: application/json' \
   -d "{\"text\":${JSON_MSG}}" 2>/dev/null)
 
@@ -140,6 +149,7 @@ fi
 
 curl -s -o /dev/null -w "" -X POST "http://localhost:${PORT}/imessage/reply/${ENCODED_RECIPIENT}" \
   ${AUTH_HEADER:+-H "$AUTH_HEADER"} \
+  ${AGENT_HEADER:+-H "$AGENT_HEADER"} \
   -H 'Content-Type: application/json' \
   -d "{\"text\":${JSON_MSG},\"sendToken\":\"${SEND_TOKEN}\"}" 2>/dev/null || \
   echo "Warning: server confirmation failed (message was sent)" >&2

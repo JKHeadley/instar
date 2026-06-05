@@ -81,10 +81,12 @@ if (runMode && runCmd.length === 0) {
 // guard so the { "secret": true } placeholder produced by SecretMigrator
 // cannot leak through as a bogus Bearer.
 let authToken = process.env.INSTAR_AUTH_TOKEN || '';
+let agentId = process.env.INSTAR_AGENT_ID || '';
 let port;
 try {
   const config = JSON.parse(fs.readFileSync('.instar/config.json', 'utf-8'));
   if (!authToken && typeof config.authToken === 'string') authToken = config.authToken;
+  if (!agentId && typeof config.projectName === 'string') agentId = config.projectName;
   port = config.port;
 } catch (e) {
   if (!authToken) {
@@ -104,7 +106,10 @@ if (!resolvedPort) {
 const url = `http://localhost:${resolvedPort}/secrets/retrieve/${token}${consume ? '?consume=true' : ''}`;
 const res = await fetch(url, {
   method: 'POST',
-  headers: { 'Authorization': `Bearer ${authToken}` },
+  headers: {
+    'Authorization': `Bearer ${authToken}`,
+    ...(agentId ? { 'X-Instar-AgentId': agentId } : {}),
+  },
 });
 
 if (!res.ok) {
@@ -160,7 +165,10 @@ async function consumeSubmission() {
   try {
     await fetch(`http://localhost:${resolvedPort}/secrets/retrieve/${token}?consume=true`, {
       method: 'POST',
-      headers: { 'Authorization': `Bearer ${authToken}` },
+      headers: {
+        'Authorization': `Bearer ${authToken}`,
+        ...(agentId ? { 'X-Instar-AgentId': agentId } : {}),
+      },
     });
   } catch {
     // Non-fatal — the sliding/absolute-cap cleanup will reclaim it regardless.

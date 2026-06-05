@@ -79,6 +79,10 @@ export interface SecretSyncHandle {
   provisionAll: () => Promise<{ machineId: string; ok: boolean; reason?: string }[]>;
   /** Leaf key-paths of secrets present in this machine's vault — NAMES only, never values. */
   localKeyPaths: () => string[];
+  /** Vault readability — distinguishes a genuinely empty vault from a
+   *  decrypt-failure (the 2026-06-05 masking: a key-bifurcated vault reported
+   *  localKeyPaths: [] as if empty). 'decrypt-failed' carries the precise error. */
+  vaultStatus?: () => { status: 'ok' | 'empty' | 'decrypt-failed'; error?: string };
   /** Online registered peers this machine would sync to (machineId + nickname). */
   syncTargets: () => { machineId: string; nickname?: string | null }[];
 }

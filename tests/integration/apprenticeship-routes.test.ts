@@ -90,6 +90,11 @@ function appWith(ctx: RouteContext): express.Express {
   return app;
 }
 
+const UXOK = {
+  dupNotices: 0, infraNoiseMsgs: 0, asksOfUser: 0, contentFreeUpdates: 0,
+  modalitiesExercised: ['text'], duringRestartChurn: false,
+};
+
 describe('/apprenticeship routes (integration)', () => {
   let tmpDir: string;
   let stateDir: string;
@@ -193,6 +198,10 @@ describe('/apprenticeship routes (integration)', () => {
         infraItems: ['ripgrep missing'],
         kind: 'mentor-mentee-differential',
         channel: 'telegram-playwright',
+        operatorSeatUx: {
+          dupNotices: 0, infraNoiseMsgs: 0, asksOfUser: 0, contentFreeUpdates: 0,
+          modalitiesExercised: ['text'], duringRestartChurn: false,
+        },
       });
     expect(created.status).toBe(201);
     expect(created.body.kind).toBe('mentor-mentee-differential');
@@ -209,6 +218,10 @@ describe('/apprenticeship routes (integration)', () => {
         cycleNumber: 1,
         task: 'Other task',
         menteeOutput: 'other output',
+        operatorSeatUx: {
+          dupNotices: 0, infraNoiseMsgs: 0, asksOfUser: 0, contentFreeUpdates: 0,
+          modalitiesExercised: ['text'], duringRestartChurn: false,
+        },
       })
       .expect(201);
 
@@ -232,6 +245,25 @@ describe('/apprenticeship routes (integration)', () => {
     store.close();
   });
 
+  it('REFUSES a cycle without operatorSeatUx over HTTP with the self-describing shape (UX-blindspot gate)', async () => {
+    const store = makeCycleStore();
+    const app = appWith(ctxFor(stateDir, makeProgram(), store));
+
+    const refused = await request(app)
+      .post('/apprenticeship/cycles')
+      .set(auth())
+      .send({
+        instanceId: 'echo-to-codey',
+        cycleNumber: 1,
+        task: 'drive without observing',
+        menteeOutput: 'no verdict supplied',
+      });
+    expect(refused.status).toBe(400);
+    expect(refused.body.error).toContain('operatorSeatUx is required');
+    expect(refused.body.error).toContain('modalitiesExercised'); // caller can self-serve the fix
+    store.close();
+  });
+
   it('records manual overseer cycle rows with their execution channel', async () => {
     const store = makeCycleStore();
     const app = appWith(ctxFor(stateDir, makeProgram(), store));
@@ -250,6 +282,10 @@ describe('/apprenticeship routes (integration)', () => {
         infraItems: ['add capability awareness for cycle writes'],
         kind: 'overseer-apprentice-devreview',
         channel: 'direct-shortcut',
+        operatorSeatUx: {
+          dupNotices: 0, infraNoiseMsgs: 0, asksOfUser: 0, contentFreeUpdates: 0,
+          modalitiesExercised: ['text'], duringRestartChurn: false,
+        },
       });
 
     expect(created.status).toBe(201);
@@ -284,6 +320,7 @@ describe('/apprenticeship routes (integration)', () => {
       createdAt: '2026-06-03T08:00:00.000Z',
       task: 'review 1',
       menteeOutput: 'output',
+      operatorSeatUx: UXOK,
       kind: 'overseer-apprentice-devreview',
     });
     store.record({
@@ -293,6 +330,7 @@ describe('/apprenticeship routes (integration)', () => {
       createdAt: '2026-06-03T09:00:00.000Z',
       task: 'review 2',
       menteeOutput: 'output',
+      operatorSeatUx: UXOK,
       kind: 'overseer-apprentice-devreview',
     });
     store.record({
@@ -302,6 +340,7 @@ describe('/apprenticeship routes (integration)', () => {
       createdAt: '2026-06-03T10:00:00.000Z',
       task: 'mentor loop',
       menteeOutput: 'output',
+      operatorSeatUx: UXOK,
       kind: 'mentor-mentee-differential',
     });
     store.record({
@@ -311,6 +350,7 @@ describe('/apprenticeship routes (integration)', () => {
       createdAt: '2026-06-03T11:00:00.000Z',
       task: 'review loop',
       menteeOutput: 'output',
+      operatorSeatUx: UXOK,
       kind: 'overseer-apprentice-devreview',
     });
 
@@ -350,6 +390,7 @@ describe('/apprenticeship routes (integration)', () => {
       createdAt: '2026-06-03T09:00:00.000Z',
       task: 'old open',
       menteeOutput: 'output',
+      operatorSeatUx: UXOK,
     });
     store.record({
       id: 'young-open',
@@ -358,6 +399,7 @@ describe('/apprenticeship routes (integration)', () => {
       createdAt: '2026-06-03T11:30:00.000Z',
       task: 'young open',
       menteeOutput: 'output',
+      operatorSeatUx: UXOK,
     });
     store.record({
       id: 'old-closed',
@@ -366,6 +408,7 @@ describe('/apprenticeship routes (integration)', () => {
       createdAt: '2026-06-03T08:00:00.000Z',
       task: 'old closed',
       menteeOutput: 'output',
+      operatorSeatUx: UXOK,
       status: 'closed',
     });
     store.record({
@@ -375,6 +418,7 @@ describe('/apprenticeship routes (integration)', () => {
       createdAt: '2026-06-03T08:00:00.000Z',
       task: 'other old',
       menteeOutput: 'output',
+      operatorSeatUx: UXOK,
     });
 
     const app = appWith(ctxFor(stateDir, makeProgram(), store, makeCycleSlaMonitor(store)));

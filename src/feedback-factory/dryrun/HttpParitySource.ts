@@ -54,6 +54,26 @@ export interface HttpParitySourceConfig {
   fetchImpl?: FetchLike;
   /** Optional path override (defaults to `/api/instar/read`). */
   readPath?: string;
+  /**
+   * Per-page fetch timeout in ms. Default 90 000 (a healthy full snapshot ran
+   * ~15s/page, so 90s is ~6× headroom). Enforced via AbortSignal so one stalled
+   * Portal page request cannot hang `prepare()` forever — the 2026-06-05 live
+   * incident: a silent page stall left a triggered parity pass unresolved for
+   * 10+ minutes with no logged outcome and nothing recorded.
+   */
+  pageTimeoutMs?: number;
+  /**
+   * Total budget for the whole snapshot fetch in ms. Default 600 000 (10 min).
+   * Checked between pages AND bounds each page's abort signal, so `prepare()`
+   * has a hard upper duration even at the 200-page safety cap.
+   */
+  totalTimeoutMs?: number;
+  /**
+   * When true, `prepare()` ALSO captures the raw cluster + feedback rows verbatim
+   * (every field as the wire delivered it, no coercion) for the AS-IS import
+   * runner. Off by default — parity mode only needs the typed cluster projection.
+   */
+  captureRaw?: boolean;
 }
 
 /** Shape returned by Portal at `/api/instar/read` (only the fields we read). */
@@ -119,16 +139,24 @@ function coerceCluster(row: unknown): PortalCluster {
  */
 export class HttpParitySource implements ParitySource {
   private snapshot: PortalCluster[] | null = null;
+  /** Raw rows verbatim (only populated when `captureRaw` is set). */
+  private rawClusters: Map<string, Record<string, unknown>> | null = null;
+  private rawFeedback: Map<string, Record<string, unknown>> | null = null;
+  private rawFeedbackUnkeyed: Record<string, unknown>[] = [];
   private readonly pageSize: number;
   private readonly maxPages: number;
   private readonly fetch: FetchLike;
   private readonly readPath: string;
+  private readonly pageTimeoutMs: number;
+  private readonly totalTimeoutMs: number;
 
   constructor(private readonly config: HttpParitySourceConfig) {
     this.pageSize = config.pageSize ?? 1000;
     this.maxPages = config.maxPages ?? 200;
     this.fetch = config.fetchImpl ?? (globalThis.fetch as unknown as FetchLike);
     this.readPath = config.readPath ?? '/api/instar/read';
+    this.pageTimeoutMs = config.pageTimeoutMs ?? 90_000;
+    this.totalTimeoutMs = config.totalTimeoutMs ?? 600_000;
     if (!this.fetch) {
       throw new HttpParitySourceError(500, 'no fetch available — pass fetchImpl or run on a runtime with global fetch');
     }
@@ -137,8 +165,12 @@ export class HttpParitySource implements ParitySource {
   /** Pre-fetch and cache the cluster snapshot. Idempotent: re-calling re-fetches. */
   async prepare(): Promise<void> {
     const byId = new Map<string, PortalCluster>();
+    const rawClusters = this.config.captureRaw ? new Map<string, Record<string, unknown>>() : null;
+    const rawFeedback = this.config.captureRaw ? new Map<string, Record<string, unknown>>() : null;
+    const rawFeedbackUnkeyed: Record<string, unknown>[] = [];
     const base = this.config.baseUrl.replace(/\/+$/, '');
     const authHeader = `Bearer ${this.config.token}`;
+    const deadline = Date.now() + this.totalTimeoutMs;
 
     for (let page = 0; page < this.maxPages; page++) {
       const offset = page * this.pageSize;
@@ -146,7 +178,35 @@ export class HttpParitySource implements ParitySource {
       if (this.config.status) qs.set('status', this.config.status);
       const url = `${base}${this.readPath}?${qs.toString()}`;
 
-      const res = await this.fetch(url, { headers: { Authorization: authHeader, Accept: 'application/json' } });
+      // Hard duration bound (the 2026-06-05 hang fix): every page fetch carries
+      // an AbortSignal capped by BOTH the per-page timeout and the remaining
+      // total budget. A stalled request aborts instead of hanging the pass —
+      // the route layer then logs the classified failure (per #807's
+      // always-logged-outcome contract) and records nothing.
+      const remainingMs = deadline - Date.now();
+      if (remainingMs <= 0) {
+        throw new HttpParitySourceError(
+          504,
+          `parity snapshot fetch exceeded the total budget (${this.totalTimeoutMs}ms) before page ${page}`,
+        );
+      }
+      const budgetMs = Math.min(this.pageTimeoutMs, remainingMs);
+      let res: Awaited<ReturnType<FetchLike>>;
+      try {
+        res = await this.fetch(url, {
+          headers: { Authorization: authHeader, Accept: 'application/json' },
+          signal: AbortSignal.timeout(budgetMs),
+        });
+      } catch (err) {
+        const name = err instanceof Error ? err.name : '';
+        if (name === 'TimeoutError' || name === 'AbortError') {
+          throw new HttpParitySourceError(
+            504,
+            `Portal /api/instar/read page ${page} timed out after ${budgetMs}ms (pageTimeoutMs=${this.pageTimeoutMs}, totalTimeoutMs=${this.totalTimeoutMs})`,
+          );
+        }
+        throw err;
+      }
       if (!res.ok) {
         let detail = '';
         try { detail = (await res.text()).slice(0, 200); } catch { /* ignore */ }
@@ -155,21 +215,62 @@ export class HttpParitySource implements ParitySource {
           `Portal /api/instar/read failed (page ${page}, status ${res.status} ${res.statusText}): ${detail}`,
         );
       }
-      const envelope = (await res.json()) as ReadResponseEnvelope;
-      const rawClusters = envelope?.data?.clusters ?? [];
-      for (const raw of rawClusters) {
+      // The abort signal also bounds the BODY read — a page whose headers arrive
+      // in time but whose body streams too slowly aborts here, not in fetch().
+      // Classify it the same way (live finding, 2026-06-05 11:01Z: a slow page
+      // body propagated the raw "operation was aborted" instead of naming the
+      // page and budgets).
+      let envelope: ReadResponseEnvelope;
+      try {
+        envelope = (await res.json()) as ReadResponseEnvelope;
+      } catch (err) {
+        const name = err instanceof Error ? err.name : '';
+        if (name === 'TimeoutError' || name === 'AbortError') {
+          throw new HttpParitySourceError(
+            504,
+            `Portal /api/instar/read page ${page} body read timed out after ${budgetMs}ms (pageTimeoutMs=${this.pageTimeoutMs}, totalTimeoutMs=${this.totalTimeoutMs})`,
+          );
+        }
+        throw err;
+      }
+      const pageClusters = envelope?.data?.clusters ?? [];
+      for (const raw of pageClusters) {
         const c = coerceCluster(raw);
         if (!byId.has(c.clusterId)) byId.set(c.clusterId, c);
+        // Raw capture: keep the wire row VERBATIM (no coercion) for the AS-IS
+        // import. Dedup by the same clusterId (pages repeat clusters).
+        if (rawClusters && !rawClusters.has(c.clusterId)) {
+          rawClusters.set(c.clusterId, raw as Record<string, unknown>);
+        }
+      }
+      if (rawFeedback) {
+        for (const raw of envelope?.data?.feedback ?? []) {
+          if (!raw || typeof raw !== 'object') continue;
+          const r = raw as Record<string, unknown>;
+          const idv = r['feedbackId'] ?? r['feedback_id'] ?? r['id'];
+          const id = typeof idv === 'string' ? idv : typeof idv === 'number' ? String(idv) : '';
+          // Feedback is the paginated table itself; offset pagination can repeat a
+          // row across page boundaries under concurrent writes — dedup by id when
+          // one resolves, keep verbatim otherwise (the import will surface it).
+          if (id) {
+            if (!rawFeedback.has(id)) rawFeedback.set(id, r);
+          } else {
+            rawFeedbackUnkeyed.push(r);
+          }
+        }
       }
 
       // Pagination stop signal: returned_count < pageSize means the feedback table
       // is exhausted (clusters/dispatches per Dawn's contract accompany the feedback
       // pages and stabilise quickly via the byId dedup above).
-      const returned = envelope?.meta?.returned_count ?? rawClusters.length;
+      const returned = envelope?.meta?.returned_count ?? pageClusters.length;
       if (returned < this.pageSize) break;
     }
 
     this.snapshot = [...byId.values()];
+    this.rawClusters = rawClusters;
+    this.rawFeedback = rawFeedback;
+    this.rawFeedbackUnkeyed = rawFeedbackUnkeyed;
   }
 
   /** Sync ParitySource read — returns the snapshot captured by {@link prepare}. */
@@ -178,5 +279,21 @@ export class HttpParitySource implements ParitySource {
       throw new HttpParitySourceError(500, 'HttpParitySource.prepare() must be awaited before readPortalClusters()');
     }
     return this.snapshot.map((c) => ({ ...c }));
+  }
+
+  /** Raw cluster rows verbatim (requires `captureRaw` + a completed prepare()). */
+  readRawClusters(): Record<string, unknown>[] {
+    if (!this.rawClusters) {
+      throw new HttpParitySourceError(500, 'raw capture unavailable — construct with captureRaw:true and await prepare() first');
+    }
+    return [...this.rawClusters.values()].map((r) => ({ ...r }));
+  }
+
+  /** Raw feedback rows verbatim (requires `captureRaw` + a completed prepare()). */
+  readRawFeedback(): Record<string, unknown>[] {
+    if (!this.rawFeedback) {
+      throw new HttpParitySourceError(500, 'raw capture unavailable — construct with captureRaw:true and await prepare() first');
+    }
+    return [...this.rawFeedback.values(), ...this.rawFeedbackUnkeyed].map((r) => ({ ...r }));
   }
 }
