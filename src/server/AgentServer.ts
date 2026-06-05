@@ -2113,9 +2113,42 @@ export class AgentServer {
     const getConfig = (): MentorConfig => readMentorConfigFromDisk(options.config.stateDir, startupMentorConfig);
     const intelligence = options.intelligence ?? null;
     const self = this;
+    // Durable lastResult: persist the loop's last outcome to the state dir so a
+    // server restart doesn't erase it. On a frequent-release day restart cadence
+    // matched the 15-min tick cadence, so GET /mentor/status.lastResult read
+    // null essentially always — the loop was undiagnosable from its own status
+    // route. Absent stateDir ⇒ in-memory only (old behavior).
+    const lastResultPath = options.config.stateDir
+      ? path.join(options.config.stateDir, 'mentor-last-result.json')
+      : null;
     return new MentorOnboardingRunner(
       {
         capture: (input) => ledger.captureRun(input),
+        loadLastResult: lastResultPath
+          ? () => {
+              try {
+                const raw = fs.readFileSync(lastResultPath, 'utf-8');
+                const parsed = JSON.parse(raw) as { ran?: unknown; at?: unknown };
+                // Minimal shape check — a corrupt/foreign file hydrates as null.
+                if (typeof parsed?.at === 'number' && typeof parsed?.ran === 'boolean') {
+                  return parsed as import('../scheduler/MentorOnboardingRunner.js').MentorRunResult & { at: number };
+                }
+              } catch { /* @silent-fallback-ok — missing/corrupt file ⇒ null (old in-memory start) */ }
+              return null;
+            }
+          : undefined,
+        saveLastResult: lastResultPath
+          ? (r) => {
+              try {
+                fs.mkdirSync(path.dirname(lastResultPath), { recursive: true });
+                const tmp = `${lastResultPath}.tmp`;
+                fs.writeFileSync(tmp, JSON.stringify(r, null, 2), 'utf-8');
+                fs.renameSync(tmp, lastResultPath);
+              } catch (err) {
+                console.warn('[mentor] lastResult persist failed (non-fatal):', err instanceof Error ? err.message : String(err));
+              }
+            }
+          : undefined,
         // Record a keystone `mentor-mentee-differential` CYCLE per tick — the
         // structural version of the manual differential-oversight loop. No-ops
         // unless `mentor.apprenticeshipInstanceId` is set AND the cycle store is
