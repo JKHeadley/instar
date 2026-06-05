@@ -211,6 +211,11 @@ export interface SessionManagerConfig {
   /** Absolute maximum session duration in minutes — safety net for sessions
    *  without an explicit timeout (default: 240) */
   defaultMaxDurationMinutes?: number;
+  /** Minutes the age-gate backs off re-requesting a kill for a session whose kill the
+   *  KEEP-guard just vetoed (recent user message / topic-bound / commitment). Stops the
+   *  every-5s re-ask flood; the KEEP-guard remains the sole authority over WHICH sessions
+   *  die. Default 10; 0 disables (legacy every-tick behavior). */
+  ageKillBackoffMinutes?: number;
   /** Tri-state liveness-oracle tuning (UNIFIED-SESSION-LIFECYCLE §P1). Partial —
    *  unset fields fall back to DEFAULT_LIVENESS_CONFIG. Validated at startup so a
    *  sub-floor probe timeout (which would re-create the 2026-05-27 false-purge)

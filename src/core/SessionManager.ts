@@ -71,6 +71,7 @@ import { buildInjectionTag } from '../types/pipeline.js';
 import { sanitizeSenderName, sanitizeTopicName } from '../utils/sanitize.js';
 import { getTelegramInboundDir } from '../messaging/shared/telegramInboundFiles.js';
 import { SessionBuildContextStore } from './SessionBuildContextStore.js';
+import { AgeKillBackoff } from './AgeKillBackoff.js';
 
 /** Absolute maximum session duration (4 hours) — safety net for sessions without explicit timeout */
 const DEFAULT_MAX_DURATION_MINUTES = 240;
@@ -305,6 +306,10 @@ export class SessionManager extends EventEmitter {
    * once per session, not every tick.
    */
   private overAgeButActiveLogged = new Set<string>();
+  /** Per-session back-off so the age-gate respects the KEEP-guard's verdict: after a kill
+   *  is vetoed (session kept), suppress re-requests for a window instead of re-asking every
+   *  5s tick (the 2026-06-05 17,503-line flood). Constructed in the constructor. */
+  private ageKillBackoff!: AgeKillBackoff;
 
   /** Cached count of running sessions, updated asynchronously by the monitor tick.
    *  Used by the health endpoint to avoid synchronous tmux polling. */
@@ -322,6 +327,10 @@ export class SessionManager extends EventEmitter {
     super();
     this.config = config;
     this.state = state;
+    // Age-gate kill back-off: default 10 min between re-requests for a kept session
+    // (config.ageKillBackoffMinutes; 0 disables → legacy every-tick behavior).
+    const backoffMin = typeof config.ageKillBackoffMinutes === 'number' ? config.ageKillBackoffMinutes : 10;
+    this.ageKillBackoff = new AgeKillBackoff({ backoffMs: Math.max(0, backoffMin) * 60_000 });
     if (config.respawnBuildContext?.enabled) {
       this.buildContextStore = new SessionBuildContextStore(state, {
         maxAgeMs: config.respawnBuildContext.maxAgeMs,
@@ -933,6 +942,12 @@ rm()  { "${shimRunner}" rm  "$@"; }
               }
               // Fall through to the rest of the loop — do NOT skip idle detection,
               // because if the session DOES go idle, we still want it killed.
+            } else if (!this.ageKillBackoff.shouldRequest(session.id, Date.now())) {
+              // Over age + idle, but a recent kill-request for this session was VETOED by
+              // the KEEP-guard (recent user message / topic-bound / commitment). Respect
+              // that verdict: stay silent and back off instead of re-asking every 5s tick
+              // (the 2026-06-05 17,503-line flood). Fall through to idle detection — when
+              // the keep-reason lapses, the back-off expires and we re-evaluate then.
             } else {
               // Check for unanswered injection before timeout kill
               const pendingInjection = this.pendingInjections.get(session.tmuxSession);
@@ -953,10 +968,23 @@ rm()  { "${shimRunner}" rm  "$@"; }
               // gate, and — critically — gains the P2 KEEP-guard's topic-bound
               // grace, so a session that just received a user message is not
               // age-killed out from under the user.
-              await this.terminateSession(session.id, 'age-limit', {
+              const ageKillResult = await this.terminateSession(session.id, 'age-limit', {
                 finalStatus: 'killed',
                 disposition: 'terminal',
               });
+              if (ageKillResult.terminated) {
+                // Actually killed — drop any back-off state for the (now gone) session.
+                this.ageKillBackoff.recordKilled(session.id);
+              } else {
+                // The KEEP-guard kept it (skipped:<reason>). Respect that and back off:
+                // suppress re-requests for the back-off window instead of nagging every
+                // tick. ONE informative line — not 17,503.
+                this.ageKillBackoff.recordVeto(session.id, Date.now());
+                console.warn(
+                  `[SessionManager] Session "${session.name}" is over age but KEPT (${ageKillResult.skipped ?? 'guard'}); ` +
+                  `backing off age re-checks. It is NOT being killed.`
+                );
+              }
               continue;
             }
           }
