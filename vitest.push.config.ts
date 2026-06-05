@@ -79,16 +79,16 @@ const FLAKY_TESTS = [
   // ── Port assertion mismatch on some environments ──────────────────
   'tests/integration/fresh-install.test.ts',
 
-  // ── Stale test file: predates the TunnelManager provider/tier rewrite ──
-  // (#329 et seq.) — 22/29 tests fail because the suite mocks only the
-  // `cloudflared` module while production now drives a provider pool with a
-  // REAL reachability probe (driveTier1 → probeReachability fetches
-  // <url>/health and requires 2xx; the mock URL can never answer). The old
-  // "error message format mismatch" label badly understated this. Needs a
-  // rewrite against the provider/lifecycle architecture with the `fetch`
-  // injection seam (TunnelManager constructor `injections.fetch`) stubbed.
-  // Tracked: commitment "Rewrite TunnelManager unit suite" (2026-06-05).
-  'tests/unit/TunnelManager.test.ts',
+  // TunnelManager.test.ts — RE-ARMED 2026-06-05 (closes the commitment
+  // "Rewrite TunnelManager unit suite"). The old suite predated the
+  // provider/tier rewrite (mocked the `cloudflared` module directly; 22/29
+  // failed against the real reachability probe). Rewritten against the
+  // provider/lifecycle architecture using the constructor injection seams
+  // (injections.providers + injections.fetch) and the public deterministic
+  // drivers (runSelfHealCheck/grantConsent/declineConsent) — no real timers,
+  // processes, or network. 51 deterministic tests now gate the lifecycle:
+  // provider-pool fallback, reachability probing, consent flow + cooldown,
+  // self-heal stability gate, and mandatory credential rotation.
 
   // ── Supertest body size limit vs express limit mismatch ─────────
   'tests/integration/view-tunnel-routes.test.ts',
