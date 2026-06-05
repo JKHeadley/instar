@@ -221,6 +221,7 @@ import type { InstructionsVerifier } from '../monitoring/InstructionsVerifier.js
 import type { CoherenceGate } from '../core/CoherenceGate.js';
 import type { MessagingToneGate } from '../core/MessagingToneGate.js';
 import { isJunkPayload } from '../core/junk-payload.js';
+import { detectLocalhostLink } from '../core/localhost-link.js';
 import { detectJargon } from '../core/JargonDetector.js';
 import type { PasteManager } from '../paste/PasteManager.js';
 import type { WebSocketManager } from './WebSocketManager.js';
@@ -1154,6 +1155,7 @@ export function createRoutes(ctx: RouteContext): Router {
       topicId?: number;
       allowDebugText?: boolean;
       allowDuplicate?: boolean;
+      allowLocalhostLink?: boolean;
       messageKind?: 'reply' | 'health-alert' | 'unknown';
       jargon?: boolean;
     },
@@ -1169,6 +1171,29 @@ export function createRoutes(ctx: RouteContext): Router {
     void observeSelfViolation(text, options.topicId).catch(() => {
       /* @silent-fallback-ok — observe-only; a detector error never affects delivery */
     });
+
+    // ── Localhost-link guard (operator-mandated HARD rule, 2026-06-05) ──
+    // A clickable localhost/loopback link must never reach a user — the user
+    // is almost never on the machine this server runs on. This is a
+    // deterministic block (like the 4096-length check), NOT a signal for the
+    // LLM authority: a loopback link in a user-bound message has no
+    // legitimate reading. Runs BEFORE the tone-gate availability check so the
+    // rule holds even on installs with no gate configured. Escape hatch:
+    // metadata.allowLocalhostLink for the rare operator-requested raw URL.
+    if (!options.allowLocalhostLink) {
+      const localLink = detectLocalhostLink(text);
+      if (localLink.detected) {
+        res.status(422).json({
+          error:
+            `Message blocked: contains a machine-local link (${localLink.match}) that the user cannot open from their device. ` +
+            `Replace it with the public tunnel URL (GET /tunnel → url + path), or omit the link and say it will follow. ` +
+            `If the operator explicitly asked for the raw local URL, resend with metadata.allowLocalhostLink: true.`,
+          blockedBy: 'localhost-link-guard',
+          match: localLink.match,
+        });
+        return true;
+      }
+    }
 
     if (!ctx.messagingToneGate) return false; // No authority configured — pass through
 
@@ -6723,6 +6748,7 @@ export function createRoutes(ctx: RouteContext): Router {
     const isProxy = metadata?.isProxy === true;
     const allowDebugText = metadata?.allowDebugText === true;
     const allowDuplicate = metadata?.allowDuplicate === true;
+    const allowLocalhostLink = metadata?.allowLocalhostLink === true;
     // Skip the LOCAL tone gate when this server will RELAY the reply through the
     // lease holder (a tokenless pool standby). The holder runs ITS OWN tone gate
     // on receipt, so the standby gating too is redundant — and worse, it adds a
@@ -6740,6 +6766,7 @@ export function createRoutes(ctx: RouteContext): Router {
         topicId,
         allowDebugText,
         allowDuplicate,
+        allowLocalhostLink,
       }))
     )
       return;
