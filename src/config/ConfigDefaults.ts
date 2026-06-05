@@ -469,6 +469,23 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       topicPlacementUpdateMinIntervalMs: 10000,
     },
   },
+  // Session Boot Self-Knowledge (spec: session-boot-self-knowledge.md) — the
+  // "what I already have" block (vault secret NAMES + operational facts) the
+  // session-start hook injects at boot. DARK-SHIP: `sessionContext.enabled` is
+  // deliberately OMITTED so the route resolves it via the developmentAgent
+  // gate (`enabled ?? !!config.developmentAgent`) — live on the dev agent,
+  // dark on the fleet; the live-fleet flip (registering `enabled: true` here)
+  // is the tracked follow-up per the spec's rollout Resolution rule.
+  // NOTE: `InstarConfig.selfKnowledge` is DISTINCT from the SelfKnowledgeTree
+  // metadata field on AgentContextSnapshot — different type, different system.
+  // applyDefaults add-missing semantics → migrateConfig backfills on update
+  // (Migration Parity); an operator's existing operationalFacts are never touched.
+  selfKnowledge: {
+    sessionContext: {
+      maxInjectedBytes: 2000,
+    },
+    operationalFacts: [],
+  },
 };
 
 /**

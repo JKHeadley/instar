@@ -688,8 +688,11 @@ changes-requested, terminal). Deny-by-default inherited: no mandate → 403.
 ## /self-knowledge
 - `GET /self-knowledge/health`
 - `GET /self-knowledge/search`
+- `GET /self-knowledge/session-context` — the boot self-knowledge block: vault secret NAMES (never values) + operational facts; `?full=1` bypasses display caps. Dark on the fleet (`enabled ?? developmentAgent`).
 - `GET /self-knowledge/tree`
 - `GET /self-knowledge/validate`
+- `POST /self-knowledge/facts` — append a durable operational fact (auto-stamped with date + machine)
+- `DELETE /self-knowledge/facts` — remove a fact by `{match}` or `{index, expect}`
 
 ## /semantic
 - `DELETE /semantic/forget/:id`

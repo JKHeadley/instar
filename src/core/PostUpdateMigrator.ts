@@ -243,6 +243,7 @@ export class PostUpdateMigrator {
     this.migrateStaleLifelineSignal(result);
     this.migrateThreadlineConversationStore(result);
     this.migrateThreadlineAgentInfoIdentity(result);
+    this.migrateWorktreeMisplacedFloodItems(result);
 
     return result;
   }
@@ -589,6 +590,42 @@ export class PostUpdateMigrator {
       result.upgraded.push(`threadline-agent-info-identity: repaired agent-info.json to canonical fingerprint ${canonicalFingerprint.slice(0, 8)}…`);
     } catch (err) {
       result.errors.push(`threadline-agent-info-identity write: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  /**
+   * 2026-06-05 worktree-misplaced flood cleanup (Bounded Notification
+   * Surface). The pre-fix AgentWorktreeDetector emitted one attention item
+   * PER worktree with ids `worktree-misplaced:<sha256>`; a transiently-wrong
+   * safe-root read mass-created 110 false-positive OPEN items on flooded
+   * agents. The fixed detector emits a single `worktree-misplaced-summary:*`
+   * item, so the old per-path items are permanently stale — purge them.
+   * Idempotent: a store with no old-format ids is left untouched.
+   */
+  private migrateWorktreeMisplacedFloodItems(result: MigrationResult): void {
+    const storePath = path.join(this.config.stateDir, 'state', 'attention-items.json');
+    if (!fs.existsSync(storePath)) {
+      result.skipped.push('worktree-misplaced flood items: no attention store');
+      return;
+    }
+    try {
+      const data = JSON.parse(fs.readFileSync(storePath, 'utf-8')) as { items?: Array<{ id?: string }> };
+      const items = Array.isArray(data.items) ? data.items : [];
+      // Old per-path format only: `worktree-misplaced:<hash>`. The new
+      // aggregated format is `worktree-misplaced-summary:<hash>` — kept.
+      const isStale = (id: unknown) => typeof id === 'string' && id.startsWith('worktree-misplaced:');
+      const staleCount = items.filter((i) => isStale(i.id)).length;
+      if (staleCount === 0) {
+        result.skipped.push('worktree-misplaced flood items: none present');
+        return;
+      }
+      const kept = items.filter((i) => !isStale(i.id));
+      const tmp = `${storePath}.${process.pid}.tmp`;
+      fs.writeFileSync(tmp, JSON.stringify({ ...data, items: kept }, null, 2));
+      fs.renameSync(tmp, storePath);
+      result.upgraded.push(`worktree-misplaced flood items: purged ${staleCount} stale per-path item(s) from the attention store`);
+    } catch (err) {
+      result.errors.push(`worktree-misplaced flood items: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
@@ -2787,6 +2824,25 @@ Rule: I do not state that work landed inside another agent's state unless I have
       result.upgraded.push('CLAUDE.md: added Cross-Agent Communication Discipline (anti-confabulation) section');
     }
 
+    // Session Boot Self-Knowledge (spec: session-boot-self-knowledge.md).
+    // Existing agents need the rule ("a secret named in your boot block is in
+    // the vault — retrieve, don't re-ask") + the facts writer + the retrieval
+    // script. Content-sniffed on the same heading the template emits.
+    if (!content.includes('**Session Boot Self-Knowledge**')) {
+      const bootSelfKnowledgeSection = `
+**Session Boot Self-Knowledge** — Your session-start context includes an auto-injected \`<session-self-knowledge>\` block: the NAMES of secrets in your encrypted vault (never values) + self-asserted operational facts about this agent/machine. (Rides the developmentAgent gate until the fleet flip.)
+- **The rule**: a secret named in your boot block is ALREADY in your vault — retrieve it with \`node .instar/scripts/secret-get.mjs <name>\` (pipe stdout straight into the consuming command, e.g. \`... github_token | gh auth login --with-token\` — NEVER echo the value into chat/transcripts) instead of asking the user to re-send it. Only re-ask if you have evidence it is invalid (expired/revoked/decrypt-failed).
+- Discover vault key names anytime: \`node .instar/scripts/secret-get.mjs --names\` (names+lengths to stderr) or \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/self-knowledge/session-context?full=1"\`.
+- **Record a durable operational fact** (a channel path, a logged-in seat, a machine-specific truth worth knowing at every boot): \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/self-knowledge/facts -H 'Content-Type: application/json' -d '{"fact":"..."}'\` (auto-stamped with date+machine). Remove: \`curl -X DELETE -H "Authorization: Bearer $AUTH" http://localhost:${port}/self-knowledge/facts -H 'Content-Type: application/json' -d '{"match":"substring"}'\`. Facts are per-machine and appear at the next session start.
+- **When to use** (PROACTIVE — this is the trigger): the moment you discover an operational fact future sessions will need (where a tool lives, which machine owns a seat, a non-obvious path), record it as a fact — never leave it to session memory.
+- If the boot block reports the vault as DECRYPT-FAILED: do NOT repair, rotate, or delete anything — a decrypt failure is usually recoverable; destructive action loses secrets permanently. Surface it to the operator and stop.
+- Off-switch: \`selfKnowledge.sessionContext.enabled: false\` in \`.instar/config.json\` (applies at the next session start).
+`;
+      content += '\n' + bootSelfKnowledgeSection;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Session Boot Self-Knowledge section');
+    }
+
     // Apprenticeship Program (Step 1, APPRENTICESHIP-STEP1-PROGRAM-SCAFFOLD-SPEC.md).
     // Existing agents need to know the program registry + lifecycle gates exist —
     // an agent that doesn't know about a capability effectively doesn't have it.
@@ -3153,6 +3209,26 @@ The attention queue spawns ONE Telegram forum topic per item — right for a gen
       result.upgraded.push('CLAUDE.md: added Topic-Flood Guard section');
     } else {
       result.skipped.push('CLAUDE.md: Topic-Flood Guard section already present');
+    }
+
+    // Bounded Notification Surface (2026-06-05, flood #3) — extends the
+    // flood-guard awareness with the universal last-resort budget INSIDE
+    // createForumTopic (covers every caller, not just attention items) and the
+    // aggregate-at-the-emitter rule. Idempotent via the unique marker phrase.
+    if (!content.includes('Bounded Notification Surface')) {
+      const section = `
+### Bounded Notification Surface (universal auto-topic budget)
+
+Beyond the attention-queue breaker above, the topic-creation primitive itself (\`TelegramAdapter.createForumTopic\`) enforces a LAST-RESORT budget on every automatically-created topic — covering every caller, current and future, no matter what source labels it passes (the 2026-06-05 worktree-detector flood dodged the per-source budget by giving every item a unique source; this ceiling is the layer that cannot be dodged). User-initiated and bounded create-once system topics are exempt; everything else is budgeted by default. Tune via \`messaging[].config.topicCreationBudget\` = \`{ "windowMs": 600000, "maxTopicsPerSource": 8, "maxTopicsGlobal": 12 }\`.
+
+- If I am building a feature that notifies per-element over a collection: AGGREGATE — one summary item carrying the count and the list, never one item per element. The burst-invariant CI test (\`tests/integration/notification-flood-burst-invariant.test.ts\`) fails any build that violates the bound.
+- If a topic creation fails with "topic-creation budget exceeded": that is the flood ceiling doing its job — fix the calling feature's volume (aggregate), don't raise the budget.
+`;
+      content += '\n' + section;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Bounded Notification Surface section');
+    } else {
+      result.skipped.push('CLAUDE.md: Bounded Notification Surface section already present');
     }
 
     // Multi-Machine Session Pool (§L2) — tells the agent about the active-active
@@ -4390,6 +4466,11 @@ Create worktrees for collaborator repos with \`instar worktree create <branch>\`
       '**Coordination Mandate**',
       '**ReviewExchange (autonomous code review)**',
       '**Cutover Readiness**',
+      // Session Boot Self-Knowledge (spec session-boot-self-knowledge): vault
+      // secret NAMES + operational facts at boot. A Codex/Gemini agent that
+      // never learns the facts writer + secret-get retrieval will re-ask the
+      // user for stored credentials — the exact loop this feature closes.
+      '**Session Boot Self-Knowledge**',
     ];
 
     for (const shadowName of ['AGENTS.md', 'GEMINI.md']) {
@@ -4597,6 +4678,25 @@ Create worktrees for collaborator repos with \`instar worktree create <branch>\`
       }
     } catch (err) {
       result.errors.push(`secret-drop-retrieve.mjs: ${err instanceof Error ? err.message : String(err)}`);
+    }
+
+    // Vault retrieval helper — always overwrite (sibling of the above; spec
+    // session-boot-self-knowledge §Retrieval affordance). The boot block names
+    // vault secrets; this is the hardened read path it points at (value →
+    // stdout for piping, names/diagnostics → stderr, never echoed). Without
+    // it, "a secret named here is in your vault" is aspirational.
+    try {
+      const secretGetContent = this.loadRelayTemplate('secret-get.mjs');
+      if (secretGetContent) {
+        fs.writeFileSync(
+          path.join(instarScriptsDir, 'secret-get.mjs'),
+          secretGetContent,
+          { mode: 0o755 },
+        );
+        result.upgraded.push('scripts/secret-get.mjs (hardened vault retrieval)');
+      }
+    } catch (err) {
+      result.errors.push(`secret-get.mjs: ${err instanceof Error ? err.message : String(err)}`);
     }
 
     // Session-clock injector — always overwrite. New, non-customizable shared
@@ -6076,6 +6176,37 @@ except Exception:
   fi
 fi
 
+# SESSION BOOT SELF-KNOWLEDGE injection (spec: session-boot-self-knowledge.md).
+# Fetches /self-knowledge/session-context and injects the deterministic "what I
+# already have" block: vault secret NAMES (never values) + self-asserted
+# operational facts — so the agent never re-asks the user for a secret it
+# already holds and never claims ignorance of a channel it owns. Placed AFTER
+# the org-intent + preferences blocks (authoritative contract first — this is
+# background signal; the server wraps it in a <session-self-knowledge
+# src='boot'> envelope). Fail-open: 503 (dark / disabled) / 404 (version skew:
+# old server) / unreachable / empty -> silent skip; curl -sf is what makes a
+# non-2xx emit nothing, and the Bearer token travels ONLY in the header.
+if [ -n "\$PORT" ] && [ -n "\$TOKEN" ]; then
+  BOOT_SK_RESPONSE=\$(curl -sf --max-time 4 --connect-timeout 1 -H "Authorization: Bearer \$TOKEN" \\
+    "http://localhost:\${PORT}/self-knowledge/session-context" 2>/dev/null)
+  if [ -n "\$BOOT_SK_RESPONSE" ]; then
+    BOOT_SK_BLOCK=\$(echo "\$BOOT_SK_RESPONSE" | python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    if d.get('present') and d.get('block'):
+        print(d['block'])
+except Exception:
+    pass
+" 2>/dev/null)
+    if [ -n "\$BOOT_SK_BLOCK" ]; then
+      echo ""
+      echo "\$BOOT_SK_BLOCK"
+      echo ""
+    fi
+  fi
+fi
+
 # BEGIN integrated-being-v2
 # INTEGRATED-BEING V2 — session-write binding (see docs/specs/integrated-being-ledger-v2.md §3)
 # Generates a session UUID, registers with /shared-state/session-bind, writes the
@@ -6795,6 +6926,10 @@ AUTH_TOKEN="\${INSTAR_AUTH_TOKEN:-}"
 if [ -z "\$AUTH_TOKEN" ] && [ -f "\$CONFIG_FILE" ]; then
   AUTH_TOKEN=\$(python3 -c "import json; v=json.load(open('\$CONFIG_FILE')).get('authToken',''); print(v if isinstance(v, str) else '')" 2>/dev/null)
 fi
+AGENT_ID="\${INSTAR_AGENT_ID:-}"
+if [ -z "\$AGENT_ID" ] && [ -f "\$CONFIG_FILE" ]; then
+  AGENT_ID=\$(python3 -c "import json; print(json.load(open('\$CONFIG_FILE')).get('projectName',''))" 2>/dev/null)
+fi
 
 # Session-clock injection (query mode) — surface elapsed/remaining for an active
 # time-boxed session on this user turn too (not just autonomous continuations),
@@ -6802,13 +6937,14 @@ fi
 # nothing when no time-boxed session is active or the server is unreachable.
 # Spec: docs/specs/ROBUST-SESSION-TIME-AWARENESS-SPEC.md (Component 2, query mode).
 if [ -f "\$INSTAR_DIR/scripts/emit-session-clock.sh" ]; then
-  bash "\$INSTAR_DIR/scripts/emit-session-clock.sh" query "\$TOPIC_ID" "\$PORT" "\$AUTH_TOKEN" 2>/dev/null
+  bash "\$INSTAR_DIR/scripts/emit-session-clock.sh" query "\$TOPIC_ID" "\$PORT" "\$AUTH_TOKEN" "\$AGENT_ID" 2>/dev/null
 fi
 
 # Fetch recent messages for this topic
 if [ -n "\$AUTH_TOKEN" ]; then
   RECENT_MSGS=\$(curl -s \\
     -H "Authorization: Bearer \${AUTH_TOKEN}" \\
+    -H "X-Instar-AgentId: \${AGENT_ID}" \\
     "http://localhost:\${PORT}/telegram/topics/\${TOPIC_ID}/messages?limit=15" 2>/dev/null)
 else
   RECENT_MSGS=\$(curl -s \\
@@ -7111,6 +7247,41 @@ except Exception:
           echo "--- END WORKING MEMORY ---"
           echo ""
         fi
+      fi
+    fi
+  fi
+fi
+
+# SESSION BOOT SELF-KNOWLEDGE re-injection (spec: session-boot-self-knowledge.md).
+# A days-long session compacts; the boot block injected at session start only
+# survives if the compaction summary happens to carry it — willpower, not
+# structure. Re-fetching here makes the block durable across compaction AND
+# fresher than the original: a secret stored mid-session appears in the
+# post-compaction context. Same fail-open contract as the boot fetch: dark /
+# unreachable / version-skew -> silent skip, header-only Bearer.
+if [ -f "$INSTAR_DIR/config.json" ]; then
+  BOOT_SK_PORT=\${PORT:-\$(grep -oE '"port"[[:space:]]*:[[:space:]]*[0-9]+' "$INSTAR_DIR/config.json" | head -1 | grep -oE '[0-9]+' | head -1)}
+  BOOT_SK_TOKEN="\${INSTAR_AUTH_TOKEN:-}"
+  if [ -z "\$BOOT_SK_TOKEN" ]; then
+    BOOT_SK_TOKEN=\$(python3 -c "import json; v=json.load(open('$INSTAR_DIR/config.json')).get('authToken',''); print(v if isinstance(v, str) else '')" 2>/dev/null)
+  fi
+  if [ -n "\$BOOT_SK_PORT" ] && [ -n "\$BOOT_SK_TOKEN" ]; then
+    BOOT_SK_RESPONSE=\$(curl -sf --max-time 4 --connect-timeout 1 -H "Authorization: Bearer \$BOOT_SK_TOKEN" \
+      "http://localhost:\${BOOT_SK_PORT}/self-knowledge/session-context" 2>/dev/null)
+    if [ -n "\$BOOT_SK_RESPONSE" ]; then
+      BOOT_SK_BLOCK=\$(echo "\$BOOT_SK_RESPONSE" | python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    if d.get('present') and d.get('block'):
+        print(d['block'])
+except Exception:
+    pass
+" 2>/dev/null)
+      if [ -n "\$BOOT_SK_BLOCK" ]; then
+        echo ""
+        echo "\$BOOT_SK_BLOCK"
+        echo ""
       fi
     fi
   fi

@@ -46,6 +46,10 @@ export interface ResolveAgentHomeOptions {
   instarHome?: string;
   /** Override registry lookup (for tests). Returns the set of registered agent names. */
   registryLookup?: () => Set<string>;
+  /** Override registry entries lookup (for tests). Returns name + recorded
+   *  home path pairs — the legacy-home acceptance path matches the candidate
+   *  against these recorded paths. */
+  registryEntriesLookup?: () => ReadonlyArray<{ name: string; path?: string }>;
 }
 
 export interface ResolvedAgentHome {
@@ -215,8 +219,21 @@ export function resolveAgentHome(opts: ResolveAgentHomeOptions = {}): ResolvedAg
     ? agentsRootReal
     : `${agentsRootReal}${path.sep}`;
   if (!candidateReal.startsWith(expectedPrefix)) {
+    // Legacy-home acceptance: agents onboarded before the worktree convention
+    // live outside the agents root (e.g. ~/Documents/Projects/<agent>). The
+    // ONLY accepted evidence is the instar registry's own recorded home path —
+    // operator-controlled state a planted .instar/AGENT.md cannot forge. The
+    // candidate must realpath-equal a registered entry's path AND the entry
+    // name must pass the same charset clamp as compliant homes. Worktrees for
+    // a legacy home land at <legacyHome>/.worktrees/ — still inside the
+    // agent's own granted territory, which is the convention's actual intent.
+    const legacy = matchRegisteredLegacyHome(candidateReal, opts);
+    if (legacy) return legacy;
     throw new Error(
-      `agent home: ${candidateReal} is not under the instar agents root ${agentsRootReal}`,
+      `agent home: ${candidateReal} is not under the instar agents root ${agentsRootReal} ` +
+      `and does not match any registered agent's recorded home path. If this IS a live ` +
+      `legacy agent home, its server must be registered (run it once so it heartbeats into ` +
+      `the registry); otherwise set INSTAR_AGENT_HOME to the agent's real home.`,
     );
   }
   const remainder = candidateReal.slice(expectedPrefix.length).replace(/\/+$/, '');
@@ -242,6 +259,39 @@ export function resolveAgentHome(opts: ResolveAgentHomeOptions = {}): ResolvedAg
   }
 
   return { agentHome: candidateReal, agentName: remainder };
+}
+
+/**
+ * Match a candidate directory against the registry's recorded agent-home
+ * paths (legacy-home acceptance). Returns the resolved home when exactly the
+ * registry vouches for the path; null otherwise (caller produces the refusal).
+ *
+ * Deliberately narrow: file evidence inside the candidate (.instar/AGENT.md,
+ * config.json) counts for NOTHING here — only the registry's own record,
+ * realpath-resolved so a symlinked registration still matches.
+ */
+function matchRegisteredLegacyHome(
+  candidateReal: string,
+  opts: ResolveAgentHomeOptions,
+): ResolvedAgentHome | null {
+  // Hermeticity rule: when the caller seamed the registry in ANY form
+  // (registryLookup or registryEntriesLookup), never consult the real
+  // on-disk registry — a name-only seam means "no entries with paths".
+  const entries = opts.registryEntriesLookup
+    ? opts.registryEntriesLookup()
+    : opts.registryLookup
+      ? []
+      : loadRegistry().entries.map((e) => ({ name: e.name, path: e.path }));
+  for (const entry of entries) {
+    if (!entry.path) continue;
+    const entryReal = realpathOrNull(entry.path);
+    if (!entryReal || entryReal !== candidateReal) continue;
+    // Same charset clamp as compliant homes — a registry entry with a hostile
+    // name never resolves (falls through to the generic refusal).
+    if (!AGENT_NAME_PATTERN.test(entry.name)) continue;
+    return { agentHome: candidateReal, agentName: entry.name };
+  }
+  return null;
 }
 
 function walkUpForAgentMd(start: string): string | null {

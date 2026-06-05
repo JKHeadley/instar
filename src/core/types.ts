@@ -80,6 +80,8 @@ export type SessionStatus = 'starting' | 'running' | 'completed' | 'failed' | 'k
 export type ModelTier = 'opus' | 'sonnet' | 'haiku';
 
 export interface SessionManagerConfig {
+  /** Project name used as the stable local agent id for auth-bound calls. */
+  projectName: string;
   /** Path to tmux binary */
   tmuxPath: string;
   /**
@@ -451,6 +453,8 @@ export interface JobSchedulerConfig {
   gateRetryDelayMs?: number;
   /** Auth token exposed to gate shell commands as $INSTAR_AUTH_TOKEN so gates can call authenticated localhost endpoints. */
   authToken?: string;
+  /** Project name exposed as $INSTAR_AGENT_ID so gate shells can bind bearer auth to this agent. */
+  projectName?: string;
   /** Wake-time job reaper — closes runs left pending after the host wakes from sleep. */
   wakeReaper?: {
     /** Minimum sleep duration (seconds) to trigger a reap pass. Defaults to 60. */
@@ -2138,6 +2142,28 @@ export interface InstarConfig {
    * (Introduced 2026-06-02 — Justin's ask, topic 13481.)
    */
   developmentAgent?: boolean;
+  /**
+   * Session Boot Self-Knowledge (spec: session-boot-self-knowledge.md) — the
+   * deterministic "what I already have" block injected at session start: vault
+   * secret NAMES (never values) + self-asserted operational facts. DISTINCT
+   * from the SelfKnowledgeTree metadata on AgentContextSnapshot (different
+   * type, different system — a type-distinctness test pins this).
+   */
+  selfKnowledge?: {
+    sessionContext?: {
+      /** Resolved as `enabled ?? !!developmentAgent` (graduated rollout — dark fleet / live dev-agent). */
+      enabled?: boolean;
+      /** Byte bound for the injected block (default 2000). */
+      maxInjectedBytes?: number;
+    };
+    /**
+     * Durable per-agent/per-machine operational facts. Written by
+     * POST/DELETE /self-knowledge/facts (stamped {fact, updatedAt, machine});
+     * bare strings (hand-authored/legacy) are accepted by the reader.
+     * Per-machine by design — config.json does not sync across machines.
+     */
+    operationalFacts?: Array<string | { fact: string; updatedAt?: string; machine?: string }>;
+  };
   /** Session manager config */
   sessions: SessionManagerConfig;
   /**

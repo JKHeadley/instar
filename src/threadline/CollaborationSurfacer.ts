@@ -27,7 +27,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 export interface SurfacerTelegram {
-  findOrCreateForumTopic(name: string, iconColor?: number): Promise<{ topicId: number; name: string; reused: boolean }>;
+  findOrCreateForumTopic(name: string, iconColor?: number, opts?: { origin?: 'user' | 'system' | 'auto'; label?: string }): Promise<{ topicId: number; name: string; reused: boolean }>;
   sendToTopic(topicId: number, text: string, options?: { silent?: boolean; skipStallClear?: boolean }): Promise<unknown>;
 }
 
@@ -199,7 +199,7 @@ export class CollaborationSurfacer {
 
   private async ensureHubTopic(state: SurfaceState): Promise<number> {
     if (typeof state.dedicatedTopicId === 'number') return state.dedicatedTopicId;
-    const t = await this.telegram.findOrCreateForumTopic(this.topicName);
+    const t = await this.telegram.findOrCreateForumTopic(this.topicName, undefined, { label: 'collaboration-surfacer' });
     state.dedicatedTopicId = t.topicId;
     return t.topicId;
   }

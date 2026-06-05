@@ -731,9 +731,11 @@ export class JobScheduler {
     });
 
     const timeout = Math.max(1, job.expectedDurationMinutes ?? DEFAULT_EXPECTED_MINUTES) * 2 * 60_000;
-    const env = this.config.authToken
-      ? { ...process.env, INSTAR_AUTH_TOKEN: this.config.authToken }
-      : process.env;
+    const env = {
+      ...process.env,
+      ...(this.config.authToken ? { INSTAR_AUTH_TOKEN: this.config.authToken } : {}),
+      ...(this.config.projectName ? { INSTAR_AGENT_ID: this.config.projectName } : {}),
+    };
 
     execFileAsync('/bin/sh', ['-c', script], {
       cwd: path.dirname(this.stateDir),
@@ -1279,6 +1281,7 @@ export class JobScheduler {
         const topic = await this.telegram.findOrCreateForumTopic(
           `${TOPIC_STYLE.JOB.emoji} Job: ${job.name}`,
           TOPIC_STYLE.JOB.color,
+          { label: 'job-topics' },
         );
         job.topicId = topic.topicId;
         this.saveJobTopicMapping(job.slug, topic.topicId);
@@ -1298,6 +1301,7 @@ export class JobScheduler {
           const newTopic = await this.telegram.findOrCreateForumTopic(
             `${TOPIC_STYLE.JOB.emoji} Job: ${job.name}`,
             TOPIC_STYLE.JOB.color,
+            { label: 'job-topics' },
           );
           job.topicId = newTopic.topicId;
           this.saveJobTopicMapping(job.slug, newTopic.topicId);
@@ -1377,6 +1381,7 @@ export class JobScheduler {
         const topic = await this.telegram.findOrCreateForumTopic(
           `${TOPIC_STYLE.JOB.emoji} Job: ${job.name}`,
           TOPIC_STYLE.JOB.color,
+          { label: 'job-topics' },
         );
         job.topicId = topic.topicId;
         mappings[job.slug] = topic.topicId;
@@ -1419,9 +1424,11 @@ export class JobScheduler {
     // endpoints (e.g. /evolution/actions/overdue). Without this, gates that curl
     // the local API silently return 401 and the downstream pipe crashes, making
     // the job skip every run cycle with no obvious signal.
-    const gateEnv = this.config.authToken
-      ? { ...process.env, INSTAR_AUTH_TOKEN: this.config.authToken }
-      : process.env;
+    const gateEnv = {
+      ...process.env,
+      ...(this.config.authToken ? { INSTAR_AUTH_TOKEN: this.config.authToken } : {}),
+      ...(this.config.projectName ? { INSTAR_AGENT_ID: this.config.projectName } : {}),
+    };
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {

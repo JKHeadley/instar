@@ -38,6 +38,7 @@ fi
 # Get port from env or config
 PORT="${INSTAR_PORT:-}"
 AUTH=""
+AGENT_ID="${INSTAR_AGENT_ID:-}"
 
 if [ -f ".instar/config.json" ]; then
   if [ -z "$PORT" ]; then
@@ -51,6 +52,9 @@ if [ -f ".instar/config.json" ]; then
   AUTH="${INSTAR_AUTH_TOKEN:-}"
   if [ -z "$AUTH" ]; then
     AUTH=$(python3 -c "import json; v=json.load(open('.instar/config.json')).get('authToken',''); print(v if isinstance(v, str) else '')" 2>/dev/null)
+  fi
+  if [ -z "$AGENT_ID" ]; then
+    AGENT_ID=$(python3 -c "import json; print(json.load(open('.instar/config.json')).get('projectName',''))" 2>/dev/null)
   fi
 fi
 
@@ -68,6 +72,7 @@ RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
   "http://localhost:${PORT}/slack/reply/${CHANNEL_ID}" \
   -H "Content-Type: application/json" \
   ${AUTH:+-H "Authorization: Bearer $AUTH"} \
+  ${AGENT_ID:+-H "X-Instar-AgentId: $AGENT_ID"} \
   -d "{\"text\": ${ESCAPED}}")
 
 HTTP_CODE=$(echo "$RESPONSE" | tail -1)
