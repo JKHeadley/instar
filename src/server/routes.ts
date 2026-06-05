@@ -729,6 +729,10 @@ export interface RouteContext {
     /** ReviewExchange engine (spec §7 G2.3) — mandate-gated mutual code-review sign-offs. */
     reviews: import('../coordination/ReviewExchange.js').ReviewExchangeEngine;
   } | null;
+  /** Cutover-READINESS checker (spec §7 G2.4, decision 1A: everything UP TO the
+   *  door). Read-only objective conditions from durable state; the flip itself is
+   *  never autonomous. Null when stateDir is unavailable. */
+  cutoverReadiness: import('../feedback-factory/cutoverReadiness.js').CutoverReadiness | null;
   /** Cross-topic activity index (Parallel-Work Awareness Phase A). Backs GET /parallel-work/activities. */
   parallelActivityIndex?: import('../core/ParallelActivityIndex.js').ParallelActivityIndex | null;
   /** The shared intelligence provider (an IntelligenceRouter when per-component routing is wired). Backs GET /intelligence/routing. */
@@ -5151,6 +5155,37 @@ export function createRoutes(ctx: RouteContext): Router {
       return;
     }
     res.json({ signed: true, exchange: result.record });
+  });
+
+  // ── Cutover-READINESS (coordination-mandate spec §7 G2.4, decision 1A) ──
+  // Everything UP TO the door: the two objective cutover conditions resolved from
+  // REAL durable state (persisted IntegrityReport + durable parity window). The
+  // flip itself is the operator's manual click — there is NO fire-cutover route
+  // here by design, and `door` says so machine-readably.
+
+  // The readiness signal. Read-only.
+  router.get('/cutover-readiness', (_req, res) => {
+    if (!ctx.cutoverReadiness) {
+      res.status(503).json({ error: 'cutover-readiness unavailable (no stateDir or init failed)' });
+      return;
+    }
+    res.json(ctx.cutoverReadiness.status());
+  });
+
+  // TRIGGER a server-side parity pass (T7: the agent may ask; the server computes).
+  // The request body contributes NOTHING to the result. 409 when no source is
+  // configured or the live check fails (nothing recorded on failure).
+  router.post('/cutover-readiness/parity-pass', async (_req, res) => {
+    if (!ctx.cutoverReadiness) {
+      res.status(503).json({ error: 'cutover-readiness unavailable (no stateDir or init failed)' });
+      return;
+    }
+    const outcome = await ctx.cutoverReadiness.runParityPass();
+    if (!outcome.ok) {
+      res.status(409).json({ error: outcome.reason });
+      return;
+    }
+    res.json({ recorded: true, pass: outcome.pass, gate: outcome.gate });
   });
 
   // ── Parallel-Work Awareness (docs/specs/parallel-activity-coherence.md, Phase A) ──

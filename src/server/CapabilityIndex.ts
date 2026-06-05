@@ -609,6 +609,18 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     }),
   },
   {
+    key: 'cutoverReadiness',
+    prefixes: ['/cutover-readiness'],
+    description: 'Cutover-READINESS checker (coordination-mandate spec §7 G2.4, decision 1A) — everything UP TO the cutover door, never the door. Composes the two objective conditions from REAL durable state: the persisted import IntegrityReport (integrity-gate-pass) and the durable zero-divergence parity window with a freshness bound (parity-zero-divergence). The flip itself is the operator\'s manual click; there is NO fire-cutover route by design.',
+    build: ({ ctx }) => ({
+      enabled: !!ctx.cutoverReadiness,
+      endpoints: [
+        'GET /cutover-readiness — { ready, door:"manual-operator-click", integrity, parity } from durable state (read-only)',
+        'POST /cutover-readiness/parity-pass — TRIGGER a server-side live parity check (fetch+compare server-side; the body contributes nothing); records the pass into the durable window',
+      ],
+    }),
+  },
+  {
     key: 'resourceLedger',
     prefixes: ['/resources'],
     description: 'Per-agent ResourceLedger — read-only CPU/memory + rate-limit-event observability (mirrors TokenLedger). Phase A persists rate-limit events (breaker trips + session-sentinel detections) across restarts; Phase B continuously samples CPU% + RSS of the agent server + its spawned sessions. Never gates.',

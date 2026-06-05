@@ -305,6 +305,17 @@ with respect to behavior; the ratio is a signal, never a gate.
 - `PATCH /config`
 - `POST /config/telemetry`
 
+## /cutover-readiness
+
+Cutover-READINESS (coordination-mandate spec §7 G2.4, decision 1A): everything UP
+TO the cutover door, never the door. The two objective conditions resolve from
+REAL durable state — the persisted import IntegrityReport and the durable
+zero-divergence parity window (with a readiness-layer freshness bound). The flip
+itself is the operator's manual click; there is no fire-cutover route by design.
+
+- `GET /cutover-readiness` — `{ ready, door: "manual-operator-click", integrity, parity }` (read-only)
+- `POST /cutover-readiness/parity-pass` — trigger a server-side live parity check; the request contributes nothing to the result; a failed check records nothing
+
 ## /context
 - `GET /context`
 - `GET /context/:segmentId`

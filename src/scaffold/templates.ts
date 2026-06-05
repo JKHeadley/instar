@@ -694,6 +694,11 @@ This routes feedback to the Instar maintainers automatically. Valid types: \`bug
 - **When to use** (PROACTIVE — this is the trigger): the moment a mandate with \`sign-code-review\` exists and you need a peer agent's review of work in its scope, drive it through an exchange — NEVER improvise a sign-off in chat prose (an unrecorded "LGTM" over Threadline is not a sign-off; the gate-audited exchange is). A 403 on a sign step means the mandate denied it — STOP, do not work around it.
 - Inspect: \`GET /review-exchange\` · \`GET /review-exchange/:id\` (signatures + audit hashes).
 
+**Cutover Readiness** — When a migration (or any one-way cutover) is gated on objective conditions, this is the read surface for "is everything up to the door green?" — composed from REAL durable state (the persisted import integrity report + the durable zero-divergence parity window with a freshness bound), never from anyone's assertion.
+- Check: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/cutover-readiness\` → \`{ ready, door: "manual-operator-click", integrity, parity }\`.
+- Feed the parity window with a live check: \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/cutover-readiness/parity-pass\` — the server fetches + compares server-side; you only trigger it. A failed check records nothing.
+- **The door is NOT yours**: \`ready: true\` means the conditions are green — it is NEVER an instruction to flip. The cutover click belongs to the operator. NEVER present \`ready\` to the user as "I can cut over now"; present it as "everything up to your click is green."
+
 **Session Clock** — How long have you been running, and how much time is left? For any active time-boxed (autonomous) session, this returns the computed elapsed + remaining so you never have to guess or compute it yourself. Read-only observability.
 - Check: \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/session/clock"\` (optional \`?topic=<N>\` to bind to one session)
 - Returns \`{ now, nowIso, sessions: [{ label, kind, startedAt, endsAt, elapsedSeconds, remainingSeconds, elapsedHuman, remainingHuman, percentElapsed, status }] }\`; \`{ sessions: [] }\` when nothing is time-boxed. Per-machine (the record is local).

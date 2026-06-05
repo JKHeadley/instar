@@ -19,6 +19,11 @@ import { MandateGate } from '../coordination/MandateGate.js';
 import { MandateAudit } from '../coordination/MandateAudit.js';
 import { ConditionsRegistry } from '../coordination/conditions.js';
 import { ReviewExchangeEngine } from '../coordination/ReviewExchange.js';
+import { CutoverReadiness } from '../feedback-factory/cutoverReadiness.js';
+import { DurableParityMonitor, JsonlPassPersistence } from '../feedback-factory/monitor/parityMonitorStore.js';
+import { HttpParitySource } from '../feedback-factory/dryrun/HttpParitySource.js';
+import { runDryRunCompare } from '../feedback-factory/dryrun/dryRunCompare.js';
+import { SecretStore } from '../core/SecretStore.js';
 import { fileURLToPath } from 'node:url';
 import type { SessionManager } from '../core/SessionManager.js';
 import type { StateManager } from '../core/StateManager.js';
@@ -162,6 +167,7 @@ export class AgentServer {
   /** Coordination Mandate enforcement (spec §4): deny-by-default gate + signed
    *  store + hash-chained audit. Null when stateDir is unavailable. */
   private coordination: { store: MandateStore; gate: MandateGate; audit: MandateAudit; conditions: ConditionsRegistry; reviews: ReviewExchangeEngine } | null = null;
+  private cutoverReadiness: CutoverReadiness | null = null;
   private parallelActivityIndex: ParallelActivityIndex | null = null;
   private parallelWorkSentinel: ParallelWorkSentinel | null = null;
   private parallelWorkSentinelTimer: ReturnType<typeof setInterval> | null = null;
@@ -891,11 +897,45 @@ export class AgentServer {
           filePath: path.join(options.config.stateDir, 'state', 'mandate-audit.jsonl'),
         });
         const conditions = new ConditionsRegistry();
-        // Registered deny-safe: these return false until the real integrity/parity
-        // state is wired (the first mandate has no conditioned authority, so they
-        // are not exercised — built + tested for the future cutover authority).
-        conditions.register('integrity-gate-pass', () => false);
-        conditions.register('parity-zero-divergence', () => false);
+        // Cutover-READINESS (spec §7 G2.4, scoped by decision 1A: everything UP TO
+        // the door — the flip itself stays the operator's manual click). The two
+        // objective conditions resolve from REAL durable state (T7): the persisted
+        // import IntegrityReport and the durable zero-divergence parity window.
+        // An agent can TRIGGER a server-side parity pass; it can never assert one.
+        const parityMonitor = new DurableParityMonitor(
+          new JsonlPassPersistence(path.join(options.config.stateDir, 'state', 'feedback-parity-passes.jsonl')),
+        );
+        const migrationCfg = (this.config as { feedbackMigration?: { paritySource?: { baseUrl?: string; secretKey?: string; pageSize?: number; status?: string } } }).feedbackMigration;
+        const paritySourceCfg = migrationCfg?.paritySource;
+        const runParityCheck = paritySourceCfg?.baseUrl
+          ? async () => {
+            const token = String(new SecretStore({ stateDir: options.config.stateDir }).get(paritySourceCfg.secretKey ?? 'portal.instarReadToken') ?? '');
+            if (!token) throw new Error(`parity source token "${paritySourceCfg.secretKey ?? 'portal.instarReadToken'}" not found in the SecretStore`);
+            const source = new HttpParitySource({
+              baseUrl: paritySourceCfg.baseUrl!,
+              token,
+              ...(paritySourceCfg.pageSize ? { pageSize: paritySourceCfg.pageSize } : {}),
+              ...(paritySourceCfg.status ? { status: paritySourceCfg.status } : {}),
+            });
+            await source.prepare();
+            return runDryRunCompare(source);
+          }
+          : null;
+        const readiness = new CutoverReadiness({
+          parityMonitor,
+          integrityReportPath: path.join(options.config.stateDir, 'state', 'feedback-integrity-report.json'),
+          runParityCheck,
+        });
+        // The REAL resolvers (replacing the former deny-safe stubs): both read
+        // durable server-side state; both stay false until that state genuinely
+        // clears. The first mandate has no conditioned authority, so behavior is
+        // unchanged until an execute-cutover authority is ever issued.
+        conditions.register('integrity-gate-pass', () => readiness.integrityStatus().passed);
+        conditions.register('parity-zero-divergence', () => {
+          const p = readiness.parityStatus();
+          return p.cleared && !p.stale;
+        });
+        this.cutoverReadiness = readiness;
         const gate = new MandateGate({ store, conditions, audit });
         // ReviewExchange (spec §7 G2.3): mutual code-review sign-offs, every
         // signature evaluated through the SAME gate (same audit chain).
@@ -1246,6 +1286,7 @@ export class AgentServer {
       resourceLedger: this.resourceLedger,
       approvalLedger: this.approvalLedger,
       coordination: this.coordination,
+      cutoverReadiness: this.cutoverReadiness,
       parallelActivityIndex: this.parallelActivityIndex,
       frameworkIssueLedger: this.frameworkIssueLedger,
       mentorRunner: this.mentorRunner,
