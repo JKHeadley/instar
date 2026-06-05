@@ -192,11 +192,13 @@ describe('instar-dev pre-commit — orphan deferrals enforcement', () => {
     expect(result.stderr).toMatch(/converged \+ approved/);
   });
 
-  // The audit JSON line must record riskFloor (the NUMBER), not just belowFloor,
+  // The audit record must include riskFloor (the NUMBER), not just belowFloor,
   // so the decision record is self-contained for later review (convergence
   // Finding — audit field). The no-tier legacy fixture above touches only a
-  // benign src/touched.ts, so riskFloor is 1.
-  it('AUDIT: a commit appends one well-formed decisions.jsonl line including riskFloor (number)', async () => {
+  // benign src/touched.ts, so riskFloor is 1. Post-task-#80 the record is a
+  // per-entry file under .instar/instar-dev-decisions/ (one file per decision
+  // — parallel PRs can no longer conflict on a shared JSONL tail).
+  it('AUDIT: a commit writes one well-formed decision entry file including riskFloor (number)', async () => {
     stageFixture({
       specFrontmatter: 'title: Audit spec\napproved: true\nreview-convergence: tactical\neli16-overview: fixture.eli16.md',
       specBody: 'A normal change for audit-line shape verification.',
@@ -204,11 +206,11 @@ describe('instar-dev pre-commit — orphan deferrals enforcement', () => {
     const result = await runHook(process.env, sandbox);
     expect(result.status).toBe(0);
 
-    const auditPath = path.join(sandbox, '.instar', 'instar-dev-decisions.jsonl');
-    expect(fs.existsSync(auditPath)).toBe(true);
-    const lines = fs.readFileSync(auditPath, 'utf-8').trim().split('\n').filter(Boolean);
-    expect(lines.length).toBe(1);
-    const entry = JSON.parse(lines[0]);
+    const auditDir = path.join(sandbox, '.instar', 'instar-dev-decisions');
+    expect(fs.existsSync(auditDir)).toBe(true);
+    const entryFiles = fs.readdirSync(auditDir).filter(f => f.endsWith('.json'));
+    expect(entryFiles.length).toBe(1);
+    const entry = JSON.parse(fs.readFileSync(path.join(auditDir, entryFiles[0]), 'utf-8'));
     expect(entry).toHaveProperty('riskFloor');
     expect(typeof entry.riskFloor).toBe('number');
     expect(entry.riskFloor).toBe(1); // benign src/touched.ts → no risk signals
