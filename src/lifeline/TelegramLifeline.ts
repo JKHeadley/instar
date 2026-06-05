@@ -1851,8 +1851,16 @@ export class TelegramLifeline {
       if (forwarded) {
         replayed++;
       } else {
-        // Re-queue with incremented failure counter
-        msg.replayFailures = failures + 1;
+        // Re-queue — but only burn replay budget when the server is believed
+        // HEALTHY and still refused the message (a message-specific/poison
+        // failure, which is what the drop policy exists for). A forward that
+        // fails because the server is DOWN (update restart, crash window) says
+        // nothing about the message — same class as the versionSkewActive
+        // exemption above. Without this guard, a multi-minute restart window
+        // with 30s replay ticks burned all 3 attempts in ~90s and dropped
+        // head-of-queue messages (live: 39 dropped on codey, 9 on 2026-06-05
+        // alone, every one "Handoff to server failed" during a bounce).
+        msg.replayFailures = this.supervisor.healthy ? failures + 1 : failures;
         this.queue.enqueue(msg);
         failed++;
         // If the server just went down during replay, stop replaying —
