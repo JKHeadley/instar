@@ -234,13 +234,19 @@ describe('probe_server_identity — behaviour', () => {
   });
 
   function envSandbox(): NodeJS.ProcessEnv {
-    return {
+    const env: NodeJS.ProcessEnv = {
       ...process.env,
       HOME: tmp,
       INSTAR_WATCHDOG_LAUNCH_AGENTS_DIR: path.join(tmp, 'LaunchAgents'),
       INSTAR_WATCHDOG_STATE_DIR: sandboxStateDir,
       INSTAR_WATCHDOG_LOG_FILE: sandboxLogFile,
     };
+    // Ambient-credential hygiene: agent shells export the REAL INSTAR_AUTH_TOKEN,
+    // and the probe under test prefers that env var over the fixture config's
+    // authToken — so the Authorization-header assertions failed on any agent box
+    // while passing in CI (2026-06-05 suite triage). The sandbox must not inherit it.
+    delete env.INSTAR_AUTH_TOKEN;
+    return env;
   }
 
   function sourceTrick(rest: string): string {
