@@ -62,6 +62,30 @@ export const DEFAULT_ATTENTION_TOPIC_GUARD: AttentionTopicGuardConfig = {
 /** The shared key used when the GLOBAL cap (not a per-source cap) trips. */
 export const GLOBAL_BUCKET = '*';
 
+/**
+ * Thrown by the topic-creation chokepoint (`TelegramAdapter.createForumTopic`)
+ * when an `origin: 'auto'` creation exceeds the last-resort flood ceiling.
+ * Deliberately the same failure shape as a Telegram 429 — every existing
+ * caller already survives topic-creation failure (rate limits happen in the
+ * wild), so the budget rides battle-tested error paths instead of inventing
+ * a new fallback surface.
+ */
+export class TopicFloodBudgetError extends Error {
+  readonly topicName: string;
+  readonly label: string;
+  readonly bucket: string;
+  constructor(topicName: string, label: string, bucket: string) {
+    super(
+      `topic-creation budget exceeded: refused auto topic "${topicName}" (label=${label}, bucket=${bucket}). ` +
+      'The last-resort flood ceiling — see topicCreationBudget config.',
+    );
+    this.name = 'TopicFloodBudgetError';
+    this.topicName = topicName;
+    this.label = label;
+    this.bucket = bucket;
+  }
+}
+
 export type GuardDecision =
   | { action: 'allow' }
   | { action: 'coalesce'; firstInEpisode: boolean; suppressedCount: number; bucket: string };

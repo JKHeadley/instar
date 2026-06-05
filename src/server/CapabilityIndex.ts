@@ -564,6 +564,65 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     }),
   },
   {
+    key: 'approvalLedger',
+    prefixes: ['/approvals'],
+    description: 'Approval-as-Data ledger — every operator approval recorded as durable, signed data (approved-as-is vs approved-with-change with the why, vs rejected) + per-class agreement ratios. Tracks approvals wherever they occur (spec, chat, other). Read-only observability; the ratio is a signal, never a gate. The OPERATOR is the authoritative source of mode+divergences — never self-classify their intent.',
+    build: ({ ctx }) => ({
+      enabled: !!ctx.approvalLedger,
+      endpoints: [
+        'POST /approvals — record an operator decision (mode + divergences operator-sourced; inconsistent rows 400)',
+        'GET /approvals?limit=N&decisionClass=X&surface=Y — list recorded decisions, newest first',
+        'GET /approvals/summary — per-class { total, approvedAsIs, ratio, streak, autoApprovalEligible, divergenceCounts } + bySurface breakdown',
+      ],
+    }),
+  },
+  {
+    key: 'coordinationMandate',
+    prefixes: ['/mandate'],
+    description: 'Coordination Mandate — deny-by-default authority gate for autonomous agent-to-agent actions. The operator\'s bounded, expiring, revocable mandate (issued from the dashboard behind their PIN) is the authorizer, never the agent. Every decision (allow AND deny) lands in a hash-chained, tamper-evident audit. With no mandate issued, every evaluation denies.',
+    build: ({ ctx }) => ({
+      enabled: !!ctx.coordination,
+      endpoints: [
+        'POST /mandate/evaluate — check an intended A2A action { action, params, agentFp, mandateId } → { decision, reason } (call BEFORE acting; a deny means stop)',
+        'GET /mandate — list mandates (each with live authorshipValid)',
+        'GET /mandate/:id — one mandate + verification status',
+        'GET /mandate/audit?limit=N — the chained decision audit (chain.ok:false = tampering — surface it)',
+        'POST /mandate/issue — PIN-GATED (operator only; agent Bearer token is refused)',
+        'POST /mandate/:id/revoke — PIN-GATED (the operator kill switch)',
+      ],
+    }),
+  },
+  {
+    key: 'reviewExchange',
+    prefixes: ['/review-exchange'],
+    description: 'ReviewExchange — the autonomous code-review protocol (coordination-mandate spec §7 G2.3). One mutual, mandate-gated sign-off of a review artifact between the two agents named in a mandate: owner delivers the package over Threadline, peer returns an authenticated verdict, and BOTH sign-offs are evaluated through the mandate gate (sign-code-review authority) before acceptance. Linear states: proposed → delivered → verdict-recorded → complete (or changes-requested). Deny-by-default inherited: no mandate → every sign-off refuses.',
+    build: ({ ctx }) => ({
+      enabled: !!ctx.coordination,
+      endpoints: [
+        'POST /review-exchange — create { mandateId, artifact, packageRef, packageSha256, parties:[ownerFp,peerFp] } (content-addressed; sha fixed at creation)',
+        'GET /review-exchange — list exchanges',
+        'GET /review-exchange/:id — one exchange with its signatures + audit hashes',
+        'POST /review-exchange/:id/delivered — record the Threadline delivery evidence',
+        'POST /review-exchange/:id/peer-verdict — record the peer\'s authenticated verdict; "approve" is their sign-off → mandate-gated (deny → 403)',
+        'POST /review-exchange/:id/sign — the owner\'s countersignature → mandate-gated; completes the mutual exchange',
+      ],
+    }),
+  },
+  {
+    key: 'cutoverReadiness',
+    prefixes: ['/cutover-readiness'],
+    description: 'Cutover-READINESS checker (coordination-mandate spec §7 G2.4, decision 1A) — everything UP TO the cutover door, never the door. Composes the two objective conditions from REAL durable state: the persisted import IntegrityReport (integrity-gate-pass) and the durable zero-divergence parity window with a freshness bound (parity-zero-divergence). The flip itself is the operator\'s manual click; there is NO fire-cutover route by design.',
+    build: ({ ctx }) => ({
+      enabled: !!ctx.cutoverReadiness,
+      endpoints: [
+        'GET /cutover-readiness — { ready, door:"manual-operator-click", integrity, parity, importDryRun } from durable state (read-only)',
+        'POST /cutover-readiness/parity-pass — TRIGGER a server-side live parity check (fetch+compare server-side; the body contributes nothing); records the pass into the durable window',
+        'POST /cutover-readiness/import-dryrun — TRIGGER a server-side import REHEARSAL (live source fetch → AS-IS import into an in-memory target → integrity gate over readback); zero durable data writes; NEVER greens the canonical integrity condition',
+        'GET /cutover-readiness/import-dryrun — the last rehearsal\'s verdict (read-only, informational — not a `ready` input)',
+      ],
+    }),
+  },
+  {
     key: 'resourceLedger',
     prefixes: ['/resources'],
     description: 'Per-agent ResourceLedger — read-only CPU/memory + rate-limit-event observability (mirrors TokenLedger). Phase A persists rate-limit events (breaker trips + session-sentinel detections) across restarts; Phase B continuously samples CPU% + RSS of the agent server + its spawned sessions. Never gates.',

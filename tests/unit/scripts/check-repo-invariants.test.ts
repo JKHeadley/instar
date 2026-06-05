@@ -66,4 +66,50 @@ describe('check-repo-invariants', () => {
     const r = runInvariants(dir, { INSTAR_README_MIN_LINES: '0' });
     expect(r.exitCode).toBe(0);
   });
+
+  // ── Invariant 3: release-note fragments assemble + validate ──────
+  // Server-side twin of the pre-push gate's §1 — a malformed fragment that
+  // reaches main jams EVERY release at publish-time (v1.3.180, #781).
+
+  function writeFragment(name: string, content: string): void {
+    fs.mkdirSync(path.join(dir, 'upgrades', 'next'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'upgrades', 'next', name), content);
+  }
+
+  const VALID_FRAGMENT =
+    '<!-- bump: patch -->\n\n# Some fix\n\n' +
+    '## What to Tell Your User\n\nNothing user-visible; an internal fix.\n\n' +
+    '## Summary of New Capabilities\n\n- An internal robustness fix landed.\n\n' +
+    '## What Changed\n\nInternal plumbing only, no behavior change for users.\n';
+
+  it('passes when fragments assemble and validate cleanly', () => {
+    writeFragment('good.md', VALID_FRAGMENT);
+    const r = runInvariants(dir);
+    expect(r.exitCode).toBe(0);
+  });
+
+  it('fails LOUDLY when a fragment is malformed (assembly throws) — the publish-jam class', () => {
+    // Content but no parseable H2 section — assembleNextMd throws on this.
+    writeFragment('broken.md', 'just some prose with no sections at all\n');
+    const r = runInvariants(dir);
+    expect(r.exitCode).toBe(1);
+    expect(r.stderr).toMatch(/malformed|fail validation/i);
+    expect(r.stderr).toContain('jam the publish workflow');
+  });
+
+  it('fails when the assembled guide misses a required section (validator issue)', () => {
+    writeFragment('incomplete.md',
+      '<!-- bump: patch -->\n\n## What Changed\n\nSomething changed but no user sections exist.\n');
+    const r = runInvariants(dir);
+    expect(r.exitCode).toBe(1);
+    expect(r.stderr).toContain('jam the publish workflow');
+  });
+
+  it('passes when no upgrades dir / no fragments exist (post-release-cut state)', () => {
+    // fakeRepo has no upgrades dir at all — covered by the healthy test, but
+    // also pin the empty-fragments-dir shape explicitly.
+    fs.mkdirSync(path.join(dir, 'upgrades', 'next'), { recursive: true });
+    const r = runInvariants(dir);
+    expect(r.exitCode).toBe(0);
+  });
 });

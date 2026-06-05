@@ -181,6 +181,25 @@ describe('AgentServer', () => {
       expect(res.status).toBe(400);
       expect(res.body.error).toContain('required');
     });
+
+    it('passes gemini-cli framework through to session manager', async () => {
+      const res = await request(app)
+        .post('/sessions/spawn')
+        .send({
+          name: 'test-gemini',
+          prompt: 'hello from dashboard',
+          framework: 'gemini-cli',
+          model: 'gemini-2.5-flash',
+        });
+
+      expect(res.status).toBe(201);
+      expect(mockSM._lastSpawnArgs).toMatchObject({
+        name: 'test-gemini',
+        prompt: 'hello from dashboard',
+        framework: 'gemini-cli',
+        model: 'gemini-2.5-flash',
+      });
+    });
   });
 
   describe('GET /jobs', () => {

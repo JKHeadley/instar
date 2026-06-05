@@ -179,3 +179,31 @@ describe('PresenceProxy source — quota integration', () => {
     expect(quotaIdx).toBeLessThan(llmIdx);
   });
 });
+
+// ── 2026-06-05 incident (topic 2169) — the session-limit banner variant ──
+// The pane showed "Session limit reached ∙ resets 10:30pm" (no timezone
+// paren) while the standby kept reporting "actively working". None of the
+// original patterns matched that wording.
+describe('Quota exhaustion detection — session-limit banner (2026-06-05 incident)', () => {
+  it('detects "Session limit reached ∙ resets 10:30pm" (the verbatim incident banner)', () => {
+    const result = detectQuotaExhaustion(`Some output\nSession limit reached ∙ resets 10:30pm`);
+    expect(result).not.toBeNull();
+    expect(result).toContain('usage limit');
+  });
+
+  it('detects "session limit, resets 10:30pm" (comma variant)', () => {
+    expect(detectQuotaExhaustion(`session limit, resets 10:30pm`)).not.toBeNull();
+  });
+
+  it('detects a bare "You have reached your limit · resets 4pm" (no timezone paren)', () => {
+    expect(detectQuotaExhaustion(`You have reached your limit · resets 4pm`)).not.toBeNull();
+  });
+
+  it('does NOT fire on "approaching session limit" (approaching ≠ paused)', () => {
+    expect(detectQuotaExhaustion(`Approaching session limit — consider wrapping up\n> working on the next step`)).toBeNull();
+  });
+
+  it('does NOT fire on ordinary prose containing "resets" without a limit context', () => {
+    expect(detectQuotaExhaustion(`The cron job resets 3 counters at midnight\nmore output\nmore output`)).toBeNull();
+  });
+});

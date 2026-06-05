@@ -106,7 +106,19 @@ export function resolveSeamlessnessConfig(mm?: MultiMachineConfig): ResolvedSeam
     splitBrainEscalationCooldownMs: mm?.splitBrainEscalationCooldownMs ?? 5 * 60_000,
     handoffBar: mm?.handoffBar ?? 'near-instant',
     maxProcessingMs: mm?.maxProcessingMs ?? 5 * 60_000,
-    exactlyOnceIngress: mm?.exactlyOnceIngress ?? false,
+    // Exactly-once ingress defaults ON whenever the session pool is actively
+    // routing real traffic ('live-transfer' / 'rebalance'). Running a live
+    // multi-machine pool WITHOUT the ingress dedupe ledger is an incoherent
+    // configuration: a lifeline retry or a post-restart queue replay
+    // re-EXECUTES the user's message (2026-06-05 incident: one "move to
+    // laptop" ran 4×, producing contradictory "Moving"/"rate-limited"
+    // replies). An explicit `exactlyOnceIngress: false` still wins —
+    // operators can opt out; they just no longer get the dark-by-accident
+    // default while the pool is live. Pre-live stages ('dark'/'shadow')
+    // keep the old dark default.
+    exactlyOnceIngress:
+      mm?.exactlyOnceIngress ??
+      (mm?.sessionPool?.stage === 'live-transfer' || mm?.sessionPool?.stage === 'rebalance'),
     protocolVersion: mm?.protocolVersion ?? SEAMLESSNESS_PROTOCOL_VERSION,
   };
 }

@@ -1,0 +1,3 @@
+# Secrets boot guard + orphan-proof stores
+
+When an agent's encrypted secrets can't be decrypted, the old behavior was to silently swallow the failure and let placeholder objects leak into the running config — the server then crash-looped minutes later on an unrelated-looking type error (the 2026-06-05 incident). Now the boot fails fast with a message naming the exact affected fields, the shared cross-agent secret vault refuses to generate a fresh key over existing data it would orphan, and secret-store failures are loudly reported instead of looking like "no secrets stored." Complements PR #810, which fixed the key storage layer itself.
