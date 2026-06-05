@@ -41,3 +41,11 @@ reset on any divergence (including re-clearing only after a fresh full clean win
 
 Near-zero, and the failure mode is conservative: if the policy is too strict, the gate just
 stays *blocked* longer (cutover waits) — never the dangerous direction of clearing early.
+
+## Durability note
+
+The "they agreed" window can take hours to build up. If we kept it only in memory, restarting
+the server in the middle would silently wipe the streak and we'd have to start over (or worse,
+mis-measure the window across the restart). So each check result is appended to a small log file
+and reloaded when the monitor starts — the window survives restarts. A half-written final line
+from a crash is skipped cleanly, so one bad line never corrupts the rest of the history.

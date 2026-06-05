@@ -27,3 +27,11 @@
   `monitor.gate(now).cleared`. The Phase-4 cutover executor (G2.4) consults it before the flip.
 - A durable wrapper (persist passes to JSONL so the window survives a restart) + a read-only
   `/parity/status` route land with the cutover-executor wiring.
+
+## Durability (added)
+- `parityMonitorStore.ts` — `DurableParityMonitor` + `JsonlPassPersistence`. The zero-divergence
+  window spans HOURS; without persistence a restart silently resets the streak. Passes are
+  appended to an append-only JSONL and reloaded on construction, so the window survives a
+  restart. Torn final line (crash mid-append) is skipped on reload, never corrupting the prior
+  window. Injectable `PassPersistence` keeps the logic unit-testable without disk. Still not
+  wired into the running server (the cutover executor constructs it with the live path).
