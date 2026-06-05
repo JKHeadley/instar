@@ -1,0 +1,12 @@
+<!-- bump: patch -->
+<!-- internal-only -->
+
+## What Changed
+
+Added behavioral regression coverage for the Slack Socket Mode reconnect ack guard. The existing fix already guards ack sends on socket readiness and catches the send-race path; this slice pins that behavior by instantiating the socket client and driving the raw-message handler directly.
+
+The test now proves that an event arriving while the socket is not open does not attempt the ack send or throw, and that an ack send throwing after an open-state check is caught while event processing continues.
+
+## Evidence
+
+Focused gate: `npx vitest run tests/unit/slack-socket-reconnect.test.ts` passed with 17 tests.
