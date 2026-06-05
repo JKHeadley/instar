@@ -6234,9 +6234,27 @@ for pattern in "vercel deploy" "vercel --prod" "git push" "npm publish" "npx wra
   fi
 done
 
+# Safe-case carve-out: \`git push --force-with-lease\` to a NON-protected branch is the
+# legitimate way to update one's OWN amended/rebased PR branch (--force-with-lease refuses
+# to overwrite unseen work; a feature/PR branch is not shared history). Still block plain
+# --force/-f and any force-push explicitly targeting a protected branch (main/master/develop/
+# release*). Residual on-main edge is double-protected: agents work in feature-branch worktrees
+# (never on main) and main carries remote branch protection that rejects a force-push regardless.
+FORCE_WITH_LEASE_OWN_BRANCH=0
+if echo "$INPUT" | grep -qiE 'git +push[^|;&]*--force-with-lease'; then
+  if echo "$INPUT" | grep -qiE '(^|[[:space:]:/])(main|master|develop|release[A-Za-z0-9._/-]*)([[:space:]]|:|$)'; then
+    FORCE_WITH_LEASE_OWN_BRANCH=0
+  else
+    FORCE_WITH_LEASE_OWN_BRANCH=1
+  fi
+fi
+
 # Risky commands — behavior depends on safety level
 for pattern in "rm -rf \\." "git push --force" "git push -f" "git reset --hard" "git clean -fd" "DROP TABLE" "DROP DATABASE" "TRUNCATE" "DELETE FROM"; do
   if echo "$INPUT" | grep -qi "$pattern"; then
+    if [ "$FORCE_WITH_LEASE_OWN_BRANCH" -eq 1 ] && echo "$pattern" | grep -qiE 'git push (--force|-f)'; then
+      continue
+    fi
     if [ "$SAFETY_LEVEL" -eq 1 ]; then
       echo "BLOCKED: Potentially destructive command detected: $pattern" >&2
       echo "Authorization required: Ask the user whether to proceed with this operation." >&2
