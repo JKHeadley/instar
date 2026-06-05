@@ -100,6 +100,7 @@ describe('SessionManager.spawnSession — Threadline A2A continuity flags (headl
       maxSessions: 3,
       protectedSessions: [],
       completionPatterns: ['Session complete'],
+      framework: 'claude-code',
     };
     manager = new SessionManager(config, state);
 

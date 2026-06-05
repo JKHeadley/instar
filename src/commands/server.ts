@@ -4771,6 +4771,14 @@ export async function startServer(options: StartOptions): Promise<void> {
       });
     }
 
+    sessionManager.on('injectionReplyDetected', (info: { topicId: number; sessionName: string; text: string; injectedAt: number }) => {
+      if (!telegram) return;
+      console.log(`[injectionReplyDetected] Surfacing Gemini final pane reply from "${info.sessionName}" to topic ${info.topicId}`);
+      telegram.sendToTopic(info.topicId, info.text).catch((err: Error) => {
+        console.error(`[injectionReplyDetected] Failed to send reply for topic ${info.topicId}:`, err.message);
+      });
+    });
+
     if (scheduler) {
       sessionManager.on('sessionComplete', (session) => {
         scheduler!.processQueue();

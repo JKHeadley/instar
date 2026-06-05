@@ -17,7 +17,7 @@ import { fileURLToPath } from 'node:url';
 import { SessionLivenessOracle, type SessionLivenessOracleConfig } from './SessionLivenessOracle.js';
 import type { ReapGuard } from './ReapGuard.js';
 import { paneShowsClaudeWorking } from './claudeActivityIndicators.js';
-import { meaningfulTail } from './paneText.js';
+import { extractGeminiFinalAssistantBlock, meaningfulTail } from './paneText.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -850,6 +850,31 @@ rm()  { "${shimRunner}" rm  "$@"; }
         }
 
         this.recordBuildContext(session.tmuxSession);
+
+        // Gemini CLI can complete a Telegram turn by rendering the final
+        // assistant block in the TUI without executing the relay script. When a
+        // topic-bound injection is still pending, surface that completed block
+        // as the reply instead of leaving the user silent.
+        if (session.framework === 'gemini-cli') {
+          const pendingInjection = this.pendingInjections.get(session.tmuxSession);
+          if (pendingInjection) {
+            const pane = this.captureOutput(session.tmuxSession, 400) || '';
+            const marker = `[telegram:${pendingInjection.topicId}`;
+            const markerIdx = pane.lastIndexOf(marker);
+            if (markerIdx >= 0) {
+              const reply = extractGeminiFinalAssistantBlock(pane.slice(markerIdx));
+              if (reply && reply.trim()) {
+                this.pendingInjections.delete(session.tmuxSession);
+                this.emit('injectionReplyDetected', {
+                  topicId: pendingInjection.topicId,
+                  sessionName: session.tmuxSession,
+                  text: reply,
+                  injectedAt: pendingInjection.injectedAt,
+                });
+              }
+            }
+          }
+        }
 
         // Check for completion patterns even while session appears alive
         // (catches sessions where Claude finished but tmux is still open)
