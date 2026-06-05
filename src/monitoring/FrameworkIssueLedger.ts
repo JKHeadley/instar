@@ -376,11 +376,11 @@ export class FrameworkIssueLedger {
             `INSERT INTO framework_issues
                (id, framework, bucket, bucket_primary, title, severity, status, dedup_key,
                 signature, recurrence_count, first_seen_version, last_seen_version,
-                playbook_status, probable_loop, created_at, updated_at)
+                related_spec, playbook_status, probable_loop, created_at, updated_at)
              VALUES (@id, @framework, @bucket, @bucketPrimary, @title, @severity, 'open', @dedupKey,
-                @signature, 0, @observedVersion, @observedVersion, 'none', 0, @ts, @ts)`,
+                @signature, 0, @observedVersion, @observedVersion, @relatedSpec, 'none', 0, @ts, @ts)`,
           )
-          .run({ id: issueId, framework, bucket, bucketPrimary, title, severity, dedupKey, signature, observedVersion, ts });
+          .run({ id: issueId, framework, bucket, bucketPrimary, title, severity, dedupKey, signature, observedVersion, relatedSpec, ts });
         created = true;
         issue = { id: issueId };
       } else {
@@ -391,12 +391,14 @@ export class FrameworkIssueLedger {
             `UPDATE framework_issues
                SET last_seen_version = COALESCE(@observedVersion, last_seen_version),
                    severity = CASE WHEN @newWeight > @oldWeight THEN @severity ELSE severity END,
+                   related_spec = COALESCE(related_spec, @relatedSpec),
                    updated_at = @ts
              WHERE id = @id`,
           )
           .run({
             id: issueId,
             observedVersion,
+            relatedSpec,
             severity,
             newWeight: SEVERITY_WEIGHT[severity],
             oldWeight: SEVERITY_WEIGHT[(issue.severity as IssueSeverity) ?? 'medium'],
