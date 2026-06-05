@@ -811,6 +811,34 @@
     .ph-h { font-size: 20px; font-weight: 600; color: var(--text-bright); line-height: 1.5; margin: 0; }
     .ph-h-sub { font-size: 15px; color: var(--text-dim); line-height: 1.55; margin: 4px 0 4px 0; max-width: 720px; }
     .ph-empty { font-size: 18px; color: var(--text-dim); line-height: 1.6; }
+    /* Mandates tab */
+    .mnd-card { border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; margin-bottom: 12px; display: flex; flex-direction: column; gap: 8px; }
+    .mnd-card-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+    .mnd-scope { font-size: 17px; font-weight: 600; color: var(--text-bright); }
+    .mnd-badge { font-size: 12px; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--border); }
+    .mnd-ok { color: #3fb950; border-color: #3fb95055; }
+    .mnd-bad { color: #f85149; border-color: #f8514955; font-weight: 700; }
+    .mnd-deny { color: #d29922; border-color: #d2992255; }
+    .mnd-dead { color: var(--text-dim); }
+    .mnd-meta { font-size: 13px; color: var(--text-dim); }
+    .mnd-authorities { margin: 0; padding-left: 18px; font-size: 13px; line-height: 1.7; }
+    .mnd-empty { font-size: 16px; color: var(--text-dim); line-height: 1.6; padding: 12px 0; }
+    .mnd-revoke-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .mnd-pin { width: 110px; } .mnd-reason { flex: 1; min-width: 160px; }
+    .mnd-btn { padding: 6px 14px; cursor: pointer; }
+    .mnd-btn-danger { color: #f85149; }
+    .mnd-dead-note { font-size: 13px; color: var(--text-dim); font-style: italic; }
+    .mnd-notice { min-height: 20px; font-size: 14px; color: #3fb950; }
+    .mnd-notice-err { color: #f85149; }
+    .mnd-issue-form { display: flex; flex-direction: column; gap: 10px; max-width: 640px; padding: 12px 0; }
+    .mnd-issue-form label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--text-dim); }
+    .mnd-issue-form input, .mnd-issue-form textarea { font: inherit; padding: 6px 8px; }
+    .mnd-issue-form textarea { font-family: ui-monospace, monospace; font-size: 12px; }
+    .mnd-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    .mnd-table th, .mnd-table td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
+    .mnd-reason-cell { color: var(--text-dim); max-width: 420px; }
+    .mnd-audit-head { display: flex; gap: 12px; align-items: center; margin-bottom: 8px; }
+    .mnd-dim { font-size: 13px; color: var(--text-dim); }
     /* Page intro — one-sentence grounding right under the title so terms like
        "it" / "the system" later in the page have a clear referent. */
     .ph-intro { font-size: 17px; color: var(--text); line-height: 1.55; margin: 0; max-width: 720px; }
@@ -2652,6 +2680,7 @@
           <button class="tab" data-tab="process-health" onclick="switchTab('process-health')">Process Health</button>
           <button class="tab" data-tab="preferences-learning" onclick="switchTab('preferences-learning')">Preferences</button>
           <button class="tab" data-tab="machines" onclick="switchTab('machines')">Machines</button>
+          <button class="tab" data-tab="mandates" onclick="switchTab('mandates')">Mandates</button>
         </nav>
       </div>
       <div class="vital-signs" id="vitalSigns">
@@ -3198,6 +3227,37 @@
         <summary class="ph-detail-summary">More detail</summary>
         <div id="phDetail" class="ph-detail-body"></div>
       </details>
+    </div>
+
+    <!-- mandates tab (coordination-mandate spec, decision 2A — the operator's PIN-gated surface) -->
+    <div id="mandatesPanel" class="ph-root" style="display:none;flex-direction:column;padding:28px;gap:24px;overflow-y:auto">
+      <div style="display:flex;justify-content:space-between;align-items:baseline">
+        <h2 class="ph-title">Coordination Mandates</h2>
+        <div id="mndStamp" class="ph-stamp" aria-live="polite"></div>
+      </div>
+      <p class="ph-intro">Your bounded "permission slips" for autonomous agent-to-agent work. The slip — never the agent — is the authorizer. Issuing and revoking require <strong>your dashboard PIN</strong>; agent credentials alone are refused by design. With no slip issued, every delegated action is denied.</p>
+      <div id="mndNotice" class="mnd-notice" aria-live="polite"></div>
+      <section class="ph-section">
+        <h3 class="ph-h">Issued mandates</h3>
+        <div id="mndList"></div>
+      </section>
+      <details class="ph-detail">
+        <summary class="ph-detail-summary">Issue a new mandate (PIN required)</summary>
+        <div class="mnd-issue-form">
+          <label>Scope <input type="text" id="mndIssueScope" value="feedback-migration" /></label>
+          <label>Agent A fingerprint <input type="text" id="mndIssueAgentA" placeholder="full routing fingerprint" /></label>
+          <label>Agent B fingerprint <input type="text" id="mndIssueAgentB" placeholder="full routing fingerprint" /></label>
+          <label>Authorities (JSON) <textarea id="mndIssueAuthorities" rows="9" spellcheck="false"></textarea></label>
+          <label>Expires <input type="datetime-local" id="mndIssueExpires" /></label>
+          <label>Your dashboard PIN <input type="password" id="mndIssuePin" autocomplete="off" placeholder="typed at issuance, never stored" /></label>
+          <button id="mndIssueBtn" class="mnd-btn">Issue mandate</button>
+        </div>
+      </details>
+      <section class="ph-section">
+        <h3 class="ph-h">Decision audit</h3>
+        <p class="ph-h-sub">Every allow and deny, hash-chained. A broken chain means tampering — treat it as an incident.</p>
+        <div id="mndAudit"></div>
+      </section>
     </div>
 
     <!-- preferences-learning tab (Correction & Preference Learning Sentinel §10 Slice-2) -->
@@ -4542,6 +4602,13 @@
         display: ['flex'],
         onActivate: () => { if (typeof startMachines === 'function') startMachines(); },
         onDeactivate: () => { if (typeof stopMachines === 'function') stopMachines(); },
+      },
+      {
+        id: 'mandates',
+        panels: ['mandatesPanel'],
+        display: ['flex'],
+        onActivate: () => { if (typeof startMandates === 'function') startMandates(); },
+        onDeactivate: () => { if (typeof stopMandates === 'function') stopMandates(); },
       },
       {
         id: 'secrets',
@@ -8472,6 +8539,42 @@
     }
     function stopProcessHealth() {
       if (__phController) __phController.stop();
+    }
+
+    // ── Mandates tab (coordination-mandate spec, decision 2A) ──
+    // Same lazy dynamic-import pattern as Process Health. The PIN typed in this
+    // tab is sent once per action and never stored anywhere.
+    let __mndController = null;
+    let __mndModule = null;
+    async function startMandates() {
+      if (!__mndModule) {
+        try { __mndModule = await import('/dashboard/mandates.js'); }
+        catch (e) { console.error('[mandates] module load failed', e); return; }
+      }
+      if (!__mndController) {
+        const els = {
+          list: document.getElementById('mndList'),
+          audit: document.getElementById('mndAudit'),
+          notice: document.getElementById('mndNotice'),
+          stamp: document.getElementById('mndStamp'),
+          issueScope: document.getElementById('mndIssueScope'),
+          issueAgentA: document.getElementById('mndIssueAgentA'),
+          issueAgentB: document.getElementById('mndIssueAgentB'),
+          issueAuthorities: document.getElementById('mndIssueAuthorities'),
+          issueExpires: document.getElementById('mndIssueExpires'),
+          issuePin: document.getElementById('mndIssuePin'),
+          issueBtn: document.getElementById('mndIssueBtn'),
+        };
+        const fetchImpl = (url, opts = {}) => fetch(url, {
+          ...opts,
+          headers: { 'Authorization': `Bearer ${token}`, ...(opts.headers || {}) },
+        });
+        __mndController = __mndModule.createController({ doc: document, els, fetchImpl });
+      }
+      __mndController.start();
+    }
+    function stopMandates() {
+      if (__mndController) __mndController.stop();
     }
 
     // ── Preferences tab (Correction & Preference Learning Sentinel §10 Slice-2) ──
