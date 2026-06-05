@@ -2818,10 +2818,15 @@ export async function startServer(options: StartOptions): Promise<void> {
     const codexThreadlineMcp = config.threadline
       ? resolveThreadlineMcpEntry(config.sessions.projectDir, config.stateDir, config.projectName)
       : undefined;
-    const sessionManager = new SessionManager(
-      codexThreadlineMcp ? { ...config.sessions, codexThreadlineMcp } : config.sessions,
-      state,
-    );
+    const sessionManagerConfig = {
+      ...config.sessions,
+      ...(codexThreadlineMcp ? { codexThreadlineMcp } : {}),
+      respawnBuildContext: {
+        ...(config.sessions.respawnBuildContext ?? {}),
+        enabled: config.sessions.respawnBuildContext?.enabled ?? !!config.developmentAgent,
+      },
+    };
+    const sessionManager = new SessionManager(sessionManagerConfig, state);
 
     // Input Guard is constructed later (after sharedIntelligence is available)
     // so the topic coherence reviewer can route through the IntelligenceProvider

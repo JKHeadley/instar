@@ -69,6 +69,7 @@ import { StateManager } from './StateManager.js';
 import { buildInjectionTag } from '../types/pipeline.js';
 import { sanitizeSenderName, sanitizeTopicName } from '../utils/sanitize.js';
 import { getTelegramInboundDir } from '../messaging/shared/telegramInboundFiles.js';
+import { SessionBuildContextStore } from './SessionBuildContextStore.js';
 
 /** Absolute maximum session duration (4 hours) — safety net for sessions without explicit timeout */
 const DEFAULT_MAX_DURATION_MINUTES = 240;
@@ -311,6 +312,7 @@ export class SessionManager extends EventEmitter {
 
   /** Worktree manager — when set, spawnSession resolves an isolated worktree per topic. */
   private worktreeManager: import('./WorktreeManager.js').WorktreeManager | null = null;
+  private buildContextStore: SessionBuildContextStore | null = null;
 
   /** Per-session shim directory root (one subdir per session). Used for K9 mandatory shim. */
   private shimRoot: string | null = null;
@@ -319,6 +321,11 @@ export class SessionManager extends EventEmitter {
     super();
     this.config = config;
     this.state = state;
+    if (config.respawnBuildContext?.enabled) {
+      this.buildContextStore = new SessionBuildContextStore(state, {
+        maxAgeMs: config.respawnBuildContext.maxAgeMs,
+      });
+    }
   }
 
   /** Lazily-constructed tri-state liveness oracle (UNIFIED-SESSION-LIFECYCLE §P1).
@@ -836,6 +843,8 @@ rm()  { "${shimRunner}" rm  "$@"; }
           this.emit('sessionComplete', session);
           continue;
         }
+
+        this.recordBuildContext(session.tmuxSession);
 
         // Check for completion patterns even while session appears alive
         // (catches sessions where Claude finished but tmux is still open)
@@ -1742,6 +1751,43 @@ rm()  { "${shimRunner}" rm  "$@"; }
     }
   }
 
+  private currentPaneCwd(tmuxSession: string): string | null {
+    try {
+      const out = execFileSync(
+        this.config.tmuxPath,
+        ['display-message', '-p', '-t', `=${tmuxSession}:`, '#{pane_current_path}'],
+        { encoding: 'utf-8', timeout: 2000 },
+      ).trim();
+      return out || null;
+    } catch {
+      // @silent-fallback-ok — cwd tracking is best-effort enrichment for respawn recovery
+      return null;
+    }
+  }
+
+  private recordBuildContext(tmuxSession: string): void {
+    if (!this.buildContextStore) return;
+    const currentCwd = this.currentPaneCwd(tmuxSession);
+    if (!currentCwd) return;
+    try {
+      this.buildContextStore.record(tmuxSession, this.config.projectDir, currentCwd);
+    } catch (err) {
+      console.warn(`[SessionManager] Failed to record build context for "${tmuxSession}": ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  private withBuildContextRestoreNote(
+    tmuxSession: string,
+    initialMessage: string | undefined,
+    resumeSessionId: string | undefined,
+  ): string | undefined {
+    if (!resumeSessionId || !this.buildContextStore) return initialMessage;
+    const restore = this.buildContextStore.getRestore(tmuxSession);
+    if (!restore) return initialMessage;
+    console.log(`[SessionManager] Restoring build context for "${tmuxSession}" from ${restore.entry.currentCwd}`);
+    return [restore.note, initialMessage].filter(Boolean).join('\n\n');
+  }
+
   /**
    * Resolve the IntelligenceFramework a tmux session was spawned under
    * by reading the INSTAR_FRAMEWORK env we set in its tmux env block.
@@ -2165,6 +2211,12 @@ rm()  { "${shimRunner}" rm  "$@"; }
       return tmuxSession;
     }
 
+    const effectiveInitialMessage = this.withBuildContextRestoreNote(
+      tmuxSession,
+      initialMessage,
+      options?.resumeSessionId,
+    );
+
     // User-initiated sessions bypass the maxSessions limit entirely.
     // The user should NEVER be blocked from interacting with their agent
     // because scheduled jobs filled all slots. maxSessions only constrains
@@ -2314,7 +2366,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
       // account default).
       framework,
       ...(resolveModelForFramework(framework, launchDefaultModel) ? { model: resolveModelForFramework(framework, launchDefaultModel) } : {}),
-      prompt: initialMessage,
+      prompt: effectiveInitialMessage,
       maxDurationMinutes: this.effectiveMaxDurationMinutes,
     };
     this.state.saveSession(session);
@@ -2325,8 +2377,8 @@ rm()  { "${shimRunner}" rm  "$@"; }
     // Fresh sessions also get a generous timeout (90s) to handle slow API auth,
     // large CLAUDE.md loading, and session-start hook execution.
     const readyTimeout = options?.resumeSessionId ? 120_000 : 90_000;
-    if (initialMessage) {
-      this.handleReadyAndInject(tmuxSession, name, initialMessage, readyTimeout, options).catch((err) => {
+    if (effectiveInitialMessage) {
+      this.handleReadyAndInject(tmuxSession, name, effectiveInitialMessage, readyTimeout, options).catch((err) => {
         console.error(`[SessionManager] Error during ready-and-inject for "${tmuxSession}": ${err}`);
       });
     }

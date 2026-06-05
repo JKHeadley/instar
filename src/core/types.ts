@@ -164,6 +164,17 @@ export interface SessionManagerConfig {
   /** Server port — used to construct INSTAR_SERVER_URL for HTTP hooks */
   port?: number;
   /**
+   * Respawn build-context restore (mentor-onboarding hardening).
+   * When enabled, SessionManager records each live session's tmux pane cwd and,
+   * on a resumed respawn, prepends a continuation note when the session had
+   * navigated into an agent worktree. Undefined stays dark unless server boot
+   * resolves it through the developmentAgent gate.
+   */
+  respawnBuildContext?: {
+    enabled?: boolean;
+    maxAgeMs?: number;
+  };
+  /**
    * Per-provider credentials. Keys are provider ids
    * (e.g. 'anthropic', 'openai', 'google'). Values declare the
    * credential kind and value, plus an optional base-URL override

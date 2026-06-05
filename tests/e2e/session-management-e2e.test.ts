@@ -70,6 +70,26 @@ echo "Session ended"
   return scriptPath;
 }
 
+function createMockClaudeInteractiveInCwd(dir: string, cwd: string): string {
+  const scriptPath = path.join(dir, `mock-claude-cwd-${randomSuffix()}.sh`);
+  fs.writeFileSync(scriptPath, `#!/bin/bash
+cd "${cwd}"
+echo "────────────────────────────────────────"
+echo "❯ "
+echo "────────────────────────────────────────"
+echo "  ⏵⏵ bypass permissions on (shift+tab to cycle)                    ◐ medium · /effort"
+read -r INPUT
+echo "Received: $INPUT"
+sleep 10
+`);
+  fs.chmodSync(scriptPath, '755');
+  return scriptPath;
+}
+
+function randomSuffix(): string {
+  return Math.random().toString(36).slice(2, 8);
+}
+
 /**
  * Create a mock claude that takes a long time to show the prompt.
  * Simulates slow API auth or large CLAUDE.md loading.
@@ -735,6 +755,64 @@ describeMaybe('Session Management E2E', () => {
         return (out || '').includes('CONTINUATION');
       }, 15_000);
     });
+
+    it('restores a worktree build context on respawn while keeping home-only respawn a no-op', async () => {
+      const worktree = path.join(project.dir, '.worktrees', 'respawn-build');
+      fs.mkdirSync(worktree, { recursive: true });
+
+      const buildClaudePath = createMockClaudeInteractiveInCwd(project.dir, worktree);
+      const buildSm = createManager(project, buildClaudePath, {
+        respawnBuildContext: { enabled: true, maxAgeMs: 60_000 },
+      });
+      managers.push(buildSm);
+
+      const buildName = `${TMUX_PREFIX}build-ctx`;
+      const buildTmux = await buildSm.spawnInteractiveSession(undefined, buildName);
+      await waitFor(() => buildSm.isSessionAlive(buildTmux), 10_000);
+      const buildSession = project.state.listSessions({ status: 'running' }).find(s => s.tmuxSession === buildTmux)!;
+      buildSession.startedAt = new Date(Date.now() - 20_000).toISOString();
+      project.state.saveSession(buildSession);
+
+      await (buildSm as any).monitorTick();
+      execFileSync(tmuxPath!, ['kill-session', '-t', `=${buildTmux}`], { stdio: 'ignore' });
+
+      await buildSm.spawnInteractiveSession('CONTINUATION — resume build', buildName, {
+        telegramTopicId: 1052,
+        resumeSessionId: '550e8400-e29b-41d4-a716-446655440000',
+      });
+
+      await waitFor(() => {
+        const out = buildSm.captureOutput(buildTmux, 80) ?? '';
+        return out.includes('[BUILD-CONTEXT RESTORE]') && out.includes(worktree);
+      }, 20_000);
+
+      const homeClaudePath = createMockClaudeInteractiveInCwd(project.dir, project.dir);
+      const homeSm = createManager(project, homeClaudePath, {
+        respawnBuildContext: { enabled: true, maxAgeMs: 60_000 },
+      });
+      managers.push(homeSm);
+
+      const homeName = `${TMUX_PREFIX}home-ctx`;
+      const homeTmux = await homeSm.spawnInteractiveSession(undefined, homeName);
+      await waitFor(() => homeSm.isSessionAlive(homeTmux), 10_000);
+      const homeSession = project.state.listSessions({ status: 'running' }).find(s => s.tmuxSession === homeTmux)!;
+      homeSession.startedAt = new Date(Date.now() - 20_000).toISOString();
+      project.state.saveSession(homeSession);
+
+      await (homeSm as any).monitorTick();
+      execFileSync(tmuxPath!, ['kill-session', '-t', `=${homeTmux}`], { stdio: 'ignore' });
+
+      await homeSm.spawnInteractiveSession('CONTINUATION — home only', homeName, {
+        telegramTopicId: 1053,
+        resumeSessionId: '650e8400-e29b-41d4-a716-446655440000',
+      });
+
+      await waitFor(() => {
+        const out = homeSm.captureOutput(homeTmux, 80) ?? '';
+        return out.includes('CONTINUATION — home only');
+      }, 20_000);
+      expect(homeSm.captureOutput(homeTmux, 80)).not.toContain('[BUILD-CONTEXT RESTORE]');
+    }, 40_000);
   });
 
   // ── Feature: Session State Persistence ────────────────────────────

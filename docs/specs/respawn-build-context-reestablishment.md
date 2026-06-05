@@ -1,6 +1,15 @@
+---
+status: approved
+parent-principle: "Structure beats Willpower"
+review-convergence: "operator green-light after plan review, Telegram topic 1052, 2026-06-05T05:12:00Z"
+approved: true
+approved-by: "Justin via Telegram topic 1052"
+approved-at: "2026-06-05T05:12:00Z"
+---
+
 # Respawn Build-Context Re-establishment
 
-> **Status:** Draft spec (Tier-2). **Tracks:** the #1 mentor-onboarding hardening item — *"a respawned dev session must deterministically re-establish its fleet-PR build checkout."*
+> **Status:** Approved spec (Tier-2). **Tracks:** the #1 mentor-onboarding hardening item — *"a respawned dev session must deterministically re-establish its fleet-PR build checkout."*
 > **Earned from:** the 2026-06-04 server-bounce respawn cascade (a host-load session death + respawn wiped Codey's build context → 6-friction setup slog: wrong repo, stale deps, gate-sha drift, …). Re-grounded 2026-06-05.
 
 ## Problem
