@@ -780,6 +780,15 @@ function blockCommit(files, reason) {
 // Append exactly one JSON line to .instar/instar-dev-decisions.jsonl for every
 // in-scope commit (regardless of tier branch). Best-effort: a logging failure
 // must never crash the gate.
+//
+// The line is then STAGED so it rides the very commit it describes. Without
+// this, a pre-commit-hook append always lands AFTER staging, leaving the line
+// uncommitted in the building worktree's tracked decisions file — one-PR
+// worktrees never commit it, worktree reclaim deletes it, and the audit trail
+// silently leaks (the task-#62 "decision-audit didn't fire" mystery: it DID
+// fire, the line just evaporated with the worktree). If the commit is later
+// blocked by the gate, the staged line simply rides the retry commit — both
+// lines describe real gate evaluations.
 function writeDecisionAudit({ slug, suggestedTier, declaredTier, riskFloor, riskFloorReasons, belowFloor, files, loc }) {
   try {
     fs.mkdirSync(path.dirname(DECISIONS_LOG), { recursive: true });
@@ -799,6 +808,7 @@ function writeDecisionAudit({ slug, suggestedTier, declaredTier, riskFloor, risk
         loc,
       }) + '\n',
     );
+    execSync(`git add ${JSON.stringify(path.relative(ROOT, DECISIONS_LOG))}`, { cwd: ROOT });
   } catch {
     // best-effort — never block on audit I/O
   }
