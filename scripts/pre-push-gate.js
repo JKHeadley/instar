@@ -14,7 +14,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { validateGuideContent } from './upgrade-guide-validator.mjs';
-import { assembleNextMd, gatherFragmentInputs } from './assemble-next-md.mjs';
+import { assembleNextMd, gatherFragmentInputs, hasInternalOnlyMarker } from './assemble-next-md.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
@@ -147,8 +147,23 @@ if (latestPublished) {
 
 try {
   const { execSync } = await import('node:child_process');
-  // Get files changed since the remote tracking branch
-  const remoteBranch = execSync('git rev-parse --abbrev-ref @{u} 2>/dev/null || echo origin/main', { encoding: 'utf-8' }).trim();
+  // Compute "what this PR changes" against its MERGE TARGET (main), not the
+  // branch's own upstream (@{u}). Using @{u} breaks when a PR is updated by
+  // MERGING main in (the no-force-push path): `@{u}...HEAD` then includes all of
+  // main's already-shipped changes, producing false "src changed without a
+  // release-note fragment" errors (which forced INSTAR_PRE_PUSH_SKIP=1 on merge-
+  // updated PRs). A three-dot diff against main is the PR's TRUE diff in both the
+  // normal-incremental and merge-from-main cases, and never UNDER-reports the
+  // PR's own changes (merge-base of main and HEAD is the branch point).
+  const pickRef = (cands) => {
+    for (const r of cands) {
+      try { execSync(`git rev-parse --verify --quiet ${r}`, { stdio: 'pipe', encoding: 'utf-8' }); return r; }
+      catch { /* ref not present in this clone */ }
+    }
+    return null;
+  };
+  const remoteBranch = pickRef(['JKHeadley/main', 'origin/main', 'upstream/main', 'main'])
+    || execSync('git rev-parse --abbrev-ref @{u} 2>/dev/null || echo origin/main', { encoding: 'utf-8' }).trim();
   const changedFiles = execSync(`git diff --name-only ${remoteBranch}...HEAD 2>/dev/null || git diff --name-only HEAD~1 2>/dev/null`, { encoding: 'utf-8' })
     .trim()
     .split('\n')
@@ -183,6 +198,29 @@ try {
       `release — your change would merge but never ship. Add a fragment describing the change:\n` +
       srcChanges.slice(0, 5).map(f => `      • ${f}`).join('\n') +
       (srcChanges.length > 5 ? `\n      • ...and ${srcChanges.length - 5} more` : '')
+    );
+  }
+
+  // ── 3c. Internal-only lane verification (objective gate) ──────────────
+  // A release fragment marked <!-- internal-only --> may omit the user-facing
+  // sections — the assembler auto-fills "None — internal" for an all-internal
+  // release. That is ONLY valid for changes with no shipped runtime surface.
+  // Verify against the diff: if any staged internal-only fragment accompanies a
+  // runtime src/ change, REJECT — a user-facing change must not skip
+  // "What to Tell Your User" / "Summary of New Capabilities". This is the
+  // objective gate that keeps the marker from being misused (the agent sets it,
+  // the diff verifies it). tests/docs/scripts-only changes are fine.
+  const internalOnlyFragments = fragmentChanges.filter(f => {
+    try { return hasInternalOnlyMarker(fs.readFileSync(path.join(ROOT, f), 'utf-8')); }
+    catch { return false; }
+  });
+  if (internalOnlyFragments.length > 0 && srcChanges.length > 0) {
+    errors.push(
+      `Internal-only release fragment(s) accompany ${srcChanges.length} runtime src/ change(s):\n` +
+      internalOnlyFragments.slice(0, 5).map(f => `      • ${f} (marked <!-- internal-only -->)`).join('\n') + '\n' +
+      `      The internal-only lane (which auto-fills the user-facing release sections) is ONLY for changes ` +
+      `with no shipped runtime surface (tests / docs / scripts). Either remove the marker and write the ` +
+      `"What to Tell Your User" + "Summary of New Capabilities" sections, or split the src/ change into its own PR.`
     );
   }
 

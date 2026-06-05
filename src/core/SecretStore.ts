@@ -68,7 +68,16 @@ export class MasterKeyManager {
 
   constructor(stateDir: string, forceFile = false) {
     this.stateDir = stateDir;
-    this.forceFile = forceFile;
+    // Test runs are ALWAYS file-key-only. The keychain entry is machine-global
+    // (one service/account shared by every agent and process on the box), so a
+    // test constructing a SecretStore against a fresh stateDir would generate a
+    // new master key and silently OVERWRITE that global entry — breaking every
+    // real store encrypted with the old key (2026-06-05 incident: an integration
+    // test run did exactly this to the dev agent's vault). Structural guard, not
+    // per-test convention: no test can pollute the keychain even if it forgets
+    // forceFileKey.
+    const inTestRun = !!process.env.VITEST || process.env.NODE_ENV === 'test';
+    this.forceFile = forceFile || inTestRun;
     this.keyFilePath = path.join(stateDir, 'machine', 'secrets-master.key');
   }
 

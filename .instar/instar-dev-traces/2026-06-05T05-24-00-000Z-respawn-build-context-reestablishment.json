@@ -1,0 +1,24 @@
+{
+  "phase": "complete",
+  "slug": "respawn-build-context-reestablishment",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "src/core/SessionBuildContextStore.ts",
+    "src/core/SessionManager.ts",
+    "src/core/types.ts",
+    "tests/unit/session-build-context-store.test.ts",
+    "tests/integration/session-build-context-respawn.test.ts",
+    "tests/e2e/session-management-e2e.test.ts",
+    "docs/specs/respawn-build-context-reestablishment.md",
+    "docs/specs/respawn-build-context-reestablishment.eli16.md",
+    "upgrades/respawn-build-context-reestablishment.eli16.md",
+    "upgrades/next/respawn-build-context-reestablishment.md",
+    "upgrades/side-effects/respawn-build-context-reestablishment.md"
+  ],
+  "artifactPath": "upgrades/side-effects/respawn-build-context-reestablishment.md",
+  "artifactSha256": "7b9933f03f276e3d756599d811df326bedd7432bbe0b6c128fe665a7fb2d9a83",
+  "specPath": "docs/specs/respawn-build-context-reestablishment.md",
+  "eli16Path": "docs/specs/respawn-build-context-reestablishment.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/respawn-build-context-reestablishment.md",
+  "createdAt": "2026-06-05T05:55:00Z"
+}

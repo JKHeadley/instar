@@ -228,7 +228,18 @@ describe('No Silent Fallbacks', () => {
     // them — every warm fail-open either logs+falls-back to the proven cold-spawn carrying an
     // explicit `@silent-fallback-ok`, or re-throws non-conflict errors). Setting BASELINE to the
     // true current count restores the gate so it again prevents NET regressions.
-    const BASELINE = 458;
+    //
+    // 459 on the post-#770 base: the Agent-Health lane's best-effort lane-post
+    // fallback (TelegramAdapter.routeToAgentHealthLane — the item is already
+    // recorded in the attention store, so a transient send failure is non-fatal)
+    // adds ONE legitimate, justified fail-open over the prior 458. No NET new
+    // un-justified fallback; bumping restores the gate as a net-regression guard.
+    //
+    // #766 (internal-only-lane docs) merges onto that 459 base and adds ZERO flagged
+    // catches — its only new catch (migrateInstarDevInternalOnlyReleaseNoteLane) SURFACES
+    // errors via result.errors.push and is verified ABSENT from the flagged list. Merged
+    // baseline stays 459 (re-verified against the merged tree).
+    const BASELINE = 459;
 
     if (silentFallbacks.length > 0) {
       const report = silentFallbacks.map(fb =>

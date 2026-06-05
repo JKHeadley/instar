@@ -51,6 +51,10 @@ export type AttentionPoster = (item: {
   summary: string;
   category?: string;
   priority?: string;
+  /** Route into the calm "🩺 Agent Health" lane (see TelegramAdapter). */
+  lane?: 'agent-health';
+  /** Stable per-entity key for Agent-Health-lane suppression dedup. */
+  healthKey?: string;
 }) => Promise<boolean>;
 
 export function makeAttentionPoster(opts: {

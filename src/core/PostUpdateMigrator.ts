@@ -224,6 +224,8 @@ export class PostUpdateMigrator {
     this.migrateSkillPortHardcoding(result);
     this.migrateBuildSkillMethodology(result);
     this.migrateTestAsSelfSkill(result);
+    this.migrateInstarDevBuildLocationRegrounding(result);
+    this.migrateInstarDevInternalOnlyReleaseNoteLane(result);
     this.migrateAutonomousStopHookTopicKeyed(result);
     this.migrateSelfKnowledgeTree(result);
     this.migrateSoulMd(result);
@@ -1468,7 +1470,7 @@ export class PostUpdateMigrator {
       if (!fs.existsSync(skillFile)) return; // installBuiltinSkills handles fresh installs
       const current = fs.readFileSync(skillFile, 'utf8');
       const MARKER = 'The one-button path (Part 2.1';
-      if (current.includes(MARKER)) return; // already updated — idempotent
+      if (current.includes(MARKER)) return; // already updated - idempotent
       // Stock-fingerprint guard: don't clobber a customized test-as-self skill.
       if (!current.includes('Throwaway-Deploy Harness') || !current.includes('verify.mjs')) {
         result.skipped.push('skills/test-as-self/SKILL.md: customized — left untouched (no Part 2.1 update)');
@@ -1483,6 +1485,71 @@ export class PostUpdateMigrator {
       }
     } catch (err) {
       result.errors.push(`skills/test-as-self/SKILL.md migration: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  /**
+   * Update the deployed instar-dev skill so every fleet-development cycle
+   * re-grounds its build location before source edits. This backfills the
+   * mentor-onboarding hardening learned from Codey building a PR from a stale
+   * agent-home checkout instead of current JKHeadley/main.
+   *
+   * Idempotent + conservative: re-copy the bundled SKILL.md only when the
+   * installed copy (a) lacks the build-location marker AND (b) still matches
+   * the stock instar-dev fingerprint. A customized skill is left untouched.
+   */
+  private migrateInstarDevBuildLocationRegrounding(result: MigrationResult): void {
+    try {
+      const skillFile = path.join(this.config.projectDir, '.claude', 'skills', 'instar-dev', 'SKILL.md');
+      if (!fs.existsSync(skillFile)) return; // installBuiltinSkills handles fresh installs
+      const current = fs.readFileSync(skillFile, 'utf8');
+      const MARKER = 'Build location re-grounding';
+      if (current.includes(MARKER)) return; // already updated — idempotent
+      if (!current.includes('# /instar-dev') || !current.includes('### Phase 2 — Planning')) {
+        result.skipped.push('skills/instar-dev/SKILL.md: customized - left untouched (no build-location re-grounding update)');
+        return;
+      }
+      const bundled = path.join(__dirname, '..', '..', 'skills', 'instar-dev', 'SKILL.md');
+      if (!fs.existsSync(bundled)) return;
+      const next = fs.readFileSync(bundled, 'utf8');
+      if (next.includes(MARKER)) {
+        fs.writeFileSync(skillFile, next);
+        result.upgraded.push('skills/instar-dev/SKILL.md (Phase 2 build-location re-grounding)');
+      }
+    } catch (err) {
+      result.errors.push(`skills/instar-dev/SKILL.md migration: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  /**
+   * Update the deployed instar-dev skill so existing agents learn the
+   * internal-only release-note lane added to the shared release-note assembler
+   * and pre-push gate.
+   *
+   * Idempotent + conservative: re-copy the bundled SKILL.md only when the
+   * installed copy (a) lacks the new lane marker AND (b) still matches the
+   * stock instar-dev fingerprint. A customized skill is left untouched.
+   */
+  private migrateInstarDevInternalOnlyReleaseNoteLane(result: MigrationResult): void {
+    try {
+      const skillFile = path.join(this.config.projectDir, '.claude', 'skills', 'instar-dev', 'SKILL.md');
+      if (!fs.existsSync(skillFile)) return; // installBuiltinSkills handles fresh installs
+      const current = fs.readFileSync(skillFile, 'utf8');
+      const MARKER = 'internal-only release-note lane';
+      if (current.includes(MARKER)) return; // already updated — idempotent
+      if (!current.includes('# /instar-dev') || !current.includes('### Phase 2 — Planning')) {
+        result.skipped.push('skills/instar-dev/SKILL.md: customized - left untouched (no internal-only release-note lane update)');
+        return;
+      }
+      const bundled = path.join(__dirname, '..', '..', 'skills', 'instar-dev', 'SKILL.md');
+      if (!fs.existsSync(bundled)) return;
+      const next = fs.readFileSync(bundled, 'utf8');
+      if (next.includes(MARKER)) {
+        fs.writeFileSync(skillFile, next);
+        result.upgraded.push('skills/instar-dev/SKILL.md (internal-only release-note lane)');
+      }
+    } catch (err) {
+      result.errors.push(`skills/instar-dev/SKILL.md migration: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
@@ -3116,14 +3183,71 @@ The attention queue spawns ONE Telegram forum topic per item — right for a gen
 Beyond the one-awake-machine model: with the pool enabled I run conversations across ALL my machines at once and can MOVE a conversation between them. Ships DARK behind \`multiMachine.sessionPool.stage\` (default 'dark'); a single-machine agent is a no-op.
 
 - **See the pool:** the **Machines tab** in the dashboard, or \`GET /pool\` (Bearer-auth) → which machine is the router ("dispatcher") + every machine's nickname, hardware, online status, load, and clock-skew status.
+- **Every session, every machine:** the dashboard sessions list shows ALL sessions across the pool, each tagged with the machine it runs on. API: \`GET /sessions?scope=pool\` → \`{ sessions: [...each with machineId/machineNickname...], pool: { peersOk, failed } }\`. An unreachable peer degrades to a \`failed\` entry — local sessions always answer.
 - **Machine nicknames** are the user-facing handle (auto-assigned, editable). Rename via \`PATCH /pool/machines/:machineId\` with \`{"nickname":"the mini"}\`, or inline on the Machines tab.
-- **Proactive triggers:** when the user says "run this on <nickname>" / "move this to <nickname>" → placement/transfer-by-nickname (the session moves to the named machine, resuming like a session restart). "where is this running?" → \`GET /pool\`. Deep mechanics: the Machines tab + \`docs/specs/MULTI-MACHINE-SESSION-POOL-SPEC.md\`.
+- **Which machine + WHY (never guess):** \`GET /pool/placement?topic=N\` → the owning machine + nickname, the **reason** (\`pinned\` = a deliberate move vs \`placed\` = load-balanced vs \`unowned\`), and the lease-holder. Answerable from ANY machine (a standby proxies to the holder). Running ON a machine does NOT mean a topic was deliberately moved there — read this instead of inferring.
+- **Reliable transfer (phrasing-independent):** \`POST /pool/transfer\` with \`{"topic":N,"to":"<nickname|machineId>"}\` runs the same validated planner as "move this to <nickname>" but deterministically. 404 unknown · 409 rate-limited · 409 \`needsConfirmation\` for an offline target (re-send with \`"confirm":true\`). The lever to call directly when a natural-language move didn't catch.
+- **Proactive triggers:** when the user says "run this on <nickname>" / "move this to <nickname>" → placement/transfer-by-nickname (the session moves to the named machine, resuming like a session restart). "where is this running / why?" → \`GET /pool/placement?topic=N\`. "move it reliably / it didn't move" → \`POST /pool/transfer\`. Deep mechanics: the Machines tab + \`docs/specs/MULTI-MACHINE-SESSION-POOL-SPEC.md\`.
 `;
       content += '\n' + section;
       patched = true;
       result.upgraded.push('CLAUDE.md: added Multi-Machine Session Pool section');
     } else {
       result.skipped.push('CLAUDE.md: Multi-Machine Session Pool section already present');
+    }
+
+    // Multi-machine robustness (2026-06-04): agents that ALREADY have the pool
+    // section predate the placement-observability + deterministic-transfer routes.
+    // Append those two lines so deployed agents learn "which machine + why" and the
+    // reliable transfer lever. Idempotent via the unique `/pool/placement` marker.
+    if (content.includes('Multi-Machine Session Pool (active-active') && !content.includes('/pool/placement')) {
+      const robustness = `
+- **Which machine + WHY (never guess):** \`GET /pool/placement?topic=N\` → the owning machine + nickname, the **reason** (\`pinned\` = a deliberate move vs \`placed\` = load-balanced vs \`unowned\`), and the lease-holder. Answerable from ANY machine (a standby proxies to the holder). Running ON a machine does NOT mean a topic was deliberately moved there — read this instead of inferring.
+- **Reliable transfer (phrasing-independent):** \`POST /pool/transfer\` with \`{"topic":N,"to":"<nickname|machineId>"}\` runs the same validated planner as "move this to <nickname>" but deterministically. 404 unknown · 409 rate-limited · 409 \`needsConfirmation\` for an offline target (re-send with \`"confirm":true\`). The lever to call directly when a natural-language move didn't catch.`;
+      content += '\n' + robustness + '\n';
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added pool placement/transfer robustness lines');
+    }
+
+    // Pool-wide session visibility (2026-06-05): agents that ALREADY have the pool
+    // section predate GET /sessions?scope=pool (every session, every machine, each
+    // tagged with its machine — the dashboard cross-machine sessions list). Append
+    // the line so deployed agents can answer "what's running across my machines?"
+    // from the API. Idempotent via the unique `scope=pool` marker.
+    if (content.includes('Multi-Machine Session Pool (active-active') && !content.includes('scope=pool')) {
+      const poolSessions = `
+- **Every session, every machine:** the dashboard sessions list shows ALL sessions across the pool, each tagged with the machine it runs on. API: \`GET /sessions?scope=pool\` → \`{ sessions: [...each with machineId/machineNickname...], pool: { peersOk, failed } }\`. An unreachable peer degrades to a \`failed\` entry — local sessions always answer.`;
+      content += '\n' + poolSessions + '\n';
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added pool-wide session visibility line');
+    }
+
+    // Cross-Machine Secret Sync (spec Phase 4, 2026-06-04): deployed agents don't know
+    // a secret can now follow them across machines, nor the two routes. Append the section
+    // so an agent surfaces "drop once, usable everywhere" instead of asking the user to
+    // re-enter a credential per machine. Idempotent via the unique `/secrets/sync-status` marker.
+    if (!content.includes('/secrets/sync-status') && !content.includes('Cross-Machine Secret Sync')) {
+      const secretSync = `
+## Cross-Machine Secret Sync (drop once, usable everywhere)
+
+A secret you give me on one machine — a Telegram token, an API key, a GitHub PAT — becomes usable by me on your OTHER machines automatically. It's encrypted to each recipient machine's own X25519 key (never on disk in plaintext, only ever pushed to your registered paired machines), so you never re-enter a credential per machine. Ships DARK behind \`multiMachine.secretSync.enabled\` (default on for the dev agent).
+
+- **Status (NAMES only, never values):** \`curl -H "Authorization: Bearer $AUTH" http://localhost:4042/secrets/sync-status\` → which secret key-paths this machine holds + the online peers it would sync to.
+- **Push now (deterministic lever):** \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:4042/secrets/sync-now\` → encrypts the secret set per online peer and pushes it; returns a per-peer result. The reliable lever for a manual re-sync or live-verify.
+- **SAFETY — push is opt-in (receive-only by default):** \`multiMachine.secretSync.enabled\` alone only RECEIVES. Outbound push needs \`multiMachine.secretSync.pushEnabled: true\`, set ONLY on the machine whose secret store is authoritative. A receive-only machine refuses \`sync-now\` with 409 — preventing a machine with a stale/divergent store from clobbering good secrets on its peers. \`GET /secrets/sync-status\` reports \`mode\` (\`full\` | \`receive-only\`).
+- **Proactive trigger:** when the user starts re-entering a secret they already gave me on another machine, or asks "do I have to set this up on each machine?" — the answer is no; confirm it synced via \`GET /secrets/sync-status\`. Spec: \`docs/specs/cross-machine-secret-sync-spec.md\`.
+`;
+      content += '\n' + secretSync;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Cross-Machine Secret Sync section');
+    } else if (content.includes('Cross-Machine Secret Sync') && !content.includes('receive-only by default')) {
+      // Agents that already got the secret-sync section (from the #771 migration) predate the
+      // push-opt-in safety guard. Append the one safety line so they learn push is receive-only
+      // by default. Idempotent via the 'receive-only by default' marker.
+      const guardLine = '\n- **SAFETY — push is opt-in (receive-only by default):** for Cross-Machine Secret Sync, `multiMachine.secretSync.enabled` alone only RECEIVES. Outbound push needs `multiMachine.secretSync.pushEnabled: true`, set ONLY on the machine whose secret store is authoritative. A receive-only machine refuses `POST /secrets/sync-now` with 409 — preventing a machine with a stale/divergent store from clobbering good secrets on its peers. `GET /secrets/sync-status` reports `mode` (`full` | `receive-only`).\n';
+      content += '\n' + guardLine;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added secret-sync push-opt-in safety line');
     }
 
     // ContextWedgeSentinel — the 4th silently-stopped sentinel. Tells the agent
@@ -3507,7 +3631,7 @@ Strip the \`[telegram:N]\` prefix before interpreting the message. Respond natur
 - **Retrieve the secret (HARDENED — required)**: \`node .instar/scripts/secret-drop-retrieve.mjs TOKEN field-name\` — streams the field VALUE to stdout, prints field NAMES + lengths to stderr, NEVER prints the response body. Discover available fields with \`... TOKEN --names\`.
 - **NEVER use \`curl /secrets/retrieve\` directly** — the raw curl pattern dumps the full JSON response (including the secret value) into the Bash tool transcript.
 - List pending: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/secrets/pending\`
-- **Security**: One-time use, expires after 15 minutes, in-memory only (never written to disk), CSRF-protected.
+- **Security**: One-time link, expires after 15 minutes, CSRF-protected. The moment a secret is SUBMITTED it is also persisted store-first to the durable AES-256-GCM encrypted SecretStore — so it survives session restarts, compaction, and cross-machine handoff instead of evaporating with the in-memory copy. Retrieval transparently falls back to the durable copy, and a successful consume deletes both. (Opt out with \`secrets.persistDrops: false\` in \`.instar/config.json\`.)
 - **When to use** (PROACTIVE — this is the trigger): the moment a user offers to give you a credential (API key, password, token) or you realize you need one, use Secret Drop. It is the ONLY correct way to collect a secret. NEVER accept it pasted into Telegram or chat, and NEVER create a local file (e.g. \`.instar/secrets/foo.env\`) and ask the user to edit/paste into it — that defeats the one-time, in-memory, never-on-disk guarantee and asks the user to edit files (which you must never do). Always issue a Secret Drop one-time link instead.
 `;
       const tunnelIdx = content.indexOf('**Cloudflare Tunnel**');
@@ -4011,6 +4135,25 @@ The user has been talking to you (possibly for days). A generic greeting like "H
         content = content.replace(anchor, anchor + runBullet);
         patched = true;
         result.upgraded.push('CLAUDE.md: added Secret Drop --run atomic use-and-consume guidance');
+      }
+    }
+
+    // Secret Drop store-first durability (2026-06-04). Existing agents'
+    // Security bullet still claims submissions are "in-memory only (never
+    // written to disk)" — no longer true: submissions are persisted store-first
+    // to the encrypted SecretStore so they survive session churn. Rewrite the
+    // stale bullet so agents stop treating an un-consumed drop as a
+    // race-against-the-TTL. Idempotent: anchors on the old wording; skips when
+    // the durable wording is already present.
+    {
+      const oldSecurityLine = '- **Security**: One-time use, expires after 15 minutes, in-memory only (never written to disk), CSRF-protected.';
+      const newSecurityLine = '- **Security**: One-time link, expires after 15 minutes, CSRF-protected. The moment a secret is SUBMITTED it is also persisted store-first to the durable AES-256-GCM encrypted SecretStore — so it survives session restarts, compaction, and cross-machine handoff instead of evaporating with the in-memory copy. Retrieval transparently falls back to the durable copy, and a successful consume deletes both. (Opt out with `secrets.persistDrops: false` in `.instar/config.json`.)';
+      if (content.includes(oldSecurityLine)) {
+        content = content.replace(oldSecurityLine, newSecurityLine);
+        patched = true;
+        result.upgraded.push('CLAUDE.md: Secret Drop Security bullet updated for store-first durable persistence');
+      } else if (content.includes('persisted store-first to the durable')) {
+        result.skipped.push('CLAUDE.md: Secret Drop store-first durability already documented');
       }
     }
 
@@ -6183,9 +6326,27 @@ for pattern in "vercel deploy" "vercel --prod" "git push" "npm publish" "npx wra
   fi
 done
 
+# Safe-case carve-out: \`git push --force-with-lease\` to a NON-protected branch is the
+# legitimate way to update one's OWN amended/rebased PR branch (--force-with-lease refuses
+# to overwrite unseen work; a feature/PR branch is not shared history). Still block plain
+# --force/-f and any force-push explicitly targeting a protected branch (main/master/develop/
+# release*). Residual on-main edge is double-protected: agents work in feature-branch worktrees
+# (never on main) and main carries remote branch protection that rejects a force-push regardless.
+FORCE_WITH_LEASE_OWN_BRANCH=0
+if echo "$INPUT" | grep -qiE 'git +push[^|;&]*--force-with-lease'; then
+  if echo "$INPUT" | grep -qiE '(^|[[:space:]:/])(main|master|develop|release[A-Za-z0-9._/-]*)([[:space:]]|:|$)'; then
+    FORCE_WITH_LEASE_OWN_BRANCH=0
+  else
+    FORCE_WITH_LEASE_OWN_BRANCH=1
+  fi
+fi
+
 # Risky commands — behavior depends on safety level
 for pattern in "rm -rf \\." "git push --force" "git push -f" "git reset --hard" "git clean -fd" "DROP TABLE" "DROP DATABASE" "TRUNCATE" "DELETE FROM"; do
   if echo "$INPUT" | grep -qi "$pattern"; then
+    if [ "$FORCE_WITH_LEASE_OWN_BRANCH" -eq 1 ] && echo "$pattern" | grep -qiE 'git push (--force|-f)'; then
+      continue
+    fi
     if [ "$SAFETY_LEVEL" -eq 1 ]; then
       echo "BLOCKED: Potentially destructive command detected: $pattern" >&2
       echo "Authorization required: Ask the user whether to proceed with this operation." >&2
@@ -7677,6 +7838,10 @@ process.stdin.on('end', async () => {
     // verifier and lint both treat any deployed SHA matching this set as
     // a known-shipped instar version, not user-modified content.
     '371d7e8f4f72146bf8bd07115873bdbbaaf32e851ac6e1318ba5b8929cd06e68',
+    // Secret-externalization survivability version (env-first auth,
+    // recoverable queue, neutral relay mirror; no --stdin-base64 mode).
+    // Shipped through v1.3.266.
+    '0f6d27a522b123551871e6081774f8c89d1ad0ce248597af7dd60d8522871069',
   ]);
 
   /**
@@ -7732,7 +7897,7 @@ process.stdin.on('end', async () => {
         fs.writeFileSync(backupPath, existing, { mode: 0o644 });
         fs.writeFileSync(opts.scriptPath, opts.newContent, { mode: 0o755 });
         opts.result.upgraded.push(
-          `${opts.label} (upgraded to port-from-config + agent-id binding; ` +
+          `${opts.label} (upgraded to port-from-config + agent-id binding + robust base64 stdin; ` +
           `prior version backed up to ${path.relative(opts.stateDir, backupPath)})`
         );
       } catch (err) {

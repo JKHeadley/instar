@@ -15,10 +15,15 @@ import path from 'node:path';
 import type { SessionManager } from '../core/SessionManager.js';
 import type { SessionRefresh } from '../core/SessionRefresh.js';
 import type { StateManager } from '../core/StateManager.js';
+import { describeTopicPlacement } from '../core/TopicPlacementDescription.js';
+import { buildRelocationNicknameSet } from '../core/RelocationNicknameSet.js';
+import { resolveSelfNickname } from '../core/SelfNicknameResolver.js';
+import { planTransferByNickname } from '../core/TransferByNickname.js';
 import type { JobScheduler } from '../scheduler/JobScheduler.js';
 import type { InstarConfig, JobPriority } from '../core/types.js';
 import { IntelligenceRouter } from '../core/IntelligenceRouter.js';
 import { knownComponents } from '../core/componentCategories.js';
+import { SecretStore } from '../core/SecretStore.js';
 import { rateLimiter, signViewPath } from './middleware.js';
 import type { WriteOperation, WriteToken } from '../core/StateWriteAuthority.js';
 import { writeLifelineRestartSignal } from '../core/version-skew.js';
@@ -34,6 +39,7 @@ import { CorrectionLedger } from '../monitoring/CorrectionLedger.js';
 import { scrubSecrets as scrubCorrectionSecrets } from '../monitoring/scrubSecrets.js';
 import { HumanAsDetectorLog, LEARNING_DETERMINISTIC_THRESHOLD } from '../monitoring/HumanAsDetectorLog.js';
 import { APPRENTICESHIP_CYCLE_CHANNELS } from '../monitoring/ApprenticeshipCycleStore.js';
+import { getTelegramInboundDir } from '../messaging/shared/telegramInboundFiles.js';
 import { parseVersion, compareVersions } from '../lifeline/versionHandshake.js';
 import { readLatestCodexUsage } from '../providers/adapters/openai-codex/observability/codexRateLimitReader.js';
 import {
@@ -68,6 +74,7 @@ import {
   normalizeAttentionPriority,
   normalizeAttentionStatus,
 } from './attentionApi.js';
+import { dashboardRefreshFailure } from './DashboardRefreshDiagnostics.js';
 
 const execFile = promisify(execFileCb);
 
@@ -717,6 +724,19 @@ export interface RouteContext {
   tokenLedger: import('../monitoring/TokenLedger.js').TokenLedger | null;
   featureMetricsLedger: import('../monitoring/FeatureMetricsLedger.js').FeatureMetricsLedger | null;
   resourceLedger: import('../monitoring/ResourceLedger.js').ResourceLedger | null;
+  /** Approval-as-Data ledger (spec Part B / Phase 2). Records operator approval
+   *  decisions + per-class agreement ratios. Null when stateDir is unavailable. */
+  approvalLedger: import('../core/ApprovalLedger.js').ApprovalLedger | null;
+  /** Coordination Mandate enforcement (docs/specs/coordination-mandate.md §4).
+   *  Deny-by-default gate + signed store + hash-chained audit. Null when stateDir
+   *  is unavailable. Issuance/revocation are PIN-gated, never Bearer-only. */
+  coordination: {
+    store: import('../coordination/MandateStore.js').MandateStore;
+    gate: import('../coordination/MandateGate.js').MandateGate;
+    audit: import('../coordination/MandateAudit.js').MandateAudit;
+    /** ReviewExchange engine (spec §7 G2.3) — mandate-gated mutual code-review sign-offs. */
+    reviews: import('../coordination/ReviewExchange.js').ReviewExchangeEngine;
+  } | null;
   /** Cross-topic activity index (Parallel-Work Awareness Phase A). Backs GET /parallel-work/activities. */
   parallelActivityIndex?: import('../core/ParallelActivityIndex.js').ParallelActivityIndex | null;
   /** The shared intelligence provider (an IntelligenceRouter when per-component routing is wired). Backs GET /intelligence/routing. */
@@ -789,6 +809,22 @@ export interface RouteContext {
   /** Per-session ownership registry (§L3) — exactly-one-owner CAS + ownerOf/
    *  placementTargetOf. Read by L4 placement + observability. Null/absent (dark). */
   sessionOwnershipRegistry?: import('../core/SessionOwnershipRegistry.js').SessionOwnershipRegistry | null;
+  /** Topic placement pin store (§L4) — the holder-local hard-pin file. Backs the
+   *  pinned-vs-load-placed distinction in GET /pool/placement and the deterministic
+   *  POST /pool/transfer. Null/absent when the pool is not wired (dark). */
+  topicPinStore?: import('../core/TopicPlacementPinStore.js').TopicPlacementPinStore | null;
+  /** Cross-machine secret-sync (spec Phase 4) — backs GET /secrets/sync-status + POST /secrets/sync-now. */
+  secretSync?: import('../core/SecretSync.js').SecretSyncHandle | null;
+  /** This machine's mesh id (machineId). Used by placement/transfer routes to tell
+   *  whether the answering machine owns the topic. Null/absent (single-machine/dark). */
+  meshSelfId?: string | null;
+  /** Resolve the lease-holder's base URL when this machine is NOT the holder (else
+   *  null). Lets the placement/transfer routes proxy to the authoritative holder so
+   *  they are answerable/callable from ANY machine. Null/absent (single-machine/dark). */
+  resolveRouterUrl?: (() => string | null) | null;
+  /** Every OTHER registered, non-revoked machine with a known URL — for pool-wide
+   *  aggregation (GET /sessions?scope=pool). Null/absent (single-machine/dark). */
+  resolvePeerUrls?: (() => Array<{ machineId: string; url: string }>) | null;
   /** Signed, append-only rollout-stage E2E results (§Rollout) — backs GET
    *  /session-pool/e2e-results so the gate state is observable. Null/absent (dark). */
   sessionPoolE2EResultStore?: import('../core/SessionPoolE2EResultStore.js').SessionPoolE2EResultStore | null;
@@ -4295,16 +4331,28 @@ export function createRoutes(ctx: RouteContext): Router {
     res.json(ctx.sleepWakeDetector.getStats(sinceMs));
   });
 
-  router.get('/sessions', (req, res) => {
+  router.get('/sessions', async (req, res) => {
     const status = req.query.status as string | undefined;
     const validStatuses = ['starting', 'running', 'completed', 'failed', 'killed'];
     const sessions = status && validStatuses.includes(status)
       ? ctx.state.listSessions({ status: status as 'starting' | 'running' | 'completed' | 'failed' | 'killed' })
       : ctx.state.listSessions();
 
+    // Which machine answered — so a session row can say where it runs. Absent
+    // on single-machine installs (no pool wired), so the dashboard hides the badge.
+    const selfMachineId = ctx.meshSelfId ?? null;
+    const selfMachineNickname = selfMachineId
+      ? (ctx.machinePoolRegistry?.getCapacity(selfMachineId)?.nickname ?? null)
+      : null;
+
     // Enrich sessions with hook event telemetry and platform info
     const enriched = sessions.map(s => {
       const result: Record<string, unknown> = { ...s };
+
+      if (selfMachineId) {
+        result.machineId = selfMachineId;
+        if (selfMachineNickname) result.machineNickname = selfMachineNickname;
+      }
 
       // Add hook event telemetry
       if (req.query.enrich !== 'false' && ctx.hookEventReceiver) {
@@ -4346,6 +4394,54 @@ export function createRoutes(ctx: RouteContext): Router {
 
       return result;
     });
+
+    // scope=pool — "all my sessions, across ALL my machines" (operator ask,
+    // 2026-06-05 topic 13481: every session must show on the dashboard with the
+    // machine it runs on). Aggregates each ONLINE-registered peer's plain
+    // GET /sessions (never scope=pool — no recursion) and tags every remote
+    // session with that peer's identity. Tolerant by design: a peer that is
+    // down/slow contributes a `failed` entry, never a 500 — the dashboard still
+    // shows everything reachable. Response shape differs from the plain route
+    // (an object, not an array) because callers opting into the pool view need
+    // the per-peer health alongside the merged list.
+    if (req.query.scope === 'pool') {
+      const peers = ctx.resolvePeerUrls?.() ?? [];
+      const failed: Array<{ machineId: string; error: string }> = [];
+      const remote: Record<string, unknown>[] = [];
+      await Promise.all(peers.map(async (p) => {
+        try {
+          const r = await fetch(`${p.url}/sessions`, {
+            headers: { Authorization: `Bearer ${ctx.config.authToken}` },
+            signal: AbortSignal.timeout(5000),
+          });
+          if (!r.ok) throw new Error(`HTTP ${r.status}`);
+          const list = (await r.json()) as Record<string, unknown>[];
+          const nickname = ctx.machinePoolRegistry?.getCapacity(p.machineId)?.nickname ?? null;
+          for (const s of list) {
+            remote.push({
+              ...s,
+              machineId: s.machineId ?? p.machineId,
+              machineNickname: s.machineNickname ?? nickname ?? undefined,
+              remote: true,
+            });
+          }
+        } catch (err) {
+          failed.push({ machineId: p.machineId, error: err instanceof Error ? err.message : String(err) });
+        }
+      }));
+      res.json({
+        sessions: [...enriched, ...remote],
+        pool: {
+          enabled: !!ctx.machinePoolRegistry,
+          selfMachineId,
+          selfMachineNickname,
+          peersQueried: peers.length,
+          peersOk: peers.length - failed.length,
+          failed,
+        },
+      });
+      return;
+    }
 
     res.json(enriched);
   });
@@ -4867,6 +4963,363 @@ export function createRoutes(ctx: RouteContext): Router {
       limit,
       samples: ctx.resourceLedger.recentSamples({ sinceMs, limit, source }),
     });
+  });
+
+  // ── Approval-as-Data (docs/specs/AUTONOMOUS-OPERATION-JUDGMENT-AND-APPROVAL-AS-DATA-SPEC.md, Part B / Phase 2) ──
+  // Durable, signed record of every operator approval decision, and the per-class
+  // agreement ratios computed from it. Tracks approvals WHEREVER they occur (a spec
+  // sign-off, a decision approved in chat, …) — operator extension 2026-06-05.
+  //
+  // AUTHORITY INVARIANT: `mode` + `divergences` MUST reflect an EXPLICIT operator
+  // statement (the approve control, or words like "go with your picks" = as-is vs
+  // "change X because Y" = with-change). The agent must NOT infer/self-classify the
+  // operator's intent; an ambiguous/silent decision is NOT recorded. Any row is
+  // operator-correctable (append a row with `corrects` set). Read paths never gate.
+
+  // Record an approval decision. The caller passes operator-sourced mode+divergences.
+  router.post('/approvals', (req, res) => {
+    if (!ctx.approvalLedger) {
+      res.status(503).json({ error: 'approval ledger unavailable (no stateDir or init failed)' });
+      return;
+    }
+    const b = req.body ?? {};
+    if (typeof b.subject !== 'string' || !b.subject.trim()) {
+      res.status(400).json({ error: 'subject is required' });
+      return;
+    }
+    if (typeof b.decisionClass !== 'string' || !b.decisionClass.trim()) {
+      res.status(400).json({ error: 'decisionClass is required' });
+      return;
+    }
+    try {
+      const row = ctx.approvalLedger.recordApproval({
+        subject: b.subject,
+        decisionClass: b.decisionClass,
+        surface: b.surface ?? 'chat',
+        approver: typeof b.approver === 'string' && b.approver ? b.approver : 'justin',
+        mode: b.mode,
+        divergences: Array.isArray(b.divergences) ? b.divergences : undefined,
+        reviewIterations: typeof b.reviewIterations === 'number' ? b.reviewIterations : undefined,
+        commitSha: typeof b.commitSha === 'string' ? b.commitSha : undefined,
+        evidenceRef: typeof b.evidenceRef === 'string' ? b.evidenceRef : undefined,
+        corrects: typeof b.corrects === 'string' ? b.corrects : undefined,
+        decidedAt: typeof b.decidedAt === 'string' ? b.decidedAt : undefined,
+      });
+      res.status(201).json({ recorded: true, row });
+    } catch (err) {
+      // The store throws on an internally-inconsistent row (e.g. as-is WITH a
+      // divergence, or a change WITHOUT one) — that's a 400, not a 500.
+      res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  // Per-class agreement summary + an overall surface breakdown. Read-only; never gates.
+  router.get('/approvals/summary', (_req, res) => {
+    if (!ctx.approvalLedger) {
+      res.status(503).json({ error: 'approval ledger unavailable (no stateDir or init failed)' });
+      return;
+    }
+    const classes = ctx.approvalLedger.summarize();
+    const rows = ctx.approvalLedger.all();
+    const bySurface: Record<string, { total: number; approvedAsIs: number }> = {};
+    for (const r of rows) {
+      const s = (bySurface[r.surface] ??= { total: 0, approvedAsIs: 0 });
+      s.total++;
+      if (r.mode === 'approved-as-is') s.approvedAsIs++;
+    }
+    res.json({
+      total: rows.length,
+      classes,
+      bySurface,
+      note: 'Read-only. The ratio is a SIGNAL; auto-approval (Phase 3) routes through a full-context authority, not the arithmetic.',
+    });
+  });
+
+  // List recorded rows, newest-first (paginated; ?limit= / ?decisionClass= / ?surface=).
+  router.get('/approvals', (req, res) => {
+    if (!ctx.approvalLedger) {
+      res.status(503).json({ error: 'approval ledger unavailable (no stateDir or init failed)' });
+      return;
+    }
+    let limit = 100;
+    if (typeof req.query.limit === 'string' && /^\d+$/.test(req.query.limit)) {
+      const n = Number(req.query.limit);
+      if (n > 0 && n <= 1000) limit = n;
+    }
+    const decisionClass = typeof req.query.decisionClass === 'string' ? req.query.decisionClass : undefined;
+    const surface = typeof req.query.surface === 'string' ? req.query.surface : undefined;
+    let rows = ctx.approvalLedger.all();
+    if (decisionClass) rows = rows.filter((r) => r.decisionClass === decisionClass);
+    if (surface) rows = rows.filter((r) => r.surface === surface);
+    const recent = rows.slice(-limit).reverse();
+    res.json({ count: recent.length, total: rows.length, rows: recent });
+  });
+
+  // ── Coordination Mandate (docs/specs/coordination-mandate.md §4) ──
+  // Deny-by-default enforcement for autonomous A2A authority. The mandate (a
+  // human-authored, signed policy) is the AUTHORIZER — never the agent. Justin's
+  // resolved decisions (A/A/B, 2026-06-05): issuance + revocation are PIN-gated
+  // (the human-authenticated dashboard surface — an agent's Bearer token CANNOT
+  // issue/revoke); the first mandate carries only exchange-read-credential +
+  // sign-code-review; execute-cutover is not delegated (the flip stays human).
+  //
+  // PIN verification mirrors /dashboard/unlock: sha256 + timingSafeEqual + a
+  // per-IP attempt limit. Read paths + /mandate/evaluate are Bearer-gated.
+
+  const mandatePinAttempts = new Map<string, { count: number; resetAt: number }>();
+  const MANDATE_PIN_MAX_ATTEMPTS = 5;
+  const MANDATE_PIN_WINDOW_MS = 5 * 60 * 1000;
+
+  /** Verify the operator PIN for mandate issuance/revocation. Returns an error
+   *  string (already sent) or null when the PIN is valid. */
+  function checkMandatePin(req: import('express').Request, res: import('express').Response): boolean {
+    if (!ctx.config.dashboardPin) {
+      res.status(503).json({ error: 'PIN authentication not available (no dashboardPin configured)' });
+      return false;
+    }
+    const ip = req.ip || req.socket?.remoteAddress || 'unknown';
+    const now = Date.now();
+    let entry = mandatePinAttempts.get(ip);
+    if (entry && now > entry.resetAt) { mandatePinAttempts.delete(ip); entry = undefined; }
+    if (entry && entry.count >= MANDATE_PIN_MAX_ATTEMPTS) {
+      res.status(429).json({ error: 'Too many attempts. Try again later.' });
+      return false;
+    }
+    const pin = (req.body ?? {}).pin;
+    if (!pin || typeof pin !== 'string') {
+      res.status(403).json({ error: 'Operator PIN required — mandate issuance/revocation is a human action, not an agent action' });
+      return false;
+    }
+    const ha = createHash('sha256').update(pin).digest();
+    const hb = createHash('sha256').update(ctx.config.dashboardPin).digest();
+    if (ha.length !== hb.length || !timingSafeEqual(ha, hb)) {
+      if (!entry) { entry = { count: 0, resetAt: now + MANDATE_PIN_WINDOW_MS }; mandatePinAttempts.set(ip, entry); }
+      entry.count++;
+      res.status(403).json({ error: 'Incorrect PIN', attemptsRemaining: MANDATE_PIN_MAX_ATTEMPTS - entry.count });
+      return false;
+    }
+    return true;
+  }
+
+  // Evaluate an action against a mandate (the enforcement consumption point).
+  // Every call — allow AND deny — lands in the hash-chained audit.
+  router.post('/mandate/evaluate', (req, res) => {
+    if (!ctx.coordination) {
+      res.status(503).json({ error: 'coordination mandate engine unavailable (no stateDir or init failed)' });
+      return;
+    }
+    const b = req.body ?? {};
+    if (typeof b.action !== 'string' || !b.action || typeof b.agentFp !== 'string' || !b.agentFp || typeof b.mandateId !== 'string' || !b.mandateId) {
+      res.status(400).json({ error: 'action, agentFp, and mandateId are required' });
+      return;
+    }
+    const result = ctx.coordination.gate.evaluate({
+      action: b.action,
+      params: (b.params && typeof b.params === 'object') ? b.params : {},
+      agentFp: b.agentFp,
+      mandateId: b.mandateId,
+    });
+    res.json({ decision: result.decision, reason: result.reason, conditionResult: result.conditionResult });
+  });
+
+  // Read-only audit trail + chain integrity. MUST be registered before /mandate/:id.
+  router.get('/mandate/audit', (req, res) => {
+    if (!ctx.coordination) {
+      res.status(503).json({ error: 'coordination mandate engine unavailable (no stateDir or init failed)' });
+      return;
+    }
+    let limit = 100;
+    if (typeof req.query.limit === 'string' && /^\d+$/.test(req.query.limit)) {
+      const n = Number(req.query.limit);
+      if (n > 0 && n <= 1000) limit = n;
+    }
+    const all = ctx.coordination.audit.all();
+    res.json({
+      total: all.length,
+      chain: ctx.coordination.audit.verifyChain(),
+      headHash: ctx.coordination.audit.headHash(),
+      entries: all.slice(-limit).reverse(),
+    });
+  });
+
+  // List mandates (each with its live authorship-verification status). Read-only.
+  router.get('/mandate', (_req, res) => {
+    if (!ctx.coordination) {
+      res.status(503).json({ error: 'coordination mandate engine unavailable (no stateDir or init failed)' });
+      return;
+    }
+    const { store } = ctx.coordination;
+    res.json({
+      mandates: store.list().map((m) => ({ ...m, authorshipValid: store.verifyAuthorship(m) })),
+    });
+  });
+
+  // One mandate + its verification status. Read-only.
+  router.get('/mandate/:id', (req, res) => {
+    if (!ctx.coordination) {
+      res.status(503).json({ error: 'coordination mandate engine unavailable (no stateDir or init failed)' });
+      return;
+    }
+    const m = ctx.coordination.store.get(req.params.id);
+    if (!m) {
+      res.status(404).json({ error: `mandate "${req.params.id}" not found` });
+      return;
+    }
+    res.json({ mandate: { ...m, authorshipValid: ctx.coordination.store.verifyAuthorship(m) } });
+  });
+
+  // Issue a mandate — PIN-GATED (decision 2A: the human-authenticated surface).
+  router.post('/mandate/issue', (req, res) => {
+    if (!ctx.coordination) {
+      res.status(503).json({ error: 'coordination mandate engine unavailable (no stateDir or init failed)' });
+      return;
+    }
+    if (!checkMandatePin(req, res)) return;
+    const b = req.body ?? {};
+    if (typeof b.scope !== 'string' || !b.scope.trim()) {
+      res.status(400).json({ error: 'scope is required' });
+      return;
+    }
+    if (!Array.isArray(b.agents) || b.agents.length !== 2 || b.agents.some((a: unknown) => typeof a !== 'string' || !a)) {
+      res.status(400).json({ error: 'agents must be a pair of two agent fingerprints' });
+      return;
+    }
+    if (!Array.isArray(b.authorities) || b.authorities.length === 0
+      || b.authorities.some((a: any) => typeof a?.action !== 'string' || !a.action || typeof a?.bounds !== 'object' || a.bounds === null)) {
+      res.status(400).json({ error: 'authorities must be a non-empty array of { action, bounds, requiresCondition? }' });
+      return;
+    }
+    if (typeof b.expiresAt !== 'string' || isNaN(Date.parse(b.expiresAt)) || Date.parse(b.expiresAt) <= Date.now()) {
+      res.status(400).json({ error: 'expiresAt must be a future ISO timestamp (mandates always expire)' });
+      return;
+    }
+    const mandate = ctx.coordination.store.issue({
+      scope: b.scope,
+      agents: [b.agents[0], b.agents[1]],
+      authorities: b.authorities,
+      author: typeof b.author === 'string' && b.author ? b.author : 'justin',
+      expiresAt: b.expiresAt,
+    });
+    res.status(201).json({ issued: true, mandate });
+  });
+
+  // Revoke a mandate — PIN-GATED (the operator kill switch; checked on every action).
+  router.post('/mandate/:id/revoke', (req, res) => {
+    if (!ctx.coordination) {
+      res.status(503).json({ error: 'coordination mandate engine unavailable (no stateDir or init failed)' });
+      return;
+    }
+    if (!checkMandatePin(req, res)) return;
+    const reason = typeof (req.body ?? {}).reason === 'string' && req.body.reason ? req.body.reason : 'operator revocation';
+    const m = ctx.coordination.store.revoke(req.params.id, reason);
+    if (!m) {
+      res.status(404).json({ error: `mandate "${req.params.id}" not found` });
+      return;
+    }
+    res.json({ revoked: true, mandate: m });
+  });
+
+  // ── ReviewExchange — autonomous code-review protocol (coordination-mandate spec §7 G2.3) ──
+  // One mutual, MANDATE-GATED sign-off of a review artifact between the two agents named
+  // in a mandate. Both sign-offs run through /the same/ MandateGate (named party, bounds,
+  // expiry, revocation — every decision in the hash-chained audit). Deny-by-default is
+  // inherited: with no mandate issued, every sign/verdict path refuses. Bearer-gated
+  // (creating/recording an exchange delegates nothing; the GATE is what authorizes
+  // sign-offs — there is no PIN path here by design).
+
+  const reviewsUnavailable = (res: import('express').Response): boolean => {
+    if (!ctx.coordination) {
+      res.status(503).json({ error: 'coordination mandate engine unavailable (no stateDir or init failed)' });
+      return true;
+    }
+    return false;
+  };
+
+  // Create an exchange (state: proposed).
+  router.post('/review-exchange', (req, res) => {
+    if (reviewsUnavailable(res)) return;
+    const b = req.body ?? {};
+    if (!Array.isArray(b.parties) || b.parties.length !== 2 || b.parties.some((p: unknown) => typeof p !== 'string' || !p)) {
+      res.status(400).json({ error: 'parties must be [ownerFp, peerFp] — two agent fingerprints' });
+      return;
+    }
+    const result = ctx.coordination!.reviews.create({
+      mandateId: String(b.mandateId ?? ''), artifact: String(b.artifact ?? ''),
+      packageRef: String(b.packageRef ?? ''), packageSha256: String(b.packageSha256 ?? ''),
+      parties: [b.parties[0], b.parties[1]],
+      ...(typeof b.id === 'string' && b.id ? { id: b.id } : {}),
+    });
+    if (!result.ok) {
+      res.status(400).json({ error: result.reason });
+      return;
+    }
+    res.status(201).json({ created: true, exchange: result.record });
+  });
+
+  // List exchanges. Read-only.
+  router.get('/review-exchange', (_req, res) => {
+    if (reviewsUnavailable(res)) return;
+    res.json({ exchanges: ctx.coordination!.reviews.list() });
+  });
+
+  // One exchange. Read-only.
+  router.get('/review-exchange/:id', (req, res) => {
+    if (reviewsUnavailable(res)) return;
+    const record = ctx.coordination!.reviews.get(req.params.id);
+    if (!record) {
+      res.status(404).json({ error: `exchange "${req.params.id}" not found` });
+      return;
+    }
+    res.json({ exchange: record });
+  });
+
+  // proposed → delivered (record the Threadline delivery evidence).
+  router.post('/review-exchange/:id/delivered', (req, res) => {
+    if (reviewsUnavailable(res)) return;
+    const result = ctx.coordination!.reviews.markDelivered(req.params.id, String((req.body ?? {}).evidence ?? ''));
+    if (!result.ok) {
+      res.status(result.reason.includes('not found') ? 404 : 409).json({ error: result.reason });
+      return;
+    }
+    res.json({ delivered: true, exchange: result.record });
+  });
+
+  // delivered → verdict-recorded | changes-requested. An 'approve' verdict is the
+  // PEER's sign-off → mandate-gated for the peer's fingerprint (deny → 403).
+  router.post('/review-exchange/:id/peer-verdict', (req, res) => {
+    if (reviewsUnavailable(res)) return;
+    const b = req.body ?? {};
+    if (b.verdict !== 'approve' && b.verdict !== 'request-changes') {
+      res.status(400).json({ error: 'verdict must be "approve" or "request-changes"' });
+      return;
+    }
+    const result = ctx.coordination!.reviews.recordPeerVerdict(req.params.id, {
+      verdict: b.verdict, summary: String(b.summary ?? ''),
+      evidence: String(b.evidence ?? ''), peerFp: String(b.peerFp ?? ''),
+    });
+    if (!result.ok) {
+      // Gate denials are 403 FIRST — a deny may itself say "mandate not found"
+      // (deny-by-default), which must not masquerade as an exchange 404.
+      const status = result.reason.startsWith('mandate denied') ? 403
+        : result.reason.includes('not found') ? 404 : 409;
+      res.status(status).json({ error: result.reason });
+      return;
+    }
+    res.json({ recorded: true, exchange: result.record });
+  });
+
+  // verdict-recorded → complete. The OWNER's countersignature → mandate-gated (deny → 403).
+  router.post('/review-exchange/:id/sign', (req, res) => {
+    if (reviewsUnavailable(res)) return;
+    const result = ctx.coordination!.reviews.sign(req.params.id, String((req.body ?? {}).agentFp ?? ''));
+    if (!result.ok) {
+      // Same precedence as peer-verdict: gate deny (403) before not-found (404).
+      const status = result.reason.startsWith('mandate denied') ? 403
+        : result.reason.includes('not found') ? 404 : 409;
+      res.status(status).json({ error: result.reason });
+      return;
+    }
+    res.json({ signed: true, exchange: result.record });
   });
 
   // ── Parallel-Work Awareness (docs/specs/parallel-activity-coherence.md, Phase A) ──
@@ -6905,6 +7358,10 @@ export function createRoutes(ctx: RouteContext): Router {
     const summary = typeof req.body.summary === 'string' ? req.body.summary : req.body.body;
     const sourceContext = typeof req.body.sourceContext === 'string' ? req.body.sourceContext : req.body.source;
     const priority = normalizeAttentionPriority(req.body.priority);
+    // Agent-Health lane: a routine self-health notice routed into the ONE calm
+    // "🩺 Agent Health" topic (never a per-item topic). Opt-in via lane.
+    const lane = req.body.lane === 'agent-health' ? 'agent-health' as const : undefined;
+    const healthKey = typeof req.body.healthKey === 'string' && req.body.healthKey ? req.body.healthKey : undefined;
     if (!id || typeof id !== 'string' || id.length > 200) {
       res.status(400).json({ error: '"id" must be a string under 200 characters' });
       return;
@@ -6930,14 +7387,21 @@ export function createRoutes(ctx: RouteContext): Router {
     // self-healed-event messages get suppressed instead of spawning topics.
     const isHealthAlert = typeof category === 'string' && /^(degradation|health|health-alert|alert)$/i.test(category);
     const candidate = [title, summary, description].filter((s): s is string => typeof s === 'string' && s.length > 0).join('\n\n');
-    const blocked = await checkOutboundMessage(candidate, 'telegram', res, {
-      messageKind: isHealthAlert ? 'health-alert' : 'reply',
-      jargon: isHealthAlert,
-      // No topicId — attention items create new topics; no prior thread context applies.
-    });
-    if (blocked) {
-      // checkOutboundMessage already wrote the 422 response.
-      return;
+    // Agent-Health-lane notices do NOT spawn a per-item topic — they land in the
+    // ONE opt-in calm lane and are already named + next-step-bearing by
+    // construction, so they bypass the per-topic outbound gate (which exists to
+    // suppress jargon/no-CTA topic spawns). Skipping it here prevents a
+    // well-formed lane heads-up from being silently 422'd and never delivered.
+    if (!lane) {
+      const blocked = await checkOutboundMessage(candidate, 'telegram', res, {
+        messageKind: isHealthAlert ? 'health-alert' : 'reply',
+        jargon: isHealthAlert,
+        // No topicId — attention items create new topics; no prior thread context applies.
+      });
+      if (blocked) {
+        // checkOutboundMessage already wrote the 422 response.
+        return;
+      }
     }
 
     // CMT-519 — structural guard: threadline/agent-messaging-class attention
@@ -6971,6 +7435,8 @@ export function createRoutes(ctx: RouteContext): Router {
         priority,
         description: description || undefined,
         sourceContext: sourceContext || undefined,
+        lane,
+        healthKey,
       });
       res.status(201).json(item);
     } catch (err) {
@@ -7770,6 +8236,221 @@ export function createRoutes(ctx: RouteContext): Router {
         : null,
       machines,
     });
+  });
+
+  // GET /pool/placement?topic=N — authoritative "which machine is this topic running
+  // on, and WHY (deliberately pinned vs. load-placed)" + the current lease-holder.
+  // Answerable from ANY machine: a non-holder PROXIES to the holder, whose local pin
+  // store is authoritative for the pinned-vs-placed distinction. Closes the gap where
+  // a standby session could only INFER its placement and narrate a guess as fact.
+  // Read-only — never moves a session. 503 when the pool isn't wired (dark/single).
+  router.get('/pool/placement', async (req, res) => {
+    const topicRaw = req.query.topic;
+    const topicId =
+      typeof topicRaw === 'string'
+        ? topicRaw.trim()
+        : Array.isArray(topicRaw) && topicRaw.length
+          ? String(topicRaw[0]).trim()
+          : '';
+    if (!topicId) {
+      res.status(400).json({ error: 'topic (query param) is required, e.g. /pool/placement?topic=13481' });
+      return;
+    }
+    if (!ctx.sessionOwnershipRegistry) {
+      res.status(503).json({ error: 'session pool not available (dark / single-machine install)' });
+      return;
+    }
+    // Proxy to the holder when this machine isn't it (its pin store is authoritative).
+    const holderUrl = ctx.resolveRouterUrl?.() ?? null;
+    if (holderUrl) {
+      try {
+        const r = await fetch(`${holderUrl}/pool/placement?topic=${encodeURIComponent(topicId)}`, {
+          headers: { Authorization: `Bearer ${ctx.config.authToken}` },
+        });
+        if (r.ok) {
+          const j = (await r.json()) as Record<string, unknown>;
+          res.json({ ...j, answeredBy: 'holder-proxy' });
+          return;
+        }
+        // proxy returned non-2xx → fall through to a labelled local best-effort answer
+      } catch {
+        // @silent-fallback-ok — holder unreachable → fall through to the local best-effort
+        // answer, which is explicitly labelled `answeredBy: 'local-fallback'` in the response
+        // (the caller sees it is degraded; nothing is silently masked).
+      }
+    }
+    const sync = ctx.coordinator ? ctx.coordinator.getSyncStatus() : null;
+    const owner = ctx.sessionOwnershipRegistry.ownerOf(topicId);
+    const pin = ctx.topicPinStore?.get(topicId) ?? null;
+    const pinnedTo = pin && pin.pinned ? pin.preferredMachine : null;
+    const nicknameOf = (id: string | null): string | null =>
+      id ? (ctx.machinePoolRegistry?.getCapacity(id)?.nickname ?? null) : null;
+    const description = describeTopicPlacement({
+      topicId,
+      owner,
+      pinnedTo,
+      leaseHolder: sync?.leaseHolder ?? null,
+      selfMachineId: ctx.meshSelfId ?? null,
+      nicknameOf,
+    });
+    res.json({ ...description, answeredBy: holderUrl ? 'local-fallback' : 'local' });
+  });
+
+  // POST /pool/transfer — deterministic topic transfer that does NOT depend on
+  // natural-language phrasing. Body: { topic, to: "<nickname|machineId>", confirm? }.
+  // Runs the SAME validated planner as "move this to <nickname>" (rate-limit, online,
+  // already-there checks), sets the placement pin, and releases local ownership so the
+  // next message re-places onto the target. A non-holder PROXIES to the holder (whose
+  // pin store drives routing). This is the reliable lever a session can call directly
+  // instead of hoping a phrase is recognized. 503 when the pool isn't wired (dark).
+  router.post('/pool/transfer', async (req, res) => {
+    const body = (req.body ?? {}) as { topic?: unknown; to?: unknown; confirm?: unknown };
+    const topicId = body.topic != null ? String(body.topic).trim() : '';
+    const to = typeof body.to === 'string' ? body.to.trim() : '';
+    if (!topicId || !to) {
+      res.status(400).json({ error: 'topic and to are required, e.g. {"topic":13481,"to":"Laptop"}' });
+      return;
+    }
+    if (!ctx.sessionOwnershipRegistry || !ctx.topicPinStore) {
+      res.status(503).json({ error: 'session pool not available (dark / single-machine install)' });
+      return;
+    }
+    // The holder's pin store drives routing — proxy there when this machine isn't it.
+    const holderUrl = ctx.resolveRouterUrl?.() ?? null;
+    if (holderUrl) {
+      try {
+        const r = await fetch(`${holderUrl}/pool/transfer`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${ctx.config.authToken}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ topic: topicId, to, confirm: body.confirm === true }),
+        });
+        // @silent-fallback-ok — if the holder's body isn't JSON we still forward its
+        // status code with an empty object; the status is the signal, not the body.
+        const j = (await r.json().catch(() => ({}))) as Record<string, unknown>;
+        res.status(r.status).json({ ...j, handledBy: 'holder-proxy' });
+      } catch (err) {
+        // @silent-fallback-ok — NOT silent: a failed proxy surfaces an explicit 502 with the
+        // reason to the caller (the transfer did not happen), rather than masking the failure.
+        res.status(502).json({ error: `could not reach lease-holder to perform transfer: ${err instanceof Error ? err.message : String(err)}` });
+      }
+      return;
+    }
+    // We are the holder (or single-machine) — perform authoritatively.
+    const self = ctx.meshSelfId ?? null;
+    const caps = ctx.machinePoolRegistry?.getCapacities() ?? [];
+    // Resolve THIS machine's own nickname robustly (not caps-only): a machine's capacity
+    // view can omit its own nickname (the live-caught self-nickname gap). The
+    // self-nickname convergence task persists it into caps; this resolver is the
+    // consistent path + boot-window backstop.
+    const selfNickname = resolveSelfNickname({ selfMachineId: self, localCapacities: caps });
+    const { nickToMachine, knownNicknames } = buildRelocationNicknameSet({ capacities: caps, selfMachineId: self, selfNickname });
+    const knownMachineIds = new Set(caps.map((c) => c.machineId));
+    // Resolve `to` as a nickname OR a raw machineId, so callers can use either.
+    const resolveTarget = (n: string): string | null => {
+      const byNick = nickToMachine.get(n.trim().toLowerCase());
+      if (byNick) return byNick;
+      if (knownMachineIds.has(n)) return n;
+      if (self && n === self) return self;
+      return null;
+    };
+    const plan = planTransferByNickname(
+      { intent: 'transfer', nickname: to, matchedVerb: 'transfer' },
+      {
+        resolveNickname: resolveTarget,
+        validNicknames: () => knownNicknames,
+        isOnline: (m) => m === self || (ctx.machinePoolRegistry?.getCapacity(m)?.online ?? false),
+        currentOwnerOf: (sk) => ctx.sessionOwnershipRegistry!.ownerOf(sk),
+        isMidReply: () => false,
+        lastPlacementUpdateAt: (sk) => ctx.topicPinStore!.lastUpdatedAtMs(sk) ?? null,
+        now: () => Date.now(),
+      },
+      topicId,
+    );
+    if (plan.action === 'reject') {
+      res.status(plan.rejectReason === 'unknown-machine-nickname' ? 404 : 409).json({
+        error:
+          plan.rejectReason === 'unknown-machine-nickname'
+            ? `unknown machine "${to}". Known: ${(plan.validNicknames ?? []).join(', ') || '(none)'}`
+            : `cannot transfer right now (${plan.rejectReason})`,
+        rejectReason: plan.rejectReason,
+      });
+      return;
+    }
+    if (plan.action === 'confirm-required' && body.confirm !== true) {
+      res.status(409).json({ needsConfirmation: true, prompt: plan.confirmationPrompt, targetMachine: plan.targetMachine });
+      return;
+    }
+    // transfer | noop | confirmed → set the pin and release local ownership if we hold it.
+    const target = plan.targetMachine!;
+    ctx.topicPinStore.set(topicId, target, plan.setPin ?? true);
+    let releasedLocalOwnership = false;
+    try {
+      if (self && ctx.sessionOwnershipRegistry.ownerOf(topicId) === self) {
+        const r = ctx.sessionOwnershipRegistry.cas(
+          { type: 'release', machineId: self },
+          { sessionKey: topicId, sender: self, nonce: `${self}:rel:${topicId}:${Date.now()}` },
+        );
+        releasedLocalOwnership = r.ok;
+      }
+    } catch {
+      // @silent-fallback-ok — the pin (set above) is what drives re-placement; releasing local
+      // ownership is a best-effort optimization. If it throws, route() re-places off the pin on
+      // the next message regardless, and `releasedLocalOwnership:false` is reported to the caller.
+    }
+    res.json({
+      ok: true,
+      topicId,
+      targetMachine: target,
+      targetNickname: ctx.machinePoolRegistry?.getCapacity(target)?.nickname ?? null,
+      action: plan.action,
+      pinned: plan.setPin ?? true,
+      releasedLocalOwnership,
+    });
+  });
+
+  // GET /secrets/sync-status — read-only view of cross-machine secret-sync (spec Phase 4).
+  // Returns WHICH secret key-paths this machine holds (NAMES only — never a value) and the
+  // online peers it would sync to. Never exposes a secret value. 503 when sync is disabled.
+  router.get('/secrets/sync-status', (_req, res) => {
+    const ss = ctx.secretSync;
+    if (!ss || !ss.enabled) {
+      res.status(503).json({ error: 'secret-sync not available (dark / single-machine install)' });
+      return;
+    }
+    res.json({
+      enabled: true,
+      pushEnabled: ss.pushEnabled,
+      mode: ss.pushEnabled ? 'full' : 'receive-only',
+      localKeyPaths: ss.localKeyPaths(),
+      syncTargets: ss.syncTargets(),
+    });
+  });
+
+  // POST /secrets/sync-now — deterministic push-on-provision lever (spec Phase 4). Encrypts
+  // the current secret set per online peer (to that peer's X25519 key) and pushes it. Returns
+  // a per-peer result — NEVER a secret value. This is the reliable lever (the analog of
+  // POST /pool/transfer) for live-verify and for a manual re-sync. 503 when sync is disabled.
+  router.post('/secrets/sync-now', async (_req, res) => {
+    const ss = ctx.secretSync;
+    if (!ss || !ss.enabled) {
+      res.status(503).json({ error: 'secret-sync not available (dark / single-machine install)' });
+      return;
+    }
+    // Receive-only machines refuse to push (safety): they must not send their possibly-stale
+    // set to peers. Set multiMachine.secretSync.pushEnabled=true on the AUTHORITATIVE machine.
+    if (!ss.pushEnabled) {
+      res.status(409).json({
+        error: 'push disabled (receive-only). Set multiMachine.secretSync.pushEnabled=true on the machine whose secret store is authoritative.',
+        mode: 'receive-only',
+      });
+      return;
+    }
+    try {
+      const results = await ss.provisionAll();
+      res.json({ ok: true, pushed: results.length, results });
+    } catch (err) {
+      res.status(500).json({ error: `sync failed: ${err instanceof Error ? err.message : String(err)}` });
+    }
   });
 
   // GET /session-pool/e2e-results — the rollout gate's observable state (§Rollout).
@@ -9697,6 +10378,33 @@ export function createRoutes(ctx: RouteContext): Router {
       return;
     }
 
+    // ── Store-first durable persistence (2026-06-04) ──────────────────────────
+    // Before we confirm or nudge the agent, persist the submission to the durable,
+    // AES-256-GCM encrypted SecretStore. Previously a submission lived ONLY in the
+    // in-memory `received` map, so any session restart / compaction / cross-machine
+    // handoff before the agent consumed it lost the secret outright — the recurring
+    // "I handed you a secret and you dropped it" failure. Persisting first makes the
+    // value survive churn by construction; the retrieve route falls back to this copy
+    // when the in-memory one is gone, and a successful consume deletes it.
+    // Best-effort + loud on failure: the ephemeral copy still exists for immediate
+    // use, so a keychain/disk hiccup must not 500 the user's submission. Opt out with
+    // config.secrets.persistDrops=false. NEVER log the secret value.
+    if (ctx.config.secrets?.persistDrops !== false) {
+      try {
+        const store = new SecretStore({ stateDir: ctx.config.stateDir, forceFileKey: ctx.config.secrets?.forceFileKey });
+        store.set(`secretDrops.${req.params.token}`, {
+          label: submission.label,
+          topicId: submission.topicId ?? null,
+          receivedAt: submission.receivedAt,
+          fields: Object.keys(submission.values),
+          values: submission.values,
+        });
+        console.log(`[secret-drop] persisted submission to durable store (token ${req.params.token.slice(0, 8)}…, ${Object.keys(submission.values).length} field(s)) — survives session churn`);
+      } catch (err) {
+        console.error(`[secret-drop] DURABLE PERSIST FAILED (token ${req.params.token.slice(0, 8)}…) — secret is in-memory only and may be lost on churn:`, err instanceof Error ? err.message : String(err));
+      }
+    }
+
     // Send Telegram confirmation if topic is configured
     if (submission.topicId && ctx.telegram) {
       const fieldCount = Object.keys(submission.values).length;
@@ -9790,7 +10498,7 @@ export function createRoutes(ctx: RouteContext): Router {
           ``,
           systemMsg,
         ];
-        const tmpDir = '/tmp/instar-telegram';
+        const tmpDir = getTelegramInboundDir(ctx.config.projectDir);
         fs.mkdirSync(tmpDir, { recursive: true });
         const ctxPath = path.join(tmpDir, `ctx-${topicId}-${Date.now()}.txt`);
         fs.writeFileSync(ctxPath, contextLines.join('\n'));
@@ -9866,11 +10574,46 @@ export function createRoutes(ctx: RouteContext): Router {
   // non-destructive default lets the caller retry. See
   // docs/specs/secret-drop-hardening.md for the full rationale.
   router.post('/secrets/retrieve/:token', (req, res) => {
+    const token = req.params.token;
     const consumeFlag = req.query.consume;
     const consume = consumeFlag === 'true' || consumeFlag === '1';
-    const submission = consume
-      ? secretDrop.consumeReceived(req.params.token)
-      : secretDrop.peekReceived(req.params.token);
+    let submission = consume
+      ? secretDrop.consumeReceived(token)
+      : secretDrop.peekReceived(token);
+
+    const persistDrops = ctx.config.secrets?.persistDrops !== false;
+
+    if (!submission && persistDrops) {
+      // Durable fallback: the in-memory `received` copy is gone (server restart,
+      // compaction, cross-machine handoff, or grace-window cleanup). The store-first
+      // persisted copy is the recovery path — without it, churn between submit and
+      // retrieve dropped the secret with no recovery.
+      try {
+        const store = new SecretStore({ stateDir: ctx.config.stateDir, forceFileKey: ctx.config.secrets?.forceFileKey });
+        const durable = store.get(`secretDrops.${token}`) as
+          | { label?: string; topicId?: number | null; receivedAt?: string; values?: Record<string, string> }
+          | undefined;
+        if (durable && durable.values) {
+          submission = {
+            values: durable.values,
+            receivedAt: durable.receivedAt ?? new Date().toISOString(),
+            label: durable.label ?? 'Secret',
+            topicId: durable.topicId ?? undefined,
+          };
+          // A successful consume against the durable copy removes it.
+          if (consume) store.delete(`secretDrops.${token}`);
+        }
+      } catch (err) {
+        console.error(`[secret-drop] durable fallback read failed (token ${token.slice(0, 8)}…):`, err instanceof Error ? err.message : String(err));
+      }
+    } else if (submission && consume && persistDrops) {
+      // In-memory consume succeeded — clean the durable copy too, so a consumed
+      // secret never lingers in the encrypted store (matters for one-time codes).
+      try {
+        new SecretStore({ stateDir: ctx.config.stateDir, forceFileKey: ctx.config.secrets?.forceFileKey }).delete(`secretDrops.${token}`);
+      } catch { /* @silent-fallback-ok — durable cleanup is best-effort */ }
+    }
+
     if (!submission) {
       res.status(404).json({ error: 'No submission found for this token' });
       return;
@@ -9913,17 +10656,34 @@ export function createRoutes(ctx: RouteContext): Router {
 
   router.post('/telegram/dashboard-refresh', async (_req, res) => {
     if (!ctx.telegram) {
-      res.status(503).json({ error: 'Telegram not configured' });
+      res.status(503).json(dashboardRefreshFailure(
+        'precondition',
+        'Telegram messaging is not configured for this agent, so there is no Dashboard topic to update.',
+        'Run Telegram setup for this agent or disable the dashboard-link-refresh job when Telegram is intentionally unavailable.',
+        'skipped',
+      ));
       return;
     }
     if (!ctx.tunnel) {
-      res.status(503).json({ error: 'Tunnel not running', action: 'skipped' });
+      res.status(503).json(dashboardRefreshFailure(
+        'precondition',
+        'The tunnel manager is not wired, so there is no remote dashboard URL to pin.',
+        'Enable the tunnel or disable dashboard-link-refresh for local-only agents.',
+        'skipped',
+      ));
       return;
     }
 
     const tunnelUrl = ctx.tunnel.url;
     if (!tunnelUrl) {
-      res.status(503).json({ error: 'Tunnel has no URL yet', action: 'skipped' });
+      const lc = ctx.tunnel.lifecycleState;
+      const reason = lc.episode?.lastFailureReason ? ` Last tunnel failure: ${lc.episode.lastFailureReason}.` : '';
+      res.status(503).json(dashboardRefreshFailure(
+        'precondition',
+        `The tunnel is not advertising a URL yet.${reason}`,
+        'Check /tunnel for lifecycle state, then restart or repair the configured tunnel provider.',
+        'skipped',
+      ));
       return;
     }
 
@@ -9940,7 +10700,13 @@ export function createRoutes(ctx: RouteContext): Router {
       await ctx.telegram.broadcastDashboardUrl(tunnelUrl, tunnelType);
       res.json({ action: 'refreshed', url: tunnelUrl, tunnelType });
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      const detail = err instanceof Error ? err.message : String(err);
+      console.error(`[dashboard-refresh] broadcast failed tunnelType=${tunnelType}: ${detail}`);
+      res.status(502).json(dashboardRefreshFailure(
+        'broadcast',
+        detail,
+        'Verify the Dashboard forum topic still exists, Telegram credentials are valid, and the bot can edit or send pinned messages.',
+      ));
     }
   });
 
@@ -10372,7 +11138,7 @@ export function createRoutes(ctx: RouteContext): Router {
           ``,
           `This session was auto-created for Telegram topic ${topicId}.`,
         ];
-        const tmpDir = '/tmp/instar-telegram';
+        const tmpDir = getTelegramInboundDir(ctx.config.projectDir);
         fs.mkdirSync(tmpDir, { recursive: true });
         const ctxPath = path.join(tmpDir, `ctx-${topicId}-${Date.now()}.txt`);
         fs.writeFileSync(ctxPath, contextLines.join('\n'));
@@ -14758,14 +15524,28 @@ export function createRoutes(ctx: RouteContext): Router {
      * existing commitment when one already exists for this threadId, so 4
      * call-sites below are safe.
      */
-    const captureOrigin = async (effThreadId: string, remoteAgentDisplay: string): Promise<void> => {
+    // `canonicalRemoteAgent` MUST be the peer's resolved FULL fingerprint (the
+    // same identity used for routing) — NOT a display name or a "name:fpPrefix"
+    // address. The inbound anti-hijack guard (ThreadlineRouter) compares a reply's
+    // senderFingerprint against the stored thread owner (`remoteAgent`); if we
+    // stored a composite/display string instead of the full fingerprint, a known
+    // peer's reply fails the match and gets false-isolated to a fresh cold-spawn
+    // thread — breaking A2A continuity (the "one coherent individual" property).
+    // The human-facing display name is preserved separately. Mirrors
+    // telegramBridge.mirrorOutbound, which already stores the resolved fingerprint
+    // as `remoteAgent` and the raw target as `remoteAgentName`.
+    const captureOrigin = async (
+      effThreadId: string,
+      canonicalRemoteAgent: string,
+      displayName?: string,
+    ): Promise<void> => {
       if (!ctx.topicLinkageHandler) return;
       if (!resolvedOriginTopicId) return;
       try {
         ctx.topicLinkageHandler.captureOriginOnSend({
           threadId: effThreadId,
-          remoteAgent: remoteAgentDisplay,
-          remoteAgentDisplayName: remoteAgentDisplay,
+          remoteAgent: canonicalRemoteAgent,
+          remoteAgentDisplayName: displayName ?? canonicalRemoteAgent,
           originTopicId: resolvedOriginTopicId,
           purpose: resolvedPurpose,
           subject: 'Threadline conversation',
@@ -15076,7 +15856,14 @@ export function createRoutes(ctx: RouteContext): Router {
                       outcome,
                     }).catch(() => { /* swallow — bridge is relay-only */ });
                   }
-                  await captureOrigin(effectiveThreadId, localTarget.name);
+                  // Store the resolved full fingerprint as the canonical thread
+                  // owner (display = the local agent's name) so a reply matches
+                  // the anti-hijack guard instead of being false-isolated.
+                  await captureOrigin(
+                    effectiveThreadId,
+                    localTarget.fingerprint || localTarget.publicKey?.substring(0, 32) || localTarget.name,
+                    localTarget.name,
+                  );
                   if (waitForReply) {
                     const reply = await waitForThreadlineReply(ctx, localTarget.name, effectiveThreadId, timeoutSeconds);
                     res.json({
@@ -15191,7 +15978,12 @@ export function createRoutes(ctx: RouteContext): Router {
         }).catch(() => { /* swallow — bridge is relay-only */ });
       }
 
-      await captureOrigin(effectiveRelayThreadId, targetAgent);
+      // `resolvedId` is the peer's full routing fingerprint; store IT as the
+      // canonical thread owner (display = the raw target the caller typed) so a
+      // reply matches the anti-hijack guard instead of being false-isolated.
+      // This is the fix for the composite "name:fpPrefix" address being stored
+      // un-resolved and causing a known peer's replies to cold-spawn.
+      await captureOrigin(effectiveRelayThreadId, resolvedId, targetAgent);
       if (waitForReply) {
         const reply = await waitForThreadlineReply(ctx, resolvedId, effectiveRelayThreadId, timeoutSeconds);
         res.json({

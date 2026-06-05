@@ -25,8 +25,9 @@ export interface DetectedPrompt {
   detectedAt: number;
   id: string;               // Unique prompt ID (12-char CSPRNG)
   /**
-   * Optional auto-dismiss directive for non-blocking system prompts
-   * (e.g. Claude Code's "How is Claude doing this session?" optional survey).
+   * Optional deterministic response directive for system prompts whose safe
+   * answer is known from the framework UI itself (e.g. Claude Code's optional
+   * survey, Gemini CLI's loop-detection modal).
    * When set, the consumer should send `autoDismissKey` to the session and
    * SKIP the relay/classify pipeline entirely.
    */
@@ -77,6 +78,84 @@ interface PatternMatch {
   autoDismissKey?: string;
 }
 
+function extractNumberedOptions(lines: string[]): PromptOption[] {
+  const options: PromptOption[] = [];
+  for (const line of lines) {
+    const optMatch = line.match(/^\s*(?:[>❯●○◉]\s*)?(\d+)[.)]\s+(.+)$/);
+    if (optMatch) {
+      options.push({ key: optMatch[1], label: optMatch[2].trim() });
+      continue;
+    }
+
+    const colonMatch = line.match(/(?:^|\s)(\d+)\s*[:.)]\s*([A-Za-z][^0-9]{2,})(?=\s+\d+\s*[:.)]|$)/g);
+    if (!colonMatch) continue;
+    for (const raw of colonMatch) {
+      const parsed = raw.trim().match(/^(\d+)\s*[:.)]\s*(.+)$/);
+      if (parsed) options.push({ key: parsed[1], label: parsed[2].trim() });
+    }
+  }
+  return options;
+}
+
+function findOptionKey(options: PromptOption[], accept: RegExp, reject?: RegExp): string | null {
+  const option = options.find(o => accept.test(o.label) && !(reject?.test(o.label)));
+  return option?.key ?? null;
+}
+
+function detectGeminiSafeDefaultModal(lines: string[], fullWindow?: string[]): PatternMatch | null {
+  const windowLines = fullWindow ?? lines;
+  const haystack = windowLines.join('\n');
+  const options = extractNumberedOptions(windowLines);
+
+  if (/A potential loop was detected/i.test(haystack) && /loop detection/i.test(haystack)) {
+    const key = findOptionKey(options, /\bkeep\b.*\b(loop detection|enabled)\b|\benabled\b/i, /\bdisable\b/i) ?? 'Enter';
+    return {
+      type: 'confirmation',
+      summary: 'Gemini CLI loop-detection modal (auto-answer: keep enabled)',
+      options: options.length > 0 ? options : [
+        { key: 'Enter', label: 'Keep loop detection enabled' },
+        { key: 'Escape', label: 'Cancel' },
+      ],
+      autoDismissKey: key,
+    };
+  }
+
+  const isWorkspaceTrust = (
+    /(?:workspace|folder|directory|project).{0,80}trust|trust.{0,80}(?:workspace|folder|directory|project)/i.test(haystack)
+    && /(?:Gemini|gemini-cli|trusted workspace|trust this|do you trust|safe to run)/i.test(haystack)
+  );
+  if (isWorkspaceTrust) {
+    const key = findOptionKey(options, /\b(trust|yes|allow)\b/i, /\b(don'?t|do not|no|untrusted|deny)\b/i) ?? 'Enter';
+    return {
+      type: 'confirmation',
+      summary: 'Gemini CLI workspace-trust modal (auto-answer: trust workspace)',
+      options: options.length > 0 ? options : [
+        { key: 'Enter', label: 'Trust workspace' },
+        { key: 'Escape', label: 'Cancel' },
+      ],
+      autoDismissKey: key,
+    };
+  }
+
+  const isGeminiInstallConfirm = (
+    /(?:Gemini|gemini-cli|MCP server|extension|tool).{0,120}(?:install|installation)|(?:install|installation).{0,120}(?:Gemini|gemini-cli|MCP server|extension|tool)/i.test(haystack)
+    && /(?:Do you want to install|Need to install|Install .*\?|requires installation|Confirm install)/i.test(haystack)
+  );
+  if (isGeminiInstallConfirm) {
+    return {
+      type: 'confirmation',
+      summary: 'Gemini CLI install-confirm modal (auto-answer: highlighted default)',
+      options: options.length > 0 ? options : [
+        { key: 'Enter', label: 'Use highlighted default' },
+        { key: 'Escape', label: 'Cancel' },
+      ],
+      autoDismissKey: 'Enter',
+    };
+  }
+
+  return null;
+}
+
 /**
  * Patterns for detecting interactive prompts in Claude Code terminal output.
  * Each pattern operates on stripped (no-ANSI) text.
@@ -85,6 +164,16 @@ const PROMPT_PATTERNS: Array<{
   type: PromptType;
   test: (lines: string[], fullWindow?: string[]) => PatternMatch | null;
 }> = [
+  // Gemini CLI modal prompts that block autonomous sessions even in YOLO mode.
+  // These are framework-level affordances with a known safe/default response,
+  // so answer them before the relay/classifier path can wedge the session.
+  {
+    type: 'confirmation',
+    test(lines, fullWindow) {
+      return detectGeminiSafeDefaultModal(lines, fullWindow);
+    },
+  },
+
   // Claude Code OPTIONAL session feedback survey — non-blocking.
   // Shape: "How is Claude doing this session? (optional)" followed by
   //        "1: Bad  2: Fine  3: Good  0: Dismiss" on one line.

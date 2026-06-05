@@ -120,6 +120,8 @@ export class GeminiCliIntelligenceProvider implements IntelligenceProvider {
         recordGeminiCapacityDeferral({
           retryAfterMs: capacity.retryAfterMs,
           reason: capacity.reason ?? message,
+          model: currentModel,
+          quotaStateFile: this.capacityPolicy?.quotaStateFile,
         });
         throw new Error(
           `${capacity.reason}; retry after ${Math.ceil(capacity.retryAfterMs / 1000)}s — ${message}`,

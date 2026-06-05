@@ -59,6 +59,7 @@ import {
 import type { InstarConfig } from '../core/types.js';
 import { SafeGitExecutor } from '../core/SafeGitExecutor.js';
 import { installBuiltinJobs } from '../scheduler/InstallBuiltinJobs.js';
+import { dashboardRefreshGateScript, dashboardRefreshScript } from '../server/DashboardRefreshDiagnostics.js';
 import { renderNonClaudeIdentityShadows } from '../core/IdentityRenderer.js';
 import { installCodexHooks } from '../core/installCodexHooks.js';
 import { armCodexHooks, makeTmuxTrustDriver } from '../core/codexHookArm.js';
@@ -3406,10 +3407,10 @@ If everything is coherent and no reflection is needed, exit silently. Only repor
       expectedDurationMinutes: 1,
       model: 'haiku',
       enabled: true,
-      gate: `curl -sf http://localhost:\${INSTAR_PORT:-${port}}/health >/dev/null 2>&1`,
+      gate: dashboardRefreshGateScript(port),
       execute: {
         type: 'script',
-        value: `AUTH=$(python3 -c "import json; print(json.load(open('.instar/config.json')).get('authToken','')).strip()" 2>/dev/null) && curl -sf -X POST -H "Authorization: Bearer $AUTH" http://localhost:\${INSTAR_PORT:-${port}}/telegram/dashboard-refresh`,
+        value: dashboardRefreshScript(port),
       },
       tags: ['cat:infrastructure', 'role:worker', 'exec:script'],
       telegramNotify: false,
@@ -3992,9 +3993,24 @@ for pattern in "rm -rf /" "rm -rf ~" "> /dev/sda" "mkfs\\." "dd if=" ":(){:|:&};
   fi
 done
 
+# Safe-case carve-out: \`git push --force-with-lease\` to a NON-protected branch is the
+# legitimate way to update one's OWN amended/rebased PR branch. Still block plain --force/-f
+# and any force-push explicitly targeting a protected branch (main/master/develop/release*).
+FORCE_WITH_LEASE_OWN_BRANCH=0
+if echo "\$INPUT" | grep -qiE 'git +push[^|;&]*--force-with-lease'; then
+  if echo "\$INPUT" | grep -qiE '(^|[[:space:]:/])(main|master|develop|release[A-Za-z0-9._/-]*)([[:space:]]|:|\$)'; then
+    FORCE_WITH_LEASE_OWN_BRANCH=0
+  else
+    FORCE_WITH_LEASE_OWN_BRANCH=1
+  fi
+fi
+
 # Risky commands — behavior depends on safety level
 for pattern in "rm -rf \\." "git push --force" "git push -f" "git reset --hard" "git clean -fd" "DROP TABLE" "DROP DATABASE" "TRUNCATE" "DELETE FROM"; do
   if echo "\$INPUT" | grep -qi "\$pattern"; then
+    if [ "\$FORCE_WITH_LEASE_OWN_BRANCH" -eq 1 ] && echo "\$pattern" | grep -qiE 'git push (--force|-f)'; then
+      continue
+    fi
     if [ "\$SAFETY_LEVEL" -eq 1 ]; then
       echo "BLOCKED: Potentially destructive command detected: \$pattern" >&2
       echo "Ask the user for explicit confirmation before running this command." >&2

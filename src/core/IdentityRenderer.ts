@@ -182,6 +182,7 @@ function buildPersistentRelayAppendix(framework: string): string {
     '```',
     ``,
     `(Replace \`N\` with the topic id from the prefix. If \`.instar/scripts/telegram-reply.sh\` is missing on an older install, fall back to \`.claude/scripts/telegram-reply.sh\`.)`,
+    `If the response itself contains a literal \`EOF\` line or shell-sensitive content that could break the heredoc wrapper, base64-encode the response text and pipe that encoded text to \`telegram-reply.sh --stdin-base64 N\` instead.`,
     ``,
     `Rules:`,
     `- Strip the \`[telegram:N]\` prefix before interpreting the message.`,

@@ -177,6 +177,7 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       enabled: true,
       tickIntervalSec: 120,
       unverifiableEscalateMinutes: 30,
+      conversationalEscalateMinutes: 180,
       indeterminateEscalateCount: 15,
       progressFloorBytes: 512,
     },

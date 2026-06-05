@@ -90,6 +90,7 @@ process.stdout.write('OK_WITH_FALLBACK');
 
   it('defers after a long quota reset and refuses the next call locally', async () => {
     const countFile = path.join(tmpDir, 'count');
+    const quotaFile = path.join(tmpDir, 'quota-state.json');
     const bin = fakeGemini(`
 const fs = require('fs');
 const countFile = ${JSON.stringify(countFile)};
@@ -98,10 +99,32 @@ fs.writeFileSync(countFile, String(n + 1));
 process.stderr.write('TerminalQuotaError: QUOTA_EXHAUSTED. Your quota will reset after 2h0m0s.');
 process.exit(1);
 `);
-    const adapter = createGeminiCliAdapter({ geminiPath: bin });
+    const adapter = createGeminiCliAdapter({
+      geminiPath: bin,
+      capacityPolicy: { quotaStateFile: quotaFile },
+    });
     const oneShot = adapter.primitive(CapabilityFlag.OneShotCompletion) as OneShotCompletion;
     await expect(oneShot.evaluate('p', { timeoutMs: 10_000 })).rejects.toBeInstanceOf(QuotaError);
     await expect(oneShot.evaluate('p', { timeoutMs: 10_000 })).rejects.toBeInstanceOf(QuotaError);
-    expect(fs.readFileSync(countFile, 'utf8')).toBe('1');
+    // The FIRST evaluate now spawns Gemini twice — flash exhausts, the policy
+    // switches to pro (separate quota), pro ALSO exhausts → only then a genuine
+    // account-wide deferral. The SECOND evaluate is still refused locally by the
+    // gate (no further spawn), so the count stays at 2.
+    expect(fs.readFileSync(countFile, 'utf8')).toBe('2');
+
+    const state = JSON.parse(fs.readFileSync(quotaFile, 'utf8')) as {
+      source: string;
+      fiveHourPercent: number;
+      model: string;
+      recommendation: string;
+      scope: string;
+    };
+    expect(state.source).toBe('gemini-cli-capacity');
+    expect(state.fiveHourPercent).toBe(100);
+    // The stop-state records the last model confirmed exhausted (pro) and is
+    // account-scoped — written only once EVERY known model is exhausted.
+    expect(state.model).toBe('gemini-2.5-pro');
+    expect(state.recommendation).toBe('stop');
+    expect(state.scope).toBe('account');
   });
 });

@@ -328,11 +328,31 @@ function validateInstarRepoCandidate(
   const repoPath = realpathOrNull(topLevel.stdout);
   if (!repoPath) return { ok: false, error: 'repo root realpath failed' };
 
+  // Trust the checkout if ANY of its remote urls is allowlisted, not only origin's.
+  // Fleet agents fork instar to a personal remote (origin = instar-<name>.git) while
+  // keeping a canonical remote (e.g. JKHeadley → upstream instar) that the worktree
+  // actually builds against. An origin-only check rejected every agent's own checkout
+  // from `instar worktree create`, defeating the worktree convention for the whole fleet.
   const remote = tryGit(['-C', repoPath, 'config', '--get', 'remote.origin.url'], repoPath, op, 'read');
-  if (!remote.ok || !remote.stdout) {
-    return { ok: false, error: 'remote.origin.url unset' };
+  let allowedUrl: string | null =
+    remote.ok && remote.stdout && allowlist.has(remote.stdout) ? remote.stdout : null;
+  if (!allowedUrl) {
+    const allRemotes = tryGit(['-C', repoPath, 'remote', '-v'], repoPath, op, 'read');
+    if (allRemotes.ok && allRemotes.stdout) {
+      for (const line of allRemotes.stdout.split('\n')) {
+        // git remote -v line: "<name>\t<url> (fetch|push)"
+        const m = line.match(/^\S+\s+(\S+)\s+\((?:fetch|push)\)$/);
+        if (m && allowlist.has(m[1])) {
+          allowedUrl = m[1];
+          break;
+        }
+      }
+    }
   }
-  if (!allowlist.has(remote.stdout)) {
+  if (!allowedUrl) {
+    if (!remote.ok || !remote.stdout) {
+      return { ok: false, error: 'remote.origin.url unset' };
+    }
     return {
       ok: false,
       error: `remote.origin.url ${remote.stdout} not in worktree.repoUrlAllowlist`,
@@ -354,7 +374,7 @@ function validateInstarRepoCandidate(
     }
   }
 
-  return { ok: true, repoPath, remoteUrl: remote.stdout };
+  return { ok: true, repoPath, remoteUrl: allowedUrl };
 }
 
 // ── Slug / branch validation ─────────────────────────────────────────────

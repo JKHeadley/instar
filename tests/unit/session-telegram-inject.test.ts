@@ -11,7 +11,7 @@ import path from 'node:path';
 import { SessionManager } from '../../src/core/SessionManager.js';
 import { createTempProject, createMockSessionManager } from '../helpers/setup.js';
 import type { TempProject } from '../helpers/setup.js';
-import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { getTelegramInboundDir } from '../../src/messaging/shared/telegramInboundFiles.js';
 
 describe('SessionManager.injectTelegramMessage', () => {
   let project: TempProject;
@@ -24,25 +24,17 @@ describe('SessionManager.injectTelegramMessage', () => {
 
   afterEach(() => {
     project.cleanup();
-    // Clean up temp files
-    const tmpDir = '/tmp/instar-telegram';
-    if (fs.existsSync(tmpDir)) {
-      const files = fs.readdirSync(tmpDir).filter(f => f.startsWith('msg-'));
-      for (const f of files) {
-        try { SafeFsExecutor.safeUnlinkSync(path.join(tmpDir, f), { operation: 'tests/unit/session-telegram-inject.test.ts:32' }); } catch { /* ignore */ }
-      }
-    }
   });
 
   // We test the logic by examining the file system side effects
   // since the tmux commands will fail in test (no tmux session)
 
-  it('writes long messages to temp file', () => {
+  it('writes long messages under the project-local Telegram inbound directory', () => {
     const sm = new SessionManager(
       {
         tmuxPath: '/usr/bin/tmux',
         claudePath: '/usr/bin/claude',
-        projectDir: project.stateDir,
+        projectDir: project.dir,
         maxSessions: 3,
         protectedSessions: [],
         completionPatterns: [],
@@ -57,13 +49,13 @@ describe('SessionManager.injectTelegramMessage', () => {
     // but the file should still be created
     sm.injectTelegramMessage('nonexistent-session', 42, longText);
 
-    // Check that temp file was created
-    const tmpDir = '/tmp/instar-telegram';
-    if (fs.existsSync(tmpDir)) {
-      const files = fs.readdirSync(tmpDir).filter(f => f.startsWith('msg-42-'));
-      // File may or may not exist depending on timing, but the directory should be created
-      expect(fs.existsSync(tmpDir)).toBe(true);
-    }
+    const inboundDir = getTelegramInboundDir(project.dir);
+    expect(fs.existsSync(inboundDir)).toBe(true);
+    const files = fs.readdirSync(inboundDir).filter(f => f.startsWith('msg-42-'));
+    expect(files).toHaveLength(1);
+    const content = fs.readFileSync(path.join(inboundDir, files[0]), 'utf-8');
+    expect(content).toContain('[telegram:42]');
+    expect(content).toContain(longText);
   });
 
   it('threshold is 500 chars for the tagged message', () => {
@@ -87,7 +79,7 @@ describe('SessionManager.injectTelegramMessage', () => {
     {
       tmuxPath: '/usr/bin/tmux',
       claudePath: '/usr/bin/claude',
-      projectDir: project.stateDir,
+      projectDir: project.dir,
       maxSessions: 3,
       protectedSessions: [],
       completionPatterns: [],
@@ -96,7 +88,7 @@ describe('SessionManager.injectTelegramMessage', () => {
   );
   const longText = 'Z'.repeat(600); // exceeds the 500-char file threshold
   const countFilesFor = (topicId: number) => {
-    const dir = '/tmp/instar-telegram';
+    const dir = getTelegramInboundDir(project.dir);
     return fs.existsSync(dir)
       ? fs.readdirSync(dir).filter(f => f.startsWith(`msg-${topicId}-`)).length
       : 0;

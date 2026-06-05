@@ -164,6 +164,17 @@ export interface SessionManagerConfig {
   /** Server port — used to construct INSTAR_SERVER_URL for HTTP hooks */
   port?: number;
   /**
+   * Respawn build-context restore (mentor-onboarding hardening).
+   * When enabled, SessionManager records each live session's tmux pane cwd and,
+   * on a resumed respawn, prepends a continuation note when the session had
+   * navigated into an agent worktree. Undefined stays dark unless server boot
+   * resolves it through the developmentAgent gate.
+   */
+  respawnBuildContext?: {
+    enabled?: boolean;
+    maxAgeMs?: number;
+  };
+  /**
    * Per-provider credentials. Keys are provider ids
    * (e.g. 'anthropic', 'openai', 'google'). Values declare the
    * credential kind and value, plus an optional base-URL override
@@ -606,6 +617,14 @@ export interface QuotaState {
   usagePercent: number;
   /** 5-hour rolling rate limit utilization (0-100), if available */
   fiveHourPercent?: number;
+  /** Provider/framework that produced this quota snapshot, if known */
+  source?: 'anthropic-oauth' | 'claude-jsonl' | 'gemini-cli-capacity';
+  /** Provider model whose capacity window is currently blocked, if known */
+  model?: string;
+  /** When a provider-specific capacity block is expected to clear */
+  blockedUntil?: string;
+  /** Human-readable reason from the provider capacity signal */
+  blockReason?: string;
   /** When usage data was last updated */
   lastUpdated: string;
   /** Per-account breakdown if multi-account */
@@ -1788,6 +1807,19 @@ export interface MultiMachineConfig {
    */
   sessionPool?: SessionPoolConfig;
   /**
+   * Cross-machine secret-sync (spec Phase 4): a secret given to the agent on one
+   * machine becomes usable on its other machines automatically (encrypted to the
+   * recipient machine's X25519 key, never on disk in plaintext, only ever pushed
+   * to registered peers). Ships DARK; on the dev agent it defaults on via the
+   * `developmentAgent` gate. Backs GET /secrets/sync-status + POST /secrets/sync-now.
+   *
+   * SAFETY: `enabled` alone is RECEIVE-ONLY. Outbound push (boot best-effort +
+   * POST /secrets/sync-now) is gated SEPARATELY on `pushEnabled` (default false), so a
+   * machine with a stale/divergent store cannot auto-push and clobber peers' good secrets.
+   * Set `pushEnabled: true` only on the machine whose secret store is authoritative.
+   */
+  secretSync?: { enabled?: boolean; pushEnabled?: boolean };
+  /**
    * Whether THIS machine's lifeline owns the Telegram long-poll. Telegram allows
    * exactly one getUpdates poller per bot token, so a second machine that also
    * polls causes a permanent 409-conflict war and nondeterministic message
@@ -2232,6 +2264,29 @@ export interface InstarConfig {
   publishing?: PublishingConfig;
   /** Cloudflare Tunnel config */
   tunnel?: TunnelConfigType;
+  /** Secret handling config */
+  secrets?: {
+    /**
+     * When true (default), a submitted Secret Drop is persisted store-first to
+     * the durable, AES-256-GCM encrypted SecretStore the instant it is received —
+     * so it survives session restart / compaction / cross-machine handoff instead
+     * of living only in the in-memory `received` map. The agent retrieves from the
+     * durable copy transparently and a successful `?consume=true` deletes it.
+     * Set false to revert to in-memory-only (pre-2026-06-04) behavior.
+     */
+    persistDrops?: boolean;
+    /**
+     * Force the SecretStore master key to the per-agent file key
+     * (.instar/machine/secrets-master.key), skipping the OS keychain.
+     * The keychain entry is MACHINE-GLOBAL (shared by every agent/process on the
+     * box) — a SecretStore constructed against a fresh stateDir with no file key
+     * generates a new key and silently overwrites that global entry, breaking
+     * every other store encrypted with the old key (2026-06-05 incident: an
+     * integration test did exactly this). Tests MUST set this true; production
+     * defaults to keychain-first for backward compatibility.
+     */
+    forceFileKey?: boolean;
+  };
   /** Request timeout in milliseconds (default: 30000) */
   requestTimeoutMs?: number;
   /** Instar version (from package.json) */
@@ -3376,6 +3431,9 @@ export interface MonitoringConfig {
     enabled?: boolean;
     tickIntervalSec?: number;
     unverifiableEscalateMinutes?: number;
+    /** No-progress window for conversational/autonomous sessions (default 180,
+     *  forgiving — they idle between turns + while waiting on long tool calls). */
+    conversationalEscalateMinutes?: number;
     indeterminateEscalateCount?: number;
     progressFloorBytes?: number;
   };

@@ -73,13 +73,35 @@ export interface StaleBackstopDeps {
   raiseAttention: AttentionPoster;
   /** Flag/unflag a session as long-`indeterminate` for the spawn absolute-cap exclusion. */
   setLongIndeterminate?: (sessionId: string, isLong: boolean) => void;
+  /**
+   * Resolve a session to its HUMAN Telegram topic name (e.g. "EXO 3.0") so the
+   * heads-up reads with the topic name, never a bare `topic-<n>`. Returns null
+   * when no friendly name is known (the notice falls back to the session name).
+   */
+  resolveTopicName?: (session: Session) => string | null;
+  /**
+   * True when a session is operator-protected (the reaper's `protectedSessions`).
+   * A protected session is one the operator deliberately keeps running (e.g. a
+   * long autonomous job), so the backstop never escalates it as "stale" — that
+   * would be crying wolf on work the user explicitly wants alive. Absent ⇒ no
+   * session is treated as protected (prior behavior).
+   */
+  isProtectedSession?: (session: Session) => boolean;
   now?: () => number;
 }
 
 export interface StaleBackstopOptions {
   enabled: boolean;
   tickIntervalSec: number;
+  /** No-progress escalation window for JOB sessions (run-to-completion). */
   unverifiableEscalateMinutes: number;
+  /**
+   * No-progress escalation window for CONVERSATIONAL / autonomous sessions.
+   * These legitimately idle between turns and while waiting on multi-minute tool
+   * calls, so a tight window false-positives a healthy long-runner as "stale"
+   * (the 2026-06-04 flood). Defaults well above the job window. Never below it.
+   */
+  conversationalEscalateMinutes: number;
   indeterminateEscalateCount: number;
   progressFloorBytes: number;
   /** Minimum CPU-seconds a JOB session's descendants must accumulate between two
@@ -93,6 +115,7 @@ export const DEFAULT_STALE_BACKSTOP_OPTIONS: StaleBackstopOptions = {
   enabled: true,
   tickIntervalSec: 120,
   unverifiableEscalateMinutes: 30,
+  conversationalEscalateMinutes: 180,
   indeterminateEscalateCount: 15,
   progressFloorBytes: 512,
   cpuFloorSeconds: 1,
@@ -181,7 +204,7 @@ export class StaleSessionBackstop {
         o.indeterminateStreak++;
         const isLong = o.indeterminateStreak >= this.opts.indeterminateEscalateCount;
         this.deps.setLongIndeterminate?.(session.id, isLong);
-        if (isLong && !o.episodeActive) {
+        if (isLong && !o.episodeActive && !this.deps.isProtectedSession?.(session)) {
           o.episodeActive = true;
           o.episodeSeq++;
           await this.escalateSession(session, o, `unverifiable: ${o.indeterminateStreak} consecutive indeterminate probes`);
@@ -206,7 +229,19 @@ export class StaleSessionBackstop {
         continue;
       }
       const stalledMs = this.now() - o.lastProgressAt;
-      if (stalledMs >= this.opts.unverifiableEscalateMinutes * 60_000 && !o.episodeActive) {
+      // Conversational/autonomous sessions get a far more forgiving window than
+      // run-to-completion jobs: they legitimately idle between turns and while
+      // waiting on long tool calls, so a tight window cries wolf on healthy
+      // long-runners. (Never below the job window.) Protected sessions — ones the
+      // operator deliberately keeps alive — are never escalated as stale.
+      const staleThresholdMin = session.jobSlug
+        ? this.opts.unverifiableEscalateMinutes
+        : Math.max(this.opts.conversationalEscalateMinutes, this.opts.unverifiableEscalateMinutes);
+      if (
+        stalledMs >= staleThresholdMin * 60_000
+        && !o.episodeActive
+        && !this.deps.isProtectedSession?.(session)
+      ) {
         o.episodeActive = true;
         o.episodeSeq++;
         await this.escalateSession(
@@ -251,14 +286,28 @@ export class StaleSessionBackstop {
   }
 
   private async escalateSession(session: Session, o: Obs, detail: string): Promise<void> {
+    // Resolve a friendly topic name so the heads-up reads "the 'EXO 3.0' session",
+    // never "topic-19077". Fall back to the session name only if it isn't the
+    // useless topic-<n> form.
+    const resolved = this.deps.resolveTopicName?.(session) ?? null;
+    const display = (resolved && !/^topic-\d+$/.test(resolved))
+      ? resolved
+      : (!/^topic-\d+$/.test(session.name) ? session.name : (resolved ?? session.name));
+    // Route into the calm Agent-Health lane at NORMAL priority. This is a routine
+    // self-health observation, not a user-critical alert — so it bundles into the
+    // ONE "🩺 Agent Health" topic and never spawns topic-after-topic. The store
+    // `id` still carries the episode seq (each episode is recorded), while
+    // `healthKey` is stable per session so the lane suppresses duplicate re-posts.
     await this.deps.raiseAttention({
       id: `stale-${session.id}-${o.episodeSeq}`,
-      title: `Session "${session.name}" is stale but unkillable`,
+      healthKey: `stale-${session.id}`,
+      lane: 'agent-health',
+      title: `Heads-up on the "${display}" session`,
       summary:
-        `${detail}. It is being KEPT (never auto-killed), but it may be wedged or holding a slot. `
-        + `Investigate, or force-kill it from the dashboard if it's genuinely stuck.`,
+        `It hasn't shown visible progress in a while (${detail}), so it might be stuck — but it's still `
+        + `running and nothing's been killed. Reply "check ${display}" and I'll look, or ignore this if you know it's fine.`,
       category: 'degradation',
-      priority: 'HIGH',
+      priority: 'NORMAL',
     });
   }
 

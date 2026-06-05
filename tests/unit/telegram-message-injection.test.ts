@@ -40,7 +40,7 @@ describe('Telegram message injection logic', () => {
       path.join(process.cwd(), 'src/core/SessionManager.ts'),
       'utf-8'
     );
-    expect(source).toContain('instar-telegram');
+    expect(source).toContain('getTelegramInboundDir(this.config.projectDir)');
     expect(source).toContain('Long message saved to');
   });
 
