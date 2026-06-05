@@ -1,0 +1,12 @@
+<!-- bump: patch -->
+<!-- internal-only -->
+
+## What Changed
+
+`instar worktree create` now validates a checkout against ALL of its git remotes, not just `remote.origin.url`. Fleet agents fork instar (origin = `instar-<name>.git`, not allowlisted) and keep the canonical repo as a second remote (e.g. `upstream` → `instar-ai/instar.git`) that the worktree builds against — so the origin-only check rejected every agent's own checkout from the helper built for them (both Echo and Codey hit this: "remote.origin.url … not in worktree.repoUrlAllowlist"). The validator now accepts the checkout if origin is allowlisted (unchanged) OR if any remote url is allowlisted. The trust boundary is unchanged: the allowlist is still the sole gate, and untrusted repos are rejected with the same messages as before — only the remote SOURCE widened from origin-only to all-remotes.
+
+## Evidence
+
+- New unit test: fork origin (`instar-echo.git`) + `upstream` → `instar-ai/instar.git` is accepted, with `remoteUrl` resolving to the canonical url.
+- The existing "rejects unset origin" and "rejects non-allowlisted origin" tests pass unchanged (messages preserved).
+- `vitest run tests/unit/InstarWorktreeManager.test.ts` → 31/31 green; `tsc --noEmit` clean.

@@ -275,6 +275,22 @@ describe('resolveInstarRepo', () => {
     expect(result.remoteUrl).toBe('git@github.com:instar-ai/instar.git');
   });
 
+  it('accepts a fork origin when a second remote is allowlisted (fleet worktree convention)', () => {
+    // Fleet agents fork instar (origin = instar-<name>.git, NOT allowlisted) and keep
+    // a canonical remote (e.g. upstream → instar-ai/instar.git) that the worktree builds
+    // against. An origin-only check rejected every agent's own checkout; the all-remotes
+    // check accepts it via the canonical remote.
+    const repo = makeRepo({ remote: 'https://github.com/owner/instar-echo.git' });
+    execFileSync('git', ['remote', 'add', 'upstream', 'git@github.com:instar-ai/instar.git'], { cwd: repo, stdio: 'pipe' });
+    const result = resolveInstarRepo({
+      env: { INSTAR_REPO: repo },
+      fallbackChain: [],
+      urlAllowlist: DEFAULT_INSTAR_REPO_URL_ALLOWLIST,
+    });
+    expect(result.repoPath).toBe(fs.realpathSync(repo));
+    expect(result.remoteUrl).toBe('git@github.com:instar-ai/instar.git');
+  });
+
   it('honors operator-supplied urlAllowlist additions', () => {
     const repo = makeRepo({ remote: 'git@example.com:fork/instar.git' });
     const result = resolveInstarRepo({
