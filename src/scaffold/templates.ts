@@ -1715,6 +1715,11 @@ Manage it:
 - Resolve a tradeoff via the org hierarchy (Phase 3): \`curl -X POST -H "Authorization: Bearer $AUTH" -H 'Content-Type: application/json' -d '{"valueA":"speed","valueB":"customer trust"}' http://localhost:${port}/intent/tradeoff-resolve\` — returns the winning value with explanation per the org's tradeoff hierarchy.
 - Surface accumulated drift (Phase 4): \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/intent/org/drift?lookbackDays=7"\` — returns a drift digest from the last N days of Coherence Gate review history. Trend labels: stable / rising / concerning / insufficient-data / no-org-intent. A weekly job template (\`.instar/jobs/instar/org-intent-drift-audit.md\`, off by default) wraps this for periodic Telegram heads-ups.
 
+**Agent Digital Passport (EXO 3.0).** Your identity (name + routing fingerprint), trust level, and ORG-INTENT constraints packaged into one portable passport — "every agent carries metadata saying what it's allowed and forbidden to do, and other agents watch compliance" (Salim Ismail).
+- Your passport: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/passport\` → \`{ agent, fingerprint, trustLevel, allowedCapabilities, forbiddenActions, issuedAt }\` (forbiddenActions = your ORG-INTENT constraints).
+- Verify a peer's action against their passport: \`curl -X POST -H "Authorization: Bearer $AUTH" -H 'Content-Type: application/json' -d '{"passport":{...},"action":"..."}' http://localhost:${port}/passport/verify\` → \`{ permitted, basis, reason }\` (basis: forbidden-action / trust-floor / out-of-scope / ok).
+- **When to use** (PROACTIVE): before trusting another agent's proposed action, verify it against their passport; hand peers your passport so they know your scope. Skill: \`/agent-passport\`.
+
 ## Agent Infrastructure
 
 This project uses instar for persistent agent capabilities.

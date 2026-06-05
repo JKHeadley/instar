@@ -12211,6 +12211,60 @@ export function createRoutes(ctx: RouteContext): Router {
     }
   });
 
+  // Agent digital passport (EXO 3.0 — Salim Ismail, "The 80-Year Business Rule
+  // AI Just Broke"): "every AI agent gets a digital passport with metadata
+  // saying what it's allowed to do and what it's not allowed to do, and other
+  // agents watching that it's complying." Packages Instar's existing identity +
+  // trust + ORG-INTENT constraints into one portable passport.
+  //
+  // GET /passport → this agent's passport (forbiddenActions = ORG-INTENT constraints).
+  router.get('/passport', async (_req, res) => {
+    try {
+      const { buildPassport } = await import('../core/AgentPassport.js');
+      const { OrgIntentManager } = await import('../core/OrgIntentManager.js');
+      // Best-effort identity fingerprint from threadline agent-info, else 'unresolved'.
+      let fingerprint = 'unresolved';
+      try {
+        const fs = await import('node:fs');
+        const path = await import('node:path');
+        const infoPath = path.join(ctx.config.stateDir, '..', 'threadline', 'agent-info.json');
+        if (fs.existsSync(infoPath)) {
+          const info = JSON.parse(fs.readFileSync(infoPath, 'utf-8'));
+          fingerprint = info.fingerprint || info.publicKey || 'unresolved';
+        }
+      } catch { /* fingerprint stays unresolved */ }
+      const parsed = new OrgIntentManager(ctx.config.stateDir).parse();
+      const forbiddenActions = parsed ? parsed.constraints.map((c: { text: string }) => c.text) : [];
+      const passport = buildPassport({
+        agent: ctx.config.projectName ?? 'unknown',
+        fingerprint,
+        trustLevel: 'supervised',
+        forbiddenActions,
+        issuedAt: new Date().toISOString(),
+      });
+      res.json(passport);
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to build passport' });
+    }
+  });
+
+  // POST /passport/verify — the compliance check a peer runs against a passport
+  // before trusting a proposed action. Body: { passport, action }.
+  router.post('/passport/verify', async (req, res) => {
+    const passport = req.body?.passport;
+    const action = typeof req.body?.action === 'string' ? req.body.action.trim() : '';
+    if (!passport || typeof passport !== 'object' || !action) {
+      res.status(400).json({ error: 'Body must include a "passport" object and a non-empty "action" string.' });
+      return;
+    }
+    try {
+      const { permits } = await import('../core/AgentPassport.js');
+      res.json(permits(passport, action));
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to verify against passport' });
+    }
+  });
+
   // ORG-INTENT drift digest (Phase 4 of the ORG-INTENT runtime project).
   // Samples recent Coherence Gate review history and emits a drift digest:
   // overall block rate, per-reviewer breakdown, half-window trend comparison,
