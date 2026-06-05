@@ -12,6 +12,7 @@ tags:
   - audit
 toolAllowlist: "*"
 unrestrictedTools: true
+mcpAccess: none
 ---
 Run the weekly Failure-Learning analysis. This job exists because individual failures get fixed and forgotten — this turns the accumulated, attributed record into process-level insight, and closes the loop all the way to a human-approved fix and a verification that the fix worked.
 

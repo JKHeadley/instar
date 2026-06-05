@@ -36,7 +36,15 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const ROOT = path.resolve(__dirname, '..');
 const TRACES_DIR = path.join(ROOT, '.instar', 'instar-dev-traces');
-const DECISIONS_LOG = path.join(ROOT, '.instar', 'instar-dev-decisions.jsonl');
+// Legacy single-file audit log (frozen 2026-06-05 — read-only history).
+// Every gated commit used to APPEND one line here; because the line rides the
+// commit (the task-#62 fix), any two PRs in flight both modified this file's
+// tail and conflicted at the merge point — a structural conflict generator at
+// parallel-PR cadence (live hit: PR #824 went CI-green then failed merge on
+// exactly this file). New entries are one-file-per-decision under
+// DECISIONS_DIR instead: distinct filenames can never conflict.
+// (The frozen legacy file remains at .instar/instar-dev-decisions.jsonl.)
+const DECISIONS_DIR = path.join(ROOT, '.instar', 'instar-dev-decisions');
 const WINDOW_MS = 60 * 60 * 1000; // 60 minutes
 const MIN_ARTIFACT_CHARS = 200;
 
@@ -257,7 +265,7 @@ const decision = decideRequirementSet(declaredTier);
 // belowFloor = the agent declared UNDER the risk-signaled floor. We never
 // block on it (the mind holds authority) — the record is the backstop.
 const belowFloor = declaredTier != null && declaredTier < tierSignal.riskFloor;
-writeDecisionAudit({
+const decisionEntryPath = writeDecisionAudit({
   slug,
   suggestedTier: tierSignal.suggestedTier,
   declaredTier,
@@ -276,7 +284,7 @@ if (belowFloor) {
   console.error(`  declared Tier ${declaredTier} < risk floor ${tierSignal.riskFloor}. Risk signals:`);
   for (const r of tierSignal.reasons) console.error(`    • ${r}`);
   if (tierReasoning) console.error(`  Your tierReasoning: ${tierReasoning}`);
-  console.error(`  Recorded to ${path.relative(ROOT, DECISIONS_LOG)} (belowFloor:true).`);
+  console.error(`  Recorded to ${path.relative(ROOT, decisionEntryPath ?? DECISIONS_DIR)} (belowFloor:true).`);
   console.error('');
 }
 
@@ -791,26 +799,39 @@ function blockCommit(files, reason) {
 // lines describe real gate evaluations.
 function writeDecisionAudit({ slug, suggestedTier, declaredTier, riskFloor, riskFloorReasons, belowFloor, files, loc }) {
   try {
-    fs.mkdirSync(path.dirname(DECISIONS_LOG), { recursive: true });
-    fs.appendFileSync(
-      DECISIONS_LOG,
+    fs.mkdirSync(DECISIONS_DIR, { recursive: true });
+    const ts = new Date().toISOString();
+    // Filename: sortable timestamp + sanitized slug → chronological `ls`,
+    // and a DISTINCT file per decision so parallel PRs can never conflict
+    // on the audit trail (each adds its own file; git merges additions of
+    // different paths trivially, including GitHub's server-side merge).
+    const safeSlug = String(slug).toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '') || 'unknown';
+    let entryPath = path.join(DECISIONS_DIR, `${ts.replace(/[:.]/g, '-')}-${safeSlug}.json`);
+    let n = 1;
+    while (fs.existsSync(entryPath)) {
+      entryPath = path.join(DECISIONS_DIR, `${ts.replace(/[:.]/g, '-')}-${safeSlug}-${n++}.json`);
+    }
+    fs.writeFileSync(
+      entryPath,
       JSON.stringify({
-        ts: new Date().toISOString(),
+        ts,
         slug,
         suggestedTier,
         declaredTier,
-        // riskFloor (the number) keeps the line self-contained for later review
+        // riskFloor (the number) keeps the entry self-contained for later review
         // without re-running the classifier — not just the derived belowFloor.
         riskFloor,
         riskFloorReasons,
         belowFloor,
         files,
         loc,
-      }) + '\n',
+      }, null, 2) + '\n',
     );
-    execSync(`git add ${JSON.stringify(path.relative(ROOT, DECISIONS_LOG))}`, { cwd: ROOT });
+    execSync(`git add ${JSON.stringify(path.relative(ROOT, entryPath))}`, { cwd: ROOT });
+    return entryPath;
   } catch {
     // best-effort — never block on audit I/O
+    return null;
   }
 }
 

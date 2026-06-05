@@ -841,6 +841,11 @@ export class JobScheduler {
       triggeredBy: `scheduler:${reason}`,
       maxDurationMinutes: job.expectedDurationMinutes,
       allowedTools: spawnAllowedTools,
+      // mcpAccess: 'none' → spawn with zero project MCP servers (claude-code
+      // only; the flag builder no-ops for codex). Bash/curl-only jobs skip the
+      // MCP boot cost + the auth-required-remote-MCP headless hang hazard
+      // (docs/specs/LOOP-SESSION-NO-MCP-SPEC.md). Absent/'project' → unchanged.
+      disableProjectMcp: job.mcpAccess === 'none' ? true : undefined,
     }).then(() => {
       // Record in run history with full Phase 1b observability payload
       const runId = this.runHistory.recordStart({

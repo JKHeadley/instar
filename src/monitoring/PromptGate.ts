@@ -411,8 +411,10 @@ const PROMPT_PATTERNS: Array<{
 
 export class InputDetector extends EventEmitter {
   private lastOutput = new Map<string, string>();
+  private lastContentFingerprint = new Map<string, string>();
   private stableCount = new Map<string, number>();
   private emittedPrompts = new Map<string, Set<string>>();
+  private autoDismissedPrompts = new Map<string, Set<string>>();
 
   /** Post-emission cooldown: session → timestamp of last emission */
   private lastEmissionTime = new Map<string, number>();
@@ -468,6 +470,12 @@ export class InputDetector extends EventEmitter {
     const allLines = trimTrailingBlankRows(stripped.split('\n'));
     const lines = allLines.slice(-this.config.detectionWindowLines);
     const tailText = lines.join('\n');
+    const contentFingerprint = createHash('sha256').update(tailText).digest('hex');
+    const previousContentFingerprint = this.lastContentFingerprint.get(sessionName);
+    if (previousContentFingerprint && previousContentFingerprint !== contentFingerprint) {
+      this.autoDismissedPrompts.delete(sessionName);
+    }
+    this.lastContentFingerprint.set(sessionName, contentFingerprint);
 
     // --- Debounce: require 2 consecutive identical captures (quiescence) ---
     // First capture sets the baseline. Second identical capture confirms stability.
@@ -520,6 +528,10 @@ export class InputDetector extends EventEmitter {
    */
   private emitIfNew(sessionName: string, match: PatternMatch, tailLines: string[]): DetectedPrompt | null {
     const fingerprint = this.fingerprint(sessionName, match.type, tailLines.join('\n'));
+
+    if (match.autoDismissKey && this.autoDismissedPrompts.get(sessionName)?.has(fingerprint)) {
+      return null;
+    }
 
     // Check rejected cooling
     const rejectedExpiry = this.rejectedFingerprints.get(fingerprint);
@@ -714,6 +726,22 @@ When in doubt, respond NO_PROMPT. False positives cause spam.`;
   }
 
   /**
+   * Called after a deterministic auto-dismiss key is successfully sent.
+   * Unlike normal prompt dedup, this memory survives onInputSent(): some
+   * terminal panes keep the dismissed prompt text visible until new output
+   * arrives, and re-clearing normal dedup would otherwise re-fire every tick.
+   */
+  onAutoDismissSent(prompt: DetectedPrompt): void {
+    if (!prompt.autoDismissKey) return;
+    let prompts = this.autoDismissedPrompts.get(prompt.sessionName);
+    if (!prompts) {
+      prompts = new Set();
+      this.autoDismissedPrompts.set(prompt.sessionName, prompts);
+    }
+    prompts.add(this.fingerprint(prompt.sessionName, prompt.type, prompt.raw));
+  }
+
+  /**
    * Mark a prompt as rejected (user cancelled). Prevents re-fire for 60s.
    */
   onPromptRejected(sessionName: string, promptRaw: string, type: PromptType): void {
@@ -726,8 +754,10 @@ When in doubt, respond NO_PROMPT. False positives cause spam.`;
    */
   cleanup(sessionName: string): void {
     this.lastOutput.delete(sessionName);
+    this.lastContentFingerprint.delete(sessionName);
     this.stableCount.delete(sessionName);
     this.emittedPrompts.delete(sessionName);
+    this.autoDismissedPrompts.delete(sessionName);
     this.lastEmissionTime.delete(sessionName);
     this.llmRelayTimestamps.delete(sessionName);
     this.pendingLlmDetection.delete(sessionName);

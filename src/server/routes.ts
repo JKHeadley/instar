@@ -75,6 +75,7 @@ import {
   normalizeAttentionStatus,
 } from './attentionApi.js';
 import { dashboardRefreshFailure } from './DashboardRefreshDiagnostics.js';
+import { KNOWN_GEMINI_MODELS } from '../providers/adapters/gemini-cli/models.js';
 
 const execFile = promisify(execFileCb);
 
@@ -4425,8 +4426,9 @@ export function createRoutes(ctx: RouteContext): Router {
       res.status(400).json({ error: '"prompt" must be a string under 500KB' });
       return;
     }
-    if (framework !== undefined && !['claude-code', 'codex-cli'].includes(framework)) {
-      res.status(400).json({ error: '"framework" must be one of: claude-code, codex-cli' });
+    const SUPPORTED_SPAWN_FRAMEWORKS = ['claude-code', 'codex-cli', 'gemini-cli'];
+    if (framework !== undefined && !SUPPORTED_SPAWN_FRAMEWORKS.includes(framework)) {
+      res.status(400).json({ error: `"framework" must be one of: ${SUPPORTED_SPAWN_FRAMEWORKS.join(', ')}` });
       return;
     }
     // Provider-portability v1.0.0: model whitelist is framework-aware.
@@ -4448,7 +4450,9 @@ export function createRoutes(ctx: RouteContext): Router {
       const requestedFramework = framework ?? 'claude-code';
       const allowed = requestedFramework === 'codex-cli'
         ? [...GENERIC_TIERS, ...CODEX_MODELS_SUBSCRIPTION]
-        : [...GENERIC_TIERS, ...CLAUDE_TIERS];
+        : requestedFramework === 'gemini-cli'
+          ? [...GENERIC_TIERS, ...KNOWN_GEMINI_MODELS]
+          : [...GENERIC_TIERS, ...CLAUDE_TIERS];
       if (!allowed.includes(model)) {
         res.status(400).json({
           error: `"model" must be one of: ${allowed.join(', ')} (framework: ${requestedFramework})`,

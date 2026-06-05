@@ -12,6 +12,7 @@ tags:
   - org-intent
 toolAllowlist: "*"
 unrestrictedTools: true
+mcpAccess: none
 ---
 Run a weekly drift audit against your organizational intent. This job exists because the per-message Coherence Gate from Phase 1 catches individual constraint violations, but it can't catch the slow accumulation of borderline-passing messages that collectively drift from intent. That's the Klarna failure mode — every individual review passes the gate's threshold, but the agent has gradually optimized for the wrong objective.
 

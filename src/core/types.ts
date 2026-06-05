@@ -255,6 +255,15 @@ export interface JobDefinition {
   grounding?: JobGrounding;
   /** LLM supervision tier — see docs/LLM-SUPERVISED-EXECUTION.md */
   supervision?: SupervisionTier;
+  /** MCP access for the spawned job session (claude-code spawns only).
+   *  - 'none': spawn with `--strict-mcp-config --mcp-config '{"mcpServers":{}}'`
+   *    so the headless session starts with ZERO project MCP servers. Right for
+   *    bash/curl-only jobs (health-check & friends) — they pay MCP boot cost
+   *    (and the auth-required-remote-MCP hang hazard, see
+   *    docs/specs/LOOP-SESSION-NO-MCP-SPEC.md) for servers they never use.
+   *  - 'project' or absent: inherit the project .mcp.json (legacy behavior).
+   *  Non-claude frameworks ignore this (the flag builder returns []). */
+  mcpAccess?: 'project' | 'none';
   /** Living Skills — opt-in execution journaling and pattern detection (PROP-229) */
   livingSkills?: LivingSkillsConfig;
   /** Machine scope — restrict this job to specific machines.

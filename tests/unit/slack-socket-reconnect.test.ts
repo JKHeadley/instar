@@ -10,9 +10,10 @@
  * and no further reconnects were attempted.
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { readFileSync } from 'fs';
 import path from 'path';
+import { SocketModeClient, type SocketModeHandlers } from '../../src/messaging/slack/SocketModeClient.js';
 
 const socketClientPath = path.resolve(__dirname, '../../src/messaging/slack/SocketModeClient.ts');
 const socketClientSource = readFileSync(socketClientPath, 'utf-8');
@@ -22,6 +23,20 @@ const slackAdapterSource = readFileSync(slackAdapterPath, 'utf-8');
 
 const serverPath = path.resolve(__dirname, '../../src/commands/server.ts');
 const serverSource = readFileSync(serverPath, 'utf-8');
+
+function makeHandlers(): SocketModeHandlers {
+  return {
+    onEvent: vi.fn(async () => {}),
+    onInteraction: vi.fn(async () => {}),
+    onConnected: vi.fn(),
+    onDisconnected: vi.fn(),
+    onError: vi.fn(),
+  };
+}
+
+async function handleRaw(client: SocketModeClient, raw: string): Promise<void> {
+  await (client as unknown as { _handleRawMessage(raw: string): Promise<void> })._handleRawMessage(raw);
+}
 
 describe('SocketModeClient reconnection', () => {
   it('has a reconnect() method', () => {
@@ -90,6 +105,47 @@ describe('SleepWake Slack reconnection', () => {
 });
 
 describe('Ack send guard against a mid-reconnect socket (#43 — no whole-agent crash)', () => {
+  it('does not send or throw when an event arrives while the socket is not OPEN', async () => {
+    const handlers = makeHandlers();
+    const client = new SocketModeClient({} as any, handlers);
+    const send = vi.fn(() => {
+      throw new Error('Sent before connected.');
+    });
+    (client as any).ws = { readyState: WebSocket.CONNECTING, send };
+    const payload = {
+      envelope_id: 'E-mid-reconnect',
+      type: 'events_api',
+      payload: { event: { type: 'message' } },
+    };
+
+    await expect(handleRaw(client, JSON.stringify(payload))).resolves.toBeUndefined();
+
+    expect(send).not.toHaveBeenCalled();
+    expect(handlers.onEvent).toHaveBeenCalledWith('message', payload.payload);
+  });
+
+  it('catches an ack send race when the socket flips state after the OPEN check', async () => {
+    const handlers = makeHandlers();
+    const client = new SocketModeClient({} as any, handlers);
+    const send = vi.fn(() => {
+      throw new Error('Sent before connected.');
+    });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    (client as any).ws = { readyState: WebSocket.OPEN, send };
+    const payload = {
+      envelope_id: 'E-send-race',
+      type: 'events_api',
+      payload: { event: { type: 'message' } },
+    };
+
+    await expect(handleRaw(client, JSON.stringify(payload))).resolves.toBeUndefined();
+
+    expect(send).toHaveBeenCalledWith(JSON.stringify({ envelope_id: 'E-send-race' }));
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('Ack send failed'));
+    expect(handlers.onEvent).toHaveBeenCalledWith('message', payload.payload);
+    warn.mockRestore();
+  });
+
   it('guards the event ack on socket readyState === OPEN', () => {
     // The "must ack within 3s" send previously called this.ws?.send() with only
     // a null check — during a reconnect race the socket can be CONNECTING/CLOSING,

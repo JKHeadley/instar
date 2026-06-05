@@ -3230,6 +3230,7 @@ export async function startServer(options: StartOptions): Promise<void> {
               `[PromptGate] Auto-dismissed ${dismissKind} for ${prompt.sessionName} ` +
               `(key="${prompt.autoDismissKey}", sent=${dismissed}): ${prompt.summary}`
             );
+            if (dismissed) detector.onAutoDismissSent(prompt);
             // Reset detector state so the next genuine prompt isn't blocked
             // by the per-session cooldown.
             detector.onInputSent(prompt.sessionName);
