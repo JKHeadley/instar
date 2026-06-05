@@ -5,6 +5,8 @@ export type DashboardRefreshFailureStage =
   | 'auth'
   | 'http-client';
 
+// E2E-PAIRING: EXEMPT — generated job/gate script helper only; no route or server lifecycle path is added.
+
 export interface DashboardRefreshFailureBody {
   error: string;
   action: 'failed' | 'skipped';
@@ -32,23 +34,25 @@ export function dashboardRefreshScript(port: number): string {
   return `node --input-type=module -e "import fs from 'node:fs';
 const port = process.env.INSTAR_PORT || '${port}';
 const url = 'http://localhost:' + port + '/telegram/dashboard-refresh';
-let auth = '';
+let auth = String(process.env.INSTAR_AUTH_TOKEN || '').trim();
 try {
-  const config = JSON.parse(fs.readFileSync('.instar/config.json', 'utf8'));
-  auth = String(config.authToken || '').trim();
+  if (!auth) {
+    const config = JSON.parse(fs.readFileSync('.instar/config.json', 'utf8'));
+    auth = typeof config.authToken === 'string' ? config.authToken.trim() : '';
+  }
 } catch (err) {
   console.error('[dashboard-link-refresh] failed: could not read .instar/config.json. Next step: verify the agent state directory and config JSON are present. Detail: ' + (err?.message || err));
   process.exit(2);
 }
 if (!auth) {
-  console.error('[dashboard-link-refresh] failed: missing auth token in .instar/config.json. Next step: re-run setup or repair the agent config before refreshing the Dashboard topic.');
+  console.error('[dashboard-link-refresh] failed: missing auth token in environment or .instar/config.json. Next step: re-run setup or repair the agent config before refreshing the Dashboard topic.');
   process.exit(2);
 }
 try {
   const res = await fetch(url, { method: 'POST', headers: { Authorization: 'Bearer ' + auth } });
   const text = await res.text();
   let body = null;
-  try { body = text ? JSON.parse(text) : null; } catch {}
+  try { body = text ? JSON.parse(text) : null; } catch { body = null; }
   if (!res.ok) {
     const detail = body?.detail || body?.error || text || res.statusText;
     const nextStep = body?.nextStep || 'Check the local server health, tunnel status, and Telegram Dashboard topic configuration.';

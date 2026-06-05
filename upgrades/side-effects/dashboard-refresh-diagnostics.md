@@ -14,6 +14,7 @@ This change improves diagnostics for the built-in `dashboard-link-refresh` job a
 - `src/server/routes.ts` `/telegram/dashboard-refresh` - modified - maps missing Telegram/tunnel state and broadcast failures into explicit HTTP failure responses.
 - `src/messaging/TelegramAdapter.ts` `broadcastDashboardUrl` - modified - treats failure to edit/send the Dashboard message as a hard delivery failure; pinning remains best-effort.
 - `src/commands/init.ts` `dashboard-link-refresh` default job gate and command - modified - chooses diagnostic scripts installed or repaired for built-in legacy jobs.
+- `src/server/DashboardRefreshDiagnostics.ts` generated refresh command - modified - reads the injected auth token from the job environment first and only uses a string-valued config token as fallback.
 
 ## 1. Over-block
 
@@ -51,6 +52,8 @@ The route and script have blocking authority only over malformed or failed infra
 The visible external surface is improved job output and HTTP error JSON for `/telegram/dashboard-refresh`. The Telegram user-facing Dashboard message content is unchanged. The change affects existing agents when the built-in job definition is refreshed, because the built-in `execute.value` is treated as implementation-owned. It does not write persistent state beyond the existing dashboard message ID path when a new Telegram message is successfully sent.
 
 The gate and script no longer depend on a shell HTTP client being installed, which improves portability for Gemini/Codex-style environments where the shell path may not include curl.
+
+The refresh command now preserves compatibility with externalized auth tokens. Job sessions receive the resolved token in their environment, and the config-file fallback rejects non-string placeholder objects instead of sending them as bearer tokens.
 
 ## 7. Rollback cost
 
