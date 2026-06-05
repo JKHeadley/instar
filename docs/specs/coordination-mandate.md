@@ -149,3 +149,31 @@ Justin authors one mandate, then steps out:
 - G2.4 — the parity-gated cutover executor, gated by `execute-cutover` (per decision 1).
 - Agent-Awareness + Migration-Parity: CLAUDE.md template + `PostUpdateMigrator` entries so
   every agent knows the mandate surface and existing agents receive it.
+
+## 8. Threat model (STRIDE) — how each attack is defended
+
+A security-model change earns a real threat enumeration. Each row is an attack on the
+delegation, mapped to the design element that defends it. The deny-by-default posture is the
+spine: with NO valid mandate loaded, the gate denies every autonomous A2A action — so the
+system is inert (weakens nothing) until Justin authors one.
+
+| # | Threat (STRIDE) | Attack | Defense |
+|---|-----------------|--------|---------|
+| T1 | Spoofing | An agent forges a mandate to self-authorize | Authorship verification (property 2): a mandate is valid only with Justin's authorship proof; a forged one fails verification. The agent cannot mint authority for itself. |
+| T2 | Tampering | An agent widens an existing mandate's authorities/bounds | The authorship proof covers the whole mandate; any field edit breaks it → invalid → deny. |
+| T3 | Repudiation | An agent acts, then denies it / hides the action | Append-only audit (property 7): every gate decision (allow AND deny) is recorded with mandateId, agent, action, condition result, timestamp. See T8 for audit integrity. |
+| T4 | Replay (expired) | A lapsed mandate is reused after its window | Expiry check on every action (property 6). |
+| T5 | Replay (revoked) | A revoked mandate is reused | Revocation check on every action (property 5); revocation is immediate. |
+| T6 | Elevation / wrong party | An agent not named in the mandate uses it | The mandate names exact fingerprints; the gate checks the caller is a named party. Combined with the relay's sender authentication of `msg.from`. |
+| T7 | Spoofing (condition) | An agent fakes a precondition ("parity is green") to fire a conditioned authority | Conditions are evaluated from REAL state (property 4): `parity-zero-divergence` → `ParityMonitor.gate().cleared`, `integrity-gate-pass` → `runIntegrityGate().passed`. The agent's assertion is never the input — the objective check is. |
+| T8 | Tampering (audit) | An agent with local write access rewrites the audit to hide an action | Mitigation: the audit is append-only + each entry carries a hash chain (entry N includes the hash of N-1), so a deletion/edit breaks the chain and is detectable. The chain head is surfaced read-only for Justin; an external sink (out-of-process) is a follow-on hardening. **Open hardening item — flag for review.** |
+| T9 | Spoofing (peer) | A malicious peer (not Dawn) presents a valid-looking mandate over the relay | The mandate is bound to Dawn's specific fingerprint (T6) AND Threadline's per-peer trust + the #761 canonical-fingerprint thread-owner check apply. A different fingerprint is not a named party → deny. |
+| T10 | Condition-of-convenience | An agent waits for a transient parity-green blip, then fires the cutover | The parity condition requires a sustained WINDOW (ParityMonitor: ≥N consecutive clean passes over ≥minWindowMs of real traffic), not an instantaneous read — a transient blip cannot clear it. Plus decision #1 (cutover-depth): if Justin keeps the irreversible flip as his click, T10 is fully closed for the one-way door. |
+| T11 | DoS (revocation race) | An agent rushes an irreversible action between Justin revoking and the revoke taking effect | Revocation is checked synchronously at the gate immediately before the action; for the irreversible cutover specifically, decision #1's "human clicks the door" option removes the race entirely. A revoke also trips the parity/integrity re-check. |
+| T12 | Out-of-scope trust-root compromise | Justin's authorship key is stolen → attacker authors mandates | OUT OF SCOPE — the same trust root as today (an attacker with Justin's channel can already confirm actions). The mandate does NOT widen this; it inherits whatever protects Justin's key/channel. Stated explicitly so it is a conscious acceptance, not a gap. |
+
+**Residual / open items for the sign-off discussion:** (1) T8 audit integrity — hash-chain is
+the baseline; an external/out-of-process audit sink is the stronger form (worth deciding
+now vs. as a follow-on). (2) Decision #1 (cutover-depth) directly closes T10/T11 for the
+one-way door if the flip stays human — the lowest-regret default. These are exactly why this
+is a sign-off, not a solo build.
