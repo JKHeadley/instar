@@ -807,6 +807,8 @@ Instar contributors can run \`instar dev:preflight\` before opening PRs to run l
 
 Run \`instar dev:ci-failures <pr>\` to print a red PR's exact failing tests (file:line + assertion) via the GitHub check-run annotations API — handy when \`gh run view --log\` returns nothing.
 
+Run \`instar dev:claim-check <paths...> [--keywords <words...>]\` BEFORE starting a build: it lists open + recently-merged PRs touching those paths and specs matching the keywords, so parallel sessions divide layers explicitly instead of building the same fix twice (earned 2026-06-05: two same-incident collisions in one night). Advisory; \`--strict\` exits 1 on overlap.
+
 Run \`instar dev:profile-node [pid]\` to CPU-profile a hot RUNNING node process and print its hottest JS functions (function + file:line + self-time %). It uses SIGUSR1 + node's inspector + a CDP CPU profile, so it sees the JS frames macOS \`sample\` can't symbolicate — the way to pin which function a busy agent server is burning CPU in. No pid → it profiles the hottest node process.
 
 **Critical rule**: If this CLAUDE.md says a feature is "for standalone agents" or "when configured" or uses any qualifier — do NOT conclude you lack the feature. Check \`/capabilities\` instead. Documentation describes features in general; the API tells you what's actually running for YOU right now. When they conflict, the API wins.
