@@ -163,6 +163,14 @@ export interface MentorRunnerServices {
   /** Called once when a tick actually RAN (ran=true) — lets the host advance the
    *  min-interval clock and the per-day run counter. */
   onTickRan?: () => void;
+  /** Durable lastResult persistence (optional). `loadLastResult` hydrates the
+   *  runner once at construction; `saveLastResult` is invoked best-effort on
+   *  every lastResult write. Absent ⇒ in-memory only (the old behavior, where
+   *  every server restart wiped the only record of the loop's last outcome —
+   *  on a frequent-release day, restart cadence ≈ tick cadence, so the status
+   *  route read null essentially always). */
+  loadLastResult?: () => (MentorRunResult & { at: number }) | null;
+  saveLastResult?: (r: MentorRunResult & { at: number }) => void;
   now?: () => number;
   // --- Autonomous-fix loop ("just be Echo") services. Only consulted when
   //     mentor.autonomousFix.enabled is true; absent ⇒ the guardian path is
@@ -191,10 +199,25 @@ export class MentorOnboardingRunner {
   constructor(
     private readonly services: MentorRunnerServices,
     private readonly getConfig: () => MentorConfig,
-  ) {}
+  ) {
+    // Hydrate the last outcome from durable state so a server restart doesn't
+    // erase the loop's only observability record. Best-effort: a corrupt or
+    // missing file is just null (in-memory start, the old behavior).
+    try {
+      this.lastResult = services.loadLastResult?.() ?? null;
+    } catch { /* @silent-fallback-ok — hydration is best-effort; null = old behavior */ }
+  }
 
   private inFlight = false;
   private lastResult: (MentorRunResult & { at: number }) | null = null;
+
+  /** Single write funnel for lastResult: assigns + persists best-effort. */
+  private setLastResult(r: MentorRunResult & { at: number }): void {
+    this.lastResult = r;
+    try {
+      this.services.saveLastResult?.(r);
+    } catch { /* @silent-fallback-ok — persistence is best-effort; in-memory value is already set */ }
+  }
 
   status(): {
     enabled: boolean;
@@ -227,18 +250,25 @@ export class MentorOnboardingRunner {
     // the haiku observe-pipeline). So `mode:'off'` does NOT disable it.
     const autonomous = cfg.autonomousFix?.enabled === true;
     if (!cfg.enabled || (cfg.mode === 'off' && !autonomous)) {
-      this.lastResult = { ran: false, reason: 'disabled', at: (this.services.now ?? Date.now)() };
+      this.setLastResult({ ran: false, reason: 'disabled', at: (this.services.now ?? Date.now)() });
       return { accepted: false, reason: 'disabled' };
     }
     if (this.inFlight) return { accepted: false, reason: 'in-flight' };
     this.inFlight = true;
+    // One line per accepted tick — without it the loop is invisible in
+    // server.log (success was fully silent; only failures warned), which made
+    // "is the mentor running at all?" unanswerable from the logs.
+    // eslint-disable-next-line no-console
+    console.log(`[mentor] tick accepted (mode=${cfg.mode}, framework=${cfg.menteeFramework}${autonomous ? ', autonomous-fix' : ''})`);
     void this.tick()
       .then((r) => {
-        this.lastResult = { ...r, at: (this.services.now ?? Date.now)() };
+        this.setLastResult({ ...r, at: (this.services.now ?? Date.now)() });
+        // eslint-disable-next-line no-console
+        console.log(`[mentor] tick result: ran=${r.ran}, reason=${r.reason ?? 'ok'}`);
       })
       .catch((err) => {
         const message = err instanceof Error ? err.message : String(err);
-        this.lastResult = {
+        this.setLastResult({
           ran: false,
           reason: 'stage-a-failed',
           // Surface the real failure so GET /mentor/status.lastResult.error is
@@ -246,7 +276,7 @@ export class MentorOnboardingRunner {
           // only in a console.warn that may never reach the readable logs.
           error: message,
           at: (this.services.now ?? Date.now)(),
-        } as MentorRunResult & { at: number };
+        } as MentorRunResult & { at: number });
         // eslint-disable-next-line no-console
         console.warn('[mentor] tick failed:', message);
       })
