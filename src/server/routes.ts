@@ -24,6 +24,7 @@ import type { InstarConfig, JobPriority } from '../core/types.js';
 import { IntelligenceRouter } from '../core/IntelligenceRouter.js';
 import { knownComponents } from '../core/componentCategories.js';
 import { SecretStore } from '../core/SecretStore.js';
+import { writeConfigAtomic, readSelfKnowledgeFlags } from '../core/BootSelfKnowledge.js';
 import { rateLimiter, signViewPath } from './middleware.js';
 import type { WriteOperation, WriteToken } from '../core/StateWriteAuthority.js';
 import { writeLifelineRestartSignal } from '../core/version-skew.js';
@@ -12392,6 +12393,139 @@ export function createRoutes(ctx: RouteContext): Router {
       res.json(result);
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to read preferences' });
+    }
+  });
+
+  // ── Session Boot Self-Knowledge (spec: session-boot-self-knowledge.md) ──
+  //
+  // The "what I already have" block the session-start hook injects at boot:
+  // vault secret NAMES (never values; the same secretKeyPaths derivation as
+  // /secrets/sync-status, presented depth-capped) + self-asserted operational
+  // facts. Deterministic config/capability discovery — SIGNAL-ONLY, gates
+  // nothing. NOTE: independent of the SelfKnowledgeTree (search/validate/
+  // health above) — both are self-knowledge surfaces; this one is the
+  // deterministic boot inventory.
+  //
+  // Availability rides the developmentAgent gate (`enabled ?? !!developmentAgent`
+  // — dark fleet / live dev-agent; the live-fleet flip is a tracked follow-up,
+  // spec §Availability). Flags + facts are read FRESH from disk per request
+  // (BootSelfKnowledge re-reads config.json) so enable/disable + fact edits
+  // take effect without a server restart.
+  //
+  // A decrypt failure is a 200 with `vaultState:'decrypt-failed'` and the
+  // hands-off warning block — NEVER a 500 (the hook's `curl -sf` swallows 5xx,
+  // which would silently hide the exact warning the honesty rule exists to
+  // deliver).
+  router.get('/self-knowledge/session-context', async (req, res) => {
+    try {
+      const configPath = path.join(ctx.config.projectDir, '.instar', 'config.json');
+      const { BootSelfKnowledge, DEFAULT_MAX_BYTES } = await import('../core/BootSelfKnowledge.js');
+      const freshFlags = readSelfKnowledgeFlags(configPath);
+      const enabled = freshFlags.enabled ?? Boolean(ctx.config.developmentAgent);
+      if (!enabled) {
+        res.status(503).json({ error: 'self-knowledge session-context disabled' });
+        return;
+      }
+      const maxBytes =
+        typeof freshFlags.maxInjectedBytes === 'number' && freshFlags.maxInjectedBytes > 0
+          ? freshFlags.maxInjectedBytes
+          : DEFAULT_MAX_BYTES;
+      const full = String(req.query.full ?? '') === '1';
+      const bsk = new BootSelfKnowledge({ stateDir: ctx.config.stateDir, configPath });
+      const result = bsk.sessionContext(maxBytes, { full });
+      console.log(
+        `[boot-self-knowledge] served names=${result.names.length} facts=${result.factCount} vaultState=${result.vaultState} bytes=${Buffer.byteLength(result.block, 'utf8')}`,
+      );
+      if (result.vaultState === 'decrypt-failed') {
+        console.warn('[boot-self-knowledge] vault DECRYPT-FAILED — served hands-off warning block (not an empty vault)');
+      }
+      res.json(result);
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to build boot self-knowledge' });
+    }
+  });
+
+  // Operational-facts writer (No-Manual-Work: nobody hand-edits config.json).
+  // POST appends a fact (stamped {fact, updatedAt, machine}); DELETE removes by
+  // {match} (preferred; 409 when ambiguous) or {index, expect} (409 on
+  // mismatch — closes the read-then-delete index race). Both write through
+  // writeConfigAtomic() (re-read → mutate → temp+rename; last-writer-wins
+  // semantics vs the other, pre-existing non-atomic config writers).
+  router.post('/self-knowledge/facts', async (req, res) => {
+    try {
+      const { MAX_FACT_CHARS, MAX_FACTS_STORED } = await import('../core/BootSelfKnowledge.js');
+      const fact = typeof req.body?.fact === 'string' ? req.body.fact.trim() : '';
+      if (!fact) {
+        res.status(400).json({ error: 'fact must be a non-empty string' });
+        return;
+      }
+      if (fact.length > MAX_FACT_CHARS) {
+        res.status(400).json({ error: `fact exceeds ${MAX_FACT_CHARS} chars` });
+        return;
+      }
+      const configPath = path.join(ctx.config.projectDir, '.instar', 'config.json');
+      const outcome = writeConfigAtomic(configPath, (cfg) => {
+        const sk = (cfg.selfKnowledge ??= {}) as { operationalFacts?: unknown[] };
+        const facts = (sk.operationalFacts ??= []);
+        const existing = facts.map((f) => (typeof f === 'string' ? f : (f as { fact?: string })?.fact));
+        if (existing.includes(fact)) return { error: { status: 409, message: 'duplicate fact' } };
+        if (facts.length >= MAX_FACTS_STORED) {
+          return { error: { status: 409, message: `fact cap reached (${MAX_FACTS_STORED}) — remove one first` } };
+        }
+        facts.push({ fact, updatedAt: new Date().toISOString(), machine: os.hostname() });
+        return { value: facts };
+      });
+      if (outcome.error) {
+        res.status(outcome.error.status).json({ error: outcome.error.message });
+        return;
+      }
+      console.log(`[boot-self-knowledge] fact-added (${fact.slice(0, 60)}${fact.length > 60 ? '…' : ''})`);
+      res.json({ success: true, facts: outcome.value });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to add fact' });
+    }
+  });
+
+  router.delete('/self-knowledge/facts', (req, res) => {
+    try {
+      const match = typeof req.body?.match === 'string' ? req.body.match : null;
+      const index = typeof req.body?.index === 'number' ? req.body.index : null;
+      const expect = typeof req.body?.expect === 'string' ? req.body.expect : null;
+      if (!match && index === null) {
+        res.status(400).json({ error: 'provide {match} or {index, expect}' });
+        return;
+      }
+      const configPath = path.join(ctx.config.projectDir, '.instar', 'config.json');
+      const outcome = writeConfigAtomic(configPath, (cfg) => {
+        const sk = cfg.selfKnowledge as { operationalFacts?: unknown[] } | undefined;
+        const facts = sk?.operationalFacts ?? [];
+        const text = (f: unknown) => (typeof f === 'string' ? f : ((f as { fact?: string })?.fact ?? ''));
+        let removeAt = -1;
+        if (match) {
+          const hits = facts.map((f, i) => [text(f), i] as const).filter(([t]) => t.includes(match));
+          if (hits.length === 0) return { error: { status: 404, message: 'no fact matches' } };
+          if (hits.length > 1) return { error: { status: 409, message: `ambiguous match (${hits.length} facts) — narrow it` } };
+          removeAt = hits[0][1];
+        } else {
+          if (index === null || index < 0 || index >= facts.length) {
+            return { error: { status: 404, message: 'index out of range' } };
+          }
+          if (!expect || text(facts[index]) !== expect) {
+            return { error: { status: 409, message: 'expect does not match the fact at that index (it may have moved) — re-read and retry' } };
+          }
+          removeAt = index;
+        }
+        const [removed] = facts.splice(removeAt, 1);
+        return { value: { removed: text(removed), facts } };
+      });
+      if (outcome.error) {
+        res.status(outcome.error.status).json({ error: outcome.error.message });
+        return;
+      }
+      console.log(`[boot-self-knowledge] fact-removed (${String(outcome.value?.removed ?? '').slice(0, 60)})`);
+      res.json({ success: true, ...outcome.value });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to remove fact' });
     }
   });
 

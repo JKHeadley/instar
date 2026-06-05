@@ -2787,6 +2787,25 @@ Rule: I do not state that work landed inside another agent's state unless I have
       result.upgraded.push('CLAUDE.md: added Cross-Agent Communication Discipline (anti-confabulation) section');
     }
 
+    // Session Boot Self-Knowledge (spec: session-boot-self-knowledge.md).
+    // Existing agents need the rule ("a secret named in your boot block is in
+    // the vault — retrieve, don't re-ask") + the facts writer + the retrieval
+    // script. Content-sniffed on the same heading the template emits.
+    if (!content.includes('**Session Boot Self-Knowledge**')) {
+      const bootSelfKnowledgeSection = `
+**Session Boot Self-Knowledge** — Your session-start context includes an auto-injected \`<session-self-knowledge>\` block: the NAMES of secrets in your encrypted vault (never values) + self-asserted operational facts about this agent/machine. (Rides the developmentAgent gate until the fleet flip.)
+- **The rule**: a secret named in your boot block is ALREADY in your vault — retrieve it with \`node .instar/scripts/secret-get.mjs <name>\` (pipe stdout straight into the consuming command, e.g. \`... github_token | gh auth login --with-token\` — NEVER echo the value into chat/transcripts) instead of asking the user to re-send it. Only re-ask if you have evidence it is invalid (expired/revoked/decrypt-failed).
+- Discover vault key names anytime: \`node .instar/scripts/secret-get.mjs --names\` (names+lengths to stderr) or \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/self-knowledge/session-context?full=1"\`.
+- **Record a durable operational fact** (a channel path, a logged-in seat, a machine-specific truth worth knowing at every boot): \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/self-knowledge/facts -H 'Content-Type: application/json' -d '{"fact":"..."}'\` (auto-stamped with date+machine). Remove: \`curl -X DELETE -H "Authorization: Bearer $AUTH" http://localhost:${port}/self-knowledge/facts -H 'Content-Type: application/json' -d '{"match":"substring"}'\`. Facts are per-machine and appear at the next session start.
+- **When to use** (PROACTIVE — this is the trigger): the moment you discover an operational fact future sessions will need (where a tool lives, which machine owns a seat, a non-obvious path), record it as a fact — never leave it to session memory.
+- If the boot block reports the vault as DECRYPT-FAILED: do NOT repair, rotate, or delete anything — a decrypt failure is usually recoverable; destructive action loses secrets permanently. Surface it to the operator and stop.
+- Off-switch: \`selfKnowledge.sessionContext.enabled: false\` in \`.instar/config.json\` (applies at the next session start).
+`;
+      content += '\n' + bootSelfKnowledgeSection;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Session Boot Self-Knowledge section');
+    }
+
     // Apprenticeship Program (Step 1, APPRENTICESHIP-STEP1-PROGRAM-SCAFFOLD-SPEC.md).
     // Existing agents need to know the program registry + lifecycle gates exist —
     // an agent that doesn't know about a capability effectively doesn't have it.
@@ -4599,6 +4618,25 @@ Create worktrees for collaborator repos with \`instar worktree create <branch>\`
       result.errors.push(`secret-drop-retrieve.mjs: ${err instanceof Error ? err.message : String(err)}`);
     }
 
+    // Vault retrieval helper — always overwrite (sibling of the above; spec
+    // session-boot-self-knowledge §Retrieval affordance). The boot block names
+    // vault secrets; this is the hardened read path it points at (value →
+    // stdout for piping, names/diagnostics → stderr, never echoed). Without
+    // it, "a secret named here is in your vault" is aspirational.
+    try {
+      const secretGetContent = this.loadRelayTemplate('secret-get.mjs');
+      if (secretGetContent) {
+        fs.writeFileSync(
+          path.join(instarScriptsDir, 'secret-get.mjs'),
+          secretGetContent,
+          { mode: 0o755 },
+        );
+        result.upgraded.push('scripts/secret-get.mjs (hardened vault retrieval)');
+      }
+    } catch (err) {
+      result.errors.push(`secret-get.mjs: ${err instanceof Error ? err.message : String(err)}`);
+    }
+
     // Session-clock injector — always overwrite. New, non-customizable shared
     // routine (docs/specs/ROBUST-SESSION-TIME-AWARENESS-SPEC.md Component 2):
     // renders the SESSION CLOCK line (render mode for the autonomous-stop-hook,
@@ -6076,6 +6114,37 @@ except Exception:
   fi
 fi
 
+# SESSION BOOT SELF-KNOWLEDGE injection (spec: session-boot-self-knowledge.md).
+# Fetches /self-knowledge/session-context and injects the deterministic "what I
+# already have" block: vault secret NAMES (never values) + self-asserted
+# operational facts — so the agent never re-asks the user for a secret it
+# already holds and never claims ignorance of a channel it owns. Placed AFTER
+# the org-intent + preferences blocks (authoritative contract first — this is
+# background signal; the server wraps it in a <session-self-knowledge
+# src='boot'> envelope). Fail-open: 503 (dark / disabled) / 404 (version skew:
+# old server) / unreachable / empty -> silent skip; curl -sf is what makes a
+# non-2xx emit nothing, and the Bearer token travels ONLY in the header.
+if [ -n "\$PORT" ] && [ -n "\$TOKEN" ]; then
+  BOOT_SK_RESPONSE=\$(curl -sf --max-time 4 --connect-timeout 1 -H "Authorization: Bearer \$TOKEN" \\
+    "http://localhost:\${PORT}/self-knowledge/session-context" 2>/dev/null)
+  if [ -n "\$BOOT_SK_RESPONSE" ]; then
+    BOOT_SK_BLOCK=\$(echo "\$BOOT_SK_RESPONSE" | python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    if d.get('present') and d.get('block'):
+        print(d['block'])
+except Exception:
+    pass
+" 2>/dev/null)
+    if [ -n "\$BOOT_SK_BLOCK" ]; then
+      echo ""
+      echo "\$BOOT_SK_BLOCK"
+      echo ""
+    fi
+  fi
+fi
+
 # BEGIN integrated-being-v2
 # INTEGRATED-BEING V2 — session-write binding (see docs/specs/integrated-being-ledger-v2.md §3)
 # Generates a session UUID, registers with /shared-state/session-bind, writes the
@@ -7116,6 +7185,41 @@ except Exception:
           echo "--- END WORKING MEMORY ---"
           echo ""
         fi
+      fi
+    fi
+  fi
+fi
+
+# SESSION BOOT SELF-KNOWLEDGE re-injection (spec: session-boot-self-knowledge.md).
+# A days-long session compacts; the boot block injected at session start only
+# survives if the compaction summary happens to carry it — willpower, not
+# structure. Re-fetching here makes the block durable across compaction AND
+# fresher than the original: a secret stored mid-session appears in the
+# post-compaction context. Same fail-open contract as the boot fetch: dark /
+# unreachable / version-skew -> silent skip, header-only Bearer.
+if [ -f "$INSTAR_DIR/config.json" ]; then
+  BOOT_SK_PORT=\${PORT:-\$(grep -oE '"port"[[:space:]]*:[[:space:]]*[0-9]+' "$INSTAR_DIR/config.json" | head -1 | grep -oE '[0-9]+' | head -1)}
+  BOOT_SK_TOKEN="\${INSTAR_AUTH_TOKEN:-}"
+  if [ -z "\$BOOT_SK_TOKEN" ]; then
+    BOOT_SK_TOKEN=\$(python3 -c "import json; v=json.load(open('$INSTAR_DIR/config.json')).get('authToken',''); print(v if isinstance(v, str) else '')" 2>/dev/null)
+  fi
+  if [ -n "\$BOOT_SK_PORT" ] && [ -n "\$BOOT_SK_TOKEN" ]; then
+    BOOT_SK_RESPONSE=\$(curl -sf --max-time 4 --connect-timeout 1 -H "Authorization: Bearer \$BOOT_SK_TOKEN" \
+      "http://localhost:\${BOOT_SK_PORT}/self-knowledge/session-context" 2>/dev/null)
+    if [ -n "\$BOOT_SK_RESPONSE" ]; then
+      BOOT_SK_BLOCK=\$(echo "\$BOOT_SK_RESPONSE" | python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    if d.get('present') and d.get('block'):
+        print(d['block'])
+except Exception:
+    pass
+" 2>/dev/null)
+      if [ -n "\$BOOT_SK_BLOCK" ]; then
+        echo ""
+        echo "\$BOOT_SK_BLOCK"
+        echo ""
       fi
     fi
   fi
