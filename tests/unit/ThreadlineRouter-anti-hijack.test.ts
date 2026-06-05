@@ -136,4 +136,48 @@ describe('ThreadlineRouter — anti-hijack guard', () => {
     const reason = spawnManager.evaluate.mock.calls[0][0].reason as string;
     expect(reason).toMatch(/^Resume thread/);
   });
+
+  // ── Regression: composite-address canonicalization (relay-send fix) ──
+  // The relay path on a plaintext-tofu inbound has trust.kind !== 'verified',
+  // so the guard falls through to the identity match. A known peer's reply over
+  // the relay carries its FULL fingerprint as senderFingerprint and frequently
+  // an EMPTY senderName. The thread owner must therefore be stored as that full
+  // fingerprint for the reply to resume — which is exactly what the /threadline/
+  // relay-send `captureOrigin` fix now does (store resolvedId, not the raw
+  // "name:fpPrefix" target the caller typed).
+
+  it('resumes when the stored owner is the peer full fingerprint and the reply presents that fingerprint with EMPTY senderName (the Dawn case, post-fix storage)', async () => {
+    const threadId = 'fp-owned-thread';
+    const peerFp = '8c7928aa9f04fbda947172a2f9b2d81a';
+    threadResumeMap._set(threadId, ownedEntry(peerFp));
+
+    const result = await router.handleInboundMessage(
+      envelopeFrom(peerFp, threadId),
+      relayCtx({ senderName: '', senderFingerprint: peerFp }),
+    );
+
+    expect(result.threadId).toBe(threadId);
+    const reason = spawnManager.evaluate.mock.calls[0][0].reason as string;
+    expect(reason).toMatch(/^Resume thread/);
+  });
+
+  it('isolates when the stored owner is a composite "name:fpPrefix" and the reply presents the bare full fingerprint (the bug the relay-send canonicalization prevents)', async () => {
+    const threadId = 'composite-owned-thread';
+    const peerFp = '8c7928aa9f04fbda947172a2f9b2d81a';
+    // OLD buggy storage: the composite address was stored un-resolved, so the
+    // guard cannot match it against the reply's bare full fingerprint.
+    threadResumeMap._set(threadId, ownedEntry('Dawn-Workstation:8c7928aa'));
+
+    const result = await router.handleInboundMessage(
+      envelopeFrom(peerFp, threadId),
+      relayCtx({ senderName: '', senderFingerprint: peerFp }),
+    );
+
+    // Isolation under the OLD storage proves WHY the send path must store the
+    // resolved full fingerprint — with the fix the owner is `peerFp` and the
+    // previous test resumes instead of cold-spawning.
+    expect(result.threadId).not.toBe(threadId);
+    const reason = spawnManager.evaluate.mock.calls[0][0].reason as string;
+    expect(reason).toMatch(/^New thread/);
+  });
 });
