@@ -106,6 +106,35 @@ describe('Cutover-readiness routes (spec §7 G2.4)', () => {
     expect(monitor.passes.length).toBe(0);
   });
 
+
+  it('a CONCURRENT trigger is 409 \'already in flight\' over the full pipeline (one live fetch at a time)', async () => {
+    // The live 2026-06-05 incident shape: a slow degraded-source pass holds the
+    // handler past the client's patience; a second trigger must refuse instantly
+    // instead of piling another full fetch onto the source.
+    let release!: (v: ParityResult) => void;
+    parityCheck = () => new Promise<ParityResult>((res) => { release = res; });
+
+    const first = fetch(`${server.url}/cutover-readiness/parity-pass`, { method: 'POST' });
+    // Give the first request time to reach the handler and take the guard.
+    await new Promise((r) => setTimeout(r, 150));
+
+    const second = await fetch(`${server.url}/cutover-readiness/parity-pass`, { method: 'POST' });
+    expect(second.status).toBe(409);
+    const refusal = await second.json();
+    expect(refusal.error).toContain('already in flight');
+
+    // The guard is shared with the import dry-run (same live source).
+    const dryRun = await fetch(`${server.url}/cutover-readiness/import-dryrun`, { method: 'POST' });
+    expect(dryRun.status).toBe(409);
+    expect((await dryRun.json()).error).toContain('parity-pass');
+
+    release(CLEAN);
+    const firstRes = await first;
+    expect(firstRes.status).toBe(200);
+    expect((await firstRes.json()).recorded).toBe(true);
+    expect(monitor.passes.length).toBe(1); // exactly one pass recorded
+  });
+
   it('there is NO fire-cutover route (decision 1A is structural)', async () => {
     for (const p of ['/cutover-readiness/execute', '/cutover-readiness/fire', '/cutover-readiness/cutover']) {
       const res = await fetch(`${server.url}${p}`, { method: 'POST' });

@@ -1,0 +1,38 @@
+<!-- bump: patch -->
+
+## What Changed
+
+The migration readiness checker's two "go check the live source" triggers (the
+parity pass and the import rehearsal) now enforce ONE live fetch at a time. A
+second trigger while one is running gets an immediate, clearly-worded refusal
+instead of silently starting another full download next to the first. And when
+an operator widens the fetch budgets for a slow source, the HTTP response
+window now widens with them instead of cutting out at a fixed 6 minutes.
+
+## Evidence
+
+Found live (2026-06-05): while feeding the migration parity window against a
+degraded source, a sequential caller turned into FOUR concurrent full fetches —
+each trigger's response died at the fixed route budget while its work kept
+running, so the caller retried, and every retry stacked another fetch onto the
+struggling source. Both halves are now under test: 10 new unit tests (guard
+refuses concurrent triggers, releases after success AND failure, is shared
+across both trigger types; route budgets derive from config, never below the
+old floor, bogus values fall back), plus a full-pipeline integration test
+proving the second concurrent POST gets a 409 and exactly one pass records.
+
+## What to Tell Your User
+
+Nothing user-visible changes by default. If your agent drives a data-migration
+readiness check against a slow source, its checks are now polite under
+pressure: one live check at a time, and patient response windows that match the
+budgets you configured.
+
+## Summary of New Capabilities
+
+- `POST /cutover-readiness/parity-pass` and `POST /cutover-readiness/import-dryrun`
+  refuse a concurrent trigger with 409 `live source fetch already in flight
+  (<op> started <time>)` — one live source fetch at a time, shared across both.
+- The two routes' response budgets track `feedbackMigration.paritySource.totalTimeoutMs`
+  (+60s slack) when configured; the previous 360s constant remains the floor.
+- Maturity: stable (behavioral hardening of existing routes; no new surface).

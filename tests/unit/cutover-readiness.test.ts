@@ -253,4 +253,90 @@ describe('CutoverReadiness (spec §7 G2.4)', () => {
     fs.writeFileSync(path.join(dir, 'import-dryrun.json'), '{"generatedAt": "2026-');
     expect(r.importDryRunStatus()).toMatchObject({ ran: false, passed: false });
   });
+  // ── single-flight guard over the live source fetch ──
+
+  function deferred<T>() {
+    let resolve!: (v: T) => void;
+    let reject!: (e: unknown) => void;
+    const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej; });
+    return { promise, resolve, reject };
+  }
+
+  function buildBoth(runParityCheck: () => Promise<ParityResult>, runImportDryRun: () => Promise<typeof PASSED_RUN>) {
+    return new CutoverReadiness({
+      parityMonitor: monitor,
+      integrityReportPath: path.join(dir, 'integrity-report.json'),
+      runParityCheck,
+      importDryRunReportPath: path.join(dir, 'import-dryrun.json'),
+      runImportDryRun,
+      now: () => nowMs,
+    });
+  }
+
+  it('a concurrent parity pass is REFUSED while one is in flight, and records nothing', async () => {
+    // The live 2026-06-05 incident: the route 408s while the handler keeps
+    // running, so a retrying feeder piled four CONCURRENT full fetches onto a
+    // degraded source. The guard makes the second trigger an immediate refusal.
+    const gate = deferred<ParityResult>();
+    const r = build(() => gate.promise);
+
+    const first = r.runParityPass();
+    const second = await r.runParityPass();
+    expect(second.ok).toBe(false);
+    expect((second as { ok: false; reason: string }).reason).toContain('already in flight');
+    expect((second as { ok: false; reason: string }).reason).toContain('parity-pass');
+    expect(monitor.passes.length).toBe(0); // the refusal recorded nothing
+
+    gate.resolve(CLEAN);
+    const firstOutcome = await first;
+    expect(firstOutcome.ok).toBe(true);
+    expect(monitor.passes.length).toBe(1); // only the real pass recorded
+  });
+
+  it('the guard RELEASES after a pass completes — the next trigger runs', async () => {
+    const r = build(async () => CLEAN);
+    expect((await r.runParityPass()).ok).toBe(true);
+    expect((await r.runParityPass()).ok).toBe(true);
+    expect(monitor.passes.length).toBe(2);
+  });
+
+  it('the guard RELEASES after a FAILED check too (no wedged refusals)', async () => {
+    let calls = 0;
+    const r = build(async () => { calls++; if (calls === 1) throw new Error('page 3 timed out'); return CLEAN; });
+    const failed = await r.runParityPass();
+    expect(failed.ok).toBe(false);
+    expect((failed as { ok: false; reason: string }).reason).toContain('page 3 timed out');
+    const next = await r.runParityPass();
+    expect(next.ok).toBe(true); // not 'already in flight'
+  });
+
+  it('the guard is SHARED across ops: a dry-run is refused while a parity pass is in flight (and names the holder)', async () => {
+    const gate = deferred<ParityResult>();
+    const r = buildBoth(() => gate.promise, async () => PASSED_RUN);
+
+    const parity = r.runParityPass();
+    const dryRun = await r.runImportDryRunPass();
+    expect(dryRun.ok).toBe(false);
+    expect((dryRun as { ok: false; reason: string }).reason).toContain('parity-pass');
+    expect(fs.existsSync(path.join(dir, 'import-dryrun.json'))).toBe(false); // refusal persisted nothing
+
+    gate.resolve(CLEAN);
+    await parity;
+    expect((await r.runImportDryRunPass()).ok).toBe(true); // released → dry-run runs
+  });
+
+  it('and symmetrically: a parity pass is refused while a dry-run is in flight', async () => {
+    const gate = deferred<typeof PASSED_RUN>();
+    const r = buildBoth(async () => CLEAN, () => gate.promise);
+
+    const dryRun = r.runImportDryRunPass();
+    const parity = await r.runParityPass();
+    expect(parity.ok).toBe(false);
+    expect((parity as { ok: false; reason: string }).reason).toContain('import-dry-run');
+    expect(monitor.passes.length).toBe(0);
+
+    gate.resolve(PASSED_RUN);
+    await dryRun;
+    expect((await r.runParityPass()).ok).toBe(true);
+  });
 });

@@ -126,6 +126,17 @@ interface PersistedDryRunEnvelope {
 export class CutoverReadiness {
   private readonly d: CutoverReadinessDeps;
   private readonly maxStaleMs: number;
+  /**
+   * Single-flight guard over the LIVE SOURCE FETCH — shared by the parity pass
+   * and the import dry-run because both page the full live source. Without it,
+   * repeated triggers pile CONCURRENT full fetches onto the source: the route's
+   * response window can elapse while the handler keeps running (the always-logged
+   * outcome contract), so a caller that retries on a 408 spawns a new fetch next
+   * to the live one (observed live 2026-06-05 12:16Z — four concurrent passes
+   * against an already-degraded Portal). One live fetch at a time; a concurrent
+   * trigger is refused immediately (409 at the route) and records nothing.
+   */
+  private liveFetchInFlight: { op: 'parity-pass' | 'import-dry-run'; startedAt: string } | null = null;
 
   constructor(deps: CutoverReadinessDeps) {
     if (deps.importDryRunReportPath && path.resolve(deps.importDryRunReportPath) === path.resolve(deps.integrityReportPath)) {
@@ -196,11 +207,17 @@ export class CutoverReadiness {
     if (!this.d.runParityCheck) {
       return { ok: false, reason: 'no parity source configured (feedbackMigration.paritySource) — cannot run a live check' };
     }
+    if (this.liveFetchInFlight) {
+      return { ok: false, reason: `live source fetch already in flight (${this.liveFetchInFlight.op} started ${this.liveFetchInFlight.startedAt}) — one at a time; retry after it completes` };
+    }
+    this.liveFetchInFlight = { op: 'parity-pass', startedAt: new Date(this.nowMs()).toISOString() };
     let result: ParityResult;
     try {
       result = await this.d.runParityCheck();
     } catch (err) {
       return { ok: false, reason: `parity check failed: ${err instanceof Error ? err.message : String(err)}` };
+    } finally {
+      this.liveFetchInFlight = null;
     }
     const at = new Date(this.nowMs()).toISOString();
     this.d.parityMonitor.recordResult(result, at);
@@ -222,11 +239,17 @@ export class CutoverReadiness {
     if (!this.d.runImportDryRun || !this.d.importDryRunReportPath) {
       return { ok: false, reason: 'no import source configured (feedbackMigration.paritySource) — cannot run an import dry-run' };
     }
+    if (this.liveFetchInFlight) {
+      return { ok: false, reason: `live source fetch already in flight (${this.liveFetchInFlight.op} started ${this.liveFetchInFlight.startedAt}) — one at a time; retry after it completes` };
+    }
+    this.liveFetchInFlight = { op: 'import-dry-run', startedAt: new Date(this.nowMs()).toISOString() };
     let result: ImportRunResult;
     try {
       result = await this.d.runImportDryRun();
     } catch (err) {
       return { ok: false, reason: `import dry-run failed: ${err instanceof Error ? err.message : String(err)}` };
+    } finally {
+      this.liveFetchInFlight = null;
     }
     const generatedAt = new Date(this.nowMs()).toISOString();
     const envelope: PersistedDryRunEnvelope = { generatedAt, mode: 'dry-run', result };
