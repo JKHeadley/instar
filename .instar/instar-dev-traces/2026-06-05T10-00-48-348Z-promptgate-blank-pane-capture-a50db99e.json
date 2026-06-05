@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "sessionId": "45610377-b671-4264-a9fd-192d16f767c6",
+  "timestamp": "2026-06-05T10:00:48.348Z",
+  "artifactPath": "upgrades/side-effects/promptgate-blank-pane-capture.md",
+  "artifactSha256": "3504cb25d9aef24673ec9abdb7ac42e42405885b37edfb0eddfc063066ffd591",
+  "coveredFiles": [
+    "docs/eli16/PROMPTGATE-BLANK-PANE-CAPTURE-ELI16.md",
+    "src/monitoring/PromptGate.ts",
+    "tests/unit/PromptGate.test.ts",
+    "upgrades/next/promptgate-blank-pane-capture.md",
+    "upgrades/side-effects/promptgate-blank-pane-capture.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow PromptGate capture-window normalization for a verified Gemini modal miss; keeps existing safe-default/safe-reject handler semantics and changes no routes, persistence, schema, or session lifecycle.",
+  "eli16Path": "docs/eli16/PROMPTGATE-BLANK-PANE-CAPTURE-ELI16.md",
+  "sideEffectsPath": "upgrades/side-effects/promptgate-blank-pane-capture.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
