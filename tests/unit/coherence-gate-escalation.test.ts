@@ -17,6 +17,13 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import {
+  CapabilityRegistryGenerator,
+  CoherenceGate as ExportedCoherenceGate,
+  ResearchRateLimiter,
+  validateCommonBlockers,
+} from '../../src/index.js';
+import type { CapabilityRegistry, CommonBlocker } from '../../src/index.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -360,27 +367,30 @@ describe('CoherenceGate — escalation context wiring', () => {
   // ── Export verification ────────────────────────────────────────────────
 
   describe('exports', () => {
-    it('exports CapabilityRegistryGenerator from index', async () => {
-      const instar = await import('../../src/index.js');
-      expect(instar.CapabilityRegistryGenerator).toBeDefined();
+    it('exports CapabilityRegistryGenerator from index', () => {
+      expect(CapabilityRegistryGenerator).toBeDefined();
     });
 
-    it('exports validateCommonBlockers from index', async () => {
-      const instar = await import('../../src/index.js');
-      expect(instar.validateCommonBlockers).toBeDefined();
+    it('exports validateCommonBlockers from index', () => {
+      expect(validateCommonBlockers).toBeDefined();
     });
 
-    it('exports CommonBlocker type from index', async () => {
-      // Type-only test: verifying the type is importable
-      const instar = await import('../../src/index.js');
-      // CommonBlocker is a type-only export, verified at compile time
-      // Just verify the module loads successfully
-      expect(instar).toBeDefined();
+    it('exports CommonBlocker type from index', () => {
+      const blocker: CommonBlocker = {
+        description: 'Known operator step',
+        resolution: 'Use the existing internal tool',
+        status: 'confirmed',
+      };
+      expect(blocker.status).toBe('confirmed');
     });
 
-    it('exports CapabilityRegistry type from index', async () => {
-      const instar = await import('../../src/index.js');
-      expect(instar).toBeDefined();
+    it('exports CapabilityRegistry type from index', () => {
+      const registry: CapabilityRegistry = {
+        authentication: {},
+        tools: {},
+        surfaces: {},
+      };
+      expect(registry.tools).toEqual({});
     });
   });
 
@@ -560,11 +570,10 @@ describe('CoherenceGate — escalation context wiring', () => {
       expect(result._researchTriggered).toBeUndefined();
     });
 
-    it('exports ResearchTriggerContext from index', async () => {
-      const instar = await import('../../src/index.js');
+    it('exports ResearchTriggerContext from index', () => {
       // ResearchTriggerContext is a type-only export — just verify the module loads
-      expect(instar.CoherenceGate).toBeDefined();
-      expect(instar.ResearchRateLimiter).toBeDefined();
+      expect(ExportedCoherenceGate).toBeDefined();
+      expect(ResearchRateLimiter).toBeDefined();
     });
 
     it('CoherenceGate source includes ResearchRateLimiter integration', () => {

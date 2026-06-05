@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "hermetic-unit-suite",
+  "sessionId": "68b4f7cb-b071-47e3-b952-88a2601617bb",
+  "timestamp": "2026-06-05T20:46:51.443Z",
+  "artifactPath": "upgrades/side-effects/hermetic-unit-suite.md",
+  "artifactSha256": "b2912969a008a59d22fb0390ec612ffd7f5d90f6d2fe7546f506ac21943b84a6",
+  "coveredFiles": [
+    "src/templates/scripts/instar-watchdog.sh",
+    "tests/unit/Config.test.ts",
+    "tests/unit/coherence-gate-escalation.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Small local-unit hermeticity fix: one shipped watchdog no-auth bug plus test fixture/import isolation; no new capability, no schema or persistent-state change.",
+  "eli16Path": "docs/eli16/hermetic-unit-suite.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/hermetic-unit-suite.md",
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "Local unit-suite assumptions were already non-hermetic; a live Codex agent plus Node 25 exposed real-config/framework leakage, a watchdog no-auth script bug, and a cold dynamic import timeout under full-suite load."
+  },
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
