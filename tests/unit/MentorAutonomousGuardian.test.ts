@@ -122,6 +122,11 @@ describe('buildAutoloopGoal — deterministic prompt assembly', () => {
     expect(goal).toMatch(/JKHeadley\/main/);
     expect(goal).toMatch(/verify before you claim/i);
     expect(goal).toMatch(/one cycle, then exit/i);
+    // Gate compliance (earned: #792's no-silent-fallbacks ratchet failure — the
+    // spec's "best-effort, never throws" guidance invited a swallowed catch).
+    expect(goal).toMatch(/@silent-fallback-ok/);
+    expect(goal).toMatch(/never bump a ratchet baseline/i);
+    expect(goal).toMatch(/DegradationReporter/);
   });
 
   it('degrades gracefully when topics are unset (no "topic undefined" text)', () => {
