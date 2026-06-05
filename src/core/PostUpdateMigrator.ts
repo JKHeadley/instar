@@ -3158,6 +3158,25 @@ Beyond the one-awake-machine model: with the pool enabled I run conversations ac
       result.upgraded.push('CLAUDE.md: added pool placement/transfer robustness lines');
     }
 
+    // Cross-Machine Secret Sync (spec Phase 4, 2026-06-04): deployed agents don't know
+    // a secret can now follow them across machines, nor the two routes. Append the section
+    // so an agent surfaces "drop once, usable everywhere" instead of asking the user to
+    // re-enter a credential per machine. Idempotent via the unique `/secrets/sync-status` marker.
+    if (!content.includes('/secrets/sync-status') && !content.includes('Cross-Machine Secret Sync')) {
+      const secretSync = `
+## Cross-Machine Secret Sync (drop once, usable everywhere)
+
+A secret you give me on one machine — a Telegram token, an API key, a GitHub PAT — becomes usable by me on your OTHER machines automatically. It's encrypted to each recipient machine's own X25519 key (never on disk in plaintext, only ever pushed to your registered paired machines), so you never re-enter a credential per machine. Ships DARK behind \`multiMachine.secretSync.enabled\` (default on for the dev agent).
+
+- **Status (NAMES only, never values):** \`curl -H "Authorization: Bearer $AUTH" http://localhost:4042/secrets/sync-status\` → which secret key-paths this machine holds + the online peers it would sync to.
+- **Push now (deterministic lever):** \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:4042/secrets/sync-now\` → encrypts the secret set per online peer and pushes it; returns a per-peer result. The reliable lever for a manual re-sync or live-verify.
+- **Proactive trigger:** when the user starts re-entering a secret they already gave me on another machine, or asks "do I have to set this up on each machine?" — the answer is no; confirm it synced via \`GET /secrets/sync-status\`. Spec: \`docs/specs/cross-machine-secret-sync-spec.md\`.
+`;
+      content += '\n' + secretSync;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Cross-Machine Secret Sync section');
+    }
+
     // ContextWedgeSentinel — the 4th silently-stopped sentinel. Tells the agent
     // about the thinking-block-400 wedge + that auto-recovery is opt-in. Without
     // it, an agent asked "why did my session keep failing instantly / what is

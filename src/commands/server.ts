@@ -374,6 +374,8 @@ let _meshSelfId: string | null = null;
 let _resolveRouterUrl: (() => string | null) | null = null;
 /** Multi-Machine Session Pool §L4: per-topic placement pin store ("move this to <nickname>"). */
 let _topicPinStore: import('../core/TopicPlacementPinStore.js').TopicPlacementPinStore | null = null;
+/** Cross-machine secret-sync (spec Phase 4): route-facing handle (push lever + read-only status). */
+let _secretSyncHandle: import('../core/SecretSync.js').SecretSyncHandle | null = null;
 /** Recognize + apply a "move/run this on <nickname>" relocation on inbound; returns handled=true when the message WAS a relocation command (so it must not also be dispatched). */
 let _tryNicknameRelocation: ((topicId: number, text: string) => Promise<{ handled: boolean }>) | null = null;
 /** Per-topic framework override (claude-code | codex-cli). Populated from
@@ -9803,6 +9805,33 @@ export async function startServer(options: StartOptions): Promise<void> {
               .catch((err) => console.warn(`  [session-pool] owner-side resume failed for topic ${topicId}: ${err instanceof Error ? err.message : String(err)}`));
           },
         });
+        // ── Secret-sync inbound handler (cross-machine secret distribution, spec Phase 4) ──
+        // Dark by default; live on the dev agent via the developmentAgent gate. An inbound
+        // `secret-share` command is decrypted to THIS machine's X25519 key and stored in the
+        // local encrypted vault. The sender's authenticity + registered-peer gate are enforced
+        // by the mesh acceptance layer before this runs; confidentiality is enforced by the
+        // decryption (a payload not sealed to our key fails). The OUTBOUND provisioner is wired
+        // after the MeshRpcClient is constructed (below).
+        const _secretSyncEnabled =
+          (config.multiMachine as { secretSync?: { enabled?: boolean } } | undefined)?.secretSync?.enabled
+          ?? !!config.developmentAgent;
+        let _secretShareHandler: import('../core/SecretSync.js').SecretShareHandler | undefined;
+        if (_secretSyncEnabled) {
+          try {
+            const secretSyncMod = await import('../core/SecretSync.js');
+            const secretStoreMod = await import('../core/SecretStore.js');
+            const cryptoMod = await import('node:crypto');
+            const secretStore = new secretStoreMod.SecretStore({ stateDir: config.stateDir });
+            _secretShareHandler = new secretSyncMod.SecretShareHandler({
+              ownEncryptionPrivateKey: () => cryptoMod.createPrivateKey(meshIdMgr.loadEncryptionKey()),
+              store: { set: (k, v) => secretStore.set(k, v) },
+              log: (m) => console.log(pc.dim(`  ${m}`)),
+            });
+            console.log(pc.dim('  [secret-sync] enabled — inbound handler wired'));
+          } catch (err) {
+            console.log(pc.dim(`  [secret-sync] inbound handler not wired: ${err instanceof Error ? err.message : String(err)}`));
+          }
+        }
         meshRpcDispatcher = new meshMod.MeshRpcDispatcher({
           verify: {
             selfMachineId: meshSelfId,
@@ -9836,6 +9865,10 @@ export async function startServer(options: StartOptions): Promise<void> {
             transfer: ownAction,
             release: ownAction,
             deliverMessage: deliverMessageHandler,
+            'secret-share': (cmd, sender) =>
+              _secretShareHandler
+                ? _secretShareHandler.handle(cmd as { type: 'secret-share'; encrypted: string }, sender)
+                : { ok: false, reason: 'secret-sync disabled' },
           },
           logger: (m: string) => console.log(pc.dim(`  ${m}`)),
         });
@@ -9904,6 +9937,64 @@ export async function startServer(options: StartOptions): Promise<void> {
           void convergeSelfNickname();
           const selfNickTimer = setInterval(() => { void convergeSelfNickname(); }, 60_000);
           if (typeof selfNickTimer.unref === 'function') selfNickTimer.unref();
+          // ── Secret-sync OUTBOUND provisioner (push-on-provision, spec Phase 4) ──
+          // Constructed here (after meshClient + peerUrl exist). Encrypts the secret set
+          // PER online peer to that peer's X25519 key and pushes a signed `secret-share`.
+          // Dark by default; live on the dev agent via the same gate as the inbound handler.
+          // Exposed to routes via _secretSyncHandle (push lever + read-only status). A boot
+          // best-effort push covers a peer that came online after a secret was provisioned
+          // elsewhere; the deterministic POST /secrets/sync-now is the explicit lever.
+          if (_secretSyncEnabled) {
+            try {
+              const secretSyncMod = await import('../core/SecretSync.js');
+              const secretStoreMod = await import('../core/SecretStore.js');
+              const cryptoModOut = await import('node:crypto');
+              const provStore = new secretStoreMod.SecretStore({ stateDir: config.stateDir });
+              const readSecrets = (): import('../core/SecretStore.js').Secrets => {
+                // @silent-fallback-ok — no vault on disk (or unreadable) ⇒ nothing to sync; an
+                // empty set makes provisionAll a clean no-op rather than crashing the boot path.
+                try { return provStore.read(); } catch { return {}; }
+              };
+              const onlinePeers = (): { machineId: string; nickname?: string | null }[] =>
+                meshIdMgr.getActiveMachines()
+                  .filter((m) => m.machineId !== meshSelfId)
+                  .filter((m) => machinePoolRegistry?.getCapacity(m.machineId)?.online ?? false)
+                  .map((m) => ({ machineId: m.machineId, nickname: machinePoolRegistry?.getCapacity(m.machineId)?.nickname ?? null }));
+              const provisioner = new secretSyncMod.SecretProvisioner({
+                secretsToSync: readSecrets,
+                listPeers: () =>
+                  onlinePeers()
+                    .map((p) => {
+                      const pem = meshIdMgr.getEncryptionPublicKeyPem(p.machineId);
+                      if (!pem) return null;
+                      const b64 = cryptoModOut.createPublicKey(pem).export({ type: 'spki', format: 'der' }).toString('base64');
+                      return { machineId: p.machineId, encryptionPublicKey: b64 };
+                    })
+                    .filter((x): x is { machineId: string; encryptionPublicKey: string } => x !== null),
+                send: async (machineId, command) => {
+                  const url = peerUrl(machineId);
+                  if (!url) return { ok: false, reason: 'no peer url' };
+                  const r = await meshClient.send({ machineId, url }, command, 0);
+                  return { ok: r.ok, reason: r.reason };
+                },
+                log: (m) => console.log(pc.dim(`  ${m}`)),
+              });
+              _secretSyncHandle = {
+                enabled: true,
+                provisionAll: () => provisioner.provisionAll(),
+                localKeyPaths: () => secretSyncMod.secretKeyPaths(readSecrets()),
+                syncTargets: onlinePeers,
+              };
+              // Boot best-effort: push current secrets to any peer already online.
+              // @silent-fallback-ok — fire-and-forget; per-peer failures are already captured
+              // in provisionAll's result array, and a fresh push fires on the next provision /
+              // the deterministic POST /secrets/sync-now. Boot must never block on a peer.
+              void provisioner.provisionAll().catch(() => {});
+              console.log(pc.dim('  [secret-sync] enabled — outbound provisioner wired'));
+            } catch (err) {
+              console.log(pc.dim(`  [secret-sync] outbound provisioner not wired: ${err instanceof Error ? err.message : String(err)}`));
+            }
+          }
           // This machine participates in the session pool, so a read-only standby may
           // persist the PER-SESSION state of sessions it's handed (the pool's owner-side
           // resume only fires for CAS-confirmed owned sessions, and only past 'dark').
@@ -10180,7 +10271,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       console.log(pc.dim(`  [session-pool] rollout gate not wired: ${err instanceof Error ? err.message : String(err)}`));
     }
 
-    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, semanticMemory, activitySentinel, rateLimitSentinel, releaseReadinessSentinel: releaseReadinessSentinel ?? undefined, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, localSigningKeyPem, leaseTransport, onLeasePullRequest: () => leaseCoordinatorRef?.currentLease() ?? null, liveTailReceiver, handoffWireTransport, onHandoffBegin, onHandoffInitiate: handoffInitiate, handoffInProgress: handoffSentinelInProgress, messageLedger, currentInboundByTopic, replyMarkerTransport, onReplyMarker: messageLedger ? (marker: unknown) => { const m = marker as { dedupeKey: string; platform: string; replyIdempotencyKey: string; epoch: number; topic?: string | null }; messageLedger!.applyRemoteReplyMarker(m.dedupeKey, { platform: m.platform, replyIdempotencyKey: m.replyIdempotencyKey, epoch: m.epoch, topic: m.topic ?? null }); } : undefined, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, warrantsReplyGate, collaborationSurfacer, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, responseReviewGate, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, machinePoolRegistry, meshRpcDispatcher, sessionOwnershipRegistry, topicPinStore: _topicPinStore ?? undefined, meshSelfId: _meshSelfId ?? undefined, resolveRouterUrl: _resolveRouterUrl ?? undefined, sessionPoolE2EResultStore, proxyCoordinator, topicIntentStore, topicIntentArcCheck, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, briefDeps, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, agentWorktreeReaper, mcpProcessReaper, geminiLoopRunner, sleepController, agentActivityState, reapLog, sleepWakeDetector, unjustifiedStopGate, stopGateDb, stopNotifier });
+    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, semanticMemory, activitySentinel, rateLimitSentinel, releaseReadinessSentinel: releaseReadinessSentinel ?? undefined, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, localSigningKeyPem, leaseTransport, onLeasePullRequest: () => leaseCoordinatorRef?.currentLease() ?? null, liveTailReceiver, handoffWireTransport, onHandoffBegin, onHandoffInitiate: handoffInitiate, handoffInProgress: handoffSentinelInProgress, messageLedger, currentInboundByTopic, replyMarkerTransport, onReplyMarker: messageLedger ? (marker: unknown) => { const m = marker as { dedupeKey: string; platform: string; replyIdempotencyKey: string; epoch: number; topic?: string | null }; messageLedger!.applyRemoteReplyMarker(m.dedupeKey, { platform: m.platform, replyIdempotencyKey: m.replyIdempotencyKey, epoch: m.epoch, topic: m.topic ?? null }); } : undefined, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, warrantsReplyGate, collaborationSurfacer, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, responseReviewGate, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, machinePoolRegistry, meshRpcDispatcher, sessionOwnershipRegistry, topicPinStore: _topicPinStore ?? undefined, secretSync: _secretSyncHandle ?? undefined, meshSelfId: _meshSelfId ?? undefined, resolveRouterUrl: _resolveRouterUrl ?? undefined, sessionPoolE2EResultStore, proxyCoordinator, topicIntentStore, topicIntentArcCheck, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, briefDeps, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, agentWorktreeReaper, mcpProcessReaper, geminiLoopRunner, sleepController, agentActivityState, reapLog, sleepWakeDetector, unjustifiedStopGate, stopGateDb, stopNotifier });
     // Boot-recovery (tunnel-failure-resilience spec Part 6): if the agent
     // died mid-relay-episode, the persisted tunnel.json carries
     // rotationPending=true. Rotate the dashboard PIN + authToken BEFORE

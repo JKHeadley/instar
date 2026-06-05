@@ -790,6 +790,8 @@ export interface RouteContext {
    *  pinned-vs-load-placed distinction in GET /pool/placement and the deterministic
    *  POST /pool/transfer. Null/absent when the pool is not wired (dark). */
   topicPinStore?: import('../core/TopicPlacementPinStore.js').TopicPlacementPinStore | null;
+  /** Cross-machine secret-sync (spec Phase 4) — backs GET /secrets/sync-status + POST /secrets/sync-now. */
+  secretSync?: import('../core/SecretSync.js').SecretSyncHandle | null;
   /** This machine's mesh id (machineId). Used by placement/transfer routes to tell
    *  whether the answering machine owns the topic. Null/absent (single-machine/dark). */
   meshSelfId?: string | null;
@@ -7824,6 +7826,40 @@ export function createRoutes(ctx: RouteContext): Router {
       pinned: plan.setPin ?? true,
       releasedLocalOwnership,
     });
+  });
+
+  // GET /secrets/sync-status — read-only view of cross-machine secret-sync (spec Phase 4).
+  // Returns WHICH secret key-paths this machine holds (NAMES only — never a value) and the
+  // online peers it would sync to. Never exposes a secret value. 503 when sync is disabled.
+  router.get('/secrets/sync-status', (_req, res) => {
+    const ss = ctx.secretSync;
+    if (!ss || !ss.enabled) {
+      res.status(503).json({ error: 'secret-sync not available (dark / single-machine install)' });
+      return;
+    }
+    res.json({
+      enabled: true,
+      localKeyPaths: ss.localKeyPaths(),
+      syncTargets: ss.syncTargets(),
+    });
+  });
+
+  // POST /secrets/sync-now — deterministic push-on-provision lever (spec Phase 4). Encrypts
+  // the current secret set per online peer (to that peer's X25519 key) and pushes it. Returns
+  // a per-peer result — NEVER a secret value. This is the reliable lever (the analog of
+  // POST /pool/transfer) for live-verify and for a manual re-sync. 503 when sync is disabled.
+  router.post('/secrets/sync-now', async (_req, res) => {
+    const ss = ctx.secretSync;
+    if (!ss || !ss.enabled) {
+      res.status(503).json({ error: 'secret-sync not available (dark / single-machine install)' });
+      return;
+    }
+    try {
+      const results = await ss.provisionAll();
+      res.json({ ok: true, pushed: results.length, results });
+    } catch (err) {
+      res.status(500).json({ error: `sync failed: ${err instanceof Error ? err.message : String(err)}` });
+    }
   });
 
   // GET /session-pool/e2e-results — the rollout gate's observable state (§Rollout).
