@@ -1,0 +1,44 @@
+# Upgrade Guide — vNEXT
+
+<!-- bump: minor -->
+
+## What Changed
+
+The stale-session watchdog no longer cries wolf on healthy long-running sessions. Two
+detection-accuracy fixes in StaleSessionBackstop:
+
+1. Operator-protected sessions (the reaper's protectedSessions) are never flagged as
+   stale — they're deliberately kept alive, so escalating them was a false alarm.
+2. Conversational/autonomous sessions get a far more forgiving no-progress window
+   (conversationalEscalateMinutes, default 180 min) than run-to-completion jobs (which
+   keep the strict 30-min window). A long autonomous session that legitimately idles
+   between turns or waits on a multi-minute tool call no longer trips the 30-minute
+   "looks stuck" threshold.
+
+This is the detection half of the Notification UX Coherence work; PR1 shipped the calm
+"🩺 Agent Health" lane (the delivery half). The fake-work guards (transcript tail-hash +
+cpu-seconds delta) are unchanged — genuine wedges are still caught; the backstop is still
+signal-only and never auto-kills.
+
+## What to Tell Your User
+
+Your agent will stop pinging you that a long-running session "looks stuck" when it's
+actually just working through a slow step or waiting between turns. Sessions you've
+marked as protected are never flagged at all, and ordinary long conversations get a much
+more patient window before the agent mentions anything. Genuinely-stuck work is still
+caught — just without the false alarms.
+
+## Summary of New Capabilities
+
+- StaleSessionBackstop exempts operator-protected sessions from stale escalation.
+- New monitoring.staleBackstop.conversationalEscalateMinutes (default 180): a forgiving
+  no-progress window for conversational/autonomous sessions, separate from the strict job
+  window (unverifiableEscalateMinutes, 30). Clamped to never be more aggressive than the
+  job window.
+
+## Evidence
+
+- Unit (tests/unit/stale-session-backstop.test.ts): a protected session is never
+  escalated even well past the window; the threshold split — a healthy long conversational
+  session at 35 min does NOT escalate while a wedged job at 35 min DOES.
+- 82 standards + backstop tests green; tsc clean; pre-push-gate clean.
