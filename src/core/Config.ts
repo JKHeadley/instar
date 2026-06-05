@@ -11,6 +11,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { mergeConfigWithSecrets } from './SecretMigrator.js';
+import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 import os from 'node:os';
 import type { InstarConfig, SessionManagerConfig, JobSchedulerConfig, FeedbackConfig, AgentType } from './types.js';
 
@@ -644,6 +645,69 @@ export function resolveAgentDir(nameOrPath?: string): string {
   );
 }
 
+/** A `{secret: true}` externalization placeholder that survived the merge. */
+function isSecretPlaceholder(v: unknown): boolean {
+  return typeof v === 'object' && v !== null && !Array.isArray(v) &&
+    (v as Record<string, unknown>)['secret'] === true;
+}
+
+/** Required-secret fields per adapter type — ONLY fields the adapter
+ *  constructor needs as strings. Optional/non-secret fields never gate boot. */
+const CRITICAL_SECRET_FIELDS: Record<string, string[]> = {
+  telegram: ['token', 'chatId'],
+  slack: ['botToken', 'appToken'],
+};
+
+/**
+ * Fail the boot FAST and LOUDLY when `{secret:true}` placeholders survive the
+ * merge in boot-critical fields (spec docs/specs/keychain-per-agent-master-key.md §3).
+ * Scope is deliberately narrow: ENABLED messaging adapters' required secret
+ * fields, plus authToken only when binding non-loopback. Everything else
+ * degrades (already reported by the merge catch). Without this, a failed
+ * decrypt surfaces minutes later as an unrelated type error (the 2026-06-05
+ * incident's `tokenHash(Object)` crash-loop).
+ */
+function assertNoCriticalSecretPlaceholders(
+  fileConfig: Partial<InstarConfig>,
+  mergeError: unknown,
+): void {
+  const critical: string[] = [];
+
+  const messaging = (fileConfig as Record<string, unknown>)['messaging'];
+  if (Array.isArray(messaging)) {
+    messaging.forEach((entry, i) => {
+      if (typeof entry !== 'object' || entry === null) return;
+      const m = entry as Record<string, unknown>;
+      if (m['enabled'] === false) return; // disabled adapters never gate boot
+      const fields = CRITICAL_SECRET_FIELDS[String(m['type'])] ?? [];
+      const cfg = m['config'];
+      if (typeof cfg !== 'object' || cfg === null) return;
+      for (const field of fields) {
+        if (isSecretPlaceholder((cfg as Record<string, unknown>)[field])) {
+          critical.push(`messaging[${i}].config.${field}`);
+        }
+      }
+    });
+  }
+
+  const host = ((fileConfig as Record<string, unknown>)['host'] as string | undefined) || '127.0.0.1';
+  const nonLoopback = host !== '127.0.0.1' && host !== 'localhost' && host !== '::1';
+  if (nonLoopback && isSecretPlaceholder((fileConfig as Record<string, unknown>)['authToken'])) {
+    critical.push('authToken');
+  }
+
+  if (critical.length === 0) return;
+
+  const why = mergeError instanceof Error ? mergeError.message : mergeError ? String(mergeError) : 'placeholders not present in the SecretStore';
+  throw new Error(
+    `Secrets cannot be resolved for boot-critical config fields: ${critical.join(', ')}.\n` +
+    `Cause: ${why}.\n` +
+    `The master key available to this process does not decrypt the encrypted secret store ` +
+    `(or the store is missing these values). Failing fast instead of crashing later on a type error.\n` +
+    `Recovery: see docs/specs/keychain-per-agent-master-key.md#recovery-operator-notes`,
+  );
+}
+
 export function loadConfig(projectDir?: string): InstarConfig {
   const resolvedProjectDir = projectDir || detectProjectDir();
   const configPath = path.join(resolvedProjectDir, '.instar', 'config.json');
@@ -664,11 +728,23 @@ export function loadConfig(projectDir?: string): InstarConfig {
 
   // Merge encrypted secrets into config (replaces { "secret": true } placeholders)
   // This is transparent — single-machine users without a SecretStore see no change.
+  let secretMergeError: unknown = null;
   try {
     fileConfig = mergeConfigWithSecrets(fileConfig as Record<string, unknown>, stateDir) as Partial<InstarConfig>;
-  } catch {
-    // Non-fatal — config works without secrets (just missing the secret values)
+  } catch (err) {
+    // A failed merge is NEVER silent (the 2026-06-05 incident: an empty catch
+    // here let {secret:true} placeholders leak into runtime config and the
+    // server crash-looped 2 minutes later on tokenHash(Object)).
+    secretMergeError = err;
+    DegradationReporter.getInstance().report({
+      feature: 'Config.secretMerge',
+      primary: 'Resolve {secret:true} placeholders from the encrypted SecretStore',
+      fallback: 'Config proceeds with unresolved placeholders (non-critical fields only)',
+      reason: `Why: ${err instanceof Error ? err.message : String(err)}`,
+      impact: 'Secret-backed config fields are unavailable; boot fails fast if any are boot-critical',
+    });
   }
+  assertNoCriticalSecretPlaceholders(fileConfig, secretMergeError);
 
   const tmuxPath = fileConfig.sessions?.tmuxPath || detectTmuxPath();
   // Provider-portability v1.0.0: boot requires the configured framework's
