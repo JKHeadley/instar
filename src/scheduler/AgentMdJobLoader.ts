@@ -93,6 +93,7 @@ const ALLOWED_FRONTMATTER_KEYS: ReadonlySet<string> = new Set([
   'topicId',
   'machines',
   'supervision',
+  'mcpAccess',
 ]);
 
 // ── Zod preprocessors (spec §6) ────────────────────────────────────────────
@@ -141,6 +142,9 @@ export interface PerSlugManifest {
   gate?: string;
   unrestrictedTools?: boolean;
   manifestVersion?: number;
+  /** MCP access for the spawned session — 'none' spawns with zero project MCP
+   *  servers (claude-code only). Absent → legacy full-project-MCP behavior. */
+  mcpAccess?: 'project' | 'none';
   /** SHA of the body at the time an operator disabled the default — preserved
    *  across regeneration so a re-enabled default re-syncs intentionally. */
   disabledAtBodyHash?: string;
@@ -571,6 +575,11 @@ export function validateManifest(raw: unknown, sourceLabel?: string): PerSlugMan
   // Optional gate (shell command)
   if (j.gate !== undefined && typeof j.gate !== 'string') {
     throw new Error(`${prefix}: "gate" must be a string if provided`);
+  }
+
+  // Optional mcpAccess
+  if (j.mcpAccess !== undefined && j.mcpAccess !== 'project' && j.mcpAccess !== 'none') {
+    throw new Error(`${prefix}: "mcpAccess" must be "project" or "none" if provided, got "${j.mcpAccess}"`);
   }
 
   return j as unknown as PerSlugManifest;
@@ -1078,6 +1087,7 @@ function manifestToJobDefinition(
     gate: manifest.gate,
     unrestrictedTools: manifest.unrestrictedTools,
     manifestVersion: manifest.manifestVersion,
+    mcpAccess: manifest.mcpAccess,
   };
 
   if (manifest.execute.type === 'agentmd') {

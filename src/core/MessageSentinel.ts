@@ -122,6 +122,25 @@ export interface SentinelStats {
  */
 const MAX_FAST_PATH_WORDS = 4;
 
+/**
+ * Pause-directive length ceiling for the LLM layer.
+ *
+ * A genuine natural-language pause directive is short ("pause please",
+ * "hold on, wait for me to finish reading before you continue") — well
+ * under this bound. A LONG message classified 'pause' is task content
+ * whose closing phrase ("…and stand by") seduced the classifier; CONSUMING
+ * it as a control command destroys the content for zero safety payoff
+ * (pause's value is politeness, not safety). Live 2026-06-05: two ~200-word
+ * mentor coaching messages ending "…and stand by" were eaten this way on
+ * topic 1052 ("Session paused" posted at 14:22:58Z and 14:41:24Z; the
+ * messages were never routed and existed in no queue or drop ledger).
+ *
+ * ASYMMETRY (deliberate): emergency-stop is NOT length-gated at this layer —
+ * stopping unnecessarily on a long panic message is a tolerable false
+ * positive (the prompt's own safety-first rule). Only 'pause' downgrades.
+ */
+const MAX_PAUSE_DIRECTIVE_WORDS = 25;
+
 // ── Fast-Path Patterns ───────────────────────────────────────────────
 
 /**
@@ -346,7 +365,7 @@ export class MessageSentinel {
 
     // Layer 2: LLM classification (if available and not fast-path-only)
     if (this.config.intelligence && !this.config.fastPathOnly) {
-      const llmResult = await this.llmClassify(message);
+      const llmResult = this.downgradeLongPause(await this.llmClassify(message), message);
       const latency = Date.now() - start;
       this.recordStats(llmResult.category, 'llm', latency);
       return {
@@ -368,6 +387,34 @@ export class MessageSentinel {
       action: { type: 'pass-through' },
       reason: 'No fast-path match, no LLM available',
       continuePingIntent,
+    };
+  }
+
+  /**
+   * Structural guard (Structure > Willpower): a 'pause' classification on a
+   * LONG message downgrades to 'normal' pass-through. The LLM prompt already
+   * ASKS for this judgment ("substantive content ⇒ NORMAL"), but a closing
+   * imperative ("…and stand by") intermittently wins anyway — and the
+   * forward route CONSUMES pause-classified messages, so the false positive
+   * silently destroys the message. Emergency-stop is deliberately untouched
+   * (see MAX_PAUSE_DIRECTIVE_WORDS). The fast path needs no equivalent: its
+   * 4-word gate already excludes long messages from pattern matches.
+   */
+  private downgradeLongPause(
+    result: Omit<SentinelClassification, 'method' | 'latencyMs'>,
+    message: string,
+  ): Omit<SentinelClassification, 'method' | 'latencyMs'> {
+    if (result.category !== 'pause') return result;
+    const wordCount = message.trim().split(/\s+/).length;
+    if (wordCount <= MAX_PAUSE_DIRECTIVE_WORDS) return result;
+    console.log(
+      `[sentinel] pause downgraded to normal: ${wordCount} words > ${MAX_PAUSE_DIRECTIVE_WORDS} (long messages are task content, not pause directives)`,
+    );
+    return {
+      category: 'normal',
+      confidence: result.confidence,
+      action: { type: 'pass-through' },
+      reason: `pause downgraded: ${wordCount}-word message exceeds the ${MAX_PAUSE_DIRECTIVE_WORDS}-word pause-directive ceiling (was: ${result.reason})`,
     };
   }
 

@@ -2426,6 +2426,27 @@ program
     process.exit(exitCode);
   });
 
+// ── `instar dev:claim-check [paths...]` — pre-build parallel-claim advisory ──
+
+program
+  .command('dev:claim-check [paths...]')
+  .description('PRE-BUILD advisory: list open/recently-merged PRs touching the paths you intend to build on, and specs matching --keywords — so parallel sessions divide layers instead of colliding')
+  .option('--keywords <words...>', 'Keywords matched against docs/specs/*.md titles/headers')
+  .option('--merged-days <n>', 'Look-back window for merged PRs in days (default 2)', (v) => parseInt(v, 10))
+  .option('--repo <owner/repo>', 'Repository (default: JKHeadley/instar)')
+  .option('--strict', 'Exit 1 when any overlap is found (for scripted gates)')
+  .action(async (paths: string[] | undefined, opts: { keywords?: string[]; mergedDays?: number; repo?: string; strict?: boolean }) => {
+    const { runDevClaimCheck } = await import('./commands/devClaimCheck.js');
+    const exitCode = await runDevClaimCheck({
+      paths: paths ?? [],
+      keywords: opts.keywords,
+      mergedDays: opts.mergedDays,
+      repo: opts.repo,
+      strict: opts.strict,
+    });
+    process.exit(exitCode);
+  });
+
 // ── `instar dev:profile-node [pid]` — CPU-profile a hot node process's JS ──
 
 program

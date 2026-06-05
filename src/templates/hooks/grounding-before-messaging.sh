@@ -41,9 +41,14 @@ if echo "$INPUT" | grep -qE "(telegram-reply|send-email|send-message|POST.*/tele
     CHECK_EXIT=$?
 
     if [ "$CHECK_EXIT" -ne "0" ]; then
-      echo "$CHECK_RESULT"
-      echo ""
-      echo "=== MESSAGE BLOCKED — Review and revise before sending. ==="
+      # BLOCK output goes to STDERR: on a PreToolUse exit-2 block, Claude Code
+      # surfaces ONLY stderr to the agent. Writing the reason to stdout rendered
+      # every block as an unreadable "hook error ... No stderr output" — the agent
+      # saw a malfunction instead of the actual quality findings (2026-06-05 live
+      # incident: milestone reports bounced repeatedly with no visible reason).
+      echo "$CHECK_RESULT" >&2
+      echo "" >&2
+      echo "=== MESSAGE BLOCKED — Review and revise before sending. ===" >&2
       exit 2
     fi
   fi

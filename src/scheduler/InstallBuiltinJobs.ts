@@ -191,6 +191,12 @@ export function installBuiltinJobs(opts: InstallBuiltinJobsOptions): InstallRepo
           : frontmatter.telegramNotify === 'on-alert'
             ? 'on-alert'
             : coerceBool(frontmatter.telegramNotify),
+      // Closed two-value set; anything else (typo, absent) → undefined = legacy
+      // full-project-MCP behavior. validateManifest re-checks the enum below.
+      mcpAccess:
+        frontmatter.mcpAccess === 'none' || frontmatter.mcpAccess === 'project'
+          ? frontmatter.mcpAccess
+          : undefined,
       disabledAtBodyHash: existingDisabledAtBodyHash,
     });
 

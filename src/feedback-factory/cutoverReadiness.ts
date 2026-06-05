@@ -1,0 +1,293 @@
+/**
+ * cutoverReadiness.ts — the cutover-READINESS checker (coordination-mandate spec §7
+ * G2.4, scoped by decision 1A): everything UP TO the door, never the door.
+ *
+ * The Phase-4 cutover flip is Justin's one manual click — NOT an autonomously
+ * fireable action (decision 1A/3B). What CAN and SHOULD be autonomous is knowing,
+ * from REAL durable state, whether the flip is safe: this module composes the two
+ * objective conditions the spec names —
+ *
+ *   - `integrity-gate-pass`     ← the persisted Phase-4 import IntegrityReport
+ *                                 (`runIntegrityGate(...).passed`, written server-side
+ *                                 by the import tooling — never asserted by an agent)
+ *   - `parity-zero-divergence`  ← `DurableParityMonitor.gate(now).cleared` over the
+ *                                 durable zero-divergence window, PLUS a readiness-layer
+ *                                 freshness bound (a streak that stopped being fed is
+ *                                 visible staleness, not silent readiness)
+ *
+ * — and exposes them as one read-only status. The T7 discipline (conditions resolve
+ * from real state, never an agent's assertion) is structural here: the ONLY write
+ * paths are (a) `runParityPass()`, which the agent may TRIGGER but whose result is
+ * computed server-side from a live fetch+compare, and (b) `recordIntegrityReport()`,
+ * called by the server-side import tooling. There is no "set the condition" input.
+ */
+
+import fs from 'node:fs';
+import path from 'node:path';
+import type { DurableParityMonitor } from './monitor/parityMonitorStore.js';
+import type { CutoverGateStatus } from './monitor/parityMonitor.js';
+import type { IntegrityReport } from './migration/importIntegrity.js';
+import type { ImportRunResult } from './migration/importRunner.js';
+import type { ParityResult } from './processor/parity.js';
+
+export interface IntegrityStatus {
+  /** Has an import integrity report been recorded at all? */
+  ran: boolean;
+  /** The report's single gate boolean (false when never ran — deny-safe). */
+  passed: boolean;
+  generatedAt: string | null;
+  /** Compact counts for display; null when never ran. */
+  summary: {
+    fingerprintCollisions: number;
+    schemaDivergences: number;
+    checksumMismatches: number;
+    danglingRefs: number;
+  } | null;
+}
+
+export interface ParityReadiness extends CutoverGateStatus {
+  /** ISO of the most recent recorded pass (clean or divergent), or null. */
+  lastPassAt: string | null;
+  /** True when the last pass is older than `maxPassStalenessMs` — a cleared-but-stale
+   *  window is NOT readiness (the gate has no max-staleness by design; this layer adds it). */
+  stale: boolean;
+}
+
+/** The last import DRY-RUN's verdict — informational only, NEVER a `ready` input. */
+export interface ImportDryRunStatus {
+  ran: boolean;
+  passed: boolean;
+  generatedAt: string | null;
+  /** What the rehearsal imported (in-memory; zero durable writes). Null when never ran. */
+  imported: { clusters: number; feedback: number } | null;
+  /** Non-null when the rehearsal aborted pre-import (fingerprint collisions to resolve). */
+  abortedPreImport: string | null;
+}
+
+export interface CutoverReadinessStatus {
+  /** True only when integrity passed AND the parity window is cleared AND fresh.
+   *  This is the everything-up-to-the-door signal — it never fires anything. */
+  ready: boolean;
+  /** Decision 1A, restated machine-readably so no consumer can misread the scope. */
+  door: 'manual-operator-click';
+  integrity: IntegrityStatus;
+  parity: ParityReadiness;
+  /**
+   * The import REHEARSAL (dry-run against an in-memory target on live source data).
+   * Readiness honesty: this is visibility into whether the import pipeline is
+   * proven — it does NOT contribute to `ready`. Only the REAL import's persisted
+   * IntegrityReport (the `integrity` leg) can.
+   */
+  importDryRun: ImportDryRunStatus;
+}
+
+export type ParityPassOutcome =
+  | { ok: true; pass: { at: string; clustersCompared: number; divergences: number; divergent: boolean }; gate: CutoverGateStatus }
+  | { ok: false; reason: string };
+
+export type ImportDryRunOutcome =
+  | { ok: true; result: ImportRunResult; generatedAt: string }
+  | { ok: false; reason: string };
+
+export interface CutoverReadinessDeps {
+  parityMonitor: DurableParityMonitor;
+  /** Where the import tooling's IntegrityReport persists (JSON envelope). */
+  integrityReportPath: string;
+  /** SERVER-SIDE parity check (live fetch + compare). Null when no parity source is
+   *  configured — runParityPass() then refuses, and the parity condition can only
+   *  clear via passes recorded by other server-side paths. */
+  runParityCheck: (() => Promise<ParityResult>) | null;
+  /** Where the import DRY-RUN envelope persists. MUST differ from
+   *  `integrityReportPath` — a rehearsal must never be able to green the canonical
+   *  integrity condition (enforced in the constructor). Optional for callers that
+   *  never wire the dry-run. */
+  importDryRunReportPath?: string;
+  /** SERVER-SIDE import rehearsal (live source fetch → in-memory AS-IS import →
+   *  integrity gate over readback). Null/absent when no source is configured. */
+  runImportDryRun?: (() => Promise<ImportRunResult>) | null;
+  /** Freshness bound for the parity window (default 6h). */
+  maxPassStalenessMs?: number;
+  now?: () => number;
+}
+
+const DEFAULT_MAX_PASS_STALENESS_MS = 6 * 60 * 60 * 1000;
+
+interface PersistedIntegrityEnvelope {
+  generatedAt: string;
+  report: IntegrityReport;
+}
+
+interface PersistedDryRunEnvelope {
+  generatedAt: string;
+  mode: 'dry-run';
+  result: ImportRunResult;
+}
+
+export class CutoverReadiness {
+  private readonly d: CutoverReadinessDeps;
+  private readonly maxStaleMs: number;
+  /**
+   * Single-flight guard over the LIVE SOURCE FETCH — shared by the parity pass
+   * and the import dry-run because both page the full live source. Without it,
+   * repeated triggers pile CONCURRENT full fetches onto the source: the route's
+   * response window can elapse while the handler keeps running (the always-logged
+   * outcome contract), so a caller that retries on a 408 spawns a new fetch next
+   * to the live one (observed live 2026-06-05 12:16Z — four concurrent passes
+   * against an already-degraded Portal). One live fetch at a time; a concurrent
+   * trigger is refused immediately (409 at the route) and records nothing.
+   */
+  private liveFetchInFlight: { op: 'parity-pass' | 'import-dry-run'; startedAt: string } | null = null;
+
+  constructor(deps: CutoverReadinessDeps) {
+    if (deps.importDryRunReportPath && path.resolve(deps.importDryRunReportPath) === path.resolve(deps.integrityReportPath)) {
+      // Structural readiness-honesty guard: a rehearsal report aimed at the
+      // canonical integrity path WOULD green `ready` — refuse the wiring outright.
+      throw new Error('importDryRunReportPath must differ from integrityReportPath — a dry-run must never green the integrity gate');
+    }
+    this.d = deps;
+    this.maxStaleMs = deps.maxPassStalenessMs ?? DEFAULT_MAX_PASS_STALENESS_MS;
+  }
+
+  private nowMs(): number {
+    return this.d.now ? this.d.now() : Date.now();
+  }
+
+  /** Persist an import IntegrityReport (server-side import tooling only). */
+  recordIntegrityReport(report: IntegrityReport, generatedAt?: string): void {
+    const envelope: PersistedIntegrityEnvelope = {
+      generatedAt: generatedAt ?? new Date(this.nowMs()).toISOString(),
+      report,
+    };
+    fs.mkdirSync(path.dirname(this.d.integrityReportPath), { recursive: true });
+    fs.writeFileSync(this.d.integrityReportPath, JSON.stringify(envelope, null, 2));
+  }
+
+  integrityStatus(): IntegrityStatus {
+    try {
+      const raw = JSON.parse(fs.readFileSync(this.d.integrityReportPath, 'utf8')) as PersistedIntegrityEnvelope;
+      const r = raw?.report;
+      if (!r || typeof r.passed !== 'boolean') {
+        return { ran: false, passed: false, generatedAt: null, summary: null };
+      }
+      return {
+        ran: true,
+        passed: r.passed,
+        generatedAt: typeof raw.generatedAt === 'string' ? raw.generatedAt : null,
+        summary: {
+          fingerprintCollisions: r.fingerprintCollisions?.length ?? 0,
+          schemaDivergences: r.schemaDivergences?.length ?? 0,
+          checksumMismatches: r.checksumMismatches?.length ?? 0,
+          danglingRefs: r.danglingRefs?.length ?? 0,
+        },
+      };
+    } catch { /* @silent-fallback-ok — no report on disk = the import never ran = NOT ready (deny-safe) */
+      return { ran: false, passed: false, generatedAt: null, summary: null };
+    }
+  }
+
+  parityStatus(): ParityReadiness {
+    const nowIso = new Date(this.nowMs()).toISOString();
+    const gate = this.d.parityMonitor.gate(nowIso);
+    const passes = this.d.parityMonitor.passes;
+    const lastPassAt = passes.length > 0 ? passes[passes.length - 1].at : null;
+    const stale = lastPassAt === null
+      ? true
+      : this.nowMs() - Date.parse(lastPassAt) > this.maxStaleMs;
+    return { ...gate, lastPassAt, stale };
+  }
+
+  /**
+   * TRIGGER a server-side parity pass: live fetch + compare via the injected check,
+   * record the result (clean OR divergent) into the durable window. The caller
+   * contributes nothing to the result — only the request to run it (T7). A FAILED
+   * check records nothing: a fetch error is absence of evidence, not evidence of
+   * divergence — and it cannot extend the clean window either.
+   */
+  async runParityPass(): Promise<ParityPassOutcome> {
+    if (!this.d.runParityCheck) {
+      return { ok: false, reason: 'no parity source configured (feedbackMigration.paritySource) — cannot run a live check' };
+    }
+    if (this.liveFetchInFlight) {
+      return { ok: false, reason: `live source fetch already in flight (${this.liveFetchInFlight.op} started ${this.liveFetchInFlight.startedAt}) — one at a time; retry after it completes` };
+    }
+    this.liveFetchInFlight = { op: 'parity-pass', startedAt: new Date(this.nowMs()).toISOString() };
+    let result: ParityResult;
+    try {
+      result = await this.d.runParityCheck();
+    } catch (err) {
+      return { ok: false, reason: `parity check failed: ${err instanceof Error ? err.message : String(err)}` };
+    } finally {
+      this.liveFetchInFlight = null;
+    }
+    const at = new Date(this.nowMs()).toISOString();
+    this.d.parityMonitor.recordResult(result, at);
+    const divergences = result.fingerprintDivergences.length + result.outcomeDivergences.length;
+    return {
+      ok: true,
+      pass: { at, clustersCompared: result.clustersCompared, divergences, divergent: divergences > 0 },
+      gate: this.d.parityMonitor.gate(at),
+    };
+  }
+
+  /**
+   * TRIGGER a server-side import rehearsal (T7: the agent may ask; the server
+   * computes — live source fetch, in-memory AS-IS import, integrity gate over the
+   * readback). The envelope persists to the SEPARATE dry-run path; the canonical
+   * integrity report is structurally out of reach of this method.
+   */
+  async runImportDryRunPass(): Promise<ImportDryRunOutcome> {
+    if (!this.d.runImportDryRun || !this.d.importDryRunReportPath) {
+      return { ok: false, reason: 'no import source configured (feedbackMigration.paritySource) — cannot run an import dry-run' };
+    }
+    if (this.liveFetchInFlight) {
+      return { ok: false, reason: `live source fetch already in flight (${this.liveFetchInFlight.op} started ${this.liveFetchInFlight.startedAt}) — one at a time; retry after it completes` };
+    }
+    this.liveFetchInFlight = { op: 'import-dry-run', startedAt: new Date(this.nowMs()).toISOString() };
+    let result: ImportRunResult;
+    try {
+      result = await this.d.runImportDryRun();
+    } catch (err) {
+      return { ok: false, reason: `import dry-run failed: ${err instanceof Error ? err.message : String(err)}` };
+    } finally {
+      this.liveFetchInFlight = null;
+    }
+    const generatedAt = new Date(this.nowMs()).toISOString();
+    const envelope: PersistedDryRunEnvelope = { generatedAt, mode: 'dry-run', result };
+    fs.mkdirSync(path.dirname(this.d.importDryRunReportPath), { recursive: true });
+    fs.writeFileSync(this.d.importDryRunReportPath, JSON.stringify(envelope, null, 2));
+    return { ok: true, result, generatedAt };
+  }
+
+  importDryRunStatus(): ImportDryRunStatus {
+    const empty: ImportDryRunStatus = { ran: false, passed: false, generatedAt: null, imported: null, abortedPreImport: null };
+    if (!this.d.importDryRunReportPath) return empty;
+    try {
+      const raw = JSON.parse(fs.readFileSync(this.d.importDryRunReportPath, 'utf8')) as PersistedDryRunEnvelope;
+      const r = raw?.result;
+      if (!r || typeof r.passed !== 'boolean') return empty;
+      return {
+        ran: true,
+        passed: r.passed,
+        generatedAt: typeof raw.generatedAt === 'string' ? raw.generatedAt : null,
+        imported: r.imported ?? null,
+        abortedPreImport: r.abortedPreImport ? r.abortedPreImport.reason : null,
+      };
+    } catch { /* @silent-fallback-ok — no dry-run envelope on disk = the rehearsal never ran (informational-only surface) */
+      return empty;
+    }
+  }
+
+  /** The everything-up-to-the-door readiness signal. Read-only; never fires anything. */
+  status(): CutoverReadinessStatus {
+    const integrity = this.integrityStatus();
+    const parity = this.parityStatus();
+    return {
+      // `ready` composes integrity + parity ONLY — the dry-run is visibility, not a gate input.
+      ready: integrity.passed && parity.cleared && !parity.stale,
+      door: 'manual-operator-click',
+      integrity,
+      parity,
+      importDryRun: this.importDryRunStatus(),
+    };
+  }
+}

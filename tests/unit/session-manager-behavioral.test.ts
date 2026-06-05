@@ -113,6 +113,7 @@ describe('SessionManager behavioral tests', () => {
       maxSessions: 3,
       protectedSessions: ['my-project-server'],
       completionPatterns: ['Session complete', 'Goodbye'],
+      framework: 'claude-code',
     };
     manager = new SessionManager(config, state);
 

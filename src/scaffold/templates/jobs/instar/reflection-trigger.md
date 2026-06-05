@@ -10,6 +10,7 @@ tags:
   - cat:learning
 toolAllowlist: "*"
 unrestrictedTools: true
+mcpAccess: none
 ---
 AUTH=$(python3 -c "import json; print(json.load(open('.instar/config.json')).get('authToken',''))" 2>/dev/null)
 

@@ -188,3 +188,80 @@ describe('assertSqliteAvailable', () => {
     expect(typeof result.cliPresent).toBe('boolean');
   });
 });
+
+describe('PendingRelayStore — listStaleClaimable (restore-purge visibility)', () => {
+  // A restore-purge deletes queued-undelivered outbound messages; this
+  // listing makes every victim traceable BEFORE the delete (per-row log +
+  // degradation report). 2026-06-05: five real messages — including a user
+  // milestone report — were silently restore-purged during restart churn.
+
+  const futureCutoff = () => new Date(Date.now() + 60_000).toISOString();
+  const pastCutoff = () => new Date(Date.now() - 60_000).toISOString();
+
+  it('lists queued rows older than the cutoff, text decoded utf-8', () => {
+    const store = PendingRelayStore.open('echo', tmpDir);
+    store.enqueue({
+      delivery_id: '33333333-3333-4333-8333-333333333333',
+      topic_id: 13435,
+      text_hash: 'c'.repeat(64),
+      text: 'MILESTONE — the message that must not vanish silently',
+      http_code: 0,
+      attempted_port: 4042,
+    });
+    const victims = store.listStaleClaimable(futureCutoff());
+    expect(victims).toHaveLength(1);
+    expect(victims[0].delivery_id).toBe('33333333-3333-4333-8333-333333333333');
+    expect(victims[0].topic_id).toBe(13435);
+    expect(victims[0].text).toContain('must not vanish silently');
+    store.close();
+  });
+
+  it('excludes rows newer than the cutoff (fresh queue survives a purge listing)', () => {
+    const store = PendingRelayStore.open('echo', tmpDir);
+    store.enqueue({
+      delivery_id: '44444444-4444-4444-8444-444444444444',
+      topic_id: 9,
+      text_hash: 'd'.repeat(64),
+      text: 'fresh',
+      http_code: 0,
+      attempted_port: 4042,
+    });
+    expect(store.listStaleClaimable(pastCutoff())).toHaveLength(0);
+    store.close();
+  });
+
+  it('excludes terminal-state rows (only queued/claimed are purge candidates)', () => {
+    const store = PendingRelayStore.open('echo', tmpDir);
+    store.enqueue({
+      delivery_id: '55555555-5555-4555-8555-555555555555',
+      topic_id: 9,
+      text_hash: 'e'.repeat(64),
+      text: 'already handled',
+      http_code: 0,
+      attempted_port: 4042,
+    });
+    store.transition('55555555-5555-4555-8555-555555555555', 'delivered-recovered', {});
+    expect(store.listStaleClaimable(futureCutoff())).toHaveLength(0);
+    store.close();
+  });
+
+  it('parity: the listing matches exactly what purgeStaleClaimable deletes', () => {
+    const store = PendingRelayStore.open('echo', tmpDir);
+    for (const n of ['6', '7']) {
+      store.enqueue({
+        delivery_id: `${n.repeat(8)}-${n.repeat(4)}-4${n.repeat(3)}-8${n.repeat(3)}-${n.repeat(12)}`,
+        topic_id: 9,
+        text_hash: n.repeat(64),
+        text: `victim ${n}`,
+        http_code: 0,
+        attempted_port: 4042,
+      });
+    }
+    const cutoff = futureCutoff();
+    const listed = store.listStaleClaimable(cutoff);
+    const deleted = store.purgeStaleClaimable(cutoff);
+    expect(deleted).toBe(listed.length);
+    expect(store.count()).toBe(0);
+    store.close();
+  });
+});

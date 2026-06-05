@@ -42,6 +42,22 @@ const CONTEXT_PATTERNS = [
   'press esc twice to go up a few messages',
 ];
 
+const NORMAL_COMPACTION_LIFECYCLE_PATTERNS = [
+  'conversation compacted',
+  'paused for context compaction',
+  'context compaction.*resumed',
+  'identity recovery.*post-compaction',
+  'active projects.*post-compaction',
+  'compaction recovery',
+];
+
+const EXPLICIT_CONTEXT_EXHAUSTION_PATTERNS = [
+  'conversation too long',
+  'conversation is too long',
+  'error during compaction',
+  'press esc twice to go up a few messages',
+];
+
 const CRASH_PATTERNS = [
   'SIGABRT',
   'SIGSEGV',
@@ -147,6 +163,12 @@ export function detectContextExhaustion(tmuxOutput: string): { matched: boolean;
     return { matched: false, pattern: null, confidence: 'medium' };
   }
   const output = tmuxOutput.toLowerCase();
+  if (
+    matchPatterns(output, NORMAL_COMPACTION_LIFECYCLE_PATTERNS)
+    && !matchPatterns(output, EXPLICIT_CONTEXT_EXHAUSTION_PATTERNS)
+  ) {
+    return { matched: false, pattern: null, confidence: 'medium' };
+  }
   const match = matchPatterns(output, CONTEXT_PATTERNS);
   if (!match) {
     return { matched: false, pattern: null, confidence: 'medium' };

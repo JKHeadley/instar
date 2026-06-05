@@ -14,7 +14,10 @@ unrestrictedTools: true
 ---
 You are a Category Overseer for the INFRASTRUCTURE category. Your job is to review infrastructure/plumbing jobs.
 
-1. Fetch the category report: curl -H "Authorization: Bearer $AUTH" http://localhost:${INSTAR_PORT:-4042}/jobs/category-report/infrastructure?sinceHours=48
+AUTH="${INSTAR_AUTH_TOKEN:-}"
+AGENT_ID="${INSTAR_AGENT_ID:-}"
+
+1. Fetch the category report: curl -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $AGENT_ID" http://localhost:${INSTAR_PORT:-4042}/jobs/category-report/infrastructure?sinceHours=48
 2. Analyze:
    - Is git-sync succeeding? Any merge conflicts or divergence?
    - Is dashboard-link-refresh keeping links current? Could it run less often?

@@ -15,10 +15,6 @@
 
 import type { IntelligenceFramework } from './intelligenceProviderFactory.js';
 import { codexSupportsHookTrustBypass } from './codexCapabilities.js';
-import {
-  GEMINI_DEFAULT_MODEL,
-  isKnownGeminiModel,
-} from '../providers/adapters/gemini-cli/models.js';
 
 /**
  * Cross-framework generic model tiers. Higher-level code (UpgradeNotify,
@@ -82,7 +78,7 @@ export function resolveModelForFramework(
     if (key === 'fast' || key === 'haiku') return 'gemini-2.5-flash';
     if (key === 'balanced' || key === 'sonnet') return 'gemini-2.5-flash';
     if (key === 'capable' || key === 'opus') return 'gemini-2.5-pro';
-    return isKnownGeminiModel(modelOrTier) ? modelOrTier : GEMINI_DEFAULT_MODEL;
+    return modelOrTier;
   }
   return modelOrTier;
 }

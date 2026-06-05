@@ -18,7 +18,7 @@ export interface MessagingProbeDeps {
     topicMappings: number;
     lastError?: string | null;
     consecutivePollErrors?: number;
-    fatalReason?: '401' | 'network' | null;
+    fatalReason?: '401' | 'network' | 'no-usable-bot-token' | null;
     stoppedAt?: string | null;
   };
   /** Path to the Telegram message log JSONL file */

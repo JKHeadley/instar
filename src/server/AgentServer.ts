@@ -14,6 +14,17 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import { ApprovalLedger } from '../core/ApprovalLedger.js';
+import { MandateStore } from '../coordination/MandateStore.js';
+import { MandateGate } from '../coordination/MandateGate.js';
+import { MandateAudit } from '../coordination/MandateAudit.js';
+import { ConditionsRegistry } from '../coordination/conditions.js';
+import { ReviewExchangeEngine } from '../coordination/ReviewExchange.js';
+import { CutoverReadiness } from '../feedback-factory/cutoverReadiness.js';
+import { DurableParityMonitor, JsonlPassPersistence } from '../feedback-factory/monitor/parityMonitorStore.js';
+import { HttpParitySource } from '../feedback-factory/dryrun/HttpParitySource.js';
+import { runDryRunCompare } from '../feedback-factory/dryrun/dryRunCompare.js';
+import { InMemoryImportTarget, runImport } from '../feedback-factory/migration/importRunner.js';
+import { SecretStore } from '../core/SecretStore.js';
 import { fileURLToPath } from 'node:url';
 import type { SessionManager } from '../core/SessionManager.js';
 import type { StateManager } from '../core/StateManager.js';
@@ -154,6 +165,10 @@ export class AgentServer {
   /** Approval-as-Data ledger (spec Part B, Phase 2). Read-only observability over
    *  operator approval decisions. Null when stateDir is unavailable. */
   private approvalLedger: ApprovalLedger | null = null;
+  /** Coordination Mandate enforcement (spec §4): deny-by-default gate + signed
+   *  store + hash-chained audit. Null when stateDir is unavailable. */
+  private coordination: { store: MandateStore; gate: MandateGate; audit: MandateAudit; conditions: ConditionsRegistry; reviews: ReviewExchangeEngine } | null = null;
+  private cutoverReadiness: CutoverReadiness | null = null;
   private parallelActivityIndex: ParallelActivityIndex | null = null;
   private parallelWorkSentinel: ParallelWorkSentinel | null = null;
   private parallelWorkSentinelTimer: ReturnType<typeof setInterval> | null = null;
@@ -266,6 +281,8 @@ export class AgentServer {
     meshSelfId?: string;
     /** Resolve the lease-holder's base URL when this machine is not the holder (else null). */
     resolveRouterUrl?: () => string | null;
+    /** Every other active machine with a known URL — backs GET /sessions?scope=pool. */
+    resolvePeerUrls?: () => Array<{ machineId: string; url: string }>;
     /** Signed rollout-stage E2E result store (§Rollout). */
     sessionPoolE2EResultStore?: import('../core/SessionPoolE2EResultStore.js').SessionPoolE2EResultStore;
     localSigningKeyPem?: string;
@@ -608,7 +625,13 @@ export class AgentServer {
     // tests/e2e/standards-conformance-gate-lifecycle.test.ts; the budget itself
     // is verified at the unit level (AgentServer-outbound-timeout.test.ts via the
     // extracted production map/matcher). A 150s/180s budget is not E2E-observable.
-    this.app.use(requestTimeout(options.config.requestTimeoutMs, buildRequestTimeoutOverrides()));
+    // The parity-pass/import-dryrun route budgets derive from the configured
+    // live-source TOTAL fetch budget (feedbackMigration.paritySource.totalTimeoutMs)
+    // so widening the source budget for a degraded source widens the response
+    // window with it — see buildRequestTimeoutOverrides() for the live incident.
+    const paritySourceTotalTimeoutMs = (options.config as { feedbackMigration?: { paritySource?: { totalTimeoutMs?: number } } })
+      .feedbackMigration?.paritySource?.totalTimeoutMs;
+    this.app.use(requestTimeout(options.config.requestTimeoutMs, buildRequestTimeoutOverrides({ paritySourceTotalTimeoutMs })));
 
     // ── Token Ledger ──────────────────────────────────────────────────
     // Read-only token-usage observability. Reads Claude Code's per-session
@@ -851,6 +874,118 @@ export class AgentServer {
       // @silent-fallback-ok — reported via console.warn; a ledger init failure must never block server boot.
       console.warn('[instar] approval-ledger init failed (non-fatal):', err);
       this.approvalLedger = null;
+    }
+
+    // Coordination Mandate enforcement (docs/specs/coordination-mandate.md §4).
+    // Deny-by-default: with NO valid mandate issued, the gate denies every
+    // autonomous A2A action — the system is inert until the operator authors a
+    // mandate through the PIN-gated issuance route. The issuance proof is an HMAC
+    // over the server's issuance secret (authToken): the proof stops a forged or
+    // edited AUTHORED mandate (T1/T2); local-file tamper by an attacker with disk
+    // access is the same trust root as today (T12, out of scope, stated in-spec).
+    // Conditions resolve from REAL state; unwired conditions evaluate false
+    // (deny-safe) — the future execute-cutover authority wires real resolvers.
+    // Own try/catch so a failure here can never cascade into the other inits.
+    try {
+      if (options.config.stateDir) {
+        const issuanceKey = this.config.authToken || 'mandate-issuance-unsigned-dev-key';
+        const mSign = (canonical: string) => createHmac('sha256', issuanceKey).update(canonical).digest('hex');
+        const mVerify = (canonical: string, proof: string) => {
+          const expected = mSign(canonical);
+          try {
+            return expected.length === proof.length
+              && timingSafeEqual(Buffer.from(expected), Buffer.from(proof));
+          } catch { /* @silent-fallback-ok — a malformed proof must verify FALSE (deny-safe), never throw */ return false; }
+        };
+        const store = new MandateStore({
+          filePath: path.join(options.config.stateDir, 'state', 'coordination-mandates.json'),
+          sign: mSign,
+          verifySig: mVerify,
+        });
+        const audit = new MandateAudit({
+          filePath: path.join(options.config.stateDir, 'state', 'mandate-audit.jsonl'),
+        });
+        const conditions = new ConditionsRegistry();
+        // Cutover-READINESS (spec §7 G2.4, scoped by decision 1A: everything UP TO
+        // the door — the flip itself stays the operator's manual click). The two
+        // objective conditions resolve from REAL durable state (T7): the persisted
+        // import IntegrityReport and the durable zero-divergence parity window.
+        // An agent can TRIGGER a server-side parity pass; it can never assert one.
+        const parityMonitor = new DurableParityMonitor(
+          new JsonlPassPersistence(path.join(options.config.stateDir, 'state', 'feedback-parity-passes.jsonl')),
+        );
+        const migrationCfg = (this.config as { feedbackMigration?: { paritySource?: { baseUrl?: string; secretKey?: string; pageSize?: number; status?: string; pageTimeoutMs?: number; totalTimeoutMs?: number } } }).feedbackMigration;
+        const paritySourceCfg = migrationCfg?.paritySource;
+        const runParityCheck = paritySourceCfg?.baseUrl
+          ? async () => {
+            const token = String(new SecretStore({ stateDir: options.config.stateDir }).get(paritySourceCfg.secretKey ?? 'portal.instarReadToken') ?? '');
+            if (!token) throw new Error(`parity source token "${paritySourceCfg.secretKey ?? 'portal.instarReadToken'}" not found in the SecretStore`);
+            const source = new HttpParitySource({
+              baseUrl: paritySourceCfg.baseUrl!,
+              token,
+              ...(paritySourceCfg.pageSize ? { pageSize: paritySourceCfg.pageSize } : {}),
+              ...(paritySourceCfg.status ? { status: paritySourceCfg.status } : {}),
+              ...(paritySourceCfg.pageTimeoutMs ? { pageTimeoutMs: paritySourceCfg.pageTimeoutMs } : {}),
+              ...(paritySourceCfg.totalTimeoutMs ? { totalTimeoutMs: paritySourceCfg.totalTimeoutMs } : {}),
+            });
+            await source.prepare();
+            return runDryRunCompare(source);
+          }
+          : null;
+        // Import REHEARSAL (dry-run): live source fetch with raw capture → AS-IS
+        // import into an in-memory target → integrity gate over the readback.
+        // Zero durable data writes; the envelope lands at the SEPARATE dry-run
+        // path below, never the canonical integrity report (readiness honesty).
+        const runImportDryRunCheck = paritySourceCfg?.baseUrl
+          ? async () => {
+            const token = String(new SecretStore({ stateDir: options.config.stateDir }).get(paritySourceCfg.secretKey ?? 'portal.instarReadToken') ?? '');
+            if (!token) throw new Error(`parity source token "${paritySourceCfg.secretKey ?? 'portal.instarReadToken'}" not found in the SecretStore`);
+            const source = new HttpParitySource({
+              baseUrl: paritySourceCfg.baseUrl!,
+              token,
+              captureRaw: true,
+              ...(paritySourceCfg.pageSize ? { pageSize: paritySourceCfg.pageSize } : {}),
+              ...(paritySourceCfg.status ? { status: paritySourceCfg.status } : {}),
+              ...(paritySourceCfg.pageTimeoutMs ? { pageTimeoutMs: paritySourceCfg.pageTimeoutMs } : {}),
+              ...(paritySourceCfg.totalTimeoutMs ? { totalTimeoutMs: paritySourceCfg.totalTimeoutMs } : {}),
+            });
+            await source.prepare();
+            return runImport(
+              { clusters: source.readRawClusters(), feedback: source.readRawFeedback() },
+              new InMemoryImportTarget(),
+            );
+          }
+          : null;
+        const readiness = new CutoverReadiness({
+          parityMonitor,
+          integrityReportPath: path.join(options.config.stateDir, 'state', 'feedback-integrity-report.json'),
+          runParityCheck,
+          importDryRunReportPath: path.join(options.config.stateDir, 'state', 'feedback-import-dryrun.json'),
+          runImportDryRun: runImportDryRunCheck,
+        });
+        // The REAL resolvers (replacing the former deny-safe stubs): both read
+        // durable server-side state; both stay false until that state genuinely
+        // clears. The first mandate has no conditioned authority, so behavior is
+        // unchanged until an execute-cutover authority is ever issued.
+        conditions.register('integrity-gate-pass', () => readiness.integrityStatus().passed);
+        conditions.register('parity-zero-divergence', () => {
+          const p = readiness.parityStatus();
+          return p.cleared && !p.stale;
+        });
+        this.cutoverReadiness = readiness;
+        const gate = new MandateGate({ store, conditions, audit });
+        // ReviewExchange (spec §7 G2.3): mutual code-review sign-offs, every
+        // signature evaluated through the SAME gate (same audit chain).
+        const reviews = new ReviewExchangeEngine({
+          filePath: path.join(options.config.stateDir, 'state', 'review-exchanges.json'),
+          gate,
+        });
+        this.coordination = { store, gate, audit, conditions, reviews };
+      }
+    } catch (err) {
+      // @silent-fallback-ok — reported via console.warn; init failure leaves the engine null → routes 503 (deny-safe), never blocks boot.
+      console.warn('[instar] coordination-mandate init failed (non-fatal):', err);
+      this.coordination = null;
     }
 
     // Failure-Learning Loop (docs/specs/FAILURE-LEARNING-LOOP-SPEC.md) — instar
@@ -1187,6 +1322,8 @@ export class AgentServer {
       featureMetricsLedger: this.featureMetricsLedger,
       resourceLedger: this.resourceLedger,
       approvalLedger: this.approvalLedger,
+      coordination: this.coordination,
+      cutoverReadiness: this.cutoverReadiness,
       parallelActivityIndex: this.parallelActivityIndex,
       frameworkIssueLedger: this.frameworkIssueLedger,
       mentorRunner: this.mentorRunner,
@@ -1219,6 +1356,7 @@ export class AgentServer {
       secretSync: options.secretSync ?? null,
       meshSelfId: options.meshSelfId ?? null,
       resolveRouterUrl: options.resolveRouterUrl ?? null,
+      resolvePeerUrls: options.resolvePeerUrls ?? null,
       sessionPoolE2EResultStore: options.sessionPoolE2EResultStore ?? null,
       messageLedger: options.messageLedger ?? null,
       currentInboundByTopic: options.currentInboundByTopic ?? null,
@@ -1981,9 +2119,42 @@ export class AgentServer {
     const getConfig = (): MentorConfig => readMentorConfigFromDisk(options.config.stateDir, startupMentorConfig);
     const intelligence = options.intelligence ?? null;
     const self = this;
+    // Durable lastResult: persist the loop's last outcome to the state dir so a
+    // server restart doesn't erase it. On a frequent-release day restart cadence
+    // matched the 15-min tick cadence, so GET /mentor/status.lastResult read
+    // null essentially always — the loop was undiagnosable from its own status
+    // route. Absent stateDir ⇒ in-memory only (old behavior).
+    const lastResultPath = options.config.stateDir
+      ? path.join(options.config.stateDir, 'mentor-last-result.json')
+      : null;
     return new MentorOnboardingRunner(
       {
         capture: (input) => ledger.captureRun(input),
+        loadLastResult: lastResultPath
+          ? () => {
+              try {
+                const raw = fs.readFileSync(lastResultPath, 'utf-8');
+                const parsed = JSON.parse(raw) as { ran?: unknown; at?: unknown };
+                // Minimal shape check — a corrupt/foreign file hydrates as null.
+                if (typeof parsed?.at === 'number' && typeof parsed?.ran === 'boolean') {
+                  return parsed as import('../scheduler/MentorOnboardingRunner.js').MentorRunResult & { at: number };
+                }
+              } catch { /* @silent-fallback-ok — missing/corrupt file ⇒ null (old in-memory start) */ }
+              return null;
+            }
+          : undefined,
+        saveLastResult: lastResultPath
+          ? (r) => {
+              try {
+                fs.mkdirSync(path.dirname(lastResultPath), { recursive: true });
+                const tmp = `${lastResultPath}.tmp`;
+                fs.writeFileSync(tmp, JSON.stringify(r, null, 2), 'utf-8');
+                fs.renameSync(tmp, lastResultPath);
+              } catch (err) {
+                console.warn('[mentor] lastResult persist failed (non-fatal):', err instanceof Error ? err.message : String(err));
+              }
+            }
+          : undefined,
         // Record a keystone `mentor-mentee-differential` CYCLE per tick — the
         // structural version of the manual differential-oversight loop. No-ops
         // unless `mentor.apprenticeshipInstanceId` is set AND the cycle store is

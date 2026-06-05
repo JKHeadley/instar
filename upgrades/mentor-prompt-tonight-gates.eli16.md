@@ -1,0 +1,3 @@
+# The autonomous-mentor loop now teaches two new ship rules
+
+The mentor system can run an autonomous develop-and-fix loop whose working instructions are encoded in code (so every cycle gets the same discipline, not whatever someone remembers to type). Two rules earned the hard way on 2026-06-05 are now part of those durable instructions: (1) before starting any build, run the new claim-check command so two parallel builders never construct the same fix twice — that exact collision happened twice in one night and wasted hours; (2) every PR description must include a plain-English ELI16 section from the start, because a required CI gate now rejects PRs without one — better to write it up front than to discover the red check after pushing.

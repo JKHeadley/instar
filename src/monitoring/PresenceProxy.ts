@@ -278,6 +278,14 @@ const QUOTA_EXHAUSTION_PATTERNS = [
   /usage limit.*reached/i,
   /quota.*exceeded/i,
   /rate limit.*exceeded/i,
+  // 2026-06-05 incident (topic 2169): the session-limit banner reads
+  // "Session limit reached ∙ resets 10:30pm" — no parenthesized timezone, and
+  // none of the patterns above matched, so the standby kept saying "actively
+  // working" while the session was paused on its limit. "approaching session
+  // limit" deliberately does NOT match (approaching ≠ paused).
+  /session limit reached/i,
+  /session limit\b[^a-z]*resets/i,                       // "session limit, resets 10:30pm" / "Session limit ∙ resets…"
+  /\blimit\b.*\bresets?\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)\b/i, // any limit banner with a bare "resets 10:30pm" (no tz paren)
 ];
 
 /**
