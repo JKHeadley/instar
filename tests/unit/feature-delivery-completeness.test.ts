@@ -135,6 +135,13 @@ describe('Feature Delivery Completeness', () => {
       'Multi-Session Autonomy',    // per-topic concurrent autonomous jobs (templates.ts + migrator parity)
       'Process Health (Dashboard Tab)', // Failure-Learning Loop read surface (templates.ts + migrator + shadow-marker parity)
       "Preferences I've learned about you", // Correction & Preference Learning Sentinel Slice 1a read surface (templates.ts + migrator + shadow-marker parity)
+      // Coordination-mandate family (coordination-mandate spec §7, G2.2–G2.4): framework-agnostic
+      // agent-facing capabilities in BOTH templates.ts and the migrator. Were untracked — a latent
+      // red this guard never caught while it sat quarantined in vitest.push.config.ts; tracked here
+      // as part of re-arming the gate (2026-06-05 suite triage).
+      'Coordination Mandate',           // mandate gate awareness (/mandate/evaluate; deny-by-default; requester≠authorizer)
+      'ReviewExchange (autonomous code review)', // mandate-gated two-party review sign-off protocol
+      'Cutover Readiness',              // migration readiness read surface (/cutover-readiness; the door stays the operator's)
     ];
 
     for (const section of featureSections) {
@@ -248,6 +255,10 @@ describe('Feature Delivery Completeness', () => {
       '/session/clock',                                    // ROBUST-SESSION-TIME-AWARENESS read surface (templated "Session Clock" + migrator): observability the agent READS to answer "how long have I been running / how much is left?" — like /codex/usage and /metrics/features, not a framework-shadowed user-invokable capability
       'Token-Burn Alerts',                                 // BurnDetector noise/activity-gate awareness (monitoring.burnDetection): operational observability the agent READS to answer "why am I getting these token alerts / turn them off" — migrator-only behavioral/config guidance like 'Topic-Flood Guard' / Sentinel Notifications, no user-invokable route / template-shadow parity. (Was previously untracked — a pre-existing red in this guard, fixed here.)
       '/resources/summary',                                // per-agent ResourceLedger Phase B (CPU/memory) READ surface (templated "Resource Usage (CPU + memory + rate-limit events)" + migrator): observability the agent READS to answer "how much CPU/memory am I using right now?" — like /codex/usage, /metrics/features, /session/clock, and /resources/rate-limits, not a framework-shadowed user-invokable capability
+      '/mandate/evaluate',                                 // alternate (content-sniff) check for Coordination Mandate — tracked as a featureSection above
+      '/review-exchange',                                  // alternate (content-sniff) check for ReviewExchange — tracked as a featureSection above
+      '/cutover-readiness',                                // alternate (content-sniff) check for Cutover Readiness — tracked as a featureSection above
+      '/cutover-readiness/import-dryrun',                  // sub-line splice sniff key: the migrateClaudeMd else-if branch inserts the import-rehearsal line INTO the already-tracked Cutover Readiness section for agents that predate it (like '/corrections' for Preferences)
     ];
 
     it('all new migrator CLAUDE.md sections are tracked', () => {

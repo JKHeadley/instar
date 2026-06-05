@@ -1,0 +1,41 @@
+<!-- bump: patch -->
+
+## What Changed
+
+Two of the project's own CI guards — the no-shell-exec security check and the
+"every capability reaches every agent" delivery-completeness check — had been
+parked in a skip-list and quietly stopped guarding. Both are fixed and turned
+back on. While parked, they missed two real issues, now also fixed: one
+internal monitor used a shell pipeline where a no-shell call belongs, and the
+coordination-mandate capability family (mandate gate, ReviewExchange, Cutover
+Readiness) was never mirrored to Codex/Gemini agents' awareness files.
+
+## What to Tell Your User
+
+Nothing user-visible on Claude-based agents. If you run Codex or Gemini
+framework agents: on their next update they gain awareness of the
+coordination-mandate capabilities (how to check a mandate before acting,
+the structured review-sign-off flow, and the migration-readiness read
+surface) — previously these were Claude-only knowledge.
+
+## Summary of New Capabilities
+
+- AGENTS.md / GEMINI.md shadows now receive the **Coordination Mandate**,
+  **ReviewExchange**, and **Cutover Readiness** sections on migration (the
+  existing idempotent mirroring mechanism; append-only).
+- The security gate (no bare `execSync` outside the audited funnels) and the
+  feature-delivery-completeness gate (template ↔ migrator ↔ shadow parity) run
+  in CI again.
+- Two unit suites no longer fail on machines whose shell exports a real
+  `INSTAR_AUTH_TOKEN` (test sandboxes strip ambient credentials).
+- Maturity: stable (guard re-arms + behavior-preserving refactor; the only
+  agent-visible delta is additive shadow-file content).
+
+## Evidence
+
+2026-06-05 full-suite triage: 37 local failures enumerated; classification
+separated quarantined-guard rot (these fixes), ambient-credential env leaks
+(these fixes), one incomplete local node_modules, and box-load flakes. The
+re-armed guards pass 84/84 deterministically; the migrator + shadow surface is
+green at 49 files / 324 tests; touched suites re-run green WITH the real token
+exported, proving the hygiene fix.

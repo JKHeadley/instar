@@ -6,7 +6,7 @@
  * SessionManager/kill/audit implementations.
  */
 
-import { execSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import {
@@ -19,9 +19,14 @@ import type {
   McpReapAuditEntry,
 } from './McpProcessReaper.js';
 
-function shellExec(cmd: string, timeout = 8000): string {
+// execFileSync (argv array, no shell) instead of execSync: the previous
+// `ps | egrep | grep -v` shell pipeline tripped the no-execSync security gate
+// (tests/unit/security.test.ts) — the coarse egrep pre-filter now runs in JS
+// below, where matchMcpSignature was already doing the precise second-stage
+// match anyway. No shell, no interpolation surface.
+function fileExec(file: string, args: string[], timeout = 8000): string {
   try {
-    return execSync(cmd, { encoding: 'utf8', timeout, stdio: ['ignore', 'pipe', 'ignore'] });
+    return execFileSync(file, args, { encoding: 'utf8', timeout, stdio: ['ignore', 'pipe', 'ignore'] });
   } catch {
     return '';
   }
@@ -61,12 +66,13 @@ export function makeMcpProcessReaperDeps(opts: {
   return {
     listMcpProcesses(): McpProcessInfo[] {
       const uid = process.getuid?.() ?? 0;
-      const out = shellExec(
-        `ps -u ${uid} -o pid=,ppid=,etime=,command= 2>/dev/null | egrep -i '${mcpGrepAlternation()}' | grep -v egrep`,
-      ).trim();
+      const out = fileExec('ps', ['-u', String(uid), '-o', 'pid=,ppid=,etime=,command=']).trim();
       if (!out) return [];
+      // Coarse pre-filter (the old egrep stage), now in JS over the ps output.
+      const coarse = new RegExp(mcpGrepAlternation(), 'i');
       const procs: McpProcessInfo[] = [];
       for (const line of out.split('\n')) {
+        if (!coarse.test(line)) continue;
         const m = line.trim().match(/^(\d+)\s+(\d+)\s+([\d:.-]+)\s+(.+)$/);
         if (!m) continue;
         const command = m[4];
@@ -85,7 +91,7 @@ export function makeMcpProcessReaperDeps(opts: {
 
     getProcessTree(): Map<number, number> {
       const tree = new Map<number, number>();
-      const out = shellExec(`ps -axo pid=,ppid= 2>/dev/null`).trim();
+      const out = fileExec('ps', ['-axo', 'pid=,ppid=']).trim();
       if (!out) return tree;
       for (const line of out.split('\n')) {
         const m = line.trim().match(/^(\d+)\s+(\d+)$/);
@@ -96,7 +102,7 @@ export function makeMcpProcessReaperDeps(opts: {
 
     getTmuxPaneMap(): Map<number, string> {
       const map = new Map<number, string>();
-      const out = shellExec(`${tmuxPath} list-panes -a -F "#{session_name}||#{pane_pid}" 2>/dev/null`).trim();
+      const out = fileExec(tmuxPath, ['list-panes', '-a', '-F', '#{session_name}||#{pane_pid}']).trim();
       if (!out) return map;
       for (const line of out.split('\n')) {
         const [session, pidStr] = line.split('||');

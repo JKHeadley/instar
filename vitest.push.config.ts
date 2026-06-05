@@ -31,8 +31,15 @@ const FLAKY_TESTS = [
   // ── Environment-dependent / non-deterministic ─────────────────────
   'tests/unit/agent-registry.test.ts',
   'tests/unit/builtin-manifest.test.ts',
-  'tests/unit/feature-delivery-completeness.test.ts',
-  'tests/unit/security.test.ts',
+  // security.test.ts + feature-delivery-completeness.test.ts — RE-ARMED
+  // 2026-06-05. Both are DETERMINISTIC source-content guards (the old
+  // "environment-dependent" label was wrong) and both rotted while parked:
+  // a bare execSync reached src/monitoring/mcpProcessReaperDeps.ts, and the
+  // whole coordination-mandate capability family (mandate gate /
+  // ReviewExchange / cutover-readiness) shipped untracked by the
+  // template↔migrator↔shadow parity guard. Those are fixed and the gates now
+  // gate again. (Same lesson as the ESM-compliance re-arm above: a parked
+  // gate is no gate.)
 
   // ── Non-deterministic data / race conditions ──────────────────────
   'tests/integration/semantic-memory.test.ts',
@@ -72,7 +79,15 @@ const FLAKY_TESTS = [
   // ── Port assertion mismatch on some environments ──────────────────
   'tests/integration/fresh-install.test.ts',
 
-  // ── Error message format mismatch ─────────────────────────────────
+  // ── Stale test file: predates the TunnelManager provider/tier rewrite ──
+  // (#329 et seq.) — 22/29 tests fail because the suite mocks only the
+  // `cloudflared` module while production now drives a provider pool with a
+  // REAL reachability probe (driveTier1 → probeReachability fetches
+  // <url>/health and requires 2xx; the mock URL can never answer). The old
+  // "error message format mismatch" label badly understated this. Needs a
+  // rewrite against the provider/lifecycle architecture with the `fetch`
+  // injection seam (TunnelManager constructor `injections.fetch`) stubbed.
+  // Tracked: commitment "Rewrite TunnelManager unit suite" (2026-06-05).
   'tests/unit/TunnelManager.test.ts',
 
   // ── Supertest body size limit vs express limit mismatch ─────────

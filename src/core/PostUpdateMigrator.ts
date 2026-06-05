@@ -4382,6 +4382,14 @@ Create worktrees for collaborator repos with \`instar worktree create <branch>\`
       '**Multi-Session Autonomy**',
       '**Process Health (Dashboard Tab)**',
       "**Preferences I've learned about you**",
+      // Coordination-mandate family (coordination-mandate spec §7, G2.2–G2.4):
+      // framework-agnostic HTTP capabilities any mandate-named agent must know.
+      // A Codex/Gemini agent under a future mandate that never learns
+      // /mandate/evaluate will improvise around the gate (the Secret Drop
+      // lesson) — mirrored to the shadows like every agent-facing capability.
+      '**Coordination Mandate**',
+      '**ReviewExchange (autonomous code review)**',
+      '**Cutover Readiness**',
     ];
 
     for (const shadowName of ['AGENTS.md', 'GEMINI.md']) {
