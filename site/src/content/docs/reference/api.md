@@ -503,6 +503,21 @@ with respect to behavior; the ratio is a signal, never a gate.
 - `GET /listener/metrics`
 - `POST /listener/restart`
 
+## /mandate
+
+Coordination Mandate (spec: coordination-mandate.md): a deny-by-default authority
+gate for autonomous agent-to-agent actions. The operator's bounded, expiring,
+revocable mandate — issued from the dashboard behind their PIN — is the authorizer,
+never the agent. With no mandate issued, every evaluation denies. Every decision
+(allow AND deny) lands in a hash-chained, tamper-evident audit.
+
+- `POST /mandate/evaluate` — check an intended action `{ action, params, agentFp, mandateId }` → `{ decision, reason }`
+- `GET /mandate` — list mandates (each with live `authorshipValid`)
+- `GET /mandate/:id` — one mandate + verification status
+- `GET /mandate/audit` — the chained audit (`chain.ok:false` = tampering)
+- `POST /mandate/issue` — PIN-GATED (operator only; Bearer alone is refused)
+- `POST /mandate/:id/revoke` — PIN-GATED (the operator kill switch)
+
 ## /memory
 - `GET /memory/entities/by-evidence`
 - `GET /memory/evidence/by-entity/:id`

@@ -879,7 +879,7 @@ export class AgentServer {
           try {
             return expected.length === proof.length
               && timingSafeEqual(Buffer.from(expected), Buffer.from(proof));
-          } catch { return false; }
+          } catch { /* @silent-fallback-ok — a malformed proof must verify FALSE (deny-safe), never throw */ return false; }
         };
         const store = new MandateStore({
           filePath: path.join(options.config.stateDir, 'state', 'coordination-mandates.json'),
@@ -899,6 +899,7 @@ export class AgentServer {
         this.coordination = { store, gate, audit, conditions };
       }
     } catch (err) {
+      // @silent-fallback-ok — reported via console.warn; init failure leaves the engine null → routes 503 (deny-safe), never blocks boot.
       console.warn('[instar] coordination-mandate init failed (non-fatal):', err);
       this.coordination = null;
     }

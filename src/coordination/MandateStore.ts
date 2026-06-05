@@ -76,7 +76,7 @@ export class MandateStore {
     try {
       const raw = JSON.parse(fs.readFileSync(this.d.filePath, 'utf8'));
       return Array.isArray(raw) ? (raw as CoordinationMandate[]) : [];
-    } catch { return []; }
+    } catch { /* @silent-fallback-ok — mandates file may not exist yet; an empty store is DENY-BY-DEFAULT (the safe state) */ return []; }
   }
 
   private writeAll(mandates: CoordinationMandate[]): void {

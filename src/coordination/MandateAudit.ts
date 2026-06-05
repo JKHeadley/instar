@@ -69,11 +69,11 @@ export class MandateAudit {
   /** All entries (oldest→newest). Tolerant of a missing file / a torn trailing line. */
   all(): MandateAuditEntry[] {
     let content: string;
-    try { content = fs.readFileSync(this.d.filePath, 'utf8'); } catch { return []; }
+    try { content = fs.readFileSync(this.d.filePath, 'utf8'); } catch { /* @silent-fallback-ok — audit file may not exist yet; empty history is the natural default */ return []; }
     const out: MandateAuditEntry[] = [];
     for (const line of content.split('\n')) {
       if (!line.trim()) continue;
-      try { out.push(JSON.parse(line) as MandateAuditEntry); } catch { /* skip a torn line */ }
+      try { out.push(JSON.parse(line) as MandateAuditEntry); } catch { /* @silent-fallback-ok — torn-trailing-line tolerance; a crash mid-append must not poison reads */ }
     }
     return out;
   }
