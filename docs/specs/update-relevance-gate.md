@@ -10,7 +10,7 @@ iterations: 1
 
 # Update-Relevance Gate
 
-**Status:** converged + approved · **Ships:** dark on the fleet, live on Echo (developmentAgent gate)
+**Status:** converged + approved · **Ships:** LIVE fleet-wide, default-on (ratified by Justin 2026-06-04: a UX bug fix to a user-facing surface ships live, not dark — shipping it dark would hide the fix from exactly the users who reported the noise)
 **Parent principle:** Structure > Willpower · Near-Silent Notifications
 **Earned from:** Justin, 2026-06-04 (topic 18250). After PR #698 shipped silent-by-default + maturity-tagged announcements, the user STILL saw update messages referencing internal features they have no clue about ("Apprenticeship cycle recording (stricter)", "Sibling Agent Server Control", "I can now record manual overseer review cycles…"). #698 fixed the *opt-in framing*; it did not enforce *relevance*.
 
@@ -51,14 +51,14 @@ So the chokepoint is: **any discretionary message destined for the Agent Updates
 
 - New gate `src/core/UpdateRelevanceGate.ts` — LLM-backed (`IntelligenceProvider`), mirrors `MessagingToneGate` (fail-open, `model:'fast'`, `temperature:0`, prompt-injection boundary, `/metrics/features` attribution `component:'UpdateRelevanceGate'`).
 - Instantiated in `server.ts` beside `MessagingToneGate`, injected into the route context.
-- **Enablement resolves via the developmentAgent gate:** `config.monitoring?.updateRelevanceGate?.enabled ?? !!config.developmentAgent` → live on Echo, dark on the fleet, **no config migration needed** (runtime fallback against the shipped default; a future default flip propagates fleet-wide automatically).
+- **Default-ON fleet-wide:** `config.monitoring?.updateRelevanceGate?.enabled ?? true`, **no config migration needed** (runtime fallback against the shipped default). Rationale ("User-Facing Fixes Ship Live"): this is a UX bug fix, not a new capability — the dark/developmentAgent gate exists for changes whose failure could break something, and this gate cannot (fail-open, strict no-op off the Updates topic, fully audited; worst case = one borderline note withheld, visibly logged). Originally drafted dark-on-fleet; Justin flagged that a dark UX fix is invisible on exactly the agents whose noise he reported, and ratified the live flip 2026-06-04.
 - Off-switch / tuning: `.instar/config.json` → `monitoring.updateRelevanceGate.enabled`.
 
 ## Testing (all three tiers)
 
 - **Unit** (`tests/unit/UpdateRelevanceGate.test.ts`) — both sides of the decision boundary with realistic inputs: internal-plumbing texts → `internal`/suppress; genuine user news → `user-relevant`/deliver; jargony-but-relevant → `jargon` + rewrite; provider throw → fail-open. Mocked `IntelligenceProvider`.
 - **Integration** (`tests/integration/update-relevance-gate.routes.test.ts`) — `POST /telegram/post-update` with internal text → `200 {suppressed:true}`, not sent; with user-relevant text → sent. Gate disabled → byte-identical passthrough. Reply to a NON-updates topic → never gated.
-- **E2E** (`tests/e2e/update-relevance-gate.alive.test.ts`) — production init path: the gate is wired (not null) when `developmentAgent`/config enables it, and the update-class chokepoint is alive.
+- **E2E** (`tests/e2e/update-relevance-gate-lifecycle.test.ts`) — production init path: the gate is wired (not null) with NO explicit enablement (the default-on path every fleet agent runs), and the update-class chokepoint is alive.
 
 ## Agent Awareness
 

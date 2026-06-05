@@ -64,7 +64,10 @@ function buildApp(opts: {
       stateDir: opts.stateDir,
       projectName: 'echo-test',
       port: 0,
-      developmentAgent: opts.enabled,
+      // Default-ON fleet-wide: the enabled case omits the flag entirely (the
+      // production default every agent runs); the disabled case sets the
+      // explicit off-switch.
+      ...(opts.enabled ? {} : { monitoring: { updateRelevanceGate: { enabled: false } } }),
     },
     state: {
       get: (key: string) => (key === 'agent-updates-topic' ? UPDATES_TOPIC : undefined),

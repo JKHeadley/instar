@@ -34,8 +34,8 @@ For each candidate update the gate makes one of three calls:
 
 **Prevents anything from vanishing without a trace.** Every decision — delivered, suppressed, or rewritten — is written to an audit log (`logs/update-relevance.jsonl`). A withheld update is still "learned" by the agent internally; only the owner-facing ping is held. And a suppressed message is reported as a success, not an error, so the sender never retries or escalates it.
 
-**Prevents a surprise rollout.** It ships live only on the development agent (Echo) and stays dark on every other agent, with a simple off-switch in config. No fleet-wide config migration is required.
+**Ships live everywhere — deliberately.** This is a bug fix to what the owner experiences, not a risky new capability, so hiding it behind a dark flag would mean the owner never sees the improvement on the agents they actually watch (exactly what happened the first time around). It's on by default for every agent, with a simple off-switch in config. No fleet-wide config migration is required.
 
 ## What ships when
 
-It ships as one change: the gate class, the wiring into the two update paths, the audit trail, full unit + integration + end-to-end tests, the owner-awareness note in the agent's CLAUDE.md, and the migration so existing agents learn about it on update. Live on Echo immediately; dark on the fleet until deliberately promoted.
+It ships as one change: the gate class, the wiring into the two update paths, the audit trail, full unit + integration + end-to-end tests, the owner-awareness note in the agent's CLAUDE.md, and the migration so existing agents learn about it on update. Live on every agent from the release it lands in — because a fix to the owner's experience only counts if the owner can see it.

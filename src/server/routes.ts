@@ -1407,11 +1407,14 @@ export function createRoutes(ctx: RouteContext): Router {
       return { suppressed: false, text };
     }
 
-    // Enablement resolves via the developmentAgent gate — live on Echo, dark on
-    // the fleet, no config migration needed (runtime fallback against the shipped
-    // default; a future default flip propagates fleet-wide automatically).
-    const enabled =
-      ctx.config.monitoring?.updateRelevanceGate?.enabled ?? !!ctx.config.developmentAgent;
+    // Default-ON fleet-wide. This is a UX BUG FIX to a user-facing surface, not a
+    // new capability — shipping it dark would hide the fix from exactly the users
+    // who reported the noise (the 2026-06-04 lesson behind the "User-Facing Fixes
+    // Ship Live" standard). The gate cannot break anything: fail-open, strict
+    // no-op off the Updates topic, every decision audited. Off-switch:
+    // monitoring.updateRelevanceGate.enabled = false. No config migration needed
+    // (runtime fallback against the shipped default).
+    const enabled = ctx.config.monitoring?.updateRelevanceGate?.enabled ?? true;
     if (!enabled || !ctx.updateRelevanceGate) {
       return { suppressed: false, text };
     }

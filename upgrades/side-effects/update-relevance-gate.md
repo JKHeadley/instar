@@ -46,7 +46,7 @@ The gate holds suppress authority, but the logic is a smart, context-rich LLM au
 ## 6. External surfaces
 
 - **Other agents on the machine:** none (per-request, per-agent).
-- **Install base:** ships dark on the fleet (developmentAgent gate), live only on Echo. No fleet behavior change until deliberately promoted.
+- **Install base:** ships **live fleet-wide, default-on** (`enabled ?? true`). Deliberate: this is a UX bug fix to a user-facing surface, and shipping it dark would hide the fix from exactly the users who reported the noise (Justin ratified the live flip 2026-06-04; "User-Facing Fixes Ship Live" standard). The risk profile supports it: fail-open, no-op off the Updates topic, fully audited — the gate cannot break delivery, only withhold noise. Off-switch retained per-agent.
 - **External systems (Telegram):** the Updates-topic message content may now be a plain-language rewrite instead of the original, or withheld. `POST /telegram/post-update` gains a new success shape `{ok:true, suppressed:true, reason}` — additive; existing callers that only check `ok` are unaffected, and suppression is a 200 (success), so no caller treats it as a retryable error.
 - **Persistent state:** appends to a new `logs/update-relevance.jsonl` audit file. No schema, no DB, no migration of existing data.
 - **Timing:** adds one fast LLM call on the Updates path only. The reply path for normal conversation is byte-identical (strict no-op). Fail-open bounds any LLM-outage cost to "the original update is sent."
@@ -55,11 +55,11 @@ The gate holds suppress authority, but the logic is a smart, context-rich LLM au
 
 ## 7. Rollback cost
 
-Pure code change behind a flag. Back-out options: (a) set `monitoring.updateRelevanceGate.enabled: false` (or it's already dark on the fleet); (b) revert the code and ship a patch. No persistent state needs cleanup beyond an inert append-only log file. No agent-state repair. No user-visible regression during the rollback window — disabling the gate restores byte-identical passthrough.
+Pure code change behind a flag. Back-out options: (a) set `monitoring.updateRelevanceGate.enabled: false` on any affected agent — instant per-agent rollback; (b) revert the code (or flip the shipped default back) and ship a patch — propagates fleet-wide on the next update with no config migration. No persistent state needs cleanup beyond an inert append-only log file. No agent-state repair. No user-visible regression during the rollback window — disabling the gate restores byte-identical passthrough.
 
 ## Conclusion
 
-The review surfaced no design changes needed. The gate is an additive, fail-open, audit-logged relevance authority scoped strictly to the Agent Updates topic, mirroring the established tone-gate pattern. Over-block (the only real risk) is bounded by audit visibility, the prefer-jargon-over-internal instruction, and the low cost of withholding a borderline update. Clear to ship: live on Echo (dogfood), dark on the fleet.
+The review surfaced one design change, made mid-PR at Justin's direction: the rollout flipped from dark-on-fleet to **live fleet-wide, default-on**. His reasoning (ratified 2026-06-04): a UX bug fix that ships dark is invisible on exactly the agents whose noise was reported — the dark gate is for capabilities whose failure could break something, and this gate cannot (fail-open, no-op off the Updates topic, audited; worst case = one borderline note withheld, visibly logged). Otherwise the gate is an additive, fail-open, audit-logged relevance authority scoped strictly to the Agent Updates topic, mirroring the established tone-gate pattern. Clear to ship live fleet-wide.
 
 ## Evidence pointers
 

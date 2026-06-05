@@ -3172,13 +3172,15 @@ export interface MonitoringConfig {
    * rewrites relevant-but-jargony updates into plain language, and passes genuine
    * user-facing news through unchanged. Strict no-op off the Updates topic.
    *
-   * Enablement resolves via the developmentAgent gate
-   * (`enabled ?? !!config.developmentAgent`) — live on Echo, dark on the fleet,
-   * no config migration needed. Fail-open on any LLM error. Spec:
+   * Default-ON fleet-wide (`enabled ?? true`) — this is a UX bug fix to a
+   * user-facing surface, not a new capability, so it ships live ("User-Facing
+   * Fixes Ship Live" standard; shipping it dark would hide the fix from exactly
+   * the users who reported the noise). No config migration needed (runtime
+   * fallback against the shipped default). Fail-open on any LLM error. Spec:
    * docs/specs/update-relevance-gate.md.
    */
   updateRelevanceGate?: {
-    /** Master flag. `undefined` resolves via the developmentAgent gate. */
+    /** Master flag. Default true; set false to disable. */
     enabled?: boolean;
   };
   /**

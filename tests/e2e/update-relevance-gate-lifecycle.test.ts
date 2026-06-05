@@ -81,7 +81,8 @@ describe('Update-Relevance Gate E2E lifecycle (feature is alive)', () => {
       authToken: AUTH,
       requestTimeoutMs: 10000,
       version: '0.0.0',
-      developmentAgent: true, // resolves the gate's enablement → live
+      // No explicit enablement — the gate is default-ON fleet-wide, and this E2E
+      // deliberately exercises that exact production path (no flag set anywhere).
       sessions: {
         claudePath: '/usr/bin/echo',
         maxSessions: 3,

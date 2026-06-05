@@ -8521,8 +8521,9 @@ export async function startServer(options: StartOptions): Promise<void> {
     // announcements opt-in + maturity-tagged, the user still saw updates
     // referencing internal features they have no clue about; #698 fixed the
     // framing, this enforces relevance. Mirrors the tone gate (shared
-    // IntelligenceProvider, fail-open). Enablement resolves at request time via
-    // the developmentAgent gate (live on Echo, dark on the fleet). Spec:
+    // IntelligenceProvider, fail-open). Default-ON fleet-wide — a UX bug fix to a
+    // user-facing surface ships live, not dark ("User-Facing Fixes Ship Live"
+    // standard); off-switch: monitoring.updateRelevanceGate.enabled. Spec:
     // docs/specs/update-relevance-gate.md.
     let updateRelevanceGate:
       | import('../core/UpdateRelevanceGate.js').UpdateRelevanceGate
