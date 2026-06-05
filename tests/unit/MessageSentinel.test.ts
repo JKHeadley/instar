@@ -519,4 +519,59 @@ describe('MessageSentinel', () => {
       expect(sentinel.isEnabled()).toBe(false);
     });
   });
+
+  describe('long-message pause downgrade (consumed-coaching-message guard)', () => {
+    // Live failure (2026-06-05, topic 1052): two ~200-word mentor coaching
+    // messages ending "…and stand by" were LLM-classified 'pause'; the
+    // forward route CONSUMED them (paused the session, never routed the
+    // text — no queue, no drop ledger, just "Session paused" in the topic).
+    // The guard: a pause classification on a message longer than the
+    // pause-directive ceiling is task content → downgraded to normal.
+
+    const LONG_COACHING_MESSAGE =
+      'Status update on your lanes: the capsule spec still awaits the approved tag, and Gemini is still ' +
+      'quota-blocked until later tonight. Check the live quota state first before driving any cycle, and ' +
+      'if it has capacity run one small observation cycle, otherwise just report the numbers back here and stand by.';
+
+    it('downgrades a long LLM-pause to normal pass-through (message is task content)', async () => {
+      sentinel = new MessageSentinel({
+        intelligence: { evaluate: async () => 'pause' },
+      });
+      const result = await sentinel.classify(LONG_COACHING_MESSAGE);
+      expect(result.category).toBe('normal');
+      expect(result.action.type).toBe('pass-through');
+      expect(result.reason).toContain('pause downgraded');
+      expect(result.method).toBe('llm');
+    });
+
+    it('keeps a SHORT LLM-pause as pause (genuine directive still pauses)', async () => {
+      sentinel = new MessageSentinel({
+        intelligence: { evaluate: async () => 'pause' },
+      });
+      const result = await sentinel.classify('Hold on, wait for me to finish reading this before you continue.');
+      expect(result.category).toBe('pause');
+      expect(result.action.type).toBe('pause-session');
+    });
+
+    it('does NOT downgrade a long emergency-stop (safety asymmetry preserved)', async () => {
+      sentinel = new MessageSentinel({
+        intelligence: { evaluate: async () => 'emergency-stop' },
+      });
+      const result = await sentinel.classify(LONG_COACHING_MESSAGE);
+      expect(result.category).toBe('emergency-stop');
+      expect(result.action.type).toBe('kill-session');
+    });
+
+    it('boundary: exactly 25 words stays pause; 26 words downgrades', async () => {
+      sentinel = new MessageSentinel({
+        intelligence: { evaluate: async () => 'pause' },
+      });
+      const words25 = Array.from({ length: 25 }, (_, i) => `w${i}`).join(' ');
+      const words26 = Array.from({ length: 26 }, (_, i) => `w${i}`).join(' ');
+      expect((await sentinel.classify(words25)).category).toBe('pause');
+      const over = await sentinel.classify(words26);
+      expect(over.category).toBe('normal');
+      expect(over.action.type).toBe('pass-through');
+    });
+  });
 });

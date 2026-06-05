@@ -1,0 +1,19 @@
+---
+bump: patch
+---
+
+## What Changed
+
+The MessageSentinel's LLM layer now downgrades a 'pause' classification to normal pass-through when the message exceeds 25 words (MAX_PAUSE_DIRECTIVE_WORDS). Emergency-stop is deliberately not length-gated (safety asymmetry). The downgrade is logged and carried in the classification reason.
+
+## What to Tell Your User
+
+Long working messages that happen to end with phrases like "stand by" or "hold off for now" can no longer be swallowed as pause commands. Previously such a message could pause your agent's session and vanish entirely — you'd see only "Session paused" where your instructions should have landed. Short, genuine pause directives still pause as before.
+
+## Summary of New Capabilities
+
+- Pause classifications on messages over 25 words pass through as normal conversation; the message is delivered instead of consumed.
+
+## Evidence
+
+Live failures (2026-06-05, topic 1052): two ~200-word mentor coaching messages ending "…and stand by" were LLM-classified 'pause' and CONSUMED by the telegram-forward sentinel intercept — "Session paused" posted at 14:22:58Z and 14:41:24Z, the messages never routed, present in no queue or drop ledger (the third mechanism of the day's delivery-loss trilogy, after #839 inbound replay and #840 outbound purge). The classifier prompt already instructs "substantive content ⇒ NORMAL" but the closing imperative intermittently won — prompt-as-willpower; this guard is the structure. Pinned by 4 tests: long-pause downgrade, short-pause preserved, long emergency-stop preserved, exact 25/26-word boundary.
