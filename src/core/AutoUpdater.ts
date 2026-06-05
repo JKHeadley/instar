@@ -31,6 +31,10 @@ import { SafeFsExecutor } from './SafeFsExecutor.js';
 import { crossesBreaking, writeLifelineRestartSignal } from './version-skew.js';
 import { RestartCascadeDampener, formatLocalTimeHHMM } from './RestartCascadeDampener.js';
 import type { UpdateRestartHandshake } from './UpdateRestartHandshake.js';
+import {
+  decideUpdateNotify,
+  type UpdateNotifyKind,
+} from './updateNotifyPolicy.js';
 
 export interface AutoUpdaterConfig {
   /** How often to check for updates, in minutes. Default: 30 */
@@ -79,6 +83,16 @@ export interface AutoUpdaterConfig {
    * Spec: docs/specs/restart-immediately-spec.md.
    */
   restartImmediately?: boolean;
+  /**
+   * Option B for user-facing update messaging (per-agent opt-in via
+   * `updates.backgroundRefreshHeartbeat`). When true, the single post-restart
+   * "I just refreshed in the background, I'm current" confirmation surfaces as a
+   * quiet, version-free heartbeat instead of being fully silent. Every other
+   * update-mechanics notification stays silent regardless. Default false
+   * (= option A, full silence — version/restart churn goes to the logs only).
+   * Spec: docs/specs/quiet-update-mechanics.md.
+   */
+  backgroundRefreshHeartbeat?: boolean;
 }
 
 export interface AutoUpdaterStatus {
@@ -197,6 +211,7 @@ export class AutoUpdater {
       restartWindow: config?.restartWindow ?? null,
       restartCascadeDampenerWindowMs: config?.restartCascadeDampenerWindowMs ?? 15 * 60_000,
       restartImmediately: config?.restartImmediately ?? false,
+      backgroundRefreshHeartbeat: config?.backgroundRefreshHeartbeat ?? false,
       // codex-instar audit Item 4 — Required<T> demands every field, so we
       // coerce undefined to undefined explicitly; consumers branch on
       // truthiness in gatedRestart.
@@ -405,15 +420,18 @@ export class AutoUpdater {
           this.notifiedVersionMismatch = info.latestVersion;
           // Check if restart is actively deferred — if so, clarify that's the reason
           if (deferral) {
+            // Mechanics: version skew self-heals on the next restart. Housekeeping.
             await this.notify(
               `v${info.latestVersion} is downloaded and waiting for a restart — still running v${info.currentVersion}. ` +
               `Restart is being held back by ${deferral.reason}. ` +
-              `I'll switch over automatically once they finish.`
+              `I'll switch over automatically once they finish.`,
+              'mechanics',
             );
           } else {
             await this.notify(
               `v${info.latestVersion} is downloaded but the process hasn't restarted yet — still running v${info.currentVersion}. ` +
-              `A server restart will activate the new version.`
+              `A server restart will activate the new version.`,
+              'mechanics',
             );
           }
         }
@@ -433,10 +451,12 @@ export class AutoUpdater {
         // Notify with actionable instructions — don't leave the user hanging
         // Only notify once per detected version (avoid spam on every tick)
         if (!this.coalescingUntil) {
+          // Actionable: auto-updates are off, so the user must trigger this one.
+          // Version-free — the number is noise; the action is what matters.
           await this.notify(
-            `There's a new version available (v${info.latestVersion}). I'm currently on v${info.currentVersion}.\n\n` +
-            `Auto-updates are off. Just say "update" or "apply the update" and I'll handle it. ` +
-            `Or to turn on auto-updates so this happens automatically, say "turn on auto-updates".`
+            `There's a new update available, but auto-updates are off so it needs your go-ahead. ` +
+            `Just say "update" and I'll apply it — or say "turn on auto-updates" and I'll handle these automatically from now on.`,
+            'actionable',
           );
           // Set coalescingUntil as a "notified" marker to prevent re-notification
           this.coalescingUntil = 'notified';
@@ -508,10 +528,15 @@ export class AutoUpdater {
         this.lastError = result.message;
         this.saveState();
         console.error(`[AutoUpdater] Update failed: ${result.message}`);
+        // Mechanics: a transient apply failure that self-heals on the next
+        // cycle is not something the user needs to know about — it's not broken,
+        // nothing for them to do. Housekeeping. (A genuinely STUCK update, after
+        // the restart-verification retries are exhausted, surfaces as
+        // 'failure-escalated' from the restart handshake in server.ts.)
         await this.notify(
-          `Heads up — I tried to update to v${targetVersion} but it didn't work out. ` +
-          `I'm still running fine on v${result.previousVersion}, so nothing's broken. ` +
-          `I'll try again next cycle.`
+          `Tried to update to v${targetVersion} but the apply didn't work out. ` +
+          `Still running fine on v${result.previousVersion}; will retry next cycle.`,
+          'mechanics',
         );
         return;
       }
@@ -724,9 +749,11 @@ export class AutoUpdater {
       const hasRunningSessions = runningSessions.length > 0;
 
       if (result.reason?.includes('Max deferral')) {
-        // Forced restart after max deferral — user needs to know
+        // Interruption: a forced restart is happening right now. The user is
+        // genuinely interrupted, so they hear about it — plainly, no version churn.
         await this.notify(
-          `Update to v${newVersion} was deferred for active sessions, but the maximum wait has been reached. Restarting now.`
+          `Heads up — I need to restart to finish applying an update. I held off while you had work running, but I can't wait any longer, so I'm restarting now. Back in a few seconds.`,
+          'interruption',
         );
       } else if (hasRunningSessions) {
         // Sessions exist but aren't blocking — user needs a heads-up.
@@ -757,9 +784,13 @@ export class AutoUpdater {
           // is holding a restart" stays genuinely useful. crossesBreaking()
           // === false ⇒ same major.minor ⇒ patch-only; malformed ⇒ true (narrate).
           const patchOnly = !crossesBreaking(previousVersion, newVersion);
+          // Interruption (sessions are active): the user is being restarted, so
+          // they get a plain, version-free heads-up — never "v1.3.X". Patch-only
+          // bumps stay silent (Fork 3) but still write the handshake so restart
+          // verification + failed-restart escalation run for patch updates too.
           const restartNote = patchOnly
             ? ''
-            : `Just updated to v${newVersion}. Restarting to pick up the changes.`;
+            : `Heads up — I applied a quick update and need to restart to pick it up. Back in a few seconds.`;
           if (this.config.restartHandshake) {
             try {
               this.config.restartHandshake.writePendingHandshake({
@@ -773,10 +804,10 @@ export class AutoUpdater {
               console.warn(
                 `[AutoUpdater] Handshake write failed; falling back to immediate notify: ${err instanceof Error ? err.message : String(err)}`,
               );
-              if (restartNote) await this.notify(restartNote);
+              if (restartNote) await this.notify(restartNote, 'interruption');
             }
           } else if (restartNote) {
-            await this.notify(restartNote);
+            await this.notify(restartNote, 'interruption');
           }
           if (patchOnly) {
             console.log(
@@ -791,9 +822,18 @@ export class AutoUpdater {
           await new Promise(r => setTimeout(r, delaySecs * 1000));
         }
       } else {
-        // No active sessions — silent restart. Don't notify the user.
-        // Updates should be invisible when nobody's working.
+        // No active sessions — the restart is invisible; nobody's working.
+        // Option A (default): fully silent. Option B
+        // (updates.backgroundRefreshHeartbeat): a single quiet, version-free
+        // "I refreshed in the background" note so the user knows I'm current.
+        // The policy keeps this silent unless the heartbeat flag is on, so this
+        // call can never re-introduce version churn.
         console.log(`[AutoUpdater] Silent restart — no active sessions (updating to v${newVersion})`);
+        await this.notify(
+          `Just refreshed in the background — I'm up to date and ready.`,
+          'mechanics',
+          { isBackgroundRefreshConfirmation: true },
+        );
       }
       // CRITICAL: Save state BEFORE requesting restart. The process may exit
       // immediately after requestRestart (ForegroundRestartWatcher picks up the
@@ -820,15 +860,19 @@ export class AutoUpdater {
       nextRetryAt: new Date(Date.now() + (result.retryInMs ?? 300_000)).toISOString(),
     });
 
-    // Send warnings at thresholds
+    // Send warnings at thresholds. Interruption: a restart that WILL interrupt
+    // the user's active work is exactly the case they want to hear about — but
+    // plainly and version-free ("your work is holding a restart"), not as
+    // "v1.3.X installed".
     if (this.gate.shouldSendFinalWarning()) {
       await this.notify(
-        `Update to v${newVersion} installed. Server will restart in ~5 minutes regardless of active sessions.`
+        `Heads up — I have an update ready and I'll need to restart in about 5 minutes, even if work is still running. A good moment to wrap up anything you don't want interrupted.`,
+        'interruption',
       );
     } else if (this.gate.shouldSendFirstWarning()) {
       await this.notify(
-        `Update to v${newVersion} installed but restart is being deferred for ${result.blockingSessions?.length} active session(s). ` +
-        `Will force restart in ~30 minutes if sessions don't finish.`
+        `Heads up — I have an update ready, but I'm holding the restart while you've got work running. If it's still going in about 30 minutes I'll go ahead and restart.`,
+        'interruption',
       );
     }
 
@@ -882,9 +926,15 @@ export class AutoUpdater {
         : false;
       if (hasActive && this.lastNotifiedRestartVersion !== newVersion) {
         this.lastNotifiedRestartVersion = newVersion;
+        // Mechanics: restart-batching coordination is internal plumbing — the
+        // user flagged "rolling into the pending restart at HH:MM" as exactly
+        // the noise they don't want. The actual interruption heads-up (if a
+        // restart will interrupt active work) comes from the threshold warnings
+        // in gatedRestart. Housekeeping.
         await this.notify(
           `Update v${newVersion} queued — rolling into the pending restart at ` +
-          `${formatLocalTimeHHMM(eligibleAt, fireAt)} (about ${Math.max(1, Math.round(waitMs / 60_000))}m) so you don't get hit by two back-to-back restarts.`
+          `${formatLocalTimeHHMM(eligibleAt, fireAt)} (about ${Math.max(1, Math.round(waitMs / 60_000))}m) so two restarts coalesce into one.`,
+          'mechanics',
         );
       }
 
@@ -1011,10 +1061,31 @@ export class AutoUpdater {
   }
 
   /**
-   * Send a notification via Telegram (if configured).
-   * Falls back to console logging if Telegram is not available.
+   * Send an update notification — but only when the policy says it should reach
+   * the user. Update *mechanics* (version churn, restart coordination,
+   * self-healing version skew) are housekeeping and go to the logs only; the
+   * user hears about an update only when a restart is interrupting them
+   * (`interruption`), they must act (`actionable`), or an update is genuinely
+   * stuck (`failure-escalated`). See updateNotifyPolicy.ts.
+   *
+   * Defaults to `mechanics` so any future, un-audited notify() callsite stays
+   * silent rather than accidentally spamming the Updates topic.
    */
-  private async notify(message: string): Promise<void> {
+  private async notify(
+    message: string,
+    kind: UpdateNotifyKind = 'mechanics',
+    opts: { isBackgroundRefreshConfirmation?: boolean } = {},
+  ): Promise<void> {
+    const decision = decideUpdateNotify(kind, {
+      backgroundRefreshHeartbeat: this.config.backgroundRefreshHeartbeat,
+      isBackgroundRefreshConfirmation: opts.isBackgroundRefreshConfirmation,
+    });
+    if (!decision.reachUser) {
+      // Housekeeping — log only, never the user's Updates topic.
+      console.log(`[AutoUpdater] (silent · ${kind}: ${decision.reason}) ${message}`);
+      return;
+    }
+
     const formatted = message;
 
     if (this.telegram) {

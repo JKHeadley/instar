@@ -2824,6 +2824,23 @@ User-facing update announcements are *opt-in and maturity-tagged*, authored in t
       result.upgraded.push('CLAUDE.md: added Maturity honesty (silent-by-default user announcements) section');
     }
 
+    // Quiet update mechanics (quiet-update-mechanics spec). The maturity layer
+    // above silenced the *feature-announcement* path; this silences the *update
+    // mechanics* path (version churn + restart coordination). Existing agents
+    // need to know so they mirror it when self-narrating a restart/update.
+    // Separate guard from the maturity-honesty marker so agents that ALREADY
+    // have the maturity section still receive this newer block.
+    if (!content.includes('Quiet update mechanics (version/restart churn')) {
+      const quietMechanicsSection = `
+### Quiet update mechanics (version/restart churn → logs, not the user)
+
+Update *mechanics* are housekeeping and never reach the user's Updates topic — raw version numbers, "Just updated to vX. Restarting…", "vX applied but I'm still running vY", cascade-batch "rolling into the pending restart at HH:MM", and transient self-healing apply failures all go to the logs only. The user hears about an update ONLY when (1) a genuinely new capability ships (the maturity layer above), (2) a restart is actually interrupting their active work right now — a plain, *version-free* "back in a few seconds" heads-up, never "v1.3.X", or (3) an update is genuinely stuck after retries. Opt into a single quiet "just refreshed in the background" heartbeat with \`updates.backgroundRefreshHeartbeat: true\` in \`.instar/config.json\` (default false = full silence); it can never re-introduce version churn. When I narrate my OWN restart/update (via \`/telegram/post-update\`), I follow the same rule: no version numbers, no restart plumbing — a human "back now" only if it actually mattered to the user. Spec: \`docs/specs/quiet-update-mechanics.md\`.
+`;
+      content += '\n' + quietMechanicsSection;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Quiet update mechanics section');
+    }
+
     // Close the Loop (Untracked = Abandoned) — STANDARDS-REGISTRY amendment
     // ratified with Justin 2026-05-31. The "nothing slips through the cracks"
     // principle was made a constitutional standard; existing agents need the

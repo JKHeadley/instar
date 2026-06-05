@@ -40,6 +40,7 @@ import { lifelineOwnsPoll as lifelineOwnsTelegramPoll } from '../lifeline/Telegr
 import { DispatchManager } from '../core/DispatchManager.js';
 import { UpdateChecker } from '../core/UpdateChecker.js';
 import { AutoUpdater } from '../core/AutoUpdater.js';
+import { decideUpdateNotify } from '../core/updateNotifyPolicy.js';
 import { UpdateRestartHandshake, verifyRestartHandshake } from '../core/UpdateRestartHandshake.js';
 import { AutoDispatcher } from '../core/AutoDispatcher.js';
 import { DispatchExecutor } from '../core/DispatchExecutor.js';
@@ -5475,18 +5476,28 @@ export async function startServer(options: StartOptions): Promise<void> {
         }
         restartHandshake.clearHandshake();
       } else if (outcome.kind === 'failed') {
-        const msg = outcome.escalate
-          ? `Heads up — I tried to update to v${outcome.expectedVersion} but the restart didn't pick up the new code. Still running v${outcome.runningVersion}. Retry ${outcome.retryCount}.`
-          : `Update to v${outcome.expectedVersion} was applied but I'm still running v${outcome.runningVersion}. The next restart should pick it up.`;
+        // A non-escalated mismatch is the transient, self-healing case the user
+        // flagged as noise ("vX applied but I'm still running vY — the next
+        // restart should pick it up"). It's update mechanics → log only. Only an
+        // ESCALATED failure (the restart genuinely isn't taking the new code
+        // after repeated retries) reaches the user, and version-free.
+        const kind = outcome.escalate ? 'failure-escalated' : 'mechanics';
+        const userMsg =
+          `Heads up — I tried to apply an update but the restart didn't take, so I'm still on the previous version. ` +
+          `I'll keep retrying automatically; flagging it in case it persists.`;
+        const logMsg =
+          `[restart-handshake] failed (escalate=${outcome.escalate}, retry=${outcome.retryCount}): ` +
+          `expected v${outcome.expectedVersion}, running v${outcome.runningVersion}`;
+        const decision = decideUpdateNotify(kind);
         const topicId = state.get<number>('agent-updates-topic') || 0;
-        if (telegram && topicId) {
+        if (decision.reachUser && telegram && topicId) {
           try {
-            await telegram.sendToTopic(topicId, msg);
+            await telegram.sendToTopic(topicId, userMsg);
           } catch (err) {
             console.warn(`[restart-handshake] failure notification failed: ${err instanceof Error ? err.message : String(err)}`);
           }
         } else {
-          console.warn(`[restart-handshake] ${msg}`);
+          console.warn(`${logMsg} — ${decision.reason}`);
         }
       }
     } catch (err) {
@@ -5509,6 +5520,10 @@ export async function startServer(options: StartOptions): Promise<void> {
         // Primary-developer mode (per-agent opt-in) — never defer a restart for
         // active sessions or the restart window; always roll onto the latest.
         restartImmediately: config.updates?.restartImmediately ?? false,
+        // Option B for update messaging — surface a single quiet "refreshed in
+        // the background" heartbeat instead of full silence. Default false
+        // (= option A, full silence). Spec: docs/specs/quiet-update-mechanics.md.
+        backgroundRefreshHeartbeat: config.updates?.backgroundRefreshHeartbeat ?? false,
         // codex-instar audit Item 4 — wire the handshake into AutoUpdater so
         // the pre-restart notification is DEFERRED into the marker file.
         restartHandshake,
