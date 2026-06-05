@@ -65,6 +65,22 @@ occurred, recovery ran, LLM summarization was unavailable, and relay delivery
 state had transient failures. The bug is that low-context signals had too much
 direct user-facing authority.
 
+### Task #78: contradictory relay, standby, and watchdog narration
+
+Task #78 is the cleanest evidence for a single emission authority. Within one
+ten-minute window, three subsystems narrated contradictory states to the user:
+
+- The relay reported a message as undelivered after the agent had already
+  acknowledged it.
+- PresenceProxy emitted four "actively working" receipts.
+- A watchdog surfaced a stuck-alert.
+
+No one detector was malicious; each was speaking from a local slice of state.
+The failure was architectural: direct emission authority was distributed across
+the relay, standby/proxy, and watchdog paths. Under this brief, each subsystem
+would emit a structured signal into one gate, and the gate would decide whether
+the incident should be user-visible as `emit`, `record-only`, or `escalate`.
+
 ## Design Principle
 
 Signals do not get direct user-facing authority.
