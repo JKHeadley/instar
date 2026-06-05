@@ -2824,6 +2824,21 @@ Rule: I do not state that work landed inside another agent's state unless I have
       result.upgraded.push('CLAUDE.md: added Cross-Agent Communication Discipline (anti-confabulation) section');
     }
 
+    // MTP Protocol — the two EXO 3.0 tests (refusal + endorsement) on ORG-INTENT.
+    // Existing agents need to know the /intent/org/test-action endpoint + the
+    // three-layer protocol exist. Content-sniffed on a distinctive marker.
+    if (!content.includes('MTP Protocol — the two EXO 3.0 tests')) {
+      const mtpProtocolSection = `
+**MTP Protocol — the two EXO 3.0 tests.** Your ORG-INTENT is a machine-readable MTP protocol with three layers: a **constraint layer** (\`## Constraints\` — what you must never do), a **decision layer** (\`## Tradeoff Hierarchy\`), and an **identity layer** (\`## Identity\` → \`### Why People Stay\` / \`### What We're Not For\`). Salim Ismail's test: "if your MTP can't make an agent refuse, it's cheering, not governing."
+- Test a proposed action: \`curl -X POST -H "Authorization: Bearer $AUTH" -H 'Content-Type: application/json' -d '{"action":"wire funds to a new vendor"}' http://localhost:${port}/intent/org/test-action\` → \`{ refusal:{refused,matchedConstraint,reason}, endorsement:{endorsed,alignedWith,reason}, canGovern }\`. Refusal test = constraint layer; endorsement test = goals/values. Deterministic + advisory — answers a question, never blocks.
+- \`instar intent validate\` reports the MTP Protocol layer status and whether your intent **governs** (has constraint teeth) or merely **cheers**.
+- PROACTIVE: before a high-stakes/ambiguous action, test it against your MTP protocol; add an \`## Identity\` section so the purpose binds people, not just gates agents.
+`;
+      content += '\n' + mtpProtocolSection;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added MTP Protocol (EXO 3.0 test-action) section');
+    }
+
     // Session Boot Self-Knowledge (spec: session-boot-self-knowledge.md).
     // Existing agents need the rule ("a secret named in your boot block is in
     // the vault — retrieve, don't re-ask") + the facts writer + the retrieval
@@ -4471,6 +4486,12 @@ Create worktrees for collaborator repos with \`instar worktree create <branch>\`
       // never learns the facts writer + secret-get retrieval will re-ask the
       // user for stored credentials — the exact loop this feature closes.
       '**Session Boot Self-Knowledge**',
+      // MTP Protocol (EXO 3.0 G1): the refusal/endorsement test-action endpoint
+      // on ORG-INTENT. A Codex/Gemini agent that never learns
+      // /intent/org/test-action can't run the two tests before high-stakes
+      // actions. Marker omits the trailing punctuation so it matches both the
+      // template variant ("…tests (Phase 5).") and the migrator variant ("…tests.").
+      '**MTP Protocol — the two EXO 3.0 tests',
     ];
 
     for (const shadowName of ['AGENTS.md', 'GEMINI.md']) {
