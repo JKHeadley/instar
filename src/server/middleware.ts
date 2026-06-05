@@ -391,6 +391,9 @@ export function buildRequestTimeoutOverrides(): Record<string, number> {
     '/imessage/validate-send': OUTBOUND_MESSAGING_TIMEOUT_MS,
     '/spec/conformance-check': SPEC_REVIEW_TIMEOUT_MS,
     '/cutover-readiness/parity-pass': PARITY_PASS_TIMEOUT_MS,
+    // The import dry-run does the same full live source fetch as a parity pass
+    // (plus an in-memory import + gate, which is fast) — same budget.
+    '/cutover-readiness/import-dryrun': PARITY_PASS_TIMEOUT_MS,
   };
 }
 

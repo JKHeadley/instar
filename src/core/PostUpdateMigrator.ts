@@ -4293,11 +4293,26 @@ Create worktrees for collaborator repos with \`instar worktree create <branch>\`
 **Cutover Readiness** — When a migration (or any one-way cutover) is gated on objective conditions, this is the read surface for "is everything up to the door green?" — composed from REAL durable state (the persisted import integrity report + the durable zero-divergence parity window with a freshness bound), never from anyone's assertion.
 - Check: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/cutover-readiness\` → \`{ ready, door: "manual-operator-click", integrity, parity }\`.
 - Feed the parity window with a live check: \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/cutover-readiness/parity-pass\` — the server fetches + compares server-side; you only trigger it. A failed check records nothing.
+- Rehearse the data import without writing anything durable: \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/cutover-readiness/import-dryrun\` — server-side live fetch → AS-IS import into an in-memory target → integrity gate over what landed. The rehearsal's verdict shows as \`importDryRun\` in the readiness status (and at \`GET /cutover-readiness/import-dryrun\`) but NEVER greens the canonical integrity condition — only the REAL import's report can.
 - **The door is NOT yours**: \`ready: true\` means the conditions are green — it is NEVER an instruction to flip. The cutover click belongs to the operator. NEVER present \`ready\` to the user as "I can cut over now"; present it as "everything up to your click is green."
 `;
       content += '\n' + section;
       patched = true;
       result.upgraded.push('CLAUDE.md: added Cutover Readiness awareness section');
+    } else if (!content.includes('/cutover-readiness/import-dryrun')) {
+      // Agents that already carry the Cutover Readiness section (shipped before the
+      // import-rehearsal trigger existed): splice the new line in ahead of the
+      // door-discipline line so the section reads in workflow order. Idempotent via
+      // the content-sniff above.
+      const dryRunLine = `- Rehearse the data import without writing anything durable: \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/cutover-readiness/import-dryrun\` — server-side live fetch → AS-IS import into an in-memory target → integrity gate over what landed. The rehearsal's verdict shows as \`importDryRun\` in the readiness status (and at \`GET /cutover-readiness/import-dryrun\`) but NEVER greens the canonical integrity condition — only the REAL import's report can.\n`;
+      const doorAnchor = '- **The door is NOT yours**:';
+      if (content.includes(doorAnchor)) {
+        content = content.replace(doorAnchor, dryRunLine + doorAnchor);
+      } else {
+        content += '\n' + dryRunLine;
+      }
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added import dry-run line to Cutover Readiness section');
     }
 
     if (patched) {

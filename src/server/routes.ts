@@ -5262,6 +5262,41 @@ export function createRoutes(ctx: RouteContext): Router {
     res.json({ recorded: true, pass: outcome.pass, gate: outcome.gate });
   });
 
+  // TRIGGER a server-side import REHEARSAL (dry-run): live source fetch → AS-IS
+  // import into an in-memory target → integrity gate over what the target reads
+  // back. Zero durable data writes; the envelope persists to the SEPARATE dry-run
+  // path and NEVER greens the canonical integrity condition — `ready` still
+  // requires the REAL import's report. Same T7 discipline and same always-logged
+  // outcome contract as the parity-pass trigger above.
+  router.post('/cutover-readiness/import-dryrun', async (_req, res) => {
+    if (!ctx.cutoverReadiness) {
+      res.status(503).json({ error: 'cutover-readiness unavailable (no stateDir or init failed)' });
+      return;
+    }
+    const outcome = await ctx.cutoverReadiness.runImportDryRunPass();
+    if (outcome.ok) {
+      const r = outcome.result;
+      console.log(`[cutover-readiness] import dry-run recorded: passed=${r.passed} clusters=${r.imported.clusters} feedback=${r.imported.feedback}${r.abortedPreImport ? ` abortedPreImport=${r.abortedPreImport.reason}` : ''}`);
+    } else {
+      console.warn(`[cutover-readiness] import dry-run FAILED (nothing recorded): ${outcome.reason}`);
+    }
+    if (res.headersSent) return; // 408 already went out — outcome logged above
+    if (!outcome.ok) {
+      res.status(409).json({ error: outcome.reason });
+      return;
+    }
+    res.json({ recorded: true, mode: 'dry-run', generatedAt: outcome.generatedAt, result: outcome.result });
+  });
+
+  // The last import dry-run's verdict. Read-only, informational — never a `ready` input.
+  router.get('/cutover-readiness/import-dryrun', (_req, res) => {
+    if (!ctx.cutoverReadiness) {
+      res.status(503).json({ error: 'cutover-readiness unavailable (no stateDir or init failed)' });
+      return;
+    }
+    res.json(ctx.cutoverReadiness.importDryRunStatus());
+  });
+
   // ── Parallel-Work Awareness (docs/specs/parallel-activity-coherence.md, Phase A) ──
   // Read-only cross-topic index: every topic with intent state + its current focus +
   // high-specificity tags + whether a session is live on it. Signal-only; never gates.

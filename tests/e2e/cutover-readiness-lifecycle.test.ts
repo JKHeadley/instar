@@ -154,4 +154,23 @@ describe('Cutover-readiness E2E lifecycle — alive + conditions resolve from RE
     expect(res.status).toBe(409);
     expect(res.body.error).toMatch(/no parity source configured/);
   });
+
+  it('import-dryrun routes are ALIVE on the production path (Bearer-gated; 409 without a source — not 404, not 503)', async () => {
+    // Feature-is-alive: the trigger route exists and is wired through the
+    // production init. With no feedbackMigration.paritySource configured the
+    // rehearsal REFUSES (409) — proving the handler ran, not that routing failed.
+    expect((await request(app).post('/cutover-readiness/import-dryrun')).status).toBe(401);
+    const res = await request(app).post('/cutover-readiness/import-dryrun').set(auth());
+    expect(res.status).toBe(409);
+    expect(res.body.error).toMatch(/no import source configured/);
+
+    // The read surface is alive too and reads never-ran (deny-safe default).
+    const read = await request(app).get('/cutover-readiness/import-dryrun').set(auth());
+    expect(read.status).toBe(200);
+    expect(read.body).toMatchObject({ ran: false, passed: false });
+
+    // And the composed status carries the importDryRun leg end-to-end.
+    const status = await request(app).get('/cutover-readiness').set(auth());
+    expect(status.body.importDryRun).toMatchObject({ ran: false, passed: false });
+  });
 });

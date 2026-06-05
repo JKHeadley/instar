@@ -27,6 +27,7 @@ import path from 'node:path';
 import type { DurableParityMonitor } from './monitor/parityMonitorStore.js';
 import type { CutoverGateStatus } from './monitor/parityMonitor.js';
 import type { IntegrityReport } from './migration/importIntegrity.js';
+import type { ImportRunResult } from './migration/importRunner.js';
 import type { ParityResult } from './processor/parity.js';
 
 export interface IntegrityStatus {
@@ -52,6 +53,17 @@ export interface ParityReadiness extends CutoverGateStatus {
   stale: boolean;
 }
 
+/** The last import DRY-RUN's verdict — informational only, NEVER a `ready` input. */
+export interface ImportDryRunStatus {
+  ran: boolean;
+  passed: boolean;
+  generatedAt: string | null;
+  /** What the rehearsal imported (in-memory; zero durable writes). Null when never ran. */
+  imported: { clusters: number; feedback: number } | null;
+  /** Non-null when the rehearsal aborted pre-import (fingerprint collisions to resolve). */
+  abortedPreImport: string | null;
+}
+
 export interface CutoverReadinessStatus {
   /** True only when integrity passed AND the parity window is cleared AND fresh.
    *  This is the everything-up-to-the-door signal — it never fires anything. */
@@ -60,10 +72,21 @@ export interface CutoverReadinessStatus {
   door: 'manual-operator-click';
   integrity: IntegrityStatus;
   parity: ParityReadiness;
+  /**
+   * The import REHEARSAL (dry-run against an in-memory target on live source data).
+   * Readiness honesty: this is visibility into whether the import pipeline is
+   * proven — it does NOT contribute to `ready`. Only the REAL import's persisted
+   * IntegrityReport (the `integrity` leg) can.
+   */
+  importDryRun: ImportDryRunStatus;
 }
 
 export type ParityPassOutcome =
   | { ok: true; pass: { at: string; clustersCompared: number; divergences: number; divergent: boolean }; gate: CutoverGateStatus }
+  | { ok: false; reason: string };
+
+export type ImportDryRunOutcome =
+  | { ok: true; result: ImportRunResult; generatedAt: string }
   | { ok: false; reason: string };
 
 export interface CutoverReadinessDeps {
@@ -74,6 +97,14 @@ export interface CutoverReadinessDeps {
    *  configured — runParityPass() then refuses, and the parity condition can only
    *  clear via passes recorded by other server-side paths. */
   runParityCheck: (() => Promise<ParityResult>) | null;
+  /** Where the import DRY-RUN envelope persists. MUST differ from
+   *  `integrityReportPath` — a rehearsal must never be able to green the canonical
+   *  integrity condition (enforced in the constructor). Optional for callers that
+   *  never wire the dry-run. */
+  importDryRunReportPath?: string;
+  /** SERVER-SIDE import rehearsal (live source fetch → in-memory AS-IS import →
+   *  integrity gate over readback). Null/absent when no source is configured. */
+  runImportDryRun?: (() => Promise<ImportRunResult>) | null;
   /** Freshness bound for the parity window (default 6h). */
   maxPassStalenessMs?: number;
   now?: () => number;
@@ -86,11 +117,22 @@ interface PersistedIntegrityEnvelope {
   report: IntegrityReport;
 }
 
+interface PersistedDryRunEnvelope {
+  generatedAt: string;
+  mode: 'dry-run';
+  result: ImportRunResult;
+}
+
 export class CutoverReadiness {
   private readonly d: CutoverReadinessDeps;
   private readonly maxStaleMs: number;
 
   constructor(deps: CutoverReadinessDeps) {
+    if (deps.importDryRunReportPath && path.resolve(deps.importDryRunReportPath) === path.resolve(deps.integrityReportPath)) {
+      // Structural readiness-honesty guard: a rehearsal report aimed at the
+      // canonical integrity path WOULD green `ready` — refuse the wiring outright.
+      throw new Error('importDryRunReportPath must differ from integrityReportPath — a dry-run must never green the integrity gate');
+    }
     this.d = deps;
     this.maxStaleMs = deps.maxPassStalenessMs ?? DEFAULT_MAX_PASS_STALENESS_MS;
   }
@@ -170,15 +212,59 @@ export class CutoverReadiness {
     };
   }
 
+  /**
+   * TRIGGER a server-side import rehearsal (T7: the agent may ask; the server
+   * computes — live source fetch, in-memory AS-IS import, integrity gate over the
+   * readback). The envelope persists to the SEPARATE dry-run path; the canonical
+   * integrity report is structurally out of reach of this method.
+   */
+  async runImportDryRunPass(): Promise<ImportDryRunOutcome> {
+    if (!this.d.runImportDryRun || !this.d.importDryRunReportPath) {
+      return { ok: false, reason: 'no import source configured (feedbackMigration.paritySource) — cannot run an import dry-run' };
+    }
+    let result: ImportRunResult;
+    try {
+      result = await this.d.runImportDryRun();
+    } catch (err) {
+      return { ok: false, reason: `import dry-run failed: ${err instanceof Error ? err.message : String(err)}` };
+    }
+    const generatedAt = new Date(this.nowMs()).toISOString();
+    const envelope: PersistedDryRunEnvelope = { generatedAt, mode: 'dry-run', result };
+    fs.mkdirSync(path.dirname(this.d.importDryRunReportPath), { recursive: true });
+    fs.writeFileSync(this.d.importDryRunReportPath, JSON.stringify(envelope, null, 2));
+    return { ok: true, result, generatedAt };
+  }
+
+  importDryRunStatus(): ImportDryRunStatus {
+    const empty: ImportDryRunStatus = { ran: false, passed: false, generatedAt: null, imported: null, abortedPreImport: null };
+    if (!this.d.importDryRunReportPath) return empty;
+    try {
+      const raw = JSON.parse(fs.readFileSync(this.d.importDryRunReportPath, 'utf8')) as PersistedDryRunEnvelope;
+      const r = raw?.result;
+      if (!r || typeof r.passed !== 'boolean') return empty;
+      return {
+        ran: true,
+        passed: r.passed,
+        generatedAt: typeof raw.generatedAt === 'string' ? raw.generatedAt : null,
+        imported: r.imported ?? null,
+        abortedPreImport: r.abortedPreImport ? r.abortedPreImport.reason : null,
+      };
+    } catch { /* @silent-fallback-ok — no dry-run envelope on disk = the rehearsal never ran (informational-only surface) */
+      return empty;
+    }
+  }
+
   /** The everything-up-to-the-door readiness signal. Read-only; never fires anything. */
   status(): CutoverReadinessStatus {
     const integrity = this.integrityStatus();
     const parity = this.parityStatus();
     return {
+      // `ready` composes integrity + parity ONLY — the dry-run is visibility, not a gate input.
       ready: integrity.passed && parity.cleared && !parity.stale,
       door: 'manual-operator-click',
       integrity,
       parity,
+      importDryRun: this.importDryRunStatus(),
     };
   }
 }
