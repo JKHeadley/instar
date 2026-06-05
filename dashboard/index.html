@@ -808,11 +808,16 @@
     .mnd-btn-danger { color: #f85149; }
     .mnd-dead-note { font-size: 13px; color: var(--text-dim); font-style: italic; }
     .mnd-notice { min-height: 20px; font-size: 14px; color: #3fb950; }
-    .mnd-notice-err { color: #f85149; }
-    .mnd-issue-form { display: flex; flex-direction: column; gap: 10px; max-width: 640px; padding: 12px 0; }
-    .mnd-issue-form label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--text-dim); }
-    .mnd-issue-form input, .mnd-issue-form textarea { font: inherit; padding: 6px 8px; }
-    .mnd-issue-form textarea { font-family: ui-monospace, monospace; font-size: 12px; }
+    .mnd-issue-form { display: flex; flex-direction: column; gap: 14px; max-width: 640px; padding: 12px 0; }
+    .mnd-issue-form label { display: flex; flex-direction: column; gap: 4px; font-size: 15px; color: var(--text-bright); }
+    .mnd-issue-form input, .mnd-issue-form textarea { font: inherit; padding: 8px 10px; border-radius: 6px; }
+    .mnd-issue-form textarea { font-family: ui-monospace, monospace; font-size: 13px; }
+    .mnd-hint { font-size: 13px; color: var(--text-dim); font-weight: 400; line-height: 1.45; }
+    .mnd-prefilled { font-size: 12px; color: var(--ph-accent, #4ade80); }
+    /* Issue-form feedback: PERSISTENT, not a transient toast. A failed issuance
+       the operator never sees (the 2026-06-05 incident) is worse than no form. */
+    .mnd-notice-err { border: 1px solid #b91c1c; background: rgba(185, 28, 28, 0.12); color: #fca5a5; padding: 12px 14px; border-radius: 8px; font-size: 15px; line-height: 1.5; white-space: pre-line; }
+    .mnd-notice-ok { border: 1px solid #15803d; background: rgba(21, 128, 61, 0.12); color: #86efac; padding: 12px 14px; border-radius: 8px; font-size: 17px; font-weight: 600; line-height: 1.5; }
     .mnd-table { width: 100%; border-collapse: collapse; font-size: 13px; }
     .mnd-table th, .mnd-table td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
     .mnd-reason-cell { color: var(--text-dim); max-width: 420px; }
@@ -826,7 +831,13 @@
        maturation "you're here" marker. */
     .ph-root {
       --ph-accent: #4ade80;
+      /* These panels are declared after </main>, making them direct .app grid
+         children. switchTab() hides the sidebar too, so without explicit
+         placement the lone visible panel auto-places into the 280px sidebar
+         COLUMN — the "squashed to the side" bug. Span the full grid. */
+      grid-column: 1 / -1;
       max-width: 760px;
+      width: 100%;
       font-size: 18px;
       line-height: 1.55;
       color: var(--text-bright);
@@ -3242,15 +3253,34 @@
         <h3 class="ph-h">Issued mandates</h3>
         <div id="mndList"></div>
       </section>
-      <details class="ph-detail">
+      <details class="ph-detail" id="mndIssueDetails">
         <summary class="ph-detail-summary">Issue a new mandate (PIN required)</summary>
         <div class="mnd-issue-form">
-          <label>Scope <input type="text" id="mndIssueScope" value="feedback-migration" /></label>
-          <label>Agent A fingerprint <input type="text" id="mndIssueAgentA" placeholder="full routing fingerprint" /></label>
-          <label>Agent B fingerprint <input type="text" id="mndIssueAgentB" placeholder="full routing fingerprint" /></label>
-          <label>Authorities (JSON) <textarea id="mndIssueAuthorities" rows="9" spellcheck="false"></textarea></label>
-          <label>Expires <input type="datetime-local" id="mndIssueExpires" /></label>
-          <label>Your dashboard PIN <input type="password" id="mndIssuePin" autocomplete="off" placeholder="typed at issuance, never stored" /></label>
+          <label>What is this permission slip for?
+            <span class="mnd-hint">A short name for the project the two agents may work on together, e.g. feedback-migration.</span>
+            <input type="text" id="mndIssueScope" value="feedback-migration" />
+          </label>
+          <label>This agent (Agent A)
+            <span class="mnd-hint">Pre-filled with this agent's own routing fingerprint — you normally don't need to touch it.</span>
+            <input type="text" id="mndIssueAgentA" placeholder="filling in automatically…" />
+            <span class="mnd-prefilled" id="mndAgentAPrefillNote"></span>
+          </label>
+          <label>The other agent (Agent B)
+            <span class="mnd-hint">The peer agent's routing fingerprint — find it on that agent's Threadline tab, or ask the agent "what's your routing fingerprint?".</span>
+            <input type="text" id="mndIssueAgentB" placeholder="e.g. 8c7928aa9f04fbda947172a2f9b2d81a" />
+          </label>
+          <label>What exactly may they do? (the authorities)
+            <span class="mnd-hint">Each entry is one delegated action with its bounds. The template below covers the standard credential-handoff + code-review pair — edit only if you know you need different bounds.</span>
+            <textarea id="mndIssueAuthorities" rows="9" spellcheck="false"></textarea>
+          </label>
+          <label>When does it expire?
+            <span class="mnd-hint">Pre-filled to one week from now. Every mandate expires; expired means denied.</span>
+            <input type="datetime-local" id="mndIssueExpires" />
+          </label>
+          <label>Your dashboard PIN
+            <span class="mnd-hint">Issuing is a human action — only your PIN can do it. Sent once, never stored.</span>
+            <input type="password" id="mndIssuePin" autocomplete="off" placeholder="typed at issuance, never stored" />
+          </label>
           <button id="mndIssueBtn" class="mnd-btn">Issue mandate</button>
         </div>
       </details>
@@ -8565,6 +8595,8 @@
           issueExpires: document.getElementById('mndIssueExpires'),
           issuePin: document.getElementById('mndIssuePin'),
           issueBtn: document.getElementById('mndIssueBtn'),
+          issueDetails: document.getElementById('mndIssueDetails'),
+          agentAPrefillNote: document.getElementById('mndAgentAPrefillNote'),
         };
         const fetchImpl = (url, opts = {}) => fetch(url, {
           ...opts,

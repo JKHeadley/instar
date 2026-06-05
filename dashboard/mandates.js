@@ -106,12 +106,29 @@ export function createController({ doc, els, fetchImpl }) {
     return { status: res.status, body };
   }
 
-  function note(msg, isError) {
+  // kind: 'error' | 'success' are PERSISTENT (cleared only by the next note or
+  // an explicit clearNote) — a transient toast the operator never sees is how
+  // the 2026-06-05 silent-issuance-failure happened. 'info' stays transient.
+  function note(msg, kind) {
     if (!els.notice) return;
+    const isError = kind === true || kind === 'error'; // boolean kept for back-compat
     els.notice.textContent = msg;
-    els.notice.className = isError ? 'mnd-notice mnd-notice-err' : 'mnd-notice';
-    if (msg) setTimeout(() => { if (els.notice.textContent === msg) els.notice.textContent = ''; }, 8000);
+    els.notice.className = isError ? 'mnd-notice mnd-notice-err'
+      : kind === 'success' ? 'mnd-notice mnd-notice-ok'
+      : 'mnd-notice';
+    if (msg && !isError && kind !== 'success') {
+      setTimeout(() => { if (els.notice.textContent === msg) els.notice.textContent = ''; }, 8000);
+    }
   }
+
+  function clearNote() {
+    if (!els.notice) return;
+    els.notice.textContent = '';
+    els.notice.className = 'mnd-notice';
+  }
+
+  let refreshErrorShown = false;
+  let autoOpenedIssueForm = false;
 
   async function refresh() {
     try {
@@ -125,12 +142,22 @@ export function createController({ doc, els, fetchImpl }) {
         if (els.stamp) els.stamp.textContent = '';
         return;
       }
-      els.list.innerHTML = renderMandates(mand.body?.mandates);
+      const mandates = mand.body?.mandates;
+      els.list.innerHTML = renderMandates(mandates);
       els.audit.innerHTML = renderAudit(audit.body);
       if (els.stamp) els.stamp.textContent = 'updated ' + new Date().toLocaleTimeString();
+      // Nothing issued yet → the issue form IS the page's call to action;
+      // open it once rather than hiding it behind a collapsed <details>.
+      if (!autoOpenedIssueForm && els.issueDetails && (!Array.isArray(mandates) || mandates.length === 0)) {
+        els.issueDetails.open = true;
+        autoOpenedIssueForm = true;
+      }
+      // A persistent refresh error from a server restart-gap heals itself.
+      if (refreshErrorShown) { clearNote(); refreshErrorShown = false; }
       wireRevokeButtons();
     } catch (e) {
-      note('refresh failed: ' + (e?.message ?? e), true);
+      refreshErrorShown = true;
+      note('refresh failed: ' + (e?.message ?? e) + ' — retrying automatically.', 'error');
     }
   }
 
@@ -150,25 +177,54 @@ export function createController({ doc, els, fetchImpl }) {
             body: JSON.stringify({ pin, reason: reasonEl?.value || 'operator revocation (dashboard)' }),
           });
           if (pinEl) pinEl.value = ''; // never retain the PIN
-          if (status === 200) { note(`Mandate ${id} revoked.`); await refresh(); }
-          else note(body?.error ?? `revoke failed (${status})`, true);
+          if (status === 200) { note(`✓ Mandate ${id} revoked — the gate now denies its actions.`, 'success'); await refresh(); }
+          else note(`Not revoked — the server refused: ${body?.error ?? `HTTP ${status}`}`, 'error');
         } finally { btn.disabled = false; }
       };
     });
   }
 
+  // Validate EVERYTHING client-side and report every problem at once —
+  // never POST a request we know the server will refuse, and never let the
+  // operator discover a missing field one transient error at a time.
+  function validateIssueForm() {
+    const problems = [];
+    if (!els.issueScope?.value?.trim()) problems.push('• Scope is empty — give the permission slip a short name.');
+    if (!els.issueAgentA?.value?.trim()) problems.push('• Agent A is empty — this agent’s own fingerprint (normally pre-filled).');
+    if (!els.issueAgentB?.value?.trim()) problems.push('• Agent B is empty — paste the other agent’s routing fingerprint.');
+    let authorities = null;
+    const rawAuth = els.issueAuthorities?.value ?? '';
+    try {
+      authorities = JSON.parse(rawAuth || '[]');
+      if (!Array.isArray(authorities) || authorities.length === 0) {
+        problems.push('• Authorities is empty — the mandate must delegate at least one action.');
+        authorities = null;
+      }
+    } catch {
+      problems.push('• Authorities is not valid JSON — it must be an array of { action, bounds }.');
+    }
+    const expiresRaw = els.issueExpires?.value ?? '';
+    if (!expiresRaw) {
+      problems.push('• Expiry is empty — every mandate must expire (normally pre-filled to a week out).');
+    } else if (!(Date.parse(expiresRaw) > Date.now())) {
+      problems.push('• Expiry is in the past — pick a future date.');
+    }
+    if (!els.issuePin?.value) problems.push('• Your dashboard PIN is missing — issuing is a human action; agent credentials are refused.');
+    return { problems, authorities };
+  }
+
   async function issue() {
-    const pin = els.issuePin?.value ?? '';
-    if (!pin) { note('Type your dashboard PIN — issuance is a human action; agent credentials are refused.', true); return; }
-    let authorities;
-    try { authorities = JSON.parse(els.issueAuthorities?.value || '[]'); }
-    catch { note('Authorities must be valid JSON (array of { action, bounds }).', true); return; }
+    const { problems, authorities } = validateIssueForm();
+    if (problems.length > 0) {
+      note('Not issued — fix the following first:\n' + problems.join('\n'), 'error');
+      return;
+    }
     const payload = {
-      pin,
+      pin: els.issuePin.value,
       scope: els.issueScope?.value?.trim(),
       agents: [els.issueAgentA?.value?.trim(), els.issueAgentB?.value?.trim()],
       authorities,
-      expiresAt: els.issueExpires?.value ? new Date(els.issueExpires.value).toISOString() : '',
+      expiresAt: new Date(els.issueExpires.value).toISOString(),
     };
     els.issueBtn.disabled = true;
     try {
@@ -179,19 +235,51 @@ export function createController({ doc, els, fetchImpl }) {
       });
       if (els.issuePin) els.issuePin.value = ''; // never retain the PIN
       if (status === 201) {
-        note(`Mandate ${body?.mandate?.id ?? ''} issued.`);
+        note(`✓ Mandate ${body?.mandate?.id ?? ''} issued — it is active and listed above. The agents can now act within its bounds.`, 'success');
+        if (els.issueDetails) els.issueDetails.open = false;
         await refresh();
       } else {
-        note(body?.error ?? `issue failed (${status})`, true);
+        note(`Not issued — the server refused: ${body?.error ?? `HTTP ${status}`}`, 'error');
       }
     } finally { els.issueBtn.disabled = false; }
+  }
+
+  // datetime-local wants local "YYYY-MM-DDTHH:MM" — toISOString() (UTC, with
+  // seconds + Z) renders as blank in the picker.
+  function defaultExpiryLocal() {
+    const d = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+    const pad = (n) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  }
+
+  // The system KNOWS this agent's fingerprint — asking the operator to paste a
+  // 32-hex string the dashboard can fetch itself is exactly the UX failure
+  // Justin flagged. /threadline/health reads the canonical identity.json (works
+  // even when the relay is disconnected); /threadline/status is the fallback.
+  async function prefillAgentA() {
+    if (!els.issueAgentA || els.issueAgentA.value) return;
+    try {
+      let fp = null;
+      const health = await fetchJson('/threadline/health');
+      if (health.status === 200) fp = health.body?.fingerprint ?? null;
+      if (!fp) {
+        const status = await fetchJson('/threadline/status');
+        fp = status.body?.relay?.fingerprint ?? null;
+      }
+      if (fp && els.issueAgentA && !els.issueAgentA.value) {
+        els.issueAgentA.value = fp;
+        if (els.agentAPrefillNote) els.agentAPrefillNote.textContent = '✓ pre-filled — this agent’s own fingerprint';
+      }
+    } catch { /* leave blank; validation reports it plainly */ }
   }
 
   function start() {
     if (running) return;
     running = true;
     if (els.issueAuthorities && !els.issueAuthorities.value) els.issueAuthorities.value = AUTHORITIES_TEMPLATE;
+    if (els.issueExpires && !els.issueExpires.value) els.issueExpires.value = defaultExpiryLocal();
     if (els.issueBtn) els.issueBtn.onclick = issue;
+    prefillAgentA();
     refresh();
     timer = setInterval(refresh, REFRESH_MS);
   }
