@@ -6795,6 +6795,10 @@ AUTH_TOKEN="\${INSTAR_AUTH_TOKEN:-}"
 if [ -z "\$AUTH_TOKEN" ] && [ -f "\$CONFIG_FILE" ]; then
   AUTH_TOKEN=\$(python3 -c "import json; v=json.load(open('\$CONFIG_FILE')).get('authToken',''); print(v if isinstance(v, str) else '')" 2>/dev/null)
 fi
+AGENT_ID="\${INSTAR_AGENT_ID:-}"
+if [ -z "\$AGENT_ID" ] && [ -f "\$CONFIG_FILE" ]; then
+  AGENT_ID=\$(python3 -c "import json; print(json.load(open('\$CONFIG_FILE')).get('projectName',''))" 2>/dev/null)
+fi
 
 # Session-clock injection (query mode) — surface elapsed/remaining for an active
 # time-boxed session on this user turn too (not just autonomous continuations),
@@ -6802,13 +6806,14 @@ fi
 # nothing when no time-boxed session is active or the server is unreachable.
 # Spec: docs/specs/ROBUST-SESSION-TIME-AWARENESS-SPEC.md (Component 2, query mode).
 if [ -f "\$INSTAR_DIR/scripts/emit-session-clock.sh" ]; then
-  bash "\$INSTAR_DIR/scripts/emit-session-clock.sh" query "\$TOPIC_ID" "\$PORT" "\$AUTH_TOKEN" 2>/dev/null
+  bash "\$INSTAR_DIR/scripts/emit-session-clock.sh" query "\$TOPIC_ID" "\$PORT" "\$AUTH_TOKEN" "\$AGENT_ID" 2>/dev/null
 fi
 
 # Fetch recent messages for this topic
 if [ -n "\$AUTH_TOKEN" ]; then
   RECENT_MSGS=\$(curl -s \\
     -H "Authorization: Bearer \${AUTH_TOKEN}" \\
+    -H "X-Instar-AgentId: \${AGENT_ID}" \\
     "http://localhost:\${PORT}/telegram/topics/\${TOPIC_ID}/messages?limit=15" 2>/dev/null)
 else
   RECENT_MSGS=\$(curl -s \\

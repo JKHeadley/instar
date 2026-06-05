@@ -66,11 +66,16 @@ AUTH_TOKEN="${INSTAR_AUTH_TOKEN:-}"
 if [ -z "$AUTH_TOKEN" ] && [ -f "$CONFIG_FILE" ]; then
   AUTH_TOKEN=$(python3 -c "import json; v=json.load(open('$CONFIG_FILE')).get('authToken',''); print(v if isinstance(v, str) else '')" 2>/dev/null)
 fi
+AGENT_ID="${INSTAR_AGENT_ID:-}"
+if [ -z "$AGENT_ID" ] && [ -f "$CONFIG_FILE" ]; then
+  AGENT_ID=$(python3 -c "import json; print(json.load(open('$CONFIG_FILE')).get('projectName',''))" 2>/dev/null)
+fi
 
 # Fetch recent messages for this topic
 if [ -n "$AUTH_TOKEN" ]; then
   RECENT_MSGS=$(curl -s \
     -H "Authorization: Bearer ${AUTH_TOKEN}" \
+    -H "X-Instar-AgentId: ${AGENT_ID}" \
     "http://localhost:${PORT}/telegram/topics/${TOPIC_ID}/messages?limit=30" 2>/dev/null)
 else
   RECENT_MSGS=$(curl -s \
@@ -85,6 +90,7 @@ TOPIC_BRIEFING=""
 if [ -n "$AUTH_TOKEN" ]; then
   TOPIC_BRIEFING=$(curl -s --max-time 2 \
     -H "Authorization: Bearer ${AUTH_TOKEN}" \
+    -H "X-Instar-AgentId: ${AGENT_ID}" \
     "http://localhost:${PORT}/topic-intent/${TOPIC_ID}/briefing" 2>/dev/null)
 else
   TOPIC_BRIEFING=$(curl -s --max-time 2 \

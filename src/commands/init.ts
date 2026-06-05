@@ -273,6 +273,7 @@ async function initFreshProject(projectName: string, options: InitOptions): Prom
     projectName,
     port,
     sessions: {
+      projectName,
       tmuxPath,
       claudePath,
       projectDir,
@@ -631,6 +632,7 @@ async function initExistingProject(options: InitOptions): Promise<void> {
     projectName,
     port,
     sessions: {
+      projectName,
       tmuxPath,
       claudePath,
       projectDir,
@@ -1466,7 +1468,7 @@ Skills compound over time. Each one makes future sessions more capable. You are 
 Before EVER saying "I don't have", "I can't", or "this isn't available" — check what actually exists:
 
 \`\`\`bash
-curl -H "Authorization: Bearer $AUTH" http://localhost:\${INSTAR_PORT:-${port}}/capabilities
+curl -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $INSTAR_AGENT_ID" http://localhost:\${INSTAR_PORT:-${port}}/capabilities
 \`\`\`
 
 This returns your full capability matrix: scripts, hooks, Telegram status, jobs, relationships, and more. It is the source of truth about what you can do. **Never hallucinate about missing capabilities — verify first.**
@@ -1920,7 +1922,7 @@ If no findings exist, report "No pending findings" and stop.
 3. **Assess each valid finding**:
    - Is it actionable? Does it describe a real issue or improvement?
    - Is it a duplicate of something already proposed?
-   - Check existing evolution proposals: \\\`curl -s -H "Authorization: Bearer $AUTH" http://localhost:\${INSTAR_PORT:-${port}}/evolution/proposals\\\`
+   - Check existing evolution proposals: \\\`curl -s -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $INSTAR_AGENT_ID" http://localhost:\${INSTAR_PORT:-${port}}/evolution/proposals\\\`
 
 4. **Route the finding** (one of):
 
@@ -2018,7 +2020,7 @@ cat .instar/soul.md
 
 2. **Review recent experience** — Check for identity-relevant learnings:
 \\\`\\\`\\\`bash
-curl -s -H "Authorization: Bearer $AUTH" http://localhost:\${INSTAR_PORT:-${port}}/evolution/learnings?applied=false
+curl -s -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $INSTAR_AGENT_ID" http://localhost:\${INSTAR_PORT:-${port}}/evolution/learnings?applied=false
 \\\`\\\`\\\`
 
 3. **Ask yourself these questions** (not all will apply every time):
@@ -2053,7 +2055,7 @@ curl -s -X PATCH http://localhost:\${INSTAR_PORT:-${port}}/identity/soul \\\\
 
 6. **Check drift** — See how far you've come from your initial state:
 \\\`\\\`\\\`bash
-curl -s -H "Authorization: Bearer $AUTH" http://localhost:\${INSTAR_PORT:-${port}}/identity/soul/drift
+curl -s -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $INSTAR_AGENT_ID" http://localhost:\${INSTAR_PORT:-${port}}/identity/soul/drift
 \\\`\\\`\\\`
 
 ## When to Use
@@ -2102,7 +2104,7 @@ Check each area:
 ### 1. Topic-Project Bindings
 
 \\\`\\\`\\\`
-curl -s -H "Authorization: Bearer $AUTH" http://localhost:\${INSTAR_PORT:-${port}}/topic-bindings
+curl -s -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $INSTAR_AGENT_ID" http://localhost:\${INSTAR_PORT:-${port}}/topic-bindings
 \\\`\\\`\\\`
 
 - Are all bindings still valid?
@@ -2112,7 +2114,7 @@ curl -s -H "Authorization: Bearer $AUTH" http://localhost:\${INSTAR_PORT:-${port
 ### 2. Project Map Freshness
 
 \\\`\\\`\\\`
-curl -s -H "Authorization: Bearer $AUTH" http://localhost:\${INSTAR_PORT:-${port}}/project-map
+curl -s -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $INSTAR_AGENT_ID" http://localhost:\${INSTAR_PORT:-${port}}/project-map
 \\\`\\\`\\\`
 
 - Check the \\\`generatedAt\\\` timestamp.
@@ -2131,7 +2133,7 @@ Flag any that are missing, empty, or contain invalid JSON. Look for stale entrie
 ### 4. Context Segments
 
 \\\`\\\`\\\`
-curl -s -H "Authorization: Bearer $AUTH" http://localhost:\${INSTAR_PORT:-${port}}/context
+curl -s -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $INSTAR_AGENT_ID" http://localhost:\${INSTAR_PORT:-${port}}/context
 \\\`\\\`\\\`
 
 - Are all expected segments present?
@@ -2240,7 +2242,7 @@ AUTH=$(python3 -c "import json; print(json.load(open('.instar/config.json')).get
 If \\\`.instar/state/active-job.json\\\` exists, verify the session it references is actually running:
 
 \\\`\\\`\\\`
-curl -s -H "Authorization: Bearer $AUTH" http://localhost:\${INSTAR_PORT:-${port}}/sessions
+curl -s -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $INSTAR_AGENT_ID" http://localhost:\${INSTAR_PORT:-${port}}/sessions
 \\\`\\\`\\\`
 
 Check if the session name matches. If the session is dead but active-job.json persists, it's orphaned — delete it.
@@ -2250,7 +2252,7 @@ Check if the session name matches. If the session is dead but active-job.json pe
 Read \\\`.instar/state/job-topic-mappings.json\\\`. For each mapping, verify the topic ID is reachable:
 
 \\\`\\\`\\\`
-curl -s -H "Authorization: Bearer $AUTH" http://localhost:\${INSTAR_PORT:-${port}}/telegram/topics
+curl -s -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $INSTAR_AGENT_ID" http://localhost:\${INSTAR_PORT:-${port}}/telegram/topics
 \\\`\\\`\\\`
 
 If topics have been deleted, the mapping is stale — flag it.
@@ -2268,7 +2270,7 @@ Report bloated files and prune where safe.
 Read \\\`.instar/config.json\\\`. If Telegram is configured, verify the bot is connected:
 
 \\\`\\\`\\\`
-curl -s -H "Authorization: Bearer $AUTH" http://localhost:\${INSTAR_PORT:-${port}}/health
+curl -s -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $INSTAR_AGENT_ID" http://localhost:\${INSTAR_PORT:-${port}}/health
 \\\`\\\`\\\`
 
 Check if the telegram field shows connected. If config says telegram but health says disconnected, report the discrepancy.
@@ -2386,7 +2388,7 @@ AUTH=$(python3 -c "import json; print(json.load(open('.instar/config.json')).get
 ### 1. Job Health
 
 \\\`\\\`\\\`
-curl -s -H "Authorization: Bearer $AUTH" http://localhost:\${INSTAR_PORT:-${port}}/jobs
+curl -s -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $INSTAR_AGENT_ID" http://localhost:\${INSTAR_PORT:-${port}}/jobs
 \\\`\\\`\\\`
 
 For each enabled job, check:
@@ -2398,7 +2400,7 @@ For each enabled job, check:
 ### 2. Skip Ledger Trends
 
 \\\`\\\`\\\`
-curl -s -H "Authorization: Bearer $AUTH" http://localhost:\${INSTAR_PORT:-${port}}/skip-ledger/workloads
+curl -s -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $INSTAR_AGENT_ID" http://localhost:\${INSTAR_PORT:-${port}}/skip-ledger/workloads
 \\\`\\\`\\\`
 
 If any job has been skipped more than 10 times by its gate, the gate may be misconfigured (always returning skip), or the feature it monitors is permanently broken.
@@ -2417,7 +2419,7 @@ Two parts: pipeline health AND active consumption.
 
 \\\`\\\`\\\`
 # Read everything that's still unreported
-UNREPORTED=$(curl -s -H "Authorization: Bearer $AUTH" http://localhost:\${INSTAR_PORT:-${port}}/health/degradations | jq -c '.events[] | select(.reported == false)')
+UNREPORTED=$(curl -s -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $INSTAR_AGENT_ID" http://localhost:\${INSTAR_PORT:-${port}}/health/degradations | jq -c '.events[] | select(.reported == false)')
 \\\`\\\`\\\`
 
 For each unreported event, surface it to the attention queue using a stable id (one feature = one topic, even across days):
@@ -2443,7 +2445,7 @@ If the attention POST fails (Telegram down, etc.), do NOT call mark-reported —
 ### 5. Session Monitor
 
 \\\`\\\`\\\`
-curl -s -H "Authorization: Bearer $AUTH" http://localhost:\${INSTAR_PORT:-${port}}/sessions
+curl -s -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $INSTAR_AGENT_ID" http://localhost:\${INSTAR_PORT:-${port}}/sessions
 \\\`\\\`\\\`
 
 Are there zombie sessions (status: running but started > 30 minutes ago for a job that should take 5)?
@@ -2491,7 +2493,7 @@ AUTH=$(python3 -c "import json; print(json.load(open('.instar/config.json')).get
 ### 1. Recent Sessions
 
 \\\`\\\`\\\`
-curl -s -H "Authorization: Bearer $AUTH" http://localhost:\${INSTAR_PORT:-${port}}/sessions
+curl -s -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $INSTAR_AGENT_ID" http://localhost:\${INSTAR_PORT:-${port}}/sessions
 \\\`\\\`\\\`
 
 Get sessions that completed in the last 8 hours.
@@ -3064,7 +3066,7 @@ echo "If nothing significant, do nothing. Silence means continuity is working as
       expectedDurationMinutes: 3,
       model: 'opus',
       enabled: true,
-      gate: `curl -sf -H "Authorization: Bearer $INSTAR_AUTH_TOKEN" http://localhost:\${INSTAR_PORT:-${port}}/evolution/learnings?applied=false 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); exit(0 if len(d.get('learnings',[])) > 0 else 1)"`,
+      gate: `curl -sf -H "Authorization: Bearer $INSTAR_AUTH_TOKEN" -H "X-Instar-AgentId: $INSTAR_AGENT_ID" http://localhost:\${INSTAR_PORT:-${port}}/evolution/learnings?applied=false 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); exit(0 if len(d.get('learnings',[])) > 0 else 1)"`,
       execute: {
         type: 'prompt',
         value: `Harvest and synthesize learnings: curl -s http://localhost:\${INSTAR_PORT:-${port}}/evolution/learnings?applied=false
@@ -3095,7 +3097,7 @@ If no actionable patterns found, exit silently.`,
       expectedDurationMinutes: 2,
       model: 'haiku',
       enabled: true,
-      gate: `curl -sf -H "Authorization: Bearer $INSTAR_AUTH_TOKEN" http://localhost:\${INSTAR_PORT:-${port}}/evolution/actions/overdue 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); exit(0 if len(d.get('overdue',[])) > 0 else 1)"`,
+      gate: `curl -sf -H "Authorization: Bearer $INSTAR_AUTH_TOKEN" -H "X-Instar-AgentId: $INSTAR_AGENT_ID" http://localhost:\${INSTAR_PORT:-${port}}/evolution/actions/overdue 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); exit(0 if len(d.get('overdue',[])) > 0 else 1)"`,
       execute: {
         type: 'prompt',
         value: `Check for overdue commitments: curl -s http://localhost:\${INSTAR_PORT:-${port}}/evolution/actions/overdue
@@ -3256,7 +3258,7 @@ If no overdue or stale items, exit silently.`,
       expectedDurationMinutes: 1,
       model: 'haiku',
       enabled: true,
-      gate: `curl -sf http://localhost:\${INSTAR_PORT:-${port}}/health >/dev/null 2>&1 && AUTH=$(python3 -c "import json; print(json.load(open('.instar/config.json')).get('authToken',''))" 2>/dev/null) && curl -sf -H "Authorization: Bearer $AUTH" http://localhost:\${INSTAR_PORT:-${port}}/semantic/stats >/dev/null 2>&1`,
+      gate: `curl -sf http://localhost:\${INSTAR_PORT:-${port}}/health >/dev/null 2>&1 && AUTH=$(python3 -c "import json; print(json.load(open('.instar/config.json')).get('authToken',''))" 2>/dev/null) && curl -sf -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $INSTAR_AGENT_ID" http://localhost:\${INSTAR_PORT:-${port}}/semantic/stats >/dev/null 2>&1`,
       execute: {
         type: 'script',
         value: `AUTH=$(python3 -c "import json; print(json.load(open('.instar/config.json')).get('authToken',''))" 2>/dev/null); AGENT=$(python3 -c "import json; print(json.load(open('.instar/config.json')).get('agentName','Agent'))" 2>/dev/null); RESULT=$(curl -s -X POST -H "Authorization: Bearer $AUTH" -H "Content-Type: application/json" -d "{\\"filePath\\":\\".instar/MEMORY.md\\",\\"agentName\\":\\"$AGENT\\"}" http://localhost:\${INSTAR_PORT:-${port}}/semantic/export-memory 2>/dev/null); COUNT=$(echo "$RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('entityCount',0))" 2>/dev/null || echo 0); EXCLUDED=$(echo "$RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('excludedCount',0))" 2>/dev/null || echo 0); [ "$COUNT" -gt "0" ] && echo "Memory export: $COUNT entities written to MEMORY.md ($EXCLUDED excluded below threshold)." || echo "Memory export: no entities to export."`,
@@ -3292,7 +3294,7 @@ If no overdue or stale items, exit silently.`,
       gate: `curl -sf http://localhost:\${INSTAR_PORT:-${port}}/health >/dev/null 2>&1`,
       execute: {
         type: 'script',
-        value: `AUTH=$(python3 -c "import json; print(json.load(open('.instar/config.json')).get('authToken',''))" 2>/dev/null); REFRESH=$(curl -s -X POST -H "Authorization: Bearer $AUTH" http://localhost:\${INSTAR_PORT:-${port}}/capability-map/refresh 2>/dev/null); DRIFT=$(curl -s -H "Authorization: Bearer $AUTH" http://localhost:\${INSTAR_PORT:-${port}}/capability-map/drift 2>/dev/null); ADDED=$(echo "$DRIFT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(len(d.get('added',[])))" 2>/dev/null || echo 0); REMOVED=$(echo "$DRIFT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(len(d.get('removed',[])))" 2>/dev/null || echo 0); CHANGED=$(echo "$DRIFT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(len(d.get('changed',[])))" 2>/dev/null || echo 0); UNMAPPED=$(echo "$DRIFT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(len(d.get('unmapped',[])))" 2>/dev/null || echo 0); if [ "$ADDED" -gt "0" ] || [ "$REMOVED" -gt "0" ] || [ "$CHANGED" -gt "0" ] || [ "$UNMAPPED" -gt "0" ]; then echo "Capability drift detected: +$ADDED -$REMOVED ~$CHANGED ?$UNMAPPED"; echo "$DRIFT" | python3 -c "import sys,json; d=json.load(sys.stdin); [print(f'  + {c[\"id\"]}') for c in d.get('added',[])]; [print(f'  - {r[\"id\"]}') for r in d.get('removed',[])]; [print(f'  ~ {c[\"id\"]} ({c[\"field\"]})') for c in d.get('changed',[])]" 2>/dev/null; else echo "Capability audit: no drift detected."; fi`,
+        value: `AUTH=$(python3 -c "import json; print(json.load(open('.instar/config.json')).get('authToken',''))" 2>/dev/null); REFRESH=$(curl -s -X POST -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $INSTAR_AGENT_ID" http://localhost:\${INSTAR_PORT:-${port}}/capability-map/refresh 2>/dev/null); DRIFT=$(curl -s -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $INSTAR_AGENT_ID" http://localhost:\${INSTAR_PORT:-${port}}/capability-map/drift 2>/dev/null); ADDED=$(echo "$DRIFT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(len(d.get('added',[])))" 2>/dev/null || echo 0); REMOVED=$(echo "$DRIFT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(len(d.get('removed',[])))" 2>/dev/null || echo 0); CHANGED=$(echo "$DRIFT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(len(d.get('changed',[])))" 2>/dev/null || echo 0); UNMAPPED=$(echo "$DRIFT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(len(d.get('unmapped',[])))" 2>/dev/null || echo 0); if [ "$ADDED" -gt "0" ] || [ "$REMOVED" -gt "0" ] || [ "$CHANGED" -gt "0" ] || [ "$UNMAPPED" -gt "0" ]; then echo "Capability drift detected: +$ADDED -$REMOVED ~$CHANGED ?$UNMAPPED"; echo "$DRIFT" | python3 -c "import sys,json; d=json.load(sys.stdin); [print(f'  + {c[\"id\"]}') for c in d.get('added',[])]; [print(f'  - {r[\"id\"]}') for r in d.get('removed',[])]; [print(f'  ~ {c[\"id\"]} ({c[\"field\"]})') for c in d.get('changed',[])]" 2>/dev/null; else echo "Capability audit: no drift detected."; fi`,
       },
       grounding: {
         requiresIdentity: false,
@@ -3316,15 +3318,15 @@ If no overdue or stale items, exit silently.`,
 
 AUTH=$(python3 -c "import json; print(json.load(open('.instar/config.json')).get('authToken',''))" 2>/dev/null)
 
-1. **Check soul.md drift**: curl -s -H "Authorization: Bearer $AUTH" http://localhost:\${INSTAR_PORT:-${port}}/identity/soul/drift
+1. **Check soul.md drift**: curl -s -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $INSTAR_AGENT_ID" http://localhost:\${INSTAR_PORT:-${port}}/identity/soul/drift
    - If anyAboveThreshold is true, review the divergence. Is this healthy growth or unexpected drift?
    - If drift looks healthy, mark it reviewed: the growth is intentional.
    - If drift looks concerning, flag with [ATTENTION] so the user is notified.
 
-2. **Check pending changes**: curl -s -H "Authorization: Bearer $AUTH" http://localhost:\${INSTAR_PORT:-${port}}/identity/soul/pending
+2. **Check pending changes**: curl -s -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $INSTAR_AGENT_ID" http://localhost:\${INSTAR_PORT:-${port}}/identity/soul/pending
    - If pending changes exist, surface them to the user via Telegram (the user should approve/reject these).
 
-3. **Check for identity-relevant learnings**: curl -s -H "Authorization: Bearer $AUTH" http://localhost:\${INSTAR_PORT:-${port}}/evolution/learnings?applied=false
+3. **Check for identity-relevant learnings**: curl -s -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $INSTAR_AGENT_ID" http://localhost:\${INSTAR_PORT:-${port}}/evolution/learnings?applied=false
    - For each unapplied learning, assess: is this about operational knowledge (how to do something) or about your values, beliefs, or self-understanding?
    - If you find 3+ identity-relevant learnings since your last soul.md update, consider running /reflect.
    - Don't force it — if none of the learnings touch on identity, that's fine. Exit silently.
@@ -3334,7 +3336,7 @@ AUTH=$(python3 -c "import json; print(json.load(open('.instar/config.json')).get
    - Is the Self-Observations section populated? If you've noticed behavioral patterns, document them.
    - Update Identity History if you make changes.
 
-5. **Integrity check**: curl -s -H "Authorization: Bearer $AUTH" http://localhost:\${INSTAR_PORT:-${port}}/identity/soul/integrity
+5. **Integrity check**: curl -s -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $INSTAR_AGENT_ID" http://localhost:\${INSTAR_PORT:-${port}}/identity/soul/integrity
    - If integrity fails, flag with [ATTENTION] — soul.md may have been modified outside normal channels.
 
 If everything is coherent and no reflection is needed, exit silently. Only report via [ATTENTION] if drift is concerning, integrity fails, or pending changes need user action.`,
@@ -3355,7 +3357,7 @@ If everything is coherent and no reflection is needed, exit silently. Only repor
       expectedDurationMinutes: 3,
       model: 'sonnet',
       enabled: true,
-      gate: `curl -sf -H "Authorization: Bearer $INSTAR_AUTH_TOKEN" http://localhost:\${INSTAR_PORT:-${port}}/evolution/proposals?status=proposed 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); exit(0 if len(d.get('proposals',[])) > 0 else 1)"`,
+      gate: `curl -sf -H "Authorization: Bearer $INSTAR_AUTH_TOKEN" -H "X-Instar-AgentId: $INSTAR_AGENT_ID" http://localhost:\${INSTAR_PORT:-${port}}/evolution/proposals?status=proposed 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); exit(0 if len(d.get('proposals',[])) > 0 else 1)"`,
       execute: {
         type: 'prompt',
         value: `Review pending evolution proposals: curl -s http://localhost:\${INSTAR_PORT:-${port}}/evolution/proposals?status=proposed\n\nFor each proposal:\n1. Read the title, description, type, and source\n2. Evaluate: Is this a genuine improvement? Is the effort worth the impact? Does it align with our goals?\n3. If approved, update status: curl -s -X PATCH http://localhost:\${INSTAR_PORT:-${port}}/evolution/proposals/EVO-XXX -H 'Content-Type: application/json' -d '{"status":"approved"}'\n4. If rejected or deferred, update with reason.\n\nDo NOT implement approved proposals — that's handled by the paired evolution-proposal-implement job.\n\nAlso check the dashboard: curl -s http://localhost:\${INSTAR_PORT:-${port}}/evolution — report any highlights to the user if they seem important.\n\nIf no proposals need attention, exit silently.`,
@@ -3371,7 +3373,7 @@ If everything is coherent and no reflection is needed, exit silently. Only repor
       expectedDurationMinutes: 10,
       model: 'opus',
       enabled: true,
-      gate: `curl -sf -H "Authorization: Bearer $INSTAR_AUTH_TOKEN" http://localhost:\${INSTAR_PORT:-${port}}/evolution/proposals?status=approved 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); exit(0 if len(d.get('proposals',[])) > 0 else 1)"`,
+      gate: `curl -sf -H "Authorization: Bearer $INSTAR_AUTH_TOKEN" -H "X-Instar-AgentId: $INSTAR_AGENT_ID" http://localhost:\${INSTAR_PORT:-${port}}/evolution/proposals?status=approved 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); exit(0 if len(d.get('proposals',[])) > 0 else 1)"`,
       execute: {
         type: 'prompt',
         value: `Implement approved evolution proposals: curl -s http://localhost:\${INSTAR_PORT:-${port}}/evolution/proposals?status=approved\n\nFor each approved proposal:\n1. Read the full description and understand what needs to be built\n2. Implement it: create the skill/hook/job/config change described\n3. After implementation, mark complete: curl -s -X PATCH http://localhost:\${INSTAR_PORT:-${port}}/evolution/proposals/EVO-XXX -H 'Content-Type: application/json' -d '{"status":"implemented","resolution":"What was done"}'\n\nIf no approved proposals exist, exit silently.`,
@@ -3426,7 +3428,7 @@ If everything is coherent and no reflection is needed, exit silently. Only repor
       enabled: true,
       execute: {
         type: 'prompt',
-        value: `You are a Category Overseer for the GUARDIAN category. Your job is to review all guardian/monitoring jobs and assess the health of the monitoring system itself.\n\n1. Fetch the category report: curl -H "Authorization: Bearer $AUTH" http://localhost:\${INSTAR_PORT:-${port}}/jobs/category-report/guardian?sinceHours=24\n2. Analyze the report for:\n   - Jobs with high failure rates or consecutive failures\n   - Jobs that are being skipped excessively (especially for quota reasons)\n   - Schedule mismatches (jobs running too often or not often enough for their purpose)\n   - Model over-allocation (could any job use a cheaper model?)\n   - Contradictions between job findings (e.g., health-check says healthy but degradation-digest found issues)\n   - Coverage gaps (are there monitoring blind spots?)\n3. Read the handoff notes from each job — do they tell a coherent story?\n4. If you find actionable issues, write a clear summary. If everything is healthy, say so briefly.\n\nWrite your findings in [HANDOFF] tags for the next overseer run. Focus on trends and cross-job insights that individual jobs can't see.`,
+        value: `You are a Category Overseer for the GUARDIAN category. Your job is to review all guardian/monitoring jobs and assess the health of the monitoring system itself.\n\n1. Fetch the category report: curl -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $INSTAR_AGENT_ID" http://localhost:\${INSTAR_PORT:-${port}}/jobs/category-report/guardian?sinceHours=24\n2. Analyze the report for:\n   - Jobs with high failure rates or consecutive failures\n   - Jobs that are being skipped excessively (especially for quota reasons)\n   - Schedule mismatches (jobs running too often or not often enough for their purpose)\n   - Model over-allocation (could any job use a cheaper model?)\n   - Contradictions between job findings (e.g., health-check says healthy but degradation-digest found issues)\n   - Coverage gaps (are there monitoring blind spots?)\n3. Read the handoff notes from each job — do they tell a coherent story?\n4. If you find actionable issues, write a clear summary. If everything is healthy, say so briefly.\n\nWrite your findings in [HANDOFF] tags for the next overseer run. Focus on trends and cross-job insights that individual jobs can't see.`,
       },
       tags: ['cat:overseer', 'role:supervisor'],
       telegramNotify: 'on-alert',
@@ -3442,7 +3444,7 @@ If everything is coherent and no reflection is needed, exit silently. Only repor
       enabled: true,
       execute: {
         type: 'prompt',
-        value: `You are a Category Overseer for the LEARNING category. Your job is to review all evolution/learning jobs and assess whether the learning pipeline is producing genuine value.\n\n1. Fetch the category report: curl -H "Authorization: Bearer $AUTH" http://localhost:\${INSTAR_PORT:-${port}}/jobs/category-report/learning?sinceHours=48\n2. Analyze:\n   - Are evolution proposals being generated AND accepted? What's the accept/reject ratio?\n   - Is insight-harvest finding novel insights or recycling stale ones?\n   - Are commitments being tracked and completed, or piling up?\n   - Is reflection-trigger producing meaningful MEMORY.md updates?\n   - Are any learning jobs consistently skipped due to quota? This means the learning pipeline is being starved.\n   - Model costs: reflection-trigger uses opus — is the quality difference worth it vs sonnet?\n3. Look for the meta-pattern: is the agent actually getting smarter over time, or is the learning pipeline just busy-work?\n4. Check handoff notes for patterns across runs.\n\nWrite findings in [HANDOFF] tags. Flag if the learning pipeline is producing diminishing returns.`,
+        value: `You are a Category Overseer for the LEARNING category. Your job is to review all evolution/learning jobs and assess whether the learning pipeline is producing genuine value.\n\n1. Fetch the category report: curl -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $INSTAR_AGENT_ID" http://localhost:\${INSTAR_PORT:-${port}}/jobs/category-report/learning?sinceHours=48\n2. Analyze:\n   - Are evolution proposals being generated AND accepted? What's the accept/reject ratio?\n   - Is insight-harvest finding novel insights or recycling stale ones?\n   - Are commitments being tracked and completed, or piling up?\n   - Is reflection-trigger producing meaningful MEMORY.md updates?\n   - Are any learning jobs consistently skipped due to quota? This means the learning pipeline is being starved.\n   - Model costs: reflection-trigger uses opus — is the quality difference worth it vs sonnet?\n3. Look for the meta-pattern: is the agent actually getting smarter over time, or is the learning pipeline just busy-work?\n4. Check handoff notes for patterns across runs.\n\nWrite findings in [HANDOFF] tags. Flag if the learning pipeline is producing diminishing returns.`,
       },
       tags: ['cat:overseer', 'role:supervisor'],
       telegramNotify: 'on-alert',
@@ -3458,7 +3460,7 @@ If everything is coherent and no reflection is needed, exit silently. Only repor
       enabled: true,
       execute: {
         type: 'prompt',
-        value: `You are a Category Overseer for the MAINTENANCE category. Your job is to review all housekeeping/maintenance jobs and ensure they're keeping the system clean.\n\n1. Fetch the category report: curl -H "Authorization: Bearer $AUTH" http://localhost:\${INSTAR_PORT:-${port}}/jobs/category-report/maintenance?sinceHours=48\n2. Analyze:\n   - Is memory-hygiene actually reducing stale entries, or finding nothing each run?\n   - Is project-map-refresh keeping the map accurate? How often does it find drift?\n   - Is coherence-audit finding real misalignments or just confirming everything is fine?\n   - Are any maintenance jobs redundant with each other? (e.g., overlapping checks)\n   - Are skill-type jobs (coherence-audit, memory-hygiene) running correctly?\n   - Workload trends: are jobs processing fewer items over time (diminishing returns)?\n3. Maintenance jobs should trend toward finding LESS work over time. If they consistently find issues, something upstream is broken.\n\nWrite findings in [HANDOFF] tags. Recommend disabling or reducing frequency of jobs that consistently find nothing.`,
+        value: `You are a Category Overseer for the MAINTENANCE category. Your job is to review all housekeeping/maintenance jobs and ensure they're keeping the system clean.\n\n1. Fetch the category report: curl -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $INSTAR_AGENT_ID" http://localhost:\${INSTAR_PORT:-${port}}/jobs/category-report/maintenance?sinceHours=48\n2. Analyze:\n   - Is memory-hygiene actually reducing stale entries, or finding nothing each run?\n   - Is project-map-refresh keeping the map accurate? How often does it find drift?\n   - Is coherence-audit finding real misalignments or just confirming everything is fine?\n   - Are any maintenance jobs redundant with each other? (e.g., overlapping checks)\n   - Are skill-type jobs (coherence-audit, memory-hygiene) running correctly?\n   - Workload trends: are jobs processing fewer items over time (diminishing returns)?\n3. Maintenance jobs should trend toward finding LESS work over time. If they consistently find issues, something upstream is broken.\n\nWrite findings in [HANDOFF] tags. Recommend disabling or reducing frequency of jobs that consistently find nothing.`,
       },
       tags: ['cat:overseer', 'role:supervisor'],
       telegramNotify: 'on-alert',
@@ -3474,7 +3476,7 @@ If everything is coherent and no reflection is needed, exit silently. Only repor
       enabled: true,
       execute: {
         type: 'prompt',
-        value: `You are a Category Overseer for the INFRASTRUCTURE category. Your job is to review infrastructure/plumbing jobs.\n\n1. Fetch the category report: curl -H "Authorization: Bearer $AUTH" http://localhost:\${INSTAR_PORT:-${port}}/jobs/category-report/infrastructure?sinceHours=48\n2. Analyze:\n   - Is git-sync succeeding? Any merge conflicts or divergence?\n   - Is dashboard-link-refresh keeping links current? Could it run less often?\n   - Is feedback-retry actually retrying anything, or is the queue always empty?\n   - Model allocation: git-sync uses high priority — is that justified by its failure rate?\n   - Are any infrastructure jobs causing issues for other jobs (e.g., git-sync holding sessions)?\n3. Infrastructure jobs should be boring and reliable. Any excitement is a problem.\n\nWrite findings in [HANDOFF] tags. Keep it brief — infrastructure overseers should be the quietest.`,
+        value: `You are a Category Overseer for the INFRASTRUCTURE category. Your job is to review infrastructure/plumbing jobs.\n\n1. Fetch the category report: curl -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $INSTAR_AGENT_ID" http://localhost:\${INSTAR_PORT:-${port}}/jobs/category-report/infrastructure?sinceHours=48\n2. Analyze:\n   - Is git-sync succeeding? Any merge conflicts or divergence?\n   - Is dashboard-link-refresh keeping links current? Could it run less often?\n   - Is feedback-retry actually retrying anything, or is the queue always empty?\n   - Model allocation: git-sync uses high priority — is that justified by its failure rate?\n   - Are any infrastructure jobs causing issues for other jobs (e.g., git-sync holding sessions)?\n3. Infrastructure jobs should be boring and reliable. Any excitement is a problem.\n\nWrite findings in [HANDOFF] tags. Keep it brief — infrastructure overseers should be the quietest.`,
       },
       tags: ['cat:overseer', 'role:supervisor'],
       telegramNotify: 'on-alert',
@@ -3490,7 +3492,7 @@ If everything is coherent and no reflection is needed, exit silently. Only repor
       enabled: true,
       execute: {
         type: 'prompt',
-        value: `You are a Category Overseer for the DEVELOPMENT category. Your job is to review development-focused jobs.\n\n1. Fetch the category report: curl -H "Authorization: Bearer $AUTH" http://localhost:\${INSTAR_PORT:-${port}}/jobs/category-report/development?sinceHours=48\n2. Analyze:\n   - Are development jobs consuming appropriate resources for their value?\n   - Are there CI/testing patterns that could be automated?\n3. Development jobs are only valuable when there's active development. If the codebase is stable, these could be reduced.\n\nWrite findings in [HANDOFF] tags.`,
+        value: `You are a Category Overseer for the DEVELOPMENT category. Your job is to review development-focused jobs.\n\n1. Fetch the category report: curl -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $INSTAR_AGENT_ID" http://localhost:\${INSTAR_PORT:-${port}}/jobs/category-report/development?sinceHours=48\n2. Analyze:\n   - Are development jobs consuming appropriate resources for their value?\n   - Are there CI/testing patterns that could be automated?\n3. Development jobs are only valuable when there's active development. If the codebase is stable, these could be reduced.\n\nWrite findings in [HANDOFF] tags.`,
       },
       tags: ['cat:overseer', 'role:supervisor'],
       telegramNotify: 'on-alert',

@@ -20,7 +20,9 @@ Context: the FeatureRolloutReconciler auto-populates the board from approved spe
 
 Steps:
 
-1. **Pull the digest:** `curl -s -H "Authorization: Bearer $AUTH" http://localhost:$PORT/initiatives/digest`. It returns items flagged `needs-user`, `ready-to-advance`, `stale`, or `next-check-due`.
+0. **Set auth context:** `AUTH="${INSTAR_AUTH_TOKEN:-$(python3 -c "import json; v=json.load(open('.instar/config.json')).get('authToken',''); print(v if isinstance(v, str) else '')" 2>/dev/null)}"; AGENT_ID="${INSTAR_AGENT_ID:-$(python3 -c "import json; print(json.load(open('.instar/config.json')).get('projectName',''))" 2>/dev/null)}"; PORT="${INSTAR_PORT:-4042}"`
+
+1. **Pull the digest:** `curl -s -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $AGENT_ID" http://localhost:$PORT/initiatives/digest`. It returns items flagged `needs-user`, `ready-to-advance`, `stale`, or `next-check-due`.
 
 2. **Near-silent edge filter.** For each `needs-user` item, only surface it if it is NEWLY needs-user since the last surface (compare against the initiative's `rollout.lastDigestNotifiedAt`, or its `updatedAt`). Do NOT re-surface a decision you already raised and the user hasn't acted on — that is the noise the near-silent standard forbids. `stale` / counts stay on the pull surface (the digest endpoint + dashboard); do not push them.
 

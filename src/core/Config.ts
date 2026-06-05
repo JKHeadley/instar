@@ -796,6 +796,7 @@ export function loadConfig(projectDir?: string): InstarConfig {
   const projectName = fileConfig.projectName || path.basename(resolvedProjectDir);
 
   const sessions: SessionManagerConfig = {
+    projectName,
     tmuxPath,
     claudePath,
     // Expose every detected framework binary so spawnInteractiveSession
@@ -841,6 +842,7 @@ export function loadConfig(projectDir?: string): InstarConfig {
       shutdown: 95,
     },
     authToken: fileConfig.authToken as string | undefined,
+    projectName,
   };
 
   // Auto-generate contextSigningKey if not present (persists to config file)

@@ -14,6 +14,11 @@
 # matched on "compaction".
 
 INSTAR_DIR="${CLAUDE_PROJECT_DIR:-.}/.instar"
+CONFIG_FILE="$INSTAR_DIR/config.json"
+AGENT_ID="${INSTAR_AGENT_ID:-}"
+if [ -z "$AGENT_ID" ] && [ -f "$CONFIG_FILE" ]; then
+  AGENT_ID=$(python3 -c "import json; print(json.load(open('$CONFIG_FILE')).get('projectName',''))" 2>/dev/null)
+fi
 
 echo "=== COMPACTION RECOVERY — IDENTITY RESTORATION ==="
 echo ""
@@ -36,7 +41,7 @@ if [ -f "$INSTAR_DIR/soul.md" ]; then
     # Check integrity via server if available
     SOUL_INTEGRITY="valid"
     if [ -n "$PORT" ] && [ -n "$AUTH_TOKEN" ]; then
-      INTEGRITY_CHECK=$(curl -s -H "Authorization: Bearer ${AUTH_TOKEN}" \
+      INTEGRITY_CHECK=$(curl -s -H "Authorization: Bearer ${AUTH_TOKEN}" -H "X-Instar-AgentId: ${AGENT_ID}" \
         "http://localhost:${PORT}/identity/soul/integrity" 2>/dev/null)
       SOUL_INTEGRITY=$(echo "$INTEGRITY_CHECK" | python3 -c "
 import sys, json
@@ -180,7 +185,7 @@ if [ -f "$CONFIG_FILE" ]; then
     if [ -z "$AUTH_TOKEN" ]; then
       AUTH_TOKEN=$(python3 -c "import json; v=json.load(open('$CONFIG_FILE')).get('authToken',''); print(v if isinstance(v, str) else '')" 2>/dev/null)
     fi
-    FEATURES_JSON=$(curl -s -H "Authorization: Bearer ${AUTH_TOKEN}" \
+    FEATURES_JSON=$(curl -s -H "Authorization: Bearer ${AUTH_TOKEN}" -H "X-Instar-AgentId: ${AGENT_ID}" \
       "http://localhost:${PORT}/features/summary" 2>/dev/null)
     if [ -n "$FEATURES_JSON" ]; then
       DISCOVERY_STATE=$(echo "$FEATURES_JSON" | python3 -c "
@@ -255,7 +260,7 @@ if [ -f "$CONFIG_FILE" ]; then
       AUTH_TOKEN=$(python3 -c "import json; v=json.load(open('$CONFIG_FILE')).get('authToken',''); print(v if isinstance(v, str) else '')" 2>/dev/null)
     fi
         SLACK_MSGS=$(curl -s \
-          -H "Authorization: Bearer ${AUTH_TOKEN}" \
+          -H "Authorization: Bearer ${AUTH_TOKEN}" -H "X-Instar-AgentId: ${AGENT_ID}" \
           "http://localhost:${PORT}/slack/channels/${SLACK_CHANNEL}/messages?limit=20" 2>/dev/null)
 
         echo "$SLACK_MSGS" | python3 -c "
@@ -358,7 +363,7 @@ except Exception:
     fi
         if [ -n "$AUTH_TOKEN" ]; then
           RECENT_MSGS=$(curl -s \
-            -H "Authorization: Bearer ${AUTH_TOKEN}" \
+            -H "Authorization: Bearer ${AUTH_TOKEN}" -H "X-Instar-AgentId: ${AGENT_ID}" \
             "http://localhost:${PORT}/telegram/topics/${TOPIC_FOR_CONTEXT}/messages?limit=15" 2>/dev/null)
         else
           RECENT_MSGS=$(curl -s \
@@ -433,7 +438,7 @@ if [ -f "$CONFIG_FILE" ]; then
     if [ -z "$AUTH_TOKEN" ]; then
       AUTH_TOKEN=$(python3 -c "import json; v=json.load(open('$CONFIG_FILE')).get('authToken',''); print(v if isinstance(v, str) else '')" 2>/dev/null)
     fi
-    WORKING_MEM=$(curl -s -H "Authorization: Bearer ${AUTH_TOKEN}" \
+    WORKING_MEM=$(curl -s -H "Authorization: Bearer ${AUTH_TOKEN}" -H "X-Instar-AgentId: ${AGENT_ID}" \
       "http://localhost:${PORT}/context/working-memory?prompt=compaction-recovery&limit=5" 2>/dev/null)
     if [ -n "$WORKING_MEM" ]; then
       CONTEXT=$(echo "$WORKING_MEM" | python3 -c "
@@ -472,7 +477,7 @@ if [ -f "$CONFIG_FILE" ] && command -v tmux >/dev/null 2>&1; then
       AUTH_TOKEN=$(python3 -c "import json; v=json.load(open('$CONFIG_FILE')).get('authToken',''); print(v if isinstance(v, str) else '')" 2>/dev/null)
     fi
     curl -s -m 2 -X POST \
-      -H "Authorization: Bearer ${AUTH_TOKEN}" \
+      -H "Authorization: Bearer ${AUTH_TOKEN}" -H "X-Instar-AgentId: ${AGENT_ID}" \
       -H "Content-Type: application/json" \
       -d "{\"sessionName\":\"${TMUX_SESSION}\"}" \
       "http://localhost:${PORT}/internal/compaction-resume" >/dev/null 2>&1 &

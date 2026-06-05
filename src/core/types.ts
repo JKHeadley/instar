@@ -80,6 +80,8 @@ export type SessionStatus = 'starting' | 'running' | 'completed' | 'failed' | 'k
 export type ModelTier = 'opus' | 'sonnet' | 'haiku';
 
 export interface SessionManagerConfig {
+  /** Project name used as the stable local agent id for auth-bound calls. */
+  projectName: string;
   /** Path to tmux binary */
   tmuxPath: string;
   /**
@@ -451,6 +453,8 @@ export interface JobSchedulerConfig {
   gateRetryDelayMs?: number;
   /** Auth token exposed to gate shell commands as $INSTAR_AUTH_TOKEN so gates can call authenticated localhost endpoints. */
   authToken?: string;
+  /** Project name exposed as $INSTAR_AGENT_ID so gate shells can bind bearer auth to this agent. */
+  projectName?: string;
   /** Wake-time job reaper — closes runs left pending after the host wakes from sleep. */
   wakeReaper?: {
     /** Minimum sleep duration (seconds) to trigger a reap pass. Defaults to 60. */
