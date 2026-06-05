@@ -384,6 +384,72 @@ describe('InputDetector.pattern.geminiSafeDefaultModals', () => {
     expect(prompt!.autoDismissDisposition).toBe('safe-default');
   });
 
+  it('does not re-fire a successfully auto-dismissed prompt while pane content is unchanged', () => {
+    const detector = makeDetector();
+    const output = [
+      'Need to install the following packages:',
+      'instar@1.3.282',
+      'Ok to proceed? (y)',
+    ].join('\n') + '\n'.repeat(50);
+
+    const first = detectWithDebounce(detector, 'gemini-repeat', output);
+    expect(first).not.toBeNull();
+    expect(first!.autoDismissKey).toBe('Enter');
+
+    detector.onAutoDismissSent(first!);
+    detector.onInputSent('gemini-repeat');
+
+    const repeated = detectWithDebounce(detector, 'gemini-repeat', output);
+    expect(repeated).toBeNull();
+  });
+
+  it('re-arms an auto-dismissed prompt after pane content changes', () => {
+    const detector = makeDetector();
+    const output = [
+      'Need to install the following packages:',
+      'instar@1.3.282',
+      'Ok to proceed? (y)',
+    ].join('\n') + '\n'.repeat(50);
+
+    const first = detectWithDebounce(detector, 'gemini-rearm', output);
+    expect(first).not.toBeNull();
+
+    detector.onAutoDismissSent(first!);
+    detector.onInputSent('gemini-rearm');
+    expect(detectWithDebounce(detector, 'gemini-rearm', output)).toBeNull();
+
+    const changedOutput = [
+      'Installing instar package...',
+      'Download complete.',
+      'Gemini is continuing.',
+    ].join('\n');
+    expect(detectWithDebounce(detector, 'gemini-rearm', changedOutput)).toBeNull();
+
+    const rearmed = detectWithDebounce(detector, 'gemini-rearm', output);
+    expect(rearmed).not.toBeNull();
+    expect(rearmed!.autoDismissKey).toBe('Enter');
+  });
+
+  it('does not remember auto-dismiss prompts when send did not succeed', () => {
+    const detector = makeDetector();
+    const output = [
+      'Need to install the following packages:',
+      'instar@1.3.282',
+      'Ok to proceed? (y)',
+    ].join('\n') + '\n'.repeat(50);
+
+    const first = detectWithDebounce(detector, 'gemini-send-failed', output);
+    expect(first).not.toBeNull();
+
+    // Simulate the server path where sendKey returned false: input state may
+    // still be reset, but onAutoDismissSent is deliberately not called.
+    detector.onInputSent('gemini-send-failed');
+
+    const repeated = detectWithDebounce(detector, 'gemini-send-failed', output);
+    expect(repeated).not.toBeNull();
+    expect(repeated!.autoDismissKey).toBe('Enter');
+  });
+
   it('does NOT auto-answer a generic non-Gemini install question', () => {
     const detector = makeDetector();
     const output = [
