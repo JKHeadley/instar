@@ -1344,6 +1344,8 @@ Your response text here
 EOF
 \`\`\`
 
+If the response itself contains a literal \`EOF\` line or shell-sensitive content that could break the heredoc wrapper, base64-encode the response text and pipe that encoded text to \`.claude/scripts/telegram-reply.sh --stdin-base64 N\` instead.
+
 Strip the \`[telegram:N]\` prefix before interpreting the message. Only relay conversational text — not tool output.
 
 ### Session Continuity (CRITICAL)
@@ -1646,6 +1648,8 @@ cat <<'EOF' | .claude/scripts/telegram-reply.sh N
 Your response text here
 EOF
 \`\`\`
+
+If the response itself contains a literal \`EOF\` line or shell-sensitive content that could break the heredoc wrapper, base64-encode the response text and pipe that encoded text to \`.claude/scripts/telegram-reply.sh --stdin-base64 N\` instead.
 
 Strip the \`[telegram:N]\` prefix before interpreting the message. Only relay conversational text — not tool output.
 `;

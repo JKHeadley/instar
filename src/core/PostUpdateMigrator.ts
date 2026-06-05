@@ -7788,6 +7788,10 @@ process.stdin.on('end', async () => {
     // verifier and lint both treat any deployed SHA matching this set as
     // a known-shipped instar version, not user-modified content.
     '371d7e8f4f72146bf8bd07115873bdbbaaf32e851ac6e1318ba5b8929cd06e68',
+    // Secret-externalization survivability version (env-first auth,
+    // recoverable queue, neutral relay mirror; no --stdin-base64 mode).
+    // Shipped through v1.3.266.
+    '0f6d27a522b123551871e6081774f8c89d1ad0ce248597af7dd60d8522871069',
   ]);
 
   /**
@@ -7843,7 +7847,7 @@ process.stdin.on('end', async () => {
         fs.writeFileSync(backupPath, existing, { mode: 0o644 });
         fs.writeFileSync(opts.scriptPath, opts.newContent, { mode: 0o755 });
         opts.result.upgraded.push(
-          `${opts.label} (upgraded to port-from-config + agent-id binding; ` +
+          `${opts.label} (upgraded to port-from-config + agent-id binding + robust base64 stdin; ` +
           `prior version backed up to ${path.relative(opts.stateDir, backupPath)})`
         );
       } catch (err) {
