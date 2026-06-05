@@ -58,3 +58,8 @@ house-consciousness-framework/
 
 # Phase 1c-build — private signing key for instar-default lock-file (NEVER commit)
 .instar-release-keys/
+
+# Generated build artifact (scripts/generate-builtin-manifest.cjs, run by `npm run build`
+# + prepublishOnly). Not committed — avoids a hot-file merge-conflict loop on every
+# skill/hook PR. Shipped via the .npmignore allowlist, regenerated before publish.
+src/data/builtin-manifest.json

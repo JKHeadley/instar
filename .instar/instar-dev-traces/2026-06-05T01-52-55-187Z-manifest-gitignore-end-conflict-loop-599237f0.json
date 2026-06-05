@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "sessionId": "6b3a4359-6111-477e-9b4c-6dcf1620a9b5",
+  "timestamp": "2026-06-05T01:52:55.187Z",
+  "artifactPath": "upgrades/side-effects/manifest-gitignore-end-conflict-loop.md",
+  "artifactSha256": "5f9d7a5de9553b6729cbc214c777d8e4cf3add1286dca25d649edba898dc4ab5",
+  "coveredFiles": [
+    ".gitignore",
+    "docs/specs/manifest-gitignore-end-conflict-loop.eli16.md",
+    "src/data/builtin-manifest.json",
+    "tests/unit/builtin-manifest.test.ts",
+    "upgrades/next/manifest-gitignore-end-conflict-loop.md",
+    "upgrades/side-effects/manifest-gitignore-end-conflict-loop.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Internal dev-workflow change: gitignore + untrack a generated build artifact (no runtime src/*.ts change), one test self-generates it, ceremony docs. Publish/runtime/CI verified unaffected.",
+  "eli16Path": "docs/specs/manifest-gitignore-end-conflict-loop.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/manifest-gitignore-end-conflict-loop.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
