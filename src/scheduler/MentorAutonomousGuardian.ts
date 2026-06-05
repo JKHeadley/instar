@@ -143,5 +143,6 @@ export function buildAutoloopGoal(p: AutoloopGoalParams): string {
     ``,
     `Discipline (non-negotiable): verify before you claim — never write a result or a number before the producing tool has returned it. Never narrate a tool call you did not make. One cycle, then exit cleanly — do NOT spawn another copy of this loop or schedule a follow-up; the guardian starts the next cycle on its own heartbeat.`,
     `Gate compliance (ratchet gates): an intentional best-effort/fail-open catch must either report through DegradationReporter or carry an inline @silent-fallback-ok justification — never bump a ratchet baseline to pass CI. When you author a task brief or spec for another agent, spell these gate notes out explicitly: a spec that says "best-effort, never throws" without them invites the exact ratchet failure it is trying to avoid.`,
+    `Before you build (parallel-claim check): run \`instar dev:claim-check <paths you intend to touch> [--keywords ...]\` FIRST — if an open/recently-merged PR or a spec already owns a layer of the problem, claim a DIFFERENT layer explicitly (division-of-labor; earned 2026-06-05 when two parallel sessions built the same incident fix twice). And every PR DESCRIPTION must include an \`## ELI16\` section (a required CI gate) — write it in from the start, not after the gate goes red.`,
   ].join('\n');
 }
