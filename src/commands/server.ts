@@ -2430,7 +2430,13 @@ export async function startServer(options: StartOptions): Promise<void> {
     // detector still runs and falls back to the JSONL append.
     let stopHeartbeat: (() => void) | undefined;
     try {
-      stopHeartbeat = startHeartbeat(config.projectDir);
+      // The reRegister callback closes the registry lost-update race: if an
+      // old server generation's shutdown deleted our fresh registration
+      // (back-to-back update restarts), the next heartbeat notices the
+      // missing entry and resurrects it instead of silently no-oping forever.
+      stopHeartbeat = startHeartbeat(config.projectDir, undefined, () => {
+        registerAgent(config.projectDir, config.projectName, config.port);
+      });
     } catch (err) {
       // Registry heartbeat is non-critical — server should run without it.
       // ELOCKED errors from concurrent agent startups are transient.
@@ -10820,7 +10826,11 @@ export async function startServer(options: StartOptions): Promise<void> {
       wakeSocketServer?.stop();
       pipeSpawner?.killAll();
       try { stopHeartbeat?.(); } catch { /* non-critical during shutdown */ }
-      try { unregisterAgent(config.projectDir); } catch { /* ELOCKED is non-critical during shutdown */ }
+      // pid-guarded: only remove OUR OWN registration. An unguarded
+      // unregister-by-path here deletes the successor generation's fresh
+      // entry during back-to-back update restarts (registry lost-update
+      // race) — the agent then vanishes from the registry until restart.
+      try { unregisterAgent(config.projectDir, { onlyIfPid: process.pid }); } catch { /* ELOCKED is non-critical during shutdown */ }
       scheduler?.stop();
       if (telegram) await telegram.stop();
       sessionManager.stopMonitoring();

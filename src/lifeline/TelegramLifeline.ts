@@ -416,7 +416,16 @@ export class TelegramLifeline {
       );
     } catch { /* non-critical */ }
     try {
-      this.stopHeartbeat = startHeartbeat(this.projectConfig.projectDir + '-lifeline');
+      // reRegister callback: if an old lifeline generation's shutdown deleted
+      // this generation's registration (coordinated version-skew restart,
+      // drift auto-promote), the next heartbeat resurrects the entry.
+      this.stopHeartbeat = startHeartbeat(this.projectConfig.projectDir + '-lifeline', undefined, () => {
+        registerAgent(
+          this.projectConfig.projectDir + '-lifeline',
+          `${this.projectConfig.projectName}-lifeline`,
+          this.projectConfig.port + 1000,
+        );
+      });
     } catch (err) {
       console.error(`[Lifeline] Registry heartbeat failed to start (non-critical): ${err instanceof Error ? err.message : err}`);
     }
@@ -583,7 +592,10 @@ export class TelegramLifeline {
     if (this.sessionRecoveryInterval) { clearInterval(this.sessionRecoveryInterval); this.sessionRecoveryInterval = null; }
     if (this.watchdog) this.watchdog.stop();
     try { if (this.stopHeartbeat) this.stopHeartbeat(); } catch { /* non-critical */ }
-    try { unregisterAgent(this.projectConfig.projectDir + '-lifeline'); } catch { /* non-critical */ }
+    // pid-guarded: only remove our OWN registration — an old lifeline
+    // generation's late shutdown must not delete the successor's fresh entry
+    // (registry lost-update race; same shape as the server-side fix).
+    try { unregisterAgent(this.projectConfig.projectDir + '-lifeline', { onlyIfPid: process.pid }); } catch { /* non-critical */ }
     try { releaseLockFile(this.lockPath); } catch { /* non-critical */ }
     try { await this.supervisor.stop(); } catch { /* best-effort */ }
   }
