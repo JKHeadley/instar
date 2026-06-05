@@ -299,6 +299,13 @@ export class CommitmentTracker extends EventEmitter {
       if (c.type !== 'one-time-action') continue;
       if (c.status === 'delivered' || c.status === 'withdrawn' || c.status === 'expired') continue;
       if (!CommitmentTracker.isUnverifiableOneTime(c)) continue;
+      // Scope to what the docstring above always claimed: ONLY the historical
+      // noisy rows (stuck violated, violations accumulated, never verified).
+      // Without this check, every BOOT retro-terminalized every pending
+      // unverifiable promise — under restart churn that re-introduced the
+      // CMT-1101 evaporation through the back door, clobbering the verify-sweep
+      // fix within minutes (2026-06-05, framework-issue 5bac8d53).
+      if (!((c.violationCount ?? 0) > 0 && (c.verificationCount ?? 0) === 0)) continue;
       c.status = 'delivered';
       c.resolvedAt = c.resolvedAt ?? new Date().toISOString();
       c.resolution =
@@ -656,19 +663,18 @@ export class CommitmentTracker extends EventEmitter {
 
   /**
    * True if a one-time-action commitment has no way to be verified
-   * automatically — no verificationMethod at all, an unknown method, or
-   * the `manual` method (which by design cannot self-resolve). Such
-   * commitments should not keep accumulating violations on every sweep;
-   * they transition to `delivered` on the first verify call.
+   * automatically — no verificationMethod at all, or the `manual` method
+   * (which by design cannot self-resolve). The verify sweep is a strict
+   * no-op for these: no violation ticks (the #76 spam class), and NO
+   * auto-delivery (the #656/CMT-1101 evaporation class) — beacon-enabled
+   * or not. They stay pending until an explicit deliver()/PATCH or
+   * `expiresAt` lapse; PromiseBeacon and the overdue sweep keep them
+   * visible meanwhile. (#656 carved out only beaconEnabled commitments
+   * here; the 2026-06-05 generalization covers every unverifiable
+   * one-time-action, which makes a separate beacon carve-out redundant.)
    */
   private static isUnverifiableOneTime(c: Commitment): boolean {
     if (c.type !== 'one-time-action') return false;
-    // Beacon-enabled future promises are NOT auto-deliverable: PromiseBeacon owns
-    // their follow-through and they stay pending until the agent explicitly calls
-    // deliver(). Treating them as "unverifiable → trust the ack" auto-marks them
-    // delivered ~seconds after creation (heartbeatCount 0), silently defeating the
-    // "open a commitment for follow-through" pattern. See the verify-sweep guard below.
-    if (c.beaconEnabled) return false;
     const m = c.verificationMethod;
     return m === undefined || m === null || m === 'manual';
   }
@@ -824,37 +830,26 @@ export class CommitmentTracker extends EventEmitter {
       return { passed: false, detail: 'Awaiting threadline reply' };
     }
 
-    // PromiseBeacon owns follow-through for beacon-enabled future promises. If
-    // such a one-time action has no machine-checkable verifier, keep it PENDING
-    // until the agent explicitly delivers the promised update via deliver() —
-    // do NOT auto-mark it delivered (which fires ~seconds after creation and
-    // makes the beacon never beat). The beacon's cadenced heartbeats are the
-    // intended follow-through; this sweep is a no-op for them.
-    if (
-      commitment.type === 'one-time-action' &&
-      commitment.beaconEnabled &&
-      (commitment.verificationMethod === undefined ||
-        commitment.verificationMethod === null ||
-        commitment.verificationMethod === 'manual')
-    ) {
-      return null;
-    }
-
-    // One-time-actions with no automated verification path cannot keep
-    // being "violated" on every sweep — that's how a single commitment
-    // accumulated 51,000+ violation ticks. Transition once to
-    // `delivered` (terminal) with a clear resolution note, then skip.
+    // ANY unverifiable one-time-action stays PENDING — the sweep is a no-op.
+    //
+    // History (the causal chain matters here): #76 stopped the 51,000-tick
+    // violation spam by auto-marking these `delivered` ("trusting agent
+    // acknowledgment") — but `delivered` fired ~75 seconds after creation and
+    // is TERMINAL, so a promise like "review the PR when it lands" silently
+    // evaporated before its condition could even exist, and nothing (not the
+    // PromiseBeacon, not the overdue sweep, not PATCH) could revive it. #656
+    // fixed exactly that — but only for beaconEnabled commitments; everything
+    // registered via a plain POST /commitments still fell through to the
+    // auto-deliver (live: CMT-1101, 2026-06-05, framework-issue 5bac8d53).
+    //
+    // The generalization keeps every prior property: returning null neither
+    // violates (the #76 spam can't recur — no per-sweep ticks) nor delivers
+    // (the #656 evaporation can't recur). Closure is explicit and honest:
+    // deliver()/markDelivered() when the agent fulfills it, `expiresAt` when
+    // it lapses, and the overdue surfacing keeps it visible meanwhile — a
+    // promise nobody can verify should NAG, not vanish.
     if (CommitmentTracker.isUnverifiableOneTime(commitment)) {
-      const updated = this.mutateSync(id, c => ({
-        ...c,
-        status: 'delivered',
-        resolvedAt: new Date().toISOString(),
-        resolution:
-          'No automated verification method — trusting agent acknowledgment. ' +
-          'Use PATCH /commitments/:id or markDelivered() to change this.',
-      }));
-      if (this.config.onVerified) this.config.onVerified(updated);
-      return { passed: true, detail: 'Trusted — no automated verification method' };
+      return null;
     }
 
     let result: { passed: boolean; detail: string };
