@@ -73,6 +73,7 @@ import {
   normalizeAttentionPriority,
   normalizeAttentionStatus,
 } from './attentionApi.js';
+import { dashboardRefreshFailure } from './DashboardRefreshDiagnostics.js';
 
 const execFile = promisify(execFileCb);
 
@@ -10027,17 +10028,34 @@ export function createRoutes(ctx: RouteContext): Router {
 
   router.post('/telegram/dashboard-refresh', async (_req, res) => {
     if (!ctx.telegram) {
-      res.status(503).json({ error: 'Telegram not configured' });
+      res.status(503).json(dashboardRefreshFailure(
+        'precondition',
+        'Telegram messaging is not configured for this agent, so there is no Dashboard topic to update.',
+        'Run Telegram setup for this agent or disable the dashboard-link-refresh job when Telegram is intentionally unavailable.',
+        'skipped',
+      ));
       return;
     }
     if (!ctx.tunnel) {
-      res.status(503).json({ error: 'Tunnel not running', action: 'skipped' });
+      res.status(503).json(dashboardRefreshFailure(
+        'precondition',
+        'The tunnel manager is not wired, so there is no remote dashboard URL to pin.',
+        'Enable the tunnel or disable dashboard-link-refresh for local-only agents.',
+        'skipped',
+      ));
       return;
     }
 
     const tunnelUrl = ctx.tunnel.url;
     if (!tunnelUrl) {
-      res.status(503).json({ error: 'Tunnel has no URL yet', action: 'skipped' });
+      const lc = ctx.tunnel.lifecycleState;
+      const reason = lc.episode?.lastFailureReason ? ` Last tunnel failure: ${lc.episode.lastFailureReason}.` : '';
+      res.status(503).json(dashboardRefreshFailure(
+        'precondition',
+        `The tunnel is not advertising a URL yet.${reason}`,
+        'Check /tunnel for lifecycle state, then restart or repair the configured tunnel provider.',
+        'skipped',
+      ));
       return;
     }
 
@@ -10054,7 +10072,13 @@ export function createRoutes(ctx: RouteContext): Router {
       await ctx.telegram.broadcastDashboardUrl(tunnelUrl, tunnelType);
       res.json({ action: 'refreshed', url: tunnelUrl, tunnelType });
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      const detail = err instanceof Error ? err.message : String(err);
+      console.error(`[dashboard-refresh] broadcast failed tunnelType=${tunnelType}: ${detail}`);
+      res.status(502).json(dashboardRefreshFailure(
+        'broadcast',
+        detail,
+        'Verify the Dashboard forum topic still exists, Telegram credentials are valid, and the bot can edit or send pinned messages.',
+      ));
     }
   });
 

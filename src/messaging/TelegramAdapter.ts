@@ -137,6 +137,15 @@ export interface SendResult {
   topicId?: number;
 }
 
+export interface DashboardBroadcastResult {
+  /** Whether an existing pinned dashboard message was edited instead of posting a new one. */
+  edited: boolean;
+  /** Telegram message ID when a new dashboard message was posted. */
+  messageId?: number;
+  /** Non-fatal follow-up failures after the message was delivered. */
+  warnings: string[];
+}
+
 interface TelegramUpdate {
   update_id: number;
   message?: {
@@ -1612,12 +1621,15 @@ export class TelegramAdapter implements MessagingAdapter {
    * Fallback: if the pinned message was deleted or doesn't exist yet, we send
    * a new one, pin it, and save its ID for future edits.
    */
-  async broadcastDashboardUrl(url: string, tunnelType: 'quick' | 'named'): Promise<void> {
+  async broadcastDashboardUrl(url: string, tunnelType: 'quick' | 'named'): Promise<DashboardBroadcastResult> {
     const topicId = this.config.dashboardTopicId;
-    if (!topicId) return;
+    if (!topicId) {
+      throw new Error('Dashboard topic is not configured; create or repair the Dashboard forum topic before refreshing the pinned link');
+    }
 
     const pin = this.config.dashboardPin || '(check your config)';
     const isNamed = tunnelType === 'named';
+    const warnings: string[] = [];
 
     const message = this.formatDashboardMessage(url, pin, isNamed);
 
@@ -1632,15 +1644,16 @@ export class TelegramAdapter implements MessagingAdapter {
           parse_mode: 'Markdown',
         });
         console.log(`[telegram] Edited dashboard message ${existingMessageId} in-place`);
-        return; // Success — no new message, no unread badge
+        return { edited: true, messageId: existingMessageId, warnings }; // Success — no new message, no unread badge
       } catch (err) {
         // Edit failed — message was deleted, or content unchanged. Fall through to send new.
         const errStr = String(err);
         if (errStr.includes('message is not modified')) {
           console.log(`[telegram] Dashboard message unchanged — skipping`);
-          return;
+          return { edited: true, messageId: existingMessageId, warnings };
         }
         console.log(`[telegram] Dashboard message ${existingMessageId} edit failed, sending new: ${errStr}`);
+        warnings.push(`existing pinned message edit failed: ${errStr}`);
       }
     }
 
@@ -1665,15 +1678,18 @@ export class TelegramAdapter implements MessagingAdapter {
             message_id: result.messageId,
             disable_notification: true,
           });
-        } catch {
-          // @silent-fallback-ok — pinning is nice-to-have, send succeeded
+        } catch (err) {
+          warnings.push(`pinChatMessage failed: ${err instanceof Error ? err.message : String(err)}`);
         }
 
         // Save message ID for future edit-in-place
         this.saveDashboardMessageId(result.messageId);
       }
+      return { edited: false, messageId: result.messageId, warnings };
     } catch (err) {
-      console.error(`[telegram] Failed to broadcast dashboard URL: ${err}`);
+      const detail = err instanceof Error ? err.message : String(err);
+      console.error(`[telegram] Failed to broadcast dashboard URL: ${detail}`);
+      throw new Error(`Telegram dashboard broadcast failed: ${detail}`);
     }
   }
 
