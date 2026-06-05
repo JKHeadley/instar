@@ -12,6 +12,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { createRoutes } from '../../src/server/routes.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import type { RouteContext } from '../../src/server/routes.js';
 
 const DAY = 24 * 60 * 60 * 1000;
@@ -42,7 +43,7 @@ describe('GET /metrics/learning-velocity (integration)', () => {
     app.use('/', createRoutes(ctxFor(stateDir)));
   });
 
-  afterEach(() => { fs.rmSync(tmpDir, { recursive: true, force: true }); });
+  afterEach(() => { SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/integration/learning-velocity-routes.test.ts:45' }); });
 
   it('returns zero + insufficient-data when there are no learning sources', async () => {
     const res = await request(app).get('/metrics/learning-velocity');

@@ -12,6 +12,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { createRoutes } from '../../src/server/routes.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 const DAY = 24 * 60 * 60 * 1000;
 const agoIso = (days: number) => new Date(Date.now() - days * DAY).toISOString();
@@ -46,7 +47,7 @@ describe('GET /metrics/learning-velocity — (E2E over HTTP)', () => {
     server = await listen(app);
   });
 
-  afterEach(async () => { await server?.close(); fs.rmSync(tmpDir, { recursive: true, force: true }); });
+  afterEach(async () => { await server?.close(); SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/e2e/learning-velocity-lifecycle.test.ts:49' }); });
 
   it('FEATURE IS ALIVE: returns 200 and a computed learning-velocity metric', async () => {
     const res = await fetch(server.url + '/metrics/learning-velocity?windowDays=30');

@@ -22,6 +22,15 @@ corrections, evolution actions); this turns them into a signal:
 Read-only + advisory — it never gates anything. A flat or declining trend is the
 EXO 3.0 warning sign that the org is optimizing the old model instead of learning.
 
+## What to Tell Your User
+
+Your agent can now answer "are we actually learning, or just running?" with real numbers. Ask it for its learning velocity and you get a trend — accelerating, steady, or declining — built from its genuine learning events (lessons it recorded, corrections it absorbed, capabilities it grew) instead of backward-looking activity stats. The EXO 3.0 idea behind it: traditional KPIs measure how well the OLD model runs; learning velocity measures whether you're building the next one. A flat or declining trend is your early warning that things are coasting.
+
+## Summary of New Capabilities
+
+- `GET /metrics/learning-velocity?windowDays=30` — `{ totalEvents, eventsPerDay, byType, typeDiversity, trend, adaptabilityScore (0-100), reason }`, computed from registered learnings, corrections, and evolution actions. Read-only + advisory — never gates.
+- PROACTIVE trigger: "are we learning/adapting?" → read this metric and contrast it with operational throughput.
+
 ## Evidence
 
 Three-tier coverage, all green, `tsc --noEmit` clean:

@@ -143,6 +143,7 @@ describe('Feature Delivery Completeness', () => {
       'ReviewExchange (autonomous code review)', // mandate-gated two-party review sign-off protocol
       'Cutover Readiness',              // migration readiness read surface (/cutover-readiness; the door stays the operator's)
       '**Session Boot Self-Knowledge**', // vault secret NAMES + operational facts at boot (spec session-boot-self-knowledge; templates.ts + migrator + shadow-marker parity)
+      'Learning-Velocity Metric (EXO 3.0', // forward-looking learning KPI (/metrics/learning-velocity; EXO 3.0 G5; templates.ts + migrator + shadow-marker parity)
     ];
 
     for (const section of featureSections) {
