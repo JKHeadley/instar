@@ -1,0 +1,20 @@
+<!-- bump: patch -->
+
+# Decision-audit records are per-entry files — parallel PRs stop conflicting on the audit log
+
+## What to Tell Your User
+
+Nothing user-visible — this is contributor infrastructure. Pull requests no longer fail to merge over the development decision-audit log.
+
+## Summary of New Capabilities
+
+- Each gated commit's decision-audit record is now its own file under `.instar/instar-dev-decisions/<timestamp>-<slug>.json` (chronological by filename), staged so it still rides the commit it describes.
+- The legacy `.instar/instar-dev-decisions.jsonl` is frozen history — no new appends.
+
+## What Changed
+
+`writeDecisionAudit` in `scripts/instar-dev-precommit.js` writes one file per decision instead of appending a line to one shared JSONL. Two PRs each ADDING a distinct path can never merge-conflict; appending to the same file's tail always did. Same payload, same best-effort/never-block semantics, collision-suffixed filenames.
+
+## Evidence
+
+Live failure this fixes (2026-06-05): PR #824 passed all 19 CI checks, then `gh pr merge --squash --admin` failed with "Pull Request has merge conflicts" — `git merge` against main showed exactly ONE conflicted file, `.instar/instar-dev-decisions.jsonl`, because sibling PRs had appended their own audit lines to the same tail while #824 was in CI. Unblocked manually by union-resolving; this change removes the class. Pinned by `tests/unit/instar-dev-precommit-audit-staging.test.ts`: the gate-blocked commit still stages its entry file (the #814 property preserved), two evaluations produce two DISTINCT paths (the conflict-immunity property), and the frozen legacy JSONL is not appended to; the deferrals suite's audit-shape test re-pinned to the per-entry record (riskFloor number, belowFloor, suggestedTier, reasons array). 16/16 tests green.
