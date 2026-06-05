@@ -229,15 +229,16 @@ describe('No Silent Fallbacks', () => {
     // explicit `@silent-fallback-ok`, or re-throws non-conflict errors). Setting BASELINE to the
     // true current count restores the gate so it again prevents NET regressions.
     //
-    // 458 -> 459 on 2026-06-04 (#766 internal-only-lane docs — merge line-shift artifact): this
-    // PR's ONLY new catch is migrateInstarDevInternalOnlyReleaseNoteLane's handler, which SURFACES
-    // the error via result.errors.push (NOT swallowed) and so does not match the heuristic — it is
-    // verified ABSENT from the flagged list (no PostUpdateMigrator.ts:153x entry). The +1 is the
-    // documented merge artifact: merging a fast-moving main into this branch (which both modify
-    // PostUpdateMigrator.ts) shifts line numbers and reshapes the 20-line catch-block window so a
-    // PRE-EXISTING catch newly matches. Same class as the 437->447 / 447->450 / 450->455 bumps
-    // above — the bump-with-justification escape valve for an exact-count ratchet on a hyperactive
-    // main. No genuine new silent fallback is introduced by this docs PR.
+    // 459 on the post-#770 base: the Agent-Health lane's best-effort lane-post
+    // fallback (TelegramAdapter.routeToAgentHealthLane — the item is already
+    // recorded in the attention store, so a transient send failure is non-fatal)
+    // adds ONE legitimate, justified fail-open over the prior 458. No NET new
+    // un-justified fallback; bumping restores the gate as a net-regression guard.
+    //
+    // #766 (internal-only-lane docs) merges onto that 459 base and adds ZERO flagged
+    // catches — its only new catch (migrateInstarDevInternalOnlyReleaseNoteLane) SURFACES
+    // errors via result.errors.push and is verified ABSENT from the flagged list. Merged
+    // baseline stays 459 (re-verified against the merged tree).
     const BASELINE = 459;
 
     if (silentFallbacks.length > 0) {

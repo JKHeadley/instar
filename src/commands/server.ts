@@ -9468,6 +9468,13 @@ export async function startServer(options: StartOptions): Promise<void> {
             const tid = m ? Number(m[1]) : (telegram?.getTopicForSession?.(session.tmuxSession) ?? null);
             return (typeof tid === 'number' && telegram) ? (telegram.getTopicName?.(tid) ?? null) : null;
           },
+          // Operator-protected sessions (the reaper's protectedSessions) are never
+          // escalated as "stale" — they're deliberately kept alive, so flagging
+          // them is crying wolf. Match by tmux name or session name.
+          isProtectedSession: (session) => {
+            const protectedList = sessionManager.getProtectedSessions();
+            return protectedList.includes(session.tmuxSession) || protectedList.includes(session.name);
+          },
         },
         staleCfg,
       );
