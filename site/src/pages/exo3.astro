@@ -1,0 +1,274 @@
+---
+import Layout from '../layouts/Layout.astro';
+---
+
+<Layout
+  title="Instar — the EXO 3.0 agent"
+  description="EXO 3.0 says the org becomes an intelligence stack with governance over every layer and humans lifted onto the loop. Instar is the infrastructure that makes an organization AI-native: machine-readable purpose, human-on-the-loop governance, and the resilience layer most agent frameworks skip."
+>
+  <!-- Nav -->
+  <nav class="fixed top-0 w-full z-50 border-b border-slate-800/50 bg-[#0a0e17]/80 backdrop-blur-xl">
+    <div class="max-w-6xl mx-auto px-6 h-16 flex items-center justify-between">
+      <a href="/" class="flex items-center gap-2.5 font-bold text-lg text-slate-100 tracking-tight">
+        <img src="/logo.png" alt="Instar" class="w-7 h-7 rounded" />
+        instar
+      </a>
+      <div class="flex items-center gap-4 sm:gap-6">
+        <a href="#stack" class="text-sm text-slate-400 hover:text-slate-200 transition-colors hidden lg:block">Intelligence Stack</a>
+        <a href="#mtp" class="text-sm text-slate-400 hover:text-slate-200 transition-colors hidden lg:block">MTP Protocol</a>
+        <a href="#shape" class="text-sm text-slate-400 hover:text-slate-200 transition-colors hidden lg:block">SHAPE</a>
+        <a href="#status" class="text-sm text-slate-400 hover:text-slate-200 transition-colors hidden lg:block">Where We Are</a>
+        <a href="/" class="text-sm font-medium text-teal-400 hover:text-teal-300 transition-colors">Home</a>
+      </div>
+    </div>
+  </nav>
+
+  <!-- Hero -->
+  <section class="relative pt-32 pb-16 sm:pt-40 sm:pb-20 overflow-hidden">
+    <div class="absolute top-20 left-1/2 -translate-x-1/2 w-[600px] h-[400px] bg-teal-500/5 rounded-full blur-[120px] pointer-events-none"></div>
+
+    <div class="max-w-4xl mx-auto px-6 text-center relative">
+      <div class="animate-fade-in-up">
+        <span class="inline-block text-xs font-medium text-teal-400 uppercase tracking-[0.2em] border border-teal-500/20 rounded-full px-4 py-1.5 mb-8">The Organizational Singularity</span>
+      </div>
+
+      <h1 class="text-4xl sm:text-6xl lg:text-7xl font-extrabold tracking-tight leading-[1.1] mb-6 animate-fade-in-up animate-delay-100">
+        <span class="text-slate-100">Instar is the</span><br/>
+        <span class="bg-gradient-to-r from-teal-300 via-teal-400 to-teal-500 bg-clip-text text-transparent">EXO&nbsp;3.0 agent</span>
+      </h1>
+
+      <p class="text-lg sm:text-xl text-slate-400 max-w-2xl mx-auto mb-10 leading-relaxed animate-fade-in-up animate-delay-200">
+        EXO 3.0 makes one structural claim: when coordination costs collapse, the organization stops being a hierarchy and becomes an <strong class="text-slate-200">intelligence stack</strong> &mdash; sense, interpret, decide, act, learn &mdash; with governance over every layer and humans lifted <em>onto</em> the loop. Most &ldquo;AI agents&rdquo; automate tasks. <strong class="text-teal-300">Instar is the substrate an AI-native organization runs on.</strong>
+      </p>
+    </div>
+  </section>
+
+  <!-- The killer alignment -->
+  <section class="py-12 border-t border-slate-800/50">
+    <div class="max-w-3xl mx-auto px-6">
+      <figure class="rounded-xl border border-teal-500/20 bg-teal-500/5 p-6 sm:p-8 glow-teal">
+        <blockquote class="text-lg sm:text-xl text-slate-200 leading-relaxed italic">
+          &ldquo;A constraint with a trigger and a refusal and a log is not a wish. You have to do that in code, not in culture.&rdquo;
+        </blockquote>
+        <figcaption class="text-sm text-teal-400/80 mt-3">&mdash; Salim Ismail, <span class="text-slate-400">Why AI Agents Are Ignoring Your Purpose</span></figcaption>
+      </figure>
+      <p class="text-slate-400 text-center max-w-2xl mx-auto mt-6 leading-relaxed">
+        That is, almost word for word, the principle Instar was built on &mdash; <strong class="text-teal-300">Structure&nbsp;&gt;&nbsp;Willpower</strong>: <em>a 1,000-line prompt is a wish; a 10-line hook is a guarantee.</em> We didn&rsquo;t adopt EXO 3.0. We independently arrived at its engineering core.
+      </p>
+    </div>
+  </section>
+
+  <!-- Intelligence Stack -->
+  <section id="stack" class="py-16 sm:py-20 border-t border-slate-800/50">
+    <div class="max-w-5xl mx-auto px-6">
+      <div class="text-center mb-12">
+        <h2 class="text-3xl sm:text-4xl font-bold text-slate-100 mb-4">The intelligence stack, already wired</h2>
+        <p class="text-slate-400 max-w-2xl mx-auto leading-relaxed">EXO 3.0 says reorganize around cognitive layers, not functional silos. Instar already is.</p>
+      </div>
+
+      <div class="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
+        <div class="rounded-lg border border-slate-800 bg-slate-900/40 p-5">
+          <p class="text-sm font-semibold text-teal-300 mb-1">Sense</p>
+          <p class="text-xs text-slate-400">Sentinel family, health / quota / burn monitoring, resource ledger &mdash; continuous signal detection.</p>
+        </div>
+        <div class="rounded-lg border border-slate-800 bg-slate-900/40 p-5">
+          <p class="text-sm font-semibold text-teal-300 mb-1">Interpret</p>
+          <p class="text-xs text-slate-400">Coherence Gate, message classifiers, parallel-work awareness &mdash; meaning, not noise.</p>
+        </div>
+        <div class="rounded-lg border border-slate-800 bg-slate-900/40 p-5">
+          <p class="text-sm font-semibold text-teal-300 mb-1">Decide</p>
+          <p class="text-xs text-slate-400">Trust levels, operation-evaluation gate, deterministic tradeoff resolver &mdash; resolve without escalating.</p>
+        </div>
+        <div class="rounded-lg border border-slate-800 bg-slate-900/40 p-5">
+          <p class="text-sm font-semibold text-teal-300 mb-1">Act</p>
+          <p class="text-xs text-slate-400">Autonomous &amp; multi-session jobs, scheduler, multi-channel messaging &mdash; execute without a human at every step.</p>
+        </div>
+        <div class="rounded-lg border border-slate-800 bg-slate-900/40 p-5">
+          <p class="text-sm font-semibold text-teal-300 mb-1">Learn</p>
+          <p class="text-xs text-slate-400">Playbook (every session smarter), learnings registry, correction &amp; preference learning &mdash; better each cycle.</p>
+        </div>
+        <div class="rounded-lg border border-teal-500/20 bg-teal-500/5 p-5">
+          <p class="text-sm font-semibold text-teal-300 mb-1">Govern (spans all)</p>
+          <p class="text-xs text-slate-400">ORG-INTENT contract, external-operation gate, coherence review &mdash; governance across every layer.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- MTP as protocol -->
+  <section id="mtp" class="py-16 sm:py-20 border-t border-slate-800/50">
+    <div class="max-w-5xl mx-auto px-6">
+      <div class="text-center mb-12">
+        <h2 class="text-3xl sm:text-4xl font-bold text-slate-100 mb-4">MTP as a protocol &mdash; not a poster</h2>
+        <p class="text-slate-400 max-w-2xl mx-auto leading-relaxed">EXO 3.0&rsquo;s sharpest demand: your Massive Transformative Purpose must be <strong class="text-slate-200">machine-readable</strong>, because agents read protocols, not walls. Three layers, each one an agent can act on.</p>
+      </div>
+
+      <div class="grid lg:grid-cols-3 gap-4">
+        <div class="rounded-xl border border-teal-500/20 bg-teal-500/5 p-6">
+          <div class="flex items-center gap-2 mb-3">
+            <span class="text-xs font-medium text-green-400 uppercase tracking-wider">Live</span>
+          </div>
+          <p class="text-sm font-semibold text-slate-200 mb-2">Constraint layer</p>
+          <p class="text-xs text-slate-400 leading-relaxed mb-3">Forbidden actions with a trigger, a refusal, a log, an escalation.</p>
+          <p class="text-xs text-teal-400/80 leading-relaxed">&rarr; ORG-INTENT constraints (violations <em>block</em>) + the operation gate. Salim&rsquo;s 3&nbsp;a.m. $40k-invoice example <em>is</em> Instar&rsquo;s operation-evaluation path.</p>
+        </div>
+        <div class="rounded-xl border border-teal-500/20 bg-teal-500/5 p-6">
+          <div class="flex items-center gap-2 mb-3">
+            <span class="text-xs font-medium text-green-400 uppercase tracking-wider">Live</span>
+          </div>
+          <p class="text-sm font-semibold text-slate-200 mb-2">Decision layer</p>
+          <p class="text-xs text-slate-400 leading-relaxed mb-3">Resolve a trade-off without waking you up; versioned, auditable, deterministic.</p>
+          <p class="text-xs text-teal-400/80 leading-relaxed">&rarr; Instar&rsquo;s tradeoff hierarchy + resolver returns the winning value deterministically. Two agents reading the same intent reach the same call.</p>
+        </div>
+        <div class="rounded-xl border border-slate-800 bg-slate-900/40 p-6">
+          <div class="flex items-center gap-2 mb-3">
+            <span class="text-xs font-medium text-amber-400 uppercase tracking-wider">Shipping</span>
+          </div>
+          <p class="text-sm font-semibold text-slate-200 mb-2">Identity layer</p>
+          <p class="text-xs text-slate-400 leading-relaxed mb-3">What binds high-judgment humans when the office is gone.</p>
+          <p class="text-xs text-slate-500 leading-relaxed">&rarr; Building on ORG-INTENT values &mdash; weeks away.</p>
+        </div>
+      </div>
+
+      <div class="rounded-lg border border-slate-700/50 bg-slate-800/30 p-6 mt-4">
+        <p class="text-slate-300 text-sm leading-relaxed text-center max-w-3xl mx-auto">
+          And his two tests &mdash; <strong class="text-teal-300">endorsement</strong> (&ldquo;would leadership endorse what the agent decided?&rdquo;) and <strong class="text-teal-300">refusal</strong> (&ldquo;can your MTP make an agent say no?&rdquo;) &mdash; are what Instar&rsquo;s Coherence Gate enforces on every outbound action. <em>If your MTP can&rsquo;t cause a refusal, it&rsquo;s cheering, not governing.</em> Instar&rsquo;s gates refuse.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <!-- Human on the loop -->
+  <section class="py-16 sm:py-20 border-t border-slate-800/50">
+    <div class="max-w-3xl mx-auto px-6 text-center">
+      <h2 class="text-3xl sm:text-4xl font-bold text-slate-100 mb-4">Human <em class="text-teal-400 not-italic">on</em> the loop, not <em class="text-slate-500 not-italic">in</em> it</h2>
+      <p class="text-slate-400 leading-relaxed">
+        EXO 3.0: every AI action shouldn&rsquo;t need human approval &mdash; but every loop needs human oversight and a step-in path. That is precisely Instar&rsquo;s <strong class="text-teal-300">trust-elevation model</strong>: agents start supervised, earn collaborative then autonomous standing as they succeed, with sentinels watching, a plan-approval gate for high-stakes moves, and an attention queue that surfaces exactly the exceptions a human should handle. The architecture of authority inverts &mdash; humans become validators and exception-handlers. Instar ships that inversion as infrastructure.
+      </p>
+    </div>
+  </section>
+
+  <!-- SHAPE -->
+  <section id="shape" class="py-16 sm:py-20 border-t border-slate-800/50">
+    <div class="max-w-4xl mx-auto px-6">
+      <div class="grid lg:grid-cols-2 gap-8 items-center">
+        <div>
+          <h2 class="text-3xl sm:text-4xl font-bold text-slate-100 mb-4">SHAPE &mdash; the half everyone skips</h2>
+          <p class="text-slate-400 leading-relaxed mb-4">
+            EXO 3.0: <strong class="text-slate-200">drive without shape crashes.</strong> Drive makes you fast; shape keeps you right and resilient. Almost every agent framework is pure drive.
+          </p>
+          <p class="text-slate-400 leading-relaxed">
+            Instar&rsquo;s defining strength is <strong class="text-teal-300">shape</strong>: crash-loop pausers, circuit breakers, watchdogs, source-tree guards, a full session-lifecycle audit, self-healing updates. When external agents fail, failure cascades at exponential speed &mdash; Instar is the container that contains it.
+          </p>
+        </div>
+        <div class="grid grid-cols-2 gap-3">
+          <div class="rounded-lg border border-slate-800 bg-slate-900/40 p-4"><p class="text-xs font-medium text-teal-300">Crash-loop pauser</p></div>
+          <div class="rounded-lg border border-slate-800 bg-slate-900/40 p-4"><p class="text-xs font-medium text-teal-300">Circuit breakers</p></div>
+          <div class="rounded-lg border border-slate-800 bg-slate-900/40 p-4"><p class="text-xs font-medium text-teal-300">Session watchdogs</p></div>
+          <div class="rounded-lg border border-slate-800 bg-slate-900/40 p-4"><p class="text-xs font-medium text-teal-300">Source-tree guards</p></div>
+          <div class="rounded-lg border border-slate-800 bg-slate-900/40 p-4"><p class="text-xs font-medium text-teal-300">Lifecycle audit</p></div>
+          <div class="rounded-lg border border-slate-800 bg-slate-900/40 p-4"><p class="text-xs font-medium text-teal-300">Self-healing updates</p></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- One person, many agents -->
+  <section class="py-16 sm:py-20 border-t border-slate-800/50">
+    <div class="max-w-3xl mx-auto px-6 text-center">
+      <p class="text-2xl sm:text-3xl font-bold text-slate-100 leading-snug mb-4">
+        &ldquo;Your competitor is going to be one person with 100 agents.&rdquo;
+      </p>
+      <p class="text-slate-400 leading-relaxed">
+        That&rsquo;s the EXO 3.0 competitive map &mdash; and it&rsquo;s exactly what Instar enables. Multi-session, multi-machine pooling, and persistent autonomous jobs make one person the operator of a fleet. Instar <em>is</em> the leverage.
+      </p>
+    </div>
+  </section>
+
+  <!-- Status / trajectory -->
+  <section id="status" class="py-16 sm:py-20 border-t border-slate-800/50">
+    <div class="max-w-3xl mx-auto px-6">
+      <div class="text-center mb-10">
+        <h2 class="text-3xl sm:text-4xl font-bold text-slate-100 mb-4">Where we are, honestly</h2>
+        <p class="text-slate-400 max-w-2xl mx-auto leading-relaxed">We&rsquo;d rather show you the trajectory than claim a finished product &mdash; because EXO 3.0 says the winners are the ones who <em>started</em>, not the ones who waited for clarity.</p>
+      </div>
+
+      <div class="space-y-2">
+        <div class="flex items-center justify-between rounded-lg border border-green-500/20 bg-green-500/5 px-5 py-3">
+          <span class="text-sm text-slate-200">Intelligence stack architecture</span>
+          <span class="text-xs font-medium text-green-400 uppercase tracking-wider">Live</span>
+        </div>
+        <div class="flex items-center justify-between rounded-lg border border-green-500/20 bg-green-500/5 px-5 py-3">
+          <span class="text-sm text-slate-200">MTP constraint + decision layers</span>
+          <span class="text-xs font-medium text-green-400 uppercase tracking-wider">Live</span>
+        </div>
+        <div class="flex items-center justify-between rounded-lg border border-green-500/20 bg-green-500/5 px-5 py-3">
+          <span class="text-sm text-slate-200">Human-on-the-loop governance</span>
+          <span class="text-xs font-medium text-green-400 uppercase tracking-wider">Live</span>
+        </div>
+        <div class="flex items-center justify-between rounded-lg border border-green-500/20 bg-green-500/5 px-5 py-3">
+          <span class="text-sm text-slate-200">SHAPE / resilience <span class="text-slate-500">(our strongest layer)</span></span>
+          <span class="text-xs font-medium text-green-400 uppercase tracking-wider">Live</span>
+        </div>
+        <div class="flex items-center justify-between rounded-lg border border-green-500/20 bg-green-500/5 px-5 py-3">
+          <span class="text-sm text-slate-200">One-person-many-agents leverage</span>
+          <span class="text-xs font-medium text-green-400 uppercase tracking-wider">Live</span>
+        </div>
+        <div class="flex items-center justify-between rounded-lg border border-amber-500/20 bg-amber-500/5 px-5 py-3">
+          <span class="text-sm text-slate-200">MTP identity layer + test harness</span>
+          <span class="text-xs font-medium text-amber-400 uppercase tracking-wider">Shipping &mdash; weeks</span>
+        </div>
+        <div class="flex items-center justify-between rounded-lg border border-amber-500/20 bg-amber-500/5 px-5 py-3">
+          <span class="text-sm text-slate-200">Agent-readiness scoring <span class="text-slate-500">(your task-decomposition matrix)</span></span>
+          <span class="text-xs font-medium text-amber-400 uppercase tracking-wider">Shipping &mdash; weeks</span>
+        </div>
+        <div class="flex items-center justify-between rounded-lg border border-slate-700/50 bg-slate-800/30 px-5 py-3">
+          <span class="text-sm text-slate-200">Agent digital passport</span>
+          <span class="text-xs font-medium text-slate-400 uppercase tracking-wider">Primitives live</span>
+        </div>
+        <div class="flex items-center justify-between rounded-lg border border-slate-700/50 bg-slate-800/30 px-5 py-3">
+          <span class="text-sm text-slate-200">Learning-velocity metrics</span>
+          <span class="text-xs font-medium text-slate-400 uppercase tracking-wider">Roadmap</span>
+        </div>
+        <div class="flex items-center justify-between rounded-lg border border-teal-500/20 bg-teal-500/5 px-5 py-3">
+          <span class="text-sm text-slate-200"><strong>Inter-org porous boundary</strong> <span class="text-slate-500">(the North Star)</span></span>
+          <span class="text-xs font-medium text-teal-400 uppercase tracking-wider">Frontier</span>
+        </div>
+      </div>
+
+      <p class="text-slate-400 text-sm text-center max-w-2xl mx-auto mt-8 leading-relaxed">
+        The honest frontier is the <strong class="text-teal-300">porous, inter-org future</strong> &mdash; agents operating fluidly across organizational boundaries. Our agent-to-agent network (Threadline) is the seed. That&rsquo;s the part of EXO 3.0 we&rsquo;re most excited to build &mdash; with you.
+      </p>
+    </div>
+  </section>
+
+  <!-- CTA -->
+  <section class="py-16 sm:py-20 border-t border-slate-800/50">
+    <div class="max-w-3xl mx-auto px-6 text-center">
+      <h2 class="text-3xl sm:text-4xl font-bold text-slate-100 mb-4">Built for the Organizational Singularity</h2>
+      <p class="text-slate-400 mb-8">Persistent autonomy infrastructure for AI agents. Every molt, more autonomous.</p>
+      <div class="inline-flex items-center gap-3 bg-slate-800/60 border border-teal-500/20 rounded-lg px-6 py-4 font-mono text-base sm:text-lg glow-teal">
+        <span class="text-slate-500 select-none">$</span>
+        <span class="text-teal-300">npx instar</span>
+      </div>
+      <div class="flex items-center justify-center gap-6 mt-8">
+        <a href="/" class="text-sm text-slate-400 hover:text-teal-400 transition-colors">Home</a>
+        <a href="/introduction/" class="text-sm text-slate-400 hover:text-teal-400 transition-colors">Docs</a>
+        <a href="https://github.com/JKHeadley/instar" target="_blank" rel="noopener" class="text-sm text-slate-400 hover:text-teal-400 transition-colors">GitHub</a>
+      </div>
+    </div>
+  </section>
+
+  <!-- Footer -->
+  <footer class="py-8 border-t border-slate-800/50">
+    <div class="max-w-6xl mx-auto px-6 flex flex-col sm:flex-row items-center justify-between gap-4">
+      <div class="flex items-center gap-2 text-slate-500 text-sm">
+        <img src="/logo.png" alt="Instar" class="w-4 h-4 rounded-sm" />
+        <span>Instar</span>
+        <span class="text-slate-700">&middot;</span>
+        <span>Built by <a href="https://sagemindai.io" class="hover:text-slate-400 transition-colors" target="_blank" rel="noopener">SageMind AI</a></span>
+      </div>
+      <p class="text-slate-600 text-xs">Every molt, more autonomous.</p>
+    </div>
+  </footer>
+</Layout>
