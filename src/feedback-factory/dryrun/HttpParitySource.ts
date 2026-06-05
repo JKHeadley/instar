@@ -54,6 +54,20 @@ export interface HttpParitySourceConfig {
   fetchImpl?: FetchLike;
   /** Optional path override (defaults to `/api/instar/read`). */
   readPath?: string;
+  /**
+   * Per-page fetch timeout in ms. Default 90 000 (a healthy full snapshot ran
+   * ~15s/page, so 90s is ~6× headroom). Enforced via AbortSignal so one stalled
+   * Portal page request cannot hang `prepare()` forever — the 2026-06-05 live
+   * incident: a silent page stall left a triggered parity pass unresolved for
+   * 10+ minutes with no logged outcome and nothing recorded.
+   */
+  pageTimeoutMs?: number;
+  /**
+   * Total budget for the whole snapshot fetch in ms. Default 600 000 (10 min).
+   * Checked between pages AND bounds each page's abort signal, so `prepare()`
+   * has a hard upper duration even at the 200-page safety cap.
+   */
+  totalTimeoutMs?: number;
 }
 
 /** Shape returned by Portal at `/api/instar/read` (only the fields we read). */
@@ -123,12 +137,16 @@ export class HttpParitySource implements ParitySource {
   private readonly maxPages: number;
   private readonly fetch: FetchLike;
   private readonly readPath: string;
+  private readonly pageTimeoutMs: number;
+  private readonly totalTimeoutMs: number;
 
   constructor(private readonly config: HttpParitySourceConfig) {
     this.pageSize = config.pageSize ?? 1000;
     this.maxPages = config.maxPages ?? 200;
     this.fetch = config.fetchImpl ?? (globalThis.fetch as unknown as FetchLike);
     this.readPath = config.readPath ?? '/api/instar/read';
+    this.pageTimeoutMs = config.pageTimeoutMs ?? 90_000;
+    this.totalTimeoutMs = config.totalTimeoutMs ?? 600_000;
     if (!this.fetch) {
       throw new HttpParitySourceError(500, 'no fetch available — pass fetchImpl or run on a runtime with global fetch');
     }
@@ -139,6 +157,7 @@ export class HttpParitySource implements ParitySource {
     const byId = new Map<string, PortalCluster>();
     const base = this.config.baseUrl.replace(/\/+$/, '');
     const authHeader = `Bearer ${this.config.token}`;
+    const deadline = Date.now() + this.totalTimeoutMs;
 
     for (let page = 0; page < this.maxPages; page++) {
       const offset = page * this.pageSize;
@@ -146,7 +165,35 @@ export class HttpParitySource implements ParitySource {
       if (this.config.status) qs.set('status', this.config.status);
       const url = `${base}${this.readPath}?${qs.toString()}`;
 
-      const res = await this.fetch(url, { headers: { Authorization: authHeader, Accept: 'application/json' } });
+      // Hard duration bound (the 2026-06-05 hang fix): every page fetch carries
+      // an AbortSignal capped by BOTH the per-page timeout and the remaining
+      // total budget. A stalled request aborts instead of hanging the pass —
+      // the route layer then logs the classified failure (per #807's
+      // always-logged-outcome contract) and records nothing.
+      const remainingMs = deadline - Date.now();
+      if (remainingMs <= 0) {
+        throw new HttpParitySourceError(
+          504,
+          `parity snapshot fetch exceeded the total budget (${this.totalTimeoutMs}ms) before page ${page}`,
+        );
+      }
+      const budgetMs = Math.min(this.pageTimeoutMs, remainingMs);
+      let res: Awaited<ReturnType<FetchLike>>;
+      try {
+        res = await this.fetch(url, {
+          headers: { Authorization: authHeader, Accept: 'application/json' },
+          signal: AbortSignal.timeout(budgetMs),
+        });
+      } catch (err) {
+        const name = err instanceof Error ? err.name : '';
+        if (name === 'TimeoutError' || name === 'AbortError') {
+          throw new HttpParitySourceError(
+            504,
+            `Portal /api/instar/read page ${page} timed out after ${budgetMs}ms (pageTimeoutMs=${this.pageTimeoutMs}, totalTimeoutMs=${this.totalTimeoutMs})`,
+          );
+        }
+        throw err;
+      }
       if (!res.ok) {
         let detail = '';
         try { detail = (await res.text()).slice(0, 200); } catch { /* ignore */ }
