@@ -2264,6 +2264,29 @@ export interface InstarConfig {
   publishing?: PublishingConfig;
   /** Cloudflare Tunnel config */
   tunnel?: TunnelConfigType;
+  /** Secret handling config */
+  secrets?: {
+    /**
+     * When true (default), a submitted Secret Drop is persisted store-first to
+     * the durable, AES-256-GCM encrypted SecretStore the instant it is received —
+     * so it survives session restart / compaction / cross-machine handoff instead
+     * of living only in the in-memory `received` map. The agent retrieves from the
+     * durable copy transparently and a successful `?consume=true` deletes it.
+     * Set false to revert to in-memory-only (pre-2026-06-04) behavior.
+     */
+    persistDrops?: boolean;
+    /**
+     * Force the SecretStore master key to the per-agent file key
+     * (.instar/machine/secrets-master.key), skipping the OS keychain.
+     * The keychain entry is MACHINE-GLOBAL (shared by every agent/process on the
+     * box) — a SecretStore constructed against a fresh stateDir with no file key
+     * generates a new key and silently overwrites that global entry, breaking
+     * every other store encrypted with the old key (2026-06-05 incident: an
+     * integration test did exactly this). Tests MUST set this true; production
+     * defaults to keychain-first for backward compatibility.
+     */
+    forceFileKey?: boolean;
+  };
   /** Request timeout in milliseconds (default: 30000) */
   requestTimeoutMs?: number;
   /** Instar version (from package.json) */

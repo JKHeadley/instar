@@ -23,6 +23,7 @@ import type { JobScheduler } from '../scheduler/JobScheduler.js';
 import type { InstarConfig, JobPriority } from '../core/types.js';
 import { IntelligenceRouter } from '../core/IntelligenceRouter.js';
 import { knownComponents } from '../core/componentCategories.js';
+import { SecretStore } from '../core/SecretStore.js';
 import { rateLimiter, signViewPath } from './middleware.js';
 import type { WriteOperation, WriteToken } from '../core/StateWriteAuthority.js';
 import { writeLifelineRestartSignal } from '../core/version-skew.js';
@@ -10182,6 +10183,33 @@ export function createRoutes(ctx: RouteContext): Router {
       return;
     }
 
+    // ── Store-first durable persistence (2026-06-04) ──────────────────────────
+    // Before we confirm or nudge the agent, persist the submission to the durable,
+    // AES-256-GCM encrypted SecretStore. Previously a submission lived ONLY in the
+    // in-memory `received` map, so any session restart / compaction / cross-machine
+    // handoff before the agent consumed it lost the secret outright — the recurring
+    // "I handed you a secret and you dropped it" failure. Persisting first makes the
+    // value survive churn by construction; the retrieve route falls back to this copy
+    // when the in-memory one is gone, and a successful consume deletes it.
+    // Best-effort + loud on failure: the ephemeral copy still exists for immediate
+    // use, so a keychain/disk hiccup must not 500 the user's submission. Opt out with
+    // config.secrets.persistDrops=false. NEVER log the secret value.
+    if (ctx.config.secrets?.persistDrops !== false) {
+      try {
+        const store = new SecretStore({ stateDir: ctx.config.stateDir, forceFileKey: ctx.config.secrets?.forceFileKey });
+        store.set(`secretDrops.${req.params.token}`, {
+          label: submission.label,
+          topicId: submission.topicId ?? null,
+          receivedAt: submission.receivedAt,
+          fields: Object.keys(submission.values),
+          values: submission.values,
+        });
+        console.log(`[secret-drop] persisted submission to durable store (token ${req.params.token.slice(0, 8)}…, ${Object.keys(submission.values).length} field(s)) — survives session churn`);
+      } catch (err) {
+        console.error(`[secret-drop] DURABLE PERSIST FAILED (token ${req.params.token.slice(0, 8)}…) — secret is in-memory only and may be lost on churn:`, err instanceof Error ? err.message : String(err));
+      }
+    }
+
     // Send Telegram confirmation if topic is configured
     if (submission.topicId && ctx.telegram) {
       const fieldCount = Object.keys(submission.values).length;
@@ -10351,11 +10379,46 @@ export function createRoutes(ctx: RouteContext): Router {
   // non-destructive default lets the caller retry. See
   // docs/specs/secret-drop-hardening.md for the full rationale.
   router.post('/secrets/retrieve/:token', (req, res) => {
+    const token = req.params.token;
     const consumeFlag = req.query.consume;
     const consume = consumeFlag === 'true' || consumeFlag === '1';
-    const submission = consume
-      ? secretDrop.consumeReceived(req.params.token)
-      : secretDrop.peekReceived(req.params.token);
+    let submission = consume
+      ? secretDrop.consumeReceived(token)
+      : secretDrop.peekReceived(token);
+
+    const persistDrops = ctx.config.secrets?.persistDrops !== false;
+
+    if (!submission && persistDrops) {
+      // Durable fallback: the in-memory `received` copy is gone (server restart,
+      // compaction, cross-machine handoff, or grace-window cleanup). The store-first
+      // persisted copy is the recovery path — without it, churn between submit and
+      // retrieve dropped the secret with no recovery.
+      try {
+        const store = new SecretStore({ stateDir: ctx.config.stateDir, forceFileKey: ctx.config.secrets?.forceFileKey });
+        const durable = store.get(`secretDrops.${token}`) as
+          | { label?: string; topicId?: number | null; receivedAt?: string; values?: Record<string, string> }
+          | undefined;
+        if (durable && durable.values) {
+          submission = {
+            values: durable.values,
+            receivedAt: durable.receivedAt ?? new Date().toISOString(),
+            label: durable.label ?? 'Secret',
+            topicId: durable.topicId ?? undefined,
+          };
+          // A successful consume against the durable copy removes it.
+          if (consume) store.delete(`secretDrops.${token}`);
+        }
+      } catch (err) {
+        console.error(`[secret-drop] durable fallback read failed (token ${token.slice(0, 8)}…):`, err instanceof Error ? err.message : String(err));
+      }
+    } else if (submission && consume && persistDrops) {
+      // In-memory consume succeeded — clean the durable copy too, so a consumed
+      // secret never lingers in the encrypted store (matters for one-time codes).
+      try {
+        new SecretStore({ stateDir: ctx.config.stateDir, forceFileKey: ctx.config.secrets?.forceFileKey }).delete(`secretDrops.${token}`);
+      } catch { /* @silent-fallback-ok — durable cleanup is best-effort */ }
+    }
+
     if (!submission) {
       res.status(404).json({ error: 'No submission found for this token' });
       return;

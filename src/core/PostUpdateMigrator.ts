@@ -3600,7 +3600,7 @@ Strip the \`[telegram:N]\` prefix before interpreting the message. Respond natur
 - **Retrieve the secret (HARDENED — required)**: \`node .instar/scripts/secret-drop-retrieve.mjs TOKEN field-name\` — streams the field VALUE to stdout, prints field NAMES + lengths to stderr, NEVER prints the response body. Discover available fields with \`... TOKEN --names\`.
 - **NEVER use \`curl /secrets/retrieve\` directly** — the raw curl pattern dumps the full JSON response (including the secret value) into the Bash tool transcript.
 - List pending: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/secrets/pending\`
-- **Security**: One-time use, expires after 15 minutes, in-memory only (never written to disk), CSRF-protected.
+- **Security**: One-time link, expires after 15 minutes, CSRF-protected. The moment a secret is SUBMITTED it is also persisted store-first to the durable AES-256-GCM encrypted SecretStore — so it survives session restarts, compaction, and cross-machine handoff instead of evaporating with the in-memory copy. Retrieval transparently falls back to the durable copy, and a successful consume deletes both. (Opt out with \`secrets.persistDrops: false\` in \`.instar/config.json\`.)
 - **When to use** (PROACTIVE — this is the trigger): the moment a user offers to give you a credential (API key, password, token) or you realize you need one, use Secret Drop. It is the ONLY correct way to collect a secret. NEVER accept it pasted into Telegram or chat, and NEVER create a local file (e.g. \`.instar/secrets/foo.env\`) and ask the user to edit/paste into it — that defeats the one-time, in-memory, never-on-disk guarantee and asks the user to edit files (which you must never do). Always issue a Secret Drop one-time link instead.
 `;
       const tunnelIdx = content.indexOf('**Cloudflare Tunnel**');
@@ -4104,6 +4104,25 @@ The user has been talking to you (possibly for days). A generic greeting like "H
         content = content.replace(anchor, anchor + runBullet);
         patched = true;
         result.upgraded.push('CLAUDE.md: added Secret Drop --run atomic use-and-consume guidance');
+      }
+    }
+
+    // Secret Drop store-first durability (2026-06-04). Existing agents'
+    // Security bullet still claims submissions are "in-memory only (never
+    // written to disk)" — no longer true: submissions are persisted store-first
+    // to the encrypted SecretStore so they survive session churn. Rewrite the
+    // stale bullet so agents stop treating an un-consumed drop as a
+    // race-against-the-TTL. Idempotent: anchors on the old wording; skips when
+    // the durable wording is already present.
+    {
+      const oldSecurityLine = '- **Security**: One-time use, expires after 15 minutes, in-memory only (never written to disk), CSRF-protected.';
+      const newSecurityLine = '- **Security**: One-time link, expires after 15 minutes, CSRF-protected. The moment a secret is SUBMITTED it is also persisted store-first to the durable AES-256-GCM encrypted SecretStore — so it survives session restarts, compaction, and cross-machine handoff instead of evaporating with the in-memory copy. Retrieval transparently falls back to the durable copy, and a successful consume deletes both. (Opt out with `secrets.persistDrops: false` in `.instar/config.json`.)';
+      if (content.includes(oldSecurityLine)) {
+        content = content.replace(oldSecurityLine, newSecurityLine);
+        patched = true;
+        result.upgraded.push('CLAUDE.md: Secret Drop Security bullet updated for store-first durable persistence');
+      } else if (content.includes('persisted store-first to the durable')) {
+        result.skipped.push('CLAUDE.md: Secret Drop store-first durability already documented');
       }
     }
 
