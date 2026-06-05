@@ -8336,6 +8336,9 @@ export function createRoutes(ctx: RouteContext): Router {
       pushEnabled: ss.pushEnabled,
       mode: ss.pushEnabled ? 'full' : 'receive-only',
       localKeyPaths: ss.localKeyPaths(),
+      // 'decrypt-failed' means the vault has DATA but no resolvable key opens it
+      // — categorically different from 'empty' (the 2026-06-05 masking bug).
+      vault: ss.vaultStatus ? ss.vaultStatus() : undefined,
       syncTargets: ss.syncTargets(),
     });
   });
