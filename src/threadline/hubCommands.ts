@@ -43,7 +43,7 @@ export interface HubBindDeps {
   conversationStore: ConversationStore;
   commitmentTracker: CommitmentTracker | null;
   telegram: {
-    findOrCreateForumTopic(name: string, iconColor?: number): Promise<{ topicId: number; name: string; reused: boolean }>;
+    findOrCreateForumTopic(name: string, iconColor?: number, opts?: { origin?: 'user' | 'system' | 'auto'; label?: string }): Promise<{ topicId: number; name: string; reused: boolean }>;
     sendToTopic(topicId: number, text: string, options?: { silent?: boolean }): Promise<unknown>;
   };
   /**
@@ -133,7 +133,7 @@ export async function bindHubConversation(deps: HubBindDeps, args: HubBindArgs):
         topicId = args.targetTopicId;
         topicName = typeof args.targetTopicName === 'string' ? args.targetTopicName : `topic ${topicId}`;
       } else if (typeof args.targetTopicName === 'string' && args.targetTopicName) {
-        const t = await telegram.findOrCreateForumTopic(args.targetTopicName);
+        const t = await telegram.findOrCreateForumTopic(args.targetTopicName, undefined, { origin: 'user' });
         topicId = t.topicId; topicName = t.name;
       } else {
         return { ok: false, status: 400, error: 'tie requires targetTopicId or targetTopicName' };
@@ -146,13 +146,13 @@ export async function bindHubConversation(deps: HubBindDeps, args: HubBindArgs):
         // Inject the real slug fn so the brief's fallback name matches the
         // legacy path exactly (topicNameFor is private to this module).
         const b = await generateConversationBrief(threadId, existing ?? null, { ...deps.brief, topicNameFallback: (c, t) => topicNameFor(c as Parameters<typeof topicNameFor>[0], t) });
-        const t = await telegram.findOrCreateForumTopic(b.topicName);
+        const t = await telegram.findOrCreateForumTopic(b.topicName, undefined, { origin: 'user' });
         topicId = t.topicId; topicName = t.name;
         firstMessage = b.summary; // never empty — see openConversationBrief
         console.log(`[hub/bind] open threadId=${threadId.slice(0, 8)} topic=${topicId} nameSource=${b.nameSource} summarySource=${b.summarySource} latencyMs=${b.latencyMs} reason=${b.reason}`);
       } else {
         const name = topicNameFor(existing ?? null, threadId);
-        const t = await telegram.findOrCreateForumTopic(name);
+        const t = await telegram.findOrCreateForumTopic(name, undefined, { origin: 'user' });
         topicId = t.topicId; topicName = t.name;
         console.log(`[hub/bind] open threadId=${threadId.slice(0, 8)} topic=${topicId} nameSource=slug summarySource=slug latencyMs=0 reason=no-brief-deps`);
       }

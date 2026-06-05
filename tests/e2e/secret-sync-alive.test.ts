@@ -59,6 +59,7 @@ describe('E2E: secret-sync routes are ALIVE through the real AgentServer', () =>
     });
     const handle: SecretSyncHandle = {
       enabled: true,
+      pushEnabled: true, // this e2e exercises the full (push-enabled) path
       provisionAll: () => provisioner.provisionAll(),
       localKeyPaths: () => secretKeyPaths(localStore.read()),
       syncTargets: () => [{ machineId: 'm_peer', nickname: 'Laptop' }],

@@ -31,8 +31,15 @@ const FLAKY_TESTS = [
   // ── Environment-dependent / non-deterministic ─────────────────────
   'tests/unit/agent-registry.test.ts',
   'tests/unit/builtin-manifest.test.ts',
-  'tests/unit/feature-delivery-completeness.test.ts',
-  'tests/unit/security.test.ts',
+  // security.test.ts + feature-delivery-completeness.test.ts — RE-ARMED
+  // 2026-06-05. Both are DETERMINISTIC source-content guards (the old
+  // "environment-dependent" label was wrong) and both rotted while parked:
+  // a bare execSync reached src/monitoring/mcpProcessReaperDeps.ts, and the
+  // whole coordination-mandate capability family (mandate gate /
+  // ReviewExchange / cutover-readiness) shipped untracked by the
+  // template↔migrator↔shadow parity guard. Those are fixed and the gates now
+  // gate again. (Same lesson as the ESM-compliance re-arm above: a parked
+  // gate is no gate.)
 
   // ── Non-deterministic data / race conditions ──────────────────────
   'tests/integration/semantic-memory.test.ts',
@@ -72,8 +79,16 @@ const FLAKY_TESTS = [
   // ── Port assertion mismatch on some environments ──────────────────
   'tests/integration/fresh-install.test.ts',
 
-  // ── Error message format mismatch ─────────────────────────────────
-  'tests/unit/TunnelManager.test.ts',
+  // TunnelManager.test.ts — RE-ARMED 2026-06-05 (closes the commitment
+  // "Rewrite TunnelManager unit suite"). The old suite predated the
+  // provider/tier rewrite (mocked the `cloudflared` module directly; 22/29
+  // failed against the real reachability probe). Rewritten against the
+  // provider/lifecycle architecture using the constructor injection seams
+  // (injections.providers + injections.fetch) and the public deterministic
+  // drivers (runSelfHealCheck/grantConsent/declineConsent) — no real timers,
+  // processes, or network. 51 deterministic tests now gate the lifecycle:
+  // provider-pool fallback, reachability probing, consent flow + cooldown,
+  // self-heal stability gate, and mandatory credential rotation.
 
   // ── Supertest body size limit vs express limit mismatch ─────────
   'tests/integration/view-tunnel-routes.test.ts',

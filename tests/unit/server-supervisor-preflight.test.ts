@@ -116,6 +116,17 @@ describe('ServerSupervisor preflight self-heal', () => {
     expect(abortCalls.length).toBe(0);
   });
 
+  it('allows read-only git status against an agent dogfooding the Instar source tree', () => {
+    const supervisorSource = fs.readFileSync(
+      path.join(process.cwd(), 'src/lifeline/ServerSupervisor.ts'),
+      'utf-8'
+    );
+
+    expect(supervisorSource).toMatch(
+      /SafeGitExecutor\.readSync\(\['status'\],[\s\S]*sourceTreeReadOk:\s*true/
+    );
+  });
+
   // ── Fleet fix: bind failures must NOT trigger a native-module rebuild ──
   // when better-sqlite3 actually loads fine. A held/duplicate listener.sock or
   // HTTP port (EADDRINUSE) is a bind failure, NOT a native ABI problem — the old

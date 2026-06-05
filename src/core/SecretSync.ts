@@ -68,12 +68,21 @@ export function secretKeyPaths(secrets: Secrets, prefix = ''): string[] {
  * push-on-provision lever and read-only status WITHOUT ever exposing a secret value.
  */
 export interface SecretSyncHandle {
-  /** Whether secret-sync is enabled on this machine. */
+  /** Whether secret-sync is enabled on this machine (receive path active). */
   enabled: boolean;
-  /** Push the current secret set to every online peer (the deterministic sync lever). */
+  /**
+   * Whether OUTBOUND push is enabled. Defaults off: `enabled` alone is RECEIVE-ONLY so a
+   * machine with a stale/divergent store can't clobber peers. Set on the authoritative machine.
+   */
+  pushEnabled: boolean;
+  /** Push the current secret set to every online peer (no-op when pushEnabled is false). */
   provisionAll: () => Promise<{ machineId: string; ok: boolean; reason?: string }[]>;
   /** Leaf key-paths of secrets present in this machine's vault — NAMES only, never values. */
   localKeyPaths: () => string[];
+  /** Vault readability — distinguishes a genuinely empty vault from a
+   *  decrypt-failure (the 2026-06-05 masking: a key-bifurcated vault reported
+   *  localKeyPaths: [] as if empty). 'decrypt-failed' carries the precise error. */
+  vaultStatus?: () => { status: 'ok' | 'empty' | 'decrypt-failed'; error?: string };
   /** Online registered peers this machine would sync to (machineId + nickname). */
   syncTargets: () => { machineId: string; nickname?: string | null }[];
 }

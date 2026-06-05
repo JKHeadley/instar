@@ -120,6 +120,7 @@ describe('spawnInteractiveSession: resume-failure fallback', () => {
       maxSessions: 3,
       protectedSessions: [],
       completionPatterns: [],
+      framework: 'claude-code',
     };
     manager = new SessionManager(config, state);
     mockTmuxSessions.clear();

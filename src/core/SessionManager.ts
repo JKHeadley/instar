@@ -17,6 +17,7 @@ import { fileURLToPath } from 'node:url';
 import { SessionLivenessOracle, type SessionLivenessOracleConfig } from './SessionLivenessOracle.js';
 import type { ReapGuard } from './ReapGuard.js';
 import { paneShowsClaudeWorking } from './claudeActivityIndicators.js';
+import { extractGeminiFinalAssistantBlock, meaningfulTail } from './paneText.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -69,6 +70,7 @@ import { StateManager } from './StateManager.js';
 import { buildInjectionTag } from '../types/pipeline.js';
 import { sanitizeSenderName, sanitizeTopicName } from '../utils/sanitize.js';
 import { getTelegramInboundDir } from '../messaging/shared/telegramInboundFiles.js';
+import { SessionBuildContextStore } from './SessionBuildContextStore.js';
 
 /** Absolute maximum session duration (4 hours) — safety net for sessions without explicit timeout */
 const DEFAULT_MAX_DURATION_MINUTES = 240;
@@ -311,6 +313,7 @@ export class SessionManager extends EventEmitter {
 
   /** Worktree manager — when set, spawnSession resolves an isolated worktree per topic. */
   private worktreeManager: import('./WorktreeManager.js').WorktreeManager | null = null;
+  private buildContextStore: SessionBuildContextStore | null = null;
 
   /** Per-session shim directory root (one subdir per session). Used for K9 mandatory shim. */
   private shimRoot: string | null = null;
@@ -319,6 +322,11 @@ export class SessionManager extends EventEmitter {
     super();
     this.config = config;
     this.state = state;
+    if (config.respawnBuildContext?.enabled) {
+      this.buildContextStore = new SessionBuildContextStore(state, {
+        maxAgeMs: config.respawnBuildContext.maxAgeMs,
+      });
+    }
   }
 
   /** Lazily-constructed tri-state liveness oracle (UNIFIED-SESSION-LIFECYCLE §P1).
@@ -662,9 +670,13 @@ rm()  { "${shimRunner}" rm  "$@"; }
 
     // ── Authority gates (autonomous only; operator bypasses) ──
     // An `origin:'operator'` kill — stamped ONLY by the Bearer-authed HTTP route
-    // layer — must always happen: the user clicked "kill". It bypasses protected,
-    // the lease gate, and the KEEP-guard. Autonomous killers (the default) can
-    // only *request*; the authority holds the safety checks.
+    // layer and by the transfer handler executing the user's explicit
+    // "move this to <machine>" command (post-transfer closeout, 2026-06-05) —
+    // must always happen: the user commanded it. It bypasses protected, the
+    // lease gate, and the KEEP-guard. (The transfer handler additionally skips
+    // protected sessions BEFORE calling, so the bypass never reaches them on
+    // that path.) Autonomous killers (the default) can only *request*; the
+    // authority holds the safety checks.
     if (origin === 'autonomous') {
       // Protected set — never autonomously reap a protected session.
       if (this.config.protectedSessions.includes(session.tmuxSession)) {
@@ -837,6 +849,33 @@ rm()  { "${shimRunner}" rm  "$@"; }
           continue;
         }
 
+        this.recordBuildContext(session.tmuxSession);
+
+        // Gemini CLI can complete a Telegram turn by rendering the final
+        // assistant block in the TUI without executing the relay script. When a
+        // topic-bound injection is still pending, surface that completed block
+        // as the reply instead of leaving the user silent.
+        if (session.framework === 'gemini-cli') {
+          const pendingInjection = this.pendingInjections.get(session.tmuxSession);
+          if (pendingInjection) {
+            const pane = this.captureOutput(session.tmuxSession, 400) || '';
+            const marker = `[telegram:${pendingInjection.topicId}`;
+            const markerIdx = pane.lastIndexOf(marker);
+            if (markerIdx >= 0) {
+              const reply = extractGeminiFinalAssistantBlock(pane.slice(markerIdx));
+              if (reply && reply.trim()) {
+                this.pendingInjections.delete(session.tmuxSession);
+                this.emit('injectionReplyDetected', {
+                  topicId: pendingInjection.topicId,
+                  sessionName: session.tmuxSession,
+                  text: reply,
+                  injectedAt: pendingInjection.injectedAt,
+                });
+              }
+            }
+          }
+        }
+
         // Check for completion patterns even while session appears alive
         // (catches sessions where Claude finished but tmux is still open)
         if (!this.config.protectedSessions.includes(session.tmuxSession) &&
@@ -875,7 +914,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
           const limit = maxMinutes + buffer;
           if (elapsed > limit && !this.config.protectedSessions.includes(session.tmuxSession)) {
             // Activity check — defer kill if the session is doing real work.
-            const ageGateOutput = this.captureOutput(session.tmuxSession, 5);
+            const ageGateOutput = this.captureMeaningfulTail(session.tmuxSession, 5);
             const ageGateIsIdle = ageGateOutput && IDLE_PROMPT_PATTERNS.some(p => ageGateOutput.includes(p));
             const ageGateHasProcs = this.hasActiveProcesses(session.tmuxSession);
             const ageGateTrulyIdle = ageGateIsIdle && !ageGateHasProcs;
@@ -931,7 +970,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
         // Skip sessions the SessionReaper has leased for a two-phase reap — it
         // is the single actor on them while reaping (§3.6).
         if (!this.config.protectedSessions.includes(session.tmuxSession) && !this.isReaping(session.id)) {
-          const output = this.captureOutput(session.tmuxSession, 5);
+          const output = this.captureMeaningfulTail(session.tmuxSession, 5);
           const isIdleAtPrompt = output && IDLE_PROMPT_PATTERNS.some(p => output.includes(p));
 
           // ── Prompt Gate: feed captured output to InputDetector ──
@@ -1334,6 +1373,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
         '-e', `INSTAR_SESSION_NAME=${tmuxSession}`, // Threadline binding: attributes a relay-send to its origin session
         '-e', `INSTAR_SERVER_URL=http://localhost:${this.config.port}`,
         '-e', `INSTAR_AUTH_TOKEN=${this.config.authToken}`,
+        '-e', `INSTAR_AGENT_ID=${this.config.projectName}`,
         ...(workTreeFencingToken ? ['-e', `INSTAR_FENCING_TOKEN=${workTreeFencingToken}`] : []),
         ...(workTreeFencingToken ? ['-e', `INSTAR_WORKTREE_PATH=${resolvedCwd}`] : []),
         ...(shimDir ? ['-e', `PATH=${shimmedPath}`, '-e', `BASH_ENV=${path.join(shimDir, '.shellrc')}`] : []),
@@ -1740,6 +1780,61 @@ rm()  { "${shimRunner}" rm  "$@"; }
       // @silent-fallback-ok — capture output, null handled by caller
       return null;
     }
+  }
+
+  /**
+   * The last `lines` MEANINGFUL rows of a session's pane — blank-fill-immune.
+   *
+   * `capture-pane -S -N` returns the last N PHYSICAL rows, so in a tall pane
+   * the meaningful text (idle prompt, modal, readiness marker) can sit above a
+   * run of trailing blank rows and a small-N capture comes back entirely blank.
+   * That made genuinely-idle sessions read as ACTIVE forever in the n=5 idle/
+   * age checks (the #20/#47 inflated-blocker family; cycle-2 finding, task #77;
+   * same class PR #818 fixed inside PromptGate). This captures a wider physical
+   * window, trims trailing blanks (shared core/paneText semantics — interior
+   * blanks preserved), and returns the last `lines` meaningful rows.
+   */
+  captureMeaningfulTail(tmuxSession: string, lines: number): string | null {
+    const raw = this.captureOutput(tmuxSession, Math.max(lines * 4, 50));
+    if (raw === null) return null;
+    return meaningfulTail(raw, lines);
+  }
+
+  private currentPaneCwd(tmuxSession: string): string | null {
+    try {
+      const out = execFileSync(
+        this.config.tmuxPath,
+        ['display-message', '-p', '-t', `=${tmuxSession}:`, '#{pane_current_path}'],
+        { encoding: 'utf-8', timeout: 2000 },
+      ).trim();
+      return out || null;
+    } catch {
+      // @silent-fallback-ok — cwd tracking is best-effort enrichment for respawn recovery
+      return null;
+    }
+  }
+
+  private recordBuildContext(tmuxSession: string): void {
+    if (!this.buildContextStore) return;
+    const currentCwd = this.currentPaneCwd(tmuxSession);
+    if (!currentCwd) return;
+    try {
+      this.buildContextStore.record(tmuxSession, this.config.projectDir, currentCwd);
+    } catch (err) {
+      console.warn(`[SessionManager] Failed to record build context for "${tmuxSession}": ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  private withBuildContextRestoreNote(
+    tmuxSession: string,
+    initialMessage: string | undefined,
+    resumeSessionId: string | undefined,
+  ): string | undefined {
+    if (!resumeSessionId || !this.buildContextStore) return initialMessage;
+    const restore = this.buildContextStore.getRestore(tmuxSession);
+    if (!restore) return initialMessage;
+    console.log(`[SessionManager] Restoring build context for "${tmuxSession}" from ${restore.entry.currentCwd}`);
+    return [restore.note, initialMessage].filter(Boolean).join('\n\n');
   }
 
   /**
@@ -2165,6 +2260,12 @@ rm()  { "${shimRunner}" rm  "$@"; }
       return tmuxSession;
     }
 
+    const effectiveInitialMessage = this.withBuildContextRestoreNote(
+      tmuxSession,
+      initialMessage,
+      options?.resumeSessionId,
+    );
+
     // User-initiated sessions bypass the maxSessions limit entirely.
     // The user should NEVER be blocked from interacting with their agent
     // because scheduled jobs filled all slots. maxSessions only constrains
@@ -2247,6 +2348,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
         '-e', `INSTAR_SESSION_NAME=${tmuxSession}`, // Threadline binding: attributes a relay-send to its origin session
         '-e', `INSTAR_SERVER_URL=http://localhost:${this.config.port}`,
         '-e', `INSTAR_AUTH_TOKEN=${this.config.authToken}`,
+        '-e', `INSTAR_AGENT_ID=${this.config.projectName}`,
         '-e', `INSTAR_FRAMEWORK=${framework}`,
         // Framework-specific env additions/clears (e.g., CLAUDECODE=)
         ...Object.entries(launchSpec.envOverrides).flatMap(([k, v]) => ['-e', `${k}=${v}`]),
@@ -2314,7 +2416,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
       // account default).
       framework,
       ...(resolveModelForFramework(framework, launchDefaultModel) ? { model: resolveModelForFramework(framework, launchDefaultModel) } : {}),
-      prompt: initialMessage,
+      prompt: effectiveInitialMessage,
       maxDurationMinutes: this.effectiveMaxDurationMinutes,
     };
     this.state.saveSession(session);
@@ -2325,8 +2427,8 @@ rm()  { "${shimRunner}" rm  "$@"; }
     // Fresh sessions also get a generous timeout (90s) to handle slow API auth,
     // large CLAUDE.md loading, and session-start hook execution.
     const readyTimeout = options?.resumeSessionId ? 120_000 : 90_000;
-    if (initialMessage) {
-      this.handleReadyAndInject(tmuxSession, name, initialMessage, readyTimeout, options).catch((err) => {
+    if (effectiveInitialMessage) {
+      this.handleReadyAndInject(tmuxSession, name, effectiveInitialMessage, readyTimeout, options).catch((err) => {
         console.error(`[SessionManager] Error during ready-and-inject for "${tmuxSession}": ${err}`);
       });
     }
@@ -2491,6 +2593,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
         '-e', `INSTAR_SESSION_NAME=${tmuxSession}`, // Threadline binding: attributes a relay-send to its origin session
         '-e', `INSTAR_SERVER_URL=http://localhost:${this.config.port}`,
         '-e', `INSTAR_AUTH_TOKEN=${this.config.authToken}`,
+        '-e', `INSTAR_AGENT_ID=${this.config.projectName}`,
         '-e', 'ANTHROPIC_API_KEY=',
         '-e', 'DATABASE_URL=',
         '-e', 'DIRECT_DATABASE_URL=',
@@ -3156,7 +3259,15 @@ rm()  { "${shimRunner}" rm  "$@"; }
     const shortMarker = marker.slice(0, 30);
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i];
-      const hasPromptChar = line.includes('❯') || line.includes('›');
+      // Claude Code uses ❯, codex uses › as the input-prompt char. Gemini CLI has
+      // NEITHER — it renders its input inside a rounded border, and the active
+      // input line is "│ * <text>" (box pipe + bullet). Without recognizing that,
+      // an injected message sitting unsubmitted in a Gemini box was never detected
+      // as stuck, so verifyInjection's Enter-recovery never fired for Gemini and
+      // forwarded prompts stalled in the input box. The marker-in-line check below
+      // still gates it, so "│ *" only matches when the injected marker is on that
+      // line — a normal bulleted output line can't false-fire.
+      const hasPromptChar = line.includes('❯') || line.includes('›') || /│\s+\*/.test(line);
       if (hasPromptChar && (line.includes(marker) || (lines[i + 1] && lines[i + 1].includes(shortMarker)))) {
         return true;
       }

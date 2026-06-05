@@ -45,7 +45,7 @@ describe('Secret-sync routes (cross-machine secret distribution)', () => {
   let peerPubB64: string;
   let server: Server;
 
-  function buildHandle(enabled: boolean): SecretSyncHandle {
+  function buildHandle(enabled: boolean, pushEnabled = true): SecretSyncHandle {
     const provisioner = new SecretProvisioner({
       secretsToSync: () => localStore.read(),
       listPeers: () => [{ machineId: 'm_peer', encryptionPublicKey: peerPubB64 }],
@@ -64,7 +64,9 @@ describe('Secret-sync routes (cross-machine secret distribution)', () => {
     });
     return {
       enabled,
-      provisionAll: () => provisioner.provisionAll(),
+      pushEnabled,
+      // Mirror server.ts: a receive-only handle's provisionAll is a no-op.
+      provisionAll: () => (pushEnabled ? provisioner.provisionAll() : Promise.resolve([])),
       localKeyPaths: () => secretKeyPaths(localStore.read()),
       syncTargets: () => [{ machineId: 'm_peer', nickname: 'Laptop' }],
     };
@@ -143,5 +145,25 @@ describe('Secret-sync routes (cross-machine secret distribution)', () => {
     server = await listen(mount(null));
     expect((await api('/secrets/sync-status')).status).toBe(503);
     expect((await api('/secrets/sync-now', { method: 'POST' })).status).toBe(503);
+  });
+
+  // SAFETY GUARD: receive-only (enabled but pushEnabled=false) must NOT push — it refuses
+  // sync-now with 409 and never touches a peer's store. This is what prevents a machine with
+  // a stale/divergent store from clobbering peers.
+  it('receive-only (pushEnabled=false): sync-status reports the mode; sync-now 409s and pushes NOTHING', async () => {
+    await server.close();
+    server = await listen(mount(buildHandle(true, /*pushEnabled*/ false)));
+    const status = await api('/secrets/sync-status');
+    expect(status.status).toBe(200);
+    const sbody = JSON.parse(status.raw);
+    expect(sbody.enabled).toBe(true);
+    expect(sbody.pushEnabled).toBe(false);
+    expect(sbody.mode).toBe('receive-only');
+    // peer vault is empty; a refused push must leave it empty
+    expect(peerStore.read()).toEqual({});
+    const push = await api('/secrets/sync-now', { method: 'POST' });
+    expect(push.status).toBe(409);
+    expect(JSON.parse(push.raw).mode).toBe('receive-only');
+    expect(peerStore.read()).toEqual({}); // nothing pushed — the whole point
   });
 });

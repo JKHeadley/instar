@@ -21,6 +21,12 @@ export interface TransferByNicknameState {
   currentOwnerOf: (sessionKey: string) => string | null;
   /** Is the session mid-reply (a turn in flight)? Confirmation is required to interrupt it. */
   isMidReply: (sessionKey: string) => boolean;
+  /**
+   * The machine the topic is currently PINNED to (preferredMachine), or null if
+   * unpinned. Optional for backward compatibility — when absent, only the
+   * current-owner check can satisfy the already-there no-op.
+   */
+  currentPinOf?: (sessionKey: string) => string | null;
   /** When the topic last had a placement update (for the rate limit), or null. */
   lastPlacementUpdateAt: (sessionKey: string) => number | null;
   now: () => number;
@@ -60,18 +66,30 @@ export function planTransferByNickname(command: NicknameCommand, state: Transfer
     return { action: 'reject', sessionKey, rejectReason: 'unknown-machine-nickname', validNicknames: state.validNicknames(), detail: command.nickname };
   }
 
-  // Rate limit — at most one placement update per topic per interval (defeats rapid-fire transfers).
+  const owner = state.currentOwnerOf(sessionKey);
+
+  // Idempotency BEFORE the rate limit: a repeat "move to X" when the topic is
+  // already ON X — or already PINNED to X (the move landed but ownership hasn't
+  // re-placed yet) — is a duplicate of an already-satisfied request. It must
+  // read as "already there", never as a rate-limit rejection. (2026-06-05
+  // incident: a retried/replayed "move to laptop" hit the cooldown and the user
+  // was told "I can't move this right now (rate-limited)" seconds after
+  // "Moving this conversation to Laptop" — for ONE request that had already
+  // succeeded.)
+  if (owner === target) {
+    return { action: 'noop', sessionKey, targetMachine: target, setPin: true, detail: 'already-on-target' };
+  }
+  if ((state.currentPinOf?.(sessionKey) ?? null) === target) {
+    return { action: 'noop', sessionKey, targetMachine: target, setPin: true, detail: 'already-pinned-to-target' };
+  }
+
+  // Rate limit — at most one ACTUAL placement change per topic per interval
+  // (defeats rapid-fire transfers between DIFFERENT machines; duplicates of an
+  // already-satisfied move never reach this).
   const minInterval = state.minUpdateIntervalMs ?? DEFAULT_MIN_UPDATE_INTERVAL_MS;
   const last = state.lastPlacementUpdateAt(sessionKey);
   if (last != null && state.now() - last < minInterval) {
     return { action: 'reject', sessionKey, targetMachine: target, rejectReason: 'rate-limited' };
-  }
-
-  const owner = state.currentOwnerOf(sessionKey);
-
-  // Already on the target → no transfer needed (still applies the pin if requested).
-  if (owner === target) {
-    return { action: 'noop', sessionKey, targetMachine: target, setPin: true, detail: 'already-on-target' };
   }
 
   // Confirmation gate (§L4): offline target, OR a different owner while mid-reply.

@@ -11,6 +11,7 @@
 
 import { EventEmitter } from 'node:events';
 import { createHash, randomBytes } from 'node:crypto';
+import { trimTrailingBlankRows } from '../core/paneText.js';
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -25,12 +26,22 @@ export interface DetectedPrompt {
   detectedAt: number;
   id: string;               // Unique prompt ID (12-char CSPRNG)
   /**
-   * Optional auto-dismiss directive for non-blocking system prompts
-   * (e.g. Claude Code's "How is Claude doing this session?" optional survey).
+   * Optional deterministic response directive for system prompts whose safe
+   * answer is known from the framework UI itself (e.g. Claude Code's optional
+   * survey, Gemini CLI's loop-detection modal).
    * When set, the consumer should send `autoDismissKey` to the session and
    * SKIP the relay/classify pipeline entirely.
    */
   autoDismissKey?: string;
+  /**
+   * Safety disposition for deterministic auto-dismisses. `safe-default`
+   * answers a framework-owned non-risky prompt with its known default.
+   * `safe-reject` explicitly refuses an execution prompt; it must never
+   * approve code execution and must be logged by the consumer.
+   */
+  autoDismissDisposition?: 'safe-default' | 'safe-reject';
+  /** Command text rejected by an execution-approval safe-reject prompt. */
+  autoDismissCommand?: string;
 }
 
 export interface PromptOption {
@@ -75,6 +86,136 @@ interface PatternMatch {
   summary: string;
   options?: PromptOption[];
   autoDismissKey?: string;
+  autoDismissDisposition?: 'safe-default' | 'safe-reject';
+  autoDismissCommand?: string;
+}
+
+function extractNumberedOptions(lines: string[]): PromptOption[] {
+  const options: PromptOption[] = [];
+  for (const line of lines) {
+    const optMatch = line.match(/^\s*(?:[>❯●○◉]\s*)?(\d+)[.)]\s+(.+)$/);
+    if (optMatch) {
+      options.push({ key: optMatch[1], label: optMatch[2].trim() });
+      continue;
+    }
+
+    const colonMatch = line.match(/(?:^|\s)(\d+)\s*[:.)]\s*([A-Za-z][^0-9]{2,})(?=\s+\d+\s*[:.)]|$)/g);
+    if (!colonMatch) continue;
+    for (const raw of colonMatch) {
+      const parsed = raw.trim().match(/^(\d+)\s*[:.)]\s*(.+)$/);
+      if (parsed) options.push({ key: parsed[1], label: parsed[2].trim() });
+    }
+  }
+  return options;
+}
+
+function findOptionKey(options: PromptOption[], accept: RegExp, reject?: RegExp): string | null {
+  const option = options.find(o => accept.test(o.label) && !(reject?.test(o.label)));
+  return option?.key ?? null;
+}
+
+// trimTrailingBlankRows now lives in core/paneText.ts (shared with
+// SessionManager's idle/age small-tail checks — task #77) so the blank-fill
+// semantics can never drift between detectors.
+
+function detectGeminiSafeDefaultModal(lines: string[], fullWindow?: string[]): PatternMatch | null {
+  const windowLines = fullWindow ?? lines;
+  const haystack = windowLines.join('\n');
+  const options = extractNumberedOptions(windowLines);
+
+  if (/A potential loop was detected/i.test(haystack) && /loop detection/i.test(haystack)) {
+    const key = findOptionKey(options, /\bkeep\b.*\b(loop detection|enabled)\b|\benabled\b/i, /\bdisable\b/i) ?? 'Enter';
+    return {
+      type: 'confirmation',
+      summary: 'Gemini CLI loop-detection modal (auto-answer: keep enabled)',
+      options: options.length > 0 ? options : [
+        { key: 'Enter', label: 'Keep loop detection enabled' },
+        { key: 'Escape', label: 'Cancel' },
+      ],
+      autoDismissKey: key,
+      autoDismissDisposition: 'safe-default',
+    };
+  }
+
+  const isWorkspaceTrust = (
+    /(?:workspace|folder|directory|project).{0,80}trust|trust.{0,80}(?:workspace|folder|directory|project)/i.test(haystack)
+    && /(?:Gemini|gemini-cli|trusted workspace|trust this|do you trust|safe to run)/i.test(haystack)
+  );
+  if (isWorkspaceTrust) {
+    const key = findOptionKey(options, /\b(trust|yes|allow)\b/i, /\b(don'?t|do not|no|untrusted|deny)\b/i) ?? 'Enter';
+    return {
+      type: 'confirmation',
+      summary: 'Gemini CLI workspace-trust modal (auto-answer: trust workspace)',
+      options: options.length > 0 ? options : [
+        { key: 'Enter', label: 'Trust workspace' },
+        { key: 'Escape', label: 'Cancel' },
+      ],
+      autoDismissKey: key,
+      autoDismissDisposition: 'safe-default',
+    };
+  }
+
+  const isNpxInstarPackageInstall = (
+    /Need to install the following packages:\s*\n\s*instar@\d+\.\d+\.\d+(?:[-+.\w]*)?\s*\n\s*Ok to proceed\?\s*\(y\)/i.test(haystack)
+  );
+  if (isNpxInstarPackageInstall) {
+    return {
+      type: 'confirmation',
+      summary: 'Gemini CLI install-confirm modal (auto-answer: npx instar default)',
+      options: [
+        { key: 'Enter', label: 'Use highlighted default' },
+        { key: 'Escape', label: 'Cancel' },
+      ],
+      autoDismissKey: 'Enter',
+      autoDismissDisposition: 'safe-default',
+    };
+  }
+
+  const isGeminiInstallConfirm = (
+    /(?:Gemini|gemini-cli|MCP server|extension|tool).{0,120}(?:install|installation)|(?:install|installation).{0,120}(?:Gemini|gemini-cli|MCP server|extension|tool)/i.test(haystack)
+    && /(?:Do you want to install|Need to install|Install .*\?|requires installation|Confirm install)/i.test(haystack)
+  );
+  if (isGeminiInstallConfirm) {
+    return {
+      type: 'confirmation',
+      summary: 'Gemini CLI install-confirm modal (auto-answer: highlighted default)',
+      options: options.length > 0 ? options : [
+        { key: 'Enter', label: 'Use highlighted default' },
+        { key: 'Escape', label: 'Cancel' },
+      ],
+      autoDismissKey: 'Enter',
+      autoDismissDisposition: 'safe-default',
+    };
+  }
+
+  return null;
+}
+
+function detectExecutionApprovalSafeReject(lines: string[], fullWindow?: string[]): PatternMatch | null {
+  const windowLines = fullWindow ?? lines;
+  const haystack = windowLines.join('\n');
+  if (!/Allow execution of:/i.test(haystack)) return null;
+
+  const options = extractNumberedOptions(windowLines);
+  const rejectKey = findOptionKey(options, /\b(no|reject|suggest changes|deny|cancel)\b/i);
+  if (!rejectKey) return null;
+
+  const commandMatch = haystack.match(/Allow execution of:\s*([\s\S]*?)(?:\n\s*[●○◉]?\s*1[.)]\s+Allow once|\n\s*1[.)]\s+Allow once|$)/i);
+  const rejectedCommand = (commandMatch?.[1] ?? '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 500);
+
+  return {
+    type: 'confirmation',
+    summary: rejectedCommand
+      ? `Gemini CLI execution-approval modal (auto-reject): ${rejectedCommand.slice(0, 120)}`
+      : 'Gemini CLI execution-approval modal (auto-reject)',
+    options,
+    autoDismissKey: rejectKey,
+    autoDismissDisposition: 'safe-reject',
+    autoDismissCommand: rejectedCommand || undefined,
+  };
 }
 
 /**
@@ -85,6 +226,26 @@ const PROMPT_PATTERNS: Array<{
   type: PromptType;
   test: (lines: string[], fullWindow?: string[]) => PatternMatch | null;
 }> = [
+  // Gemini CLI modal prompts that block autonomous sessions even in YOLO mode.
+  // These are framework-level affordances with a known safe/default response,
+  // so answer them before the relay/classifier path can wedge the session.
+  {
+    type: 'confirmation',
+    test(lines, fullWindow) {
+      return detectGeminiSafeDefaultModal(lines, fullWindow);
+    },
+  },
+
+  // Gemini CLI execution approval. This is deliberately separate from the
+  // safe-default modal detector above: approving here would execute arbitrary
+  // model-proposed shell text. The only deterministic action is rejection.
+  {
+    type: 'confirmation',
+    test(lines, fullWindow) {
+      return detectExecutionApprovalSafeReject(lines, fullWindow);
+    },
+  },
+
   // Claude Code OPTIONAL session feedback survey — non-blocking.
   // Shape: "How is Claude doing this session? (optional)" followed by
   //        "1: Bad  2: Fine  3: Good  0: Dismiss" on one line.
@@ -250,8 +411,10 @@ const PROMPT_PATTERNS: Array<{
 
 export class InputDetector extends EventEmitter {
   private lastOutput = new Map<string, string>();
+  private lastContentFingerprint = new Map<string, string>();
   private stableCount = new Map<string, number>();
   private emittedPrompts = new Map<string, Set<string>>();
+  private autoDismissedPrompts = new Map<string, Set<string>>();
 
   /** Post-emission cooldown: session → timestamp of last emission */
   private lastEmissionTime = new Map<string, number>();
@@ -300,10 +463,19 @@ export class InputDetector extends EventEmitter {
 
     const stripped = stripAnsi(rawOutput);
 
-    // Take only the last N lines (detection window)
-    const allLines = stripped.split('\n');
+    // Take only the last N meaningful lines. Tmux captures preserve the full pane
+    // height, so a prompt near the top of a 50-row pane can be followed by enough
+    // blank fill rows to fall out of the slice. Trim only trailing blank rows:
+    // interior blank lines still matter for modal structure and command capture.
+    const allLines = trimTrailingBlankRows(stripped.split('\n'));
     const lines = allLines.slice(-this.config.detectionWindowLines);
     const tailText = lines.join('\n');
+    const contentFingerprint = createHash('sha256').update(tailText).digest('hex');
+    const previousContentFingerprint = this.lastContentFingerprint.get(sessionName);
+    if (previousContentFingerprint && previousContentFingerprint !== contentFingerprint) {
+      this.autoDismissedPrompts.delete(sessionName);
+    }
+    this.lastContentFingerprint.set(sessionName, contentFingerprint);
 
     // --- Debounce: require 2 consecutive identical captures (quiescence) ---
     // First capture sets the baseline. Second identical capture confirms stability.
@@ -357,6 +529,10 @@ export class InputDetector extends EventEmitter {
   private emitIfNew(sessionName: string, match: PatternMatch, tailLines: string[]): DetectedPrompt | null {
     const fingerprint = this.fingerprint(sessionName, match.type, tailLines.join('\n'));
 
+    if (match.autoDismissKey && this.autoDismissedPrompts.get(sessionName)?.has(fingerprint)) {
+      return null;
+    }
+
     // Check rejected cooling
     const rejectedExpiry = this.rejectedFingerprints.get(fingerprint);
     if (rejectedExpiry && Date.now() < rejectedExpiry) return null;
@@ -378,6 +554,8 @@ export class InputDetector extends EventEmitter {
       detectedAt: Date.now(),
       id: randomBytes(6).toString('base64url'),
       autoDismissKey: match.autoDismissKey,
+      autoDismissDisposition: match.autoDismissDisposition,
+      autoDismissCommand: match.autoDismissCommand,
     };
 
     emitted.add(fingerprint);
@@ -548,6 +726,22 @@ When in doubt, respond NO_PROMPT. False positives cause spam.`;
   }
 
   /**
+   * Called after a deterministic auto-dismiss key is successfully sent.
+   * Unlike normal prompt dedup, this memory survives onInputSent(): some
+   * terminal panes keep the dismissed prompt text visible until new output
+   * arrives, and re-clearing normal dedup would otherwise re-fire every tick.
+   */
+  onAutoDismissSent(prompt: DetectedPrompt): void {
+    if (!prompt.autoDismissKey) return;
+    let prompts = this.autoDismissedPrompts.get(prompt.sessionName);
+    if (!prompts) {
+      prompts = new Set();
+      this.autoDismissedPrompts.set(prompt.sessionName, prompts);
+    }
+    prompts.add(this.fingerprint(prompt.sessionName, prompt.type, prompt.raw));
+  }
+
+  /**
    * Mark a prompt as rejected (user cancelled). Prevents re-fire for 60s.
    */
   onPromptRejected(sessionName: string, promptRaw: string, type: PromptType): void {
@@ -560,8 +754,10 @@ When in doubt, respond NO_PROMPT. False positives cause spam.`;
    */
   cleanup(sessionName: string): void {
     this.lastOutput.delete(sessionName);
+    this.lastContentFingerprint.delete(sessionName);
     this.stableCount.delete(sessionName);
     this.emittedPrompts.delete(sessionName);
+    this.autoDismissedPrompts.delete(sessionName);
     this.lastEmissionTime.delete(sessionName);
     this.llmRelayTimestamps.delete(sessionName);
     this.pendingLlmDetection.delete(sessionName);

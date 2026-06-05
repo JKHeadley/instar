@@ -8,12 +8,16 @@
 #   cat <<'EOF' | ./telegram-reply.sh TOPIC_ID
 #   Multi-line message here
 #   EOF
+#   printf '%s' '<base64 text>' | ./telegram-reply.sh --stdin-base64 TOPIC_ID
 #
 # Flags:
 #   --format <mode>   Override server-side format mode for this send.
 #                     Valid: plain, code, markdown, legacy-passthrough
 #                     ('html' is reserved for trusted internal callers.)
 #                     When absent, the server's configured default applies.
+#   --stdin-base64    Decode stdin/argument text from base64 before sending.
+#                     Use this for content that may contain shell syntax or
+#                     heredoc delimiters such as a literal EOF line.
 #
 # Port resolution (in order):
 #   1. INSTAR_PORT environment variable (explicit operator override).
@@ -28,6 +32,7 @@
 #   comparison — a token sent to the wrong server is structurally inert.
 
 FORMAT=""
+STDIN_BASE64=0
 
 # Parse leading flags before positional args.
 while [ $# -gt 0 ]; do
@@ -38,6 +43,10 @@ while [ $# -gt 0 ]; do
       ;;
     --format=*)
       FORMAT="${1#--format=}"
+      shift
+      ;;
+    --stdin-base64|--base64-stdin)
+      STDIN_BASE64=1
       shift
       ;;
     --)
@@ -72,6 +81,19 @@ fi
 if [ -z "$MSG" ]; then
   echo "No message provided" >&2
   exit 1
+fi
+
+if [ "$STDIN_BASE64" = "1" ]; then
+  DECODED_MSG=$(printf '%s' "$MSG" | python3 -c '
+import base64, sys
+raw = "".join(sys.stdin.read().split())
+sys.stdout.write(base64.b64decode(raw, validate=True).decode("utf-8"))
+' 2>/dev/null)
+  if [ $? -ne 0 ]; then
+    echo "Invalid base64 message provided to --stdin-base64" >&2
+    exit 1
+  fi
+  MSG="$DECODED_MSG"
 fi
 
 # Resolve config-derived values from .instar/config.json (single python3

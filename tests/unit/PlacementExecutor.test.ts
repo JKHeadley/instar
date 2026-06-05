@@ -126,3 +126,101 @@ describe('validatePlacementPolicy (§L4)', () => {
     expect(() => new PlacementExecutor({ ...DEFAULT_PLACEMENT_POLICY, capabilityWhitelist: [42] } as never)).toThrow();
   });
 });
+
+// ── Quota-aware placement (2026-06-05) ─────────────────────────────────
+// The EXO-topic failure: the pool placed (and stickily kept) a topic on a
+// machine whose LLM account was rate-limited — the user saw silence. The
+// quota gate drops blocked machines from the candidate pool, with a
+// place-somewhere fallback and a pin-wins exception.
+describe('PlacementExecutor.decide — quota gate', () => {
+  const blocked = { blocked: true, blockedUntil: '2099-01-01T00:00:00Z', reason: '5-hour window at 100%' };
+
+  it('avoids a quota-blocked machine even when it is least-loaded', () => {
+    const d = exec.decide(req({
+      machineRegistry: [
+        machine('limited', { loadAvg: 0.1, quotaState: blocked }),
+        machine('working', { loadAvg: 5 }),
+      ],
+    }));
+    expect(d.outcome).toBe('placed');
+    expect(d.chosenMachine).toBe('working');
+    expect(d.escalationReason).toBeUndefined();
+  });
+
+  it('a quota-blocked current owner loses stickiness (the topic moves off the silent machine)', () => {
+    const d = exec.decide(req({
+      currentOwner: 'limited',
+      machineRegistry: [
+        machine('limited', { loadAvg: 0.1, quotaState: blocked }),
+        machine('working', { loadAvg: 5 }),
+      ],
+    }));
+    expect(d.chosenMachine).toBe('working');
+  });
+
+  it('falls back to placing on a blocked machine when EVERY machine is blocked — with the escalation note', () => {
+    const d = exec.decide(req({
+      machineRegistry: [
+        machine('a', { loadAvg: 3, quotaState: blocked }),
+        machine('b', { loadAvg: 1, quotaState: blocked }),
+      ],
+    }));
+    expect(d.outcome).toBe('placed');
+    expect(d.chosenMachine).toBe('b'); // still least-loaded among them
+    expect(d.escalationReason).toBe('all-machines-quota-blocked');
+  });
+
+  it('a HARD PIN to a quota-blocked machine is still honored, flagged via escalationReason', () => {
+    const d = exec.decide(req({
+      topicMetadata: { pinned: true, preferredMachine: 'limited' },
+      machineRegistry: [
+        machine('limited', { quotaState: blocked }),
+        machine('working'),
+      ],
+    }));
+    expect(d.outcome).toBe('placed');
+    expect(d.chosenMachine).toBe('limited');
+    expect(d.reason).toBe('hard-pin');
+    expect(d.escalationReason).toBe('pinned-machine-quota-blocked');
+  });
+
+  it('a SOFT preference for a quota-blocked machine degrades to a working one', () => {
+    const d = exec.decide(req({
+      topicMetadata: { preferredMachine: 'limited' },
+      machineRegistry: [
+        machine('limited', { quotaState: blocked }),
+        machine('working'),
+      ],
+    }));
+    expect(d.chosenMachine).toBe('working');
+  });
+
+  it('absent quotaState (older heartbeats) is treated as not blocked', () => {
+    const d = exec.decide(req({
+      machineRegistry: [machine('legacy', { loadAvg: 0.1 }), machine('other', { loadAvg: 5 })],
+    }));
+    expect(d.chosenMachine).toBe('legacy');
+  });
+
+  it('quotaState.blocked === false is eligible as usual', () => {
+    const d = exec.decide(req({
+      machineRegistry: [
+        machine('fine', { loadAvg: 0.1, quotaState: { blocked: false } }),
+        machine('other', { loadAvg: 5 }),
+      ],
+    }));
+    expect(d.chosenMachine).toBe('fine');
+  });
+
+  it('hard pin to a blocked machine still respects required capabilities (capability check is never quota-blind)', () => {
+    const d = exec.decide(req({
+      topicMetadata: { pinned: true, preferredMachine: 'limited', requiredCapabilities: ['gpu'] },
+      machineRegistry: [
+        machine('limited', { quotaState: blocked, capabilities: ['sessions'] }), // lacks gpu
+        machine('working', { capabilities: ['gpu', 'sessions'] }),
+      ],
+    }));
+    expect(d.outcome).toBe('queued');
+    expect(d.reason).toBe('hard-pin-unavailable');
+  });
+});

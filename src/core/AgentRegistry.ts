@@ -402,11 +402,26 @@ export function registerAgent(
 
 /**
  * Unregister an agent by its canonical path.
+ *
+ * `opts.onlyIfPid` guards the removal: the entry is only removed when its
+ * recorded pid matches. Server shutdown MUST pass its own pid — otherwise an
+ * old server generation's late shutdown (auto-update restart) deletes the
+ * successor's fresh registration by path, and the agent silently vanishes
+ * from the registry (the registry lost-update race). An entry whose pid is
+ * missing or different is presumed to belong to the successor and is left
+ * intact. Operator/CLI removal (no opts) still removes unconditionally.
  */
-export function unregisterAgent(agentPath: string): void {
+export function unregisterAgent(agentPath: string, opts?: { onlyIfPid?: number }): void {
   const canonicalPath = path.resolve(agentPath);
   withLockSync(registry => {
-    registry.entries = registry.entries.filter(e => e.path !== canonicalPath);
+    registry.entries = registry.entries.filter(e => {
+      if (e.path !== canonicalPath) return true;
+      if (opts?.onlyIfPid !== undefined && e.pid !== opts.onlyIfPid) {
+        console.log(`[AgentRegistry] Skipped unregister of ${canonicalPath}: entry pid ${e.pid} != caller pid ${opts.onlyIfPid} (entry belongs to a newer generation)`);
+        return true;
+      }
+      return false;
+    });
   });
 }
 
@@ -427,15 +442,22 @@ export function updateStatus(agentPath: string, status: AgentStatus, pid?: numbe
 
 /**
  * Update the heartbeat for an agent by canonical path.
+ *
+ * Returns whether the entry was found. A `false` return means the entry has
+ * vanished (e.g. an old generation's shutdown raced the registration away) —
+ * callers that own a live server should re-register rather than silently
+ * no-op forever.
  */
-export function heartbeat(agentPath: string): void {
+export function heartbeat(agentPath: string): boolean {
   const canonicalPath = path.resolve(agentPath);
-  withLockSync(registry => {
+  return withLockSync(registry => {
     const entry = registry.entries.find(e => e.path === canonicalPath);
     if (entry) {
       entry.lastHeartbeat = new Date().toISOString();
       entry.pid = process.pid;
+      return true;
     }
+    return false;
   });
 }
 
@@ -462,15 +484,42 @@ export function forceRemoveRegistryLock(): boolean {
  * Start a periodic heartbeat. Returns a cleanup function.
  * Tracks consecutive failures and force-removes the registry lock after
  * repeated failures — recovers from crash-induced stale locks.
+ *
+ * `reRegister` (optional) is invoked when a heartbeat finds the entry MISSING
+ * — i.e. something deleted this agent's registration while its server is
+ * still alive (the classic case: an old generation's pid-unguarded shutdown
+ * unregister racing a back-to-back update restart). The callback should
+ * re-create the registration (e.g. `() => registerAgent(...)`); the next
+ * heartbeat then confirms it. Without the callback the missing entry is only
+ * logged — preserving the old behavior for callers that don't own a server.
  */
-export function startHeartbeat(agentPath: string, intervalMs: number = 60_000): () => void {
+export function startHeartbeat(
+  agentPath: string,
+  intervalMs: number = 60_000,
+  reRegister?: () => void,
+): () => void {
   const canonicalPath = path.resolve(agentPath);
   let consecutiveFailures = 0;
   const MAX_FAILURES_BEFORE_RECOVERY = 3;
 
+  const beatOnce = (): void => {
+    const found = heartbeat(canonicalPath);
+    if (!found) {
+      console.warn(`[AgentRegistry] Heartbeat found no entry for ${canonicalPath} — registration was removed while this server is alive`);
+      if (reRegister) {
+        try {
+          reRegister();
+          console.log(`[AgentRegistry] Re-registered ${canonicalPath} after missing-entry heartbeat`);
+        } catch (reErr) {
+          console.error(`[AgentRegistry] Re-registration failed for ${canonicalPath}: ${reErr}`);
+        }
+      }
+    }
+  };
+
   const interval = setInterval(() => {
     try {
-      heartbeat(canonicalPath);
+      beatOnce();
       consecutiveFailures = 0;
     } catch (err) {
       consecutiveFailures++;
@@ -490,8 +539,8 @@ export function startHeartbeat(agentPath: string, intervalMs: number = 60_000): 
     }
   }, intervalMs);
 
-  // Initial heartbeat
-  try { heartbeat(canonicalPath); } catch { /* ignore */ }
+  // Initial heartbeat (also resurrects immediately if the entry is missing)
+  try { beatOnce(); } catch { /* ignore */ }
 
   return () => clearInterval(interval);
 }

@@ -366,12 +366,41 @@ export const OUTBOUND_MESSAGING_TIMEOUT_MS = 120_000;
 export const SPEC_REVIEW_TIMEOUT_MS = 180_000;
 
 /**
+ * Extended budget for the cutover-readiness parity-pass trigger
+ * (`/cutover-readiness/parity-pass`). One pass fetches the FULL live Portal
+ * cluster set (paginated) and compares server-side — measured at ~3.5 minutes
+ * against the real endpoint under load (2026-06-05). Under the 30s default the
+ * client always got a 408 while the handler kept running, and a late failure's
+ * 409 then crashed into ERR_HTTP_HEADERS_SENT with no trace of the outcome.
+ */
+export const PARITY_PASS_TIMEOUT_MS = 360_000;
+
+/**
+ * Slack added on top of a configured parity-source TOTAL fetch budget when
+ * deriving the parity-pass/import-dryrun route budgets: the route does the full
+ * live fetch PLUS server-side compare/import work after it.
+ */
+export const PARITY_ROUTE_SLACK_MS = 60_000;
+
+/**
  * The production per-path request-timeout overrides. Exported as the single
  * source of truth so wiring-integrity tests assert against the SAME map the
  * server actually wires — never a hand-rolled copy that could pass while the
  * server is misconfigured (the PR-#334 dead-code lesson).
+ *
+ * `paritySourceTotalTimeoutMs` (config `feedbackMigration.paritySource.totalTimeoutMs`):
+ * when an operator widens the live-source fetch budget for a degraded source, the
+ * parity-pass/import-dryrun ROUTE budgets must widen with it — otherwise every
+ * trigger 408s at the constant while the handler keeps running, and a caller that
+ * retries on the 408 piles a concurrent fetch onto the degraded source (observed
+ * live 2026-06-05: 600s/page configured, 360s route → four concurrent passes).
+ * The constant stays the floor; the derived budget never shrinks below it.
  */
-export function buildRequestTimeoutOverrides(): Record<string, number> {
+export function buildRequestTimeoutOverrides(opts?: { paritySourceTotalTimeoutMs?: number }): Record<string, number> {
+  const configuredTotal = opts?.paritySourceTotalTimeoutMs;
+  const parityBudgetMs = typeof configuredTotal === 'number' && Number.isFinite(configuredTotal) && configuredTotal > 0
+    ? Math.max(PARITY_PASS_TIMEOUT_MS, configuredTotal + PARITY_ROUTE_SLACK_MS)
+    : PARITY_PASS_TIMEOUT_MS;
   return {
     '/telegram/reply': OUTBOUND_MESSAGING_TIMEOUT_MS,
     '/telegram/post-update': OUTBOUND_MESSAGING_TIMEOUT_MS,
@@ -380,6 +409,10 @@ export function buildRequestTimeoutOverrides(): Record<string, number> {
     '/imessage/reply': OUTBOUND_MESSAGING_TIMEOUT_MS,
     '/imessage/validate-send': OUTBOUND_MESSAGING_TIMEOUT_MS,
     '/spec/conformance-check': SPEC_REVIEW_TIMEOUT_MS,
+    '/cutover-readiness/parity-pass': parityBudgetMs,
+    // The import dry-run does the same full live source fetch as a parity pass
+    // (plus an in-memory import + gate, which is fast) — same budget.
+    '/cutover-readiness/import-dryrun': parityBudgetMs,
   };
 }
 

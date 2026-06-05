@@ -80,6 +80,8 @@ export type SessionStatus = 'starting' | 'running' | 'completed' | 'failed' | 'k
 export type ModelTier = 'opus' | 'sonnet' | 'haiku';
 
 export interface SessionManagerConfig {
+  /** Project name used as the stable local agent id for auth-bound calls. */
+  projectName: string;
   /** Path to tmux binary */
   tmuxPath: string;
   /**
@@ -164,6 +166,17 @@ export interface SessionManagerConfig {
   /** Server port — used to construct INSTAR_SERVER_URL for HTTP hooks */
   port?: number;
   /**
+   * Respawn build-context restore (mentor-onboarding hardening).
+   * When enabled, SessionManager records each live session's tmux pane cwd and,
+   * on a resumed respawn, prepends a continuation note when the session had
+   * navigated into an agent worktree. Undefined stays dark unless server boot
+   * resolves it through the developmentAgent gate.
+   */
+  respawnBuildContext?: {
+    enabled?: boolean;
+    maxAgeMs?: number;
+  };
+  /**
    * Per-provider credentials. Keys are provider ids
    * (e.g. 'anthropic', 'openai', 'google'). Values declare the
    * credential kind and value, plus an optional base-URL override
@@ -244,6 +257,15 @@ export interface JobDefinition {
   grounding?: JobGrounding;
   /** LLM supervision tier — see docs/LLM-SUPERVISED-EXECUTION.md */
   supervision?: SupervisionTier;
+  /** MCP access for the spawned job session (claude-code spawns only).
+   *  - 'none': spawn with `--strict-mcp-config --mcp-config '{"mcpServers":{}}'`
+   *    so the headless session starts with ZERO project MCP servers. Right for
+   *    bash/curl-only jobs (health-check & friends) — they pay MCP boot cost
+   *    (and the auth-required-remote-MCP hang hazard, see
+   *    docs/specs/LOOP-SESSION-NO-MCP-SPEC.md) for servers they never use.
+   *  - 'project' or absent: inherit the project .mcp.json (legacy behavior).
+   *  Non-claude frameworks ignore this (the flag builder returns []). */
+  mcpAccess?: 'project' | 'none';
   /** Living Skills — opt-in execution journaling and pattern detection (PROP-229) */
   livingSkills?: LivingSkillsConfig;
   /** Machine scope — restrict this job to specific machines.
@@ -431,6 +453,8 @@ export interface JobSchedulerConfig {
   gateRetryDelayMs?: number;
   /** Auth token exposed to gate shell commands as $INSTAR_AUTH_TOKEN so gates can call authenticated localhost endpoints. */
   authToken?: string;
+  /** Project name exposed as $INSTAR_AGENT_ID so gate shells can bind bearer auth to this agent. */
+  projectName?: string;
   /** Wake-time job reaper — closes runs left pending after the host wakes from sleep. */
   wakeReaper?: {
     /** Minimum sleep duration (seconds) to trigger a reap pass. Defaults to 60. */
@@ -1714,6 +1738,13 @@ export interface MachineCapacity {
   hardware?: MachineHardware;
   /** Clock-skew quarantine state (§L2 FSM). */
   clockSkewStatus: ClockSkewStatus;
+  /** The machine's LLM-account quota/rate-limit state, self-reported in its
+   *  capacity heartbeat (2026-06-05, quota-aware placement). `blocked: true`
+   *  means a NEW session on this machine could not work right now (provider
+   *  block in effect or the 5-hour window is exhausted) — placement avoids it
+   *  unless every machine is blocked or the user hard-pinned here. Absent =
+   *  unknown = treated as not blocked (heartbeats from older versions). */
+  quotaState?: { blocked: boolean; blockedUntil?: string; reason?: string };
 }
 
 export interface MultiMachineConfig {
@@ -1801,8 +1832,13 @@ export interface MultiMachineConfig {
    * recipient machine's X25519 key, never on disk in plaintext, only ever pushed
    * to registered peers). Ships DARK; on the dev agent it defaults on via the
    * `developmentAgent` gate. Backs GET /secrets/sync-status + POST /secrets/sync-now.
+   *
+   * SAFETY: `enabled` alone is RECEIVE-ONLY. Outbound push (boot best-effort +
+   * POST /secrets/sync-now) is gated SEPARATELY on `pushEnabled` (default false), so a
+   * machine with a stale/divergent store cannot auto-push and clobber peers' good secrets.
+   * Set `pushEnabled: true` only on the machine whose secret store is authoritative.
    */
-  secretSync?: { enabled?: boolean };
+  secretSync?: { enabled?: boolean; pushEnabled?: boolean };
   /**
    * Whether THIS machine's lifeline owns the Telegram long-poll. Telegram allows
    * exactly one getUpdates poller per bot token, so a second machine that also
@@ -2106,6 +2142,28 @@ export interface InstarConfig {
    * (Introduced 2026-06-02 — Justin's ask, topic 13481.)
    */
   developmentAgent?: boolean;
+  /**
+   * Session Boot Self-Knowledge (spec: session-boot-self-knowledge.md) — the
+   * deterministic "what I already have" block injected at session start: vault
+   * secret NAMES (never values) + self-asserted operational facts. DISTINCT
+   * from the SelfKnowledgeTree metadata on AgentContextSnapshot (different
+   * type, different system — a type-distinctness test pins this).
+   */
+  selfKnowledge?: {
+    sessionContext?: {
+      /** Resolved as `enabled ?? !!developmentAgent` (graduated rollout — dark fleet / live dev-agent). */
+      enabled?: boolean;
+      /** Byte bound for the injected block (default 2000). */
+      maxInjectedBytes?: number;
+    };
+    /**
+     * Durable per-agent/per-machine operational facts. Written by
+     * POST/DELETE /self-knowledge/facts (stamped {fact, updatedAt, machine});
+     * bare strings (hand-authored/legacy) are accepted by the reader.
+     * Per-machine by design — config.json does not sync across machines.
+     */
+    operationalFacts?: Array<string | { fact: string; updatedAt?: string; machine?: string }>;
+  };
   /** Session manager config */
   sessions: SessionManagerConfig;
   /**
@@ -2248,6 +2306,29 @@ export interface InstarConfig {
   publishing?: PublishingConfig;
   /** Cloudflare Tunnel config */
   tunnel?: TunnelConfigType;
+  /** Secret handling config */
+  secrets?: {
+    /**
+     * When true (default), a submitted Secret Drop is persisted store-first to
+     * the durable, AES-256-GCM encrypted SecretStore the instant it is received —
+     * so it survives session restart / compaction / cross-machine handoff instead
+     * of living only in the in-memory `received` map. The agent retrieves from the
+     * durable copy transparently and a successful `?consume=true` deletes it.
+     * Set false to revert to in-memory-only (pre-2026-06-04) behavior.
+     */
+    persistDrops?: boolean;
+    /**
+     * Force the SecretStore master key to the per-agent file key
+     * (.instar/machine/secrets-master.key), skipping the OS keychain.
+     * The keychain entry is MACHINE-GLOBAL (shared by every agent/process on the
+     * box) — a SecretStore constructed against a fresh stateDir with no file key
+     * generates a new key and silently overwrites that global entry, breaking
+     * every other store encrypted with the old key (2026-06-05 incident: an
+     * integration test did exactly this). Tests MUST set this true; production
+     * defaults to keychain-first for backward compatibility.
+     */
+    forceFileKey?: boolean;
+  };
   /** Request timeout in milliseconds (default: 30000) */
   requestTimeoutMs?: number;
   /** Instar version (from package.json) */
@@ -3305,6 +3386,16 @@ export interface MonitoringConfig {
     /** Consecutive suspect ticks before a `busy-orphan-suspected` row is emitted.
      *  Default 5 (~10 min at the default 120s tick). */
     busyOrphanConfirmTicks?: number;
+    /** Post-transfer closeout (2026-06-05): close a topic-bound session whose
+     *  topic is now OWNED BY ANOTHER MACHINE in the session pool — otherwise
+     *  the old machine keeps a duplicate session doing duplicate work after a
+     *  move/failover. The close goes through the guarded terminate authority
+     *  (KEEP-guard vetoes are audited and retried). Default true; inert on
+     *  single-machine installs (no ownership registry → rule never fires). */
+    topicMovedCloseout?: boolean;
+    /** Consecutive ticks a topic must be observed owned-elsewhere before the
+     *  closeout fires (absorbs transfer races). Default 2 (~4 min). */
+    topicMovedConfirmTicks?: number;
   };
   /**
    * Reap-notification (UNIFIED-SESSION-LIFECYCLE §P3). The single coalescing

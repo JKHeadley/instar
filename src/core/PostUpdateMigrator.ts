@@ -243,6 +243,7 @@ export class PostUpdateMigrator {
     this.migrateStaleLifelineSignal(result);
     this.migrateThreadlineConversationStore(result);
     this.migrateThreadlineAgentInfoIdentity(result);
+    this.migrateWorktreeMisplacedFloodItems(result);
 
     return result;
   }
@@ -589,6 +590,42 @@ export class PostUpdateMigrator {
       result.upgraded.push(`threadline-agent-info-identity: repaired agent-info.json to canonical fingerprint ${canonicalFingerprint.slice(0, 8)}…`);
     } catch (err) {
       result.errors.push(`threadline-agent-info-identity write: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  /**
+   * 2026-06-05 worktree-misplaced flood cleanup (Bounded Notification
+   * Surface). The pre-fix AgentWorktreeDetector emitted one attention item
+   * PER worktree with ids `worktree-misplaced:<sha256>`; a transiently-wrong
+   * safe-root read mass-created 110 false-positive OPEN items on flooded
+   * agents. The fixed detector emits a single `worktree-misplaced-summary:*`
+   * item, so the old per-path items are permanently stale — purge them.
+   * Idempotent: a store with no old-format ids is left untouched.
+   */
+  private migrateWorktreeMisplacedFloodItems(result: MigrationResult): void {
+    const storePath = path.join(this.config.stateDir, 'state', 'attention-items.json');
+    if (!fs.existsSync(storePath)) {
+      result.skipped.push('worktree-misplaced flood items: no attention store');
+      return;
+    }
+    try {
+      const data = JSON.parse(fs.readFileSync(storePath, 'utf-8')) as { items?: Array<{ id?: string }> };
+      const items = Array.isArray(data.items) ? data.items : [];
+      // Old per-path format only: `worktree-misplaced:<hash>`. The new
+      // aggregated format is `worktree-misplaced-summary:<hash>` — kept.
+      const isStale = (id: unknown) => typeof id === 'string' && id.startsWith('worktree-misplaced:');
+      const staleCount = items.filter((i) => isStale(i.id)).length;
+      if (staleCount === 0) {
+        result.skipped.push('worktree-misplaced flood items: none present');
+        return;
+      }
+      const kept = items.filter((i) => !isStale(i.id));
+      const tmp = `${storePath}.${process.pid}.tmp`;
+      fs.writeFileSync(tmp, JSON.stringify({ ...data, items: kept }, null, 2));
+      fs.renameSync(tmp, storePath);
+      result.upgraded.push(`worktree-misplaced flood items: purged ${staleCount} stale per-path item(s) from the attention store`);
+    } catch (err) {
+      result.errors.push(`worktree-misplaced flood items: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
@@ -2787,6 +2824,25 @@ Rule: I do not state that work landed inside another agent's state unless I have
       result.upgraded.push('CLAUDE.md: added Cross-Agent Communication Discipline (anti-confabulation) section');
     }
 
+    // Session Boot Self-Knowledge (spec: session-boot-self-knowledge.md).
+    // Existing agents need the rule ("a secret named in your boot block is in
+    // the vault — retrieve, don't re-ask") + the facts writer + the retrieval
+    // script. Content-sniffed on the same heading the template emits.
+    if (!content.includes('**Session Boot Self-Knowledge**')) {
+      const bootSelfKnowledgeSection = `
+**Session Boot Self-Knowledge** — Your session-start context includes an auto-injected \`<session-self-knowledge>\` block: the NAMES of secrets in your encrypted vault (never values) + self-asserted operational facts about this agent/machine. (Rides the developmentAgent gate until the fleet flip.)
+- **The rule**: a secret named in your boot block is ALREADY in your vault — retrieve it with \`node .instar/scripts/secret-get.mjs <name>\` (pipe stdout straight into the consuming command, e.g. \`... github_token | gh auth login --with-token\` — NEVER echo the value into chat/transcripts) instead of asking the user to re-send it. Only re-ask if you have evidence it is invalid (expired/revoked/decrypt-failed).
+- Discover vault key names anytime: \`node .instar/scripts/secret-get.mjs --names\` (names+lengths to stderr) or \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/self-knowledge/session-context?full=1"\`.
+- **Record a durable operational fact** (a channel path, a logged-in seat, a machine-specific truth worth knowing at every boot): \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/self-knowledge/facts -H 'Content-Type: application/json' -d '{"fact":"..."}'\` (auto-stamped with date+machine). Remove: \`curl -X DELETE -H "Authorization: Bearer $AUTH" http://localhost:${port}/self-knowledge/facts -H 'Content-Type: application/json' -d '{"match":"substring"}'\`. Facts are per-machine and appear at the next session start.
+- **When to use** (PROACTIVE — this is the trigger): the moment you discover an operational fact future sessions will need (where a tool lives, which machine owns a seat, a non-obvious path), record it as a fact — never leave it to session memory.
+- If the boot block reports the vault as DECRYPT-FAILED: do NOT repair, rotate, or delete anything — a decrypt failure is usually recoverable; destructive action loses secrets permanently. Surface it to the operator and stop.
+- Off-switch: \`selfKnowledge.sessionContext.enabled: false\` in \`.instar/config.json\` (applies at the next session start).
+`;
+      content += '\n' + bootSelfKnowledgeSection;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Session Boot Self-Knowledge section');
+    }
+
     // Apprenticeship Program (Step 1, APPRENTICESHIP-STEP1-PROGRAM-SCAFFOLD-SPEC.md).
     // Existing agents need to know the program registry + lifecycle gates exist —
     // an agent that doesn't know about a capability effectively doesn't have it.
@@ -3155,6 +3211,26 @@ The attention queue spawns ONE Telegram forum topic per item — right for a gen
       result.skipped.push('CLAUDE.md: Topic-Flood Guard section already present');
     }
 
+    // Bounded Notification Surface (2026-06-05, flood #3) — extends the
+    // flood-guard awareness with the universal last-resort budget INSIDE
+    // createForumTopic (covers every caller, not just attention items) and the
+    // aggregate-at-the-emitter rule. Idempotent via the unique marker phrase.
+    if (!content.includes('Bounded Notification Surface')) {
+      const section = `
+### Bounded Notification Surface (universal auto-topic budget)
+
+Beyond the attention-queue breaker above, the topic-creation primitive itself (\`TelegramAdapter.createForumTopic\`) enforces a LAST-RESORT budget on every automatically-created topic — covering every caller, current and future, no matter what source labels it passes (the 2026-06-05 worktree-detector flood dodged the per-source budget by giving every item a unique source; this ceiling is the layer that cannot be dodged). User-initiated and bounded create-once system topics are exempt; everything else is budgeted by default. Tune via \`messaging[].config.topicCreationBudget\` = \`{ "windowMs": 600000, "maxTopicsPerSource": 8, "maxTopicsGlobal": 12 }\`.
+
+- If I am building a feature that notifies per-element over a collection: AGGREGATE — one summary item carrying the count and the list, never one item per element. The burst-invariant CI test (\`tests/integration/notification-flood-burst-invariant.test.ts\`) fails any build that violates the bound.
+- If a topic creation fails with "topic-creation budget exceeded": that is the flood ceiling doing its job — fix the calling feature's volume (aggregate), don't raise the budget.
+`;
+      content += '\n' + section;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Bounded Notification Surface section');
+    } else {
+      result.skipped.push('CLAUDE.md: Bounded Notification Surface section already present');
+    }
+
     // Multi-Machine Session Pool (§L2) — tells the agent about the active-active
     // pool + the Machines tab + nickname-based placement/transfer. Without it an
     // agent asked "what machines am I on / move this to the mini / where is this
@@ -3166,6 +3242,9 @@ The attention queue spawns ONE Telegram forum topic per item — right for a gen
 Beyond the one-awake-machine model: with the pool enabled I run conversations across ALL my machines at once and can MOVE a conversation between them. Ships DARK behind \`multiMachine.sessionPool.stage\` (default 'dark'); a single-machine agent is a no-op.
 
 - **See the pool:** the **Machines tab** in the dashboard, or \`GET /pool\` (Bearer-auth) → which machine is the router ("dispatcher") + every machine's nickname, hardware, online status, load, and clock-skew status.
+- **Every session, every machine:** the dashboard sessions list shows ALL sessions across the pool, each tagged with the machine it runs on. API: \`GET /sessions?scope=pool\` → \`{ sessions: [...each with machineId/machineNickname...], pool: { peersOk, failed } }\`. An unreachable peer degrades to a \`failed\` entry — local sessions always answer.
+- **Post-transfer closeout (automatic):** when a topic moves to another machine, the OLD machine's session for it is closed automatically (immediately on an explicit "move", or within ~2 reaper ticks for any other path) — no duplicate sessions doing duplicate work. The close is recorded in the reap-log with reason "topic moved to <machine>"; protected sessions are never auto-closed.
+- **Quota-aware placement (automatic):** capacity heartbeats carry each machine's LLM-account quota state, and placement avoids machines whose account is currently rate-limited/blocked (no more topics placed onto a silent machine). A hard pin still wins (flagged \`pinned-machine-quota-blocked\`); if EVERY machine is blocked, placement proceeds least-loaded with \`all-machines-quota-blocked\` flagged. \`GET /pool\` shows each machine's \`quotaState\`.
 - **Machine nicknames** are the user-facing handle (auto-assigned, editable). Rename via \`PATCH /pool/machines/:machineId\` with \`{"nickname":"the mini"}\`, or inline on the Machines tab.
 - **Which machine + WHY (never guess):** \`GET /pool/placement?topic=N\` → the owning machine + nickname, the **reason** (\`pinned\` = a deliberate move vs \`placed\` = load-balanced vs \`unowned\`), and the lease-holder. Answerable from ANY machine (a standby proxies to the holder). Running ON a machine does NOT mean a topic was deliberately moved there — read this instead of inferring.
 - **Reliable transfer (phrasing-independent):** \`POST /pool/transfer\` with \`{"topic":N,"to":"<nickname|machineId>"}\` runs the same validated planner as "move this to <nickname>" but deterministically. 404 unknown · 409 rate-limited · 409 \`needsConfirmation\` for an offline target (re-send with \`"confirm":true\`). The lever to call directly when a natural-language move didn't catch.
@@ -3191,6 +3270,44 @@ Beyond the one-awake-machine model: with the pool enabled I run conversations ac
       result.upgraded.push('CLAUDE.md: added pool placement/transfer robustness lines');
     }
 
+    // Pool-wide session visibility (2026-06-05): agents that ALREADY have the pool
+    // section predate GET /sessions?scope=pool (every session, every machine, each
+    // tagged with its machine — the dashboard cross-machine sessions list). Append
+    // the line so deployed agents can answer "what's running across my machines?"
+    // from the API. Idempotent via the unique `scope=pool` marker.
+    if (content.includes('Multi-Machine Session Pool (active-active') && !content.includes('scope=pool')) {
+      const poolSessions = `
+- **Every session, every machine:** the dashboard sessions list shows ALL sessions across the pool, each tagged with the machine it runs on. API: \`GET /sessions?scope=pool\` → \`{ sessions: [...each with machineId/machineNickname...], pool: { peersOk, failed } }\`. An unreachable peer degrades to a \`failed\` entry — local sessions always answer.
+- **Post-transfer closeout (automatic):** when a topic moves to another machine, the OLD machine's session for it is closed automatically (immediately on an explicit "move", or within ~2 reaper ticks for any other path) — no duplicate sessions doing duplicate work. The close is recorded in the reap-log with reason "topic moved to <machine>"; protected sessions are never auto-closed.
+- **Quota-aware placement (automatic):** capacity heartbeats carry each machine's LLM-account quota state, and placement avoids machines whose account is currently rate-limited/blocked (no more topics placed onto a silent machine). A hard pin still wins (flagged \`pinned-machine-quota-blocked\`); if EVERY machine is blocked, placement proceeds least-loaded with \`all-machines-quota-blocked\` flagged. \`GET /pool\` shows each machine's \`quotaState\`.`;
+      content += '\n' + poolSessions + '\n';
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added pool-wide session visibility line');
+    }
+
+    // Post-transfer closeout awareness (2026-06-05): agents that already carry
+    // the pool section must learn that a moved topic's old session now closes
+    // automatically (so they explain a disappeared session correctly instead of
+    // guessing). Idempotent via the unique 'Post-transfer closeout' marker.
+    if (content.includes('Multi-Machine Session Pool (active-active') && !content.includes('Post-transfer closeout')) {
+      const closeout = `
+- **Post-transfer closeout (automatic):** when a topic moves to another machine, the OLD machine's session for it is closed automatically (immediately on an explicit "move", or within ~2 reaper ticks for any other path) — no duplicate sessions doing duplicate work. The close is recorded in the reap-log with reason "topic moved to <machine>"; protected sessions are never auto-closed.
+- **Quota-aware placement (automatic):** capacity heartbeats carry each machine's LLM-account quota state, and placement avoids machines whose account is currently rate-limited/blocked (no more topics placed onto a silent machine). A hard pin still wins (flagged \`pinned-machine-quota-blocked\`); if EVERY machine is blocked, placement proceeds least-loaded with \`all-machines-quota-blocked\` flagged. \`GET /pool\` shows each machine's \`quotaState\`.`;
+      content += '\n' + closeout + '\n';
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added post-transfer closeout line');
+    }
+
+    // Quota-aware placement awareness (2026-06-05). Idempotent via the unique
+    // 'Quota-aware placement' marker.
+    if (content.includes('Multi-Machine Session Pool (active-active') && !content.includes('Quota-aware placement')) {
+      const quotaLine = `
+- **Quota-aware placement (automatic):** capacity heartbeats carry each machine's LLM-account quota state, and placement avoids machines whose account is currently rate-limited/blocked (no more topics placed onto a silent machine). A hard pin still wins (flagged \`pinned-machine-quota-blocked\`); if EVERY machine is blocked, placement proceeds least-loaded with \`all-machines-quota-blocked\` flagged. \`GET /pool\` shows each machine's \`quotaState\`.`;
+      content += '\n' + quotaLine + '\n';
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added quota-aware placement line');
+    }
+
     // Cross-Machine Secret Sync (spec Phase 4, 2026-06-04): deployed agents don't know
     // a secret can now follow them across machines, nor the two routes. Append the section
     // so an agent surfaces "drop once, usable everywhere" instead of asking the user to
@@ -3203,11 +3320,20 @@ A secret you give me on one machine — a Telegram token, an API key, a GitHub P
 
 - **Status (NAMES only, never values):** \`curl -H "Authorization: Bearer $AUTH" http://localhost:4042/secrets/sync-status\` → which secret key-paths this machine holds + the online peers it would sync to.
 - **Push now (deterministic lever):** \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:4042/secrets/sync-now\` → encrypts the secret set per online peer and pushes it; returns a per-peer result. The reliable lever for a manual re-sync or live-verify.
+- **SAFETY — push is opt-in (receive-only by default):** \`multiMachine.secretSync.enabled\` alone only RECEIVES. Outbound push needs \`multiMachine.secretSync.pushEnabled: true\`, set ONLY on the machine whose secret store is authoritative. A receive-only machine refuses \`sync-now\` with 409 — preventing a machine with a stale/divergent store from clobbering good secrets on its peers. \`GET /secrets/sync-status\` reports \`mode\` (\`full\` | \`receive-only\`).
 - **Proactive trigger:** when the user starts re-entering a secret they already gave me on another machine, or asks "do I have to set this up on each machine?" — the answer is no; confirm it synced via \`GET /secrets/sync-status\`. Spec: \`docs/specs/cross-machine-secret-sync-spec.md\`.
 `;
       content += '\n' + secretSync;
       patched = true;
       result.upgraded.push('CLAUDE.md: added Cross-Machine Secret Sync section');
+    } else if (content.includes('Cross-Machine Secret Sync') && !content.includes('receive-only by default')) {
+      // Agents that already got the secret-sync section (from the #771 migration) predate the
+      // push-opt-in safety guard. Append the one safety line so they learn push is receive-only
+      // by default. Idempotent via the 'receive-only by default' marker.
+      const guardLine = '\n- **SAFETY — push is opt-in (receive-only by default):** for Cross-Machine Secret Sync, `multiMachine.secretSync.enabled` alone only RECEIVES. Outbound push needs `multiMachine.secretSync.pushEnabled: true`, set ONLY on the machine whose secret store is authoritative. A receive-only machine refuses `POST /secrets/sync-now` with 409 — preventing a machine with a stale/divergent store from clobbering good secrets on its peers. `GET /secrets/sync-status` reports `mode` (`full` | `receive-only`).\n';
+      content += '\n' + guardLine;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added secret-sync push-opt-in safety line');
     }
 
     // ContextWedgeSentinel — the 4th silently-stopped sentinel. Tells the agent
@@ -3591,7 +3717,7 @@ Strip the \`[telegram:N]\` prefix before interpreting the message. Respond natur
 - **Retrieve the secret (HARDENED — required)**: \`node .instar/scripts/secret-drop-retrieve.mjs TOKEN field-name\` — streams the field VALUE to stdout, prints field NAMES + lengths to stderr, NEVER prints the response body. Discover available fields with \`... TOKEN --names\`.
 - **NEVER use \`curl /secrets/retrieve\` directly** — the raw curl pattern dumps the full JSON response (including the secret value) into the Bash tool transcript.
 - List pending: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/secrets/pending\`
-- **Security**: One-time use, expires after 15 minutes, in-memory only (never written to disk), CSRF-protected.
+- **Security**: One-time link, expires after 15 minutes, CSRF-protected. The moment a secret is SUBMITTED it is also persisted store-first to the durable AES-256-GCM encrypted SecretStore — so it survives session restarts, compaction, and cross-machine handoff instead of evaporating with the in-memory copy. Retrieval transparently falls back to the durable copy, and a successful consume deletes both. (Opt out with \`secrets.persistDrops: false\` in \`.instar/config.json\`.)
 - **When to use** (PROACTIVE — this is the trigger): the moment a user offers to give you a credential (API key, password, token) or you realize you need one, use Secret Drop. It is the ONLY correct way to collect a secret. NEVER accept it pasted into Telegram or chat, and NEVER create a local file (e.g. \`.instar/secrets/foo.env\`) and ask the user to edit/paste into it — that defeats the one-time, in-memory, never-on-disk guarantee and asks the user to edit files (which you must never do). Always issue a Secret Drop one-time link instead.
 `;
       const tunnelIdx = content.indexOf('**Cloudflare Tunnel**');
@@ -4098,6 +4224,25 @@ The user has been talking to you (possibly for days). A generic greeting like "H
       }
     }
 
+    // Secret Drop store-first durability (2026-06-04). Existing agents'
+    // Security bullet still claims submissions are "in-memory only (never
+    // written to disk)" — no longer true: submissions are persisted store-first
+    // to the encrypted SecretStore so they survive session churn. Rewrite the
+    // stale bullet so agents stop treating an un-consumed drop as a
+    // race-against-the-TTL. Idempotent: anchors on the old wording; skips when
+    // the durable wording is already present.
+    {
+      const oldSecurityLine = '- **Security**: One-time use, expires after 15 minutes, in-memory only (never written to disk), CSRF-protected.';
+      const newSecurityLine = '- **Security**: One-time link, expires after 15 minutes, CSRF-protected. The moment a secret is SUBMITTED it is also persisted store-first to the durable AES-256-GCM encrypted SecretStore — so it survives session restarts, compaction, and cross-machine handoff instead of evaporating with the in-memory copy. Retrieval transparently falls back to the durable copy, and a successful consume deletes both. (Opt out with `secrets.persistDrops: false` in `.instar/config.json`.)';
+      if (content.includes(oldSecurityLine)) {
+        content = content.replace(oldSecurityLine, newSecurityLine);
+        patched = true;
+        result.upgraded.push('CLAUDE.md: Secret Drop Security bullet updated for store-first durable persistence');
+      } else if (content.includes('persisted store-first to the durable')) {
+        result.skipped.push('CLAUDE.md: Secret Drop store-first durability already documented');
+      }
+    }
+
     // Worktree Convention section (Migration Parity Standard backfill for
     // Layer 2 of the agent worktree convention — fresh inits get this via
     // generateClaudeMd; existing agents get it here on update).
@@ -4184,6 +4329,68 @@ Create worktrees for collaborator repos with \`instar worktree create <branch>\`
       result.upgraded.push('CLAUDE.md: added Resource Usage (CPU + memory) awareness section');
     }
 
+    // Coordination Mandate engine (docs/specs/coordination-mandate.md) — Agent
+    // Awareness backfill for the deny-by-default A2A authority gate (#788).
+    // Existing agents updating in place must learn to evaluate-before-acting and
+    // that issuance/revocation are PIN-gated human actions. Content-sniffed on
+    // the distinctive evaluate route.
+    if (!content.includes('/mandate/evaluate')) {
+      const section = `
+**Coordination Mandate** — Your operator's "permission slip" for autonomous agent-to-agent work. Instead of approving every step of a multi-agent project, the operator issues ONE bounded, expiring, revocable mandate (from the dashboard Mandates tab, behind their PIN) delegating SPECIFIC authorities to a SPECIFIC pair of agents. The mandate — never you — is the authorizer: requester ≠ authorizer is preserved. Deny-by-default: with no mandate issued, every check denies.
+- **Before any A2A action under a mandate** (PROACTIVE — this is the trigger): check it: \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/mandate/evaluate -H 'Content-Type: application/json' -d '{"action":"sign-code-review","params":{"artifact":"migration-port","mutual":true},"agentFp":"<your-fingerprint>","mandateId":"<id>"}'\` → \`{ decision: "allow"|"deny", reason }\`. A deny means STOP — do not retry around it or escalate to a human-bypass; the bounds are the operator's.
+- Inspect: \`GET /mandate\` (each with live \`authorshipValid\`) · \`GET /mandate/:id\` · \`GET /mandate/audit\` (every decision, hash-chained — \`chain.ok:false\` means tampering; surface it immediately).
+- **You cannot issue or revoke mandates.** \`POST /mandate/issue\` and \`POST /mandate/:id/revoke\` require the operator's dashboard PIN — your Bearer token is structurally insufficient. NEVER ask the user to paste their PIN into chat; point them at the dashboard **Mandates tab** (issue/revoke forms + the decision audit live there).
+- Every evaluation (allow AND deny) is audited. Act as if the audit is read by the operator — because it is. (Spec: \`docs/specs/coordination-mandate.md\`.)
+`;
+      content += '\n' + section;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Coordination Mandate awareness section');
+    }
+
+    // ReviewExchange protocol (coordination-mandate spec §7 G2.3) — Agent
+    // Awareness backfill. Content-sniffed on the distinctive route prefix.
+    if (!content.includes('/review-exchange')) {
+      const section = `
+**ReviewExchange (autonomous code review)** — The structured way two mandate-named agents sign off a code review WITHOUT the operator relaying. One exchange = one review package, content-addressed (\`packageSha256\` fixed at creation), moving linearly: proposed → delivered → verdict-recorded → complete (or changes-requested — rework is a NEW exchange). BOTH sign-offs (the peer's authenticated approve-verdict AND your countersignature) are evaluated through the mandate gate's \`sign-code-review\` authority before acceptance; every accepted signature carries the audit hash of the gate decision that authorized it.
+- Create: \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/review-exchange -H 'Content-Type: application/json' -d '{"mandateId":"<id>","artifact":"migration-port","packageRef":"docs/...-review-package.md","packageSha256":"<sha256 of the package>","parties":["<your-fp>","<peer-fp>"]}'\`
+- Drive it: \`POST /review-exchange/:id/delivered\` (after you actually sent the package over Threadline — record the message ref as evidence) → \`POST /review-exchange/:id/peer-verdict\` (the peer's authenticated verdict; approve = their sign-off, mandate-gated) → \`POST /review-exchange/:id/sign\` (your countersignature, mandate-gated → complete).
+- **When to use** (PROACTIVE — this is the trigger): the moment a mandate with \`sign-code-review\` exists and you need a peer agent's review of work in its scope, drive it through an exchange — NEVER improvise a sign-off in chat prose (an unrecorded "LGTM" over Threadline is not a sign-off; the gate-audited exchange is). A 403 on a sign step means the mandate denied it — STOP, do not work around it.
+- Inspect: \`GET /review-exchange\` · \`GET /review-exchange/:id\` (signatures + audit hashes).
+`;
+      content += '\n' + section;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added ReviewExchange awareness section');
+    }
+
+    // Cutover-readiness checker (coordination-mandate spec §7 G2.4) — Agent
+    // Awareness backfill. Content-sniffed on the distinctive route prefix.
+    if (!content.includes('/cutover-readiness')) {
+      const section = `
+**Cutover Readiness** — When a migration (or any one-way cutover) is gated on objective conditions, this is the read surface for "is everything up to the door green?" — composed from REAL durable state (the persisted import integrity report + the durable zero-divergence parity window with a freshness bound), never from anyone's assertion.
+- Check: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/cutover-readiness\` → \`{ ready, door: "manual-operator-click", integrity, parity }\`.
+- Feed the parity window with a live check: \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/cutover-readiness/parity-pass\` — the server fetches + compares server-side; you only trigger it. A failed check records nothing.
+- Rehearse the data import without writing anything durable: \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/cutover-readiness/import-dryrun\` — server-side live fetch → AS-IS import into an in-memory target → integrity gate over what landed. The rehearsal's verdict shows as \`importDryRun\` in the readiness status (and at \`GET /cutover-readiness/import-dryrun\`) but NEVER greens the canonical integrity condition — only the REAL import's report can.
+- **The door is NOT yours**: \`ready: true\` means the conditions are green — it is NEVER an instruction to flip. The cutover click belongs to the operator. NEVER present \`ready\` to the user as "I can cut over now"; present it as "everything up to your click is green."
+`;
+      content += '\n' + section;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Cutover Readiness awareness section');
+    } else if (!content.includes('/cutover-readiness/import-dryrun')) {
+      // Agents that already carry the Cutover Readiness section (shipped before the
+      // import-rehearsal trigger existed): splice the new line in ahead of the
+      // door-discipline line so the section reads in workflow order. Idempotent via
+      // the content-sniff above.
+      const dryRunLine = `- Rehearse the data import without writing anything durable: \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/cutover-readiness/import-dryrun\` — server-side live fetch → AS-IS import into an in-memory target → integrity gate over what landed. The rehearsal's verdict shows as \`importDryRun\` in the readiness status (and at \`GET /cutover-readiness/import-dryrun\`) but NEVER greens the canonical integrity condition — only the REAL import's report can.\n`;
+      const doorAnchor = '- **The door is NOT yours**:';
+      if (content.includes(doorAnchor)) {
+        content = content.replace(doorAnchor, dryRunLine + doorAnchor);
+      } else {
+        content += '\n' + dryRunLine;
+      }
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added import dry-run line to Cutover Readiness section');
+    }
+
     if (patched) {
       try {
         fs.writeFileSync(claudeMdPath, content);
@@ -4251,6 +4458,19 @@ Create worktrees for collaborator repos with \`instar worktree create <branch>\`
       '**Multi-Session Autonomy**',
       '**Process Health (Dashboard Tab)**',
       "**Preferences I've learned about you**",
+      // Coordination-mandate family (coordination-mandate spec §7, G2.2–G2.4):
+      // framework-agnostic HTTP capabilities any mandate-named agent must know.
+      // A Codex/Gemini agent under a future mandate that never learns
+      // /mandate/evaluate will improvise around the gate (the Secret Drop
+      // lesson) — mirrored to the shadows like every agent-facing capability.
+      '**Coordination Mandate**',
+      '**ReviewExchange (autonomous code review)**',
+      '**Cutover Readiness**',
+      // Session Boot Self-Knowledge (spec session-boot-self-knowledge): vault
+      // secret NAMES + operational facts at boot. A Codex/Gemini agent that
+      // never learns the facts writer + secret-get retrieval will re-ask the
+      // user for stored credentials — the exact loop this feature closes.
+      '**Session Boot Self-Knowledge**',
     ];
 
     for (const shadowName of ['AGENTS.md', 'GEMINI.md']) {
@@ -4458,6 +4678,25 @@ Create worktrees for collaborator repos with \`instar worktree create <branch>\`
       }
     } catch (err) {
       result.errors.push(`secret-drop-retrieve.mjs: ${err instanceof Error ? err.message : String(err)}`);
+    }
+
+    // Vault retrieval helper — always overwrite (sibling of the above; spec
+    // session-boot-self-knowledge §Retrieval affordance). The boot block names
+    // vault secrets; this is the hardened read path it points at (value →
+    // stdout for piping, names/diagnostics → stderr, never echoed). Without
+    // it, "a secret named here is in your vault" is aspirational.
+    try {
+      const secretGetContent = this.loadRelayTemplate('secret-get.mjs');
+      if (secretGetContent) {
+        fs.writeFileSync(
+          path.join(instarScriptsDir, 'secret-get.mjs'),
+          secretGetContent,
+          { mode: 0o755 },
+        );
+        result.upgraded.push('scripts/secret-get.mjs (hardened vault retrieval)');
+      }
+    } catch (err) {
+      result.errors.push(`secret-get.mjs: ${err instanceof Error ? err.message : String(err)}`);
     }
 
     // Session-clock injector — always overwrite. New, non-customizable shared
@@ -5937,6 +6176,37 @@ except Exception:
   fi
 fi
 
+# SESSION BOOT SELF-KNOWLEDGE injection (spec: session-boot-self-knowledge.md).
+# Fetches /self-knowledge/session-context and injects the deterministic "what I
+# already have" block: vault secret NAMES (never values) + self-asserted
+# operational facts — so the agent never re-asks the user for a secret it
+# already holds and never claims ignorance of a channel it owns. Placed AFTER
+# the org-intent + preferences blocks (authoritative contract first — this is
+# background signal; the server wraps it in a <session-self-knowledge
+# src='boot'> envelope). Fail-open: 503 (dark / disabled) / 404 (version skew:
+# old server) / unreachable / empty -> silent skip; curl -sf is what makes a
+# non-2xx emit nothing, and the Bearer token travels ONLY in the header.
+if [ -n "\$PORT" ] && [ -n "\$TOKEN" ]; then
+  BOOT_SK_RESPONSE=\$(curl -sf --max-time 4 --connect-timeout 1 -H "Authorization: Bearer \$TOKEN" \\
+    "http://localhost:\${PORT}/self-knowledge/session-context" 2>/dev/null)
+  if [ -n "\$BOOT_SK_RESPONSE" ]; then
+    BOOT_SK_BLOCK=\$(echo "\$BOOT_SK_RESPONSE" | python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    if d.get('present') and d.get('block'):
+        print(d['block'])
+except Exception:
+    pass
+" 2>/dev/null)
+    if [ -n "\$BOOT_SK_BLOCK" ]; then
+      echo ""
+      echo "\$BOOT_SK_BLOCK"
+      echo ""
+    fi
+  fi
+fi
+
 # BEGIN integrated-being-v2
 # INTEGRATED-BEING V2 — session-write binding (see docs/specs/integrated-being-ledger-v2.md §3)
 # Generates a session UUID, registers with /shared-state/session-bind, writes the
@@ -6417,9 +6687,13 @@ if echo "$INPUT" | grep -qE "(telegram-reply|send-email|send-message|POST.*/tele
     CHECK_EXIT=$?
 
     if [ "$CHECK_EXIT" -ne "0" ]; then
-      echo "$CHECK_RESULT"
-      echo ""
-      echo "=== MESSAGE BLOCKED — Review and revise before sending. ==="
+      # BLOCK output goes to STDERR: on a PreToolUse exit-2 block, Claude Code
+      # surfaces ONLY stderr to the agent. Writing the reason to stdout rendered
+      # every block as an unreadable "hook error ... No stderr output" — the agent
+      # saw a malfunction instead of the actual quality findings (2026-06-05).
+      echo "$CHECK_RESULT" >&2
+      echo "" >&2
+      echo "=== MESSAGE BLOCKED — Review and revise before sending. ===" >&2
       exit 2
     fi
   fi
@@ -6652,6 +6926,10 @@ AUTH_TOKEN="\${INSTAR_AUTH_TOKEN:-}"
 if [ -z "\$AUTH_TOKEN" ] && [ -f "\$CONFIG_FILE" ]; then
   AUTH_TOKEN=\$(python3 -c "import json; v=json.load(open('\$CONFIG_FILE')).get('authToken',''); print(v if isinstance(v, str) else '')" 2>/dev/null)
 fi
+AGENT_ID="\${INSTAR_AGENT_ID:-}"
+if [ -z "\$AGENT_ID" ] && [ -f "\$CONFIG_FILE" ]; then
+  AGENT_ID=\$(python3 -c "import json; print(json.load(open('\$CONFIG_FILE')).get('projectName',''))" 2>/dev/null)
+fi
 
 # Session-clock injection (query mode) — surface elapsed/remaining for an active
 # time-boxed session on this user turn too (not just autonomous continuations),
@@ -6659,13 +6937,14 @@ fi
 # nothing when no time-boxed session is active or the server is unreachable.
 # Spec: docs/specs/ROBUST-SESSION-TIME-AWARENESS-SPEC.md (Component 2, query mode).
 if [ -f "\$INSTAR_DIR/scripts/emit-session-clock.sh" ]; then
-  bash "\$INSTAR_DIR/scripts/emit-session-clock.sh" query "\$TOPIC_ID" "\$PORT" "\$AUTH_TOKEN" 2>/dev/null
+  bash "\$INSTAR_DIR/scripts/emit-session-clock.sh" query "\$TOPIC_ID" "\$PORT" "\$AUTH_TOKEN" "\$AGENT_ID" 2>/dev/null
 fi
 
 # Fetch recent messages for this topic
 if [ -n "\$AUTH_TOKEN" ]; then
   RECENT_MSGS=\$(curl -s \\
     -H "Authorization: Bearer \${AUTH_TOKEN}" \\
+    -H "X-Instar-AgentId: \${AGENT_ID}" \\
     "http://localhost:\${PORT}/telegram/topics/\${TOPIC_ID}/messages?limit=15" 2>/dev/null)
 else
   RECENT_MSGS=\$(curl -s \\
@@ -6968,6 +7247,41 @@ except Exception:
           echo "--- END WORKING MEMORY ---"
           echo ""
         fi
+      fi
+    fi
+  fi
+fi
+
+# SESSION BOOT SELF-KNOWLEDGE re-injection (spec: session-boot-self-knowledge.md).
+# A days-long session compacts; the boot block injected at session start only
+# survives if the compaction summary happens to carry it — willpower, not
+# structure. Re-fetching here makes the block durable across compaction AND
+# fresher than the original: a secret stored mid-session appears in the
+# post-compaction context. Same fail-open contract as the boot fetch: dark /
+# unreachable / version-skew -> silent skip, header-only Bearer.
+if [ -f "$INSTAR_DIR/config.json" ]; then
+  BOOT_SK_PORT=\${PORT:-\$(grep -oE '"port"[[:space:]]*:[[:space:]]*[0-9]+' "$INSTAR_DIR/config.json" | head -1 | grep -oE '[0-9]+' | head -1)}
+  BOOT_SK_TOKEN="\${INSTAR_AUTH_TOKEN:-}"
+  if [ -z "\$BOOT_SK_TOKEN" ]; then
+    BOOT_SK_TOKEN=\$(python3 -c "import json; v=json.load(open('$INSTAR_DIR/config.json')).get('authToken',''); print(v if isinstance(v, str) else '')" 2>/dev/null)
+  fi
+  if [ -n "\$BOOT_SK_PORT" ] && [ -n "\$BOOT_SK_TOKEN" ]; then
+    BOOT_SK_RESPONSE=\$(curl -sf --max-time 4 --connect-timeout 1 -H "Authorization: Bearer \$BOOT_SK_TOKEN" \
+      "http://localhost:\${BOOT_SK_PORT}/self-knowledge/session-context" 2>/dev/null)
+    if [ -n "\$BOOT_SK_RESPONSE" ]; then
+      BOOT_SK_BLOCK=\$(echo "\$BOOT_SK_RESPONSE" | python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    if d.get('present') and d.get('block'):
+        print(d['block'])
+except Exception:
+    pass
+" 2>/dev/null)
+      if [ -n "\$BOOT_SK_BLOCK" ]; then
+        echo ""
+        echo "\$BOOT_SK_BLOCK"
+        echo ""
       fi
     fi
   fi
@@ -7779,6 +8093,10 @@ process.stdin.on('end', async () => {
     // verifier and lint both treat any deployed SHA matching this set as
     // a known-shipped instar version, not user-modified content.
     '371d7e8f4f72146bf8bd07115873bdbbaaf32e851ac6e1318ba5b8929cd06e68',
+    // Secret-externalization survivability version (env-first auth,
+    // recoverable queue, neutral relay mirror; no --stdin-base64 mode).
+    // Shipped through v1.3.266.
+    '0f6d27a522b123551871e6081774f8c89d1ad0ce248597af7dd60d8522871069',
   ]);
 
   /**
@@ -7834,7 +8152,7 @@ process.stdin.on('end', async () => {
         fs.writeFileSync(backupPath, existing, { mode: 0o644 });
         fs.writeFileSync(opts.scriptPath, opts.newContent, { mode: 0o755 });
         opts.result.upgraded.push(
-          `${opts.label} (upgraded to port-from-config + agent-id binding; ` +
+          `${opts.label} (upgraded to port-from-config + agent-id binding + robust base64 stdin; ` +
           `prior version backed up to ${path.relative(opts.stateDir, backupPath)})`
         );
       } catch (err) {

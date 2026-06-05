@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "sessionId": "45610377-b671-4264-a9fd-192d16f767c6",
+  "timestamp": "2026-06-05T01:44:09.146Z",
+  "artifactPath": "upgrades/side-effects/telegram-reply-robust-content.md",
+  "artifactSha256": "dd1f6cb2ebea8cc878622a6fd0e946d7cfbcfb619af4280f15abdcb53bb37e03",
+  "coveredFiles": [
+    "src/core/IdentityRenderer.ts",
+    "src/core/PostUpdateMigrator.ts",
+    "src/scaffold/templates.ts",
+    "src/templates/scripts/telegram-reply.sh",
+    "tests/unit/telegram-reply-port-resolution.test.ts",
+    "upgrades/next/telegram-reply-robust-content.md",
+    "upgrades/side-effects/telegram-reply-robust-content.md",
+    "upgrades/telegram-reply-robust-content.eli16.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Additive relay-script input mode plus generated guidance and SHA migration; no new server route, config contract, or persistence schema.",
+  "eli16Path": "upgrades/telegram-reply-robust-content.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/telegram-reply-robust-content.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
