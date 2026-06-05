@@ -23,6 +23,16 @@ action:
 Deterministic + advisory — it answers "should I let this passport do this?"; the
 caller decides. Pairs with the MTP Protocol (`/intent/org/test-action`).
 
+## What to Tell Your User
+
+Your agent now carries a digital passport — one portable card that says who it is (name + cryptographic fingerprint), how trusted it is, and exactly what it's forbidden to do (drawn straight from your organization's written constraints). When two agents work together, one can check the other's proposed action against that passport before trusting it: "is this allowed, forbidden, or outside your scope?" It's the EXO 3.0 idea that agents police each other's compliance — made real. Nothing changes in day-to-day use until agents start exchanging passports; there's nothing you need to configure.
+
+## Summary of New Capabilities
+
+- `GET /passport` — your own passport: `{ agent, fingerprint, trustLevel, allowedCapabilities, forbiddenActions, issuedAt }` (forbiddenActions = ORG-INTENT constraints).
+- `POST /passport/verify` `{ passport, action }` — deterministic peer compliance check → `{ permitted, basis, reason }` (basis: forbidden-action / trust-floor / out-of-scope / ok). Advisory — the caller decides.
+- `/agent-passport` skill — the proactive entry point before trusting a peer's proposed action.
+
 ## Evidence
 
 Three-tier coverage, all green, `tsc --noEmit` clean:

@@ -12,6 +12,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { createRoutes } from '../../src/server/routes.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import type { RouteContext } from '../../src/server/routes.js';
 
 function ctxFor(stateDir: string): RouteContext {
@@ -44,7 +45,7 @@ describe('Agent passport routes (integration)', () => {
     app.use('/', createRoutes(ctxFor(stateDir)));
   });
 
-  afterEach(() => { fs.rmSync(tmpDir, { recursive: true, force: true }); });
+  afterEach(() => { SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/integration/agent-passport-routes.test.ts:47' }); });
 
   it('GET /passport returns the agent passport with ORG-INTENT constraints as forbidden actions', async () => {
     const res = await request(app).get('/passport');

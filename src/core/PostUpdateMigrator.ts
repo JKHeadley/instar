@@ -2843,6 +2843,22 @@ Rule: I do not state that work landed inside another agent's state unless I have
       result.upgraded.push('CLAUDE.md: added Session Boot Self-Knowledge section');
     }
 
+    // Agent Digital Passport (EXO 3.0 G3): identity + trust + ORG-INTENT
+    // constraints packaged portably, with a peer compliance check. Existing
+    // agents need /passport + /passport/verify awareness before trusting a
+    // peer's proposed action. Content-sniffed on a distinctive marker.
+    if (!content.includes('Agent Digital Passport (EXO 3.0')) {
+      const agentPassportSection = `
+**Agent Digital Passport (EXO 3.0).** Your identity (name + routing fingerprint), trust level, and ORG-INTENT constraints packaged into one portable passport — "every agent carries metadata saying what it's allowed and forbidden to do, and other agents watch compliance" (Salim Ismail).
+- Your passport: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/passport\` → \`{ agent, fingerprint, trustLevel, allowedCapabilities, forbiddenActions, issuedAt }\` (forbiddenActions = your ORG-INTENT constraints).
+- Verify a peer's action against their passport: \`curl -X POST -H "Authorization: Bearer $AUTH" -H 'Content-Type: application/json' -d '{"passport":{...},"action":"..."}' http://localhost:${port}/passport/verify\` → \`{ permitted, basis, reason }\` (basis: forbidden-action / trust-floor / out-of-scope / ok).
+- **When to use** (PROACTIVE): before trusting another agent's proposed action, verify it against their passport; hand peers your passport so they know your scope. Skill: \`/agent-passport\`.
+`;
+      content += '\n' + agentPassportSection;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Agent Digital Passport section');
+    }
+
     // Apprenticeship Program (Step 1, APPRENTICESHIP-STEP1-PROGRAM-SCAFFOLD-SPEC.md).
     // Existing agents need to know the program registry + lifecycle gates exist —
     // an agent that doesn't know about a capability effectively doesn't have it.
@@ -4471,6 +4487,11 @@ Create worktrees for collaborator repos with \`instar worktree create <branch>\`
       // never learns the facts writer + secret-get retrieval will re-ask the
       // user for stored credentials — the exact loop this feature closes.
       '**Session Boot Self-Knowledge**',
+      // Agent Digital Passport (EXO 3.0 G3): portable identity + trust +
+      // constraints, with a peer compliance check. A Codex/Gemini agent that
+      // never learns /passport/verify can't check a peer's proposed action
+      // against its passport before trusting it.
+      '**Agent Digital Passport (EXO 3.0',
     ];
 
     for (const shadowName of ['AGENTS.md', 'GEMINI.md']) {

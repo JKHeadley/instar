@@ -12,6 +12,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { createRoutes } from '../../src/server/routes.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 interface TestServer { url: string; close: () => Promise<void>; }
 async function listen(app: express.Express): Promise<TestServer> {
@@ -42,7 +43,7 @@ describe('Agent digital passport — (E2E over HTTP)', () => {
     server = await listen(app);
   });
 
-  afterEach(async () => { await server?.close(); fs.rmSync(tmpDir, { recursive: true, force: true }); });
+  afterEach(async () => { await server?.close(); SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/e2e/agent-passport-lifecycle.test.ts:45' }); });
 
   it('FEATURE IS ALIVE: GET /passport returns 200 with the passport', async () => {
     const res = await fetch(server.url + '/passport');
