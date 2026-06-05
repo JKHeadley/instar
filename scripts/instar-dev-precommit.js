@@ -45,6 +45,23 @@ const TRACES_DIR = path.join(ROOT, '.instar', 'instar-dev-traces');
 // DECISIONS_DIR instead: distinct filenames can never conflict.
 // (The frozen legacy file remains at .instar/instar-dev-decisions.jsonl.)
 const DECISIONS_DIR = path.join(ROOT, '.instar', 'instar-dev-decisions');
+
+// Set by writeDecisionAudit; consumed by the process 'exit' handler that
+// finalizes the entry's verdict. BOTH the declaration AND the handler
+// registration live here, above the top-level audit call site — placed
+// after it, the declaration TDZ-throws inside writeDecisionAudit's
+// try/catch, and the handler registration is never even reached when
+// blockCommit exits first (top-level statements run in source order).
+let pendingAuditEntry = null;
+process.on('exit', (code) => {
+  if (!pendingAuditEntry) return;
+  try {
+    const { entryPath, entryData } = pendingAuditEntry;
+    entryData.verdict = code === 0 ? 'pass' : 'blocked';
+    fs.writeFileSync(entryPath, JSON.stringify(entryData, null, 2) + '\n');
+    execSync(`git add ${JSON.stringify(path.relative(ROOT, entryPath))}`, { cwd: ROOT });
+  } catch { /* best-effort — 'pending' is still more truthful than no verdict */ }
+});
 const WINDOW_MS = 60 * 60 * 1000; // 60 minutes
 const MIN_ARTIFACT_CHARS = 200;
 
@@ -811,29 +828,44 @@ function writeDecisionAudit({ slug, suggestedTier, declaredTier, riskFloor, risk
     while (fs.existsSync(entryPath)) {
       entryPath = path.join(DECISIONS_DIR, `${ts.replace(/[:.]/g, '-')}-${safeSlug}-${n++}.json`);
     }
-    fs.writeFileSync(
-      entryPath,
-      JSON.stringify({
-        ts,
-        slug,
-        suggestedTier,
-        declaredTier,
-        // riskFloor (the number) keeps the entry self-contained for later review
-        // without re-running the classifier — not just the derived belowFloor.
-        riskFloor,
-        riskFloorReasons,
-        belowFloor,
-        files,
-        loc,
-      }, null, 2) + '\n',
-    );
+    const entryData = {
+      ts,
+      slug,
+      suggestedTier,
+      declaredTier,
+      // riskFloor (the number) keeps the entry self-contained for later review
+      // without re-running the classifier — not just the derived belowFloor.
+      riskFloor,
+      riskFloorReasons,
+      belowFloor,
+      files,
+      loc,
+      // Finalized by the process exit handler below: 'pass' when the gate
+      // allowed the commit, 'blocked' otherwise. The riding-the-retry design
+      // (a blocked evaluation's entry rides the next successful commit, see
+      // header comment) is deliberate — but without a verdict, a rode-along
+      // entry written under a stale/unresolved trace slug READS as a real
+      // shipped decision for that slug. Live recurrence (2026-06-05): both
+      // echo (#836) and codey (#842) shipped mislabeled "unknown"/foreign-slug
+      // entries in one day. The verdict makes every entry self-describing.
+      verdict: 'pending',
+    };
+    fs.writeFileSync(entryPath, JSON.stringify(entryData, null, 2) + '\n');
     execSync(`git add ${JSON.stringify(path.relative(ROOT, entryPath))}`, { cwd: ROOT });
+    pendingAuditEntry = { entryPath, entryData };
     return entryPath;
   } catch {
     // best-effort — never block on audit I/O
     return null;
   }
 }
+
+// ── Verdict finalization ──────────────────────────────────────────────────
+// The process 'exit' handler that finalizes each entry's verdict is
+// registered next to the pendingAuditEntry declaration near the top of this
+// file (it must be registered BEFORE the top-level gate flow can exit). One
+// hook covers every exit path: enforceTier1's process.exit(0), the Tier-2
+// fall-through, and every blockCommit.
 
 // ─── Tier-1 lite enforcement ──────────────────────────────────────────────
 // Tier-1 requirement set: a staged ELI16 (trace.eli16Path) passing the length
