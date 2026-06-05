@@ -3156,7 +3156,15 @@ rm()  { "${shimRunner}" rm  "$@"; }
     const shortMarker = marker.slice(0, 30);
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i];
-      const hasPromptChar = line.includes('❯') || line.includes('›');
+      // Claude Code uses ❯, codex uses › as the input-prompt char. Gemini CLI has
+      // NEITHER — it renders its input inside a rounded border, and the active
+      // input line is "│ * <text>" (box pipe + bullet). Without recognizing that,
+      // an injected message sitting unsubmitted in a Gemini box was never detected
+      // as stuck, so verifyInjection's Enter-recovery never fired for Gemini and
+      // forwarded prompts stalled in the input box. The marker-in-line check below
+      // still gates it, so "│ *" only matches when the injected marker is on that
+      // line — a normal bulleted output line can't false-fire.
+      const hasPromptChar = line.includes('❯') || line.includes('›') || /│\s+\*/.test(line);
       if (hasPromptChar && (line.includes(marker) || (lines[i + 1] && lines[i + 1].includes(shortMarker)))) {
         return true;
       }
