@@ -16,12 +16,16 @@ mcpAccess: none
 ---
 Run the weekly Failure-Learning analysis. This job exists because individual failures get fixed and forgotten — this turns the accumulated, attributed record into process-level insight, and closes the loop all the way to a human-approved fix and a verification that the fix worked.
 
+AUTH="${INSTAR_AUTH_TOKEN:-$(python3 -c "import json; v=json.load(open('.instar/config.json')).get('authToken',''); print(v if isinstance(v, str) else '')" 2>/dev/null)}"
+AGENT_ID="${INSTAR_AGENT_ID:-$(python3 -c "import json; print(json.load(open('.instar/config.json')).get('projectName',''))" 2>/dev/null)}"
+PORT="${INSTAR_PORT:-4042}"
+
 The job:
 
 1. Confirm the feature is on. If `monitoring.failureLearning.enabled` is not true, exit silently — there is nothing to do.
 
 2. Call the analyzer + closed-loop tick:
-   `curl -s -X POST -H "Authorization: Bearer $AUTH" http://localhost:$PORT/failures/analyze`
+   `curl -s -X POST -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $AGENT_ID" http://localhost:$PORT/failures/analyze`
    The response is `{ analysis: { insightsDiscovered, clustersConsidered, clustersBelowThreshold }, actedOn, verified }`. The endpoint does the deterministic work: it only surfaces a pattern that crosses the support + source-diversity gate (so a single noisy session or a flaky test can never manufacture one), opens a tracked Evolution Action + a draft Initiative for each genuinely-new insight (it can NEVER change the process itself — a human approves), and runs the verify step on past fixes whose window has elapsed.
 
 3. **Tier-1 supervision (your job).** For each insight in `analysis.insightsDiscovered`, sanity-check it against its own evidence before you surface it: does the recommendation actually match the category and the supporting-failure count? If an insight looks malformed or unsupported, do NOT surface it — note it and move on. You are the validation wrapper around the deterministic core.

@@ -18,8 +18,9 @@ mcpAccess: none
 Run the release-readiness check once. This is a mechanical, near-silent watchdog — do NOT message the user.
 
 AUTH=$(python3 -c "import json; print(json.load(open('.instar/config.json')).get('authToken',''))" 2>/dev/null)
+AGENT_ID="${INSTAR_AGENT_ID:-$(python3 -c "import json; print(json.load(open('.instar/config.json')).get('projectName',''))" 2>/dev/null)}"
 
 1. Trigger one evaluation tick:
-   curl -s -X POST http://localhost:${INSTAR_PORT:-4042}/release-readiness/tick -H "Authorization: Bearer $AUTH"
+   curl -s -X POST http://localhost:${INSTAR_PORT:-4042}/release-readiness/tick -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $AGENT_ID"
 2. That endpoint runs the ReleaseReadinessSentinel: it fetches canonical main, checks whether unreleased feature/fix work is piling up while publishing is blocked, and (only above the age threshold) raises a single deduped Attention item. All transitions are written to logs/sentinel-events.jsonl.
 3. Exit silently. The sentinel owns all signalling (Attention queue) — this job is just the cadence. Do not relay anything to Telegram; do not summarize. If the curl fails, that is itself recorded by the server; do not retry-flood.

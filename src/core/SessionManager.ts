@@ -1373,6 +1373,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
         '-e', `INSTAR_SESSION_NAME=${tmuxSession}`, // Threadline binding: attributes a relay-send to its origin session
         '-e', `INSTAR_SERVER_URL=http://localhost:${this.config.port}`,
         '-e', `INSTAR_AUTH_TOKEN=${this.config.authToken}`,
+        '-e', `INSTAR_AGENT_ID=${this.config.projectName}`,
         ...(workTreeFencingToken ? ['-e', `INSTAR_FENCING_TOKEN=${workTreeFencingToken}`] : []),
         ...(workTreeFencingToken ? ['-e', `INSTAR_WORKTREE_PATH=${resolvedCwd}`] : []),
         ...(shimDir ? ['-e', `PATH=${shimmedPath}`, '-e', `BASH_ENV=${path.join(shimDir, '.shellrc')}`] : []),
@@ -2347,6 +2348,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
         '-e', `INSTAR_SESSION_NAME=${tmuxSession}`, // Threadline binding: attributes a relay-send to its origin session
         '-e', `INSTAR_SERVER_URL=http://localhost:${this.config.port}`,
         '-e', `INSTAR_AUTH_TOKEN=${this.config.authToken}`,
+        '-e', `INSTAR_AGENT_ID=${this.config.projectName}`,
         '-e', `INSTAR_FRAMEWORK=${framework}`,
         // Framework-specific env additions/clears (e.g., CLAUDECODE=)
         ...Object.entries(launchSpec.envOverrides).flatMap(([k, v]) => ['-e', `${k}=${v}`]),
@@ -2591,6 +2593,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
         '-e', `INSTAR_SESSION_NAME=${tmuxSession}`, // Threadline binding: attributes a relay-send to its origin session
         '-e', `INSTAR_SERVER_URL=http://localhost:${this.config.port}`,
         '-e', `INSTAR_AUTH_TOKEN=${this.config.authToken}`,
+        '-e', `INSTAR_AGENT_ID=${this.config.projectName}`,
         '-e', 'ANTHROPIC_API_KEY=',
         '-e', 'DATABASE_URL=',
         '-e', 'DIRECT_DATABASE_URL=',
