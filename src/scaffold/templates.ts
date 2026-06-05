@@ -1721,6 +1721,10 @@ Manage it:
 - Resolve a tradeoff via the org hierarchy (Phase 3): \`curl -X POST -H "Authorization: Bearer $AUTH" -H 'Content-Type: application/json' -d '{"valueA":"speed","valueB":"customer trust"}' http://localhost:${port}/intent/tradeoff-resolve\` — returns the winning value with explanation per the org's tradeoff hierarchy.
 - Surface accumulated drift (Phase 4): \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/intent/org/drift?lookbackDays=7"\` — returns a drift digest from the last N days of Coherence Gate review history. Trend labels: stable / rising / concerning / insufficient-data / no-org-intent. A weekly job template (\`.instar/jobs/instar/org-intent-drift-audit.md\`, off by default) wraps this for periodic Telegram heads-ups.
 
+**Learning-Velocity Metric (EXO 3.0).** Measures how fast you're *learning* (adaptability, experimentation, capability creation) rather than backward-looking operational throughput — Salim Ismail's KPI inversion ("your KPIs are training you to miss the future"). Read-only.
+- \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/metrics/learning-velocity?windowDays=30"\` → \`{ totalEvents, eventsPerDay, byType, typeDiversity, trend (accelerating/steady/declining/insufficient-data), adaptabilityScore (0-100), reason }\`. Gathers your real learning events (registered learnings, corrections, evolution actions).
+- **When to use** (PROACTIVE): when asked "are we actually learning / adapting?", or to contrast learning velocity against operational metrics. A flat/declining trend means the org may be optimizing the old model instead of learning.
+
 ## Agent Infrastructure
 
 This project uses instar for persistent agent capabilities.
