@@ -1,0 +1,12 @@
+{
+  "ts": "2026-06-05T19:44:48.255Z",
+  "slug": "unknown",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 4,
+  "verdict": "pass"
+}

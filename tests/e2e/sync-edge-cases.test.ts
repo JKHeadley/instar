@@ -507,7 +507,7 @@ describe('FileClassifier Edge Cases', () => {
 
   it('classifies structured data files under .instar/', () => {
     // Only .instar/ state files are classified as structured-data
-    const structured = ['.instar/config.json', '.instar/state/settings.yaml'];
+    const structured = ['.instar/jobs.json', '.instar/state/settings.yaml'];
 
     for (const file of structured) {
       const fullPath = path.join(tmpDir, file);
