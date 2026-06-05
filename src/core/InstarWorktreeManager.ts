@@ -72,8 +72,16 @@ export interface ResolveInstarRepoOptions {
 export interface ResolvedInstarRepo {
   /** Absolute, real path to a validated instar repo. */
   repoPath: string;
-  /** Allowlisted remote.origin.url for the resolved repo. */
+  /** The allowlisted remote url that validated the repo (url or pushurl). */
   remoteUrl: string;
+  /** Name of the remote that won the allowlist check (e.g. 'origin', 'JKHeadley'). */
+  remoteName: string;
+  /** True when the match was the remote's FETCH url — its refs mirror
+   *  canonical instar and are safe as a worktree base. A pushurl-only match
+   *  proves trust but NOT ref provenance: on fleet agent homes origin fetches
+   *  the personal fork (backup-sync of agent-home files) while pushing to
+   *  canonical — its refs must never be used as a code base. */
+  remoteFetchesCanonical: boolean;
 }
 
 export interface CreateWorktreeOptions {
@@ -278,7 +286,12 @@ export function resolveInstarRepo(opts: ResolveInstarRepoOptions = {}): Resolved
     seen.add(normalized);
     const result = validateInstarRepoCandidate(candidate, allowlist);
     if (result.ok) {
-      return { repoPath: result.repoPath, remoteUrl: result.remoteUrl };
+      return {
+        repoPath: result.repoPath,
+        remoteUrl: result.remoteUrl,
+        remoteName: result.remoteName,
+        remoteFetchesCanonical: result.remoteFetchesCanonical,
+      };
     }
     failures.push(`  - ${candidate}: ${result.error}`);
   }
@@ -313,7 +326,13 @@ function mergedRepoUrlAllowlist(configPath?: string): string[] {
 function validateInstarRepoCandidate(
   candidate: string,
   allowlist: Set<string>,
-): { ok: true; repoPath: string; remoteUrl: string } | { ok: false; error: string } {
+): {
+  ok: true;
+  repoPath: string;
+  remoteUrl: string;
+  remoteName: string;
+  remoteFetchesCanonical: boolean;
+} | { ok: false; error: string } {
   if (!candidate || !fs.existsSync(candidate)) {
     return { ok: false, error: 'path does not exist' };
   }
@@ -350,6 +369,17 @@ function validateInstarRepoCandidate(
   const remote = tryGit(['-C', repoPath, 'config', '--get', 'remote.origin.url'], repoPath, op, 'read');
   let allowedUrl: string | null =
     remote.ok && remote.stdout && allowlist.has(remote.stdout) ? remote.stdout : null;
+  // The NAME of the remote that won the allowlist check, and whether it won
+  // via its FETCH url. Both matter downstream: only a fetch-url match means
+  // the remote's refs actually mirror canonical instar, making it a safe
+  // default base for new worktree branches. On fleet agent homes `origin`
+  // fetches the agent's personal fork (whose default branch is a backup-sync
+  // of agent-home FILES — no package.json, no src/) while PUSHING to
+  // canonical; a pushurl match proves trust, not ref provenance. Branching
+  // from origin/HEAD there produced an unusable worktree whose husky wiring
+  // silently no-oped (task #82, found by the #829 live re-verify).
+  let allowedRemoteName: string | null = allowedUrl ? 'origin' : null;
+  let allowedViaFetchUrl = allowedUrl !== null;
   if (!allowedUrl) {
     const allRemotes = tryGit(
       ['-C', repoPath, 'config', '--get-regexp', String.raw`^remote\..*\.(url|pushurl)$`],
@@ -358,10 +388,17 @@ function validateInstarRepoCandidate(
     if (allRemotes.ok && allRemotes.stdout) {
       for (const line of allRemotes.stdout.split('\n')) {
         // git config --get-regexp line: "remote.<name>.url <url>"
-        const m = line.match(/^remote\.\S+\.(?:url|pushurl)\s+(\S+)$/);
-        if (m && allowlist.has(m[1])) {
-          allowedUrl = m[1];
-          break;
+        const m = line.match(/^remote\.(\S+)\.(url|pushurl)\s+(\S+)$/);
+        if (!m || !allowlist.has(m[3])) continue;
+        const isFetchUrl = m[2] === 'url';
+        // First match wins UNLESS a later FETCH-url match can upgrade a
+        // pushurl-only match — fetch-url remotes are preferred because their
+        // refs are canonical (usable as a worktree base).
+        if (!allowedUrl || (isFetchUrl && !allowedViaFetchUrl)) {
+          allowedRemoteName = m[1];
+          allowedUrl = m[3];
+          allowedViaFetchUrl = isFetchUrl;
+          if (isFetchUrl) break;
         }
       }
     }
@@ -391,7 +428,13 @@ function validateInstarRepoCandidate(
     }
   }
 
-  return { ok: true, repoPath, remoteUrl: allowedUrl };
+  return {
+    ok: true,
+    repoPath,
+    remoteUrl: allowedUrl,
+    remoteName: allowedRemoteName ?? 'origin',
+    remoteFetchesCanonical: allowedViaFetchUrl,
+  };
 }
 
 // ── Slug / branch validation ─────────────────────────────────────────────
@@ -436,7 +479,11 @@ export function validateBranchName(branch: string, repoPath: string): void {
 
 export async function createWorktree(opts: CreateWorktreeOptions): Promise<CreateWorktreeResult> {
   const { agentHome, agentName } = resolveAgentHome(opts.resolveAgentHomeOpts);
-  const { repoPath: instarRepo } = resolveInstarRepo(opts.resolveInstarRepoOpts);
+  const {
+    repoPath: instarRepo,
+    remoteName: allowlistedRemote,
+    remoteFetchesCanonical,
+  } = resolveInstarRepo(opts.resolveInstarRepoOpts);
 
   validateBranchName(opts.branch, instarRepo);
 
@@ -479,7 +526,11 @@ export async function createWorktree(opts: CreateWorktreeOptions): Promise<Creat
   const addArgs = ['-C', instarRepo, 'worktree', 'add'];
   let createdBranch = false;
   if (!branchExists) {
-    const base = await resolveBaseBranch(instarRepo, opts.baseBranch);
+    const base = await resolveBaseBranch(
+      instarRepo,
+      opts.baseBranch,
+      remoteFetchesCanonical ? allowlistedRemote : undefined,
+    );
     addArgs.push('-b', opts.branch, worktreePath, base);
     createdBranch = true;
   } else {
@@ -530,11 +581,40 @@ export async function createWorktree(opts: CreateWorktreeOptions): Promise<Creat
   };
 }
 
-async function resolveBaseBranch(repoPath: string, override?: string): Promise<string> {
+export async function resolveBaseBranch(
+  repoPath: string,
+  override?: string,
+  allowlistedRemote?: string,
+): Promise<string> {
   if (override && override.trim()) return override.trim();
   // Note: the spec also allows a `worktree.defaultBaseBranch` config override,
   // surfaced via the caller (CLI reads config and passes baseBranch).
   const baseOp = 'src/core/InstarWorktreeManager.ts:resolveBaseBranch';
+
+  // Prefer the remote that won the allowlist check — that is canonical instar
+  // by definition. Blindly using origin/HEAD branched fleet agent-home
+  // worktrees from the agent's personal FORK, whose default branch is a
+  // backup-sync of agent-home FILES (no package.json / src) — an unusable
+  // worktree whose husky wiring then silently no-oped (task #82, found by the
+  // #829 live re-verify on a real agent home).
+  if (allowlistedRemote && allowlistedRemote !== 'origin') {
+    const remoteHead = tryGit(
+      ['-C', repoPath, 'symbolic-ref', `refs/remotes/${allowlistedRemote}/HEAD`],
+      repoPath, baseOp, 'read',
+    );
+    const headPrefix = `refs/remotes/${allowlistedRemote}/`;
+    if (remoteHead.ok && remoteHead.stdout.startsWith(headPrefix)) {
+      return `${allowlistedRemote}/${remoteHead.stdout.slice(headPrefix.length)}`;
+    }
+    // Remote HEAD is often unset for manually-added remotes — fall back to
+    // its main, which `git fetch <remote> main` keeps current.
+    const remoteMain = tryGit(
+      ['-C', repoPath, 'show-ref', '--verify', `refs/remotes/${allowlistedRemote}/main`],
+      repoPath, baseOp, 'read',
+    );
+    if (remoteMain.ok) return `${allowlistedRemote}/main`;
+  }
+
   const head = tryGit(['-C', repoPath, 'symbolic-ref', 'refs/remotes/origin/HEAD'], repoPath, baseOp, 'read');
   if (head.ok && head.stdout.startsWith('refs/remotes/origin/')) {
     return head.stdout.replace('refs/remotes/origin/', 'origin/');
@@ -576,11 +656,27 @@ function maybeSymlinkNodeModules(instarRepo: string, worktreePath: string): void
   fs.symlinkSync(source, target);
 }
 
-function ensureHuskyHooksActive(worktreePath: string): void {
+export function ensureHuskyHooksActive(worktreePath: string): void {
   const packageJsonPath = path.join(worktreePath, 'package.json');
   const trackedHookPath = path.join(worktreePath, '.husky', 'pre-commit');
   const shimHookPath = path.join(worktreePath, '.husky', '_', 'pre-commit');
-  if (!fs.existsSync(packageJsonPath) || !fs.existsSync(trackedHookPath)) return;
+  // A freshly-created instar worktree without package.json + the tracked
+  // pre-commit hook is NOT a normal case — it means the worktree was branched
+  // from something that is not the instar code tree (live case, task #82: the
+  // default base resolved to the agent's personal fork, whose default branch
+  // is a backup-sync of agent-home FILES). Silently returning here is what
+  // made that worktree look fine while running ZERO commit-time checks. Fail
+  // loud with the remedies instead.
+  if (!fs.existsSync(packageJsonPath) || !fs.existsSync(trackedHookPath)) {
+    throw new Error(
+      `worktree base does not look like the instar code tree (missing ` +
+      `${!fs.existsSync(packageJsonPath) ? 'package.json' : '.husky/pre-commit'} in ${worktreePath}). ` +
+      `The base branch likely points at a fork/backup branch, not canonical instar. ` +
+      `Re-run with --base <canonical-remote>/main (e.g. --base upstream/main) or set ` +
+      `worktree.defaultBaseBranch in ~/.instar/config.json. ` +
+      `Clean up with: git worktree remove --force ${worktreePath}`,
+    );
+  }
 
   let prepareScript: unknown;
   try {

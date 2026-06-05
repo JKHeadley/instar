@@ -21,8 +21,10 @@ import {
   DEFAULT_INSTAR_REPO_URL_ALLOWLIST,
   appendLedgerEntry,
   defaultSlugFor,
+  ensureHuskyHooksActive,
   hasRunnableHookShim,
   resolveAgentHome,
+  resolveBaseBranch,
   resolveInstarRepo,
   validateBranchName,
   validateSlug,
@@ -341,6 +343,57 @@ describe('resolveInstarRepo', () => {
     expect(result.remoteUrl).toBe('git@github.com:instar-ai/instar.git');
   });
 
+  it('reports remoteName + remoteFetchesCanonical for a fetch-url match (safe base)', () => {
+    const repo = makeRepo({
+      remote: 'https://github.com/owner/instar-echo.git',
+      sourceSignature: true,
+    });
+    execFileSync('git', ['remote', 'add', 'upstream', 'git@github.com:instar-ai/instar.git'], { cwd: repo, stdio: 'pipe' });
+    const result = resolveInstarRepo({
+      env: { INSTAR_REPO: repo },
+      fallbackChain: [],
+      urlAllowlist: DEFAULT_INSTAR_REPO_URL_ALLOWLIST,
+    });
+    expect(result.remoteName).toBe('upstream');
+    expect(result.remoteFetchesCanonical).toBe(true);
+  });
+
+  it('reports remoteFetchesCanonical=false for a pushurl-only match (trusted, but refs are the fork)', () => {
+    // The live Echo agent-home shape: origin FETCHES the personal fork and
+    // PUSHES to canonical. Trust is proven by the pushurl, but origin's refs
+    // are the fork's backup-sync — never a safe base for code worktrees.
+    const repo = makeRepo({
+      remote: 'https://github.com/owner/instar-echo.git',
+      sourceSignature: true,
+    });
+    execFileSync('git', ['config', 'remote.origin.pushurl', 'git@github.com:instar-ai/instar.git'], { cwd: repo, stdio: 'pipe' });
+    const result = resolveInstarRepo({
+      env: { INSTAR_REPO: repo },
+      fallbackChain: [],
+      urlAllowlist: DEFAULT_INSTAR_REPO_URL_ALLOWLIST,
+    });
+    expect(result.remoteName).toBe('origin');
+    expect(result.remoteFetchesCanonical).toBe(false);
+  });
+
+  it('prefers a fetch-url match over an earlier pushurl match (refs beat trust-only)', () => {
+    // origin matches via pushurl; a second remote matches via its FETCH url.
+    // The fetch remote must win remoteName — its refs are usable as a base.
+    const repo = makeRepo({
+      remote: 'https://github.com/owner/instar-echo.git',
+      sourceSignature: true,
+    });
+    execFileSync('git', ['config', 'remote.origin.pushurl', 'git@github.com:instar-ai/instar.git'], { cwd: repo, stdio: 'pipe' });
+    execFileSync('git', ['remote', 'add', 'upstream', 'https://github.com/instar-ai/instar.git'], { cwd: repo, stdio: 'pipe' });
+    const result = resolveInstarRepo({
+      env: { INSTAR_REPO: repo },
+      fallbackChain: [],
+      urlAllowlist: DEFAULT_INSTAR_REPO_URL_ALLOWLIST,
+    });
+    expect(result.remoteName).toBe('upstream');
+    expect(result.remoteFetchesCanonical).toBe(true);
+  });
+
   it('still rejects a source-tree repo when NO remote url or pushurl is allowlisted', () => {
     const repo = makeRepo({
       remote: 'https://github.com/owner/instar-echo.git',
@@ -397,6 +450,77 @@ describe('resolveInstarRepo', () => {
 });
 
 // ── Slug and branch validation ───────────────────────────────────────────
+
+describe('resolveBaseBranch (task #82 — canonical-remote-preferred base)', () => {
+  let tmp: string;
+  beforeEach(() => { tmp = makeTmpDir('iwm-base'); });
+  afterEach(() => cleanup(tmp));
+
+  /** A repo with a local main commit and fabricated remote-tracking refs. */
+  function makeRepoWithRemoteRefs(remoteRefs: string[]): string {
+    const repo = fs.mkdtempSync(path.join(tmp, 'base-'));
+    execFileSync('git', ['init', '--initial-branch=main'], { cwd: repo, stdio: 'pipe' });
+    execFileSync('git', ['config', 'user.email', 't@e.st'], { cwd: repo, stdio: 'pipe' });
+    execFileSync('git', ['config', 'user.name', 't'], { cwd: repo, stdio: 'pipe' });
+    fs.writeFileSync(path.join(repo, 'f'), 'x');
+    execFileSync('git', ['add', 'f'], { cwd: repo, stdio: 'pipe' });
+    execFileSync('git', ['commit', '-m', 'init', '-q'], { cwd: repo, stdio: 'pipe' });
+    const sha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf8' }).trim();
+    for (const ref of remoteRefs) {
+      execFileSync('git', ['update-ref', ref, sha], { cwd: repo, stdio: 'pipe' });
+    }
+    return repo;
+  }
+
+  it('explicit override always wins', async () => {
+    const repo = makeRepoWithRemoteRefs([]);
+    await expect(resolveBaseBranch(repo, 'JKHeadley/main', 'upstream')).resolves.toBe('JKHeadley/main');
+  });
+
+  it('prefers the allowlisted remote main over origin/HEAD (the fork-backup trap)', async () => {
+    // origin/HEAD points at the fork's backup branch; upstream/main is
+    // canonical. The base must be upstream/main.
+    const repo = makeRepoWithRemoteRefs([
+      'refs/remotes/origin/main',
+      'refs/remotes/upstream/main',
+    ]);
+    execFileSync('git', ['symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/main'], { cwd: repo, stdio: 'pipe' });
+    await expect(resolveBaseBranch(repo, undefined, 'upstream')).resolves.toBe('upstream/main');
+  });
+
+  it('falls back to origin/HEAD when the preferred remote has no refs', async () => {
+    const repo = makeRepoWithRemoteRefs(['refs/remotes/origin/main']);
+    execFileSync('git', ['symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/main'], { cwd: repo, stdio: 'pipe' });
+    await expect(resolveBaseBranch(repo, undefined, 'upstream')).resolves.toBe('origin/main');
+  });
+
+  it('without a preferred remote, behavior is unchanged (origin/HEAD → local main)', async () => {
+    const repo = makeRepoWithRemoteRefs([]);
+    await expect(resolveBaseBranch(repo)).resolves.toBe('main');
+  });
+});
+
+describe('ensureHuskyHooksActive (task #82 — loud on a non-code base)', () => {
+  let tmp: string;
+  beforeEach(() => { tmp = makeTmpDir('iwm-husky'); });
+  afterEach(() => cleanup(tmp));
+
+  it('throws an actionable error when the worktree lacks package.json (garbage-base shape)', () => {
+    // The live failure: a worktree branched from the fork's backup-sync
+    // branch has agent-home files but no package.json. The old silent early
+    // return made it look fine while running ZERO commit-time checks.
+    const wt = fs.mkdtempSync(path.join(tmp, 'wt-'));
+    fs.writeFileSync(path.join(wt, 'MEMORY.md'), 'backup-sync content');
+    expect(() => ensureHuskyHooksActive(wt)).toThrow(/does not look like the instar code tree/);
+    expect(() => ensureHuskyHooksActive(wt)).toThrow(/--base/);
+  });
+
+  it('throws when package.json exists but the tracked pre-commit hook is missing', () => {
+    const wt = fs.mkdtempSync(path.join(tmp, 'wt-'));
+    fs.writeFileSync(path.join(wt, 'package.json'), '{}');
+    expect(() => ensureHuskyHooksActive(wt)).toThrow(/\.husky\/pre-commit/);
+  });
+});
 
 describe('validateSlug', () => {
   it('accepts well-formed slugs', () => {

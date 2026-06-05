@@ -1,0 +1,21 @@
+<!-- bump: patch -->
+
+# Worktree base resolves from canonical instar — and a broken base fails loud
+
+## What to Tell Your User
+
+Nothing user-visible — contributor/agent infrastructure. Creating a build worktree on an agent machine now starts from canonical instar code instead of the agent's backup fork, and a wrong starting point is a clear error instead of a silently checks-free folder.
+
+## Summary of New Capabilities
+
+- The repo-trust check reports which remote proved trust and whether via its FETCH url (refs mirror canonical) — fetch-url matches are preferred and become the default worktree base (`<remote>/HEAD`, then `<remote>/main`).
+- A pushurl-only trusted layout (fork-fetch/canonical-push origin) no longer silently produces a garbage worktree: the hook-wiring step throws an actionable error naming the cause, both remedies (`--base <canonical>/main` or `worktree.defaultBaseBranch` in config), and the cleanup command.
+- Single-remote canonical clones are byte-identical to before; explicit `--base` always wins.
+
+## What Changed
+
+`validateInstarRepoCandidate` tracks `remoteName` + `remoteFetchesCanonical` (fetch-url match upgrades a pushurl-only match); `resolveBaseBranch` gains a preferred tier for fetch-canonical non-origin remotes; `ensureHuskyHooksActive`'s silent early-return on missing package.json/tracked-hook becomes a loud throw.
+
+## Evidence
+
+Live failure (2026-06-05, the #829 re-verify on deployed v1.3.294): `instar worktree create` on the real agent home succeeded but branched from `origin/HEAD` = the fork's backup-sync commit — the worktree contained agent-home files (MEMORY.md, screenshots), no package.json, and the husky step silently no-oped; `git -C <wt> log -1` showed the backup commit, `.husky/_` absent. With an explicit `--base JKHeadley/main` the same CLI produced a correct worktree with the shim verified present — isolating the defect to default-base resolution. Pinned by 9 new tests: resolver contract for fetch-url match / pushurl-only match (the live Echo shape, `remoteFetchesCanonical=false`) / fetch-beats-pushurl preference; base resolution preferring the canonical remote over origin/HEAD, falling back when the preferred remote has no refs, unchanged with no preferred remote, override-wins; and the loud-throw on both garbage-base shapes. 43/43 file suite green.
