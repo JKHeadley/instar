@@ -1,6 +1,7 @@
 ---
 title: "Feedback Factory Migration — Dawn → Echo ownership, open/operated split, phased cutover (converged v2)"
 slug: feedback-factory-migration
+parent-principle: "Structure beats Willpower"
 review-iterations: 2
 review-convergence: "v2 — converged. Round 1: 3 parallel reviewers (migration-safety, standards-conformance, adversarial data-integrity) + live Standards-Conformance Gate, folding 10 structural findings: order-independent parity (recorded-corpus 100% vs live invariant gate); byte-level Python↔JS divergence pinned (Unicode regex classes, SHA encoding/normalization, tokenizer/case-fold); ONE shared canonical DB through cutover (split-brain prevention); Observability + Agent-Awareness as shipping deliverables; integrity-safe import (txn, fingerprint-uniqueness scan, sequence reset, per-row checksum); structural never-re-derive guard; proxy-forward decommission; dual-forward defense-bypass; secret trimmed at load. Round 2 (Dawn, domain owner, the required code-owner gate): confirmed scars (a)/(b)/(c) AND caught a 4th I'd missed — (d) lifecycle partitioning with cycling prevention (:2747–2793); resolved dual-forward to live MIRROR (tight version-lock timing per her Spec 04). ALL open items resolved. Ready for Justin's final approval."
 eli16-overview: feedback-factory-migration.eli16.md

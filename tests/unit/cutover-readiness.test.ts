@@ -175,4 +175,82 @@ describe('CutoverReadiness (spec §7 G2.4)', () => {
     });
     expect(r.parityStatus().cleared).toBe(true);
   });
+
+  // ── the import dry-run leg (rehearsal — informational, NEVER a ready input) ──
+
+  function buildWithDryRun(runImportDryRun: (() => Promise<import('../../src/feedback-factory/migration/importRunner.js').ImportRunResult>) | null) {
+    return new CutoverReadiness({
+      parityMonitor: monitor,
+      integrityReportPath: path.join(dir, 'integrity-report.json'),
+      runParityCheck: null,
+      importDryRunReportPath: path.join(dir, 'import-dryrun.json'),
+      runImportDryRun,
+      now: () => nowMs,
+    });
+  }
+
+  const PASSED_RUN = {
+    report: PASSED_REPORT, imported: { clusters: 1346, feedback: 9000 },
+    abortedPreImport: null, passed: true,
+  };
+
+  it('records a successful dry-run to the SEPARATE path and surfaces it in status()', async () => {
+    const r = buildWithDryRun(async () => PASSED_RUN);
+    const outcome = await r.runImportDryRunPass();
+    expect(outcome.ok).toBe(true);
+
+    const s = r.status();
+    expect(s.importDryRun).toMatchObject({ ran: true, passed: true, imported: { clusters: 1346, feedback: 9000 }, abortedPreImport: null });
+    // READINESS HONESTY — the heart of the design: a green rehearsal must not
+    // touch `ready` or the canonical integrity leg.
+    expect(s.ready).toBe(false);
+    expect(s.integrity.ran).toBe(false);
+    expect(fs.existsSync(path.join(dir, 'integrity-report.json'))).toBe(false);
+    expect(fs.existsSync(path.join(dir, 'import-dryrun.json'))).toBe(true);
+  });
+
+  it('a FAILED dry-run check records nothing', async () => {
+    const r = buildWithDryRun(async () => { throw new Error('source unreachable'); });
+    const outcome = await r.runImportDryRunPass();
+    expect(outcome.ok).toBe(false);
+    if (!outcome.ok) expect(outcome.reason).toContain('source unreachable');
+    expect(r.importDryRunStatus().ran).toBe(false);
+    expect(fs.existsSync(path.join(dir, 'import-dryrun.json'))).toBe(false);
+  });
+
+  it('refuses when no import source is configured', async () => {
+    const r = buildWithDryRun(null);
+    const outcome = await r.runImportDryRunPass();
+    expect(outcome.ok).toBe(false);
+    if (!outcome.ok) expect(outcome.reason).toContain('no import source configured');
+  });
+
+  it('surfaces a pre-import abort (fingerprint collisions) distinctly', async () => {
+    const r = buildWithDryRun(async () => ({
+      report: null, imported: { clusters: 0, feedback: 0 },
+      abortedPreImport: { reason: 'fingerprint-collision' as const, collisions: [{ fingerprint: 'x', clusterIds: ['a', 'b'] }] },
+      passed: false,
+    }));
+    await r.runImportDryRunPass();
+    const s = r.importDryRunStatus();
+    expect(s).toMatchObject({ ran: true, passed: false, abortedPreImport: 'fingerprint-collision' });
+  });
+
+  it('REFUSES wiring the dry-run report onto the canonical integrity path (structural guard)', () => {
+    expect(() => new CutoverReadiness({
+      parityMonitor: monitor,
+      integrityReportPath: path.join(dir, 'integrity-report.json'),
+      runParityCheck: null,
+      importDryRunReportPath: path.join(dir, 'integrity-report.json'),
+      runImportDryRun: async () => PASSED_RUN,
+      now: () => nowMs,
+    })).toThrow(/must differ/);
+  });
+
+  it('a torn/corrupt dry-run envelope reads as never-ran (deny-safe, informational)', async () => {
+    const r = buildWithDryRun(async () => PASSED_RUN);
+    await r.runImportDryRunPass();
+    fs.writeFileSync(path.join(dir, 'import-dryrun.json'), '{"generatedAt": "2026-');
+    expect(r.importDryRunStatus()).toMatchObject({ ran: false, passed: false });
+  });
 });

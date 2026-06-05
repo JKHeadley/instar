@@ -23,6 +23,7 @@ import { CutoverReadiness } from '../feedback-factory/cutoverReadiness.js';
 import { DurableParityMonitor, JsonlPassPersistence } from '../feedback-factory/monitor/parityMonitorStore.js';
 import { HttpParitySource } from '../feedback-factory/dryrun/HttpParitySource.js';
 import { runDryRunCompare } from '../feedback-factory/dryrun/dryRunCompare.js';
+import { InMemoryImportTarget, runImport } from '../feedback-factory/migration/importRunner.js';
 import { SecretStore } from '../core/SecretStore.js';
 import { fileURLToPath } from 'node:url';
 import type { SessionManager } from '../core/SessionManager.js';
@@ -925,10 +926,36 @@ export class AgentServer {
             return runDryRunCompare(source);
           }
           : null;
+        // Import REHEARSAL (dry-run): live source fetch with raw capture → AS-IS
+        // import into an in-memory target → integrity gate over the readback.
+        // Zero durable data writes; the envelope lands at the SEPARATE dry-run
+        // path below, never the canonical integrity report (readiness honesty).
+        const runImportDryRunCheck = paritySourceCfg?.baseUrl
+          ? async () => {
+            const token = String(new SecretStore({ stateDir: options.config.stateDir }).get(paritySourceCfg.secretKey ?? 'portal.instarReadToken') ?? '');
+            if (!token) throw new Error(`parity source token "${paritySourceCfg.secretKey ?? 'portal.instarReadToken'}" not found in the SecretStore`);
+            const source = new HttpParitySource({
+              baseUrl: paritySourceCfg.baseUrl!,
+              token,
+              captureRaw: true,
+              ...(paritySourceCfg.pageSize ? { pageSize: paritySourceCfg.pageSize } : {}),
+              ...(paritySourceCfg.status ? { status: paritySourceCfg.status } : {}),
+              ...(paritySourceCfg.pageTimeoutMs ? { pageTimeoutMs: paritySourceCfg.pageTimeoutMs } : {}),
+              ...(paritySourceCfg.totalTimeoutMs ? { totalTimeoutMs: paritySourceCfg.totalTimeoutMs } : {}),
+            });
+            await source.prepare();
+            return runImport(
+              { clusters: source.readRawClusters(), feedback: source.readRawFeedback() },
+              new InMemoryImportTarget(),
+            );
+          }
+          : null;
         const readiness = new CutoverReadiness({
           parityMonitor,
           integrityReportPath: path.join(options.config.stateDir, 'state', 'feedback-integrity-report.json'),
           runParityCheck,
+          importDryRunReportPath: path.join(options.config.stateDir, 'state', 'feedback-import-dryrun.json'),
+          runImportDryRun: runImportDryRunCheck,
         });
         // The REAL resolvers (replacing the former deny-safe stubs): both read
         // durable server-side state; both stay false until that state genuinely
