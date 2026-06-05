@@ -4253,6 +4253,53 @@ Create worktrees for collaborator repos with \`instar worktree create <branch>\`
       result.upgraded.push('CLAUDE.md: added Resource Usage (CPU + memory) awareness section');
     }
 
+    // Coordination Mandate engine (docs/specs/coordination-mandate.md) — Agent
+    // Awareness backfill for the deny-by-default A2A authority gate (#788).
+    // Existing agents updating in place must learn to evaluate-before-acting and
+    // that issuance/revocation are PIN-gated human actions. Content-sniffed on
+    // the distinctive evaluate route.
+    if (!content.includes('/mandate/evaluate')) {
+      const section = `
+**Coordination Mandate** — Your operator's "permission slip" for autonomous agent-to-agent work. Instead of approving every step of a multi-agent project, the operator issues ONE bounded, expiring, revocable mandate (from the dashboard Mandates tab, behind their PIN) delegating SPECIFIC authorities to a SPECIFIC pair of agents. The mandate — never you — is the authorizer: requester ≠ authorizer is preserved. Deny-by-default: with no mandate issued, every check denies.
+- **Before any A2A action under a mandate** (PROACTIVE — this is the trigger): check it: \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/mandate/evaluate -H 'Content-Type: application/json' -d '{"action":"sign-code-review","params":{"artifact":"migration-port","mutual":true},"agentFp":"<your-fingerprint>","mandateId":"<id>"}'\` → \`{ decision: "allow"|"deny", reason }\`. A deny means STOP — do not retry around it or escalate to a human-bypass; the bounds are the operator's.
+- Inspect: \`GET /mandate\` (each with live \`authorshipValid\`) · \`GET /mandate/:id\` · \`GET /mandate/audit\` (every decision, hash-chained — \`chain.ok:false\` means tampering; surface it immediately).
+- **You cannot issue or revoke mandates.** \`POST /mandate/issue\` and \`POST /mandate/:id/revoke\` require the operator's dashboard PIN — your Bearer token is structurally insufficient. NEVER ask the user to paste their PIN into chat; point them at the dashboard **Mandates tab** (issue/revoke forms + the decision audit live there).
+- Every evaluation (allow AND deny) is audited. Act as if the audit is read by the operator — because it is. (Spec: \`docs/specs/coordination-mandate.md\`.)
+`;
+      content += '\n' + section;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Coordination Mandate awareness section');
+    }
+
+    // ReviewExchange protocol (coordination-mandate spec §7 G2.3) — Agent
+    // Awareness backfill. Content-sniffed on the distinctive route prefix.
+    if (!content.includes('/review-exchange')) {
+      const section = `
+**ReviewExchange (autonomous code review)** — The structured way two mandate-named agents sign off a code review WITHOUT the operator relaying. One exchange = one review package, content-addressed (\`packageSha256\` fixed at creation), moving linearly: proposed → delivered → verdict-recorded → complete (or changes-requested — rework is a NEW exchange). BOTH sign-offs (the peer's authenticated approve-verdict AND your countersignature) are evaluated through the mandate gate's \`sign-code-review\` authority before acceptance; every accepted signature carries the audit hash of the gate decision that authorized it.
+- Create: \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/review-exchange -H 'Content-Type: application/json' -d '{"mandateId":"<id>","artifact":"migration-port","packageRef":"docs/...-review-package.md","packageSha256":"<sha256 of the package>","parties":["<your-fp>","<peer-fp>"]}'\`
+- Drive it: \`POST /review-exchange/:id/delivered\` (after you actually sent the package over Threadline — record the message ref as evidence) → \`POST /review-exchange/:id/peer-verdict\` (the peer's authenticated verdict; approve = their sign-off, mandate-gated) → \`POST /review-exchange/:id/sign\` (your countersignature, mandate-gated → complete).
+- **When to use** (PROACTIVE — this is the trigger): the moment a mandate with \`sign-code-review\` exists and you need a peer agent's review of work in its scope, drive it through an exchange — NEVER improvise a sign-off in chat prose (an unrecorded "LGTM" over Threadline is not a sign-off; the gate-audited exchange is). A 403 on a sign step means the mandate denied it — STOP, do not work around it.
+- Inspect: \`GET /review-exchange\` · \`GET /review-exchange/:id\` (signatures + audit hashes).
+`;
+      content += '\n' + section;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added ReviewExchange awareness section');
+    }
+
+    // Cutover-readiness checker (coordination-mandate spec §7 G2.4) — Agent
+    // Awareness backfill. Content-sniffed on the distinctive route prefix.
+    if (!content.includes('/cutover-readiness')) {
+      const section = `
+**Cutover Readiness** — When a migration (or any one-way cutover) is gated on objective conditions, this is the read surface for "is everything up to the door green?" — composed from REAL durable state (the persisted import integrity report + the durable zero-divergence parity window with a freshness bound), never from anyone's assertion.
+- Check: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/cutover-readiness\` → \`{ ready, door: "manual-operator-click", integrity, parity }\`.
+- Feed the parity window with a live check: \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/cutover-readiness/parity-pass\` — the server fetches + compares server-side; you only trigger it. A failed check records nothing.
+- **The door is NOT yours**: \`ready: true\` means the conditions are green — it is NEVER an instruction to flip. The cutover click belongs to the operator. NEVER present \`ready\` to the user as "I can cut over now"; present it as "everything up to your click is green."
+`;
+      content += '\n' + section;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Cutover Readiness awareness section');
+    }
+
     if (patched) {
       try {
         fs.writeFileSync(claudeMdPath, content);
