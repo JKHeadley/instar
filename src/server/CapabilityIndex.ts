@@ -564,6 +564,19 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     }),
   },
   {
+    key: 'approvalLedger',
+    prefixes: ['/approvals'],
+    description: 'Approval-as-Data ledger — every operator approval recorded as durable, signed data (approved-as-is vs approved-with-change with the why, vs rejected) + per-class agreement ratios. Tracks approvals wherever they occur (spec, chat, other). Read-only observability; the ratio is a signal, never a gate. The OPERATOR is the authoritative source of mode+divergences — never self-classify their intent.',
+    build: ({ ctx }) => ({
+      enabled: !!ctx.approvalLedger,
+      endpoints: [
+        'POST /approvals — record an operator decision (mode + divergences operator-sourced; inconsistent rows 400)',
+        'GET /approvals?limit=N&decisionClass=X&surface=Y — list recorded decisions, newest first',
+        'GET /approvals/summary — per-class { total, approvedAsIs, ratio, streak, autoApprovalEligible, divergenceCounts } + bySurface breakdown',
+      ],
+    }),
+  },
+  {
     key: 'resourceLedger',
     prefixes: ['/resources'],
     description: 'Per-agent ResourceLedger — read-only CPU/memory + rate-limit-event observability (mirrors TokenLedger). Phase A persists rate-limit events (breaker trips + session-sentinel detections) across restarts; Phase B continuously samples CPU% + RSS of the agent server + its spawned sessions. Never gates.',

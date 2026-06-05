@@ -77,3 +77,6 @@ empty/missing file yields an empty summary (no crash).
   console.warn + ledger null → routes 503).
 - **Docs coverage:** the three `/approvals` routes are documented in
   `site/src/content/docs/reference/api.md` (route-floor gate).
+- **Discoverability:** the `/approvals` prefix is classified in
+  `CapabilityIndex.ts` (CAPABILITY_INDEX → surfaced in `/capabilities` with its
+  three endpoints), satisfying the capabilities-discoverability gate.
