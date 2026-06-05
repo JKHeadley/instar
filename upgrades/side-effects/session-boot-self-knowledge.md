@@ -72,3 +72,7 @@ Three CI failures owned per Zero-Failure: (1) `ConversationStore.test.ts` time-b
 ## Compaction-parity round (approver design review, 2026-06-05)
 
 Justin's review surfaced the long-session gap: the block injected at session start survives compaction only if the summary carries it. Fixed in-PR: the compaction-recovery hook now carries the same fail-open fetch (re-injection after every compaction — refreshed, not merely preserved), with a Phase-3 e2e running the real compact-hook block against a live server. Collateral: org-intent + preferences share the boot-only gap (filed as `session-context-injectors-lack-compaction-parity`); a "Compaction Parity" constitution amendment is proposed separately. His scale concern is answered by the existing hard 2KB byte-cap (pointer-not-payload design); the AGGREGATE boot-budget concern across all injectors filed as `boot-context-aggregate-budget`.
+
+## Post-merge-conflict round (2026-06-05 AM)
+
+Rebase onto the post-#848 main + CI surfaced the feature-delivery-completeness registry: the new CLAUDE.md section is now tracked in `featureSections` AND mirrored to the framework-shadow markers (`migrateFrameworkShadowCapabilities`) — Codex/Gemini agents learn the capability too (the Secret Drop lesson: an unshadowed capability gets improvised around). Local pre-push had skipped the smoke ("CI is the authority"), which is why CI caught it.

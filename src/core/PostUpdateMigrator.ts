@@ -4409,6 +4409,11 @@ Create worktrees for collaborator repos with \`instar worktree create <branch>\`
       '**Coordination Mandate**',
       '**ReviewExchange (autonomous code review)**',
       '**Cutover Readiness**',
+      // Session Boot Self-Knowledge (spec session-boot-self-knowledge): vault
+      // secret NAMES + operational facts at boot. A Codex/Gemini agent that
+      // never learns the facts writer + secret-get retrieval will re-ask the
+      // user for stored credentials — the exact loop this feature closes.
+      '**Session Boot Self-Knowledge**',
     ];
 
     for (const shadowName of ['AGENTS.md', 'GEMINI.md']) {

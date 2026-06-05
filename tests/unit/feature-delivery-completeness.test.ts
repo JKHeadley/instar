@@ -142,6 +142,7 @@ describe('Feature Delivery Completeness', () => {
       'Coordination Mandate',           // mandate gate awareness (/mandate/evaluate; deny-by-default; requester≠authorizer)
       'ReviewExchange (autonomous code review)', // mandate-gated two-party review sign-off protocol
       'Cutover Readiness',              // migration readiness read surface (/cutover-readiness; the door stays the operator's)
+      '**Session Boot Self-Knowledge**', // vault secret NAMES + operational facts at boot (spec session-boot-self-knowledge; templates.ts + migrator + shadow-marker parity)
     ];
 
     for (const section of featureSections) {
