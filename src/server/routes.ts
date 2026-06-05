@@ -800,6 +800,9 @@ export interface RouteContext {
    *  null). Lets the placement/transfer routes proxy to the authoritative holder so
    *  they are answerable/callable from ANY machine. Null/absent (single-machine/dark). */
   resolveRouterUrl?: (() => string | null) | null;
+  /** Every OTHER registered, non-revoked machine with a known URL — for pool-wide
+   *  aggregation (GET /sessions?scope=pool). Null/absent (single-machine/dark). */
+  resolvePeerUrls?: (() => Array<{ machineId: string; url: string }>) | null;
   /** Signed, append-only rollout-stage E2E results (§Rollout) — backs GET
    *  /session-pool/e2e-results so the gate state is observable. Null/absent (dark). */
   sessionPoolE2EResultStore?: import('../core/SessionPoolE2EResultStore.js').SessionPoolE2EResultStore | null;
@@ -4208,16 +4211,28 @@ export function createRoutes(ctx: RouteContext): Router {
     res.json(ctx.sleepWakeDetector.getStats(sinceMs));
   });
 
-  router.get('/sessions', (req, res) => {
+  router.get('/sessions', async (req, res) => {
     const status = req.query.status as string | undefined;
     const validStatuses = ['starting', 'running', 'completed', 'failed', 'killed'];
     const sessions = status && validStatuses.includes(status)
       ? ctx.state.listSessions({ status: status as 'starting' | 'running' | 'completed' | 'failed' | 'killed' })
       : ctx.state.listSessions();
 
+    // Which machine answered — so a session row can say where it runs. Absent
+    // on single-machine installs (no pool wired), so the dashboard hides the badge.
+    const selfMachineId = ctx.meshSelfId ?? null;
+    const selfMachineNickname = selfMachineId
+      ? (ctx.machinePoolRegistry?.getCapacity(selfMachineId)?.nickname ?? null)
+      : null;
+
     // Enrich sessions with hook event telemetry and platform info
     const enriched = sessions.map(s => {
       const result: Record<string, unknown> = { ...s };
+
+      if (selfMachineId) {
+        result.machineId = selfMachineId;
+        if (selfMachineNickname) result.machineNickname = selfMachineNickname;
+      }
 
       // Add hook event telemetry
       if (req.query.enrich !== 'false' && ctx.hookEventReceiver) {
@@ -4259,6 +4274,54 @@ export function createRoutes(ctx: RouteContext): Router {
 
       return result;
     });
+
+    // scope=pool — "all my sessions, across ALL my machines" (operator ask,
+    // 2026-06-05 topic 13481: every session must show on the dashboard with the
+    // machine it runs on). Aggregates each ONLINE-registered peer's plain
+    // GET /sessions (never scope=pool — no recursion) and tags every remote
+    // session with that peer's identity. Tolerant by design: a peer that is
+    // down/slow contributes a `failed` entry, never a 500 — the dashboard still
+    // shows everything reachable. Response shape differs from the plain route
+    // (an object, not an array) because callers opting into the pool view need
+    // the per-peer health alongside the merged list.
+    if (req.query.scope === 'pool') {
+      const peers = ctx.resolvePeerUrls?.() ?? [];
+      const failed: Array<{ machineId: string; error: string }> = [];
+      const remote: Record<string, unknown>[] = [];
+      await Promise.all(peers.map(async (p) => {
+        try {
+          const r = await fetch(`${p.url}/sessions`, {
+            headers: { Authorization: `Bearer ${ctx.config.authToken}` },
+            signal: AbortSignal.timeout(5000),
+          });
+          if (!r.ok) throw new Error(`HTTP ${r.status}`);
+          const list = (await r.json()) as Record<string, unknown>[];
+          const nickname = ctx.machinePoolRegistry?.getCapacity(p.machineId)?.nickname ?? null;
+          for (const s of list) {
+            remote.push({
+              ...s,
+              machineId: s.machineId ?? p.machineId,
+              machineNickname: s.machineNickname ?? nickname ?? undefined,
+              remote: true,
+            });
+          }
+        } catch (err) {
+          failed.push({ machineId: p.machineId, error: err instanceof Error ? err.message : String(err) });
+        }
+      }));
+      res.json({
+        sessions: [...enriched, ...remote],
+        pool: {
+          enabled: !!ctx.machinePoolRegistry,
+          selfMachineId,
+          selfMachineNickname,
+          peersQueried: peers.length,
+          peersOk: peers.length - failed.length,
+          failed,
+        },
+      });
+      return;
+    }
 
     res.json(enriched);
   });

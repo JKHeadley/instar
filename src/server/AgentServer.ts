@@ -262,6 +262,8 @@ export class AgentServer {
     meshSelfId?: string;
     /** Resolve the lease-holder's base URL when this machine is not the holder (else null). */
     resolveRouterUrl?: () => string | null;
+    /** Every other active machine with a known URL — backs GET /sessions?scope=pool. */
+    resolvePeerUrls?: () => Array<{ machineId: string; url: string }>;
     /** Signed rollout-stage E2E result store (§Rollout). */
     sessionPoolE2EResultStore?: import('../core/SessionPoolE2EResultStore.js').SessionPoolE2EResultStore;
     localSigningKeyPem?: string;
@@ -1184,6 +1186,7 @@ export class AgentServer {
       secretSync: options.secretSync ?? null,
       meshSelfId: options.meshSelfId ?? null,
       resolveRouterUrl: options.resolveRouterUrl ?? null,
+      resolvePeerUrls: options.resolvePeerUrls ?? null,
       sessionPoolE2EResultStore: options.sessionPoolE2EResultStore ?? null,
       messageLedger: options.messageLedger ?? null,
       currentInboundByTopic: options.currentInboundByTopic ?? null,

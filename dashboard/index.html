@@ -203,6 +203,19 @@
     .model-badge.sonnet { background: #1b2e4e; color: #60a5fa; }
     .model-badge.haiku { background: #1b3e3e; color: #5eead4; }
 
+    /* Which machine a session runs on (multi-machine pool). */
+    .machine-badge {
+      padding: 1px 6px;
+      border-radius: 4px;
+      font-size: 10px;
+      font-weight: 600;
+      background: #3a2a1b;
+      color: #fbbf24;
+    }
+    /* A session running on ANOTHER machine — visible, but its terminal can't
+       stream here (open that machine's dashboard to interact). */
+    .session-item.remote { opacity: 0.8; cursor: default; }
+
     .type-badge {
       padding: 1px 6px;
       border-radius: 4px;
@@ -3472,6 +3485,11 @@
     let ws = null;
     let token = '';
     let sessions = [];
+    // Sessions running on OTHER machines in the pool (GET /sessions?scope=pool).
+    // Kept separate from `sessions` because the WebSocket replaces that array
+    // with LOCAL sessions on every broadcast — merging would be wiped each tick.
+    let remoteSessions = [];
+    let selfMachineNickname = null;
     let activeSession = null;
     let term = null;
     let fitAddon = null;
@@ -3518,6 +3536,7 @@
             connectWebSocket();
             startWaPolling();
             startVitalSigns();
+            startPoolSessionsPolling();
           } else {
             showAuthError('Incorrect PIN');
           }
@@ -3543,6 +3562,7 @@
             connectWebSocket();
             startWaPolling();
             startVitalSigns();
+            startPoolSessionsPolling();
           }
         })
         .catch(() => {});
@@ -3681,17 +3701,31 @@
     }
 
     // ── Session List ─────────────────────────────────────────
+    // Stable per-row key. Remote sessions are namespaced by machine so a tmux
+    // name reused on two machines never collides with a local row.
+    function sessionRowKey(s) {
+      return s.remote ? `remote:${s.machineId || '?'}:${s.tmuxSession}` : s.tmuxSession;
+    }
+
     function renderSessionList() {
       const list = document.getElementById('sessionList');
       const empty = document.getElementById('emptyState');
       const count = document.getElementById('sessionCount');
 
-      count.textContent = sessions.length;
+      // Local sessions (live via WebSocket) + every other machine's sessions
+      // (via the /sessions?scope=pool poll). Local rows inherit this machine's
+      // nickname so EVERY row states where it runs once the pool is live.
+      const all = [
+        ...sessions.map(s => (s.machineNickname || !selfMachineNickname) ? s : { ...s, machineNickname: selfMachineNickname }),
+        ...remoteSessions,
+      ];
+
+      count.textContent = all.length;
       // Keep tab bar count in sync
       const tabCount = document.getElementById('tabSessionCount');
-      if (tabCount) tabCount.textContent = sessions.length;
+      if (tabCount) tabCount.textContent = all.length;
 
-      if (sessions.length === 0) {
+      if (all.length === 0) {
         empty.style.display = 'flex';
         // Clear any existing session items
         list.querySelectorAll('.session-item').forEach(el => el.remove());
@@ -3708,29 +3742,35 @@
 
       // Remove sessions no longer running
       for (const [name, el] of existing) {
-        if (!sessions.find(s => s.tmuxSession === name)) {
+        if (!all.find(s => sessionRowKey(s) === name)) {
           el.remove();
         }
       }
 
       // Add/update sessions
-      for (const session of sessions) {
-        let el = existing.get(session.tmuxSession);
+      for (const session of all) {
+        let el = existing.get(sessionRowKey(session));
         if (!el) {
           el = document.createElement('div');
           el.className = 'session-item';
-          el.dataset.session = session.tmuxSession;
-          el.onclick = () => selectSession(session.tmuxSession, session);
+          el.dataset.session = sessionRowKey(session);
+          if (session.remote) {
+            // A remote session's terminal streams on ITS machine's dashboard —
+            // clicking here can't subscribe to it, so the row is informational.
+            el.title = `Running on ${session.machineNickname || session.machineId || 'another machine'} — open that machine's dashboard to interact.`;
+          } else {
+            el.onclick = () => selectSession(session.tmuxSession, session);
+          }
           list.appendChild(el);
         }
 
         const elapsed = formatElapsed(session.startedAt);
         const model = session.model || 'opus';
-        const isActive = session.tmuxSession === activeSession;
+        const isActive = !session.remote && session.tmuxSession === activeSession;
         const sType = session.type || (session.jobSlug ? 'job' : 'interactive');
         const tele = session.telemetry;
 
-        el.className = `session-item${isActive ? ' active' : ''}`;
+        el.className = `session-item${isActive ? ' active' : ''}${session.remote ? ' remote' : ''}`;
 
         let telemetryHtml = '';
         if (tele) {
@@ -3765,12 +3805,13 @@
         el.innerHTML = `
           <div class="session-name-row">
             <div class="session-name">${escapeHtml(session.platformName || session.name)}</div>
-            <button class="session-close-btn" data-tmux="${escapeHtml(session.tmuxSession)}" data-name="${escapeHtml(session.name)}" onclick="event.stopPropagation();closeSession(this.dataset.tmux,this.dataset.name)" title="Close session">&times;</button>
+            ${session.remote ? '' : `<button class="session-close-btn" data-tmux="${escapeHtml(session.tmuxSession)}" data-name="${escapeHtml(session.name)}" onclick="event.stopPropagation();closeSession(this.dataset.tmux,this.dataset.name)" title="Close session">&times;</button>`}
           </div>
           <div class="session-meta">
             <span class="type-badge ${sType}">${sType}</span>
             <span class="model-badge ${model}">${model}</span>
             <span class="platform-badge ${platform}" title="${platformLabel}">${platformIcon}</span>
+            ${session.machineNickname ? `<span class="machine-badge" title="Machine this session runs on">${escapeHtml(session.machineNickname)}</span>` : ''}
             <span>${elapsed}</span>
           </div>
           ${telemetryHtml}
@@ -4209,6 +4250,27 @@
     let waQrPollingStarted = 0; // timestamp when polling started
     const WA_QR_TIMEOUT_MS = 30000; // 30s timeout for QR appearance
     let waLastError = ''; // last error message for display
+
+    // ── Pool-wide sessions (multi-machine) ───────────────────
+    // The WebSocket only carries THIS machine's sessions. When the agent runs a
+    // multi-machine pool, poll the aggregated view so every session — on every
+    // machine — shows in the list, each tagged with the machine it runs on.
+    let poolPollTimer = null;
+    function startPoolSessionsPolling() {
+      if (poolPollTimer) return;
+      const poll = async () => {
+        try {
+          const r = await fetch('/sessions?scope=pool', { headers: { 'Authorization': `Bearer ${token}` } });
+          if (!r.ok) return;
+          const j = await r.json();
+          selfMachineNickname = (j.pool && j.pool.selfMachineNickname) || null;
+          remoteSessions = (j.sessions || []).filter(s => s.remote === true);
+          renderSessionList();
+        } catch { /* best-effort — peers may be offline; next tick retries */ }
+      };
+      poll();
+      poolPollTimer = setInterval(poll, 15000);
+    }
 
     function startWaPolling() {
       if (waQrInterval) return;

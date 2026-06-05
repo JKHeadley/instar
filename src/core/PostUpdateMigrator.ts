@@ -3166,6 +3166,7 @@ The attention queue spawns ONE Telegram forum topic per item — right for a gen
 Beyond the one-awake-machine model: with the pool enabled I run conversations across ALL my machines at once and can MOVE a conversation between them. Ships DARK behind \`multiMachine.sessionPool.stage\` (default 'dark'); a single-machine agent is a no-op.
 
 - **See the pool:** the **Machines tab** in the dashboard, or \`GET /pool\` (Bearer-auth) → which machine is the router ("dispatcher") + every machine's nickname, hardware, online status, load, and clock-skew status.
+- **Every session, every machine:** the dashboard sessions list shows ALL sessions across the pool, each tagged with the machine it runs on. API: \`GET /sessions?scope=pool\` → \`{ sessions: [...each with machineId/machineNickname...], pool: { peersOk, failed } }\`. An unreachable peer degrades to a \`failed\` entry — local sessions always answer.
 - **Machine nicknames** are the user-facing handle (auto-assigned, editable). Rename via \`PATCH /pool/machines/:machineId\` with \`{"nickname":"the mini"}\`, or inline on the Machines tab.
 - **Which machine + WHY (never guess):** \`GET /pool/placement?topic=N\` → the owning machine + nickname, the **reason** (\`pinned\` = a deliberate move vs \`placed\` = load-balanced vs \`unowned\`), and the lease-holder. Answerable from ANY machine (a standby proxies to the holder). Running ON a machine does NOT mean a topic was deliberately moved there — read this instead of inferring.
 - **Reliable transfer (phrasing-independent):** \`POST /pool/transfer\` with \`{"topic":N,"to":"<nickname|machineId>"}\` runs the same validated planner as "move this to <nickname>" but deterministically. 404 unknown · 409 rate-limited · 409 \`needsConfirmation\` for an offline target (re-send with \`"confirm":true\`). The lever to call directly when a natural-language move didn't catch.
@@ -3189,6 +3190,19 @@ Beyond the one-awake-machine model: with the pool enabled I run conversations ac
       content += '\n' + robustness + '\n';
       patched = true;
       result.upgraded.push('CLAUDE.md: added pool placement/transfer robustness lines');
+    }
+
+    // Pool-wide session visibility (2026-06-05): agents that ALREADY have the pool
+    // section predate GET /sessions?scope=pool (every session, every machine, each
+    // tagged with its machine — the dashboard cross-machine sessions list). Append
+    // the line so deployed agents can answer "what's running across my machines?"
+    // from the API. Idempotent via the unique `scope=pool` marker.
+    if (content.includes('Multi-Machine Session Pool (active-active') && !content.includes('scope=pool')) {
+      const poolSessions = `
+- **Every session, every machine:** the dashboard sessions list shows ALL sessions across the pool, each tagged with the machine it runs on. API: \`GET /sessions?scope=pool\` → \`{ sessions: [...each with machineId/machineNickname...], pool: { peersOk, failed } }\`. An unreachable peer degrades to a \`failed\` entry — local sessions always answer.`;
+      content += '\n' + poolSessions + '\n';
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added pool-wide session visibility line');
     }
 
     // Cross-Machine Secret Sync (spec Phase 4, 2026-06-04): deployed agents don't know
