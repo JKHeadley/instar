@@ -94,7 +94,7 @@ describe('Approval-as-Data ledger E2E lifecycle — feature is alive', () => {
   it('WIRING-INTEGRITY: the production HMAC signer is real — the persisted row verifies, a tamper fails', async () => {
     // The row recorded above is on disk, signed by the production signer
     // (HMAC over authToken). Reconstruct that signer independently and verify.
-    const file = path.join(stateDir, 'approval-ledger.jsonl');
+    const file = path.join(stateDir, 'state', 'approval-ledger.jsonl');
     const sign = (c: string) => createHmac('sha256', AUTH).update(c).digest('hex');
     const verifySig = (c: string, s: string) => {
       const e = sign(c);

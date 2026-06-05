@@ -213,6 +213,18 @@ The sections above describe the most commonly-used endpoints with curl examples 
 - `GET /agents`
 - `POST /agents/:name/restart`
 
+## /approvals
+
+Approval-as-Data (spec Part B / Phase 2): every operator approval recorded as
+durable, signed data — approved-as-is vs approved-with-change (with the why of
+each divergence) vs rejected — and the per-class agreement ratios computed from
+it. Tracks approvals wherever they occur (spec sign-off, chat, other). Read-only
+with respect to behavior; the ratio is a signal, never a gate.
+
+- `POST /approvals` — record an operator decision (mode + divergences MUST be operator-sourced; inconsistent rows 400)
+- `GET /approvals` — list recorded decisions (`?limit` / `?decisionClass` / `?surface`)
+- `GET /approvals/summary` — per-class `{ total, approvedAsIs, ratio, streak, autoApprovalEligible, divergenceCounts }` + a `bySurface` breakdown
+
 ## /apprenticeship
 - `GET /apprenticeship/instances`
 - `GET /apprenticeship/instances/:id`

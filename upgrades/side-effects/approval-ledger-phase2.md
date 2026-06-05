@@ -64,3 +64,16 @@ empty/missing file yields an empty summary (no crash).
 - E2E (`tests/e2e/approval-ledger-lifecycle.test.ts`, 5): real AgentServer boot, alive
   (200 not 503), record→summary→list lifecycle, Bearer-gate, and a WIRING-INTEGRITY proof
   that the production HMAC signer is real (persisted row verifies; a tamper fails).
+
+## Post-review amendments (same PR, pre-merge)
+
+- **State-path fix:** the ledger file follows the `.instar/state/` convention —
+  `config.stateDir` IS `.instar`, durable state lives under `state/`
+  (`.instar/state/approval-ledger.jsonl`, matching the spec's stated path). The e2e
+  wiring-integrity test proves the corrected path end-to-end.
+- **Ratchet exemptions:** the three deny-safe/default-empty catches carry
+  `@silent-fallback-ok` markers INSIDE the catch blocks (missing-file → empty
+  history; malformed signature → verifies false; init failure → reported via
+  console.warn + ledger null → routes 503).
+- **Docs coverage:** the three `/approvals` routes are documented in
+  `site/src/content/docs/reference/api.md` (route-floor gate).

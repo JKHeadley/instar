@@ -839,15 +839,16 @@ export class AgentServer {
           try {
             return expected.length === signature.length
               && timingSafeEqual(Buffer.from(expected), Buffer.from(signature));
-          } catch { return false; }
+          } catch { /* @silent-fallback-ok — a malformed signature must verify FALSE (deny-safe), never throw */ return false; }
         };
         this.approvalLedger = new ApprovalLedger({
-          filePath: path.join(options.config.stateDir, 'approval-ledger.jsonl'),
+          filePath: path.join(options.config.stateDir, 'state', 'approval-ledger.jsonl'),
           sign,
           verifySig,
         });
       }
     } catch (err) {
+      // @silent-fallback-ok — reported via console.warn; a ledger init failure must never block server boot.
       console.warn('[instar] approval-ledger init failed (non-fatal):', err);
       this.approvalLedger = null;
     }
