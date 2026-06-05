@@ -113,6 +113,12 @@ function findOptionKey(options: PromptOption[], accept: RegExp, reject?: RegExp)
   return option?.key ?? null;
 }
 
+function trimTrailingBlankRows(lines: string[]): string[] {
+  let end = lines.length;
+  while (end > 0 && lines[end - 1].trim() === '') end--;
+  return end === 0 ? [''] : lines.slice(0, end);
+}
+
 function detectGeminiSafeDefaultModal(lines: string[], fullWindow?: string[]): PatternMatch | null {
   const windowLines = fullWindow ?? lines;
   const haystack = windowLines.join('\n');
@@ -456,8 +462,11 @@ export class InputDetector extends EventEmitter {
 
     const stripped = stripAnsi(rawOutput);
 
-    // Take only the last N lines (detection window)
-    const allLines = stripped.split('\n');
+    // Take only the last N meaningful lines. Tmux captures preserve the full pane
+    // height, so a prompt near the top of a 50-row pane can be followed by enough
+    // blank fill rows to fall out of the slice. Trim only trailing blank rows:
+    // interior blank lines still matter for modal structure and command capture.
+    const allLines = trimTrailingBlankRows(stripped.split('\n'));
     const lines = allLines.slice(-this.config.detectionWindowLines);
     const tailText = lines.join('\n');
 

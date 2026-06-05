@@ -368,6 +368,22 @@ describe('InputDetector.pattern.geminiSafeDefaultModals', () => {
     expect(prompt!.autoDismissDisposition).toBe('safe-default');
   });
 
+  it('detects the npx instar package-runner modal in a default pane with blank fill rows', () => {
+    const detector = makeDetector();
+    const promptLines = [
+      'Need to install the following packages:',
+      'instar@1.3.282',
+      'Ok to proceed? (y)',
+    ];
+    const output = `${promptLines.join('\n')}${'\n'.repeat(50)}`;
+
+    const prompt = detectWithDebounce(detector, 'gemini-default-pane', output);
+    expect(prompt).not.toBeNull();
+    expect(prompt!.summary).toMatch(/npx instar default/i);
+    expect(prompt!.autoDismissKey).toBe('Enter');
+    expect(prompt!.autoDismissDisposition).toBe('safe-default');
+  });
+
   it('does NOT auto-answer a generic non-Gemini install question', () => {
     const detector = makeDetector();
     const output = [
@@ -415,6 +431,24 @@ describe('InputDetector.pattern.geminiSafeDefaultModals', () => {
     expect(prompt!.autoDismissKey).toBe('3');
     expect(prompt!.autoDismissDisposition).toBe('safe-reject');
     expect(prompt!.autoDismissCommand).toContain('# Okay');
+  });
+
+  it('detects Gemini execution-approval modals in a default pane with blank fill rows', () => {
+    const detector = makeDetector();
+    const output = [
+      'Allow execution of:',
+      'echo GEMINI_PROMPT_GATE_REJECT_SMALL_803',
+      '',
+      '1. Allow once',
+      '2. Reject',
+    ].join('\n') + '\n'.repeat(50);
+
+    const prompt = detectWithDebounce(detector, 'gemini-exec-default-pane', output);
+    expect(prompt).not.toBeNull();
+    expect(prompt!.summary).toMatch(/execution-approval/i);
+    expect(prompt!.autoDismissKey).toBe('2');
+    expect(prompt!.autoDismissDisposition).toBe('safe-reject');
+    expect(prompt!.autoDismissCommand).toBe('echo GEMINI_PROMPT_GATE_REJECT_SMALL_803');
   });
 
   it('does NOT auto-approve execution-approval modals even when allow is highlighted', () => {
