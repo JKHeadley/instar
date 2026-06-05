@@ -1,7 +1,7 @@
 ---
 title: Respawn Context Capsule — a killed working session resumes its task, not just its conversation
-status: draft
-review-convergence: pending
+status: converged
+review-convergence: 2026-06-05 (Codey adversarial review, PR #833 comment 4632349115 — all 3 open questions resolved, verify-before-action made mandatory; Echo concurred and applied the edit)
 approved: false
 owner: echo
 builder: codey (his #60 proposal, generalized; echo oversees)
@@ -61,6 +61,15 @@ The respawn path (bridge CONTINUATION spawn AND watchdog/sentinel recovery respa
 
 Staleness: capsules older than `capsule.maxAgeHours` (default 24h) are surfaced as "POSSIBLY STALE" rather than dropped — the session decides. A capsule for a COMPLETED task (openedPr merged) is retired by the writer at PR-merge checkpoint or ignored by age.
 
+### Verify-before-action (MANDATORY reader requirement — convergence edit, Codey review)
+
+A stale/wrong capsule's risk is not data loss; it is **false confidence** — a high-quality hallucination seed that walks the respawn into the wrong worktree or a merged branch. Hint-not-authority is therefore ENFORCED at the reader, not left to prose:
+
+1. **Injected language carries the verification order**: the RESUMING WORK block MUST instruct the respawn to verify the checkout (worktree exists, branch matches, base reachable, hooks active) BEFORE any edit, commit, push, or PR action. Stale capsules (past `maxAgeHours`) are injected with lower-authority language — "possible prior work-state found; verify before continuing" — never "resume this task".
+2. **Path canonicalization + allowlist**: `checkout.worktreePath` is canonicalized (symlinks resolved) and MUST fall inside the agent's worktree convention area (`~/.instar/agents/<agent>/.worktrees/`). A path outside the allowlist, or one whose canonical form diverges from the recorded form, is reported as divergence — never followed.
+3. **Claims, not state**: `branch`, `baseRef`, `baseSha`, and `hooksVerified` are claims to verify against live git, not state to trust. If `openedPr` is merged/closed, or the branch no longer points near `baseSha`, the respawn reports the divergence and proceeds from ground truth.
+4. **Divergence is reported, loudly**: any failed verification is surfaced in the session's first output (and the capsule retired/flagged), so a wrong capsule can never silently steer work. Distrust Temporary Success applies to the capsule itself.
+
 ### Lifecycle / ownership
 
 - One capsule per session NAME (the respawn inherits the name → trivially finds it).
@@ -84,8 +93,12 @@ Staleness: capsules older than `capsule.maxAgeHours` (default 24h) are surfaced 
 5. Routes `GET/POST/DELETE /sessions/:name/capsule` — integration; 503-when-disabled e2e.
 6. Ships behind `sessions.workCapsule` (developmentAgent pattern: live on echo+codey, dark fleet) with migrateConfig parity.
 
-## Open questions for convergence
+## Resolved convergence questions (Codey review, 2026-06-05 — PR #833 comment 4632349115)
 
-1. Should the gate hook write the capsule UNCONDITIONALLY (every gated commit) or only when a capsule already exists (session opted in)? (Lean: only-if-exists — keeps the gate's job narrow.)
-2. Codex/gemini parity: codex sessions have no Claude hooks — the explicit CLI writer covers them, but should the codex loop-driver checkpoint automatically? (Lean: yes, one call at its turn boundary — cheap.)
-3. Capsule for NON-dev sessions (pure conversation): skip entirely (no task ⇒ no capsule) — confirm.
+1. **Gate-hook write policy: only-if-exists.** The gate updates an existing capsule's gate fields; it never CREATES one. Creation belongs to explicit session intent or the structural worktree writer — unconditional creation would make ordinary maintenance commits look like resumable tasks the session never opted into.
+2. **Codex/Gemini loop-driver checkpointing: yes, narrow.** At its turn boundary the loop-driver refreshes existing capsule metadata only (`updatedAt`, session identity, verified cwd/worktree). It never synthesizes a task or `nextAction` from conversation text — the session owns `nextAction` via explicit writer calls.
+3. **Non-dev / pure-conversation sessions: skip entirely.** No task ⇒ no capsule; the absence of a capsule is itself the correct signal there (conversational sessions are where a stale capsule would mislead most).
+
+Builder/overseer sizing confirmed in review: Codey builds (store, worktree writer, loop-driver checkpoint, injector, tests — the live failures happened in his operating loop); Echo owns convergence + the acceptance bar (adversarial stale-capsule cases). Automatic Stop-hook capture stays OUT of this slice.
+
+Pinned live fixture (from the #834 relay cycle): ledger cycle `8ee9b174-cde7-4194-bc2e-b5069574d798` (codey-to-gemini, cycle 3, telegram-playwright, 2026-06-05T12:33:08Z) — Codey's 12:55Z restart recovery succeeded only after a manual context re-injection; the capsule makes that handoff structural.
