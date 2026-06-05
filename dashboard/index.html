@@ -790,27 +790,6 @@
       display: none !important;
     }
 
-    /* ── process-health tab (PROCESS-HEALTH-DASHBOARD-TAB-SPEC §4.1) ──
-       Large, readable, calm. No monospace, no tables, no alarm colors.
-       Measurable bars: headline ≥24px, section headers ≥20px, body ≥17px,
-       line-height 1.5–1.6. One neutral accent token, used ONLY for the
-       maturation "you're here" marker. */
-    .ph-root {
-      --ph-accent: #4ade80;
-      max-width: 760px;
-      font-size: 18px;
-      line-height: 1.55;
-      color: var(--text-bright);
-    }
-    .ph-title { font-size: 22px; font-weight: 600; color: var(--text-bright); line-height: 1.5; }
-    .ph-stamp { font-size: 14px; color: var(--text-dim); }
-    .ph-headline-wrap { margin: 4px 0 8px; }
-    .ph-headline { font-size: 26px; font-weight: 600; line-height: 1.5; color: var(--text-bright); }
-    .ph-subline { font-size: 18px; color: var(--text-dim); margin-top: 8px; line-height: 1.55; }
-    .ph-section { display: flex; flex-direction: column; gap: 10px; }
-    .ph-h { font-size: 20px; font-weight: 600; color: var(--text-bright); line-height: 1.5; margin: 0; }
-    .ph-h-sub { font-size: 15px; color: var(--text-dim); line-height: 1.55; margin: 4px 0 4px 0; max-width: 720px; }
-    .ph-empty { font-size: 18px; color: var(--text-dim); line-height: 1.6; }
     /* Mandates tab */
     .mnd-card { border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; margin-bottom: 12px; display: flex; flex-direction: column; gap: 8px; }
     .mnd-card-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
@@ -839,6 +818,28 @@
     .mnd-reason-cell { color: var(--text-dim); max-width: 420px; }
     .mnd-audit-head { display: flex; gap: 12px; align-items: center; margin-bottom: 8px; }
     .mnd-dim { font-size: 13px; color: var(--text-dim); }
+
+    /* ── process-health tab (PROCESS-HEALTH-DASHBOARD-TAB-SPEC §4.1) ──
+       Large, readable, calm. No monospace, no tables, no alarm colors.
+       Measurable bars: headline ≥24px, section headers ≥20px, body ≥17px,
+       line-height 1.5–1.6. One neutral accent token, used ONLY for the
+       maturation "you're here" marker. */
+    .ph-root {
+      --ph-accent: #4ade80;
+      max-width: 760px;
+      font-size: 18px;
+      line-height: 1.55;
+      color: var(--text-bright);
+    }
+    .ph-title { font-size: 22px; font-weight: 600; color: var(--text-bright); line-height: 1.5; }
+    .ph-stamp { font-size: 14px; color: var(--text-dim); }
+    .ph-headline-wrap { margin: 4px 0 8px; }
+    .ph-headline { font-size: 26px; font-weight: 600; line-height: 1.5; color: var(--text-bright); }
+    .ph-subline { font-size: 18px; color: var(--text-dim); margin-top: 8px; line-height: 1.55; }
+    .ph-section { display: flex; flex-direction: column; gap: 10px; }
+    .ph-h { font-size: 20px; font-weight: 600; color: var(--text-bright); line-height: 1.5; margin: 0; }
+    .ph-h-sub { font-size: 15px; color: var(--text-dim); line-height: 1.55; margin: 4px 0 4px 0; max-width: 720px; }
+    .ph-empty { font-size: 18px; color: var(--text-dim); line-height: 1.6; }
     /* Page intro — one-sentence grounding right under the title so terms like
        "it" / "the system" later in the page have a clear referent. */
     .ph-intro { font-size: 17px; color: var(--text); line-height: 1.55; margin: 0; max-width: 720px; }
