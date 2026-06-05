@@ -76,3 +76,11 @@ without a mandate), so fleet exposure is zero until an operator issues one.
   alive + Bearer-gated, deny-by-default on fresh boot, full PIN-issue→allow→deny→
   revoke→deny lifecycle with chain-verified audit, and the production-HMAC
   wiring-integrity proof (persisted authProof verifies; a widened mandate fails).
+
+## Post-review amendment (same PR, pre-merge)
+
+- **Discoverability:** the `/mandate` prefix is classified in `CapabilityIndex.ts`
+  (CAPABILITY_INDEX → surfaced in `/capabilities` with all six endpoints + the
+  evaluate-before-acting + PIN-gating semantics), satisfying the
+  capabilities-discoverability gate. Agents discover the gate; they still cannot
+  issue through it.

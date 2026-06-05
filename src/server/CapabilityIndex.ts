@@ -577,6 +577,22 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     }),
   },
   {
+    key: 'coordinationMandate',
+    prefixes: ['/mandate'],
+    description: 'Coordination Mandate — deny-by-default authority gate for autonomous agent-to-agent actions. The operator\'s bounded, expiring, revocable mandate (issued from the dashboard behind their PIN) is the authorizer, never the agent. Every decision (allow AND deny) lands in a hash-chained, tamper-evident audit. With no mandate issued, every evaluation denies.',
+    build: ({ ctx }) => ({
+      enabled: !!ctx.coordination,
+      endpoints: [
+        'POST /mandate/evaluate — check an intended A2A action { action, params, agentFp, mandateId } → { decision, reason } (call BEFORE acting; a deny means stop)',
+        'GET /mandate — list mandates (each with live authorshipValid)',
+        'GET /mandate/:id — one mandate + verification status',
+        'GET /mandate/audit?limit=N — the chained decision audit (chain.ok:false = tampering — surface it)',
+        'POST /mandate/issue — PIN-GATED (operator only; agent Bearer token is refused)',
+        'POST /mandate/:id/revoke — PIN-GATED (the operator kill switch)',
+      ],
+    }),
+  },
+  {
     key: 'resourceLedger',
     prefixes: ['/resources'],
     description: 'Per-agent ResourceLedger — read-only CPU/memory + rate-limit-event observability (mirrors TokenLedger). Phase A persists rate-limit events (breaker trips + session-sentinel detections) across restarts; Phase B continuously samples CPU% + RSS of the agent server + its spawned sessions. Never gates.',
