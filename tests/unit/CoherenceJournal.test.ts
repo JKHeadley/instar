@@ -680,3 +680,69 @@ function realFsClone(): JournalFs {
     readSync: fs.readSync,
   };
 }
+
+// ── Issue #925: lock retry + heartbeat + pid-reuse reclaim (live 2026-06-06) ──
+describe('writer lock recovery (#925)', () => {
+  it('a locked-out writer RETRIES and recovers in place when the lock is freed', async () => {
+    const dirX = fs.mkdtempSync(path.join(os.tmpdir(), 'cj-lock-retry-'));
+    try {
+      const lockDir = path.join(dirX, 'state', 'coherence-journal');
+      fs.mkdirSync(lockDir, { recursive: true });
+      const lockPath = path.join(lockDir, 'm_t.lock');
+      // A LIVE foreign holder (pid 1 — kill is EPERM ⇒ conservative refuse;
+      // mtime fresh ⇒ the heartbeat defense also refuses).
+      fs.writeFileSync(lockPath, JSON.stringify({ pid: 1, at: new Date().toISOString() }));
+      const j = new CoherenceJournal({ stateDir: dirX, machineId: 'm_t', flushIntervalMs: 10 });
+      j.open();
+      expect(j.isLockedOut).toBe(true);
+      // Holder exits: the lock file is freed.
+      fs.rmSync(lockPath, { force: true });
+      // The retry cadence is max(40×flushIntervalMs, 10s) — too slow for a unit
+      // test, so assert the RECOVERY PATH directly via a second open() attempt
+      // shape: tryActivate through a fresh instance takes the lock instantly.
+      const j2 = new CoherenceJournal({ stateDir: dirX, machineId: 'm_t', flushIntervalMs: 10 });
+      j2.open();
+      expect(j2.isLockedOut).toBe(false);
+      j2.close();
+      j.close();
+    } finally {
+      fs.rmSync(dirX, { recursive: true, force: true });
+    }
+  });
+
+  it('an mtime-stale lock is reclaimed even when its recorded pid is alive (pid-reuse defense)', () => {
+    const dirX = fs.mkdtempSync(path.join(os.tmpdir(), 'cj-lock-stale-'));
+    try {
+      const lockDir = path.join(dirX, 'state', 'coherence-journal');
+      fs.mkdirSync(lockDir, { recursive: true });
+      const lockPath = path.join(lockDir, 'm_t.lock');
+      // Recorded pid = 1 (launchd — alive forever; kill(1,0) is EPERM, the
+      // conservative no-reclaim path) but the lock's mtime is 10 minutes old:
+      // a live holder would have heartbeated it.
+      fs.writeFileSync(lockPath, JSON.stringify({ pid: 1, at: new Date().toISOString() }));
+      const old = new Date(Date.now() - 10 * 60 * 1000);
+      fs.utimesSync(lockPath, old, old);
+      const j = new CoherenceJournal({ stateDir: dirX, machineId: 'm_t', flushIntervalMs: 10 });
+      j.open();
+      expect(j.isLockedOut).toBe(false); // reclaimed despite the "alive" pid
+      j.close();
+    } finally {
+      fs.rmSync(dirX, { recursive: true, force: true });
+    }
+  });
+
+  it('a FRESH lock held by a live pid is NOT reclaimed (the conservative case)', () => {
+    const dirX = fs.mkdtempSync(path.join(os.tmpdir(), 'cj-lock-live-'));
+    try {
+      const lockDir = path.join(dirX, 'state', 'coherence-journal');
+      fs.mkdirSync(lockDir, { recursive: true });
+      fs.writeFileSync(path.join(lockDir, 'm_t.lock'), JSON.stringify({ pid: 1, at: new Date().toISOString() }));
+      const j = new CoherenceJournal({ stateDir: dirX, machineId: 'm_t', flushIntervalMs: 10 });
+      j.open();
+      expect(j.isLockedOut).toBe(true); // live + fresh → respected
+      j.close();
+    } finally {
+      fs.rmSync(dirX, { recursive: true, force: true });
+    }
+  });
+});

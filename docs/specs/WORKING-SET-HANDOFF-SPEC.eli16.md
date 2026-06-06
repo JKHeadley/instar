@@ -24,3 +24,5 @@ Also riding along, earned the hard way: the mesh-health guard. A machine that's 
 And the ask-me-anytime move: if you mention work this machine can't find, I can trigger the fetch reflex — "who made artifacts for this topic? go get them" — the EXO failure as a one-call recovery.
 
 Activates only where machine-to-machine diary sync is already on (your Laptop+Mini pair today; dark everywhere else). The build starts after this spec finishes the four-round review gauntlet, under your standing 24-hour directive.
+
+**Live-proof amendment (2026-06-06):** the first live run caught a gap — a conversation that just MOVED but hasn't received a message yet technically has "no owner" recorded, and the fetch refused to run for it. Fixed: the machine the conversation was deliberately moved TO counts as its home until real traffic says otherwise.

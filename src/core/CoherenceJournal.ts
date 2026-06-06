@@ -149,6 +149,8 @@ export interface CoherenceJournalConfig {
 
 /** The fs primitives the flusher/opener use (seamable for fault injection). */
 export interface JournalFs {
+  /** Optional (lock mtime heartbeat, #925). Defaults to fs.futimesSync. */
+  futimesSync?: (fd: number, atime: Date, mtime: Date) => void;
   openSync: typeof fs.openSync;
   writeSync: typeof fs.writeSync;
   fdatasyncSync: typeof fs.fdatasyncSync;
@@ -167,6 +169,7 @@ export interface JournalFs {
 
 function realFs(): JournalFs {
   return {
+    futimesSync: fs.futimesSync,
     openSync: fs.openSync,
     writeSync: fs.writeSync,
     fdatasyncSync: fs.fdatasyncSync,
@@ -283,6 +286,10 @@ export class CoherenceJournal {
   };
   private rateBuckets: Record<JournalKind, RateBucket>;
   private timer: ReturnType<typeof setInterval> | null = null;
+  /** Lock-retry timer while writer-locked-out (issue #925). */
+  private retryTimer: ReturnType<typeof setInterval> | null = null;
+  /** Flush counter for the lock mtime heartbeat (pid-reuse defense, #925). */
+  private flushCount = 0;
   private lockFd: number | null = null;
   private flushing = false;
   /** Monotonic suffix so rapid rotations within one ms get unique archive names. */
@@ -349,25 +356,51 @@ export class CoherenceJournal {
     if (this.state !== 'closed') return;
     this.ensureDirs();
 
-    if (!this.acquireLock()) {
-      // Loser: disable the writer. Never block / throw into callers.
+    if (!this.tryActivate()) {
+      // Loser: disable the writer — but KEEP TRYING on a bounded cadence.
+      // Issue #925 (live 2026-06-06): a restart cascade left a stale lock the
+      // boot-time reclaim couldn't take (the old process lingered through the
+      // handoff, then died) — with no retry, the writer stayed silently
+      // read-only until the NEXT restart. The retry timer closes that hole:
+      // the moment the holder exits (or its lock goes mtime-stale), this
+      // process takes over and the writer recovers in place.
       this.state = 'writer-locked-out';
-      this.log('lock', `[coherence-journal] writer locked out for ${this.machineId} — another process holds the lock`);
+      this.log('lock', `[coherence-journal] writer locked out for ${this.machineId} — another process holds the lock; retrying in background`);
+      const retryMs = Math.max(this.flushIntervalMs * 40, 10_000);
+      this.retryTimer = setInterval(() => {
+        if (this.state !== 'writer-locked-out') return;
+        if (this.tryActivate()) {
+          this.log('lock', `[coherence-journal] writer lock RECOVERED for ${this.machineId} — emissions resume`);
+          if (this.retryTimer) {
+            clearInterval(this.retryTimer);
+            this.retryTimer = null;
+          }
+        }
+      }, retryMs);
+      if (typeof this.retryTimer.unref === 'function') this.retryTimer.unref();
       return;
     }
+  }
 
+  /** Acquire + recover + start the flusher. Returns false when the lock is held. */
+  private tryActivate(): boolean {
+    if (!this.acquireLock()) return false;
     this.loadOrInitMeta();
     for (const kind of JOURNAL_KINDS) {
       this.recoverKind(kind);
     }
-
     this.state = 'active';
     this.timer = setInterval(() => this.flush(), this.flushIntervalMs);
     if (typeof this.timer.unref === 'function') this.timer.unref();
+    return true;
   }
 
   /** Stop the flusher, drain once synchronously (best-effort), release the lock. */
   close(): void {
+    if (this.retryTimer) {
+      clearInterval(this.retryTimer);
+      this.retryTimer = null;
+    }
     if (this.timer) {
       clearInterval(this.timer);
       this.timer = null;
@@ -661,6 +694,16 @@ export class CoherenceJournal {
    * Crash-safe ordering: data durable BEFORE meta. Never throws.
    */
   flush(): void {
+    // Lock mtime heartbeat (issue #925, pid-reuse defense): refresh the lock
+    // file's mtime on a slow cadence so a LIVE holder is distinguishable from
+    // a dead one whose pid was reused — reclaim treats an mtime-stale lock as
+    // dead even when kill(pid, 0) succeeds.
+    if (this.state === 'active' && this.lockFd !== null && ++this.flushCount % 40 === 0) {
+      try {
+        this.io.futimesSync?.(this.lockFd, new Date(), new Date());
+      } catch { /* @silent-fallback-ok: journal observability must never endanger the observed operation (COHERENCE-JOURNAL-SPEC §3.1) */
+      }
+    }
     if (this.state !== 'active') return;
     if (this.flushing) return; // re-entrancy guard (the timer can overlap a slow flush)
     if (this.queue.length === 0) return;
@@ -1063,6 +1106,18 @@ export class CoherenceJournal {
       const pid = Number(obj?.pid);
       if (!Number.isFinite(pid) || pid <= 0) return false;
       if (pid === process.pid) return false;
+      // pid-reuse defense (#925): a LIVE holder heartbeats the lock mtime
+      // every ~10s; a lock untouched for 5+ minutes is dead regardless of
+      // whether some unrelated process now wears its pid.
+      try {
+        const st = this.io.statSync(lockPath);
+        const mt = (st as { mtimeMs?: number }).mtimeMs;
+        if (typeof mt === 'number' && this.now().getTime() - mt > 5 * 60 * 1000) {
+          SafeFsExecutor.safeRmSync(lockPath, { force: true, operation: 'coherence-journal:reclaim-mtime-stale-lock (#925)' });
+          return true;
+        }
+      } catch { /* @silent-fallback-ok: journal observability must never endanger the observed operation (COHERENCE-JOURNAL-SPEC §3.1) */
+      }
       try {
         process.kill(pid, 0); // throws if the process does not exist
         return false; // still alive — do NOT reclaim
