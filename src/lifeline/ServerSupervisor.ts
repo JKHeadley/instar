@@ -24,6 +24,7 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 import { detectTmuxPath } from '../core/Config.js';
+import { SlowRetrySentinelEscalation } from './SlowRetrySentinelEscalation.js';
 import { SleepWakeDetector } from '../core/SleepWakeDetector.js';
 import { cpuLoadRatio, DEFAULT_MAX_LOAD_RATIO } from '../core/cpuStarvation.js';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
@@ -261,6 +262,12 @@ export class ServerSupervisor extends EventEmitter {
   private readonly maxCircuitBreakerRetries = 3; // Try 3 times at 30-min intervals before entering slow-retry
   private readonly slowRetryIntervalMs = 2 * 60 * 60_000; // 2 hours between slow retries (never truly give up)
   private slowRetryStartedAt = 0; // When slow retry mode started
+  /**
+   * Eternal Sentinel condition 4 ("No Unbounded Loops", P19): never-give-up
+   * must not mean never-tell-anyone. Fires the one-per-episode 'sentinelStalled'
+   * escalation after a sustained-failure threshold; the retrying continues.
+   */
+  private readonly sentinelEscalation: SlowRetrySentinelEscalation;
   private lastCrashOutput = ''; // Last captured crash output for diagnostics
   private doctorSessionSecret: string | null = null; // HMAC secret for doctor restart requests
   private sleepWakeDetector: SleepWakeDetector | null = null; // Detects short sleeps that gap-based detection misses
@@ -289,6 +296,8 @@ export class ServerSupervisor extends EventEmitter {
     startupGraceSeconds?: number;
     /** Injectable CPU-load-ratio source (loadavg[0]/cpuCount) for tests. Default: cpuLoadRatio. */
     loadRatioProvider?: () => number;
+    /** Sustained-failure threshold before the one-per-episode slow-retry escalation. Default: 12h. */
+    slowRetryEscalateAfterMs?: number;
   }) {
     super();
     this.projectDir = options.projectDir;
@@ -298,6 +307,9 @@ export class ServerSupervisor extends EventEmitter {
     this.tmuxPath = detectTmuxPath();
     this.serverSessionName = `${this.projectName}-server`;
     this.loadRatioProvider = options.loadRatioProvider ?? (() => cpuLoadRatio());
+    this.sentinelEscalation = new SlowRetrySentinelEscalation({
+      escalateAfterMs: options.slowRetryEscalateAfterMs,
+    });
 
     if (options.maintenanceWaitMinutes !== undefined) {
       this.maintenanceWaitMs = options.maintenanceWaitMinutes * 60_000;
@@ -478,6 +490,7 @@ export class ServerSupervisor extends EventEmitter {
     this.restartAttempts = 0;
     this.maxRetriesExhaustedAt = 0;
     this.slowRetryStartedAt = 0;
+    this.sentinelEscalation.reset(); // episode over — re-arm the one-shot escalation
     this.wakeTransitionUntil = 0;
     console.log('[Supervisor] Circuit breaker reset');
   }
@@ -1831,9 +1844,24 @@ export class ServerSupervisor extends EventEmitter {
 
       // Phase 2: Slow retry — never truly give up. Transient issues (Node version change,
       // disk full, port conflict) often resolve themselves. Try every 2 hours forever.
+      //
+      // ETERNAL SENTINEL (declared per "No Unbounded Loops" / P19): this loop is the
+      // healer of last resort for the server — the sanctioned never-give-up class.
+      // Its brakes: rate floor (one attempt per slowRetryIntervalMs, constant cost),
+      // and condition-4 observability below — after escalateAfterMs of sustained
+      // failure it tells the operator ONCE per episode, then keeps quietly trying.
       if (this.slowRetryStartedAt === 0) {
         this.slowRetryStartedAt = Date.now();
         console.log(`[Supervisor] Circuit breaker fast retries exhausted. Entering slow-retry mode (every ${this.slowRetryIntervalMs / 3600_000}h). Use /lifeline reset for immediate retry.`);
+      }
+
+      // Condition 4 — never-give-up must not mean never-tell-anyone. One
+      // escalation per episode after the sustained-failure threshold; the
+      // latch lives in SlowRetrySentinelEscalation, keyed on this episode.
+      if (this.sentinelEscalation.shouldEscalate(this.slowRetryStartedAt)) {
+        const hoursStalled = Math.round((Date.now() - this.slowRetryStartedAt) / 3600_000);
+        console.log(`[Supervisor] Slow-retry sentinel stalled ${hoursStalled}h without recovery — escalating once (retries continue)`);
+        this.emit('sentinelStalled', { hoursStalled, retryIntervalHours: this.slowRetryIntervalMs / 3600_000 });
       }
 
       const slowElapsed = Date.now() - (this.slowRetryStartedAt + this.slowRetryIntervalMs * Math.floor((Date.now() - this.slowRetryStartedAt) / this.slowRetryIntervalMs));

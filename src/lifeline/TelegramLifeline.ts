@@ -321,6 +321,15 @@ export class TelegramLifeline {
       this.notifyCircuitBroken(totalFailures, lastCrashOutput);
     });
 
+    // Eternal Sentinel condition 4 (P19): the slow-retry healer never gives up,
+    // but after a sustained-failure threshold it must tell the operator ONCE
+    // per episode instead of flailing silently for days. The one-shot latch
+    // lives supervisor-side; this is purely the delivery.
+    this.supervisor.on('sentinelStalled', (info: { hoursStalled: number; retryIntervalHours: number }) => {
+      console.error(`[Lifeline] Slow-retry sentinel stalled ${info.hoursStalled}h without recovery — notifying operator once`);
+      this.notifySentinelStalled(info);
+    });
+
     this.supervisor.on('updateApplied', (targetVersion: string) => {
       console.log(`[Lifeline] Update to v${targetVersion} applied — scheduling self-restart to pick up new code`);
       // Delay the self-exit to allow queue replay and notifications to flush.
@@ -2042,6 +2051,24 @@ export class TelegramLifeline {
       debugCommand +
       `\n\nTo retry: /lifeline reset (resets circuit breaker and restarts)\n` +
       `You'll be notified when the server recovers.`
+    ).catch(() => {});
+  }
+
+  /**
+   * One-per-episode escalation for the slow-retry Eternal Sentinel (P19
+   * condition 4). The supervisor keeps retrying after this — the message
+   * exists so "never give up" can never again mean "flail silently for days."
+   */
+  private async notifySentinelStalled(info: { hoursStalled: number; retryIntervalHours: number }): Promise<void> {
+    const topicId = this.lifelineTopicId ?? 1;
+    await this.sendToTopic(topicId,
+      `⏳ STILL DOWN AFTER ${info.hoursStalled} HOURS\n\n` +
+      `My server has been down for about ${info.hoursStalled} hours. I've kept retrying every ` +
+      `${info.retryIntervalHours} hours and will keep trying — but at this point a human may be needed.\n\n` +
+      `What you can do:\n` +
+      `  /lifeline doctor — spawns a diagnostic session that reads the crash logs\n` +
+      `  /lifeline reset — retry immediately instead of waiting for the next cycle\n\n` +
+      `This is the only nudge I'll send for this outage — I'll tell you when the server recovers.`
     ).catch(() => {});
   }
 

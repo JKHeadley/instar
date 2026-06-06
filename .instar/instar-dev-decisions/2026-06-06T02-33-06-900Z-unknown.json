@@ -1,0 +1,18 @@
+{
+  "ts": "2026-06-06T02:33:06.900Z",
+  "slug": "unknown",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 117,
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "The slow-retry mode shipped (pre-instar-repo history) deliberately never-give-up with a code comment saying so; the missing operator escalation was a designed-in observability gap, not a regression from any PR. Surfaced by the 2026-06-05 multi-machine loop-safety audit (CMT-1109) and ratified as the namesake case of the No Unbounded Loops Eternal Sentinel clause (P19 condition 4)."
+  },
+  "verdict": "blocked"
+}
