@@ -19,6 +19,7 @@
  */
 
 import type { ParsedOrgIntent } from './OrgIntentManager.js';
+import type { IntelligenceProvider } from './types.js';
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -28,6 +29,19 @@ export interface RefusalResult {
   /** The constraint text that triggered the refusal (if any). */
   matchedConstraint?: string;
   reason: string;
+}
+
+/**
+ * HOW a governance verdict was produced — Truthful Provenance (constitution):
+ * a verdict must carry the method that generated it so consumers never
+ * mistake a heuristic for ground truth (PR #899), nor an LLM judgment for
+ * certainty (this Phase 2).
+ */
+export type JudgeMethod = 'keyword-heuristic' | 'llm-judge';
+
+/** A refusal verdict produced by the LLM judge (always method 'llm-judge'). */
+export interface JudgedRefusalResult extends RefusalResult {
+  method: 'llm-judge';
 }
 
 export interface EndorsementResult {
@@ -141,4 +155,121 @@ export class IntentTestHarness {
   canGovern(): boolean {
     return this.intent.constraints.length > 0;
   }
+}
+
+// ── Phase-2 LLM judge (CMT-1128) ─────────────────────────────────────
+//
+// The keyword matcher above is a PRE-FILTER, not a decision-maker (the
+// IntelligenceProvider contract, types.ts): it is high-precision when it
+// matches but produces FALSE NEGATIVES on semantically-related wording (the
+// live boundary-map example: a constraint "never present unverified WORK as
+// completed" does not keyword-match "estimates as CONFIRMED numbers" though
+// it plainly governs it in spirit). The judge below closes that side: callers
+// short-circuit on a keyword MATCH (free, precise) and escalate keyword
+// MISSES to one bounded LLM call that judges by MEANING. Any judge problem —
+// no provider, circuit open, malformed reply — returns null so the caller
+// keeps the heuristic verdict and says so honestly (Truthful Provenance:
+// method 'llm-judge' is only ever claimed for a real, parsed LLM verdict).
+
+/** Options for a single judge call. */
+export interface JudgeOptions {
+  /** Per-call timeout in ms (default 8000 — bounded for synchronous HTTP callers). */
+  timeoutMs?: number;
+}
+
+interface JudgeReply {
+  forbidden: boolean;
+  constraintIndex: number | null;
+  reason: string;
+}
+
+/** Strictly parse the judge's reply; null on anything malformed. */
+function parseJudgeReply(raw: string, constraintCount: number): JudgeReply | null {
+  const start = raw.indexOf('{');
+  const end = raw.lastIndexOf('}');
+  if (start === -1 || end <= start) return null;
+  let obj: unknown;
+  try {
+    obj = JSON.parse(raw.slice(start, end + 1));
+  } catch {
+    // @silent-fallback-ok — a malformed judge reply yields null; the caller keeps the heuristic verdict and labels it honestly
+    return null;
+  }
+  if (typeof obj !== 'object' || obj === null) return null;
+  const o = obj as Record<string, unknown>;
+  if (typeof o.forbidden !== 'boolean') return null;
+  let idx: number | null = null;
+  if (typeof o.constraintIndex === 'number' && Number.isInteger(o.constraintIndex) && o.constraintIndex >= 1 && o.constraintIndex <= constraintCount) {
+    idx = o.constraintIndex;
+  }
+  return {
+    forbidden: o.forbidden,
+    constraintIndex: idx,
+    reason: typeof o.reason === 'string' ? o.reason : '',
+  };
+}
+
+/**
+ * Ask the LLM whether any constraint SEMANTICALLY forbids the action — the
+ * Phase-2 resolver for the keyword matcher's false-negative side.
+ *
+ * Returns a verdict with method 'llm-judge' when (and only when) a real LLM
+ * reply parsed cleanly; returns null on ANY problem (no constraints, provider
+ * error, circuit open, malformed reply) so the caller retains the heuristic
+ * verdict. Never throws.
+ */
+export async function judgeRefusal(
+  action: string,
+  intent: ParsedOrgIntent,
+  provider: IntelligenceProvider,
+  opts?: JudgeOptions,
+): Promise<JudgedRefusalResult | null> {
+  const constraints = intent.constraints.map((c) => c.text);
+  if (constraints.length === 0) return null;
+  const prompt = [
+    'You are a strict governance judge for an organization.',
+    'The organization has these MANDATORY constraints (rules agents must never break):',
+    ...constraints.map((c, i) => `${i + 1}. ${c}`),
+    '',
+    `Proposed action: "${action}"`,
+    '',
+    'Does any constraint SEMANTICALLY forbid this action? Judge by MEANING, not exact words —',
+    'a constraint forbids the action if the action violates what the rule is plainly about,',
+    'even when the wording differs (for example, a rule against "presenting unverified work',
+    'as completed" forbids "presenting estimates as confirmed numbers").',
+    '',
+    'Reply with ONLY a JSON object, no other text:',
+    '{"forbidden": true|false, "constraintIndex": <1-based index of the forbidding constraint, or null>, "reason": "<one sentence>"}',
+  ].join('\n');
+  let raw: string;
+  try {
+    raw = await provider.evaluate(prompt, {
+      model: 'fast',
+      maxTokens: 250,
+      temperature: 0,
+      timeoutMs: opts?.timeoutMs ?? 8000,
+      attribution: { component: 'IntentLlmJudge', category: 'gate' },
+    });
+  } catch {
+    // @silent-fallback-ok — judge unavailable (circuit open / provider error); caller keeps the heuristic verdict and labels it honestly
+    return null;
+  }
+  const reply = parseJudgeReply(raw, constraints.length);
+  if (!reply) return null;
+  if (reply.forbidden) {
+    const matched = reply.constraintIndex !== null ? constraints[reply.constraintIndex - 1] : undefined;
+    return {
+      refused: true,
+      matchedConstraint: matched,
+      method: 'llm-judge',
+      reason: matched
+        ? `Refused (LLM semantic judgment): the action violates the constraint "${matched}". ${reply.reason}`.trim()
+        : `Refused (LLM semantic judgment): ${reply.reason || 'a constraint forbids this action.'}`,
+    };
+  }
+  return {
+    refused: false,
+    method: 'llm-judge',
+    reason: `No constraint forbids this action per LLM semantic judgment${reply.reason ? ` — ${reply.reason}` : ''}. Stronger than a keyword miss, but still a judgment, not ground truth.`,
+  };
 }

@@ -13487,6 +13487,10 @@ export function createRoutes(ctx: RouteContext): Router {
   // Body: { "action": "<proposed action>" }
   // → { present, action, refusal:{refused,matchedConstraint,reason},
   //     endorsement:{endorsed,alignedWith,reason}, canGovern }
+  // With monitoring.orgIntentLlmJudge.enabled (Phase-2, CMT-1128), a keyword
+  // MISS on the refusal test escalates to one bounded LLM semantic judgment;
+  // refusal then also carries method ('llm-judge' | 'keyword-heuristic') and,
+  // when the judge was requested but unavailable, judgeUnavailable: true.
   router.post('/intent/org/test-action', async (req, res) => {
     const action = typeof req.body?.action === 'string' ? req.body.action.trim() : '';
     if (!action) {
@@ -13502,10 +13506,27 @@ export function createRoutes(ctx: RouteContext): Router {
         return;
       }
       const harness = new IntentTestHarness(parsed);
+      const heuristicRefusal = harness.testRefusal(action);
+      let refusal: object = heuristicRefusal;
+      // Phase-2 LLM judge (CMT-1128, ships dark): a keyword MISS escalates to
+      // one bounded semantic judgment; a keyword MATCH is kept as-is (the
+      // heuristic is high-precision when it matches — no LLM call, no spend).
+      // With the flag off this block never runs and the response is unchanged.
+      if (ctx.config.monitoring?.orgIntentLlmJudge?.enabled === true && ctx.intelligence) {
+        if (heuristicRefusal.refused) {
+          refusal = { ...heuristicRefusal, method: 'keyword-heuristic' };
+        } else {
+          const { judgeRefusal } = await import('../core/IntentTestHarness.js');
+          const judged = await judgeRefusal(action, parsed, ctx.intelligence, {
+            timeoutMs: ctx.config.monitoring.orgIntentLlmJudge.timeoutMs ?? 8000,
+          });
+          refusal = judged ?? { ...heuristicRefusal, method: 'keyword-heuristic', judgeUnavailable: true };
+        }
+      }
       res.json({
         present: true,
         action,
-        refusal: harness.testRefusal(action),
+        refusal,
         endorsement: harness.testEndorsement(action),
         canGovern: harness.canGovern(),
       });
