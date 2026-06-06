@@ -71,6 +71,7 @@ import { buildInjectionTag } from '../types/pipeline.js';
 import { sanitizeSenderName, sanitizeTopicName } from '../utils/sanitize.js';
 import { getTelegramInboundDir } from '../messaging/shared/telegramInboundFiles.js';
 import { SessionBuildContextStore } from './SessionBuildContextStore.js';
+import { PendingInjectStore, sweepPendingInjects } from './PendingInjectStore.js';
 import { AgeKillBackoff } from './AgeKillBackoff.js';
 
 /** Absolute maximum session duration (4 hours) — safety net for sessions without explicit timeout */
@@ -319,6 +320,7 @@ export class SessionManager extends EventEmitter {
   /** Worktree manager — when set, spawnSession resolves an isolated worktree per topic. */
   private worktreeManager: import('./WorktreeManager.js').WorktreeManager | null = null;
   private buildContextStore: SessionBuildContextStore | null = null;
+  private pendingInjects!: PendingInjectStore;
 
   /** Per-session shim directory root (one subdir per session). Used for K9 mandatory shim. */
   private shimRoot: string | null = null;
@@ -327,6 +329,10 @@ export class SessionManager extends EventEmitter {
     super();
     this.config = config;
     this.state = state;
+    // Durable in-flight inject ledger (finding 8d300555) — records survive a
+    // server restart in the spawn→ready→inject window; recoverPendingInjects()
+    // sweeps them at boot.
+    this.pendingInjects = new PendingInjectStore(path.join(state.baseDir, 'state'));
     // Age-gate kill back-off: default 10 min between re-requests for a kept session
     // (config.ageKillBackoffMinutes; 0 disables → legacy every-tick behavior).
     const backoffMin = typeof config.ageKillBackoffMinutes === 'number' ? config.ageKillBackoffMinutes : 10;
@@ -2456,6 +2462,18 @@ rm()  { "${shimRunner}" rm  "$@"; }
     // large CLAUDE.md loading, and session-start hook execution.
     const readyTimeout = options?.resumeSessionId ? 120_000 : 90_000;
     if (effectiveInitialMessage) {
+      // DURABILITY (finding 8d300555): the inject below happens after an async
+      // readiness wait — codex can take tens of seconds to boot, and a server
+      // restart in that window used to silently drop the message (the pending
+      // inject was process-local; tmux survived idle, the bootstrap file sat
+      // unconsumed, the operator waited on nothing). Record the pending inject
+      // BEFORE the wait; handleReadyAndInject clears it only after the inject
+      // actually runs; recoverPendingInjects sweeps survivors at boot.
+      this.pendingInjects.record({
+        tmuxSession,
+        initialMessage: effectiveInitialMessage,
+        telegramTopicId: options?.telegramTopicId,
+      });
       this.handleReadyAndInject(tmuxSession, name, effectiveInitialMessage, readyTimeout, options).catch((err) => {
         console.error(`[SessionManager] Error during ready-and-inject for "${tmuxSession}": ${err}`);
       });
@@ -2490,6 +2508,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
       const stabilizationMs = options?.resumeSessionId ? 5000 : 1000;
       await new Promise(r => setTimeout(r, stabilizationMs));
       this.injectMessage(tmuxSession, initialMessage);
+      this.pendingInjects.clear(tmuxSession);
       console.log(`[SessionManager] Injected initial message into "${tmuxSession}" (${initialMessage.length} chars${stabilizationMs ? ', after stabilization delay' : ''})`);
       return;
     }
@@ -2541,7 +2560,11 @@ rm()  { "${shimRunner}" rm  "$@"; }
           telegramTopicId: options.telegramTopicId,
           slackChannelId: options.slackChannelId,
         });
-        console.log(`[SessionManager] Fresh-spawn fallback succeeded for "${tmuxSession}".`);
+        // HONEST LOG (finding 8d300555): the recursive spawn returns BEFORE its
+        // own readiness wait + inject complete — "succeeded" here only means
+        // "launched". The pending-inject record (re-written by the recursive
+        // call) is what guarantees delivery survives a restart in that window.
+        console.log(`[SessionManager] Fresh-spawn fallback launched for "${tmuxSession}" (inject pending — durable record held until verified).`);
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err);
         console.error(`[SessionManager] Fresh-spawn fallback FAILED for "${tmuxSession}": ${errMsg}`);
@@ -2562,12 +2585,15 @@ rm()  { "${shimRunner}" rm  "$@"; }
       console.error(`[SessionManager] Claude not ready in session "${tmuxSession}" — message NOT injected. Session may need manual intervention.`);
       console.log(`[SessionManager] Session "${tmuxSession}" still alive — attempting injection anyway`);
       this.injectMessage(tmuxSession, initialMessage);
+      this.pendingInjects.clear(tmuxSession);
       return;
     }
 
     // tmux dead AND not a resume case — fresh spawn that crashed during startup.
     // No fallback (no UUID to blame); surface as a degradation so the bridge can
     // notice. The bridge already retries on the next inbound message.
+    // (The pending-inject record is deliberately NOT cleared here — the boot
+    // sweep reports the loss loudly instead of letting it vanish.)
     console.error(`[SessionManager] Claude not ready in session "${tmuxSession}" — tmux died during fresh startup. Message NOT injected.`);
     DegradationReporter.getInstance().report({
       feature: 'SessionManager.handleReadyAndInject',
@@ -2576,6 +2602,45 @@ rm()  { "${shimRunner}" rm  "$@"; }
       reason: 'fresh-spawn crashed during startup; readiness probe could not verify prompt',
       impact: 'Initial message dropped; bridge will respawn on next inbound message',
     });
+  }
+
+  /**
+   * Boot-time recovery for injects orphaned by a server restart (finding
+   * 8d300555). Sweeps the durable pending-inject records: a still-alive
+   * session gets its message re-delivered through the normal readiness path
+   * (the live incident — codex idle at a fresh prompt, bootstrap unread); a
+   * dead or expired record is reported via DegradationReporter and expired —
+   * the loss becomes VISIBLE instead of vanishing with the old process.
+   * At-least-once by design: server death between inject and clear means one
+   * duplicate on the next boot, which beats a silent drop.
+   */
+  async recoverPendingInjects(): Promise<{ redelivered: string[]; expired: string[]; deadSession: string[]; failed: string[] }> {
+    const result = await sweepPendingInjects(this.pendingInjects, {
+      sessionAlive: (tmux) => this.tmuxSessionExists(tmux),
+      redeliver: async (record) => {
+        console.log(`[SessionManager] Recovering orphaned pending inject for "${record.tmuxSession}" (queued ${record.createdAt})`);
+        // Reuse the normal readiness machinery; no resume options — the target
+        // session is already running, we only need ready + inject. The inject
+        // path clears the record on success.
+        await this.handleReadyAndInject(record.tmuxSession, undefined, record.initialMessage, 90_000, {
+          telegramTopicId: record.telegramTopicId,
+        });
+      },
+      reportLoss: (record, reason) => {
+        DegradationReporter.getInstance().report({
+          feature: 'SessionManager.recoverPendingInjects',
+          primary: 'Re-deliver an inject orphaned by a server restart',
+          fallback: `Pending inject for "${record.tmuxSession}" not re-delivered: ${reason}`,
+          reason: `Why: queued ${record.createdAt}${record.telegramTopicId !== undefined ? ` for topic ${record.telegramTopicId}` : ''}`,
+          impact: 'A queued initial message may not have reached its session; the bridge respawns on the next inbound message.',
+        });
+      },
+    });
+    const total = result.redelivered.length + result.expired.length + result.deadSession.length + result.failed.length;
+    if (total > 0) {
+      console.log(`[SessionManager] Pending-inject recovery: ${result.redelivered.length} redelivered, ${result.deadSession.length} dead-session, ${result.expired.length} expired, ${result.failed.length} failed.`);
+    }
+    return result;
   }
 
   /**

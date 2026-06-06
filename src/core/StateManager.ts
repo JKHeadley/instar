@@ -73,6 +73,13 @@ export class StateManager {
     this._now = opts?.now ?? (() => Date.now());
   }
 
+  /** The root the state tree hangs off (files live under `<baseDir>/state/...`).
+   *  Exposed so sibling stores (e.g. PendingInjectStore) can colocate without
+   *  re-plumbing the path through their own config. */
+  get baseDir(): string {
+    return this.stateDir;
+  }
+
   /** Drop the listSessions cache so the next read reflects a just-written change. */
   private invalidateSessionsCache(): void {
     this._sessionsCache = null;
