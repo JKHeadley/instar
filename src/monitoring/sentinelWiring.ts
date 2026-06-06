@@ -297,9 +297,17 @@ export const RATE_LIMIT_RESUME_NUDGE =
 
 export interface RateLimitRecoverySurface {
   isSessionAlive(sessionName: string): boolean;
-  /** Topic-tagged nudge through the provenance-checked injectMessage path. */
-  injectTopicNudge(sessionName: string, topicId: number, text: string): boolean;
-  /** Trusted internal nudge that bypasses the topic-prefix requirement. */
+  /**
+   * Trusted internal nudge that bypasses the topic-prefix requirement.
+   *
+   * This is the ONLY channel the resume nudge is allowed to use. The resume
+   * nudge is infrastructure poking the session to continue — it is NOT a user
+   * message, so it must never carry a `[telegram:N]` prefix. A telegram-prefixed
+   * nudge is byte-indistinguishable from a real message from the user, which
+   * makes the agent answer it ("no throttle on my end") and relay that denial
+   * back to the topic, contradicting the sentinel's own throttle notices.
+   * (Incoherence incident 2026-06-05.)
+   */
   injectInternalNudge(sessionName: string, text: string): boolean;
   getTopicForSession(sessionName: string): number | null | undefined;
   /** The always-available system topic; null during initial setup. */
@@ -318,7 +326,8 @@ export interface RateLimitRecoverySurface {
 /**
  * Build the resume/notify functions for RateLimitSentinel. Both paths ALWAYS
  * record an audit event and never silently return:
- *  - resumeFn: topic-bound → topic-tagged inject; non-topic-bound → internal inject.
+ *  - resumeFn: ALWAYS internal inject (no `[telegram:N]` user-message prefix),
+ *    topic-bound or not — the resume nudge is infrastructure, never a user turn.
  *  - notifyFn: session topic → lifeline topic → recovery-unreachable audit.
  */
 export function buildRateLimitRecoveryDeps(s: RateLimitRecoverySurface): {
@@ -328,24 +337,20 @@ export function buildRateLimitRecoveryDeps(s: RateLimitRecoverySurface): {
   return {
     resumeFn: async (sessionName) => {
       if (!s.isSessionAlive(sessionName)) return false;
+      // The resume nudge ALWAYS goes through the internal recovery channel —
+      // topic-bound or not. It un-sticks the session identically to the
+      // user-message path (both converge on the same low-level inject) but
+      // carries no `[telegram:N]` prefix, so the agent can never mistake it for
+      // a message from the user and relay a contradictory "no throttle" reply.
+      // The topic (when present) is recorded for the audit trail only.
+      // (Incoherence incident 2026-06-05 — see throttle-notice-coherence spec.)
       const topicId = s.getTopicForSession(sessionName);
-      if (topicId != null) {
-        const ok = s.injectTopicNudge(sessionName, topicId, RATE_LIMIT_RESUME_NUDGE);
-        s.recordRecovery(
-          ok ? 'recovery-reached' : 'recovery-unreachable',
-          sessionName,
-          ok ? 'resume nudge injected via topic' : 'topic injectMessage returned false',
-          ['topic'],
-        );
-        return ok;
-      }
-      // Non-topic-bound (e.g. interactive dev window): internal injection path.
       const ok = s.injectInternalNudge(sessionName, RATE_LIMIT_RESUME_NUDGE);
       s.recordRecovery(
         ok ? 'recovery-reached' : 'recovery-unreachable',
         sessionName,
         ok
-          ? 'resume nudge injected via internal path (session not topic-bound)'
+          ? `resume nudge injected via internal recovery channel${topicId != null ? ` (topic ${topicId})` : ''}`
           : 'internal injection returned false',
         ['internal-injection'],
       );

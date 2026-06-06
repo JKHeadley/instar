@@ -6303,8 +6303,9 @@ export async function startServer(options: StartOptions): Promise<void> {
     const { buildRateLimitRecoveryDeps } = await import('../monitoring/sentinelWiring.js');
     const { resumeFn: rateLimitResume, notifyFn: rateLimitNotify } = buildRateLimitRecoveryDeps({
       isSessionAlive: (name) => sessionManager.isSessionAlive(name),
-      injectTopicNudge: (name, topicId, text) =>
-        sessionManager.injectMessage(name, `[telegram:${topicId}] ${text}`),
+      // Resume nudge is infrastructure, never a user message — it goes through
+      // the internal recovery channel ONLY (no `[telegram:N]` prefix), so the
+      // agent can't mistake it for the user and relay a contradictory reply.
       injectInternalNudge: (name, text) =>
         sessionManager.injectInternalMessage(name, text, 'sentinel-recovery'),
       getTopicForSession: (name) => telegram?.getTopicForSession(name),

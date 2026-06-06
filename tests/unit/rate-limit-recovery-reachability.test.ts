@@ -32,17 +32,12 @@ interface Recorded {
 /** A configurable fake surface that records every interaction. */
 function makeSurface(overrides: Partial<RateLimitRecoverySurface> = {}) {
   const calls = {
-    topicNudges: [] as Array<{ name: string; topicId: number; text: string }>,
     internalNudges: [] as Array<{ name: string; text: string }>,
     delivered: [] as Array<{ topicId: number; text: string }>,
     recorded: [] as Recorded[],
   };
   const surface: RateLimitRecoverySurface = {
     isSessionAlive: () => true,
-    injectTopicNudge: (name, topicId, text) => {
-      calls.topicNudges.push({ name, topicId, text });
-      return true;
-    },
     injectInternalNudge: (name, text) => {
       calls.internalNudges.push({ name, text });
       return true;
@@ -131,29 +126,53 @@ describe('buildRateLimitRecoveryDeps — notifyFn reachability', () => {
 });
 
 describe('buildRateLimitRecoveryDeps — resumeFn reachability', () => {
-  it('topic-bound session → topic-tagged nudge', async () => {
+  // THE COHERENCE BUG THIS GUARDS (2026-06-05): the resume nudge used to take a
+  // `[telegram:N]`-prefixed path for topic-bound sessions. That prefix is the
+  // exact format of a real user message, so the agent answered the nudge ("no
+  // throttle on my end") and relayed that denial back to the topic — appearing
+  // to contradict the sentinel's own throttle notices. The fix: the resume
+  // nudge ALWAYS uses the internal (un-prefixed) recovery channel, so it can
+  // never be mistaken for a user message. There is no longer a topic-tagged
+  // injection path at all.
+  it('topic-bound session → internal nudge ONLY (never the user-message path)', async () => {
     const { surface, calls } = makeSurface({ getTopicForSession: () => 42 });
     const { resumeFn } = buildRateLimitRecoveryDeps(surface);
 
     const ok = await resumeFn('sess-a');
 
     expect(ok).toBe(true);
-    expect(calls.topicNudges).toEqual([{ name: 'sess-a', topicId: 42, text: RATE_LIMIT_RESUME_NUDGE }]);
-    expect(calls.internalNudges).toHaveLength(0);
+    // Even though the session IS topic-bound, the nudge goes internal — the
+    // topic only shows up in the audit detail, never as a `[telegram:N]` prefix.
+    expect(calls.internalNudges).toEqual([{ name: 'sess-a', text: RATE_LIMIT_RESUME_NUDGE }]);
     expect(calls.recorded[0].kind).toBe('recovery-reached');
+    expect(calls.recorded[0].fallbackTried).toEqual(['internal-injection']);
+    expect(calls.recorded[0].detail).toContain('topic 42');
   });
 
-  it('NON-topic-bound session → internal injection nudge, returns true (the core bug)', async () => {
+  it('resume nudge text never contains a `[telegram:` prefix (anti-impersonation)', async () => {
+    const { surface, calls } = makeSurface({ getTopicForSession: () => 99 });
+    const { resumeFn } = buildRateLimitRecoveryDeps(surface);
+
+    await resumeFn('sess-x');
+
+    // The injected text must be the bare nudge — anything wearing a user-message
+    // prefix would be answered+relayed by the agent (the incoherence incident).
+    expect(calls.internalNudges).toHaveLength(1);
+    expect(calls.internalNudges[0].text).toBe(RATE_LIMIT_RESUME_NUDGE);
+    expect(calls.internalNudges[0].text).not.toContain('[telegram:');
+  });
+
+  it('NON-topic-bound session → internal injection nudge, returns true', async () => {
     const { surface, calls } = makeSurface({ getTopicForSession: () => null });
     const { resumeFn } = buildRateLimitRecoveryDeps(surface);
 
     const ok = await resumeFn('echo-dev');
 
-    // Regression: before the fix this returned false WITHOUT injecting anything,
-    // so the sentinel escalated as "resumeFn declined" and the session never woke.
+    // Regression: an earlier bug returned false WITHOUT injecting anything for
+    // non-topic-bound sessions, so the sentinel escalated as "resumeFn declined"
+    // and the session never woke. Now every session reaches the internal channel.
     expect(ok).toBe(true);
     expect(calls.internalNudges).toEqual([{ name: 'echo-dev', text: RATE_LIMIT_RESUME_NUDGE }]);
-    expect(calls.topicNudges).toHaveLength(0);
     expect(calls.recorded[0].kind).toBe('recovery-reached');
     expect(calls.recorded[0].fallbackTried).toEqual(['internal-injection']);
   });
@@ -163,7 +182,6 @@ describe('buildRateLimitRecoveryDeps — resumeFn reachability', () => {
     const { resumeFn } = buildRateLimitRecoveryDeps(surface);
 
     expect(await resumeFn('dead')).toBe(false);
-    expect(calls.topicNudges).toHaveLength(0);
     expect(calls.internalNudges).toHaveLength(0);
   });
 
