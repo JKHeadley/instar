@@ -267,14 +267,21 @@ ROUTER, which confirms claims on the target's behalf in the single-router
 topology; instrumenting them would schedule the pull on the wrong machine.
 
 Discipline (all inherited-invariant applications):
-- **Quiet-topic ownership fallback (issue #926, live-earned):** ownership
-  only CASes when traffic flows, so a topic just MOVED here is
+- **Quiet-topic ownership fallback (issues #926 + #930, live-earned):**
+  ownership only CASes when traffic flows, so a topic just MOVED here is
   `owner: null` + pinned — the exact state the reflex exists for. The
-  ownerOf seam therefore falls back to the placement pin when no
-  ownership record exists (`pinned && preferredMachine === self` ⇒
-  self-owned at epoch 0); the pin is the live placement authority for
-  unowned topics, and a real claim bumping past epoch 0 aborts an
-  in-flight pull as superseded, by design.
+  ownerOf seam falls back in two steps when no ownership record exists:
+  (1) the LOCAL placement pin (`pinned && preferredMachine === self` ⇒
+  self at epoch 0); (2) — because the pin store is ROUTER-local and
+  therefore empty on the pinned-TO machine (#930, live v1.3.369) — the
+  newest topic-placement JOURNAL entry (own + replica): `owner === self`
+  ⇒ self at that entry's epoch. The placement entry is emitted at the
+  router's CAS chokepoint — the strongest placement evidence reachable
+  from the target; admitting a read-only, jailed, hash-verified,
+  never-clobber pull off it is NOT the kill/spawn/move class the
+  journal-actuation ban guards (nomination already runs on replica
+  evidence by design), and the per-write recheck still aborts on any
+  real claim.
 - **Operation key `(topic, epoch)`** — at most one pull scheduled per key,
   deduped against a durable recent-key window (restart-proof). Skipped
   entirely when `owner === prevOwner` (placing-confirm, no real move) or

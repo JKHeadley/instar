@@ -26,3 +26,5 @@ And the ask-me-anytime move: if you mention work this machine can't find, I can 
 Activates only where machine-to-machine diary sync is already on (your Laptop+Mini pair today; dark everywhere else). The build starts after this spec finishes the four-round review gauntlet, under your standing 24-hour directive.
 
 **Live-proof amendment (2026-06-06):** the first live run caught a gap — a conversation that just MOVED but hasn't received a message yet technically has "no owner" recorded, and the fetch refused to run for it. Fixed: the machine the conversation was deliberately moved TO counts as its home until real traffic says otherwise.
+
+**Second live-proof amendment (2026-06-06):** the first amendment's fix turned out to be half-blind — the "this conversation was deliberately moved here" note is kept by the machine that DID the moving, not the machine it moved TO. The receiving machine now also accepts the moving machine's diary entry (which it already receives) as proof it's the home, so the fetch finally works from the machine that actually needs the files.

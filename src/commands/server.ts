@@ -10714,6 +10714,26 @@ export async function startServer(options: StartOptions): Promise<void> {
                 if (pin?.pinned && pin.preferredMachine === wsSelf) {
                   return { owner: wsSelf, epoch: 0 };
                 }
+                // Issue #930 (live, v1.3.369): the pin store is ROUTER-local —
+                // on the pinned-TO machine it is empty, so #926's fallback
+                // never fires there. Second fallback: the newest
+                // topic-placement JOURNAL entry (own + replica — the entry is
+                // emitted at the router's CAS chokepoint, the strongest
+                // placement evidence reachable here). Admitting a READ-ONLY,
+                // jailed, hash-verified, never-clobber pull off it is not the
+                // kill/spawn/move class the journal-actuation ban guards, and
+                // nomination already runs on replica evidence by design; the
+                // per-write stillCurrent recheck still aborts on a real claim.
+                try {
+                  const placement = wsReader2
+                    .query({ kind: 'topic-placement', topic, limit: 1 })
+                    .entries[0];
+                  const pd = placement?.data as { owner?: string; epoch?: number } | undefined;
+                  if (pd?.owner === wsSelf && typeof pd.epoch === 'number') {
+                    return { owner: wsSelf, epoch: pd.epoch };
+                  }
+                } catch { /* @silent-fallback-ok: missing placement evidence simply means no fallback ownership — the reflex answers not-owner honestly (WORKING-SET-HANDOFF-SPEC §3.3) */
+                }
                 return { owner: null, epoch: null };
               };
               workingSetPullCoordinator = new wscMod.WorkingSetPullCoordinator({
