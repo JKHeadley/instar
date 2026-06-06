@@ -4771,6 +4771,12 @@ Create worktrees for collaborator repos with \`instar worktree create <branch>\`
       '**Coordination Mandate**',
       '**ReviewExchange (autonomous code review)**',
       '**Cutover Readiness**',
+      // Working-Set Handoff (WORKING-SET-HANDOFF-SPEC §3.7): the fetch reflex
+      // (POST /coherence/fetch-working-set). A Codex/Gemini agent that never
+      // learns it will tell the user the files "aren't on this machine"
+      // instead of fetching them — the EXO failure surviving on shadow
+      // frameworks only. Mirrored like every agent-facing capability.
+      "**Working-Set Handoff (fetch a topic's files from the machine that made them)**",
       // Session Boot Self-Knowledge (spec session-boot-self-knowledge): vault
       // secret NAMES + operational facts at boot. A Codex/Gemini agent that
       // never learns the facts writer + secret-get retrieval will re-ask the

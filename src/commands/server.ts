@@ -11004,11 +11004,8 @@ export async function startServer(options: StartOptions): Promise<void> {
                 .filter((m) => !m.entry.revokedAt)
                 .map((m) => ({ machineId: m.machineId, url: peerUrl(m.machineId) })),
             recordHeartbeat: (obs) => { machinePoolRegistry?.recordHeartbeat(obs); },
-            // Working-set pending-pull re-arm (§3.4): rides the same cadence
-            // journal-sync does. No-op while the coordinator is dark; the
-            // coordinator's drain gate dedupes/staggers per peer.
-            onPeerRecorded: (machineId) => workingSetPullCoordinator?.onPeerRecorded(machineId),
             log: (line) => console.log(pc.dim(`  [peer-presence] ${line}`)),
+            onPeerRecorded: (machineId) => workingSetPullCoordinator?.onPeerRecorded(machineId), // working-set re-arm (§3.4); no-op when dark
             fetchPeerCapacity: async (machineId, url) => {
               const res = await meshClient.send({ machineId, url }, { type: 'session-status' }, 0);
               if (res.ok && res.result && typeof res.result === 'object') {
