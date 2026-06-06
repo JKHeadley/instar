@@ -29,6 +29,7 @@ import { rateLimiter, signViewPath } from './middleware.js';
 import type { WriteOperation, WriteToken } from '../core/StateWriteAuthority.js';
 import { writeLifelineRestartSignal } from '../core/version-skew.js';
 import { readSessionClocks } from '../core/SessionClockReader.js';
+import { CoherenceJournalReader, InvalidCursorError } from '../core/CoherenceJournalReader.js';
 import { creditUsherOnOutbound } from '../core/UsherActedCorrelator.js';
 import { validateWriteToken, canPerformOperation } from '../core/StateWriteAuthority.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
@@ -3355,13 +3356,13 @@ export function createRoutes(ctx: RouteContext): Router {
   });
 
   router.post('/autonomous/stop-all', (_req, res) => {
-    const result = stopAllAutonomousJobs(ctx.config.stateDir);
+    const result = stopAllAutonomousJobs(ctx.config.stateDir, ctx.state.getCoherenceJournal());
     res.json({ ok: true, ...result });
   });
 
   router.post('/autonomous/sessions/:topic/stop', (req, res) => {
     const topic = req.params.topic;
-    const stopped = stopAutonomousTopic(ctx.config.stateDir, topic);
+    const stopped = stopAutonomousTopic(ctx.config.stateDir, topic, ctx.state.getCoherenceJournal());
     res.status(stopped ? 200 : 404).json({ ok: stopped, topic });
   });
 
@@ -4228,6 +4229,42 @@ export function createRoutes(ctx: RouteContext): Router {
     const rawLimit = Number(req.query.limit);
     const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(Math.floor(rawLimit), 1000) : 200;
     res.json({ entries: ctx.reapLog.read(limit) });
+  });
+
+  // Coherence Journal merged read API (COHERENCE-JOURNAL-SPEC §3.5). The
+  // pull-surface answer to "which machine was topic N on / where are its
+  // artifacts?" — a bounded, honest-about-trust merged view over this machine's
+  // own streams + replicated peer copies. Read-only, Bearer-auth (router-level
+  // middleware), signal-only (§3.9: nothing actuates off the journal).
+  //
+  // 503 when the writer is not wired (journal dark). The reader builds its own
+  // file-path discipline from ctx.config.stateDir — `machine`/`kind` query
+  // params are matched against the enumerated on-disk stream set, never used to
+  // construct a path, so a traversal-shaped param matches nothing.
+  router.get('/coherence/journal', (req, res) => {
+    if (!ctx.state.getCoherenceJournal()) {
+      res.status(503).json({ error: 'coherence journal not enabled' });
+      return;
+    }
+    const reader = new CoherenceJournalReader({ stateDir: ctx.config.stateDir });
+    const rawTopic = Number(req.query.topic);
+    const rawLimit = Number(req.query.limit);
+    try {
+      const result = reader.query({
+        topic: Number.isFinite(rawTopic) ? rawTopic : undefined,
+        kind: typeof req.query.kind === 'string' ? req.query.kind : undefined,
+        machine: typeof req.query.machine === 'string' ? req.query.machine : undefined,
+        limit: Number.isFinite(rawLimit) ? rawLimit : undefined,
+        cursor: typeof req.query.cursor === 'string' ? req.query.cursor : undefined,
+      });
+      res.json(result);
+    } catch (err) {
+      if (err instanceof InvalidCursorError) {
+        res.status(400).json({ error: err.message });
+        return;
+      }
+      throw err;
+    }
   });
 
   // Reaper decision audit (RESPONSIBLE-RESOURCE-USAGE). The pull-surface answer to
@@ -8433,11 +8470,24 @@ export function createRoutes(ctx: RouteContext): Router {
     let releasedLocalOwnership = false;
     try {
       if (self && ctx.sessionOwnershipRegistry.ownerOf(topicId) === self) {
+        const prevOwner = ctx.sessionOwnershipRegistry.read(topicId)?.ownerMachineId;
         const r = ctx.sessionOwnershipRegistry.cas(
           { type: 'release', machineId: self },
           { sessionKey: topicId, sender: self, nonce: `${self}:rel:${topicId}:${Date.now()}` },
         );
         releasedLocalOwnership = r.ok;
+        // Coherence journal §3.3: the deterministic transfer API's release half.
+        try {
+          const topicNum = Number(topicId);
+          if (r.ok && Number.isFinite(topicNum)) {
+            ctx.state.getCoherenceJournal()?.emitPlacement(topicNum, {
+              owner: r.record.ownerMachineId ?? '',
+              ...(prevOwner ? { prevOwner } : {}),
+              epoch: r.record.ownershipEpoch,
+              reason: 'user-move',
+            });
+          }
+        } catch { /* observability never endangers the observed */ }
       }
     } catch {
       // @silent-fallback-ok — the pin (set above) is what drives re-placement; releasing local
@@ -10931,7 +10981,7 @@ export function createRoutes(ctx: RouteContext): Router {
                 try { ctx.sessionManager?.killSession(sessionName); } catch { /* best-effort */ }
               }
               // Clear this topic's autonomous job so it doesn't zombie-resume.
-              try { stopAutonomousTopic(ctx.config.stateDir, String(topicId)); } catch { /* best-effort */ }
+              try { stopAutonomousTopic(ctx.config.stateDir, String(topicId), ctx.state.getCoherenceJournal()); } catch { /* best-effort */ }
               console.log(`[telegram-forward] sentinel emergency-stop: killed session "${sessionName}" for topic ${topicId}`);
             }
             if (classification.reason) {

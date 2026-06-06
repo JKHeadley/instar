@@ -88,9 +88,9 @@ the registry. That's the "nothing becomes machine-local by accident ever
 again" guarantee. And my own docs teach every agent that the diary exists —
 a capability nobody knows about may as well not exist.
 
-## One question left for you (in §8)
+## The questions, resolved
 
 The retention question answered itself in review (per-kind diaries: "topic
-moved" kept ~forever, noisy kinds rotate). Remaining: OK to close P1 with
-the real two-machine proof on your live fleet — move a topic, then read its
-history from both machines?
+moved" kept ~forever, noisy kinds rotate). The live two-machine proof —
+move a topic, then read its history from both machines — was approved with
+the spec ("approved!", 2026-06-05) and closes P1.3.

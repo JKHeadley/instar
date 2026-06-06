@@ -136,9 +136,43 @@ export function canStartAutonomousJob(deps: CanStartDeps): CanStartResult {
 }
 
 /** Stop exactly one topic's job (removes its state file). Returns true if removed. */
-export function stopAutonomousTopic(stateDir: string, topic: string): boolean {
+/**
+ * Minimal journal seam (COHERENCE-JOURNAL-SPEC §3.3): the stop funnels emit
+ * `stopped` directly when a handle is threaded by the caller. Callers without
+ * the handle still get coverage from the journal scanner's observed-stopped
+ * (≤ one scan interval later); op-key dedupe collapses the two.
+ */
+export interface AutonomousJournalSeam {
+  emitAutonomousRun(topic: number, data: { action: 'started' | 'stopped'; runId: string; artifactPaths: string[] }): void;
+}
+
+/** The stable runId formula shared by the scanner and the stop funnels. */
+export function autonomousRunId(startedAt: string | null, topic: string): string {
+  return `${startedAt ?? 'unknown'}:${topic}`;
+}
+
+function emitStopped(journal: AutonomousJournalSeam | undefined, stateDir: string, topic: string, file: string): void {
+  if (!journal) return;
+  try {
+    const topicNum = Number(topic);
+    if (!Number.isFinite(topicNum)) return;
+    // Read startedAt BEFORE the file is removed so the runId matches the
+    // scanner's started emit (op-key dedupe depends on the same formula).
+    const job = listAutonomousJobs(stateDir).find((j) => j.topic === topic);
+    journal.emitAutonomousRun(topicNum, {
+      action: 'stopped',
+      runId: autonomousRunId(job?.startedAt ?? null, topic),
+      artifactPaths: [file],
+    });
+  } catch { /* @silent-fallback-ok: journal observability must never endanger the observed operation (COHERENCE-JOURNAL-SPEC §3.1) */
+    /* observability never endangers the observed */
+  }
+}
+
+export function stopAutonomousTopic(stateDir: string, topic: string, journal?: AutonomousJournalSeam): boolean {
   const f = path.join(autonomousDir(stateDir), `${topic}.local.md`);
   if (fs.existsSync(f)) {
+    emitStopped(journal, stateDir, topic, f);
     SafeFsExecutor.safeRmSync(f, { force: true, operation: 'AutonomousSessions.stopAutonomousTopic' });
     return true;
   }
@@ -155,14 +189,16 @@ export interface StopAllResult {
  * writes the emergency-stop flag so any session whose hook fires before its file
  * is gone also stands down. The flag is the belt; removing files is the suspenders.
  */
-export function stopAllAutonomousJobs(stateDir: string): StopAllResult {
+export function stopAllAutonomousJobs(stateDir: string, journal?: AutonomousJournalSeam): StopAllResult {
   const stoppedTopics: string[] = [];
   const dir = autonomousDir(stateDir);
   try {
     for (const name of fs.readdirSync(dir)) {
       if (!name.endsWith('.local.md')) continue;
+      const topic = name.replace(/\.local\.md$/, '');
+      emitStopped(journal, stateDir, topic, path.join(dir, name));
       SafeFsExecutor.safeRmSync(path.join(dir, name), { force: true, operation: 'AutonomousSessions.stopAllAutonomousJobs' });
-      stoppedTopics.push(name.replace(/\.local\.md$/, ''));
+      stoppedTopics.push(topic);
     }
   } catch {
     /* dir absent */
