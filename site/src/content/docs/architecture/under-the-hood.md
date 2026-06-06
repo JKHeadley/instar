@@ -116,6 +116,24 @@ Automatic git-based state synchronization for multi-machine setups. Debounces co
 ### CoherenceJournal
 The multi-machine "diary" writer (P1 of the coherence initiative). Each machine appends per-kind event streams — topic placement (with the reason it moved), session open/close/reap, autonomous runs with their artifact paths — so "what happened where, and where are the files?" is answerable from local disk. Emits are non-blocking memory hand-offs (a background flusher owns all disk I/O), crash repairs are counted, restores-from-backup are detected via incarnation tokens, and a strict per-kind schema keeps free text and secrets out. Signal-only by design: nothing ever kills, spawns, or moves anything based on journal data — the companion `CoherenceJournalReader` (a deliberately separate module, so a lint can ban actuators from importing it) serves the merged bounded read view behind `GET /coherence/journal`. Ships dark; per-kind retention keeps placement history effectively forever.
 
+### JournalSyncApplier
+The receive/serve engine of coherence-journal replication (P1.3). On the serve side it reads THIS machine's own durably-flushed stream from a peer-requested sequence number and returns a bounded batch (256KB cap — never a giant single response). On the receive side it durably appends a peer's entries under that peer's machine id, binding every entry to the AUTHENTICATED envelope sender — an entry claiming to be from a machine other than the one that sent it is counted as forged and dropped (first-hop-only trust: no machine can relay or invent another machine's history). Gap detection marks a replica stream `suspect` rather than silently skipping sequence numbers.
+
+### PeerPresencePuller
+The 30-second heartbeat that keeps a machine's view of its peers honest. Each tick it pulls every registered peer's session-status over the signed mesh channel, records who answered (feeding "is the Mini actually reachable?" rather than guessing), and piggybacks the coherence-journal advert exchange — a peer's response carries its own stream heads, so delta requests ride an existing cadence instead of a new polling loop. A peer coming back online after an outage is observed HERE, which is what re-arms recovery work that was waiting for it.
+
+### WorkingSetManifest
+The pure "what files make up this conversation's workspace on this machine?" computation (P2.1 of the coherence initiative). Candidates come from durable evidence only — the `autonomous/<topic>.*` filesystem convention plus every artifact path the topic's own journal stream recorded — never from anyone remembering to declare anything. Every candidate is canonicalized and jailed (symlinks at the final component refused; escapes counted, never served), hashed (sha256 is the only decision key; mtime is display-only), scanned for credential shapes (flagged files are listed but never transferred — an honest refusal, not a silent skip), and capped (per-file, headline exemption for the topic's own `.local.md`, max 64 files). When the topic's run is still live, every entry is marked "still being written" so a mid-run snapshot is never served.
+
+### AutonomousSessions
+The shared helpers behind multi-session autonomy: which topics have an active autonomous job right now (each topic's run lives at `.instar/autonomous/<topicId>.local.md`), the stable run-id derivation that lets monitors and the coherence journal name a specific run, and the parsing of run state (goal, duration, end time) that the can-start gate, the session clock, and the stop hook all share. One source of truth for "what's running" instead of three slightly-different parsers.
+
+### ApprovalLedger
+The durable record of operator approvals (PIN-gated decisions like mandate issuance). Every approval is appended with what was approved, when, and under which authority — so "did the operator actually authorize this?" is answerable from disk long after the chat scrolled away. Append-only and hash-chained: a tampered entry breaks the chain visibly rather than rewriting history silently.
+
+### MeshUrlAdvertiser
+Keeps each machine's reachable URL fresh in the machines registry. Tunnel URLs rotate (quick tunnels get a new hostname every restart), so peers would otherwise keep dialing a dead address; the advertiser publishes the current URL on a cadence and peers pick it up on their next presence pull. The reason "the Mini moved networks" doesn't mean "the Mini vanished."
+
 ### LiveConfig
 Watches `config.json` every 5 seconds for changes. When a value changes, it emits events so other systems can hot-reload without a server restart.
 
