@@ -874,6 +874,54 @@ function hashAuthHeader(header: unknown): string {
 }
 
 /**
+ * Resolve the canonical-main ref a merged PR's commit must be reachable from,
+ * for the projects `building → merged` gate (StageTransitionValidator).
+ *
+ * Default is `origin/main`. But on a dev-agent home `origin` is the agent's
+ * FORK (e.g. instar-echo) while PRs merge on the UPSTREAM repo (JKHeadley/instar),
+ * so origin/main never contains the merge commit → every advance failed
+ * MERGE_COMMIT_UNREACHABLE. We ask gh which repo it resolves for this cwd
+ * (the same repo `gh pr view` reads), then find the LOCAL remote whose URL
+ * points at that repo and return `<remote>/main`. Falls back to `origin/main`
+ * when gh or the remote mapping is unavailable (canonical-origin installs).
+ *
+ * READ-ONLY: `gh repo view` + `git remote -v` (the latter via
+ * SafeGitExecutor.readSync — `remote` is a READONLY_GIT_VERB, shape-checked
+ * to list/get-url only).
+ */
+function resolveCanonicalMainRef(repoPath: string): string {
+  const FALLBACK = 'origin/main';
+  try {
+    const ghRepo = execFileSync('gh', ['repo', 'view', '--json', 'nameWithOwner', '-q', '.nameWithOwner'], {
+      cwd: repoPath,
+      encoding: 'utf-8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+    if (!ghRepo) return FALLBACK;
+    // `git remote -v` is read-only (shape-checked by readSync). Find the remote
+    // whose fetch URL contains the gh-resolved "owner/repo".
+    const remotesOut = SafeGitExecutor.readSync(['remote', '-v'], {
+      cwd: repoPath,
+      operation: 'projects.advance.resolveCanonicalMainRef',
+      encoding: 'utf-8',
+    });
+    for (const line of remotesOut.split('\n')) {
+      // format: "<name>\t<url> (fetch)"
+      const m = /^(\S+)\s+(\S+)\s+\(fetch\)/.exec(line.trim());
+      if (!m) continue;
+      const [, name, url] = m;
+      // match owner/repo with or without a trailing .git
+      if (url.includes(ghRepo) || url.includes(`${ghRepo}.git`)) {
+        return `${name}/main`;
+      }
+    }
+    return FALLBACK;
+  } catch {
+    return FALLBACK; // gh missing / not a gh repo / git error → preserve default
+  }
+}
+
+/**
  * Read-check-increment for the per-token projects-creation counter.
  * Returns `{ok: true}` if the request is within the 5/hour window, or
  * `{ok: false, windowEnds}` if the limit is reached.
@@ -8298,6 +8346,12 @@ export function createRoutes(ctx: RouteContext): Router {
           return false; // exit 1 = not an ancestor; any other failure = treat as not-ancestor (validator re-checks)
         }
       },
+      // Resolve the canonical-main ref the merge commit must be reachable from.
+      // The validator defaults to `origin/main`, but on a dev-agent home `origin`
+      // is the agent's FORK while merges land on the upstream remote — so we map
+      // the gh-resolved PR repo (e.g. JKHeadley/instar) to the LOCAL remote whose
+      // URL points at it and use `<remote>/main`. Falls back to `origin/main`.
+      mergeBaseBranch: resolveCanonicalMainRef(project.targetRepoPath),
     };
 
     const fromStage =
