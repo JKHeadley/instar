@@ -24,6 +24,8 @@ import { NonceStore } from './NonceStore.js';
 import type { StateManager } from './StateManager.js';
 import type { LeaseCoordinator } from './LeaseCoordinator.js';
 import { SEAMLESSNESS_PROTOCOL_VERSION } from './seamlessnessConfig.js';
+import { FailureEpisodeLatch } from './FailureEpisodeLatch.js';
+import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 import type { MachineRole, MachineIdentity, MultiMachineConfig, CoordinationMode } from './types.js';
 
 /** Observability shape for /health.multiMachine.syncStatus (spec §11). */
@@ -80,6 +82,20 @@ export class MultiMachineCoordinator extends EventEmitter {
   private _identity: MachineIdentity | null = null;
   private _enabled: boolean = false;
   private heartbeatWriteTimer: ReturnType<typeof setInterval> | null = null;
+  /**
+   * Heartbeat-write failure episode accounting ("No Unbounded Loops" / P19,
+   * Eternal Sentinel condition 4). writeHeartbeat() throws raw fs errors
+   * (ENOSPC, EACCES) — pre-fix, a throw inside the 2-min timer tick escaped as
+   * an uncaughtException and CRASHED the awake holder (the worst possible cost
+   * for one failed attempt), while a hypothetical swallowed failure would have
+   * gone silent until a peer force-failed-over. Now: each tick's write is
+   * guarded, the first failure of an episode logs once, a sustained episode
+   * raises ONE degradation signal (before the peer failover horizon), recovery
+   * logs once and re-arms. The write keeps being attempted every tick forever
+   * — this writer is the awake machine's liveness voice; persistence is the
+   * point.
+   */
+  private readonly hbWriteEpisode = new FailureEpisodeLatch({ signalAfterMs: 6 * 60_000 });
   private heartbeatCheckTimer: ReturnType<typeof setInterval> | null = null;
   /** Integrated-Being v1 — tracks whether we've already emitted the
    *  per-machine-ledger warning this boot. Spec §Multi-machine. */
@@ -340,8 +356,20 @@ export class MultiMachineCoordinator extends EventEmitter {
     // Update registry
     this.identityManager.updateRole(this._identity.machineId, 'awake');
 
-    // Write initial heartbeat
-    this.heartbeatManager.writeHeartbeat();
+    // Write initial heartbeat. This is the ONE call site where a write failure
+    // is NOT retryable-in-place (second-pass reviewer): a promotion that cannot
+    // voice its liveness must ABORT CLEANLY — completing it silently would
+    // leave this machine serving as awake with no heartbeat, and (pre-fix) a
+    // raw throw left the role flipped + registry updated with no writer
+    // running. Roll both back, then rethrow for the caller.
+    try {
+      this.heartbeatManager.writeHeartbeat();
+    } catch (err) {
+      this._role = oldRole;
+      this.identityManager.updateRole(this._identity.machineId, oldRole);
+      console.error(`[MultiMachine] promotion aborted — initial heartbeat write failed (${err instanceof Error ? err.message : String(err)}); role rolled back to '${oldRole}'`);
+      throw err;
+    }
 
     // Start heartbeat writer
     this.startHeartbeatWriter();
@@ -787,12 +815,12 @@ export class MultiMachineCoordinator extends EventEmitter {
     }
 
     // Write immediately
-    this.heartbeatManager.writeHeartbeat();
+    this.writeHeartbeatGuarded();
 
     // Then every 2 minutes
     this.heartbeatWriteTimer = setInterval(() => {
       if (this._role === 'awake') {
-        this.heartbeatManager.writeHeartbeat();
+        this.writeHeartbeatGuarded();
         // Touch lastSeen in registry
         if (this._identity) {
           try {
@@ -806,6 +834,43 @@ export class MultiMachineCoordinator extends EventEmitter {
 
     if (this.heartbeatWriteTimer.unref) {
       this.heartbeatWriteTimer.unref();
+    }
+  }
+
+  /**
+   * ETERNAL SENTINEL (declared per "No Unbounded Loops" / P19): the heartbeat
+   * writer is the awake machine's liveness voice — it must keep attempting
+   * every tick forever (rate floor = HEARTBEAT_WRITE_INTERVAL_MS, constant
+   * cost). Its brakes live here: a write failure can no longer escape the
+   * timer tick as an uncaughtException (pre-fix: ENOSPC at the wrong moment
+   * CRASHED the awake holder), failure logging is state-change-bounded (first
+   * + recovery, one line each), and a sustained episode raises ONE degradation
+   * signal — sized at 6min (3 failed cycles) so the operator hears about it
+   * BEFORE the peer's ~15min heartbeat-expiry failover horizon.
+   */
+  private writeHeartbeatGuarded(): void {
+    try {
+      this.heartbeatManager.writeHeartbeat();
+      const s = this.hbWriteEpisode.recordSuccess();
+      if (s.recovered) {
+        console.log(`[MultiMachine] heartbeat write recovered after ${s.failures} consecutive failures`);
+      }
+    } catch (err) {
+      const f = this.hbWriteEpisode.recordFailure();
+      const msg = err instanceof Error ? err.message : String(err);
+      if (f.firstOfEpisode) {
+        console.error(`[MultiMachine] heartbeat write FAILED (${msg}) — retrying every ${HEARTBEAT_WRITE_INTERVAL_MS / 60_000}min; peers may failover if this persists`);
+      }
+      if (f.shouldSignal) {
+        console.error(`[MultiMachine] heartbeat write failing for ${Math.round(f.failingForMs / 60_000)}min (${f.failures} consecutive) — signaling once; retries continue`);
+        DegradationReporter.getInstance().report({
+          feature: 'MultiMachine.heartbeatWrite',
+          primary: "Awake machine persists its liveness heartbeat so peers don't failover",
+          fallback: `Heartbeat writes failing for ~${Math.round(f.failingForMs / 60_000)}min (${f.failures} consecutive: ${msg}); retries continue every ${HEARTBEAT_WRITE_INTERVAL_MS / 60_000}min`,
+          reason: 'Heartbeat file write throwing (disk full / permissions / path issue)',
+          impact: 'If this persists past the heartbeat expiry window, a standby peer will treat this machine as dead and fail over while it is still serving.',
+        });
+      }
     }
   }
 
