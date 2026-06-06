@@ -331,8 +331,13 @@ export class SessionManager extends EventEmitter {
     this.state = state;
     // Durable in-flight inject ledger (finding 8d300555) — records survive a
     // server restart in the spawn→ready→inject window; recoverPendingInjects()
-    // sweeps them at boot.
-    this.pendingInjects = new PendingInjectStore(path.join(state.baseDir, 'state'));
+    // sweeps them at boot. Mock StateManagers in tests may lack baseDir —
+    // fall back to the projectDir-derived state root rather than crashing
+    // construction (the ledger path just needs to be stable per install).
+    const stateBase = typeof (state as { baseDir?: unknown } | undefined)?.baseDir === 'string'
+      ? (state as { baseDir: string }).baseDir
+      : path.join(config.projectDir, '.instar');
+    this.pendingInjects = new PendingInjectStore(path.join(stateBase, 'state'));
     // Age-gate kill back-off: default 10 min between re-requests for a kept session
     // (config.ageKillBackoffMinutes; 0 disables → legacy every-tick behavior).
     const backoffMin = typeof config.ageKillBackoffMinutes === 'number' ? config.ageKillBackoffMinutes : 10;

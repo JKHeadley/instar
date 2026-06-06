@@ -48,3 +48,7 @@ Records contain the message text (which may be a bootstrap-file pointer or full 
 ## 7. What this does NOT fix (honest scope)
 
 The bootstrap-*.txt files themselves are still unswept (consumed implicitly by the session reading them). A dead-session loss is REPORTED but not auto-respawned — the bridge's next-message respawn remains the recovery path; auto-respawn is a candidate follow-up once this slice proves itself.
+
+## 8. CI-found edge (mock construction)
+
+E2e suites construct SessionManager with mock StateManager objects lacking `baseDir`; the wiring now falls back to `path.join(config.projectDir, '.instar')` instead of crashing construction. Caught by CI (shard 2/4), reproduced and fixed; the failing e2e (`secret-sync-alive`) verified green locally post-fix.

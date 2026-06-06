@@ -21,3 +21,7 @@ Delivery is at-least-once: if the server dies after typing the message but befor
 ## What does NOT change
 
 Normal spawns, resumes, and injects behave exactly as before — the ledger writes never block or fail the spawn (they degrade to a warning). The recovery sweep runs in the background after boot and can't delay startup.
+
+## Post-CI note
+
+E2e suites construct the session manager with simplified stand-in state objects; the ledger's path resolution now falls back to the project-directory-derived state root when the state object lacks the path accessor — construction never crashes on a stand-in.
