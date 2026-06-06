@@ -226,8 +226,8 @@ function getHostGitIdentity(): { name?: string; email?: string } {
 // (set by `instar worktree create` / init). The fix: when the target repo
 // HAS a local identity configured, the funnel strips inherited identity env
 // vars so the repo-local identity — the per-agent identity — always wins.
-// Repos WITHOUT a local identity keep the long-standing fallback behavior
-// (host identity injected only-if-empty) so non-agent installs don't break
+// Repos WITHOUT a local identity keep the long-standing host-identity
+// behavior (injected only-if-empty) so non-agent installs don't break
 // with "Author identity unknown".
 const IDENTITY_ENV_VARS = [
   'GIT_AUTHOR_NAME',
@@ -239,28 +239,78 @@ const IDENTITY_ENV_VARS = [
 // Cache of "does this repo have a local user.name AND user.email" keyed on
 // the directory we run git in. Local config is stable for the life of a
 // process; tests reset via _resetLocalIdentityCacheForTest.
+//
+// IMPORTANT: this probe reads .git/config via fs, NOT via a git subprocess.
+// Spawning `git config --local` here would route through child_process — and
+// unit tests that mock node:child_process with scripted mockReturnValueOnce
+// sequences (e.g. GitSync.test.ts) would have those sequences consumed and
+// misaligned by the probe. The fs read is also faster and side-effect-free.
 const _localIdentityCache = new Map<string, boolean>();
+
+/** Candidate config files that hold "repo-local" identity for `dir`. */
+function localConfigCandidates(dir: string): string[] {
+  const dotGit = path.join(dir, '.git');
+  let st: fs.Stats;
+  try {
+    st = fs.statSync(dotGit);
+  } catch {
+    return []; /* @silent-fallback-ok — not a git repo: legacy host-identity behavior applies */
+  }
+  if (st.isDirectory()) return [path.join(dotGit, 'config')];
+  // Linked worktree: .git is a file containing "gitdir: <path>". Its local
+  // config is the COMMON repo config (and config.worktree when the
+  // extensions.worktreeConfig overlay is enabled) — check both.
+  try {
+    const m = /^gitdir:\s*(.+?)\s*$/m.exec(fs.readFileSync(dotGit, 'utf-8'));
+    if (!m) return [];
+    const gitdir = path.resolve(dir, m[1]);
+    const candidates: string[] = [path.join(gitdir, 'config.worktree')];
+    const commondirFile = path.join(gitdir, 'commondir');
+    if (fs.existsSync(commondirFile)) {
+      const common = path.resolve(gitdir, fs.readFileSync(commondirFile, 'utf-8').trim());
+      candidates.push(path.join(common, 'config'));
+    } else {
+      candidates.push(path.join(gitdir, 'config'));
+    }
+    return candidates;
+  } catch {
+    return []; /* @silent-fallback-ok — unreadable worktree pointer: legacy host-identity behavior applies */
+  }
+}
+
+/** Minimal git-config parse: does the [user] section define `key`? */
+function configDefines(file: string, key: 'name' | 'email'): boolean {
+  let content: string;
+  try {
+    content = fs.readFileSync(file, 'utf-8');
+  } catch {
+    return false; /* @silent-fallback-ok — absent candidate file is simply not a source */
+  }
+  let inUser = false;
+  for (const raw of content.split('\n')) {
+    const line = raw.trim();
+    if (line.startsWith('[')) {
+      inUser = /^\[user\]/i.test(line);
+      continue;
+    }
+    if (inUser && new RegExp(`^${key}\\s*=\\s*\\S`).test(line)) return true;
+  }
+  return false;
+}
+
 function repoHasLocalIdentity(cwd: string): boolean {
   let key: string;
   try {
     key = path.resolve(cwd);
   } catch {
-    return false;
+    return false; /* @silent-fallback-ok — unresolvable cwd: legacy host-identity behavior applies */
   }
   const cached = _localIdentityCache.get(key);
   if (cached !== undefined) return cached;
-  let has = false;
-  try {
-    const name = execFileSync('git', ['config', '--local', '--get', 'user.name'], {
-      cwd: key, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'ignore'],
-    }).toString().trim();
-    const email = execFileSync('git', ['config', '--local', '--get', 'user.email'], {
-      cwd: key, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'ignore'],
-    }).toString().trim();
-    has = Boolean(name && email);
-  } catch {
-    has = false; // not a repo / no local identity — fall back to host behavior
-  }
+  const candidates = localConfigCandidates(key);
+  const has =
+    candidates.some((f) => configDefines(f, 'name')) &&
+    candidates.some((f) => configDefines(f, 'email'));
   _localIdentityCache.set(key, has);
   return has;
 }

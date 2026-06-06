@@ -44,3 +44,14 @@ were the funnel's job); this closes the path where instar's own machinery
 could be tricked into committing as the wrong principal. No config flag, no
 route, no migration — pure hardening at the single choke point that already
 exists for exactly this kind of rule.
+
+## Addendum — how the repo is probed (CI-hardening revision)
+
+The "does this repo have its own identity?" check reads the repository's
+config file directly from disk (following the worktree pointer file when the
+repo is a linked worktree) instead of spawning a git subprocess. Two reasons:
+it is faster and has no side effects, and — discovered by CI — several unit
+tests script the exact sequence of git subprocess calls they expect, so an
+extra probe subprocess from inside the funnel would silently shift those
+sequences and break unrelated tests. Reading the file can't interfere with
+anything.
