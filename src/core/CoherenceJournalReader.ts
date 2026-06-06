@@ -89,6 +89,23 @@ export interface ReaderQueryResult {
   truncated: boolean;
 }
 
+/**
+ * Own-stream autonomous-run evidence for ONE topic (P2 §3.1 source 2).
+ * Own stream ONLY by construction — `query()`'s merged own+replica view is
+ * deliberately not used: replicas NOMINATE, they never feed THIS machine's
+ * manifest (WORKING-SET-HANDOFF-SPEC §3.1).
+ */
+export interface OwnAutonomousRuns {
+  /** Own-stream autonomous-run entries for the topic, newest-first. */
+  entries: ReaderEntry[];
+  /** True when the newest `started` run has no matching `stopped`. */
+  liveRun: boolean;
+  /** Union of jailed artifactPaths across the entries, deduped, order-stable. */
+  artifactPaths: string[];
+  /** Byte/archive bound hit — the answer may be missing older evidence. */
+  truncated: boolean;
+}
+
 export interface CoherenceJournalReaderConfig {
   /** Absolute path to the agent's `.instar/` directory (the stateDir). */
   stateDir: string;
@@ -359,6 +376,81 @@ export class CoherenceJournalReader {
       skippedCorrupt,
       truncated,
     };
+  }
+
+  /**
+   * P2 §3.1: the working-set manifest's journal-evidence source. Reads the
+   * OWN stream only (source === 'own', machineId === ownMachineId — never a
+   * replica, never a peer's stream that happens to sit in our own dir),
+   * kind `autonomous-run`, filtered to `topic`. Bounded exactly like query()
+   * (shared byte ceiling + archive cap); over-bound → truncated: true, the
+   * caller treats the evidence as partial rather than failing.
+   */
+  readOwnAutonomousRuns(topic: number, ownMachineId: string): OwnAutonomousRuns {
+    const streams = this.enumerate(ownMachineId, 'autonomous-run').filter(
+      (s) => s.source === 'own',
+    );
+
+    const collected: ReaderEntry[] = [];
+    let truncated = false;
+    let bytesRemaining = this.byteCeiling;
+
+    for (const group of this.groupStreams(streams)) {
+      const ordered = this.orderNewestFirst(group.files);
+      let archivesScanned = 0;
+      for (const f of ordered) {
+        if (bytesRemaining <= 0) {
+          truncated = true;
+          break;
+        }
+        if (f.isArchive && archivesScanned >= this.archiveCap) {
+          truncated = true;
+          break;
+        }
+        if (f.isArchive) archivesScanned++;
+        const read = readTailTolerant(this.io, f.file, READER_MAX_LIMIT, bytesRemaining);
+        if (read.truncated) truncated = true;
+        bytesRemaining -= Math.min(this.safeSize(f.file), bytesRemaining);
+        for (const e of read.entries) {
+          if (e.topic !== topic) continue;
+          collected.push({ ...e, source: 'own' });
+        }
+      }
+    }
+
+    const sorted = this.sortMerged(collected, false); // newest-first, (ts, machineId, seq)
+
+    // liveRun: the newest run's `started` with no `stopped` for the same runId.
+    // Scanning newest-first, the first action we see per runId is its LATEST
+    // state — a runId whose first-seen action is 'started' is still running.
+    let liveRun = false;
+    const seenRuns = new Set<string>();
+    for (const e of sorted) {
+      const runId = typeof e.data?.runId === 'string' ? (e.data.runId as string) : '';
+      const action = e.data?.action;
+      if (!runId || seenRuns.has(runId)) continue;
+      seenRuns.add(runId);
+      if (action === 'started') {
+        liveRun = true;
+        break;
+      }
+      if (action === 'stopped') break; // newest run is finished → not live
+    }
+
+    // artifactPaths union (write-time jailed already), deduped, newest-first
+    // stable order.
+    const seenPaths = new Set<string>();
+    const artifactPaths: string[] = [];
+    for (const e of sorted) {
+      const paths = Array.isArray(e.data?.artifactPaths) ? (e.data.artifactPaths as unknown[]) : [];
+      for (const p of paths) {
+        if (typeof p !== 'string' || !p || seenPaths.has(p)) continue;
+        seenPaths.add(p);
+        artifactPaths.push(p);
+      }
+    }
+
+    return { entries: sorted, liveRun, artifactPaths, truncated };
   }
 
   /** The opaque cursor for the LAST entry of a page (callers echo it back). */
