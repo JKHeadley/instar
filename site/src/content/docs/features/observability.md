@@ -25,6 +25,12 @@ Where burn detection reacts to token *volume* over a rolling window, the circuit
 
 `CircuitBreakingIntelligenceProvider` wraps every intelligence provider at the single construction chokepoint, so every LLM-backed feature is covered without per-feature code. When a call returns a usage/rate/spend-limit error, the shared account-global `LlmCircuitBreaker` opens: subsequent calls short-circuit in-process — no subprocess is spawned, so they cost nothing — for a cool-down window (15 minutes by default). After the window it admits a single probe; a successful probe closes the breaker and work resumes, a still-limited probe re-opens it. The breaker enforces the provider's decision rather than making a policy decision of its own, and it is on by default (tune or disable via `intelligence.circuitBreaker` in `.instar/config.json`).
 
+## Loop-safety brakes (P19 "No Unbounded Loops")
+
+Components: `PeerFailureLogGate`, `FailureEpisodeLatch`, `OwnerSuspectBreaker`, `SlowRetrySentinelEscalation`, `AgeKillBackoff`.
+
+Every repeating behavior in the multi-machine mesh carries its own brakes, enforced by the constitution's "No Unbounded Loops" standard. `PeerFailureLogGate` converts per-attempt failure logging into state-change logging (one line when a peer becomes unreachable, a coarse reminder every Nth consecutive failure, one line on recovery) — a down peer produces ~49 log lines a day instead of ~17,000. `FailureEpisodeLatch` is the canonical episode accountant behind the Eternal Sentinel clause: a loop that retries forever raises exactly ONE degradation signal per sustained-failure episode, re-armed on recovery. `OwnerSuspectBreaker` is the session router's per-machine circuit: a machine whose message deliveries keep failing is marked suspect for an absolute 30-second half-open window, during which its sessions route straight to failover re-placement instead of each re-paying the delivery retry tax; any successful delivery closes the window instantly. `SlowRetrySentinelEscalation` gives the server supervisor's never-give-up revival loop its one-per-outage operator notification, and `AgeKillBackoff` keeps the session reaper from re-requesting a kill its keep-guard already vetoed.
+
 ## Quota tracking
 
 Components: `QuotaTracker`, `QuotaManager`, `QuotaCollector`, `QuotaNotifier`, `QuotaExhaustionDetector`.

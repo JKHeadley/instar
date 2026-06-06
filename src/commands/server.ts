@@ -10256,17 +10256,52 @@ export async function startServer(options: StartOptions): Promise<void> {
           // Shared-cluster writes stay blocked on a standby. (bug #9: the moved session's
           // saveSession was blocked by the standby read-only guard.)
           state.setSessionPoolActive(true);
+          // Per-peer suspect breaker (P19) — the markOwnerSuspect hook's missing
+          // half. A peer whose deliveries exhaust retries is short-circuited for
+          // a half-open 30s window: every session it owns goes straight to the
+          // EXISTING failover re-place path instead of re-paying the ~4.5s retry
+          // tax per message. Any successful delivery closes the window; sustained
+          // suspicion (10min of consecutive windows) raises ONE degradation
+          // signal per episode.
+          const ownerSuspectBreaker = new (await import('../core/OwnerSuspectBreaker.js')).OwnerSuspectBreaker({
+            logger: (m) => console.log(pc.dim(m)),
+            reportSustained: ({ machineId, suspectForMs, marks }) => {
+              DegradationReporter.getInstance().report({
+                feature: 'SessionPool.ownerDelivery',
+                primary: 'Messages forward to the machine that owns their session',
+                fallback: `Owner ${machineId} unresponsive to deliveries for ~${Math.round(suspectForMs / 60_000)}min (${marks} suspect windows); its sessions re-place on dispatch; half-open re-probes continue`,
+                reason: 'deliverMessage retries to the owning machine keep exhausting',
+                impact: 'Sessions owned by that machine fail over to other machines on their next message instead of being delivered in place.',
+              });
+            },
+          });
           _sessionRouter = new routerMod.SessionRouter({
             selfMachineId: meshSelfId,
             placement: new placeMod.PlacementExecutor(),
-            machineRegistry: () => machinePoolRegistry?.getCapacities() ?? [],
+            // Placement must consult the breaker too: a message re-placed OFF a
+            // suspect owner must not be placed right back ONTO it. Suspect
+            // machines are filtered from the candidate set UNLESS that would
+            // empty it — with every machine suspect, placement proceeds on the
+            // full set (mirrors the all-machines-quota-blocked precedent:
+            // degraded placement beats no placement).
+            machineRegistry: () => {
+              const all = machinePoolRegistry?.getCapacities() ?? [];
+              const ok = all.filter((c) => !ownerSuspectBreaker.isSuspect(c.machineId));
+              return ok.length > 0 ? ok : all;
+            },
             resolveOwnership: (sk) => {
               const r = ownReg.read(sk);
               if (!r) return { owner: null, epoch: 0, status: null };
               const status = r.status === 'released' ? null : (r.status as 'active' | 'placing' | 'transferring');
               return { owner: ownReg.ownerOf(sk), epoch: r.ownershipEpoch, status, target: ownReg.placementTargetOf(sk) ?? undefined };
             },
-            isMachineAlive: (m) => m === meshSelfId || (machinePoolRegistry?.getCapacity(m)?.online ?? false),
+            // Capacity-online AND not currently suspect: a slow-but-heartbeating
+            // peer that keeps failing deliveries reads as not-alive for routing,
+            // sending its sessions down the existing failover re-place path
+            // without each message re-paying the retry tax.
+            isMachineAlive: (m) => m === meshSelfId || ((machinePoolRegistry?.getCapacity(m)?.online ?? false) && !ownerSuspectBreaker.isSuspect(m)),
+            markOwnerSuspect: (m) => ownerSuspectBreaker.markSuspect(m),
+            onOwnerResponsive: (m) => ownerSuspectBreaker.recordSuccess(m),
             casClaimOwnership: (sk, machineId) => {
               const r = ownReg.cas({ type: 'place', machineId }, { sessionKey: sk, sender: meshSelfId, nonce: `${meshSelfId}:c:${++routerNonce}` });
               return { ok: r.ok, epoch: ownReg.read(sk)?.ownershipEpoch ?? 0 };

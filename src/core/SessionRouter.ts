@@ -125,6 +125,13 @@ export interface SessionRouterDeps {
   queueMessage: (msg: InboundMessage, reason: string) => void;
   raiseAttention: (title: string, body: string) => void;
   markOwnerSuspect?: (machineId: string) => void;
+  /**
+   * A deliverMessage attempt REACHED the owner (queued/duplicate/stale acks all
+   * prove the peer is responsive). Wired to OwnerSuspectBreaker.recordSuccess
+   * so the per-peer suspect window closes the moment the peer answers — the
+   * other half of the markOwnerSuspect breaker (P19).
+   */
+  onOwnerResponsive?: (machineId: string) => void;
   sleep: (ms: number) => Promise<void>;
   log?: (line: string) => void;
 }
@@ -143,8 +150,16 @@ export class SessionRouter {
   route(msg: InboundMessage): Promise<RouteOutcome> {
     const prior = this.chains.get(msg.sessionKey) ?? Promise.resolve();
     const next = prior.catch(() => undefined).then(() => this.dispatchOne(msg));
-    // Track the tail so the next message on this session waits for this one to settle.
-    this.chains.set(msg.sessionKey, next.then(() => undefined, () => undefined));
+    // Track the tail so the next message on this session waits for this one to
+    // settle — and DELETE the entry once this tail settles while still current,
+    // so the map is bounded by in-flight sessions, not sessions-ever-routed
+    // (P19 cap: the map previously grew one settled-promise entry per session
+    // forever).
+    const tail = next.then(() => undefined, () => undefined);
+    this.chains.set(msg.sessionKey, tail);
+    void tail.then(() => {
+      if (this.chains.get(msg.sessionKey) === tail) this.chains.delete(msg.sessionKey);
+    });
     return next;
   }
 
@@ -181,6 +196,9 @@ export class SessionRouter {
     for (let attempt = 0; attempt <= this.cfg.deliverMessageMaxRetries; attempt++) {
       try {
         const ack = await this.deps.deliverMessage(owner, { sessionKey: msg.sessionKey, messageId: msg.messageId, payload: msg.payload, ownershipEpoch: epoch });
+        // ANY ack (queued/duplicate/stale) proves the peer answered — close its
+        // suspect window before interpreting the ack.
+        this.deps.onOwnerResponsive?.(owner);
         if (ack.accepted === 'duplicate') return { action: 'duplicate', owner, acked: true };
         if (ack.accepted === 'queued') return { action: 'forwarded', owner, acked: true };
         // stale-ownership → re-resolve (bounded) and route to the current owner.
