@@ -2944,6 +2944,23 @@ User-facing update announcements are *opt-in and maturity-tagged*, authored in t
       result.upgraded.push('CLAUDE.md: added Maturity honesty (silent-by-default user announcements) section');
     }
 
+    // Update-Relevance Gate (update-relevance-gate spec). Existing agents need to
+    // know that a self-narrated update may be silently WITHHELD by a relevance gate
+    // at the Updates-topic chokepoint — so they write update narration in plain
+    // owner-facing terms and don't treat a 200 {suppressed:true} as an error to
+    // retry. Content-sniffed on a distinctive phrase the template also emits, so a
+    // freshly-initialized agent is never double-patched.
+    if (!content.includes('a self-narrated update may be silently withheld')) {
+      const updateRelevanceSection = `
+### Update-Relevance Gate (a self-narrated update may be silently withheld)
+
+Every discretionary update-class message bound for the Agent Updates topic — whether I post it via \`/telegram/post-update\` OR it comes from the upgrade-note notifier — passes a relevance gate at that shared chokepoint. It independently asks "would a non-technical owner actually notice, use, or care about this?" An \`internal\` verdict (subsystem/sentinel/gate/refactor/agent-to-agent plumbing — e.g. "Sibling Agent Server Control", "apprenticeship cycle recording") is WITHHELD entirely; a relevant-but-jargony update is rewritten into plain "here's what you can now do" language; genuine user news passes through. This does NOT trust my own framing — it enforces relevance in code (Structure > Willpower), so I should write update narration in plain owner-facing terms or expect it to be held. Suppression is a SUCCESS (the endpoint returns \`{ok:true, suppressed:true}\`, NOT an error — do not retry/escalate). Every deliver/suppress/rewrite decision is recorded at \`logs/update-relevance.jsonl\` (nothing vanishes silently). On by default for every agent (a UX fix to a user-facing surface ships live, not dark); off-switch: \`.instar/config.json\` → \`monitoring.updateRelevanceGate.enabled: false\`. Fail-open: an LLM hiccup never swallows a real update. Spec: \`docs/specs/update-relevance-gate.md\`.
+`;
+      content += '\n' + updateRelevanceSection;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Update-Relevance Gate section');
+    }
+
     // Close the Loop (Untracked = Abandoned) — STANDARDS-REGISTRY amendment
     // ratified with Justin 2026-05-31. The "nothing slips through the cracks"
     // principle was made a constitutional standard; existing agents need the
