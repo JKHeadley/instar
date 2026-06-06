@@ -681,6 +681,30 @@ export class TelegramAdapter implements MessagingAdapter {
   /** Callback when relay lease is released (response received or timeout) */
   public onRelayLeaseEnd: ((sessionName: string) => void) | null = null;
 
+  /**
+   * Per-topic monotonic content version — bumped on every message logged for the
+   * topic. The live-tail streamer polls this (getTopicContentVersion) as its
+   * cheap change-detector: an unchanged version means the topic's tail content
+   * is byte-identical, so the streamer skips serializing it entirely (the
+   * 2026-06-05 event-loop-stall fix — building every topic's history every tick
+   * blocked the loop for seconds).
+   */
+  private topicContentVersion = new Map<number, number>();
+  /**
+   * In-memory recent-tail cache backing getTopicHistory — seeded lazily from the
+   * JSONL on a topic's first read, then maintained on every append. Bounds the
+   * cost of repeated history reads to O(limit) instead of a full synchronous
+   * re-read of the (up to 75k-line) message log per call. Holds the most recent
+   * TAIL_CACHE_LIMIT entries per topic, which covers every production caller
+   * (live-tail + handoff hash use 500, respawn history far less). Log rotation
+   * is irrelevant to it — rotation only drops OLD lines, and the cache only
+   * holds the newest.
+   */
+  private topicTailCache = new Map<number, LogEntry[]>();
+  /** One-time batch seed done (all live topics seeded in a single file pass). */
+  private tailCacheSeeded = false;
+  private static readonly TAIL_CACHE_LIMIT = 500;
+
   // Shared infrastructure modules (Phase 1 extraction)
   private sharedLogger: MessageLogger | null = null;
   private sharedRegistry: SessionChannelRegistry | null = null;
@@ -2142,6 +2166,13 @@ export class TelegramAdapter implements MessagingAdapter {
     const sessionName = this.topicToSession.get(topicId);
     this.topicToSession.delete(topicId);
     if (sessionName) this.sessionToTopic.delete(sessionName);
+    // Reclaim the topic's tail cache — a long-lived server churning through
+    // many topics must not retain ≤500 entries per topic-ever-seen forever
+    // (second-pass reviewer finding). A later read simply re-seeds via the
+    // lazy per-topic path. The version COUNTER is deliberately kept: it is
+    // ~8 bytes, and resetting it on a re-registered topic could collide with
+    // a LiveTailSource.lastSeenVersion snapshot and silently gate a real change.
+    this.topicTailCache.delete(topicId);
     this.saveRegistry();
   }
 
@@ -3390,9 +3421,74 @@ export class TelegramAdapter implements MessagingAdapter {
   }
 
   /**
-   * Get recent messages for a topic (for thread history on respawn).
+   * Get recent messages for a topic (for thread history on respawn, the live-tail
+   * streamer, and the handoff hash).
+   *
+   * Served from the in-memory tail cache after a one-time lazy seed from the
+   * JSONL — the file is NOT re-read per call. (Pre-fix, the live-tail streamer
+   * called this for every known topic every 5s, each call synchronously reading
+   * the full multi-MB log: the measured cause of the 2026-06-05 event-loop
+   * stalls.) Requests beyond the cache window fall through to a direct file scan.
    */
   getTopicHistory(topicId: number, limit: number = 20): LogEntry[] {
+    if (limit <= TelegramAdapter.TAIL_CACHE_LIMIT) {
+      const cached = this.topicTailCache.get(topicId);
+      if (cached) return cached.slice(-limit);
+      // First miss: batch-seed every LIVE topic (topicToSession) in ONE file
+      // pass — the live-tail streamer enumerates exactly that set, so without
+      // this its first tick would trigger one full-file scan PER topic.
+      if (!this.tailCacheSeeded) {
+        this.seedTailCacheFromLog();
+        this.tailCacheSeeded = true;
+        const justSeeded = this.topicTailCache.get(topicId);
+        if (justSeeded) return justSeeded.slice(-limit);
+      }
+      // Not a live topic (e.g. respawn history for an unregistered topic) —
+      // per-topic scan once, then cache it.
+      const seeded = this.scanLogForTopic(topicId, TelegramAdapter.TAIL_CACHE_LIMIT);
+      this.topicTailCache.set(topicId, seeded);
+      return seeded.slice(-limit);
+    }
+    // Oversized request (no production caller) — direct scan, leave the cache's
+    // "most recent TAIL_CACHE_LIMIT entries" invariant untouched.
+    return this.scanLogForTopic(topicId, limit);
+  }
+
+  /**
+   * Single-pass cache seed: parse the JSONL once and build the recent tail for
+   * every topic with a registered session (the set the live-tail streamer
+   * enumerates). Topics with no entries get an empty array so they never
+   * trigger a per-topic file scan of their own.
+   */
+  private seedTailCacheFromLog(): void {
+    for (const id of this.topicToSession.keys()) {
+      if (!this.topicTailCache.has(id)) this.topicTailCache.set(id, []);
+    }
+    if (!fs.existsSync(this.messageLogPath)) return;
+    let lines: string[];
+    try {
+      lines = fs.readFileSync(this.messageLogPath, 'utf-8').split('\n').filter(Boolean);
+    } catch (err) {
+      // @silent-fallback-ok — a transiently unreadable log just means the seed
+      // is empty this boot; per-topic reads still work and appends repopulate.
+      console.error(`[telegram] tail-cache seed failed to read message log: ${err}`);
+      return;
+    }
+    for (const line of lines) {
+      try {
+        const entry: LogEntry = JSON.parse(line);
+        const entryTopicId = entry.topicId ?? (entry as unknown as { channelId?: number }).channelId;
+        if (typeof entryTopicId !== 'number') continue;
+        const tail = this.topicTailCache.get(entryTopicId);
+        if (!tail) continue; // not a live topic — lazy per-topic path covers it
+        tail.push(entry);
+        if (tail.length > TelegramAdapter.TAIL_CACHE_LIMIT) tail.shift();
+      } catch { /* skip malformed */ }
+    }
+  }
+
+  /** Full JSONL scan for a topic's most recent entries (the cache seed / fallback path). */
+  private scanLogForTopic(topicId: number, limit: number): LogEntry[] {
     if (!fs.existsSync(this.messageLogPath)) return [];
 
     // Read the file to find matching entries.
@@ -3400,12 +3496,16 @@ export class TelegramAdapter implements MessagingAdapter {
     const content = fs.readFileSync(this.messageLogPath, 'utf-8');
     const lines = content.split('\n').filter(Boolean);
 
-    // Scan from end to find matching entries (most recent first)
+    // Scan from end to find matching entries (most recent first).
+    // Lines written via the shared MessageLogger carry `channelId` instead of
+    // `topicId` (same compat dance as MessageLogger.search) — accept both so the
+    // scan (and the tail-cache seed built from it) sees every writer's entries.
     const matching: LogEntry[] = [];
     for (let i = lines.length - 1; i >= 0 && matching.length < limit; i--) {
       try {
         const entry: LogEntry = JSON.parse(lines[i]);
-        if (entry.topicId === topicId) {
+        const entryTopicId = entry.topicId ?? (entry as unknown as { channelId?: number }).channelId;
+        if (entryTopicId === topicId) {
           matching.unshift(entry); // Maintain chronological order
         }
       } catch { /* skip malformed */ }
@@ -3414,7 +3514,30 @@ export class TelegramAdapter implements MessagingAdapter {
     return matching;
   }
 
+  /**
+   * Cheap, monotonic per-topic change signal for the live-tail streamer: bumped
+   * on every message logged for the topic. Equal versions ⇒ identical tail
+   * content, so the streamer can skip serializing unchanged topics.
+   */
+  getTopicContentVersion(topicId: number): number {
+    return this.topicContentVersion.get(topicId) ?? 0;
+  }
+
   private appendToLog(entry: LogEntry): void {
+    // Maintain the per-topic change signal + tail cache FIRST — both paths below
+    // (shared logger / legacy file) persist the same entry, and every logged
+    // message must be visible to getTopicHistory/getTopicContentVersion callers
+    // regardless of which writer is active. Only a topic already seeded gets a
+    // cache append (an unseeded topic seeds lazily from the file on first read).
+    if (typeof entry.topicId === 'number') {
+      this.topicContentVersion.set(entry.topicId, (this.topicContentVersion.get(entry.topicId) ?? 0) + 1);
+      const tail = this.topicTailCache.get(entry.topicId);
+      if (tail) {
+        tail.push(entry);
+        if (tail.length > TelegramAdapter.TAIL_CACHE_LIMIT) tail.shift();
+      }
+    }
+
     // Phase 1b: Delegate to shared MessageLogger when flag is enabled
     if (this.sharedLogger) {
       this.sharedLogger.append({

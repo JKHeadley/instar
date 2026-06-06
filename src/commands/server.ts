@@ -9580,6 +9580,10 @@ export async function startServer(options: StartOptions): Promise<void> {
           return entries.map((e) => `[${e.timestamp}] ${e.text}`).join('\n') + (entries.length ? '\n' : '');
         },
         activeTopics: () => telegram.getKnownTopicIds().map((id) => String(id)),
+        // Cheap per-topic change signal — lets the source skip serializing
+        // topics with no new messages instead of rebuilding every topic's
+        // history every tick (the 2026-06-05 event-loop-stall fix).
+        getTopicVersion: (topic) => telegram.getTopicContentVersion(Number(topic)),
         transport: sendTransport,
         logger: (m) => console.log(pc.dim(m)),
       });
