@@ -468,6 +468,23 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       placementCooldownMs: 300000,
       topicPlacementUpdateMinIntervalMs: 10000,
     },
+    // Coherence Journal (COHERENCE-JOURNAL-SPEC §3.7). DARK-SHIP: `enabled` is
+    // deliberately OMITTED — the runtime resolves `enabled ?? !!developmentAgent`
+    // (live on the dev agent, dark on the fleet), mirroring
+    // selfKnowledge.sessionContext. applyDefaults add-missing semantics →
+    // migrateConfig backfills these literals on existing agents (Migration Parity).
+    // retention.rotateKeep semantics: N>0 = keep N archives, delete older;
+    // 0 = rotate at maxFileBytes but NEVER delete (bounded files, history forever).
+    coherenceJournal: {
+      flushIntervalMs: 250,
+      scannerIntervalMs: 60000,
+      replication: { maxBatchBytes: 262144 },
+      retention: {
+        'topic-placement': { maxFileBytes: 8388608, rotateKeep: 0 },
+        'session-lifecycle': { maxFileBytes: 16777216, rotateKeep: 4 },
+        'autonomous-run': { maxFileBytes: 8388608, rotateKeep: 8 },
+      },
+    },
   },
   // Session Boot Self-Knowledge (spec: session-boot-self-knowledge.md) — the
   // "what I already have" block (vault secret NAMES + operational facts) the

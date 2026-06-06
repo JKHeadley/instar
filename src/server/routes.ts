@@ -3355,13 +3355,13 @@ export function createRoutes(ctx: RouteContext): Router {
   });
 
   router.post('/autonomous/stop-all', (_req, res) => {
-    const result = stopAllAutonomousJobs(ctx.config.stateDir);
+    const result = stopAllAutonomousJobs(ctx.config.stateDir, ctx.state.getCoherenceJournal());
     res.json({ ok: true, ...result });
   });
 
   router.post('/autonomous/sessions/:topic/stop', (req, res) => {
     const topic = req.params.topic;
-    const stopped = stopAutonomousTopic(ctx.config.stateDir, topic);
+    const stopped = stopAutonomousTopic(ctx.config.stateDir, topic, ctx.state.getCoherenceJournal());
     res.status(stopped ? 200 : 404).json({ ok: stopped, topic });
   });
 
@@ -8379,11 +8379,24 @@ export function createRoutes(ctx: RouteContext): Router {
     let releasedLocalOwnership = false;
     try {
       if (self && ctx.sessionOwnershipRegistry.ownerOf(topicId) === self) {
+        const prevOwner = ctx.sessionOwnershipRegistry.read(topicId)?.ownerMachineId;
         const r = ctx.sessionOwnershipRegistry.cas(
           { type: 'release', machineId: self },
           { sessionKey: topicId, sender: self, nonce: `${self}:rel:${topicId}:${Date.now()}` },
         );
         releasedLocalOwnership = r.ok;
+        // Coherence journal §3.3: the deterministic transfer API's release half.
+        try {
+          const topicNum = Number(topicId);
+          if (r.ok && Number.isFinite(topicNum)) {
+            ctx.state.getCoherenceJournal()?.emitPlacement(topicNum, {
+              owner: r.record.ownerMachineId ?? '',
+              ...(prevOwner ? { prevOwner } : {}),
+              epoch: r.record.ownershipEpoch,
+              reason: 'user-move',
+            });
+          }
+        } catch { /* observability never endangers the observed */ }
       }
     } catch {
       // @silent-fallback-ok — the pin (set above) is what drives re-placement; releasing local
@@ -10877,7 +10890,7 @@ export function createRoutes(ctx: RouteContext): Router {
                 try { ctx.sessionManager?.killSession(sessionName); } catch { /* best-effort */ }
               }
               // Clear this topic's autonomous job so it doesn't zombie-resume.
-              try { stopAutonomousTopic(ctx.config.stateDir, String(topicId)); } catch { /* best-effort */ }
+              try { stopAutonomousTopic(ctx.config.stateDir, String(topicId), ctx.state.getCoherenceJournal()); } catch { /* best-effort */ }
               console.log(`[telegram-forward] sentinel emergency-stop: killed session "${sessionName}" for topic ${topicId}`);
             }
             if (classification.reason) {
