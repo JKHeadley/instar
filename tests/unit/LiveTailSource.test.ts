@@ -327,3 +327,88 @@ describe('LiveTailSource', () => {
     });
   });
 });
+
+describe('stale-standby signal (Eternal Sentinel condition 4 / P19)', () => {
+  function makeFailing(staleSignalAfterMs: number) {
+    let nowMs = 0;
+    let ok = false;
+    const signals: any[] = [];
+    const content: Record<string, string> = { t: 'data' };
+    const src = new LiveTailSource({
+      getTopicContent: (t) => content[t],
+      activeTopics: () => Object.keys(content),
+      transport: { broadcast: async () => ok },
+      failureBackoffBaseMs: 1_000,
+      failureBackoffMaxMs: 1_000, // fixed window so attempts land predictably
+      staleSignalAfterMs,
+      reportStaleStandby: (info) => signals.push(info),
+      now: () => nowMs,
+    });
+    return { src, signals, content, setNow: (t: number) => { nowMs = t; }, setOk: (v: boolean) => { ok = v; } };
+  }
+
+  it('SUSTAINED-FAILURE BOUND: a never-recovering topic signals exactly ONCE across unlimited attempts', async () => {
+    const { src, signals, setNow } = makeFailing(10_000);
+    for (let t = 0; t <= 100_000; t += 1_001) { // ~100 attempt windows
+      setNow(t);
+      await src.flushTopic('t');
+    }
+    expect(signals).toHaveLength(1);
+    expect(signals[0].topic).toBe('t');
+    expect(signals[0].failingForMs).toBeGreaterThanOrEqual(10_000);
+    expect(signals[0].consecutiveFailures).toBeGreaterThan(1);
+  });
+
+  it('does not signal before the threshold', async () => {
+    const { src, signals, setNow } = makeFailing(60_000);
+    for (let t = 0; t <= 30_000; t += 1_001) {
+      setNow(t);
+      await src.flushTopic('t');
+    }
+    expect(signals).toHaveLength(0);
+  });
+
+  it('recovery clears the episode; a NEW failure episode signals again', async () => {
+    const { src, signals, content, setNow, setOk } = makeFailing(5_000);
+    // Episode 1: fail past the threshold.
+    for (let t = 0; t <= 7_000; t += 1_001) { setNow(t); await src.flushTopic('t'); }
+    expect(signals).toHaveLength(1);
+    // Recover.
+    setOk(true);
+    setNow(10_000);
+    expect((await src.flushTopic('t')).flushed).toBe(true);
+    // Episode 2: new content, fail past the threshold again.
+    setOk(false);
+    content.t = 'data more';
+    for (let t = 11_000; t <= 18_000; t += 1_001) { setNow(t); await src.flushTopic('t'); }
+    expect(signals).toHaveLength(2);
+  });
+
+  it('omitted reporter dep → no crash, behavior unchanged (signal is optional)', async () => {
+    let nowMs = 0;
+    const src = new LiveTailSource({
+      getTopicContent: () => 'data',
+      activeTopics: () => ['t'],
+      transport: { broadcast: async () => false },
+      failureBackoffBaseMs: 1_000,
+      failureBackoffMaxMs: 1_000,
+      staleSignalAfterMs: 2_000,
+      now: () => nowMs,
+    });
+    for (let t = 0; t <= 5_000; t += 1_001) { nowMs = t; await src.flushTopic('t'); }
+    expect(src.currentSeq('t')).toBe(0); // still correctly un-advanced
+  });
+});
+
+describe('server-boot wiring: stale-standby signal (source-shape pin)', () => {
+  it('server.ts wires reportStaleStandby to DegradationReporter inside the LiveTailSource construction', () => {
+    const fs = require('node:fs') as typeof import('node:fs');
+    const path = require('node:path') as typeof import('node:path');
+    const src = fs.readFileSync(path.join(process.cwd(), 'src/commands/server.ts'), 'utf-8');
+    const idx = src.indexOf('new LiveTailSource({');
+    expect(idx).toBeGreaterThan(0);
+    const block = src.slice(idx, idx + 2500);
+    expect(block).toContain('reportStaleStandby: ({ topic, failingForMs, consecutiveFailures })');
+    expect(block).toContain("feature: 'LiveTail.standbyFreshness'");
+  });
+});

@@ -71,6 +71,17 @@ export interface LiveTailSourceDeps {
   failureBackoffBaseMs?: number;
   /** Backoff ceiling. Default 5 min. */
   failureBackoffMaxMs?: number;
+  /**
+   * Eternal Sentinel condition 4 ("No Unbounded Loops" / P19): the backoff
+   * keeps retrying a failing topic forever (correct — the standby copy should
+   * converge whenever the peer recovers), but a topic whose flushes have been
+   * failing past staleSignalAfterMs must SAY SO once per episode instead of
+   * going quietly stale. Wired to DegradationReporter in server.ts; omitted →
+   * silent (tests / channels without a reporter).
+   */
+  reportStaleStandby?: (info: { topic: string; failingForMs: number; consecutiveFailures: number }) => void;
+  /** Sustained-failure threshold for the one-per-episode stale signal. Default 30 min. */
+  staleSignalAfterMs?: number;
   now?: () => number;
   logger?: (msg: string) => void;
 }
@@ -95,6 +106,7 @@ export interface FlushOpts {
 const DEFAULT_MAX_FLUSH_BYTES = 256 * 1024;
 const DEFAULT_BACKOFF_BASE_MS = 5_000;
 const DEFAULT_BACKOFF_MAX_MS = 300_000;
+const DEFAULT_STALE_SIGNAL_AFTER_MS = 30 * 60_000;
 
 export class LiveTailSource {
   private readonly d: LiveTailSourceDeps;
@@ -108,6 +120,10 @@ export class LiveTailSource {
   private failures = new Map<string, number>();
   /** Per-topic earliest next attempt (ms epoch) while backing off. */
   private nextAttemptAt = new Map<string, number>();
+  /** Per-topic failure-episode start (ms epoch; absent = healthy). */
+  private failingSince = new Map<string, number>();
+  /** Episode-keyed one-shot latch for the stale-standby signal (value = failingSince it fired for). */
+  private staleSignaledFor = new Map<string, number>();
 
   constructor(deps: LiveTailSourceDeps) {
     this.d = deps;
@@ -201,10 +217,26 @@ export class LiveTailSource {
       this.log(
         `flush of topic ${topic} seq ${nextSeq} not acknowledged — retry in ${Math.round(backoff / 1000)}s (failure #${failures})`,
       );
+
+      // Eternal Sentinel condition 4: retrying forever is correct, but a topic
+      // whose standby copy has been stale past the threshold says so ONCE per
+      // episode (episode-keyed latch, same defensive shape as the supervisor's
+      // SlowRetrySentinelEscalation — a fresh episode re-arms automatically).
+      const episodeStart = this.failingSince.get(topic) ?? now;
+      if (!this.failingSince.has(topic)) this.failingSince.set(topic, episodeStart);
+      const failingForMs = this.now() - episodeStart;
+      if (failingForMs >= (this.d.staleSignalAfterMs ?? DEFAULT_STALE_SIGNAL_AFTER_MS)
+          && this.staleSignaledFor.get(topic) !== episodeStart) {
+        this.staleSignaledFor.set(topic, episodeStart);
+        this.log(`topic ${topic} standby copy STALE — flushes failing for ${Math.round(failingForMs / 60_000)}min (signaling once; retries continue)`);
+        this.d.reportStaleStandby?.({ topic, failingForMs, consecutiveFailures: failures });
+      }
       return { topic, seq: this.currentSeq(topic), flushed: false };
     }
     this.failures.delete(topic);
     this.nextAttemptAt.delete(topic);
+    this.failingSince.delete(topic);
+    this.staleSignaledFor.delete(topic);
     this.seq.set(topic, nextSeq);
     this.streamed.set(topic, full);
     if (version !== undefined) this.lastSeenVersion.set(topic, version);

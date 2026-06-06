@@ -9585,6 +9585,18 @@ export async function startServer(options: StartOptions): Promise<void> {
         // topics with no new messages instead of rebuilding every topic's
         // history every tick (the 2026-06-05 event-loop-stall fix).
         getTopicVersion: (topic) => telegram.getTopicContentVersion(Number(topic)),
+        // Eternal Sentinel condition 4 (P19): a topic whose standby copy has
+        // been stale past the threshold surfaces ONCE per episode through the
+        // standard degradation channel (housekeeping — never a user ping).
+        reportStaleStandby: ({ topic, failingForMs, consecutiveFailures }) => {
+          DegradationReporter.getInstance().report({
+            feature: 'LiveTail.standbyFreshness',
+            primary: 'Standby machine receives a fresh copy of each conversation tail',
+            fallback: `Topic ${telegram.getTopicName?.(Number(topic)) ?? topic}'s standby copy is stale (flushes failing ~${Math.round(failingForMs / 60_000)}min, ${consecutiveFailures} consecutive); retries continue on capped backoff`,
+            reason: 'Live-tail flushes to the standby peer are persistently rejected or unreachable',
+            impact: 'A failover during this window would resume that conversation from an older tail (bounded by the outage start).',
+          });
+        },
         transport: sendTransport,
         logger: (m) => console.log(pc.dim(m)),
       });
