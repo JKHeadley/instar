@@ -216,7 +216,59 @@ function getHostGitIdentity(): { name?: string; email?: string } {
   };
 }
 
-function sanitizeEnv(callerEnv?: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+// ── Per-agent identity isolation (Caroline-class gap 1, Phase-3 Inc-P3a) ──
+//
+// Git's native precedence puts GIT_AUTHOR_*/GIT_COMMITTER_* env vars ABOVE
+// repo-local config. On a shared machine that precedence is exactly the
+// credential/identity-bleed exposure: an agent spawned from a shell that
+// exports another person's GIT_AUTHOR_NAME silently commits as that person,
+// even though the agent's worktree has its own local user.name/user.email
+// (set by `instar worktree create` / init). The fix: when the target repo
+// HAS a local identity configured, the funnel strips inherited identity env
+// vars so the repo-local identity — the per-agent identity — always wins.
+// Repos WITHOUT a local identity keep the long-standing fallback behavior
+// (host identity injected only-if-empty) so non-agent installs don't break
+// with "Author identity unknown".
+const IDENTITY_ENV_VARS = [
+  'GIT_AUTHOR_NAME',
+  'GIT_AUTHOR_EMAIL',
+  'GIT_COMMITTER_NAME',
+  'GIT_COMMITTER_EMAIL',
+] as const;
+
+// Cache of "does this repo have a local user.name AND user.email" keyed on
+// the directory we run git in. Local config is stable for the life of a
+// process; tests reset via _resetLocalIdentityCacheForTest.
+const _localIdentityCache = new Map<string, boolean>();
+function repoHasLocalIdentity(cwd: string): boolean {
+  let key: string;
+  try {
+    key = path.resolve(cwd);
+  } catch {
+    return false;
+  }
+  const cached = _localIdentityCache.get(key);
+  if (cached !== undefined) return cached;
+  let has = false;
+  try {
+    const name = execFileSync('git', ['config', '--local', '--get', 'user.name'], {
+      cwd: key, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'ignore'],
+    }).toString().trim();
+    const email = execFileSync('git', ['config', '--local', '--get', 'user.email'], {
+      cwd: key, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'ignore'],
+    }).toString().trim();
+    has = Boolean(name && email);
+  } catch {
+    has = false; // not a repo / no local identity — fall back to host behavior
+  }
+  _localIdentityCache.set(key, has);
+  return has;
+}
+function _resetLocalIdentityCacheForTest(): void {
+  _localIdentityCache.clear();
+}
+
+function sanitizeEnv(callerEnv?: NodeJS.ProcessEnv, cwd?: string): NodeJS.ProcessEnv {
   // Start from a copy of process.env, then strip the denylist, then strip
   // anything the caller supplied that's on the denylist or that matches
   // GIT_CONFIG_KEY_* / GIT_CONFIG_VALUE_*.
@@ -230,15 +282,23 @@ function sanitizeEnv(callerEnv?: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
       delete merged[k];
     }
   }
-  // Preserve host git identity before we neutralize global config — without
-  // this, every commit through SafeGitExecutor would fail with "Author
-  // identity unknown" because the global config is at /dev/null. Identity is
-  // not an alias-attack vector; alias rebinding is.
-  const id = getHostGitIdentity();
-  if (id.name && !merged.GIT_AUTHOR_NAME) merged.GIT_AUTHOR_NAME = id.name;
-  if (id.email && !merged.GIT_AUTHOR_EMAIL) merged.GIT_AUTHOR_EMAIL = id.email;
-  if (id.name && !merged.GIT_COMMITTER_NAME) merged.GIT_COMMITTER_NAME = id.name;
-  if (id.email && !merged.GIT_COMMITTER_EMAIL) merged.GIT_COMMITTER_EMAIL = id.email;
+  // Per-agent identity isolation: a repo with its OWN local identity is
+  // authoritative — strip inherited identity env vars so git falls through
+  // to the repo-local config (the agent's identity), never a name that
+  // leaked in from the spawning shell or another principal on the machine.
+  if (repoHasLocalIdentity(cwd ?? process.cwd())) {
+    for (const k of IDENTITY_ENV_VARS) delete merged[k];
+  } else {
+    // Preserve host git identity before we neutralize global config — without
+    // this, every commit through SafeGitExecutor would fail with "Author
+    // identity unknown" because the global config is at /dev/null. Identity is
+    // not an alias-attack vector; alias rebinding is.
+    const id = getHostGitIdentity();
+    if (id.name && !merged.GIT_AUTHOR_NAME) merged.GIT_AUTHOR_NAME = id.name;
+    if (id.email && !merged.GIT_AUTHOR_EMAIL) merged.GIT_AUTHOR_EMAIL = id.email;
+    if (id.name && !merged.GIT_COMMITTER_NAME) merged.GIT_COMMITTER_NAME = id.name;
+    if (id.email && !merged.GIT_COMMITTER_EMAIL) merged.GIT_COMMITTER_EMAIL = id.email;
+  }
   // Inject unconditional config disables.
   merged.GIT_CONFIG_GLOBAL = '/dev/null';
   merged.GIT_CONFIG_SYSTEM = '/dev/null';
@@ -706,7 +766,7 @@ export class SafeGitExecutor {
       );
     }
 
-    const env = sanitizeEnv(opts.env);
+    const env = sanitizeEnv(opts.env, opts.cwd);
 
     let stdout: string;
     try {
@@ -753,7 +813,7 @@ export class SafeGitExecutor {
       );
     }
 
-    const env = sanitizeEnv(opts.env);
+    const env = sanitizeEnv(opts.env, opts.cwd);
     const spawnOpts: SpawnOptions = {
       cwd: opts.cwd,
       stdio: opts.stdio ?? 'pipe',
@@ -800,7 +860,7 @@ export class SafeGitExecutor {
       audit('git', opts.operation, verb, targets[0], 'allowed', 'sourceTree-bypass');
     }
 
-    const env = sanitizeEnv(opts.env);
+    const env = sanitizeEnv(opts.env, opts.cwd);
     let stdout: string;
     try {
       stdout = execFileSync('git', args as string[], {
@@ -949,6 +1009,8 @@ export const _internal = {
   isReadOnlyShape,
   sanitizeEnv,
   GIT_ENV_DENYLIST,
+  repoHasLocalIdentity,
+  _resetLocalIdentityCacheForTest,
 };
 
 // Suppress unused-export warnings for the convenience re-exports. The
