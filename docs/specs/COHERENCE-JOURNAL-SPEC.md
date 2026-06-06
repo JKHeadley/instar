@@ -3,7 +3,9 @@ title: "Coherence Journal — per-machine append-only event streams (P1 of multi
 slug: "coherence-journal"
 author: "echo"
 eli16-overview: "COHERENCE-JOURNAL-SPEC.eli16.md"
-status: "in-convergence"
+status: "approved"
+approved: true
+principal-signoff: 'Justin, 2026-06-05 20:34 PDT (topic 13481): "approved!" — in response to the convergence-gate ask (A: approve converged spec + build P1.1-P1.3; C: live two-machine proof on the fleet as the P1.3 closing step). Convergence report + rendered ELI16 delivered and linked in PR #875.'
 layer: "core-instar-primitive"
 parent-principle: "Structure > Willpower — cross-machine awareness comes from a structural event stream, not from any session remembering to report what it did"
 parent-spec: "MULTI-MACHINE-COHERENCE-MASTER-SPEC.md"
