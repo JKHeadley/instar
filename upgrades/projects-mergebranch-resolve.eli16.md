@@ -7,3 +7,5 @@ This is a sibling of the same class as #866: code that assumed the common-case e
 The fix: instead of hardcoding "origin/main", the route now asks GitHub which repo it's actually talking to (the same repo the PR-view reads), finds the LOCAL remote whose URL points at that repo, and checks "<that-remote>/main". On a normal install that resolves right back to origin/main (unchanged behavior); on a fork-origin agent home it correctly resolves to the upstream remote where the merges live. Both lookups are read-only (a GitHub repo-view and a git remote listing).
 
 With this, the projects pipeline can finally record merged steps on the machines we actually develop on — which is the whole point of being able to track an initiative through to "merged."
+
+_Follow-up note: on any lookup error the resolver simply uses the standard default — by design, not as a failure._

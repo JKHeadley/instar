@@ -916,7 +916,7 @@ function resolveCanonicalMainRef(repoPath: string): string {
       }
     }
     return FALLBACK;
-  } catch {
+  } catch { /* @silent-fallback-ok: resolving the canonical-main ref is best-effort — gh missing / not-a-gh-repo / git error falls back to the documented `origin/main` default (the prior behavior), which the merge-base gate then re-validates. Not a degradation: it's the conservative default this resolver exists to refine, not replace. */
     return FALLBACK; // gh missing / not a gh repo / git error → preserve default
   }
 }

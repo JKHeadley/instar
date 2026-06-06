@@ -49,3 +49,5 @@ Completes the #866 chain: the projects pipeline can now record merged steps on d
 
 ## Evidence pointers
 - `tests/unit/StageTransitionValidator.test.ts` — new cases: helper called with the configured `mergeBaseBranch` (not origin/main); unreachable error names the configured branch. 28 validator tests + 45 projects-api green; tsc + destructive-lint clean.
+
+_Follow-up: the resolver catch carries an `@silent-fallback-ok` note — falling back to the `origin/main` default is the conservative behavior this resolver refines, not a swallowed error._
