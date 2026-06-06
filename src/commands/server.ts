@@ -2446,22 +2446,55 @@ export async function startServer(options: StartOptions): Promise<void> {
       console.log(pc.yellow(`  Registry heartbeat failed to start (non-critical): ${err instanceof Error ? err.message : err}`));
     }
 
-    // Phase 5 — install the cost-aware routing policy on the global
-    // providers registry. The policy itself decides nothing today because
-    // no adapters are registered against the providers registry yet
-    // (adapter-registration at startup is tracked as a separate cycle —
-    // depends on per-machine credential discovery), but installing the
-    // policy now ensures any future call to `registry.resolve()` flows
-    // through the chain (CostAware → FirstAvailable; PinHonoringPolicy
-    // pending — recommended by the spec but not yet built) instead of
-    // defaulting to first-by-registration.
+    // Phase 5 — register the Anthropic adapters and install the cost-aware
+    // routing policy on the global providers registry. Registration is the
+    // formerly-deferred "separate cycle" (src/providers/bootRegistration.ts):
+    // gated (codex-only agents register nothing), idempotent, and LAZY (no
+    // tmux/claude spawns at boot — the pool only spawns on first use). With
+    // adapters actually registered, `registry.resolve()` decisions are real,
+    // and the policy's `readSdkCredit` is plumbed from the headless adapter's
+    // UsageMeterProvider instead of the old `() => null` stub.
     //
     // Idempotent: only installs when no policy has been set yet on the
     // module-singleton registry. Re-entering `startServer` in the same
     // process (test harnesses, in-proc respawn) won't clobber a policy
     // a caller (test or production wiring) installed first.
+    let anthropicRegistration: import('../providers/bootRegistration.js').RegisterAnthropicAdaptersResult | null = null;
     try {
       const { registry } = await import('../providers/registry.js');
+      const { registerAnthropicAdapters } = await import('../providers/bootRegistration.js');
+
+      // Scratch working dir for intelligence-pool sessions (context
+      // decontamination — no project CLAUDE.md/MCP in judgment calls).
+      const subscriptionPathConfig = config.intelligence?.subscriptionPath;
+      const poolWorkdir = subscriptionPathConfig?.workingDirectory
+        ?? path.join(config.stateDir, 'intelligence-pool');
+      try { fs.mkdirSync(poolWorkdir, { recursive: true }); } catch { /* spawn-time failure surfaces loudly */ }
+
+      anthropicRegistration = await registerAnthropicAdapters({
+        ...(config.enabledFrameworks ? { enabledFrameworks: config.enabledFrameworks } : {}),
+        ...(config.sessions?.claudePath ? { claudePath: config.sessions.claudePath } : {}),
+        ...(config.sessions?.tmuxPath ? { tmuxPath: config.sessions.tmuxPath } : {}),
+        pool: {
+          poolSize: subscriptionPathConfig?.poolSize ?? 2,
+          // One model per pool; 'haiku' default keeps sentinel chatter off
+          // the subscription's large-model quota (types.ts rationale).
+          model: subscriptionPathConfig?.model ?? 'haiku',
+          workingDirectory: poolWorkdir,
+          // Agent-scoped prefix — pool.start()'s orphan recovery kills
+          // stale `<prefix>-*` tmux sessions from a crashed previous
+          // process, so the prefix MUST be unique per agent on a shared
+          // machine (an unscoped prefix would reap another agent's pool).
+          sessionPrefix: `instar-pool-${String(config.projectName ?? 'agent').toLowerCase().replace(/[^a-z0-9-]/g, '-')}`,
+        },
+      });
+      if (anthropicRegistration.skippedReason) {
+        console.log(pc.dim(`  Providers registry: Anthropic adapters skipped (${anthropicRegistration.skippedReason})`));
+      } else {
+        const ids = [...anthropicRegistration.registered, ...anthropicRegistration.alreadyRegistered];
+        console.log(pc.green(`  Providers registry: ${ids.join(', ')} registered`));
+      }
+
       // Read-only probe — `getRoutingPolicy` isn't on the public surface,
       // so we test by attempting a no-op resolve and seeing whether the
       // chain fires. Cheaper proxy: a private convention — set a marker
@@ -2476,10 +2509,10 @@ export async function startServer(options: StartOptions): Promise<void> {
         const { CostAwareRoutingPolicy } = await import('../providers/costAwareRouting.js');
         registry.setRoutingPolicy(new ChainPolicy([
           new CostAwareRoutingPolicy({
-            // Tier 3.C will plumb a real UsageMeterProvider here. Until
-            // then, `null` means "state unknown" → policy falls to
-            // subscription floor (conservative).
-            readSdkCredit: async () => null,
+            // Real credit reader from the headless adapter's usage meter
+            // (TTL-cached; null = unknown → subscription floor). On a
+            // skipped registration this stays a null-reader by contract.
+            readSdkCredit: anthropicRegistration.readSdkCredit,
             sdkCreditAdapterId: 'anthropic-headless' as never,
             subscriptionAdapterId: 'anthropic-interactive-pool' as never,
           }),
@@ -2489,9 +2522,9 @@ export async function startServer(options: StartOptions): Promise<void> {
         console.log(pc.green('  Routing policy installed: ChainPolicy[CostAware, FirstAvailable]'));
       }
     } catch (err) {
-      // Policy install is non-critical — sessions still resolve adapters
-      // via the registry's first-match-by-registration fallback.
-      console.log(pc.yellow(`  Routing policy install failed (non-critical): ${err instanceof Error ? err.message : err}`));
+      // Registration/policy install is non-critical — sessions still resolve
+      // adapters via the registry's first-match-by-registration fallback.
+      console.log(pc.yellow(`  Providers registration/policy install failed (non-critical): ${err instanceof Error ? err.message : err}`));
     }
 
     // Warn if no auth token configured — server allows unauthenticated access
@@ -2918,6 +2951,13 @@ export async function startServer(options: StartOptions): Promise<void> {
       openMs: config.intelligence?.circuitBreaker?.openMs,
     });
 
+    // Hoisted out of the provider-build try block: the per-component
+    // IntelligenceRouter below (outside that try) reuses the same
+    // subscription-path option for its claude-code builds.
+    let subscriptionPathOption:
+      | import('../core/intelligenceProviderFactory.js').BuildIntelligenceProviderOptions['subscriptionPath']
+      | undefined;
+
     // Provider-portability v1.0.0: pick the IntelligenceProvider that
     // matches the configured framework. Defaults to claude-code for
     // backwards-compat; INSTAR_FRAMEWORK=codex-cli routes through Codex.
@@ -2978,9 +3018,50 @@ export async function startServer(options: StartOptions): Promise<void> {
       } catch (err) {
         console.warn(`[server] TopicLocalModelStore failed to initialize: ${err}`);
       }
+      // June-15 subscription-path routing (spec 04 Rule 1). Built ONCE here;
+      // reused by the main provider below AND the per-component
+      // IntelligenceRouter's claude-code builds, so a component routed to
+      // claude-code while the default framework is codex still gets the
+      // same SDK-pot-vs-subscription routing. Mode 'off'/unset ⇒ option
+      // stays undefined ⇒ claude path byte-for-byte unchanged.
+      const spMode = config.intelligence?.subscriptionPath?.mode ?? 'off';
+      if ((spMode === 'auto' || spMode === 'force') && anthropicRegistration?.pool) {
+        let lastRoutedPath: string | null = null;
+        subscriptionPathOption = {
+          mode: spMode,
+          poolAdapter: anthropicRegistration.pool,
+          readSdkCredit: anthropicRegistration.readSdkCredit,
+          // Transition-only logging (reaper-audit pattern): a line when the
+          // serving path CHANGES, not per call — ~1k internal calls/day must
+          // not become 1k log lines.
+          onRoute: (info) => {
+            if (info.path !== lastRoutedPath) {
+              lastRoutedPath = info.path;
+              console.log(pc.gray(`  [subscription-path] serving internal intelligence via ${info.path} (${info.reason})`));
+            }
+          },
+          onDegrade: (info) => {
+            try {
+              DegradationReporter.getInstance().report({
+                feature: 'AnthropicSubscriptionRouter',
+                primary: `internal intelligence on ${info.from}`,
+                fallback: `fell back to ${info.to}`,
+                reason: info.reason,
+                impact: `Internal LLM call${info.component ? ` (${info.component})` : ''} served by ${info.to} after ${info.from} failed.`,
+              });
+            } catch { /* never break the LLM path on a degradation report */ }
+          },
+        };
+        console.log(pc.green(`  Subscription-path routing: mode '${spMode}' (pool model: ${config.intelligence?.subscriptionPath?.model ?? 'haiku'})`));
+      } else if (spMode !== 'off') {
+        // Configured but unusable (codex-only gate, registration failure) —
+        // say so loudly rather than silently running the SDK path.
+        console.log(pc.yellow(`  Subscription-path routing: mode '${spMode}' configured but the interactive-pool adapter is unavailable — internal calls stay on the default claude -p path`));
+      }
       const built = buildIntelligenceProvider({
         framework,
         binaryPath: framework === 'claude-code' ? config.sessions.claudePath : undefined,
+        ...(subscriptionPathOption ? { subscriptionPath: subscriptionPathOption } : {}),
         ...(framework === 'gemini-cli' && config.monitoring?.quotaTracking
           ? {
               quotaStateFile: (config.monitoring as { quotaStateFile?: string }).quotaStateFile
@@ -3026,7 +3107,16 @@ export async function startServer(options: StartOptions): Promise<void> {
           resolveConfig: () => config.sessions?.componentFrameworks,
           // Each non-default framework gets its OWN breaker → a Claude trip can't
           // pause Codex (the whole point). Default framework keeps the shared one.
-          buildProvider: (fw) => buildIP({ framework: fw, breaker: new LlmCircuitBreaker() }),
+          // claude-code builds inherit the subscription-path routing so a
+          // component routed to Claude under a codex default still honors
+          // the June-15 SDK-pot-vs-subscription decision.
+          buildProvider: (fw) => buildIP({
+            framework: fw,
+            breaker: new LlmCircuitBreaker(),
+            ...(fw === 'claude-code' && subscriptionPathOption
+              ? { subscriptionPath: subscriptionPathOption }
+              : {}),
+          }),
           onDegrade: (info) => {
             try {
               DegradationReporter.getInstance().report({
@@ -10764,6 +10854,20 @@ export async function startServer(options: StartOptions): Promise<void> {
       if (_shuttingDown) return;
       _shuttingDown = true;
       console.log('\nShutting down...');
+
+      // Dispose the interactive-pool adapter (kills its tmux REPL sessions
+      // so they don't orphan). No-op when registration was skipped or the
+      // pool never spawned (lazy). Must run before process exit — orphaned
+      // pool sessions would silently keep drawing subscription quota.
+      if (anthropicRegistration?.pool) {
+        try {
+          const { registry: providersRegistry } = await import('../providers/registry.js');
+          await providersRegistry.unregister(anthropicRegistration.pool.id);
+          console.log('[shutdown] Interactive-pool adapter disposed');
+        } catch (err) {
+          console.error('[shutdown] Interactive-pool dispose failed:', err);
+        }
+      }
 
       // Save resume UUIDs for ALL active topic-linked sessions before exit.
       // Without this, server restarts lose all resume mappings because:

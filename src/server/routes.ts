@@ -18140,7 +18140,34 @@ export function createRoutes(ctx: RouteContext): Router {
   // The endpoints construct ephemeral policy/tracker/router instances
   // per call with the parameters in the query string. They do NOT
   // depend on adapters being registered against the global Registry —
-  // production-adapter registration is tracked separately.
+  // production-adapter registration happens at server boot
+  // (src/providers/bootRegistration.ts); GET /providers/registry below
+  // is the REAL-registry introspection surface.
+
+  // GET /providers/registry — what is ACTUALLY registered (June-15
+  // readiness diagnostic; truth T1 of the live-wiring spec). Names and
+  // capability flags only — never prompt content or credentials (T-04).
+  router.get('/providers/registry', async (_req, res) => {
+    try {
+      const { registry } = await import('../providers/registry.js');
+      const ids = registry.list();
+      const adapters = ids.map((id) => {
+        const adapter = registry.get(id);
+        return {
+          id,
+          capabilities: adapter ? Array.from(adapter.capabilities).sort() : [],
+        };
+      });
+      const policyInstalled = Boolean(
+        (registry as unknown as Record<symbol, boolean>)[
+          Symbol.for('instar.serverBoot.routingPolicyInstalled')
+        ],
+      );
+      res.json({ adapters, count: adapters.length, routingPolicyInstalled: policyInstalled });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
 
   router.get('/providers/routing/decide', async (req, res) => {
     try {

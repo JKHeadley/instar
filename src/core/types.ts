@@ -2247,6 +2247,44 @@ export interface InstarConfig {
        */
       openMs?: number;
     };
+    /**
+     * Anthropic subscription-path routing for INTERNAL intelligence calls
+     * (sentinels, gates, extractors) — the June-15 readiness lever
+     * (specs/provider-portability/04-anthropic-path-constraints.md Rule 1).
+     *
+     * - 'off' (default / section absent): today's behavior, byte-for-byte —
+     *   every internal call is a `claude -p` one-shot (the Agent SDK credit
+     *   path after 2026-06-15). No pool sessions are ever spawned.
+     * - 'auto': drain the SDK credit pot while its state is known-healthy;
+     *   fall to the subscription interactive pool when the pot is unknown
+     *   or at/below the safety margin. One cross-path fallback on failure.
+     * - 'force': subscription pool ONLY — guarantees zero `claude -p`
+     *   traffic (soak tests, June-15 emergency lever). Pool failures are
+     *   loud; there is deliberately no SDK fallback.
+     *
+     * Applies on the claude-code intelligence path only; codex/gemini
+     * routing (sessions.componentFrameworks) is unaffected. Restart
+     * sessions/server to apply (config is read at boot).
+     */
+    subscriptionPath?: {
+      mode?: 'off' | 'auto' | 'force';
+      /** Warm REPL sessions kept by the pool (default 2). */
+      poolSize?: number;
+      /**
+       * Model for the pool's REPL sessions (one model per pool, set at
+       * spawn). Default 'haiku' — internal judgment calls are 'fast'-tier;
+       * running them on the account-default large model would burn the
+       * subscription's large-model quota on sentinel chatter.
+       */
+      model?: string;
+      /**
+       * Working directory for pool sessions. Default: a dedicated scratch
+       * dir under the agent's state dir — context decontamination (no
+       * project CLAUDE.md / MCP servers leak into judgment calls; parity
+       * with the `--setting-sources user` flag on the `claude -p` path).
+       */
+      workingDirectory?: string;
+    };
   };
   /**
    * Agent-level set of frameworks this install actively uses. Drives

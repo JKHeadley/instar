@@ -663,6 +663,11 @@ This routes feedback to the Instar maintainers automatically. Valid types: \`bug
 - **Auto-sync**: Search automatically syncs before querying, so results are always current.
 - **When to use**: When looking for something you know you wrote but can't remember where. When a user asks "didn't we discuss X?" When building context for a task from past learnings.
 
+**Anthropic Subscription-Path Routing (June-15 readiness)** — Your internal background LLM calls (sentinels, gates, extractors) normally run as \`claude -p\` one-shots, which bill the Agent SDK credit pot after 2026-06-15. The subscription-path lever can route them through a pool of long-lived interactive Claude sessions instead — the path that keeps working when the pot is empty.
+- What's actually wired in: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/providers/registry\` → registered provider adapters + capability flags. Both \`anthropic-headless\` and \`anthropic-interactive-pool\` listed = the escape hatch is installed.
+- The lever lives in \`.instar/config.json\` → \`intelligence.subscriptionPath.mode\`: \`off\` (default — today's behavior), \`auto\` (drain the SDK pot while healthy, slide to the interactive pool when it's unknown/near-empty), \`force\` (interactive pool ONLY — zero \`claude -p\` traffic). Restart sessions/server to apply.
+- **When to use** (PROACTIVE): user asks "are we ready for the June 15 change?" / "what happens when the SDK credits run out?" → read \`GET /providers/registry\` and report the mode from config. User hit SDK-pot exhaustion → offer the \`force\`/\`auto\` flip instead of letting background checks fail. (Spec: \`docs/specs/provider-substrate-live-wiring.md\`.)
+
 **Codex Usage** — Check where codex account usage sits (the codex \`/status\` rate-limit windows) without the interactive TUI. Reads the authoritative primary (5h) + secondary (weekly) windows the codex CLI persists into its session rollout files.
 - Check: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/codex/usage\`
 - Returns \`{ available, usage: { primary, secondary, model, planType, rateLimitReachedType } }\` where each window has \`usedPercent\`, \`remainingPercent\`, \`windowMinutes\`, \`resetsAt\`/\`resetsAtIso\`, \`resetsInSeconds\`. \`available:false\` means no codex session data on disk yet (e.g. a pure-Claude agent).

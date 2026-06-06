@@ -3054,6 +3054,24 @@ Check where codex account usage sits without the interactive TUI. The codex CLI 
       result.upgraded.push('CLAUDE.md: added Codex Usage (/codex/usage) awareness (codex-usage-visibility)');
     }
 
+    // subscription-path-routing (Agent Awareness + Migration Parity): existing
+    // agents must learn the June-15 lever exists — the registry introspection
+    // route and the intelligence.subscriptionPath mode switch. Content-sniff
+    // on the route marker.
+    if (!content.includes('/providers/registry')) {
+      const subscriptionPathSection = `
+### Anthropic Subscription-Path Routing (June-15 readiness)
+
+Your internal background LLM calls (sentinels, gates, extractors) normally run as \`claude -p\` one-shots, which bill the Agent SDK credit pot after 2026-06-15. The subscription-path lever routes them through a pool of long-lived interactive Claude sessions instead — the path that keeps working when the pot is empty.
+- What's actually wired in: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/providers/registry\` → registered provider adapters + capability flags. Both \`anthropic-headless\` and \`anthropic-interactive-pool\` listed = the escape hatch is installed.
+- The lever: \`.instar/config.json\` → \`intelligence.subscriptionPath.mode\`: \`off\` (default — today's behavior), \`auto\` (drain the SDK pot while healthy, slide to the interactive pool when it's unknown/near-empty), \`force\` (interactive pool ONLY — zero \`claude -p\` traffic). Restart sessions/server to apply.
+- **When to use** (PROACTIVE): "are we ready for the June 15 change?" / "what happens when the SDK credits run out?" → read \`GET /providers/registry\` + report the configured mode. SDK-pot exhaustion → offer the \`force\`/\`auto\` flip instead of letting background checks fail. (Spec: \`docs/specs/provider-substrate-live-wiring.md\`.)
+`;
+      content += '\n' + subscriptionPathSection;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Anthropic Subscription-Path Routing (/providers/registry) awareness (provider-substrate-live-wiring)');
+    }
+
     // session-clock (Agent Awareness + Migration Parity): existing agents must
     // learn they can ask how long they've been running / how much is left,
     // instead of guessing. Content-sniff on the route marker.
