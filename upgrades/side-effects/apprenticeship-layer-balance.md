@@ -39,3 +39,12 @@ No agent-installed files change. The signal is a new read-only API field, so Age
 ## 6. Scope honesty (what this is NOT)
 
 Observe-only by design. It does NOT auto-correct the imbalance — the natural phase-2 (a cadence rule that makes the autonomous loop drive the mentee layer at least once per K mentor cycles) is deliberately deferred so the signal proves out first (Graduated-Feature-Rollout discipline; ship the observation structure before the enforcement law — the same order as #856/#864 before the #861 constitution article).
+
+## 7. Incidental fix carried by this PR (`src/server/routes.ts`)
+
+Merging current `main` surfaced a pre-existing route-completeness ratchet break introduced by #884 (P1 Coherence Journal): the new `/coherence/journal` route caught `InvalidCursorError` then `throw err` for everything else. That left routes.ts at 225 `catch (err)` / 224 `err instanceof Error` (ratchet red) and leaked an unhandled Express HTML 500 on any non-cursor error.
+
+- **Decision point:** the journal route's catch block — `modify`. Behavior change: a non-cursor error now returns a clean JSON `{ error }` 500 instead of propagating to Express's default HTML error handler. Strictly better (no stack-trace leak), no new failure mode.
+- **Causal autopsy:** balance was even (224/224) at `6c2af5a6a`, went to 225/224 at `7afa768f5` (#884). Confirmed via per-commit catch/instanceof bisect.
+- **Blast radius:** one route's error path. No state, no migration, no gating. Rebalances the ratchet to 225/225 (route-completeness green).
+- **Why carried here vs separate PR:** the merge made this PR's CI red and #893 can't go green without it; owned per the Zero-Failure Standard ("there is no such thing as a pre-existing failure"). Documented loudly rather than silently bundled.

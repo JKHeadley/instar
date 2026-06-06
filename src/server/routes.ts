@@ -4263,7 +4263,7 @@ export function createRoutes(ctx: RouteContext): Router {
         res.status(400).json({ error: err.message });
         return;
       }
-      throw err;
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
     }
   });
 

@@ -56,3 +56,15 @@ and exactly-at-threshold), integration (route surfaces it + honors the tuning
 query), e2e (alive through the real AgentServer). Migration-parity + agent-
 awareness covered (template line + idempotent PostUpdateMigrator backfill, 4
 tests). `tsc --noEmit` clean.
+
+## Incidental fix surfaced by the merge (Zero-Failure Standard)
+
+Merging current `main` in surfaced a pre-existing route-completeness ratchet
+break introduced by #884 (P1 Coherence Journal): the new `/coherence/journal`
+route's catch handled `InvalidCursorError` then `throw err` for everything
+else — leaving the routes.ts catch/instanceof count at 225/224 and producing an
+unhandled Express 500 (HTML stack leak) on any non-cursor error. Fixed in this
+PR by returning a proper JSON 500 (`err instanceof Error ? err.message :
+String(err)`) instead of re-throwing — strictly better behavior, and it
+rebalances the ratchet (225/225). Owned per the Zero-Failure Standard ("there
+is no such thing as a pre-existing failure").

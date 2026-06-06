@@ -28,6 +28,10 @@ It is **observe-only**. It never blocks a cycle, never gates anything, never cha
 
 A `direct-shortcut` mentor-mentee-differential (a drive that bypassed the dogfooded channel) does NOT count toward the keystone — so even a drive that "ran" but skipped the real UX still reads the layer as un-driven. The signal catches the near-miss, not just the obvious gap.
 
+## One extra fix this PR carries (caught while merging latest main)
+
+When I pulled the newest code in to finish this PR, a test ("route-completeness") went red — not from my work, but from a route that shipped a few PRs earlier (the new `/coherence/journal` endpoint). That route caught one specific error and then *re-threw* everything else, which makes the server spit out a raw crash page (HTML with a stack trace) instead of a clean error. Our rule is: don't leave a failure lying around just because someone else caused it ("there is no such thing as a pre-existing failure"). So I fixed that route to return a tidy JSON 500 like the rest of the server does. It's a small, strictly-better change, and it makes the test green again.
+
 ## Evidence
 
-Computed purely from existing cycle rows (no new storage, no migration). All three test tiers green, both sides of every boundary (never-fired starves; before-keystone oversight doesn't; exactly-at-threshold starves, one-below doesn't; shortcut still reads un-driven; empty instance is calm).
+Computed purely from existing cycle rows (no new storage, no migration). All three test tiers green, both sides of every boundary (never-fired starves; before-keystone oversight doesn't; exactly-at-threshold starves, one-below doesn't; shortcut still reads un-driven; empty instance is calm). The incidental `/coherence/journal` fix is covered by the route-completeness ratchet going green (225/225) and `tsc --noEmit` clean.
