@@ -1,5 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { SessionMonitor, type SessionMonitorDeps } from '../../src/monitoring/SessionMonitor.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 /**
  * SessionMonitor tests — proactive session health monitoring.
@@ -405,6 +409,115 @@ describe('SessionMonitor', () => {
       vi.advanceTimersByTime(6 * 60_000);
       await monitor.poll(); // a NEW genuine death -> notify #2
       expect(deps.sendToTopic).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  describe('context-exhaustion notify ledger persistence (survives server restarts)', () => {
+    // REGRESSION (2026-06-06 residual, topics 16566 + 19437): the dedup map
+    // was in-memory only, so every server restart (update-train churn) forgot
+    // which dead sessions were already announced and re-posted the same
+    // "conversation too long" once per boot — 4 notices in 2h on one topic.
+    const exhaustedOutput = 'Error: Conversation too long. Press esc twice to go up a few messages and try again.';
+    let tmpDir: string;
+    let statePath: string;
+
+    const failingRecovery = () => ({
+      checkAndRecover: vi.fn(async () => ({
+        recovered: false, failureType: 'context_exhaustion' as const, message: 'recovery failed',
+      })),
+    });
+
+    function deadSessionDeps(statePathOverride: string): SessionMonitorDeps {
+      return createMockDeps({
+        getActiveTopicSessions: vi.fn(() => new Map([[300, 'session-dead']])),
+        captureSessionOutput: vi.fn(() => exhaustedOutput),
+        sessionRecovery: failingRecovery() as any,
+        statePath: statePathOverride,
+      });
+    }
+
+    beforeEach(() => {
+      tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sm-ledger-test-'));
+      statePath = path.join(tmpDir, 'state', 'session-monitor-ctx-notified.json');
+    });
+
+    afterEach(() => {
+      SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/SessionMonitor.test.ts ledger cleanup' });
+    });
+
+    it('a restarted monitor does NOT re-announce a death the previous instance already announced', async () => {
+      const depsA = deadSessionDeps(statePath);
+      const monitorA = new SessionMonitor(depsA, { pollIntervalSec: 60 });
+      await monitorA.poll();
+      expect(depsA.sendToTopic).toHaveBeenCalledTimes(1); // first (honest) notice
+      expect(fs.existsSync(statePath)).toBe(true);        // persisted
+      monitorA.stop();
+
+      // "Server restart": a brand-new instance, same statePath, same dead session.
+      const depsB = deadSessionDeps(statePath);
+      const monitorB = new SessionMonitor(depsB, { pollIntervalSec: 60 });
+      await monitorB.poll();
+      expect(depsB.sendToTopic).not.toHaveBeenCalled();   // pre-fix: re-announced per boot
+      monitorB.stop();
+    });
+
+    it('a successful recovery clears the persisted episode so a post-restart genuine death notifies again', async () => {
+      const depsA = deadSessionDeps(statePath);
+      const monitorA = new SessionMonitor(depsA, { pollIntervalSec: 60, notificationCooldownMinutes: 5 });
+      await monitorA.poll();
+      expect(depsA.sendToTopic).toHaveBeenCalledTimes(1);
+
+      // Recovery succeeds → episode cleared AND persisted as cleared.
+      (depsA.sessionRecovery!.checkAndRecover as any).mockResolvedValue({
+        recovered: true, failureType: 'context_exhaustion' as const, message: 'recovered',
+      });
+      vi.advanceTimersByTime(6 * 60_000);
+      await monitorA.poll();
+      monitorA.stop();
+
+      // Restart: a NEW genuine death on the same topic must notify.
+      const depsB = deadSessionDeps(statePath);
+      const monitorB = new SessionMonitor(depsB, { pollIntervalSec: 60 });
+      await monitorB.poll();
+      expect(depsB.sendToTopic).toHaveBeenCalledTimes(1);
+      monitorB.stop();
+    });
+
+    it('tolerates a corrupt ledger (starts empty, still notifies once)', async () => {
+      fs.mkdirSync(path.dirname(statePath), { recursive: true });
+      fs.writeFileSync(statePath, '{not json!!');
+      const deps2 = deadSessionDeps(statePath);
+      const monitor2 = new SessionMonitor(deps2, { pollIntervalSec: 60 });
+      await monitor2.poll();
+      expect(deps2.sendToTopic).toHaveBeenCalledTimes(1);
+      monitor2.stop();
+    });
+
+    it('prunes entries older than 7 days at load (stale episodes do not suppress forever)', async () => {
+      fs.mkdirSync(path.dirname(statePath), { recursive: true });
+      fs.writeFileSync(statePath, JSON.stringify({
+        '300': { sessionName: 'session-dead', at: Date.now() - 8 * 24 * 60 * 60 * 1000 },
+      }));
+      const deps2 = deadSessionDeps(statePath);
+      const monitor2 = new SessionMonitor(deps2, { pollIntervalSec: 60 });
+      await monitor2.poll();
+      // The 8-day-old entry was pruned → this death is a fresh episode → notify.
+      expect(deps2.sendToTopic).toHaveBeenCalledTimes(1);
+      monitor2.stop();
+    });
+
+    it('runs without a statePath exactly as before (no file, in-memory dedup only)', async () => {
+      const deps2 = createMockDeps({
+        getActiveTopicSessions: vi.fn(() => new Map([[301, 'session-x']])),
+        captureSessionOutput: vi.fn(() => exhaustedOutput),
+        sessionRecovery: failingRecovery() as any,
+        // no statePath
+      });
+      const monitor2 = new SessionMonitor(deps2, { pollIntervalSec: 60 });
+      await monitor2.poll();
+      expect(deps2.sendToTopic).toHaveBeenCalledTimes(1);
+      expect(fs.existsSync(statePath)).toBe(false);
+      monitor2.stop();
     });
   });
 

@@ -1,0 +1,45 @@
+# Death-notice dedup survives server restarts
+
+## What Changed
+
+SessionMonitor's once-per-death-episode notify dedup (`ctxNotifiedSessions`,
+introduced by the #914 flood fix) was in-memory only. Every server restart —
+and the update train restarts the server several times a day — cleared it, so
+an already-announced dead session was re-announced once per boot: the bounded
+residual behind the repeated "conversation too long" notices (confirmed twice
+on 2026-06-06, topics 16566 and 19437; operator approved persisting it).
+
+The map is now a persisted ledger at `state/session-monitor-ctx-notified.json`
+(topicId → {sessionName, at}; atomic tmp+rename writes; declared in the
+state-coherence registry as machine-local/single-writer). It loads at
+construction with a 7-day prune; a successful recovery deletes the entry (so a
+future genuine death notifies normally); a missing/corrupt file degrades to
+empty — worst case one repeat notice, the pre-fix status quo, never broken
+monitoring. Without a configured statePath the monitor behaves exactly as
+before.
+
+## What to Tell Your User
+
+Nothing — housekeeping. The visible effect is the absence of repeats: a dead
+session's "conversation too long" notice now arrives exactly once, no matter
+how many times the server restarts behind the scenes.
+
+## Summary of New Capabilities
+
+- SessionMonitor ctx-notified ledger: per-boot re-announce residual closed.
+
+## Evidence
+
+- **Before:** topic 16566 received the same "conversation too long" death
+  notice ~26× overnight 2026-06-05→06 (pre-#914 deferral bug + per-boot
+  re-announce); after #914 (v1.3.361) the bounded residual remained — topic
+  19437 got 4 notices in 2h (12:16→13:16Z), exactly one per server boot during
+  update-train churn, and 16566 got 2 more when v1.3.361→363 restarted the
+  server at 10:51Z (in-memory map cleared, documented bounded risk in the #914
+  observation report).
+- **After (mechanism):** the regression suite replays the restart: instance A
+  notifies once and persists; a NEW SessionMonitor instance on the same
+  statePath (the "server restart") polls the same dead session and sends
+  NOTHING. Recovery-clears, 7-day prune, corrupt-file tolerance, and
+  no-statePath inertness each have a dedicated test
+  (tests/unit/SessionMonitor.test.ts, 5 new tests; 29/29 green).
