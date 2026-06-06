@@ -852,6 +852,18 @@ export function loadConfig(projectDir?: string): InstarConfig {
     anthropicApiKey: fileConfig.sessions?.anthropicApiKey as string | undefined,
     anthropicBaseUrl: fileConfig.sessions?.anthropicBaseUrl as string | undefined,
     credentials: buildCredentialsMap(fileConfig.sessions as Record<string, unknown> | undefined),
+    // Per-component framework routing (docs/specs/per-component-framework-routing.md).
+    // LOAD-PATH FIX (2026-06-06): this field was documented + consumed
+    // (IntelligenceRouter's resolveConfig reads config.sessions.componentFrameworks
+    // live) but NEVER copied from the config FILE here — so the documented
+    // `.instar/config.json` surface was silently dead on every deployed agent
+    // (the feature's tests built config objects in-memory, which is why the
+    // file-load gap never surfaced). Pass it through; the router validates
+    // values per-call (unknown frameworks degrade to the default + report).
+    ...(fileConfig.sessions?.componentFrameworks &&
+    typeof fileConfig.sessions.componentFrameworks === 'object'
+      ? { componentFrameworks: fileConfig.sessions.componentFrameworks }
+      : {}),
     // pi-cli subscription-guard override (PI-HARNESS-INTEGRATION-SPEC §4.3).
     // Config surface: top-level `piCli.allowAnthropicProviders` — file-config
     // only, deliberately NOT an env var (no per-boot bypass surface).

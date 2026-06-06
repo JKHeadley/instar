@@ -48,6 +48,55 @@ describe('Config', () => {
       SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/Config.test.ts:48' });
     });
 
+    it('carries sessions.componentFrameworks from config.json into the loaded config (load-path wiring)', () => {
+      // REGRESSION (2026-06-06): the per-component framework routing feature
+      // read config.sessions.componentFrameworks live (IntelligenceRouter
+      // resolveConfig), and the docs told users to set it in
+      // `.instar/config.json` — but Config.load never copied the field from
+      // the file, so the documented surface was silently DEAD on every
+      // deployed agent. This is the exact-gap test: a FILE-loaded config must
+      // carry the routing table.
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-config-test-'));
+      const stateDir = path.join(tmpDir, '.instar');
+      fs.mkdirSync(stateDir, { recursive: true });
+
+      const routing = {
+        categories: { sentinel: 'codex-cli' },
+        overrides: { CoherenceReviewer: 'claude-code' },
+      };
+      fs.writeFileSync(
+        path.join(stateDir, 'config.json'),
+        JSON.stringify({
+          sessions: {
+            framework: 'claude-code',
+            claudePath: '/usr/local/bin/claude',
+            tmuxPath: '/usr/bin/tmux',
+            componentFrameworks: routing,
+          },
+        }),
+      );
+
+      const config = loadConfig(tmpDir);
+      expect(config.sessions.componentFrameworks).toEqual(routing);
+
+      SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/Config.test.ts:componentFrameworks' });
+    });
+
+    it('omits componentFrameworks when absent from the file (no phantom field)', () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-config-test-'));
+      const stateDir = path.join(tmpDir, '.instar');
+      fs.mkdirSync(stateDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(stateDir, 'config.json'),
+        JSON.stringify({
+          sessions: { framework: 'claude-code', claudePath: '/usr/local/bin/claude', tmuxPath: '/usr/bin/tmux' },
+        }),
+      );
+      const config = loadConfig(tmpDir);
+      expect(config.sessions.componentFrameworks).toBeUndefined();
+      SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/Config.test.ts:componentFrameworks-absent' });
+    });
+
     it('respects sessions.tmuxPath from config.json instead of auto-detecting', () => {
       const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-config-test-'));
       const stateDir = path.join(tmpDir, '.instar');
