@@ -49,6 +49,7 @@ const LONG_LIVED_STORES = [
   'src/messaging/MessageProcessingLedger.ts',
   'src/messaging/pending-relay-store.ts',
   'src/messaging/imessage/NativeBackend.ts',
+  'src/threadline/A2ADeliveryTracker.ts',
 ];
 
 /**

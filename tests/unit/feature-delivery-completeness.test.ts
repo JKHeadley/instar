@@ -271,6 +271,7 @@ describe('Feature Delivery Completeness', () => {
       '/cutover-readiness',                                // alternate (content-sniff) check for Cutover Readiness — tracked as a featureSection above
       '/cutover-readiness/import-dryrun',                  // sub-line splice sniff key: the migrateClaudeMd else-if branch inserts the import-rehearsal line INTO the already-tracked Cutover Readiness section for agents that predate it (like '/corrections' for Preferences)
       '/providers/registry',                               // provider-substrate-live-wiring (June-15 subscription-path) read surface (templated "Anthropic Subscription-Path Routing" + migrator): observability the agent READS to answer "are we ready for June 15 / is the escape hatch installed?" plus an Anthropic-specific config lever — like /session/clock and /resources/summary, not a framework-shadowed user-invokable capability (the lever only applies to claude-code internal calls; Codex/Gemini agents have no claude -p traffic to reroute)
+      'Is my channel to a peer alive? (A2A delivery health)', // A2A-DURABLE-DELIVERY read surface (templated + migrator parity): observability the agent READS to answer "is my channel to <peer> alive / did they get it?" via GET /threadline/peers/health[/:fp] — same READ-surface class as /codex/usage, /metrics/features, /session/clock, /sessions/reap-log; not a framework-shadowed user-invokable capability
     ];
 
     it('all new migrator CLAUDE.md sections are tracked', () => {

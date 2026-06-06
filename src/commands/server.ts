@@ -8609,6 +8609,19 @@ export async function startServer(options: StartOptions): Promise<void> {
       ? new ListenerSessionManager(config.stateDir, config.authToken ?? '', config.threadline as Partial<import('../threadline/ListenerSessionManager.js').ListenerConfig>)
       : null;
 
+    // A2A Delivery Tracker — durable per-peer delivery lifecycle + peer-health
+    // ("communications never just die out", A2A-DURABLE-DELIVERY-SPEC.md / #939).
+    // Recording-only: it never gates a send. Always constructed (cheap SQLite,
+    // self-initializing schema) so the peer-health routes answer even when the
+    // relay is off.
+    let a2aDeliveryTracker: import('../threadline/A2ADeliveryTracker.js').A2ADeliveryTracker | null = null;
+    try {
+      const { A2ADeliveryTracker } = await import('../threadline/A2ADeliveryTracker.js');
+      a2aDeliveryTracker = A2ADeliveryTracker.open(config.projectName, config.stateDir);
+    } catch (err) {
+      console.warn(pc.yellow(`  A2A delivery tracker: unavailable — ${err instanceof Error ? err.message : String(err)}`));
+    }
+
     // Wake Socket Server — receives signals from the standalone listener daemon (Phase 1)
     let wakeSocketServer: import('../threadline/WakeSocketServer.js').WakeSocketServer | undefined;
     try {
@@ -8925,6 +8938,22 @@ export async function startServer(options: StartOptions): Promise<void> {
               });
             } catch (err) {
               console.warn(`[relay] Canonical inbox append failed (non-fatal): ${err instanceof Error ? err.message : err}`);
+            }
+          }
+
+          // Durable A2A delivery (A2A-DURABLE-DELIVERY-SPEC.md): this is the
+          // relay-ingest accept point for CROSS-MACHINE peers (the primary
+          // Echo↔Dawn case) — here `senderFingerprint` is the peer's real
+          // routing fingerprint, so liveness keys correctly and the implicit
+          // ack (a reply on the thread = processed-ack of our prior send) fires.
+          // Same-machine local delivery is recorded separately in the
+          // /messages/relay-agent route. Recording-only — never gates routing.
+          if (a2aDeliveryTracker) {
+            try {
+              a2aDeliveryTracker.recordInboundFrom(senderFingerprint, senderName ?? null);
+              if (msg.threadId) a2aDeliveryTracker.recordAckByThread(msg.threadId);
+            } catch (err) {
+              console.warn(`[relay] A2A inbound record failed (non-fatal): ${err instanceof Error ? err.message : err}`);
             }
           }
 
@@ -11562,7 +11591,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       console.log(pc.dim(`  [session-pool] rollout gate not wired: ${err instanceof Error ? err.message : String(err)}`));
     }
 
-    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, semanticMemory, activitySentinel, rateLimitSentinel, releaseReadinessSentinel: releaseReadinessSentinel ?? undefined, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, localSigningKeyPem, leaseTransport, onLeasePullRequest: () => leaseCoordinatorRef?.currentLease() ?? null, liveTailReceiver, handoffWireTransport, onHandoffBegin, onHandoffInitiate: handoffInitiate, handoffInProgress: handoffSentinelInProgress, messageLedger, currentInboundByTopic, replyMarkerTransport, onReplyMarker: messageLedger ? (marker: unknown) => { const m = marker as { dedupeKey: string; platform: string; replyIdempotencyKey: string; epoch: number; topic?: string | null }; messageLedger!.applyRemoteReplyMarker(m.dedupeKey, { platform: m.platform, replyIdempotencyKey: m.replyIdempotencyKey, epoch: m.epoch, topic: m.topic ?? null }); } : undefined, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, warrantsReplyGate, collaborationSurfacer, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, responseReviewGate, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, machinePoolRegistry, meshRpcDispatcher, workingSetPullCoordinator, commitmentReplicaStore, forwardCommitmentMutate, sessionOwnershipRegistry, topicPinStore: _topicPinStore ?? undefined, secretSync: _secretSyncHandle ?? undefined, meshSelfId: _meshSelfId ?? undefined, resolveRouterUrl: _resolveRouterUrl ?? undefined, resolvePeerUrls: _resolvePeerUrls ?? undefined, sessionPoolE2EResultStore, proxyCoordinator, topicIntentStore, topicIntentArcCheck, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, briefDeps, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, agentWorktreeReaper, mcpProcessReaper, geminiLoopRunner, sleepController, agentActivityState, reapLog, sleepWakeDetector, unjustifiedStopGate, stopGateDb, stopNotifier });
+    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, semanticMemory, activitySentinel, rateLimitSentinel, releaseReadinessSentinel: releaseReadinessSentinel ?? undefined, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, localSigningKeyPem, leaseTransport, onLeasePullRequest: () => leaseCoordinatorRef?.currentLease() ?? null, liveTailReceiver, handoffWireTransport, onHandoffBegin, onHandoffInitiate: handoffInitiate, handoffInProgress: handoffSentinelInProgress, messageLedger, currentInboundByTopic, replyMarkerTransport, onReplyMarker: messageLedger ? (marker: unknown) => { const m = marker as { dedupeKey: string; platform: string; replyIdempotencyKey: string; epoch: number; topic?: string | null }; messageLedger!.applyRemoteReplyMarker(m.dedupeKey, { platform: m.platform, replyIdempotencyKey: m.replyIdempotencyKey, epoch: m.epoch, topic: m.topic ?? null }); } : undefined, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, warrantsReplyGate, collaborationSurfacer, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, a2aDeliveryTracker: a2aDeliveryTracker ?? undefined, responseReviewGate, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, machinePoolRegistry, meshRpcDispatcher, workingSetPullCoordinator, commitmentReplicaStore, forwardCommitmentMutate, sessionOwnershipRegistry, topicPinStore: _topicPinStore ?? undefined, secretSync: _secretSyncHandle ?? undefined, meshSelfId: _meshSelfId ?? undefined, resolveRouterUrl: _resolveRouterUrl ?? undefined, resolvePeerUrls: _resolvePeerUrls ?? undefined, sessionPoolE2EResultStore, proxyCoordinator, topicIntentStore, topicIntentArcCheck, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, briefDeps, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, agentWorktreeReaper, mcpProcessReaper, geminiLoopRunner, sleepController, agentActivityState, reapLog, sleepWakeDetector, unjustifiedStopGate, stopGateDb, stopNotifier });
     // Resolve the late-bound topic-operator getter (increment 2e): routing was
     // wired before the server existed; from here on inbound binds use the
     // server's own store instance.
