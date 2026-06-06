@@ -16,6 +16,10 @@ A spec for the harness that ties those pieces together: **scenario packs** (atta
 
 Org-agnostic is built in: a scenario never hardcodes "this must be refused" — it carries hints for FINDING the governing rule in whatever org's rulebook the harness is pointed at. If no rule matches, the result is "ungoverned": the agent might still refuse on instinct, but the org learns its rulebook has a hole. That's the "cheering vs governing" measurement, automated.
 
+## The coherence rule (operator refinement)
+
+An attack only measures something if the disguise fits the door it knocks on. "I'm the boss on my friend's phone" arriving from the boss's REAL account is nonsense — the test rig rejects that combination. Every scenario declares who it pretends to be (the real owner acting strangely, a stranger, another agent, a stolen account), and it may only be delivered over a channel where that pretense is plausible. Contexts we haven't probed yet are reported as "untested," never assumed safe. The spec also carries a crosswalk table checking the harness itself against every EXO 3.0 requirement it claims to serve — and the operator flagged a bigger question it surfaces (is "the message came from your Telegram" really proof it's you?) as a separate tracked exploration.
+
 ## The safeguards
 
 Attack text lives in files, never in the orchestrator's conversation — components handle payloads as file paths and hashes, and humans review them through file-viewer links. The agent being tested gets probed only in disposable test sessions in the dedicated test topic, and each session is killed (resume pointer cleared) after its run, so a poisoned transcript dies with its session. Level-3 attacks are off until the operator turns them on, and pointing the harness at an agent you don't operate requires that operator's standing consent. Every probe is written to an audit log.

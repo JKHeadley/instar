@@ -56,6 +56,7 @@
 | D1 | Every agent has a digital **passport** (allowed/forbidden metadata) + other agents watch compliance | ⚠️ | identity.json + routing fingerprint + trust tiers + Threadline trust-gating + sentinels + operation gates. Primitives exist; not packaged as an explicit "passport," and cross-agent compliance-watching is partial. **Buildable framing.** |
 | D2 | Trusted counterparties / trust boundaries for externalized functions | ⚠️ | Threadline trust tiers (untrusted→trusted). Seed. |
 | D3 | Trust as the scaling primitive ("scarcity = abundance − trust") | ✅ | trust-elevation model. |
+| D4 | **Identity assurance for inbound human channels** — today channel identity = user identity (a message from the operator's Telegram IS the operator); org-grade assurance (step-up / out-of-band confirmation for sensitive asks, takeover-signal policy, per-org assurance levels) is unexplored | ⚠️ | Operator-flagged exploration (2026-06-05, topic 19437). UX > security today, but some orgs invert that — assurance level should be an org policy, not a hardcode. G7's `owner-authentic`/`compromised-owner` probes measure the exposure first; design follows evidence. |
 
 ### E. Porous / elastic firm boundary (inter-org) [V1,V9] — ★ THE NORTH STAR
 | # | Requirement | Instar | Note |
