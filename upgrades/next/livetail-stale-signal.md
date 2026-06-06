@@ -1,7 +1,6 @@
 ---
 bump: patch
 ---
-<!-- internal-only -->
 
 ## What Changed
 
@@ -14,6 +13,22 @@ per outage when flushes have failed ≥30min: one log line + one
 housekeeping channel — the reporter's per-feature 1h cooldown bounds even an
 all-topics-stale storm to a single alert). Success clears the episode. The
 `reportStaleStandby` dep is optional — omitted, behavior is byte-identical.
+
+## What to Tell Your User
+
+Only relevant if I run on more than one machine: when the standby machine's
+copy of a conversation falls behind for over half an hour (because syncs to it
+keep failing), that fact is now recorded in my health/degradation log instead
+of being invisible. Nothing pings you — but if a machine takeover ever resumes
+a conversation from an older point, there's now a checkable record explaining
+exactly which conversation was behind and since when.
+
+## Summary of New Capabilities
+
+- Stale-standby visibility: one degradation record per conversation per outage
+  when cross-machine sync has been failing ≥30min (`LiveTail.standbyFreshness`
+  in the degradation log / Process Health surfaces); retries continue
+  unchanged. No configuration needed.
 
 ## Evidence
 
