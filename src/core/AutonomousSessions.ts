@@ -164,7 +164,7 @@ function emitStopped(journal: AutonomousJournalSeam | undefined, stateDir: strin
       runId: autonomousRunId(job?.startedAt ?? null, topic),
       artifactPaths: [file],
     });
-  } catch {
+  } catch { /* @silent-fallback-ok: journal observability must never endanger the observed operation (COHERENCE-JOURNAL-SPEC §3.1) */
     /* observability never endangers the observed */
   }
 }

@@ -486,7 +486,7 @@ export class CoherenceJournal {
       this.opKeys[kind].add(opKey);
       this.trimOpKeys(kind);
       this.queue.push({ kind, line, seq });
-    } catch (e) {
+    } catch (e) { /* @silent-fallback-ok: journal observability must never endanger the observed operation (COHERENCE-JOURNAL-SPEC §3.1) */
       // The journal never throws into its caller (§3.1).
       this.log('emit', `[coherence-journal] emit failed (swallowed): ${(e as Error)?.message}`);
     }
@@ -602,7 +602,7 @@ export class CoherenceJournal {
     let realExisting: string;
     try {
       realExisting = fs.realpathSync(existing);
-    } catch {
+    } catch { /* @silent-fallback-ok: journal observability must never endanger the observed operation (COHERENCE-JOURNAL-SPEC §3.1) */
       realExisting = existing;
     }
     const finalPath = tail.length ? path.join(realExisting, ...tail) : realExisting;
@@ -669,7 +669,7 @@ export class CoherenceJournal {
         try {
           // Injected standby guard — throwing skips this kind's batch + counts.
           if (this.guardWrite) this.guardWrite(filePath);
-        } catch (e) {
+        } catch (e) { /* @silent-fallback-ok: journal observability must never endanger the observed operation (COHERENCE-JOURNAL-SPEC §3.1) */
           this.degradation.guardSkips++;
           this.log('guard', `[coherence-journal] guardWrite refused ${kind}: ${(e as Error)?.message}`);
           // Re-queue this kind's items so a transient guard refusal doesn't lose them.
@@ -720,7 +720,7 @@ export class CoherenceJournal {
           this.persistMeta();
         }
       }
-    } catch (e) {
+    } catch (e) { /* @silent-fallback-ok: journal observability must never endanger the observed operation (COHERENCE-JOURNAL-SPEC §3.1) */
       this.degradation.flushErrors++;
       this.log('flush', `[coherence-journal] flush failed (swallowed): ${(e as Error)?.message}`);
     } finally {
@@ -740,7 +740,7 @@ export class CoherenceJournal {
         if (obj && typeof obj.incarnation === 'string' && obj.kinds && typeof obj.kinds === 'object') {
           meta = obj as MetaFile;
         }
-      } catch {
+      } catch { /* @silent-fallback-ok: journal observability must never endanger the observed operation (COHERENCE-JOURNAL-SPEC §3.1) */
         meta = null; // malformed meta → re-init below
       }
     }
@@ -867,7 +867,7 @@ export class CoherenceJournal {
         const obj = JSON.parse(ln) as JournalEntry;
         const key = this.opKeyOf(kind, obj);
         if (key) this.opKeys[kind].add(key);
-      } catch {
+      } catch { /* @silent-fallback-ok: journal observability must never endanger the observed operation (COHERENCE-JOURNAL-SPEC §3.1) */
         // skip corrupt lines
       }
     }
@@ -951,7 +951,7 @@ export class CoherenceJournal {
     for (const a of toDelete) {
       try {
         SafeFsExecutor.safeRmSync(path.join(this.dirPath(), a), { force: true, operation: 'coherence-journal:prune-archive' });
-      } catch (e) {
+      } catch (e) { /* @silent-fallback-ok: journal observability must never endanger the observed operation (COHERENCE-JOURNAL-SPEC §3.1) */
         this.log('prune', `[coherence-journal] prune failed for ${a}: ${(e as Error)?.message}`);
       }
     }
@@ -963,7 +963,7 @@ export class CoherenceJournal {
     let names: string[];
     try {
       names = this.io.readdirSync(this.dirPath()) as string[];
-    } catch {
+    } catch { /* @silent-fallback-ok: journal observability must never endanger the observed operation (COHERENCE-JOURNAL-SPEC §3.1) */
       return [];
     }
     const re = new RegExp(`^${escapeRegExp(prefix)}(\\d+)\\.jsonl$`);
@@ -1013,11 +1013,11 @@ export class CoherenceJournal {
       try {
         const buf = Buffer.from(JSON.stringify({ pid: process.pid, at: this.now().toISOString() }), 'utf-8');
         this.io.writeSync(fd, buf, 0, buf.length);
-      } catch {
+      } catch { /* @silent-fallback-ok: journal observability must never endanger the observed operation (COHERENCE-JOURNAL-SPEC §3.1) */
         /* best-effort lock annotation */
       }
       return true;
-    } catch {
+    } catch { /* @silent-fallback-ok: journal observability must never endanger the observed operation (COHERENCE-JOURNAL-SPEC §3.1) */
       // Lock exists — check whether the holder is still alive (stale reclaim).
       if (this.reclaimStaleLock(lockPath)) {
         try {
@@ -1026,11 +1026,11 @@ export class CoherenceJournal {
           const buf = Buffer.from(JSON.stringify({ pid: process.pid, at: this.now().toISOString() }), 'utf-8');
           try {
             this.io.writeSync(fd, buf, 0, buf.length);
-          } catch {
+          } catch { /* @silent-fallback-ok: journal observability must never endanger the observed operation (COHERENCE-JOURNAL-SPEC §3.1) */
             /* best-effort */
           }
           return true;
-        } catch {
+        } catch { /* @silent-fallback-ok: journal observability must never endanger the observed operation (COHERENCE-JOURNAL-SPEC §3.1) */
           return false;
         }
       }
@@ -1049,14 +1049,14 @@ export class CoherenceJournal {
       try {
         process.kill(pid, 0); // throws if the process does not exist
         return false; // still alive — do NOT reclaim
-      } catch (err) {
+      } catch (err) { /* @silent-fallback-ok: journal observability must never endanger the observed operation (COHERENCE-JOURNAL-SPEC §3.1) */
         if ((err as NodeJS.ErrnoException)?.code === 'ESRCH') {
           SafeFsExecutor.safeRmSync(lockPath, { force: true, operation: 'coherence-journal:reclaim-stale-lock' });
           return true;
         }
         return false; // EPERM etc. — be conservative, don't reclaim
       }
-    } catch {
+    } catch { /* @silent-fallback-ok: journal observability must never endanger the observed operation (COHERENCE-JOURNAL-SPEC §3.1) */
       return false;
     }
   }
@@ -1065,7 +1065,7 @@ export class CoherenceJournal {
     if (this.lockFd !== null) {
       try {
         this.io.closeSync(this.lockFd);
-      } catch {
+      } catch { /* @silent-fallback-ok: journal observability must never endanger the observed operation (COHERENCE-JOURNAL-SPEC §3.1) */
         /* best-effort */
       }
       this.lockFd = null;
@@ -1131,7 +1131,7 @@ export function readTailTolerant(
   let size: number;
   try {
     size = io.statSync(filePath).size;
-  } catch {
+  } catch { /* @silent-fallback-ok: journal observability must never endanger the observed operation (COHERENCE-JOURNAL-SPEC §3.1) */
     return result;
   }
   if (size === 0) return result;

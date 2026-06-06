@@ -213,7 +213,7 @@ export class StateManager {
       if (!fs.existsSync(filePath)) return undefined;
       const parsed = JSON.parse(fs.readFileSync(filePath, 'utf-8')) as Session;
       return parsed?.status;
-    } catch {
+    } catch { /* @silent-fallback-ok: journal observability must never endanger the observed operation (COHERENCE-JOURNAL-SPEC §3.1) */
       return undefined; // unreadable prev = treat as new (op-key dedupe absorbs repeats)
     }
   }

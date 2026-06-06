@@ -38,7 +38,10 @@ describe('Session Pool activation wiring (§L4)', () => {
   it('the SessionRouter is constructed with the real registry/ownership/placement + outbound mesh client', () => {
     const idx = src.indexOf('new routerMod.SessionRouter({');
     expect(idx).toBeGreaterThan(0);
-    const block = src.slice(idx, idx + 3000);
+    // Window 3200 (was 2000): the coherence-journal emitPlacement pairing
+    // (spec §3.3, enforced by lint-cas-emit-placement) added lines inside
+    // casClaimOwnership/confirmClaim, pushing the later assertions out.
+    const block = src.slice(idx, idx + 3200);
     // The registry dep filters suspect machines from placement candidates
     // (owner-suspect breaker, P19) with an all-suspect unfiltered fallback —
     // still sourced from the REAL machinePoolRegistry capacities.

@@ -29,6 +29,7 @@ import { rateLimiter, signViewPath } from './middleware.js';
 import type { WriteOperation, WriteToken } from '../core/StateWriteAuthority.js';
 import { writeLifelineRestartSignal } from '../core/version-skew.js';
 import { readSessionClocks } from '../core/SessionClockReader.js';
+import { CoherenceJournalReader, InvalidCursorError } from '../core/CoherenceJournalReader.js';
 import { creditUsherOnOutbound } from '../core/UsherActedCorrelator.js';
 import { validateWriteToken, canPerformOperation } from '../core/StateWriteAuthority.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
@@ -4228,6 +4229,42 @@ export function createRoutes(ctx: RouteContext): Router {
     const rawLimit = Number(req.query.limit);
     const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(Math.floor(rawLimit), 1000) : 200;
     res.json({ entries: ctx.reapLog.read(limit) });
+  });
+
+  // Coherence Journal merged read API (COHERENCE-JOURNAL-SPEC §3.5). The
+  // pull-surface answer to "which machine was topic N on / where are its
+  // artifacts?" — a bounded, honest-about-trust merged view over this machine's
+  // own streams + replicated peer copies. Read-only, Bearer-auth (router-level
+  // middleware), signal-only (§3.9: nothing actuates off the journal).
+  //
+  // 503 when the writer is not wired (journal dark). The reader builds its own
+  // file-path discipline from ctx.config.stateDir — `machine`/`kind` query
+  // params are matched against the enumerated on-disk stream set, never used to
+  // construct a path, so a traversal-shaped param matches nothing.
+  router.get('/coherence/journal', (req, res) => {
+    if (!ctx.state.getCoherenceJournal()) {
+      res.status(503).json({ error: 'coherence journal not enabled' });
+      return;
+    }
+    const reader = new CoherenceJournalReader({ stateDir: ctx.config.stateDir });
+    const rawTopic = Number(req.query.topic);
+    const rawLimit = Number(req.query.limit);
+    try {
+      const result = reader.query({
+        topic: Number.isFinite(rawTopic) ? rawTopic : undefined,
+        kind: typeof req.query.kind === 'string' ? req.query.kind : undefined,
+        machine: typeof req.query.machine === 'string' ? req.query.machine : undefined,
+        limit: Number.isFinite(rawLimit) ? rawLimit : undefined,
+        cursor: typeof req.query.cursor === 'string' ? req.query.cursor : undefined,
+      });
+      res.json(result);
+    } catch (err) {
+      if (err instanceof InvalidCursorError) {
+        res.status(400).json({ error: err.message });
+        return;
+      }
+      throw err;
+    }
   });
 
   // Reaper decision audit (RESPONSIBLE-RESOURCE-USAGE). The pull-surface answer to

@@ -2629,14 +2629,14 @@ export async function startServer(options: StartOptions): Promise<void> {
                   }
                   seenRuns.delete(topicKey);
                 }
-              } catch { /* skip-tick; never compounds (P19) */ }
+              } catch { /* @silent-fallback-ok: journal observability must never endanger the observed operation (COHERENCE-JOURNAL-SPEC §3.1) */ /* skip-tick; never compounds (P19) */ }
             };
             const cjScanTimer = setInterval(() => { void cjScan(); }, cjScannerMs);
             cjScanTimer.unref?.();
             void cjScan(); // prime at boot (re-emits dedupe via op keys)
           }
           console.log(pc.dim(`  Coherence journal: writer active (${cjMachineId.slice(0, 16)}…)`));
-        } catch (err) {
+        } catch (err) { /* @silent-fallback-ok: journal observability must never endanger the observed operation (COHERENCE-JOURNAL-SPEC §3.1) */
           // The journal must never endanger boot (§3.1 inverted at startup).
           console.warn(pc.yellow(`  Coherence journal failed to start (continuing without): ${err instanceof Error ? err.message : String(err)}`));
           coherenceJournal = undefined;
@@ -4002,6 +4002,17 @@ export async function startServer(options: StartOptions): Promise<void> {
       ensureAgentUpdatesTopic(telegram, state).catch(err => {
         console.error(`[server] Failed to ensure Agent Updates topic: ${err}`);
       });
+    }
+
+    // ── Coherence Journal × Telegram emergency-stop seam (COHERENCE-JOURNAL §3.3)
+    // The adapter's sentinel emergency-stop path clears a topic's autonomous job
+    // via stopAutonomousTopic but holds no StateManager, so it cannot reach the
+    // wired journal on its own. Inject the journal as the AutonomousJournalSeam so
+    // a sentinel-driven stop emits the autonomous-run `stopped` event like every
+    // other stop funnel. Placed AFTER both adapter-setup blocks (so `telegram` is
+    // assigned in either mode) and only when the journal is wired.
+    if (telegram && coherenceJournal) {
+      telegram.setCoherenceJournalSeam(coherenceJournal);
     }
 
     // Agent worktree convention (Layer 4) — lifeline detector.

@@ -33,7 +33,7 @@ import {
   recordFormatFallbackPlainRetry,
 } from './telegramFormatMetrics.js';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
-import { stopAutonomousTopic } from '../core/AutonomousSessions.js';
+import { stopAutonomousTopic, type AutonomousJournalSeam } from '../core/AutonomousSessions.js';
 import { AttentionTopicGuard, TopicFloodBudgetError, type AttentionTopicGuardConfig } from './AttentionTopicGuard.js';
 
 export interface TelegramConfig {
@@ -445,6 +445,12 @@ export class TelegramAdapter implements MessagingAdapter {
    *  (voice/photo/document) cannot carry the [a2a:…] marker and bypass the hook.
    *  See installAgentMessageHook for the production binding. */
   private agentMessageHook?: AgentMessageHook;
+  /** Optional coherence-journal seam (COHERENCE-JOURNAL-SPEC §3.3). The adapter
+   *  holds no StateManager, so the emergency-stop path's stopAutonomousTopic call
+   *  cannot reach the wired journal on its own. server.ts injects this seam so the
+   *  sentinel emergency-stop emits the autonomous-run `stopped` event like every
+   *  other stop funnel. Undefined → the stop stays silent (best-effort, never blocks). */
+  private coherenceJournalSeam?: AutonomousJournalSeam;
 
   // Attention queue (persisted to disk)
   private attentionItemToTopic: Map<string, number> = new Map();
@@ -1932,6 +1938,16 @@ export class TelegramAdapter implements MessagingAdapter {
    */
   setAgentMessageHook(hook: AgentMessageHook | undefined): void {
     this.agentMessageHook = hook;
+  }
+
+  /**
+   * Inject the coherence-journal seam (COHERENCE-JOURNAL-SPEC §3.3). The adapter
+   * has no StateManager, so its emergency-stop path threads this seam into
+   * stopAutonomousTopic so the autonomous-run `stopped` event is emitted on a
+   * sentinel-driven stop. server.ts wires this right after state.setCoherenceJournal.
+   */
+  setCoherenceJournalSeam(seam: AutonomousJournalSeam | undefined): void {
+    this.coherenceJournalSeam = seam;
   }
 
   /**
@@ -4423,7 +4439,7 @@ export class TelegramAdapter implements MessagingAdapter {
             // Also clear this topic's autonomous job so it doesn't zombie-resume
             // when a fresh session spawns. (Multi-session: per-topic state file.)
             try {
-              if (stopAutonomousTopic(this.stateDir, String(numericTopicId))) {
+              if (stopAutonomousTopic(this.stateDir, String(numericTopicId), this.coherenceJournalSeam)) {
                 console.log(`[sentinel] Cleared autonomous job for topic ${numericTopicId}`);
               }
             } catch { /* best-effort */ }
