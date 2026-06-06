@@ -157,7 +157,8 @@ export class InteractivePool extends EventEmitter {
         });
         console.log(`[interactive-pool] killed stale pool session from a previous process: ${name}`);
       } catch {
-        // Raced away or already gone — fine either way.
+        // @silent-fallback-ok — kill-session raced: the stale session is
+        // already gone, which is the desired end-state; nothing degraded.
       }
     }
   }

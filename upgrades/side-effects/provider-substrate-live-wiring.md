@@ -129,3 +129,17 @@ commit; findings folded back into code/spec before the convergence tag.
 - Spec: `docs/specs/provider-substrate-live-wiring.md` (+ `.eli16.md`)
 - Live exposure measurement driving the work: /metrics/features 24h on echo
   (~1,014 real internal calls, ~26.7M tokens-in).
+
+## CI-green follow-up (same PR)
+
+- New side effect: a FAILED boot registration/policy install now emits a
+  DegradationReporter event (`serverBoot.anthropicProviderRegistration`) in
+  addition to the yellow boot log line — so a dark June-15 routing install is
+  visible in the degradation feed, not just scrollback. No behavior change on
+  the success path.
+- Silent-fallback ratchet lowered 459 → 458 (that catch is now reporter-wired);
+  two non-degradation catches carry in-brace `@silent-fallback-ok`
+  justifications (raced tmux kill-session; HTTP 500 surfaced to caller).
+- `/providers/registry` tracked in the feature-delivery-completeness guard
+  (read-surface class, like `/session/clock`; no framework shadow — the lever
+  only applies to claude-code internal traffic).

@@ -2524,7 +2524,16 @@ export async function startServer(options: StartOptions): Promise<void> {
     } catch (err) {
       // Registration/policy install is non-critical — sessions still resolve
       // adapters via the registry's first-match-by-registration fallback.
+      // But it IS a degradation: the June-15 subscription-path routing is
+      // not live in this process, so report it rather than only logging.
       console.log(pc.yellow(`  Providers registration/policy install failed (non-critical): ${err instanceof Error ? err.message : err}`));
+      DegradationReporter.getInstance().report({
+        feature: 'serverBoot.anthropicProviderRegistration',
+        primary: 'both Anthropic adapters registered + cost-aware routing policy installed at boot',
+        fallback: 'empty providers registry — internal LLM calls stay on the legacy claude -p path with no SDK-pot-vs-subscription routing',
+        reason: `registration/policy install threw: ${err instanceof Error ? err.message : String(err)}`,
+        impact: 'subscription-path routing (June-15 readiness) is unavailable for this server process until restart',
+      });
     }
 
     // Warn if no auth token configured — server allows unauthenticated access
@@ -3026,7 +3035,10 @@ export async function startServer(options: StartOptions): Promise<void> {
       // stays undefined ⇒ claude path byte-for-byte unchanged.
       const spMode = config.intelligence?.subscriptionPath?.mode ?? 'off';
       if ((spMode === 'auto' || spMode === 'force') && anthropicRegistration?.pool) {
-        let lastRoutedPath: string | null = null;
+        // (string | undefined, not `= null` — a `= null;` initializer inside
+        // the preceding catch's 20-line scan window false-flags the unrelated
+        // TopicLocalModelStore catch in no-silent-fallbacks.test.ts.)
+        let lastRoutedPath: string | undefined;
         subscriptionPathOption = {
           mode: spMode,
           poolAdapter: anthropicRegistration.pool,

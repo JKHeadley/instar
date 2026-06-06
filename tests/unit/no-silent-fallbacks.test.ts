@@ -239,7 +239,14 @@ describe('No Silent Fallbacks', () => {
     // catches — its only new catch (migrateInstarDevInternalOnlyReleaseNoteLane) SURFACES
     // errors via result.errors.push and is verified ABSENT from the flagged list. Merged
     // baseline stays 459 (re-verified against the merged tree).
-    const BASELINE = 459;
+    //
+    // Lowered 459 -> 458 by provider-substrate-live-wiring (June-15 subscription
+    // path): the pre-existing boot "Policy install is non-critical" catch in
+    // src/commands/server.ts now reports via DegradationReporter (a real fix —
+    // a dark June-15 routing install is a reportable degradation, not a log
+    // line). The PR's own new catches are either reporter-wired, exempt with
+    // in-brace justification, or surface errors to the HTTP caller.
+    const BASELINE = 458;
 
     if (silentFallbacks.length > 0) {
       const report = silentFallbacks.map(fb =>

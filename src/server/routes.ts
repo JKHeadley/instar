@@ -18165,6 +18165,8 @@ export function createRoutes(ctx: RouteContext): Router {
       );
       res.json({ adapters, count: adapters.length, routingPolicyInstalled: policyInstalled });
     } catch (err) {
+      // @silent-fallback-ok — not silent: the error is surfaced to the
+      // caller as an HTTP 500 with the message.
       res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
     }
   });
