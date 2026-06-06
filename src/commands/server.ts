@@ -7014,6 +7014,12 @@ export async function startServer(options: StartOptions): Promise<void> {
               : telegram!.getSessionForTopic(topicId);
             return sessionName ? rateLimitSentinel.isRecoveryActive(sessionName) : false;
           },
+          // Honest turn-receipts: when any recovery sentinel already owns this
+          // session's stuck-state recovery (it is messaging the user), the
+          // honest classifier must stay silent so the user hears one voice.
+          // Reuses the same composed checker the SessionReaper uses for its veto.
+          isStuckRecoveryActive: (sessionName) =>
+            wedgeRecoveryActive?.(sessionName) ?? false,
           // Shared LLM queue (interactive lane) — cross-monitor concurrency
           // and daily-spend-cap with PromiseBeacon.
           sharedLlmQueue,

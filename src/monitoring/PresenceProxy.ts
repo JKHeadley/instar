@@ -19,7 +19,7 @@ import { execSync } from 'child_process';
 import type { IntelligenceProvider, IntelligenceOptions } from '../core/types.js';
 import type { MessageLoggedEvent } from '../messaging/shared/MessagingEventBus.js';
 import { isSystemOrProxyMessage } from '../messaging/shared/isSystemOrProxyMessage.js';
-import { detectContextExhaustion } from './QuotaExhaustionDetector.js';
+import { classifyStuckSignature } from './StuckSignatureClassifier.js';
 import { LlmAbortedError } from './LlmQueue.js';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 import type { IntelligenceFramework } from '../core/intelligenceProviderFactory.js';
@@ -101,6 +101,15 @@ export interface PresenceProxyConfig {
 
   // Optional: context exhaustion auto-recovery
   recoverContextExhaustion?: (topicId: number, sessionName: string) => Promise<{ recovered: boolean }>;
+
+  /**
+   * Honest turn-receipts: when a recovery sentinel (ContextWedgeSentinel,
+   * etc.) is ALREADY handling this session's stuck state, it owns the user
+   * voice — PresenceProxy must not also message about the wedge. Wired to the
+   * composed sentinel recovery checker. Absent/undefined = no suppression
+   * (the honest classifier is then the only voice, which is still correct).
+   */
+  isStuckRecoveryActive?: (sessionName: string) => boolean;
 
   // Timer config
   tier1DelayMs?: number;       // Default: 20000
@@ -1347,15 +1356,34 @@ export class PresenceProxy {
       }
     }
 
-    // ── Context exhaustion: auto-recover before LLM call ──
+    // ── Honest turn-receipts: classify a live-but-failing session ──
+    // A session can be ALIVE (child process running) yet failing every turn:
+    // rate-limited, policy-wedged, context-wedged, or out of context window.
+    // The process-tree check below would mislabel all of these "working" —
+    // the exact lie behind "🔭 actively working" while the session is dead.
+    // classifyStuckSignature is TAIL-GATED: the signature must be the live
+    // tail, not a stale mention in scrollback (which is why "conversation too
+    // long" previously fired as noise on healthy sessions). When it matches,
+    // we surface the REAL reason instead of "working". Recovery still belongs
+    // to the sentinels — if one already owns this session's recovery, it owns
+    // the voice and we stay silent.
     if (snapshot) {
-      const ctxCheck = detectContextExhaustion(snapshot);
-      if (ctxCheck.matched && ctxCheck.confidence === 'high') {
+      const stuck = classifyStuckSignature(snapshot);
+      if (stuck) {
         if (state.cancelled) {
           this.config.releaseTriageMutex?.(state.sessionName, 'presence-proxy');
           return;
         }
-        if (this.config.recoverContextExhaustion) {
+        // A sentinel already messaging about this stuck state owns the voice.
+        if (this.config.isStuckRecoveryActive?.(state.sessionName)) {
+          this.config.releaseTriageMutex?.(state.sessionName, 'presence-proxy');
+          this.persistState(topicId, state);
+          return;
+        }
+
+        // context-too-long: try the existing auto-recovery first; only if it
+        // is unavailable/fails do we surface the honest "start fresh" message.
+        if (stuck.kind === 'context-too-long' && this.config.recoverContextExhaustion) {
           const result = await this.config.recoverContextExhaustion(topicId, state.sessionName);
           if (result.recovered) {
             state.tier3FiredAt = Date.now();
@@ -1369,12 +1397,13 @@ export class PresenceProxy {
             return;
           }
         }
-        // No recovery callback or recovery failed — notify user
+
+        // rate-limited self-clears (assessment 'waiting'); the wedges and an
+        // unrecovered context-too-long need a fresh session (assessment 'dead').
         state.tier3FiredAt = Date.now();
-        state.tier3Assessment = 'dead';
-        state.tier3Summary = 'Conversation too long — session cannot continue';
-        await this.sendProxyMessage(topicId,
-          `${this.prefix} 5-minute check — Session hit "conversation too long" and can't continue. Send a new message to start a fresh session with your recent history.`, 3);
+        state.tier3Assessment = stuck.kind === 'rate-limited' ? 'waiting' : 'dead';
+        state.tier3Summary = stuck.detail ? `${stuck.kind} (${stuck.detail})` : stuck.kind;
+        await this.sendProxyMessage(topicId, `${this.prefix} ${stuck.message}`, 3);
         this.config.releaseTriageMutex?.(state.sessionName, 'presence-proxy');
         this.persistState(topicId, state);
         this.cleanupState(topicId);
