@@ -143,6 +143,9 @@ describe('Feature Delivery Completeness', () => {
       'ReviewExchange (autonomous code review)', // mandate-gated two-party review sign-off protocol
       'Cutover Readiness',              // migration readiness read surface (/cutover-readiness; the door stays the operator's)
       '**Session Boot Self-Knowledge**', // vault secret NAMES + operational facts at boot (spec session-boot-self-knowledge; templates.ts + migrator + shadow-marker parity)
+      'MTP Protocol — the two EXO 3.0 tests', // ORG-INTENT as machine-readable MTP: identity layer + refusal/endorsement tests (/intent/org/test-action; EXO 3.0 G1; templates.ts + migrator + shadow-marker parity)
+      'Agent Digital Passport (EXO 3.0', // portable identity+trust+constraints passport + peer compliance check (/passport, /passport/verify; EXO 3.0 G3; templates.ts + migrator + shadow-marker parity)
+      'Agent-Readiness Scoring (EXO 3.0', // coordination-vs-judgment diagnostic (/agent-readiness/score; EXO 3.0 G2; templates.ts + migrator + shadow-marker parity)
       'Learning-Velocity Metric (EXO 3.0', // forward-looking learning KPI (/metrics/learning-velocity; EXO 3.0 G5; templates.ts + migrator + shadow-marker parity)
     ];
 
@@ -262,6 +265,7 @@ describe('Feature Delivery Completeness', () => {
       '/review-exchange',                                  // alternate (content-sniff) check for ReviewExchange — tracked as a featureSection above
       '/cutover-readiness',                                // alternate (content-sniff) check for Cutover Readiness — tracked as a featureSection above
       '/cutover-readiness/import-dryrun',                  // sub-line splice sniff key: the migrateClaudeMd else-if branch inserts the import-rehearsal line INTO the already-tracked Cutover Readiness section for agents that predate it (like '/corrections' for Preferences)
+      '/providers/registry',                               // provider-substrate-live-wiring (June-15 subscription-path) read surface (templated "Anthropic Subscription-Path Routing" + migrator): observability the agent READS to answer "are we ready for June 15 / is the escape hatch installed?" plus an Anthropic-specific config lever — like /session/clock and /resources/summary, not a framework-shadowed user-invokable capability (the lever only applies to claude-code internal calls; Codex/Gemini agents have no claude -p traffic to reroute)
     ];
 
     it('all new migrator CLAUDE.md sections are tracked', () => {

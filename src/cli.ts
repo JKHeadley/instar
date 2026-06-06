@@ -270,6 +270,32 @@ async function addQuota(opts: { stateFile?: string }): Promise<void> {
 
 const program = new Command();
 
+function rejectUnknownTopLevelCommand(program: Command, argv: string[]): void {
+  const firstArg = argv[2];
+  if (!firstArg || firstArg.startsWith('-')) {
+    return;
+  }
+
+  if (firstArg === 'help') {
+    program.outputHelp();
+    process.exit(0);
+  }
+
+  const commandNames = new Set<string>();
+  for (const command of program.commands) {
+    commandNames.add(command.name());
+    for (const alias of command.aliases()) {
+      commandNames.add(alias);
+    }
+  }
+
+  if (!commandNames.has(firstArg)) {
+    console.error(`error: unknown command '${firstArg}'`);
+    console.error(`Run 'instar --help' for available commands.`);
+    process.exit(1);
+  }
+}
+
 program
   .name('instar')
   .description('Persistent autonomy infrastructure for AI agents')
@@ -2447,6 +2473,45 @@ program
     process.exit(exitCode);
   });
 
+// ── `instar dev:post-drive-transcript-audit` — operator-seat UX transcript auditor ──
+
+program
+  .command('dev:post-drive-transcript-audit')
+  .description('Audit topic transcripts for operator-seat UX antipatterns and file framework-issue observations with stable dedupe keys')
+  .option('--topic <id>', 'Topic id to audit (repeatable)', (v: string, prev: string[]) => [...prev, v], [])
+  .option('--topics <ids...>', 'Topic ids to audit')
+  .requiredOption('--start <timestamp>', 'Window start timestamp (any Date.parse-compatible value)')
+  .requiredOption('--end <timestamp>', 'Window end timestamp (any Date.parse-compatible value)')
+  .option('--limit <n>', 'Messages to read per topic (max 100)', (v) => parseInt(v, 10))
+  .option('--base-url <url>', 'Instar server base URL (defaults to this project config port)')
+  .option('--history-base-url <url>', "Server holding the drive TRANSCRIPT when it is not this one (e.g. the mentee's server) — findings still file to --base-url's ledger")
+  .option('--history-auth-token <token>', 'Bearer token for --history-base-url reads (prefer the INSTAR_HISTORY_AUTH_TOKEN env var — flags are visible in ps)')
+  .option('--dir <path>', 'Project directory to load config from')
+  .option('--dry-run', 'Print report without filing framework-issue observations')
+  .option('--json', 'Print structured JSON report')
+  .action(async (opts: {
+    topic?: string[];
+    topics?: string[];
+    start: string;
+    end: string;
+    limit?: number;
+    baseUrl?: string;
+    historyBaseUrl?: string;
+    historyAuthToken?: string;
+    dir?: string;
+    dryRun?: boolean;
+    json?: boolean;
+  }) => {
+    const { runPostDriveTranscriptAuditCli } = await import('./commands/postDriveTranscriptAudit.js');
+    try {
+      const exitCode = await runPostDriveTranscriptAuditCli(opts);
+      process.exit(exitCode);
+    } catch (err) {
+      console.error(err instanceof Error ? err.message : String(err));
+      process.exit(1);
+    }
+  });
+
 // ── `instar dev:profile-node [pid]` — CPU-profile a hot node process's JS ──
 
 program
@@ -2476,4 +2541,5 @@ program
     return route(taskPrompt, opts);
   });
 
+rejectUnknownTopLevelCommand(program, process.argv);
 program.parse();

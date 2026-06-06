@@ -24,6 +24,7 @@ import {
   type HistoryEntryLike,
 } from '../../src/messaging/shared/compactionResumePayload.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { formatLocalTimestamp } from '../../src/utils/localTime.js';
 
 describe('buildCompactionResumePayload', () => {
   it('emits preamble-only when the context block is empty', () => {
@@ -100,14 +101,15 @@ describe('formatInlineHistory', () => {
     const out = formatInlineHistory(entries, { topicName: 'demo', label: 'THREAD' });
     expect(out).toContain('--- THREAD (last 2 messages) ---');
     expect(out).toContain('Topic: demo');
-    expect(out).toContain('[16:00:00] Justin: hi');
-    expect(out).toContain('[16:00:30] Agent: hello');
+    // Local-tz rendering (2026-06-05 time-incoherency fix)
+    expect(out).toContain(`[${formatLocalTimestamp('2026-04-17T16:00:00Z')}] Justin: hi`);
+    expect(out).toContain(`[${formatLocalTimestamp('2026-04-17T16:00:30Z')}] Agent: hello`);
     expect(out).toContain('--- END THREAD ---');
   });
 
   it('falls back to generic "User" when senderName missing', () => {
     const out = formatInlineHistory([{ text: 'hey', fromUser: true, timestamp: '2026-04-17T16:00:00Z' }]);
-    expect(out).toContain('[16:00:00] User: hey');
+    expect(out).toContain(`[${formatLocalTimestamp('2026-04-17T16:00:00Z')}] User: hey`);
   });
 
   it('truncates very long message bodies to 2000 chars', () => {
@@ -194,6 +196,6 @@ describe('integration — topic 6795 shape', () => {
     const payload = buildCompactionResumePayload(contextBlock);
     expect(payload).toContain(COMPACTION_RESUME_PREAMBLE);
     expect(payload).toContain('Okay, you really need to hand hold me through whatever I need to do here');
-    expect(payload).toContain('[16:24:00] Justin:');
+    expect(payload).toContain(`[${formatLocalTimestamp('2026-04-17T16:24:00Z')}] Justin:`);
   });
 });

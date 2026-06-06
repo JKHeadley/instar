@@ -24,6 +24,23 @@ export interface InteractivePoolConfig {
   /** Working directory for the REPL sessions. */
   workingDirectory?: string;
   /**
+   * Optional model for the pool's REPL sessions, passed as `--model` at
+   * spawn. One model per pool (per-call selection would need model-keyed
+   * sub-pools — out of scope). Intelligence-funnel pools set this to a
+   * small model (e.g. 'haiku') so high-volume judgment calls don't draw
+   * the subscription's large-model quota. Unset → the account default.
+   */
+  model?: string;
+  /**
+   * tmux session-name prefix for pool sessions (default 'instar-pool').
+   * Production callers MUST pass an agent-scoped prefix (e.g.
+   * 'instar-pool-<projectName>'): `start()` kills stale `<prefix>-*`
+   * sessions left by a crashed previous process (orphan recovery), so an
+   * UNscoped prefix on a multi-agent machine would reap another agent's
+   * live pool.
+   */
+  sessionPrefix?: string;
+  /**
    * Idle markers used to detect prompt completion. Inherited from the
    * feasibility prototype.
    */
@@ -66,6 +83,7 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): Interactive
     allocateTimeoutMs: 60_000,
     credential: env['CLAUDE_CODE_OAUTH_TOKEN'] || env['ANTHROPIC_API_KEY'],
     apiBaseUrl: env['ANTHROPIC_BASE_URL'],
+    model: env['INTERACTIVE_POOL_MODEL'] || undefined,
     idleMarkers: ['? for shortcuts', 'bypass permissions on', 'shift+tab to cycle'],
     stabilitySeconds: 4,
     maxPromptWaitSeconds: 120,

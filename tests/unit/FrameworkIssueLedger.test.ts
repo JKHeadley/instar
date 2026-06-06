@@ -48,6 +48,34 @@ describe('recordObservation — create + dedup', () => {
     expect(issue.generalizable).toBe(true); // derived at read
   });
 
+  it('persists relatedSpec citations on create and backfills them on a later matching observation', () => {
+    const created = ledger.recordObservation({
+      framework: 'codex-cli',
+      bucket: 'instar-integration-gap',
+      title: 'transcript auditor finding',
+      dedupKey: 'post-drive::citation',
+      relatedSpec: 'Observation Needs Structure (PR #861)',
+    });
+    expect(ledger.getIssue(created.issueId)!.relatedSpec).toBe('Observation Needs Structure (PR #861)');
+
+    const legacy = ledger.recordObservation({
+      framework: 'codex-cli',
+      bucket: 'instar-integration-gap',
+      title: 'legacy finding',
+      dedupKey: 'post-drive::legacy-citation',
+    });
+    expect(ledger.getIssue(legacy.issueId)!.relatedSpec).toBeNull();
+    ledger.recordObservation({
+      framework: 'codex-cli',
+      bucket: 'instar-integration-gap',
+      title: 'legacy finding again',
+      dedupKey: 'post-drive::legacy-citation',
+      episodeKey: 'second',
+      relatedSpec: 'UX-blindspot arc / PR #856',
+    });
+    expect(ledger.getIssue(legacy.issueId)!.relatedSpec).toBe('UX-blindspot arc / PR #856');
+  });
+
   it('merges same (framework, dedupKey) into ONE canonical issue', () => {
     const a = ledger.recordObservation({
       framework: 'codex-cli', bucket: 'framework-limitation', title: 'A',

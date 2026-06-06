@@ -140,7 +140,11 @@ describe('telegram-reply.sh ↔ /events/delivery-failed end-to-end', () => {
         [path.join(projectDir, '.claude', 'scripts', 'telegram-reply.sh'), '50', 'a recoverable message'],
         {
           cwd: projectDir,
-          env: { ...process.env, INSTAR_PORT: '' },
+          // Hermetic: a live agent session exports INSTAR_AUTH_TOKEN; inheriting it
+          // makes the script send the REAL token, which this server's auth
+          // middleware rejects before the route can record the hit (found live
+          // 2026-06-05: the test failed only inside an agent session).
+          env: { ...process.env, INSTAR_PORT: '', INSTAR_AUTH_TOKEN: '' },
         },
       );
       child.stdout.on('data', () => {/* swallow */});

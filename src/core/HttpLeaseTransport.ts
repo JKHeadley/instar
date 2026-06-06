@@ -18,6 +18,7 @@
  */
 
 import { signRequest } from '../server/machineAuth.js';
+import { PeerFailureLogGate } from './PeerFailureLogGate.js';
 import type { LeaseTransport } from './LeaseCoordinator.js';
 import type { LeaseRecord } from './types.js';
 
@@ -38,6 +39,24 @@ export interface HttpLeaseTransportDeps {
   fetchImpl?: typeof fetch;
   /** How recent a successful broadcast counts as "reachable". Default = leaseTtlMs. */
   reachabilityWindowMs?: number;
+  /**
+   * Per-request abort timeout (P19 brake: a hung socket must not wedge the
+   * caller's fixed-cadence loop — the pull loop's `leasePulling` guard would
+   * otherwise stay held forever). Default 30s: the timeout must sit ABOVE the
+   * fleet's documented 5–40s receiver-side event-loop-stall envelope's bulk —
+   * a slow-but-alive peer must NOT be converted into "no medium", because a
+   * failed broadcast feeds the renewal path's self-suspend (second-pass
+   * reviewer finding). A truly hung socket never returns, so 30s bounds the
+   * wedge exactly as well as a smaller value would. server.ts derives this
+   * from leaseTtlMs (min(ttl/2, 30s)).
+   */
+  requestTimeoutMs?: number;
+  /**
+   * Coarse-reminder interval for the per-peer failure log gate (P19 brake:
+   * per-attempt logging is amplification — a down peer at a 5s cadence wrote
+   * ~17k lines/day). Default 360 consecutive failures (~30min at 5s).
+   */
+  failureLogEveryN?: number;
   now?: () => number;
   logger?: (msg: string) => void;
 }
@@ -49,10 +68,25 @@ export class HttpLeaseTransport implements LeaseTransport {
   private lastBroadcastOkAt = 0;
   private lastPullOkAt = 0;
   private readonly windowMs: number;
+  private readonly requestTimeoutMs: number;
+  /** State-change failure logging (first/Nth/recovery) — never per-attempt. */
+  private readonly logGate: PeerFailureLogGate;
 
   constructor(deps: HttpLeaseTransportDeps) {
     this.d = deps;
     this.windowMs = deps.reachabilityWindowMs ?? 60_000;
+    this.requestTimeoutMs = deps.requestTimeoutMs ?? 30_000;
+    this.logGate = new PeerFailureLogGate(deps.failureLogEveryN ?? 360);
+  }
+
+  /** Gated failure/recovery logging — emits only on state changes + coarse reminders. */
+  private logFailure(key: string, detail: string): void {
+    const line = this.logGate.failed(key, detail);
+    if (line) this.log(line);
+  }
+  private logSuccess(key: string): void {
+    const line = this.logGate.succeeded(key);
+    if (line) this.log(line);
   }
 
   private now(): number {
@@ -85,10 +119,17 @@ export class HttpLeaseTransport implements LeaseTransport {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', ...headers },
             body: JSON.stringify(body),
+            // P19 brake: a hung socket aborts instead of holding the caller open.
+            signal: AbortSignal.timeout(this.requestTimeoutMs),
           });
-          if (res && (res as Response).ok) anyOk = true;
+          if (res && (res as Response).ok) {
+            anyOk = true;
+            this.logSuccess(`broadcast to ${peer.machineId}`);
+          } else {
+            this.logFailure(`broadcast to ${peer.machineId}`, `status ${(res as Response)?.status}`);
+          }
         } catch (err) {
-          this.log(`broadcast to ${peer.machineId} failed: ${err instanceof Error ? err.message : String(err)}`);
+          this.logFailure(`broadcast to ${peer.machineId}`, err instanceof Error ? err.message : String(err));
         }
       }),
     );
@@ -150,11 +191,18 @@ export class HttpLeaseTransport implements LeaseTransport {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...headers },
         body: JSON.stringify(body),
+        // P19 brake: the pull loop's `leasePulling` guard means a hung socket
+        // would wedge ALL future pulls — abort instead.
+        signal: AbortSignal.timeout(this.requestTimeoutMs),
       });
-      if (!res || !(res as Response).ok) return null;
+      if (!res || !(res as Response).ok) {
+        this.logFailure(`pull from ${peer.machineId}`, `status ${(res as Response)?.status}`);
+        return null;
+      }
       const data = (await (res as Response).json().catch(() => null)) as { lease?: LeaseRecord | null } | null;
       // A successful response (even one carrying no lease) proves the medium is live.
       this.lastPullOkAt = this.now();
+      this.logSuccess(`pull from ${peer.machineId}`);
       const lease = data?.lease ?? null;
       if (lease && typeof lease.epoch === 'number') {
         this.recordObserved(lease);
@@ -162,7 +210,7 @@ export class HttpLeaseTransport implements LeaseTransport {
       }
       return null;
     } catch (err) {
-      this.log(`pull from ${peer.machineId} failed: ${err instanceof Error ? err.message : String(err)}`);
+      this.logFailure(`pull from ${peer.machineId}`, err instanceof Error ? err.message : String(err));
       return null;
     }
   }

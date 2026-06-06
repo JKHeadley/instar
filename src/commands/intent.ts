@@ -14,6 +14,7 @@ import { loadConfig } from '../core/Config.js';
 import { DecisionJournal } from '../core/DecisionJournal.js';
 import { IntentDriftDetector } from '../core/IntentDriftDetector.js';
 import { OrgIntentManager } from '../core/OrgIntentManager.js';
+import { IntentTestHarness } from '../core/IntentTestHarness.js';
 
 interface IntentReflectOptions {
   dir?: string;
@@ -242,6 +243,22 @@ export async function intentValidate(options: IntentValidateOptions): Promise<vo
   console.log(pc.bold(`  Organization: ${pc.cyan(orgIntent.name)}`));
   console.log(`  Constraints:  ${orgIntent.constraints.length}`);
   console.log(`  Goals:        ${orgIntent.goals.length}`);
+  console.log();
+
+  // MTP Protocol status (EXO 3.0): is ORG-INTENT a governing protocol with all
+  // three machine-readable layers, or just a poster? "If your MTP can't cause
+  // an agent to refuse, it's cheering, not governing." (Salim Ismail)
+  const harness = new IntentTestHarness(orgIntent);
+  const layer = (ok: boolean) => (ok ? pc.green('present') : pc.dim('missing'));
+  console.log(pc.bold('  MTP Protocol (EXO 3.0):'));
+  console.log(`    Constraint layer: ${layer(orgIntent.constraints.length > 0)}  ${pc.dim(`(${orgIntent.constraints.length})`)}`);
+  console.log(`    Decision layer:   ${layer(orgIntent.tradeoffHierarchy.length > 0)}  ${pc.dim(`(${orgIntent.tradeoffHierarchy.length} in tradeoff hierarchy)`)}`);
+  console.log(`    Identity layer:   ${layer(!!orgIntent.identity)}`);
+  if (harness.canGovern()) {
+    console.log(`    ${pc.green('Governs')} — the MTP can make an agent refuse (constraint teeth present).`);
+  } else {
+    console.log(`    ${pc.yellow('Cheering, not governing')} — no constraints, so the MTP cannot cause a refusal.`);
+  }
   console.log();
 
   // Run validation

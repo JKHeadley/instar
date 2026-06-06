@@ -92,7 +92,7 @@ async function runScript(script: string, args: string[], port: number, stdin?: s
     return await new Promise<RunResult>((resolve, reject) => {
       const proc = spawn('bash', [path.join(SCRIPT_DIR, script), ...args], {
         cwd: tmpCwd,
-        env: { ...process.env, INSTAR_PORT: String(port), PATH: process.env.PATH },
+        env: { ...process.env, INSTAR_PORT: String(port), INSTAR_AUTH_TOKEN: '', PATH: process.env.PATH }, // hermetic vs live-session env
       });
       let stdout = '';
       let stderr = '';

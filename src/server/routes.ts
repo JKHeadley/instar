@@ -77,6 +77,7 @@ import {
 } from './attentionApi.js';
 import { dashboardRefreshFailure } from './DashboardRefreshDiagnostics.js';
 import { KNOWN_GEMINI_MODELS } from '../providers/adapters/gemini-cli/models.js';
+import { formatLocalTimestamp } from '../utils/localTime.js';
 
 const execFile = promisify(execFileCb);
 
@@ -10517,7 +10518,7 @@ export function createRoutes(ctx: RouteContext): Router {
               historyLines.push(``);
               for (const m of history) {
                 const sender = m.fromUser ? (m.senderName || 'User') : 'Agent';
-                const ts = m.timestamp ? new Date(m.timestamp).toISOString().slice(11, 19) : '??:??';
+                const ts = formatLocalTimestamp(m.timestamp); // local + tz label (see src/utils/localTime.ts)
                 const histText = (m.text || '').slice(0, 2000);
                 historyLines.push(`[${ts}] ${sender}: ${histText}`);
               }
@@ -11154,7 +11155,7 @@ export function createRoutes(ctx: RouteContext): Router {
                 const sender = m.fromUser
                   ? (m.senderName || 'User')
                   : 'Agent';
-                const ts = m.timestamp ? new Date(m.timestamp).toISOString().slice(11, 19) : '??:??';
+                const ts = formatLocalTimestamp(m.timestamp); // local + tz label (see src/utils/localTime.ts)
                 const histText = (m.text || '').slice(0, 2000);
                 historyLines.push(`[${ts}] ${sender}: ${histText}`);
               }
@@ -12853,6 +12854,29 @@ export function createRoutes(ctx: RouteContext): Router {
       ) {
         throw new Error(`channel must be one of: ${APPRENTICESHIP_CYCLE_CHANNELS.join(', ')}`);
       }
+      // Anti-fabrication tooth for the transcript-audit gate: a block declaring
+      // ledger:'local' claims its findings were filed into THIS agent's framework
+      // ledger — so at least one claimed dedup key must actually resolve here.
+      // 'remote'/'dry-run'/'failed' declarations are accepted as declared (the
+      // declaration itself stays queryable for meta-analysis); shape validation
+      // happens in the store either way.
+      const audit = (body as Record<string, unknown>).transcriptAudit as Record<string, unknown> | undefined;
+      if (
+        audit && typeof audit === 'object' && !Array.isArray(audit) &&
+        audit.ledger === 'local' &&
+        Array.isArray(audit.findingDedupKeys) && audit.findingDedupKeys.length > 0 &&
+        ctx.frameworkIssueLedger
+      ) {
+        const keys = (audit.findingDedupKeys as unknown[]).filter((k): k is string => typeof k === 'string');
+        const resolved = keys.some((k) => ctx.frameworkIssueLedger!.hasDedupKey(k));
+        if (!resolved) {
+          throw new Error(
+            "transcriptAudit declares ledger:'local' with filed findings, but none of the claimed " +
+              'findingDedupKeys exist in this agent\'s framework ledger. Run the auditor without --dry-run ' +
+              "so findings actually file, or declare ledger:'remote'/'dry-run'/'failed' honestly.",
+          );
+        }
+      }
       const cycle = ctx.apprenticeshipCycleStore.record({
         ...body,
         kind: typeof body.kind === 'string' ? body.kind : 'mentor-mentee-differential',
@@ -13007,6 +13031,130 @@ export function createRoutes(ctx: RouteContext): Router {
       });
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to resolve tradeoff' });
+    }
+  });
+
+  // Agent digital passport (EXO 3.0 — Salim Ismail, "The 80-Year Business Rule
+  // AI Just Broke"): "every AI agent gets a digital passport with metadata
+  // saying what it's allowed to do and what it's not allowed to do, and other
+  // agents watching that it's complying." Packages Instar's existing identity +
+  // trust + ORG-INTENT constraints into one portable passport.
+  //
+  // GET /passport → this agent's passport (forbiddenActions = ORG-INTENT constraints).
+  router.get('/passport', async (_req, res) => {
+    try {
+      const { buildPassport } = await import('../core/AgentPassport.js');
+      const { OrgIntentManager } = await import('../core/OrgIntentManager.js');
+      // Best-effort identity fingerprint from threadline agent-info, else 'unresolved'.
+      let fingerprint = 'unresolved';
+      try {
+        const fs = await import('node:fs');
+        const path = await import('node:path');
+        const infoPath = path.join(ctx.config.stateDir, '..', 'threadline', 'agent-info.json');
+        if (fs.existsSync(infoPath)) {
+          const info = JSON.parse(fs.readFileSync(infoPath, 'utf-8'));
+          fingerprint = info.fingerprint || info.publicKey || 'unresolved';
+        }
+      } catch { /* fingerprint stays unresolved */ }
+      const parsed = new OrgIntentManager(ctx.config.stateDir).parse();
+      const forbiddenActions = parsed ? parsed.constraints.map((c: { text: string }) => c.text) : [];
+      const passport = buildPassport({
+        agent: ctx.config.projectName ?? 'unknown',
+        fingerprint,
+        trustLevel: 'supervised',
+        forbiddenActions,
+        issuedAt: new Date().toISOString(),
+      });
+      res.json(passport);
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to build passport' });
+    }
+  });
+
+  // POST /passport/verify — the compliance check a peer runs against a passport
+  // before trusting a proposed action. Body: { passport, action }.
+  router.post('/passport/verify', async (req, res) => {
+    const passport = req.body?.passport;
+    const action = typeof req.body?.action === 'string' ? req.body.action.trim() : '';
+    if (!passport || typeof passport !== 'object' || !action) {
+      res.status(400).json({ error: 'Body must include a "passport" object and a non-empty "action" string.' });
+      return;
+    }
+    try {
+      const { permits } = await import('../core/AgentPassport.js');
+      res.json(permits(passport, action));
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to verify against passport' });
+    }
+  });
+
+  // Agent-readiness scoring (EXO 3.0 — Salim Ismail's "task decomposition
+  // matrix"): score a task or workflow on its coordination-vs-judgment ratio to
+  // tell whether it's a good agent candidate. Coordination work (routing,
+  // approvals, scheduling, status tracking, prescriptive steps) is agent-ready;
+  // judgment work (ambiguity, exceptions, relationships, no-playbook calls)
+  // stays human. Deterministic + advisory.
+  //
+  // Body: { "task": { "name?": "...", "description": "..." } }
+  //    or { "workflow": { "name?": "...", "steps": ["...", "..."] } }
+  // → { coordinationSignals, judgmentSignals, coordinationRatio,
+  //     overallReadiness (0-100), recommendation, reason, matched }
+  router.post('/agent-readiness/score', async (req, res) => {
+    const task = req.body?.task;
+    const workflow = req.body?.workflow;
+    const hasTask = task && typeof task.description === 'string' && task.description.trim();
+    const hasWorkflow = workflow && Array.isArray(workflow.steps) && workflow.steps.length > 0;
+    if (!hasTask && !hasWorkflow) {
+      res.status(400).json({
+        error: 'Provide either "task" {description} or "workflow" {steps:[...]} in the request body.',
+      });
+      return;
+    }
+    try {
+      const { AgentReadinessScorer } = await import('../core/AgentReadinessScorer.js');
+      const scorer = new AgentReadinessScorer();
+      const result = hasTask ? scorer.score(task) : scorer.scoreWorkflow(workflow);
+      res.json(result);
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to score agent-readiness' });
+    }
+  });
+
+  // MTP Protocol — the two EXO 3.0 tests (Salim Ismail, "Why AI Agents Are
+  // Ignoring Your Purpose"): given a proposed action, run it against ORG-INTENT
+  // as a machine-readable protocol.
+  //   - refusal test:    can the MTP make an agent say NO? (constraint layer)
+  //   - endorsement test: would leadership endorse this? (goal/value layers)
+  // Deterministic + heuristic so two agents reading the same intent reach the
+  // same call. SIGNAL/advisory — never blocks; it answers a question.
+  //
+  // Body: { "action": "<proposed action>" }
+  // → { present, action, refusal:{refused,matchedConstraint,reason},
+  //     endorsement:{endorsed,alignedWith,reason}, canGovern }
+  router.post('/intent/org/test-action', async (req, res) => {
+    const action = typeof req.body?.action === 'string' ? req.body.action.trim() : '';
+    if (!action) {
+      res.status(400).json({ error: 'A non-empty "action" string is required in the request body.' });
+      return;
+    }
+    try {
+      const { OrgIntentManager } = await import('../core/OrgIntentManager.js');
+      const { IntentTestHarness } = await import('../core/IntentTestHarness.js');
+      const parsed = new OrgIntentManager(ctx.config.stateDir).parse();
+      if (!parsed) {
+        res.json({ present: false, action });
+        return;
+      }
+      const harness = new IntentTestHarness(parsed);
+      res.json({
+        present: true,
+        action,
+        refusal: harness.testRefusal(action),
+        endorsement: harness.testEndorsement(action),
+        canGovern: harness.canGovern(),
+      });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to test action against ORG-INTENT' });
     }
   });
 
@@ -18046,7 +18194,36 @@ export function createRoutes(ctx: RouteContext): Router {
   // The endpoints construct ephemeral policy/tracker/router instances
   // per call with the parameters in the query string. They do NOT
   // depend on adapters being registered against the global Registry —
-  // production-adapter registration is tracked separately.
+  // production-adapter registration happens at server boot
+  // (src/providers/bootRegistration.ts); GET /providers/registry below
+  // is the REAL-registry introspection surface.
+
+  // GET /providers/registry — what is ACTUALLY registered (June-15
+  // readiness diagnostic; truth T1 of the live-wiring spec). Names and
+  // capability flags only — never prompt content or credentials (T-04).
+  router.get('/providers/registry', async (_req, res) => {
+    try {
+      const { registry } = await import('../providers/registry.js');
+      const ids = registry.list();
+      const adapters = ids.map((id) => {
+        const adapter = registry.get(id);
+        return {
+          id,
+          capabilities: adapter ? Array.from(adapter.capabilities).sort() : [],
+        };
+      });
+      const policyInstalled = Boolean(
+        (registry as unknown as Record<symbol, boolean>)[
+          Symbol.for('instar.serverBoot.routingPolicyInstalled')
+        ],
+      );
+      res.json({ adapters, count: adapters.length, routingPolicyInstalled: policyInstalled });
+    } catch (err) {
+      // @silent-fallback-ok — not silent: the error is surfaced to the
+      // caller as an HTTP 500 with the message.
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
 
   router.get('/providers/routing/decide', async (req, res) => {
     try {

@@ -128,7 +128,7 @@ function runScript(topicId: number, message: string): Promise<RunResult> {
   return new Promise((resolve) => {
     const child = spawn('bash', [scriptPath, String(topicId), message], {
       cwd: projectDir,
-      env: { ...process.env, INSTAR_PORT: '' },
+      env: { ...process.env, INSTAR_PORT: '', INSTAR_AUTH_TOKEN: '' }, // hermetic vs live-session env
     });
     let stdout = '';
     let stderr = '';

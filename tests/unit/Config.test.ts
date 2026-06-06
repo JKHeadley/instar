@@ -37,7 +37,7 @@ describe('Config', () => {
       fs.writeFileSync(
         path.join(stateDir, 'config.json'),
         JSON.stringify({
-          sessions: { claudePath: customClaudePath, tmuxPath: '/usr/bin/tmux' },
+          sessions: { framework: 'claude-code', claudePath: customClaudePath, tmuxPath: '/usr/bin/tmux' },
         }),
       );
 
@@ -57,7 +57,7 @@ describe('Config', () => {
       fs.writeFileSync(
         path.join(stateDir, 'config.json'),
         JSON.stringify({
-          sessions: { tmuxPath: customTmuxPath, claudePath: '/usr/bin/claude-stub' },
+          sessions: { framework: 'claude-code', tmuxPath: customTmuxPath, claudePath: '/usr/bin/claude-stub' },
         }),
       );
 
@@ -81,7 +81,7 @@ describe('Config', () => {
 
       fs.writeFileSync(
         path.join(stateDir, 'config.json'),
-        JSON.stringify({}),
+        JSON.stringify({ sessions: { framework: 'claude-code' } }),
       );
 
       const config = loadConfig(tmpDir);

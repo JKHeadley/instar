@@ -4,6 +4,20 @@ import path from 'node:path';
 import os from 'node:os';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
+const { classifyMock } = vi.hoisted(() => ({
+  classifyMock: vi.fn((filePath: string) => {
+    if (
+      filePath.includes('.instar/config.json') ||
+      filePath.includes('.instar/identity.json') ||
+      filePath.includes('.instar/messages/') ||
+      filePath.includes('.instar/sessions/')
+    ) {
+      return { strategy: filePath.includes('config') || filePath.includes('identity') ? 'never-sync' : 'exclude' };
+    }
+    return { strategy: 'programmatic' };
+  }),
+}));
+
 // Mock child_process before importing GitSyncManager
 vi.mock('node:child_process', () => ({
   execFileSync: vi.fn(() => ''),
@@ -21,7 +35,7 @@ vi.mock('../../src/monitoring/DegradationReporter.js', () => ({
 // Mock FileClassifier to avoid complex dependency chain
 vi.mock('../../src/core/FileClassifier.js', () => ({
   FileClassifier: vi.fn().mockImplementation(() => ({
-    classify: vi.fn(() => ({ strategy: 'programmatic' })),
+    classify: classifyMock,
     regenerateLockfile: vi.fn(() => ({ success: false })),
     resolveBinary: vi.fn(() => ({ resolution: 'conflict' })),
   })),
@@ -103,11 +117,12 @@ describe('GitSyncManager', () => {
     vi.useFakeTimers();
     vi.mocked(execFileSync).mockReset();
     vi.mocked(execFileSync).mockReturnValue('');
+    classifyMock.mockClear();
   });
 
   afterEach(() => {
     vi.useRealTimers();
-    vi.restoreAllMocks();
+    vi.clearAllMocks();
     try {
       SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/GitSync.test.ts:106' });
     } catch { /* cleanup best-effort */ }
@@ -121,6 +136,7 @@ describe('GitSyncManager', () => {
       const manager = new GitSyncManager(config);
       // Verify via commitAndPush behavior: when autoPush is true, it calls git push
       vi.mocked(execFileSync)
+        .mockReturnValueOnce('') // git status --porcelain -z (no scoped entries; preserve existing add/diff path)
         .mockReturnValueOnce('') // git add
         .mockReturnValueOnce('some-file.json\n') // git diff --cached --name-only (staged files exist)
         .mockReturnValueOnce('') // git commit
@@ -139,6 +155,7 @@ describe('GitSyncManager', () => {
       const manager = new GitSyncManager(config);
 
       vi.mocked(execFileSync)
+        .mockReturnValueOnce('') // git status --porcelain -z
         .mockReturnValueOnce('') // git add
         .mockReturnValueOnce('some-file.json\n') // git diff --cached
         .mockReturnValueOnce(''); // git commit
@@ -418,6 +435,7 @@ describe('GitSyncManager', () => {
     it('returns false when nothing is staged', () => {
       const manager = new GitSyncManager(createConfig());
       vi.mocked(execFileSync)
+        .mockReturnValueOnce('') // git status --porcelain -z
         .mockReturnValueOnce('') // git add
         .mockReturnValueOnce(''); // git diff --cached --name-only (empty)
 
@@ -428,6 +446,7 @@ describe('GitSyncManager', () => {
     it('returns true on successful commit', () => {
       const manager = new GitSyncManager(createConfig());
       vi.mocked(execFileSync)
+        .mockReturnValueOnce('') // git status --porcelain -z
         .mockReturnValueOnce('') // git add
         .mockReturnValueOnce('file.json\n') // git diff --cached
         .mockReturnValueOnce('') // git commit
@@ -512,6 +531,7 @@ describe('GitSyncManager', () => {
       const manager = new GitSyncManager(config);
       vi.mocked(execFileSync).mockImplementation((_cmd, args) => {
         const a = args as string[];
+        if (a[0] === 'status' && a.includes('--porcelain')) return ' M .instar/jobs.json\0';
         if (a[0] === 'diff' && a.includes('--cached')) return 'file.json\n';
         return '';
       });
@@ -525,6 +545,95 @@ describe('GitSyncManager', () => {
         (call) => call[0] === 'git' && (call[1] as string[])[0] === 'commit'
       );
       expect(commitCalls.length).toBe(1);
+    });
+
+    it('skips agent-local secret/runtime paths while staging legitimate state', () => {
+      const config = createConfig({ debounceMs: 60_000 });
+      const manager = new GitSyncManager(config);
+      vi.mocked(execFileSync).mockImplementation((_cmd, args) => {
+        const a = args as string[];
+        if (a[0] === 'status' && a.includes('--porcelain')) {
+          return [
+            ' M .instar/config.json',
+            '?? .instar/messages/store/topic.jsonl',
+            '?? .instar/sessions/session-1/summary.json',
+            ' M .instar/jobs.json',
+          ].join('\0') + '\0';
+        }
+        if (a[0] === 'diff' && a.includes('--cached')) return '.instar/jobs.json\n';
+        return '';
+      });
+
+      manager.queueAutoCommit(path.join(tmpDir, '.instar'));
+      manager.stop();
+
+      const addCalls = vi.mocked(execFileSync).mock.calls
+        .filter((call) => call[0] === 'git' && (call[1] as string[])[0] === 'add')
+        .map((call) => (call[1] as string[])[1]);
+
+      expect(addCalls).toEqual(['.instar/jobs.json']);
+    });
+
+    it('stages rename destinations from porcelain -z status', () => {
+      const config = createConfig({ debounceMs: 60_000 });
+      const manager = new GitSyncManager(config);
+      vi.mocked(execFileSync).mockImplementation((_cmd, args) => {
+        const a = args as string[];
+        if (a[0] === 'status' && a.includes('--porcelain')) {
+          return 'R  .instar/jobs-renamed.json\0.instar/config.json\0';
+        }
+        if (a[0] === 'diff' && a.includes('--cached')) return '.instar/jobs-renamed.json\n';
+        return '';
+      });
+
+      manager.queueAutoCommit(path.join(tmpDir, '.instar'));
+      manager.stop();
+
+      const addCalls = vi.mocked(execFileSync).mock.calls
+        .filter((call) => call[0] === 'git' && (call[1] as string[])[0] === 'add')
+        .map((call) => (call[1] as string[])[1]);
+
+      expect(addCalls).toEqual(['.instar/jobs-renamed.json']);
+    });
+
+    it('allows deletions of paths that otherwise classify never-sync', () => {
+      const config = createConfig({ debounceMs: 60_000 });
+      const manager = new GitSyncManager(config);
+      vi.mocked(execFileSync).mockImplementation((_cmd, args) => {
+        const a = args as string[];
+        if (a[0] === 'status' && a.includes('--porcelain')) return ' D .instar/config.json\0';
+        if (a[0] === 'diff' && a.includes('--cached')) return '.instar/config.json\n';
+        return '';
+      });
+
+      manager.queueAutoCommit(path.join(tmpDir, '.instar'));
+      manager.stop();
+
+      const addCalls = vi.mocked(execFileSync).mock.calls
+        .filter((call) => call[0] === 'git' && (call[1] as string[])[0] === 'add')
+        .map((call) => (call[1] as string[])[1]);
+
+      expect(addCalls).toEqual(['.instar/config.json']);
+    });
+
+    it('falls back to original paths when dirty status lookup fails', () => {
+      const config = createConfig({ debounceMs: 60_000 });
+      const manager = new GitSyncManager(config);
+      vi.mocked(execFileSync).mockImplementation((_cmd, args) => {
+        const a = args as string[];
+        if (a[0] === 'status' && a.includes('--porcelain')) throw new Error('status failed');
+        if (a[0] === 'diff' && a.includes('--cached')) return '.instar/jobs.json\n';
+        return '';
+      });
+
+      manager.queueAutoCommit(path.join(tmpDir, '.instar'));
+      manager.stop();
+
+      const addCalls = vi.mocked(execFileSync).mock.calls
+        .filter((call) => call[0] === 'git' && (call[1] as string[])[0] === 'add')
+        .map((call) => (call[1] as string[])[1]);
+
+      expect(addCalls).toEqual([path.join(tmpDir, '.instar')]);
     });
   });
 

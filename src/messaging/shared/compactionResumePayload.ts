@@ -24,6 +24,7 @@
 import fs from 'fs';
 import path from 'path';
 import { randomUUID } from 'crypto';
+import { formatLocalTimestamp } from '../../utils/localTime.js';
 
 export const COMPACTION_RESUME_PREAMBLE =
   [
@@ -59,7 +60,7 @@ export function formatInlineHistory(
   lines.push('');
   for (const m of entries) {
     const sender = m.fromUser ? (m.senderName || 'User') : 'Agent';
-    const ts = m.timestamp ? new Date(m.timestamp).toISOString().slice(11, 19) : '??:??';
+    const ts = formatLocalTimestamp(m.timestamp); // local + tz label (see src/utils/localTime.ts)
     const text = (m.text || '').slice(0, 2000);
     lines.push(`[${ts}] ${sender}: ${text}`);
   }

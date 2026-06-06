@@ -21,6 +21,15 @@ import { CodexCliIntelligenceProvider } from './CodexCliIntelligenceProvider.js'
 import { GeminiCliIntelligenceProvider } from './GeminiCliIntelligenceProvider.js';
 import { wrapIntelligenceWithCircuitBreaker } from './CircuitBreakingIntelligenceProvider.js';
 import type { LlmCircuitBreaker } from './LlmCircuitBreaker.js';
+import {
+  AnthropicSubscriptionRouter,
+  type SubscriptionPathMode,
+  type SubscriptionRouteInfo,
+  type SubscriptionDegradeInfo,
+} from './AnthropicSubscriptionRouter.js';
+import { InteractivePoolIntelligenceProvider } from './InteractivePoolIntelligenceProvider.js';
+import type { ProviderAdapter } from '../providers/registry.js';
+import type { AgentSdkCreditSnapshot } from '../providers/primitives/observability/usageMeterProvider.js';
 
 /**
  * Stable framework identifiers the factory recognizes. Adding a new
@@ -64,6 +73,24 @@ export interface BuildIntelligenceProviderOptions {
    * CLI-reported usage-limit windows into the existing quota gate.
    */
   quotaStateFile?: string;
+  /**
+   * Anthropic subscription-path routing (June-15 readiness, spec 04 Rule 1).
+   * claude-code framework only; ignored for codex/gemini. When present, the
+   * ClaudeCliIntelligenceProvider is wrapped in an AnthropicSubscriptionRouter
+   * (SDK-credit `claude -p` ⟷ interactive REPL pool) BEFORE the circuit
+   * breaker. When absent (config mode 'off' / unset), the claude-code path is
+   * byte-for-byte today's behavior.
+   */
+  subscriptionPath?: {
+    mode: SubscriptionPathMode;
+    /** The registered anthropic-interactive-pool adapter (bootRegistration). */
+    poolAdapter: ProviderAdapter;
+    /** Real credit reader (bootRegistration.buildReadSdkCredit). */
+    readSdkCredit: () => Promise<AgentSdkCreditSnapshot | null>;
+    safetyMarginFraction?: number;
+    onRoute?: (info: SubscriptionRouteInfo) => void;
+    onDegrade?: (info: SubscriptionDegradeInfo) => void;
+  };
 }
 
 /**
@@ -91,7 +118,28 @@ export function buildIntelligenceProvider(
     case 'claude-code': {
       const path = options.binaryPath ?? detectClaudePath();
       if (!path) return null;
-      return wrapIntelligenceWithCircuitBreaker(new ClaudeCliIntelligenceProvider(path), options.breaker);
+      const headless = new ClaudeCliIntelligenceProvider(path);
+      // Subscription-path routing (spec 04 Rule 1): when configured, route
+      // each call between the SDK-credit `claude -p` path and the
+      // subscription interactive pool. The router sits INSIDE the breaker
+      // wrap so a rate-limit on the surviving path still trips the breaker.
+      // Absent option ⇒ plain provider, byte-for-byte today's behavior.
+      if (options.subscriptionPath) {
+        const sp = options.subscriptionPath;
+        const routed = new AnthropicSubscriptionRouter({
+          headless,
+          pool: new InteractivePoolIntelligenceProvider(sp.poolAdapter),
+          mode: sp.mode,
+          readSdkCredit: sp.readSdkCredit,
+          ...(sp.safetyMarginFraction !== undefined
+            ? { safetyMarginFraction: sp.safetyMarginFraction }
+            : {}),
+          ...(sp.onRoute ? { onRoute: sp.onRoute } : {}),
+          ...(sp.onDegrade ? { onDegrade: sp.onDegrade } : {}),
+        });
+        return wrapIntelligenceWithCircuitBreaker(routed, options.breaker);
+      }
+      return wrapIntelligenceWithCircuitBreaker(headless, options.breaker);
     }
     case 'codex-cli': {
       const path = options.binaryPath ?? detectCodexPath();

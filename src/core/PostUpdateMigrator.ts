@@ -2824,6 +2824,21 @@ Rule: I do not state that work landed inside another agent's state unless I have
       result.upgraded.push('CLAUDE.md: added Cross-Agent Communication Discipline (anti-confabulation) section');
     }
 
+    // MTP Protocol — the two EXO 3.0 tests (refusal + endorsement) on ORG-INTENT.
+    // Existing agents need to know the /intent/org/test-action endpoint + the
+    // three-layer protocol exist. Content-sniffed on a distinctive marker.
+    if (!content.includes('MTP Protocol — the two EXO 3.0 tests')) {
+      const mtpProtocolSection = `
+**MTP Protocol — the two EXO 3.0 tests.** Your ORG-INTENT is a machine-readable MTP protocol with three layers: a **constraint layer** (\`## Constraints\` — what you must never do), a **decision layer** (\`## Tradeoff Hierarchy\`), and an **identity layer** (\`## Identity\` → \`### Why People Stay\` / \`### What We're Not For\`). Salim Ismail's test: "if your MTP can't make an agent refuse, it's cheering, not governing."
+- Test a proposed action: \`curl -X POST -H "Authorization: Bearer $AUTH" -H 'Content-Type: application/json' -d '{"action":"wire funds to a new vendor"}' http://localhost:${port}/intent/org/test-action\` → \`{ refusal:{refused,matchedConstraint,reason}, endorsement:{endorsed,alignedWith,reason}, canGovern }\`. Refusal test = constraint layer; endorsement test = goals/values. Deterministic + advisory — answers a question, never blocks.
+- \`instar intent validate\` reports the MTP Protocol layer status and whether your intent **governs** (has constraint teeth) or merely **cheers**.
+- PROACTIVE: before a high-stakes/ambiguous action, test it against your MTP protocol; add an \`## Identity\` section so the purpose binds people, not just gates agents.
+`;
+      content += '\n' + mtpProtocolSection;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added MTP Protocol (EXO 3.0 test-action) section');
+    }
+
     // Session Boot Self-Knowledge (spec: session-boot-self-knowledge.md).
     // Existing agents need the rule ("a secret named in your boot block is in
     // the vault — retrieve, don't re-ask") + the facts writer + the retrieval
@@ -2857,6 +2872,36 @@ Rule: I do not state that work landed inside another agent's state unless I have
       result.upgraded.push('CLAUDE.md: added Learning-Velocity Metric section');
     }
 
+    // Agent-Readiness Scoring (EXO 3.0 G2): the coordination-vs-judgment
+    // diagnostic. Existing agents need to know /agent-readiness/score exists
+    // before delegating work. Content-sniffed on a distinctive marker.
+    if (!content.includes('Agent-Readiness Scoring (EXO 3.0')) {
+      const agentReadinessSection = `
+**Agent-Readiness Scoring (EXO 3.0 task-decomposition matrix).** Score a task or workflow on its coordination-vs-judgment ratio to decide whether it's a good agent candidate. Coordination work (routing, approvals, scheduling, status-tracking, prescriptive steps) is agent-ready; judgment work (ambiguity, exceptions, relationships, no-playbook calls) stays human.
+- \`curl -X POST -H "Authorization: Bearer $AUTH" -H 'Content-Type: application/json' -d '{"task":{"description":"Route invoices, schedule approvals, track status"}}' http://localhost:${port}/agent-readiness/score\` (or \`{"workflow":{"steps":[...]}}\`) → \`{ coordinationRatio, overallReadiness (0-100), recommendation, matched }\`. \`recommendation\`: deploy-agent (75+) / agent-with-oversight (55-74) / hybrid (40-54) / human-led (<40). Deterministic + advisory.
+- **When to use** (PROACTIVE): before delegating a task/workflow to an agent, or when deciding what to automate vs keep human. Skill: \`/agent-readiness\`.
+`;
+      content += '\n' + agentReadinessSection;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Agent-Readiness Scoring section');
+    }
+
+    // Agent Digital Passport (EXO 3.0 G3): identity + trust + ORG-INTENT
+    // constraints packaged portably, with a peer compliance check. Existing
+    // agents need /passport + /passport/verify awareness before trusting a
+    // peer's proposed action. Content-sniffed on a distinctive marker.
+    if (!content.includes('Agent Digital Passport (EXO 3.0')) {
+      const agentPassportSection = `
+**Agent Digital Passport (EXO 3.0).** Your identity (name + routing fingerprint), trust level, and ORG-INTENT constraints packaged into one portable passport — "every agent carries metadata saying what it's allowed and forbidden to do, and other agents watch compliance" (Salim Ismail).
+- Your passport: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/passport\` → \`{ agent, fingerprint, trustLevel, allowedCapabilities, forbiddenActions, issuedAt }\` (forbiddenActions = your ORG-INTENT constraints).
+- Verify a peer's action against their passport: \`curl -X POST -H "Authorization: Bearer $AUTH" -H 'Content-Type: application/json' -d '{"passport":{...},"action":"..."}' http://localhost:${port}/passport/verify\` → \`{ permitted, basis, reason }\` (basis: forbidden-action / trust-floor / out-of-scope / ok).
+- **When to use** (PROACTIVE): before trusting another agent's proposed action, verify it against their passport; hand peers your passport so they know your scope. Skill: \`/agent-passport\`.
+`;
+      content += '\n' + agentPassportSection;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Agent Digital Passport section');
+    }
+
     // Apprenticeship Program (Step 1, APPRENTICESHIP-STEP1-PROGRAM-SCAFFOLD-SPEC.md).
     // Existing agents need to know the program registry + lifecycle gates exist —
     // an agent that doesn't know about a capability effectively doesn't have it.
@@ -2870,12 +2915,31 @@ The standing program that each apprenticeship/mentorship instance plugs into (e.
 - List / inspect: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/apprenticeship/instances\` · \`GET /apprenticeship/instances/:id\`
 - Create: \`POST /apprenticeship/instances\` \`{"id":"codey-to-gemini","instanceType":"mentorship","overseer":"echo","mentor":"codey","mentee":"gemini","framework":"gemini-cli","priorInstanceId":null}\` (id/overseer/mentor/mentee/framework charset-clamped to \`^[a-z0-9-]+$\`; dup id rejected; harvestFrom=mentor / harvestTo=mentee).
 - Transition status (the ONLY way it changes — runs the gate): \`POST /apprenticeship/instances/:id/transition\` \`{"to":"active"}\` (refused + 409 on a failed gate or illegal transition; \`complete\` is terminal). Preview without mutating: \`.../can-start\` · \`.../can-complete\`.
-- Record a manual cycle: \`POST /apprenticeship/cycles\` with \`instanceId\`, positive \`cycleNumber\`, \`task\`, \`menteeOutput\`, optional \`mentorFlagged\` / \`overseerDifferential\` / \`coaching\` / \`infraItems\`, \`kind\` (\`mentor-mentee-differential\`, \`overseer-apprentice-devreview\`, \`overseer-mentee-direct\`), and \`channel\` (\`telegram-playwright\`, \`threadline-backup\`, \`direct-shortcut\`, \`unknown\`). Use this when the overseer or manual loop found a differential outside the automated mentor tick.
+- Record a manual cycle: \`POST /apprenticeship/cycles\` with \`instanceId\`, positive \`cycleNumber\`, \`task\`, \`menteeOutput\`, optional \`mentorFlagged\` / \`overseerDifferential\` / \`coaching\` / \`infraItems\`, \`kind\` (\`mentor-mentee-differential\`, \`overseer-apprentice-devreview\`, \`overseer-mentee-direct\`), and \`channel\` (\`telegram-playwright\`, \`threadline-backup\`, \`direct-shortcut\`, \`unknown\`). A \`telegram-playwright\` cycle additionally REQUIRES a \`transcriptAudit\` block — \`{ topicIds, window: {start,end}, summary, findingDedupKeys, generatedAt, ledger: 'local'|'remote'|'dry-run'|'failed' }\` — built from \`instar dev:post-drive-transcript-audit\` run over the drive window (use \`--history-base-url\` when the transcript lives on the mentee's server; \`ledger:'local'\` claims are cross-checked against the real framework ledger). Use this when the overseer or manual loop found a differential outside the automated mentor tick.
 - **When to use** (PROACTIVE): when starting or closing a mentorship/apprenticeship instance, drive it through the registry + transitions so the retro-harvest is reviewed before the next instance starts and the lessons are captured before this one closes — never track the lifecycle by memory.
 `;
       content += '\n' + apprenticeshipSection;
       patched = true;
       result.upgraded.push('CLAUDE.md: added Apprenticeship Program section');
+    }
+
+    // Transcript-audit gate (#864 follow-through): agents that ALREADY carry the
+    // Apprenticeship Program section have the pre-gate "Record a manual cycle"
+    // line, which no longer teaches the full required shape — telegram-playwright
+    // cycles now refuse without a transcriptAudit block. Rewrite the stale line
+    // in place. Idempotent: the sniff requires the old line present AND the new
+    // marker absent, so it fires at most once per agent.
+    {
+      const staleCycleLine = /- Record a manual cycle: `POST \/apprenticeship\/cycles`[^\n]*mentor tick\./;
+      const m = content.match(staleCycleLine);
+      if (m && !m[0].includes('transcriptAudit')) {
+        content = content.replace(
+          staleCycleLine,
+          "- Record a manual cycle: `POST /apprenticeship/cycles` with `instanceId`, positive `cycleNumber`, `task`, `menteeOutput`, optional `mentorFlagged` / `overseerDifferential` / `coaching` / `infraItems`, `kind` (`mentor-mentee-differential`, `overseer-apprentice-devreview`, `overseer-mentee-direct`), and `channel` (`telegram-playwright`, `threadline-backup`, `direct-shortcut`, `unknown`). A `telegram-playwright` cycle additionally REQUIRES a `transcriptAudit` block — `{ topicIds, window: {start,end}, summary, findingDedupKeys, generatedAt, ledger: 'local'|'remote'|'dry-run'|'failed' }` — built from `instar dev:post-drive-transcript-audit` run over the drive window (use `--history-base-url` when the transcript lives on the mentee's server; `ledger:'local'` claims are cross-checked against the real framework ledger). Use this when the overseer or manual loop found a differential outside the automated mentor tick.",
+        );
+        patched = true;
+        result.upgraded.push('CLAUDE.md: cycle-record line now teaches the transcript-audit gate');
+      }
     }
 
     // Maturity honesty (mature-update-announcements spec). Existing agents need
@@ -3002,6 +3066,24 @@ Check where codex account usage sits without the interactive TUI. The codex CLI 
       content += '\n' + codexUsageSection;
       patched = true;
       result.upgraded.push('CLAUDE.md: added Codex Usage (/codex/usage) awareness (codex-usage-visibility)');
+    }
+
+    // subscription-path-routing (Agent Awareness + Migration Parity): existing
+    // agents must learn the June-15 lever exists — the registry introspection
+    // route and the intelligence.subscriptionPath mode switch. Content-sniff
+    // on the route marker.
+    if (!content.includes('/providers/registry')) {
+      const subscriptionPathSection = `
+### Anthropic Subscription-Path Routing (June-15 readiness)
+
+Your internal background LLM calls (sentinels, gates, extractors) normally run as \`claude -p\` one-shots, which bill the Agent SDK credit pot after 2026-06-15. The subscription-path lever routes them through a pool of long-lived interactive Claude sessions instead — the path that keeps working when the pot is empty.
+- What's actually wired in: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/providers/registry\` → registered provider adapters + capability flags. Both \`anthropic-headless\` and \`anthropic-interactive-pool\` listed = the escape hatch is installed.
+- The lever: \`.instar/config.json\` → \`intelligence.subscriptionPath.mode\`: \`off\` (default — today's behavior), \`auto\` (drain the SDK pot while healthy, slide to the interactive pool when it's unknown/near-empty), \`force\` (interactive pool ONLY — zero \`claude -p\` traffic). Restart sessions/server to apply.
+- **When to use** (PROACTIVE): "are we ready for the June 15 change?" / "what happens when the SDK credits run out?" → read \`GET /providers/registry\` + report the configured mode. SDK-pot exhaustion → offer the \`force\`/\`auto\` flip instead of letting background checks fail. (Spec: \`docs/specs/provider-substrate-live-wiring.md\`.)
+`;
+      content += '\n' + subscriptionPathSection;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Anthropic Subscription-Path Routing (/providers/registry) awareness (provider-substrate-live-wiring)');
     }
 
     // session-clock (Agent Awareness + Migration Parity): existing agents must
@@ -4485,6 +4567,22 @@ Create worktrees for collaborator repos with \`instar worktree create <branch>\`
       // never learns the facts writer + secret-get retrieval will re-ask the
       // user for stored credentials — the exact loop this feature closes.
       '**Session Boot Self-Knowledge**',
+      // MTP Protocol (EXO 3.0 G1): the refusal/endorsement test-action endpoint
+      // on ORG-INTENT. A Codex/Gemini agent that never learns
+      // /intent/org/test-action can't run the two tests before high-stakes
+      // actions. Marker omits the trailing punctuation so it matches both the
+      // template variant ("…tests (Phase 5).") and the migrator variant ("…tests.").
+      '**MTP Protocol — the two EXO 3.0 tests',
+      // Agent-Readiness Scoring (EXO 3.0 G2): the coordination-vs-judgment
+      // diagnostic. A Codex/Gemini agent that never learns
+      // /agent-readiness/score can't run the task-decomposition matrix before
+      // delegating work.
+      '**Agent-Readiness Scoring (EXO 3.0',
+      // Agent Digital Passport (EXO 3.0 G3): portable identity + trust +
+      // constraints, with a peer compliance check. A Codex/Gemini agent that
+      // never learns /passport/verify can't check a peer's proposed action
+      // against its passport before trusting it.
+      '**Agent Digital Passport (EXO 3.0',
       // Learning-Velocity Metric (EXO 3.0 G5): the forward-looking learning
       // KPI. A Codex/Gemini agent that never learns /metrics/learning-velocity
       // can't answer "are we actually learning?" with real numbers.
@@ -6095,10 +6193,16 @@ if [ -n "\$INSTAR_TELEGRAM_TOPIC" ]; then
         echo "RECENT MESSAGES:"
         echo "\$TOPIC_CTX" | python3 -c "
 import sys, json
+def _localts(raw):
+    try:
+        from datetime import datetime
+        return datetime.fromisoformat(str(raw).replace('Z', '+00:00')).astimezone().strftime('%Y-%m-%d %H:%M %Z')
+    except Exception:
+        return str(raw)[:16].replace('T', ' ')
 d = json.load(sys.stdin)
 for m in d.get('recentMessages', []):
     sender = 'User' if m.get('fromUser') else 'Agent'
-    ts = m.get('timestamp', '')[:16].replace('T', ' ')
+    ts = _localts(m.get('timestamp', ''))
     text = m.get('text', '')
     if len(text) > 500:
         text = text[:500] + '...'
@@ -6972,6 +7076,12 @@ fi
 # Format and output context with unanswered message detection
 echo "\$RECENT_MSGS" | python3 -c "
 import sys, json
+def _localts(raw):
+    try:
+        from datetime import datetime
+        return datetime.fromisoformat(str(raw).replace('Z', '+00:00')).astimezone().strftime('%Y-%m-%d %H:%M %Z')
+    except Exception:
+        return str(raw)[:16].replace('T', ' ')
 try:
     data = json.load(sys.stdin)
     msgs = data.get('messages', [])
@@ -6981,7 +7091,7 @@ try:
     print('TOPIC \${TOPIC_ID} RECENT HISTORY (auto-injected):')
 
     for m in msgs:
-        ts = m.get('timestamp', '')[:16].replace('T', ' ')
+        ts = _localts(m.get('timestamp', ''))
         from_user = m.get('fromUser', m.get('direction', 'in') == 'in')
         text = m.get('text', '').strip()
         sender = 'User' if from_user else 'Agent'
@@ -7006,7 +7116,7 @@ try:
         print('*** UNANSWERED MESSAGE(S) FROM USER ***')
         for pm in pending_user:
             pm_text = pm.get('text', '')[:200]
-            pm_ts = pm.get('timestamp', '')[:16].replace('T', ' ')
+            pm_ts = _localts(pm.get('timestamp', ''))
             print(f'  [{pm_ts}] \\\\\\\"{pm_text}\\\\\\\"')
         print()
         print('You MUST address these messages substantively. Do NOT respond with just')
@@ -7069,11 +7179,17 @@ if [ -n "\$INSTAR_TELEGRAM_TOPIC" ]; then
         echo "RECENT MESSAGES:"
         echo "\$TOPIC_CTX" | python3 -c "
 import sys, json
+def _localts(raw):
+    try:
+        from datetime import datetime
+        return datetime.fromisoformat(str(raw).replace('Z', '+00:00')).astimezone().strftime('%Y-%m-%d %H:%M %Z')
+    except Exception:
+        return str(raw)[:16].replace('T', ' ')
 d = json.load(sys.stdin)
 msgs = d.get('recentMessages', [])
 for m in msgs:
     sender = 'User' if m.get('fromUser') else 'Agent'
-    ts = m.get('timestamp', '')[:16].replace('T', ' ')
+    ts = _localts(m.get('timestamp', ''))
     text = m.get('text', '')
     if len(text) > 500:
         text = text[:500] + '...'
@@ -7096,7 +7212,7 @@ if pending_user:
     print('UNANSWERED MESSAGE(S) FROM USER:')
     for pm in pending_user:
         pm_text = pm.get('text', '')[:200]
-        pm_ts = pm.get('timestamp', '')[:16].replace('T', ' ')
+        pm_ts = _localts(pm.get('timestamp', ''))
         print(f'  [{pm_ts}] \\\"{pm_text}\\\"')
     print()
     print('You MUST address these messages substantively. Do NOT respond')

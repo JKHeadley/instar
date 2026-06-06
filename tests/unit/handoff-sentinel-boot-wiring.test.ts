@@ -79,7 +79,10 @@ describe('createHandoffSentinelBootWiring — wiring integrity', () => {
     const wiring = createHandoffSentinelBootWiring({
       telegram: telegramStub(HISTORY),
       coordinator: { demoteToStandby: (reason) => { calls.push(`demote:${reason}`); } },
-      liveTailSource: { pushTick: async () => { calls.push('pushTick'); return 1; } },
+      // The handoff flush must FORCE — bypassing the cadence path's version
+      // gate and failure backoff (a mid-backoff topic would otherwise be
+      // silently skipped from the handoff manifest).
+      liveTailSource: { pushTick: async (opts) => { calls.push(`pushTick${opts?.force ? ':force' : ''}`); return 1; } },
       wire: {
         sendBegin: async (m) => {
           calls.push('sendBegin');
@@ -109,7 +112,7 @@ describe('createHandoffSentinelBootWiring — wiring integrity', () => {
     const outcome = await wiring.initiate();
     expect(outcome).toBe('handed-off');
     // Proves it is NOT a no-op and delegates to each real dependency, in order.
-    expect(calls).toEqual(['pushTick', 'sendBegin', 'awaitAck', 'sendYield', 'demote:planned handoff: yielded to peer']);
+    expect(calls).toEqual(['pushTick:force', 'sendBegin', 'awaitAck', 'sendYield', 'demote:planned handoff: yielded to peer']);
     // The manifest hashed the active topic's history with the canonical fn.
     expect(begunManifest!.threadHistoryHash).toBe(hashTopicHistory(() => HISTORY, 42));
   });

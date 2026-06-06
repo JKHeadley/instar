@@ -4,6 +4,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import { formatForwardedTopicContext } from '../../src/core/ForwardedTopicContext.js';
+import { formatLocalTimestamp } from '../../src/utils/localTime.js';
 
 describe('formatForwardedTopicContext (moved-session context relay — bug #2)', () => {
   it('returns empty string for null / empty history (nothing to inject)', () => {
@@ -20,8 +21,10 @@ describe('formatForwardedTopicContext (moved-session context relay — bug #2)',
     expect(out).toContain('Thread History (last 2 messages, relayed from the previous machine)');
     expect(out).toContain('continue THIS conversation, not start something new');
     expect(out).toContain('Topic: deploys');
-    expect(out).toContain('[12:00:05] Justin: what is the deploy status?');
-    expect(out).toContain('[12:00:30] Agent: Shipped v1.3.165.');
+    // Local-tz rendering (2026-06-05 time-incoherency fix): timestamps are
+    // rendered in the HOST's local timezone with an explicit tz label.
+    expect(out).toContain(`[${formatLocalTimestamp('2026-05-31T12:00:05Z')}] Justin: what is the deploy status?`);
+    expect(out).toContain(`[${formatLocalTimestamp('2026-05-31T12:00:30Z')}] Agent: Shipped v1.3.165.`);
     expect(out.trimEnd().endsWith('--- End Thread History ---')).toBe(true);
   });
 
