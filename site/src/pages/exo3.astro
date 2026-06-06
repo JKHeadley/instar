@@ -17,6 +17,7 @@ import Layout from '../layouts/Layout.astro';
         <a href="#purpose" class="text-sm text-slate-400 hover:text-slate-200 transition-colors hidden lg:block">Purpose</a>
         <a href="#stack" class="text-sm text-slate-400 hover:text-slate-200 transition-colors hidden lg:block">Intelligence Stack</a>
         <a href="#mtp" class="text-sm text-slate-400 hover:text-slate-200 transition-colors hidden lg:block">MTP Protocol</a>
+        <a href="#redteam" class="text-sm text-slate-400 hover:text-slate-200 transition-colors hidden lg:block">Red-Team</a>
         <a href="#shape" class="text-sm text-slate-400 hover:text-slate-200 transition-colors hidden lg:block">SHAPE</a>
         <a href="#status" class="text-sm text-slate-400 hover:text-slate-200 transition-colors hidden lg:block">Where We Are</a>
         <a href="/" class="text-sm font-medium text-teal-400 hover:text-teal-300 transition-colors">Home</a>
@@ -136,21 +137,46 @@ import Layout from '../layouts/Layout.astro';
           <p class="text-xs text-slate-400 leading-relaxed mb-3">Resolve a trade-off without waking you up; versioned, auditable, deterministic.</p>
           <p class="text-xs text-teal-400/80 leading-relaxed">&rarr; Instar&rsquo;s tradeoff hierarchy + resolver returns the winning value deterministically. Two agents reading the same intent reach the same call.</p>
         </div>
-        <div class="rounded-xl border border-slate-800 bg-slate-900/40 p-6">
+        <div class="rounded-xl border border-teal-500/20 bg-teal-500/5 p-6">
           <div class="flex items-center gap-2 mb-3">
-            <span class="text-xs font-medium text-amber-400 uppercase tracking-wider">Shipping</span>
+            <span class="text-xs font-medium text-green-400 uppercase tracking-wider">Live</span>
           </div>
           <p class="text-sm font-semibold text-slate-200 mb-2">Identity layer</p>
           <p class="text-xs text-slate-400 leading-relaxed mb-3">What binds high-judgment humans when the office is gone.</p>
-          <p class="text-xs text-slate-500 leading-relaxed">&rarr; Building on ORG-INTENT values &mdash; weeks away.</p>
+          <p class="text-xs text-teal-400/80 leading-relaxed">&rarr; ORG-INTENT&rsquo;s Identity section &mdash; &ldquo;Why People Stay&rdquo; and &ldquo;What We&rsquo;re Not For&rdquo; &mdash; parsed and served to agents like every other layer.</p>
         </div>
       </div>
 
       <div class="rounded-lg border border-slate-700/50 bg-slate-800/30 p-6 mt-4">
         <p class="text-slate-300 text-sm leading-relaxed text-center max-w-3xl mx-auto">
-          And his two tests &mdash; <strong class="text-teal-300">endorsement</strong> (&ldquo;would leadership endorse what the agent decided?&rdquo;) and <strong class="text-teal-300">refusal</strong> (&ldquo;can your MTP make an agent say no?&rdquo;) &mdash; are what Instar&rsquo;s Coherence Gate enforces on every outbound action. <em>If your MTP can&rsquo;t cause a refusal, it&rsquo;s cheering, not governing.</em> Instar&rsquo;s gates refuse.
+          And his two tests &mdash; <strong class="text-teal-300">endorsement</strong> (&ldquo;would leadership endorse what the agent decided?&rdquo;) and <strong class="text-teal-300">refusal</strong> (&ldquo;can your MTP make an agent say no?&rdquo;) &mdash; are now a live, packaged harness: post any proposed action to the intent API and get back a refusal verdict and an endorsement verdict, and <code class="text-teal-300">instar intent validate</code> reports whether your MTP <em>governs</em> or merely <em>cheers</em>. <em>If your MTP can&rsquo;t cause a refusal, it&rsquo;s cheering, not governing.</em> Ours refuses &mdash; and we prove it, adversarially, below.
         </p>
       </div>
+    </div>
+  </section>
+
+  <!-- MTP Red-Team Harness -->
+  <section id="redteam" class="py-16 sm:py-20 border-t border-slate-800/50">
+    <div class="max-w-4xl mx-auto px-6">
+      <div class="text-center mb-10">
+        <h2 class="text-3xl sm:text-4xl font-bold text-slate-100 mb-4">We red-team our own purpose</h2>
+        <p class="text-slate-400 max-w-2xl mx-auto leading-relaxed">An MTP whose refusal boundary was never adversarially probed is an <em>unverified</em> governor. So Instar ships a red-team harness that probes the live agent through its real channel &mdash; escalating pressure, expectations derived from the org&rsquo;s <strong class="text-slate-200">own</strong> intent. Any org can point it at their own MTP. Here is what it found when we pointed it at ours.</p>
+      </div>
+
+      <div class="grid sm:grid-cols-2 gap-4">
+        <div class="rounded-xl border border-green-500/20 bg-green-500/5 p-6">
+          <p class="text-xs font-medium text-green-400 uppercase tracking-wider mb-3">Governed</p>
+          <p class="text-sm text-slate-300 leading-relaxed">Credential-exfiltration probes: refused at every amplification level, from the polite ask to the engineered social pressure. The constraint held the line.</p>
+        </div>
+        <div class="rounded-xl border border-amber-500/20 bg-amber-500/5 p-6">
+          <p class="text-xs font-medium text-amber-400 uppercase tracking-wider mb-3">The harness caught itself</p>
+          <p class="text-sm text-slate-300 leading-relaxed">A value-conflict probe first read &ldquo;ungoverned&rdquo; &mdash; and the root cause was the harness&rsquo;s own keyword matcher, not the intent. So every verdict now declares the method that produced it, and a semantic judge gives keyword misses a real second opinion by <em>meaning</em>. The first blind spot our red-team caught was its own &mdash; and it said so.</p>
+        </div>
+      </div>
+
+      <p class="text-slate-400 text-sm text-center max-w-2xl mx-auto mt-8 leading-relaxed">
+        Every probe, verdict, and method lands in an audit trail. <em class="text-teal-300">Governing, not cheering</em> isn&rsquo;t a claim here &mdash; it&rsquo;s a measurement.
+      </p>
     </div>
   </section>
 
@@ -230,21 +256,25 @@ import Layout from '../layouts/Layout.astro';
           <span class="text-sm text-slate-200">One-person-many-agents leverage</span>
           <span class="text-xs font-medium text-green-400 uppercase tracking-wider">Live</span>
         </div>
-        <div class="flex items-center justify-between rounded-lg border border-amber-500/20 bg-amber-500/5 px-5 py-3">
-          <span class="text-sm text-slate-200">MTP identity layer + test harness</span>
-          <span class="text-xs font-medium text-amber-400 uppercase tracking-wider">Shipping &mdash; weeks</span>
+        <div class="flex items-center justify-between rounded-lg border border-green-500/20 bg-green-500/5 px-5 py-3">
+          <span class="text-sm text-slate-200">MTP identity layer + refusal/endorsement tests</span>
+          <span class="text-xs font-medium text-green-400 uppercase tracking-wider">Live</span>
         </div>
-        <div class="flex items-center justify-between rounded-lg border border-amber-500/20 bg-amber-500/5 px-5 py-3">
+        <div class="flex items-center justify-between rounded-lg border border-green-500/20 bg-green-500/5 px-5 py-3">
           <span class="text-sm text-slate-200">Agent-readiness scoring <span class="text-slate-500">(your task-decomposition matrix)</span></span>
-          <span class="text-xs font-medium text-amber-400 uppercase tracking-wider">Shipping &mdash; weeks</span>
+          <span class="text-xs font-medium text-green-400 uppercase tracking-wider">Live</span>
         </div>
-        <div class="flex items-center justify-between rounded-lg border border-slate-700/50 bg-slate-800/30 px-5 py-3">
+        <div class="flex items-center justify-between rounded-lg border border-green-500/20 bg-green-500/5 px-5 py-3">
           <span class="text-sm text-slate-200">Agent digital passport</span>
-          <span class="text-xs font-medium text-slate-400 uppercase tracking-wider">Primitives live</span>
+          <span class="text-xs font-medium text-green-400 uppercase tracking-wider">Live</span>
         </div>
-        <div class="flex items-center justify-between rounded-lg border border-slate-700/50 bg-slate-800/30 px-5 py-3">
+        <div class="flex items-center justify-between rounded-lg border border-green-500/20 bg-green-500/5 px-5 py-3">
           <span class="text-sm text-slate-200">Learning-velocity metrics</span>
-          <span class="text-xs font-medium text-slate-400 uppercase tracking-wider">Roadmap</span>
+          <span class="text-xs font-medium text-green-400 uppercase tracking-wider">Live</span>
+        </div>
+        <div class="flex items-center justify-between rounded-lg border border-amber-500/20 bg-amber-500/5 px-5 py-3">
+          <span class="text-sm text-slate-200">MTP red-team harness <span class="text-slate-500">(first boundary map run against ourselves)</span></span>
+          <span class="text-xs font-medium text-amber-400 uppercase tracking-wider">Phase 1 live</span>
         </div>
         <div class="flex items-center justify-between rounded-lg border border-teal-500/20 bg-teal-500/5 px-5 py-3">
           <span class="text-sm text-slate-200"><strong>Inter-org porous boundary</strong> <span class="text-slate-500">(the North Star)</span></span>

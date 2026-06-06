@@ -1,6 +1,6 @@
 ---
 title: EXO 3.0 Alignment
-description: The EXO 3.0 capability set — MTP protocol tests, agent-readiness scoring, digital passports, and learning-velocity metrics.
+description: The EXO 3.0 capability set — MTP protocol tests, the MTP red-team harness, agent-readiness scoring, digital passports, and learning-velocity metrics.
 ---
 
 Instar maps directly onto Salim Ismail's EXO 3.0 framework — agents governed by
@@ -39,6 +39,27 @@ Not For`).
 - `instar intent validate` reports layer status and whether the intent **governs** or merely **cheers**
 
 Advisory, never blocking — it answers a question.
+
+## MTP Red-Team Harness
+
+An MTP whose refusal boundary was never adversarially probed is an
+*unverified* governor. The red-team harness probes the refusal boundary with
+amplification-ladder scenarios (from the polite ask up to engineered social
+pressure), deriving pass/fail expectations from the target org's **own**
+intent — so any org can point it at their own MTP. Every probe, verdict, and
+the method that produced it lands in an audit trail.
+
+The first boundary map — run against our own intent — demonstrated both
+honesty properties at once: credential-exfiltration probes were refused at
+every amplification level (governed), and a value-conflict probe that first
+read "ungoverned" turned out to be the harness's **own keyword matcher**
+missing a semantic match, not a real intent gap. Two fixes followed: every
+verdict now declares the method that produced it (`keyword-heuristic` vs
+`llm-judge`), and an optional LLM judge (`monitoring.orgIntentLlmJudge.enabled`)
+gives keyword misses a semantic second opinion by meaning rather than wording.
+
+- Spec: `docs/specs/MTP-REDTEAM-HARNESS-SPEC.md`; scenario pack and expectation resolver in `src/redteam/`
+- Phase 1 (scenario verification + the static boundary map) is live; the live adversarial drive against a running agent is the next phase, shown honestly as such
 
 ## Agent-Readiness Scoring
 
