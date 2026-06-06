@@ -3982,6 +3982,53 @@ export async function startServer(options: StartOptions): Promise<void> {
       ));
     }
 
+    // GuardPostureTripwire — a disabled guard is itself an incident.
+    // Runs once per server boot. Compares the resolved guard posture (every
+    // monitoring.* enabled flag + scheduler.enabled) against the persisted
+    // posture from the previous boot; any enabled→disabled transition gets a
+    // loud log line + a logs/guard-posture.jsonl breadcrumb + ONE aggregated
+    // HIGH Attention item (the 2026-06-05 meltdown load-shed batch-flipped
+    // five guards off and only the scheduler was noticed — issue #882 / the
+    // EXO AUP-wedge evening). Signal-only: never re-enables, never blocks a
+    // boot. Placement mirrors the worktree detector above: after the
+    // Telegram setup blocks so `telegram.createAttentionItem` is available.
+    try {
+      const tripwire = await import('../monitoring/GuardPostureTripwire.js');
+      const postureResult = await tripwire.runGuardPostureTripwire({
+        config,
+        stateDir: config.stateDir,
+        logsDir: path.join(config.stateDir, '..', 'logs'),
+        emitAttention: telegram
+          ? async (item) => {
+              await telegram!.createAttentionItem({
+                id: item.id,
+                title: item.title,
+                summary: item.summary,
+                description: item.description,
+                category: item.category,
+                priority: item.priority,
+                sourceContext: item.sourceContext,
+              });
+            }
+          : undefined,
+      });
+      if (postureResult.disabled.length > 0) {
+        console.log(pc.yellow(
+          `  Guard-posture tripwire: ${postureResult.disabled.length} guard(s) DISABLED since last boot ` +
+            `(${postureResult.disabled.join(', ')}) — ` +
+            `${postureResult.attentionEmitted ? 'Attention item raised' : 'breadcrumb only (no Telegram)'}`,
+        ));
+      } else if (postureResult.firstBoot) {
+        console.log(pc.green('  Guard-posture tripwire: baseline recorded'));
+      } else {
+        console.log(pc.green('  Guard-posture tripwire: posture unchanged'));
+      }
+    } catch (err) {
+      console.log(pc.yellow(
+        `  Guard-posture tripwire: skipped (${err instanceof Error ? err.message : String(err)})`,
+      ));
+    }
+
     // ArcCheck (Layer 3) — declared at outer scope so the instance built inside
     // the telegram block is visible at AgentServer construction below. The same
     // instance backs the HTTP route and the in-process checkOutboundMessage caller.
