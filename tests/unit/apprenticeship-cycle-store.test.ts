@@ -226,6 +226,81 @@ describe('ApprenticeshipCycleStore', () => {
     });
   });
 
+  describe('keystoneBalance — dormancy (wall-clock staleness; the 24h-idle-reads-healthy gap)', () => {
+    // makeStore() fixes now() at 2026-06-03T08:00:00Z; record the keystone with an
+    // explicit past createdAt to control its age relative to that fixed clock.
+    const recAt = (store: ApprenticeshipCycleStore, id: string, n: number, kind: string, at: string, inst = 'i') =>
+      store.record({ id, instanceId: inst, cycleNumber: n, createdAt: at, task: 't', menteeOutput: 'm', kind, operatorSeatUx: ux() });
+
+    it('DORMANT: keystone fired but last drive older than the threshold with NO oversight since (the exact masked-as-healthy case)', () => {
+      const store = makeStore();
+      // keystone 8h before now (08:00); default dormancy 6h; zero oversight after it
+      recAt(store, 'k1', 1, 'mentor-mentee-differential', '2026-06-03T00:00:00.000Z');
+      const kb = store.roleCoverage('i').keystoneBalance;
+      expect(kb.starved).toBe(false); // nothing piled up since → NOT starved...
+      expect(kb.dormant).toBe(true); // ...but 8h of silence → dormant
+      expect(kb.lastKeystoneAgeMs).toBe(8 * 60 * 60 * 1000);
+      expect(kb.dormancyThresholdMs).toBe(6 * 60 * 60 * 1000);
+      expect(kb.reason).toMatch(/dormant/i);
+      store.close();
+    });
+
+    it('NOT dormant: a recent keystone drive reads healthy', () => {
+      const store = makeStore();
+      recAt(store, 'k1', 1, 'mentor-mentee-differential', '2026-06-03T05:00:00.000Z'); // 3h ago < 6h
+      const kb = store.roleCoverage('i').keystoneBalance;
+      expect(kb.dormant).toBe(false);
+      expect(kb.starved).toBe(false);
+      expect(kb.lastKeystoneAgeMs).toBe(3 * 60 * 60 * 1000);
+      expect(kb.reason).toMatch(/healthy/i);
+      store.close();
+    });
+
+    it('dormancy boundary: exactly AT the threshold is dormant; one ms under is not', () => {
+      const store = makeStore();
+      recAt(store, 'k1', 1, 'mentor-mentee-differential', '2026-06-03T06:00:00.000Z'); // 2h ago
+      const at = store.roleCoverage('i', { keystoneDormancyMs: 2 * 60 * 60 * 1000 }).keystoneBalance;
+      expect(at.dormant).toBe(true); // age === threshold → dormant
+      expect(at.dormancyThresholdMs).toBe(2 * 60 * 60 * 1000);
+      const under = store.roleCoverage('i', { keystoneDormancyMs: 2 * 60 * 60 * 1000 + 1 }).keystoneBalance;
+      expect(under.dormant).toBe(false); // threshold 1ms past the age → not dormant
+      store.close();
+    });
+
+    it('ORTHOGONAL: a layer can be BOTH starved and dormant (reason names both)', () => {
+      const store = makeStore();
+      recAt(store, 'k1', 1, 'mentor-mentee-differential', '2026-06-03T00:00:00.000Z'); // 8h ago
+      recAt(store, 'r1', 2, 'overseer-apprentice-devreview', '2026-06-03T01:00:00.000Z');
+      recAt(store, 'r2', 3, 'overseer-apprentice-devreview', '2026-06-03T02:00:00.000Z');
+      recAt(store, 'r3', 4, 'overseer-mentee-direct', '2026-06-03T03:00:00.000Z');
+      const kb = store.roleCoverage('i').keystoneBalance; // 3 oversight-since ≥ default 3 → starved
+      expect(kb.starved).toBe(true);
+      expect(kb.dormant).toBe(true);
+      expect(kb.reason).toMatch(/drifted/i);
+      expect(kb.reason).toMatch(/dormant/i);
+      store.close();
+    });
+
+    it('never-fired keystone is NOT dormant (null age — nothing to be stale)', () => {
+      const store = makeStore();
+      recAt(store, 'r1', 1, 'overseer-apprentice-devreview', '2026-06-03T07:00:00.000Z');
+      const kb = store.roleCoverage('i').keystoneBalance;
+      expect(kb.lastKeystoneAt).toBeNull();
+      expect(kb.lastKeystoneAgeMs).toBeNull();
+      expect(kb.dormant).toBe(false);
+      store.close();
+    });
+
+    it('a future-stamped keystone clamps age to 0 (no false dormancy from clock skew)', () => {
+      const store = makeStore();
+      recAt(store, 'k1', 1, 'mentor-mentee-differential', '2026-06-03T10:00:00.000Z'); // 2h AFTER now
+      const kb = store.roleCoverage('i').keystoneBalance;
+      expect(kb.lastKeystoneAgeMs).toBe(0);
+      expect(kb.dormant).toBe(false);
+      store.close();
+    });
+  });
+
   it('filters list results by instanceId and applies the limit', () => {
     const store = makeStore();
     store.record({ id: 'a1', instanceId: 'a', cycleNumber: 1, task: 'a1', menteeOutput: 'out', operatorSeatUx: ux() });

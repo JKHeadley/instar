@@ -225,6 +225,38 @@ describe('Apprenticeship Program E2E lifecycle (feature is alive)', () => {
     expect(res.body.keystoneBalance.starved).toBe(true);
     expect(res.body.keystoneBalance.keystoneAxis).toBe('mentor-mentee-differential');
     expect(res.body.keystoneBalance.oversightSinceKeystone).toBe(2);
+    // dormancy dimension is ALIVE through AgentServer: the keystone never fired
+    // here, so it is not dormant, but the fields are surfaced (not undefined).
+    expect(res.body.keystoneBalance.dormant).toBe(false);
+    expect(res.body.keystoneBalance.lastKeystoneAgeMs).toBeNull();
+    expect(typeof res.body.keystoneBalance.dormancyThresholdMs).toBe('number');
+  });
+
+  it('keystoneBalance dormancy is ALIVE through AgentServer: a long-stale keystone reads dormant, not starved', async () => {
+    // A single keystone drive stamped far in the past (unset channel → grandfathered
+    // → fires the keystone), nothing since. The real AgentServer store uses the real
+    // clock, so this is far older than the 6h default → dormant without being starved.
+    await request(app)
+      .post('/apprenticeship/cycles')
+      .set(auth())
+      .send({
+        id: 'e2e-keystone-stale-1',
+        instanceId: 'dormant-layer',
+        cycleNumber: 1,
+        createdAt: '2026-06-03T08:00:00.000Z',
+        task: 'mentee drive long ago',
+        menteeOutput: 'output',
+        operatorSeatUx: { dupNotices: 0, infraNoiseMsgs: 0, asksOfUser: 0, contentFreeUpdates: 0, modalitiesExercised: ['text'], duringRestartChurn: false },
+        kind: 'mentor-mentee-differential',
+      })
+      .expect(201);
+
+    const res = await request(app).get('/apprenticeship/instances/dormant-layer/role-coverage').set(auth());
+    expect(res.status).toBe(200);
+    expect(res.body.keystoneBalance.starved).toBe(false); // no oversight piled up since
+    expect(res.body.keystoneBalance.dormant).toBe(true); // but long silent → dormant
+    expect(res.body.keystoneBalance.lastKeystoneAgeMs).toBeGreaterThan(6 * 60 * 60 * 1000);
+    expect(res.body.keystoneBalance.reason).toMatch(/dormant/i);
   });
 
   it('requires Bearer auth', async () => {

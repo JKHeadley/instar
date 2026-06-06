@@ -341,6 +341,32 @@ describe('/apprenticeship routes (integration)', () => {
     store.close();
   });
 
+  it('role-coverage surfaces dormancy and honors the ?keystoneDormancyMs tuning query', async () => {
+    const store = makeCycleStore(); // fixed now() = 2026-06-03T08:00:00Z
+    const app = appWith(ctxFor(stateDir, makeProgram(), store));
+    // one keystone drive 8h before now, nothing since — the masked-as-healthy shape
+    await request(app).post('/apprenticeship/cycles').set(auth()).send({
+      id: 'k', instanceId: 'dorm', cycleNumber: 1, task: 't', menteeOutput: 'm',
+      kind: 'mentor-mentee-differential', createdAt: '2026-06-03T00:00:00.000Z', operatorSeatUx: UXOK,
+    }).expect(201);
+    // default dormancy 6h → an 8h-old keystone reads DORMANT (but not starved: no oversight piled up)
+    const dflt = await request(app).get('/apprenticeship/instances/dorm/role-coverage').set(auth());
+    expect(dflt.status).toBe(200);
+    expect(dflt.body.keystoneBalance.starved).toBe(false);
+    expect(dflt.body.keystoneBalance.dormant).toBe(true);
+    expect(dflt.body.keystoneBalance.lastKeystoneAgeMs).toBe(8 * 60 * 60 * 1000);
+    expect(dflt.body.keystoneBalance.dormancyThresholdMs).toBe(6 * 60 * 60 * 1000);
+    expect(dflt.body.keystoneBalance.reason).toMatch(/dormant/i);
+    // ?keystoneDormancyMs raised past the age → no longer dormant, reads healthy
+    const relaxed = await request(app)
+      .get(`/apprenticeship/instances/dorm/role-coverage?keystoneDormancyMs=${9 * 60 * 60 * 1000}`)
+      .set(auth());
+    expect(relaxed.body.keystoneBalance.dormant).toBe(false);
+    expect(relaxed.body.keystoneBalance.dormancyThresholdMs).toBe(9 * 60 * 60 * 1000);
+    expect(relaxed.body.keystoneBalance.reason).toMatch(/healthy/i);
+    store.close();
+  });
+
   // ── transcript-audit artifact gate (#864 follow-through) ───────────────
   describe('transcript-audit gate over HTTP', () => {
     const AUDIT_OK = {
