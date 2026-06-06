@@ -8119,7 +8119,7 @@ export function createRoutes(ctx: RouteContext): Router {
             stdio: ['ignore', 'ignore', 'ignore'],
           });
           return true; // exit 0 = sha is an ancestor of branch
-        } catch {
+        } catch { /* @silent-fallback-ok: merge-base --is-ancestor signals via exit code (0 ancestor / 1 not); a non-zero exit IS the negative answer, not a degradation — returning false is the correct, complete result, and the validator surfaces MERGE_COMMIT_UNREACHABLE to the caller. */
           return false; // exit 1 = not an ancestor; any other failure = treat as not-ancestor (validator re-checks)
         }
       },

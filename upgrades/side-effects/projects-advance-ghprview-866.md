@@ -40,3 +40,5 @@ Closes #866: the projects pipeline can record merged steps for the first time. T
 
 ## Evidence pointers
 - `tests/integration/projects-api.test.ts` — new building→merged test asserts `code !== GH_PR_VIEW_UNAVAILABLE` (→ `GH_PR_VIEW_FAILED`), deterministic regardless of gh presence; full file 45 tests + StageTransitionValidator 26 green; tsc clean.
+
+_Follow-up: the merge-base catch carries an `@silent-fallback-ok` note (non-zero `--is-ancestor` exit = the negative answer, not a degradation) — holds the no-silent-fallbacks budget._

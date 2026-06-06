@@ -7,3 +7,5 @@ This is the textbook wiring-integrity failure the project's own testing standard
 The fix injects two small READ-ONLY helpers at the route: one runs `gh pr view <n>` to check the PR's merge state, the other runs `git merge-base --is-ancestor` to confirm the commit is really on the branch — both against the project's own target repo. Nothing destructive; just reads.
 
 The test is the meaningful part: it proves the helper is now actually wired by asserting that a building→merged attempt can NEVER again return "helper not provided" — any real failure (no such PR, gh not installed) now surfaces as "PR-view failed" instead. The only way to get the old error back is to un-wire the helper, which the test would catch. That's the wiring-integrity check the missing piece needed all along.
+
+_Follow-up: the read-only merge-base catch carries an `@silent-fallback-ok` note — a non-zero `--is-ancestor` exit IS the negative answer (not an ancestor), not a degradation._
