@@ -8619,6 +8619,8 @@ export async function startServer(options: StartOptions): Promise<void> {
       const { A2ADeliveryTracker } = await import('../threadline/A2ADeliveryTracker.js');
       a2aDeliveryTracker = A2ADeliveryTracker.open(config.projectName, config.stateDir);
     } catch (err) {
+      // @silent-fallback-ok: cascade-isolation — a tracker open failure must never block
+      // server boot; the peer-health routes 503 cleanly and delivery is unaffected. Logged.
       console.warn(pc.yellow(`  A2A delivery tracker: unavailable — ${err instanceof Error ? err.message : String(err)}`));
     }
 
@@ -8953,6 +8955,8 @@ export async function startServer(options: StartOptions): Promise<void> {
               a2aDeliveryTracker.recordInboundFrom(senderFingerprint, senderName ?? null);
               if (msg.threadId) a2aDeliveryTracker.recordAckByThread(msg.threadId);
             } catch (err) {
+              // @silent-fallback-ok: recording-only — A2A delivery/liveness tracking must
+              // never break inbound routing (the message was already accepted above). Logged.
               console.warn(`[relay] A2A inbound record failed (non-fatal): ${err instanceof Error ? err.message : err}`);
             }
           }

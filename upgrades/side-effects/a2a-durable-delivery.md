@@ -143,6 +143,13 @@ scoped to PR2.
 
 After folding all findings the design converged: read surface + lifecycle were sound; the fix was identifier reconciliation + wiring the cross-machine path + the missing wiring-integrity test. 31 tests green across all tiers; tsc clean.
 
+### Post-CI hardening (the suite is the authority)
+
+CI then caught three guard-allowlist failures that a targeted local run had skipped (each lives in a shard a subset run doesn't reach) — all mine, all fixed:
+- `SqliteRegistry-wiring`: the new SQLite store registered in `LONG_LIVED_STORES`.
+- `feature-delivery-completeness`: the new `migrateClaudeMd` section registered in `legacyMigratorSections` (READ-surface class, like `/codex/usage`).
+- `no-silent-fallbacks`: the recording-only catches (`recordSent`/`recordInboundFrom`/`recordAckByThread`) and the tracker-init catches are intentional (A2A tracking must never break the send/accept it observes; a tracker-open failure must never 503 the server) — annotated with in-brace `@silent-fallback-ok` + justification so the gate counts zero new silent swallows (count 460 ≤ 461 baseline). Lesson recorded: any new SQLite store / `migrateClaudeMd` section / defensive catch must run these completeness guards locally before push.
+
 ## Evidence pointers
 
 - Tier 1: `tests/unit/A2ADeliveryTracker.test.ts` — 20 tests (lifecycle,

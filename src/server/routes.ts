@@ -15770,6 +15770,8 @@ export function createRoutes(ctx: RouteContext): Router {
             if (livenessFp) ctx.a2aDeliveryTracker.recordInboundFrom(livenessFp, senderAgent ?? null);
             if (ackThread) ctx.a2aDeliveryTracker.recordAckByThread(ackThread);
           } catch (err) {
+            // @silent-fallback-ok: recording-only — A2A delivery/liveness tracking must
+            // never break inbound routing (the message was already accepted above). Logged.
             console.warn(`[relay-agent] A2A inbound record failed (non-fatal): ${err instanceof Error ? err.message : err}`);
           }
         }
@@ -16918,6 +16920,8 @@ export function createRoutes(ctx: RouteContext): Router {
                       transport: 'local',
                     });
                   } catch (err) {
+                    // @silent-fallback-ok: recording-only — A2A delivery tracking must never
+                    // break the send (the message was already delivered above). Logged.
                     console.warn(`[relay-send] A2A delivery record failed (non-fatal): ${err instanceof Error ? err.message : err}`);
                   }
                   if (waitForReply) {
@@ -17052,6 +17056,8 @@ export function createRoutes(ctx: RouteContext): Router {
           transport: 'relay',
         });
       } catch (err) {
+        // @silent-fallback-ok: recording-only — A2A delivery tracking must never break
+        // the send (the message was already delivered above). Logged.
         console.warn(`[relay-send] A2A delivery record failed (non-fatal): ${err instanceof Error ? err.message : err}`);
       }
       if (waitForReply) {

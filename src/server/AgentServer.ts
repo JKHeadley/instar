@@ -806,6 +806,8 @@ export class AgentServer {
       try {
         this.a2aDeliveryTracker = A2ADeliveryTracker.open(options.config.projectName, options.config.stateDir);
       } catch (err) {
+        // @silent-fallback-ok: cascade-isolation — a tracker init failure must never 503
+        // the server (mirrors the FeatureMetricsLedger block above). Logged; routes 503 cleanly.
         console.warn('[instar] a2a-delivery-tracker init failed (non-fatal):', err);
         this.a2aDeliveryTracker = null;
       }
