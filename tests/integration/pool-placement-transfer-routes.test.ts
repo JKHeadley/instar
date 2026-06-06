@@ -44,6 +44,7 @@ describe('Pool placement + transfer routes (multi-machine robustness)', () => {
   let ownReg: SessionOwnershipRegistry;
   let pinStore: TopicPlacementPinStore;
   let server: Server;
+  let placements: Array<Record<string, unknown>>;
   const SELF = 'm_a'; // "Mac Mini" — the holder answering these requests
   const PEER = 'm_b'; // "Laptop"
 
@@ -82,6 +83,7 @@ describe('Pool placement + transfer routes (multi-machine robustness)', () => {
       getSyncStatus: () => ({ enabled: true, role: 'awake', leaseHolder: SELF, leaseEpoch: 3, holdsLease: true, splitBrainState: 'clear', protocolVersion: 1, awakeMachineCount: 1 }),
       managers: { identityManager: idMgr },
     };
+    placements = [];
     const ctx: any = {
       config: { authToken: 'test', stateDir: dir, port: 0 },
       stateDir: dir,
@@ -91,6 +93,9 @@ describe('Pool placement + transfer routes (multi-machine robustness)', () => {
       topicPinStore: pinStore,
       meshSelfId: SELF,
       resolveRouterUrl: () => null, // we are the holder → answer locally
+      // Coherence journal seam (finding #5): capture every placement entry the
+      // transfer handler emits, exactly as the live journal would receive it.
+      state: { getCoherenceJournal: () => ({ emitPlacement: (topic: number, data: Record<string, unknown>) => placements.push({ topic, ...data }) }) },
     };
     const app = express();
     app.use(express.json());
@@ -174,6 +179,86 @@ describe('Pool placement + transfer routes (multi-machine robustness)', () => {
     const t = await api('/pool/transfer', { method: 'POST', body: JSON.stringify({ topic: 201, to: PEER }) });
     expect(t.status).toBe(200);
     expect(t.body.targetMachine).toBe(PEER);
+  });
+
+  // ── Coherence finding #5 (2026-06-06): the transfer's PLACE half ────────
+  // A quiet topic transferred via /pool/transfer previously journaled NOTHING
+  // (pin is router-local; the release half only fires when the router holds
+  // ownership) — so the pinned-to machine could never prove ownership and its
+  // working-set fetch reflex stayed refused even after the #926/#930 fallbacks.
+
+  it('finding #5: QUIET topic (never-seen) → place+claim the target, journal the placement', async () => {
+    const t = await api('/pool/transfer', { method: 'POST', body: JSON.stringify({ topic: 300, to: 'Laptop' }) });
+    expect(t.status).toBe(200);
+    expect(t.body.placedOwnership).toBe(true);
+    expect(t.body.releasedLocalOwnership).toBe(false); // we never held it
+    // Ownership landed CONFIRMED (active) — a resting 'placing' record would
+    // queue every later message as ownership-contention (the bug-#11 wedge).
+    expect(ownReg.ownerOf('300')).toBe(PEER);
+    expect(ownReg.read('300')?.status).toBe('active');
+    // Both halves journal (§3.3 call-site pairing — like the router's
+    // casClaimOwnership/confirmClaim pair); the NEWEST entry is what the
+    // target's wsOwnerOf #930 fallback reads after replication.
+    expect(placements).toHaveLength(2);
+    expect(placements[0]).toMatchObject({ topic: 300, owner: PEER, reason: 'user-move' });
+    expect(placements[1]).toMatchObject({ topic: 300, owner: PEER, reason: 'user-move' });
+    expect(placements[1].epoch).toBeGreaterThan(placements[0].epoch as number);
+  });
+
+  it('finding #5: SELF-owned topic → release half THEN place half; newest journal entry names the target', async () => {
+    own('301', SELF);
+    const t = await api('/pool/transfer', { method: 'POST', body: JSON.stringify({ topic: 301, to: 'Laptop' }) });
+    expect(t.status).toBe(200);
+    expect(t.body.releasedLocalOwnership).toBe(true);
+    expect(t.body.placedOwnership).toBe(true);
+    expect(ownReg.ownerOf('301')).toBe(PEER);
+    expect(ownReg.read('301')?.status).toBe('active');
+    expect(placements).toHaveLength(3); // release half + place half + claim confirm
+    expect(placements[2]).toMatchObject({ topic: 301, owner: PEER, reason: 'user-move' });
+  });
+
+  it('finding #5: a topic ACTIVELY owned by another machine is never stolen', async () => {
+    idMgr.registerMachine(identity('m_c', 'studio'), 'standby');
+    registry.recordHeartbeat({ machineId: 'm_c', selfReportedLastSeen: new Date().toISOString(), loadAvg: 1 });
+    own('302', 'm_c'); // active on the third machine
+    const t = await api('/pool/transfer', { method: 'POST', body: JSON.stringify({ topic: 302, to: 'Laptop' }) });
+    expect(t.status).toBe(200);
+    expect(t.body.placedOwnership).toBe(false);
+    expect(ownReg.ownerOf('302')).toBe('m_c'); // untouched — the pin drives re-placement on real traffic
+    expect(placements).toHaveLength(0);
+  });
+
+  it('finding #5: transfer to the machine that ALREADY actively owns it is a no-op (no extra epoch, no entry)', async () => {
+    own('303', PEER);
+    const epochBefore = ownReg.read('303')!.ownershipEpoch;
+    const t = await api('/pool/transfer', { method: 'POST', body: JSON.stringify({ topic: 303, to: 'Laptop' }) });
+    expect(t.status).toBe(200);
+    expect(t.body.placedOwnership).toBe(false);
+    expect(ownReg.read('303')!.ownershipEpoch).toBe(epochBefore);
+    expect(placements).toHaveLength(0);
+  });
+
+  it('finding #5: a resting "placing" record naming the target is repaired via claim (bug-#11 shape)', async () => {
+    // Legacy/raced state: placed but never claimed — would queue every message.
+    ownReg.cas({ type: 'place', machineId: PEER }, { sessionKey: '304', sender: 'ROUTER', nonce: 'p:304' });
+    expect(ownReg.read('304')?.status).toBe('placing');
+    const t = await api('/pool/transfer', { method: 'POST', body: JSON.stringify({ topic: 304, to: 'Laptop' }) });
+    expect(t.status).toBe(200);
+    expect(t.body.placedOwnership).toBe(true);
+    expect(ownReg.read('304')?.status).toBe('active'); // repaired
+    expect(ownReg.ownerOf('304')).toBe(PEER);
+    expect(placements).toHaveLength(1);
+    expect(placements[0]).toMatchObject({ topic: 304, owner: PEER, reason: 'user-move' });
+  });
+
+  it("finding #5: a 'placing' record naming a DIFFERENT machine is left strictly untouched", async () => {
+    ownReg.cas({ type: 'place', machineId: SELF }, { sessionKey: '305', sender: 'ROUTER', nonce: 'p:305' });
+    const t = await api('/pool/transfer', { method: 'POST', body: JSON.stringify({ topic: 305, to: 'Laptop' }) });
+    expect(t.status).toBe(200);
+    expect(t.body.placedOwnership).toBe(false);
+    expect(ownReg.read('305')?.status).toBe('placing'); // someone else's in-flight placement
+    expect(ownReg.read('305')?.ownerMachineId).toBe(SELF);
+    expect(placements).toHaveLength(0);
   });
 
   it('rejects an unknown machine with 404', async () => {

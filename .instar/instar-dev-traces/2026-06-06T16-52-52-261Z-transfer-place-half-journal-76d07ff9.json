@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "sessionId": "cbdc2d51-a6de-446b-8215-773ec12f8e0b",
+  "timestamp": "2026-06-06T16:52:52.261Z",
+  "artifactPath": "upgrades/side-effects/transfer-place-half-journal.md",
+  "artifactSha256": "ca977e32205788431132f62b56e2c3b80f5ba01e5b034c7dddeecc373b7dff81",
+  "coveredFiles": [
+    "src/server/routes.ts",
+    "tests/integration/pool-placement-transfer-routes.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Surgical route-handler fix landing the PLACE half of an already-specced, already-converged transfer-journaling contract (WORKING-SET-HANDOFF-SPEC quiet-topic fallback discipline); composes existing legal FSM transitions at the existing chokepoint, fully covered by 6 new integration tests over every record-shape boundary.",
+  "eli16Path": "docs/specs/WORKING-SET-HANDOFF-SPEC.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/transfer-place-half-journal.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
