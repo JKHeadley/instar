@@ -30,6 +30,10 @@ src/
                   # execFileSync/execSync callsites replaced; enforces audit trail),
                   # SafeFsExecutor (single-funnel for all destructive fs ops —
                   # rmSync/unlinkSync/rmdirSync callsites replaced; enforces audit trail),
+                  # PendingInjectStore (durable ledger of in-flight initial-message
+                  # injects — queued messages survive server restarts; recorded at
+                  # spawn, cleared after the inject runs, swept at boot by
+                  # SessionManager.recoverPendingInjects with loud loss reporting),
                   # types
   scheduler/      # Cron-based job scheduling with quota awareness
   monitoring/     # Health checks, QuotaTracker (threshold-based load shedding),

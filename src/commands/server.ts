@@ -4828,6 +4828,19 @@ export async function startServer(options: StartOptions): Promise<void> {
 
     sessionManager.startMonitoring();
 
+    // Pending-inject recovery (finding 8d300555): re-deliver initial messages
+    // orphaned by the previous server process dying in the spawn→ready→inject
+    // window (the auto-updater restart race). Runs AFTER the purge so dead
+    // sessions are already settled, and in the background — the ready-waits
+    // inside can take up to 90s per session and must not block boot.
+    void sessionManager.recoverPendingInjects().catch((err) => {
+      // @silent-fallback-ok boot recovery is a backstop that must NEVER crash
+      // boot — its own internal failures already route to DegradationReporter
+      // (sweepPendingInjects.reportLoss); this outer guard only catches an
+      // unexpected throw from the sweep harness itself.
+      console.error(`[server] Pending-inject recovery failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+    });
+
     // StuckInputSentinel — persistent, restart-safe recovery for tmux prompts
     // that hold text but never submitted Enter. Complements the in-process
     // verifyInjection timers (PR #159) which die when the server crashes.
