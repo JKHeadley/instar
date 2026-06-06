@@ -73,6 +73,13 @@ export class StateManager {
     this._now = opts?.now ?? (() => Date.now());
   }
 
+  /** The root the state tree hangs off (files live under `<baseDir>/state/...`).
+   *  Exposed so sibling stores (e.g. PendingInjectStore) can colocate without
+   *  re-plumbing the path through their own config. */
+  get baseDir(): string {
+    return this.stateDir;
+  }
+
   /** Drop the listSessions cache so the next read reflects a just-written change. */
   private invalidateSessionsCache(): void {
     this._sessionsCache = null;
@@ -131,6 +138,38 @@ export class StateManager {
     throw new Error(`StateManager is read-only (this machine is on standby). Blocked: ${operation}`);
   }
 
+  /**
+   * PUBLIC guard entrypoint for coherence-journal appends (COHERENCE-JOURNAL-SPEC §3.1).
+   *
+   * The journal writer (`CoherenceJournal`) does its own file I/O — it is not a
+   * StateManager method — so the read-only-standby decision is centralized HERE and the
+   * flusher calls this before each append batch. Two deliberate properties:
+   *
+   * 1. Journal writes are permitted on a read-only standby INDEPENDENT of
+   *    `_sessionPoolActive`. The `sessionScoped` exception above only opens when the
+   *    pool is live; reusing it would silently disable the journal on exactly the
+   *    quiet-standby topology the EXO artifact-stranding incident happened on. A
+   *    standby observing its own placement/lifecycle events cannot fork shared state:
+   *    journal streams are single-producer-per-machine by construction.
+   *
+   * 2. The permission is allowlisted to precisely the canonicalized journal prefix —
+   *    own streams + meta/lock sidecars (`state/coherence-journal/`) and replica
+   *    appends (`state/coherence-journal/peers/`, inside the first). A path escaping
+   *    the prefix throws even when NOT read-only: the journal dir is the only thing
+   *    this entrypoint will ever bless, so a bug constructing a stray path fails
+   *    loudly here instead of writing somewhere surprising.
+   */
+  guardJournalWrite(targetPath: string): void {
+    const journalRoot = path.resolve(this.stateDir, 'state', 'coherence-journal');
+    const resolved = path.resolve(targetPath);
+    if (resolved !== journalRoot && !resolved.startsWith(journalRoot + path.sep)) {
+      throw new Error(
+        `guardJournalWrite: path escapes the coherence-journal prefix: ${targetPath}`,
+      );
+    }
+    // Inside the prefix: permitted in read-only mode (standby-safe by design).
+  }
+
   /** Validate a key/ID contains only safe characters to prevent path traversal. */
   private validateKey(key: string, label: string = 'key'): void {
     if (!/^[a-zA-Z0-9_-]+$/.test(key)) {
@@ -164,8 +203,77 @@ export class StateManager {
     this.guardWrite('saveSession', { sessionScoped: true });
     this.validateKey(session.id, 'sessionId');
     const filePath = path.join(this.stateDir, 'state', 'sessions', `${session.id}.json`);
+    // Coherence-journal lifecycle funnel (COHERENCE-JOURNAL-SPEC §3.3): EVERY
+    // session status transition passes through saveSession — deriving the
+    // transition here (prev-on-disk vs next) means no call site can ever
+    // forget to record one (eleven callsites exist; per-site wiring would
+    // drift). Read-before-write is one small file on a non-hot path.
+    const prevStatus = this.peekSessionStatus(filePath);
     this.atomicWrite(filePath, JSON.stringify(session, null, 2));
     this.invalidateSessionsCache(); // a write must be visible to the next list
+    this.recordLifecycleTransition(prevStatus, session);
+  }
+
+  /** Best-effort read of an existing session record's status (funnel diff input). */
+  private peekSessionStatus(filePath: string): Session['status'] | undefined {
+    try {
+      if (!fs.existsSync(filePath)) return undefined;
+      const parsed = JSON.parse(fs.readFileSync(filePath, 'utf-8')) as Session;
+      return parsed?.status;
+    } catch { /* @silent-fallback-ok: journal observability must never endanger the observed operation (COHERENCE-JOURNAL-SPEC §3.1) */
+      return undefined; // unreadable prev = treat as new (op-key dedupe absorbs repeats)
+    }
+  }
+
+  /** Injected at server startup; absent (undefined) = journaling disabled, zero-cost no-op. */
+  private coherenceJournal?: import('./CoherenceJournal.js').CoherenceJournal;
+
+  /** Wire the coherence journal (COHERENCE-JOURNAL-SPEC §3.3). Server startup only. */
+  setCoherenceJournal(journal: import('./CoherenceJournal.js').CoherenceJournal | undefined): void {
+    this.coherenceJournal = journal;
+  }
+
+  /**
+   * The wired journal handle, for callers that already hold the StateManager
+   * (e.g. routes threading the §3.3 stop-funnel emits) — saves a parallel
+   * plumbing path through every context object.
+   */
+  getCoherenceJournal(): import('./CoherenceJournal.js').CoherenceJournal | undefined {
+    return this.coherenceJournal;
+  }
+
+  /**
+   * Map a saveSession status diff onto journal lifecycle events. NEVER throws
+   * into saveSession (the journal must not endanger the observed operation).
+   * 'reaped' is NOT derived here — the reaper emits it explicitly alongside its
+   * reap-log append (with reapLogRef), per the spec.
+   */
+  private recordLifecycleTransition(prev: Session['status'] | undefined, session: Session): void {
+    if (!this.coherenceJournal) return;
+    try {
+      const next = session.status;
+      if (prev === next) return; // metadata-only save, not a transition
+      let journalStatus: 'created' | 'completed' | 'killed' | 'failed' | undefined;
+      if (prev === undefined && (next === 'starting' || next === 'running')) journalStatus = 'created';
+      else if (next === 'completed') journalStatus = 'completed';
+      else if (next === 'killed') journalStatus = 'killed';
+      else if (next === 'failed') journalStatus = 'failed';
+      if (!journalStatus) return; // e.g. starting→running: not a lifecycle boundary
+      // Best-effort topic linkage from the session-name convention; entries
+      // without a topic are still sessionId-queryable.
+      const m = /(?:^|[-_])(?:topic|telegram)[-_]?(\d+)(?:$|[-_])/.exec(session.name ?? '');
+      const topic = m ? Number(m[1]) : undefined;
+      this.coherenceJournal.emitLifecycle(
+        {
+          sessionId: session.id,
+          status: journalStatus,
+          ...(session.endedReason ? { reapReason: session.endedReason } : {}),
+        },
+        topic,
+      );
+    } catch {
+      // Swallow: observability must not endanger the observed (§3.1).
+    }
   }
 
   listSessions(filter?: { status?: Session['status'] }): Session[] {

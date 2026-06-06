@@ -7,7 +7,7 @@ status: "approved"
 approved: true
 principal-signoff: 'Justin, 2026-06-05 20:34 PDT (topic 13481): "approved!" — in response to the convergence-gate ask (A: approve converged spec + build P1.1-P1.3; C: live two-machine proof on the fleet as the P1.3 closing step). Convergence report + rendered ELI16 delivered and linked in PR #875.'
 layer: "core-instar-primitive"
-parent-principle: "Structure > Willpower — cross-machine awareness comes from a structural event stream, not from any session remembering to report what it did"
+parent-principle: "Structure beats Willpower — cross-machine awareness comes from a structural event stream, not from any session remembering to report what it did"
 parent-spec: "MULTI-MACHINE-COHERENCE-MASTER-SPEC.md"
 project: "multimachine-coherence"
 project-items: "P1.1 coherence-journal-core, P1.2 topic-placement-history-api, P1.3 journal-peer-replication"
@@ -69,7 +69,7 @@ the Migration-Parity and Agent-Awareness deliverables for all of the above
 event semantics beyond the basic conversation-bound record (P3); replicating
 any EXISTING audit stream (reap-log etc. stay machine-local); commitments
 store convergence (P1.5 follow-up spec, per Justin's approved
-recommendation); live `artifacts-updated` declarations from running sessions
+recommendation <!-- tracked: CMT-1116 -->); live `artifacts-updated` declarations from running sessions
 (willpower-dependent as proposed; becomes structural in P2's working-set
 manifest <!-- tracked: multimachine-coherence-topic-working-set-manifest -->);
 transitive replication (machine B relaying machine C's streams — first-hop

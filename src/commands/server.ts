@@ -2560,6 +2560,90 @@ export async function startServer(options: StartOptions): Promise<void> {
       }
     }
 
+    // ── Coherence Journal (COHERENCE-JOURNAL-SPEC §3.1/§3.3, P1.1) ─────────
+    // Per-machine append-only event streams (topic-placement / session-
+    // lifecycle / autonomous-run). Dark-ship: `enabled ?? !!developmentAgent`.
+    // Constructed HERE — after the coordinator (machineId available), before
+    // the reaper/ownership wiring that emits into it. Writer runs even on a
+    // single-machine agent (locally useful); replication is P1.3.
+    let coherenceJournal: import('../core/CoherenceJournal.js').CoherenceJournal | undefined;
+    {
+      const cjCfg = config.multiMachine?.coherenceJournal;
+      const cjEnabled = cjCfg?.enabled ?? !!config.developmentAgent;
+      if (cjEnabled) {
+        try {
+          const cjMod = await import('../core/CoherenceJournal.js');
+          // Stable machine id: mesh identity when present; deterministic
+          // hostname-derived fallback for single-machine agents (sanitized by
+          // the journal's own percent-encode rule either way).
+          const cjMachineId = coordinator.identity?.machineId ?? `m_host_${os.hostname()}`;
+          coherenceJournal = new cjMod.CoherenceJournal({
+            stateDir: config.stateDir,
+            machineId: cjMachineId,
+            flushIntervalMs: cjCfg?.flushIntervalMs,
+            retention: cjCfg?.retention as never,
+            // The §3.1 standby-safe seam: the flusher asks StateManager before
+            // each append batch; the prefix allowlist lives there.
+            guardWrite: (p) => state.guardJournalWrite(p),
+            logger: (m) => console.log(pc.dim(`  [coherence-journal] ${m}`)),
+          });
+          coherenceJournal.open();
+          // Lifecycle funnel (§3.3): every session status transition flows
+          // through StateManager.saveSession; the diff-derived emit lives there.
+          state.setCoherenceJournal(coherenceJournal);
+          // §3.3 autonomous-run journal scanner — observation-based start/stop
+          // (no single .local.md write funnel exists; polling is the structural
+          // choice). P19 brakes, declared: constant per-tick cost (bounded by
+          // maxConcurrent active runs); a throwing read skips the tick and
+          // never compounds; the seen-set evicts a run after its stopped emit
+          // (bounded by active runs, not history); emits inherit the writer's
+          // rate cap. Sub-scan-interval runs are not observed (stated spec
+          // limitation). Op-key dedupe collapses scanner + stop-funnel emits.
+          {
+            const journal = coherenceJournal;
+            const cjScannerMs = cjCfg?.scannerIntervalMs ?? 60000;
+            const seenRuns = new Map<string, { runId: string; file: string }>();
+            const cjScan = async () => {
+              try {
+                const { activeAutonomousJobs, autonomousRunId } = await import('../core/AutonomousSessions.js');
+                const active = activeAutonomousJobs(config.stateDir);
+                const liveTopics = new Set<string>();
+                for (const j of active) {
+                  if (j.topic == null) continue; // legacy single-file job: not topic-scoped
+                  liveTopics.add(j.topic);
+                  const topicNum = Number(j.topic);
+                  if (!Number.isFinite(topicNum)) continue;
+                  if (!seenRuns.has(j.topic)) {
+                    const runId = autonomousRunId(j.startedAt, j.topic);
+                    seenRuns.set(j.topic, { runId, file: j.file });
+                    journal.emitAutonomousRun(topicNum, { action: 'started', runId, artifactPaths: [j.file] });
+                  }
+                }
+                for (const [topicKey, run] of [...seenRuns]) {
+                  if (liveTopics.has(topicKey)) continue;
+                  const topicNum = Number(topicKey);
+                  if (Number.isFinite(topicNum)) {
+                    // observed-stopped: covers deaths outside the stop funnels
+                    // (crash / reboot / reaper kill) — no phantom-live runs.
+                    journal.emitAutonomousRun(topicNum, { action: 'stopped', runId: run.runId, artifactPaths: [run.file] });
+                  }
+                  seenRuns.delete(topicKey);
+                }
+              } catch { /* @silent-fallback-ok: journal observability must never endanger the observed operation (COHERENCE-JOURNAL-SPEC §3.1) */ /* skip-tick; never compounds (P19) */ }
+            };
+            const cjScanTimer = setInterval(() => { void cjScan(); }, cjScannerMs);
+            cjScanTimer.unref?.();
+            void cjScan(); // prime at boot (re-emits dedupe via op keys)
+          }
+          console.log(pc.dim(`  Coherence journal: writer active (${cjMachineId.slice(0, 16)}…)`));
+        } catch (err) { /* @silent-fallback-ok: journal observability must never endanger the observed operation (COHERENCE-JOURNAL-SPEC §3.1) */
+          // The journal must never endanger boot (§3.1 inverted at startup).
+          console.warn(pc.yellow(`  Coherence journal failed to start (continuing without): ${err instanceof Error ? err.message : String(err)}`));
+          coherenceJournal = undefined;
+        }
+      }
+    }
+
     // Cross-Machine Seamlessness (spec §9) — resolve + validate the tunable
     // knobs at startup. A violating config (e.g. a widened ingressHeartbeatMs
     // that breaks the RPO bound) is REJECTED here with a clear message rather
@@ -3920,6 +4004,17 @@ export async function startServer(options: StartOptions): Promise<void> {
       });
     }
 
+    // ── Coherence Journal × Telegram emergency-stop seam (COHERENCE-JOURNAL §3.3)
+    // The adapter's sentinel emergency-stop path clears a topic's autonomous job
+    // via stopAutonomousTopic but holds no StateManager, so it cannot reach the
+    // wired journal on its own. Inject the journal as the AutonomousJournalSeam so
+    // a sentinel-driven stop emits the autonomous-run `stopped` event like every
+    // other stop funnel. Placed AFTER both adapter-setup blocks (so `telegram` is
+    // assigned in either mode) and only when the journal is wired.
+    if (telegram && coherenceJournal) {
+      telegram.setCoherenceJournalSeam(coherenceJournal);
+    }
+
     // Agent worktree convention (Layer 4) — lifeline detector.
     //
     // Runs once per server boot. Inspects the canonical instar repo's
@@ -3979,6 +4074,53 @@ export async function startServer(options: StartOptions): Promise<void> {
     } catch (err) {
       console.log(pc.yellow(
         `  Worktree detector: skipped (${err instanceof Error ? err.message : String(err)})`,
+      ));
+    }
+
+    // GuardPostureTripwire — a disabled guard is itself an incident.
+    // Runs once per server boot. Compares the resolved guard posture (every
+    // monitoring.* enabled flag + scheduler.enabled) against the persisted
+    // posture from the previous boot; any enabled→disabled transition gets a
+    // loud log line + a logs/guard-posture.jsonl breadcrumb + ONE aggregated
+    // HIGH Attention item (the 2026-06-05 meltdown load-shed batch-flipped
+    // five guards off and only the scheduler was noticed — issue #882 / the
+    // EXO AUP-wedge evening). Signal-only: never re-enables, never blocks a
+    // boot. Placement mirrors the worktree detector above: after the
+    // Telegram setup blocks so `telegram.createAttentionItem` is available.
+    try {
+      const tripwire = await import('../monitoring/GuardPostureTripwire.js');
+      const postureResult = await tripwire.runGuardPostureTripwire({
+        config,
+        stateDir: config.stateDir,
+        logsDir: path.join(config.stateDir, '..', 'logs'),
+        emitAttention: telegram
+          ? async (item) => {
+              await telegram!.createAttentionItem({
+                id: item.id,
+                title: item.title,
+                summary: item.summary,
+                description: item.description,
+                category: item.category,
+                priority: item.priority,
+                sourceContext: item.sourceContext,
+              });
+            }
+          : undefined,
+      });
+      if (postureResult.disabled.length > 0) {
+        console.log(pc.yellow(
+          `  Guard-posture tripwire: ${postureResult.disabled.length} guard(s) DISABLED since last boot ` +
+            `(${postureResult.disabled.join(', ')}) — ` +
+            `${postureResult.attentionEmitted ? 'Attention item raised' : 'breadcrumb only (no Telegram)'}`,
+        ));
+      } else if (postureResult.firstBoot) {
+        console.log(pc.green('  Guard-posture tripwire: baseline recorded'));
+      } else {
+        console.log(pc.green('  Guard-posture tripwire: posture unchanged'));
+      }
+    } catch (err) {
+      console.log(pc.yellow(
+        `  Guard-posture tripwire: skipped (${err instanceof Error ? err.message : String(err)})`,
       ));
     }
 
@@ -4699,6 +4841,21 @@ export async function startServer(options: StartOptions): Promise<void> {
         origin: e.origin,
       });
       reapNotifier.onReaped({ session: e.session, reason: e.reason, disposition: e.disposition, origin: e.origin });
+      // Coherence journal 'reaped' (§3.3): emitted HERE, alongside the
+      // reap-log append it references — never derived in the saveSession
+      // funnel (which records the plain killed/completed transition).
+      try {
+        const m = /(?:^|[-_])(?:topic|telegram)[-_]?(\d+)(?:$|[-_])/.exec(e.session.name ?? '');
+        coherenceJournal?.emitLifecycle(
+          {
+            sessionId: e.session.id,
+            status: 'reaped',
+            reapReason: e.reason,
+            reapLogRef: `logs/reap-log.jsonl:${e.session.name}`,
+          },
+          m ? Number(m[1]) : undefined,
+        );
+      } catch { /* observability never endangers the observed */ }
     });
     sessionManager.on('reapBlocked', (e: { session: import('../core/types.js').Session; reason: string; skipped: string; origin?: 'operator' | 'autonomous' }) => {
       reapLog.recordSkipped({
@@ -4717,6 +4874,19 @@ export async function startServer(options: StartOptions): Promise<void> {
     await sessionManager.purgeDeadSessions();
 
     sessionManager.startMonitoring();
+
+    // Pending-inject recovery (finding 8d300555): re-deliver initial messages
+    // orphaned by the previous server process dying in the spawn→ready→inject
+    // window (the auto-updater restart race). Runs AFTER the purge so dead
+    // sessions are already settled, and in the background — the ready-waits
+    // inside can take up to 90s per session and must not block boot.
+    void sessionManager.recoverPendingInjects().catch((err) => {
+      // @silent-fallback-ok boot recovery is a backstop that must NEVER crash
+      // boot — its own internal failures already route to DegradationReporter
+      // (sweepPendingInjects.reportLoss); this outer guard only catches an
+      // unexpected throw from the sweep harness itself.
+      console.error(`[server] Pending-inject recovery failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+    });
 
     // StuckInputSentinel — persistent, restart-safe recovery for tmux prompts
     // that hold text but never submitted Enter. Complements the in-process
@@ -9935,16 +10105,41 @@ export async function startServer(options: StartOptions): Promise<void> {
           logger: (m: string) => console.log(pc.dim(`  ${m}`)),
         });
         const ownReg = sessionOwnershipRegistry;
+        // Coherence journal §3.3: the emit is a thin wrapper at every CAS call
+        // site — `reason` is caller knowledge (cas() is a storage primitive and
+        // cannot know WHY). A mesh-applied action records the coarse reason;
+        // the ORIGINATING machine's own emit carries the precise one. The
+        // cas-pairing lint (scripts/lint-cas-emit-placement.js) fails CI on
+        // any cas( call site missing this pairing.
+        const emitPlacement = (
+          sessionKey: string,
+          r: import('../core/SessionOwnershipRegistry.js').CasResult,
+          reason: import('../core/CoherenceJournal.js').PlacementReason,
+          prevOwner?: string,
+        ): void => {
+          try {
+            if (!coherenceJournal || !r?.ok) return;
+            const rec = (r as { record?: { ownerMachineId?: string; ownershipEpoch?: number } }).record;
+            const topicNum = Number(sessionKey);
+            if (!Number.isFinite(topicNum) || rec?.ownershipEpoch == null) return;
+            coherenceJournal.emitPlacement(topicNum, {
+              owner: rec.ownerMachineId ?? '',
+              ...(prevOwner ? { prevOwner } : {}),
+              epoch: rec.ownershipEpoch,
+              reason,
+            });
+          } catch { /* observability never endangers the observed */ }
+        };
         // The §L3 ownership commands, routed from MeshRpc to the registry CAS.
         const ownAction = (
           cmd: import('../core/MeshRpc.js').MeshCommand,
           sender: string,
           env: import('../core/MeshRpc.js').MeshEnvelope,
         ): unknown => {
-          if (cmd.type === 'place') return ownReg.cas({ type: 'place', machineId: cmd.machine }, { sessionKey: cmd.session, sender, nonce: env.nonce });
-          if (cmd.type === 'claim') return ownReg.cas({ type: 'claim', machineId: sender }, { sessionKey: cmd.session, sender, nonce: env.nonce });
-          if (cmd.type === 'transfer') return ownReg.cas({ type: 'transfer', to: cmd.target }, { sessionKey: cmd.session, sender, nonce: env.nonce });
-          if (cmd.type === 'release') return ownReg.cas({ type: 'release', machineId: sender }, { sessionKey: cmd.session, sender, nonce: env.nonce });
+          if (cmd.type === 'place') { const prev = ownReg.read(cmd.session)?.ownerMachineId; const r = ownReg.cas({ type: 'place', machineId: cmd.machine }, { sessionKey: cmd.session, sender, nonce: env.nonce }); emitPlacement(cmd.session, r, 'placed', prev); return r; }
+          if (cmd.type === 'claim') { const prev = ownReg.read(cmd.session)?.ownerMachineId; const r = ownReg.cas({ type: 'claim', machineId: sender }, { sessionKey: cmd.session, sender, nonce: env.nonce }); emitPlacement(cmd.session, r, cmd.failover ? 'failover' : 'placed', prev); return r; }
+          if (cmd.type === 'transfer') { const prev = ownReg.read(cmd.session)?.ownerMachineId; const r = ownReg.cas({ type: 'transfer', to: cmd.target }, { sessionKey: cmd.session, sender, nonce: env.nonce }); emitPlacement(cmd.session, r, 'user-move', prev); return r; }
+          if (cmd.type === 'release') { const prev = ownReg.read(cmd.session)?.ownerMachineId; const r = ownReg.cas({ type: 'release', machineId: sender }, { sessionKey: cmd.session, sender, nonce: env.nonce }); emitPlacement(cmd.session, r, 'released', prev); return r; }
           return { ok: false, reason: 'unsupported' };
         };
         // The §L4 owner-side deliverMessage receive handler (shared factory — same
@@ -10303,7 +10498,9 @@ export async function startServer(options: StartOptions): Promise<void> {
             markOwnerSuspect: (m) => ownerSuspectBreaker.markSuspect(m),
             onOwnerResponsive: (m) => ownerSuspectBreaker.recordSuccess(m),
             casClaimOwnership: (sk, machineId) => {
+              const prevOwner = ownReg.read(sk)?.ownerMachineId;
               const r = ownReg.cas({ type: 'place', machineId }, { sessionKey: sk, sender: meshSelfId, nonce: `${meshSelfId}:c:${++routerNonce}` });
+              emitPlacement(sk, r, 'placed', prevOwner);
               return { ok: r.ok, epoch: ownReg.read(sk)?.ownershipEpoch ?? 0 };
             },
             // bug #11: confirm the remote owner (placing → active) after the spawn is
@@ -10312,7 +10509,9 @@ export async function startServer(options: StartOptions): Promise<void> {
             // owner, so the router confirms on the target's behalf. Without this the
             // record stays 'placing' and every later message for the session queues.
             confirmClaim: (sk, machineId) => {
-              ownReg.cas({ type: 'claim', machineId }, { sessionKey: sk, sender: meshSelfId, nonce: `${meshSelfId}:cl:${++routerNonce}` });
+              const prevOwner = ownReg.read(sk)?.ownerMachineId;
+              const r = ownReg.cas({ type: 'claim', machineId }, { sessionKey: sk, sender: meshSelfId, nonce: `${meshSelfId}:cl:${++routerNonce}` });
+              emitPlacement(sk, r, 'placed', prevOwner); // placing→active confirmation: a real epoch bump in the registry
             },
             deliverMessage: async (target, env) => {
               const url = peerUrl(target);
@@ -10483,7 +10682,9 @@ export async function startServer(options: StartOptions): Promise<void> {
               // If THIS machine actively owns the topic, release so the next message re-places to the pin.
               try {
                 if (ownReg.ownerOf(sessionKey) === meshSelfId) {
-                  ownReg.cas({ type: 'release', machineId: meshSelfId }, { sessionKey, sender: meshSelfId, nonce: `${meshSelfId}:rel:${sessionKey}:${Math.round(performance.now())}` });
+                  const prevOwner = ownReg.read(sessionKey)?.ownerMachineId;
+                  const r = ownReg.cas({ type: 'release', machineId: meshSelfId }, { sessionKey, sender: meshSelfId, nonce: `${meshSelfId}:rel:${sessionKey}:${Math.round(performance.now())}` });
+                  emitPlacement(sessionKey, r, 'user-move', prevOwner); // the explicit move's release half
                 }
               } catch { /* best-effort; route() re-places regardless once the owner is cleared */ }
               // ── Post-transfer closeout, immediate half (2026-06-05) ───────

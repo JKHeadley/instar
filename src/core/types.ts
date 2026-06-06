@@ -1859,6 +1859,36 @@ export interface MultiMachineConfig {
    * standby can honor it. Consumed by TelegramLifeline.start().
    */
   telegramPolling?: boolean;
+  /**
+   * Coherence Journal (COHERENCE-JOURNAL-SPEC §3.7) — per-machine append-only
+   * event streams (topic-placement / session-lifecycle / autonomous-run) +
+   * first-hop peer replication. DARK-SHIP: `enabled` deliberately resolves
+   * `enabled ?? !!developmentAgent` at runtime (omit it in defaults — live on
+   * the dev agent, dark on the fleet). Single-machine agents: writer on,
+   * replication a clean no-op.
+   */
+  coherenceJournal?: CoherenceJournalUserConfig;
+}
+
+/**
+ * Coherence Journal USER-config block (.instar/config.json — COHERENCE-JOURNAL-SPEC §3.7).
+ * Distinct from CoherenceJournal.ts's constructor-options interface of a similar name.
+ */
+export interface CoherenceJournalUserConfig {
+  /** Resolved `enabled ?? !!developmentAgent` at runtime (dark-ship pattern). */
+  enabled?: boolean;
+  /** Background flusher cadence for batched appends + fdatasync. Default 250ms. */
+  flushIntervalMs?: number;
+  /** Autonomous-run journal scanner cadence (§3.3). Default 60s. */
+  scannerIntervalMs?: number;
+  /** Replication tunables; `enabled` follows the same dark-ship gate. */
+  replication?: { enabled?: boolean; maxBatchBytes?: number };
+  /**
+   * Per-kind retention. rotateKeep N>0 = rotate at maxFileBytes, keep N
+   * archives, delete older; 0 = rotate at maxFileBytes but NEVER delete
+   * (bounded files, history forever — the topic-placement setting).
+   */
+  retention?: Record<string, { maxFileBytes?: number; rotateKeep?: number }>;
 }
 
 /**

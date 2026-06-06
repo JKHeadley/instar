@@ -3513,6 +3513,28 @@ Every session shutoff — and every REFUSED shutoff (protected, not-lease-holder
       result.skipped.push('CLAUDE.md: Reap-Log section already present');
     }
 
+    // GuardPostureTripwire — a disabled guard is itself an incident. Tells the
+    // agent the "did a monitor get switched off?" surface exists. Without it,
+    // an agent asked "why didn't the watchdog catch this?" can't ground the
+    // answer in the posture history (the 2026-06-05 batch-flip went invisible
+    // for exactly this reason). Idempotent via content-sniffing on the
+    // breadcrumb path.
+    if (!content.includes('guard-posture.jsonl')) {
+      const section = `
+## Guard-Posture Tripwire (a disabled guard is itself an incident)
+
+At every server boot the guard posture (every \`monitoring.*\` enabled flag + \`scheduler.enabled\`) is compared against the previous boot's posture. Any guard that went enabled→disabled triggers: a loud boot log line, one row in \`logs/guard-posture.jsonl\`, and ONE aggregated HIGH Attention item listing every newly-disabled guard. Re-enables get the breadcrumb only. Signal-only — nothing is ever auto-re-enabled; a deliberate disable just needs its Attention item acknowledged. (Born from the 2026-06-05 meltdown load-shed: five guards batch-flipped off by an emergency config edit, only one noticed.)
+
+- If a user asks "why didn't the watchdog/sentinel/scheduler catch X?" — FIRST check \`logs/guard-posture.jsonl\` (and the current config) to see whether the guard was even running. A silently-disabled guard explains more incidents than a broken one.
+- If you ever disable a guard yourself as emergency load-shedding: say so to the user at the time, and expect the tripwire to raise the Attention item at the next boot — that item is the loop-closer that gets the guard turned back on.
+`;
+      content += '\n' + section;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Guard-Posture Tripwire section');
+    } else {
+      result.skipped.push('CLAUDE.md: Guard-Posture Tripwire section already present');
+    }
+
     // AgentWorktreeReaper report (RESPONSIBLE-RESOURCE-USAGE — OS resource hygiene).
     // Tells the agent the "which stale worktrees can be reclaimed?" read-surface
     // exists. Without it, an agent asked about worktree disk/sprawl has no grounded
