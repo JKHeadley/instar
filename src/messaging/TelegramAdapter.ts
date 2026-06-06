@@ -3483,7 +3483,7 @@ export class TelegramAdapter implements MessagingAdapter {
         if (!tail) continue; // not a live topic — lazy per-topic path covers it
         tail.push(entry);
         if (tail.length > TelegramAdapter.TAIL_CACHE_LIMIT) tail.shift();
-      } catch { /* skip malformed */ }
+      } catch { /* @silent-fallback-ok — skip a malformed JSONL line, identical to the scan path's long-standing behavior */ }
     }
   }
 
