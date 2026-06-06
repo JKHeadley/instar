@@ -2684,6 +2684,11 @@ export async function startServer(options: StartOptions): Promise<void> {
           },
           nextSequence: () => ++leaseSeq,
           reachabilityWindowMs: seamlessness.leaseTtlMs,
+          // P19 hung-socket brake, derived from config: must stay BELOW the
+          // self-suspend horizon (leaseTtlMs) so one slow renewal can't burn
+          // the whole TTL, but ABOVE the fleet's 5-40s receiver-stall envelope
+          // so a slow-but-alive peer isn't converted into "no medium".
+          requestTimeoutMs: Math.min(seamlessness.leaseTtlMs / 2, 30_000),
           logger: (m) => console.log(pc.dim(m)),
         });
         const leaseCoordinator = new LeaseCoordinator({

@@ -140,3 +140,81 @@ describe('HttpLeaseTransport', () => {
     expect(fetchImpl).toHaveBeenCalledTimes(2); // unchanged — no peers, no calls
   });
 });
+
+describe('HttpLeaseTransport — P19 brakes (timeout + bounded failure logging)', () => {
+  function makeWithLogger(fetchImpl: any, failureLogEveryN?: number) {
+    let seq = 0;
+    const lines: string[] = [];
+    const t = new HttpLeaseTransport({
+      selfMachineId: 'm_a',
+      signingKeyPem: privateKey,
+      peers: () => [{ machineId: 'm_b', url: 'http://peer' }],
+      nextSequence: () => ++seq,
+      fetchImpl,
+      reachabilityWindowMs: 60_000,
+      failureLogEveryN,
+      logger: (m) => lines.push(m),
+    });
+    return { t, lines };
+  }
+
+  it('every outbound request carries an abort signal (hung-socket brake)', async () => {
+    const fetchImpl = vi.fn(async () => ({ ok: true, json: async () => ({ lease: null }) })) as any;
+    const { t } = makeWithLogger(fetchImpl);
+    await t.broadcast({ holder: 'm_a', epoch: 1, nonce: 1, issuedAt: 1, ttlMs: 1000 } as any);
+    await t.pullPeer({ machineId: 'm_b', url: 'http://peer' });
+    for (const call of fetchImpl.mock.calls) {
+      expect(call[1].signal).toBeInstanceOf(AbortSignal);
+    }
+  });
+
+  it('SUSTAINED-FAILURE BOUND (P19): repeated pull failures log first + every Nth, never per-attempt', async () => {
+    const fetchImpl = vi.fn(async () => { throw new Error('ECONNREFUSED'); }) as any;
+    const { t, lines } = makeWithLogger(fetchImpl, 10);
+    for (let i = 0; i < 25; i++) {
+      await t.pullPeer({ machineId: 'm_b', url: 'http://peer' });
+    }
+    // 25 failures with N=10 → first (#1) + reminders (#10, #20) = 3 lines, not 25.
+    expect(lines).toHaveLength(3);
+    expect(lines[0]).toContain('became unreachable');
+    expect(lines[1]).toContain('10 consecutive failures');
+    expect(lines[2]).toContain('20 consecutive failures');
+  });
+
+  it('recovery after a failure streak logs exactly once', async () => {
+    let fail = true;
+    const fetchImpl = vi.fn(async () => {
+      if (fail) throw new Error('down');
+      return { ok: true, json: async () => ({ lease: null }) };
+    }) as any;
+    const { t, lines } = makeWithLogger(fetchImpl, 100);
+    await t.pullPeer({ machineId: 'm_b', url: 'http://peer' });
+    await t.pullPeer({ machineId: 'm_b', url: 'http://peer' });
+    fail = false;
+    await t.pullPeer({ machineId: 'm_b', url: 'http://peer' });
+    await t.pullPeer({ machineId: 'm_b', url: 'http://peer' });
+    expect(lines.filter((l) => l.includes('recovered after 2 consecutive failures'))).toHaveLength(1);
+    expect(lines).toHaveLength(2); // first-failure + recovery, nothing else
+  });
+
+  it('broadcast failure logging is gated the same way (rejecting peer, non-ok status)', async () => {
+    const fetchImpl = vi.fn(async () => ({ ok: false, status: 403 })) as any;
+    const { t, lines } = makeWithLogger(fetchImpl, 10);
+    const rec = { holder: 'm_a', epoch: 1, nonce: 1, issuedAt: 1, ttlMs: 1000 } as any;
+    for (let i = 0; i < 12; i++) await t.broadcast(rec);
+    expect(lines).toHaveLength(2); // first (status 403) + the 10th reminder
+    expect(lines[0]).toContain('status 403');
+  });
+});
+
+describe('server-boot wiring: lease transport timeout derivation (source-shape pin)', () => {
+  it('server.ts derives requestTimeoutMs from leaseTtlMs (min(ttl/2, 30s))', () => {
+    const fs = require('node:fs') as typeof import('node:fs');
+    const path = require('node:path') as typeof import('node:path');
+    const src = fs.readFileSync(path.join(process.cwd(), 'src/commands/server.ts'), 'utf-8');
+    const idx = src.indexOf('new HttpLeaseTransport({');
+    expect(idx).toBeGreaterThan(0);
+    const block = src.slice(idx, idx + 1600);
+    expect(block).toContain('requestTimeoutMs: Math.min(seamlessness.leaseTtlMs / 2, 30_000)');
+  });
+});
