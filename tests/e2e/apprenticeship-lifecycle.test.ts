@@ -219,6 +219,12 @@ describe('Apprenticeship Program E2E lifecycle (feature is alive)', () => {
     expect(res.body.driftWarning).toBe(true);
     expect(res.body.axes['mentor-mentee-differential'].fired).toBe(false);
     expect(res.body.axes['overseer-apprentice-devreview'].cycleCount).toBe(2);
+    // keystoneBalance (2026-06-06 mentor/mentee balance signal) is ALIVE through
+    // the real AgentServer: this instance reviewed twice but never drove its
+    // mentee, so the deepest layer reads as starved — observe-only, never gates.
+    expect(res.body.keystoneBalance.starved).toBe(true);
+    expect(res.body.keystoneBalance.keystoneAxis).toBe('mentor-mentee-differential');
+    expect(res.body.keystoneBalance.oversightSinceKeystone).toBe(2);
   });
 
   it('requires Bearer auth', async () => {

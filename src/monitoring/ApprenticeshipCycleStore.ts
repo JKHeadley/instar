@@ -150,6 +150,54 @@ export interface ApprenticeshipRoleAxisCoverage {
   lastAt: string | null;
 }
 
+/**
+ * The keystone axis — the ONE that proves the recursion actually ran at its
+ * deepest layer (the mentor actually drove the mentee, vs merely reviewing or
+ * overseeing). Surfacing its health is what makes the 2026-06-06 imbalance
+ * (mentor-heavy / mentee-light: the mentor layer ran 13 cycles while the
+ * mentee layer ran 3) a VISIBLE tracked fact instead of something only a human
+ * notices weeks later. "Observation Needs Structure" applied to layer balance.
+ */
+export const APPRENTICESHIP_KEYSTONE_AXIS: ApprenticeshipCycleAxis = 'mentor-mentee-differential';
+
+/** Oversight axes — review/direct activity that is NOT the keystone drive. A
+ *  program busy on these while the keystone goes stale is drifting away from
+ *  actually exercising its mentee. */
+export const APPRENTICESHIP_OVERSIGHT_AXES: ApprenticeshipCycleAxis[] = [
+  'overseer-apprentice-devreview',
+  'overseer-mentee-direct',
+];
+
+/** Default: this many oversight cycles AFTER the last keystone cycle marks the
+ *  deepest layer as starved (the program kept reviewing/overseeing without
+ *  driving the mentee). Observe-only threshold; tune via roleCoverage opts. */
+export const DEFAULT_KEYSTONE_STARVATION_OVERSIGHT = 3;
+
+/**
+ * Observe-only health of the keystone (deepest) layer for one instance. Never
+ * gates or blocks — it makes "is the mentee layer actually running?" a
+ * queryable fact. `starved=true` means the program is active but its deepest
+ * layer is under-firing: either the keystone never ran while oversight did, or
+ * enough oversight has piled up since the last keystone drive that the layer
+ * has clearly drifted. The generalization of the older narrow `driftWarning`.
+ */
+export interface ApprenticeshipKeystoneBalance {
+  keystoneAxis: ApprenticeshipCycleAxis;
+  keystoneCycleCount: number;
+  lastKeystoneAt: string | null;
+  /** Combined cycle count across the oversight axes. */
+  oversightCycleCount: number;
+  /** Oversight cycles recorded strictly AFTER the last keystone cycle (or all
+   *  of them, if the keystone never fired). */
+  oversightSinceKeystone: number;
+  /** The deepest layer is under-firing relative to ongoing program activity. */
+  starved: boolean;
+  /** The threshold actually applied (so callers can show "3 of 3"). */
+  starvationThreshold: number;
+  /** Plain-English why, for surfacing to a human. */
+  reason: string;
+}
+
 export interface ApprenticeshipRoleCoverage {
   instanceId: string;
   axes: Record<ApprenticeshipCycleAxis, ApprenticeshipRoleAxisCoverage>;
@@ -160,6 +208,15 @@ export interface ApprenticeshipRoleCoverage {
    *  did NOT count toward the keystone axis). Surfaced for honesty — a shortcut is
    *  recorded but can never make the keystone look healthy (§4a enforcement). */
   shortcutDifferentialCount: number;
+  /** Observe-only deepest-layer health (the 2026-06-06 mentor/mentee balance
+   *  signal). Never gates; surfaces the imbalance so it can't silently drift. */
+  keystoneBalance: ApprenticeshipKeystoneBalance;
+}
+
+export interface RoleCoverageOptions {
+  /** Oversight-since-keystone count that marks the deepest layer starved.
+   *  Defaults to DEFAULT_KEYSTONE_STARVATION_OVERSIGHT. */
+  oversightStarvationThreshold?: number;
 }
 
 export interface ApprenticeshipCycleRecord {
@@ -586,7 +643,7 @@ export class ApprenticeshipCycleStore {
     return row ? this.rowToRecord(row) : null;
   }
 
-  roleCoverage(instanceId: string): ApprenticeshipRoleCoverage {
+  roleCoverage(instanceId: string, opts: RoleCoverageOptions = {}): ApprenticeshipRoleCoverage {
     const id = requireString(instanceId, 'instanceId');
     const rows = this.stmts.listAllByInstance.all(id) as Row[];
     const blank = (): ApprenticeshipRoleAxisCoverage => ({ fired: false, cycleCount: 0, lastAt: null });
@@ -595,6 +652,9 @@ export class ApprenticeshipCycleStore {
     ) as Record<ApprenticeshipCycleAxis, ApprenticeshipRoleAxisCoverage>;
     const unknown = blank();
     let shortcutDifferentialCount = 0;
+    // Oversight rows are gathered with their timestamps so we can count how
+    // many landed AFTER the last keystone drive (the starvation signal).
+    const oversightTimestamps: string[] = [];
 
     for (const row of rows) {
       const kind = normalizeKind(row.kind);
@@ -612,6 +672,9 @@ export class ApprenticeshipCycleStore {
       target.fired = true;
       target.cycleCount += 1;
       if (!target.lastAt || row.created_at > target.lastAt) target.lastAt = row.created_at;
+      if ((APPRENTICESHIP_OVERSIGHT_AXES as string[]).includes(kind)) {
+        oversightTimestamps.push(row.created_at);
+      }
     }
 
     const dormantAxes = APPRENTICESHIP_CYCLE_AXES.filter((axis) => !axes[axis].fired);
@@ -619,7 +682,66 @@ export class ApprenticeshipCycleStore {
       !axes['mentor-mentee-differential'].fired &&
       axes['overseer-apprentice-devreview'].cycleCount >= 2;
 
-    return { instanceId: id, axes, unknown, dormantAxes, driftWarning, shortcutDifferentialCount };
+    const keystoneBalance = this.computeKeystoneBalance(
+      axes,
+      oversightTimestamps,
+      opts.oversightStarvationThreshold,
+    );
+
+    return { instanceId: id, axes, unknown, dormantAxes, driftWarning, shortcutDifferentialCount, keystoneBalance };
+  }
+
+  /**
+   * Observe-only keystone (deepest-layer) health. NEVER gates — it only makes
+   * the mentor/mentee balance a queryable fact (the 2026-06-06 imbalance fix:
+   * "Observation Needs Structure" applied to layer balance). Starved when the
+   * program is active but its keystone drive is under-firing: keystone never
+   * ran while oversight did, OR enough oversight has accrued since the last
+   * keystone cycle that the layer has clearly drifted.
+   */
+  private computeKeystoneBalance(
+    axes: Record<ApprenticeshipCycleAxis, ApprenticeshipRoleAxisCoverage>,
+    oversightTimestamps: string[],
+    thresholdOpt?: number,
+  ): ApprenticeshipKeystoneBalance {
+    const threshold =
+      typeof thresholdOpt === 'number' && Number.isInteger(thresholdOpt) && thresholdOpt > 0
+        ? thresholdOpt
+        : DEFAULT_KEYSTONE_STARVATION_OVERSIGHT;
+    const keystone = axes[APPRENTICESHIP_KEYSTONE_AXIS];
+    const lastKeystoneAt = keystone.lastAt;
+    const oversightCycleCount = oversightTimestamps.length;
+    // Oversight strictly after the last keystone drive (string ISO compare is
+    // safe — createdAt is always a normalized ISO timestamp). When the keystone
+    // never ran, ALL oversight counts as "since" (there was never a drive).
+    const oversightSinceKeystone = lastKeystoneAt
+      ? oversightTimestamps.filter((ts) => ts > lastKeystoneAt).length
+      : oversightCycleCount;
+
+    let starved = false;
+    let reason: string;
+    if (!keystone.fired && oversightCycleCount > 0) {
+      starved = true;
+      reason = `keystone (${APPRENTICESHIP_KEYSTONE_AXIS}) has NEVER fired while ${oversightCycleCount} oversight cycle(s) ran — the deepest layer was never exercised.`;
+    } else if (keystone.fired && oversightSinceKeystone >= threshold) {
+      starved = true;
+      reason = `${oversightSinceKeystone} oversight cycle(s) since the last keystone drive (>= ${threshold}) — the program has drifted to reviewing/overseeing without driving the mentee.`;
+    } else if (!keystone.fired) {
+      reason = `keystone has not fired yet, but no oversight activity to drift against — program just hasn't started its deepest layer.`;
+    } else {
+      reason = `keystone healthy: last drive recorded, ${oversightSinceKeystone} oversight cycle(s) since (< ${threshold}).`;
+    }
+
+    return {
+      keystoneAxis: APPRENTICESHIP_KEYSTONE_AXIS,
+      keystoneCycleCount: keystone.cycleCount,
+      lastKeystoneAt,
+      oversightCycleCount,
+      oversightSinceKeystone,
+      starved,
+      starvationThreshold: threshold,
+      reason,
+    };
   }
 
   closeCycle(id: string): ApprenticeshipCycleRecord | null {
