@@ -219,6 +219,108 @@ describe('SafeGitExecutor — env denylist', () => {
   });
 });
 
+// ── per-agent identity isolation (Phase-3 Inc-P3a) ────────────────
+//
+// The Caroline-class gap 1 fix: a repo with its OWN local user.name +
+// user.email (every agent worktree/home) is authoritative — inherited
+// GIT_AUTHOR_*/GIT_COMMITTER_* env vars from the spawning shell must NOT
+// override it inside the funnel. Repos WITHOUT local identity keep the
+// long-standing host-identity fallback so non-agent installs don't break.
+
+describe('SafeGitExecutor — per-agent identity isolation (Inc-P3a)', () => {
+  let agentRepo: string; // local identity set (initRepo does this)
+  let bareIdentityRepo: string; // git repo, NO local identity
+  let notARepo: string;
+  beforeEach(() => {
+    _internal._resetLocalIdentityCacheForTest();
+    agentRepo = mkSandbox('sge-agent-');
+    initRepo(agentRepo);
+    bareIdentityRepo = mkSandbox('sge-noident-');
+    execFileSync('git', ['init', '--initial-branch=main'], {
+      cwd: bareIdentityRepo, stdio: 'ignore', env: sanitizedGitEnv(),
+    });
+    notARepo = mkSandbox('sge-norepo-');
+  });
+  afterEach(() => {
+    _internal._resetLocalIdentityCacheForTest();
+    rmrf(agentRepo);
+    rmrf(bareIdentityRepo);
+    rmrf(notARepo);
+  });
+
+  it('repoHasLocalIdentity: true for a repo with local user.name+email, false otherwise', () => {
+    expect(_internal.repoHasLocalIdentity(agentRepo)).toBe(true);
+    expect(_internal.repoHasLocalIdentity(bareIdentityRepo)).toBe(false);
+    expect(_internal.repoHasLocalIdentity(notARepo)).toBe(false);
+  });
+
+  it('strips inherited GIT_AUTHOR_*/GIT_COMMITTER_* when the target repo has a local identity', () => {
+    const sanitized = _internal.sanitizeEnv(
+      {
+        GIT_AUTHOR_NAME: 'Caroline',
+        GIT_AUTHOR_EMAIL: 'caroline@other.example',
+        GIT_COMMITTER_NAME: 'Caroline',
+        GIT_COMMITTER_EMAIL: 'caroline@other.example',
+      },
+      agentRepo,
+    );
+    expect(sanitized.GIT_AUTHOR_NAME).toBeUndefined();
+    expect(sanitized.GIT_AUTHOR_EMAIL).toBeUndefined();
+    expect(sanitized.GIT_COMMITTER_NAME).toBeUndefined();
+    expect(sanitized.GIT_COMMITTER_EMAIL).toBeUndefined();
+  });
+
+  it('preserves caller identity env vars when the target repo has NO local identity (legacy fallback)', () => {
+    const sanitized = _internal.sanitizeEnv(
+      { GIT_AUTHOR_NAME: 'Host Person', GIT_AUTHOR_EMAIL: 'host@example.com' },
+      bareIdentityRepo,
+    );
+    // Current (pre-P3a) behavior must be unchanged on this side of the
+    // boundary: supplied identity is retained so commits still work with
+    // global config neutralized to /dev/null.
+    expect(sanitized.GIT_AUTHOR_NAME).toBe('Host Person');
+    expect(sanitized.GIT_AUTHOR_EMAIL).toBe('host@example.com');
+  });
+
+  it('CAROLINE REPLAY: a commit through the funnel with a polluted env lands as the repo-local agent identity', () => {
+    // The exact incident shape: the spawning shell exports another
+    // principal's identity; the agent's repo has its own local identity.
+    fs.writeFileSync(path.join(agentRepo, 'work.txt'), 'phase-3');
+    execFileSync('git', ['add', 'work.txt'], { cwd: agentRepo, stdio: 'ignore', env: sanitizedGitEnv() });
+    SafeGitExecutor.execSync(['commit', '-m', 'agent work'], {
+      cwd: agentRepo,
+      operation: 'inc-p3a-test-commit',
+      env: {
+        GIT_AUTHOR_NAME: 'Caroline',
+        GIT_AUTHOR_EMAIL: 'caroline@other.example',
+        GIT_COMMITTER_NAME: 'Caroline',
+        GIT_COMMITTER_EMAIL: 'caroline@other.example',
+      },
+    });
+    const author = execFileSync('git', ['log', '-1', '--format=%an <%ae>'], {
+      cwd: agentRepo, encoding: 'utf-8', env: sanitizedGitEnv(),
+    }).trim();
+    const committer = execFileSync('git', ['log', '-1', '--format=%cn <%ce>'], {
+      cwd: agentRepo, encoding: 'utf-8', env: sanitizedGitEnv(),
+    }).trim();
+    // initRepo sets the local identity to T <t@t.com> — the agent identity.
+    expect(author).toBe('T <t@t.com>');
+    expect(committer).toBe('T <t@t.com>');
+    expect(author).not.toContain('Caroline');
+  });
+
+  it('local-identity verdict is cached per directory and resettable for tests', () => {
+    expect(_internal.repoHasLocalIdentity(bareIdentityRepo)).toBe(false);
+    // Add local identity AFTER the first (cached) read — stale verdict holds…
+    execFileSync('git', ['config', 'user.name', 'Late Agent'], { cwd: bareIdentityRepo, stdio: 'ignore', env: sanitizedGitEnv() });
+    execFileSync('git', ['config', 'user.email', 'late@instar.local'], { cwd: bareIdentityRepo, stdio: 'ignore', env: sanitizedGitEnv() });
+    expect(_internal.repoHasLocalIdentity(bareIdentityRepo)).toBe(false);
+    // …until the cache is reset.
+    _internal._resetLocalIdentityCacheForTest();
+    expect(_internal.repoHasLocalIdentity(bareIdentityRepo)).toBe(true);
+  });
+});
+
 // ── readSync ──────────────────────────────────────────────────────
 
 describe('SafeGitExecutor.readSync', () => {
