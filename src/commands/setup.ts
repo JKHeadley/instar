@@ -756,8 +756,8 @@ function findInstarRoot(): string {
 // ── Auto-Start on Login ─────────────────────────────────────────
 
 /**
- * Install auto-start so the agent's lifeline process starts on login.
- * macOS: LaunchAgent plist in ~/Library/LaunchAgents/
+ * Install auto-start so the agent's server process starts at system boot.
+ * macOS: LaunchDaemon plist in /Library/LaunchDaemons/ (runs at boot, no login required)
  * Linux: systemd user service in ~/.config/systemd/user/
  *
  * Returns true if auto-start was installed successfully.
@@ -781,7 +781,7 @@ export function installAutoStart(projectName: string, projectDir: string, hasTel
   const platform = process.platform;
 
   if (platform === 'darwin') {
-    return installMacOSLaunchAgent(projectName, projectDir, hasTelegram);
+    return installMacOSLaunchDaemon(projectName, projectDir, hasTelegram);
   } else if (platform === 'linux') {
     return installLinuxSystemdService(projectName, projectDir, hasTelegram);
   } else {
@@ -798,20 +798,28 @@ export function uninstallAutoStart(projectName: string): boolean {
 
   if (platform === 'darwin') {
     const label = `ai.instar.${projectName}`;
-    const plistPath = path.join(os.homedir(), 'Library', 'LaunchAgents', `${label}.plist`);
+    const daemonPlistPath = `/Library/LaunchDaemons/${label}.plist`;
+    const agentPlistPath = path.join(os.homedir(), 'Library', 'LaunchAgents', `${label}.plist`);
 
-    // Unload if loaded
+    // Unload daemon if loaded
     try {
-      execFileSync('launchctl', ['bootout', `gui/${process.getuid?.() ?? 501}`, plistPath], { stdio: 'ignore' });
+      execFileSync('sudo', ['launchctl', 'bootout', 'system', daemonPlistPath], { stdio: 'ignore' });
     } catch { /* not loaded */ }
 
-    // Remove file
+    // Remove daemon plist (requires root)
     try {
-      SafeFsExecutor.safeUnlinkSync(plistPath, { operation: 'src/commands/setup.ts:590' });
-      return true;
-    } catch {
-      return false;
-    }
+      execFileSync('sudo', ['rm', '-f', daemonPlistPath], { stdio: 'ignore' });
+    } catch { /* best effort */ }
+
+    // Also clean up any legacy LaunchAgent plist
+    try {
+      execFileSync('launchctl', ['bootout', `gui/${process.getuid?.() ?? 501}`, agentPlistPath], { stdio: 'ignore' });
+    } catch { /* not loaded */ }
+    try {
+      SafeFsExecutor.safeUnlinkSync(agentPlistPath, { operation: 'src/commands/setup.ts:590' });
+    } catch { /* best effort */ }
+
+    return true;
   } else if (platform === 'linux') {
     const serviceName = `instar-${projectName}.service`;
     const servicePath = path.join(os.homedir(), '.config', 'systemd', 'user', serviceName);
@@ -1677,15 +1685,26 @@ export function installFleetWatchdog(): boolean {
   }
 }
 
-function installMacOSLaunchAgent(projectName: string, projectDir: string, hasTelegram: boolean): boolean {
+/**
+ * Install a macOS LaunchDaemon so the agent starts at system boot without requiring
+ * a user login. The daemon runs as the current user (UserName key) so it has full
+ * access to the user's home directory and environment.
+ *
+ * Requires sudo to write to /Library/LaunchDaemons/ and load via launchctl.
+ * The setup wizard runs interactively so the sudo prompt is visible to the user.
+ *
+ * Migration: if a legacy LaunchAgent plist exists at ~/Library/LaunchAgents/ it is
+ * unloaded and removed automatically as part of this installation.
+ */
+function installMacOSLaunchDaemon(projectName: string, projectDir: string, hasTelegram: boolean): boolean {
   const label = `ai.instar.${projectName}`;
-  const launchAgentsDir = path.join(os.homedir(), 'Library', 'LaunchAgents');
-  const plistPath = path.join(launchAgentsDir, `${label}.plist`);
+  const daemonDir = '/Library/LaunchDaemons';
+  const plistPath = path.join(daemonDir, `${label}.plist`);
+  const legacyAgentPath = path.join(os.homedir(), 'Library', 'LaunchAgents', `${label}.plist`);
   const logDir = path.join(projectDir, '.instar', 'logs');
+  const userName = os.userInfo().username;
 
   // Install boot wrappers that resolve shadow install at startup time.
-  // This ensures machine reboots use the auto-updated version, not the version
-  // that was global when setup ran. See: github issue / cluster-shadow-install-*
   const wrappers = installBootWrapper(projectDir);
 
   // Determine what to start: lifeline if Telegram configured, otherwise just the server
@@ -1694,13 +1713,7 @@ function installMacOSLaunchAgent(projectName: string, projectDir: string, hasTel
     ? ['lifeline', 'start', '--dir', projectDir]
     : ['server', 'start', '--foreground', '--dir', projectDir];
 
-  // Use node + JS wrapper instead of /bin/bash + shell wrapper.
-  // On macOS Sequoia+, launchd-spawned /bin/bash lacks Full Disk Access (TCC),
-  // causing "Operation not permitted" on project files. User-installed node
-  // (homebrew, nvm) is not subject to TCC restrictions.
-  //
-  // We use a stable symlink (.instar/bin/node) so NVM/asdf version switches
-  // don't break the plist. The symlink is updated by self-healing on every startup.
+  // Use a stable node symlink so NVM/asdf version switches don't break the plist.
   const nodeSymlink = ensureStableNodeSymlink(projectDir);
   const programArgs = [nodeSymlink, wrappers.js, ...args];
 
@@ -1713,6 +1726,10 @@ function installMacOSLaunchAgent(projectName: string, projectDir: string, hasTel
 <dict>
     <key>Label</key>
     <string>${escapeXml(label)}</string>
+    <key>UserName</key>
+    <string>${escapeXml(userName)}</string>
+    <key>GroupName</key>
+    <string>staff</string>
     <key>ProgramArguments</key>
     <array>
 ${argsXml}
@@ -1731,6 +1748,8 @@ ${argsXml}
     <dict>
         <key>PATH</key>
         <string>${escapeXml(process.env.PATH || '/usr/local/bin:/usr/bin:/bin')}</string>
+        <key>HOME</key>
+        <string>${escapeXml(os.homedir())}</string>
         <key>INSTAR_SUPERVISED</key>
         <string>1</string>
     </dict>
@@ -1740,37 +1759,47 @@ ${argsXml}
 </plist>`;
 
   try {
-    fs.mkdirSync(launchAgentsDir, { recursive: true });
     fs.mkdirSync(logDir, { recursive: true });
-    fs.writeFileSync(plistPath, plist);
 
-    // Validate the plist is well-formed XML before loading.
-    // A corrupted plist means launchd can't restart the agent after crashes,
-    // which turns transient failures into permanently dead agents.
+    // Write to a temp file first so we can validate before copying to the system location.
+    const tmpPlist = path.join(os.tmpdir(), `${label}.plist`);
+    fs.writeFileSync(tmpPlist, plist);
+
+    // Validate the plist is well-formed XML before installing.
     try {
-      execFileSync('plutil', ['-lint', plistPath], { stdio: 'pipe' });
+      execFileSync('plutil', ['-lint', tmpPlist], { stdio: 'pipe' });
     } catch (err) {
       const stderr = err instanceof Error && 'stderr' in err ? String((err as any).stderr) : '';
       console.error(`[setup] CRITICAL: Generated plist failed validation: ${stderr}`);
-      console.error(`[setup] Plist path: ${plistPath}`);
-      // Remove the invalid plist so we don't leave a landmine
-      try { SafeFsExecutor.safeUnlinkSync(plistPath, { operation: 'src/commands/setup.ts:1195' }); } catch { /* best effort */ }
+      try { fs.unlinkSync(tmpPlist); } catch { /* best effort */ }
       return false;
     }
 
-    // Load the agent (skipped under test — see launchctlLoadAllowed).
+    // Install into /Library/LaunchDaemons/ — requires root.
+    execFileSync('sudo', ['cp', tmpPlist, plistPath]);
+    execFileSync('sudo', ['chown', 'root:wheel', plistPath]);
+    execFileSync('sudo', ['chmod', '644', plistPath]);
+    try { fs.unlinkSync(tmpPlist); } catch { /* best effort */ }
+
+    // Load the daemon (skipped under test — see launchctlLoadAllowed).
     if (launchctlLoadAllowed()) {
+      // Unload first if already loaded
       try {
-        // Unload first if already loaded
-        execFileSync('launchctl', ['bootout', `gui/${process.getuid?.() ?? 501}`, plistPath], { stdio: 'ignore' });
+        execFileSync('sudo', ['launchctl', 'bootout', 'system', plistPath], { stdio: 'ignore' });
       } catch { /* not loaded yet — fine */ }
 
-      execFileSync('launchctl', ['bootstrap', `gui/${process.getuid?.() ?? 501}`, plistPath], { stdio: 'ignore' });
+      execFileSync('sudo', ['launchctl', 'bootstrap', 'system', plistPath]);
+
+      // Migrate: remove any legacy LaunchAgent plist so the agent doesn't start twice on login.
+      try {
+        execFileSync('launchctl', ['bootout', `gui/${process.getuid?.() ?? 501}`, legacyAgentPath], { stdio: 'ignore' });
+      } catch { /* not loaded */ }
+      try {
+        SafeFsExecutor.safeUnlinkSync(legacyAgentPath, { operation: 'src/commands/setup.ts:migrate-agent' });
+      } catch { /* best effort */ }
     }
 
     // Ensure the user-machine fleet watchdog is installed alongside this agent.
-    // Singleton per machine — first agent setup creates it, subsequent setups
-    // refresh it from the latest template. Non-fatal if it fails (returns false).
     try { installFleetWatchdog(); } catch { /* best effort — agent install must not fail because of watchdog */ }
 
     return true;
