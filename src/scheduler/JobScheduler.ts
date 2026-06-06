@@ -361,6 +361,29 @@ export class JobScheduler {
       return 'skipped';
     }
 
+    // Per-slug double-run guard (june15-headless-spawn-reroute, PR2 finding O3).
+    // A rerouted job REPL survives a server restart (boot purge keeps alive
+    // sessions) but JobScheduler.activeRunIds (in-memory) is lost — so without
+    // this guard the same slug could re-trigger on its next cron tick while the
+    // orphan session still runs: double execution + double billing. If a LIVE
+    // session already holds this jobSlug, skip the trigger (log + record, no
+    // throw). Applies to ALL jobs (not only rerouted ones) — a slow headless job
+    // that outran its cron interval was always at risk; this closes it generally.
+    // The boot-reconcile in SessionManager.purgeDeadSessions kills surviving
+    // rerouted job sessions, so the steady state is one-run-per-slug.
+    const liveWithSlug = this.sessionManager.listRunningSessions().some(s => s.jobSlug === slug);
+    if (liveWithSlug) {
+      this.skipLedger.recordSkip(slug, 'already-running');
+      console.log(`[scheduler] Job "${slug}" skipped — a live session already holds this slug (avoiding double-run).`);
+      this.state.appendEvent({
+        type: 'job_skipped',
+        summary: `Job "${slug}" skipped — already running`,
+        timestamp: new Date().toISOString(),
+        metadata: { slug, reason, gateReason: 'already-running' },
+      });
+      return 'skipped';
+    }
+
     // Script jobs bypass quota gating — they don't consume LLM tokens
     if (job.execute.type !== 'script') {
       const gateResult = this.normalizeCanRunResult(this.canRunJob(job.priority));

@@ -73,6 +73,40 @@ export interface Session {
    *  (e.g. 'idle-zombie', 'reaped-idle', 'manual-kill'). Undefined on records
    *  ended before this field existed. */
   endedReason?: string;
+  /**
+   * How this session signals task completion (june15-headless-spawn-reroute, PR2).
+   * - undefined/'exit': today's behavior — a headless one-shot signals completion
+   *   by process exit; the monitor loop relies on exit detection. Byte-for-byte
+   *   unchanged for the default lane.
+   * - 'pattern': a rerouted-interactive session never exits, so completion is
+   *   detected by scanning the captured pane for this session's own
+   *   `completionPatterns` (the injected sentinel). The monitor loop branches on
+   *   this field. See docs/specs/june15-headless-spawn-reroute.md ("Completion
+   *   detection is the crux"). */
+  completionMode?: 'exit' | 'pattern';
+  /**
+   * Per-session completion patterns (june15-headless-spawn-reroute, PR2). Only
+   * consulted when completionMode === 'pattern'. The default
+   * SessionManagerConfig.completionPatterns are session-DEATH phrases an
+   * interactive REPL never prints on task success — the reroute supplies its own
+   * deterministic sentinel here (`INSTAR_JOB_COMPLETE_<id-suffix>`). */
+  completionPatterns?: string[];
+  /**
+   * Which billing lane this session launched on (june15-headless-spawn-reroute,
+   * PR2 finding O4 — positive-lane observability). 'headless' = today's
+   * `claude -p` one-shot (Agent SDK pot post-June-15); 'rerouted-interactive' =
+   * launched as an interactive REPL on the subscription path. Always populated
+   * now for claude-code spawns; surfaced in GET /sessions and the reap-log so the
+   * soak's success criterion (zero 'headless' under force) is machine-checkable. */
+  launchLane?: 'headless' | 'rerouted-interactive';
+  /**
+   * Hard lifetime ceiling in minutes for a rerouted-interactive session
+   * (june15-headless-spawn-reroute, PR2 finding O1 belt-and-suspenders). An
+   * interactive REPL never exits, so if the model phrases its finish differently
+   * than the sentinel the session would leak onto the 5h window. On expiry the
+   * session is killed + timeout DegradationReporter-reported. Unset on the
+   * headless lane (it exits on its own). */
+  maxLifetimeMinutes?: number;
 }
 
 export type SessionStatus = 'starting' | 'running' | 'completed' | 'failed' | 'killed';
@@ -221,6 +255,25 @@ export interface SessionManagerConfig {
    *  sub-floor probe timeout (which would re-create the 2026-05-27 false-purge)
    *  is rejected loudly. */
   liveness?: Partial<import('./SessionLivenessOracle.js').SessionLivenessOracleConfig>;
+  /**
+   * Headless-spawn reroute mode (june15-headless-spawn-reroute, PR2). Mirrors
+   * `intelligence.subscriptionPath.mode` — threaded from server boot so
+   * spawnSession's claude-code headless branch knows whether to reroute a
+   * `claude -p` one-shot onto the interactive (subscription) lane. Absent/'off'
+   * ⇒ today's behavior, byte-for-byte. 'force' ⇒ always reroute claude-code
+   * headless spawns; 'auto' ⇒ reroute only when the shared decideSdkVsSubscription
+   * says subscription (SDK pot pressure). See spec "The core switch". */
+  subscriptionPathMode?: 'off' | 'auto' | 'force';
+  /**
+   * Max concurrent rerouted-interactive sessions across all spawn classes
+   * (june15-headless-spawn-reroute PR2, findings S1/O2). Threaded from
+   * `intelligence.subscriptionPath.maxRerouted` (default 3). */
+  subscriptionMaxRerouted?: number;
+  /**
+   * Hard lifetime ceiling (minutes) stamped onto each rerouted-interactive
+   * session (june15-headless-spawn-reroute PR2, finding O1). Threaded from
+   * `intelligence.subscriptionPath.maxReroutedLifetimeMinutes` (default 45). */
+  subscriptionReroutedLifetimeMinutes?: number;
 }
 
 // ── Job Scheduling ──────────────────────────────────────────────────
@@ -876,6 +929,7 @@ export type SkipReason =
   | 'capacity'        // No available session slots (queued instead of skipped, but tracked)
   | 'claimed'         // Another machine already claimed this job (Phase 4C — Gap 5)
   | 'machine-scope'   // Job is scoped to a different machine
+  | 'already-running' // A live session already holds this jobSlug (june15-headless-spawn-reroute O3: per-slug double-run guard)
   | 'gate';           // Gate command returned non-zero (nothing to do)
 
 /**
@@ -2314,6 +2368,22 @@ export interface InstarConfig {
        * with the `--setting-sources user` flag on the `claude -p` path).
        */
       workingDirectory?: string;
+      /**
+       * Max concurrent rerouted-interactive sessions across ALL spawn classes
+       * (jobs + A2A + mentor) — june15-headless-spawn-reroute PR2 findings S1/O2.
+       * Each held REPL is ~200–500MB RSS; without a cap the
+       * worst-case maxSessions×500MB = the 2026-06-05 laptop-meltdown class.
+       * Default 3 (analogous to `maxParallelJobs ?? 2`). Under 'auto', exceeding
+       * the cap falls back to headless (degradation-reported); under 'force' the
+       * spawn is refused loudly. */
+      maxRerouted?: number;
+      /**
+       * Hard lifetime ceiling (minutes) for a rerouted-interactive session
+       * (june15-headless-spawn-reroute PR2 finding O1). On expiry the session is
+       * killed + the timeout is DegradationReporter-reported. Default 45 — the
+       * backstop for when the model phrases its finish differently than the
+       * injected sentinel and the REPL would otherwise never be reaped. */
+      maxReroutedLifetimeMinutes?: number;
     };
   };
   /**

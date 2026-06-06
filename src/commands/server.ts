@@ -2961,6 +2961,11 @@ export async function startServer(options: StartOptions): Promise<void> {
     const codexThreadlineMcp = config.threadline
       ? resolveThreadlineMcpEntry(config.sessions.projectDir, config.stateDir, config.projectName)
       : undefined;
+    // Headless-spawn reroute (june15-headless-spawn-reroute, PR2): thread the
+    // subscriptionPath mode + caps so spawnSession's claude-code headless branch
+    // knows whether to reroute a `claude -p` one-shot onto the interactive
+    // (subscription) lane. Absent/'off' ⇒ today's behavior, byte-for-byte.
+    const subscriptionPathCfg = config.intelligence?.subscriptionPath;
     const sessionManagerConfig = {
       ...config.sessions,
       ...(codexThreadlineMcp ? { codexThreadlineMcp } : {}),
@@ -2968,8 +2973,21 @@ export async function startServer(options: StartOptions): Promise<void> {
         ...(config.sessions.respawnBuildContext ?? {}),
         enabled: config.sessions.respawnBuildContext?.enabled ?? !!config.developmentAgent,
       },
+      subscriptionPathMode: subscriptionPathCfg?.mode ?? 'off',
+      ...(subscriptionPathCfg?.maxRerouted != null ? { subscriptionMaxRerouted: subscriptionPathCfg.maxRerouted } : {}),
+      ...(subscriptionPathCfg?.maxReroutedLifetimeMinutes != null
+        ? { subscriptionReroutedLifetimeMinutes: subscriptionPathCfg.maxReroutedLifetimeMinutes }
+        : {}),
     };
     const sessionManager = new SessionManager(sessionManagerConfig, state);
+    // Wire the SAME TTL-cached SDK-credit reader PR1's routing policy uses, so
+    // the reroute 'auto' decision and the intelligence-funnel routing share one
+    // credit source and can't drift (june15-headless-spawn-reroute, PR2). Only
+    // when registration succeeded; otherwise 'auto' resolves to the subscription
+    // floor via the null-snapshot contract.
+    if (anthropicRegistration?.readSdkCredit) {
+      sessionManager.setSdkCreditReader(anthropicRegistration.readSdkCredit);
+    }
 
     // Input Guard is constructed later (after sharedIntelligence is available)
     // so the topic coherence reviewer can route through the IntelligenceProvider
@@ -3178,10 +3196,18 @@ export async function startServer(options: StartOptions): Promise<void> {
             ? 'Gemini CLI'
             : 'Claude CLI subscription';
       } else {
-        // Fall back to the legacy Claude path for backwards-compat. Wrap with
-        // the circuit breaker (the factory path above is already wrapped).
+        // Fall back to the legacy Claude path for backwards-compat — via the
+        // factory, not direct construction (june15-headless-spawn-reroute,
+        // Class 8): the factory carries the breaker wrap AND the
+        // subscription-path router, so a fallback provider can't silently
+        // dodge June-15 routing. Factory-null (no claude binary) now yields
+        // an honest absence instead of a provider with an undefined path.
         sharedIntelligence =
-          wrapIntelligenceWithCircuitBreaker(new ClaudeCliIntelligenceProvider(config.sessions.claudePath)) ?? undefined;
+          buildIntelligenceProvider({
+            framework: 'claude-code',
+            binaryPath: config.sessions.claudePath,
+            ...(subscriptionPathOption ? { subscriptionPath: subscriptionPathOption } : {}),
+          }) ?? undefined;
         intelligenceSource = 'Claude CLI subscription (fallback)';
       }
     } catch { /* CLI not available */ }
@@ -3316,8 +3342,14 @@ export async function startServer(options: StartOptions): Promise<void> {
         // be built but a claude binary path is still configured. Skipped on
         // codex-only agents (isClaudeForbidden) — there, relationships run
         // without LLM intelligence rather than silently using Claude.
+        // Via the factory (Class 8): carries breaker + subscription router.
+        const { buildIntelligenceProvider: buildFallbackIP } = await import('../core/intelligenceProviderFactory.js');
         config.relationships.intelligence =
-          wrapIntelligenceWithCircuitBreaker(new ClaudeCliIntelligenceProvider(config.sessions.claudePath)) ?? undefined;
+          buildFallbackIP({
+            framework: 'claude-code',
+            binaryPath: config.sessions.claudePath,
+            ...(subscriptionPathOption ? { subscriptionPath: subscriptionPathOption } : {}),
+          }) ?? undefined;
         intelligenceMode = 'LLM-supervised (Claude CLI subscription, fallback)';
       }
 
@@ -4839,6 +4871,10 @@ export async function startServer(options: StartOptions): Promise<void> {
         reason: e.reason,
         disposition: e.disposition,
         origin: e.origin,
+        // Positive-lane observability (june15-headless-spawn-reroute O4): record
+        // which billing lane the reaped session ran on so the soak can confirm
+        // rerouted sessions reach their completion from the reap-log too.
+        ...(e.session.launchLane ? { launchLane: e.session.launchLane } : {}),
       });
       reapNotifier.onReaped({ session: e.session, reason: e.reason, disposition: e.disposition, origin: e.origin });
       // Coherence journal 'reaped' (§3.3): emitted HERE, alongside the
@@ -5097,10 +5133,15 @@ export async function startServer(options: StartOptions): Promise<void> {
       if (sharedIntelligence) {
         summaryIntelligence = sharedIntelligence;
       } else if (!isClaudeForbidden()) {
-        const { ClaudeCliIntelligenceProvider } = await import('../core/ClaudeCliIntelligenceProvider.js');
-        summaryIntelligence = wrapIntelligenceWithCircuitBreaker(
-          new ClaudeCliIntelligenceProvider(config.sessions.claudePath),
-        );
+        // Via the factory (june15-headless-spawn-reroute, Class 8): carries
+        // the breaker wrap + the subscription-path router so topic summaries
+        // can't silently dodge June-15 routing.
+        const { buildIntelligenceProvider: buildSummaryIP } = await import('../core/intelligenceProviderFactory.js');
+        summaryIntelligence = buildSummaryIP({
+          framework: 'claude-code',
+          binaryPath: config.sessions.claudePath,
+          ...(subscriptionPathOption ? { subscriptionPath: subscriptionPathOption } : {}),
+        });
       }
       // On a codex-only agent without a built Codex provider, summaryIntelligence
       // stays null — topic summaries are skipped rather than run on Claude.
@@ -8041,6 +8082,22 @@ export async function startServer(options: StartOptions): Promise<void> {
         ?? (config as { maxSessions?: number }).maxSessions
         ?? 5,
       getActiveSessions: () => sessionManager.listRunningSessions(),
+      // Subscription-quota gate (june15-headless-spawn-reroute, finding S1):
+      // wired ONLY when the subscription-path reroute is active — rerouted
+      // A2A cold spawns land on the operator's 5h window, so inbound peer
+      // traffic must respect the same quota gate scheduled jobs already do
+      // (otherwise a chatty peer can rate-limit the USER's own
+      // conversations). mode 'off' (the fleet default): seam absent,
+      // admission byte-for-byte unchanged.
+      ...((config.intelligence?.subscriptionPath?.mode === 'auto'
+        || config.intelligence?.subscriptionPath?.mode === 'force')
+        ? {
+            shouldSpawnSession: (priority?: string) =>
+              quotaTracker
+                ? quotaTracker.shouldSpawnSession(priority as import('../core/types.js').JobPriority | undefined)
+                : { allowed: true, reason: 'No quota tracker — fail open' },
+          }
+        : {}),
       spawnSession: async (prompt, opts) => {
         // Warm-session A2A (Arch Y): when the SpawnRequest is flagged interactive,
         // launch a PERSISTENT (keep-alive) interactive worker instead of the
@@ -8435,6 +8492,22 @@ export async function startServer(options: StartOptions): Promise<void> {
           // Same per-agent codex threadline MCP override as SessionManager, so a
           // codex pipe-reply worker uses THIS agent's threadline MCP.
           ...(codexThreadlineMcp ? { codexThreadlineMcp } : {}),
+          // June-15 subscription-path gates (spec Class 7 + findings S1/S4):
+          // live mode accessor — under 'force' a claude-code pipe spawn
+          // refuses from inside spawn() (the only shape that both fires the
+          // degradation event AND falls through to the rerouted A2A path);
+          // the quota gate stops auto-mode pipe spawns from hammering a hot
+          // 5h window. Mode 'off' (default): both accessors are inert.
+          getSubscriptionPathMode: () => config.intelligence?.subscriptionPath?.mode ?? 'off',
+          ...((config.intelligence?.subscriptionPath?.mode === 'auto'
+            || config.intelligence?.subscriptionPath?.mode === 'force')
+            ? {
+                shouldSpawnSession: () =>
+                  quotaTracker
+                    ? quotaTracker.shouldSpawnSession()
+                    : { allowed: true, reason: 'No quota tracker — fail open' },
+              }
+            : {}),
         });
         console.log(pc.dim(`  Pipe sessions: enabled (model: ${pipeConfig?.model ?? 'sonnet'}, max: ${pipeConfig?.maxConcurrent ?? 5})`));
       } catch (err) {

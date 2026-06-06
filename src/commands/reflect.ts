@@ -365,6 +365,13 @@ function resolveIntelligence(claudePath?: string): IntelligenceProvider | null {
     binaryPath: framework === 'claude-code' ? claudePath : undefined,
   });
   if (built) return built;
+  // Subscription-path note (june15-headless-spawn-reroute, Class 8): this
+  // fallback stays UNROUTED deliberately. `instar reflect` is a standalone
+  // CLI process — there is no server boot, no adapter registration, and no
+  // interactive pool to route into, so the factory's subscriptionPath option
+  // can never apply here. Volume is operator-invoked (not background), so
+  // the post-June-15 SDK-pot exposure is negligible and visible to the
+  // human running it.
   if (claudePath) return wrapIntelligenceWithCircuitBreaker(new ClaudeCliIntelligenceProvider(claudePath));
   return null;
 }

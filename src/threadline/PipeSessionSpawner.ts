@@ -22,6 +22,7 @@ import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 import type { IntelligenceProvider } from '../core/types.js';
 import type { IntelligenceFramework } from '../core/intelligenceProviderFactory.js';
 import { buildHeadlessLaunch } from '../core/frameworkSessionLaunch.js';
+import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 
 // ── Types ─────────────────────────────────────────────────────────────
 
@@ -63,6 +64,26 @@ export interface PipeSessionConfig {
    * ~/.codex/config.toml. Ignored for non-codex frameworks.
    */
   codexThreadlineMcp?: { command: string; args: string[] };
+  /**
+   * Live accessor for intelligence.subscriptionPath.mode
+   * (june15-headless-spawn-reroute, spec Class 7 + finding S4). The pipe
+   * path is structurally isolated — it shells `buildHeadlessLaunch` argv
+   * directly, with no SessionManager and therefore no subscription-path
+   * reroute. Under 'force' (zero `claude -p` traffic is the contract) a
+   * claude-code pipe spawn must REFUSE — from inside spawn(), returning
+   * `{spawned: false}`, which is the only shape where the caller falls
+   * through to the normal (rerouted) A2A path instead of dropping the
+   * reply. Absent (the default) or non-claude frameworks: unchanged.
+   */
+  getSubscriptionPathMode?: () => 'off' | 'auto' | 'force';
+  /**
+   * Optional subscription-quota gate (finding S1) — same seam as
+   * SpawnRequestManager's. Wired to QuotaTracker.shouldSpawnSession only
+   * when the subscription-path reroute is active; a quota-blocked pipe
+   * spawn refuses (falls through to the gated A2A path) instead of adding
+   * load to the operator's 5h window.
+   */
+  shouldSpawnSession?: () => { allowed: boolean; reason: string };
 }
 
 export interface PipeSpawnRequest {
@@ -280,6 +301,33 @@ export class PipeSessionSpawner {
    */
   async spawn(request: PipeSpawnRequest, summarizedHistory?: string): Promise<PipeSpawnResult> {
     const sessionName = `pipe-${request.threadId}`;
+
+    // June-15 force-mode refusal (spec Class 7, finding S4): this path shells
+    // a headless `claude -p` directly — under force (zero `-p` traffic) a
+    // claude-code pipe spawn must refuse so the caller falls through to the
+    // rerouted A2A path. Refusing HERE (not at the eligibility gate) is
+    // load-bearing: only a `{spawned: false}` return from spawn() both fires
+    // the degradation event and reaches the fall-through.
+    if (this.config.framework === 'claude-code') {
+      const mode = this.config.getSubscriptionPathMode?.() ?? 'off';
+      if (mode === 'force') {
+        DegradationReporter.getInstance().report({
+          feature: 'PipeSessionSpawner.spawn',
+          primary: 'fast pipe-mode one-shot reply',
+          fallback: 'normal (rerouted) A2A spawn path handles the reply',
+          reason: 'intelligence.subscriptionPath.mode=force forbids headless claude -p spawns; the pipe path has no interactive reroute (tracked: CMT-1112)',
+          impact: 'pipe-eligible replies take the slower SessionManager path while force-mode is on',
+        });
+        return { spawned: false, reason: 'subscription-path force-mode: pipe (headless claude -p) refused; reply falls through to the rerouted A2A path' };
+      }
+      // Quota gate (S1): a pipe spawn under auto-mode still bills SOMEONE —
+      // when the gate is wired and the 5h window is hot, refuse and let the
+      // (equally gated) A2A path queue the reply.
+      const quota = this.config.shouldSpawnSession?.();
+      if (quota && !quota.allowed) {
+        return { spawned: false, reason: `subscription quota gate: ${quota.reason}` };
+      }
+    }
 
     // Build prompt
     const prompt = buildPipePrompt(request, summarizedHistory);

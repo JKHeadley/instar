@@ -62,6 +62,7 @@ import {
   resolveModelForFramework,
 } from './frameworkSessionLaunch.js';
 import { frameworkFromEnv } from './intelligenceProviderFactory.js';
+import { decideSdkVsSubscription, DEFAULT_SAFETY_MARGIN_FRACTION } from '../providers/costAwareRouting.js';
 import {
   resolveCodexLaunchModelWithUsage,
   type CodexModelSwapConfig,
@@ -325,6 +326,21 @@ export class SessionManager extends EventEmitter {
   /** Per-session shim directory root (one subdir per session). Used for K9 mandatory shim. */
   private shimRoot: string | null = null;
 
+  /**
+   * SDK-credit reader for the june15-headless-spawn-reroute 'auto' decision
+   * (PR2). Plumbed from server boot's anthropicRegistration.readSdkCredit (the
+   * SAME TTL-cached reader PR1's routing policy uses, so the two routing layers
+   * cannot drift). Returns null when credit state is unknown → the shared
+   * decideSdkVsSubscription falls to the subscription floor. Unset (tests/
+   * standalone) ⇒ 'auto' is treated as always-reroute-on-unknown (== subscription
+   * floor), matching the pure function's null-snapshot contract. */
+  private readSdkCredit?: () => Promise<import('../providers/primitives/observability/usageMeterProvider.js').AgentSdkCreditSnapshot | null>;
+
+  /** Last reroute-decision per framework, so the transition-only log line fires
+   *  on a CHANGE rather than every spawn (mirrors PR1's onRoute). Keyed by
+   *  framework; value is the resolved path string. */
+  private lastRerouteDecision = new Map<string, 'headless' | 'rerouted-interactive'>();
+
   constructor(config: SessionManagerConfig, state: StateManager) {
     super();
     this.config = config;
@@ -506,6 +522,20 @@ rm()  { "${shimRunner}" rm  "$@"; }
    */
   setReapGuard(guard: ReapGuard): void {
     this.reapGuard = guard;
+  }
+
+  /**
+   * Wire the SDK-credit reader used by the headless-spawn-reroute 'auto'
+   * decision (june15-headless-spawn-reroute, PR2). Server boot passes
+   * anthropicRegistration.readSdkCredit — the same TTL-cached reader PR1's
+   * routing policy uses — so the reroute decision and the intelligence-funnel
+   * routing share ONE credit source and can't drift. Unset ⇒ 'auto' resolves to
+   * the subscription floor (null-snapshot contract of decideSdkVsSubscription).
+   */
+  setSdkCreditReader(
+    reader: () => Promise<import('../providers/primitives/observability/usageMeterProvider.js').AgentSdkCreditSnapshot | null>,
+  ): void {
+    this.readSdkCredit = reader;
   }
 
   /**
@@ -871,6 +901,60 @@ rm()  { "${shimRunner}" rm  "$@"; }
 
         this.recordBuildContext(session.tmuxSession);
 
+        // ── Rerouted-interactive completion branch (june15-headless-spawn-
+        // reroute, PR2 O1) ──
+        // A rerouted session (completionMode==='pattern') never exits on task
+        // success, so completion is detected by (a) its OWN sentinel pattern and
+        // (b) a hard lifetime cap as belt-and-suspenders. This branch handles
+        // those sessions and `continue`s; the default lane (completionMode unset
+        // or 'exit') falls through to today's global detectCompletion below,
+        // byte-for-byte unchanged.
+        if (session.completionMode === 'pattern') {
+          // (a) Sentinel match → terminate via the SUCCESS path. We use
+          // finalStatus:'completed' so sessionComplete carries status
+          // 'completed' → JobScheduler records SUCCESS (JobScheduler.ts:1109
+          // maps only 'killed' → 'timeout'). A sentinel completion is a clean
+          // finish, NOT a timeout.
+          if (!this.config.protectedSessions.includes(session.tmuxSession) &&
+              this.detectSessionCompletion(session)) {
+            console.log(`[SessionManager] Rerouted session "${session.name}" completed (sentinel detected). Reaping as success.`);
+            await this.terminateSession(session.id, 'sentinel-complete', {
+              finalStatus: 'completed',
+              disposition: 'terminal',
+            });
+            continue;
+          }
+          // (b) Hard lifetime cap → kill + report. This IS a timeout (the model
+          // never printed the sentinel), so finalStatus:'killed' → JobScheduler
+          // records 'timeout'. The cap bounds the leak when the model phrases
+          // its finish differently than the sentinel.
+          if (session.startedAt && session.maxLifetimeMinutes) {
+            const lifeElapsedMin = (Date.now() - new Date(session.startedAt).getTime()) / 60000;
+            if (lifeElapsedMin > session.maxLifetimeMinutes &&
+                !this.config.protectedSessions.includes(session.tmuxSession)) {
+              console.warn(`[SessionManager] Rerouted session "${session.name}" exceeded its hard lifetime (${Math.round(lifeElapsedMin)}m > ${session.maxLifetimeMinutes}m) without a completion sentinel. Killing (timeout).`);
+              const killed = await this.terminateSession(session.id, 'rerouted-lifetime', {
+                finalStatus: 'killed',
+                disposition: 'terminal',
+              });
+              if (killed.terminated) {
+                DegradationReporter.getInstance().report({
+                  feature: 'SessionManager.monitorTick.reroutedLifetime',
+                  primary: 'rerouted-interactive session completes via its sentinel within the lifetime cap',
+                  fallback: 'killed on the hard lifetime cap (recorded as timeout)',
+                  reason: `Session "${session.name}" ran ${Math.round(lifeElapsedMin)}m without printing its completion sentinel`,
+                  impact: 'Rerouted job recorded a timeout; it reruns cleanly on its next trigger',
+                });
+              }
+              continue;
+            }
+          }
+          // Still running, no sentinel, under lifetime — leave it; re-check next
+          // tick. Skip the rest of the loop body (the default exit/idle paths
+          // below are tuned for the headless lane, not a held REPL).
+          continue;
+        }
+
         // Gemini CLI can complete a Telegram turn by rendering the final
         // assistant block in the TUI without executing the relay script. When a
         // topic-bound injection is still pending, surface that completed block
@@ -1170,6 +1254,89 @@ rm()  { "${shimRunner}" rm  "$@"; }
   }
 
   /**
+   * Current host memory-pressure tier (june15-headless-spawn-reroute PR2, O2).
+   * Extracted from getSessionDiagnostics' inline computation so the reroute
+   * pre-spawn gate and the diagnostics surface read ONE definition of pressure.
+   * The reroute gate refuses to hold a fresh ~200-500MB REPL when the host is
+   * already 'high'/'critical' — the 2026-06-05 laptop-meltdown class.
+   */
+  private currentMemoryPressure(): MemoryPressure {
+    const totalMem = os.totalmem();
+    const freeMem = os.freemem();
+    const usedPercent = Math.round(((totalMem - freeMem) / totalMem) * 100);
+    if (usedPercent >= 90) return 'critical';
+    if (usedPercent >= 75) return 'high';
+    if (usedPercent >= 60) return 'moderate';
+    return 'low';
+  }
+
+  /**
+   * Count live sessions currently on the rerouted-interactive lane
+   * (june15-headless-spawn-reroute PR2, findings S1/O2). The concurrency cap
+   * (subscriptionPath.maxRerouted) bounds the held-REPL memory envelope ACROSS
+   * all spawn classes — jobs, A2A, and mentor spawns alike — since A2A/mentor
+   * spawns carry no jobSlug and would otherwise be bounded only by the global
+   * maxSessions.
+   */
+  private countReroutedInteractiveSessions(): number {
+    return this.listRunningSessions().filter((s) => s.launchLane === 'rerouted-interactive').length;
+  }
+
+  /**
+   * Decide whether a claude-code headless spawn should be rerouted onto the
+   * interactive (subscription) lane (june15-headless-spawn-reroute PR2, "The
+   * core switch"). ONLY claude-code is eligible — the lever is Anthropic-billing-
+   * specific; codex/gemini headless paths don't draw the Anthropic SDK pot.
+   *
+   * - mode 'off'/absent           → false (today's behavior, byte-for-byte)
+   * - mode 'force'                → true  (zero `claude -p` traffic, the soak lever)
+   * - mode 'auto'                 → consult the SAME shared decideSdkVsSubscription
+   *                                 + TTL-cached credit reader PR1 uses, so the two
+   *                                 routing layers can't drift. Subscription → reroute.
+   *
+   * Emits a transition-only log line when the resolved lane CHANGES for this
+   * framework (mirrors PR1's onRoute — a line per change, not per spawn).
+   */
+  private async shouldRerouteToInteractive(
+    framework: IntelligenceFramework,
+  ): Promise<boolean> {
+    if (framework !== 'claude-code') return false;
+    const mode = this.config.subscriptionPathMode ?? 'off';
+    if (mode === 'off') return false;
+
+    let reroute: boolean;
+    let reason: string;
+    if (mode === 'force') {
+      reroute = true;
+      reason = 'mode=force';
+    } else {
+      // 'auto' — null snapshot (unknown / no reader) ⇒ subscription floor.
+      let snapshot: import('../providers/primitives/observability/usageMeterProvider.js').AgentSdkCreditSnapshot | null = null;
+      if (this.readSdkCredit) {
+        try {
+          snapshot = await this.readSdkCredit();
+        } catch {
+          // @silent-fallback-ok — a credit-read error is the unknown state; the
+          // shared decision below maps null → subscription floor (conservative),
+          // exactly as PR1's routing policy does. No degradation: this is the
+          // designed fallback, not an unexpected failure.
+          snapshot = null;
+        }
+      }
+      const decision = decideSdkVsSubscription(snapshot, DEFAULT_SAFETY_MARGIN_FRACTION);
+      reroute = decision.path === 'subscription';
+      reason = `mode=auto ${decision.reason}`;
+    }
+
+    const lane: 'headless' | 'rerouted-interactive' = reroute ? 'rerouted-interactive' : 'headless';
+    if (this.lastRerouteDecision.get(framework) !== lane) {
+      this.lastRerouteDecision.set(framework, lane);
+      console.log(`[SessionManager] reroute lane → ${lane} for ${framework} (${reason})`);
+    }
+    return reroute;
+  }
+
+  /**
    * Spawn a new Claude Code session in tmux.
    *
    * When a WorktreeManager is wired in (see `setWorktreeManager`) and `topicId`
@@ -1316,6 +1483,41 @@ rm()  { "${shimRunner}" rm  "$@"; }
     // fallback model (separate quota bucket) instead of stalling. No-op +
     // zero disk I/O unless codex.rateLimitModelSwap is enabled. Best-effort.
     const launchModel = await this.resolveCodexLaunchModel(headlessFramework, options.model);
+
+    // ── Headless-spawn reroute (june15-headless-spawn-reroute, PR2) ──
+    // For claude-code ONLY, when subscriptionPath.mode is 'force' (or 'auto'
+    // under SDK-pot pressure), reroute this `claude -p` one-shot onto the
+    // interactive (subscription) lane so it stops billing the Agent SDK pot
+    // after 2026-06-15. A control-flow fork, NOT a launch-spec swap (spec F3):
+    // it delegates to the interactive delivery chain (ready-wait + inject) and
+    // supplies its own completion sentinel + lifetime cap (the REPL never exits
+    // on task success). Non-claude frameworks and 'off' fall straight through to
+    // today's headless path, byte-for-byte.
+    //
+    // The cap + memory-pressure gate (spec O2/S1) is evaluated here: under
+    // 'auto', an exceeded cap / elevated pressure DEGRADES to the headless lane
+    // below (degradation-reported); under 'force' it REFUSES loudly (no headless
+    // fallback — force guarantees zero `claude -p`). So this branch only commits
+    // to the reroute when the gate passes; otherwise control falls through.
+    if (await this.shouldRerouteToInteractive(headlessFramework)) {
+      const gate = this.evaluateRerouteGate(options.name);
+      if (gate.allow) {
+        return await this.spawnReroutedInteractive({
+          sessionId,
+          tmuxSession,
+          options,
+          binaryPath: headlessBinaryPath,
+          launchModel,
+          resolvedCwd,
+          workTreeFencingToken,
+          shimDir,
+        });
+      }
+      // gate refused — 'force' already threw inside evaluateRerouteGate; only
+      // 'auto' reaches here, having degradation-reported. Fall through to the
+      // headless build below.
+    }
+
     const headlessSpec = buildHeadlessLaunch(headlessFramework, {
       binaryPath: headlessBinaryPath,
       prompt: options.prompt,
@@ -1457,10 +1659,302 @@ rm()  { "${shimRunner}" rm  "$@"; }
       framework: headlessFramework,
       prompt: options.prompt,
       maxDurationMinutes: options.maxDurationMinutes,
+      // Positive-lane observability (june15-headless-spawn-reroute O4): always
+      // populated now, so the soak's "zero headless under force" criterion is
+      // machine-checkable from GET /sessions. completionMode stays 'exit' (the
+      // headless one-shot signals completion by process exit — today's behavior).
+      launchLane: 'headless',
+      completionMode: 'exit',
     };
 
     this.state.saveSession(session);
     return session;
+  }
+
+  /**
+   * Pre-spawn cap + memory-pressure gate for the reroute (june15-headless-spawn-
+   * reroute PR2, findings O2/S1). Decides whether a rerouted-interactive spawn
+   * may proceed:
+   *  - cap reached (>= subscriptionPath.maxRerouted) OR host memory pressure
+   *    elevated ('high'/'critical') → REFUSE.
+   *  - under 'force': a refusal THROWS loudly (force guarantees zero `claude -p`,
+   *    so there is no headless fallback) — and degradation-reports first.
+   *  - under 'auto': a refusal returns `{ allow: false }` after degradation-
+   *    reporting, so spawnSession falls through to the headless lane (the SDK
+   *    pot still works; the host stays healthy).
+   * Returns `{ allow: true }` when the reroute may proceed.
+   */
+  private evaluateRerouteGate(spawnName: string): { allow: boolean } {
+    const mode = this.config.subscriptionPathMode ?? 'off';
+    const maxRerouted = this.config.subscriptionMaxRerouted ?? 3;
+    const reroutedCount = this.countReroutedInteractiveSessions();
+    const pressure = this.currentMemoryPressure();
+    const pressureElevated = pressure === 'high' || pressure === 'critical';
+    if (reroutedCount < maxRerouted && !pressureElevated) {
+      return { allow: true };
+    }
+    const why = reroutedCount >= maxRerouted
+      ? `rerouted-session cap reached (${reroutedCount}/${maxRerouted})`
+      : `host memory pressure is ${pressure}`;
+    if (mode === 'force') {
+      // Loud refusal — force-mode has no headless fallback. Report AND throw.
+      DegradationReporter.getInstance().report({
+        feature: 'SessionManager.spawnReroutedInteractive',
+        primary: 'reroute claude-code one-shot onto the interactive subscription lane',
+        fallback: 'spawn REFUSED (force-mode has no headless fallback)',
+        reason: `Cannot reroute: ${why}`,
+        impact: `Job/A2A spawn "${spawnName}" refused under force-mode to protect the host; it will retry on its next trigger`,
+      });
+      throw new Error(`Reroute refused (force-mode): ${why}`);
+    }
+    // 'auto' — degrade to the headless lane (host stays healthy). Caller falls
+    // through to the headless build.
+    DegradationReporter.getInstance().report({
+      feature: 'SessionManager.spawnReroutedInteractive',
+      primary: 'reroute claude-code one-shot onto the interactive subscription lane',
+      fallback: 'fell back to the headless (claude -p) lane',
+      reason: `Cannot reroute: ${why}`,
+      impact: `Job/A2A spawn "${spawnName}" ran headless this time to avoid host pressure`,
+    });
+    this.recordRerouteFallback(why);
+    return { allow: false };
+  }
+
+  /**
+   * F6 recurrence cap (spec "Structural guards" + Distrust Temporary
+   * Success): the auto-mode headless fallback is self-healing — a reroute
+   * that's BROKEN (cap stuck, pressure stuck high, continuity gap) would
+   * silently fall back on EVERY spawn and look fine forever while the entire
+   * June-15 reroute is dead. Count fallbacks in a rolling window; past the
+   * cap, raise ONE escalated degradation event per window saying "dead, not
+   * transiently degraded".
+   */
+  private rerouteFallbackTimes: number[] = [];
+  private rerouteFallbackEscalatedAt = 0;
+  private recordRerouteFallback(why: string): void {
+    const WINDOW_MS = 30 * 60_000;
+    const CAP = 5;
+    const now = Date.now();
+    this.rerouteFallbackTimes = this.rerouteFallbackTimes.filter((t) => now - t < WINDOW_MS);
+    this.rerouteFallbackTimes.push(now);
+    if (
+      this.rerouteFallbackTimes.length > CAP &&
+      now - this.rerouteFallbackEscalatedAt >= WINDOW_MS
+    ) {
+      this.rerouteFallbackEscalatedAt = now;
+      DegradationReporter.getInstance().report({
+        feature: 'SessionManager.rerouteFallbackRecurrence',
+        primary: 'subscription-path reroute serving job/A2A spawns (mode auto)',
+        fallback: `headless fallback recurred ${this.rerouteFallbackTimes.length}× in 30min — the reroute is effectively DEAD, not transiently degraded`,
+        reason: `latest: ${why}`,
+        impact: 'Every job/A2A spawn is back on the SDK-pot claude -p lane; post-June-15 this drains the pot with no reroute. Investigate the cap/pressure/continuity cause.',
+      });
+    }
+  }
+
+  /**
+   * Spawn a claude-code job/A2A one-shot rerouted onto the interactive
+   * (subscription) lane (june15-headless-spawn-reroute, PR2 "The core switch").
+   *
+   * This is the control-flow fork from spawnSession's headless branch. It:
+   *  - builds an INTERACTIVE claude launch (no `-p`; the REPL opens and waits)
+   *    via buildInteractiveLaunch, carrying the resolved model + the A2A
+   *    `--session-id`/`--resume` continuity flag through unchanged;
+   *  - splices the SAME `claudeHeadlessExtraFlags` (--allowedTools,
+   *    --strict-mcp-config --mcp-config {}) the headless path uses — both are
+   *    valid INTERACTIVE flags and the gate is framework-only, so the load-
+   *    bearing no-project-MCP boot (avoids the ~4.5-min OAuth-remote-MCP hang)
+   *    is preserved (spec F4/S3);
+   *  - creates the tmux session with the same env isolation as the headless
+   *    block PLUS `-x 200 -y 50` (prompt detection is tuned for the wide pane,
+   *    spec F6);
+   *  - enforces the memory-pressure + concurrency cap gate BEFORE rerouting
+   *    (spec O2/S1): under 'auto', exceeding either falls back to the headless
+   *    lane (degradation-reported); under 'force' the spawn is refused loudly;
+   *  - appends a deterministic completion sentinel to the prompt and stamps the
+   *    session with completionMode='pattern' + the per-session pattern + a hard
+   *    maxLifetimeMinutes, so the monitor loop can reap a never-exiting REPL on
+   *    sentinel-match or lifetime-expiry (spec O1, "the crux");
+   *  - fires the ready-wait + inject ASYNCHRONOUSLY (does NOT block the return —
+   *    callers expect the Session back promptly), reusing the same
+   *    waitForClaudeReadyWithRetry + injectMessage machinery handleReadyAndInject
+   *    uses.
+   */
+  private async spawnReroutedInteractive(args: {
+    sessionId: string;
+    tmuxSession: string;
+    options: Parameters<SessionManager['spawnSession']>[0];
+    binaryPath: string;
+    launchModel: string | undefined;
+    resolvedCwd: string;
+    workTreeFencingToken: string | null;
+    shimDir: string | null;
+  }): Promise<Session> {
+    const { sessionId, tmuxSession, options, binaryPath, launchModel, resolvedCwd, workTreeFencingToken, shimDir } = args;
+    const lifetimeMinutes = this.config.subscriptionReroutedLifetimeMinutes ?? 45;
+
+    // ── Completion sentinel (spec O1, "the crux") ──
+    // An interactive REPL never exits on task success, and the default
+    // completionPatterns are session-DEATH phrases. So we instruct the model to
+    // print a deterministic, per-session sentinel as its FINAL line, and teach
+    // the monitor loop to reap on that (completionMode='pattern'). The sentinel
+    // is keyed on the session id suffix so two concurrent rerouted sessions
+    // can't false-trigger each other.
+    const sentinel = `INSTAR_JOB_COMPLETE_${sessionId.slice(-8)}`;
+    const promptWithSentinel = `${options.prompt}\n\nWhen you have fully completed this task, print exactly this marker as your final line: ${sentinel}`;
+
+    // ── Build the INTERACTIVE launch (no `-p`) ──
+    // Carry the resolved model + the A2A continuity flag through. sessionId
+    // (--session-id) pins the transcript at the caller-chosen uuid so A2A
+    // `--resume` keeps working (spec "A2A cold spawns"); resumeSessionId
+    // (--resume) reloads a prior transcript. Mirrors the headless precedence
+    // (sessionId wins).
+    const launchSpec = buildInteractiveLaunch('claude-code', {
+      binaryPath,
+      ...(launchModel ? { defaultModel: launchModel } : {}),
+      ...(options.sessionId ? { sessionId: options.sessionId } : {}),
+      ...(!options.sessionId && options.resumeSessionId ? { resumeSessionId: options.resumeSessionId } : {}),
+    });
+
+    // Splice the load-bearing headless flags into the INTERACTIVE argv. Both
+    // --allowedTools and --strict-mcp-config --mcp-config {} are valid
+    // interactive flags; claudeHeadlessExtraFlags is gated only on
+    // framework==='claude-code', so the reroute calls it and appends to the end
+    // of the argv (the interactive argv has no `-p` positional to splice before).
+    // Without --strict-mcp-config, an MCP-restricted rerouted job re-introduces
+    // the documented ~4.5-min OAuth-remote-MCP boot hang (spec F4/S3).
+    const extraClaudeFlags = claudeHeadlessExtraFlags({
+      framework: 'claude-code',
+      allowedTools: options.allowedTools,
+      disableProjectMcp: options.disableProjectMcp,
+    });
+    if (extraClaudeFlags.length > 0) {
+      launchSpec.argv.push(...extraClaudeFlags);
+    }
+
+    // K9: build PATH env with shim prepended (when shim was installed) — same as
+    // the headless block.
+    const inheritedPath = process.env.PATH ?? '';
+    const shimmedPath = shimDir ? `${shimDir}:${inheritedPath}` : inheritedPath;
+
+    const frameworkEnvFlags: string[] = [];
+    for (const [k, v] of Object.entries(launchSpec.envOverrides)) {
+      frameworkEnvFlags.push('-e', `${k}=${v}`);
+    }
+    // Anthropic-only env (claude-code reroute is always claude-code).
+    const anthropicEnvFlags: string[] =
+      (this.config.anthropicApiKey ?? '').startsWith('sk-ant-oat')
+        ? ['-e', `CLAUDE_CODE_OAUTH_TOKEN=${this.config.anthropicApiKey}`, '-e', 'ANTHROPIC_API_KEY=']
+        : ['-e', `ANTHROPIC_API_KEY=${this.config.anthropicApiKey ?? ''}`, '-e', 'CLAUDE_CODE_OAUTH_TOKEN='];
+    anthropicEnvFlags.push('-e', `ANTHROPIC_BASE_URL=${this.config.anthropicBaseUrl ?? ''}`);
+
+    try {
+      execFileSync(this.config.tmuxPath, [
+        'new-session', '-d',
+        '-s', tmuxSession,
+        '-c', resolvedCwd,
+        // Wide pane — detectClaudePrompt reads the last lines for the ❯/status
+        // markers and is tuned for the interactive default (spec F6). The 80×24
+        // headless default makes ready/idle detection flaky.
+        '-x', '200', '-y', '50',
+        ...frameworkEnvFlags,
+        ...(this.config.claudeCodeMaxRetries != null
+          ? ['-e', `CLAUDE_CODE_MAX_RETRIES=${this.config.claudeCodeMaxRetries}`]
+          : []),
+        '-e', `INSTAR_SESSION_ID=${sessionId}`,
+        '-e', `INSTAR_SESSION_NAME=${tmuxSession}`,
+        '-e', `INSTAR_SERVER_URL=http://localhost:${this.config.port}`,
+        '-e', `INSTAR_AUTH_TOKEN=${this.config.authToken}`,
+        '-e', `INSTAR_AGENT_ID=${this.config.projectName}`,
+        ...(workTreeFencingToken ? ['-e', `INSTAR_FENCING_TOKEN=${workTreeFencingToken}`] : []),
+        ...(workTreeFencingToken ? ['-e', `INSTAR_WORKTREE_PATH=${resolvedCwd}`] : []),
+        ...(shimDir ? ['-e', `PATH=${shimmedPath}`, '-e', `BASH_ENV=${path.join(shimDir, '.shellrc')}`] : []),
+        ...anthropicEnvFlags,
+        // Same DB-credential isolation as every other spawn (Portal 2026-02-22).
+        '-e', 'DATABASE_URL=',
+        '-e', 'DIRECT_DATABASE_URL=',
+        '-e', 'DATABASE_URL_PROD=',
+        '-e', 'DATABASE_URL_DEV=',
+        '-e', 'DATABASE_URL_TEST=',
+        ...launchSpec.argv,
+      ], { encoding: 'utf-8' });
+
+      try {
+        execFileSync(this.config.tmuxPath, [
+          'set-option', '-t', `=${tmuxSession}:`, 'history-limit', '50000',
+        ], { encoding: 'utf-8', timeout: 5000 });
+      } catch {
+        // @silent-fallback-ok — history-limit is a nice-to-have
+      }
+    } catch (err) {
+      throw new Error(`Failed to create rerouted interactive tmux session: ${err}`);
+    }
+
+    const session: Session = {
+      id: sessionId,
+      name: options.name,
+      status: 'running',
+      jobSlug: options.jobSlug,
+      tmuxSession,
+      startedAt: new Date().toISOString(),
+      triggeredBy: options.triggeredBy,
+      model: resolveModelForFramework('claude-code', launchModel) ?? launchModel,
+      framework: 'claude-code',
+      prompt: options.prompt,
+      maxDurationMinutes: options.maxDurationMinutes,
+      // The reroute's completion contract (spec O1 + O4):
+      launchLane: 'rerouted-interactive',
+      completionMode: 'pattern',
+      completionPatterns: [sentinel],
+      maxLifetimeMinutes: lifetimeMinutes,
+    };
+    this.state.saveSession(session);
+
+    // Deliver the prompt asynchronously — do NOT block spawnSession's return on
+    // readiness (callers expect the Session back promptly; the ready-gate is
+    // ~90s worst-case). Reuses the EXISTING ready-wait + inject machinery.
+    const readyTimeout = options.resumeSessionId ? 120_000 : 90_000;
+    this.injectAfterReady(tmuxSession, promptWithSentinel, readyTimeout).catch((err) => {
+      // @silent-fallback-ok — fire-and-forget error log for the background
+      // ready-wait+inject (mirrors handleReadyAndInject's .catch). injectAfterReady
+      // already DegradationReporter-reports a genuine delivery failure internally;
+      // this guards only against an unexpected rejection escaping the detached promise.
+      console.error(`[SessionManager] Error during rerouted ready-and-inject for "${tmuxSession}": ${err}`);
+    });
+
+    return session;
+  }
+
+  /**
+   * Wait for Claude to be ready, then inject a prompt — the minimal ready-wait
+   * + inject path shared by the rerouted-interactive spawn
+   * (june15-headless-spawn-reroute). Factored from handleReadyAndInject's shape;
+   * deliberately WITHOUT the resume-fresh-spawn fallback (a rerouted job's
+   * delivery is best-effort — the monitor loop's lifetime cap bounds a dead
+   * REPL, and the job reruns cleanly on its next trigger).
+   */
+  private async injectAfterReady(tmuxSession: string, prompt: string, readyTimeout: number): Promise<void> {
+    const ready = await this.waitForClaudeReadyWithRetry(tmuxSession, readyTimeout);
+    if (ready) {
+      await new Promise((r) => setTimeout(r, 1000));
+      this.injectMessage(tmuxSession, prompt);
+      return;
+    }
+    // Not ready in time. If tmux is still alive, best-effort inject anyway
+    // (prompt-detection false negative). If it's gone, the spawn crashed during
+    // startup — surface a degradation; the monitor loop will not see a sentinel
+    // and the lifetime cap will reap the record.
+    if (this.tmuxSessionExists(tmuxSession)) {
+      this.injectMessage(tmuxSession, prompt);
+      return;
+    }
+    DegradationReporter.getInstance().report({
+      feature: 'SessionManager.injectAfterReady',
+      primary: 'wait for rerouted interactive Claude ready, inject prompt',
+      fallback: 'tmux died during startup; prompt not delivered',
+      reason: 'rerouted spawn crashed during startup; readiness probe could not verify prompt',
+      impact: 'Rerouted job prompt dropped; the job reruns on its next trigger',
+    });
   }
 
   /**
@@ -2038,6 +2532,24 @@ rm()  { "${shimRunner}" rm  "$@"; }
         });
         if (r.terminated) purged++;
         else skipped++; // not-lease-holder / protected — recorded, kept for next awake tick
+      } else if (session.launchLane === 'rerouted-interactive' && session.jobSlug) {
+        // Boot reconciliation (june15-headless-spawn-reroute, PR2 finding O3):
+        // a rerouted JOB session that survived a restart is still ALIVE in tmux,
+        // but JobScheduler.activeRunIds (in-memory) is lost AND triggerJob has no
+        // guard against re-triggering the slug on its next cron tick → double
+        // execution + double billing. Adopt-or-kill: we KILL (the safe choice —
+        // the job reruns cleanly with fresh run-tracking; adopting an orphan REPL
+        // whose run-id we no longer hold would silently never finalize). Operator
+        // kill so the lease/KEEP-guards don't pin the orphan.
+        const r = await this.terminateSession(session.id, 'boot-reconcile-rerouted-job', {
+          finalStatus: 'killed',
+          disposition: 'terminal',
+          origin: 'operator',
+        });
+        if (r.terminated) {
+          console.log(`[SessionManager] Startup reconcile: killed surviving rerouted job session "${session.name}" (slug ${session.jobSlug}) — the job reruns cleanly on its next trigger.`);
+        }
+        kept++; // counted as "not dead-purged"; the kill is the reconciliation
       } else {
         kept++;
         if (v?.liveness === 'indeterminate') indeterminate++;
@@ -2106,11 +2618,9 @@ rm()  { "${shimRunner}" rm  "$@"; }
     const freeMemMB = Math.round(freeMem / 1048576);
     const totalMemMB = Math.round(totalMem / 1048576);
 
-    let memoryPressure: MemoryPressure;
-    if (usedPercent >= 90) memoryPressure = 'critical';
-    else if (usedPercent >= 75) memoryPressure = 'high';
-    else if (usedPercent >= 60) memoryPressure = 'moderate';
-    else memoryPressure = 'low';
+    // Shared with the reroute pre-spawn gate (june15-headless-spawn-reroute O2)
+    // via currentMemoryPressure() — one definition of the pressure tiers.
+    const memoryPressure: MemoryPressure = this.currentMemoryPressure();
 
     // Build actionable suggestions
     const suggestions: string[] = [];
@@ -2154,6 +2664,24 @@ rm()  { "${shimRunner}" rm  "$@"; }
     return this.config.completionPatterns.some(pattern =>
       output.includes(pattern)
     );
+  }
+
+  /**
+   * Per-session completion detection (june15-headless-spawn-reroute, PR2).
+   * Scans the captured pane for THIS session's own `completionPatterns` (the
+   * injected sentinel) rather than the global death-phrase config. A rerouted-
+   * interactive REPL never exits and never prints the global death phrases on
+   * success, so the global detectCompletion would never reap it. Used by the
+   * monitor loop ONLY for completionMode==='pattern' sessions; the default lane
+   * is byte-for-byte untouched. Returns false when the session has no
+   * per-session patterns (defensive — should not happen for a 'pattern' session).
+   */
+  detectSessionCompletion(session: Session): boolean {
+    const patterns = session.completionPatterns;
+    if (!patterns || patterns.length === 0) return false;
+    const output = this.captureOutput(session.tmuxSession, 30);
+    if (!output) return false;
+    return patterns.some((pattern) => output.includes(pattern));
   }
 
   /**
@@ -3148,6 +3676,13 @@ rm()  { "${shimRunner}" rm  "$@"; }
    * Used by injectMessage after provenance checks pass.
    */
   private rawInject(tmuxSession: string, text: string): boolean {
+    // Strip any EMBEDDED bracketed-paste markers from the prompt content before
+    // we wrap it in our own \x1b[200~…\x1b[201~ (june15-headless-spawn-reroute,
+    // PR2 finding S2). A job/A2A prompt containing a literal \x1b[201~ would
+    // otherwise forge a paste boundary and submit extra REPL turns — the
+    // headless `-p` argv path was immune, and InputGuard only scans topic-bound
+    // sessions, so rerouted job/A2A prompts need this sanitizer at the chokepoint.
+    text = text.replace(/\x1b\[20[01]~/g, '');
     // Reset idle-prompt timer — this session is about to receive new input,
     // so it's not a zombie. Without this, the zombie detector can kill a session
     // that just received a message but hasn't produced output yet.

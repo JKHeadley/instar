@@ -28,7 +28,7 @@
     "test:contract": "node scripts/run-contract-tests.js",
     "test:contract:raw": "vitest run --config vitest.contract.config.ts",
     "test:all": "vitest run && vitest run --config vitest.integration.config.ts && vitest run --config vitest.e2e.config.ts",
-    "lint": "tsc --noEmit && node scripts/lint-no-direct-destructive.js && node scripts/lint-no-direct-llm-http.js && node scripts/lint-no-direct-url-log.js && node scripts/lint-no-unfunneled-topic-creation.js && node scripts/lint-state-registry.js && node scripts/lint-cas-emit-placement.js && node scripts/lint-journal-actuation-ban.js && node scripts/check-codex-rule1-drift.js",
+    "lint": "tsc --noEmit && node scripts/lint-no-direct-destructive.js && node scripts/lint-no-direct-llm-http.js && node scripts/lint-no-direct-url-log.js && node scripts/lint-no-unfunneled-topic-creation.js && node scripts/lint-no-unfunneled-headless-launch.js && node scripts/lint-state-registry.js && node scripts/lint-cas-emit-placement.js && node scripts/lint-journal-actuation-ban.js && node scripts/check-codex-rule1-drift.js",
     "lint:destructive": "node scripts/lint-no-direct-destructive.js",
     "lint:destructive:staged": "node scripts/lint-no-direct-destructive.js --staged",
     "lint:llm-http": "node scripts/lint-no-direct-llm-http.js",

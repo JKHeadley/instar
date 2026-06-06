@@ -30,6 +30,11 @@ export interface ReapLogEntry {
   /** For 'skipped': why the authority refused (protected / not-lease-holder / a KEEP / in-flight). */
   skipped?: string;
   machine?: string;
+  /** Which billing lane the reaped session ran on (june15-headless-spawn-reroute
+   *  PR2, finding O4). 'rerouted-interactive' = the subscription lane;
+   *  'headless' = the legacy `claude -p` SDK-pot lane. Absent on legacy records /
+   *  non-claude spawns where the field was never stamped. */
+  launchLane?: 'headless' | 'rerouted-interactive';
 }
 
 export class ReapLog {
@@ -47,6 +52,7 @@ export class ReapLog {
     reason: string;
     disposition?: 'terminal' | 'recovery-bounce';
     origin?: 'operator' | 'autonomous';
+    launchLane?: 'headless' | 'rerouted-interactive';
   }): void {
     this.append({
       ts: new Date().toISOString(),
@@ -57,6 +63,7 @@ export class ReapLog {
       disposition: e.disposition ?? 'terminal',
       origin: e.origin,
       machine: this.machineId?.(),
+      ...(e.launchLane ? { launchLane: e.launchLane } : {}),
     });
   }
 

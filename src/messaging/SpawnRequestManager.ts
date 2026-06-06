@@ -207,6 +207,17 @@ export interface SpawnRequestManagerConfig {
   }) => Promise<string | { sessionId: string; tmuxSession?: string }>;
   /** Function to check memory pressure. Returns true if pressure is too high. */
   isMemoryPressureHigh?: () => boolean;
+  /**
+   * Optional subscription-quota gate (june15-headless-spawn-reroute,
+   * security finding S1). When the subscription-path reroute is active
+   * (intelligence.subscriptionPath.mode auto/force), A2A cold spawns land on
+   * the operator's subscription 5h window — without this gate, inbound peer
+   * traffic could drive that window to exhaustion and block the USER's own
+   * conversations (a peer-triggered rate-limit DoS). The server wires this
+   * to QuotaTracker.shouldSpawnSession ONLY when the reroute is active;
+   * absent (the default), admission behavior is byte-for-byte unchanged.
+   */
+  shouldSpawnSession?: (priority?: string) => { allowed: boolean; reason: string };
   /** Cooldown between spawn requests per agent (ms). Default: 30s */
   cooldownMs?: number;
   /** Max spawn retries before giving up. Default: 3 */
@@ -586,6 +597,24 @@ export class SpawnRequestManager {
         reason: 'Memory pressure too high for new session',
         retryAfterMs: 120_000,
       };
+    }
+
+    // Subscription-quota gate (S1) — only wired when the subscription-path
+    // reroute is active, so a peer-driven spawn can't exhaust the operator's
+    // 5h window. Queue the message (like cooldown) rather than dropping it:
+    // quota pressure is transient and the content must survive it.
+    if (this.#config.shouldSpawnSession) {
+      const quota = this.#config.shouldSpawnSession(request.priority);
+      if (!quota.allowed) {
+        if (request.context) {
+          this.#queueMessage(agent, request.context, request.pendingMessages?.[0]);
+        }
+        return {
+          approved: false,
+          reason: `Subscription quota gate: ${quota.reason}`,
+          retryAfterMs: 120_000,
+        };
+      }
     }
 
     // §4.2: failure-suppressive reservation. Stamp `lastSpawnByAgent` BEFORE

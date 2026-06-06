@@ -74,6 +74,9 @@ const ALLOWLIST = new Set([
   // --name-only` for staged-file detection. Cannot depend on the TS funnel
   // because TS is not compiled when the lint runs in pre-push.
   'scripts/lint-no-unfunneled-topic-creation.js',
+  // Same bootstrap-escape pattern (june15-headless-spawn-reroute funnel
+  // lint) — read-only `git diff --cached --name-only` only.
+  'scripts/lint-no-unfunneled-headless-launch.js',
   // Postinstall bootstrap script — runs before TypeScript is compiled and
   // before SafeFsExecutor is available. CommonJS, can't use ESM imports.
   'scripts/fix-better-sqlite3.cjs',

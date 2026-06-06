@@ -3097,6 +3097,37 @@ Your internal background LLM calls (sentinels, gates, extractors) normally run a
       result.upgraded.push('CLAUDE.md: added Anthropic Subscription-Path Routing (/providers/registry) awareness (provider-substrate-live-wiring)');
     }
 
+    // subscription-path SCOPE correction (june15-headless-spawn-reroute,
+    // review finding F2): PR 1's block scoped the lever to "internal
+    // background LLM calls" — after PR 2 the SAME mode key also reroutes
+    // headless job / A2A / dispatch spawns, so the deployed wording is
+    // factually incomplete. The PR-1 sniff ('/providers/registry') is
+    // already satisfied on every deployed agent and CANNOT gate this patch —
+    // sniff on the NEW phrase instead, and splice the corrected scope line
+    // into the existing section. Idempotent: skips once the phrase exists.
+    if (
+      content.includes('/providers/registry') &&
+      !content.includes('headless job / agent-to-agent / dispatch spawns')
+    ) {
+      // PR 1 shipped TWO wordings: the migrator section said "routes them",
+      // the fresh-init template said "can route them" — match either.
+      const oldScopeSentences = [
+        'Your internal background LLM calls (sentinels, gates, extractors) normally run as \`claude -p\` one-shots, which bill the Agent SDK credit pot after 2026-06-15. The subscription-path lever routes them through a pool of long-lived interactive Claude sessions instead — the path that keeps working when the pot is empty.',
+        'Your internal background LLM calls (sentinels, gates, extractors) normally run as \`claude -p\` one-shots, which bill the Agent SDK credit pot after 2026-06-15. The subscription-path lever can route them through a pool of long-lived interactive Claude sessions instead — the path that keeps working when the pot is empty.',
+      ];
+      const newScopeSentence = 'Your internal background LLM calls (sentinels, gates, extractors) AND your headless job / agent-to-agent / dispatch spawns normally run as \`claude -p\` one-shots, which bill the Agent SDK credit pot after 2026-06-15. The subscription-path lever routes BOTH through interactive Claude sessions instead — the path that keeps working when the pot is empty. (Rerouted job/A2A spawns run as normal interactive sessions with a completion marker, a concurrency cap, and quota backpressure — each session\'s \`launchLane\` in \`GET /sessions\` shows which billing lane it used.)';
+      for (const oldScopeSentence of oldScopeSentences) {
+        if (content.includes(oldScopeSentence)) {
+          content = content.replace(oldScopeSentence, newScopeSentence);
+          patched = true;
+          result.upgraded.push('CLAUDE.md: corrected Subscription-Path Routing scope — lever now covers job/A2A/dispatch spawns too (june15-headless-spawn-reroute)');
+          break;
+        }
+      }
+      // A hand-edited section that no longer carries either PR-1 sentence is
+      // left untouched — never clobber user-customized wording.
+    }
+
     // session-clock (Agent Awareness + Migration Parity): existing agents must
     // learn they can ask how long they've been running / how much is left,
     // instead of guessing. Content-sniff on the route marker.
