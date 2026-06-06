@@ -3345,6 +3345,27 @@ If a user asks "are my sentinels alerting?" or "why isn't the watchdog notifying
       result.skipped.push('CLAUDE.md: Sentinel Notifications section already present');
     }
 
+    // Honest turn-receipts — the standby (🔭) system now classifies a
+    // live-but-failing session honestly instead of saying "actively working".
+    // Tells the agent what the standby tells the user now + that stale
+    // "conversation too long" noise is fixed. Idempotent via marker.
+    if (!content.includes('Honest standby (turn-receipts)')) {
+      const section = `
+## Honest standby (turn-receipts)
+
+When a user message goes unanswered, the standby (🔭) system reports on the session. A session can be ALIVE (its process is running) yet failing every turn — rate-limited, stuck on a content-policy error, on a corrupted-context error, or out of context window. Previously the live process made the standby say "🔭 actively working" — a lie, the exact reason a user sees delivery receipts but no reply. The standby now classifies the session's LIVE tmux tail and surfaces the REAL reason instead: "I've hit the usage limit (resets …)", "my session got stuck on a content-policy error — resend your last message", etc. (\`StuckSignatureClassifier\`, tail-gated, signal-only — recovery still belongs to the sentinels, and when a sentinel already owns a session's recovery the standby stays silent so the user hears one voice).
+
+The same change tail-gates the "conversation too long" check: it only fires when that is the session's LIVE state, not a stale mention scrolled up in the buffer (which previously fired as noise on healthy sessions).
+
+If a user asks "why did I see 'actively working' when you were stuck?" or "why do those 'conversation too long' messages come up when nothing's wrong?" — explain the above: the standby is now honest about WHY a turn failed, and the stale-scrollback false signal is gone.
+`;
+      content += '\n' + section;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Honest standby (turn-receipts) section');
+    } else {
+      result.skipped.push('CLAUDE.md: Honest standby section already present');
+    }
+
     // Topic-Flood Guard (2026-05-28 lockdown) — the structural backstop that
     // caps how many forum topics a single attention source may spawn. Without
     // this section an agent asked "why are my notices grouped / where did topic

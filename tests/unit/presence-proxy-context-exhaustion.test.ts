@@ -97,51 +97,46 @@ The context below is what you had before the reset.
   });
 });
 
-describe('PresenceProxy source — context exhaustion integration', () => {
-  it('imports detectContextExhaustion', () => {
-    const fs = require('fs');
-    const path = require('path');
-    const source = fs.readFileSync(
-      path.join(process.cwd(), 'src/monitoring/PresenceProxy.ts'),
-      'utf-8'
-    );
-    expect(source).toContain("import { detectContextExhaustion }");
+describe('PresenceProxy source — honest turn-receipts integration', () => {
+  const fs = require('fs');
+  const path = require('path');
+  const readSource = () => fs.readFileSync(
+    path.join(process.cwd(), 'src/monitoring/PresenceProxy.ts'),
+    'utf-8',
+  );
+
+  it('imports the honest stuck-signature classifier', () => {
+    expect(readSource()).toContain("import { classifyStuckSignature } from './StuckSignatureClassifier.js'");
   });
 
-  it('checks for context exhaustion after quota check in tier 3', () => {
-    const fs = require('fs');
-    const path = require('path');
-    const source = fs.readFileSync(
-      path.join(process.cwd(), 'src/monitoring/PresenceProxy.ts'),
-      'utf-8'
-    );
-    // Context exhaustion check should appear AFTER quota check but BEFORE process tree check
+  it('runs the honest stuck classifier after the quota check and before the process-tree check', () => {
+    const source = readSource();
+    // The honest classifier must sit AFTER the quota check (which owns the
+    // usage-limit form) but BEFORE the process-tree "working" assessment —
+    // that ordering is what stops a wedged/limited session being mislabeled
+    // "working" because its child process is alive.
     const quotaIdx = source.indexOf('Quota exhaustion: check before LLM call');
-    const ctxIdx = source.indexOf('Context exhaustion: auto-recover before LLM call');
+    const honestIdx = source.indexOf('Honest turn-receipts: classify a live-but-failing session');
     const processIdx = source.indexOf('Process tree check (authoritative)');
     expect(quotaIdx).toBeGreaterThan(0);
-    expect(ctxIdx).toBeGreaterThan(quotaIdx);
-    expect(processIdx).toBeGreaterThan(ctxIdx);
+    expect(honestIdx).toBeGreaterThan(quotaIdx);
+    expect(processIdx).toBeGreaterThan(honestIdx);
   });
 
-  it('calls recoverContextExhaustion callback when context exhaustion detected', () => {
-    const fs = require('fs');
-    const path = require('path');
-    const source = fs.readFileSync(
-      path.join(process.cwd(), 'src/monitoring/PresenceProxy.ts'),
-      'utf-8'
-    );
+  it('preserves context-exhaustion auto-recovery inside the honest block', () => {
+    const source = readSource();
+    expect(source).toContain('classifyStuckSignature(snapshot)');
     expect(source).toContain('recoverContextExhaustion');
     expect(source).toContain('Conversation got too long');
   });
 
-  it('PresenceProxyConfig includes recoverContextExhaustion callback', () => {
-    const fs = require('fs');
-    const path = require('path');
-    const source = fs.readFileSync(
-      path.join(process.cwd(), 'src/monitoring/PresenceProxy.ts'),
-      'utf-8'
-    );
+  it('defers to an owning recovery sentinel (one voice)', () => {
+    expect(readSource()).toContain('isStuckRecoveryActive');
+  });
+
+  it('PresenceProxyConfig includes recoverContextExhaustion + isStuckRecoveryActive', () => {
+    const source = readSource();
     expect(source).toContain('recoverContextExhaustion?: (topicId: number, sessionName: string) => Promise<{ recovered: boolean }>');
+    expect(source).toContain('isStuckRecoveryActive?: (sessionName: string) => boolean');
   });
 });
