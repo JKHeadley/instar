@@ -282,6 +282,10 @@ export class AgentServer {
     /** Commitments-coherence replica store (COMMITMENTS-COHERENCE §3.2) —
      *  merged GET /commitments?scope=mesh. Absent while dark. */
     commitmentReplicaStore?: import('../core/CommitmentsSync.js').CommitmentReplicaStore;
+    /** P1.5b owner-routed mutation forward (§3.4). Absent while dark. */
+    forwardCommitmentMutate?: (ownerMachineId: string, payload: import('../core/CommitmentMutation.js').CommitmentMutatePayload) => Promise<
+      { kind: 'verdict'; outcome: import('../core/CommitmentMutation.js').MutateOutcome } | { kind: 'queued'; reason: string }
+    >;
     /** Per-session ownership registry (§L3). */
     sessionOwnershipRegistry?: import('../core/SessionOwnershipRegistry.js').SessionOwnershipRegistry;
     /** Topic placement pin store (§L4) — backs GET /pool/placement + POST /pool/transfer. */
@@ -1382,6 +1386,7 @@ export class AgentServer {
       meshRpcDispatcher: options.meshRpcDispatcher ?? null,
       workingSetPullCoordinator: options.workingSetPullCoordinator ?? null,
       commitmentReplicaStore: options.commitmentReplicaStore ?? null,
+      forwardCommitmentMutate: options.forwardCommitmentMutate ?? null,
       sessionOwnershipRegistry: options.sessionOwnershipRegistry ?? null,
       topicPinStore: options.topicPinStore ?? null,
       secretSync: options.secretSync ?? null,

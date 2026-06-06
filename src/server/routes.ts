@@ -820,6 +820,12 @@ export interface RouteContext {
    *  the merged GET /commitments view folds these replicas in. Null/absent
    *  while dark (the routes return own rows only, byte-identical to before). */
   commitmentReplicaStore?: import('../core/CommitmentsSync.js').CommitmentReplicaStore | null;
+  /** P1.5b owner-routed mutation (§3.4): forward a mutate intent to the
+   *  owning machine (verdict back, or durably queued). Null/absent = dark
+   *  (replica-targeted mutations answer 409 explaining the layer is off). */
+  forwardCommitmentMutate?: ((ownerMachineId: string, payload: import('../core/CommitmentMutation.js').CommitmentMutatePayload) => Promise<
+    { kind: 'verdict'; outcome: import('../core/CommitmentMutation.js').MutateOutcome } | { kind: 'queued'; reason: string }
+  >) | null;
   /** Per-session ownership registry (§L3) — exactly-one-owner CAS + ownerOf/
    *  placementTargetOf. Read by L4 placement + observability. Null/absent (dark). */
   sessionOwnershipRegistry?: import('../core/SessionOwnershipRegistry.js').SessionOwnershipRegistry | null;
@@ -15228,6 +15234,19 @@ export function createRoutes(ctx: RouteContext): Router {
       res.status(404).json({ error: 'CommitmentTracker not configured' });
       return;
     }
+    // P1.5b §3.4 owner-routing (replica-targeted beacon-field PATCH forwards).
+    {
+      const pOrigin = typeof req.query.origin === 'string' ? req.query.origin : undefined;
+      const pRoute = await resolveCommitmentRoute(req.params.id, pOrigin);
+      if (pRoute === 'ambiguous') {
+        res.status(409).json({ error: `Commitment id ${req.params.id} is ambiguous across machines — retry with ?origin=<machineId>` });
+        return;
+      }
+      if (typeof pRoute === 'object') {
+        await forwardMutation(res, pRoute.forward.owner, mutatePayload(req, pRoute.forward.owner, 'patch-beacon', req.body ?? {}));
+        return;
+      }
+    }
     const existing = ctx.commitmentTracker.get(req.params.id);
     if (!existing) {
       res.status(404).json({ error: `Commitment ${req.params.id} not found` });
@@ -15332,9 +15351,87 @@ export function createRoutes(ctx: RouteContext): Router {
    * came back with the promised update," separate from `verified` which means
    * "config state is as promised."
    */
-  router.post('/commitments/:id/deliver', (req, res) => {
+  /**
+   * P1.5b §3.4 — owner-routing decision for a mutation route. Returns:
+   *  'local'      → the record is OWN (or the layer is dark): mutate locally.
+   *  {forward}    → the record lives ONLY in a replica: forward to its owner.
+   *  'ambiguous'  → a bare id matches own AND replica rows (409, §3.1).
+   *  'absent'     → nowhere in the merged view (404 falls through to local).
+   */
+  async function resolveCommitmentRoute(id: string, origin: string | undefined): Promise<
+    'local' | 'ambiguous' | 'absent' | { forward: { owner: string } }
+  > {
+    if (!ctx.commitmentReplicaStore || !ctx.commitmentTracker) return 'local';
+    const syncMod = await import('../core/CommitmentsSync.js');
+    const rows = syncMod.mergeCommitmentViews({
+      ownMachineId: ctx.meshSelfId ?? 'local',
+      own: ctx.commitmentTracker.getAll(),
+      replicas: ctx.commitmentReplicaStore.allReplicas(),
+    });
+    const resolved = syncMod.resolveBareId(rows, id, origin);
+    if (resolved === 'ambiguous') return 'ambiguous';
+    if (resolved === null) return 'absent';
+    if (resolved.viewSource === 'own') return 'local';
+    return { forward: { owner: resolved.originMachineId } };
+  }
+
+  /** Shared forward path: verdict → mapped response; queued → honest 202. */
+  async function forwardMutation(
+    res: import('express').Response,
+    owner: string,
+    payload: import('../core/CommitmentMutation.js').CommitmentMutatePayload,
+  ): Promise<void> {
+    if (!ctx.forwardCommitmentMutate) {
+      res.status(409).json({
+        error: `Commitment ${payload.id} lives on ${owner} and cross-machine mutation is not enabled here`,
+      });
+      return;
+    }
+    const r = await ctx.forwardCommitmentMutate(owner, payload);
+    if (r.kind === 'queued') {
+      res.status(202).json({ queued: true, owner, reason: r.reason, opKey: payload.opKey });
+      return;
+    }
+    const v = r.outcome;
+    if (v.verdict === 'applied' || v.verdict === 'idempotent-noop') {
+      res.json({ delivered: payload.op === 'deliver' ? true : undefined, op: payload.op, id: payload.id, owner, verdict: v.verdict, status: v.status, ...(v.staleObservation ? { staleObservation: true } : {}) });
+      return;
+    }
+    res.status(v.verdict === 'not-found' ? 404 : 409).json({ error: `owner verdict: ${v.verdict}`, owner, status: v.status });
+  }
+
+  function mutatePayload(
+    req: import('express').Request,
+    origin: string,
+    op: import('../core/CommitmentMutation.js').CommitmentMutateOp,
+    args?: Record<string, unknown>,
+  ): import('../core/CommitmentMutation.js').CommitmentMutatePayload {
+    return {
+      origin,
+      id: req.params.id,
+      op,
+      ...(args ? { args } : {}),
+      opKey: randomUUID(),
+      requestedAt: new Date().toISOString(),
+      callerMachineId: ctx.meshSelfId ?? 'local',
+      ...(typeof req.query.observedStatus === 'string' ? { observedStatus: req.query.observedStatus } : {}),
+    };
+  }
+
+  router.post('/commitments/:id/deliver', async (req, res) => {
     if (!ctx.commitmentTracker) {
       res.status(404).json({ error: 'CommitmentTracker not configured' });
+      return;
+    }
+    const origin = typeof req.query.origin === 'string' ? req.query.origin : undefined;
+    const route = await resolveCommitmentRoute(req.params.id, origin);
+    if (route === 'ambiguous') {
+      res.status(409).json({ error: `Commitment id ${req.params.id} is ambiguous across machines — retry with ?origin=<machineId>` });
+      return;
+    }
+    if (typeof route === 'object') {
+      const { deliveryMessageId } = req.body ?? {};
+      await forwardMutation(res, route.forward.owner, mutatePayload(req, route.forward.owner, 'deliver', deliveryMessageId ? { deliveryMessageId } : undefined));
       return;
     }
     const { deliveryMessageId } = req.body ?? {};
@@ -15346,7 +15443,7 @@ export function createRoutes(ctx: RouteContext): Router {
     res.json({ delivered: true, id: updated.id, commitment: updated });
   });
 
-  router.post('/commitments/:id/withdraw', (req, res) => {
+  router.post('/commitments/:id/withdraw', async (req, res) => {
     if (!ctx.commitmentTracker) {
       res.status(404).json({ error: 'CommitmentTracker not configured' });
       return;
@@ -15354,6 +15451,17 @@ export function createRoutes(ctx: RouteContext): Router {
     const { reason } = req.body;
     if (!reason) {
       res.status(400).json({ error: 'reason is required' });
+      return;
+    }
+    // P1.5b §3.4 owner-routing (replica-targeted withdraw forwards).
+    const wOrigin = typeof req.query.origin === 'string' ? req.query.origin : undefined;
+    const wRoute = await resolveCommitmentRoute(req.params.id, wOrigin);
+    if (wRoute === 'ambiguous') {
+      res.status(409).json({ error: `Commitment id ${req.params.id} is ambiguous across machines — retry with ?origin=<machineId>` });
+      return;
+    }
+    if (typeof wRoute === 'object') {
+      await forwardMutation(res, wRoute.forward.owner, mutatePayload(req, wRoute.forward.owner, 'withdraw', { reason }));
       return;
     }
     const success = ctx.commitmentTracker.withdraw(req.params.id, reason);
@@ -15372,9 +15480,20 @@ export function createRoutes(ctx: RouteContext): Router {
    * event. No-op (404) for commitments that aren't paused or are in a terminal
    * status.
    */
-  router.post('/commitments/:id/resume', (req, res) => {
+  router.post('/commitments/:id/resume', async (req, res) => {
     if (!ctx.commitmentTracker) {
       res.status(404).json({ error: 'CommitmentTracker not configured' });
+      return;
+    }
+    // P1.5b §3.4 owner-routing (replica-targeted resume forwards).
+    const rOrigin = typeof req.query.origin === 'string' ? req.query.origin : undefined;
+    const rRoute = await resolveCommitmentRoute(req.params.id, rOrigin);
+    if (rRoute === 'ambiguous') {
+      res.status(409).json({ error: `Commitment id ${req.params.id} is ambiguous across machines — retry with ?origin=<machineId>` });
+      return;
+    }
+    if (typeof rRoute === 'object') {
+      await forwardMutation(res, rRoute.forward.owner, mutatePayload(req, rRoute.forward.owner, 'resume'));
       return;
     }
     const updated = ctx.commitmentTracker.resume(req.params.id);

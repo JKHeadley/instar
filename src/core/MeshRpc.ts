@@ -57,6 +57,26 @@ export type MeshCommand =
       request: { sinceSeq: number; incarnation?: string };
     }
   | {
+      // Commitments-coherence owner-routed MUTATION (COMMITMENTS-COHERENCE-
+      // SPEC §3.4). NOT read/observe class — this verb has its OWN RBAC case
+      // below. verifyEnvelope (registered peer + signature + recipient
+      // binding + nonce) is the SOLE authority by design; the owner's CAS
+      // state machine re-validates every transition (mesh adds reach, not
+      // authority), and the durable owner-side opKey window is the replay
+      // control beyond the 60s nonce window.
+      type: 'commitment-mutate';
+      payload: {
+        origin: string;
+        id: string;
+        op: 'deliver' | 'withdraw' | 'resume' | 'patch-beacon';
+        args?: Record<string, unknown>;
+        opKey: string;
+        requestedAt: string;
+        callerMachineId: string;
+        observedStatus?: string;
+      };
+    }
+  | {
       // Working-set handoff transport (WORKING-SET-HANDOFF-SPEC §3.2).
       // Read/observe class — the FRESH manifest computed per request is the
       // allowlist (own jailed working files only; no generic file-read
@@ -177,6 +197,15 @@ export function checkCommandRBAC(command: MeshCommand, sender: MachineId, deps: 
       if (isRouter && command.failover === true) return { ok: true, reason: 'ok' };
       return { ok: false, reason: 'release-unauthorized' };
     }
+    case 'commitment-mutate':
+      // MUTATING verb, deliberately its OWN case (COMMITMENTS-COHERENCE-SPEC
+      // §3.4/§5): any registered peer may issue it under the same-operator
+      // posture — meaning RBAC adds NO authorization beyond verifyEnvelope,
+      // WHICH IS THE INTENDED SOLE AUTHORITY (stated so no reviewer assumes
+      // a role check exists). The owner re-validates every transition through
+      // the unchanged commitment state machine; replay is fenced by the
+      // durable owner-side opKey window.
+      return { ok: true, reason: 'ok' };
     case 'capacity-report':
     case 'session-status':
     case 'journal-sync':
