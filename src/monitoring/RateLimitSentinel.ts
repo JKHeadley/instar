@@ -82,8 +82,11 @@ export interface RateLimitRecoveryState {
 
 export interface RateLimitSentinelDeps {
   /**
-   * Inject a NEUTRAL "continue" nudge into the session (topic-tagged so
-   * InputGuard accepts it). Returns whether the injection was accepted.
+   * Inject a NEUTRAL "continue" nudge into the session via the INTERNAL
+   * recovery channel — never a `[telegram:N]`-prefixed user-message path. The
+   * prefix would make the agent answer the nudge as if it came from the user
+   * and relay that reply, contradicting the throttle notices (incoherence
+   * incident 2026-06-05). Returns whether the injection was accepted.
    * Must NOT reuse the compaction-resume payload.
    */
   resumeFn: (sessionName: string) => Promise<boolean>;
