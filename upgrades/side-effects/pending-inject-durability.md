@@ -52,3 +52,7 @@ The bootstrap-*.txt files themselves are still unswept (consumed implicitly by t
 ## 8. CI-found edge (mock construction)
 
 E2e suites construct SessionManager with mock StateManager objects lacking `baseDir`; the wiring now falls back to `path.join(config.projectDir, '.instar')` instead of crashing construction. Caught by CI (shard 2/4), reproduced and fixed; the failing e2e (`secret-sync-alive`) verified green locally post-fix.
+
+## 9. no-silent-fallbacks ratchet (+1, justified)
+
+The subsystem's defensive catches (record/clear/list + the boot-recovery guard) tripped the no-silent-fallbacks baseline 458→459. None is a silent swallow: record/clear/list warn with full context and carry in-brace `@silent-fallback-ok`; the boot-recovery guard's real failures route to DegradationReporter via `sweepPendingInjects.reportLoss`. Baseline bumped with a precise in-test comment — the PR adds zero unjustified silent fallbacks.

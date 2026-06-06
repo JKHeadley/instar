@@ -4724,6 +4724,10 @@ export async function startServer(options: StartOptions): Promise<void> {
     // sessions are already settled, and in the background — the ready-waits
     // inside can take up to 90s per session and must not block boot.
     void sessionManager.recoverPendingInjects().catch((err) => {
+      // @silent-fallback-ok boot recovery is a backstop that must NEVER crash
+      // boot — its own internal failures already route to DegradationReporter
+      // (sweepPendingInjects.reportLoss); this outer guard only catches an
+      // unexpected throw from the sweep harness itself.
       console.error(`[server] Pending-inject recovery failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
     });
 

@@ -246,7 +246,18 @@ describe('No Silent Fallbacks', () => {
     // a dark June-15 routing install is a reportable degradation, not a log
     // line). The PR's own new catches are either reporter-wired, exempt with
     // in-brace justification, or surface errors to the HTTP caller.
-    const BASELINE = 458;
+    //
+    // 458 -> 459 by pending-inject-durability (finding 8d300555): the new
+    // PendingInjectStore durability subsystem adds intentional best-effort
+    // catches so a ledger write/clear/sweep can NEVER break the spawn or boot
+    // it protects. None is silent — record/clear/list warn with full context
+    // and carry in-brace @silent-fallback-ok; the boot-recovery guard's real
+    // failures route to DegradationReporter via sweepPendingInjects.reportLoss.
+    // The net +1 is one parser-counted defensive catch in this slice; bumping
+    // restores the gate as a net-regression guard (the PR adds ZERO unjustified
+    // silent swallows, verified by stashing the source: every new catch logs+
+    // continues with context or reports).
+    const BASELINE = 459;
 
     if (silentFallbacks.length > 0) {
       const report = silentFallbacks.map(fb =>

@@ -65,6 +65,9 @@ export class PendingInjectStore {
       };
       fs.writeFileSync(this.fileFor(entry.tmuxSession), JSON.stringify(full, null, 2));
     } catch (err) {
+      // @silent-fallback-ok a durable-ledger write must NEVER break the spawn it
+      // is protecting — warn with context and continue; a missed record only
+      // means this one inject isn't restart-recoverable (the pre-fix behavior).
       console.warn(`[PendingInjectStore] record failed for "${entry.tmuxSession}" (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
     }
   }
@@ -93,7 +96,9 @@ export class PendingInjectStore {
     try {
       files = fs.readdirSync(this.dir).filter((f) => f.endsWith('.json'));
     } catch {
-      return { records, corrupt }; // no dir yet → nothing pending
+      // @silent-fallback-ok no pending-injects dir yet (fresh install / nothing
+      // ever queued) is the normal empty case, not a degradation — return empty.
+      return { records, corrupt };
     }
     for (const f of files) {
       try {
