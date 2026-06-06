@@ -151,7 +151,15 @@ describe('post-drive transcript audit', () => {
       fs.mkdirSync(path.join(tmp, '.instar'), { recursive: true });
       fs.writeFileSync(
         path.join(tmp, '.instar', 'config.json'),
-        JSON.stringify({ projectName: 'pdta-test', port: 4099, authToken: 'local-token' }),
+        JSON.stringify({
+          projectName: 'pdta-test',
+          port: 4099,
+          authToken: 'local-token',
+          // Hermeticity: CI runners have no claude/tmux binaries — explicit
+          // config paths bypass loadConfig's host detection (the #862 lesson,
+          // same pattern as tests/unit/config-loadconfig.test.ts).
+          sessions: { tmuxPath: '/usr/bin/tmux', claudePath: '/usr/bin/claude' },
+        }),
       );
       return tmp;
     }
