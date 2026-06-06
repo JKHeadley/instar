@@ -26,7 +26,7 @@ import { execFileSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import { SafeGitExecutor } from './SafeGitExecutor.js';
 import { ensureInstarBashPreToolUseHooks, type SettingsMatcherEntry } from './instarSettingsHooks.js';
-import { resolveAgentHome as resolveAgentHomeForWorktree, ensureWorktreeSpotlightExclusion } from './InstarWorktreeManager.js';
+import { resolveAgentHome as resolveAgentHomeForWorktree, ensureWorktreeSpotlightExclusion, ensureClaudeTranscriptSpotlightExclusion } from './InstarWorktreeManager.js';
 import { fileURLToPath } from 'node:url';
 import { TreeGenerator } from '../knowledge/TreeGenerator.js';
 import { HTTP_HOOK_TEMPLATES, buildHttpHookSettings } from '../data/http-hook-templates.js';
@@ -249,6 +249,7 @@ export class PostUpdateMigrator {
     this.migrateWorktreeConvention(result);
     this.migrateWorktreeSpotlightExclusion(result);
     this.migrateNodeModulesSpotlightExclusion(result);
+    this.migrateClaudeTranscriptSpotlightExclusion(result);
     this.migrateBootWrapperToCjs(result);
     this.migrateBootWrapperAbiCheck(result);
     this.migrateStaleLifelineSignal(result);
@@ -822,6 +823,30 @@ export class PostUpdateMigrator {
       } catch (err) {
         result.errors.push(`node-modules-spotlight-exclusion: ${err instanceof Error ? err.message : String(err)}`);
       }
+    }
+  }
+
+  /**
+   * OS resource hygiene (Responsible Resource Usage standard): exclude this
+   * agent's Claude Code transcript directory (`~/.claude/projects/<encoded-home>`)
+   * from macOS Spotlight. The node_modules + worktree exclusions above cover the
+   * static/throwaway trees, but the BIGGEST churning set was never excluded — the
+   * JSONL session transcripts grow on every assistant/user turn and an active home
+   * accumulates many GB (measured ~18GB on a busy fleet box), which Spotlight
+   * (mds_stores) re-indexes on every change, a top OS-level CPU consumer. instar
+   * already READS these transcripts (TokenLedger), so excluding them from indexing
+   * is the matching hygiene; nothing usefully Spotlight-searches a Claude JSONL.
+   * Honored recursively, harmless on non-macOS, idempotent, and a graceful no-op
+   * when the transcript dir doesn't exist yet (a brand-new agent with no sessions).
+   */
+  private migrateClaudeTranscriptSpotlightExclusion(result: MigrationResult): void {
+    const agentHome = path.dirname(this.config.stateDir);
+    try {
+      if (ensureClaudeTranscriptSpotlightExclusion(agentHome)) {
+        result.upgraded.push('claude-transcript-spotlight-exclusion: dropped .metadata_never_index at ~/.claude/projects/<agent> (excludes Claude session transcripts from Spotlight indexing)');
+      }
+    } catch (err) {
+      result.errors.push(`claude-transcript-spotlight-exclusion: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 

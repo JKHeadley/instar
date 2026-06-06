@@ -809,6 +809,36 @@ export function ensureWorktreeSpotlightExclusion(worktreesDir: string): boolean 
   }
 }
 
+/**
+ * Drop a `.metadata_never_index` marker at this agent's Claude Code transcript
+ * directory (`<claudeHome>/projects/<encoded-agent-home>`) so macOS Spotlight
+ * (mds_stores) stops re-indexing the constantly-appended JSONL session
+ * transcripts. These are the single largest Spotlight churn source on a busy
+ * agent: every assistant/user turn appends to them and an active home accumulates
+ * many GB (measured ~18GB on a busy fleet box), which Spotlight re-indexes on
+ * every change — pinning mds_stores at 60-90% of a core. instar already READS
+ * these transcripts (TokenLedger / CompactionSentinel), so excluding them from
+ * indexing is the matching OS hygiene; nothing usefully Spotlight-searches a
+ * Claude JSONL transcript. Claude encodes the project dir by mapping every
+ * non-alphanumeric char to '-' (`/Users/justin/.instar/agents/echo` ->
+ * `-Users-justin--instar-agents-echo`); we mirror that. Graceful no-op when the
+ * transcript dir doesn't exist yet (no sessions run) or on non-macOS; idempotent.
+ * Returns true iff it created the marker.
+ *
+ * Part of the Responsible Resource Usage standard — OS resource hygiene.
+ */
+export function ensureClaudeTranscriptSpotlightExclusion(
+  agentHome: string,
+  claudeHome?: string,
+): boolean {
+  const home = claudeHome ?? path.join(process.env.HOME || os.homedir(), '.claude');
+  const encoded = agentHome.replace(/[^a-zA-Z0-9]/g, '-');
+  const transcriptDir = path.join(home, 'projects', encoded);
+  if (!fs.existsSync(transcriptDir)) return false;
+  // Reuse the generic marker-dropper (dir-agnostic despite the name).
+  return ensureWorktreeSpotlightExclusion(transcriptDir);
+}
+
 // ── Audit ledger ─────────────────────────────────────────────────────────
 
 export interface LedgerEntry {

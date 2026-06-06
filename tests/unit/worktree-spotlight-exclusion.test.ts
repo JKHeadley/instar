@@ -9,7 +9,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { ensureWorktreeSpotlightExclusion } from '../../src/core/InstarWorktreeManager.js';
+import { ensureWorktreeSpotlightExclusion, ensureClaudeTranscriptSpotlightExclusion } from '../../src/core/InstarWorktreeManager.js';
 import { PostUpdateMigrator } from '../../src/core/PostUpdateMigrator.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
@@ -140,5 +140,94 @@ describe('PostUpdateMigrator.migrateNodeModulesSpotlightExclusion', () => {
     const result2 = makeMigrator(stateDir).migrate();
     expect(result2.errors).toEqual([]);
     expect(result2.upgraded.some((s) => s.includes('node-modules-spotlight-exclusion'))).toBe(false);
+  });
+});
+
+// ── Claude transcript exclusion (the ~18GB JSONL churn — the dominant lever) ──
+
+describe('ensureClaudeTranscriptSpotlightExclusion', () => {
+  let claudeHome: string;
+  let agentHome: string;
+  beforeEach(() => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-transcript-'));
+    claudeHome = path.join(root, '.claude');
+    agentHome = path.join(root, '.instar', 'agents', 'echo');
+  });
+  afterEach(() => {
+    SafeFsExecutor.safeRmSync(path.dirname(claudeHome), { recursive: true, force: true, operation: OP });
+  });
+
+  function transcriptDir(): string {
+    const encoded = agentHome.replace(/[^a-zA-Z0-9]/g, '-');
+    return path.join(claudeHome, 'projects', encoded);
+  }
+
+  it('drops the marker at the encoded transcript dir when it exists', () => {
+    fs.mkdirSync(transcriptDir(), { recursive: true });
+    expect(ensureClaudeTranscriptSpotlightExclusion(agentHome, claudeHome)).toBe(true);
+    expect(fs.existsSync(path.join(transcriptDir(), '.metadata_never_index'))).toBe(true);
+  });
+
+  it('encodes the agent home with non-alphanumerics -> "-" (matches Claude Code)', () => {
+    // The encoded dir name must collapse every "/" and "." to "-".
+    const encoded = agentHome.replace(/[^a-zA-Z0-9]/g, '-');
+    expect(encoded).not.toMatch(/[/.]/);
+    fs.mkdirSync(transcriptDir(), { recursive: true });
+    ensureClaudeTranscriptSpotlightExclusion(agentHome, claudeHome);
+    expect(fs.existsSync(path.join(claudeHome, 'projects', encoded, '.metadata_never_index'))).toBe(true);
+  });
+
+  it('is a graceful no-op when the transcript dir does not exist yet (new agent, no sessions)', () => {
+    // No mkdir — the transcript dir is absent.
+    expect(ensureClaudeTranscriptSpotlightExclusion(agentHome, claudeHome)).toBe(false);
+    expect(fs.existsSync(transcriptDir())).toBe(false);
+  });
+
+  it('is idempotent — returns false on the second run', () => {
+    fs.mkdirSync(transcriptDir(), { recursive: true });
+    expect(ensureClaudeTranscriptSpotlightExclusion(agentHome, claudeHome)).toBe(true);
+    expect(ensureClaudeTranscriptSpotlightExclusion(agentHome, claudeHome)).toBe(false);
+  });
+});
+
+describe('PostUpdateMigrator.migrateClaudeTranscriptSpotlightExclusion', () => {
+  beforeEach(() => {
+    tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-transcript-mig-'));
+    setHome(tmpHome);
+    originalAuditDir = process.env.INSTAR_AUDIT_LOG_DIR;
+    process.env.INSTAR_AUDIT_LOG_DIR = path.join(tmpHome, 'audit');
+  });
+  afterEach(() => {
+    if (originalAuditDir === undefined) delete process.env.INSTAR_AUDIT_LOG_DIR;
+    else process.env.INSTAR_AUDIT_LOG_DIR = originalAuditDir;
+    restoreHome();
+    SafeFsExecutor.safeRmSync(tmpHome, { recursive: true, force: true, maxRetries: 5, retryDelay: 100, operation: OP });
+  });
+
+  it('drops the marker at the transcript dir on update when transcripts exist', () => {
+    const { agentHome } = setupAgentHome('echo-transcript');
+    const encoded = agentHome.replace(/[^a-zA-Z0-9]/g, '-');
+    const transcriptDir = path.join(tmpHome, '.claude', 'projects', encoded);
+    fs.mkdirSync(transcriptDir, { recursive: true });
+    const result = makeMigrator(path.join(agentHome, '.instar')).migrate();
+    expect(result.upgraded.some((s) => s.includes('claude-transcript-spotlight-exclusion'))).toBe(true);
+    expect(fs.existsSync(path.join(transcriptDir, '.metadata_never_index'))).toBe(true);
+  });
+
+  it('skips without error when the transcript dir is absent (brand-new agent)', () => {
+    const { agentHome } = setupAgentHome('echo-transcript-none');
+    const result = makeMigrator(path.join(agentHome, '.instar')).migrate();
+    expect(result.errors).toEqual([]);
+    expect(result.upgraded.some((s) => s.includes('claude-transcript-spotlight-exclusion'))).toBe(false);
+  });
+
+  it('is idempotent — second run does not re-report the exclusion', () => {
+    const { agentHome } = setupAgentHome('echo-transcript-idem');
+    const encoded = agentHome.replace(/[^a-zA-Z0-9]/g, '-');
+    fs.mkdirSync(path.join(tmpHome, '.claude', 'projects', encoded), { recursive: true });
+    makeMigrator(path.join(agentHome, '.instar')).migrate();
+    const result2 = makeMigrator(path.join(agentHome, '.instar')).migrate();
+    expect(result2.errors).toEqual([]);
+    expect(result2.upgraded.some((s) => s.includes('claude-transcript-spotlight-exclusion'))).toBe(false);
   });
 });
