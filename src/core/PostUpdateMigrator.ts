@@ -6448,6 +6448,36 @@ except Exception:
   fi
 fi
 
+# TOPIC OPERATOR injection — Know Your Principal (#898, increment 2c). Fetches the
+# VERIFIED operator binding for THIS topic from /topic-operator/session-context and
+# injects the <topic-operator> block so the agent reasons with its authenticated
+# operator from message one — and never seats a name read in content in the
+# operator's chair (the "Caroline" identity-bleed fix). The operator is established
+# ONLY from the platform-verified sender id; this is the read surface. Placed with
+# the authoritative-identity context (org-intent + preferences) up front. Fail-open:
+# no topic / route 503 (store unavailable) / unbound topic / unreachable -> silent
+# skip; curl -sf makes a non-2xx emit nothing, and the Bearer token stays in the header.
+if [ -n "\$INSTAR_TELEGRAM_TOPIC" ] && [ -n "\$PORT" ] && [ -n "\$TOKEN" ]; then
+  TOPIC_OP_RESPONSE=\$(curl -sf --max-time 4 -H "Authorization: Bearer \$TOKEN" \\
+    "http://localhost:\${PORT}/topic-operator/session-context?topicId=\${INSTAR_TELEGRAM_TOPIC}" 2>/dev/null)
+  if [ -n "\$TOPIC_OP_RESPONSE" ]; then
+    TOPIC_OP_BLOCK=\$(echo "\$TOPIC_OP_RESPONSE" | python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    if d.get('present') and d.get('block'):
+        print(d['block'])
+except Exception:
+    pass
+" 2>/dev/null)
+    if [ -n "\$TOPIC_OP_BLOCK" ]; then
+      echo ""
+      echo "\$TOPIC_OP_BLOCK"
+      echo ""
+    fi
+  fi
+fi
+
 # SESSION BOOT SELF-KNOWLEDGE injection (spec: session-boot-self-knowledge.md).
 # Fetches /self-knowledge/session-context and injects the deterministic "what I
 # already have" block: vault secret NAMES (never values) + self-asserted
@@ -7565,6 +7595,42 @@ except Exception:
       if [ -n "\$BOOT_SK_BLOCK" ]; then
         echo ""
         echo "\$BOOT_SK_BLOCK"
+        echo ""
+      fi
+    fi
+  fi
+fi
+
+# TOPIC OPERATOR re-injection (Know Your Principal #898, increment 2c — Compaction
+# Parity twin of the session-start block). The verified operator binding injected at
+# session start only survives a compaction if the summary happens to carry it —
+# willpower, not structure. Re-fetching here makes the agent re-learn WHO its
+# verified operator is after a context reset; losing that awareness post-compaction
+# is exactly the identity gap this feature closes. Same fail-open contract as the
+# boot fetch: no topic / unbound / store-503 / unreachable -> silent skip,
+# header-only Bearer.
+if [ -n "\$INSTAR_TELEGRAM_TOPIC" ] && [ -f "$INSTAR_DIR/config.json" ]; then
+  TOPIC_OP_PORT=\${PORT:-\$(grep -oE '"port"[[:space:]]*:[[:space:]]*[0-9]+' "$INSTAR_DIR/config.json" | head -1 | grep -oE '[0-9]+' | head -1)}
+  TOPIC_OP_TOKEN="\${INSTAR_AUTH_TOKEN:-}"
+  if [ -z "\$TOPIC_OP_TOKEN" ]; then
+    TOPIC_OP_TOKEN=\$(python3 -c "import json; v=json.load(open('$INSTAR_DIR/config.json')).get('authToken',''); print(v if isinstance(v, str) else '')" 2>/dev/null)
+  fi
+  if [ -n "\$TOPIC_OP_PORT" ] && [ -n "\$TOPIC_OP_TOKEN" ]; then
+    TOPIC_OP_RESPONSE=\$(curl -sf --max-time 4 --connect-timeout 1 -H "Authorization: Bearer \$TOPIC_OP_TOKEN" \\
+      "http://localhost:\${TOPIC_OP_PORT}/topic-operator/session-context?topicId=\${INSTAR_TELEGRAM_TOPIC}" 2>/dev/null)
+    if [ -n "\$TOPIC_OP_RESPONSE" ]; then
+      TOPIC_OP_BLOCK=\$(echo "\$TOPIC_OP_RESPONSE" | python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    if d.get('present') and d.get('block'):
+        print(d['block'])
+except Exception:
+    pass
+" 2>/dev/null)
+      if [ -n "\$TOPIC_OP_BLOCK" ]; then
+        echo ""
+        echo "\$TOPIC_OP_BLOCK"
         echo ""
       fi
     fi

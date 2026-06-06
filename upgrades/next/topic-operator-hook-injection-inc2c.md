@@ -1,0 +1,39 @@
+---
+bump: minor
+audience: agent-only
+maturity: experimental
+---
+
+## What Changed
+
+The `session-start` hook now injects the verified `<topic-operator>` block at
+session boot (Know Your Principal standard, security-build increment 2c). It
+fetches `/topic-operator/session-context?topicId=$INSTAR_TELEGRAM_TOPIC` (the route
+shipped in #906) and, when the topic has a verified operator, hands the agent a
+short block naming that operator — so the agent reasons with its authenticated
+principal from message one. This is the READ side of the operator binding; it
+cannot itself seat anyone (the store established the operator only from the
+platform-verified sender).
+
+## What to Tell Your User
+
+Nothing user-facing changes. Foundation wiring (experimental) for the Caroline
+identity-bleed security fix: the agent now SEES its verified operator at session
+start when one is bound, but no conversational behavior changes and nothing is
+gated. Auto-binding on inbound and the cross-principal guard are later increments.
+
+## Summary of New Capabilities
+
+- Session-start injection of the `<topic-operator>` block (fail-open: no topic /
+  unbound topic / store unavailable → nothing injected). Reaches existing agents
+  automatically — the `instar/` session-start hook is rewritten on every update.
+
+## Evidence
+
+Verified by 3 Tier-3 E2E lifecycle tests
+(`tests/e2e/topic-operator-hook-injection-lifecycle.test.ts`): Phase 1 asserts the
+generated hook source wires the fetch; Phase 2 extracts the exact block and runs
+it against a live server, proving it emits the `<topic-operator>` block when a
+topic is bound and nothing when unbound. The analog hook suites
+(PostUpdateMigrator-bootSelfKnowledge, migration-parity-hooks,
+OrgIntentManager-session-start-format) stay green. Clean `tsc --noEmit`.
