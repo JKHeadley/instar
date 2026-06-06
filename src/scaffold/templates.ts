@@ -1770,6 +1770,10 @@ Manage it:
 - Verify a peer's action against their passport: \`curl -X POST -H "Authorization: Bearer $AUTH" -H 'Content-Type: application/json' -d '{"passport":{...},"action":"..."}' http://localhost:${port}/passport/verify\` → \`{ permitted, basis, reason }\` (basis: forbidden-action / trust-floor / out-of-scope / ok).
 - **When to use** (PROACTIVE): before trusting another agent's proposed action, verify it against their passport; hand peers your passport so they know your scope. Skill: \`/agent-passport\`.
 
+**Learning-Velocity Metric (EXO 3.0).** Measures how fast you're *learning* (adaptability, experimentation, capability creation) rather than backward-looking operational throughput — Salim Ismail's KPI inversion ("your KPIs are training you to miss the future"). Read-only.
+- \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/metrics/learning-velocity?windowDays=30"\` → \`{ totalEvents, eventsPerDay, byType, typeDiversity, trend (accelerating/steady/declining/insufficient-data), adaptabilityScore (0-100), reason }\`. Gathers your real learning events (registered learnings, corrections, evolution actions).
+- **When to use** (PROACTIVE): when asked "are we actually learning / adapting?", or to contrast learning velocity against operational metrics. A flat/declining trend means the org may be optimizing the old model instead of learning.
+
 ## Agent Infrastructure
 
 This project uses instar for persistent agent capabilities.

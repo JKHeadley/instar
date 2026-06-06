@@ -2869,6 +2869,20 @@ Rule: I do not state that work landed inside another agent's state unless I have
       result.upgraded.push('CLAUDE.md: added Session Boot Self-Knowledge section');
     }
 
+    // Learning-Velocity Metric (EXO 3.0 G5): forward-looking learning KPI.
+    // Existing agents need /metrics/learning-velocity awareness to answer
+    // "are we actually learning?". Content-sniffed on a distinctive marker.
+    if (!content.includes('Learning-Velocity Metric (EXO 3.0')) {
+      const learningVelocitySection = `
+**Learning-Velocity Metric (EXO 3.0).** Measures how fast you're *learning* (adaptability, experimentation, capability creation) rather than backward-looking operational throughput — Salim Ismail's KPI inversion ("your KPIs are training you to miss the future"). Read-only.
+- \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/metrics/learning-velocity?windowDays=30"\` → \`{ totalEvents, eventsPerDay, byType, typeDiversity, trend (accelerating/steady/declining/insufficient-data), adaptabilityScore (0-100), reason }\`. Gathers your real learning events (registered learnings, corrections, evolution actions).
+- **When to use** (PROACTIVE): when asked "are we actually learning / adapting?", or to contrast learning velocity against operational metrics. A flat/declining trend means the org may be optimizing the old model instead of learning.
+`;
+      content += '\n' + learningVelocitySection;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Learning-Velocity Metric section');
+    }
+
     // Agent-Readiness Scoring (EXO 3.0 G2): the coordination-vs-judgment
     // diagnostic. Existing agents need to know /agent-readiness/score exists
     // before delegating work. Content-sniffed on a distinctive marker.
@@ -4589,6 +4603,10 @@ Create worktrees for collaborator repos with \`instar worktree create <branch>\`
       // never learns /passport/verify can't check a peer's proposed action
       // against its passport before trusting it.
       '**Agent Digital Passport (EXO 3.0',
+      // Learning-Velocity Metric (EXO 3.0 G5): the forward-looking learning
+      // KPI. A Codex/Gemini agent that never learns /metrics/learning-velocity
+      // can't answer "are we actually learning?" with real numbers.
+      '**Learning-Velocity Metric (EXO 3.0',
     ];
 
     for (const shadowName of ['AGENTS.md', 'GEMINI.md']) {

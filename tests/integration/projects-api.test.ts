@@ -128,9 +128,14 @@ auto_advance: true
     const heartbeatApi = new MachineHeartbeat({
       stateDir: project.stateDir,
       machineId: 'test-machine',
-      // Tests use a tiny staleness threshold so claim-ownership can be
-      // exercised in both states (fresh + stale) without faking timers.
-      staleThresholdMs: 50,
+      // Tests use a short-but-generous staleness threshold so claim-ownership
+      // can be exercised in both states without faking timers: the "stale"
+      // case writes a 10-minute-old timestamp (>> 60s), and the "fresh" case
+      // gets 60s of headroom so a loaded CI shard can't age a just-written
+      // heartbeat past the threshold mid-test (live flake: shard 1/4 on PR
+      // #794 — expected 409, got 200, because >50ms elapsed between writing
+      // the peer heartbeat and the route reading it).
+      staleThresholdMs: 60_000,
     });
     heartbeatApi.writeOnce(); // ensure THIS machine has a fresh record
     const machineHeartbeat = { api: heartbeatApi, config: { machineId: 'test-machine' } };
@@ -668,7 +673,7 @@ goal: try escape
     await seedProject('claim-3');
     const proj = tracker.get('claim-3')!;
     fs.mkdirSync(path.join(project.stateDir, 'machine-health'), { recursive: true });
-    // Stale: heartbeat is from 10 minutes ago, staleThresholdMs is 50ms in tests.
+    // Stale: heartbeat is from 10 minutes ago, staleThresholdMs is 60s in tests.
     fs.writeFileSync(
       path.join(project.stateDir, 'machine-health', 'm-peer.json'),
       JSON.stringify({
