@@ -40,6 +40,7 @@ import {
   type SpawnOptions,
 } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -337,17 +338,51 @@ function sanitizeEnv(callerEnv?: NodeJS.ProcessEnv, cwd?: string): NodeJS.Proces
   // to the repo-local config (the agent's identity), never a name that
   // leaked in from the spawning shell or another principal on the machine.
   if (repoHasLocalIdentity(cwd ?? process.cwd())) {
+    const stripped = IDENTITY_ENV_VARS.filter((k) => merged[k] !== undefined);
     for (const k of IDENTITY_ENV_VARS) delete merged[k];
+    if (stripped.length > 0) {
+      // Inc-P3d observability: this is the Caroline-class moment — an inherited
+      // identity tried to ride into a repo that has its own. Record it.
+      appendCredentialResolutionEntry({
+        timestamp: new Date().toISOString(),
+        kind: 'resolution',
+        decision: 'repo-local-strip',
+        strippedKeys: stripped,
+        cwd: cwd ?? process.cwd(),
+      });
+    }
   } else {
     // Preserve host git identity before we neutralize global config — without
     // this, every commit through SafeGitExecutor would fail with "Author
     // identity unknown" because the global config is at /dev/null. Identity is
     // not an alias-attack vector; alias rebinding is.
     const id = getHostGitIdentity();
-    if (id.name && !merged.GIT_AUTHOR_NAME) merged.GIT_AUTHOR_NAME = id.name;
-    if (id.email && !merged.GIT_AUTHOR_EMAIL) merged.GIT_AUTHOR_EMAIL = id.email;
-    if (id.name && !merged.GIT_COMMITTER_NAME) merged.GIT_COMMITTER_NAME = id.name;
-    if (id.email && !merged.GIT_COMMITTER_EMAIL) merged.GIT_COMMITTER_EMAIL = id.email;
+    const injected: string[] = [];
+    if (id.name && !merged.GIT_AUTHOR_NAME) {
+      merged.GIT_AUTHOR_NAME = id.name;
+      injected.push('GIT_AUTHOR_NAME');
+    }
+    if (id.email && !merged.GIT_AUTHOR_EMAIL) {
+      merged.GIT_AUTHOR_EMAIL = id.email;
+      injected.push('GIT_AUTHOR_EMAIL');
+    }
+    if (id.name && !merged.GIT_COMMITTER_NAME) {
+      merged.GIT_COMMITTER_NAME = id.name;
+      injected.push('GIT_COMMITTER_NAME');
+    }
+    if (id.email && !merged.GIT_COMMITTER_EMAIL) {
+      merged.GIT_COMMITTER_EMAIL = id.email;
+      injected.push('GIT_COMMITTER_EMAIL');
+    }
+    if (injected.length > 0) {
+      appendCredentialResolutionEntry({
+        timestamp: new Date().toISOString(),
+        kind: 'resolution',
+        decision: 'host-identity-inject',
+        injectedKeys: injected,
+        cwd: cwd ?? process.cwd(),
+      });
+    }
   }
   // Inject unconditional config disables.
   merged.GIT_CONFIG_GLOBAL = '/dev/null';
@@ -708,6 +743,166 @@ function captureCallerFrame(): string {
   return frame.trim();
 }
 
+// ── Credential-resolution audit (Caroline-class observability, Inc-P3d) ──
+//
+// Observe-only record of the identity-resolution decisions the funnel makes
+// (which identity surface won and why), plus a boot-time coherence sample of
+// the machine's credential surfaces. Signal-only by construction: a write
+// problem never affects the git operation or server boot. Same dir + env
+// overrides as the destructive-ops audit (INSTAR_AUDIT_LOG_DIR /
+// INSTAR_AUDIT_LOG_DISABLED).
+
+export interface CredentialResolutionEntry {
+  timestamp: string;
+  kind: 'resolution' | 'boot-coherence';
+  /** For kind 'resolution': which way sanitizeEnv resolved identity. */
+  decision?: 'repo-local-strip' | 'host-identity-inject';
+  /** Identity env vars deleted because the repo-local identity is authoritative. */
+  strippedKeys?: string[];
+  /** Identity env vars injected from the host identity (repo had none). */
+  injectedKeys?: string[];
+  cwd?: string;
+  /** For kind 'boot-coherence': the agent's expected identity and its source. */
+  expected?: { name?: string; email?: string; source: string };
+  /** Surfaces whose identity disagrees with (or shadows) the expected one. */
+  divergences?: Array<{ surface: string; detail: string }>;
+  /** Whether a machine-global gh CLI auth state file exists (presence only). */
+  ghHostsPresent?: boolean;
+}
+
+function credentialAuditPath(): string | null {
+  if (process.env.INSTAR_AUDIT_LOG_DISABLED === '1') return null;
+  const overrideDir = process.env.INSTAR_AUDIT_LOG_DIR;
+  const dir = overrideDir ?? path.join(process.cwd(), '.instar', 'audit');
+  return path.join(dir, 'credential-resolution.jsonl');
+}
+
+// Per-process dedupe so a recurring resolution (e.g. a sync loop hitting the
+// same repo every few minutes) is recorded once, not flooded. Boot-coherence
+// entries are always written (one per boot by construction).
+const _credentialAuditSeen = new Set<string>();
+function _resetCredentialAuditDedupeForTest(): void {
+  _credentialAuditSeen.clear();
+}
+
+export function appendCredentialResolutionEntry(entry: CredentialResolutionEntry): void {
+  const file = credentialAuditPath();
+  if (!file) return;
+  if (entry.kind === 'resolution') {
+    const dedupeKey = `${entry.decision}|${entry.cwd}|${(entry.strippedKeys || entry.injectedKeys || []).join(',')}`;
+    if (_credentialAuditSeen.has(dedupeKey)) return;
+    _credentialAuditSeen.add(dedupeKey);
+  }
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.appendFileSync(file, JSON.stringify(entry) + '\n');
+  } catch {
+    /* @silent-fallback-ok — observe-only record; a write problem must never affect the git operation */
+  }
+}
+
+/** Minimal git-config parse: the VALUE of `key` in the [user] section, if any. */
+function configGet(file: string, key: 'name' | 'email'): string | undefined {
+  let content: string;
+  try {
+    content = fs.readFileSync(file, 'utf-8');
+  } catch {
+    return undefined; /* @silent-fallback-ok — absent candidate file is simply not a source */
+  }
+  let inUser = false;
+  for (const raw of content.split('\n')) {
+    const line = raw.trim();
+    if (line.startsWith('[')) {
+      inUser = /^\[user\]/i.test(line);
+      continue;
+    }
+    if (!inUser) continue;
+    const m = new RegExp(`^${key}\\s*=\\s*(.+)$`).exec(line);
+    if (m) return m[1].trim();
+  }
+  return undefined;
+}
+
+export interface BootCredentialCoherenceReport {
+  expected: { name?: string; email?: string; source: string };
+  divergences: Array<{ surface: string; detail: string }>;
+  ghHostsPresent: boolean;
+  sampledAt: string;
+}
+
+/**
+ * Boot-time credential coherence sample (Inc-P3d). Reads the agent's
+ * EXPECTED identity from the repo-local git config of `agentDir`, compares
+ * the machine's other identity surfaces against it (inherited identity env
+ * vars, the machine-global ~/.gitconfig), and notes whether a machine-global
+ * gh CLI auth state exists. Pure fs reads — no subprocess (the P3a lesson:
+ * funnel-adjacent probes must not consume mocked child_process sequences).
+ * Records one 'boot-coherence' line in credential-resolution.jsonl and
+ * returns the report. Never throws; returns null if sampling itself broke.
+ */
+export function auditBootCredentialCoherence(
+  agentDir?: string,
+  homeDirOverride?: string,
+): BootCredentialCoherenceReport | null {
+  try {
+    const dir = path.resolve(agentDir ?? process.cwd());
+    const candidates = localConfigCandidates(dir);
+    const name = candidates.map((f) => configGet(f, 'name')).find((v) => v !== undefined);
+    const email = candidates.map((f) => configGet(f, 'email')).find((v) => v !== undefined);
+    const expected = { name, email, source: 'repo-local-config' };
+    const divergences: Array<{ surface: string; detail: string }> = [];
+    for (const k of IDENTITY_ENV_VARS) {
+      const v = process.env[k];
+      if (!v) continue;
+      const expectedVal = k.endsWith('EMAIL') ? email : name;
+      if (expectedVal === undefined) {
+        divergences.push({
+          surface: `env:${k}`,
+          detail: 'identity env var inherited but the agent dir has no repo-local identity to anchor against',
+        });
+      } else if (v !== expectedVal) {
+        divergences.push({
+          surface: `env:${k}`,
+          detail: 'inherited identity env var differs from the repo-local agent identity',
+        });
+      }
+    }
+    const home = homeDirOverride ?? os.homedir();
+    const gName = configGet(path.join(home, '.gitconfig'), 'name');
+    const gEmail = configGet(path.join(home, '.gitconfig'), 'email');
+    if (gName !== undefined && name !== undefined && gName !== name) {
+      divergences.push({
+        surface: 'global-gitconfig:user.name',
+        detail: 'machine-global git identity differs from the repo-local agent identity',
+      });
+    }
+    if (gEmail !== undefined && email !== undefined && gEmail !== email) {
+      divergences.push({
+        surface: 'global-gitconfig:user.email',
+        detail: 'machine-global git identity differs from the repo-local agent identity',
+      });
+    }
+    const ghHostsPresent = fs.existsSync(path.join(home, '.config', 'gh', 'hosts.yml'));
+    const report: BootCredentialCoherenceReport = {
+      expected,
+      divergences,
+      ghHostsPresent,
+      sampledAt: new Date().toISOString(),
+    };
+    appendCredentialResolutionEntry({
+      timestamp: report.sampledAt,
+      kind: 'boot-coherence',
+      cwd: dir,
+      expected,
+      divergences,
+      ghHostsPresent,
+    });
+    return report;
+  } catch {
+    return null; /* @silent-fallback-ok — a broken sample must never affect server boot */
+  }
+}
+
 // ── Public types ────────────────────────────────────────────────────
 
 export interface SafeGitOptions {
@@ -1061,6 +1256,8 @@ export const _internal = {
   GIT_ENV_DENYLIST,
   repoHasLocalIdentity,
   _resetLocalIdentityCacheForTest,
+  _resetCredentialAuditDedupeForTest,
+  configGet,
 };
 
 // Suppress unused-export warnings for the convenience re-exports. The

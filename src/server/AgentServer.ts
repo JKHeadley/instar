@@ -66,7 +66,7 @@ import { ApprenticeshipProgram } from '../core/ApprenticeshipProgram.js';
 import { ApprenticeshipCycleStore } from '../monitoring/ApprenticeshipCycleStore.js';
 import { ApprenticeshipCycleSlaMonitor } from '../monitoring/ApprenticeshipCycleSlaMonitor.js';
 import { GeminiCapacityEscalationMonitor } from '../monitoring/GeminiCapacityEscalationMonitor.js';
-import { SafeGitExecutor } from '../core/SafeGitExecutor.js';
+import { SafeGitExecutor, auditBootCredentialCoherence } from '../core/SafeGitExecutor.js';
 import { createSpecReviewRoutes } from './specReviewRoutes.js';
 import { createUsherRoutes } from './usherRoutes.js';
 import { createHandoffInitiateRoutes } from './handoffInitiateRoutes.js';
@@ -2524,6 +2524,25 @@ export class AgentServer {
       }
     } catch (err) {
       console.warn('[instar] boot.id creation raised (sentinel will fail to start):', err);
+    }
+
+    // Inc-P3d boot credential-coherence sample (Caroline-class observability).
+    // Signal-only: compares the agent's repo-local identity against the
+    // machine's other identity surfaces (inherited env, global gitconfig) and
+    // records one boot-coherence line in credential-resolution.jsonl. Pure fs
+    // reads; never throws; never blocks boot.
+    try {
+      // stateDir is <projectDir>/.instar — the repo whose local identity is
+      // the agent's expected identity is its PARENT.
+      const agentRepoDir = this.config.stateDir ? path.dirname(this.config.stateDir) : process.cwd();
+      const coherence = auditBootCredentialCoherence(agentRepoDir);
+      if (coherence && coherence.divergences.length > 0) {
+        console.warn(
+          `[instar] credential-coherence: ${coherence.divergences.length} identity surface(s) diverge from the agent's repo-local identity (see .instar/audit/credential-resolution.jsonl)`,
+        );
+      }
+    } catch (err) {
+      console.warn('[instar] boot credential-coherence sample raised:', err);
     }
 
     return new Promise((resolve, reject) => {

@@ -1,0 +1,16 @@
+{
+  "ts": "2026-06-06T10:53:47.734Z",
+  "slug": "unknown",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/core/SafeGitExecutor.ts matches SafeGitExecutor (destructive-git funnel)",
+    "new capability: new config key added"
+  ],
+  "belowFloor": true,
+  "files": 2,
+  "loc": 226,
+  "causalAutopsy": null,
+  "verdict": "pass"
+}
