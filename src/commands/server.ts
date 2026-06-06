@@ -11097,9 +11097,19 @@ export async function startServer(options: StartOptions): Promise<void> {
                   selfReportedLastSeen?: string;
                   loadAvg?: number;
                   journalAdvert?: Record<string, Record<string, { incarnation: string; lastSeq: number }>>;
+                  commitmentsAdvert?: { incarnation: string; replicationSeq: number };
                 };
                 const journalAdvert = _unwrapPeerJournalAdvert(machineId, cap.journalAdvert);
-                return { selfReportedLastSeen: cap.selfReportedLastSeen, loadAvg: cap.loadAvg, journalAdvert };
+                // #930 sibling (live, v1.3.369): the commitments advert was
+                // parsed AWAY here — served by the peer, dropped by this
+                // narrowing return — so driveCommitmentsSync never fired and
+                // zero replicas ever landed. Pass it through.
+                return {
+                  selfReportedLastSeen: cap.selfReportedLastSeen,
+                  loadAvg: cap.loadAvg,
+                  journalAdvert,
+                  ...(cap.commitmentsAdvert ? { commitmentsAdvert: cap.commitmentsAdvert } : {}),
+                };
               }
               return null;
             },

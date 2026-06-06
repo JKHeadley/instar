@@ -46,3 +46,12 @@ and lands nothing new.
   for BOTH fallback steps + the honest default.
 - Typecheck clean. The live proof completes on the echo pair after this
   ships (the staged 77901 artifact + recorded hashes).
+
+## Addendum — the dropped commitments advert (same branch)
+
+While verifying P1.5a live, found that fetchPeerCapacity's narrowing
+return discarded the peer's commitmentsAdvert — driveCommitmentsSync
+never fired; zero commitment replicas ever landed in either direction.
+Pass-through (one spread line) + a source-shape regression test. The
+integration suite drove the engine directly and missed this seam — the
+wiring-integrity gap class.
