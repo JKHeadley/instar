@@ -146,6 +146,7 @@ describe('Feature Delivery Completeness', () => {
       'MTP Protocol — the two EXO 3.0 tests', // ORG-INTENT as machine-readable MTP: identity layer + refusal/endorsement tests (/intent/org/test-action; EXO 3.0 G1; templates.ts + migrator + shadow-marker parity)
       'Agent Digital Passport (EXO 3.0', // portable identity+trust+constraints passport + peer compliance check (/passport, /passport/verify; EXO 3.0 G3; templates.ts + migrator + shadow-marker parity)
       'Agent-Readiness Scoring (EXO 3.0', // coordination-vs-judgment diagnostic (/agent-readiness/score; EXO 3.0 G2; templates.ts + migrator + shadow-marker parity)
+      'Learning-Velocity Metric (EXO 3.0', // forward-looking learning KPI (/metrics/learning-velocity; EXO 3.0 G5; templates.ts + migrator + shadow-marker parity)
     ];
 
     for (const section of featureSections) {

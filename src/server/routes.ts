@@ -4879,6 +4879,60 @@ export function createRoutes(ctx: RouteContext): Router {
     res.json({ ...summary, features });
   });
 
+  // Learning-velocity metric (EXO 3.0 — Salim Ismail, "Your KPI System Is
+  // Training You to Miss the Future"): measure how fast the org is LEARNING
+  // (adaptability, experimentation, capability creation) rather than backward-
+  // looking operational throughput. Gathers Instar's real learning events
+  // (registered learnings, corrections, evolution actions) and computes velocity
+  // + trend + diversity. Read-only + advisory.
+  //
+  // ?windowDays=N (default 30) → { totalEvents, eventsPerDay, byType,
+  //   typeDiversity, trend, adaptabilityScore, reason }
+  router.get('/metrics/learning-velocity', async (req, res) => {
+    try {
+      const windowDays = req.query.windowDays
+        ? Math.max(1, parseInt(req.query.windowDays as string, 10) || 30)
+        : 30;
+      const { computeLearningVelocity } = await import('../core/LearningVelocityScorer.js');
+      const fs = await import('node:fs');
+      const path = await import('node:path');
+      const events: { timestamp: string; type: string }[] = [];
+      const tsField = (o: Record<string, unknown>): unknown =>
+        o.createdAt ?? o.timestamp ?? o.date ?? o.ts ?? o.loggedAt ?? o.addedAt;
+      const push = (ts: unknown, type: string) => {
+        if (ts === undefined || ts === null) return;
+        const iso = typeof ts === 'number' ? new Date(ts).toISOString() : String(ts);
+        events.push({ timestamp: iso, type });
+      };
+      // learning-registry.json → registered learnings
+      try {
+        const p = path.join(ctx.config.stateDir, 'learning-registry.json');
+        if (fs.existsSync(p)) {
+          const reg = JSON.parse(fs.readFileSync(p, 'utf-8'));
+          for (const l of (reg.learnings ?? [])) push(tsField(l), 'learning');
+        }
+      } catch { /* skip unreadable source */ }
+      // best-effort JSONL sources
+      const jsonlSources: [string, string][] = [
+        ['state/corrections.jsonl', 'correction'],
+        ['logs/evolution-actions.jsonl', 'evolution'],
+      ];
+      for (const [rel, type] of jsonlSources) {
+        try {
+          const p = path.join(ctx.config.stateDir, rel);
+          if (!fs.existsSync(p)) continue;
+          for (const line of fs.readFileSync(p, 'utf-8').split('\n')) {
+            if (!line.trim()) continue;
+            try { push(tsField(JSON.parse(line)), type); } catch { /* skip bad line */ }
+          }
+        } catch { /* skip unreadable source */ }
+      }
+      res.json(computeLearningVelocity(events, new Date().toISOString(), windowDays));
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to compute learning velocity' });
+    }
+  });
+
   // ── Per-agent ResourceLedger (Phase A: durable rate-limit events) ────
   // Read-only. 503 when the ledger is unavailable (no stateDir / init failed /
   // monitoring.resourceLedger.enabled:false leaves it null). Never gates.
