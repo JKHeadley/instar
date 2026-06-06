@@ -2968,11 +2968,30 @@ The standing program that each apprenticeship/mentorship instance plugs into (e.
     if (content.includes('**Apprenticeship Program**') && !content.includes('keystoneBalance')) {
       const anchor = '- **When to use** (PROACTIVE): when starting or closing a mentorship/apprenticeship instance, drive it through the registry + transitions so the retro-harvest is reviewed before the next instance starts and the lessons are captured before this one closes — never track the lifecycle by memory.';
       if (content.includes(anchor)) {
-        const balanceLine = '\n- Layer-balance health: `GET /apprenticeship/instances/:id/role-coverage` returns a `keystoneBalance` block — `{ keystoneAxis, keystoneCycleCount, lastKeystoneAt, oversightSinceKeystone, starved, reason }` — answering "is my deepest layer (the real mentor→mentee drive) actually firing, or have I drifted into just reviewing/overseeing?" `starved:true` = the mentee layer is under-firing relative to ongoing activity (the silent "mentor-heavy/mentee-light" drift). Observe-only; tune via `?oversightStarvationThreshold=N`. **When to use** (PROACTIVE): before deciding the loop is healthy — if starved, drive the mentee layer (a real `mentor-mentee-differential` cycle through the dogfooded channel), not another review.';
+        const balanceLine = '\n- Layer-balance health: `GET /apprenticeship/instances/:id/role-coverage` returns a `keystoneBalance` block — `{ keystoneAxis, keystoneCycleCount, lastKeystoneAt, oversightSinceKeystone, starved, dormant, lastKeystoneAgeMs, reason }` — answering "is my deepest layer (the real mentor→mentee drive) actually firing, or have I drifted into just reviewing/overseeing?" `starved:true` = the mentee layer is under-firing relative to ongoing oversight; `dormant:true` = the keystone has gone wall-clock silent past the threshold (the blind spot the bare oversight count reads as "healthy") — check both. Observe-only; tune via `?oversightStarvationThreshold=N` and `?keystoneDormancyMs=N`. **When to use** (PROACTIVE): before deciding the loop is healthy — if starved OR dormant, drive the mentee layer (a real `mentor-mentee-differential` cycle through the dogfooded channel), not another review.';
         content = content.replace(anchor, anchor + balanceLine);
         patched = true;
         result.upgraded.push('CLAUDE.md: added apprenticeship layer-balance (keystoneBalance) awareness');
       }
+    }
+
+    // Dormancy dimension (this change): agents that ALREADY carry the
+    // keystoneBalance line from the prior layer-balance migration have only the
+    // bare `{ ...starved, reason }` shape — they don't know to check `dormant`,
+    // the wall-clock-silence blind spot the oversight count can't see. Upgrade the
+    // shape in place (the JSON-shape substring is identical across the template and
+    // prior-migration variants, so one replace covers both). Idempotent: the sniff
+    // requires the pre-dormancy shape present, which the replacement removes.
+    if (
+      content.includes('keystoneBalance') &&
+      content.includes('oversightSinceKeystone, starved, reason }')
+    ) {
+      content = content.replace(
+        /oversightSinceKeystone, starved, reason \}/g,
+        'oversightSinceKeystone, starved, dormant, lastKeystoneAgeMs, reason }',
+      );
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added keystoneBalance dormancy field awareness');
     }
 
     // Transcript-audit gate (#864 follow-through): agents that ALREADY carry the

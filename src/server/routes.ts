@@ -13106,10 +13106,16 @@ export function createRoutes(ctx: RouteContext): Router {
     if (!ctx.apprenticeshipCycleStore) { res.status(503).json({ error: 'apprenticeship cycle store disabled' }); return; }
     try {
       // Optional ?oversightStarvationThreshold=N tunes the keystone-balance
-      // signal (observe-only; default DEFAULT_KEYSTONE_STARVATION_OVERSIGHT).
+      // starvation signal; ?keystoneDormancyMs=N tunes the wall-clock dormancy
+      // signal (both observe-only; defaults DEFAULT_KEYSTONE_STARVATION_OVERSIGHT
+      // / DEFAULT_KEYSTONE_DORMANCY_MS).
+      const opts: { oversightStarvationThreshold?: number; keystoneDormancyMs?: number } = {};
       const raw = req.query.oversightStarvationThreshold;
       const parsed = typeof raw === 'string' ? Number.parseInt(raw, 10) : NaN;
-      const opts = Number.isInteger(parsed) && parsed > 0 ? { oversightStarvationThreshold: parsed } : {};
+      if (Number.isInteger(parsed) && parsed > 0) opts.oversightStarvationThreshold = parsed;
+      const rawDormancy = req.query.keystoneDormancyMs;
+      const parsedDormancy = typeof rawDormancy === 'string' ? Number.parseInt(rawDormancy, 10) : NaN;
+      if (Number.isFinite(parsedDormancy) && parsedDormancy > 0) opts.keystoneDormancyMs = parsedDormancy;
       res.json(ctx.apprenticeshipCycleStore.roleCoverage(req.params.id, opts));
     } catch (err) {
       res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
