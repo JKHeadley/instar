@@ -3491,6 +3491,26 @@ ${CONTEXT_WALL_ESCALATION_NOTE}`;
       result.skipped.push('CLAUDE.md: Honest standby + escalation already present');
     }
 
+    // Outbound duplicate-message suppression (2026-06-06) — tells the agent
+    // that the relay drops an exact re-send of the same long reply, and how to
+    // force a repeat. Without it an agent puzzled why its re-sent status didn't
+    // appear has no grounded answer. Idempotent via the marker.
+    if (!content.includes('Duplicate-message suppression')) {
+      const section = `
+## Duplicate-message suppression (2026-06-06)
+
+The Telegram relay (\`/telegram/reply\`) now drops an exact duplicate: if I send the SAME message text to the SAME topic again within ~15 minutes, the repeat is suppressed and never reaches the user (the first send still goes through). This kills the "same status posted 2–3 times" problem — usually caused by a session re-announcing its last status after a restart/recovery, or a relay re-emitting identical content under a fresh delivery id. It is length-gated, so brief acks ("Got it, on it") are never suppressed, and it is per-topic, so the same text to a different topic still sends.
+
+- If I genuinely need to send the same long text twice (rare), I pass \`metadata.allowDuplicate: true\` on the reply to bypass the dedup.
+- If a user asks "why didn't my message resend / I only see it once?" — explain: an exact duplicate within the window is suppressed on purpose; that is the duplicate-message fix, not a delivery failure.
+`;
+      content += '\n' + section;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Duplicate-message suppression section');
+    } else {
+      result.skipped.push('CLAUDE.md: Duplicate-message suppression section already present');
+    }
+
     // Topic-Flood Guard (2026-05-28 lockdown) — the structural backstop that
     // caps how many forum topics a single attention source may spawn. Without
     // this section an agent asked "why are my notices grouped / where did topic

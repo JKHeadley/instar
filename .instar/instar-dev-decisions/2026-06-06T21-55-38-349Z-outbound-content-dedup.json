@@ -1,0 +1,21 @@
+{
+  "ts": "2026-06-06T21:55:38.349Z",
+  "slug": "outbound-content-dedup",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new exported class / subsystem added",
+    "new capability: new config key added"
+  ],
+  "belowFloor": true,
+  "files": 3,
+  "loc": 171,
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "Not a regression. The /telegram/reply chokepoint always had only an id-based dedup (catches re-POST of the same delivery id) and an LLM tone gate (skipped for proxy/relay) — never a deterministic CONTENT dedup. The gap was latent from the relay's introduction; it surfaced as agents began re-announcing status after restarts/recoveries and cross-machine relay re-emitted identical content under fresh ids (2026-06-06 EXO logs: byte-identical send 13.5 min apart). Adjacent to the restart/recovery churn from the same day's compaction work."
+  },
+  "verdict": "pass"
+}

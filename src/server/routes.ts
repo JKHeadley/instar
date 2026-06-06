@@ -196,6 +196,7 @@ import { ProcessIntegrity } from '../core/ProcessIntegrity.js';
 import type { MessageRouter } from '../messaging/MessageRouter.js';
 import type { SessionSummarySentinel } from '../messaging/SessionSummarySentinel.js';
 import { decideIngress, commitInboundReply, dedupeKeyFor } from '../messaging/ingressDedup.js';
+import { OutboundContentDedup } from '../messaging/OutboundContentDedup.js';
 import { RelayContentDedup } from '../messaging/relayContentDedup.js';
 import type { SpawnRequestManager } from '../messaging/SpawnRequestManager.js';
 import { getOutboundQueueStatus, cleanupDeliveredOutbound, buildAgentList } from '../messaging/GitSyncTransport.js';
@@ -1186,6 +1187,19 @@ export function createRoutes(ctx: RouteContext): Router {
   // (Not using a Set — we need TTL.) Helper functions above provide that.
   const deliveryIdLruHelpers = { has: deliveryLruHas, record: deliveryLruRecord };
   void deliveryIdLruHelpers; // referenced via the helpers; alias kept for grep
+
+  // ── /telegram/reply content-dedup (2026-06-06 duplicate-message fix) ──
+  // The delivery-id LRU above only catches a re-POST of the SAME id. It does
+  // NOT catch the agent re-sending the SAME TEXT under a fresh id (an agent
+  // re-announcing its last status after a restart/recovery, or a relay
+  // re-emitting identical content) — the observed bug was a byte-identical
+  // status sent 13.5 min apart. This deterministic content fingerprint catches
+  // that, runs BEFORE the tone gate (so it also covers the proxy/relay paths
+  // the tone gate skips), and honors the existing `allowDuplicate` escape hatch.
+  const outboundContentDedup = new OutboundContentDedup(
+    (ctx.config as unknown as { outboundContentDedup?: import('../messaging/OutboundContentDedup.js').OutboundContentDedupConfig })
+      .outboundContentDedup ?? {},
+  );
 
   // ── Messaging tone gate ──────────────────────────────────────────
   //
@@ -7149,6 +7163,20 @@ export function createRoutes(ctx: RouteContext): Router {
     const allowDebugText = metadata?.allowDebugText === true;
     const allowDuplicate = metadata?.allowDuplicate === true;
     const allowLocalhostLink = metadata?.allowLocalhostLink === true;
+
+    // ── Content-dedup (2026-06-06): suppress the agent re-sending the SAME
+    // text to the same topic within the window (an agent re-announcing its last
+    // status after a restart/recovery, or a relay re-emitting identical content
+    // under a fresh delivery id — the delivery-id LRU above can't catch that).
+    // Deterministic, before the tone gate, so it also covers proxy/relay sends
+    // the gate skips. Honors the existing `allowDuplicate` escape hatch; brief
+    // acks are below the length floor and never suppressed. Recorded only after
+    // a successful send (below), so a failed send's retry isn't lost.
+    if (!allowDuplicate && outboundContentDedup.isDuplicate(topicId, text)) {
+      console.log(`[telegram/reply] suppressed duplicate content for topic ${topicId} (identical text within window)`);
+      res.json({ ok: true, topicId, suppressedDuplicate: true });
+      return;
+    }
     // Skip the LOCAL tone gate when this server will RELAY the reply through the
     // lease holder (a tokenless pool standby). The holder runs ITS OWN tone gate
     // on receipt, so the standby gating too is redundant — and worse, it adds a
@@ -7178,6 +7206,10 @@ export function createRoutes(ctx: RouteContext): Router {
       // ever return a placeholder 0 and so reported "ok" even when nothing was
       // delivered (the false-success-under-load class).
       const sendResult = await ctx.telegram.sendToTopic(topicId, text, { skipStallClear: isProxy });
+      // Record the content fingerprint AFTER a successful send so an identical
+      // re-send within the window is suppressed — but a FAILED send (which
+      // throws before here) is never recorded, so its legitimate retry isn't lost.
+      outboundContentDedup.record(topicId, text);
       // Clear injection tracker — but NOT for proxy messages (PresenceProxy)
       // Proxy messages should not reset stall detection timers
       if (!isProxy) {
