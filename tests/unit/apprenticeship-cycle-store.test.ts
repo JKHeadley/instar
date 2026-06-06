@@ -41,6 +41,19 @@ describe('ApprenticeshipCycleStore', () => {
     };
   }
 
+  /** A minimal valid transcript-audit attachment (the #864 follow-through gate). */
+  function audit(over: Record<string, unknown> = {}) {
+    return {
+      topicIds: [1052],
+      window: { start: '2026-06-03T07:00:00.000Z', end: '2026-06-03T08:00:00.000Z' },
+      summary: { 'asks-of-user': 0, total: 0 },
+      findingDedupKeys: [],
+      generatedAt: '2026-06-03T08:01:00.000Z',
+      ledger: 'dry-run',
+      ...over,
+    };
+  }
+
   it('records, lists, gets, and closes a cycle with JSON fields intact', () => {
     const store = makeStore();
     const recorded = store.record({
@@ -172,7 +185,7 @@ describe('ApprenticeshipCycleStore', () => {
 
     it('a telegram-playwright differential FIRES the keystone axis', () => {
       const store = makeStore();
-      store.record(diff({ channel: 'telegram-playwright' }));
+      store.record(diff({ channel: 'telegram-playwright', transcriptAudit: audit() }));
       const cov = store.roleCoverage('codey-to-gemini');
       expect(cov.axes['mentor-mentee-differential'].fired).toBe(true);
       expect(cov.shortcutDifferentialCount).toBe(0);
@@ -280,6 +293,106 @@ describe('ApprenticeshipCycleStore', () => {
       // And NEW writes through the migrated store are still gated.
       expect(() => store.record(base())).toThrow(/operatorSeatUx is required/);
       store.close();
+    });
+  });
+
+  describe('transcript-audit artifact gate (#864 follow-through — Observation Needs Structure)', () => {
+    const tp = (over: Record<string, unknown> = {}) => ({
+      instanceId: 'echo-to-codey',
+      cycleNumber: 1,
+      task: 't',
+      menteeOutput: 'm',
+      channel: 'telegram-playwright',
+      operatorSeatUx: ux(),
+      ...over,
+    });
+
+    it('REFUSES a telegram-playwright cycle without the audit, teaching the exact CLI', () => {
+      const store = makeStore();
+      expect(() => store.record(tp())).toThrow(/transcriptAudit is required for telegram-playwright cycles/);
+      expect(() => store.record(tp())).toThrow(/dev:post-drive-transcript-audit/); // names the producing command
+      expect(() => store.record(tp())).toThrow(/--history-base-url/); // and the cross-agent read path
+      expect(store.list()).toHaveLength(0); // nothing persisted on refusal
+      store.close();
+    });
+
+    it('the audit stays OPTIONAL on non-dogfooded channels (null when not supplied)', () => {
+      const store = makeStore();
+      for (const channel of ['direct-shortcut', 'threadline-backup', undefined]) {
+        const r = store.record(tp({ channel, id: `c-${channel ?? 'none'}` }));
+        expect(r.transcriptAudit).toBeNull();
+      }
+      store.close();
+    });
+
+    it('a supplied block is validated on ANY channel (malformed never persists silently)', () => {
+      const store = makeStore();
+      expect(() => store.record(tp({ channel: 'direct-shortcut', transcriptAudit: 'ran it, trust me' })))
+        .toThrow(/transcriptAudit must be an object/);
+      store.close();
+    });
+
+    it('REFUSES malformed blocks on both sides of each boundary', () => {
+      const store = makeStore();
+      expect(() => store.record(tp({ transcriptAudit: audit({ topicIds: [] }) }))).toThrow(/topicIds must be a non-empty array/);
+      expect(() => store.record(tp({ transcriptAudit: audit({ topicIds: [0] }) }))).toThrow(/positive integers/);
+      expect(() => store.record(tp({ transcriptAudit: audit({ window: { start: 'nope', end: '2026-06-03T08:00:00.000Z' } }) }))).toThrow(/window must be/);
+      expect(() => store.record(tp({ transcriptAudit: audit({ window: { start: '2026-06-03T09:00:00.000Z', end: '2026-06-03T08:00:00.000Z' } }) }))).toThrow(/end must be at or after/);
+      expect(() => store.record(tp({ transcriptAudit: audit({ summary: { total: -1 } }) }))).toThrow(/non-negative integer counts/);
+      expect(() => store.record(tp({ transcriptAudit: audit({ summary: { total: 1.5 } }) }))).toThrow(/non-negative integer counts/);
+      expect(() => store.record(tp({ transcriptAudit: audit({ findingDedupKeys: [''] }) }))).toThrow(/findingDedupKeys must be a string array/);
+      expect(() => store.record(tp({ transcriptAudit: audit({ generatedAt: 'whenever' }) }))).toThrow(/generatedAt must be a parseable/);
+      expect(() => store.record(tp({ transcriptAudit: audit({ ledger: 'verbal' }) }))).toThrow(/ledger must be one of local\|remote\|dry-run\|failed/);
+      expect(() => store.record(tp({ transcriptAudit: audit({ notes: 42 }) }))).toThrow(/notes must be a string/);
+      store.close();
+    });
+
+    it('ACCEPTS a valid block and round-trips it through get()', () => {
+      const store = makeStore();
+      const r = store.record(tp({
+        transcriptAudit: audit({
+          summary: { 'asks-of-user': 1, 'infra-noise': 2, total: 3 },
+          findingDedupKeys: ['post-drive-transcript-audit::asks-of-user::topic-1052::abc123'],
+          ledger: 'local',
+          notes: 'filed during the 13435 run-2 drive',
+        }),
+      }));
+      const read = store.get(r.id)!.transcriptAudit!;
+      expect(read.summary.total).toBe(3);
+      expect(read.findingDedupKeys).toHaveLength(1);
+      expect(read.ledger).toBe('local');
+      expect(read.window.start).toBe('2026-06-03T07:00:00.000Z');
+      store.close();
+    });
+
+    it('legacy rows (pre-gate DB) migrate and read as transcriptAudit: null; new writes are gated', () => {
+      const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'apprenticeship-cycles-'));
+      tmpDirs.push(tmp);
+      const dbPath = path.join(tmp, 'cycles.db');
+
+      // Pre-#856-era table: no UX column AND no audit column.
+      const legacy = new DatabaseCtor(dbPath);
+      legacy.exec(`CREATE TABLE apprenticeship_cycles (
+        id TEXT PRIMARY KEY, instance_id TEXT NOT NULL, cycle_number INTEGER NOT NULL,
+        created_at TEXT NOT NULL, task TEXT NOT NULL, mentee_output TEXT NOT NULL,
+        mentor_flagged_json TEXT NOT NULL, overseer_diff_json TEXT NOT NULL,
+        coaching TEXT NOT NULL, infra_items_json TEXT NOT NULL,
+        kind TEXT NOT NULL, status TEXT NOT NULL, channel TEXT NOT NULL DEFAULT 'unknown'
+      )`);
+      legacy.prepare(`INSERT INTO apprenticeship_cycles VALUES
+        ('old-tp','i',1,'2026-06-01T00:00:00.000Z','t','m','[]','[]','','[]','unknown','open','telegram-playwright')`).run();
+      legacy.close();
+
+      const store = new ApprenticeshipCycleStore({ dbPath, now: () => new Date('2026-06-03T08:00:00.000Z') });
+      // Grandfathered: the old telegram-playwright row reads honestly as "no audit".
+      expect(store.get('old-tp')!.transcriptAudit).toBeNull();
+      // The migration is idempotent across reopen.
+      store.close();
+      const reopened = new ApprenticeshipCycleStore({ dbPath, now: () => new Date('2026-06-03T08:00:00.000Z') });
+      expect(reopened.get('old-tp')!.transcriptAudit).toBeNull();
+      // New telegram-playwright writes through the migrated store are gated.
+      expect(() => reopened.record(tp())).toThrow(/transcriptAudit is required/);
+      reopened.close();
     });
   });
 });

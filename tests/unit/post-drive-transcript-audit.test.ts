@@ -1,9 +1,26 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import {
   classifyTranscriptUx,
   runPostDriveTranscriptAudit,
+  runPostDriveTranscriptAuditCli,
   type TranscriptMessage,
 } from '../../src/commands/postDriveTranscriptAudit.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+
+const tmpDirs: string[] = [];
+
+afterEach(() => {
+  for (const dir of tmpDirs.splice(0)) {
+    SafeFsExecutor.safeRmSync(dir, {
+      recursive: true,
+      force: true,
+      operation: 'tests/unit/post-drive-transcript-audit.test.ts:afterEach',
+    });
+  }
+});
 
 const window = {
   start: '2026-06-05T18:15:00.000Z',
@@ -125,5 +142,118 @@ describe('post-drive transcript audit', () => {
     expect(filed).toBe(0);
     expect(report.summary['asks-of-user']).toBe(1);
     expect(report.observations).toEqual([{ dedupKey: report.findings[0].dedupKey, filed: false }]);
+  });
+
+  describe('split read/write servers (--history-base-url, the cross-agent mentor flow)', () => {
+    function makeConfigDir(): string {
+      const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'pdta-cli-'));
+      tmpDirs.push(tmp);
+      fs.mkdirSync(path.join(tmp, '.instar'), { recursive: true });
+      fs.writeFileSync(
+        path.join(tmp, '.instar', 'config.json'),
+        JSON.stringify({ projectName: 'pdta-test', port: 4099, authToken: 'local-token' }),
+      );
+      return tmp;
+    }
+
+    it('reads history from --history-base-url with the remote token, files findings to the local ledger with the local token', async () => {
+      const dir = makeConfigDir();
+      const calls: Array<{ url: string; auth: string | undefined }> = [];
+      const originalFetch = globalThis.fetch;
+      globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+        const u = String(url);
+        const headers = (init?.headers ?? {}) as Record<string, string>;
+        calls.push({ url: u, auth: headers.Authorization });
+        if (u.includes('/telegram/topics/')) {
+          return new Response(JSON.stringify({ messages: [
+            { messageId: 7, topicId: 1052, text: 'Please resend that file again', fromUser: false, timestamp: '2026-06-05T18:16:00.000Z' },
+          ] }), { status: 200 });
+        }
+        if (u.includes('/framework-issues/observe')) {
+          return new Response(JSON.stringify({ created: true, issueId: 'iss-1' }), { status: 200 });
+        }
+        throw new Error(`unexpected fetch: ${u}`);
+      }) as typeof fetch;
+      const originalEnv = process.env.INSTAR_HISTORY_AUTH_TOKEN;
+      process.env.INSTAR_HISTORY_AUTH_TOKEN = 'mentee-token';
+
+      try {
+        const exitCode = await runPostDriveTranscriptAuditCli({
+          topic: ['1052'],
+          start: window.start,
+          end: window.end,
+          dir,
+          json: true,
+          historyBaseUrl: 'http://localhost:4777',
+        });
+        expect(exitCode).toBe(0);
+
+        const historyCall = calls.find((c) => c.url.includes('/telegram/topics/'))!;
+        const observeCall = calls.find((c) => c.url.includes('/framework-issues/observe'))!;
+        // Read side: the MENTEE's server, with the history token — never the local one.
+        expect(historyCall.url.startsWith('http://localhost:4777/')).toBe(true);
+        expect(historyCall.auth).toBe('Bearer mentee-token');
+        // Write side: the auditing agent's OWN ledger with its own token.
+        expect(observeCall.url.startsWith('http://localhost:4099/')).toBe(true);
+        expect(observeCall.auth).toBe('Bearer local-token');
+      } finally {
+        globalThis.fetch = originalFetch;
+        if (originalEnv === undefined) delete process.env.INSTAR_HISTORY_AUTH_TOKEN;
+        else process.env.INSTAR_HISTORY_AUTH_TOKEN = originalEnv;
+      }
+    });
+
+    it('sends NO auth header to a remote history server when no history token is provided (never leaks the local token)', async () => {
+      const dir = makeConfigDir();
+      const calls: Array<{ url: string; auth: string | undefined }> = [];
+      const originalFetch = globalThis.fetch;
+      globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+        const u = String(url);
+        const headers = (init?.headers ?? {}) as Record<string, string>;
+        calls.push({ url: u, auth: headers.Authorization });
+        return new Response(JSON.stringify({ messages: [] }), { status: 200 });
+      }) as typeof fetch;
+      const originalEnv = process.env.INSTAR_HISTORY_AUTH_TOKEN;
+      delete process.env.INSTAR_HISTORY_AUTH_TOKEN;
+
+      try {
+        await runPostDriveTranscriptAuditCli({
+          topic: ['1052'],
+          start: window.start,
+          end: window.end,
+          dir,
+          json: true,
+          historyBaseUrl: 'http://localhost:4777',
+        });
+        const historyCall = calls.find((c) => c.url.includes('/telegram/topics/'))!;
+        expect(historyCall.auth).toBeUndefined();
+      } finally {
+        globalThis.fetch = originalFetch;
+        if (originalEnv !== undefined) process.env.INSTAR_HISTORY_AUTH_TOKEN = originalEnv;
+      }
+    });
+
+    it('defaults to the single-server #864 flow when --history-base-url is omitted', async () => {
+      const dir = makeConfigDir();
+      const calls: string[] = [];
+      const originalFetch = globalThis.fetch;
+      globalThis.fetch = (async (url: string | URL | Request) => {
+        calls.push(String(url));
+        return new Response(JSON.stringify({ messages: [] }), { status: 200 });
+      }) as typeof fetch;
+
+      try {
+        await runPostDriveTranscriptAuditCli({
+          topic: ['1052'],
+          start: window.start,
+          end: window.end,
+          dir,
+          json: true,
+        });
+        expect(calls.every((u) => u.startsWith('http://localhost:4099/'))).toBe(true);
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+    });
   });
 });

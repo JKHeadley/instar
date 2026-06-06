@@ -131,6 +131,39 @@ describe('Apprenticeship Program E2E lifecycle (feature is alive)', () => {
     expect(res.body.overseerDifferential).toEqual(['overseer finding']);
   });
 
+  it('the transcript-audit gate is ALIVE through AgentServer: telegram-playwright refuses without it, records with it', async () => {
+    const base = {
+      instanceId: 'echo-to-codey',
+      cycleNumber: 3,
+      task: 'Playwright drive of the mentee',
+      menteeOutput: 'mentee output',
+      channel: 'telegram-playwright',
+      operatorSeatUx: { dupNotices: 0, infraNoiseMsgs: 0, asksOfUser: 0, contentFreeUpdates: 0, modalitiesExercised: ['text'], duringRestartChurn: false },
+    };
+
+    const refused = await request(app).post('/apprenticeship/cycles').set(auth()).send({ ...base, id: 'e2e-tp-refused' });
+    expect(refused.status).toBe(400);
+    expect(refused.body.error).toContain('transcriptAudit is required for telegram-playwright cycles');
+
+    const accepted = await request(app).post('/apprenticeship/cycles').set(auth()).send({
+      ...base,
+      id: 'e2e-tp-audited',
+      transcriptAudit: {
+        topicIds: [1052],
+        window: { start: '2026-06-03T07:00:00.000Z', end: '2026-06-03T08:00:00.000Z' },
+        summary: { total: 0 },
+        findingDedupKeys: [],
+        generatedAt: '2026-06-03T08:01:00.000Z',
+        ledger: 'dry-run',
+      },
+    });
+    expect(accepted.status).toBe(201);
+
+    const fetched = await request(app).get('/apprenticeship/cycles/e2e-tp-audited').set(auth());
+    expect(fetched.status).toBe(200);
+    expect(fetched.body.transcriptAudit.ledger).toBe('dry-run');
+  });
+
   it('GET /apprenticeship/cycles/overdue is alive (200, not 503) through AgentServer when enabled', async () => {
     await request(app)
       .post('/apprenticeship/cycles')

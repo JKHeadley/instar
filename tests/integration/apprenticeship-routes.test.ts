@@ -26,6 +26,7 @@ import { validateRetroHarvest } from '../../src/core/retroHarvestValidator.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { ApprenticeshipCycleStore } from '../../src/monitoring/ApprenticeshipCycleStore.js';
 import { ApprenticeshipCycleSlaMonitor } from '../../src/monitoring/ApprenticeshipCycleSlaMonitor.js';
+import { FrameworkIssueLedger } from '../../src/monitoring/FrameworkIssueLedger.js';
 
 const AUTH = 'apprenticeship-routes-token';
 const auth = () => ({ Authorization: `Bearer ${AUTH}` });
@@ -202,6 +203,15 @@ describe('/apprenticeship routes (integration)', () => {
           dupNotices: 0, infraNoiseMsgs: 0, asksOfUser: 0, contentFreeUpdates: 0,
           modalitiesExercised: ['text'], duringRestartChurn: false,
         },
+        // telegram-playwright cycles require the objective audit artifact (#864 gate).
+        transcriptAudit: {
+          topicIds: [1052],
+          window: { start: '2026-06-03T07:00:00.000Z', end: '2026-06-03T08:00:00.000Z' },
+          summary: { total: 0 },
+          findingDedupKeys: [],
+          generatedAt: '2026-06-03T08:01:00.000Z',
+          ledger: 'dry-run',
+        },
       });
     expect(created.status).toBe(201);
     expect(created.body.kind).toBe('mentor-mentee-differential');
@@ -301,6 +311,120 @@ describe('/apprenticeship routes (integration)', () => {
     expect(coverage.body.axes['overseer-apprentice-devreview'].fired).toBe(true);
     expect(coverage.body.axes['mentor-mentee-differential'].fired).toBe(false);
     store.close();
+  });
+
+  // ── transcript-audit artifact gate (#864 follow-through) ───────────────
+  describe('transcript-audit gate over HTTP', () => {
+    const AUDIT_OK = {
+      topicIds: [1052],
+      window: { start: '2026-06-03T07:00:00.000Z', end: '2026-06-03T08:00:00.000Z' },
+      summary: { 'asks-of-user': 0, total: 0 },
+      findingDedupKeys: [],
+      generatedAt: '2026-06-03T08:01:00.000Z',
+      ledger: 'dry-run',
+    };
+    const tpCycle = (over: Record<string, unknown> = {}) => ({
+      instanceId: 'echo-to-codey',
+      cycleNumber: 1,
+      task: 'playwright drive',
+      menteeOutput: 'mentee did the thing',
+      channel: 'telegram-playwright',
+      operatorSeatUx: UXOK,
+      ...over,
+    });
+
+    function makeLedger(): FrameworkIssueLedger {
+      return new FrameworkIssueLedger({ dbPath: path.join(stateDir, 'server-data', 'framework-issues.db') });
+    }
+
+    it('REFUSES a telegram-playwright cycle without the audit, teaching the producing CLI', async () => {
+      const store = makeCycleStore();
+      const app = appWith(ctxFor(stateDir, makeProgram(), store));
+      const refused = await request(app).post('/apprenticeship/cycles').set(auth()).send(tpCycle());
+      expect(refused.status).toBe(400);
+      expect(refused.body.error).toContain('transcriptAudit is required for telegram-playwright cycles');
+      expect(refused.body.error).toContain('dev:post-drive-transcript-audit');
+      store.close();
+    });
+
+    it('ACCEPTS a dry-run audit block and round-trips it on GET', async () => {
+      const store = makeCycleStore();
+      const app = appWith(ctxFor(stateDir, makeProgram(), store));
+      const created = await request(app).post('/apprenticeship/cycles').set(auth())
+        .send(tpCycle({ id: 'cycle-audited', transcriptAudit: AUDIT_OK }));
+      expect(created.status).toBe(201);
+      expect(created.body.transcriptAudit.ledger).toBe('dry-run');
+
+      const fetched = await request(app).get('/apprenticeship/cycles/cycle-audited').set(auth());
+      expect(fetched.status).toBe(200);
+      expect(fetched.body.transcriptAudit.topicIds).toEqual([1052]);
+      expect(fetched.body.transcriptAudit.window.start).toBe('2026-06-03T07:00:00.000Z');
+      store.close();
+    });
+
+    it("REFUSES a ledger:'local' claim whose dedup keys do NOT resolve in the real ledger (anti-fabrication)", async () => {
+      const store = makeCycleStore();
+      const ledger = makeLedger();
+      const ctx = ctxFor(stateDir, makeProgram(), store);
+      (ctx as unknown as Record<string, unknown>).frameworkIssueLedger = ledger;
+      const app = appWith(ctx);
+
+      const refused = await request(app).post('/apprenticeship/cycles').set(auth()).send(tpCycle({
+        transcriptAudit: {
+          ...AUDIT_OK,
+          ledger: 'local',
+          summary: { 'asks-of-user': 1, total: 1 },
+          findingDedupKeys: ['post-drive-transcript-audit::asks-of-user::topic-1052::fabricated00'],
+        },
+      }));
+      expect(refused.status).toBe(400);
+      expect(refused.body.error).toContain('none of the claimed');
+      ledger.close();
+      store.close();
+    });
+
+    it("ACCEPTS a ledger:'local' claim whose dedup key actually resolves", async () => {
+      const store = makeCycleStore();
+      const ledger = makeLedger();
+      const dedupKey = 'post-drive-transcript-audit::asks-of-user::topic-1052::real0001';
+      ledger.recordObservation({
+        framework: 'codex-cli',
+        bucket: 'instar-integration-gap',
+        title: 'Post-drive transcript asked the operator to resend',
+        dedupKey,
+      });
+      const ctx = ctxFor(stateDir, makeProgram(), store);
+      (ctx as unknown as Record<string, unknown>).frameworkIssueLedger = ledger;
+      const app = appWith(ctx);
+
+      const created = await request(app).post('/apprenticeship/cycles').set(auth()).send(tpCycle({
+        id: 'cycle-local-verified',
+        transcriptAudit: {
+          ...AUDIT_OK,
+          ledger: 'local',
+          summary: { 'asks-of-user': 1, total: 1 },
+          findingDedupKeys: [dedupKey],
+        },
+      }));
+      expect(created.status).toBe(201);
+      expect(created.body.transcriptAudit.findingDedupKeys).toEqual([dedupKey]);
+      ledger.close();
+      store.close();
+    });
+
+    it('skips the ledger cross-check gracefully when no ledger is wired (declaration still recorded)', async () => {
+      const store = makeCycleStore();
+      const app = appWith(ctxFor(stateDir, makeProgram(), store)); // no frameworkIssueLedger on ctx
+      const created = await request(app).post('/apprenticeship/cycles').set(auth()).send(tpCycle({
+        transcriptAudit: {
+          ...AUDIT_OK,
+          ledger: 'local',
+          findingDedupKeys: ['post-drive-transcript-audit::infra-noise::topic-1052::unverified'],
+        },
+      }));
+      expect(created.status).toBe(201);
+      store.close();
+    });
   });
 
   it('role-coverage route requires bearer, 503s without the store, and detects role drift', async () => {

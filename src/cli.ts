@@ -2458,6 +2458,8 @@ program
   .requiredOption('--end <timestamp>', 'Window end timestamp (any Date.parse-compatible value)')
   .option('--limit <n>', 'Messages to read per topic (max 100)', (v) => parseInt(v, 10))
   .option('--base-url <url>', 'Instar server base URL (defaults to this project config port)')
+  .option('--history-base-url <url>', "Server holding the drive TRANSCRIPT when it is not this one (e.g. the mentee's server) — findings still file to --base-url's ledger")
+  .option('--history-auth-token <token>', 'Bearer token for --history-base-url reads (prefer the INSTAR_HISTORY_AUTH_TOKEN env var — flags are visible in ps)')
   .option('--dir <path>', 'Project directory to load config from')
   .option('--dry-run', 'Print report without filing framework-issue observations')
   .option('--json', 'Print structured JSON report')
@@ -2468,6 +2470,8 @@ program
     end: string;
     limit?: number;
     baseUrl?: string;
+    historyBaseUrl?: string;
+    historyAuthToken?: string;
     dir?: string;
     dryRun?: boolean;
     json?: boolean;
