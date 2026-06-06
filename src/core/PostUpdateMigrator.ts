@@ -74,6 +74,16 @@ const AUP_WEDGE_CLAUDE_MD_NOTE = `
 - **Fresh respawn via API:** \`POST /sessions/refresh\` with \`{"sessionName":"<tmux-name>","fresh":true,"reason":"…"}\` kills + respawns WITHOUT \`--resume\` (clears the topic's resume UUID first). Use it when a transcript is poisoned — a normal refresh would re-wedge.
 `;
 
+/**
+ * CLAUDE.md note for the /compact context-wall escalation rung (2026-06-06).
+ * Marker for idempotency: 'Context-wall recovery escalation'.
+ */
+const CONTEXT_WALL_ESCALATION_NOTE = `
+### Context-wall recovery escalation (2026-06-06)
+
+When a session is genuinely stuck at the context wall ("Context limit reached · /compact or /clear to continue" / "conversation too long"), recovery now tries a NON-DESTRUCTIVE rung FIRST: it presses \`/compact\` for the session and verifies the wall cleared — preserving the whole conversation. Only if \`/compact\` can't clear it (the conversation is too long to even compact) does recovery fall back to the previous behavior, a fresh respawn that keeps thread history but starts a new conversation. This is gated to a genuinely idle session (a session still actively working at 100% context is left alone, never compacted out from under its work). If a user asks "why did my long session restart / did I lose the conversation?" — the answer is: I try to compact it in place first; a fresh start only happens when compaction itself fails.
+`;
+
 export interface MigrationResult {
   /** What was upgraded */
   upgraded: string[];
@@ -3482,12 +3492,40 @@ When a user message goes unanswered, the standby (🔭) system reports on the se
 The same change tail-gates the "conversation too long" check: it only fires when that is the session's LIVE state, not a stale mention scrolled up in the buffer (which previously fired as noise on healthy sessions).
 
 If a user asks "why did I see 'actively working' when you were stuck?" or "why do those 'conversation too long' messages come up when nothing's wrong?" — explain the above: the standby is now honest about WHY a turn failed, and the stale-scrollback false signal is gone.
-`;
+${CONTEXT_WALL_ESCALATION_NOTE}`;
       content += '\n' + section;
       patched = true;
       result.upgraded.push('CLAUDE.md: added Honest standby (turn-receipts) section');
+    } else if (!content.includes('Context-wall recovery escalation')) {
+      // Agents that already have the Honest-standby section predate the
+      // /compact escalation rung (2026-06-06). Append the note so an agent can
+      // explain "I tried /compact before restarting." Marker: 'Context-wall
+      // recovery escalation'.
+      content += '\n' + CONTEXT_WALL_ESCALATION_NOTE;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Context-wall recovery escalation note');
     } else {
-      result.skipped.push('CLAUDE.md: Honest standby section already present');
+      result.skipped.push('CLAUDE.md: Honest standby + escalation already present');
+    }
+
+    // Outbound duplicate-message suppression (2026-06-06) — tells the agent
+    // that the relay drops an exact re-send of the same long reply, and how to
+    // force a repeat. Without it an agent puzzled why its re-sent status didn't
+    // appear has no grounded answer. Idempotent via the marker.
+    if (!content.includes('Duplicate-message suppression')) {
+      const section = `
+## Duplicate-message suppression (2026-06-06)
+
+The Telegram relay (\`/telegram/reply\`) now drops an exact duplicate: if I send the SAME message text to the SAME topic again within ~15 minutes, the repeat is suppressed and never reaches the user (the first send still goes through). This kills the "same status posted 2–3 times" problem — usually caused by a session re-announcing its last status after a restart/recovery, or a relay re-emitting identical content under a fresh delivery id. It is length-gated, so brief acks ("Got it, on it") are never suppressed, and it is per-topic, so the same text to a different topic still sends.
+
+- If I genuinely need to send the same long text twice (rare), I pass \`metadata.allowDuplicate: true\` on the reply to bypass the dedup.
+- If a user asks "why didn't my message resend / I only see it once?" — explain: an exact duplicate within the window is suppressed on purpose; that is the duplicate-message fix, not a delivery failure.
+`;
+      content += '\n' + section;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Duplicate-message suppression section');
+    } else {
+      result.skipped.push('CLAUDE.md: Duplicate-message suppression section already present');
     }
 
     // Topic-Flood Guard (2026-05-28 lockdown) — the structural backstop that
@@ -7154,7 +7192,7 @@ fi
       'fi',
       '',
       '# 2. COMMITMENT OVERREACH — Promises that may not survive session boundaries',
-      'if echo "$CONTENT" | grep -qiE "(i.ll (make sure|ensure|guarantee|always|never forget)|i (promise|commit to|will always)|you can count on me to|i.ll remember (to|this)|from now on i.ll)"; then',
+      'if echo "$CONTENT" | grep -qiE "(^|[^a-zA-Z])i.ll (make sure|ensure|guarantee|always|never forget)|(^|[^a-zA-Z])i (promise([^a-zA-Z]|$)|commit to|will always)|you can count on me to|(^|[^a-zA-Z])i.ll remember (to|this)|from now on i.ll"; then',
       '  ISSUES+=("COMMITMENT: You\'re making a promise that may not survive context compaction or session end. Can your infrastructure actually keep this commitment? If not, reframe as intent rather than guarantee.")',
       '  ISSUE_COUNT=$((ISSUE_COUNT + 1))',
       'fi',

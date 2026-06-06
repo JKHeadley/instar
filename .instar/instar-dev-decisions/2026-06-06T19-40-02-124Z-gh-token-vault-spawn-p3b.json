@@ -1,0 +1,16 @@
+{
+  "ts": "2026-06-06T19:40:02.124Z",
+  "slug": "gh-token-vault-spawn-p3b",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/core/ghToken.ts matches token handling",
+    "new capability: new config key added"
+  ],
+  "belowFloor": true,
+  "files": 2,
+  "loc": 89,
+  "causalAutopsy": null,
+  "verdict": "pass"
+}

@@ -30,7 +30,10 @@ if echo "$CONTENT" | grep -qiE "(unfortunately.{0,20}(i can.t|i.m unable|not (po
 fi
 
 # 2. COMMITMENT OVERREACH — Promises that may not survive session boundaries
-if echo "$CONTENT" | grep -qiE "(i.ll (make sure|ensure|guarantee|always|never forget)|i (promise|commit to|will always)|you can count on me to|i.ll remember (to|this)|from now on i.ll)"; then
+# Word-boundary guards (live FPs 2026-06-06): "Mini promises"/"I promised"
+# matched the bare `i (promise...)` — the leading i must start a word and
+# `promise` must not continue into promised/promises.
+if echo "$CONTENT" | grep -qiE "(^|[^a-zA-Z])i.ll (make sure|ensure|guarantee|always|never forget)|(^|[^a-zA-Z])i (promise([^a-zA-Z]|$)|commit to|will always)|you can count on me to|(^|[^a-zA-Z])i.ll remember (to|this)|from now on i.ll"; then
   ISSUES+=("COMMITMENT: You're making a promise that may not survive context compaction or session end. Can your infrastructure actually keep this commitment? If not, reframe as intent rather than guarantee.")
   ISSUE_COUNT=$((ISSUE_COUNT + 1))
 fi

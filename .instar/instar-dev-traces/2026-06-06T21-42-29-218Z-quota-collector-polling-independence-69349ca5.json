@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "sessionId": "cbdc2d51-a6de-446b-8215-773ec12f8e0b",
+  "timestamp": "2026-06-06T21:42:29.218Z",
+  "artifactPath": "upgrades/side-effects/quota-collector-polling-independence.md",
+  "artifactSha256": "3bc335a11fc158fb1d894c7892da5299a54a7e82b41fac42fb6dbdb97652733c",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "tests/unit/quota-collector-polling-independence-wiring.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Boot-ordering fix grounded in live evidence (echo logs lifeline-owns-polling + no-quota-state-file fail-open): hoists the existing quota collector pipeline out of the Telegram-polling conditional to top scope after scheduler, gated only on quotaTracker; behavior is a strict superset (collector runs in more cases), single-construction asserted, tsc-verified scope resolution; structural wiring test locks it.",
+  "eli16Path": "upgrades/next/quota-collector-polling-independence.md",
+  "sideEffectsPath": "upgrades/side-effects/quota-collector-polling-independence.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

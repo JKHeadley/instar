@@ -119,6 +119,12 @@ function makeManager(opts: {
   // synchronously at new-session, so this never affects the pin assertions.
   (manager as unknown as { waitForClaudeReadyWithRetry: () => Promise<boolean> })
     .waitForClaudeReadyWithRetry = async () => true;
+  // Deterministic reroute gate regardless of the host machine's live memory
+  // state: the gate legitimately refuses force-mode spawns when the REAL host
+  // is under pressure, which made this suite fail on loaded dev machines while
+  // passing in CI. These tests assert the reroute logic, not host pressure.
+  (manager as unknown as { currentMemoryPressure: () => string })
+    .currentMemoryPressure = () => 'normal';
   if (opts.credit) {
     manager.setSdkCreditReader(opts.credit as never);
   }
