@@ -8092,6 +8092,37 @@ export function createRoutes(ctx: RouteContext): Router {
       skippedReason: typeof artifact.skippedReason === 'string' ? artifact.skippedReason : undefined,
       skippedBy: typeof artifact.skippedBy === 'string' ? artifact.skippedBy : undefined,
       unskippedAt: typeof artifact.unskippedAt === 'string' ? artifact.unskippedAt : undefined,
+      // #866: `building → merged` requires ghPrView + gitMergeBaseIsAncestor, but
+      // the validator has NO internal default for these (unlike readSpecFrontmatter,
+      // which loadFrontmatter defaults). Without injecting them here EVERY
+      // building→merged transition fails GH_PR_VIEW_UNAVAILABLE — i.e. no project
+      // item can ever reach `merged` through the live API (found 2026-06-06 closing
+      // out multimachine-coherence P0). Both helpers are READ-ONLY git/gh against
+      // the project's target repo.
+      ghPrView: async (prNumber: number) => {
+        const out = execFileSync(
+          'gh',
+          ['pr', 'view', String(prNumber), '--json', 'state,mergeCommit,statusCheckRollup'],
+          { cwd: project.targetRepoPath, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] },
+        );
+        return JSON.parse(out) as import('../core/StageTransitionValidator.js').GhPrView;
+      },
+      gitMergeBaseIsAncestor: (sha: string, branch: string) => {
+        // `merge-base --is-ancestor` is a READ-ONLY verb (in SafeGitExecutor's
+        // READONLY_GIT_VERBS) — routed through readSync (the sanctioned read
+        // path), not raw execFileSync, per the destructive-tool funnel. It
+        // exits 0 (ancestor → readSync returns) or 1 (not → readSync throws).
+        try {
+          SafeGitExecutor.readSync(['merge-base', '--is-ancestor', sha, branch], {
+            cwd: project.targetRepoPath,
+            operation: 'projects.advance.mergeBaseIsAncestor',
+            stdio: ['ignore', 'ignore', 'ignore'],
+          });
+          return true; // exit 0 = sha is an ancestor of branch
+        } catch {
+          return false; // exit 1 = not an ancestor; any other failure = treat as not-ancestor (validator re-checks)
+        }
+      },
     };
 
     const fromStage =

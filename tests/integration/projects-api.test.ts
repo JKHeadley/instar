@@ -541,6 +541,34 @@ goal: try escape
     expect(res.status).toBe(404);
   });
 
+  it('POST /projects/:id/advance — building → merged WIRES ghPrView (never GH_PR_VIEW_UNAVAILABLE) [#866]', async () => {
+    // Wiring-integrity (#866): the validator has no internal default for
+    // ghPrView, so building→merged was structurally impossible on every
+    // install (always GH_PR_VIEW_UNAVAILABLE) until the route injects it.
+    // After the fix the helper is provided, so ANY failure of the now-wired
+    // helper surfaces as GH_PR_VIEW_FAILED — never UNAVAILABLE — regardless of
+    // whether `gh` is installed/authed in CI (a missing gh binary or a fake PR
+    // both throw inside the injected helper, which the validator maps to
+    // GH_PR_VIEW_FAILED). The ONLY way to get UNAVAILABLE is the helper being
+    // absent — i.e. the bug. So this assertion proves the wiring deterministically.
+    const { projectVersion, itemId } = await seedProject('adv-merged-866');
+    const res = await request(app)
+      .post('/projects/adv-merged-866/advance')
+      .set('Authorization', `Bearer ${AUTH_TOKEN}`)
+      .set('If-Match', String(projectVersion))
+      .send({
+        itemId,
+        fromStage: 'building',
+        targetStage: 'merged',
+        artifact: { prNumber: 999999 }, // nonexistent PR → helper throws → GH_PR_VIEW_FAILED
+      });
+    // The transition is rejected (no real merged PR), but NOT for the
+    // helper-missing reason — the helper is now wired.
+    expect(res.status).toBe(409);
+    expect(res.body.code).not.toBe('GH_PR_VIEW_UNAVAILABLE');
+    expect(res.body.code).toBe('GH_PR_VIEW_FAILED');
+  });
+
   it('POST /projects/:id/halt — halts the active round (idempotent)', async () => {
     await seedProject('halt-1');
     const res = await request(app)
