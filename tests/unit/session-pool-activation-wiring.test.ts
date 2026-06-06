@@ -69,7 +69,9 @@ describe('Session Pool activation wiring (§L4)', () => {
   it('the owner-side bridge resumes the local session on a forwarded message, gated + fail-safe', () => {
     const idx = src.indexOf('onAccepted: (cmd) => {');
     expect(idx).toBeGreaterThan(0);
-    const block = src.slice(idx, idx + 4200);
+    // Window widened 4200→5000: the working-set move trigger (WORKING-SET-HANDOFF §3.3)
+    // now prefixes the onAccepted body before the stage gate.
+    const block = src.slice(idx, idx + 5000);
     // Gated on a non-dark stage + only with Telegram present.
     expect(block).toContain("_sessionPoolStage() === 'dark' || !telegram");
     // Bridges to the existing local spawn/resume path for the topic (now wrapped in an
@@ -84,7 +86,9 @@ describe('Session Pool activation wiring (§L4)', () => {
   it('bug #13: a forwarded follow-up to an already-running moved session INJECTS, never re-spawns', () => {
     const idx = src.indexOf('onAccepted: (cmd) => {');
     expect(idx).toBeGreaterThan(0);
-    const block = src.slice(idx, idx + 4200);
+    // Window widened 4200→5000: the working-set move trigger (WORKING-SET-HANDOFF §3.3)
+    // now prefixes the onAccepted body before the stage gate.
+    const block = src.slice(idx, idx + 5000);
     // A live session for the topic short-circuits to injection BEFORE the spawn IIFE.
     const injectIdx = block.indexOf('sessionManager.isSessionAlive(existing)');
     const spawnIdx = block.indexOf('spawnSessionForTopic(sessionManager, tg, spawnName');

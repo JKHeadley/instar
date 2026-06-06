@@ -1944,8 +1944,33 @@ export interface CoherenceJournalUserConfig {
   flushIntervalMs?: number;
   /** Autonomous-run journal scanner cadence (§3.3). Default 60s. */
   scannerIntervalMs?: number;
-  /** Replication tunables; `enabled` follows the same dark-ship gate. */
+  /**
+   * Replication tunables. NOTE: replication SEND/drive requires the EXPLICIT
+   * `enabled === true` (never the `?? developmentAgent` dark-ship gate) — and
+   * the working-set feature below activates IFF this same gate is on
+   * (WORKING-SET-HANDOFF-SPEC §3.7: the pull is meaningless without
+   * replication's mesh path and must never out-activate it).
+   */
   replication?: { enabled?: boolean; maxBatchBytes?: number };
+  /**
+   * Working-Set Handoff tunables (WORKING-SET-HANDOFF-SPEC §3.7). All
+   * optional; ConfigDefaults carries the shipped literal. Gated on
+   * `replication.enabled === true` — there is no separate enable flag.
+   */
+  workingSet?: {
+    maxFileBytes?: number;
+    headlineFileBytes?: number;
+    maxFiles?: number;
+    maxTotalBytes?: number;
+    pullMaxBatchBytes?: number;
+    pullOnMove?: boolean;
+    pendingPullTtlDays?: number;
+    chunkRestartCap?: number;
+    chunksPerTick?: number;
+    serveConcurrency?: number;
+    rearmConcurrency?: number;
+    busyRetryCap?: number;
+  };
   /**
    * Per-kind retention. rotateKeep N>0 = rotate at maxFileBytes, keep N
    * archives, delete older; 0 = rotate at maxFileBytes but NEVER delete
@@ -3762,6 +3787,23 @@ export interface MonitoringConfig {
   principalCoherence?: {
     /** Master kill switch (default: false). Gates the observe-only check entirely. */
     enabled: boolean;
+  };
+  /**
+   * Phase-2 LLM judge for ORG-INTENT governance verdicts (CMT-1128). When
+   * enabled AND an intelligence provider is configured, a keyword-heuristic
+   * MISS on POST /intent/org/test-action escalates to one bounded LLM call
+   * that judges the action against the constraints by MEANING — closing the
+   * keyword matcher's false-negative side (semantically-related constraints
+   * whose wording differs). Verdicts carry their method ('llm-judge' only for
+   * a real, parsed LLM verdict; judge problems keep the heuristic verdict and
+   * say so). Signal-only — the route answers a question, never blocks. Ships
+   * DARK (default false).
+   */
+  orgIntentLlmJudge?: {
+    /** Master kill switch (default: false). */
+    enabled: boolean;
+    /** Per-judge-call timeout in ms (default: 8000). */
+    timeoutMs?: number;
   };
   /**
    * ApprenticeshipCycleSlaMonitor — observe-only signal for open apprenticeship

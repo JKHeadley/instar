@@ -137,7 +137,7 @@ interface Candidate {
 
 export function computeWorkingSet(opts: ComputeWorkingSetOpts): WorkingSetManifestResult {
   const io = opts.fsImpl ?? realFs();
-  const caps: WorkingSetCaps = { ...DEFAULT_WORKING_SET_CAPS, ...opts.caps };
+  const caps = mergeCaps(opts.caps);
   const now = opts.now ?? (() => new Date());
   const scan = opts.secretScan ?? defaultSecretScan;
 
@@ -311,4 +311,15 @@ function jailContained(io: WorkingSetFs, roots: string[], candidate: string): st
 function isContained(root: string, p: string): boolean {
   const rel = path.relative(root, p);
   return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
+}
+
+/** Undefined-safe caps merge — a config block with absent keys keeps defaults. */
+export function mergeCaps(caps?: Partial<WorkingSetCaps>): WorkingSetCaps {
+  const out = { ...DEFAULT_WORKING_SET_CAPS };
+  if (!caps) return out;
+  for (const k of Object.keys(out) as (keyof WorkingSetCaps)[]) {
+    const v = caps[k];
+    if (typeof v === 'number' && Number.isFinite(v) && v > 0) out[k] = v;
+  }
+  return out;
 }

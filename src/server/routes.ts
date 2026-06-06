@@ -811,6 +811,11 @@ export interface RouteContext {
   /** MeshRpc dispatcher (§L0) — the receive side behind POST /mesh/rpc (signed,
    *  recipient-bound, RBAC-gated m2m commands). Null/absent when not wired (dark). */
   meshRpcDispatcher?: import('../core/MeshRpc.js').MeshRpcDispatcher | null;
+  /** Working-set pull coordinator (WORKING-SET-HANDOFF-SPEC §3.3) — the move
+   *  trigger + reflex pipeline behind POST /coherence/fetch-working-set.
+   *  Null/absent while the working-set layer is dark (rides the explicit
+   *  replication gate). */
+  workingSetPullCoordinator?: import('../core/WorkingSetPullCoordinator.js').WorkingSetPullCoordinator | null;
   /** Per-session ownership registry (§L3) — exactly-one-owner CAS + ownerOf/
    *  placementTargetOf. Read by L4 placement + observability. Null/absent (dark). */
   sessionOwnershipRegistry?: import('../core/SessionOwnershipRegistry.js').SessionOwnershipRegistry | null;
@@ -4486,6 +4491,30 @@ export function createRoutes(ctx: RouteContext): Router {
         res.status(400).json({ error: err.message });
         return;
       }
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  // The evidence-driven fetch reflex (WORKING-SET-HANDOFF-SPEC §3.3): "who made
+  // artifacts for this topic? go get them" — the EXO failure as a one-call
+  // recovery. Bearer-auth (router-level middleware); 503 while the working-set
+  // layer is dark (it rides the explicit replication gate); rate-limited per
+  // topic with concurrent calls coalesced into the single-flight pull.
+  router.post('/coherence/fetch-working-set', async (req, res) => {
+    const coordinator = ctx.workingSetPullCoordinator;
+    if (!coordinator) {
+      res.status(503).json({ error: 'working-set handoff not enabled (requires coherenceJournal.replication.enabled)' });
+      return;
+    }
+    const topic = Number(req.body?.topic);
+    if (!Number.isFinite(topic)) {
+      res.status(400).json({ error: 'topic (number) is required' });
+      return;
+    }
+    try {
+      const outcome = await coordinator.fetchWorkingSet(topic);
+      res.status(outcome.skipReason === 'rate-limited' ? 429 : 200).json(outcome);
+    } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
     }
   });
@@ -13487,6 +13516,10 @@ export function createRoutes(ctx: RouteContext): Router {
   // Body: { "action": "<proposed action>" }
   // → { present, action, refusal:{refused,matchedConstraint,reason},
   //     endorsement:{endorsed,alignedWith,reason}, canGovern }
+  // With monitoring.orgIntentLlmJudge.enabled (Phase-2, CMT-1128), a keyword
+  // MISS on the refusal test escalates to one bounded LLM semantic judgment;
+  // refusal then also carries method ('llm-judge' | 'keyword-heuristic') and,
+  // when the judge was requested but unavailable, judgeUnavailable: true.
   router.post('/intent/org/test-action', async (req, res) => {
     const action = typeof req.body?.action === 'string' ? req.body.action.trim() : '';
     if (!action) {
@@ -13502,10 +13535,27 @@ export function createRoutes(ctx: RouteContext): Router {
         return;
       }
       const harness = new IntentTestHarness(parsed);
+      const heuristicRefusal = harness.testRefusal(action);
+      let refusal: object = heuristicRefusal;
+      // Phase-2 LLM judge (CMT-1128, ships dark): a keyword MISS escalates to
+      // one bounded semantic judgment; a keyword MATCH is kept as-is (the
+      // heuristic is high-precision when it matches — no LLM call, no spend).
+      // With the flag off this block never runs and the response is unchanged.
+      if (ctx.config.monitoring?.orgIntentLlmJudge?.enabled === true && ctx.intelligence) {
+        if (heuristicRefusal.refused) {
+          refusal = { ...heuristicRefusal, method: 'keyword-heuristic' };
+        } else {
+          const { judgeRefusal } = await import('../core/IntentTestHarness.js');
+          const judged = await judgeRefusal(action, parsed, ctx.intelligence, {
+            timeoutMs: ctx.config.monitoring.orgIntentLlmJudge.timeoutMs ?? 8000,
+          });
+          refusal = judged ?? { ...heuristicRefusal, method: 'keyword-heuristic', judgeUnavailable: true };
+        }
+      }
       res.json({
         present: true,
         action,
-        refusal: harness.testRefusal(action),
+        refusal,
         endorsement: harness.testEndorsement(action),
         canGovern: harness.canGovern(),
       });

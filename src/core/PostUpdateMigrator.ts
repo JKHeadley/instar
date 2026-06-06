@@ -2867,6 +2867,21 @@ Rule: I do not state that work landed inside another agent's state unless I have
       result.upgraded.push('CLAUDE.md: added Cross-Agent Communication Discipline (anti-confabulation) section');
     }
 
+    // Working-Set Handoff fetch reflex (WORKING-SET-HANDOFF-SPEC §3.7) —
+    // existing agents need the proactive trigger ("user references files not on
+    // this machine → POST /coherence/fetch-working-set"). Content-sniffed on a
+    // distinctive marker; harmless on agents where the layer is dark (503).
+    if (!content.includes('Working-Set Handoff (fetch a topic')) {
+      const workingSetSection = `
+**Working-Set Handoff (fetch a topic's files from the machine that made them)** — When a conversation moves between my machines, its working files follow automatically (the journal nominates which machines produced artifacts; the receiving machine pulls them in verified 1MB slices; nothing is ever overwritten — a divergent local file keeps its place and the incoming copy lands alongside it). If the producer machine is offline, the request is written down durably and fires the moment it returns.
+- The fetch reflex: \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/coherence/fetch-working-set -H 'Content-Type: application/json' -d '{"topic":N}'\` → \`{ scheduled, reports: [{ nominee, report }] }\` (503 = the working-set layer is dark on this agent; 429 = rate-limited, a pull is already running or just ran).
+- **When to use** (PROACTIVE — this is the trigger): the user references files/work/analysis from this topic that are NOT on this machine ("where's the overnight analysis?", "you did this on the other machine") → fire the reflex, then answer from the landed files. Files flagged as containing credentials, still-being-written, or oversized are refused with named reasons in the report — explain honestly rather than retrying.
+`;
+      content += '\n' + workingSetSection;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Working-Set Handoff fetch-reflex section');
+    }
+
     // MTP Protocol — the two EXO 3.0 tests (refusal + endorsement) on ORG-INTENT.
     // Existing agents need to know the /intent/org/test-action endpoint + the
     // three-layer protocol exist. Content-sniffed on a distinctive marker.
@@ -4756,6 +4771,12 @@ Create worktrees for collaborator repos with \`instar worktree create <branch>\`
       '**Coordination Mandate**',
       '**ReviewExchange (autonomous code review)**',
       '**Cutover Readiness**',
+      // Working-Set Handoff (WORKING-SET-HANDOFF-SPEC §3.7): the fetch reflex
+      // (POST /coherence/fetch-working-set). A Codex/Gemini agent that never
+      // learns it will tell the user the files "aren't on this machine"
+      // instead of fetching them — the EXO failure surviving on shadow
+      // frameworks only. Mirrored like every agent-facing capability.
+      "**Working-Set Handoff (fetch a topic's files from the machine that made them)**",
       // Session Boot Self-Knowledge (spec session-boot-self-knowledge): vault
       // secret NAMES + operational facts at boot. A Codex/Gemini agent that
       // never learns the facts writer + secret-get retrieval will re-ask the
