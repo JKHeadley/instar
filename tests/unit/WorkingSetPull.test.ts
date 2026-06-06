@@ -212,6 +212,43 @@ describe('WorkingSetPull — busy (§3.2 retry-without-penalty)', () => {
   });
 });
 
+describe('WorkingSetPull — cold-transport retry (live-matrix T1)', () => {
+  it('ONE transport failure then success → pull completes (the cold tunnel hop is masked)', async () => {
+    writeProd(`${TOPIC}.local.md`, 'cold-start content');
+    const server = makeServer();
+    let calls = 0;
+    const puller = new WorkingSetPuller({
+      stateDir: recvDir,
+      send: async (cmd) => {
+        calls++;
+        if (calls === 1) throw new Error('This operation was aborted');
+        return server.handle(cmd);
+      },
+      senderShortId: 'm_prod',
+      stillCurrent: () => true,
+    });
+    const report = await puller.pullTopic(TOPIC);
+    expect(report.files[0].outcome).toBe('written');
+    expect(report.needsPendingPull).toBe(false);
+    expect(calls).toBeGreaterThanOrEqual(2); // the failed first attempt + the immediate re-send
+  });
+
+  it('TWO consecutive transport failures on the same verb propagate → refused + pending-pull (never loops)', async () => {
+    const puller = new WorkingSetPuller({
+      stateDir: recvDir,
+      send: async () => {
+        throw new Error('This operation was aborted');
+      },
+      senderShortId: 'm_prod',
+      stillCurrent: () => true,
+    });
+    const report = await puller.pullTopic(TOPIC);
+    expect(report.files[0].outcome).toBe('refused');
+    expect(String(report.files[0].reason)).toContain('transport');
+    expect(report.needsPendingPull).toBe(true);
+  });
+});
+
 describe('WorkingSetPull — never-clobber (§3.5)', () => {
   it('identical destination → skippedExisting; divergent → alongside; same divergent content → ONE alongside', async () => {
     writeProd(`${TOPIC}.local.md`, 'producer version');

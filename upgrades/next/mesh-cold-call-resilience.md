@@ -1,0 +1,49 @@
+# Mesh cold-call resilience — heavy verbs stop aborting on cold tunnel hops
+
+## What Changed
+
+The cross-machine RPC client's per-attempt timeout was a flat 5 seconds for
+every verb. The live-test matrix measured the FIRST mesh call over an idle
+tunnel aborting three times in one afternoon ("This operation was aborted") —
+working-set pulls and owner-routed commitment forwards both degraded to their
+pending/queued fallback paths, adding minutes of latency to operations the
+warm link serves in under a second (live-matrix finding T1, 2026-06-06).
+
+Three surgical changes:
+- `MeshRpcClient.send` accepts a per-call `{ timeoutMs }` override (default
+  behavior unchanged for all existing callers).
+- The working-set pull send now uses 30s per attempt (pages carry up to 1MiB
+  over a tunnel) and the owner-routed commitment forward uses 15s.
+- The working-set puller's send loop performs ONE bounded immediate re-send on
+  a transport failure — masking the cold hop; a second consecutive failure is
+  real and propagates to the pending-pull ledger exactly as before (it can
+  never loop).
+
+## What to Tell Your User
+
+Nothing proactively — cross-machine file fetches and promise operations just
+get faster and stop falling back to their retry queues on the first attempt
+after a quiet period.
+
+- audience: agent-only
+- maturity: stable
+
+## Summary of New Capabilities
+
+- Per-call timeout override on the mesh RPC client (`send(..., { timeoutMs })`).
+- Working-set pull verbs ride a 30s per-attempt budget; commitment-mutate
+  forwards ride 15s.
+- One bounded cold-transport re-send in the working-set puller (never loops;
+  second failure propagates to the durable pending-pull path unchanged).
+
+## Evidence
+
+- `tests/unit/mesh-rpc-client-timeout.test.ts` — 3 tests: override wins over
+  constructor default (slow peer aborts at default, answers with override),
+  override can tighten, omitted opts preserves existing behavior.
+- `tests/unit/WorkingSetPull.test.ts` — 2 new tests: one transport failure then
+  success completes the pull; two consecutive failures propagate to
+  refused + pending-pull (bounded, never loops).
+- Live measurements: three first-attempt aborts (working-set pull ×2,
+  commitment forward ×1) all succeeded on retry/drain; warm-link pulls
+  complete first-attempt.
