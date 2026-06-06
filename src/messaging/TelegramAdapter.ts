@@ -2030,6 +2030,22 @@ export class TelegramAdapter implements MessagingAdapter {
   }
 
   /**
+   * Public read-only authorization check for a sender id (Know Your Principal #898,
+   * increment 2d). Wraps the private `isAuthorized` so the lifeline-forward route can
+   * decide whether an inbound sender is an authorized operator BEFORE binding them as
+   * the topic operator — an UNAUTHORIZED sender must never become the operator
+   * (that would re-open the "Caroline" cross-principal bug). Accepts number|string
+   * (the route carries the id as a string); a blank/non-numeric id returns false.
+   * Same trust model as `isAuthorized`: with no `authorizedUserIds` allowlist, every
+   * authenticated sender is accepted (the agent already serves everyone there).
+   */
+  isAuthorizedSender(userId: number | string): boolean {
+    const n = typeof userId === 'number' ? userId : Number(String(userId).trim());
+    if (!Number.isFinite(n)) return false;
+    return this.isAuthorized(n);
+  }
+
+  /**
    * Handle a message from an unknown/unauthorized Telegram user.
    * Checks the registration policy and responds appropriately:
    * - admin-only: Gated message + notify admin

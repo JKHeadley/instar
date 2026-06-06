@@ -11193,6 +11193,30 @@ export function createRoutes(ctx: RouteContext): Router {
       }
     }
 
+    // Topic-operator auto-bind (Know Your Principal #898, increment 2d — the WRITE
+    // side). Record the VERIFIED operator of this topic from the AUTHENTICATED +
+    // AUTHORIZED sender of this real user inbound, so the session-start hook (#908)
+    // can inject it. ONLY an AUTHORIZED sender becomes the operator — an unauthorized
+    // sender in the bot's group must NEVER be seated (that re-opens the cross-principal
+    // "Caroline" bug). Placed AFTER the a2a-hook short-circuit so agent-to-agent bot
+    // messages never bind. Fail-soft: no store / unauthorized / error -> no-op and
+    // routing continues; setOperator is idempotent on the same uid.
+    if (ctx.topicOperatorStore && fromUserId !== undefined && fromUserId !== null
+        && typeof topicId === 'number') {
+      try {
+        if (ctx.telegram?.isAuthorizedSender?.(fromUserId)) {
+          ctx.topicOperatorStore.setOperator(topicId, {
+            platform: 'telegram',
+            uid: String(fromUserId),
+            displayName: typeof fromFirstName === 'string' ? fromFirstName : undefined,
+          });
+        }
+      } catch (err) {
+        // @silent-fallback-ok — an auto-bind failure must never break message routing.
+        console.error(`[telegram-forward] topic-operator auto-bind error (non-fatal): ${err instanceof Error ? err.message : err}`);
+      }
+    }
+
     // Build a Message object and fire the onTopicMessage callback
     if (ctx.telegram?.onTopicMessage) {
       const message = {
