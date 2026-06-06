@@ -2882,6 +2882,19 @@ Rule: I do not state that work landed inside another agent's state unless I have
       result.upgraded.push('CLAUDE.md: added Working-Set Handoff fetch-reflex section');
     }
 
+    // Threadline Conversation Coherence (P3 — THREADLINE-CONVERSATION-
+    // COHERENCE-SPEC §3.4): existing agents need the holder-view trigger.
+    if (!content.includes('Threadline Conversation Coherence (which machine holds')) {
+      const tlConvSection = `
+**Threadline Conversation Coherence (which machine holds each agent-to-agent thread)** — Every A2A conversation's lifecycle (started / tied to a topic / closed) is recorded content-free in the coherence journal and replicated, so ANY machine can answer "which machine holds the Dawn thread?" from local disk. When a topic moves machines, its conversation deliberately does NOT move (the relay address is part of that machine's identity) — the merged view names the holder honestly instead.
+- The view: \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/threadline/conversations?scope=mesh"\` → \`{ conversations: [{ conversationId, peerFingerprint, holderMachineId, boundTopicId, status, stalenessMs }] }\` (own rows live; replica rows staleness-tagged; \`scope\` omitted = local only).
+- **When to use** (PROACTIVE — this is the trigger): the user references an A2A thread that is NOT held on this machine ("what did Dawn and I agree?") → consult the mesh view and NAME THE HOLDER ("that conversation lives on <machine>, as of <staleness> ago") — never claim the thread doesn't exist. If the holder is offline, quote the relay's REAL bound: peers' messages queue in memory for ~24h and may then drop.
+`;
+      content += '\n' + tlConvSection;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Threadline Conversation Coherence holder-view section');
+    }
+
     // MTP Protocol — the two EXO 3.0 tests (refusal + endorsement) on ORG-INTENT.
     // Existing agents need to know the /intent/org/test-action endpoint + the
     // three-layer protocol exist. Content-sniffed on a distinctive marker.
@@ -4777,6 +4790,10 @@ Create worktrees for collaborator repos with \`instar worktree create <branch>\`
       // instead of fetching them — the EXO failure surviving on shadow
       // frameworks only. Mirrored like every agent-facing capability.
       "**Working-Set Handoff (fetch a topic's files from the machine that made them)**",
+      // Threadline Conversation Coherence (P3): a Codex/Gemini agent that
+      // never learns the holder view will claim a thread held elsewhere
+      // "doesn't exist" — the exact dishonesty P3 kills.
+      '**Threadline Conversation Coherence (which machine holds each agent-to-agent thread)**',
       // Session Boot Self-Knowledge (spec session-boot-self-knowledge): vault
       // secret NAMES + operational facts at boot. A Codex/Gemini agent that
       // never learns the facts writer + secret-get retrieval will re-ask the

@@ -172,7 +172,13 @@ interface MutateQueueEntry {
 
 // ── Implementation ──────────────────────────────────────────────
 
+/** P3 §3.1 — states whose entry counts as 'closed' for the lifecycle diff. */
+const TERMINAL_CONVERSATION_STATES = new Set(['resolved', 'failed', 'archived']);
+
 export class ConversationStore {
+  /** P3 §3.1 — injected coherence-journal emitter (undefined = dark). */
+  private journalSeam?: (data: { action: 'started' | 'bound' | 'unbound' | 'closed'; conversationId: string; peerFingerprint: string; topicId?: number }) => void;
+
   private filePath: string;
 
   /** Per-threadId FIFO mutate queues — serialize same-process concurrent writers. */
@@ -401,6 +407,11 @@ export class ConversationStore {
   /** Commit a record into the freshly-read file with version+1 (LOAD-BEARING:
    *  both async and sync commit paths bump version so the CAS detects races). */
   private commit(file: ConversationStoreFile, threadId: string, next: Conversation, observedVersion: number): Conversation {
+    // P3 (THREADLINE-CONVERSATION-COHERENCE-SPEC §3.1): the prev record for
+    // the transition diff is read BEFORE the write lands. commit() is the
+    // single write funnel (mutate/mutateSync both route here), so the diff
+    // sees every lifecycle change exactly once.
+    const prev = file.conversations[threadId] ?? null;
     const committed: Conversation = {
       ...next,
       threadId,
@@ -411,7 +422,49 @@ export class ConversationStore {
     this.pruneMapInPlace(file.conversations);
     this.writeFileAtomic(file);
     this.invalidateCache();
+    this.emitLifecycleDiff(prev, committed);
     return committed;
+  }
+
+  /**
+   * P3 §3.1 — derive the content-free lifecycle action from a prev/next
+   * transition diff on `state` + `boundTopicId` ONLY (a message append /
+   * lastActivity bump / unread write changes neither and emits NOTHING).
+   * Never throws into the write path (observability never endangers the
+   * observed operation).
+   */
+  private emitLifecycleDiff(prev: Conversation | null, next: Conversation): void {
+    if (!this.journalSeam) return;
+    try {
+      const peer = next.participants?.peers?.[0] ?? '';
+      if (!peer) return; // no fingerprint = nothing coherent to record
+      const wasTerminal = prev ? TERMINAL_CONVERSATION_STATES.has(prev.state) : false;
+      const isTerminal = TERMINAL_CONVERSATION_STATES.has(next.state);
+      if (!prev) {
+        this.journalSeam({ action: 'started', conversationId: next.threadId, peerFingerprint: peer, ...(typeof next.boundTopicId === 'number' ? { topicId: next.boundTopicId } : {}) });
+        if (typeof next.boundTopicId === 'number') {
+          this.journalSeam({ action: 'bound', conversationId: next.threadId, peerFingerprint: peer, topicId: next.boundTopicId });
+        }
+        return;
+      }
+      if (prev.boundTopicId !== next.boundTopicId) {
+        if (typeof prev.boundTopicId === 'number') {
+          this.journalSeam({ action: 'unbound', conversationId: next.threadId, peerFingerprint: peer, topicId: prev.boundTopicId });
+        }
+        if (typeof next.boundTopicId === 'number') {
+          this.journalSeam({ action: 'bound', conversationId: next.threadId, peerFingerprint: peer, topicId: next.boundTopicId });
+        }
+      }
+      if (!wasTerminal && isTerminal) {
+        this.journalSeam({ action: 'closed', conversationId: next.threadId, peerFingerprint: peer, ...(typeof next.boundTopicId === 'number' ? { topicId: next.boundTopicId } : {}) });
+      }
+    } catch { /* @silent-fallback-ok: journal observability must never endanger the conversation write (THREADLINE-CONVERSATION-COHERENCE-SPEC §4.1) */
+    }
+  }
+
+  /** P3 §3.1 — inject the coherence-journal emitter (server wiring). */
+  setCoherenceJournalSeam(seam: (data: { action: 'started' | 'bound' | 'unbound' | 'closed'; conversationId: string; peerFingerprint: string; topicId?: number }) => void): void {
+    this.journalSeam = seam;
   }
 
   /**

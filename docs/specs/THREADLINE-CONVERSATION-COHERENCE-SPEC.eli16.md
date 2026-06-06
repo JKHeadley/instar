@@ -11,3 +11,5 @@ P3 fixes the knowing, deliberately not the moving:
 The review round's best catch: my draft promised that another agent's messages to a sleeping machine would "resume when it returns" — but the actual relay holds them in a memory-only queue for 24 hours and then drops them. The honest answer now states that real limit instead of an open-ended promise. Reviewers also corrected the code seams to the real ones, made the social-graph implication of syncing "who I talk to" an explicit stated decision, and kept the promise-reminder-transfer question OPEN (visible everywhere, acted on at home) rather than pretending a principle closed it.
 
 Cheapest phase of the whole initiative: no new plumbing, no new storage, no new switches — one more record type riding rails that are already live on your Laptop+Mini pair.
+
+**Build status:** shipped — the diary's 4th record type, the conversation-holder view, and the honest offline-bound wording are all live code with tests.

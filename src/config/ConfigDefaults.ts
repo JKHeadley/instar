@@ -512,6 +512,9 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
         'topic-placement': { maxFileBytes: 8388608, rotateKeep: 0 },
         'session-lifecycle': { maxFileBytes: 16777216, rotateKeep: 4 },
         'autonomous-run': { maxFileBytes: 8388608, rotateKeep: 8 },
+        // P3 (THREADLINE-CONVERSATION-COHERENCE-SPEC §3.4): the 4th kind —
+        // applyDefaults add-missing backfills existing agents.
+        'threadline-conversation': { maxFileBytes: 8388608, rotateKeep: 8 },
       },
     },
   },

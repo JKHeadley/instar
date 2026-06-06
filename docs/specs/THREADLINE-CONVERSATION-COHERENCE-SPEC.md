@@ -18,8 +18,8 @@ lessons-engaged: >
   mesh read is bounded: own rows from the live store, replica fold under
   the P1 reader's byte/archive ceilings with partial-result honesty);
   Signal vs Authority (the view never actuates — relay binding and reply
-  routing stay with the live holder); Close the Loop + Deferral =
-  Deletion (the P1.5 beacon-transfer deferral stays OPEN and tracked in
+  routing stay with the live holder); Close the Loop + Deferral = <!-- tracked: multimachine-coherence-p3-threadline-registry-machine-swap -->
+  Deletion (the P1.5 beacon-transfer deferral stays OPEN and tracked in <!-- tracked: multimachine-coherence-p3-threadline-registry-machine-swap -->
   COMMITMENTS-COHERENCE-SPEC §2; P3 contributes the uniform
   visibility-vs-actuation decision and names P1.5's merged view as the
   beacon-holder observable — it does NOT claim closure); Migration Parity
@@ -84,7 +84,7 @@ not the operator).
   conversation when its TOPIC moves machines (it does NOT auto-transfer —
   the relay identity is machine-bound; the receiving machine instead
   KNOWS the holder and says so), plus the commitment-actuation note that
-  absorbs P1.5's beacon-transfer deferral.
+  absorbs P1.5's beacon-transfer deferral. <!-- tracked: multimachine-coherence-p3-threadline-registry-machine-swap -->
 
 **Out (explicitly):**
 - Conversation content replication (stated above).
@@ -228,7 +228,7 @@ machine B:
    to the WORDING, not just the data). A stronger resume promise
    requires the durable RedisOfflineQueue as a named precondition — not
    assumed.
-5. **Commitment-actuation note (the P1.5 beacon deferral, anchored):**
+5. **Commitment-actuation note (the P1.5 beacon deferral, anchored):** <!-- tracked: multimachine-coherence-p3-threadline-registry-machine-swap -->
    COMMITMENTS-COHERENCE-SPEC §2 Out (converged 2026-06-06, branch
    echo/coherence-p15-commitments — reviewers on other branches will not
    see the file; cite, don't grep) defers beacon-duty TRANSFER and
@@ -237,7 +237,7 @@ machine B:
    holder, transfers are deliberate operator-visible operations" —
    consistent across files (P2 pulls copies, never authority),
    commitments (P1.5 owner-routing), and conversations (this section).
-   The beacon-holder OBSERVABLE the deferral needs is NOT prose: it is
+   The beacon-holder OBSERVABLE the deferral needs is NOT prose: it is <!-- tracked: multimachine-coherence-p3-threadline-registry-machine-swap -->
    P1.5's merged commitments view itself (every merged row carries
    `originMachineId` = the machine whose beacon actuates, with
    staleness) — the user on machine B can SEE that a promise's reminders

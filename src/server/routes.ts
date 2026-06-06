@@ -7475,6 +7475,33 @@ export function createRoutes(ctx: RouteContext): Router {
 
   // ── Threadline observability — read-only views over inbox/outbox/bindings ──
 
+  // P3 (THREADLINE-CONVERSATION-COHERENCE-SPEC §3.2) — which machine holds
+  // each A2A conversation. The STRUCTURAL surface for "never claim the
+  // thread doesn't exist": own rows from the LIVE store; ?scope=mesh adds
+  // replica-folded rows (composite (holder, conversationId) keys, staleness
+  // + streamStatus honesty). 200 even when replication is dark (own rows
+  // only); 503 only when the conversation store itself is absent.
+  router.get('/threadline/conversations', async (req, res) => {
+    if (!ctx.conversationStore) {
+      res.status(503).json({ error: 'conversation store not available' });
+      return;
+    }
+    try {
+      const meshMod = await import('../threadline/ConversationMeshView.js');
+      const readerMod = await import('../core/CoherenceJournalReader.js');
+      const wantMesh = req.query.scope === 'mesh';
+      const own = ctx.conversationStore.all();
+      const view = meshMod.buildMeshConversationView({
+        ownMachineId: ctx.meshSelfId ?? 'local',
+        ownConversations: own,
+        ...(wantMesh ? { reader: new readerMod.CoherenceJournalReader({ stateDir: ctx.config.stateDir }) } : {}),
+      });
+      res.json({ scope: wantMesh ? 'mesh' : 'local', conversations: view.rows, partial: view.partial });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
   router.get('/threadline/observability/threads', (req, res) => {
     if (!ctx.threadlineObservability) {
       res.status(503).json({ error: 'Threadline observability not initialized' });

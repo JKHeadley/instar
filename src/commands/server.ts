@@ -8066,6 +8066,15 @@ export async function startServer(options: StartOptions): Promise<void> {
     // (below), upstream of all three routing branches, with turn/novelty state
     // living on the Conversation (the one-shot worker can't self-police a loop).
     const conversationStore = new ConversationStore(config.stateDir);
+    // P3 (THREADLINE-CONVERSATION-COHERENCE-SPEC §3.1): the lifecycle
+    // emission seam — the store's commit() transition-diff drives the
+    // journal's 4th kind. Harmless when the journal is absent/locked-out
+    // (emit drops + counts); replication of the kind rides the existing
+    // gate like every other kind.
+    if (coherenceJournal) {
+      const cj = coherenceJournal;
+      conversationStore.setCoherenceJournalSeam((d) => cj.emitThreadlineConversation(d));
+    }
     const warrantsReplyGate = new WarrantsReplyGate({ intelligence: sharedIntelligence });
     // CMT-509 §2: surface PARENTLESS Threadline conversations into a single
     // dedicated topic so a peer reaching out cold is visible (not an invisible

@@ -54,6 +54,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import {
+  type ThreadlineConversationAction,
   JOURNAL_KINDS,
   sanitizeMachineId,
   readTailTolerant,
@@ -556,6 +557,18 @@ export class JournalSyncApplier {
       if (!Array.isArray(raw.artifactPaths)) return false;
       if (!raw.artifactPaths.every((p) => typeof p === 'string')) return false;
       const known = ['action', 'runId', 'artifactPaths'];
+      return keys.every((k) => known.includes(k));
+    }
+    if (kind === 'threadline-conversation') {
+      // P3 §3.1 — the receive-side mirror of CoherenceJournal.validate
+      // (round-1: without this branch the applier rejects the kind and
+      // suspect-flags the sending peer).
+      const actions: ThreadlineConversationAction[] = ['started', 'bound', 'unbound', 'closed'];
+      if (typeof raw.action !== 'string' || !actions.includes(raw.action as ThreadlineConversationAction)) return false;
+      if (typeof raw.conversationId !== 'string' || !raw.conversationId || raw.conversationId.length > 256) return false;
+      if (typeof raw.peerFingerprint !== 'string' || !raw.peerFingerprint || raw.peerFingerprint.length > 256) return false;
+      if (raw.topicId !== undefined && (typeof raw.topicId !== 'number' || !Number.isFinite(raw.topicId))) return false;
+      const known = ['action', 'conversationId', 'peerFingerprint', 'topicId'];
       return keys.every((k) => known.includes(k));
     }
     return false;

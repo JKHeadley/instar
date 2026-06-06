@@ -36,9 +36,9 @@ import path from 'node:path';
 
 import { SafeFsExecutor } from './SafeFsExecutor.js';
 
-export type JournalKind = 'topic-placement' | 'session-lifecycle' | 'autonomous-run';
+export type JournalKind = 'topic-placement' | 'session-lifecycle' | 'autonomous-run' | 'threadline-conversation';
 
-export const JOURNAL_KINDS: JournalKind[] = ['topic-placement', 'session-lifecycle', 'autonomous-run'];
+export const JOURNAL_KINDS: JournalKind[] = ['topic-placement', 'session-lifecycle', 'autonomous-run', 'threadline-conversation'];
 
 /** §3.2 enums. */
 export type PlacementReason = 'user-move' | 'placed' | 'failover' | 'released' | 'quota-block-move';
@@ -47,6 +47,8 @@ export type PlacementReason = 'user-move' | 'placed' | 'failover' | 'released' |
 // or 'killed' would misstate history. Additive — readers ignore unknowns.
 export type SessionStatus = 'created' | 'completed' | 'killed' | 'reaped' | 'failed';
 export type AutonomousAction = 'started' | 'stopped';
+/** P3 (THREADLINE-CONVERSATION-COHERENCE-SPEC §3.1). */
+export type ThreadlineConversationAction = 'started' | 'bound' | 'unbound' | 'closed';
 
 export interface PlacementData {
   owner: string;
@@ -66,6 +68,14 @@ export interface AutonomousRunData {
   action: AutonomousAction;
   runId: string;
   artifactPaths: string[];
+}
+
+/** P3 §3.1 — content-free conversation lifecycle (no titles, no text). */
+export interface ThreadlineConversationData {
+  action: ThreadlineConversationAction;
+  conversationId: string;
+  peerFingerprint: string;
+  topicId?: number;
 }
 
 /** One line in a stream file. */
@@ -96,6 +106,7 @@ export const DEFAULT_RETENTION: Record<JournalKind, KindRetention> = {
   'topic-placement': { maxFileBytes: 8 * 1024 * 1024, rotateKeep: 0 },
   'session-lifecycle': { maxFileBytes: 16 * 1024 * 1024, rotateKeep: 4 },
   'autonomous-run': { maxFileBytes: 8 * 1024 * 1024, rotateKeep: 8 },
+  'threadline-conversation': { maxFileBytes: 8 * 1024 * 1024, rotateKeep: 8 },
 };
 
 export const DEFAULT_FLUSH_INTERVAL_MS = 250;
@@ -269,12 +280,13 @@ export class CoherenceJournal {
   private state: WriterState = 'closed';
   private incarnation = '';
   /** Next seq to assign at enqueue, per kind (in-memory counter seeded at open). */
-  private nextSeq: Record<JournalKind, number> = { 'topic-placement': 1, 'session-lifecycle': 1, 'autonomous-run': 1 };
+  private nextSeq: Record<JournalKind, number> = { 'topic-placement': 1, 'session-lifecycle': 1, 'autonomous-run': 1, 'threadline-conversation': 1 };
   /** Durable highWaterSeq per kind (advanced after data fdatasync). */
   private highWaterSeq: Record<JournalKind, number> = {
     'topic-placement': 0,
     'session-lifecycle': 0,
     'autonomous-run': 0,
+    'threadline-conversation': 0,
   };
   /** In-memory enqueue order; drained by the flusher in seq order per kind. */
   private queue: QueuedEntry[] = [];
@@ -283,6 +295,7 @@ export class CoherenceJournal {
     'topic-placement': new Set(),
     'session-lifecycle': new Set(),
     'autonomous-run': new Set(),
+    'threadline-conversation': new Set(),
   };
   private rateBuckets: Record<JournalKind, RateBucket>;
   private timer: ReturnType<typeof setInterval> | null = null;
@@ -321,6 +334,7 @@ export class CoherenceJournal {
       'topic-placement': config.retention?.['topic-placement'] ?? DEFAULT_RETENTION['topic-placement'],
       'session-lifecycle': config.retention?.['session-lifecycle'] ?? DEFAULT_RETENTION['session-lifecycle'],
       'autonomous-run': config.retention?.['autonomous-run'] ?? DEFAULT_RETENTION['autonomous-run'],
+      'threadline-conversation': config.retention?.['threadline-conversation'] ?? DEFAULT_RETENTION['threadline-conversation'],
     };
     this.rateCapCfg = config.rateCap ?? DEFAULT_RATE_CAP;
     this.artifactRoots = (config.artifactRoots ?? [path.join(this.stateDir, 'autonomous'), this.stateDir]).map((r) => {
@@ -342,6 +356,7 @@ export class CoherenceJournal {
       'topic-placement': { tokens: this.rateCapCfg.capacity, lastRefillMs: initMs },
       'session-lifecycle': { tokens: this.rateCapCfg.capacity, lastRefillMs: initMs },
       'autonomous-run': { tokens: this.rateCapCfg.capacity, lastRefillMs: initMs },
+      'threadline-conversation': { tokens: this.rateCapCfg.capacity, lastRefillMs: initMs },
     };
   }
 
@@ -485,6 +500,16 @@ export class CoherenceJournal {
     );
   }
 
+  /** threadline-conversation (P3 §3.1). Op key: (conversationId, action, topicId?). */
+  emitThreadlineConversation(data: ThreadlineConversationData): void {
+    this.emit(
+      'threadline-conversation',
+      data?.topicId,
+      data as unknown as Record<string, unknown>,
+      `${data?.conversationId}:${data?.action}:${typeof data?.topicId === 'number' ? data.topicId : ''}`,
+    );
+  }
+
   /**
    * Generic non-blocking emit: validate + jail + dedupe + rate-cap + serialize,
    * assign a seq, enqueue, and RETURN. No synchronous file I/O on this stack —
@@ -596,6 +621,20 @@ export class CoherenceJournal {
       if (jailed === null) return null; // any path failed the jail → reject the entry
       out = { action, runId, artifactPaths: jailed };
       known = ['action', 'runId', 'artifactPaths'];
+    } else if (kind === 'threadline-conversation') {
+      // P3 §3.1 — content-free lifecycle: ids + fingerprint only, free text
+      // structurally excluded (the P1 typed-schema invariant).
+      const action = raw.action;
+      const conversationId = raw.conversationId;
+      const peerFingerprint = raw.peerFingerprint;
+      const actions: ThreadlineConversationAction[] = ['started', 'bound', 'unbound', 'closed'];
+      if (typeof action !== 'string' || !actions.includes(action as ThreadlineConversationAction)) return null;
+      if (typeof conversationId !== 'string' || !conversationId || conversationId.length > 256) return null;
+      if (typeof peerFingerprint !== 'string' || !peerFingerprint || peerFingerprint.length > 256) return null;
+      const topicId = raw.topicId;
+      if (topicId !== undefined && (typeof topicId !== 'number' || !Number.isFinite(topicId))) return null;
+      out = { action, conversationId, peerFingerprint, ...(topicId !== undefined ? { topicId } : {}) };
+      known = ['action', 'conversationId', 'peerFingerprint', 'topicId'];
     } else {
       return null;
     }
@@ -823,6 +862,7 @@ export class CoherenceJournal {
         'topic-placement': { highWaterSeq: this.highWaterSeq['topic-placement'] },
         'session-lifecycle': { highWaterSeq: this.highWaterSeq['session-lifecycle'] },
         'autonomous-run': { highWaterSeq: this.highWaterSeq['autonomous-run'] },
+        'threadline-conversation': { highWaterSeq: this.highWaterSeq['threadline-conversation'] },
       },
     };
     const metaPath = this.metaPath();
@@ -947,6 +987,12 @@ export class CoherenceJournal {
     if (kind === 'autonomous-run') {
       if (typeof entry.topic !== 'number' || typeof d.runId !== 'string' || typeof d.action !== 'string') return null;
       return `${entry.topic}:${d.runId}:${d.action}`;
+    }
+    if (kind === 'threadline-conversation') {
+      // P3 §3.1: (conversationId, action, topicId?) — conversationId lives in
+      // data, not entry.topic (round-1 integration finding).
+      if (typeof d.conversationId !== 'string' || typeof d.action !== 'string') return null;
+      return `${d.conversationId}:${d.action}:${typeof d.topicId === 'number' ? d.topicId : ''}`;
     }
     return null;
   }
