@@ -10359,11 +10359,8 @@ export async function startServer(options: StartOptions): Promise<void> {
           // double-gate on stage!=='dark' to be safe. Fire-and-forget: the durable receipt
           // is already recorded + ACKed before this runs.
           onAccepted: (cmd) => {
-            // Working-set move trigger (WORKING-SET-HANDOFF §3.3): the one
-            // place the receiver knows it now owns the topic. Fire-and-forget
-            // BEFORE the session-pool stage gate — the coordinator carries its
-            // own gates (ownership, op-key dedupe, single-flight, pressure)
-            // and is undefined while the working-set layer is dark.
+            // Working-set move trigger (WORKING-SET-HANDOFF §3.3) — fire-and-forget,
+            // BEFORE the stage gate (the coordinator carries its own gates; dark ⇒ undefined).
             {
               const wsTopic = Number(cmd.session);
               if (Number.isFinite(wsTopic)) workingSetPullCoordinator?.onTopicAccepted(wsTopic);
