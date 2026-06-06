@@ -3538,6 +3538,10 @@ export async function startServer(options: StartOptions): Promise<void> {
       });
       console.log(pc.green(`  Quota tracking enabled (${quotaFile})`));
     }
+    // NOTE (A1): the account switcher + quota collector pipeline are set up
+    // below, AFTER the scheduler exists, but OUTSIDE the Telegram-polling block
+    // (see the "Account switcher + quota collector pipeline" section) so the
+    // collector runs regardless of who owns Telegram polling.
 
     // Set up opt-in telemetry heartbeat.
     // ALWAYS construct, even when disabled — fixes the chicken-and-egg deadlock
@@ -3774,6 +3778,66 @@ export async function startServer(options: StartOptions): Promise<void> {
       }
     } else if (config.scheduler.enabled && !coordinator.isAwake) {
       console.log(pc.yellow('  Scheduler skipped (standby mode)'));
+    }
+
+    // Account switcher + quota collector pipeline (live-matrix finding A1,
+    // 2026-06-06). The collector that WRITES quota-state.json — and the
+    // QuotaManager that drives its adaptive polling — were previously nested
+    // inside the `!lifelineOwnsPolling` Telegram block, so on any agent whose
+    // LIFELINE owns Telegram polling (the normal production topology) the
+    // collector never started: quota-state.json was never written, the tracker
+    // read an absent file, and quota-aware placement (#804) stayed permanently
+    // fail-open — the exact EXO rate-limit-stall hazard it exists to prevent.
+    // Collecting quota is independent of who polls Telegram, so it lives here
+    // at top scope (after the scheduler exists so migration wiring is real),
+    // gated only on quotaTracker. accountSwitcher is also consumed by
+    // wireTelegramCallbacks in the polling block; constructing it here keeps it
+    // in scope for both the polling and send-only paths.
+    const accountSwitcher = new AccountSwitcher();
+    if (quotaTracker) {
+      const quotaNotifier = new QuotaNotifier(config.stateDir);
+      const alertTopicId = state.get<number>('agent-attention-topic') ?? null;
+      quotaNotifier.configure(
+        async (_topicId, text) => {
+          const tier: NotificationTier = text.includes('EXHAUSTED') || text.includes('critical') ? 'IMMEDIATE' : 'SUMMARY';
+          notify(tier, 'quota', text);
+        },
+        alertTopicId,
+      );
+
+      let collector: InstanceType<typeof import('../monitoring/QuotaCollector.js').QuotaCollector> | null = null;
+      let migrator: InstanceType<typeof import('../monitoring/SessionMigrator.js').SessionMigrator> | null = null;
+      try {
+        const { QuotaCollector } = await import('../monitoring/QuotaCollector.js');
+        const { createDefaultProvider } = await import('../monitoring/CredentialProvider.js');
+        if (resolvedFramework === 'claude-code') {
+          const provider = createDefaultProvider();
+          collector = new QuotaCollector(provider, quotaTracker);
+        } else {
+          console.log(pc.yellow(`  QuotaCollector skipped for ${resolvedFramework} (no framework usage meter)`));
+        }
+      } catch (err) {
+        console.log(pc.yellow(`  QuotaCollector not available: ${err instanceof Error ? err.message : err}`));
+      }
+      try {
+        const { SessionMigrator } = await import('../monitoring/SessionMigrator.js');
+        migrator = new SessionMigrator({ stateDir: config.stateDir });
+      } catch (err) {
+        console.log(pc.yellow(`  SessionMigrator not available: ${err instanceof Error ? err.message : err}`));
+      }
+
+      quotaManager = new QuotaManager(
+        { stateDir: config.stateDir },
+        { tracker: quotaTracker, collector, switcher: accountSwitcher, migrator, notifier: quotaNotifier },
+      );
+      quotaManager.setSessionManager(sessionManager);
+      if (scheduler) quotaManager.setScheduler(scheduler);
+      quotaManager.setNotificationSender(async (message) => {
+        const tier: NotificationTier = message.includes('❌') || message.includes('EXHAUSTED') ? 'IMMEDIATE' : 'SUMMARY';
+        notify(tier, 'quota', message);
+      });
+      quotaManager.start();
+      console.log(pc.green('  QuotaManager started (adaptive polling) — runs regardless of Telegram-polling ownership (A1)'));
     }
 
     // Start telemetry heartbeat (deferred to here so collector can be wired first)
@@ -4032,76 +4096,10 @@ export async function startServer(options: StartOptions): Promise<void> {
       notificationBatcher.start();
       console.log(pc.green('  Notification batcher enabled (SUMMARY: 30m, DIGEST: 2h)'));
 
-      // Set up account switcher (Keychain-based OAuth account swapping)
-      const accountSwitcher = new AccountSwitcher();
-
-      // Set up quota notifier (Telegram alerts on threshold crossings)
-      const quotaNotifier = new QuotaNotifier(config.stateDir);
-      const alertTopicId = state.get<number>('agent-attention-topic') ?? null;
-      quotaNotifier.configure(
-        async (_topicId, text) => {
-          // Quota exhaustion is IMMEDIATE; warnings are SUMMARY
-          const tier: NotificationTier = text.includes('EXHAUSTED') || text.includes('critical') ? 'IMMEDIATE' : 'SUMMARY';
-          notify(tier, 'quota', text);
-        },
-        alertTopicId,
-      );
-
-      // Set up QuotaManager orchestration hub (Phase 4)
-      if (quotaTracker) {
-        // Try to set up the full collector-driven pipeline
-        let collector: InstanceType<typeof import('../monitoring/QuotaCollector.js').QuotaCollector> | null = null;
-        let migrator: InstanceType<typeof import('../monitoring/SessionMigrator.js').SessionMigrator> | null = null;
-
-        try {
-          const { QuotaCollector } = await import('../monitoring/QuotaCollector.js');
-          const { createDefaultProvider } = await import('../monitoring/CredentialProvider.js');
-          if (resolvedFramework === 'claude-code') {
-            const provider = createDefaultProvider();
-            collector = new QuotaCollector(provider, quotaTracker);
-          } else {
-            console.log(pc.yellow(`  QuotaCollector skipped for ${resolvedFramework} (no framework usage meter)`));
-          }
-        } catch (err) {
-          console.log(pc.yellow(`  QuotaCollector not available: ${err instanceof Error ? err.message : err}`));
-        }
-
-        try {
-          const { SessionMigrator } = await import('../monitoring/SessionMigrator.js');
-          migrator = new SessionMigrator({ stateDir: config.stateDir });
-        } catch (err) {
-          console.log(pc.yellow(`  SessionMigrator not available: ${err instanceof Error ? err.message : err}`));
-        }
-
-        quotaManager = new QuotaManager(
-          { stateDir: config.stateDir },
-          {
-            tracker: quotaTracker,
-            collector,
-            switcher: accountSwitcher,
-            migrator,
-            notifier: quotaNotifier,
-          },
-        );
-
-        // Wire session manager and scheduler for migration support
-        quotaManager.setSessionManager(sessionManager);
-        if (scheduler) {
-          quotaManager.setScheduler(scheduler);
-        }
-
-        // Wire Telegram notifications
-        quotaManager.setNotificationSender(async (message) => {
-          const tier: NotificationTier = message.includes('❌') || message.includes('EXHAUSTED') ? 'IMMEDIATE' : 'SUMMARY';
-          notify(tier, 'quota', message);
-        });
-
-        // Start adaptive polling (replaces the 10-min setInterval)
-        quotaManager.start();
-        console.log(pc.green('  QuotaManager started (adaptive polling, auto-migration)'));
-      } else {
-        console.log(pc.yellow('  QuotaManager skipped (no quota tracker)'));
-      }
+      // accountSwitcher + the QuotaManager/collector pipeline were hoisted OUT
+      // of this Telegram-polling block to top scope (finding A1) so the quota
+      // collector runs even when the lifeline owns Telegram polling. See the
+      // "Account switcher + quota collector pipeline" section above.
 
       // Initialize persistent UserManager for user identity resolution (Gap 8)
       const userManager = new UserManager(config.stateDir, config.users);
