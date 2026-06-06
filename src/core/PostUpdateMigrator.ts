@@ -2901,12 +2901,31 @@ The standing program that each apprenticeship/mentorship instance plugs into (e.
 - List / inspect: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/apprenticeship/instances\` · \`GET /apprenticeship/instances/:id\`
 - Create: \`POST /apprenticeship/instances\` \`{"id":"codey-to-gemini","instanceType":"mentorship","overseer":"echo","mentor":"codey","mentee":"gemini","framework":"gemini-cli","priorInstanceId":null}\` (id/overseer/mentor/mentee/framework charset-clamped to \`^[a-z0-9-]+$\`; dup id rejected; harvestFrom=mentor / harvestTo=mentee).
 - Transition status (the ONLY way it changes — runs the gate): \`POST /apprenticeship/instances/:id/transition\` \`{"to":"active"}\` (refused + 409 on a failed gate or illegal transition; \`complete\` is terminal). Preview without mutating: \`.../can-start\` · \`.../can-complete\`.
-- Record a manual cycle: \`POST /apprenticeship/cycles\` with \`instanceId\`, positive \`cycleNumber\`, \`task\`, \`menteeOutput\`, optional \`mentorFlagged\` / \`overseerDifferential\` / \`coaching\` / \`infraItems\`, \`kind\` (\`mentor-mentee-differential\`, \`overseer-apprentice-devreview\`, \`overseer-mentee-direct\`), and \`channel\` (\`telegram-playwright\`, \`threadline-backup\`, \`direct-shortcut\`, \`unknown\`). Use this when the overseer or manual loop found a differential outside the automated mentor tick.
+- Record a manual cycle: \`POST /apprenticeship/cycles\` with \`instanceId\`, positive \`cycleNumber\`, \`task\`, \`menteeOutput\`, optional \`mentorFlagged\` / \`overseerDifferential\` / \`coaching\` / \`infraItems\`, \`kind\` (\`mentor-mentee-differential\`, \`overseer-apprentice-devreview\`, \`overseer-mentee-direct\`), and \`channel\` (\`telegram-playwright\`, \`threadline-backup\`, \`direct-shortcut\`, \`unknown\`). A \`telegram-playwright\` cycle additionally REQUIRES a \`transcriptAudit\` block — \`{ topicIds, window: {start,end}, summary, findingDedupKeys, generatedAt, ledger: 'local'|'remote'|'dry-run'|'failed' }\` — built from \`instar dev:post-drive-transcript-audit\` run over the drive window (use \`--history-base-url\` when the transcript lives on the mentee's server; \`ledger:'local'\` claims are cross-checked against the real framework ledger). Use this when the overseer or manual loop found a differential outside the automated mentor tick.
 - **When to use** (PROACTIVE): when starting or closing a mentorship/apprenticeship instance, drive it through the registry + transitions so the retro-harvest is reviewed before the next instance starts and the lessons are captured before this one closes — never track the lifecycle by memory.
 `;
       content += '\n' + apprenticeshipSection;
       patched = true;
       result.upgraded.push('CLAUDE.md: added Apprenticeship Program section');
+    }
+
+    // Transcript-audit gate (#864 follow-through): agents that ALREADY carry the
+    // Apprenticeship Program section have the pre-gate "Record a manual cycle"
+    // line, which no longer teaches the full required shape — telegram-playwright
+    // cycles now refuse without a transcriptAudit block. Rewrite the stale line
+    // in place. Idempotent: the sniff requires the old line present AND the new
+    // marker absent, so it fires at most once per agent.
+    {
+      const staleCycleLine = /- Record a manual cycle: `POST \/apprenticeship\/cycles`[^\n]*mentor tick\./;
+      const m = content.match(staleCycleLine);
+      if (m && !m[0].includes('transcriptAudit')) {
+        content = content.replace(
+          staleCycleLine,
+          "- Record a manual cycle: `POST /apprenticeship/cycles` with `instanceId`, positive `cycleNumber`, `task`, `menteeOutput`, optional `mentorFlagged` / `overseerDifferential` / `coaching` / `infraItems`, `kind` (`mentor-mentee-differential`, `overseer-apprentice-devreview`, `overseer-mentee-direct`), and `channel` (`telegram-playwright`, `threadline-backup`, `direct-shortcut`, `unknown`). A `telegram-playwright` cycle additionally REQUIRES a `transcriptAudit` block — `{ topicIds, window: {start,end}, summary, findingDedupKeys, generatedAt, ledger: 'local'|'remote'|'dry-run'|'failed' }` — built from `instar dev:post-drive-transcript-audit` run over the drive window (use `--history-base-url` when the transcript lives on the mentee's server; `ledger:'local'` claims are cross-checked against the real framework ledger). Use this when the overseer or manual loop found a differential outside the automated mentor tick.",
+        );
+        patched = true;
+        result.upgraded.push('CLAUDE.md: cycle-record line now teaches the transcript-audit gate');
+      }
     }
 
     // Maturity honesty (mature-update-announcements spec). Existing agents need

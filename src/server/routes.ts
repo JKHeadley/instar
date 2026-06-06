@@ -12799,6 +12799,29 @@ export function createRoutes(ctx: RouteContext): Router {
       ) {
         throw new Error(`channel must be one of: ${APPRENTICESHIP_CYCLE_CHANNELS.join(', ')}`);
       }
+      // Anti-fabrication tooth for the transcript-audit gate: a block declaring
+      // ledger:'local' claims its findings were filed into THIS agent's framework
+      // ledger — so at least one claimed dedup key must actually resolve here.
+      // 'remote'/'dry-run'/'failed' declarations are accepted as declared (the
+      // declaration itself stays queryable for meta-analysis); shape validation
+      // happens in the store either way.
+      const audit = (body as Record<string, unknown>).transcriptAudit as Record<string, unknown> | undefined;
+      if (
+        audit && typeof audit === 'object' && !Array.isArray(audit) &&
+        audit.ledger === 'local' &&
+        Array.isArray(audit.findingDedupKeys) && audit.findingDedupKeys.length > 0 &&
+        ctx.frameworkIssueLedger
+      ) {
+        const keys = (audit.findingDedupKeys as unknown[]).filter((k): k is string => typeof k === 'string');
+        const resolved = keys.some((k) => ctx.frameworkIssueLedger!.hasDedupKey(k));
+        if (!resolved) {
+          throw new Error(
+            "transcriptAudit declares ledger:'local' with filed findings, but none of the claimed " +
+              'findingDedupKeys exist in this agent\'s framework ledger. Run the auditor without --dry-run ' +
+              "so findings actually file, or declare ledger:'remote'/'dry-run'/'failed' honestly.",
+          );
+        }
+      }
       const cycle = ctx.apprenticeshipCycleStore.record({
         ...body,
         kind: typeof body.kind === 'string' ? body.kind : 'mentor-mentee-differential',

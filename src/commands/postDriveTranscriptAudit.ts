@@ -92,6 +92,14 @@ export interface PostDriveTranscriptAuditCliOptions {
   end: string;
   limit?: number;
   baseUrl?: string;
+  /** Where the drive TRANSCRIPT lives when it is not this agent's server —
+   *  e.g. the MENTEE's server records the mentor's Playwright drive, so the
+   *  mentor reads history there while filing findings into its OWN ledger.
+   *  Defaults to baseUrl (single-server flow, byte-compatible with #864).
+   *  Auth for the remote read comes from --history-auth-token or the
+   *  INSTAR_HISTORY_AUTH_TOKEN env var (env preferred — flags leak via ps). */
+  historyBaseUrl?: string;
+  historyAuthToken?: string;
   dir?: string;
   dryRun?: boolean;
   json?: boolean;
@@ -368,6 +376,18 @@ export async function runPostDriveTranscriptAuditCli(options: PostDriveTranscrip
   const baseUrl = (options.baseUrl ?? `http://localhost:${config.port}`).replace(/\/+$/, '');
   const headers: Record<string, string> = {};
   if (config.authToken) headers.Authorization = `Bearer ${config.authToken}`;
+  // Transcript reads may live on a DIFFERENT server than the ledger writes:
+  // in the apprenticeship flow the MENTEE's server records the drive, while
+  // findings belong in the auditing agent's OWN ledger. --history-base-url
+  // splits the read side; filing always goes to baseUrl. Defaults preserve
+  // the single-server #864 behavior byte-for-byte.
+  const historyBaseUrl = (options.historyBaseUrl ?? baseUrl).replace(/\/+$/, '');
+  const historyHeaders: Record<string, string> = { ...headers };
+  if (historyBaseUrl !== baseUrl) {
+    const remoteToken = options.historyAuthToken ?? process.env.INSTAR_HISTORY_AUTH_TOKEN;
+    if (remoteToken) historyHeaders.Authorization = `Bearer ${remoteToken}`;
+    else delete historyHeaders.Authorization; // local token is wrong for a remote server — send none rather than a misleading one
+  }
   const topicIds = parseTopicIds(options);
 
   const report = await runPostDriveTranscriptAudit({
@@ -378,7 +398,7 @@ export async function runPostDriveTranscriptAuditCli(options: PostDriveTranscrip
     dryRun: options.dryRun,
     deps: {
       readTopicHistory: async (topicId, limit) => {
-        const data = await fetchJson(`${baseUrl}/telegram/topics/${topicId}/messages?limit=${limit}`, { headers });
+        const data = await fetchJson(`${historyBaseUrl}/telegram/topics/${topicId}/messages?limit=${limit}`, { headers: historyHeaders });
         const messages = (data as { messages?: unknown }).messages;
         if (!Array.isArray(messages)) throw new Error(`Topic ${topicId} history response did not include messages[]`);
         return messages as TranscriptMessage[];

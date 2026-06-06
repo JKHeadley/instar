@@ -671,6 +671,16 @@ export class FrameworkIssueLedger {
     return r ? this.rowToIssue(r) : null;
   }
 
+  /** Whether ANY framework's issue carries this dedup key. Used by the
+   *  apprenticeship transcript-audit gate to verify a cycle's claimed
+   *  locally-filed findings actually exist in this ledger. */
+  hasDedupKey(dedupKey: string): boolean {
+    const r = this.db
+      .prepare(`SELECT 1 FROM framework_issues WHERE dedup_key = ? LIMIT 1`)
+      .get(dedupKey);
+    return r !== undefined;
+  }
+
   listIssues(q: ListIssuesQuery = {}): IssueRow[] {
     const clauses: string[] = [];
     const params: Record<string, unknown> = {};
