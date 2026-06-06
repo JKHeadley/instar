@@ -29,6 +29,30 @@
       "grandfathered": false
     },
     {
+      "category": "pull-opkeys",
+      "description": "Durable (topic,epoch) operation-key window for working-set pull dedupe - restart-proof at-most-once scheduling per move (WORKING-SET-HANDOFF-SPEC P2 \u00a73.3). Machine-local, bounded window (200 keys), single-writer (the coordinator).",
+      "scope": "machine-local",
+      "freshness": "live",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "state/coherence-journal/pull-opkeys.json"
+      ],
+      "grandfathered": false
+    },
+    {
+      "category": "visibility-guard",
+      "description": "Peer-visibility guard dedupe state - which improper revocations were already surfaced (keyed on revokedAt, cross-boot) + per-machine disappearance episodes for flap bounding (WORKING-SET-HANDOFF-SPEC P2 \u00a73.6). Machine-local notice hygiene, never authority.",
+      "scope": "machine-local",
+      "freshness": "live",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "state/coherence-journal/visibility-guard.json"
+      ],
+      "grandfathered": false
+    },
+    {
       "category": "commitments",
       "description": "CommitmentTracker single-writer CAS store of user-facing promises and follow-through state.",
       "scope": "must-be-coherent",
