@@ -57,7 +57,7 @@ import { QuotaTracker } from '../monitoring/QuotaTracker.js';
 import { AccountSwitcher } from '../monitoring/AccountSwitcher.js';
 import { QuotaNotifier } from '../monitoring/QuotaNotifier.js';
 import { QuotaManager } from '../monitoring/QuotaManager.js';
-import { classifySessionDeath } from '../monitoring/QuotaExhaustionDetector.js';
+import { classifySessionDeath, detectContextExhaustion } from '../monitoring/QuotaExhaustionDetector.js';
 import { SessionWatchdog } from '../monitoring/SessionWatchdog.js';
 import { formatWatchdogUserMessage } from '../monitoring/watchdog-notifications.js';
 import { StallTriageNurse } from '../monitoring/StallTriageNurse.js';
@@ -5831,6 +5831,32 @@ export async function startServer(options: StartOptions): Promise<void> {
             } else if (!slackChId) {
               console.warn(`[respawnSessionFresh] No platform handler for topicId=${topicId} — recovery is a no-op`);
             }
+          },
+          // Non-destructive context-wall escalation (rung 1, tried before the
+          // fresh respawn): press `/compact` for a session stuck at "Context
+          // limit reached · /compact or /clear to continue" and verify the wall
+          // clears. Preserves the conversation. Only reached for a genuinely
+          // idle session (the recovery gates on !hasActiveProcesses).
+          attemptCompaction: async (name) => {
+            // Press the button the wall asks for.
+            const injected = sessionManager.injectMessage(name, '/compact');
+            if (!injected) return { cleared: false, reason: 'inject-failed' };
+            // Poll for the wall to clear (compaction takes a few seconds).
+            const deadline = Date.now() + 30_000;
+            while (Date.now() < deadline) {
+              await new Promise((r) => setTimeout(r, 3_000));
+              const out = sessionManager.captureOutput(name, 40) || '';
+              const tail = out.split('\n').map((l) => l.trim()).filter(Boolean).slice(-12).join('\n');
+              // Compaction itself failed (too long to even compact) → give up the rung.
+              if (/error during compaction|compaction failed/i.test(tail)) {
+                return { cleared: false, reason: 'compaction-error' };
+              }
+              // Wall gone from the live state → compaction cleared it.
+              if (!detectContextExhaustion(out).matched) {
+                return { cleared: true };
+              }
+            }
+            return { cleared: false, reason: 'timeout' };
           },
         },
       );

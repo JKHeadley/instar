@@ -74,6 +74,16 @@ const AUP_WEDGE_CLAUDE_MD_NOTE = `
 - **Fresh respawn via API:** \`POST /sessions/refresh\` with \`{"sessionName":"<tmux-name>","fresh":true,"reason":"…"}\` kills + respawns WITHOUT \`--resume\` (clears the topic's resume UUID first). Use it when a transcript is poisoned — a normal refresh would re-wedge.
 `;
 
+/**
+ * CLAUDE.md note for the /compact context-wall escalation rung (2026-06-06).
+ * Marker for idempotency: 'Context-wall recovery escalation'.
+ */
+const CONTEXT_WALL_ESCALATION_NOTE = `
+### Context-wall recovery escalation (2026-06-06)
+
+When a session is genuinely stuck at the context wall ("Context limit reached · /compact or /clear to continue" / "conversation too long"), recovery now tries a NON-DESTRUCTIVE rung FIRST: it presses \`/compact\` for the session and verifies the wall cleared — preserving the whole conversation. Only if \`/compact\` can't clear it (the conversation is too long to even compact) does recovery fall back to the previous behavior, a fresh respawn that keeps thread history but starts a new conversation. This is gated to a genuinely idle session (a session still actively working at 100% context is left alone, never compacted out from under its work). If a user asks "why did my long session restart / did I lose the conversation?" — the answer is: I try to compact it in place first; a fresh start only happens when compaction itself fails.
+`;
+
 export interface MigrationResult {
   /** What was upgraded */
   upgraded: string[];
@@ -3465,12 +3475,20 @@ When a user message goes unanswered, the standby (🔭) system reports on the se
 The same change tail-gates the "conversation too long" check: it only fires when that is the session's LIVE state, not a stale mention scrolled up in the buffer (which previously fired as noise on healthy sessions).
 
 If a user asks "why did I see 'actively working' when you were stuck?" or "why do those 'conversation too long' messages come up when nothing's wrong?" — explain the above: the standby is now honest about WHY a turn failed, and the stale-scrollback false signal is gone.
-`;
+${CONTEXT_WALL_ESCALATION_NOTE}`;
       content += '\n' + section;
       patched = true;
       result.upgraded.push('CLAUDE.md: added Honest standby (turn-receipts) section');
+    } else if (!content.includes('Context-wall recovery escalation')) {
+      // Agents that already have the Honest-standby section predate the
+      // /compact escalation rung (2026-06-06). Append the note so an agent can
+      // explain "I tried /compact before restarting." Marker: 'Context-wall
+      // recovery escalation'.
+      content += '\n' + CONTEXT_WALL_ESCALATION_NOTE;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Context-wall recovery escalation note');
     } else {
-      result.skipped.push('CLAUDE.md: Honest standby section already present');
+      result.skipped.push('CLAUDE.md: Honest standby + escalation already present');
     }
 
     // Topic-Flood Guard (2026-05-28 lockdown) — the structural backstop that

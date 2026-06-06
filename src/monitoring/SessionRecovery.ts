@@ -95,6 +95,18 @@ export interface SessionRecoveryDeps {
   /** Respawn a session fresh (no --resume) for context exhaustion recovery */
   respawnSessionFresh?: (topicId: number, sessionName?: string, recoveryPrompt?: string) => Promise<void>;
   /**
+   * Non-destructive context-wall escalation: press `/compact` for a session
+   * genuinely stuck at "Context limit reached · /compact or /clear to continue"
+   * and verify the wall cleared. This PRESERVES the conversation (Claude
+   * compacts in place) — the rung that should be tried BEFORE the destructive
+   * fresh respawn. Resolves `{ cleared: true }` when the wall is gone after
+   * compaction, `{ cleared: false, reason }` when compaction itself fails
+   * (e.g. the conversation is too long to even compact) or times out — in
+   * which case recovery falls through to the fresh respawn. Undefined ⇒ the
+   * rung is skipped (pre-escalation behavior: straight to fresh respawn).
+   */
+  attemptCompaction?: (sessionName: string) => Promise<{ cleared: boolean; reason?: string }>;
+  /**
    * Get recent messages for a topic (used by context-exhaustion recovery to
    * capture any in-flight agent reply that lands between detection and respawn,
    * so the fresh session can avoid duplicating it).
@@ -366,12 +378,42 @@ export class SessionRecovery extends EventEmitter {
 
     this.emit('recovery:context_exhaustion', { topicId, sessionName, matchedPattern, attemptNumber });
 
+    // ── Rung 1: non-destructive /compact (preserves the conversation) ──
+    // Before killing the session and losing the conversation, try the escalation
+    // the wall itself asks for: press `/compact`. This is gated to a GENUINELY
+    // stuck session (no active child processes — a working session at 100%
+    // context is handled by the kill-defer below, never compacted out from under
+    // its work). If /compact clears the wall the conversation survives; if it
+    // fails (too long to even compact) or times out, we fall through to the
+    // destructive fresh respawn — never worse than the prior behavior.
+    const hasChildren = this.deps.hasActiveProcesses?.(sessionName) ?? false;
+    if (!hasChildren && this.deps.attemptCompaction) {
+      try {
+        const compaction = await this.deps.attemptCompaction(sessionName);
+        if (compaction.cleared) {
+          this.emit('recovery:context_compacted', { topicId, sessionName, attemptNumber });
+          return {
+            recovered: true,
+            failureType: 'context_exhaustion',
+            attemptNumber,
+            message: `Recovered via /compact — conversation preserved (pattern: "${matchedPattern}", attempt ${attemptNumber})`,
+          };
+        }
+        // compaction.cleared === false → fall through to the destructive respawn.
+      } catch {
+        // @silent-fallback-ok — compaction is best-effort; fall through to respawn.
+      }
+    }
+
     // Record detection moment so we can identify any in-flight agent reply that
     // lands AFTER this point — the dying session may have generated a reply that
     // hasn't been written to topic history yet at respawn time.
     const detectedAt = Date.now();
 
-    // Kill the session — it's stuck at the "conversation too long" prompt
+    // ── Rung 2: kill + fresh respawn (conversation lost) ──
+    // Reached only when /compact was unavailable, declined (active children), or
+    // could not clear the wall. The session is stuck at the "conversation too
+    // long" prompt and a fresh start is the only remaining recovery.
     if ((await this.killForRecovery(sessionName)) === 'deferred-still-working') {
       return {
         recovered: false, failureType: 'context_exhaustion', attemptNumber, deferred: true,
