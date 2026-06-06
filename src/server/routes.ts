@@ -8847,6 +8847,70 @@ export function createRoutes(ctx: RouteContext): Router {
       // ownership is a best-effort optimization. If it throws, route() re-places off the pin on
       // the next message regardless, and `releasedLocalOwnership:false` is reported to the caller.
     }
+    // Coherence finding #5 (2026-06-06): the transfer's PLACE half. A QUIET topic
+    // (never-seen or released ownership record) previously journaled NOTHING on
+    // transfer — the pin is router-local and the release half above only fires when
+    // this machine held ownership — so the pinned-to machine could never prove
+    // ownership and its working-set fetch reflex stayed refused ("not-owner") even
+    // after the #926/#930 read-side fallbacks. Land place→claim for the target (the
+    // FSM permits the router to confirm a claim on the placed owner's behalf — the
+    // bug-#11 confirmClaim precedent), which records a REAL epoch and journals a
+    // placement entry that replicates to the target. Claim immediately follows place
+    // so the record never rests at 'placing' (a resting 'placing' record queues every
+    // later message as ownership-contention). Guarded: place is only legal on
+    // never-seen/released records, so an active or in-flight record is never stolen.
+    let placedOwnership = false;
+    try {
+      // Skip only when the target already holds CONFIRMED (active) ownership — a
+      // resting 'placing' record naming the target must still fall through to the
+      // claim repair below (ownerOf reports an owner for 'placing' records too,
+      // which is why this guard reads the record's status directly).
+      const cur0 = ctx.sessionOwnershipRegistry.read(topicId);
+      if (self && !(cur0?.status === 'active' && cur0.ownerMachineId === target)) {
+        const prevOwner = cur0?.ownerMachineId;
+        // Each landed CAS journals (§3.3 call-site pairing — placement history
+        // never grows a hole): the place half AND the placing→active confirm,
+        // exactly like the router's casClaimOwnership/confirmClaim pair. The
+        // entry is what the target's wsOwnerOf journal-placement fallback
+        // (#930) reads after replication.
+        const casAndJournal = (action: { type: 'place'; machineId: string } | { type: 'claim'; machineId: string }, half: string): boolean => {
+          const r = ctx.sessionOwnershipRegistry!.cas(action, {
+            sessionKey: topicId,
+            sender: self,
+            nonce: `${self}:${half}:${topicId}:${Date.now()}`,
+          });
+          if (!r.ok) return false;
+          try {
+            const topicNum = Number(topicId);
+            if (Number.isFinite(topicNum)) {
+              ctx.state.getCoherenceJournal()?.emitPlacement(topicNum, {
+                owner: r.record.ownerMachineId ?? target,
+                ...(prevOwner ? { prevOwner } : {}),
+                epoch: r.record.ownershipEpoch,
+                reason: 'user-move',
+              });
+            }
+          } catch { /* observability never endangers the observed */ }
+          return true;
+        };
+        if (casAndJournal({ type: 'place', machineId: target }, 'tplace')) {
+          placedOwnership = casAndJournal({ type: 'claim', machineId: target }, 'tclaim');
+        } else {
+          // A resting 'placing' record already naming the target (legacy pre-fix
+          // state, or a raced earlier transfer) → confirm the claim (placing→active),
+          // the bug-#11 repair. Any other record shape is left strictly untouched.
+          const cur = ctx.sessionOwnershipRegistry.read(topicId);
+          if (cur?.status === 'placing' && cur.ownerMachineId === target) {
+            placedOwnership = casAndJournal({ type: 'claim', machineId: target }, 'tclaim');
+          }
+        }
+      }
+    } catch {
+      // @silent-fallback-ok — landing the place half is the quiet-topic ownership-evidence
+      // repair (coherence finding #5); the pin (set above) still drives re-placement on the
+      // next real message, so a CAS failure must never fail the transfer itself.
+      // `placedOwnership:false` is reported to the caller.
+    }
     res.json({
       ok: true,
       topicId,
@@ -8855,6 +8919,7 @@ export function createRoutes(ctx: RouteContext): Router {
       action: plan.action,
       pinned: plan.setPin ?? true,
       releasedLocalOwnership,
+      placedOwnership,
     });
   });
 

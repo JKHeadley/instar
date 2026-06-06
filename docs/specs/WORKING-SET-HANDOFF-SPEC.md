@@ -282,6 +282,21 @@ Discipline (all inherited-invariant applications):
   journal-actuation ban guards (nomination already runs on replica
   evidence by design), and the per-write recheck still aborts on any
   real claim.
+- **The transfer's PLACE half (finding #5, live v1.3.372):** both read-side
+  fallbacks above presuppose evidence EXISTS — but `/pool/transfer` on a
+  QUIET topic (never-seen or released ownership record) produced none: the
+  pin is router-local and the release half only journals when the router
+  itself held ownership, so the pinned-to machine still answered
+  `not-owner` after #926+#930 deployed. The transfer handler now lands the
+  place half — `place→claim` for the target as one synchronous pair (the
+  bug-#11 confirmClaim precedent; never resting at `placing`, which would
+  queue every later message as ownership-contention), journaled
+  `reason: 'user-move'` at the real epoch so the entry replicates to the
+  target. Guards: an active record held by a non-target machine is never
+  stolen (place is only legal on never-seen/released records); a resting
+  `placing` record naming the target is repaired via claim; any other
+  in-flight shape is left strictly untouched. Reported as
+  `placedOwnership` in the transfer response.
 - **Operation key `(topic, epoch)`** — at most one pull scheduled per key,
   deduped against a durable recent-key window (restart-proof). Skipped
   entirely when `owner === prevOwner` (placing-confirm, no real move) or
