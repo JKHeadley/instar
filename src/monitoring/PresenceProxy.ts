@@ -220,6 +220,39 @@ const INJECTION_PATTERNS = [
   /^\s*<\/?(?:system|instruction|prompt)/i,
 ];
 
+// Input-box GHOST TEXT (the 2026-06-06 presence-confabulation incident):
+// codex renders rotating placeholder suggestions inside its empty input box
+// ("› Write tests for @filename", "› Implement {feature}"). ANSI-stripping
+// erases the dim styling, so by the time the snapshot reaches the assessment
+// LLM the ghost text is indistinguishable from a typed command — and the LLM
+// reported "preparing to write tests for the referenced file" for a session
+// that was IDLE at a fresh prompt (topic 2271, 00:35:28Z). Status confabulated
+// from UI chrome.
+//
+// Match conservatively: only `›`-prefixed input-box lines whose content is
+// recognizably TEMPLATE text — it contains a `{placeholder}` or `@filename`
+// token, or exact-matches the known codex suggestion set. A real typed-but-
+// unsubmitted command stays visible (it is genuine pane state); only text the
+// USER NEVER WROTE is stripped.
+const KNOWN_INPUT_BOX_GHOSTS = new Set(
+  [
+    'implement {feature}',
+    'write tests for @filename',
+    'find and fix a bug in @filename',
+    'explain this codebase',
+    'summarize recent commits',
+  ],
+);
+const INPUT_BOX_LINE = /^\s*[›❯>]\s+(.*\S)\s*$/;
+const TEMPLATE_TOKEN = /\{[a-z_-]+\}|@filename\b/i;
+
+function isInputBoxGhostLine(line: string): boolean {
+  const m = INPUT_BOX_LINE.exec(line);
+  if (!m) return false;
+  const content = m[1].trim();
+  return TEMPLATE_TOKEN.test(content) || KNOWN_INPUT_BOX_GHOSTS.has(content.toLowerCase());
+}
+
 export function sanitizeTmuxOutput(raw: string, extraPatterns?: string[]): string {
   let output = raw;
 
@@ -240,10 +273,11 @@ export function sanitizeTmuxOutput(raw: string, extraPatterns?: string[]): strin
     output = output.replace(pattern, '[REDACTED]');
   }
 
-  // Remove lines matching injection patterns
+  // Remove lines matching injection patterns, and input-box ghost-text lines
+  // (placeholder suggestions the user never typed — see isInputBoxGhostLine).
   output = output
     .split('\n')
-    .filter(line => !INJECTION_PATTERNS.some(p => p.test(line)))
+    .filter(line => !INJECTION_PATTERNS.some(p => p.test(line)) && !isInputBoxGhostLine(line))
     .join('\n');
 
   return output.trim();
