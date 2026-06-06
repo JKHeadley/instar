@@ -1760,6 +1760,11 @@ Manage it:
 - \`curl -X POST -H "Authorization: Bearer $AUTH" -H 'Content-Type: application/json' -d '{"task":{"description":"Route invoices, schedule approvals, track status"}}' http://localhost:${port}/agent-readiness/score\` (or \`{"workflow":{"steps":[...]}}\`) → \`{ coordinationRatio, overallReadiness (0-100), recommendation, matched }\`. \`recommendation\`: deploy-agent (75+) / agent-with-oversight (55-74) / hybrid (40-54) / human-led (<40). Deterministic + advisory.
 - **When to use** (PROACTIVE): before delegating a task/workflow to an agent, or when deciding what to automate vs keep human. Pair with \`/intent/org/test-action\` (is it agent-ready AND does our purpose endorse it?). Skill: \`/agent-readiness\`.
 
+**Agent Digital Passport (EXO 3.0).** Your identity (name + routing fingerprint), trust level, and ORG-INTENT constraints packaged into one portable passport — "every agent carries metadata saying what it's allowed and forbidden to do, and other agents watch compliance" (Salim Ismail).
+- Your passport: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/passport\` → \`{ agent, fingerprint, trustLevel, allowedCapabilities, forbiddenActions, issuedAt }\` (forbiddenActions = your ORG-INTENT constraints).
+- Verify a peer's action against their passport: \`curl -X POST -H "Authorization: Bearer $AUTH" -H 'Content-Type: application/json' -d '{"passport":{...},"action":"..."}' http://localhost:${port}/passport/verify\` → \`{ permitted, basis, reason }\` (basis: forbidden-action / trust-floor / out-of-scope / ok).
+- **When to use** (PROACTIVE): before trusting another agent's proposed action, verify it against their passport; hand peers your passport so they know your scope. Skill: \`/agent-passport\`.
+
 ## Agent Infrastructure
 
 This project uses instar for persistent agent capabilities.

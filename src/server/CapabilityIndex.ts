@@ -100,6 +100,15 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     }),
   },
   {
+    key: 'agentPassport',
+    prefixes: ['/passport'],
+    description: 'Agent Digital Passport (EXO 3.0) — the agent\'s identity (name + routing fingerprint), trust level, and ORG-INTENT constraints packaged into one portable passport, plus a deterministic peer compliance check ("is this action permitted for this passport?"). Advisory — the caller decides; never gates.',
+    build: () => ({
+      configured: true, // built from identity/trust/intent already on ctx paths — no hard ctx dependency
+      endpoints: ['GET /passport', 'POST /passport/verify'],
+    }),
+  },
+  {
     key: 'apprenticeshipProgram',
     prefixes: ['/apprenticeship'],
     description: 'Apprenticeship Program — instance registry + lifecycle gates for onboarding agent frameworks. Each onboarding is a tracked instance (overseer / mentor / mentee). The retro-gate refuses starting an instance without a valid prior retro-harvest; the doc-as-required-artifact gate refuses completing one without its lessons captured. Gates are structural preconditions on objective artifacts; verdicts audited to logs/apprenticeship-decisions.jsonl.',
