@@ -12956,6 +12956,38 @@ export function createRoutes(ctx: RouteContext): Router {
     }
   });
 
+  // Agent-readiness scoring (EXO 3.0 — Salim Ismail's "task decomposition
+  // matrix"): score a task or workflow on its coordination-vs-judgment ratio to
+  // tell whether it's a good agent candidate. Coordination work (routing,
+  // approvals, scheduling, status tracking, prescriptive steps) is agent-ready;
+  // judgment work (ambiguity, exceptions, relationships, no-playbook calls)
+  // stays human. Deterministic + advisory.
+  //
+  // Body: { "task": { "name?": "...", "description": "..." } }
+  //    or { "workflow": { "name?": "...", "steps": ["...", "..."] } }
+  // → { coordinationSignals, judgmentSignals, coordinationRatio,
+  //     overallReadiness (0-100), recommendation, reason, matched }
+  router.post('/agent-readiness/score', async (req, res) => {
+    const task = req.body?.task;
+    const workflow = req.body?.workflow;
+    const hasTask = task && typeof task.description === 'string' && task.description.trim();
+    const hasWorkflow = workflow && Array.isArray(workflow.steps) && workflow.steps.length > 0;
+    if (!hasTask && !hasWorkflow) {
+      res.status(400).json({
+        error: 'Provide either "task" {description} or "workflow" {steps:[...]} in the request body.',
+      });
+      return;
+    }
+    try {
+      const { AgentReadinessScorer } = await import('../core/AgentReadinessScorer.js');
+      const scorer = new AgentReadinessScorer();
+      const result = hasTask ? scorer.score(task) : scorer.scoreWorkflow(workflow);
+      res.json(result);
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to score agent-readiness' });
+    }
+  });
+
   // MTP Protocol — the two EXO 3.0 tests (Salim Ismail, "Why AI Agents Are
   // Ignoring Your Purpose"): given a proposed action, run it against ORG-INTENT
   // as a machine-readable protocol.

@@ -1586,6 +1586,40 @@ curl http://localhost:\${INSTAR_PORT:-${port}}/evolution
  */
 export function installBuiltinSkills(skillsDir: string, port: number): void {
   const skills: Record<string, { name: string; description: string; content: string }> = {
+    'agent-readiness': {
+      name: 'agent-readiness',
+      description: 'Score a task or workflow on its coordination-vs-judgment ratio (EXO 3.0 task-decomposition matrix).',
+      content: `---
+name: agent-readiness
+description: Score a task or workflow on its coordination-vs-judgment ratio to tell whether it's a good agent candidate (EXO 3.0 task-decomposition matrix).
+metadata:
+  user_invocable: "true"
+---
+
+# /agent-readiness
+
+Salim Ismail's EXO 3.0 diagnostic, made runnable: score a piece of work on its **coordination-vs-judgment ratio**. Coordination work — routing information, approvals, scheduling, status tracking, prescriptive/standardized steps — is what AI agents do best, so it's *agent-ready*. Judgment work — resolving ambiguity, handling exceptions, navigating relationships, making a call with no playbook — should stay with (or escalate to) humans.
+
+## When to use
+- Before delegating a task/workflow to an agent — is it actually a good candidate?
+- When deciding whether a process should be fully automated, agent-with-oversight, hybrid, or kept human-led.
+
+## How
+Score a task:
+\`\`\`bash
+curl -X POST -H "Authorization: Bearer $AUTH" -H 'Content-Type: application/json' \\
+  -d '{"task":{"description":"Route invoices, schedule approvals, track status, compile a report, notify owners."}}' \\
+  http://localhost:\${INSTAR_PORT:-${port}}/agent-readiness/score
+\`\`\`
+Score a workflow:
+\`\`\`bash
+curl -X POST -H "Authorization: Bearer $AUTH" -H 'Content-Type: application/json' \\
+  -d '{"workflow":{"steps":["Fetch the record","Assign accounts","Schedule orientation","Update the tracker"]}}' \\
+  http://localhost:\${INSTAR_PORT:-${port}}/agent-readiness/score
+\`\`\`
+Returns \`{ coordinationSignals, judgmentSignals, coordinationRatio, overallReadiness (0-100), recommendation, reason, matched }\`. \`recommendation\`: \`deploy-agent\` (75+), \`agent-with-oversight\` (55-74), \`hybrid\` (40-54), \`human-led\` (<40). Deterministic + advisory — never blocks. Pair with the MTP Protocol (\`/intent/org/test-action\`) to check both "is this agent-ready?" and "does our purpose endorse it?"
+`,
+    },
     'evolve': {
       name: 'evolve',
       description: 'Propose an evolution improvement to your own infrastructure, behavior, or capabilities.',

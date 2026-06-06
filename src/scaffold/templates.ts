@@ -1756,6 +1756,10 @@ Manage it:
 - \`instar intent validate\` now reports the MTP Protocol layer status (constraint / decision / identity present?) and whether your intent **governs** (has constraint teeth) or merely **cheers**.
 - **When to use** (PROACTIVE): before a high-stakes or ambiguous action, test it against your MTP protocol; if you're authoring an ORG-INTENT, add an \`## Identity\` section so the purpose binds people, not just gates agents.
 
+**Agent-Readiness Scoring (EXO 3.0 task-decomposition matrix).** Score a task or workflow on its coordination-vs-judgment ratio to decide whether it's a good agent candidate. Coordination work (routing, approvals, scheduling, status-tracking, prescriptive steps) is agent-ready; judgment work (ambiguity, exceptions, relationships, no-playbook calls) stays human.
+- \`curl -X POST -H "Authorization: Bearer $AUTH" -H 'Content-Type: application/json' -d '{"task":{"description":"Route invoices, schedule approvals, track status"}}' http://localhost:${port}/agent-readiness/score\` (or \`{"workflow":{"steps":[...]}}\`) → \`{ coordinationRatio, overallReadiness (0-100), recommendation, matched }\`. \`recommendation\`: deploy-agent (75+) / agent-with-oversight (55-74) / hybrid (40-54) / human-led (<40). Deterministic + advisory.
+- **When to use** (PROACTIVE): before delegating a task/workflow to an agent, or when deciding what to automate vs keep human. Pair with \`/intent/org/test-action\` (is it agent-ready AND does our purpose endorse it?). Skill: \`/agent-readiness\`.
+
 ## Agent Infrastructure
 
 This project uses instar for persistent agent capabilities.
