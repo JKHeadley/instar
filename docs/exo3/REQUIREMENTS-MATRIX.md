@@ -104,6 +104,7 @@
 | **G4 — Inter-org porousness** (Threadline disabled-seed → real maturation track) | E1,E2,D2 | **Large** | Strategic — the North Star; honesty here beats overclaiming |
 | **G5 — Learning-velocity metrics** | H1 | **Medium** | Medium — differentiates from operational-only observability |
 | **G6 — Internalize/externalize, CAIO** | E2,I4 | — | Advisory; name as org-design guidance, not a feature |
+| **G7 — MTP Red-Team Harness** (standardized adversarial verification: amplification-ladder probes L0–L3 against the live agent through its real channel, expectations derived from the target org's OWN intent — org-agnostic by construction) | B4,I1 | **Medium** | **Required** — operator-declared fundamental for full EXO 3.0 compatibility (2026-06-05, topic 19437): an MTP whose refusal boundary was never adversarially probed is an *unverified* governor; other orgs run the same harness against their own MTPs. Spec: `docs/specs/MTP-REDTEAM-HARNESS-SPEC.md` |
 
 ---
 
@@ -114,6 +115,7 @@
 - **G2 (Agent-readiness scoring)** — cheap, concrete, and it mirrors his own task-decomposition matrix; doubles as an interactive hook on the page.
 
 **SHOW as in-progress trajectory** (honest roadmap *is* the credibility — we think like he does):
+- **G7 (MTP Red-Team Harness)** — added 2026-06-05 by operator directive as REQUIRED for full EXO 3.0 compatibility. Phase 1 (prototype + first boundary map) before outreach; the public page shows the harness and our own honestly-measured boundary map as the proof that "governing, not cheering" is verified, not asserted.
 - **G3 (Agent passport)** — show the live primitives + the path to an explicit passport.
 - **G4 (Inter-org porousness)** — Threadline as the seed + the maturation track. This is the North Star; overclaiming here would be the one thing that loses him.
 - **G5 (Learning-velocity metrics)** — show operational observability + the roadmap.
