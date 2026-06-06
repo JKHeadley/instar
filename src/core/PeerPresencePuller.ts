@@ -49,6 +49,15 @@ export interface PeerCapacity {
    * peers omit it and the drive is a no-op.
    */
   commitmentsAdvert?: { incarnation: string; replicationSeq: number };
+  /**
+   * The peer's self-reported LLM-account quota state (live-matrix finding A2,
+   * 2026-06-06). It IS carried in the peer's session-status response (its
+   * getCapacity(self) already includes it) but was being PARSED AWAY on the
+   * receive side — so the router only ever saw its OWN quota and quota-aware
+   * placement (#804) could never avoid a rate-limited PEER (the original EXO
+   * failure). Absent from old peers = treated as not blocked (fail-open).
+   */
+  quotaState?: { blocked: boolean; blockedUntil?: string; reason?: string };
 }
 
 /** One stream slice of a journal-sync delta (mirrors MeshRpc's `journal-sync.batch`). */
@@ -71,7 +80,7 @@ export interface PeerPresencePullerDeps {
    */
   fetchPeerCapacity: (machineId: string, url: string) => Promise<PeerCapacity | null>;
   /** Record an observed peer heartbeat into the pool registry (marks it online for the failover window). */
-  recordHeartbeat: (obs: { machineId: string; selfReportedLastSeen: string; loadAvg?: number }) => void;
+  recordHeartbeat: (obs: { machineId: string; selfReportedLastSeen: string; loadAvg?: number; quotaState?: { blocked: boolean; blockedUntil?: string; reason?: string } }) => void;
   /** Wall clock — injectable for tests. Defaults to `Date`. */
   now?: () => Date;
   /** Optional structured log line per pass (e.g. for the boot log). */
@@ -142,7 +151,7 @@ export class PeerPresencePuller {
         }
         if (!cap) return null;
         const seen = cap.selfReportedLastSeen ?? (this.d.now?.() ?? new Date()).toISOString();
-        this.d.recordHeartbeat({ machineId: m.machineId, selfReportedLastSeen: seen, loadAvg: cap.loadAvg });
+        this.d.recordHeartbeat({ machineId: m.machineId, selfReportedLastSeen: seen, loadAvg: cap.loadAvg, ...(cap.quotaState ? { quotaState: cap.quotaState } : {}) });
         // REPLICATION-GATED journal-delta drive — only when the server wired the
         // delta deps (i.e. replication.enabled === true). Otherwise a complete
         // no-op (engine/transport stay dark). Never throws into the puller.

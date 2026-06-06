@@ -11305,17 +11305,24 @@ export async function startServer(options: StartOptions): Promise<void> {
                   loadAvg?: number;
                   journalAdvert?: Record<string, Record<string, { incarnation: string; lastSeq: number }>>;
                   commitmentsAdvert?: { incarnation: string; replicationSeq: number };
+                  quotaState?: { blocked: boolean; blockedUntil?: string; reason?: string };
                 };
                 const journalAdvert = _unwrapPeerJournalAdvert(machineId, cap.journalAdvert);
                 // #930 sibling (live, v1.3.369): the commitments advert was
                 // parsed AWAY here — served by the peer, dropped by this
                 // narrowing return — so driveCommitmentsSync never fired and
                 // zero replicas ever landed. Pass it through.
+                // A2 (live, v1.3.384): the SAME narrowing also dropped the
+                // peer's quotaState (its getCapacity(self) includes it), so the
+                // router only ever saw its OWN quota and quota-aware placement
+                // (#804) could never avoid a rate-limited PEER — the original
+                // EXO failure. Pass it through too. Absent = not blocked.
                 return {
                   selfReportedLastSeen: cap.selfReportedLastSeen,
                   loadAvg: cap.loadAvg,
                   journalAdvert,
                   ...(cap.commitmentsAdvert ? { commitmentsAdvert: cap.commitmentsAdvert } : {}),
+                  ...(cap.quotaState ? { quotaState: cap.quotaState } : {}),
                 };
               }
               return null;

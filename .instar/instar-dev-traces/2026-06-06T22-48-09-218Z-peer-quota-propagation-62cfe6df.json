@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "sessionId": "cbdc2d51-a6de-446b-8215-773ec12f8e0b",
+  "timestamp": "2026-06-06T22:48:09.218Z",
+  "artifactPath": "upgrades/side-effects/peer-quota-propagation.md",
+  "artifactSha256": "c7e10b77470db3434bc8aeefc12d99b1f1517d3862ff70385febdc963184777c",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "src/core/PeerPresencePuller.ts",
+    "tests/unit/peer-presence-puller.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Additive pass-through of an existing field (peer quotaState already served in session-status, dropped by the receive-side narrowing — identical shape to the #931 commitmentsAdvert fix); absent-safe/fail-open, no transport change; 2 new propagation tests + existing wiring suite green; grounded by live evidence (peer quotaState null on /pool after 5min despite peer /quota ok).",
+  "eli16Path": "upgrades/next/peer-quota-propagation.md",
+  "sideEffectsPath": "upgrades/side-effects/peer-quota-propagation.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

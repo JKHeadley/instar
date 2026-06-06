@@ -18,13 +18,14 @@
 import { describe, it, expect, vi } from 'vitest';
 import { PeerPresencePuller, type PeerPresenceMachine } from '../../src/core/PeerPresencePuller.js';
 
+type QuotaState = { blocked: boolean; blockedUntil?: string; reason?: string };
 function makePuller(opts: {
   self: string;
   peers: PeerPresenceMachine[];
-  fetchImpl: (machineId: string, url: string) => Promise<{ selfReportedLastSeen?: string; loadAvg?: number } | null>;
+  fetchImpl: (machineId: string, url: string) => Promise<{ selfReportedLastSeen?: string; loadAvg?: number; quotaState?: QuotaState } | null>;
   now?: () => Date;
 }) {
-  const recorded: Array<{ machineId: string; selfReportedLastSeen: string; loadAvg?: number }> = [];
+  const recorded: Array<{ machineId: string; selfReportedLastSeen: string; loadAvg?: number; quotaState?: QuotaState }> = [];
   const puller = new PeerPresencePuller({
     selfMachineId: opts.self,
     listPeers: () => opts.peers,
@@ -49,6 +50,43 @@ describe('PeerPresencePuller.pullOnce', () => {
     expect(recorded).toEqual([
       { machineId: 'm_mini', selfReportedLastSeen: '2026-05-29T10:00:00.000Z', loadAvg: 1.25 },
     ]);
+  });
+
+  // Finding A2 (live, 2026-06-06): the peer's quotaState rides session-status
+  // but was parsed away on the receive side, so the router never saw a peer's
+  // quota and quota-aware placement (#804) couldn't avoid a rate-limited peer.
+  it('propagates a peer quotaState into the recorded heartbeat (A2)', async () => {
+    const { puller, recorded } = makePuller({
+      self: 'm_self',
+      peers: [{ machineId: 'm_mini', url: 'https://mini.example.dev' }],
+      fetchImpl: async () => ({
+        selfReportedLastSeen: '2026-06-06T10:00:00.000Z',
+        loadAvg: 0.5,
+        quotaState: { blocked: true, blockedUntil: '2026-06-06T11:00:00.000Z', reason: '5-hour window at 97%' },
+      }),
+    });
+
+    await puller.pullOnce();
+
+    expect(recorded).toHaveLength(1);
+    expect(recorded[0].quotaState).toEqual({
+      blocked: true,
+      blockedUntil: '2026-06-06T11:00:00.000Z',
+      reason: '5-hour window at 97%',
+    });
+  });
+
+  it('omits quotaState when the peer does not report one (old peer = not blocked, fail-open)', async () => {
+    const { puller, recorded } = makePuller({
+      self: 'm_self',
+      peers: [{ machineId: 'm_old', url: 'https://old.example.dev' }],
+      fetchImpl: async () => ({ selfReportedLastSeen: '2026-06-06T10:00:00.000Z', loadAvg: 0.5 }),
+    });
+
+    await puller.pullOnce();
+
+    expect(recorded).toHaveLength(1);
+    expect('quotaState' in recorded[0]).toBe(false);
   });
 
   it('never polls or records itself', async () => {
