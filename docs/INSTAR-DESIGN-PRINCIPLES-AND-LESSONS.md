@@ -900,11 +900,30 @@ Before any high-risk action (deploying, pushing to git, modifying files outside 
 
 **Earned from:** The 2026-06-05 UX-blindspot — "observe the Telegram UX" lived as prose in the mentor prompt for weeks while the ledger collected 35 engineering findings and ZERO experience-framed ones; the operator hit resend-asks, duplicate notices, and a failed photo within ten minutes of manual driving. Same-week recurrences: undiagnosable mentor heartbeat (#838), verdict-less gate audits (#844), chat-only cause analysis (#854), and the commitment auto-delivery bug recurring unpinned (no test had ever asserted the correct behavior — the observation had no artifact either).
 
+### P19. No Unbounded Loops (every repeating behavior carries its own brakes)
+
+**Statement:** Any code path that repeats an action — retry, poll, monitor tick, recovery attempt, sync flush — must ship with three brakes built in: backoff (failed-attempt interval grows), a breaker (after sustained failure it stops and surfaces the degradation once), and a cap (a hard bound on what one attempt can cost: payload size, processes, log lines, notifications). A raw loop is a standing invitation for the compounding failure mode — the loop's own work worsening the condition it retries against. One sanctioned exemption, the **Eternal Sentinel**: a designated critical-system healer may never give up, but only when declared in code, healer-role-only, rate-floored with constant per-attempt cost, and still observable (escalates once after a sustained-failure threshold — never-give-up must not mean never-tell-anyone).
+
+**Source:** constitution article "No Unbounded Loops — Every Repeating Behavior Carries Its Own Brakes" (Building); requested and ratified by Justin 2026-06-05 (topic "Resource Limitation Mitigation"), including the Eternal Sentinel caveat he added at ratification.
+
+**Translation:**
+- For every `setInterval` / `while` / retry path in a spec, ask: "if the target rejects every attempt for an hour, how many attempts run and what does each cost?" — and "does a FAILED attempt do more work than a successful one?" (resends, rescans, per-attempt log lines, respawns = amplification; cap them).
+- The brakes live IN the looping component (injectable clock, bounded state, unit-testable) — never in the caller's good intentions.
+- A loop that must never give up is an Eternal Sentinel and must satisfy all four sentinel conditions — silence is the bug being killed, not persistence.
+- PRs shipping a repeating behavior carry a sustained-failure test: drive the loop against a permanently-rejecting target; assert attempt count and per-attempt cost stay under the declared bound.
+
+**Enforcement (structural):**
+- Canonical brake shapes in code: `AgeKillBackoff` (#863), the live-tail guards (#867: version gate / exponential backoff / content cap / tail cache), `topicCreationBudget` + `AttentionTopicGuard` (P17), `LlmCircuitBreaker`.
+- The multi-machine loop-safety audit (CMT-1109) scores every mesh-path repeating behavior against the three brakes / four sentinel conditions and fixes the unbounded ones as individual PRs.
+- This catalog entry, so the `/spec-converge` reviewer asks the loop questions of every spec.
+
+**Earned from:** One day (2026-06-05), three same-shaped incidents on the live fleet: the reaper age-gate re-requesting a vetoed kill every 5s forever (17,503 identical requests — #863); the live-tail streamer re-reading the 75k-line message log per topic per 5s tick and hot-retrying rejected flushes — its own cost froze the event loop, which staled mesh timestamps, which caused the very rejections it retried (#867); and the topic-spam flood family (P17). Per Distrust Temporary Success: three recurrences in one day is one missing standard, not three bugs.
+
 ## Part 4 — How the lessons-aware reviewer uses this index
 
 The 8th `/spec-converge` reviewer (see `skills/spec-converge/SKILL.md`) loads this document plus the linked `feedback_*.md` files and the principles in `CLAUDE.md`, then asks for each spec under review:
 
-For each Part 1 principle (P1-P18):
+For each Part 1 principle (P1-P19):
 - Does the spec engage with this principle?
 - Does it contradict it?
 - If contradicting, is there an explicit, defended rationale in the spec?
@@ -932,3 +951,4 @@ Output: structured findings per category, with citations to this index. Findings
 | 2026-06-05 | Added P16 Notice + Solve Inefficiencies (efficiency is a standing search — the proactive sibling of P15), mirroring the new constitution standard ratified by Justin during the recursive apprenticeship run (topic 13435), earned from the merge-churn throughput inefficiency (strict branch protection + fast main + slow CI = rebase loops). Updated the spec-converge review template's Part-1 range from P1-P15 to P1-P16. |
 | 2026-06-05 | Added P17 Bounded Notification Surface (no feature may flood the user), mirroring the new constitution standard proposed after the third topic-spam flood (topic 11960; worktree-detector false-positive mass-flag dodged the per-source budget via unique sourceContexts). Enforcement is structural from day one: burst-invariant test + funnel lint + in-chokepoint budget. Updated the spec-converge review template's Part-1 range from P1-P16 to P1-P17. |
 | 2026-06-05 | Added P18 Observation Needs Structure (a duty to notice requires an unskippable artifact) + two corollaries (silent compensation is a swallowed finding → Friction-Is-a-Spec revision; record schema is perception → Observability revision), mirroring the constitution amendment ratified by Justin during apprenticeship run 2 (topic 13435, UX-blindspot arc). Enforcement structural from day one: #856 cycle gate, #844 verdict finalization, #854 causalAutopsy field. Updated the spec-converge review template's Part-1 range from P1-P17 to P1-P18. |
+| 2026-06-05 | Added P19 No Unbounded Loops (every repeating behavior carries its own brakes: backoff + breaker + cap, with the ratified Eternal Sentinel exemption — declared, healer-only, rate-floored constant-cost, still-observable), mirroring the constitution standard requested and ratified by Justin (topic "Resource Limitation Mitigation") after three same-day loop incidents: reaper kill-request loop (#863), live-tail compounding spiral (#867), topic-flood family (P17). Enforcement: canonical brake shapes in code + the CMT-1109 loop-safety audit + sustained-failure test pattern. Updated the spec-converge review template's Part-1 range from P1-P18 to P1-P19. |
