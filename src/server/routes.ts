@@ -1178,6 +1178,20 @@ export function createRoutes(ctx: RouteContext): Router {
       /* @silent-fallback-ok — observe-only; a detector error never affects delivery */
     });
 
+    // ── Principal-Coherence Signal (OBSERVE-ONLY) ─────────────────────
+    // Record — but NEVER act on — the case where this finalized outbound
+    // message credits an operator-ROLE decision (approval / mandate / credential
+    // / lock / acting-for) to a principal who is NOT the topic's VERIFIED
+    // operator. That is the "Caroline" identity-bleed failure, caught in the
+    // agent's OWN output where no inbound gate watches. Same fire-and-forget
+    // VOID contract as observeSelfViolation: structurally independent of the
+    // tone-gate verdict and of this function's return value — it cannot block,
+    // delay, or rewrite the message. Dark by default (gated inside on
+    // monitoring.principalCoherence.enabled + a wired TopicOperatorStore).
+    void observePrincipalCoherence(text, options.topicId).catch(() => {
+      /* @silent-fallback-ok — observe-only; a detector error never affects delivery */
+    });
+
     // ── Localhost-link guard (operator-mandated HARD rule, 2026-06-05) ──
     // A clickable localhost/loopback link must never reach a user — the user
     // is almost never on the machine this server runs on. This is a
@@ -1390,6 +1404,88 @@ export function createRoutes(ctx: RouteContext): Router {
               matchKind: v.matchKind,
               matchedHead: v.matchedText.slice(0, 80),
             })}\n`,
+          );
+        } catch {
+          /* @silent-fallback-ok — audit must never throw */
+        }
+      }
+    } catch {
+      // @silent-fallback-ok — observe-only; any error silently no-ops and the
+      // outbound message is unaffected.
+    }
+  }
+
+  /**
+   * Principal-Coherence Signal — OBSERVE-ONLY (Know Your Principal / Caroline
+   * identity-bleed standard, security build increment 3).
+   *
+   * Runs `evaluatePrincipalCoherence` against the finalized outbound text using
+   * the topic's VERIFIED operator (the authenticated binding from
+   * TopicOperatorStore — never a name read from content). On any finding — the
+   * agent crediting an operator-ROLE decision to a principal who is NOT the
+   * bound operator — it appends a structured line to
+   * `state/principal-coherence.jsonl`.
+   *
+   * HARD GUARANTEES (identical contract to observeSelfViolation):
+   *   - SIGNAL-ONLY: returns void; called as a fire-and-forget branch with NO
+   *     path to block, delay, rewrite, or influence the outbound message or the
+   *     tone-gate verdict.
+   *   - FAIL-OPEN: every operation guarded; any throw is swallowed and the
+   *     message is unaffected.
+   *   - DARK BY DEFAULT: inert unless `monitoring.principalCoherence.enabled` is
+   *     true AND a TopicOperatorStore is wired AND the topic has a numeric id.
+   *   - OBSERVE-FIRST: it ONLY logs. The detector regex can false-positive on
+   *     prose that merely names a capitalized person; observe mode is precisely
+   *     HOW that FP rate gets measured on real outbound BEFORE any warn/block
+   *     surface is ever built. The `verdict` field is recorded, never enforced.
+   */
+  async function observePrincipalCoherence(text: string, topicId?: number): Promise<void> {
+    try {
+      // Dark unless explicitly enabled AND the operator store is wired AND we
+      // have a numeric topic to look the verified operator up by.
+      if (ctx.config.monitoring?.principalCoherence?.enabled !== true) return;
+      if (!ctx.topicOperatorStore) return;
+      if (typeof topicId !== 'number') return;
+      if (typeof text !== 'string' || text.trim().length === 0) return;
+
+      // The authenticated binding — never a content name. Null when the topic is
+      // unbound, in which case evaluatePrincipalCoherence treats every
+      // attribution as unverifiable (still observe-only).
+      const operator = ctx.topicOperatorStore.asVerifiedOperator(topicId);
+
+      const { evaluatePrincipalCoherence } = await import('../core/PrincipalGuard.js');
+      // knownUserNames is intentionally empty here: there is no clean UserManager
+      // handle on this delivery seam, so only the operator's own names resolve a
+      // bound principal. Any prose naming a known NON-operator user therefore
+      // surfaces as a finding — which is exactly the false-positive surface that
+      // observe mode exists to measure before warn/block is ever considered.
+      const findings = evaluatePrincipalCoherence(text, operator, []);
+      if (findings.length === 0) return;
+
+      const auditPath = path.join(ctx.config.stateDir, 'state', 'principal-coherence.jsonl');
+      try {
+        fs.mkdirSync(path.dirname(auditPath), { recursive: true });
+      } catch {
+        /* @silent-fallback-ok — if the dir can't be made, the appends below no-op */
+      }
+      for (const f of findings) {
+        try {
+          fs.appendFileSync(
+            auditPath,
+            JSON.stringify({
+              t: new Date().toISOString(),
+              kind: 'principal-coherence',
+              topicId,
+              operatorUid: operator?.uid ?? null,
+              operatorBound: operator !== null,
+              principal: f.attribution.principal,
+              attributionKind: f.attribution.kind,
+              // Recorded for analysis ONLY — observe mode NEVER enforces a verdict.
+              verdict: f.verdict,
+              snippet: f.attribution.snippet.slice(0, 160),
+              reason: f.reason,
+            }) + '\n',
+            'utf8',
           );
         } catch {
           /* @silent-fallback-ok — audit must never throw */

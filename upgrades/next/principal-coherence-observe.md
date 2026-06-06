@@ -1,0 +1,45 @@
+---
+bump: minor
+audience: agent-only
+maturity: experimental
+---
+
+## What Changed
+
+The agent now runs an OBSERVE-ONLY coherence check on its OWN outbound messages
+(Know Your Principal standard, security-build increment 3 — the READ side). When
+a finalized message credits an operator-ROLE decision (approval / mandate /
+credential / lock / acting-for) to a principal who is NOT the topic's VERIFIED
+operator, a structured finding is appended to `state/principal-coherence.jsonl`.
+This is the first runtime consumer of `PrincipalGuard` (shipped pure in #902):
+the verified operator comes from the authenticated-sender binding
+(#904/#906/#909), never from a name in content.
+
+## What to Tell Your User
+
+Nothing user-facing changes. Foundation observability (experimental) for the
+"Caroline" identity-bleed security fix: the agent can now NOTICE — in its own
+output, where no inbound gate watches — when it credits a decision to someone who
+isn't its verified operator. It is SIGNAL-ONLY: it NEVER blocks, delays, or
+rewrites a message; it only writes a log line. It ships off by default (dark) so
+the detector's false-positive rate can be measured on real outbound before any
+warn or block surface is ever considered.
+
+## Summary of New Capabilities
+
+- `monitoring.principalCoherence.enabled` config flag (default false / absent).
+- Observe-only outbound check on the `checkOutboundMessage` delivery seam,
+  modeled on the existing `observeSelfViolation` (fire-and-forget, fail-open,
+  dark by default).
+- Audit trail at `state/principal-coherence.jsonl` (one JSON line per finding:
+  topicId, operatorUid, operatorBound, principal, attributionKind, verdict,
+  snippet, reason). The `verdict` is recorded for analysis, NEVER enforced.
+
+## Evidence
+
+14 tests across all three tiers, all green: Tier-1 unit
+(`principal-coherence-operator-seam`, 5 — the store→guard contract, both sides),
+Tier-2 integration (`principal-coherence-signal`, 5 — over the wire, gating both
+sides), Tier-3 e2e (`principal-coherence-lifecycle`, 4 — production boot,
+feature-is-alive, signal-only proof that a block-verdict finding still returns
+200 not 422). Clean `tsc --noEmit`; docs-coverage `--check` passes (no new route).

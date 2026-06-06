@@ -3748,6 +3748,22 @@ export interface MonitoringConfig {
     feedbackPostDelayMs?: number;
   };
   /**
+   * PrincipalGuard — observe-only outbound coherence check for the "Know Your
+   * Principal" / Caroline identity-bleed standard (security build increment 3).
+   * When enabled, the outbound tone-gate seam runs
+   * `evaluatePrincipalCoherence(text, verifiedOperator)` on a finalized agent
+   * message and LOGS any operator/attribution mismatch to
+   * `state/principal-coherence.jsonl`. SIGNAL-ONLY — it NEVER blocks, delays, or
+   * rewrites the message; on any error the message sends normally and the check
+   * no-ops. Ships DARK (default false). Observe-first so the regex false-positive
+   * rate (prose that merely mentions a capitalized name) can be measured on real
+   * outbound BEFORE any warn/block surface is ever built.
+   */
+  principalCoherence?: {
+    /** Master kill switch (default: false). Gates the observe-only check entirely. */
+    enabled: boolean;
+  };
+  /**
    * ApprenticeshipCycleSlaMonitor — observe-only signal for open apprenticeship
    * differential cycles older than the configured SLA. Ships OFF; when enabled
    * it raises at most one Attention item per overdue cycle id and never mutates
