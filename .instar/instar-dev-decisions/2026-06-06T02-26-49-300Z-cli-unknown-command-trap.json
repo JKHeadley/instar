@@ -1,0 +1,17 @@
+{
+  "ts": "2026-06-06T02:26:49.300Z",
+  "slug": "cli-unknown-command-trap",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 5,
+  "loc": 74,
+  "causalAutopsy": {
+    "origin": "latent",
+    "relatedPrs": [],
+    "notes": "Commander's program-level default action for bare `instar` was allowed to coexist with no explicit top-level unknown-command guard. The latent bug surfaced when a typo such as `instar dev:claim-checkk` entered setup instead of exiting, hanging agent Bash sessions."
+  },
+  "verdict": "pass"
+}

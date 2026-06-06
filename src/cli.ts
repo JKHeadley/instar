@@ -270,6 +270,32 @@ async function addQuota(opts: { stateFile?: string }): Promise<void> {
 
 const program = new Command();
 
+function rejectUnknownTopLevelCommand(program: Command, argv: string[]): void {
+  const firstArg = argv[2];
+  if (!firstArg || firstArg.startsWith('-')) {
+    return;
+  }
+
+  if (firstArg === 'help') {
+    program.outputHelp();
+    process.exit(0);
+  }
+
+  const commandNames = new Set<string>();
+  for (const command of program.commands) {
+    commandNames.add(command.name());
+    for (const alias of command.aliases()) {
+      commandNames.add(alias);
+    }
+  }
+
+  if (!commandNames.has(firstArg)) {
+    console.error(`error: unknown command '${firstArg}'`);
+    console.error(`Run 'instar --help' for available commands.`);
+    process.exit(1);
+  }
+}
+
 program
   .name('instar')
   .description('Persistent autonomy infrastructure for AI agents')
@@ -2511,4 +2537,5 @@ program
     return route(taskPrompt, opts);
   });
 
+rejectUnknownTopLevelCommand(program, process.argv);
 program.parse();
