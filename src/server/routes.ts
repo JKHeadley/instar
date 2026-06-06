@@ -77,6 +77,7 @@ import {
 } from './attentionApi.js';
 import { dashboardRefreshFailure } from './DashboardRefreshDiagnostics.js';
 import { KNOWN_GEMINI_MODELS } from '../providers/adapters/gemini-cli/models.js';
+import { formatLocalTimestamp } from '../utils/localTime.js';
 
 const execFile = promisify(execFileCb);
 
@@ -10463,7 +10464,7 @@ export function createRoutes(ctx: RouteContext): Router {
               historyLines.push(``);
               for (const m of history) {
                 const sender = m.fromUser ? (m.senderName || 'User') : 'Agent';
-                const ts = m.timestamp ? new Date(m.timestamp).toISOString().slice(11, 19) : '??:??';
+                const ts = formatLocalTimestamp(m.timestamp); // local + tz label (see src/utils/localTime.ts)
                 const histText = (m.text || '').slice(0, 2000);
                 historyLines.push(`[${ts}] ${sender}: ${histText}`);
               }
@@ -11100,7 +11101,7 @@ export function createRoutes(ctx: RouteContext): Router {
                 const sender = m.fromUser
                   ? (m.senderName || 'User')
                   : 'Agent';
-                const ts = m.timestamp ? new Date(m.timestamp).toISOString().slice(11, 19) : '??:??';
+                const ts = formatLocalTimestamp(m.timestamp); // local + tz label (see src/utils/localTime.ts)
                 const histText = (m.text || '').slice(0, 2000);
                 historyLines.push(`[${ts}] ${sender}: ${histText}`);
               }

@@ -6117,10 +6117,16 @@ if [ -n "\$INSTAR_TELEGRAM_TOPIC" ]; then
         echo "RECENT MESSAGES:"
         echo "\$TOPIC_CTX" | python3 -c "
 import sys, json
+def _localts(raw):
+    try:
+        from datetime import datetime
+        return datetime.fromisoformat(str(raw).replace('Z', '+00:00')).astimezone().strftime('%Y-%m-%d %H:%M %Z')
+    except Exception:
+        return str(raw)[:16].replace('T', ' ')
 d = json.load(sys.stdin)
 for m in d.get('recentMessages', []):
     sender = 'User' if m.get('fromUser') else 'Agent'
-    ts = m.get('timestamp', '')[:16].replace('T', ' ')
+    ts = _localts(m.get('timestamp', ''))
     text = m.get('text', '')
     if len(text) > 500:
         text = text[:500] + '...'
@@ -6994,6 +7000,12 @@ fi
 # Format and output context with unanswered message detection
 echo "\$RECENT_MSGS" | python3 -c "
 import sys, json
+def _localts(raw):
+    try:
+        from datetime import datetime
+        return datetime.fromisoformat(str(raw).replace('Z', '+00:00')).astimezone().strftime('%Y-%m-%d %H:%M %Z')
+    except Exception:
+        return str(raw)[:16].replace('T', ' ')
 try:
     data = json.load(sys.stdin)
     msgs = data.get('messages', [])
@@ -7003,7 +7015,7 @@ try:
     print('TOPIC \${TOPIC_ID} RECENT HISTORY (auto-injected):')
 
     for m in msgs:
-        ts = m.get('timestamp', '')[:16].replace('T', ' ')
+        ts = _localts(m.get('timestamp', ''))
         from_user = m.get('fromUser', m.get('direction', 'in') == 'in')
         text = m.get('text', '').strip()
         sender = 'User' if from_user else 'Agent'
@@ -7028,7 +7040,7 @@ try:
         print('*** UNANSWERED MESSAGE(S) FROM USER ***')
         for pm in pending_user:
             pm_text = pm.get('text', '')[:200]
-            pm_ts = pm.get('timestamp', '')[:16].replace('T', ' ')
+            pm_ts = _localts(pm.get('timestamp', ''))
             print(f'  [{pm_ts}] \\\\\\\"{pm_text}\\\\\\\"')
         print()
         print('You MUST address these messages substantively. Do NOT respond with just')
@@ -7091,11 +7103,17 @@ if [ -n "\$INSTAR_TELEGRAM_TOPIC" ]; then
         echo "RECENT MESSAGES:"
         echo "\$TOPIC_CTX" | python3 -c "
 import sys, json
+def _localts(raw):
+    try:
+        from datetime import datetime
+        return datetime.fromisoformat(str(raw).replace('Z', '+00:00')).astimezone().strftime('%Y-%m-%d %H:%M %Z')
+    except Exception:
+        return str(raw)[:16].replace('T', ' ')
 d = json.load(sys.stdin)
 msgs = d.get('recentMessages', [])
 for m in msgs:
     sender = 'User' if m.get('fromUser') else 'Agent'
-    ts = m.get('timestamp', '')[:16].replace('T', ' ')
+    ts = _localts(m.get('timestamp', ''))
     text = m.get('text', '')
     if len(text) > 500:
         text = text[:500] + '...'
@@ -7118,7 +7136,7 @@ if pending_user:
     print('UNANSWERED MESSAGE(S) FROM USER:')
     for pm in pending_user:
         pm_text = pm.get('text', '')[:200]
-        pm_ts = pm.get('timestamp', '')[:16].replace('T', ' ')
+        pm_ts = _localts(pm.get('timestamp', ''))
         print(f'  [{pm_ts}] \\\"{pm_text}\\\"')
     print()
     print('You MUST address these messages substantively. Do NOT respond')

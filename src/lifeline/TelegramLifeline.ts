@@ -82,6 +82,7 @@ import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 import { applyTelegramFormatter } from '../messaging/TelegramAdapter.js';
 import type { FormatMode } from '../messaging/TelegramMarkdownFormatter.js';
 import { recordFormatFallbackPlainRetry } from '../messaging/telegramFormatMetrics.js';
+import { formatLocalTimestamp } from '../utils/localTime.js';
 
 /**
  * Acquire an exclusive lock file to prevent multiple lifeline instances.
@@ -1698,7 +1699,7 @@ export class TelegramLifeline {
         `  Restart attempts: ${status.restartAttempts}`,
         `  Total failures: ${status.totalFailures}`,
         `  Queued messages: ${queueSize}`,
-        `  Last healthy: ${status.lastHealthy ? new Date(status.lastHealthy).toISOString().slice(11, 19) : 'never'}`,
+        `  Last healthy: ${status.lastHealthy ? formatLocalTimestamp(status.lastHealthy, { date: false, seconds: true }) : 'never'}`,
       ];
       if (status.circuitBroken) {
         lines.push(`  Circuit breaker: TRIPPED — use /lifeline reset to retry`);

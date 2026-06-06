@@ -78,7 +78,7 @@ for msg in messages:
     ts = msg.get('ts', '')
     try:
         dt = datetime.fromtimestamp(float(ts))
-        time_str = dt.strftime('%H:%M:%S')
+        time_str = dt.astimezone().strftime('%H:%M:%S %Z')
     except:
         time_str = ts
 
