@@ -1,0 +1,41 @@
+---
+bump: minor
+audience: agent-only
+maturity: experimental
+---
+
+## What Changed
+
+The verified topic operator is now recorded AUTOMATICALLY (Know Your Principal
+standard, security-build increment 2d — the WRITE side). On the lifeline-forward
+inbound path (`POST /internal/telegram-forward`), a real user message from an
+AUTHENTICATED + AUTHORIZED sender binds that sender as the topic's operator, so
+the session-start hook (#908) injects it without a manual `POST /topic-operator`.
+Added a public `TelegramAdapter.isAuthorizedSender()` (the authorized-only gate)
+wrapping the private `isAuthorized`.
+
+## What to Tell Your User
+
+Nothing user-facing changes. Foundation wiring (experimental) for the Caroline
+identity-bleed security fix: the agent now learns its verified operator on its own
+from authorized inbound messages. ONLY authorized senders are recorded — an
+unauthorized party in the group is never seated as operator. Fail-soft: a bind
+failure never affects message handling.
+
+## Summary of New Capabilities
+
+- Auto-bind of the topic operator on `/internal/telegram-forward` (authorized
+  senders only; a2a bot messages and unauthorized senders never bind; fail-soft;
+  idempotent).
+- `TelegramAdapter.isAuthorizedSender(number|string)` — public read-only auth check.
+- Known gap (tracked for Inc-2e): the adapter long-poll (no-lifeline) path is not
+  yet covered; a no-lifeline install has no auto-bind (fail-safe).
+
+## Evidence
+
+Verified by 5 Tier-1 unit tests (`telegram-isauthorizedsender`: both sides of the
+boundary, number/string ids, blank/NaN guard, no-allowlist model) and 4 Tier-2
+integration tests (`topic-operator-autobind-route`: over the wire — authorized
+binds, unauthorized doesn't, a2a bot doesn't, null store no-op). The 14 existing
+`/internal/telegram-forward` integration tests stay green (no regression). Clean
+`tsc --noEmit`.
