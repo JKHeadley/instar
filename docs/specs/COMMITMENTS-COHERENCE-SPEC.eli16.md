@@ -15,3 +15,5 @@ P1.5 makes it ONE list, seen and closeable from anywhere, without inventing any 
 - **No new switches**: it rides the same single machine-to-machine sync gate as the diary and the file handoff — your Laptop+Mini pair today, dark everywhere else.
 
 Deliberately NOT in this phase: the heartbeat reminders for a promise stay on its home machine (a sleeping machine's reminders pause until it wakes — closing still works from anywhere). If that pause turns out to hurt in practice, transferring reminder duty is the named follow-up.
+
+**Build status:** the "seeing" half (P1.5a) is built and tested — every machine can now list every machine's promises with honest freshness labels. The "closing from anywhere" half (P1.5b: forwarding + the durable queue) is next.

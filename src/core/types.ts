@@ -1972,6 +1972,19 @@ export interface CoherenceJournalUserConfig {
     busyRetryCap?: number;
   };
   /**
+   * Commitments Coherence tunables (COMMITMENTS-COHERENCE-SPEC §3.6). Gated
+   * on `replication.enabled === true` — no separate enable flag.
+   */
+  commitments?: {
+    syncPageBytes?: number;
+    maxSyncPagesPerTick?: number;
+    replicaStaleWarnMs?: number;
+    pendingMutationTtlDays?: number;
+    maxPendingOpsPerCommitment?: number;
+    maxPendingOpsPerOwner?: number;
+    opKeyTtlDays?: number;
+  };
+  /**
    * Per-kind retention. rotateKeep N>0 = rotate at maxFileBytes, keep N
    * archives, delete older; 0 = rotate at maxFileBytes but NEVER delete
    * (bounded files, history forever — the topic-placement setting).

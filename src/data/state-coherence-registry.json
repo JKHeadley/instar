@@ -54,13 +54,25 @@
     },
     {
       "category": "commitments",
-      "description": "CommitmentTracker single-writer CAS store of user-facing promises and follow-through state.",
+      "description": "CommitmentTracker single-writer CAS store of user-facing promises and follow-through state. P1.5 (COMMITMENTS-COHERENCE-SPEC) fulfills the peer-http transport: owner-routed mutation + first-hop delta replication; the census's earlier 'AO desired' note is resolved-as-won't-do (owner-routing achieves coherence without the append-only conversion).",
       "scope": "must-be-coherent",
       "freshness": "eventual",
       "conflictShape": "single-writer",
       "transport": "peer-http",
       "paths": [
         "state/commitments.json"
+      ],
+      "grandfathered": false
+    },
+    {
+      "category": "commitment-replicas",
+      "description": "Per-peer read-only replicas of other machines' commitment stores (COMMITMENTS-COHERENCE-SPEC P1.5 \u00a73.2). Derived cache - rebuilt by a full re-pull; written ONLY by the commitments-sync receive path; first-hop sender-bound; incarnation-fenced.",
+      "scope": "derived-cache",
+      "freshness": "eventual",
+      "conflictShape": "single-writer",
+      "transport": "peer-http",
+      "paths": [
+        "state/commitment-replicas/"
       ],
       "grandfathered": false
     },

@@ -279,6 +279,9 @@ export class AgentServer {
     /** Working-set pull coordinator (WORKING-SET-HANDOFF §3.3) — behind
      *  POST /coherence/fetch-working-set. Absent while the layer is dark. */
     workingSetPullCoordinator?: import('../core/WorkingSetPullCoordinator.js').WorkingSetPullCoordinator;
+    /** Commitments-coherence replica store (COMMITMENTS-COHERENCE §3.2) —
+     *  merged GET /commitments?scope=mesh. Absent while dark. */
+    commitmentReplicaStore?: import('../core/CommitmentsSync.js').CommitmentReplicaStore;
     /** Per-session ownership registry (§L3). */
     sessionOwnershipRegistry?: import('../core/SessionOwnershipRegistry.js').SessionOwnershipRegistry;
     /** Topic placement pin store (§L4) — backs GET /pool/placement + POST /pool/transfer. */
@@ -1378,6 +1381,7 @@ export class AgentServer {
       machinePoolRegistry: options.machinePoolRegistry ?? null,
       meshRpcDispatcher: options.meshRpcDispatcher ?? null,
       workingSetPullCoordinator: options.workingSetPullCoordinator ?? null,
+      commitmentReplicaStore: options.commitmentReplicaStore ?? null,
       sessionOwnershipRegistry: options.sessionOwnershipRegistry ?? null,
       topicPinStore: options.topicPinStore ?? null,
       secretSync: options.secretSync ?? null,

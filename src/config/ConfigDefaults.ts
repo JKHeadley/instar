@@ -497,6 +497,17 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
         rearmConcurrency: 1,
         busyRetryCap: 10,
       },
+      // Commitments Coherence (COMMITMENTS-COHERENCE-SPEC §3.6). No enable
+      // flag — rides replication.enabled === true like the working set.
+      commitments: {
+        syncPageBytes: 262144,
+        maxSyncPagesPerTick: 4,
+        replicaStaleWarnMs: 600000,
+        pendingMutationTtlDays: 7,
+        maxPendingOpsPerCommitment: 4,
+        maxPendingOpsPerOwner: 64,
+        opKeyTtlDays: 7,
+      },
       retention: {
         'topic-placement': { maxFileBytes: 8388608, rotateKeep: 0 },
         'session-lifecycle': { maxFileBytes: 16777216, rotateKeep: 4 },

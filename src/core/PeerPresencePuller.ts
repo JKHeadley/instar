@@ -43,6 +43,12 @@ export interface PeerCapacity {
    * wired (server passes them ONLY when replication is explicitly enabled).
    */
   journalAdvert?: Record<string, { incarnation: string; lastSeq: number }>;
+  /**
+   * The peer's OWN commitments-store advert (COMMITMENTS-COHERENCE-SPEC
+   * §3.2). Present only when the peer runs the commitments-sync layer; old
+   * peers omit it and the drive is a no-op.
+   */
+  commitmentsAdvert?: { incarnation: string; replicationSeq: number };
 }
 
 /** One stream slice of a journal-sync delta (mirrors MeshRpc's `journal-sync.batch`). */
@@ -103,6 +109,17 @@ export interface PeerPresencePullerDeps {
    * MUST NOT throw into the puller; consumers dedupe/stagger themselves.
    */
   onPeerRecorded?: (machineId: string) => void;
+  /**
+   * REPLICATION-GATED commitments-sync drive (COMMITMENTS-COHERENCE-SPEC
+   * §3.2): called with the peer's commitments advert when present; the
+   * consumer compares against its replica cursor and pulls delta pages
+   * (bounded per tick). MUST NOT throw into the puller.
+   */
+  driveCommitmentsSync?: (
+    machineId: string,
+    url: string,
+    advert: { incarnation: string; replicationSeq: number },
+  ) => Promise<void>;
 }
 
 export class PeerPresencePuller {
@@ -130,6 +147,12 @@ export class PeerPresencePuller {
         // delta deps (i.e. replication.enabled === true). Otherwise a complete
         // no-op (engine/transport stay dark). Never throws into the puller.
         await this.driveJournalDelta(m.machineId, m.url as string, cap.journalAdvert);
+        if (cap.commitmentsAdvert && this.d.driveCommitmentsSync) {
+          try {
+            await this.d.driveCommitmentsSync(m.machineId, m.url as string, cap.commitmentsAdvert);
+          } catch { /* @silent-fallback-ok: the puller's contract is NEVER to throw — a failed commitments pull retries on the next presence pass (COMMITMENTS-COHERENCE-SPEC §3.2) */
+          }
+        }
         try {
           this.d.onPeerRecorded?.(m.machineId);
         } catch { /* @silent-fallback-ok: the puller's contract is NEVER to throw — a pending-pull re-arm failure must not break the presence pass (WORKING-SET-HANDOFF-SPEC §3.4) */

@@ -20,8 +20,8 @@ lessons-engaged: >
   snapshot drive rides the presence cadence, the online forward is
   single-attempt + timeout-to-queue, the pending re-fire is attempt-capped
   with busy exempt); B24 (gate latency: forward timeout = ambiguous outcome →
-  durable queue with the SAME opKey, idempotent by construction); Deferral =
-  Deletion (the beacon-transfer deferral is registered against the
+  durable queue with the SAME opKey, idempotent by construction); Deferral = <!-- tracked: multimachine-coherence-p3-threadline-registry-machine-swap -->
+  Deletion (the beacon-transfer deferral is registered against the <!-- tracked: multimachine-coherence-p3-threadline-registry-machine-swap -->
   multimachine-coherence P3 round item, not a private intention); Signal vs
   Authority (replicas and merged views never actuate; the owner's CAS state
   machine is the only authority).
@@ -95,7 +95,7 @@ Revisit only if live operation surfaces a real merge need.
 - Beacon/actuation transfer — PromiseBeacon heartbeats stay on the OWNING
   machine in P1.5. A beacon whose owner sleeps goes quiet until that
   machine returns; closure still works from anywhere via the queue. This
-  deferral is REGISTERED against the multimachine-coherence project's P3
+  deferral is REGISTERED against the multimachine-coherence project's P3 <!-- tracked: multimachine-coherence-p3-threadline-registry-machine-swap -->
   round item (machine-swap semantics — beacon-duty transfer is a
   machine-swap concern), not a private intention
   <!-- tracked: multimachine-coherence-p3-threadline-registry-machine-swap -->.
@@ -266,7 +266,7 @@ promise.
 
 ### 3.3a Duplicate logical promises (named, surfaced, not merged)
 
-The beacon-stays-home deferral CREATES a duplicate path: A holds CMT-A for
+The beacon-stays-home deferral CREATES a duplicate path: A holds CMT-A for <!-- tracked: multimachine-coherence-p3-threadline-registry-machine-swap -->
 promise X, A sleeps, its beacon goes quiet, the user re-asks on B, B
 creates CMT-B for the same logical promise (creation is always local —
 there is deliberately no cross-machine create routing). When A returns,
@@ -282,7 +282,7 @@ P1.5's stance:
   delivering one ("a possible duplicate on <machine> is still open —
   deliver it too?"). Semantic dedupe stays a human/agent decision.
 - The double-beacon consequence is an ACCEPTED P1.5 limitation, stated
-  here and resolved by the same P3 beacon-transfer item the §2 deferral
+  here and resolved by the same P3 beacon-transfer item the §2 deferral <!-- tracked: multimachine-coherence-p3-threadline-registry-machine-swap -->
   is registered against.
 
 ### 3.4 Owner-routed mutation (P1.5b — close-requestable from anywhere)
@@ -486,7 +486,7 @@ applies on its return").
 
 ## 8. Open questions for Justin
 
-1. ~~Beacon-ownership transfer when a topic moves~~ — DEFERRED by design
+1. ~~Beacon-ownership transfer when a topic moves~~ — DEFERRED by design <!-- tracked: multimachine-coherence-p3-threadline-registry-machine-swap -->
    (§2 Out, registered against the P3 round item): heartbeats stay with
    the owning machine; closure works from anywhere via owner-routing +
    the durable queue; duplicates are surfaced (§3.3a), not auto-merged.
