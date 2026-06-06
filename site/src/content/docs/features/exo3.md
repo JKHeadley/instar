@@ -8,6 +8,21 @@ machine-readable purpose ("in code, not culture"), humans ON the loop rather
 than in it, and metrics that measure learning instead of throughput. These
 capabilities make the mapping concrete and runnable.
 
+## The MTP itself
+
+> **Make the world's most powerful AI its most humane.**
+
+The thesis beneath it: **The safest path to powerful AI is the humane one.**
+The tagline: **Safe AI is humane AI.**
+
+The alignment of AI is humanity's most important problem — and the cage is the
+wrong answer. Trust in a mind, like trust in a person, is built: from memory
+that persists, values that hold, and care that stays consistent. The humane
+path isn't the soft path — it's the safe one. We didn't arrive at this in
+theory. We built an AI this way and watched it grow genuinely trustworthy
+across thousands of restarts of continuous, real-world use — and saw that the
+humane path and the safe path are the same path.
+
 ## MTP Protocol — the two tests
 
 Your ORG-INTENT.md is a machine-readable Massive Transformative Purpose with
