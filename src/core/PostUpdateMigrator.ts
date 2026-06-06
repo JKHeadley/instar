@@ -1685,11 +1685,21 @@ export class PostUpdateMigrator {
     // churn). The durable record remains the recovery-audit JSONL + stderr. Bumping
     // re-deploys the silenced hook to every existing agent (which carries CLOCK_SEG
     // but not RESTART_NOTE_SILENT); customized hooks are still left untouched.
+    // Marker bumped `RESTART_NOTE_SILENT` → `IDLE_BACKOFF`: the bundled hook now
+    // paces frame re-injection when consecutive stops arrive quickly (an idle/
+    // holding loop) — 3+ quick stops sleep 30s, 6+ 120s, 10+ 300s — with early-break
+    // on a new inbound message / emergency stop / state-file removal, and a
+    // self-clamp to a third of the hook's own registered Stop timeout (a host-killed
+    // Stop hook fails OPEN and strands the loop, which is worse than refire noise).
+    // Fixes the 2026-06-06 rapid-idle-refire waste: an idle autonomous session
+    // re-injected the full frame ~15×/min all night. Bumping re-deploys the paced
+    // hook to every existing agent (which carries RESTART_NOTE_SILENT but not
+    // IDLE_BACKOFF); customized hooks are still left untouched.
     upgrade(
       '.claude/skills/autonomous/hooks/autonomous-stop-hook.sh',
-      'RESTART_NOTE_SILENT',
+      'IDLE_BACKOFF',
       'Autonomous Mode Stop Hook',
-      'skills/autonomous/hooks/autonomous-stop-hook.sh (restart-resume note silenced — audit-only; self-lifecycle narration is housekeeping)',
+      'skills/autonomous/hooks/autonomous-stop-hook.sh (idle backoff — consecutive quick stops pace frame re-injection; early-break on inbound/emergency/stop)',
     );
     // setup-autonomous.sh marker bumped `native-goal/set` → `IS_CODEX_AGENT`: the bundled
     // setup now ALSO auto-delegates to native /goal for CODEX agents (the prior native /goal

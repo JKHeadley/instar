@@ -120,7 +120,7 @@ function runHook(opts: {
     session_id: opts.sessionId,
     transcript_path: opts.transcriptPath ?? '',
   });
-  const env: NodeJS.ProcessEnv = { ...process.env };
+  const env: NodeJS.ProcessEnv = { ...process.env, INSTAR_HOOK_BACKOFF_DISABLE: '1' };
   if (opts.tmuxSession !== undefined) {
     env.INSTAR_HOOK_TMUX_SESSION = opts.tmuxSession;
   } else {

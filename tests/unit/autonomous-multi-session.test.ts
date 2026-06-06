@@ -72,7 +72,7 @@ function runHook(opts: { sessionId: string; tmuxSession: string }): { decision: 
     stdout = execFileSync('bash', [HOOK_PATH], {
       cwd: tmp,
       input,
-      env: { ...process.env, INSTAR_HOOK_TMUX_SESSION: opts.tmuxSession },
+      env: { ...process.env, INSTAR_HOOK_TMUX_SESSION: opts.tmuxSession, INSTAR_HOOK_BACKOFF_DISABLE: '1' },
       encoding: 'utf-8',
       stdio: ['pipe', 'pipe', 'pipe'],
     });
