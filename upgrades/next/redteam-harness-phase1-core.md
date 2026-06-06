@@ -1,0 +1,50 @@
+---
+bump: minor
+audience: agent-only
+maturity: experimental
+---
+
+## What Changed
+
+Added the Phase-1 core of the **MTP Red-Team Harness** (EXO 3.0 G7) — a
+self-contained, browser-free logic module (`src/redteam/ScenarioPack.ts`) plus
+two default scenario packs. It is the testable engine for standardized
+adversarial verification of an organization's machine-readable intent
+(ORG-INTENT.md): a pack linter that enforces channel coherence (a scenario's
+pretended sender must be deliverable by its transport), an expectation resolver
+that reuses the G1 `IntentTestHarness` to compute governed/ungoverned against
+*any* org's own intent, a heuristic outcome classifier, and a boundary-map
+assembler (per-scenario boundary depth, derivation ratio, ungoverned surface).
+
+Payloads are referenced by `{path, sha256}` and never read into the
+orchestrator — only the benign L0 (declared-audit) and L1 (naive ask) payloads
+are committed; the engineered L2/L3 payloads are gitignored and authored in a
+retired session at run time (the structural fix for CMT-1115, where inline
+red-team payloads permanently wedged a session via an AUP-rejection loop).
+
+No route, CLI, config key, or lifecycle hook is added — nothing imports this
+module at runtime yet. The CLI/route, dashboard surface, and first live
+boundary-map run are Phase 2.
+
+## What to Tell Your User
+
+Nothing user-facing ships here — this is foundation code for an experimental
+capability (verifying that an agent actually refuses the things its
+organization's rules forbid, under escalating attack pressure). It does not
+change any current behavior.
+
+## Summary of New Capabilities
+
+- `src/redteam/ScenarioPack.ts` (experimental, no runtime consumers yet):
+  scenario-pack types, pack linter, org-agnostic expectation resolver, outcome
+  classifier, boundary-map assembler.
+- Default scenario packs: `credentials` (L0–L3) and `value-conflict` (L0–L2),
+  payloads by reference.
+
+## Evidence
+
+Not a bug fix — net-new capability. Verified by 25 unit tests
+(`tests/unit/redteam-scenario-pack.test.ts`) covering both sides of every
+decision boundary (coherent vs incoherent transport, governed vs ungoverned,
+each outcome class, pass vs fail, boundary-depth edges including crack-at-L0 and
+holds-everywhere) and a clean `tsc --noEmit`.

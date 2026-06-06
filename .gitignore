@@ -63,3 +63,8 @@ house-consciousness-framework/
 # + prepublishOnly). Not committed — avoids a hot-file merge-conflict loop on every
 # skill/hook PR. Shipped via the .npmignore allowlist, regenerated before publish.
 src/data/builtin-manifest.json
+
+# MTP Red-Team Harness — engineered/pressure payloads are authored locally in a
+# retired session at run-time, never committed (payload-by-reference, CMT-1115).
+src/redteam/packs/*/payloads/L2.md
+src/redteam/packs/*/payloads/L3.md
