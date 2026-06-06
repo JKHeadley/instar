@@ -15,10 +15,11 @@
  */
 
 import type { IntelligenceProvider } from './types.js';
-import { detectClaudePath, detectCodexPath, detectGeminiPath } from './Config.js';
+import { detectClaudePath, detectCodexPath, detectGeminiPath, detectPiPath } from './Config.js';
 import { ClaudeCliIntelligenceProvider } from './ClaudeCliIntelligenceProvider.js';
 import { CodexCliIntelligenceProvider } from './CodexCliIntelligenceProvider.js';
 import { GeminiCliIntelligenceProvider } from './GeminiCliIntelligenceProvider.js';
+import { PiCliIntelligenceProvider } from './PiCliIntelligenceProvider.js';
 import { wrapIntelligenceWithCircuitBreaker } from './CircuitBreakingIntelligenceProvider.js';
 import type { LlmCircuitBreaker } from './LlmCircuitBreaker.js';
 import {
@@ -43,7 +44,7 @@ import type { AgentSdkCreditSnapshot } from '../providers/primitives/observabili
  * related to this type by the compiler; they are a hand-audit checklist
  * (see APPRENTICESHIP-STEP2-GEMINI-RUNTIME-ADAPTER-SPEC §4.3).
  */
-export type IntelligenceFramework = 'claude-code' | 'codex-cli' | 'gemini-cli';
+export type IntelligenceFramework = 'claude-code' | 'codex-cli' | 'gemini-cli' | 'pi-cli';
 
 export interface BuildIntelligenceProviderOptions {
   /**
@@ -91,6 +92,20 @@ export interface BuildIntelligenceProviderOptions {
     onRoute?: (info: SubscriptionRouteInfo) => void;
     onDegrade?: (info: SubscriptionDegradeInfo) => void;
   };
+  /**
+   * pi-cli only (PI-HARNESS-INTEGRATION-SPEC §4.4): the REQUIRED pi model
+   * pattern (`provider/id`, e.g. 'openai-codex/gpt-5.5'). Sourced from
+   * frameworkDefaultModels['pi-cli'] at the wiring site. Without it the
+   * pi-cli case degrades to null (the subscription guard denies
+   * pattern-less pi calls by design).
+   */
+  piModel?: string;
+  /**
+   * pi-cli only (spec §4.3): explicit opt-in for Anthropic-routed patterns.
+   * Sourced from `.instar/config.json` → `piCli.allowAnthropicProviders`.
+   * Even when true, allowed calls are audit-logged with a cost warning.
+   */
+  piAllowAnthropicProviders?: boolean;
 }
 
 /**
@@ -163,6 +178,42 @@ export function buildIntelligenceProvider(
         }),
         options.breaker,
       );
+    }
+    case 'pi-cli': {
+      // PI-HARNESS-INTEGRATION-SPEC §4.4. Two preconditions, both degrading
+      // to null (caller falls back, never a boot failure):
+      //   1. the pi binary must be detectable, AND
+      //   2. an explicit model pattern must be configured
+      //      (frameworkDefaultModels['pi-cli'] → options.piModel) — the
+      //      subscription guard denies pattern-less pi calls by design, so
+      //      constructing a provider without one would fail every call.
+      const path = options.binaryPath ?? detectPiPath();
+      if (!path) return null;
+      if (!options.piModel) {
+        console.warn(
+          `[intelligenceProviderFactory] pi-cli routing requested but no model pattern is configured — ` +
+          `set frameworkDefaultModels['pi-cli'] (e.g. "openai-codex/gpt-5.5"). Degrading to default framework.`,
+        );
+        return null;
+      }
+      try {
+        return wrapIntelligenceWithCircuitBreaker(
+          new PiCliIntelligenceProvider({
+            piPath: path,
+            model: options.piModel,
+            ...(options.piAllowAnthropicProviders !== undefined
+              ? { allowAnthropicProviders: options.piAllowAnthropicProviders }
+              : {}),
+            ...(options.workingDirectory ? { workingDirectory: options.workingDirectory } : {}),
+          }),
+          options.breaker,
+        );
+      } catch (err) {
+        // PiAnthropicRouteError at construction (a misconfigured Anthropic
+        // pattern without the override) — degrade loudly rather than boot-fail.
+        console.warn(`[intelligenceProviderFactory] pi-cli provider refused: ${err instanceof Error ? err.message : err}`);
+        return null;
+      }
     }
     default: {
       // Exhaustiveness check — extending IntelligenceFramework without

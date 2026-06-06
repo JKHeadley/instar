@@ -99,7 +99,7 @@ interface InitOptions {
    * a Codex-only install with no `.claude/` writes. `'both'` enables
    * dual-runtime use.
    */
-  framework?: 'claude-code' | 'codex-cli' | 'gemini-cli' | 'both';
+  framework?: 'claude-code' | 'codex-cli' | 'gemini-cli' | 'pi-cli' | 'both';
 }
 
 /**
@@ -110,8 +110,8 @@ interface InitOptions {
  * users and the historical `npx instar` flow.
  */
 export function resolveEnabledFrameworks(
-  choice: 'claude-code' | 'codex-cli' | 'gemini-cli' | 'both' | undefined,
-): ReadonlyArray<'claude-code' | 'codex-cli' | 'gemini-cli'> {
+  choice: 'claude-code' | 'codex-cli' | 'gemini-cli' | 'pi-cli' | 'both' | undefined,
+): ReadonlyArray<'claude-code' | 'codex-cli' | 'gemini-cli' | 'pi-cli'> {
   switch (choice) {
     case 'codex-cli':
       return ['codex-cli'];
@@ -136,13 +136,13 @@ export function resolveEnabledFrameworks(
  * gemini-only agent (framework-issue: gemini-cli scaffold leak). Using a complete
  * known-framework guard makes this drift-proof as new frameworks are added.
  */
-export const KNOWN_FRAMEWORKS: ReadonlyArray<'claude-code' | 'codex-cli' | 'gemini-cli'> = [
+export const KNOWN_FRAMEWORKS: ReadonlyArray<'claude-code' | 'codex-cli' | 'gemini-cli' | 'pi-cli'> = [
   'claude-code',
   'codex-cli',
   'gemini-cli',
 ];
 
-export function isKnownFramework(f: unknown): f is 'claude-code' | 'codex-cli' | 'gemini-cli' {
+export function isKnownFramework(f: unknown): f is 'claude-code' | 'codex-cli' | 'gemini-cli' | 'pi-cli' {
   return typeof f === 'string' && (KNOWN_FRAMEWORKS as readonly string[]).includes(f);
 }
 

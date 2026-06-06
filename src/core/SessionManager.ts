@@ -2335,7 +2335,15 @@ rm()  { "${shimRunner}" rm  "$@"; }
     });
     const binaryPath =
       this.config.frameworkBinaryPaths?.[framework]
-      ?? this.config.claudePath;
+      ?? (framework === 'pi-cli'
+        // pi-cli must NEVER inherit the claudePath fallback: claudePath holds a
+        // CLAUDE binary on claude-code installs, and silently launching Claude
+        // with pi's flags violates the additive-only constraint
+        // (PI-HARNESS-INTEGRATION-SPEC §0.1). A bare 'pi' lets PATH resolution
+        // work when detection missed an install; a missing binary then fails
+        // loudly inside the pane instead of impersonating another framework.
+        ? 'pi'
+        : this.config.claudePath);
     if (!binaryPath) {
       throw new Error(`No binary path available for framework "${framework}"`);
     }
@@ -2356,6 +2364,12 @@ rm()  { "${shimRunner}" rm  "$@"; }
       ...(options?.codexLocalProvider ? { codexLocalProvider: options.codexLocalProvider } : {}),
       // Per-agent codex threadline MCP override (ignored by non-codex builders).
       ...(this.config.codexThreadlineMcp ? { codexThreadlineMcp: this.config.codexThreadlineMcp } : {}),
+      // pi-cli: pin session transcripts into the agent state dir so they are
+      // durable + discoverable (PI-HARNESS-INTEGRATION-SPEC §2.2). Ignored by
+      // every other framework's builder.
+      ...(framework === 'pi-cli'
+        ? { piSessionDir: path.join(this.config.projectDir, '.instar', 'state', 'pi-sessions') }
+        : {}),
     });
 
     // Spawn the framework CLI in tmux — no bash -c shell intermediary.
@@ -3298,6 +3312,26 @@ rm()  { "${shimRunner}" rm  "$@"; }
       const hasPromptChar = line.includes('❯') || line.includes('›') || /│\s+\*/.test(line);
       if (hasPromptChar && (line.includes(marker) || (lines[i + 1] && lines[i + 1].includes(shortMarker)))) {
         return true;
+      }
+      // pi has NO prompt char at all — its input box is a bare text line
+      // SANDWICHED between two horizontal-rule lines (verified by live pane
+      // capture, P0.1 eval pi 0.78.1):
+      //   ────────────────────────────
+      //   STUCK-MARKER-TEXT …
+      //   ────────────────────────────
+      // Submitted transcript text is never between two rules, so requiring a
+      // rule within 2 lines BOTH above and below (the tolerance covers a long
+      // input wrapping to a second row) plus the marker match cannot
+      // false-fire on normal output. Without this branch, an injected message
+      // stranded in pi's input box would never be detected as stuck and the
+      // Enter-recovery would never fire (the Gemini lesson, same shape).
+      if (line.includes(marker) || (lines[i + 1] && lines[i + 1].includes(shortMarker))) {
+        const isRule = (l: string | undefined): boolean => !!l && /^\s*─{10,}\s*$/.test(l);
+        const ruleAbove = isRule(lines[i - 1]) || isRule(lines[i - 2]);
+        const ruleBelow = isRule(lines[i + 1]) || isRule(lines[i + 2]);
+        if (ruleAbove && ruleBelow) {
+          return true;
+        }
       }
     }
     return false;

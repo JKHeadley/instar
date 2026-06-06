@@ -2495,6 +2495,39 @@ export async function startServer(options: StartOptions): Promise<void> {
         console.log(pc.green(`  Providers registry: ${ids.join(', ')} registered`));
       }
 
+      // pi-cli adapter (PI-HARNESS-INTEGRATION-SPEC §4.2) — ships dark:
+      // registers ONLY when enabledFrameworks explicitly contains 'pi-cli'
+      // AND the binary is detectable. Own try/catch: a pi registration
+      // failure must never affect the Anthropic adapters or the boot.
+      try {
+        const { registerPiAdapters } = await import('../providers/bootRegistration.js');
+        const piRegistration = await registerPiAdapters({
+          ...(config.enabledFrameworks ? { enabledFrameworks: config.enabledFrameworks } : {}),
+          ...(config.sessions?.frameworkBinaryPaths?.['pi-cli']
+            ? { piPath: config.sessions.frameworkBinaryPaths['pi-cli'] }
+            : {}),
+          ...(config.sessions?.frameworkDefaultModels?.['pi-cli']
+            ? { model: config.sessions.frameworkDefaultModels['pi-cli'] }
+            : {}),
+          ...(config.sessions?.piCliAllowAnthropicProviders !== undefined
+            ? { allowAnthropicProviders: config.sessions.piCliAllowAnthropicProviders }
+            : {}),
+          sessionDir: path.join(config.stateDir, 'pi-sessions'),
+        });
+        if (piRegistration.skippedReason) {
+          if (piRegistration.skippedReason === 'pi-binary-missing') {
+            // Configured-but-missing is worth a visible (non-fatal) note.
+            console.log(pc.yellow(`  Providers registry: pi-cli enabled but binary missing — install @earendil-works/pi-coding-agent`));
+          }
+          // 'pi-not-enabled' is the dark default — say nothing.
+        } else {
+          const piIds = [...piRegistration.registered, ...piRegistration.alreadyRegistered];
+          console.log(pc.green(`  Providers registry: ${piIds.join(', ')} registered`));
+        }
+      } catch (err) {
+        console.warn(`  Providers registry: pi-cli registration failed (non-fatal): ${err instanceof Error ? err.message : err}`);
+      }
+
       // Read-only probe — `getRoutingPolicy` isn't on the public surface,
       // so we test by attempting a no-op resolve and seeing whether the
       // chain fires. Cheaper proxy: a private convention — set a marker
@@ -3132,6 +3165,19 @@ export async function startServer(options: StartOptions): Promise<void> {
             breaker: new LlmCircuitBreaker(),
             ...(fw === 'claude-code' && subscriptionPathOption
               ? { subscriptionPath: subscriptionPathOption }
+              : {}),
+            // pi-cli routing (PI-HARNESS-INTEGRATION-SPEC §4.4): thread the
+            // configured model pattern + the explicit Anthropic override.
+            // Absent pattern ⇒ the factory degrades to null (guarded by design).
+            ...(fw === 'pi-cli'
+              ? {
+                  ...(config.sessions?.frameworkDefaultModels?.['pi-cli']
+                    ? { piModel: config.sessions.frameworkDefaultModels['pi-cli'] }
+                    : {}),
+                  ...(config.sessions?.piCliAllowAnthropicProviders !== undefined
+                    ? { piAllowAnthropicProviders: config.sessions.piCliAllowAnthropicProviders }
+                    : {}),
+                }
               : {}),
           }),
           onDegrade: (info) => {

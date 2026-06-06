@@ -62,7 +62,7 @@ export interface Session {
   /** The AI framework/engine powering this session. Carried so the dashboard
    *  renders engine-aware (a Codex session must not display as a Claude one).
    *  Populated at spawn from the resolved framework; undefined on legacy records. */
-  framework?: 'claude-code' | 'codex-cli' | 'gemini-cli';
+  framework?: 'claude-code' | 'codex-cli' | 'gemini-cli' | 'pi-cli';
   /** The initial prompt/instruction sent to the framework's CLI */
   prompt?: string;
   /** Maximum duration in minutes before the session is killed */
@@ -113,7 +113,7 @@ export interface SessionManagerConfig {
    * without re-running detection. Missing keys mean that framework
    * isn't installed.
    */
-  frameworkBinaryPaths?: { 'claude-code'?: string; 'codex-cli'?: string; 'gemini-cli'?: string };
+  frameworkBinaryPaths?: { 'claude-code'?: string; 'codex-cli'?: string; 'gemini-cli'?: string; 'pi-cli'?: string };
   /**
    * Per-framework default model override. Lets the agent's
    * `instar.config.json` choose a specific Codex / Claude model id
@@ -122,7 +122,16 @@ export interface SessionManagerConfig {
    * raw model ids. Missing keys fall back to each builder's hardcoded
    * subscription-safe default.
    */
-  frameworkDefaultModels?: { 'claude-code'?: string; 'codex-cli'?: string; 'gemini-cli'?: string };
+  frameworkDefaultModels?: { 'claude-code'?: string; 'codex-cli'?: string; 'gemini-cli'?: string; 'pi-cli'?: string };
+  /**
+   * pi-cli only (PI-HARNESS-INTEGRATION-SPEC §4.3): explicit opt-in for
+   * Anthropic-routed pi model patterns. Sourced from `.instar/config.json`
+   * → top-level `piCli.allowAnthropicProviders` at Config.load. Default
+   * (absent/false) means the structural subscription guard DENIES
+   * Anthropic-via-pi — third-party-harness Claude usage bills as extra
+   * usage, not plan limits.
+   */
+  piCliAllowAnthropicProviders?: boolean;
   /**
    * Per-component framework routing (docs/specs/per-component-framework-routing.md):
    * route different INTERNAL LLM-driven components (sentinels, gates, …) to
@@ -136,9 +145,9 @@ export interface SessionManagerConfig {
    * topicFrameworks/resolveTopicFramework.
    */
   componentFrameworks?: {
-    default?: 'claude-code' | 'codex-cli' | 'gemini-cli';
-    categories?: Partial<Record<'sentinel' | 'gate' | 'job' | 'reflector' | 'other', 'claude-code' | 'codex-cli' | 'gemini-cli'>>;
-    overrides?: Record<string, 'claude-code' | 'codex-cli' | 'gemini-cli'>;
+    default?: 'claude-code' | 'codex-cli' | 'gemini-cli' | 'pi-cli';
+    categories?: Partial<Record<'sentinel' | 'gate' | 'job' | 'reflector' | 'other', 'claude-code' | 'codex-cli' | 'gemini-cli' | 'pi-cli'>>;
+    overrides?: Record<string, 'claude-code' | 'codex-cli' | 'gemini-cli' | 'pi-cli'>;
     fallback?: 'default' | 'none';
   };
   /**
@@ -151,7 +160,7 @@ export interface SessionManagerConfig {
    * EVERY path — scheduled jobs AND user messages. Before this
    * field existed, spawnInteractiveSession hardcoded 'claude-code',
    * so messaging a Codex-only agent spawned a Claude session. */
-  framework?: 'claude-code' | 'codex-cli' | 'gemini-cli';
+  framework?: 'claude-code' | 'codex-cli' | 'gemini-cli' | 'pi-cli';
   /** Project directory (where CLAUDE.md lives) */
   projectDir: string;
   /** Maximum concurrent sessions */
@@ -2179,7 +2188,7 @@ export interface InstarConfig {
    * Lets you flip a single topic to Codex without changing the whole
    * agent's framework.
    */
-  topicFrameworks?: Record<string, 'claude-code' | 'codex-cli' | 'gemini-cli'>;
+  topicFrameworks?: Record<string, 'claude-code' | 'codex-cli' | 'gemini-cli' | 'pi-cli'>;
   /**
    * Topic-intent auto-capture loop config (rung 0 of continuous-working-awareness).
    * `capture.enabled` (default true) is the kill-switch for the per-turn extraction
@@ -2298,7 +2307,7 @@ export interface InstarConfig {
    * `enabledFrameworks`; this is the persisted, operator-settable
    * source of truth the migrator reads.)
    */
-  enabledFrameworks?: ('claude-code' | 'codex-cli' | 'gemini-cli')[];
+  enabledFrameworks?: ('claude-code' | 'codex-cli' | 'gemini-cli' | 'pi-cli')[];
   /** Job scheduler config */
   scheduler: JobSchedulerConfig;
   /** Registered users */

@@ -133,7 +133,7 @@ async function promptForFramework(
   }
 }
 
-export async function runSetup(opts?: { framework?: 'claude-code' | 'codex-cli' | 'gemini-cli' }): Promise<void> {
+export async function runSetup(opts?: { framework?: 'claude-code' | 'codex-cli' | 'gemini-cli' | 'pi-cli' }): Promise<void> {
   // Check and install prerequisites (tmux + the chosen framework's CLI)
   console.log();
   const prereqs = await ensurePrerequisites();
@@ -152,7 +152,7 @@ export async function runSetup(opts?: { framework?: 'claude-code' | 'codex-cli' 
   //      which runtime to use. (gemini-cli is selectable via the explicit
   //      --framework flag; the interactive prompt covers claude/codex for now.)
   //   3. Default 'claude-code' otherwise (non-interactive / piped / CI).
-  const framework: 'claude-code' | 'codex-cli' | 'gemini-cli' = opts?.framework
+  const framework: 'claude-code' | 'codex-cli' | 'gemini-cli' | 'pi-cli' = opts?.framework
     ?? (process.stdin.isTTY
       ? await promptForFramework(claudePath, codexPath)
       : 'claude-code');
@@ -437,7 +437,7 @@ ${agentSummary}
  */
 async function ensureSecretBackend(
   binaryPath: string,
-  framework: 'claude-code' | 'codex-cli' | 'gemini-cli',
+  framework: 'claude-code' | 'codex-cli' | 'gemini-cli' | 'pi-cli',
   instarRoot: string,
 ): Promise<string> {
   const backendFile = path.join(os.homedir(), '.instar', 'secrets', 'backend.json');

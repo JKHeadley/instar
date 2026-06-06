@@ -110,7 +110,7 @@ export class PostUpdateMigrator {
    * the parity-renderings backfill and the legacy `.claude/`-specific
    * steps consult this.
    */
-  private getEnabledFrameworks(): ReadonlyArray<'claude-code' | 'codex-cli' | 'gemini-cli'> {
+  private getEnabledFrameworks(): ReadonlyArray<'claude-code' | 'codex-cli' | 'gemini-cli' | 'pi-cli'> {
     try {
       const configPath = path.join(this.config.stateDir, 'config.json');
       const config = JSON.parse(fs.readFileSync(configPath, 'utf-8')) as {
@@ -125,7 +125,7 @@ export class PostUpdateMigrator {
         // heart of this spec (the structural twin of the codex getEnabledFrameworks
         // gating).
         const filtered = enabled.filter(
-          (f): f is 'claude-code' | 'codex-cli' | 'gemini-cli' =>
+          (f): f is 'claude-code' | 'codex-cli' | 'gemini-cli' | 'pi-cli' =>
             f === 'claude-code' || f === 'codex-cli' || f === 'gemini-cli',
         );
         if (filtered.length > 0) return filtered;
@@ -3582,6 +3582,21 @@ Run different INTERNAL components on different agentic frameworks to spread LLM 
       content += '\n' + routingSection;
       patched = true;
       result.upgraded.push('CLAUDE.md: added Per-Component Framework Routing awareness');
+    }
+
+    // Pi framework awareness (PI-HARNESS-INTEGRATION-SPEC Phase A, 2026-06-06)
+    // — Agent Awareness + Migration Parity: existing agents must learn that
+    // 'pi-cli' is now a valid fourth framework value anywhere frameworks are
+    // configured (topicFrameworks, enabledFrameworks, componentFrameworks).
+    // Ships DARK (requires the pi binary + explicit opt-in), so this is a
+    // one-liner, not a section. Content-sniffed for idempotency.
+    if (content.includes('Per-Component Framework Routing') && !content.includes("pi-cli")) {
+      const piNote = `
+**Pi framework (additive)** — \`pi-cli\` is a valid fourth framework value wherever frameworks are configured (\`topicFrameworks\`, \`enabledFrameworks\`, \`sessions.componentFrameworks\`). It drives the pi agent harness (\`npm install -g @earendil-works/pi-coding-agent --ignore-scripts\`); sessions run pi's TUI in tmux exactly like other frameworks (dashboard streaming unchanged). ADDITIVE ONLY: it never displaces a subscription path — Claude work stays on Claude Code. Ships dark; nothing changes unless explicitly enabled. (Spec: \`docs/specs/PI-HARNESS-INTEGRATION-SPEC.md\`.)
+`;
+      content += '\n' + piNote;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added pi-cli framework awareness note');
     }
 
     // Correction & Preference Learning Sentinel (Slice 1a) §7 — Agent Awareness +

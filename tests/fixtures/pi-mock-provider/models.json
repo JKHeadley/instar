@@ -1,0 +1,16 @@
+{
+  "providers": {
+    "mock": {
+      "baseUrl": "http://127.0.0.1:18923/v1",
+      "api": "openai-completions",
+      "apiKey": "mock-key",
+      "compat": {
+        "supportsDeveloperRole": false,
+        "supportsReasoningEffort": false
+      },
+      "models": [
+        { "id": "mock-model" }
+      ]
+    }
+  }
+}

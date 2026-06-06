@@ -80,6 +80,17 @@ export function resolveModelForFramework(
     if (key === 'capable' || key === 'opus') return 'gemini-2.5-pro';
     return modelOrTier;
   }
+  if (framework === 'pi-cli') {
+    // pi is multi-provider by design — its `--model` flag takes a
+    // `provider/id` pattern and the PROVIDER is the agent's config choice
+    // (frameworkDefaultModels['pi-cli'], e.g. 'openai-codex/gpt-5.5' or a
+    // models.json custom provider). Generic tiers therefore have no
+    // universal mapping here; they resolve inside the configured provider's
+    // own vocabulary downstream. Everything passes through verbatim — an
+    // invalid pattern fails loudly in pi's own model resolution, never
+    // silently on a wrong provider (PI-HARNESS-INTEGRATION-SPEC §2.2).
+    return modelOrTier;
+  }
   return modelOrTier;
 }
 
@@ -146,6 +157,14 @@ export interface InteractiveLaunchOptions {
    * reloading an existing transcript). No effect on non-claude frameworks.
    */
   sessionId?: string;
+  /**
+   * pi-cli only: directory pi persists its session JSONL files into
+   * (`--session-dir`). SessionManager pins this to the agent's state dir so
+   * pi transcripts are durable + reap-log-coherent instead of landing in
+   * pi's per-cwd default location (PI-HARNESS-INTEGRATION-SPEC §2.2).
+   * No effect on non-pi frameworks.
+   */
+  piSessionDir?: string;
 }
 
 export interface InteractiveLaunchSpec {
@@ -316,10 +335,47 @@ const geminiCliBuilder: Builder = (options) => {
   };
 };
 
+const piCliBuilder: Builder = (options) => {
+  // pi interactive launch (PI-HARNESS-INTEGRATION-SPEC §2.2). pi has NO
+  // permission system at all (YOLO by design — containment is the harness
+  // wrapper's job, same posture as Claude's --dangerously-skip-permissions
+  // fleet default), so there is no approval flag to pass.
+  const argv: string[] = [options.binaryPath];
+  if (options.piSessionDir) {
+    // Durable transcripts: pin the session store into the agent state dir
+    // instead of pi's per-cwd default.
+    argv.push('--session-dir', options.piSessionDir);
+  }
+  // Resume and fresh-pin both map to `--session-id <id>` — pi's flag is
+  // create-or-resume (deterministic id), verified hands-on in the P0.1 eval.
+  // Resume wins when both are set, mirroring the claude-code builder.
+  const pinnedId = options.resumeSessionId ?? options.sessionId;
+  if (pinnedId) {
+    argv.push('--session-id', pinnedId);
+  }
+  // Model is a `provider/id` pattern (pass-through resolution — see
+  // resolveModelForFramework). When unset, pi uses its own configured
+  // default provider/model, which keeps parity with Claude's
+  // "inherit the CLI's account default" behavior.
+  const resolvedModel = resolveModelForFramework('pi-cli', options.defaultModel);
+  if (resolvedModel) {
+    argv.push('--model', resolvedModel);
+  }
+  return {
+    argv,
+    envOverrides: {
+      // Defense-in-depth: clear CLAUDECODE so a pi session can't be
+      // mis-detected as a Claude one by env-grepping tooling.
+      CLAUDECODE: '',
+    },
+  };
+};
+
 const BUILDERS: Record<IntelligenceFramework, Builder> = {
   'claude-code': claudeCodeBuilder,
   'codex-cli': codexCliBuilder,
   'gemini-cli': geminiCliBuilder,
+  'pi-cli': piCliBuilder,
 };
 
 /**
@@ -531,10 +587,37 @@ const geminiCliHeadlessBuilder: HeadlessBuilder = (options) => {
   };
 };
 
+const piCliHeadlessBuilder: HeadlessBuilder = (options) => {
+  // pi headless (prompt-and-exit) — the canonical one-shot argv, verified
+  // hands-on in the P0.1 eval (pi 0.78.1):
+  //   pi -p --mode json --no-session --offline [--model provider/id] <prompt>
+  // `--mode json` emits a JSONL event stream on stdout (message/tool events
+  // with usage + cost on message_end) — same consumption shape as
+  // `codex exec --json`. `--no-session` keeps one-shots ephemeral.
+  // `--offline` skips pi's startup network operations (first-boot fd/ripgrep
+  // downloads, update checks) so a job spawn can't stall on GitHub.
+  // The prompt is exactly one argv element, so a leading-dash prompt can't
+  // be re-parsed as a flag (same hardening note as the gemini builder).
+  const argv: string[] = [options.binaryPath, '-p', '--mode', 'json', '--no-session', '--offline'];
+  const resolvedModel = resolveModelForFramework('pi-cli', options.model);
+  if (resolvedModel) {
+    argv.push('--model', resolvedModel);
+  }
+  argv.push(options.prompt);
+  return {
+    argv,
+    envOverrides: {
+      // Same nested-detection prevention as the other builders.
+      CLAUDECODE: '',
+    },
+  };
+};
+
 const HEADLESS_BUILDERS: Record<IntelligenceFramework, HeadlessBuilder> = {
   'claude-code': claudeCodeHeadlessBuilder,
   'codex-cli': codexCliHeadlessBuilder,
   'gemini-cli': geminiCliHeadlessBuilder,
+  'pi-cli': piCliHeadlessBuilder,
 };
 
 /**

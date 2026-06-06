@@ -114,10 +114,33 @@ const GEMINI_CLI_SIGNAL: FrameworkActivitySignal = {
     'spinner characters (⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏), "Generating"/"Thinking" during a turn, "esc to interrupt". NOTE: the Gemini interactive-TUI signatures are not yet live-characterized (the minimal Step-2 body runs one-shot); this is a conservative default refined when the loop-driver/TUI path lands.',
 };
 
+const PI_CLI_SIGNAL: FrameworkActivitySignal = {
+  displayName: 'Pi',
+  // CONSERVATIVE (PI-HARNESS-INTEGRATION-SPEC §2.2, P0.1 eval pi 0.78.1): the
+  // hands-on eval characterized the pane during tool execution — pi renders
+  // the executed command as a `$ <cmd>` line and stamps `Took N.Ns` on
+  // completion; pi-tui also uses the shared Braille spinner family while
+  // streaming. This entry matches those plus the generic working words. It
+  // deliberately does NOT match the bare word "pi", the model name in the
+  // status line, or the STATIC banner hint "escape interrupt" (always visible
+  // near boot even when idle — matching it would recreate the codex
+  // idle-status false-positive that hid stuck sessions).
+  toolCallOrSpinner: /⠋|⠙|⠹|⠸|⠼|⠴|⠦|⠧|⠇|⠏|^\s*\$\s\S|\bTook \d+(\.\d+)?s\b|\b(generating|thinking|streaming)\b/im,
+  // pi's interrupt hint is the banner's "escape interrupt", but that banner is
+  // visible while IDLE too — so it is NOT a reliable in-flight indicator. Use a
+  // deliberately unmatchable pattern until a live-provider pane characterizes a
+  // work-scoped hint (refinement noted in the spec's build-time discovery list).
+  escapeToInterrupt: /pi-has-no-work-scoped-interrupt-hint(?!)/,
+  runningIndicator: /\((running|executing|streaming)\)/i,
+  promptSignaturesLine:
+    'executed-command lines ("$ <cmd>") with "Took N.Ns" completion stamps, spinner characters (⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏). IDLE (NOT work): the status line "<cwd> … <model>" and the static banner "escape interrupt · ctrl+c/ctrl+d clear/exit".',
+};
+
 const ACTIVITY_SIGNALS: Record<IntelligenceFramework, FrameworkActivitySignal> = {
   'claude-code': CLAUDE_CODE_SIGNAL,
   'codex-cli': CODEX_CLI_SIGNAL,
   'gemini-cli': GEMINI_CLI_SIGNAL,
+  'pi-cli': PI_CLI_SIGNAL,
 };
 
 /**

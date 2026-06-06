@@ -23,7 +23,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { findGeminiSessionFileSync } from '../providers/adapters/gemini-cli/observability/sessionPaths.js';
 
-export type SessionFramework = 'claude-code' | 'codex-cli' | 'gemini-cli';
+export type SessionFramework = 'claude-code' | 'codex-cli' | 'gemini-cli' | 'pi-cli';
 
 export interface ResolveTranscriptOptions {
   framework: SessionFramework;

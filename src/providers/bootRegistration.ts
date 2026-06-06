@@ -223,3 +223,94 @@ async function registerAnthropicAdaptersInner(
     readSdkCredit: buildReadSdkCredit(headless, options.creditCacheTtlMs),
   };
 }
+
+// ── pi-cli adapter registration (PI-HARNESS-INTEGRATION-SPEC §4.2) ──────
+
+export interface RegisterPiAdaptersOptions {
+  /**
+   * The agent's enabled frameworks (InstarConfig.enabledFrameworks). pi is
+   * ADDITIVE and ships dark: registration happens ONLY when 'pi-cli' is
+   * explicitly present — unset/empty means NOT enabled (the inverse of the
+   * Anthropic default, deliberately: existing agents see zero change).
+   */
+  enabledFrameworks?: ReadonlyArray<string>;
+  /** Detected `pi` binary path. Unset → adapter env detection. */
+  piPath?: string | null;
+  /** The pi `--model` pattern (frameworkDefaultModels['pi-cli']). */
+  model?: string;
+  /** Subscription-guard override (config `piCli.allowAnthropicProviders`). */
+  allowAnthropicProviders?: boolean;
+  /** Session-dir for RPC sessions (durable transcripts). */
+  sessionDir?: string;
+  /** Target registry override for tests. */
+  registryInstance?: Registry;
+}
+
+export interface RegisterPiAdaptersResult {
+  registered: ProviderId[];
+  alreadyRegistered: ProviderId[];
+  skippedReason?: 'pi-not-enabled' | 'pi-binary-missing';
+  adapter?: ProviderAdapter;
+}
+
+const inFlightPiByRegistry = new WeakMap<Registry, Promise<RegisterPiAdaptersResult>>();
+
+/**
+ * Register the pi-cli adapter, gated and idempotent (mirrors
+ * registerAnthropicAdapters' contract):
+ *
+ *   - GATED on explicit opt-in: `enabledFrameworks` must contain 'pi-cli'.
+ *   - GATED on the binary: a configured-but-missing pi degrades to a
+ *     skip + doctor-visible reason, never a boot failure.
+ *   - IDEMPOTENT including under concurrent calls (single-flight).
+ *   - LAZY: pure in-memory construction; nothing spawns at registration.
+ *   - GUARDED: the adapter's transports enforce the Anthropic-deny
+ *     subscription guard at every call construction (spec §4.3).
+ */
+export async function registerPiAdapters(
+  options: RegisterPiAdaptersOptions = {},
+): Promise<RegisterPiAdaptersResult> {
+  const targetRegistry = options.registryInstance ?? defaultRegistry;
+  const existing = inFlightPiByRegistry.get(targetRegistry);
+  if (existing) return existing;
+  const run = registerPiAdaptersInner(options, targetRegistry).finally(() => {
+    inFlightPiByRegistry.delete(targetRegistry);
+  });
+  inFlightPiByRegistry.set(targetRegistry, run);
+  return run;
+}
+
+async function registerPiAdaptersInner(
+  options: RegisterPiAdaptersOptions,
+  reg: Registry,
+): Promise<RegisterPiAdaptersResult> {
+  // Gate 1 — explicit opt-in (ships dark).
+  if (!options.enabledFrameworks?.includes('pi-cli')) {
+    return { registered: [], alreadyRegistered: [], skippedReason: 'pi-not-enabled' };
+  }
+
+  // Gate 2 — binary present. Lazy import keeps the adapter graph out of
+  // boots that never enable pi.
+  const { detectPiPath } = await import('../core/Config.js');
+  const piPath = options.piPath ?? detectPiPath();
+  if (!piPath) {
+    return { registered: [], alreadyRegistered: [], skippedReason: 'pi-binary-missing' };
+  }
+
+  const { createPiCliAdapter, PI_CLI_ID } = await import('./adapters/pi-cli/index.js');
+
+  const already = reg.get(PI_CLI_ID);
+  if (already) {
+    return { registered: [], alreadyRegistered: [PI_CLI_ID], adapter: already };
+  }
+  const adapter = createPiCliAdapter({
+    piPath,
+    ...(options.model ? { model: options.model } : {}),
+    ...(options.allowAnthropicProviders !== undefined
+      ? { allowAnthropicProviders: options.allowAnthropicProviders }
+      : {}),
+    ...(options.sessionDir ? { sessionDir: options.sessionDir } : {}),
+  });
+  await reg.register(adapter);
+  return { registered: [PI_CLI_ID], alreadyRegistered: [], adapter };
+}

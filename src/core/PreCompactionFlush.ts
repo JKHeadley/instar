@@ -73,7 +73,7 @@ export interface PreCompactionFlushDeps {
    * 'claude-code' — the historical behavior, so Claude installs are
    * byte-for-byte unchanged.
    */
-  framework?: 'claude-code' | 'codex-cli' | 'gemini-cli';
+  framework?: 'claude-code' | 'codex-cli' | 'gemini-cli' | 'pi-cli';
   /** Optional override for the Codex sessions root (testing). */
   codexSessionsRoot?: string;
   /** Optional override for the Gemini home dir (testing). */
