@@ -47,6 +47,7 @@ function runHook(opts: { codex: boolean; tmuxSession: string; emergencyStop?: bo
   const env: NodeJS.ProcessEnv = {
     ...process.env,
     INSTAR_HOOK_TMUX_SESSION: opts.tmuxSession,
+    INSTAR_HOOK_BACKOFF_DISABLE: '1',
     CLAUDE_PROJECT_DIR: homeDir, // anchor to the test home (prod codex uses the $0 fallback)
   };
   const args = opts.codex ? [HOOK_PATH, '--codex'] : [HOOK_PATH];

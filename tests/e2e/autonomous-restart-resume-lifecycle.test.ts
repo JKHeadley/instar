@@ -69,7 +69,7 @@ function fire(sessionId: string, lastText = ''): { decision: string | null; exit
     stdout = execFileSync('bash', [HOOK_PATH], {
       cwd: home,
       input,
-      env: { ...process.env, INSTAR_HOOK_TMUX_SESSION: TMUX },
+      env: { ...process.env, INSTAR_HOOK_TMUX_SESSION: TMUX, INSTAR_HOOK_BACKOFF_DISABLE: '1' },
       encoding: 'utf-8',
       stdio: ['pipe', 'pipe', 'pipe'],
     });

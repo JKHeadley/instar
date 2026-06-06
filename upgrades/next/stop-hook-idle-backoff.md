@@ -1,0 +1,56 @@
+# Autonomous stop-hook idle backoff — pace frame re-injection while holding
+
+## What Changed
+
+The autonomous loop's Stop hook re-feeds the full frame + context to the model
+after every turn. When a session was idle/holding (waiting on the operator, a
+budget window, or a peer), turns completed in ~4s and the hook re-injected
+~15×/min — thousands of token-heavy no-op re-injections over one operator
+sleep (the 2026-06-06 rapid-idle-refire waste).
+
+The hook now measures the agent's ACTIVE time between re-injections (slept
+time never counts) and backs off when consecutive stops arrive quickly: 3+
+quick stops → 30s wait, 6+ → 2 min, 10+ → 5 min, before the next re-injection.
+One real burst of work resets the counter instantly — a productive loop never
+waits. During a wait it polls every 5s and breaks early on a new inbound
+message for its topic, the emergency-stop flag, or its job being stopped — a
+user message gets through in ≤5s. The wait self-clamps to a third of the
+hook's own registered Stop timeout (a host-killed Stop hook fails OPEN and
+strands the loop; the clamp guarantees noise over strand).
+
+State is a per-topic sidecar (`.instar/autonomous/<topic>.local.backoff.json`)
+invisible to the server. Existing agents receive the paced hook via a
+PostUpdateMigrator marker bump (`RESTART_NOTE_SILENT` → `IDLE_BACKOFF`);
+customized hooks are left untouched.
+
+## What to Tell Your User
+
+Idle autonomous sessions now sip tokens instead of gulping them — an agent
+holding overnight re-checks roughly every 5 minutes instead of every 4
+seconds, and still reacts to your message within ~5 seconds. Busy sessions
+are completely unaffected.
+
+## Summary of New Capabilities
+
+- Autonomous stop-hook idle backoff: tiered pacing (30s/120s/300s) of frame
+  re-injection after 3/6/10 consecutive quick stops; instant reset on real work.
+- Early-break responsiveness: new inbound message / emergency stop / job stop
+  cut any backoff wait to ≤5s.
+- Timeout self-clamp: the backoff reads its own Stop-hook registration and
+  never sleeps past a third of it (20s conservative fallback) — fail-toward-
+  noise, never toward a stranded loop.
+- Env seams for operators/tests: `INSTAR_HOOK_BACKOFF_DISABLE`, `_QUICK_SECS`,
+  `_T1/_T2/_T3`, `_POLL_SECS`, `_MAX_SLEEP`.
+- Migration: existing agents get the paced hook automatically (marker bump
+  `RESTART_NOTE_SILENT` → `IDLE_BACKOFF`).
+
+## Evidence
+
+- `tests/unit/autonomous-stop-hook-idle-backoff.test.ts` — 13 tests executing
+  the REAL hook: counter evolution, tier engagement (measured wall-time),
+  long-gap + new-run resets, MAX_SLEEP clamp, DISABLE seam, async early-breaks
+  (inbound / emergency / state-removal), static safety assertions, migration
+  upgrade path.
+- 57 tests across the 8 pre-existing hook suites pass (disable seam added to
+  their harnesses so repeated hook execs never sleep).
+- Typecheck clean; `bash -n` clean.

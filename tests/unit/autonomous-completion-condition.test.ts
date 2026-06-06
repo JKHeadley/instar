@@ -31,7 +31,7 @@ function writeTranscript(): string {
 function statePresent() { return fs.existsSync(path.join(tmp, '.instar', 'autonomous-state.local.md')); }
 
 function runHook(evalOverride?: string): { decision: string | null; exit: number } {
-  const env: NodeJS.ProcessEnv = { ...process.env, INSTAR_HOOK_NO_TMUX: '1', INSTAR_HOOK_TMUX_SESSION: '' };
+  const env: NodeJS.ProcessEnv = { ...process.env, INSTAR_HOOK_NO_TMUX: '1', INSTAR_HOOK_TMUX_SESSION: '', INSTAR_HOOK_BACKOFF_DISABLE: '1' };
   if (evalOverride !== undefined) env.INSTAR_HOOK_EVAL_OVERRIDE = evalOverride;
   let stdout = ''; let exit = 0;
   try {

@@ -542,6 +542,122 @@ if [[ "$STATE_SESSION" != "$HOOK_SESSION" ]]; then
   record_session_id "$HOOK_SESSION"
 fi
 
+# ── IDLE_BACKOFF — consecutive quick stops back off before re-injecting the frame ──
+# Every block-decision below re-feeds the FULL frame + context to the model. When the
+# session is idle/holding (nothing actionable), stops arrive back-to-back (~4s apart)
+# and the loop re-injects thousands of tokens ~15×/min, all night — the 2026-06-06
+# rapid-idle-refire waste. Backoff: measure the agent's ACTIVE time since the last
+# re-injection (gap = stop arrival − last resume; slept time never counts toward the
+# gap, so a long sleep can't masquerade as productive work). gap < QUICK_SECS ⇒ an
+# idle cycle ⇒ the consecutive counter rises ⇒ tiered sleep (3+ quick stops → T1 30s,
+# 6+ → T2 120s, 10+ → T3 300s) BEFORE the next re-injection. Any real work makes the
+# gap long and resets the counter to zero — productive loops never wait at all.
+# RESPONSIVENESS: the sleep polls every POLL_SECS and breaks EARLY on (a) a new
+# inbound message for this topic, (b) the emergency-stop flag, (c) the state file
+# vanishing (stop/stop-all) — a user message cuts the wait to ≤POLL_SECS.
+# SAFETY (fail-toward-noise, never toward strand): the total sleep self-clamps to a
+# third of THIS hook's own registered Stop timeout, read live from settings.json —
+# a host-killed Stop hook fails OPEN and strands the loop, which is categorically
+# worse than refire noise. Unreadable/missing timeout ⇒ conservative 20s cap; codex
+# registrations (.codex/hooks.json, different timeout semantics) ⇒ same 20s cap.
+BACKOFF_STATE="${STATE_FILE%.md}.backoff.json"
+BACKOFF_SLEPT=0
+if [[ "${INSTAR_HOOK_BACKOFF_DISABLE:-0}" != "1" ]]; then
+  BK_QUICK_SECS="${INSTAR_HOOK_BACKOFF_QUICK_SECS:-120}"
+  BK_T1="${INSTAR_HOOK_BACKOFF_T1:-30}"
+  BK_T2="${INSTAR_HOOK_BACKOFF_T2:-120}"
+  BK_T3="${INSTAR_HOOK_BACKOFF_T3:-300}"
+  BK_POLL="${INSTAR_HOOK_BACKOFF_POLL_SECS:-5}"
+
+  # Self-clamp: never sleep past a third of the registered hook timeout.
+  BK_MAX="${INSTAR_HOOK_BACKOFF_MAX_SLEEP:-}"
+  if [[ -z "$BK_MAX" ]]; then
+    if [[ "$IS_CODEX" == "1" ]]; then
+      BK_MAX=20
+    else
+      BK_REG_TIMEOUT=$(python3 -c "
+import json
+try:
+    s = json.load(open('.claude/settings.json'))
+    for grp in (s.get('hooks', {}).get('Stop') or []):
+        for h in (grp.get('hooks') or []):
+            if 'autonomous-stop-hook.sh' in (h.get('command') or ''):
+                t = h.get('timeout')
+                print(int(t) if isinstance(t, (int, float)) and t > 0 else '')
+                raise SystemExit
+except SystemExit:
+    pass
+except Exception:
+    pass
+" 2>/dev/null || echo "")
+      if [[ "$BK_REG_TIMEOUT" =~ ^[0-9]+$ ]] && [[ $BK_REG_TIMEOUT -ge 60 ]]; then
+        BK_MAX=$(( BK_REG_TIMEOUT / 3 ))
+      else
+        BK_MAX=20
+      fi
+    fi
+  fi
+
+  # Read sidecar (per-topic). A new run (different started_at) resets the counter.
+  BK_PREV_RESUMED=$(jq -r '.lastResumedAt // 0' "$BACKOFF_STATE" 2>/dev/null || echo 0)
+  BK_PREV_QUICK=$(jq -r '.quickStops // 0' "$BACKOFF_STATE" 2>/dev/null || echo 0)
+  BK_PREV_RUN=$(jq -r '.runStartedAt // ""' "$BACKOFF_STATE" 2>/dev/null || echo "")
+  [[ "$BK_PREV_RESUMED" =~ ^[0-9]+$ ]] || BK_PREV_RESUMED=0
+  [[ "$BK_PREV_QUICK" =~ ^[0-9]+$ ]] || BK_PREV_QUICK=0
+  if [[ "$BK_PREV_RUN" != "$STARTED_AT" ]]; then
+    BK_PREV_RESUMED=0; BK_PREV_QUICK=0
+  fi
+
+  BK_NOW=$(date +%s)
+  BK_GAP=-1
+  BK_QUICK=0
+  if [[ $BK_PREV_RESUMED -gt 0 ]]; then
+    BK_GAP=$(( BK_NOW - BK_PREV_RESUMED ))
+    if [[ $BK_GAP -lt $BK_QUICK_SECS ]]; then
+      BK_QUICK=$(( BK_PREV_QUICK + 1 ))
+    fi
+  fi
+
+  BK_SLEEP=0
+  if   [[ $BK_QUICK -ge 10 ]]; then BK_SLEEP=$BK_T3
+  elif [[ $BK_QUICK -ge 6  ]]; then BK_SLEEP=$BK_T2
+  elif [[ $BK_QUICK -ge 3  ]]; then BK_SLEEP=$BK_T1
+  fi
+  [[ $BK_SLEEP -gt $BK_MAX ]] && BK_SLEEP=$BK_MAX
+
+  if [[ $BK_SLEEP -gt 0 ]]; then
+    bk_inbound_latest() { ls -t .instar/telegram-inbound/msg-"${REPORT_TOPIC:-none}"-* 2>/dev/null | head -1; }
+    BK_MARK_IN=$(bk_inbound_latest)
+    while [[ $BACKOFF_SLEPT -lt $BK_SLEEP ]]; do
+      BK_CHUNK=$(( BK_SLEEP - BACKOFF_SLEPT ))
+      [[ $BK_CHUNK -gt $BK_POLL ]] && BK_CHUNK=$BK_POLL
+      sleep "$BK_CHUNK"
+      BACKOFF_SLEPT=$(( BACKOFF_SLEPT + BK_CHUNK ))
+      [[ -f ".instar/autonomous-emergency-stop" ]] && break
+      [[ ! -f "$STATE_FILE" ]] && break
+      [[ "$(bk_inbound_latest)" != "$BK_MARK_IN" ]] && break
+    done
+    echo "[autonomous] idle backoff: quickStops=$BK_QUICK gap=${BK_GAP}s slept=${BACKOFF_SLEPT}s (cap=${BK_MAX}s)" >&2
+
+    # Re-check terminal conditions that may have arrived during the sleep.
+    if [[ ! -f "$STATE_FILE" ]]; then
+      rm -f "$BACKOFF_STATE" 2>/dev/null || true
+      echo "[autonomous] state file removed during idle backoff — allowing exit" >&2
+      exit 0
+    fi
+    if [[ -f ".instar/autonomous-emergency-stop" ]]; then
+      emit "🛑 Autonomous mode: Emergency stop detected (during idle backoff)."
+      notify_terminal_stop "🛑 My autonomous run on \"$(goal_snippet)\" was stopped (emergency stop)."
+      rm -f "$STATE_FILE" "$BACKOFF_STATE" 2>/dev/null || true
+      exit 0
+    fi
+  fi
+
+  BK_RESUMED=$(date +%s)
+  printf '{"runStartedAt":"%s","lastResumedAt":%s,"quickStops":%s,"lastSleepSecs":%s}\n' \
+    "$STARTED_AT" "$BK_RESUMED" "$BK_QUICK" "$BACKOFF_SLEPT" > "$BACKOFF_STATE" 2>/dev/null || true
+fi
+
 # ── Continue the job: increment iteration, feed the task back. ────────
 NEXT_ITERATION=$((ITERATION + 1))
 
