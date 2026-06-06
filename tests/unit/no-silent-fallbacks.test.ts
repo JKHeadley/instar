@@ -257,7 +257,16 @@ describe('No Silent Fallbacks', () => {
     // restores the gate as a net-regression guard (the PR adds ZERO unjustified
     // silent swallows, verified by stashing the source: every new catch logs+
     // continues with context or reports).
-    const BASELINE = 459;
+    //
+    // 459 -> 461 by working-set-handoff (P2): two parser-counted defensive
+    // catches in the new transfer machinery — the serve-side fd close guard
+    // (WorkingSetPull.serveChunk finally) and the manifest's vanished-file
+    // path. Neither is silent: every new catch carries an in-brace
+    // @silent-fallback-ok with the spec-section justification, and the
+    // failure it absorbs is counted in the pull report (goneFromDisk /
+    // refusal counters) rather than swallowed. Verified: the PR adds zero
+    // unjustified swallows; honest degradations surface as counted outcomes.
+    const BASELINE = 461;
 
     if (silentFallbacks.length > 0) {
       const report = silentFallbacks.map(fb =>

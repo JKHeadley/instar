@@ -97,6 +97,12 @@ export interface PeerPresencePullerDeps {
    * Returns `{ kind → { incarnation, lastSeq } }` (possibly empty).
    */
   localAdvertFor?: (machineId: string) => Record<string, { incarnation: string; lastSeq: number }>;
+  /**
+   * Fired once per peer recorded online this pass (WORKING-SET-HANDOFF-SPEC
+   * §3.4 — the pending-pull re-arm rides the same cadence journal-sync does).
+   * MUST NOT throw into the puller; consumers dedupe/stagger themselves.
+   */
+  onPeerRecorded?: (machineId: string) => void;
 }
 
 export class PeerPresencePuller {
@@ -124,6 +130,10 @@ export class PeerPresencePuller {
         // delta deps (i.e. replication.enabled === true). Otherwise a complete
         // no-op (engine/transport stay dark). Never throws into the puller.
         await this.driveJournalDelta(m.machineId, m.url as string, cap.journalAdvert);
+        try {
+          this.d.onPeerRecorded?.(m.machineId);
+        } catch { /* @silent-fallback-ok: the puller's contract is NEVER to throw — a pending-pull re-arm failure must not break the presence pass (WORKING-SET-HANDOFF-SPEC §3.4) */
+        }
         return m.machineId;
       }),
     );

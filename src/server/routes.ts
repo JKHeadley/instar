@@ -811,6 +811,11 @@ export interface RouteContext {
   /** MeshRpc dispatcher (§L0) — the receive side behind POST /mesh/rpc (signed,
    *  recipient-bound, RBAC-gated m2m commands). Null/absent when not wired (dark). */
   meshRpcDispatcher?: import('../core/MeshRpc.js').MeshRpcDispatcher | null;
+  /** Working-set pull coordinator (WORKING-SET-HANDOFF-SPEC §3.3) — the move
+   *  trigger + reflex pipeline behind POST /coherence/fetch-working-set.
+   *  Null/absent while the working-set layer is dark (rides the explicit
+   *  replication gate). */
+  workingSetPullCoordinator?: import('../core/WorkingSetPullCoordinator.js').WorkingSetPullCoordinator | null;
   /** Per-session ownership registry (§L3) — exactly-one-owner CAS + ownerOf/
    *  placementTargetOf. Read by L4 placement + observability. Null/absent (dark). */
   sessionOwnershipRegistry?: import('../core/SessionOwnershipRegistry.js').SessionOwnershipRegistry | null;
@@ -4486,6 +4491,30 @@ export function createRoutes(ctx: RouteContext): Router {
         res.status(400).json({ error: err.message });
         return;
       }
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  // The evidence-driven fetch reflex (WORKING-SET-HANDOFF-SPEC §3.3): "who made
+  // artifacts for this topic? go get them" — the EXO failure as a one-call
+  // recovery. Bearer-auth (router-level middleware); 503 while the working-set
+  // layer is dark (it rides the explicit replication gate); rate-limited per
+  // topic with concurrent calls coalesced into the single-flight pull.
+  router.post('/coherence/fetch-working-set', async (req, res) => {
+    const coordinator = ctx.workingSetPullCoordinator;
+    if (!coordinator) {
+      res.status(503).json({ error: 'working-set handoff not enabled (requires coherenceJournal.replication.enabled)' });
+      return;
+    }
+    const topic = Number(req.body?.topic);
+    if (!Number.isFinite(topic)) {
+      res.status(400).json({ error: 'topic (number) is required' });
+      return;
+    }
+    try {
+      const outcome = await coordinator.fetchWorkingSet(topic);
+      res.status(outcome.skipReason === 'rate-limited' ? 429 : 200).json(outcome);
+    } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
     }
   });

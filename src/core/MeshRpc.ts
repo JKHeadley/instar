@@ -45,6 +45,18 @@ export type MeshCommand =
       advert?: Record<string, Record<string, { incarnation: string; lastSeq: number }>>;
       request?: { machineId: string; kind: string; fromSeq: number };
       batch?: { kind: string; incarnation: string; entries: unknown[]; oldestRetainedSeq?: number }[];
+    }
+  | {
+      // Working-set handoff transport (WORKING-SET-HANDOFF-SPEC §3.2).
+      // Read/observe class — the FRESH manifest computed per request is the
+      // allowlist (own jailed working files only; no generic file-read
+      // surface). Chunked: every response ≤ pullMaxBatchBytes (1 MiB default).
+      //   • manifestOnly — list the topic's working set (entries + flags).
+      //   • want         — serve content chunks at the given offsets.
+      type: 'working-set-pull';
+      topic: number;
+      manifestOnly?: boolean;
+      want?: { relPath: string; offset: number }[];
     };
 
 export interface MeshEnvelope {
@@ -158,12 +170,17 @@ export function checkCommandRBAC(command: MeshCommand, sender: MachineId, deps: 
     case 'capacity-report':
     case 'session-status':
     case 'journal-sync':
+    case 'working-set-pull':
     case 'secret-share':
       // Read/observe class (or e2e-encrypted) — any registered peer (already
       // proven a registered peer by verifyEnvelope). journal-sync joins this
       // class: it serves/applies own-stream coherence-journal deltas, which are
       // self-binding (first-hop sender binding fences forged entries in the
-      // applier) — no router/owner role is required.
+      // applier) — no router/owner role is required. working-set-pull joins
+      // it (WORKING-SET-HANDOFF-SPEC §3.2): it serves OWN jailed working
+      // files behind a fresh-manifest allowlist (disclosure accepted for
+      // registered same-operator peers, §3.1 note); the handler itself stays
+      // dark unless replication is explicitly enabled (§3.7 gate).
       return { ok: true, reason: 'ok' };
     default:
       return { ok: false, reason: 'claim-unauthorized' };

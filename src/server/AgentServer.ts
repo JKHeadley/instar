@@ -276,6 +276,9 @@ export class AgentServer {
     machinePoolRegistry?: import('../core/MachinePoolRegistry.js').MachinePoolRegistry;
     /** MeshRpc dispatcher (§L0) — receive side behind POST /mesh/rpc. */
     meshRpcDispatcher?: import('../core/MeshRpc.js').MeshRpcDispatcher;
+    /** Working-set pull coordinator (WORKING-SET-HANDOFF §3.3) — behind
+     *  POST /coherence/fetch-working-set. Absent while the layer is dark. */
+    workingSetPullCoordinator?: import('../core/WorkingSetPullCoordinator.js').WorkingSetPullCoordinator;
     /** Per-session ownership registry (§L3). */
     sessionOwnershipRegistry?: import('../core/SessionOwnershipRegistry.js').SessionOwnershipRegistry;
     /** Topic placement pin store (§L4) — backs GET /pool/placement + POST /pool/transfer. */
@@ -1374,6 +1377,7 @@ export class AgentServer {
       coordinator: options.coordinator ?? null,
       machinePoolRegistry: options.machinePoolRegistry ?? null,
       meshRpcDispatcher: options.meshRpcDispatcher ?? null,
+      workingSetPullCoordinator: options.workingSetPullCoordinator ?? null,
       sessionOwnershipRegistry: options.sessionOwnershipRegistry ?? null,
       topicPinStore: options.topicPinStore ?? null,
       secretSync: options.secretSync ?? null,

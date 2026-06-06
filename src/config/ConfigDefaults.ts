@@ -479,6 +479,24 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       flushIntervalMs: 250,
       scannerIntervalMs: 60000,
       replication: { maxBatchBytes: 262144 },
+      // Working-Set Handoff (WORKING-SET-HANDOFF-SPEC §3.7). NO enable flag
+      // here — the feature activates IFF replication.enabled === true (the
+      // pull is meaningless without replication's mesh path and must never
+      // out-activate it). These are the transfer's bounded-behavior dials.
+      workingSet: {
+        maxFileBytes: 4194304,
+        headlineFileBytes: 16777216,
+        maxFiles: 64,
+        maxTotalBytes: 33554432,
+        pullMaxBatchBytes: 1048576,
+        pullOnMove: true,
+        pendingPullTtlDays: 7,
+        chunkRestartCap: 3,
+        chunksPerTick: 8,
+        serveConcurrency: 2,
+        rearmConcurrency: 1,
+        busyRetryCap: 10,
+      },
       retention: {
         'topic-placement': { maxFileBytes: 8388608, rotateKeep: 0 },
         'session-lifecycle': { maxFileBytes: 16777216, rotateKeep: 4 },

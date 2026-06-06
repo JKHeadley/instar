@@ -2609,6 +2609,17 @@ export async function startServer(options: StartOptions): Promise<void> {
     // RECEIVE handler (always-registered; harmless when idle) and the
     // REPLICATION-GATED puller delta drive. Constructed only when the journal is.
     let journalSyncApplier: import('../core/JournalSyncApplier.js').JournalSyncApplier | undefined;
+    // Working-set serve side (WORKING-SET-HANDOFF-SPEC §3.7): constructed ONLY
+    // when replication is EXPLICITLY enabled (=== true, never the dark-ship
+    // gate) — the pull is meaningless without replication's mesh path and must
+    // never out-activate it. The dispatcher's working-set-pull handler answers
+    // 'disabled' while this stays undefined.
+    let workingSetPullServer: import('../core/WorkingSetPull.js').WorkingSetPullServer | undefined;
+    // The pull side (§3.3 trigger + §3.4 ledger/drain + the reflex route).
+    // Hoisted here so the deliverMessage onAccepted seam (wired earlier than
+    // the mesh client) can reference it lazily; constructed in the mesh-wiring
+    // block ONLY under the same explicit replication gate.
+    let workingSetPullCoordinator: import('../core/WorkingSetPullCoordinator.js').WorkingSetPullCoordinator | undefined;
     {
       const cjCfg = config.multiMachine?.coherenceJournal;
       const cjEnabled = cjCfg?.enabled ?? !!config.developmentAgent;
@@ -2652,6 +2663,34 @@ export async function startServer(options: StartOptions): Promise<void> {
           } catch (e) { /* @silent-fallback-ok: journal observability must never endanger the observed operation (COHERENCE-JOURNAL-SPEC §3.1) */
             journalSyncApplier = undefined;
             console.log(pc.dim(`  [journal-sync] applier not constructed: ${e instanceof Error ? e.message : String(e)}`));
+          }
+          // Working-set serve side (WORKING-SET-HANDOFF-SPEC §3.2/§3.7) —
+          // gated on the EXPLICIT replication enable, same gate as the
+          // replication SEND/drive below. Serves OWN jailed working files
+          // behind a fresh-manifest allowlist; chunked ≤ pullMaxBatchBytes.
+          if (cjCfg?.replication?.enabled === true) {
+            try {
+              const wsMod = await import('../core/WorkingSetPull.js');
+              const wsReaderMod = await import('../core/CoherenceJournalReader.js');
+              const wsReader = new wsReaderMod.CoherenceJournalReader({ stateDir: config.stateDir });
+              const ws = cjCfg?.workingSet;
+              workingSetPullServer = new wsMod.WorkingSetPullServer({
+                stateDir: config.stateDir,
+                readRuns: (topic) => wsReader.readOwnAutonomousRuns(topic, cjMachineId),
+                caps: {
+                  ...(ws?.maxFileBytes != null ? { maxFileBytes: ws.maxFileBytes } : {}),
+                  ...(ws?.headlineFileBytes != null ? { headlineFileBytes: ws.headlineFileBytes } : {}),
+                  ...(ws?.maxFiles != null ? { maxFiles: ws.maxFiles } : {}),
+                  ...(ws?.maxTotalBytes != null ? { maxTotalBytes: ws.maxTotalBytes } : {}),
+                },
+                ...(ws?.pullMaxBatchBytes != null ? { pullMaxBatchBytes: ws.pullMaxBatchBytes } : {}),
+                ...(ws?.serveConcurrency != null ? { serveConcurrency: ws.serveConcurrency } : {}),
+                logger: (m) => console.log(pc.dim(`  [working-set] ${m}`)),
+              });
+            } catch (e) { /* @silent-fallback-ok: working-set serve construction failure degrades to 'disabled' responses — never blocks server boot (WORKING-SET-HANDOFF-SPEC §4) */
+              workingSetPullServer = undefined;
+              console.log(pc.dim(`  [working-set] serve side not constructed: ${e instanceof Error ? e.message : String(e)}`));
+            }
           }
           // §3.3 autonomous-run journal scanner — observation-based start/stop
           // (no single .local.md write funnel exists; polling is the structural
@@ -10320,6 +10359,12 @@ export async function startServer(options: StartOptions): Promise<void> {
           // double-gate on stage!=='dark' to be safe. Fire-and-forget: the durable receipt
           // is already recorded + ACKed before this runs.
           onAccepted: (cmd) => {
+            // Working-set move trigger (WORKING-SET-HANDOFF §3.3) — fire-and-forget,
+            // BEFORE the stage gate (the coordinator carries its own gates; dark ⇒ undefined).
+            {
+              const wsTopic = Number(cmd.session);
+              if (Number.isFinite(wsTopic)) workingSetPullCoordinator?.onTopicAccepted(wsTopic);
+            }
             if (_sessionPoolStage() === 'dark' || !telegram) return;
             const tg = telegram;
             const topicId = Number(cmd.session);
@@ -10482,6 +10527,17 @@ export async function startServer(options: StartOptions): Promise<void> {
               }
               return { ok: true };
             },
+            // WORKING-SET-HANDOFF-SPEC §3.2 — the chunked working-set serve
+            // verb. Registered always (lockstep with the union+RBAC edits so
+            // a mixed-version caller gets a clean answer, never no-handler
+            // surprises within one version); answers 'disabled' until the
+            // §3.7 replication gate constructs the serve side above.
+            'working-set-pull': (cmd) => {
+              if (!workingSetPullServer) return { ok: false, reason: 'working-set disabled' };
+              return workingSetPullServer.handle(
+                cmd as import('../core/WorkingSetPull.js').WorkingSetPullCmd,
+              );
+            },
             place: ownAction,
             claim: ownAction,
             transfer: ownAction,
@@ -10564,6 +10620,142 @@ export async function startServer(options: StartOptions): Promise<void> {
           void convergeSelfNickname();
           const selfNickTimer = setInterval(() => { void convergeSelfNickname(); }, 60_000);
           if (typeof selfNickTimer.unref === 'function') selfNickTimer.unref();
+          // ── Working-set pull coordinator (WORKING-SET-HANDOFF §3.3/§3.4) ──
+          // Constructed here (after meshClient + peerUrl exist) ONLY when the
+          // serve side was constructed above — i.e. the same explicit
+          // replication.enabled === true gate. Wires the move trigger (the
+          // onAccepted seam reads the hoisted variable), the reflex route, the
+          // returning-peer staggered drain, and the slow sweep tick.
+          if (workingSetPullServer) {
+            try {
+              const wscMod = await import('../core/WorkingSetPullCoordinator.js');
+              const ledgerMod = await import('../core/PendingPullLedger.js');
+              const wsPullMod = await import('../core/WorkingSetPull.js');
+              const wsReaderMod2 = await import('../core/CoherenceJournalReader.js');
+              const wsCfg = config.multiMachine?.coherenceJournal?.workingSet;
+              const wsLedger = new ledgerMod.PendingPullLedger({
+                stateDir: config.stateDir,
+                ttlDays: wsCfg?.pendingPullTtlDays,
+                onCorrupt: (qPath) => {
+                  void telegram?.createAttentionItem({
+                    id: `WS-LEDGER-CORRUPT-${Date.now()}`,
+                    title: 'Working-set pending-pull ledger was unreadable',
+                    summary: `The pending-pull ledger could not be parsed and was quarantined to ${path.basename(qPath)}. Stranded-recovery records may be lost — workspaces awaiting an offline machine may need a manual POST /coherence/fetch-working-set once that machine returns.`,
+                    category: 'agent-health',
+                    priority: 'NORMAL',
+                    lane: 'agent-health',
+                    sourceContext: 'working-set-handoff',
+                  }).catch(() => {});
+                },
+                onExpired: (rec) => {
+                  void telegram?.createAttentionItem({
+                    id: `WS-PULL-EXPIRED-${rec.topic}-${rec.epoch}`,
+                    title: `Topic ${rec.topic}'s working set was never recovered`,
+                    summary: `A working-set pull for topic ${rec.topic} from ${rec.nominee} stayed unrecoverable for the full retention window (reason: ${rec.reason}, ${rec.attempts} attempts). The files remain on ${rec.nominee}; bring it back online or run POST /coherence/fetch-working-set {"topic":${rec.topic}} once reachable.`,
+                    category: 'agent-health',
+                    priority: 'NORMAL',
+                    lane: 'agent-health',
+                    sourceContext: 'working-set-handoff',
+                  }).catch(() => {});
+                },
+                logger: (m) => console.log(pc.dim(`  [working-set] ${m}`)),
+              });
+              const wsReader2 = new wsReaderMod2.CoherenceJournalReader({ stateDir: config.stateDir });
+              const wsSelf = cjOwnMachineId ?? meshSelfId;
+              const wsOwnerOf = (topic: number): { owner: string | null; epoch: number | null } => {
+                const rec = sessionOwnershipRegistry?.read(String(topic));
+                return { owner: rec?.ownerMachineId ?? null, epoch: rec?.ownershipEpoch ?? null };
+              };
+              workingSetPullCoordinator = new wscMod.WorkingSetPullCoordinator({
+                stateDir: config.stateDir,
+                ownMachineId: wsSelf,
+                reader: wsReader2,
+                ledger: wsLedger,
+                ownerOf: wsOwnerOf,
+                makePuller: (nominee, topic, epoch) => {
+                  const url = peerUrl(nominee);
+                  if (!url) return null;
+                  return new wsPullMod.WorkingSetPuller({
+                    stateDir: config.stateDir,
+                    send: async (cmd) => {
+                      const r = await meshClient.send({ machineId: nominee, url }, cmd, 0);
+                      if (!r.ok) throw new Error(`mesh ${r.status}: ${r.reason ?? 'error'}`);
+                      return r.result as import('../core/WorkingSetPull.js').ServeResult;
+                    },
+                    senderShortId: nominee,
+                    stillCurrent: () => {
+                      const o = wsOwnerOf(topic);
+                      return o.owner === wsSelf && o.epoch === epoch;
+                    },
+                    pullMaxBatchBytes: wsCfg?.pullMaxBatchBytes,
+                    chunkRestartCap: wsCfg?.chunkRestartCap,
+                    chunksPerTick: wsCfg?.chunksPerTick,
+                    busyRetryCap: wsCfg?.busyRetryCap,
+                    logger: (m) => console.log(pc.dim(`  [working-set] ${m}`)),
+                  });
+                },
+                rearmConcurrency: wsCfg?.rearmConcurrency,
+                logger: (m) => console.log(pc.dim(`  [working-set] ${m}`)),
+              });
+              // The slow tick: TTL sweep + live-source re-arm (§3.4). 10 min.
+              const wsSweepTimer = setInterval(() => {
+                void workingSetPullCoordinator?.sweep().catch(() => {});
+              }, 600_000);
+              if (typeof wsSweepTimer.unref === 'function') wsSweepTimer.unref();
+              // ── Peer-visibility guard (§3.6, the rider) ──
+              // Improper revocations surface on boot + a registry recheck each
+              // guard tick; disappearances are checked against the pool
+              // registry's online view. All notices ride the agent-health
+              // attention lane (coalescing, never topic-per-event).
+              const guardMod = await import('../core/PeerVisibilityGuard.js');
+              const visibilityGuard = new guardMod.PeerVisibilityGuard({
+                stateDir: config.stateDir,
+                selfMachineId: meshSelfId,
+                strandedTopicsFor: async (machineId) => {
+                  const recs = await wsLedger.pendingForPeer(machineId);
+                  return [...new Set(recs.map((r) => r.topic))];
+                },
+                notify: (notice) => {
+                  void telegram?.createAttentionItem({
+                    id: `WS-GUARD-${notice.kind}-${notice.machineId}-${Date.now()}`,
+                    title: notice.title,
+                    summary: notice.body,
+                    category: 'agent-health',
+                    priority: 'NORMAL',
+                    lane: 'agent-health',
+                    sourceContext: 'peer-visibility-guard',
+                  }).catch(() => {});
+                },
+                logger: (m) => console.log(pc.dim(`  [visibility-guard] ${m}`)),
+              });
+              // Boot check (§3.6.1) — the Mini's 10-invisible-hours case.
+              try {
+                visibilityGuard.checkRevocations(meshIdMgr.loadRegistry());
+              } catch { /* @silent-fallback-ok: a guard boot-check failure must never block server boot; the guard-tick recheck covers it (WORKING-SET-HANDOFF-SPEC §3.6) */
+              }
+              const wsGuardTimer = setInterval(() => {
+                try {
+                  const reg = meshIdMgr.loadRegistry();
+                  visibilityGuard.checkRevocations(reg);
+                  const expected = Object.entries(reg.machines ?? {})
+                    .filter(([, e]) => !(e as { revokedAt?: string }).revokedAt)
+                    .map(([id]) => id);
+                  const online = new Set(
+                    (machinePoolRegistry?.getCapacities() ?? [])
+                      .filter((c) => c.online)
+                      .map((c) => c.machineId),
+                  );
+                  void visibilityGuard.checkDisappearances(expected, online).catch(() => {});
+                } catch { /* @silent-fallback-ok: the guard is observability — a failed tick is skipped, never compounds (WORKING-SET-HANDOFF-SPEC §3.6) */
+                }
+              }, 300_000);
+              if (typeof wsGuardTimer.unref === 'function') wsGuardTimer.unref();
+              console.log(pc.dim('  [working-set] pull coordinator wired (trigger + reflex + drain + sweep + visibility guard)'));
+            } catch (e) { /* @silent-fallback-ok: working-set pull wiring failure degrades to serve-only (the verb still answers); never blocks server boot (WORKING-SET-HANDOFF-SPEC §4) */
+              workingSetPullCoordinator = undefined;
+              console.log(pc.dim(`  [working-set] coordinator not constructed: ${e instanceof Error ? e.message : String(e)}`));
+            }
+          }
           // ── Secret-sync OUTBOUND provisioner (push-on-provision, spec Phase 4) ──
           // Constructed here (after meshClient + peerUrl exist). Encrypts the secret set
           // PER online peer to that peer's X25519 key and pushes a signed `secret-share`.
@@ -10813,6 +11005,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                 .map((m) => ({ machineId: m.machineId, url: peerUrl(m.machineId) })),
             recordHeartbeat: (obs) => { machinePoolRegistry?.recordHeartbeat(obs); },
             log: (line) => console.log(pc.dim(`  [peer-presence] ${line}`)),
+            onPeerRecorded: (machineId) => workingSetPullCoordinator?.onPeerRecorded(machineId), // working-set re-arm (§3.4); no-op when dark
             fetchPeerCapacity: async (machineId, url) => {
               const res = await meshClient.send({ machineId, url }, { type: 'session-status' }, 0);
               if (res.ok && res.result && typeof res.result === 'object') {
@@ -11059,7 +11252,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       console.log(pc.dim(`  [session-pool] rollout gate not wired: ${err instanceof Error ? err.message : String(err)}`));
     }
 
-    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, semanticMemory, activitySentinel, rateLimitSentinel, releaseReadinessSentinel: releaseReadinessSentinel ?? undefined, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, localSigningKeyPem, leaseTransport, onLeasePullRequest: () => leaseCoordinatorRef?.currentLease() ?? null, liveTailReceiver, handoffWireTransport, onHandoffBegin, onHandoffInitiate: handoffInitiate, handoffInProgress: handoffSentinelInProgress, messageLedger, currentInboundByTopic, replyMarkerTransport, onReplyMarker: messageLedger ? (marker: unknown) => { const m = marker as { dedupeKey: string; platform: string; replyIdempotencyKey: string; epoch: number; topic?: string | null }; messageLedger!.applyRemoteReplyMarker(m.dedupeKey, { platform: m.platform, replyIdempotencyKey: m.replyIdempotencyKey, epoch: m.epoch, topic: m.topic ?? null }); } : undefined, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, warrantsReplyGate, collaborationSurfacer, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, responseReviewGate, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, machinePoolRegistry, meshRpcDispatcher, sessionOwnershipRegistry, topicPinStore: _topicPinStore ?? undefined, secretSync: _secretSyncHandle ?? undefined, meshSelfId: _meshSelfId ?? undefined, resolveRouterUrl: _resolveRouterUrl ?? undefined, resolvePeerUrls: _resolvePeerUrls ?? undefined, sessionPoolE2EResultStore, proxyCoordinator, topicIntentStore, topicIntentArcCheck, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, briefDeps, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, agentWorktreeReaper, mcpProcessReaper, geminiLoopRunner, sleepController, agentActivityState, reapLog, sleepWakeDetector, unjustifiedStopGate, stopGateDb, stopNotifier });
+    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, semanticMemory, activitySentinel, rateLimitSentinel, releaseReadinessSentinel: releaseReadinessSentinel ?? undefined, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, localSigningKeyPem, leaseTransport, onLeasePullRequest: () => leaseCoordinatorRef?.currentLease() ?? null, liveTailReceiver, handoffWireTransport, onHandoffBegin, onHandoffInitiate: handoffInitiate, handoffInProgress: handoffSentinelInProgress, messageLedger, currentInboundByTopic, replyMarkerTransport, onReplyMarker: messageLedger ? (marker: unknown) => { const m = marker as { dedupeKey: string; platform: string; replyIdempotencyKey: string; epoch: number; topic?: string | null }; messageLedger!.applyRemoteReplyMarker(m.dedupeKey, { platform: m.platform, replyIdempotencyKey: m.replyIdempotencyKey, epoch: m.epoch, topic: m.topic ?? null }); } : undefined, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, warrantsReplyGate, collaborationSurfacer, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, responseReviewGate, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, machinePoolRegistry, meshRpcDispatcher, workingSetPullCoordinator, sessionOwnershipRegistry, topicPinStore: _topicPinStore ?? undefined, secretSync: _secretSyncHandle ?? undefined, meshSelfId: _meshSelfId ?? undefined, resolveRouterUrl: _resolveRouterUrl ?? undefined, resolvePeerUrls: _resolvePeerUrls ?? undefined, sessionPoolE2EResultStore, proxyCoordinator, topicIntentStore, topicIntentArcCheck, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, briefDeps, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, agentWorktreeReaper, mcpProcessReaper, geminiLoopRunner, sleepController, agentActivityState, reapLog, sleepWakeDetector, unjustifiedStopGate, stopGateDb, stopNotifier });
     // Boot-recovery (tunnel-failure-resilience spec Part 6): if the agent
     // died mid-relay-episode, the persisted tunnel.json carries
     // rotationPending=true. Rotate the dashboard PIN + authToken BEFORE
