@@ -947,6 +947,18 @@
         "state/project-registry.json"
       ],
       "grandfathered": true
+    },
+    {
+      "category": "session-monitor-ctx-notified",
+      "description": "Persisted context-exhaustion notify ledger - topicId -> {sessionName, at} already announced as dead, so the once-per-death-episode dedup survives server restarts (update-train churn previously re-announced the same death once per boot; 2026-06-06 residual on topics 16566/19437). Machine-local, single-writer (SessionMonitor), pruned at 7 days on load.",
+      "scope": "machine-local",
+      "freshness": "live",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "state/session-monitor-ctx-notified.json"
+      ],
+      "grandfathered": false
     }
   ]
 }

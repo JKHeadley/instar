@@ -5910,6 +5910,10 @@ export async function startServer(options: StartOptions): Promise<void> {
                 }
               : undefined,
           sessionRecovery,
+          // Persisted notify ledger: without it, every server restart
+          // (update-train churn) forgot which dead sessions were already
+          // announced and re-posted the same death once per boot.
+          statePath: path.join(config.stateDir, 'state', 'session-monitor-ctx-notified.json'),
         },
         config.monitoring.sessionMonitor,
       );
