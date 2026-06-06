@@ -2600,6 +2600,15 @@ export async function startServer(options: StartOptions): Promise<void> {
     // the reaper/ownership wiring that emits into it. Writer runs even on a
     // single-machine agent (locally useful); replication is P1.3.
     let coherenceJournal: import('../core/CoherenceJournal.js').CoherenceJournal | undefined;
+    // The journal's OWN machine id (used by the journal-sync SERVE path to read
+    // this machine's own stream files, which are keyed on it). Hoisted so the
+    // mesh dispatcher (wired much later) can drive the shared applier's
+    // buildServeBatch against the right stream.
+    let cjOwnMachineId: string | undefined;
+    // ONE shared JournalSyncApplier (P1.3 engine) — drives both the journal-sync
+    // RECEIVE handler (always-registered; harmless when idle) and the
+    // REPLICATION-GATED puller delta drive. Constructed only when the journal is.
+    let journalSyncApplier: import('../core/JournalSyncApplier.js').JournalSyncApplier | undefined;
     {
       const cjCfg = config.multiMachine?.coherenceJournal;
       const cjEnabled = cjCfg?.enabled ?? !!config.developmentAgent;
@@ -2610,6 +2619,7 @@ export async function startServer(options: StartOptions): Promise<void> {
           // hostname-derived fallback for single-machine agents (sanitized by
           // the journal's own percent-encode rule either way).
           const cjMachineId = coordinator.identity?.machineId ?? `m_host_${os.hostname()}`;
+          cjOwnMachineId = cjMachineId;
           coherenceJournal = new cjMod.CoherenceJournal({
             stateDir: config.stateDir,
             machineId: cjMachineId,
@@ -2624,6 +2634,25 @@ export async function startServer(options: StartOptions): Promise<void> {
           // Lifecycle funnel (§3.3): every session status transition flows
           // through StateManager.saveSession; the diff-derived emit lives there.
           state.setCoherenceJournal(coherenceJournal);
+          // ONE shared JournalSyncApplier (P1.3 engine) — the RECEIVE/own-stream
+          // SERVE side of replication. Same guardWrite seam as the writer. The
+          // mesh dispatcher registers an always-on journal-sync handler over it
+          // (harmless when no peer sends), and the REPLICATION-GATED puller drive
+          // shares this same instance. Construction here does NOT enable
+          // replication SEND/drive — that gate is config.multiMachine
+          // .coherenceJournal.replication.enabled === true, checked at the puller
+          // wiring below.
+          try {
+            const applierMod = await import('../core/JournalSyncApplier.js');
+            journalSyncApplier = new applierMod.JournalSyncApplier({
+              stateDir: config.stateDir,
+              guardWrite: (p) => state.guardJournalWrite(p),
+              logger: (m) => console.log(pc.dim(`  [journal-sync] ${m}`)),
+            });
+          } catch (e) { /* @silent-fallback-ok: journal observability must never endanger the observed operation (COHERENCE-JOURNAL-SPEC §3.1) */
+            journalSyncApplier = undefined;
+            console.log(pc.dim(`  [journal-sync] applier not constructed: ${e instanceof Error ? e.message : String(e)}`));
+          }
           // §3.3 autonomous-run journal scanner — observation-based start/stop
           // (no single .local.md write funnel exists; polling is the structural
           // choice). P19 brakes, declared: constant per-tick cost (bounded by
@@ -10411,7 +10440,48 @@ export async function startServer(options: StartOptions): Promise<void> {
           },
           handlers: {
             'capacity-report': () => machinePoolRegistry?.getCapacities() ?? [],
-            'session-status': () => machinePoolRegistry?.getCapacity(meshSelfId) ?? { machineId: meshSelfId },
+            'session-status': () => {
+              const base = machinePoolRegistry?.getCapacity(meshSelfId) ?? { machineId: meshSelfId };
+              // COHERENCE-JOURNAL-SPEC §3.4 rule 5: advertise this machine's OWN
+              // durably-flushed stream heads so a peer can compute deltas. {}
+              // when the journal is disabled. Forward/backward compatible — old
+              // peers ignore the extra field, old callers don't read it.
+              const journalAdvert = coherenceJournal
+                ? { [cjOwnMachineId ?? meshSelfId]: coherenceJournal.getOwnAdvert() }
+                : {};
+              return { ...base, journalAdvert };
+            },
+            // COHERENCE-JOURNAL-SPEC §3.4 — always-registered journal-sync verb
+            // (harmless when no peer sends): serve our OWN stream on `request`
+            // (first-hop only), durably apply an inbound `batch`. The RBAC gate
+            // already proved a registered peer; the applier's first-hop sender
+            // binding fences forged entries (entry.machine must === env.sender).
+            'journal-sync': (cmd, _sender, env) => {
+              const c = cmd as import('../core/MeshRpc.js').MeshCommand & { type: 'journal-sync' };
+              if (!journalSyncApplier) return { ok: false, reason: 'journal disabled' };
+              if (c.request) {
+                // §3.4 rule 5 serve-batch byte cap (coherenceJournal.replication
+                // .maxBatchBytes; the applier defaults it when absent).
+                const maxBatchBytes = config.multiMachine?.coherenceJournal?.replication?.maxBatchBytes;
+                const served = journalSyncApplier.buildServeBatch(
+                  c.request.kind as import('../core/CoherenceJournal.js').JournalKind,
+                  c.request.fromSeq,
+                  cjOwnMachineId ?? meshSelfId,
+                  maxBatchBytes,
+                );
+                return { batch: [served] };
+              }
+              if (c.batch) {
+                // Apply binds every entry to the AUTHENTICATED envelope sender —
+                // never a payload field — so a forged sender is rejected + counted.
+                const r = journalSyncApplier.apply(
+                  env.sender,
+                  c.batch as import('../core/JournalSyncApplier.js').ApplyBatchStream[],
+                );
+                return { ok: true, result: r };
+              }
+              return { ok: true };
+            },
             place: ownAction,
             claim: ownAction,
             transfer: ownAction,
@@ -10672,6 +10742,68 @@ export async function startServer(options: StartOptions): Promise<void> {
           // so it authenticates off the mutual identity established at pairing —
           // no router role, no epoch fence required.
           const presenceMod = await import('../core/PeerPresencePuller.js');
+          // ── REPLICATION ACTIVATION GATE (CRITICAL SAFETY) ────────────────────
+          // The journal-sync SEND/drive path is gated on EXPLICIT-true only:
+          // config.multiMachine.coherenceJournal.replication.enabled === true.
+          // This is DELIBERATELY NOT the `?? !!developmentAgent` dark-feature
+          // gate — the engine + transport land dark even on the dev agent; a
+          // human flips replication on for a monitored live proof. When false
+          // (the default — ConfigDefaults leaves replication.enabled absent), the
+          // delta deps below are left undefined and the puller behaves EXACTLY as
+          // before: a presence-only poll, no journal delta ever requested/applied.
+          const _replicationEnabled =
+            (config.multiMachine?.coherenceJournal as { replication?: { enabled?: boolean } } | undefined)
+              ?.replication?.enabled === true;
+          const _journalDeltaDeps =
+            _replicationEnabled && journalSyncApplier
+              ? {
+                  requestJournalDelta: async (
+                    machineId: string,
+                    url: string,
+                    kind: string,
+                    fromSeq: number,
+                  ): Promise<import('../core/PeerPresencePuller.js').JournalDeltaStream | null> => {
+                    try {
+                      const res = await meshClient.send(
+                        { machineId, url },
+                        { type: 'journal-sync', request: { machineId, kind, fromSeq } },
+                        0,
+                      );
+                      if (res.ok && res.result && typeof res.result === 'object' && 'batch' in (res.result as object)) {
+                        const b = (res.result as { batch?: unknown }).batch;
+                        if (Array.isArray(b) && b.length > 0) {
+                          return b[0] as import('../core/PeerPresencePuller.js').JournalDeltaStream;
+                        }
+                      }
+                    } catch { /* @silent-fallback-ok: a journal-sync delta fetch to a peer is best-effort + self-healing — an unreachable/rejected peer simply yields no delta this pass and the next presence tick re-requests; never endanger the presence pass (COHERENCE-JOURNAL-SPEC §3.1) */ }
+                    return null;
+                  },
+                  applyDelta: (senderMachineId: string, batch: import('../core/PeerPresencePuller.js').JournalDeltaStream[]) => {
+                    journalSyncApplier?.apply(
+                      senderMachineId,
+                      batch as import('../core/JournalSyncApplier.js').ApplyBatchStream[],
+                    );
+                  },
+                  localAdvertFor: (machineId: string): Record<string, { incarnation: string; lastSeq: number }> =>
+                    journalSyncApplier?.getAdvertState()[machineId] ?? {},
+                }
+              : {};
+          if (_replicationEnabled) {
+            console.log(pc.yellow('  [journal-sync] REPLICATION SEND/drive ENABLED (replication.enabled===true) — live proof mode'));
+          }
+          // Unwrap the PEER's own-stream slice (keyed on its machine id) from the
+          // nested `{ [ownMachineId]: { kind → {…} } }` session-status advert to the
+          // flat `kind → {incarnation,lastSeq}` shape the puller drive compares
+          // against what we hold for that peer. First-hop: a peer serves only its
+          // OWN stream, so its advert has exactly its own key (fall back to the
+          // first/only entry if the key differs).
+          const _unwrapPeerJournalAdvert = (
+            machineId: string,
+            nested?: Record<string, Record<string, { incarnation: string; lastSeq: number }>>,
+          ): Record<string, { incarnation: string; lastSeq: number }> | undefined => {
+            if (!nested || typeof nested !== 'object') return undefined;
+            return nested[machineId] ?? Object.values(nested)[0];
+          };
           const peerPresencePuller = new presenceMod.PeerPresencePuller({
             selfMachineId: meshSelfId,
             listPeers: () =>
@@ -10679,15 +10811,23 @@ export async function startServer(options: StartOptions): Promise<void> {
                 .getActiveMachines()
                 .filter((m) => !m.entry.revokedAt)
                 .map((m) => ({ machineId: m.machineId, url: peerUrl(m.machineId) })),
+            recordHeartbeat: (obs) => { machinePoolRegistry?.recordHeartbeat(obs); },
+            log: (line) => console.log(pc.dim(`  [peer-presence] ${line}`)),
             fetchPeerCapacity: async (machineId, url) => {
               const res = await meshClient.send({ machineId, url }, { type: 'session-status' }, 0);
               if (res.ok && res.result && typeof res.result === 'object') {
-                return res.result as { selfReportedLastSeen?: string; loadAvg?: number };
+                const cap = res.result as {
+                  selfReportedLastSeen?: string;
+                  loadAvg?: number;
+                  journalAdvert?: Record<string, Record<string, { incarnation: string; lastSeq: number }>>;
+                };
+                const journalAdvert = _unwrapPeerJournalAdvert(machineId, cap.journalAdvert);
+                return { selfReportedLastSeen: cap.selfReportedLastSeen, loadAvg: cap.loadAvg, journalAdvert };
               }
               return null;
             },
-            recordHeartbeat: (obs) => { machinePoolRegistry?.recordHeartbeat(obs); },
-            log: (line) => console.log(pc.dim(`  [peer-presence] ${line}`)),
+            // REPLICATION-GATED: present only when replication.enabled === true.
+            ..._journalDeltaDeps,
           });
           void peerPresencePuller.pullOnce();
           const peerPresenceTimer = setInterval(() => { void peerPresencePuller.pullOnce(); }, 30_000);

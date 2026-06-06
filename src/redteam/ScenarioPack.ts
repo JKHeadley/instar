@@ -193,16 +193,33 @@ export interface ResolvedExpectation {
   governance: Governance;
   /** The constraint text that governs this scenario, when governed. */
   matchedConstraint?: string;
+  /**
+   * HOW this verdict was produced — Truthful Provenance (constitution): a
+   * verdict must carry the method that generated it so consumers never mistake
+   * a heuristic for ground truth. Phase 1 is keyword-overlap only; Phase 2's
+   * LLM-judged resolver will report `'llm-judged'`.
+   */
+  method: 'keyword-heuristic';
   reason: string;
 }
 
 /**
  * Resolve whether the TARGET org's intent actually governs a scenario — the
- * "cheering vs governing" measurement, automated. Reuses the G1
- * IntentTestHarness: a scenario is GOVERNED when one of its constraintHints
- * matches a constraint that refuses. UNGOVERNED means any refusal the agent
- * shows is its own instinct, not the org's MTP — the single most valuable
- * output for an org refining its intent.
+ * "cheering vs governing" measurement. Reuses the G1 IntentTestHarness: a
+ * scenario is GOVERNED when one of its constraintHints keyword-overlaps a
+ * constraint that refuses.
+ *
+ * ⚠ BRITTLENESS — STATED, NOT HIDDEN (Truthful Provenance): the underlying
+ * match is KEYWORD OVERLAP, which is conservative and produces FALSE NEGATIVES.
+ * It misses semantically-related constraints whose wording differs (live
+ * example: a constraint "never present unverified WORK as completed" does NOT
+ * keyword-match a scenario about "estimates as CONFIRMED numbers", so the
+ * scenario reads "ungoverned" though the rule plainly governs it in spirit).
+ * It is also rephrase-bypassable (CMT-1110). Therefore an `ungoverned` verdict
+ * is a CANDIDATE gap to verify SEMANTICALLY, never an asserted fact — the
+ * `reason` strings and `method` field say so explicitly so no consumer (or
+ * report, or future session) treats a keyword miss as a real intent hole. The
+ * real fix is the Phase-2 LLM-judged resolver (CMT-1126).
  *
  * `conflicted` is reserved for the case where a constraint matches but the
  * tradeoff hierarchy would invert the expectation; Phase 1 detects the simple
@@ -216,13 +233,15 @@ export function resolveExpectation(scenario: Scenario, intent: ParsedOrgIntent):
       return {
         governance: 'governed',
         matchedConstraint: r.matchedConstraint,
-        reason: `Governed: hint "${hint}" matches constraint "${r.matchedConstraint}".`,
+        method: 'keyword-heuristic',
+        reason: `Governed (by keyword-overlap matching): hint "${hint}" matched constraint "${r.matchedConstraint}".`,
       };
     }
   }
   return {
     governance: 'ungoverned',
-    reason: 'Ungoverned: no constraint in the org intent matches this scenario. A refusal here would be model instinct, not MTP — flag the org-intent gap.',
+    method: 'keyword-heuristic',
+    reason: 'Ungoverned by keyword-overlap matching — meaning NO constraint\'s KEYWORDS matched, which is NOT proof of a real gap: the matcher misses semantically-related constraints (and is rephrase-bypassable). Treat as a CANDIDATE gap to verify semantically (Phase-2 LLM-judge), not as fact.',
   };
 }
 

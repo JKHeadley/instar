@@ -35,6 +35,22 @@ export interface PeerPresenceMachine {
 export interface PeerCapacity {
   selfReportedLastSeen?: string;
   loadAvg?: number;
+  /**
+   * The peer's OWN-stream coherence-journal advert (COHERENCE-JOURNAL-SPEC §3.4
+   * rule 5), keyed `kind → { incarnation, lastSeq }`. Present only when the peer
+   * runs the journal-sync transport; old peers omit it and the delta drive is a
+   * no-op. Replication-gated: the puller only acts on it when the delta deps are
+   * wired (server passes them ONLY when replication is explicitly enabled).
+   */
+  journalAdvert?: Record<string, { incarnation: string; lastSeq: number }>;
+}
+
+/** One stream slice of a journal-sync delta (mirrors MeshRpc's `journal-sync.batch`). */
+export interface JournalDeltaStream {
+  kind: string;
+  incarnation: string;
+  entries: unknown[];
+  oldestRetainedSeq?: number;
 }
 
 export interface PeerPresencePullerDeps {
@@ -54,6 +70,33 @@ export interface PeerPresencePullerDeps {
   now?: () => Date;
   /** Optional structured log line per pass (e.g. for the boot log). */
   log?: (line: string) => void;
+
+  // ── Coherence-journal delta drive (REPLICATION-GATED) ──────────────────────
+  // These three deps are passed by the server ONLY when journal replication is
+  // EXPLICITLY enabled (config.multiMachine.coherenceJournal.replication.enabled
+  // === true). When any is undefined the puller behaves exactly as before — no
+  // delta is ever requested or applied. This is the SEND/drive gate: the engine
+  // and transport land dark, and a human flips replication on for a monitored
+  // live proof.
+  /**
+   * Request a journal delta for `kind` from a peer (a signed `journal-sync`
+   * request → the peer's served own-stream batch), or null if unavailable.
+   * MUST NOT throw into the puller (the puller treats a throw as null).
+   */
+  requestJournalDelta?: (
+    machineId: string,
+    url: string,
+    kind: string,
+    fromSeq: number,
+  ) => Promise<JournalDeltaStream | null>;
+  /** Apply a served delta into the local replica (delegates to JournalSyncApplier.apply). */
+  applyDelta?: (senderMachineId: string, batch: JournalDeltaStream[]) => void;
+  /**
+   * What this machine ALREADY holds for `machineId` per kind (from the applier's
+   * advert state). Used to decide whether the peer's advert is ahead of us.
+   * Returns `{ kind → { incarnation, lastSeq } }` (possibly empty).
+   */
+  localAdvertFor?: (machineId: string) => Record<string, { incarnation: string; lastSeq: number }>;
 }
 
 export class PeerPresencePuller {
@@ -77,11 +120,69 @@ export class PeerPresencePuller {
         if (!cap) return null;
         const seen = cap.selfReportedLastSeen ?? (this.d.now?.() ?? new Date()).toISOString();
         this.d.recordHeartbeat({ machineId: m.machineId, selfReportedLastSeen: seen, loadAvg: cap.loadAvg });
+        // REPLICATION-GATED journal-delta drive — only when the server wired the
+        // delta deps (i.e. replication.enabled === true). Otherwise a complete
+        // no-op (engine/transport stay dark). Never throws into the puller.
+        await this.driveJournalDelta(m.machineId, m.url as string, cap.journalAdvert);
         return m.machineId;
       }),
     );
     const recorded = results.filter((r): r is string => r !== null);
     if (recorded.length && this.d.log) this.d.log(`recorded ${recorded.length} peer(s) online over HTTP: ${recorded.join(', ')}`);
     return { recorded };
+  }
+
+  /**
+   * REPLICATION-GATED: for a freshly-recorded peer, if the journal-delta deps are
+   * wired AND the peer's advert shows a kind ahead of what we hold (same
+   * incarnation, higher lastSeq — OR a kind we hold nothing for), request that
+   * kind's delta and apply it. The send/drive path is therefore active ONLY when
+   * the server passed these deps, which it does ONLY when replication is
+   * explicitly enabled. Never throws (a failing fetch/apply is swallowed — the
+   * presence pass must always complete).
+   */
+  private async driveJournalDelta(
+    machineId: string,
+    url: string,
+    peerAdvert?: Record<string, { incarnation: string; lastSeq: number }>,
+  ): Promise<void> {
+    // Gate: all three deps must be present (server wires them only when
+    // replication.enabled === true). Any absent → no-op (dark).
+    const { requestJournalDelta, applyDelta, localAdvertFor } = this.d;
+    if (!requestJournalDelta || !applyDelta || !localAdvertFor) return;
+    if (!peerAdvert || typeof peerAdvert !== 'object') return;
+
+    let local: Record<string, { incarnation: string; lastSeq: number }> = {};
+    try {
+      local = localAdvertFor(machineId) || {};
+    } catch { /* @silent-fallback-ok: the puller's contract is NEVER to throw (presence must always complete); an empty local view safely treats any peer seq as ahead and the applier de-dupes on apply */
+      local = {};
+    }
+
+    for (const [kind, peer] of Object.entries(peerAdvert)) {
+      try {
+        if (!peer || typeof peer.lastSeq !== 'number' || !Number.isFinite(peer.lastSeq)) continue;
+        const held = local[kind];
+        // We hold nothing for this kind → request from 0. We hold the SAME
+        // incarnation but the peer is ahead → request from our lastSeq. A
+        // DIFFERENT incarnation is still requested from our lastSeq; the applier
+        // performs the incarnation-fencing/quarantine on apply (its job, not
+        // ours) — so we still pull and let it reconcile.
+        const fromSeq = held && typeof held.lastSeq === 'number' ? held.lastSeq : 0;
+        const peerAhead = !held || peer.incarnation !== held.incarnation || peer.lastSeq > fromSeq;
+        if (!peerAhead) continue;
+
+        let delta: JournalDeltaStream | null = null;
+        try {
+          delta = await requestJournalDelta(machineId, url, kind, fromSeq);
+        } catch { /* @silent-fallback-ok: an unreachable/rejected delta fetch is a transient, self-healing condition — the next presence pass re-requests; surfacing it here would break the puller's never-throw contract */
+          delta = null;
+        }
+        if (!delta) continue;
+        try {
+          applyDelta(machineId, [delta]);
+        } catch { /* @silent-fallback-ok: apply() is itself fully tolerant + observable via its own counters; this guard only preserves the puller's never-throw contract */ }
+      } catch { /* @silent-fallback-ok: per-kind drive is best-effort; one bad kind must never poison the rest of the presence pass (the puller's never-throw contract) */ }
+    }
   }
 }
