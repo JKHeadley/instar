@@ -69,6 +69,10 @@ This escalation lets a codex agent heal itself with no external nudge, across a 
 
 Ships **dark** behind `monitoring.codexWedgeRecovery` (default off, dry-run first) on the Graduated-Feature-Rollout track. With no config it is byte-for-byte the legacy keypress-only behavior.
 
+### PendingInjectStore (queued messages survive restarts)
+
+When a session is spawned for an inbound message, the message is typed in only after the session finishes booting — tens of seconds on codex. That in-flight inject used to be process-local: a server restart in the window silently dropped the user's message while the terminal session survived at an idle prompt. The **PendingInjectStore** makes the in-flight inject durable — one JSON record per pending inject, written at spawn, cleared only after the message is actually injected. On boot, `SessionManager.recoverPendingInjects` sweeps survivors: still-alive sessions get their message re-delivered through the normal readiness path; dead or stale records are reported loudly through DegradationReporter and retired. Delivery is deliberately at-least-once — a rare duplicate beats a silent drop.
+
 </details>
 
 ---
