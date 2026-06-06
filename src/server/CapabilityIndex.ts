@@ -91,6 +91,15 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     }),
   },
   {
+    key: 'agentReadiness',
+    prefixes: ['/agent-readiness'],
+    description: 'Agent-Readiness Scoring (EXO 3.0 task-decomposition matrix) — score a task or workflow on its coordination-vs-judgment ratio to decide whether it is a good agent candidate. Coordination work (routing, approvals, scheduling, status-tracking) is agent-ready; judgment work (ambiguity, exceptions, relationships) stays human. Deterministic + advisory — answers a question, never gates.',
+    build: () => ({
+      configured: true, // pure scorer behind a dynamic import — no ctx dependency
+      endpoints: ['POST /agent-readiness/score'],
+    }),
+  },
+  {
     key: 'agentPassport',
     prefixes: ['/passport'],
     description: 'Agent Digital Passport (EXO 3.0) — the agent\'s identity (name + routing fingerprint), trust level, and ORG-INTENT constraints packaged into one portable passport, plus a deterministic peer compliance check ("is this action permitted for this passport?"). Advisory — the caller decides; never gates.',

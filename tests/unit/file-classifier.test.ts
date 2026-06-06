@@ -255,6 +255,22 @@ describe('FileClassifier', () => {
       expect(result.fileClass).toBe('secret');
       expect(result.strategy).toBe('never-sync');
     });
+
+    it.each([
+      '.instar/config.json',
+      '.instar/config.json.backup',
+      '.instar/identity.json',
+      '.instar/agent-tokens/instar-codey.token',
+      '.instar/cloudflared-quick.yml',
+      '.claude.json',
+      '.mcp.json',
+    ])('classifies agent-local secret path %s as never-sync', (relPath) => {
+      const classifier = makeClassifier(tmpDir);
+      const result = classifier.classify(path.join(tmpDir, relPath));
+
+      expect(result.fileClass).toBe('secret');
+      expect(result.strategy).toBe('never-sync');
+    });
   });
 
   // ── Structured Data Classification ───────────────────────────────
@@ -283,6 +299,21 @@ describe('FileClassifier', () => {
       // JSON outside .instar/ isn't guaranteed to have a programmatic strategy
       // It falls through to source code
       expect(result.strategy).toBe('llm');
+    });
+
+    it.each([
+      '.instar/messages/store/topic.jsonl',
+      '.instar/reports/check.md',
+      '.instar/sessions/session-1/summary.json',
+      '.instar/shadow-install/node_modules/instar/package.json',
+      '.instar/telegram-inbound/msg.txt',
+      '.instar/views/view.json',
+    ])('classifies agent-local runtime path %s as generated/excluded', (relPath) => {
+      const classifier = makeClassifier(tmpDir);
+      const result = classifier.classify(path.join(tmpDir, relPath));
+
+      expect(result.fileClass).toBe('generated');
+      expect(result.strategy).toBe('exclude');
     });
   });
 

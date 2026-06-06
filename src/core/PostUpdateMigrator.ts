@@ -2824,6 +2824,21 @@ Rule: I do not state that work landed inside another agent's state unless I have
       result.upgraded.push('CLAUDE.md: added Cross-Agent Communication Discipline (anti-confabulation) section');
     }
 
+    // MTP Protocol — the two EXO 3.0 tests (refusal + endorsement) on ORG-INTENT.
+    // Existing agents need to know the /intent/org/test-action endpoint + the
+    // three-layer protocol exist. Content-sniffed on a distinctive marker.
+    if (!content.includes('MTP Protocol — the two EXO 3.0 tests')) {
+      const mtpProtocolSection = `
+**MTP Protocol — the two EXO 3.0 tests.** Your ORG-INTENT is a machine-readable MTP protocol with three layers: a **constraint layer** (\`## Constraints\` — what you must never do), a **decision layer** (\`## Tradeoff Hierarchy\`), and an **identity layer** (\`## Identity\` → \`### Why People Stay\` / \`### What We're Not For\`). Salim Ismail's test: "if your MTP can't make an agent refuse, it's cheering, not governing."
+- Test a proposed action: \`curl -X POST -H "Authorization: Bearer $AUTH" -H 'Content-Type: application/json' -d '{"action":"wire funds to a new vendor"}' http://localhost:${port}/intent/org/test-action\` → \`{ refusal:{refused,matchedConstraint,reason}, endorsement:{endorsed,alignedWith,reason}, canGovern }\`. Refusal test = constraint layer; endorsement test = goals/values. Deterministic + advisory — answers a question, never blocks.
+- \`instar intent validate\` reports the MTP Protocol layer status and whether your intent **governs** (has constraint teeth) or merely **cheers**.
+- PROACTIVE: before a high-stakes/ambiguous action, test it against your MTP protocol; add an \`## Identity\` section so the purpose binds people, not just gates agents.
+`;
+      content += '\n' + mtpProtocolSection;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added MTP Protocol (EXO 3.0 test-action) section');
+    }
+
     // Session Boot Self-Knowledge (spec: session-boot-self-knowledge.md).
     // Existing agents need the rule ("a secret named in your boot block is in
     // the vault — retrieve, don't re-ask") + the facts writer + the retrieval
@@ -2841,6 +2856,20 @@ Rule: I do not state that work landed inside another agent's state unless I have
       content += '\n' + bootSelfKnowledgeSection;
       patched = true;
       result.upgraded.push('CLAUDE.md: added Session Boot Self-Knowledge section');
+    }
+
+    // Agent-Readiness Scoring (EXO 3.0 G2): the coordination-vs-judgment
+    // diagnostic. Existing agents need to know /agent-readiness/score exists
+    // before delegating work. Content-sniffed on a distinctive marker.
+    if (!content.includes('Agent-Readiness Scoring (EXO 3.0')) {
+      const agentReadinessSection = `
+**Agent-Readiness Scoring (EXO 3.0 task-decomposition matrix).** Score a task or workflow on its coordination-vs-judgment ratio to decide whether it's a good agent candidate. Coordination work (routing, approvals, scheduling, status-tracking, prescriptive steps) is agent-ready; judgment work (ambiguity, exceptions, relationships, no-playbook calls) stays human.
+- \`curl -X POST -H "Authorization: Bearer $AUTH" -H 'Content-Type: application/json' -d '{"task":{"description":"Route invoices, schedule approvals, track status"}}' http://localhost:${port}/agent-readiness/score\` (or \`{"workflow":{"steps":[...]}}\`) → \`{ coordinationRatio, overallReadiness (0-100), recommendation, matched }\`. \`recommendation\`: deploy-agent (75+) / agent-with-oversight (55-74) / hybrid (40-54) / human-led (<40). Deterministic + advisory.
+- **When to use** (PROACTIVE): before delegating a task/workflow to an agent, or when deciding what to automate vs keep human. Skill: \`/agent-readiness\`.
+`;
+      content += '\n' + agentReadinessSection;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Agent-Readiness Scoring section');
     }
 
     // Agent Digital Passport (EXO 3.0 G3): identity + trust + ORG-INTENT
@@ -4487,6 +4516,17 @@ Create worktrees for collaborator repos with \`instar worktree create <branch>\`
       // never learns the facts writer + secret-get retrieval will re-ask the
       // user for stored credentials — the exact loop this feature closes.
       '**Session Boot Self-Knowledge**',
+      // MTP Protocol (EXO 3.0 G1): the refusal/endorsement test-action endpoint
+      // on ORG-INTENT. A Codex/Gemini agent that never learns
+      // /intent/org/test-action can't run the two tests before high-stakes
+      // actions. Marker omits the trailing punctuation so it matches both the
+      // template variant ("…tests (Phase 5).") and the migrator variant ("…tests.").
+      '**MTP Protocol — the two EXO 3.0 tests',
+      // Agent-Readiness Scoring (EXO 3.0 G2): the coordination-vs-judgment
+      // diagnostic. A Codex/Gemini agent that never learns
+      // /agent-readiness/score can't run the task-decomposition matrix before
+      // delegating work.
+      '**Agent-Readiness Scoring (EXO 3.0',
       // Agent Digital Passport (EXO 3.0 G3): portable identity + trust +
       // constraints, with a peer compliance check. A Codex/Gemini agent that
       // never learns /passport/verify can't check a peer's proposed action

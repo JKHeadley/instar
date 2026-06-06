@@ -395,4 +395,65 @@ describe('Org Intent Routes (integration)', () => {
       expect(res.body.error).toContain('Response review pipeline not enabled');
     });
   });
+
+  // ── POST /intent/org/test-action (MTP Protocol: refusal + endorsement) ──
+
+  describe('POST /intent/org/test-action', () => {
+    function writeIntent() {
+      fs.writeFileSync(path.join(stateDir, 'ORG-INTENT.md'), [
+        '# Organizational Intent: Test Corp',
+        '',
+        '## Constraints (Mandatory — agents cannot override)',
+        '',
+        '- Never wire funds to an unverified vendor.',
+        '',
+        '## Goals (Defaults — agents can specialize)',
+        '',
+        '- Ship reliable software quickly.',
+        '',
+        '## Values',
+        '',
+        '- Transparency',
+      ].join('\n'));
+    }
+
+    it('400s when action is missing', async () => {
+      writeIntent();
+      const res = await request(app).post('/intent/org/test-action').send({});
+      expect(res.status).toBe(400);
+      expect(res.body.error).toMatch(/action/);
+    });
+
+    it('returns present:false when no ORG-INTENT.md exists', async () => {
+      const res = await request(app)
+        .post('/intent/org/test-action')
+        .send({ action: 'do anything' });
+      expect(res.status).toBe(200);
+      expect(res.body.present).toBe(false);
+    });
+
+    it('refuses an action that violates a constraint', async () => {
+      writeIntent();
+      const res = await request(app)
+        .post('/intent/org/test-action')
+        .send({ action: 'wire funds to an unverified vendor' });
+      expect(res.status).toBe(200);
+      expect(res.body.present).toBe(true);
+      expect(res.body.refusal.refused).toBe(true);
+      expect(res.body.refusal.matchedConstraint).toMatch(/unverified vendor/);
+      expect(res.body.endorsement.endorsed).toBe(false);
+      expect(res.body.canGovern).toBe(true);
+    });
+
+    it('endorses an action aligned with a goal and breaking no constraint', async () => {
+      writeIntent();
+      const res = await request(app)
+        .post('/intent/org/test-action')
+        .send({ action: 'ship reliable software for the release' });
+      expect(res.status).toBe(200);
+      expect(res.body.refusal.refused).toBe(false);
+      expect(res.body.endorsement.endorsed).toBe(true);
+      expect(res.body.endorsement.alignedWith).toMatch(/reliable software/);
+    });
+  });
 });
