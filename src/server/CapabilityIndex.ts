@@ -595,6 +595,20 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     }),
   },
   {
+    key: 'topicOperator',
+    prefixes: ['/topic-operator'],
+    description: 'Verified per-topic operator binding (Know Your Principal #898) — the principal whose decisions the agent enacts in a topic, established ONLY from the authenticated sender uid (a content name can never become the operator by construction; the "Caroline" identity-bleed mode is structurally impossible). Decoupled from /topic-bindings: a topic can have a verified operator with no project binding. Feeds the cross-principal guard and the session-start <topic-operator> injection.',
+    build: ({ ctx }) => ({
+      enabled: !!ctx.topicOperatorStore,
+      endpoints: [
+        'POST /topic-operator — bind a topic operator from the AUTHENTICATED sender { topicId, platform?, uid (required), displayName? }; a blank uid is refused (a content name is never accepted)',
+        'GET /topic-operator — all bound operators (names + uids)',
+        'GET /topic-operator/:topicId — one topic\'s verified operator, or null when unbound',
+        'GET /topic-operator/session-context?topicId=N — the <topic-operator> session-start injection block ({ present:false } when unbound)',
+      ],
+    }),
+  },
+  {
     key: 'coordinationMandate',
     prefixes: ['/mandate'],
     description: 'Coordination Mandate — deny-by-default authority gate for autonomous agent-to-agent actions. The operator\'s bounded, expiring, revocable mandate (issued from the dashboard behind their PIN) is the authorizer, never the agent. Every decision (allow AND deny) lands in a hash-chained, tamper-evident audit. With no mandate issued, every evaluation denies.',

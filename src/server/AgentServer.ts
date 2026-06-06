@@ -14,6 +14,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import { ApprovalLedger } from '../core/ApprovalLedger.js';
+import { TopicOperatorStore } from '../users/TopicOperatorStore.js';
 import { MandateStore } from '../coordination/MandateStore.js';
 import { MandateGate } from '../coordination/MandateGate.js';
 import { MandateAudit } from '../coordination/MandateAudit.js';
@@ -165,6 +166,10 @@ export class AgentServer {
   /** Approval-as-Data ledger (spec Part B, Phase 2). Read-only observability over
    *  operator approval decisions. Null when stateDir is unavailable. */
   private approvalLedger: ApprovalLedger | null = null;
+  /** Verified per-topic operator binding (Know Your Principal #898, increment 2).
+   *  The principal whose decisions the agent enacts in a topic, established ONLY
+   *  from the authenticated sender uid. Null when stateDir is unavailable. */
+  private topicOperatorStore: TopicOperatorStore | null = null;
   /** Coordination Mandate enforcement (spec §4): deny-by-default gate + signed
    *  store + hash-chained audit. Null when stateDir is unavailable. */
   private coordination: { store: MandateStore; gate: MandateGate; audit: MandateAudit; conditions: ConditionsRegistry; reviews: ReviewExchangeEngine } | null = null;
@@ -876,6 +881,23 @@ export class AgentServer {
       this.approvalLedger = null;
     }
 
+    // Verified per-topic operator binding (Know Your Principal #898, increment 2).
+    // The store is the authoritative answer to "who is this topic's operator?" —
+    // established ONLY from the authenticated sender uid (a content name can never
+    // become the operator by construction; the "Caroline" identity-bleed failure
+    // mode is structurally impossible). Own try/catch so it can never cascade into
+    // server boot; an empty store is fail-safe (the guard then treats every
+    // attribution as unverifiable).
+    try {
+      if (options.config.stateDir) {
+        this.topicOperatorStore = new TopicOperatorStore(path.join(options.config.stateDir, 'state'));
+      }
+    } catch (err) {
+      // @silent-fallback-ok — reported via console.warn; an operator-store init failure must never block server boot.
+      console.warn('[instar] topic-operator-store init failed (non-fatal):', err);
+      this.topicOperatorStore = null;
+    }
+
     // Coordination Mandate enforcement (docs/specs/coordination-mandate.md §4).
     // Deny-by-default: with NO valid mandate issued, the gate denies every
     // autonomous A2A action — the system is inert until the operator authors a
@@ -1322,6 +1344,7 @@ export class AgentServer {
       featureMetricsLedger: this.featureMetricsLedger,
       resourceLedger: this.resourceLedger,
       approvalLedger: this.approvalLedger,
+      topicOperatorStore: this.topicOperatorStore,
       coordination: this.coordination,
       cutoverReadiness: this.cutoverReadiness,
       parallelActivityIndex: this.parallelActivityIndex,

@@ -42,3 +42,19 @@ the agent's own head.
 The principle: don't rely on an agent *happening* to feel suspicious of an
 unfamiliar name. The suspicion is structural — resolve against the registry, or
 treat as unknown and stop.
+
+## API
+
+The operator binding is exposed over the Bearer-gated HTTP API. The operator is
+established ONLY from the authenticated sender `uid`; a blank uid is refused, and
+a `displayName` (a content name) is never authoritative. When the store is
+unavailable every route returns `503` rather than crashing.
+
+- `POST /topic-operator` — bind a topic operator from the authenticated sender
+  `{ topicId, platform?, uid (required), displayName? }`; a blank uid → `400`.
+- `GET /topic-operator` — all bound operators (names + uids).
+- `GET /topic-operator/:topicId` — one topic's verified operator (or `null`).
+- `GET /topic-operator/session-context?topicId=N` — the `<topic-operator>`
+  session-start injection block the session-start hook fetches so the agent
+  reasons with its verified operator from message one (`{ present:false }` when
+  the topic has no bound operator).

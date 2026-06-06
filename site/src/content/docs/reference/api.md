@@ -843,6 +843,13 @@ changes-requested, terminal). Deny-by-default inherited: no mandate → 403.
 - `GET /topic-bindings`
 - `POST /topic-bindings`
 
+## /topic-operator
+Verified per-topic operator binding (Know Your Principal). The operator is established ONLY from the authenticated sender `uid` — a content name can never become the operator. See [Know Your Principal](/concepts/know-your-principal/).
+- `POST /topic-operator` — bind a topic operator from the AUTHENTICATED sender `{ topicId, platform?, uid (required), displayName? }`; a blank uid is refused `400`
+- `GET /topic-operator` — all bound operators (names + uids)
+- `GET /topic-operator/:topicId` — one topic's verified operator (or `null` when unbound)
+- `GET /topic-operator/session-context?topicId=N` — the `<topic-operator>` session-start injection block (`{ present:false }` when unbound)
+
 ## /triage
 - `GET /triage/history`
 - `GET /triage/status`

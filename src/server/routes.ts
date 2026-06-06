@@ -724,6 +724,10 @@ export interface RouteContext {
   /** Approval-as-Data ledger (spec Part B / Phase 2). Records operator approval
    *  decisions + per-class agreement ratios. Null when stateDir is unavailable. */
   approvalLedger: import('../core/ApprovalLedger.js').ApprovalLedger | null;
+  /** Verified per-topic operator binding (Know Your Principal #898, increment 2).
+   *  The principal whose decisions the agent enacts, established only from the
+   *  authenticated sender uid. Null when stateDir is unavailable. */
+  topicOperatorStore: import('../users/TopicOperatorStore.js').TopicOperatorStore | null;
   /** Coordination Mandate enforcement (docs/specs/coordination-mandate.md §4).
    *  Deny-by-default gate + signed store + hash-chained audit. Null when stateDir
    *  is unavailable. Issuance/revocation are PIN-gated, never Bearer-only. */
@@ -3819,6 +3823,81 @@ export function createRoutes(ctx: RouteContext): Router {
 
     ctx.coherenceGate.setTopicBinding(Number(topicId), binding);
     res.json({ bound: true, topicId: Number(topicId), binding });
+  });
+
+  // ── Topic Operator (Know Your Principal #898, increment 2) ─────────
+  //
+  // The verified principal whose decisions the agent enacts in a topic. The
+  // operator is established ONLY from the authenticated sender uid — a content
+  // name can never become the operator (the "Caroline" identity-bleed failure
+  // mode is impossible by construction). Decoupled from /topic-bindings: a topic
+  // can have a verified operator without any project binding.
+
+  // The session-start injection block (mirrors /intent/org/session-context) — the
+  // session-start hook fetches this so the agent reasons with its VERIFIED operator
+  // from message one. Declared before the param routes to avoid capture.
+  router.get('/topic-operator/session-context', (req, res) => {
+    if (!ctx.topicOperatorStore) {
+      res.status(503).json({ error: 'topic-operator store not initialized' });
+      return;
+    }
+    const topicId = req.query.topicId;
+    if (topicId === undefined || topicId === '') {
+      res.status(400).json({ error: 'Required: topicId (query param)' });
+      return;
+    }
+    const block = ctx.topicOperatorStore.sessionContextBlock(String(topicId));
+    if (!block) {
+      res.json({ present: false });
+      return;
+    }
+    res.json({ present: true, block });
+  });
+
+  // All bound operators (names + uids), for inspection.
+  router.get('/topic-operator', (_req, res) => {
+    if (!ctx.topicOperatorStore) {
+      res.status(503).json({ error: 'topic-operator store not initialized' });
+      return;
+    }
+    res.json({ operators: ctx.topicOperatorStore.all() });
+  });
+
+  // One topic's verified operator, or null when unbound.
+  router.get('/topic-operator/:topicId', (req, res) => {
+    if (!ctx.topicOperatorStore) {
+      res.status(503).json({ error: 'topic-operator store not initialized' });
+      return;
+    }
+    res.json({ operator: ctx.topicOperatorStore.getOperator(req.params.topicId) });
+  });
+
+  // Bind a topic's operator from the AUTHENTICATED sender. The `uid` is the
+  // authority and is REQUIRED — a blank uid is refused (an operator cannot be
+  // established without a verified id, and `displayName` is never authoritative,
+  // only used to match the operator's name in the agent's own prose).
+  router.post('/topic-operator', (req, res) => {
+    if (!ctx.topicOperatorStore) {
+      res.status(503).json({ error: 'topic-operator store not initialized' });
+      return;
+    }
+    const { topicId, platform, uid, displayName, boundAt } = req.body ?? {};
+    if (topicId === undefined || topicId === null || topicId === '') {
+      res.status(400).json({ error: 'Required: topicId' });
+      return;
+    }
+    const record = ctx.topicOperatorStore.setOperator(Number(topicId), {
+      platform: typeof platform === 'string' && platform ? platform : 'telegram',
+      uid: typeof uid === 'string' ? uid : String(uid ?? ''),
+      displayName: typeof displayName === 'string' ? displayName : undefined,
+      boundAt: typeof boundAt === 'string' ? boundAt : undefined,
+    });
+    if (!record) {
+      // establishOperator refused a blank uid — a content name is never accepted.
+      res.status(400).json({ error: 'A verified sender uid is required to establish an operator' });
+      return;
+    }
+    res.json({ bound: true, topicId: Number(topicId), operator: record });
   });
 
   // ── Context Hierarchy ──────────────────────────────────────────────
