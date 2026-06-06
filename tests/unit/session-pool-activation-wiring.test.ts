@@ -38,12 +38,24 @@ describe('Session Pool activation wiring (§L4)', () => {
   it('the SessionRouter is constructed with the real registry/ownership/placement + outbound mesh client', () => {
     const idx = src.indexOf('new routerMod.SessionRouter({');
     expect(idx).toBeGreaterThan(0);
-    const block = src.slice(idx, idx + 2000);
-    expect(block).toContain('machineRegistry: () => machinePoolRegistry?.getCapacities()');
+    const block = src.slice(idx, idx + 3000);
+    // The registry dep filters suspect machines from placement candidates
+    // (owner-suspect breaker, P19) with an all-suspect unfiltered fallback —
+    // still sourced from the REAL machinePoolRegistry capacities.
+    expect(block).toContain('machinePoolRegistry?.getCapacities() ?? []');
+    expect(block).toContain('ownerSuspectBreaker.isSuspect(c.machineId)');
     expect(block).toContain('resolveOwnership:');
     expect(block).toContain('casClaimOwnership:');
     expect(block).toContain('deliverMessage:'); // outbound via MeshRpcClient
     expect(src).toContain('new clientMod.MeshRpcClient({');
+  });
+
+  it('the owner-suspect breaker is wired into BOTH halves (mark + responsive) and the aliveness check', () => {
+    const idx = src.indexOf('new routerMod.SessionRouter({');
+    const block = src.slice(idx, idx + 3000);
+    expect(block).toContain('markOwnerSuspect: (m) => ownerSuspectBreaker.markSuspect(m)');
+    expect(block).toContain('onOwnerResponsive: (m) => ownerSuspectBreaker.recordSuccess(m)');
+    expect(block).toContain('!ownerSuspectBreaker.isSuspect(m)');
   });
 
   it('the router is shared via a module-level ref (inbound handler is defined above startServer)', () => {
