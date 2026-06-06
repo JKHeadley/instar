@@ -24,9 +24,13 @@ the agent's own head.
 
 ## How it works
 
-- **Hard operator binding.** A topic's operator is established only from the
-  platform-verified sender id — never from a name read in content or ambient
-  machine state — and injected at session start, immutable for the session.
+- **Hard operator binding (`TopicOperatorStore`).** A topic's operator is
+  established only from the platform-verified sender id — never from a name read
+  in content or ambient machine state — and injected at session start. The
+  `TopicOperatorStore` keeps this binding decoupled from the topic→project
+  binding (a topic can have a verified operator without any project binding), and
+  exposes a `<topic-operator>` block for the session-start hook to inject so the
+  agent reasons with its verified operator from the first message.
 - **The cross-principal detector (`PrincipalGuard`).** It reads agent-authored
   text for operator-role decision shapes ("X approved", "Mandate (X)", "locked
   with X", "X dropped a token") and flags any credited to a principal who is

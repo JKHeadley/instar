@@ -1,0 +1,31 @@
+---
+bump: minor
+audience: agent-only
+maturity: experimental
+---
+
+## What Changed
+
+Added `src/users/TopicOperatorStore.ts` — the durable, decoupled store for a
+topic's VERIFIED operator (Know Your Principal standard, security-build
+increment 2). It records the operator only from the platform-authenticated
+sender (never a content name), keeps it separate from the topic→project binding,
+and exposes the `<topic-operator>` session-start injection block. No runtime
+consumers yet (routes + session-start wiring are later increments).
+
+## What to Tell Your User
+
+Nothing user-facing changes. Foundation code (experimental) for the Caroline
+identity-bleed security fix — it does not alter any current behavior.
+
+## Summary of New Capabilities
+
+- `TopicOperatorStore` (experimental, no runtime consumers yet): setOperator /
+  getOperator / asVerifiedOperator / sessionContextBlock, backed by
+  `state/topic-operators.json`.
+
+## Evidence
+
+Net-new capability. Verified by 10 unit tests (both sides of every boundary +
+durable persistence + the content-name-can't-become-operator invariant) and a
+clean `tsc --noEmit`.
