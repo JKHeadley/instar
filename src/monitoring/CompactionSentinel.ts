@@ -471,10 +471,18 @@ export class CompactionSentinel extends EventEmitter {
           const st = fs.statSync(exact);
           return { path: exact, size: st.size, mtime: st.mtimeMs };
         }
-        // If uuid is known but file doesn't exist, return null rather than
-        // falling through — the session genuinely has no jsonl, and picking
-        // a sibling's file would be a false signal.
-        return null;
+        // Stale claudeSessionId: the stored UUID has no transcript on disk
+        // (conversation rotated via respawn/--resume and the record lagged).
+        // The old "return null — the session genuinely has no jsonl" reasoning
+        // assumed the mapping was always fresh; a write-once bridge made it
+        // permanently stale instead, so null here meant recovery verification
+        // could NEVER succeed (2026-06-06 false-escalation incident, mirrored
+        // in RateLimitSentinel). Degrade to the same newest-jsonl heuristic
+        // the no-uuid case already uses.
+        console.log(
+          `[CompactionSentinel] stale claudeSessionId for "${sessionName}" ` +
+          `(${uuid}.jsonl missing) — falling back to newest jsonl in project root`,
+        );
       }
 
       // Fallback: most-recently-modified jsonl in the project.

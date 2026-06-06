@@ -796,16 +796,36 @@ rm()  { "${shimRunner}" rm  "$@"; }
 
   /**
    * Associate a Claude Code session UUID with an instar session.
-   * Called when the first hook event arrives from a Claude Code session,
-   * allowing SubagentTracker lookups to bridge the two ID spaces.
+   * Called on hook events from a Claude Code session, allowing
+   * SubagentTracker lookups to bridge the two ID spaces.
+   *
+   * Last-writer-wins, NOT write-once: a fresh respawn or `claude --resume`
+   * rotates the conversation UUID, and every subsequent hook event carries
+   * the NEW id. The old write-once guard froze the first-ever UUID, so after
+   * any respawn the record pointed at a transcript that no longer grew (or
+   * never existed) — which made both sentinels' jsonl-growth recovery
+   * verification permanently fail and falsely escalate healthy sessions
+   * ("no jsonl growth after 6 attempts" on a session that was actively
+   * answering). 2026-06-06 echo-api-errors incident.
+   *
+   * Safe because every hook event's session_id is the MAIN conversation's
+   * UUID (subagents are identified by separate agent_id/agent_transcript_path
+   * fields, never by swapping session_id), and a dead conversation emits no
+   * further events to flip the value back.
    */
   setClaudeSessionId(instarSessionId: string, claudeSessionId: string): void {
+    if (!claudeSessionId) return;
     const sessions = this.state.listSessions({ status: 'running' });
     const session = sessions.find(s => s.id === instarSessionId);
-    if (session && !session.claudeSessionId) {
-      session.claudeSessionId = claudeSessionId;
-      this.state.saveSession(session);
+    if (!session || session.claudeSessionId === claudeSessionId) return;
+    if (session.claudeSessionId) {
+      console.log(
+        `[SessionManager] claudeSessionId rotated for "${session.tmuxSession}": ` +
+        `${session.claudeSessionId} → ${claudeSessionId} (respawn/resume)`,
+      );
     }
+    session.claudeSessionId = claudeSessionId;
+    this.state.saveSession(session);
   }
 
   /**

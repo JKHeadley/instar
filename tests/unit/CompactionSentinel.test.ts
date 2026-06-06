@@ -238,6 +238,39 @@ describe('CompactionSentinel', () => {
     expect(events.find(e => e.type === 'compaction:recovered')).toBeDefined();
   });
 
+  // REGRESSION (2026-06-06 incident, mirrored from RateLimitSentinel): when the
+  // stored claudeSessionId has NO transcript on disk (UUID rotated on respawn/
+  // --resume; the bridge record went stale), returning null made recovery
+  // verification permanently unable to succeed. A stale uuid must degrade to
+  // the newest-jsonl heuristic instead of guaranteeing a false failure.
+  it('falls back to newest jsonl when the stored claudeSessionId transcript is missing (phantom uuid)', async () => {
+    jsonl.write('live-conversation.jsonl', 100); // the REAL transcript (different uuid)
+
+    sentinel.stop();
+    sentinel = new CompactionSentinel(
+      {
+        recoverFn: recoverFn as any,
+        projectDir: '/fake/project',
+        jsonlRoot: jsonl.root,
+        getClaudeSessionId: () => '563a7027-432d-4b46-9706-caf43daa1016', // no such file
+      },
+      { dedupeWindowMs: 60_000, verifyWindowMs: 25_000, maxInjectAttempts: 3, recoveryGuardMs: 10 * 60_000 },
+    );
+    events = [];
+    for (const e of ['compaction:detected', 'compaction:inject-attempted', 'compaction:recovered', 'compaction:failed']) {
+      sentinel.on(e as any, (p: any) => events.push({ type: e, payload: p }));
+    }
+
+    sentinel.report('echo-api-errors', 'watchdog-poll');
+    await vi.advanceTimersByTimeAsync(0);
+
+    // The live transcript grows — the session genuinely recovered.
+    jsonl.write('live-conversation.jsonl', 900);
+    await vi.advanceTimersByTimeAsync(25_500);
+    expect(events.find(e => e.type === 'compaction:recovered')).toBeDefined();
+    expect(events.find(e => e.type === 'compaction:failed')).toBeUndefined();
+  });
+
   it('detects growth via mtime change on a fixed-size jsonl', async () => {
     jsonl.write('foo.jsonl', 100);
     sentinel.report('s1', 'watchdog-poll');

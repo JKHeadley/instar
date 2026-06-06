@@ -508,7 +508,17 @@ export class RateLimitSentinel extends EventEmitter {
           const st = fs.statSync(exact);
           return { path: exact, size: st.size, mtime: st.mtimeMs };
         }
-        return null;
+        // Stale claudeSessionId: the stored UUID has no transcript on disk
+        // (conversation rotated via respawn/--resume and the record lagged).
+        // Returning null here made verification PERMANENTLY unable to succeed
+        // → 6 futile nudges → false "no jsonl growth" escalation on a healthy,
+        // actively-answering session (2026-06-06 echo-api-errors incident).
+        // Degrade to the same newest-jsonl heuristic the no-uuid case already
+        // uses — identical risk profile, strictly better than guaranteed-wrong.
+        console.log(
+          `[RateLimitSentinel] stale claudeSessionId for "${sessionName}" ` +
+          `(${uuid}.jsonl missing) — falling back to newest jsonl in project root`,
+        );
       }
 
       const entries = fs.readdirSync(root).filter(f => f.endsWith('.jsonl'));

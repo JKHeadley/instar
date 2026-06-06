@@ -2489,12 +2489,20 @@ export function createRoutes(ctx: RouteContext): Router {
 
     // Bridge instar session ID ↔ Claude Code session ID.
     // Hook URLs include ?instar_sid=<INSTAR_SESSION_ID> set via tmux env var.
-    // On the first hook event from a session, this populates claudeSessionId on
-    // the instar Session record, enabling SubagentTracker lookups.
+    // Populates claudeSessionId on the instar Session record (enabling
+    // SubagentTracker lookups + sentinel jsonl-growth verification) and KEEPS
+    // it current: a respawn/--resume rotates the conversation UUID, and the
+    // first event carrying the new id updates the record (last-writer-wins —
+    // see SessionManager.setClaudeSessionId). The old `!session.claudeSessionId`
+    // guard here made the bridge write-once, leaving records pointing at dead
+    // transcripts after every respawn (2026-06-06 false-escalation incident).
     const instarSid = typeof req.query.instar_sid === 'string' ? req.query.instar_sid : '';
+    // Every Claude Code hook event carries the MAIN conversation's session_id
+    // (subagents are identified by separate agent_id/agent_transcript_path
+    // fields). Missing/empty session_id = malformed or custom event — skip.
     if (instarSid && payload.session_id && ctx.sessionManager) {
       const session = ctx.sessionManager.getSessionById(instarSid);
-      if (session && !session.claudeSessionId) {
+      if (session && session.claudeSessionId !== payload.session_id) {
         ctx.sessionManager.setClaudeSessionId(instarSid, payload.session_id);
       }
     }

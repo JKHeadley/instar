@@ -446,4 +446,35 @@ describe('SessionManager behavioral tests', () => {
       // No error, no hanging interval
     });
   });
+
+  describe('setClaudeSessionId (conversation-UUID bridge)', () => {
+    // REGRESSION (2026-06-06 echo-api-errors incident): the bridge was
+    // write-once, so a respawn/--resume rotating the conversation UUID left
+    // the record pointing at a dead transcript forever — sentinel jsonl-growth
+    // recovery verification could never succeed and falsely escalated healthy
+    // sessions. The bridge must be last-writer-wins.
+    it('first-set populates, rotation updates, identical/empty ids no-op', async () => {
+      const session = await manager.spawnSession({ name: 'bridge-test', prompt: 'p' });
+
+      // First-set (unchanged behavior)
+      manager.setClaudeSessionId(session.id, 'first-uuid');
+      expect(state.getSession(session.id)?.claudeSessionId).toBe('first-uuid');
+
+      // Rotation (the fix): respawn/--resume rotates the conversation UUID
+      manager.setClaudeSessionId(session.id, 'second-uuid');
+      expect(state.getSession(session.id)?.claudeSessionId).toBe('second-uuid');
+
+      // Identical id: no-op (idempotent)
+      manager.setClaudeSessionId(session.id, 'second-uuid');
+      expect(state.getSession(session.id)?.claudeSessionId).toBe('second-uuid');
+
+      // Empty id: ignored, never clears the stored value
+      manager.setClaudeSessionId(session.id, '');
+      expect(state.getSession(session.id)?.claudeSessionId).toBe('second-uuid');
+    });
+
+    it('unknown instar session id is a safe no-op', () => {
+      expect(() => manager.setClaudeSessionId('no-such-id', 'some-uuid')).not.toThrow();
+    });
+  });
 });
