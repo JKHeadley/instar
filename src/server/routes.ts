@@ -18359,7 +18359,9 @@ export function createRoutes(ctx: RouteContext): Router {
       }
       res.json(decision);
     } catch (err) {
-      res.status(500).json({ error: (err as Error).message });
+      // Guarded message extraction — an `as Error` cast lies if err isn't an
+      // Error (e.g. a thrown string/object); instanceof is the safe form.
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
     }
   });
 

@@ -91,3 +91,15 @@ justify it at review.
 - Spec + ELI16: `docs/specs/june15-headless-spawn-reroute.md` / `.eli16.md`
 - Lint: `scripts/lint-no-unfunneled-headless-launch.js` (chained in
   `pnpm lint`)
+
+## CI-green follow-up #2 (Zero-Failure Standard)
+
+A main-drift imbalance surfaced by this PR's CI (route-completeness:
+225 `catch (err)` vs 224 `err instanceof Error` in routes.ts — landed on
+main via a [skip ci] merge that never ran this shard). Per the Zero-Failure
+Standard ("no pre-existing failures — if you see it you own it"), fixed by
+converting one `/providers/...` route's `(err as Error).message` cast to the
+safe `err instanceof Error ? err.message : String(err)` guard — balances the
+count AND is strictly safer (an `as Error` cast lies if err isn't an Error).
+Also: the codex-model-swap structure-pin window widened past the reroute
+branch (test-only — invariant unchanged).
