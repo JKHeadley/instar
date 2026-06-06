@@ -1944,8 +1944,33 @@ export interface CoherenceJournalUserConfig {
   flushIntervalMs?: number;
   /** Autonomous-run journal scanner cadence (§3.3). Default 60s. */
   scannerIntervalMs?: number;
-  /** Replication tunables; `enabled` follows the same dark-ship gate. */
+  /**
+   * Replication tunables. NOTE: replication SEND/drive requires the EXPLICIT
+   * `enabled === true` (never the `?? developmentAgent` dark-ship gate) — and
+   * the working-set feature below activates IFF this same gate is on
+   * (WORKING-SET-HANDOFF-SPEC §3.7: the pull is meaningless without
+   * replication's mesh path and must never out-activate it).
+   */
   replication?: { enabled?: boolean; maxBatchBytes?: number };
+  /**
+   * Working-Set Handoff tunables (WORKING-SET-HANDOFF-SPEC §3.7). All
+   * optional; ConfigDefaults carries the shipped literal. Gated on
+   * `replication.enabled === true` — there is no separate enable flag.
+   */
+  workingSet?: {
+    maxFileBytes?: number;
+    headlineFileBytes?: number;
+    maxFiles?: number;
+    maxTotalBytes?: number;
+    pullMaxBatchBytes?: number;
+    pullOnMove?: boolean;
+    pendingPullTtlDays?: number;
+    chunkRestartCap?: number;
+    chunksPerTick?: number;
+    serveConcurrency?: number;
+    rearmConcurrency?: number;
+    busyRetryCap?: number;
+  };
   /**
    * Per-kind retention. rotateKeep N>0 = rotate at maxFileBytes, keep N
    * archives, delete older; 0 = rotate at maxFileBytes but NEVER delete

@@ -2609,6 +2609,12 @@ export async function startServer(options: StartOptions): Promise<void> {
     // RECEIVE handler (always-registered; harmless when idle) and the
     // REPLICATION-GATED puller delta drive. Constructed only when the journal is.
     let journalSyncApplier: import('../core/JournalSyncApplier.js').JournalSyncApplier | undefined;
+    // Working-set serve side (WORKING-SET-HANDOFF-SPEC §3.7): constructed ONLY
+    // when replication is EXPLICITLY enabled (=== true, never the dark-ship
+    // gate) — the pull is meaningless without replication's mesh path and must
+    // never out-activate it. The dispatcher's working-set-pull handler answers
+    // 'disabled' while this stays undefined.
+    let workingSetPullServer: import('../core/WorkingSetPull.js').WorkingSetPullServer | undefined;
     {
       const cjCfg = config.multiMachine?.coherenceJournal;
       const cjEnabled = cjCfg?.enabled ?? !!config.developmentAgent;
@@ -2652,6 +2658,34 @@ export async function startServer(options: StartOptions): Promise<void> {
           } catch (e) { /* @silent-fallback-ok: journal observability must never endanger the observed operation (COHERENCE-JOURNAL-SPEC §3.1) */
             journalSyncApplier = undefined;
             console.log(pc.dim(`  [journal-sync] applier not constructed: ${e instanceof Error ? e.message : String(e)}`));
+          }
+          // Working-set serve side (WORKING-SET-HANDOFF-SPEC §3.2/§3.7) —
+          // gated on the EXPLICIT replication enable, same gate as the
+          // replication SEND/drive below. Serves OWN jailed working files
+          // behind a fresh-manifest allowlist; chunked ≤ pullMaxBatchBytes.
+          if (cjCfg?.replication?.enabled === true) {
+            try {
+              const wsMod = await import('../core/WorkingSetPull.js');
+              const wsReaderMod = await import('../core/CoherenceJournalReader.js');
+              const wsReader = new wsReaderMod.CoherenceJournalReader({ stateDir: config.stateDir });
+              const ws = cjCfg?.workingSet;
+              workingSetPullServer = new wsMod.WorkingSetPullServer({
+                stateDir: config.stateDir,
+                readRuns: (topic) => wsReader.readOwnAutonomousRuns(topic, cjMachineId),
+                caps: {
+                  ...(ws?.maxFileBytes != null ? { maxFileBytes: ws.maxFileBytes } : {}),
+                  ...(ws?.headlineFileBytes != null ? { headlineFileBytes: ws.headlineFileBytes } : {}),
+                  ...(ws?.maxFiles != null ? { maxFiles: ws.maxFiles } : {}),
+                  ...(ws?.maxTotalBytes != null ? { maxTotalBytes: ws.maxTotalBytes } : {}),
+                },
+                ...(ws?.pullMaxBatchBytes != null ? { pullMaxBatchBytes: ws.pullMaxBatchBytes } : {}),
+                ...(ws?.serveConcurrency != null ? { serveConcurrency: ws.serveConcurrency } : {}),
+                logger: (m) => console.log(pc.dim(`  [working-set] ${m}`)),
+              });
+            } catch (e) { /* @silent-fallback-ok: working-set serve construction failure degrades to 'disabled' responses — never blocks server boot (WORKING-SET-HANDOFF-SPEC §4) */
+              workingSetPullServer = undefined;
+              console.log(pc.dim(`  [working-set] serve side not constructed: ${e instanceof Error ? e.message : String(e)}`));
+            }
           }
           // §3.3 autonomous-run journal scanner — observation-based start/stop
           // (no single .local.md write funnel exists; polling is the structural
@@ -10481,6 +10515,17 @@ export async function startServer(options: StartOptions): Promise<void> {
                 return { ok: true, result: r };
               }
               return { ok: true };
+            },
+            // WORKING-SET-HANDOFF-SPEC §3.2 — the chunked working-set serve
+            // verb. Registered always (lockstep with the union+RBAC edits so
+            // a mixed-version caller gets a clean answer, never no-handler
+            // surprises within one version); answers 'disabled' until the
+            // §3.7 replication gate constructs the serve side above.
+            'working-set-pull': (cmd) => {
+              if (!workingSetPullServer) return { ok: false, reason: 'working-set disabled' };
+              return workingSetPullServer.handle(
+                cmd as import('../core/WorkingSetPull.js').WorkingSetPullCmd,
+              );
             },
             place: ownAction,
             claim: ownAction,
