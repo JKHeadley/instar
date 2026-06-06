@@ -66,3 +66,17 @@ their claude-code/codex-cli/gemini-cli behavior is untouched.
 Replacing any Claude Code path; pi-ai adoption for non-pi internal calls;
 OAuth flow automation; cross-provider mid-session handoff; event-stream
 dashboard renderer (optional Phase E, decided after the core lands).
+
+## CI-fix follow-up (post-first-commit)
+
+Greening CI surfaced expected churn, no behavior change:
+- Three existing tests hardcoded the 3-framework SUPPORTED list → added
+  'pi-cli' to the expectations.
+- The `no-silent-fallbacks` ratchet counted the intelligenceProviderFactory
+  pi-cli degrade-to-null catch → marked `@silent-fallback-ok` (it warns
+  loudly and the router emits its own DegradationReporter; a second report
+  here would double-count the same degrade).
+- The release-fragment lint required `## Summary of New Capabilities` → added
+  it and switched to the canonical `<!-- bump -->` comment.
+None of these touch runtime behavior; they align the new framework with the
+existing structural gates.

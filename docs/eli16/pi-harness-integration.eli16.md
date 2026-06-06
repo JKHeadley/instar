@@ -51,3 +51,12 @@ one shared file with behavior change (the stuck-marker detector) only adds a
 new detection branch that requires BOTH the injected marker AND pi's
 double-rule input-box shape, so it cannot false-fire on Claude/Codex/Gemini
 panes — and the existing prompt-char tests still pass unchanged.
+
+## CI-fix note
+
+After the first commit, CI flagged the usual paperwork for a new framework:
+three old tests that listed the three existing frameworks by hand (we added
+pi to each), a "no silent failures" counter that needed us to label one
+intentional, loudly-logged fallback as OK, and a release-notes format rule
+that wanted a one-line capability summary. All cosmetic/structural — the
+feature behaves identically.

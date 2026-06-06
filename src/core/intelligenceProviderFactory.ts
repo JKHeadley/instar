@@ -209,8 +209,12 @@ export function buildIntelligenceProvider(
           options.breaker,
         );
       } catch (err) {
-        // PiAnthropicRouteError at construction (a misconfigured Anthropic
-        // pattern without the override) — degrade loudly rather than boot-fail.
+        // @silent-fallback-ok — NOT a silent fallback: a PiAnthropicRouteError
+        // at construction (a misconfigured Anthropic pattern without the
+        // override) degrades to null LOUDLY (console.warn below), and the
+        // caller (IntelligenceRouter) treats null as "framework unavailable →
+        // route to the default framework" with its own DegradationReporter
+        // emission. Reporting here too would double-count the same degrade.
         console.warn(`[intelligenceProviderFactory] pi-cli provider refused: ${err instanceof Error ? err.message : err}`);
         return null;
       }
