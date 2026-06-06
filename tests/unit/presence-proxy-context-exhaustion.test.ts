@@ -27,7 +27,7 @@ describe('Context exhaustion detection in PresenceProxy flow', () => {
   });
 
   it('detects plain "conversation too long" error', () => {
-    const snapshot = `Error: Conversation too long
+    const snapshot = `Error: Conversation too long. Press esc twice to go up a few messages and try again.
 ❯`;
     expect(detectQuotaExhaustion(snapshot)).toBeNull();
     const result = detectContextExhaustion(snapshot);
@@ -36,7 +36,7 @@ describe('Context exhaustion detection in PresenceProxy flow', () => {
   });
 
   it('detects "conversation is too long" variant', () => {
-    const snapshot = `The conversation is too long to continue processing.`;
+    const snapshot = `Error during compaction: The conversation is too long to continue processing. Press esc twice to go up a few messages and try again.`;
     const result = detectContextExhaustion(snapshot);
     expect(result.matched).toBe(true);
     expect(result.confidence).toBe('high');

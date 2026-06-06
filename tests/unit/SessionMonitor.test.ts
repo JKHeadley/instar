@@ -399,7 +399,7 @@ describe('SessionMonitor', () => {
       deps = createMockDeps({
         getActiveTopicSessions: vi.fn(() => new Map([[905, 'session-ctx2']])),
         isSessionAlive: vi.fn(() => true),
-        captureSessionOutput: vi.fn(() => 'conversation too long'),
+        captureSessionOutput: vi.fn(() => 'Conversation too long. Press esc twice to go up a few messages and try again.'),
         getTopicHistory: vi.fn(() => []),
         sessionRecovery: mockRecovery as any,
       });
