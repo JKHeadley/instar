@@ -1,0 +1,44 @@
+---
+bump: patch
+---
+
+## What Changed
+
+Audit fix #5 under "No Unbounded Loops" (P19), completing the mesh-transport
+brake set #874 started: `HttpLiveTailTransport` (conversation-tail streaming)
+and `ReplyMarkerTransport` (cross-machine "already answered" markers) get
+`AbortSignal.timeout` on their fetches (30s default — the #874 reviewer's
+stall-envelope sizing, applied from the start) and `PeerFailureLogGate`
+state-change failure logging (first / every-Nth / recovery; previously one
+line per failed attempt, and silent for non-ok responses). Verified: neither
+transport feeds lease renewal/suspend (`isReachable()`'s only consumer is the
+lease wire), so the timeout carries zero authority coupling. The reviewer
+confirmed the marker-drop trade-off under a 30s abort is pre-accepted by the
+marker's documented design (fire-and-forget; provider redelivery + dedup gate
++ synced ledger are the backstops).
+
+## What to Tell Your User
+
+If you run me on more than one machine: the last two machine-to-machine sync
+channels now have the same protections as the rest — a stuck network
+connection can't silently jam them, and a down machine produces a handful of
+meaningful log lines instead of one per failed attempt. All four cross-machine
+wires now follow the loop-safety standard.
+
+## Summary of New Capabilities
+
+- Hung-socket protection + bounded failure logging on the live-tail and
+  reply-marker transports (no configuration needed; recovery and
+  rejecting-peer visibility included).
+
+## Evidence
+
+CMT-1109 audit, mechanical completion of the #874 pattern (line-level
+CONCUR-reviewed tonight) on two lower-blast-radius transports. Focused
+adversarial second-pass: CONCUR on all probes (Two-Generals widening
+pre-accepted by design — broadcast is void-discarded at its only callsite;
+gate memory peer-bounded; alternating ok/fail chatter is diagnostic at reply
+cadence; local encryptFor throws disambiguate via error detail). Tests: 6 new
+green (AbortSignal pins both transports; P19 bounds — 25 failed flushes → 3
+lines, 12 rejected markers → 2 lines; recovery-once; steady-success silence)
++ pre-existing transport suites untouched and green; tsc clean.

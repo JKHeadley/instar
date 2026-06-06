@@ -22,6 +22,7 @@
  */
 
 import { signRequest } from '../server/machineAuth.js';
+import { PeerFailureLogGate } from './PeerFailureLogGate.js';
 
 export interface ReplyMarkerPeer {
   machineId: string;
@@ -45,18 +46,46 @@ export interface ReplyMarkerTransportDeps {
   /** Monotonic per-request sequence for machine-auth replay protection. */
   nextSequence: () => number;
   fetchImpl?: typeof fetch;
+  /**
+   * Per-request abort timeout (P19 brake — a hung socket must not hold the
+   * reply-commit path open). Default 30s: sized ABOVE the fleet's documented
+   * 5–40s receiver-stall envelope (the #874 reviewer's sizing rationale — a
+   * slow-but-alive peer must not read as unreachable).
+   */
+  requestTimeoutMs?: number;
+  /**
+   * Coarse-reminder interval for the per-peer failure log gate (P19 brake).
+   * Default 50 — markers flow at REPLY cadence (not a fixed 5s tick), so the
+   * reminder lands roughly every 50 failed replies; first-failure and
+   * recovery lines carry the state changes regardless.
+   */
+  failureLogEveryN?: number;
   logger?: (msg: string) => void;
 }
 
 export class ReplyMarkerTransport {
   private readonly d: ReplyMarkerTransportDeps;
+  private readonly requestTimeoutMs: number;
+  /** State-change failure logging (first/Nth/recovery) — never per-attempt. */
+  private readonly logGate: PeerFailureLogGate;
 
   constructor(deps: ReplyMarkerTransportDeps) {
     this.d = deps;
+    this.requestTimeoutMs = deps.requestTimeoutMs ?? 30_000;
+    this.logGate = new PeerFailureLogGate(deps.failureLogEveryN ?? 50);
   }
 
   private log(m: string): void {
     this.d.logger?.(`[reply-marker] ${m}`);
+  }
+
+  private logFailure(key: string, detail: string): void {
+    const line = this.logGate.failed(key, detail);
+    if (line) this.log(line);
+  }
+  private logSuccess(key: string): void {
+    const line = this.logGate.succeeded(key);
+    if (line) this.log(line);
   }
 
   /**
@@ -80,11 +109,17 @@ export class ReplyMarkerTransport {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', ...headers },
             body: JSON.stringify(body),
+            // P19 brake: a hung socket aborts instead of holding the reply-commit path.
+            signal: AbortSignal.timeout(this.requestTimeoutMs),
           });
-          if (res && (res as Response).ok) anyOk = true;
-          else this.log(`peer ${peer.machineId} rejected marker ${marker.dedupeKey} (status ${(res as Response)?.status})`);
+          if (res && (res as Response).ok) {
+            anyOk = true;
+            this.logSuccess(`marker to ${peer.machineId}`);
+          } else {
+            this.logFailure(`marker to ${peer.machineId}`, `status ${(res as Response)?.status} (marker ${marker.dedupeKey})`);
+          }
         } catch (err) {
-          this.log(`broadcast to ${peer.machineId} failed: ${err instanceof Error ? err.message : String(err)}`);
+          this.logFailure(`marker to ${peer.machineId}`, err instanceof Error ? err.message : String(err));
         }
       }),
     );
