@@ -47,6 +47,16 @@ export type MeshCommand =
       batch?: { kind: string; incarnation: string; entries: unknown[]; oldestRetainedSeq?: number }[];
     }
   | {
+      // Commitments-coherence read replication (COMMITMENTS-COHERENCE-SPEC
+      // §3.2). Read/observe class — serves OWN commitment records as
+      // seq-windowed delta pages (lastMutatedSeq > sinceSeq), incarnation-
+      // fenced, per-field credential-shape redacted. First-hop: the receiver
+      // binds the replica to the AUTHENTICATED sender and rejects rows
+      // claiming other machines.
+      type: 'commitments-sync';
+      request: { sinceSeq: number; incarnation?: string };
+    }
+  | {
       // Working-set handoff transport (WORKING-SET-HANDOFF-SPEC §3.2).
       // Read/observe class — the FRESH manifest computed per request is the
       // allowlist (own jailed working files only; no generic file-read
@@ -171,6 +181,7 @@ export function checkCommandRBAC(command: MeshCommand, sender: MachineId, deps: 
     case 'session-status':
     case 'journal-sync':
     case 'working-set-pull':
+    case 'commitments-sync':
     case 'secret-share':
       // Read/observe class (or e2e-encrypted) — any registered peer (already
       // proven a registered peer by verifyEnvelope). journal-sync joins this

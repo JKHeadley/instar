@@ -816,6 +816,10 @@ export interface RouteContext {
    *  Null/absent while the working-set layer is dark (rides the explicit
    *  replication gate). */
   workingSetPullCoordinator?: import('../core/WorkingSetPullCoordinator.js').WorkingSetPullCoordinator | null;
+  /** Commitments-coherence replica store (COMMITMENTS-COHERENCE-SPEC §3.2) —
+   *  the merged GET /commitments view folds these replicas in. Null/absent
+   *  while dark (the routes return own rows only, byte-identical to before). */
+  commitmentReplicaStore?: import('../core/CommitmentsSync.js').CommitmentReplicaStore | null;
   /** Per-session ownership registry (§L3) — exactly-one-owner CAS + ownerOf/
    *  placementTargetOf. Read by L4 placement + observability. Null/absent (dark). */
   sessionOwnershipRegistry?: import('../core/SessionOwnershipRegistry.js').SessionOwnershipRegistry | null;
@@ -15007,12 +15011,31 @@ export function createRoutes(ctx: RouteContext): Router {
   /**
    * Get all commitments with optional status filter.
    */
-  router.get('/commitments', (req, res) => {
+  router.get('/commitments', async (req, res) => {
     if (!ctx.commitmentTracker) {
       res.json({ enabled: false, commitments: [] });
       return;
     }
     const status = req.query.status as string | undefined;
+    // COMMITMENTS-COHERENCE-SPEC §3.3 — ?scope=mesh merges own + replica
+    // rows on the composite (originMachineId, id) key with viewSource +
+    // staleness honesty. Default scope stays byte-identical to before
+    // (own rows only); a dark replica layer degrades mesh scope to own
+    // rows too (200, never 503 — single-machine agents answer normally).
+    if (req.query.scope === 'mesh') {
+      const syncMod = await import('../core/CommitmentsSync.js');
+      const own = status === 'active' ? ctx.commitmentTracker.getActive() : ctx.commitmentTracker.getAll();
+      const replicas = ctx.commitmentReplicaStore?.allReplicas() ?? [];
+      const rows = syncMod.mergeCommitmentViews({
+        ownMachineId: ctx.meshSelfId ?? 'local',
+        own,
+        replicas: status === 'active'
+          ? replicas.map((r) => ({ ...r, records: r.records.filter((c) => c.status === 'pending') }))
+          : replicas,
+      });
+      res.json({ enabled: true, scope: 'mesh', commitments: rows });
+      return;
+    }
     if (status === 'active') {
       res.json({ enabled: true, commitments: ctx.commitmentTracker.getActive() });
     } else {

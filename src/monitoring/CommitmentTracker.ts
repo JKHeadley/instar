@@ -19,6 +19,7 @@
 
 import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import type { LiveConfig } from '../config/LiveConfig.js';
@@ -196,12 +197,39 @@ export interface Commitment {
    * amplification on the mutate queue.
    */
   consecutiveUnchanged?: number;
+
+  // ── Commitments Coherence (P1.5 — COMMITMENTS-COHERENCE-SPEC §3.1/§3.2) ──
+
+  /**
+   * The machine that CREATED this record — the cross-machine identity is the
+   * composite (originMachineId, id) because ids are per-machine sequential
+   * counters (CMT-001…) and collide across machines by construction. Stamped
+   * at creation, NEVER reassigned. Legacy records: absent ⇒ owned by the
+   * store they live in (serve-time stamping + lazy back-fill on next mutate).
+   */
+  originMachineId?: string;
+  /**
+   * The store replicationSeq of this record's last STATE-MEANINGFUL mutation
+   * (status/fields/creation — NOT beacon bookkeeping). What makes
+   * commitments-sync a seq-windowed DELTA instead of a whole-store blob.
+   */
+  lastMutatedSeq?: number;
 }
 
 export interface CommitmentStore {
   version: 2;
   commitments: Commitment[];
   lastModified: string;
+  // ── Commitments Coherence (P1.5 §3.2) — ADDITIVE fields only: the schema
+  // `version: 2` literal is deliberately untouched (a version bump would trip
+  // loadStore's acceptance guard and wipe the store on downgrade paths).
+  /** Monotonic counter bumped on state-meaningful writes (deliberately NOT
+   *  named `version` — that name is taken twice already in this file). */
+  replicationSeq?: number;
+  /** Re-minted on rewind detection (backup restore) — receivers replace the
+   *  replica wholesale on incarnation change instead of stranding behind a
+   *  higher remembered seq (the journal §3.4 rule 3 cure). */
+  storeIncarnation?: string;
 }
 
 export interface CommitmentVerificationReport {
@@ -221,6 +249,10 @@ export interface CommitmentVerificationReport {
 export interface CommitmentTrackerConfig {
   stateDir: string;
   liveConfig: LiveConfig;
+  /** This machine's mesh identity — stamped as originMachineId on every NEW
+   *  commitment (P1.5 §3.1). Absent on single-machine agents pre-mesh; records
+   *  created without it are legacy-local by definition. */
+  originMachineId?: string;
   /** Check interval in ms. Default: 60_000 (1 minute) */
   checkIntervalMs?: number;
   /** Callback when a violation is detected */
@@ -447,6 +479,10 @@ export class CommitmentTracker extends EventEmitter {
       externalKey: input.externalKey,
       beaconCreatedBySource: input.beaconCreatedBySource,
       heartbeatCount: 0,
+      // P1.5 §3.1: the creator stamp — the composite (originMachineId, id) is
+      // THE cross-machine identity (ids are per-machine sequential counters).
+      // Distinct from ownerMachineId (a caller-supplied beacon field).
+      ...(this.config.originMachineId ? { originMachineId: this.config.originMachineId } : {}),
     };
 
     // Insert via the same discipline future writes use: under the single-
@@ -1255,7 +1291,10 @@ export class CommitmentTracker extends EventEmitter {
         continue;
       }
 
-      const committed: Commitment = { ...next, version: observedVersion + 1 };
+      const committed: Commitment = this.stampReplicationIfMeaningful(
+        current,
+        { ...next, version: observedVersion + 1 },
+      );
       this.store.commitments[latestIdx] = committed;
       this.saveStore();
       return committed;
@@ -1281,7 +1320,10 @@ export class CommitmentTracker extends EventEmitter {
     const current = this.store.commitments[idx];
     const observedVersion = current.version ?? 0;
     const next = fn({ ...current });
-    const committed: Commitment = { ...next, version: observedVersion + 1 };
+    const committed: Commitment = this.stampReplicationIfMeaningful(
+      current,
+      { ...next, version: observedVersion + 1 },
+    );
     this.store.commitments[idx] = committed;
     this.saveStore();
     return committed;
@@ -1293,7 +1335,10 @@ export class CommitmentTracker extends EventEmitter {
    * writes through mutate(id, fn).
    */
   private insertNew(commitment: Commitment): Commitment {
-    const withVersion: Commitment = { ...commitment, version: commitment.version ?? 0 };
+    const withVersion: Commitment = this.stampReplicationIfMeaningful(
+      null, // creation is always state-meaningful (P1.5 §3.2)
+      { ...commitment, version: commitment.version ?? 0 },
+    );
     this.store.commitments.push(withVersion);
     this.saveStore();
     return withVersion;
@@ -1321,13 +1366,47 @@ export class CommitmentTracker extends EventEmitter {
           }
           // Bump on-disk version tag; persisted on next saveStore().
           data.version = 2;
+          // ── Commitments Coherence backfill (P1.5 §3.2, additive) ──
+          // Legacy store: seed replicationSeq=1 + mint a fresh incarnation —
+          // peers hold nothing for the new incarnation, so the first sync is
+          // a FULL pull by construction (never a 0-means-unchanged strand).
+          if (typeof data.replicationSeq !== 'number' || !Number.isFinite(data.replicationSeq)) {
+            data.replicationSeq = 1;
+            data.storeIncarnation = randomUUID();
+          }
+          if (typeof data.storeIncarnation !== 'string' || !data.storeIncarnation) {
+            data.storeIncarnation = randomUUID();
+          }
+          for (const c of data.commitments) {
+            // Legacy records serve on a from-0 pull (lastMutatedSeq=1).
+            if (typeof c.lastMutatedSeq !== 'number') c.lastMutatedSeq = 1;
+          }
+          // Rewind detection (backup restore): the meta sidecar remembers the
+          // high-water replicationSeq ever advertised; a store now BELOW it
+          // was rewound — re-mint the incarnation so peers re-pull wholesale
+          // instead of silently stranding (journal §3.4 rule 3 verbatim).
+          try {
+            const metaRaw = fs.readFileSync(`${this.storePath}.meta.json`, 'utf-8');
+            const meta = JSON.parse(metaRaw) as { highWaterSeq?: number };
+            if (typeof meta?.highWaterSeq === 'number' && data.replicationSeq < meta.highWaterSeq) {
+              data.storeIncarnation = randomUUID();
+            }
+          } catch { /* @silent-fallback-ok: no meta sidecar = no prior advert to rewind below (first boot) — nothing to fence (COMMITMENTS-COHERENCE-SPEC §3.2) */
+          }
           return data as CommitmentStore;
         }
       }
     } catch {
       // Start fresh on corruption
     }
-    return { version: 2, commitments: [], lastModified: new Date().toISOString() };
+    // Fresh store: seed the P1.5 replication fields at birth (§3.2).
+    return {
+      version: 2,
+      commitments: [],
+      lastModified: new Date().toISOString(),
+      replicationSeq: 1,
+      storeIncarnation: randomUUID(),
+    };
   }
 
   private saveStore(): void {
@@ -1338,9 +1417,57 @@ export class CommitmentTracker extends EventEmitter {
       const tmpPath = `${this.storePath}.${process.pid}.tmp`;
       fs.writeFileSync(tmpPath, JSON.stringify(this.store, null, 2) + '\n');
       fs.renameSync(tmpPath, this.storePath);
+      // P1.5 §3.2 rewind fence: the meta sidecar tracks the high-water
+      // replicationSeq. Written AFTER the store (a crash between leaves the
+      // sidecar behind the store — harmless; ahead would false-trip the
+      // rewind fence). Best-effort like the store write itself.
+      const seq = this.store.replicationSeq;
+      if (typeof seq === 'number') {
+        const metaTmp = `${this.storePath}.meta.json.${process.pid}.tmp`;
+        fs.writeFileSync(metaTmp, JSON.stringify({ highWaterSeq: seq }));
+        fs.renameSync(metaTmp, `${this.storePath}.meta.json`);
+      }
     } catch {
       // @silent-fallback-ok — state persistence failure, will retry next cycle
     }
+  }
+
+  /**
+   * P1.5 §3.2 — replication bookkeeping at the WRITE FUNNELS. Diffs prev vs
+   * next EXCLUDING beacon-bookkeeping fields (consecutiveUnchanged,
+   * lastHeartbeatAt, heartbeatCount) and the CAS version: a state-meaningful
+   * change bumps the store's replicationSeq and stamps the record's
+   * lastMutatedSeq (creation always counts). Quiet-agent heartbeats must
+   * never re-ship snapshots. Single-file atomicity: the bump, the stamp, and
+   * the record persist in the SAME saveStore() write.
+   */
+  private stampReplicationIfMeaningful(prev: Commitment | null, next: Commitment): Commitment {
+    const BOOKKEEPING = new Set(['consecutiveUnchanged', 'lastHeartbeatAt', 'heartbeatCount', 'version', 'lastMutatedSeq']);
+    let meaningful = prev === null;
+    if (!meaningful && prev) {
+      const keys = new Set([...Object.keys(prev), ...Object.keys(next)]);
+      for (const k of keys) {
+        if (BOOKKEEPING.has(k)) continue;
+        const a = (prev as unknown as Record<string, unknown>)[k];
+        const b = (next as unknown as Record<string, unknown>)[k];
+        if (JSON.stringify(a) !== JSON.stringify(b)) {
+          meaningful = true;
+          break;
+        }
+      }
+    }
+    if (!meaningful) return next;
+    const seq = (this.store.replicationSeq ?? 1) + 1;
+    this.store.replicationSeq = seq;
+    return { ...next, lastMutatedSeq: seq };
+  }
+
+  /** P1.5 §3.2 — the advert, answered from MEMORY (never a disk read). */
+  getReplicationAdvert(): { incarnation: string; replicationSeq: number } | null {
+    const inc = this.store.storeIncarnation;
+    const seq = this.store.replicationSeq;
+    if (typeof inc !== 'string' || typeof seq !== 'number') return null;
+    return { incarnation: inc, replicationSeq: seq };
   }
 
   private computeNextId(): number {
