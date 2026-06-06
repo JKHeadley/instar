@@ -86,6 +86,14 @@ export class TopicOperatorStore {
       boundAt: input.boundAt ?? '',
       boundFrom: 'authenticated-inbound',
     };
+    // Idempotency guard: both inbound ingress paths (lifeline-forward #909 and
+    // the polling seam, increment 2e) re-bind on EVERY message from the operator.
+    // When the stored record is already identical, skip the disk write — the
+    // re-bind is then a pure read, not a per-message file rewrite.
+    const existing = this.load()[String(topicId)];
+    if (existing && JSON.stringify(existing) === JSON.stringify(record)) {
+      return existing;
+    }
     const map = { ...this.load() };
     map[String(topicId)] = record;
     this.save(map);

@@ -90,3 +90,28 @@ describe('TopicOperatorStore.sessionContextBlock', () => {
     expect(s.sessionContextBlock(7)).toContain('uid 999 is the VERIFIED operator');
   });
 });
+
+describe('TopicOperatorStore.setOperator idempotency (increment 2e)', () => {
+  // Both ingress paths re-bind on EVERY message from the operator; an identical
+  // record must be a pure read, not a per-message file rewrite.
+  it('skips the disk write when the stored record is identical', () => {
+    const s = new TopicOperatorStore(dir);
+    s.setOperator(19437, { platform: 'telegram', uid: '7812716706', displayName: 'Justin' });
+    const file = path.join(dir, 'topic-operators.json');
+    // Remove the file: if the identical re-bind skips save(), it stays absent.
+    SafeFsExecutor.safeRmSync(file, { force: true, operation: 'tests/unit/topic-operator-store.test.ts' });
+    const rec = s.setOperator(19437, { platform: 'telegram', uid: '7812716706', displayName: 'Justin' });
+    expect(rec?.uid).toBe('7812716706');
+    expect(fs.existsSync(file)).toBe(false);
+  });
+
+  it('still writes when the record actually changes', () => {
+    const s = new TopicOperatorStore(dir);
+    s.setOperator(19437, { platform: 'telegram', uid: '7812716706', displayName: 'Justin' });
+    const file = path.join(dir, 'topic-operators.json');
+    SafeFsExecutor.safeRmSync(file, { force: true, operation: 'tests/unit/topic-operator-store.test.ts' });
+    s.setOperator(19437, { platform: 'telegram', uid: '42', displayName: 'Other' });
+    expect(fs.existsSync(file)).toBe(true);
+    expect(s.getOperator(19437)?.uid).toBe('42');
+  });
+});

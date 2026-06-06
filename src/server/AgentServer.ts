@@ -2949,4 +2949,15 @@ export class AgentServer {
   getParallelWorkSentinel(): ParallelWorkSentinel | null {
     return this.parallelWorkSentinel;
   }
+
+  /**
+   * The topic-operator store (Know Your Principal #898). Exposed so the inbound
+   * routing seam (`wireTelegramRouting`, increment 2e) binds the operator on the
+   * POLLING ingress path with the SAME instance the routes use — the store caches
+   * its map in memory, so constructing a second instance on the same file would
+   * lose updates between the two caches.
+   */
+  getTopicOperatorStore(): TopicOperatorStore | null {
+    return this.topicOperatorStore;
+  }
 }
