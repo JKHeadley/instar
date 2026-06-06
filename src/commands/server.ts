@@ -2731,6 +2731,11 @@ export async function startServer(options: StartOptions): Promise<void> {
                   if (!Number.isFinite(topicNum)) continue;
                   if (!seenRuns.has(j.topic)) {
                     const runId = autonomousRunId(j.startedAt, j.topic);
+                    // #925: while the writer is locked out the emit below is
+                    // dropped — do NOT mark the run seen, so it re-emits on a
+                    // later tick once the lock recovers (op-key dedupe makes
+                    // re-emits safe).
+                    if (journal.isLockedOut) continue;
                     seenRuns.set(j.topic, { runId, file: j.file });
                     journal.emitAutonomousRun(topicNum, { action: 'started', runId, artifactPaths: [j.file] });
                   }
@@ -10724,7 +10729,21 @@ export async function startServer(options: StartOptions): Promise<void> {
               const wsSelf = cjOwnMachineId ?? meshSelfId;
               const wsOwnerOf = (topic: number): { owner: string | null; epoch: number | null } => {
                 const rec = sessionOwnershipRegistry?.read(String(topic));
-                return { owner: rec?.ownerMachineId ?? null, epoch: rec?.ownershipEpoch ?? null };
+                if (rec?.ownerMachineId) {
+                  return { owner: rec.ownerMachineId, epoch: rec.ownershipEpoch ?? null };
+                }
+                // Issue #926 (live 2026-06-06): ownership only CASes when real
+                // traffic flows — a QUIET topic just moved here has owner:null
+                // + a pin. The pin IS the live placement authority for unowned
+                // topics; without this fallback the fetch reflex refuses in
+                // exactly the post-move state it exists for. Epoch 0 keeps the
+                // per-write recheck coherent (a real claim bumps past it and
+                // the in-flight pull aborts as superseded, by design).
+                const pin = _topicPinStore?.get(String(topic));
+                if (pin?.pinned && pin.preferredMachine === wsSelf) {
+                  return { owner: wsSelf, epoch: 0 };
+                }
+                return { owner: null, epoch: null };
               };
               workingSetPullCoordinator = new wscMod.WorkingSetPullCoordinator({
                 stateDir: config.stateDir,

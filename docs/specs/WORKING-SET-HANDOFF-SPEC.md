@@ -267,6 +267,14 @@ ROUTER, which confirms claims on the target's behalf in the single-router
 topology; instrumenting them would schedule the pull on the wrong machine.
 
 Discipline (all inherited-invariant applications):
+- **Quiet-topic ownership fallback (issue #926, live-earned):** ownership
+  only CASes when traffic flows, so a topic just MOVED here is
+  `owner: null` + pinned — the exact state the reflex exists for. The
+  ownerOf seam therefore falls back to the placement pin when no
+  ownership record exists (`pinned && preferredMachine === self` ⇒
+  self-owned at epoch 0); the pin is the live placement authority for
+  unowned topics, and a real claim bumping past epoch 0 aborts an
+  in-flight pull as superseded, by design.
 - **Operation key `(topic, epoch)`** — at most one pull scheduled per key,
   deduped against a durable recent-key window (restart-proof). Skipped
   entirely when `owner === prevOwner` (placing-confirm, no real move) or
