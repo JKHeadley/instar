@@ -15,6 +15,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { SessionLivenessOracle, type SessionLivenessOracleConfig } from './SessionLivenessOracle.js';
+import { resolveGhTokenFromVault } from './ghToken.js';
 import type { ReapGuard } from './ReapGuard.js';
 import { paneShowsClaudeWorking } from './claudeActivityIndicators.js';
 import { extractGeminiFinalAssistantBlock, meaningfulTail } from './paneText.js';
@@ -341,6 +342,11 @@ export class SessionManager extends EventEmitter {
    *  framework; value is the resolved path string. */
   private lastRerouteDecision = new Map<string, 'headless' | 'rerouted-interactive'>();
 
+  /** State root for the per-agent encrypted vault (P3b gh-token resolution —
+   *  same derivation as the pending-inject ledger: StateManager.baseDir when
+   *  present, else `<projectDir>/.instar`). */
+  private vaultStateDir: string;
+
   constructor(config: SessionManagerConfig, state: StateManager) {
     super();
     this.config = config;
@@ -354,6 +360,7 @@ export class SessionManager extends EventEmitter {
       ? (state as { baseDir: string }).baseDir
       : path.join(config.projectDir, '.instar');
     this.pendingInjects = new PendingInjectStore(path.join(stateBase, 'state'));
+    this.vaultStateDir = stateBase;
     // Age-gate kill back-off: default 10 min between re-requests for a kept session
     // (config.ageKillBackoffMinutes; 0 disables → legacy every-tick behavior).
     const backoffMin = typeof config.ageKillBackoffMinutes === 'number' ? config.ageKillBackoffMinutes : 10;
@@ -363,6 +370,18 @@ export class SessionManager extends EventEmitter {
         maxAgeMs: config.respawnBuildContext.maxAgeMs,
       });
     }
+  }
+
+  /** Per-agent GitHub token env flags for spawned sessions (Phase-3 increment
+   *  P3b, option C — per-agent credential isolation). Resolves the agent's OWN
+   *  token from its encrypted vault at spawn time; when the vault holds none,
+   *  returns [] and the spawn env is unchanged (machine-global gh behavior,
+   *  exactly as before). Mirrors the existing credential-injection art
+   *  (INSTAR_AUTH_TOKEN / ANTHROPIC_API_KEY via tmux -e). The hardened triage
+   *  spawn deliberately does NOT call this — it scrubs credentials. */
+  private ghTokenEnvFlags(): string[] {
+    const token = resolveGhTokenFromVault(this.vaultStateDir);
+    return token ? ['-e', `GH_TOKEN=${token}`] : [];
   }
 
   /** Lazily-constructed tri-state liveness oracle (UNIFIED-SESSION-LIFECYCLE §P1).
@@ -1635,6 +1654,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
         '-e', `INSTAR_SERVER_URL=http://localhost:${this.config.port}`,
         '-e', `INSTAR_AUTH_TOKEN=${this.config.authToken}`,
         '-e', `INSTAR_AGENT_ID=${this.config.projectName}`,
+        ...this.ghTokenEnvFlags(), // P3b: per-agent vault GitHub token (empty when no vault token)
         ...(workTreeFencingToken ? ['-e', `INSTAR_FENCING_TOKEN=${workTreeFencingToken}`] : []),
         ...(workTreeFencingToken ? ['-e', `INSTAR_WORKTREE_PATH=${resolvedCwd}`] : []),
         ...(shimDir ? ['-e', `PATH=${shimmedPath}`, '-e', `BASH_ENV=${path.join(shimDir, '.shellrc')}`] : []),
@@ -1886,6 +1906,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
         '-e', `INSTAR_SERVER_URL=http://localhost:${this.config.port}`,
         '-e', `INSTAR_AUTH_TOKEN=${this.config.authToken}`,
         '-e', `INSTAR_AGENT_ID=${this.config.projectName}`,
+        ...this.ghTokenEnvFlags(), // P3b: per-agent vault GitHub token (empty when no vault token)
         ...(workTreeFencingToken ? ['-e', `INSTAR_FENCING_TOKEN=${workTreeFencingToken}`] : []),
         ...(workTreeFencingToken ? ['-e', `INSTAR_WORKTREE_PATH=${resolvedCwd}`] : []),
         ...(shimDir ? ['-e', `PATH=${shimmedPath}`, '-e', `BASH_ENV=${path.join(shimDir, '.shellrc')}`] : []),
@@ -2951,6 +2972,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
         '-e', `INSTAR_AUTH_TOKEN=${this.config.authToken}`,
         '-e', `INSTAR_AGENT_ID=${this.config.projectName}`,
         '-e', `INSTAR_FRAMEWORK=${framework}`,
+        ...this.ghTokenEnvFlags(), // P3b: per-agent vault GitHub token (empty when no vault token)
         // Framework-specific env additions/clears (e.g., CLAUDECODE=)
         ...Object.entries(launchSpec.envOverrides).flatMap(([k, v]) => ['-e', `${k}=${v}`]),
         // OAuth tokens (sk-ant-oat01-...) go in CLAUDE_CODE_OAUTH_TOKEN to enable
