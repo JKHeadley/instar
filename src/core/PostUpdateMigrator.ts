@@ -2928,10 +2928,26 @@ The standing program that each apprenticeship/mentorship instance plugs into (e.
 - Transition status (the ONLY way it changes — runs the gate): \`POST /apprenticeship/instances/:id/transition\` \`{"to":"active"}\` (refused + 409 on a failed gate or illegal transition; \`complete\` is terminal). Preview without mutating: \`.../can-start\` · \`.../can-complete\`.
 - Record a manual cycle: \`POST /apprenticeship/cycles\` with \`instanceId\`, positive \`cycleNumber\`, \`task\`, \`menteeOutput\`, optional \`mentorFlagged\` / \`overseerDifferential\` / \`coaching\` / \`infraItems\`, \`kind\` (\`mentor-mentee-differential\`, \`overseer-apprentice-devreview\`, \`overseer-mentee-direct\`), and \`channel\` (\`telegram-playwright\`, \`threadline-backup\`, \`direct-shortcut\`, \`unknown\`). A \`telegram-playwright\` cycle additionally REQUIRES a \`transcriptAudit\` block — \`{ topicIds, window: {start,end}, summary, findingDedupKeys, generatedAt, ledger: 'local'|'remote'|'dry-run'|'failed' }\` — built from \`instar dev:post-drive-transcript-audit\` run over the drive window (use \`--history-base-url\` when the transcript lives on the mentee's server; \`ledger:'local'\` claims are cross-checked against the real framework ledger). Use this when the overseer or manual loop found a differential outside the automated mentor tick.
 - **When to use** (PROACTIVE): when starting or closing a mentorship/apprenticeship instance, drive it through the registry + transitions so the retro-harvest is reviewed before the next instance starts and the lessons are captured before this one closes — never track the lifecycle by memory.
+- Layer-balance health: \`GET /apprenticeship/instances/:id/role-coverage\` returns a \`keystoneBalance\` block — \`{ keystoneAxis, keystoneCycleCount, lastKeystoneAt, oversightSinceKeystone, starved, reason }\` — answering "is my deepest layer (the real mentor→mentee drive) actually firing, or have I drifted into just reviewing/overseeing?" \`starved:true\` = the mentee layer is under-firing relative to ongoing activity (the silent "mentor-heavy/mentee-light" drift). Observe-only; tune via \`?oversightStarvationThreshold=N\`. **When to use** (PROACTIVE): before deciding the loop is healthy — if starved, drive the mentee layer (a real \`mentor-mentee-differential\` cycle through the dogfooded channel), not another review.
 `;
       content += '\n' + apprenticeshipSection;
       patched = true;
       result.upgraded.push('CLAUDE.md: added Apprenticeship Program section');
+    }
+
+    // Layer-balance signal (2026-06-06): agents that ALREADY carry the
+    // Apprenticeship Program section need the keystoneBalance health line — an
+    // agent that doesn't know to CHECK the balance can't notice the mentee
+    // layer starving. Content-sniffed insertion; idempotent (only when the
+    // section exists AND the line is absent).
+    if (content.includes('**Apprenticeship Program**') && !content.includes('keystoneBalance')) {
+      const anchor = '- **When to use** (PROACTIVE): when starting or closing a mentorship/apprenticeship instance, drive it through the registry + transitions so the retro-harvest is reviewed before the next instance starts and the lessons are captured before this one closes — never track the lifecycle by memory.';
+      if (content.includes(anchor)) {
+        const balanceLine = '\n- Layer-balance health: `GET /apprenticeship/instances/:id/role-coverage` returns a `keystoneBalance` block — `{ keystoneAxis, keystoneCycleCount, lastKeystoneAt, oversightSinceKeystone, starved, reason }` — answering "is my deepest layer (the real mentor→mentee drive) actually firing, or have I drifted into just reviewing/overseeing?" `starved:true` = the mentee layer is under-firing relative to ongoing activity (the silent "mentor-heavy/mentee-light" drift). Observe-only; tune via `?oversightStarvationThreshold=N`. **When to use** (PROACTIVE): before deciding the loop is healthy — if starved, drive the mentee layer (a real `mentor-mentee-differential` cycle through the dogfooded channel), not another review.';
+        content = content.replace(anchor, anchor + balanceLine);
+        patched = true;
+        result.upgraded.push('CLAUDE.md: added apprenticeship layer-balance (keystoneBalance) awareness');
+      }
     }
 
     // Transcript-audit gate (#864 follow-through): agents that ALREADY carry the

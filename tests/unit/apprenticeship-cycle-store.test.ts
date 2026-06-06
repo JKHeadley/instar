@@ -145,6 +145,87 @@ describe('ApprenticeshipCycleStore', () => {
     store.close();
   });
 
+  describe('keystoneBalance — observe-only deepest-layer health (2026-06-06 mentor/mentee balance)', () => {
+    const rec = (store: ApprenticeshipCycleStore, id: string, n: number, kind: string, at: string, inst = 'i') =>
+      store.record({ id, instanceId: inst, cycleNumber: n, createdAt: at, task: 't', menteeOutput: 'm', kind, operatorSeatUx: ux() });
+
+    it('STARVED: keystone never fired while oversight ran (the assessment case)', () => {
+      const store = makeStore();
+      rec(store, 'r1', 1, 'overseer-apprentice-devreview', '2026-06-03T08:00:00.000Z');
+      rec(store, 'r2', 2, 'overseer-apprentice-devreview', '2026-06-03T09:00:00.000Z');
+      const kb = store.roleCoverage('i').keystoneBalance;
+      expect(kb.keystoneAxis).toBe('mentor-mentee-differential');
+      expect(kb.keystoneCycleCount).toBe(0);
+      expect(kb.lastKeystoneAt).toBeNull();
+      expect(kb.oversightCycleCount).toBe(2);
+      expect(kb.oversightSinceKeystone).toBe(2);
+      expect(kb.starved).toBe(true);
+      expect(kb.reason).toMatch(/never fired/i);
+      store.close();
+    });
+
+    it('STARVED: keystone fired but enough oversight piled up SINCE (fired-but-stale)', () => {
+      const store = makeStore();
+      rec(store, 'k1', 1, 'mentor-mentee-differential', '2026-06-03T08:00:00.000Z');
+      rec(store, 'r1', 2, 'overseer-apprentice-devreview', '2026-06-03T09:00:00.000Z');
+      rec(store, 'r2', 3, 'overseer-apprentice-devreview', '2026-06-03T10:00:00.000Z');
+      rec(store, 'r3', 4, 'overseer-mentee-direct', '2026-06-03T11:00:00.000Z');
+      const kb = store.roleCoverage('i').keystoneBalance;
+      expect(kb.keystoneCycleCount).toBe(1);
+      expect(kb.lastKeystoneAt).toBe('2026-06-03T08:00:00.000Z');
+      expect(kb.oversightSinceKeystone).toBe(3); // all 3 oversight rows are AFTER the keystone
+      expect(kb.starved).toBe(true);
+      expect(kb.reason).toMatch(/drifted/i);
+      store.close();
+    });
+
+    it('HEALTHY: oversight that happened BEFORE the last keystone does not count as drift', () => {
+      const store = makeStore();
+      rec(store, 'r1', 1, 'overseer-apprentice-devreview', '2026-06-03T08:00:00.000Z');
+      rec(store, 'r2', 2, 'overseer-apprentice-devreview', '2026-06-03T09:00:00.000Z');
+      rec(store, 'k1', 3, 'mentor-mentee-differential', '2026-06-03T10:00:00.000Z'); // keystone is the LATEST
+      const kb = store.roleCoverage('i').keystoneBalance;
+      expect(kb.oversightCycleCount).toBe(2);
+      expect(kb.oversightSinceKeystone).toBe(0); // both oversight rows predate the keystone
+      expect(kb.starved).toBe(false);
+      expect(kb.reason).toMatch(/healthy/i);
+      store.close();
+    });
+
+    it('NOT starved: empty instance / keystone-not-started has nothing to drift against', () => {
+      const store = makeStore();
+      const empty = store.roleCoverage('empty').keystoneBalance;
+      expect(empty.starved).toBe(false);
+      expect(empty.oversightCycleCount).toBe(0);
+      expect(empty.reason).toMatch(/just hasn't started|not fired yet/i);
+      store.close();
+    });
+
+    it('exactly AT threshold starves; one below does not (both sides of the boundary)', () => {
+      const store = makeStore();
+      rec(store, 'k1', 1, 'mentor-mentee-differential', '2026-06-03T08:00:00.000Z');
+      rec(store, 'r1', 2, 'overseer-apprentice-devreview', '2026-06-03T09:00:00.000Z');
+      rec(store, 'r2', 3, 'overseer-apprentice-devreview', '2026-06-03T10:00:00.000Z');
+      // 2 oversight-since with threshold 3 → not starved
+      expect(store.roleCoverage('i', { oversightStarvationThreshold: 3 }).keystoneBalance.starved).toBe(false);
+      // same data, threshold 2 → exactly at → starved
+      const atThreshold = store.roleCoverage('i', { oversightStarvationThreshold: 2 }).keystoneBalance;
+      expect(atThreshold.starved).toBe(true);
+      expect(atThreshold.starvationThreshold).toBe(2);
+      store.close();
+    });
+
+    it('a direct-shortcut keystone does NOT count — starvation still sees the layer as un-driven', () => {
+      const store = makeStore();
+      store.record({ id: 'sc', instanceId: 'i', cycleNumber: 1, createdAt: '2026-06-03T08:00:00.000Z', task: 't', menteeOutput: 'm', kind: 'mentor-mentee-differential', channel: 'direct-shortcut', operatorSeatUx: ux() });
+      rec(store, 'r1', 2, 'overseer-apprentice-devreview', '2026-06-03T09:00:00.000Z');
+      const kb = store.roleCoverage('i').keystoneBalance;
+      expect(kb.keystoneCycleCount).toBe(0); // shortcut excluded from the keystone axis
+      expect(kb.starved).toBe(true); // so the layer reads as never-driven
+      store.close();
+    });
+  });
+
   it('filters list results by instanceId and applies the limit', () => {
     const store = makeStore();
     store.record({ id: 'a1', instanceId: 'a', cycleNumber: 1, task: 'a1', menteeOutput: 'out', operatorSeatUx: ux() });

@@ -4263,7 +4263,7 @@ export function createRoutes(ctx: RouteContext): Router {
         res.status(400).json({ error: err.message });
         return;
       }
-      throw err;
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
     }
   });
 
@@ -12995,7 +12995,12 @@ export function createRoutes(ctx: RouteContext): Router {
   router.get('/apprenticeship/instances/:id/role-coverage', (req, res) => {
     if (!ctx.apprenticeshipCycleStore) { res.status(503).json({ error: 'apprenticeship cycle store disabled' }); return; }
     try {
-      res.json(ctx.apprenticeshipCycleStore.roleCoverage(req.params.id));
+      // Optional ?oversightStarvationThreshold=N tunes the keystone-balance
+      // signal (observe-only; default DEFAULT_KEYSTONE_STARVATION_OVERSIGHT).
+      const raw = req.query.oversightStarvationThreshold;
+      const parsed = typeof raw === 'string' ? Number.parseInt(raw, 10) : NaN;
+      const opts = Number.isInteger(parsed) && parsed > 0 ? { oversightStarvationThreshold: parsed } : {};
+      res.json(ctx.apprenticeshipCycleStore.roleCoverage(req.params.id, opts));
     } catch (err) {
       res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
     }

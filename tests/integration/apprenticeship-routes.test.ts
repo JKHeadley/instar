@@ -310,6 +310,34 @@ describe('/apprenticeship routes (integration)', () => {
     expect(coverage.status).toBe(200);
     expect(coverage.body.axes['overseer-apprentice-devreview'].fired).toBe(true);
     expect(coverage.body.axes['mentor-mentee-differential'].fired).toBe(false);
+    // keystoneBalance (the 2026-06-06 mentor/mentee balance signal) is surfaced
+    // through the route: this instance reviewed without ever driving the mentee.
+    expect(coverage.body.keystoneBalance.keystoneAxis).toBe('mentor-mentee-differential');
+    expect(coverage.body.keystoneBalance.starved).toBe(true);
+    expect(coverage.body.keystoneBalance.reason).toMatch(/never fired/i);
+    store.close();
+  });
+
+  it('role-coverage honors the ?oversightStarvationThreshold tuning query', async () => {
+    const store = makeCycleStore();
+    const app = appWith(ctxFor(stateDir, makeProgram(), store));
+    const base = (id: string, n: number, kind: string, at: string) => ({
+      id, instanceId: 'tuned', cycleNumber: n, task: 't', menteeOutput: 'm', kind, createdAt: at, operatorSeatUx: UXOK,
+    });
+    for (const c of [
+      base('k', 1, 'mentor-mentee-differential', '2026-06-03T08:00:00.000Z'),
+      base('o1', 2, 'overseer-apprentice-devreview', '2026-06-03T09:00:00.000Z'),
+      base('o2', 3, 'overseer-apprentice-devreview', '2026-06-03T10:00:00.000Z'),
+    ]) {
+      await request(app).post('/apprenticeship/cycles').set(auth()).send(c).expect(201);
+    }
+    // default threshold 3 → 2 oversight-since → not starved
+    const dflt = await request(app).get('/apprenticeship/instances/tuned/role-coverage').set(auth());
+    expect(dflt.body.keystoneBalance.starved).toBe(false);
+    // ?oversightStarvationThreshold=2 → exactly at → starved
+    const tuned = await request(app).get('/apprenticeship/instances/tuned/role-coverage?oversightStarvationThreshold=2').set(auth());
+    expect(tuned.body.keystoneBalance.starved).toBe(true);
+    expect(tuned.body.keystoneBalance.starvationThreshold).toBe(2);
     store.close();
   });
 
