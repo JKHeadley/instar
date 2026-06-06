@@ -24,3 +24,22 @@ original in-memory-config tests never exercised.
 Only if they previously tried per-component framework routing and concluded it
 didn't work: it was a config-loading bug, now fixed — their config.json
 setting will take effect after this update.
+
+## Evidence
+
+Reproduced LIVE on the echo agent (v1.3.360, 2026-06-06 ~09:50Z):
+1. Wrote `{"sessions": {"componentFrameworks": {"categories": {"sentinel":
+   "codex-cli"}}}}` into `.instar/config.json` (verified on disk, mtime
+   confirmed surviving the restart).
+2. Restarted the server (launchd kickstart; fresh boot read the file).
+3. **Before fix:** `GET /intelligence/routing` still reported all 13 sentinel
+   components on `claude-code` — the file field never reached the router
+   (`grep componentFrameworks dist/core/Config.js` → 0 matches in the
+   deployed loader; the field is consumed in IntelligenceRouter.js +
+   commands/server.js but never loaded).
+4. **After fix (this branch):** the new exact-gap regression test loads a
+   REAL config file through `loadConfig()` and the returned
+   `config.sessions.componentFrameworks` carries the table — failing on
+   pre-fix code, passing post-fix. (Live post-fix routing verification on
+   echo happens after this releases and is the first task of the observation
+   session tracking the swap.)
