@@ -297,6 +297,22 @@ Discipline (all inherited-invariant applications):
   `placing` record naming the target is repaired via claim; any other
   in-flight shape is left strictly untouched. Reported as
   `placedOwnership` in the transfer response.
+- **Ownership epoch floor (finding #7, live v1.3.375):** the ownership
+  registry is in-memory, so a server restart resets a quiet topic's epochs
+  to 0 — and the journal's `(topic, epoch)` op-key window (which IS
+  restart-proof) then dedupes the re-placed topic's fresh placement
+  entries as replays: the CAS lands, the transfer truthfully answers
+  `placedOwnership: true`, and the durable evidence silently keeps naming
+  the PREVIOUS machine (observed live on the 77901 transfer-back). Fix at
+  the epoch source: `cas()` consults an `epochFloorOf` seam — the newest
+  JOURNALED epoch for the session (the journal is the durable memory the
+  in-memory registry lacks) — so post-restart epochs stay monotonic and
+  every landed CAS journals under a fresh op-key. The in-memory store's
+  fast-forward accepts any monotonic advance (a git fast-forward may move
+  several commits; `cas()` is synchronous, so a stale competing candidate
+  still proposes ≤ the landed epoch and loses). The floor is best-effort:
+  a reader failure reads as 0 and only risks the pre-fix dedupe for that
+  one call — it never blocks an ownership CAS.
 - **Operation key `(topic, epoch)`** — at most one pull scheduled per key,
   deduped against a durable recent-key window (restart-proof). Skipped
   entirely when `owner === prevOwner` (placing-confirm, no real move) or

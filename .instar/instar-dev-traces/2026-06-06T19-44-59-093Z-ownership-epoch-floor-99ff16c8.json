@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "sessionId": "cbdc2d51-a6de-446b-8215-773ec12f8e0b",
+  "timestamp": "2026-06-06T19:44:59.093Z",
+  "artifactPath": "upgrades/side-effects/ownership-epoch-floor.md",
+  "artifactSha256": "2d0d18c9134405594934fca3f45b3faa28c5229331041a45d5f710589ce777f9",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "src/core/SessionOwnership.ts",
+    "src/core/SessionOwnershipRegistry.ts",
+    "tests/unit/ownership-epoch-floor.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Monotonicity fix observed live (finding #7: restart-reset epochs collide with the restart-proof journal op-key, silently dropping placement evidence): an optional best-effort floor seam + a store fast-forward relaxation with identical loser-rejection outcomes; 6 new unit tests incl. the full restart regression; 62 blast-radius tests green.",
+  "eli16Path": "docs/specs/WORKING-SET-HANDOFF-SPEC.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/ownership-epoch-floor.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

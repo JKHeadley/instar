@@ -10360,10 +10360,15 @@ export async function startServer(options: StartOptions): Promise<void> {
         // git-backed cross-machine store is the Track-H swap). Per-session nonce set.
         const ownMod = await import('../core/SessionOwnershipRegistry.js');
         const seenOwnNonces = new Set<string>();
+        // Epoch floor (finding #7): late-bound — the journal reader that backs it
+        // is constructed further down (working-set wiring); until then the floor
+        // reads 0, which preserves pre-fix behavior for the boot window.
+        let ownershipEpochFloor: ((sessionKey: string) => number) | null = null;
         sessionOwnershipRegistry = new ownMod.SessionOwnershipRegistry({
           store: new ownMod.InMemorySessionOwnershipStore(),
           seenNonce: (k) => seenOwnNonces.has(k),
           recordNonce: (k) => seenOwnNonces.add(k),
+          epochFloorOf: (sk) => ownershipEpochFloor?.(sk) ?? 0,
           logger: (m: string) => console.log(pc.dim(`  ${m}`)),
         });
         const ownReg = sessionOwnershipRegistry;
@@ -10771,6 +10776,19 @@ export async function startServer(options: StartOptions): Promise<void> {
                 logger: (m) => console.log(pc.dim(`  [working-set] ${m}`)),
               });
               const wsReader2 = new wsReaderMod2.CoherenceJournalReader({ stateDir: config.stateDir });
+              // Bind the ownership epoch floor (finding #7): the newest JOURNALED
+              // epoch for a topic — own + replica streams — so a post-restart
+              // re-place on the in-memory registry never reuses an epoch the
+              // journal's (topic, epoch) op-key already consumed (which silently
+              // deduped the fresh placement evidence away, leaving the durable
+              // record pointing at the WRONG machine).
+              ownershipEpochFloor = (sk: string): number => {
+                const topicNum = Number(sk);
+                if (!Number.isFinite(topicNum)) return 0;
+                const newest = wsReader2.query({ kind: 'topic-placement', topic: topicNum, limit: 1 }).entries[0];
+                const e = (newest?.data as { epoch?: unknown } | undefined)?.epoch;
+                return typeof e === 'number' && Number.isFinite(e) ? e : 0;
+              };
               const wsSelf = cjOwnMachineId ?? meshSelfId;
               const wsOwnerOf = (topic: number): { owner: string | null; epoch: number | null } => {
                 const rec = sessionOwnershipRegistry?.read(String(topic));

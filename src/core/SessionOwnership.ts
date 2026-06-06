@@ -59,7 +59,7 @@ export type OwnershipReason =
 export function applyOwnershipAction(
   current: SessionOwnershipRecord | null,
   action: OwnershipAction,
-  ctx: { sessionKey: string; nonce: string; now: number },
+  ctx: { sessionKey: string; nonce: string; now: number; epochFloor?: number },
 ): { ok: true; next: SessionOwnershipRecord } | { ok: false; reason: OwnershipReason } {
   const base = {
     sessionKey: ctx.sessionKey,
@@ -67,7 +67,13 @@ export function applyOwnershipAction(
     timestamp: ctx.now,
     updatedAt: new Date(ctx.now).toISOString(),
   };
-  const epoch = current?.ownershipEpoch ?? 0;
+  // Epoch floor (live-matrix finding #7, 2026-06-06): the registry is
+  // in-memory, so a restart resets epochs to 0 for quiet sessions — and the
+  // coherence journal's (topic, epoch) op-key then DEDUPES the re-placed
+  // session's placement entries as replays, leaving the durable evidence
+  // pointing at the WRONG machine. The caller may supply a floor (the newest
+  // journaled epoch for this session) so post-restart epochs stay monotonic.
+  const epoch = Math.max(current?.ownershipEpoch ?? 0, ctx.epochFloor ?? 0);
 
   switch (action.type) {
     case 'place': {

@@ -44,7 +44,13 @@ export class InMemorySessionOwnershipStore {
   casWrite(candidate: import('./SessionOwnership.js').SessionOwnershipRecord) {
     const current = this.recs.get(candidate.sessionKey) ?? null;
     const curEpoch = current?.ownershipEpoch ?? 0;
-    if (candidate.ownershipEpoch === curEpoch + 1) {
+    // Fast-forward = MONOTONIC advance (like a git fast-forward push, which may
+    // advance several commits) — not exactly +1. The epoch floor (finding #7)
+    // legitimately jumps a fresh post-restart record past journal-consumed
+    // epochs; cas() is synchronous, so within this in-process store a stale
+    // competing candidate still loses (it computed from the same `current`
+    // and proposes an epoch ≤ the landed one).
+    if (candidate.ownershipEpoch > curEpoch) {
       this.recs.set(candidate.sessionKey, candidate);
       return { ok: true, observed: candidate };
     }
@@ -76,6 +82,14 @@ export interface SessionOwnershipRegistryDeps {
   now?: () => number;
   /** Eviction age (ms) for `released` records. Default 86400000 (24h). */
   releasedEvictionMs?: number;
+  /**
+   * Durable epoch floor for a session (live-matrix finding #7): the newest
+   * JOURNALED epoch, so a post-restart re-place on this in-memory store never
+   * reuses an epoch the coherence journal already consumed (its (topic, epoch)
+   * op-key would silently dedupe the new placement evidence away). Best-effort:
+   * a throw reads as 0 — the floor is monotonicity insurance, never a gate.
+   */
+  epochFloorOf?: (sessionKey: string) => number;
   logger?: (msg: string) => void;
 }
 
@@ -127,7 +141,12 @@ export class SessionOwnershipRegistry {
    */
   cas(action: OwnershipAction, ctx: { sessionKey: string; sender: string; nonce: string }): CasResult {
     const current = this.d.store.read(ctx.sessionKey);
-    const t = applyOwnershipAction(current, action, { sessionKey: ctx.sessionKey, nonce: ctx.nonce, now: this.now() });
+    let epochFloor = 0;
+    try {
+      epochFloor = this.d.epochFloorOf?.(ctx.sessionKey) ?? 0;
+    } catch { /* @silent-fallback-ok: the journal-derived epoch floor is monotonicity insurance (finding #7) — a reader failure must never block an ownership CAS, it just risks the pre-fix dedupe behavior for this one call */
+    }
+    const t = applyOwnershipAction(current, action, { sessionKey: ctx.sessionKey, nonce: ctx.nonce, now: this.now(), epochFloor });
     if (!t.ok) return { ok: false, reason: t.reason, observed: current };
 
     const nkey = ownershipNonceKey(ctx.sessionKey, ctx.sender, t.next.ownershipEpoch, ctx.nonce);
