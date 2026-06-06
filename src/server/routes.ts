@@ -4508,6 +4508,13 @@ export function createRoutes(ctx: RouteContext): Router {
   // conversation. The response is 202 immediately because the kill itself
   // ends the requester's process — there is no synchronous result.
   //
+  // `fresh: true` skips the `--resume` — the topic's resume UUID is cleared so
+  // the respawn starts a brand-new conversation. This is the recovery path for
+  // a POISONED transcript (thinking-block-400 wedge, AUP-rejection loop) where
+  // resuming would just re-wedge. Before this param existed only the
+  // ContextWedgeSentinel's internal wiring could fresh-respawn; the 2026-06-05
+  // EXO incident required hand-editing topic-resume-map.json to recover.
+  //
   // Rate limit and lifecycle live in SessionRefresh (the orchestrator);
   // this route is a thin entry point.
   router.post('/sessions/refresh', spawnLimiter, (req, res) => {
@@ -4516,7 +4523,7 @@ export function createRoutes(ctx: RouteContext): Router {
       return;
     }
 
-    const { sessionName, followUpPrompt, reason } = req.body || {};
+    const { sessionName, followUpPrompt, reason, fresh } = req.body || {};
 
     if (!sessionName || typeof sessionName !== 'string' || !SESSION_NAME_RE.test(sessionName)) {
       res.status(400).json({ error: '"sessionName" is required and must contain only letters, numbers, hyphens, underscores (max 200)' });
@@ -4530,17 +4537,21 @@ export function createRoutes(ctx: RouteContext): Router {
       res.status(400).json({ error: '"reason" must be a string under 1000 chars' });
       return;
     }
+    if (fresh !== undefined && typeof fresh !== 'boolean') {
+      res.status(400).json({ error: '"fresh" must be a boolean' });
+      return;
+    }
 
     // Acknowledge BEFORE killing — the requester is the session being killed,
     // so it needs to receive the 202 before its process disappears.
-    res.status(202).json({ ok: true, message: 'Refresh scheduled', sessionName });
+    res.status(202).json({ ok: true, message: 'Refresh scheduled', sessionName, fresh: fresh === true });
 
     // Schedule the kill+spawn after the response has flushed and the agent
     // has a moment to log its last action. 500ms is enough for HTTP flush
     // on a local loopback without being a noticeable user-facing delay.
     const sessionRefresh = ctx.sessionRefresh;
     setTimeout(() => {
-      sessionRefresh.refreshSession({ sessionName, followUpPrompt, reason }).then(result => {
+      sessionRefresh.refreshSession({ sessionName, followUpPrompt, reason, fresh }).then(result => {
         if (!result.ok) {
           // Structured logging so over-blocks (rate guard) are detectable
           // in operations per signal-vs-authority logging rule. The agent's

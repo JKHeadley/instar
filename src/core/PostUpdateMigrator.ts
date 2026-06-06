@@ -63,6 +63,17 @@ import {
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
+/**
+ * CLAUDE.md note for the second wedge-signature family (2026-06-05 EXO
+ * incident) + the API fresh-respawn lever. Appended to NEW installs as part of
+ * the Stuck-Context Recovery section, and patched onto agents that already
+ * have the section. Marker for idempotency: 'AUP-rejection wedge'.
+ */
+const AUP_WEDGE_CLAUDE_MD_NOTE = `
+- **AUP-rejection wedge (second signature, 2026-06-05):** a transcript that accumulates content tripping the API's Usage Policy classifier (e.g. literal red-team / prompt-injection test payloads from security-harness work) gets EVERY reply rejected with \`API Error: … appears to violate our Usage Policy\` — same permanent death, same fresh-respawn recovery. The sentinel requires the signature on MORE THAN ONE line (the loop always repeats; a benign one-off rejection doesn't). Prevention: keep literal adversarial payloads in files on disk and reference them by path — never paste them into a conversation.
+- **Fresh respawn via API:** \`POST /sessions/refresh\` with \`{"sessionName":"<tmux-name>","fresh":true,"reason":"…"}\` kills + respawns WITHOUT \`--resume\` (clears the topic's resume UUID first). Use it when a transcript is poisoned — a normal refresh would re-wedge.
+`;
+
 export interface MigrationResult {
   /** What was upgraded */
   upgraded: string[];
@@ -3419,9 +3430,10 @@ A secret you give me on one machine — a Telegram token, an API key, a GitHub P
     }
 
     // ContextWedgeSentinel — the 4th silently-stopped sentinel. Tells the agent
-    // about the thinking-block-400 wedge + that auto-recovery is opt-in. Without
-    // it, an agent asked "why did my session keep failing instantly / what is
-    // the thinking-block error?" has no grounded answer. Idempotent via marker.
+    // about the transcript fast-fail wedges (thinking-block 400 + AUP-rejection
+    // loop) + that auto-recovery is opt-in. Without it, an agent asked "why did
+    // my session keep failing instantly / what is the thinking-block error?"
+    // has no grounded answer. Idempotent via marker.
     if (!content.includes('ContextWedgeSentinel') && !content.includes('Stuck-Context Recovery (thinking-block wedge)')) {
       const section = `
 ## Stuck-Context Recovery (thinking-block wedge)
@@ -3433,12 +3445,20 @@ A nudge can't fix this (re-engaging re-sends the corrupted turn). Recovery is a 
 - **Detection + audit are default-ON housekeeping** — every transition (detected / recovered / dry-run / false-alarm / escalated) lands in \`logs/sentinel-events.jsonl\`; the user sees nothing.
 - **Auto-recovery is OPT-IN** (it kills + respawns a session). It rides the Graduated Feature Rollout track and ships dark. Turn it on in \`.instar/config.json\`: \`{"monitoring": {"contextWedgeSentinel": {"autoRecovery": {"enabled": true, "dryRun": false}}}}\` (use \`dryRun: true\` first to log what it WOULD respawn). When OFF, a confirmed wedge escalates (gated by \`sentinelTelegramEscalation\`) so you can restart it yourself.
 - If a user asks "why did my session keep failing / get stuck on a thinking error?" — read \`logs/sentinel-events.jsonl\` (filter \`context-wedge\`) and explain the above. Spec: \`docs/specs/context-wedge-sentinel.md\`.
-`;
+${AUP_WEDGE_CLAUDE_MD_NOTE}`;
       content += '\n' + section;
       patched = true;
       result.upgraded.push('CLAUDE.md: added Stuck-Context Recovery section');
+    } else if (content.includes('ContextWedgeSentinel') && !content.includes('AUP-rejection wedge')) {
+      // Agents that already got the Stuck-Context section predate the second
+      // signature family (the 2026-06-05 EXO AUP-rejection incident). Append
+      // the note so they know about it + the API fresh-respawn lever.
+      // Idempotent via the 'AUP-rejection wedge' marker.
+      content += '\n' + AUP_WEDGE_CLAUDE_MD_NOTE;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added AUP-rejection wedge + fresh-respawn API note');
     } else {
-      result.skipped.push('CLAUDE.md: Stuck-Context Recovery section already present');
+      result.skipped.push('CLAUDE.md: Stuck-Context Recovery section already current');
     }
 
     // Reap-log (UNIFIED-SESSION-LIFECYCLE §P4) — tells the agent the durable

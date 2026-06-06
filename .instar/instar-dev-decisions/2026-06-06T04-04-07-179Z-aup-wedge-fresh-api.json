@@ -1,0 +1,19 @@
+{
+  "ts": "2026-06-06T04:04:07.179Z",
+  "slug": "aup-wedge-fresh-api",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)"
+  ],
+  "belowFloor": true,
+  "files": 4,
+  "loc": 190,
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "The sentinel shipped (by design) with only the thinking-block-400 signature; the AUP-rejection family existed as a latent blind spot from day one and was surfaced by a NEW usage pattern (red-team payload generation in the EXO 3.0 MTP harness work, 2026-06-05 topic 19437). Not caused by a prior PR regression. Separate operational finding from the same incident (sentinel config-disabled on Echo) is tracked under CMT-1115/guard-disable-tripwire, not this change."
+  },
+  "verdict": "blocked"
+}

@@ -90,7 +90,24 @@ describe('POST /sessions/refresh', () => {
   it('returns 202 immediately on valid input', async () => {
     const r = await api('/sessions/refresh', { sessionName: 'echo-qalatra', followUpPrompt: 'continue' });
     expect(r.status).toBe(202);
-    expect(r.body).toEqual({ ok: true, message: 'Refresh scheduled', sessionName: 'echo-qalatra' });
+    expect(r.body).toEqual({ ok: true, message: 'Refresh scheduled', sessionName: 'echo-qalatra', fresh: false });
+  });
+
+  it('returns 400 when fresh is not a boolean', async () => {
+    const r = await api('/sessions/refresh', { sessionName: 'echo-qalatra', fresh: 'yes' });
+    expect(r.status).toBe(400);
+    expect(r.body.error).toMatch(/fresh/);
+  });
+
+  it('forwards fresh:true to refreshSession (poisoned-transcript recovery path)', async () => {
+    const r = await api('/sessions/refresh', { sessionName: 'echo-exo-3-0', fresh: true, reason: 'aup-rejection wedge' });
+    expect(r.status).toBe(202);
+    expect(r.body.fresh).toBe(true);
+
+    await new Promise(resolve => setTimeout(resolve, 600));
+    expect(sessionRefresh.refreshSession).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionName: 'echo-exo-3-0', fresh: true, reason: 'aup-rejection wedge' }),
+    );
   });
 
   it('invokes sessionRefresh.refreshSession asynchronously after the response', async () => {

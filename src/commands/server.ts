@@ -6287,7 +6287,8 @@ export async function startServer(options: StartOptions): Promise<void> {
         ));
       }
 
-      // ── ContextWedgeSentinel — thinking-block-400 fast-fail wedge ──
+      // ── ContextWedgeSentinel — transcript fast-fail wedges (thinking-block
+      // 400 + AUP-rejection loop) ──
       // Detection + audit ship default-ON (harmless housekeeping). The
       // destructive fresh-respawn is gated by autoRecovery (default OFF +
       // dryRun) and rides the Graduated Feature Rollout track. freshRespawn is
@@ -6318,12 +6319,12 @@ export async function startServer(options: StartOptions): Promise<void> {
             confirmWindowMs: wedgeCfg.confirmWindowMs,
           },
         );
-        wedgeSentinel.on('detected', (e: { sessionName: string }) =>
-          notifier.record('detected', 'context-wedge', e.sessionName));
-        wedgeSentinel.on('recovered', (e: { sessionName: string }) =>
-          notifier.record('recovered', 'context-wedge', e.sessionName, 'fresh respawn'));
-        wedgeSentinel.on('dry-run', (e: { sessionName: string }) =>
-          notifier.record('dry-run', 'context-wedge', e.sessionName, 'would fresh-respawn'));
+        wedgeSentinel.on('detected', (e: { sessionName: string; kind?: string }) =>
+          notifier.record('detected', 'context-wedge', e.sessionName, e.kind));
+        wedgeSentinel.on('recovered', (e: { sessionName: string; kind?: string }) =>
+          notifier.record('recovered', 'context-wedge', e.sessionName, `fresh respawn (${e.kind ?? 'unknown'})`));
+        wedgeSentinel.on('dry-run', (e: { sessionName: string; kind?: string }) =>
+          notifier.record('dry-run', 'context-wedge', e.sessionName, `would fresh-respawn (${e.kind ?? 'unknown'})`));
         wedgeSentinel.on('false-alarm', (e: { sessionName: string }) =>
           notifier.record('false-alarm', 'context-wedge', e.sessionName, 'signature scrolled out of tail'));
         wedgeSentinel.on('recovery-error', (e: { sessionName: string; err: unknown }) =>
@@ -6331,7 +6332,7 @@ export async function startServer(options: StartOptions): Promise<void> {
         wedgeSentinel.start();
         wedgeRecoveryActive = (s: string) => wedgeSentinel.isRecoveryActive(s);
         const mode = autoRecovery.enabled ? (autoRecovery.dryRun ? 'auto-recover dry-run' : 'auto-recover LIVE') : 'detect-only';
-        console.log(pc.green(`  ContextWedgeSentinel enabled (thinking-block-400 wedge — ${mode})`));
+        console.log(pc.green(`  ContextWedgeSentinel enabled (thinking-block-400 + aup-rejection wedges — ${mode})`));
       }
     }
 

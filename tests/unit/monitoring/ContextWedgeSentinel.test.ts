@@ -11,8 +11,11 @@ import { describe, it, expect } from 'vitest';
 import {
   ContextWedgeSentinel,
   detectContextWedge,
+  detectAupRejection,
+  classifyWedgeTail,
   signatureIsTail,
   CONTEXT_WEDGE_PATTERNS,
+  AUP_WEDGE_PATTERNS,
   type WedgeRecoveryOutcome,
 } from '../../../src/monitoring/ContextWedgeSentinel.js';
 
@@ -220,5 +223,123 @@ describe('ContextWedgeSentinel — isRecoveryActive (SessionReaper veto)', () =>
     expect(s.isRecoveryActive('echo-wedged')).toBe(true);
     await deps.drainTimers();
     expect(s.isRecoveryActive('echo-wedged')).toBe(false);
+  });
+});
+
+// ── AUP-rejection family (signature 2, 2026-06-05 EXO incident) ──────────────
+
+// Verbatim shape of the wedged pane captured during the incident: every
+// injected message produces a fresh copy of the same rejection.
+const AUP_ERROR_LINE =
+  '⏺ API Error: Claude Code is unable to respond to this request, which appears to violate our Usage Policy (https://www.anthropic.com/legal/aup). Please double press esc to edit your last message or start a new session for Claude Code to assist with a different task.';
+
+const AUP_WEDGE_TAIL = [
+  '❯ [telegram:19437 "🎯 EXO 3.0" from Justin (uid:7812716706)] did you get my last 3 messages?',
+  AUP_ERROR_LINE,
+  '✻ Churned for 8s · 1 shell still running',
+  '❯ [telegram:19437 "🎯 EXO 3.0" from Unknown] did you get my last 3 messages?',
+  AUP_ERROR_LINE,
+  '✻ Cogitated for 8s · 1 shell still running',
+].join('\n');
+
+// A benign ONE-OFF rejection: single occurrence, session idle after it.
+const AUP_ONE_OFF_TAIL = [
+  '❯ [telegram:42] some message',
+  AUP_ERROR_LINE,
+  '✻ Worked for 22s',
+].join('\n');
+
+describe('detectAupRejection', () => {
+  it('matches the canonical AUP rejection', () => {
+    expect(detectAupRejection(AUP_ERROR_LINE)).toBe(true);
+  });
+
+  it('does not match unrelated text', () => {
+    expect(detectAupRejection('all systems normal; processing message')).toBe(false);
+  });
+
+  it('empty is false (no throw)', () => {
+    expect(detectAupRejection('')).toBe(false);
+  });
+
+  it('exports at least one pattern', () => {
+    expect(AUP_WEDGE_PATTERNS.length).toBeGreaterThan(0);
+  });
+});
+
+describe('classifyWedgeTail — family discrimination', () => {
+  it('classifies the repeated AUP loop as aup-rejection', () => {
+    expect(classifyWedgeTail(AUP_WEDGE_TAIL)).toBe('aup-rejection');
+  });
+
+  it('a benign ONE-OFF AUP rejection is NOT a wedge (single occurrence)', () => {
+    expect(classifyWedgeTail(AUP_ONE_OFF_TAIL)).toBeNull();
+    expect(signatureIsTail(AUP_ONE_OFF_TAIL)).toBe(false);
+  });
+
+  it('classifies the thinking-block 400 as thinking-block-400', () => {
+    expect(classifyWedgeTail(WEDGE_TAIL)).toBe('thinking-block-400');
+  });
+
+  it('AUP loop scrolled out of the tail is not a wedge (session progressed)', () => {
+    const progressed =
+      AUP_WEDGE_TAIL +
+      '\n' +
+      Array.from({ length: 20 }, (_, i) => `working line ${i}: doing real work now`).join('\n');
+    expect(classifyWedgeTail(progressed)).toBeNull();
+  });
+
+  it('signatureIsTail back-compat: true for the AUP loop tail', () => {
+    expect(signatureIsTail(AUP_WEDGE_TAIL)).toBe(true);
+  });
+});
+
+describe('ContextWedgeSentinel — AUP wedge lifecycle', () => {
+  it('scanSession detects the AUP loop and tags kind on the event', () => {
+    const deps = makeDeps({ output: AUP_WEDGE_TAIL });
+    const s = new ContextWedgeSentinel(deps);
+    let detected: { sessionName: string; kind?: string } | null = null;
+    s.on('detected', (e) => { detected = e; });
+    s.scanSession('echo-exo-3-0');
+    expect(detected).not.toBeNull();
+    expect(detected!.kind).toBe('aup-rejection');
+  });
+
+  it('scanSession ignores the benign one-off AUP rejection', () => {
+    const deps = makeDeps({ output: AUP_ONE_OFF_TAIL });
+    const s = new ContextWedgeSentinel(deps);
+    let detected = false;
+    s.on('detected', () => { detected = true; });
+    s.scanSession('echo-exo-3-0');
+    expect(detected).toBe(false);
+  });
+
+  it('recovered event carries the aup-rejection kind (audit detail)', async () => {
+    const deps = makeDeps({ output: AUP_WEDGE_TAIL, outcome: 'respawned' });
+    const s = new ContextWedgeSentinel(deps);
+    let recovered: { sessionName: string; kind?: string } | null = null;
+    s.on('recovered', (e) => { recovered = e; });
+    s.scanSession('echo-exo-3-0');
+    await deps.drainTimers();
+    expect(recovered).not.toBeNull();
+    expect(recovered!.kind).toBe('aup-rejection');
+  });
+
+  it('escalation message names the policy-rejection cause for AUP wedges', async () => {
+    const deps = makeDeps({ output: AUP_WEDGE_TAIL, outcome: 'detect-only' });
+    const s = new ContextWedgeSentinel(deps);
+    s.scanSession('echo-exo-3-0');
+    await deps.drainTimers();
+    expect(deps.captured).toHaveLength(1);
+    expect(deps.captured[0].text).toMatch(/policy-rejection/i);
+  });
+
+  it('escalation message keeps the stuck-context wording for thinking-block wedges', async () => {
+    const deps = makeDeps({ output: WEDGE_TAIL, outcome: 'detect-only' });
+    const s = new ContextWedgeSentinel(deps);
+    s.scanSession('echo-wedged');
+    await deps.drainTimers();
+    expect(deps.captured).toHaveLength(1);
+    expect(deps.captured[0].text).toMatch(/stuck-context/i);
   });
 });

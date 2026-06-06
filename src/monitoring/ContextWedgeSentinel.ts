@@ -1,17 +1,29 @@
 /**
- * ContextWedgeSentinel — detects Claude Code's "thinking/redacted_thinking
- * blocks in the latest assistant message cannot be modified" 400 wedge and
- * recovers via a FRESH respawn.
+ * ContextWedgeSentinel — detects transcript-level fast-fail wedges (the
+ * thinking-block 400 and the Usage-Policy rejection loop) and recovers via a
+ * FRESH respawn.
  *
- * The failure (diagnosed 2026-05-28): a tool call is cancelled inside a
- * parallel tool batch while extended thinking is on. Claude Code cancels every
- * sibling call, and that cancellation corrupts the thinking block on the latest
- * assistant turn. The Anthropic API then rejects EVERY resume of that session
- * with `400 ... thinking blocks in the latest assistant message cannot be
- * modified`. The session fast-fails instantly on every inbound message ("Cooked
- * for 0s"); it is permanently dead yet still emitting output, so neither the
- * silence sentinel (output never goes quiet) nor the socket sentinel (no
- * disconnect string) catches it.
+ * Signature family 1 — thinking-block 400 (diagnosed 2026-05-28): a tool call
+ * is cancelled inside a parallel tool batch while extended thinking is on.
+ * Claude Code cancels every sibling call, and that cancellation corrupts the
+ * thinking block on the latest assistant turn. The Anthropic API then rejects
+ * EVERY resume of that session with `400 ... thinking blocks in the latest
+ * assistant message cannot be modified`. The session fast-fails instantly on
+ * every inbound message ("Cooked for 0s"); it is permanently dead yet still
+ * emitting output, so neither the silence sentinel (output never goes quiet)
+ * nor the socket sentinel (no disconnect string) catches it.
+ *
+ * Signature family 2 — AUP-rejection loop (diagnosed 2026-06-05, EXO 3.0
+ * incident): the transcript accumulates content that trips the API's Usage
+ * Policy classifier (e.g. literal red-team / prompt-injection test payloads
+ * generated during security-harness work). Because every turn re-sends the
+ * full conversation, EVERY response attempt is rejected with `API Error:
+ * Claude Code is unable to respond to this request, which appears to violate
+ * our Usage Policy` — same permanent-death shape, same recovery. Unlike the
+ * thinking-block 400, a SINGLE policy rejection can be a benign one-off (one
+ * bad request, next message fine), so this family additionally requires the
+ * signature to appear MORE THAN ONCE in the capture (the loop always repeats;
+ * a one-off never does) before it counts as a wedge.
  *
  * Critical difference from the other silently-stopped sentinels: a send-keys
  * nudge CANNOT recover this — re-engaging just re-sends the corrupted turn and
@@ -56,6 +68,8 @@ export interface ContextWedgeState {
   sessionName: string;
   detectedAt: number;
   status: ContextWedgeStatus;
+  /** Which signature family triggered the detection. */
+  kind: WedgeKind;
 }
 
 export interface ContextWedgeSentinelDeps {
@@ -105,6 +119,18 @@ export const CONTEXT_WEDGE_PATTERNS: readonly RegExp[] = [
   /`?(?:thinking|redacted_thinking)`?\s+blocks.{0,80}cannot be modified/i,
 ];
 
+/**
+ * Patterns for the AUP-rejection loop. Anchored on the API-specific rejection
+ * phrase, which natural prose almost never contains verbatim.
+ */
+export const AUP_WEDGE_PATTERNS: readonly RegExp[] = [
+  /unable to respond to this request.{0,60}appears to violate our Usage Policy/is,
+  /appears to violate our Usage Policy/i,
+];
+
+/** Which signature family a wedge detection matched. */
+export type WedgeKind = 'thinking-block-400' | 'aup-rejection';
+
 /** Detector — true if `text` contains the thinking-block-400 signature. */
 export function detectContextWedge(text: string): boolean {
   if (!text) return false;
@@ -114,17 +140,51 @@ export function detectContextWedge(text: string): boolean {
   return false;
 }
 
-/**
- * Tail detector — is the signature present within the last `tailLines`
- * non-empty lines of the capture? A genuinely wedged session shows the error as
- * its live tail; a session that merely mentioned the error earlier and then
- * kept working has scrolled it out of the tail.
- */
-export function signatureIsTail(text: string, tailLines = 10): boolean {
+/** Detector — true if `text` contains the AUP-rejection signature. */
+export function detectAupRejection(text: string): boolean {
   if (!text) return false;
+  for (const pat of AUP_WEDGE_PATTERNS) {
+    if (pat.test(text)) return true;
+  }
+  return false;
+}
+
+/**
+ * Count how many distinct lines of `text` carry the AUP signature. The
+ * rejection loop re-prints the error on every failed turn, so a wedged session
+ * shows it repeatedly; a benign one-off rejection appears exactly once.
+ */
+function countAupSignatureLines(text: string): number {
+  if (!text) return 0;
+  let n = 0;
+  for (const line of text.split('\n')) {
+    if (line && detectAupRejection(line)) n++;
+  }
+  return n;
+}
+
+/**
+ * Tail classifier — which wedge family (if any) is the live tail of the
+ * capture? A genuinely wedged session shows the error as its tail; a session
+ * that merely mentioned the error earlier and then kept working has scrolled
+ * it out. The AUP family additionally requires the signature on >1 line of the
+ * full capture — the loop always repeats, a benign one-off rejection doesn't.
+ */
+export function classifyWedgeTail(text: string, tailLines = 10): WedgeKind | null {
+  if (!text) return null;
   const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
   const tail = lines.slice(-tailLines).join('\n');
-  return detectContextWedge(tail);
+  if (detectContextWedge(tail)) return 'thinking-block-400';
+  if (detectAupRejection(tail) && countAupSignatureLines(text) > 1) return 'aup-rejection';
+  return null;
+}
+
+/**
+ * Tail detector — is any wedge signature the live tail? (Back-compat wrapper
+ * around classifyWedgeTail; existing callers and tests use the boolean form.)
+ */
+export function signatureIsTail(text: string, tailLines = 10): boolean {
+  return classifyWedgeTail(text, tailLines) !== null;
 }
 
 export class ContextWedgeSentinel extends EventEmitter {
@@ -168,12 +228,13 @@ export class ContextWedgeSentinel extends EventEmitter {
     const output = this.deps.getRecentOutput(sessionName);
     // Require the signature to be the live TAIL, not merely present somewhere in
     // the scrollback — the discriminator against a session discussing the bug.
-    if (!signatureIsTail(output)) return;
-    this.report(sessionName);
+    const kind = classifyWedgeTail(output);
+    if (!kind) return;
+    this.report(sessionName, kind);
   }
 
   /** Public entry: report a detected (not yet confirmed) wedge. Idempotent. */
-  report(sessionName: string): void {
+  report(sessionName: string, kind: WedgeKind = 'thinking-block-400'): void {
     if (!this.cfg.enabled) return;
     if (this.states.has(sessionName)) return;
     const now = (this.deps.now ?? Date.now)();
@@ -181,9 +242,10 @@ export class ContextWedgeSentinel extends EventEmitter {
       sessionName,
       detectedAt: now,
       status: 'detected',
+      kind,
     };
     this.states.set(sessionName, state);
-    this.emit('detected', { sessionName });
+    this.emit('detected', { sessionName, kind });
 
     // Enter the confirm window before any destructive action.
     state.status = 'confirming';
@@ -223,8 +285,8 @@ export class ContextWedgeSentinel extends EventEmitter {
     // Confirmation gate: the signature must STILL be the tail. If it scrolled
     // out (the session progressed past the error), this was not a wedge — a
     // false alarm (e.g. a session that quoted the error then kept working).
-    if (!signatureIsTail(output)) {
-      this.emit('false-alarm', { sessionName });
+    if (!classifyWedgeTail(output)) {
+      this.emit('false-alarm', { sessionName, kind: state.kind });
       this.clear(sessionName);
       return;
     }
@@ -241,14 +303,14 @@ export class ContextWedgeSentinel extends EventEmitter {
     switch (outcome) {
       case 'respawned':
         state.status = 'recovered';
-        this.emit('recovered', { sessionName });
+        this.emit('recovered', { sessionName, kind: state.kind });
         this.clear(sessionName);
         return;
       case 'dry-run':
         // Housekeeping only — would-have-respawned. Keep state so we don't
         // re-confirm the same wedge every tick; the dry-run log is the signal.
         state.status = 'escalated';
-        this.emit('dry-run', { sessionName });
+        this.emit('dry-run', { sessionName, kind: state.kind });
         return;
       case 'detect-only':
       case 'failed':
@@ -262,12 +324,16 @@ export class ContextWedgeSentinel extends EventEmitter {
     const state = this.states.get(sessionName);
     if (!state) return;
     state.status = 'escalated';
+    const cause =
+      state.kind === 'aup-rejection'
+        ? 'a policy-rejection loop (its conversation content is being refused by the API on every turn)'
+        : 'a stuck-context error';
     const detail =
       outcome === 'failed'
-        ? `${friendlyName(sessionName)} is wedged on a stuck-context error and my respawn attempt did not clear it. Want me to dig in?`
-        : `${friendlyName(sessionName)} is wedged on a stuck-context error (it can only be fixed by a fresh restart, which is currently off). Want me to restart it?`;
+        ? `${friendlyName(sessionName)} is wedged on ${cause} and my respawn attempt did not clear it. Want me to dig in?`
+        : `${friendlyName(sessionName)} is wedged on ${cause} (it can only be fixed by a fresh restart, which is currently off). Want me to restart it?`;
     void this.notify(sessionName, detail);
-    this.emit('escalated', { sessionName, outcome });
+    this.emit('escalated', { sessionName, outcome, kind: state.kind });
     // Keep state so a subsequent scan doesn't re-report the same wedge.
   }
 

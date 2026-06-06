@@ -170,3 +170,78 @@ describe('ContextWedgeSentinel E2E — WIRED into server.ts (dead-code guard)', 
     expect(serverSrc).toMatch(/fresh:\s*true/);
   });
 });
+
+// ── AUP-rejection family (signature 2, 2026-06-05 EXO incident) ──────────────
+
+const AUP_ERROR_LINE =
+  '⏺ API Error: Claude Code is unable to respond to this request, which appears to violate our Usage Policy (https://www.anthropic.com/legal/aup). Please double press esc to edit your last message or start a new session for Claude Code to assist with a different task.';
+
+const AUP_WEDGE_TAIL = [
+  '❯ [telegram:19437 "🎯 EXO 3.0" from Justin] did you get my last 3 messages?',
+  AUP_ERROR_LINE,
+  '✻ Churned for 8s · 1 shell still running',
+  '❯ [telegram:19437 "🎯 EXO 3.0" from Unknown] did you get my last 3 messages?',
+  AUP_ERROR_LINE,
+  '✻ Cogitated for 8s · 1 shell still running',
+].join('\n');
+
+describe('ContextWedgeSentinel E2E — AUP-rejection wedge through the production wiring', () => {
+  it('live: a confirmed AUP loop respawns and the audit row carries the kind', async () => {
+    const surface: SentinelSessionSurface = {
+      captureOutput: () => AUP_WEDGE_TAIL,
+      isSessionAlive: () => true,
+      sendKey: () => true,
+      listRunningSessions: () => [{ tmuxSession: 'echo-exo-3-0' }],
+    };
+    const rig = wireProduction({ surface, autoRecovery: { enabled: true, dryRun: false } });
+    try {
+      rig.sentinel.tick();
+      await settle();
+      expect(rig.respawns()).toBe(1);
+      const audit = readAudit(rig.sentinelLogPath);
+      const recovered = audit.find(e => e.kind === 'recovered' && e.sentinel === 'context-wedge');
+      expect(recovered).toBeTruthy();
+    } finally {
+      rig.cleanup();
+    }
+  });
+
+  it('a benign ONE-OFF AUP rejection never enters the wedge lifecycle (no audit rows, no kill)', async () => {
+    const oneOff = [
+      '❯ [telegram:42] some message',
+      AUP_ERROR_LINE,
+      '✻ Worked for 22s',
+    ].join('\n');
+    const surface: SentinelSessionSurface = {
+      captureOutput: () => oneOff,
+      isSessionAlive: () => true,
+      sendKey: () => true,
+      listRunningSessions: () => [{ tmuxSession: 'echo-fine' }],
+    };
+    const rig = wireProduction({ surface, autoRecovery: { enabled: true, dryRun: false } });
+    try {
+      rig.sentinel.tick();
+      await settle();
+      expect(rig.respawns()).toBe(0);
+      const audit = readAudit(rig.sentinelLogPath);
+      expect(audit.filter(e => e.sentinel === 'context-wedge')).toHaveLength(0);
+    } finally {
+      rig.cleanup();
+    }
+  });
+});
+
+describe('Fresh-respawn API lever — WIRED into routes.ts (dead-code guard)', () => {
+  const routesSrc = fs.readFileSync(
+    path.join(process.cwd(), 'src/server/routes.ts'),
+    'utf-8',
+  );
+
+  it('routes.ts validates the fresh param', () => {
+    expect(routesSrc).toMatch(/"fresh" must be a boolean/);
+  });
+
+  it('routes.ts forwards fresh to refreshSession', () => {
+    expect(routesSrc).toMatch(/refreshSession\(\{ sessionName, followUpPrompt, reason, fresh \}\)/);
+  });
+});
