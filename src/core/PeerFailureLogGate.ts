@@ -21,7 +21,13 @@
 
 export class PeerFailureLogGate {
   private readonly everyN: number;
-  /** Per-key consecutive failure count (0 = healthy). */
+  /**
+   * Per-key consecutive failure count (0 = healthy). Recovered keys are
+   * deleted, so retained state is bounded by currently-failing peer×op pairs.
+   * (A peer removed from the registry mid-streak leaves one stale entry —
+   * bounded by historical peer count; second-pass reviewer assessed as
+   * acceptable.)
+   */
   private failures = new Map<string, number>();
 
   /** @param everyN coarse-reminder interval in consecutive failures. Default 360 (~30min at a 5s cadence). */
