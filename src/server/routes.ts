@@ -630,6 +630,9 @@ export interface RouteContext {
   handshakeManager: HandshakeManager | null;
   threadlineRelayClient: import('../threadline/client/ThreadlineClient.js').ThreadlineClient | null;
   listenerManager: import('../threadline/ListenerSessionManager.js').ListenerSessionManager | null;
+  /** Durable A2A delivery lifecycle + peer-health (A2A-DURABLE-DELIVERY-SPEC.md).
+   *  Recording-only — never gates a send. Null only if SQLite open failed. */
+  a2aDeliveryTracker: import('../threadline/A2ADeliveryTracker.js').A2ADeliveryTracker | null;
   responseReviewGate: CoherenceGate | null;
   /** Scoped tone gate for outbound agent-to-user messaging routes.
    *  Uses the shared IntelligenceProvider (Claude CLI subscription or Anthropic API).
@@ -7597,6 +7600,32 @@ export function createRoutes(ctx: RouteContext): Router {
     const detail = ctx.threadlineObservability.getThread(req.params.threadId);
     if (!detail) { res.status(404).json({ error: 'Thread not found' }); return; }
     res.json(detail);
+  });
+
+  // ── A2A peer-health (A2A-DURABLE-DELIVERY-SPEC.md) ──────────────────────
+  // "Is my channel to <peer> alive?" as a lookup, not a guess. Read-only
+  // observability over the durable delivery tracker — never gates a send.
+  router.get('/threadline/peers/health', (req, res) => {
+    if (!ctx.a2aDeliveryTracker) {
+      res.status(503).json({ error: 'A2A delivery tracker not initialized' });
+      return;
+    }
+    const staleAfterMs = typeof req.query.staleAfterMs === 'string' && Number.isFinite(Number(req.query.staleAfterMs))
+      ? Number(req.query.staleAfterMs)
+      : undefined;
+    const peers = ctx.a2aDeliveryTracker.allPeerHealth({ staleAfterMs });
+    res.json({ peers, count: peers.length, staleCount: peers.filter((p) => p.stale).length });
+  });
+
+  router.get('/threadline/peers/:fp/health', (req, res) => {
+    if (!ctx.a2aDeliveryTracker) {
+      res.status(503).json({ error: 'A2A delivery tracker not initialized' });
+      return;
+    }
+    const staleAfterMs = typeof req.query.staleAfterMs === 'string' && Number.isFinite(Number(req.query.staleAfterMs))
+      ? Number(req.query.staleAfterMs)
+      : undefined;
+    res.json(ctx.a2aDeliveryTracker.peerHealth(req.params.fp, { staleAfterMs }));
   });
 
   router.get('/threadline/observability/search', (req, res) => {
@@ -15757,6 +15786,28 @@ export function createRoutes(ctx: RouteContext): Router {
         const senderAgent = envelope.message?.from?.agent;
         console.log(`[relay-agent] Accepted message from ${senderAgent ?? 'unknown'} (thread: ${envelope.message?.threadId ?? 'none'}, id: ${envelope.message?.id ?? 'none'})`);
 
+        // Durable A2A delivery (A2A-DURABLE-DELIVERY-SPEC.md): bump the peer's
+        // inbound-liveness clock, and treat a reply ON A THREAD as an implicit
+        // processed-ack of our prior send on that thread — proof the peer
+        // received it. The ack keys on threadId (robust to the local-vs-remote
+        // sender-identity asymmetry). For liveness we key by the peer's canonical
+        // FINGERPRINT — on this same-machine path `from.agent` is the sender's
+        // NAME, so resolve the thread owner's fingerprint (stored by captureOrigin,
+        // R1) and fall back to the name only if unresolved. Recording-only.
+        if (ctx.a2aDeliveryTracker) {
+          try {
+            const ackThread = envelope.message?.threadId;
+            const ownerFp = ackThread ? ctx.threadResumeMap?.get(ackThread)?.remoteAgent : undefined;
+            const livenessFp = ownerFp || senderAgent;
+            if (livenessFp) ctx.a2aDeliveryTracker.recordInboundFrom(livenessFp, senderAgent ?? null);
+            if (ackThread) ctx.a2aDeliveryTracker.recordAckByThread(ackThread);
+          } catch (err) {
+            // @silent-fallback-ok: recording-only — A2A delivery/liveness tracking must
+            // never break inbound routing (the message was already accepted above). Logged.
+            console.warn(`[relay-agent] A2A inbound record failed (non-fatal): ${err instanceof Error ? err.message : err}`);
+          }
+        }
+
         // Check if this message resolves a pending waitForReply request.
         // Local delivery bypasses the relay client's gate-passed event, so we
         // must check reply waiters here directly.
@@ -16890,6 +16941,21 @@ export function createRoutes(ctx: RouteContext): Router {
                     localTarget.fingerprint || localTarget.publicKey?.substring(0, 32) || localTarget.name,
                     localTarget.name,
                   );
+                  // Durable delivery record (A2A-DURABLE-DELIVERY-SPEC.md) —
+                  // recording-only, mirrors the relay path.
+                  try {
+                    ctx.a2aDeliveryTracker?.recordSent({
+                      messageId: msgId,
+                      peerFp: localTarget.fingerprint || localTarget.publicKey?.substring(0, 32) || localTarget.name,
+                      peerName: localTarget.name,
+                      threadId: effectiveThreadId,
+                      transport: 'local',
+                    });
+                  } catch (err) {
+                    // @silent-fallback-ok: recording-only — A2A delivery tracking must never
+                    // break the send (the message was already delivered above). Logged.
+                    console.warn(`[relay-send] A2A delivery record failed (non-fatal): ${err instanceof Error ? err.message : err}`);
+                  }
                   if (waitForReply) {
                     const reply = await waitForThreadlineReply(ctx, localTarget.name, effectiveThreadId, timeoutSeconds);
                     res.json({
@@ -17010,6 +17076,22 @@ export function createRoutes(ctx: RouteContext): Router {
       // This is the fix for the composite "name:fpPrefix" address being stored
       // un-resolved and causing a known peer's replies to cold-spawn.
       await captureOrigin(effectiveRelayThreadId, resolvedId, targetAgent);
+      // Durable delivery record (A2A-DURABLE-DELIVERY-SPEC.md): start the
+      // awaiting-ack lifecycle so silence becomes a visible, escalatable signal.
+      // Recording-only — never gates the send (already happened above).
+      try {
+        ctx.a2aDeliveryTracker?.recordSent({
+          messageId: relayMsgId,
+          peerFp: resolvedId,
+          peerName: targetAgent,
+          threadId: effectiveRelayThreadId,
+          transport: 'relay',
+        });
+      } catch (err) {
+        // @silent-fallback-ok: recording-only — A2A delivery tracking must never break
+        // the send (the message was already delivered above). Logged.
+        console.warn(`[relay-send] A2A delivery record failed (non-fatal): ${err instanceof Error ? err.message : err}`);
+      }
       if (waitForReply) {
         const reply = await waitForThreadlineReply(ctx, resolvedId, effectiveRelayThreadId, timeoutSeconds);
         res.json({

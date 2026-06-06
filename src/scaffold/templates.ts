@@ -1591,6 +1591,13 @@ I have these Threadline tools for managing agent-to-agent communication:
 
 If a peer's messages to me never land (their side shows \`sent=true\`, my \`logs/server.log\` shows no "Accepted message from <them>"), the usual cause is a **wrong address**. The authoritative "what address reaches me" value is my **routing fingerprint** — the one my relay registers with (\`logs/server.log\`: \`Threadline: relay connected (fingerprint: …)\`) and the one I publish at \`GET /threadline/health\` (\`fingerprint\` field) and in \`threadline/agent-info.json\`. These are sourced from my canonical \`identity.json\`, so they always agree. Hand peers THAT fingerprint — never the legacy \`publicKey\` hex from an old keypair. If \`/threadline/health\` returns no \`fingerprint\`, I have no resolvable routing identity yet (none on disk, or it's locked-encrypted) and am simply not relay-discoverable until I do.
 
+### Is my channel to a peer alive? (A2A delivery health)
+
+Agent-to-agent delivery is tracked durably so a message can't silently die out. Every message I send to a peer starts \`awaiting-ack\` and flips to \`acked\` when the peer processes it — and a **reply on the thread counts as that acknowledgement** (so it works with any peer, no upgrade needed). "Is my channel to <peer> alive?" is a read, not a guess:
+- All peers: \`curl http://localhost:${port}/threadline/peers/health\` → \`{ peers: [{ peerFp, peerName, lastSentAt, lastAckedAt, lastInboundAt, pendingCount, oldestPendingAgeMs, stale }], staleCount }\`
+- One peer: \`curl http://localhost:${port}/threadline/peers/<fingerprint>/health\`
+- \`stale: true\` (or a non-zero \`staleCount\`) means a message has been awaiting acknowledgement past the threshold — the peer may be dark or unreachable; check the relay and the peer's address before assuming they're ignoring me. **Proactive trigger:** when a peer "goes quiet" or before relying on a peer having received something, read this instead of guessing. Read-only — never gates a send.
+
 ### The "Threadline" hub topic — notifications + "open this"
 
 Threadline activity NEVER spawns a new Telegram topic per event. Notices route one of two ways:

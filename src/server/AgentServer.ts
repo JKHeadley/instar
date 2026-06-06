@@ -80,6 +80,7 @@ import { DeliveryFailureSentinel } from '../monitoring/delivery-failure-sentinel
 import os from 'node:os';
 import { TokenLedger } from '../monitoring/TokenLedger.js';
 import { FeatureMetricsLedger } from '../monitoring/FeatureMetricsLedger.js';
+import { A2ADeliveryTracker } from '../threadline/A2ADeliveryTracker.js';
 import { setFeatureMetricsRecorder } from '../core/CircuitBreakingIntelligenceProvider.js';
 import { TokenLedgerPoller } from '../monitoring/TokenLedgerPoller.js';
 import { ResourceLedger } from '../monitoring/ResourceLedger.js';
@@ -160,6 +161,7 @@ export class AgentServer {
   private toneGate: import('../core/MessagingToneGate.js').MessagingToneGate | null = null;
   private tokenLedger: TokenLedger | null = null;
   private featureMetricsLedger: FeatureMetricsLedger | null = null;
+  private a2aDeliveryTracker: import('../threadline/A2ADeliveryTracker.js').A2ADeliveryTracker | null = null;
   private tokenLedgerPoller: TokenLedgerPoller | null = null;
   private resourceLedger: ResourceLedger | null = null;
   private resourceLedgerPoller: ResourceLedgerPoller | null = null;
@@ -385,6 +387,7 @@ export class AgentServer {
     threadlineRelayClient?: import('../threadline/client/ThreadlineClient.js').ThreadlineClient;
     threadlineReplyWaiters?: Map<string, { resolve: (reply: string) => void; threadId: string; senderAgent: string; timer: ReturnType<typeof setTimeout> }>;
     listenerManager?: import('../threadline/ListenerSessionManager.js').ListenerSessionManager;
+    a2aDeliveryTracker?: import('../threadline/A2ADeliveryTracker.js').A2ADeliveryTracker;
     responseReviewGate?: import('../core/CoherenceGate.js').CoherenceGate;
     messagingToneGate?: import('../core/MessagingToneGate.js').MessagingToneGate;
     outboundDedupGate?: import('../core/OutboundDedupGate.js').OutboundDedupGate;
@@ -790,6 +793,23 @@ export class AgentServer {
       } catch (err) {
         console.warn('[instar] feature-metrics-ledger init failed (non-fatal):', err);
         this.featureMetricsLedger = null;
+      }
+    }
+
+    // A2A delivery tracker (A2A-DURABLE-DELIVERY-SPEC.md) — durable per-peer
+    // delivery lifecycle + peer-health. Production (commands/server.ts) injects
+    // its instance via options; when not injected (e.g. an AgentServer booted
+    // directly, as in e2e) we build it here from stateDir so the peer-health
+    // routes are ALIVE on every entry path, not a 503-stub. Own try/catch
+    // (cascade-isolation). Recording-only — never gates a send.
+    if (!options.a2aDeliveryTracker && options.config.stateDir) {
+      try {
+        this.a2aDeliveryTracker = A2ADeliveryTracker.open(options.config.projectName, options.config.stateDir);
+      } catch (err) {
+        // @silent-fallback-ok: cascade-isolation — a tracker init failure must never 503
+        // the server (mirrors the FeatureMetricsLedger block above). Logged; routes 503 cleanly.
+        console.warn('[instar] a2a-delivery-tracker init failed (non-fatal):', err);
+        this.a2aDeliveryTracker = null;
       }
     }
 
@@ -1326,6 +1346,7 @@ export class AgentServer {
       handshakeManager: options.handshakeManager ?? null,
       threadlineRelayClient: options.threadlineRelayClient ?? null,
       listenerManager: options.listenerManager ?? null,
+      a2aDeliveryTracker: options.a2aDeliveryTracker ?? this.a2aDeliveryTracker,
       responseReviewGate: options.responseReviewGate ?? null,
       messagingToneGate: options.messagingToneGate ?? null,
       topicIntentArcCheck: options.topicIntentArcCheck ?? null,

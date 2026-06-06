@@ -3135,6 +3135,23 @@ If a peer's messages to me never land (their side shows \`sent=true\`, my \`logs
       result.upgraded.push('CLAUDE.md: added Threadline routing-fingerprint guidance section');
     }
 
+    // A2A delivery health (A2A-DURABLE-DELIVERY-SPEC.md). Existing agents need to
+    // know "is my channel to <peer> alive?" is a read, and that a reply on a
+    // thread counts as the peer's acknowledgement. Content-sniffed for idempotency.
+    if (!content.includes('Is my channel to a peer alive? (A2A delivery health)')) {
+      const a2aHealthSection = `
+### Is my channel to a peer alive? (A2A delivery health)
+
+Agent-to-agent delivery is tracked durably so a message can't silently die out. Every message I send to a peer starts \`awaiting-ack\` and flips to \`acked\` when the peer processes it — and a **reply on the thread counts as that acknowledgement** (so it works with any peer, no upgrade needed). "Is my channel to <peer> alive?" is a read, not a guess:
+- All peers: \`GET /threadline/peers/health\` → \`{ peers: [{ peerFp, peerName, lastSentAt, lastAckedAt, lastInboundAt, pendingCount, oldestPendingAgeMs, stale }], staleCount }\`
+- One peer: \`GET /threadline/peers/<fingerprint>/health\`
+- \`stale: true\` (or a non-zero \`staleCount\`) means a message has been awaiting acknowledgement past the threshold — the peer may be dark or unreachable; check the relay and the peer's address before assuming they're ignoring me. **Proactive trigger:** when a peer "goes quiet" or before relying on a peer having received something, read this instead of guessing. Read-only — never gates a send.
+`;
+      content += '\n' + a2aHealthSection;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added A2A delivery-health section');
+    }
+
     // Cross-Machine Seamlessness (spec §11 Agent Awareness). Existing
     // multi-machine agents need to know about lease-based authority, the
     // honest machine-provenance disclosure, and where to read mesh/sync status.
