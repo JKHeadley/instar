@@ -1,0 +1,30 @@
+<!-- bump: patch -->
+
+## What Changed
+
+Sibling fix to #866: the projects `building → merged` gate's merge-base check
+was hardcoded to `origin/main`, which broke on dev-agent homes where `origin`
+is the agent's fork and merges land on the upstream remote (every advance
+failed MERGE_COMMIT_UNREACHABLE despite the PR merging). The validator now
+reads `ctx.mergeBaseBranch` (default `origin/main` preserved) and the route
+resolves it via `resolveCanonicalMainRef()` — maps the gh-resolved PR repo to
+the local remote whose URL matches and uses `<remote>/main`. Read-only
+(gh repo view + git remote -v through SafeGitExecutor.readSync).
+
+## What to Tell Your User
+
+On the machines you actually develop on, the projects pipeline can now record
+a step as "merged" correctly — before, it always errored because it checked
+the wrong copy of the main branch. Canonical installs are unaffected.
+
+## Summary of New Capabilities
+
+- The `building → merged` project advance now works on fork-origin dev-agent
+  checkouts (resolves the real upstream main), in addition to canonical-origin
+  installs. No new endpoint — completes #866's pipeline fix.
+
+## Evidence
+
+- tests/unit/StageTransitionValidator.test.ts: helper is called with the
+  configured mergeBaseBranch (not the origin/main default); unreachable error
+  names it. 28 validator + 45 projects-api tests green; tsc + lint clean.

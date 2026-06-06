@@ -227,6 +227,50 @@ describe('StageTransitionValidator', () => {
     if (!r.ok) expect(r.code).toBe('MERGE_COMMIT_UNREACHABLE');
   });
 
+  it('building → merged: uses ctx.mergeBaseBranch when provided (fork-origin agent home) [#866 sibling]', async () => {
+    // On a dev-agent home, origin = the fork; merges land on upstream. The
+    // route resolves the upstream remote and passes mergeBaseBranch; the
+    // helper must be called with THAT ref, not the hardcoded origin/main.
+    let seenBranch = '';
+    const ctx: ValidationContext = {
+      targetRepoPath: tmpRepo,
+      prNumber: 42,
+      mergeBaseBranch: 'upstream/main',
+      ghPrView: async () => ({
+        state: 'MERGED',
+        mergeCommit: { oid: 'a1b2c3d4e5f60708' },
+        statusCheckRollup: [{ conclusion: 'SUCCESS' }],
+      }),
+      gitMergeBaseIsAncestor: (sha, branch) => {
+        seenBranch = branch;
+        return sha === 'a1b2c3d4e5f60708' && branch === 'upstream/main';
+      },
+    };
+    const r = await validateStageTransition('building', 'merged', ctx);
+    expect(seenBranch).toBe('upstream/main'); // not the origin/main default
+    expect(r.ok).toBe(true);
+  });
+
+  it('building → merged: unreachable error names the configured branch', async () => {
+    const ctx: ValidationContext = {
+      targetRepoPath: tmpRepo,
+      prNumber: 42,
+      mergeBaseBranch: 'upstream/main',
+      ghPrView: async () => ({
+        state: 'MERGED',
+        mergeCommit: { oid: 'aaaaaaa' },
+        statusCheckRollup: [{ conclusion: 'SUCCESS' }],
+      }),
+      gitMergeBaseIsAncestor: () => false,
+    };
+    const r = await validateStageTransition('building', 'merged', ctx);
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.code).toBe('MERGE_COMMIT_UNREACHABLE');
+      expect(r.reason).toContain('upstream/main');
+    }
+  });
+
   it('building → merged: rejects when state is OPEN', async () => {
     const ctx: ValidationContext = {
       targetRepoPath: tmpRepo,

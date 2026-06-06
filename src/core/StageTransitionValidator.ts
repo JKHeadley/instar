@@ -56,6 +56,13 @@ export interface ValidationContext {
   readSpecFrontmatter?: (absPath: string) => Promise<unknown>;
   ghPrView?: (prNumber: number) => Promise<GhPrView>;
   gitMergeBaseIsAncestor?: (sha: string, branch: string) => boolean;
+  /**
+   * The canonical-main ref the merge commit must be reachable from. Defaults to
+   * `origin/main`. On a fork-origin checkout (dev-agent home: origin = the
+   * fork, merges on the upstream remote) the route resolves the upstream
+   * remote and passes `<remote>/main` here. (#866 sibling fix.)
+   */
+  mergeBaseBranch?: string;
 }
 
 export interface GhPrView {
@@ -248,11 +255,19 @@ export async function validateStageTransition(
         code: 'MERGE_BASE_HELPER_UNAVAILABLE',
       };
     }
-    const ancestor = ctx.gitMergeBaseIsAncestor(oid, 'origin/main');
+    // The canonical-main ref defaults to `origin/main`, but on a dev-agent
+    // home `origin` is the agent's FORK (instar-echo) while merges land on the
+    // upstream remote (JKHeadley/instar) — so origin/main never contains the
+    // merge commit and every advance failed MERGE_COMMIT_UNREACHABLE. The
+    // route now resolves the remote whose URL matches the gh-resolved PR repo
+    // and passes it as `mergeBaseBranch`; this default preserves prior behavior
+    // for canonical-origin installs.
+    const mergeBaseBranch = ctx.mergeBaseBranch ?? 'origin/main';
+    const ancestor = ctx.gitMergeBaseIsAncestor(oid, mergeBaseBranch);
     if (!ancestor) {
       return {
         ok: false,
-        reason: `mergeCommit.oid ${oid} is not reachable from origin/main`,
+        reason: `mergeCommit.oid ${oid} is not reachable from ${mergeBaseBranch}`,
         code: 'MERGE_COMMIT_UNREACHABLE',
       };
     }
