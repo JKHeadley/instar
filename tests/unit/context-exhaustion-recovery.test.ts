@@ -69,10 +69,37 @@ describe('QuotaExhaustionDetector — context exhaustion patterns', () => {
     expect(result.confidence).toBe('high');
   });
 
-  it('detects "conversation is too long"', () => {
+  it('detects "conversation is too long" when CLI-framed', () => {
     const result = detectContextExhaustion(
-      'conversation is too long'
+      'Error: Conversation is too long. Press esc twice to go up a few messages and try again.'
     );
+    expect(result.matched).toBe(true);
+    expect(result.confidence).toBe('high');
+  });
+
+  // FALSE-POSITIVE GUARD (RUN-2 2026-06-06 topic 13435 flood): the bare phrase as
+  // CONTENT — not the framed CLI error — must NOT be detected. Without this, a
+  // session that merely discusses the failure mode (or the recovery notice this
+  // detector itself emits) re-trips detection and floods the user.
+  it('does NOT detect the bare phrase without CLI error framing (content, not a live error)', () => {
+    expect(detectContextExhaustion('conversation is too long').matched).toBe(false);
+    expect(detectContextExhaustion('conversation too long').matched).toBe(false);
+  });
+
+  it('does NOT detect the recovery notice text (self-amplification guard)', () => {
+    const notice = 'Session hit "conversation too long" and can\'t continue. Send a new message to start a fresh session with your recent history.';
+    expect(detectContextExhaustion(notice).matched).toBe(false);
+  });
+
+  it('does NOT detect an agent narrating the failure mode', () => {
+    const narration = 'Diagnosed the flood: the detector substring-matches "conversation too long" anywhere in the pane, so my own work mentioning it keeps re-tripping it.';
+    expect(detectContextExhaustion(narration).matched).toBe(false);
+  });
+
+  it('DOES detect a real error even when the pane also contains narration of the phrase', () => {
+    const mixed = 'earlier I wrote about conversation too long handling...\n' +
+      'Error during compaction: Error: Conversation too long. Press esc twice to go up a few messages and try again.';
+    const result = detectContextExhaustion(mixed);
     expect(result.matched).toBe(true);
     expect(result.confidence).toBe('high');
   });
@@ -198,7 +225,7 @@ describe('SessionRecovery — context exhaustion', () => {
   });
 
   it('falls back to normal respawnSession when respawnSessionFresh is not provided', async () => {
-    const captureSessionOutput = vi.fn(() => 'conversation too long');
+    const captureSessionOutput = vi.fn(() => 'Conversation too long. Press esc twice to go up a few messages and try again.');
 
     deps = createMockDeps({
       isSessionAlive: vi.fn(() => true),
@@ -215,7 +242,7 @@ describe('SessionRecovery — context exhaustion', () => {
   });
 
   it('does not detect context exhaustion for dead sessions', async () => {
-    const captureSessionOutput = vi.fn(() => 'conversation too long');
+    const captureSessionOutput = vi.fn(() => 'Conversation too long. Press esc twice to go up a few messages and try again.');
 
     deps = createMockDeps({
       isSessionAlive: vi.fn(() => false), // Session is dead
@@ -244,7 +271,7 @@ describe('SessionRecovery — context exhaustion', () => {
   });
 
   it('respects cooldown between context exhaustion recovery attempts', async () => {
-    const captureSessionOutput = vi.fn(() => 'conversation too long');
+    const captureSessionOutput = vi.fn(() => 'Conversation too long. Press esc twice to go up a few messages and try again.');
     const respawnSessionFresh = vi.fn(async () => {});
 
     deps = createMockDeps({
@@ -266,7 +293,7 @@ describe('SessionRecovery — context exhaustion', () => {
   });
 
   it('respects maxAttempts for context exhaustion recovery', async () => {
-    const captureSessionOutput = vi.fn(() => 'conversation too long');
+    const captureSessionOutput = vi.fn(() => 'Conversation too long. Press esc twice to go up a few messages and try again.');
     const respawnSessionFresh = vi.fn(async () => {});
 
     deps = createMockDeps({
@@ -294,7 +321,7 @@ describe('SessionRecovery — context exhaustion', () => {
   it('runs context exhaustion check before JSONL-based checks', async () => {
     // When both context exhaustion AND stall are present, context exhaustion wins
     // because it runs first and the session should be respawned fresh, not resumed
-    const captureSessionOutput = vi.fn(() => 'conversation too long');
+    const captureSessionOutput = vi.fn(() => 'Conversation too long. Press esc twice to go up a few messages and try again.');
     const respawnSessionFresh = vi.fn(async () => {});
 
     deps = createMockDeps({
@@ -312,7 +339,7 @@ describe('SessionRecovery — context exhaustion', () => {
   });
 
   it('logs context exhaustion recovery events', async () => {
-    const captureSessionOutput = vi.fn(() => 'conversation too long');
+    const captureSessionOutput = vi.fn(() => 'Conversation too long. Press esc twice to go up a few messages and try again.');
 
     deps = createMockDeps({
       isSessionAlive: vi.fn(() => true),
@@ -334,7 +361,7 @@ describe('SessionRecovery — context exhaustion', () => {
   });
 
   it('getStats includes context exhaustion counts', async () => {
-    const captureSessionOutput = vi.fn(() => 'conversation too long');
+    const captureSessionOutput = vi.fn(() => 'Conversation too long. Press esc twice to go up a few messages and try again.');
 
     deps = createMockDeps({
       isSessionAlive: vi.fn(() => true),
@@ -360,7 +387,7 @@ describe('SessionRecovery — context exhaustion', () => {
   // ==========================================================================
 
   it('captures an in-flight reply that lands during the grace window and puts it in the recovery prompt', async () => {
-    const captureSessionOutput = vi.fn(() => 'conversation too long');
+    const captureSessionOutput = vi.fn(() => 'Conversation too long. Press esc twice to go up a few messages and try again.');
     const respawnSessionFresh = vi.fn(async () => {});
 
     // Simulate the dying session's reply landing in topic history at T+4s
@@ -408,7 +435,7 @@ describe('SessionRecovery — context exhaustion', () => {
   });
 
   it('recovers normally when no in-flight reply lands during grace window', async () => {
-    const captureSessionOutput = vi.fn(() => 'conversation too long');
+    const captureSessionOutput = vi.fn(() => 'Conversation too long. Press esc twice to go up a few messages and try again.');
     const respawnSessionFresh = vi.fn(async () => {});
 
     // getRecentTopicMessages always returns only an old user message — no new agent reply
@@ -439,7 +466,7 @@ describe('SessionRecovery — context exhaustion', () => {
     // Regression guard: we must only capture replies that land AFTER the
     // exhaustion was detected. A reply the user sees in history from 10
     // seconds before the failure is not "in-flight."
-    const captureSessionOutput = vi.fn(() => 'conversation too long');
+    const captureSessionOutput = vi.fn(() => 'Conversation too long. Press esc twice to go up a few messages and try again.');
     const respawnSessionFresh = vi.fn(async () => {});
 
     const detectedAt = Date.now();
@@ -466,7 +493,7 @@ describe('SessionRecovery — context exhaustion', () => {
 
   it('falls back to a 3s static delay when getRecentTopicMessages is not wired', async () => {
     // Preserves prior behavior when the dep is absent (e.g., pre-wire servers).
-    const captureSessionOutput = vi.fn(() => 'conversation too long');
+    const captureSessionOutput = vi.fn(() => 'Conversation too long. Press esc twice to go up a few messages and try again.');
     const respawnSessionFresh = vi.fn(async () => {});
 
     deps = createMockDeps({

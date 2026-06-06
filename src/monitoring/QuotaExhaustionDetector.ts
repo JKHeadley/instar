@@ -173,8 +173,30 @@ export function detectContextExhaustion(tmuxOutput: string): { matched: boolean;
   if (!match) {
     return { matched: false, pattern: null, confidence: 'medium' };
   }
-  const strongSignals = ['conversation too long', 'conversation is too long', 'error during compaction'];
-  const isStrong = strongSignals.some(s => output.includes(s));
+  // FALSE-POSITIVE GUARD (RUN-2 2026-06-06, topic 13435 flood). The bare phrase
+  // "conversation (is) too long" appears as ordinary CONTENT whenever a session
+  // discusses the conversation-too-long failure mode — an autonomous session
+  // working ON that feature, a quoted error, or the recovery NOTICE this very
+  // detector triggers ("Session hit \"conversation too long\" …"), which re-enters
+  // the pane and self-amplifies one false positive into a flood. A REAL Claude
+  // Code exhaustion error always renders WITH its CLI recovery framing — the
+  // "press esc twice …" hint or an "error during compaction" line (see the
+  // realistic fixture in the unit tests). Require that framing: the bare phrase,
+  // alone, is content, not a live CLI error.
+  const bareExhaustionPhrases = ['conversation too long', 'conversation is too long'];
+  // Both wordings of the CLI recovery hint ("esc"/"escape"), kept anchored on
+  // "twice" so it matches the real too-long prompt but not an unrelated
+  // "press escape to stop" working-indicator line.
+  const cliErrorFrames = ['press esc twice', 'press escape twice', 'error during compaction'];
+  const hasBarePhrase = bareExhaustionPhrases.some(s => output.includes(s));
+  const hasCliFrame = cliErrorFrames.some(s => output.includes(s));
+  if (hasBarePhrase && !hasCliFrame) {
+    // Phrase present only as content/narration — not the framed CLI error. (A
+    // non-phrase soft signal like "context limit" is unaffected: hasBarePhrase
+    // is false, so this guard does not apply and existing behavior is preserved.)
+    return { matched: false, pattern: null, confidence: 'medium' };
+  }
+  const isStrong = hasBarePhrase || output.includes('error during compaction');
   return { matched: true, pattern: match, confidence: isStrong ? 'high' : 'medium' };
 }
 

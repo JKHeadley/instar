@@ -1,0 +1,40 @@
+## What Changed
+
+Fixed a false-positive in context-exhaustion detection that could flood a topic with
+duplicate "conversation too long" notices. The detector (`detectContextExhaustion`)
+matched the bare phrase "conversation too long" anywhere in a session's terminal
+output, with no check that it was an actual CLI error versus ordinary content. A
+session that merely discussed the failure mode — or the recovery notice the detector
+itself emits ("Session hit 'conversation too long'…") — re-tripped detection, and
+because the notice text re-enters the pane, one false positive amplified into a flood
+of duplicate notices and spurious respawns on a perfectly healthy session.
+
+The detector now requires the real CLI error framing — the "Press esc twice…" hint or
+an "error during compaction" line — for the bare phrase to count. The bare phrase
+alone is treated as content. Real exhaustion errors always carry that framing, so
+genuine recovery is unaffected; the self-amplifying flood and the content
+false-positive are both eliminated.
+
+## What to Tell Your User
+
+If you ever saw a burst of repeated "conversation too long" messages while your
+session was actually working fine, that was a false alarm — now fixed. Real
+out-of-room recovery still works exactly as before. Nothing for you to do.
+
+## Summary of New Capabilities
+
+- Context-exhaustion detection no longer fires on the phrase appearing as content or
+  in its own recovery notice — it requires the real CLI error framing.
+- Eliminates the self-amplifying "conversation too long" notice flood.
+- No behavior change for genuine context-exhaustion recovery.
+
+## Evidence
+
+- Unit (`tests/unit/context-exhaustion-recovery.test.ts`): real framed error detected;
+  bare phrase rejected; recovery-notice text rejected; agent narration rejected; a
+  mixed pane (narration + real framed error) still detected. 31 passing.
+- Unit (`tests/unit/presence-proxy-context-exhaustion.test.ts`): standby detection on
+  realistic framed snapshots; non-error content not detected. 14 passing.
+- SessionRecovery recovery-behavior tests updated to realistic framed fixtures and
+  still green (recovery still triggers on real exhaustion).
+- Full typecheck clean.
