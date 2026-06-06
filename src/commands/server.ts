@@ -350,6 +350,11 @@ function isAutostartInstalled(projectName: string): boolean {
 let _orphanReaper: import('../monitoring/OrphanProcessReaper.js').OrphanProcessReaper | null = null;
 let _memoryMonitor: import('../monitoring/MemoryPressureMonitor.js').MemoryPressureMonitor | null = null;
 let _fixDeps: FixCommandDeps | null = null;
+// Late-bound ref to the running AgentServer: wireTelegramRouting's
+// topic-operator getter (Know Your Principal increment 2e) resolves the
+// server's store at message-time — the server is constructed long after
+// routing is wired, and the store must be the server's OWN instance.
+let _agentServerRef: import('../server/AgentServer.js').AgentServer | null = null;
 
 // Module-level reference for session resume mapping.
 // Set once in startServer() and used by spawnSessionForTopic/respawnSessionForTopic.
@@ -1210,7 +1215,7 @@ function messageToPipeline(msg: Message, topicName?: string): PipelineMessage {
   };
 }
 
-function wireTelegramRouting(
+export function wireTelegramRouting(
   telegram: TelegramAdapter,
   sessionManager: SessionManager,
   quotaTracker?: QuotaTracker,
@@ -1220,6 +1225,11 @@ function wireTelegramRouting(
   // Late-bound: the threadline hub deps are constructed AFTER this is wired, so
   // resolve them at message-time (CMT-529 deterministic "open this" intercept).
   getHubDeps?: () => import('../threadline/hubCommands.js').HubBindDeps | null,
+  // Late-bound (same reason as getHubDeps): the AgentServer's TopicOperatorStore —
+  // the SAME instance the routes use (a second instance on the same file would
+  // lose updates between the two in-memory caches). Know Your Principal #898,
+  // increment 2e: the polling-path operator auto-bind.
+  getTopicOperatorStore?: () => import('../users/TopicOperatorStore.js').TopicOperatorStore | null,
 ): void {
   // Guard: tracks which topic IDs have a spawn in progress.
   // Prevents duplicate concurrent spawns for the same topic when messages
@@ -1237,6 +1247,30 @@ function wireTelegramRouting(
     const resolvedUser = telegramUserId && userManager
       ? userManager.resolveFromTelegramUserId(telegramUserId)
       : null;
+
+    // Topic-operator auto-bind (Know Your Principal #898, increment 2e — the
+    // POLLING-path writer; the lifeline-forward path already binds in routes.ts
+    // #909). This onTopicMessage seam is the convergence BOTH ingress paths
+    // reach, so binding here closes the no-lifeline gap; the routes-side bind
+    // stays (idempotent — same store instance, identical record skips the
+    // write). The isAuthorizedSender check is LOAD-BEARING: the lifeline path
+    // fires this callback for unauthorized senders too (it only skips its own
+    // bind), so without the check here an unauthorized group member could seat
+    // themselves as operator — the cross-principal "Caroline" bug. Fail-soft:
+    // no store / unauthorized / error → no-op and routing continues.
+    try {
+      const opStore = getTopicOperatorStore?.() ?? null;
+      if (opStore && telegramUserId && telegram.isAuthorizedSender(telegramUserId)) {
+        opStore.setOperator(topicId, {
+          platform: 'telegram',
+          uid: String(telegramUserId),
+          displayName: (msg.metadata?.firstName as string) ?? undefined,
+        });
+      }
+    } catch (err) {
+      // @silent-fallback-ok — an auto-bind failure must never break message routing.
+      console.error(`[telegram] topic-operator auto-bind error (non-fatal): ${err instanceof Error ? err.message : err}`);
+    }
 
     // In lifeline-owned polling mode (deep-signal, echo) TelegramAdapter's
     // own poll loop never runs, so its handleCommand() never fires on forwarded
@@ -3879,7 +3913,8 @@ export async function startServer(options: StartOptions): Promise<void> {
       _fixDeps = { state, liveConfig, sessionManager, telegram, config };
       wireTelegramRouting(telegram, sessionManager, quotaTracker, topicMemory, userManagerSendOnly,
         (topicId, text) => handleFixCommand(topicId, text, _fixDeps!),
-        () => (collaborationSurfacer && conversationStore && telegram) ? { collaborationSurfacer, conversationStore, commitmentTracker, telegram, brief: briefDeps } : null);
+        () => (collaborationSurfacer && conversationStore && telegram) ? { collaborationSurfacer, conversationStore, commitmentTracker, telegram, brief: briefDeps } : null,
+        () => _agentServerRef?.getTopicOperatorStore() ?? null);
       wireTelegramCallbacks(telegram, sessionManager, state, quotaTracker, undefined, config.sessions.claudePath, topicMemory);
       console.log(pc.green('  Telegram routing + command callbacks wired (send-only)'));
     }
@@ -4084,7 +4119,8 @@ export async function startServer(options: StartOptions): Promise<void> {
       // Wire up topic → session routing and session management callbacks
       wireTelegramRouting(telegram, sessionManager, quotaTracker, topicMemory, userManager,
         (topicId, text) => handleFixCommand(topicId, text, _fixDeps!),
-        () => (collaborationSurfacer && conversationStore && telegram) ? { collaborationSurfacer, conversationStore, commitmentTracker, telegram, brief: briefDeps } : null);
+        () => (collaborationSurfacer && conversationStore && telegram) ? { collaborationSurfacer, conversationStore, commitmentTracker, telegram, brief: briefDeps } : null,
+        () => _agentServerRef?.getTopicOperatorStore() ?? null);
       wireTelegramCallbacks(telegram, sessionManager, state, quotaTracker, accountSwitcher, config.sessions.claudePath, topicMemory);
 
       // Wire up unknown-user handling (Multi-User Setup Wizard Phase 4.5)
@@ -11497,6 +11533,11 @@ export async function startServer(options: StartOptions): Promise<void> {
     }
 
     const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, semanticMemory, activitySentinel, rateLimitSentinel, releaseReadinessSentinel: releaseReadinessSentinel ?? undefined, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, localSigningKeyPem, leaseTransport, onLeasePullRequest: () => leaseCoordinatorRef?.currentLease() ?? null, liveTailReceiver, handoffWireTransport, onHandoffBegin, onHandoffInitiate: handoffInitiate, handoffInProgress: handoffSentinelInProgress, messageLedger, currentInboundByTopic, replyMarkerTransport, onReplyMarker: messageLedger ? (marker: unknown) => { const m = marker as { dedupeKey: string; platform: string; replyIdempotencyKey: string; epoch: number; topic?: string | null }; messageLedger!.applyRemoteReplyMarker(m.dedupeKey, { platform: m.platform, replyIdempotencyKey: m.replyIdempotencyKey, epoch: m.epoch, topic: m.topic ?? null }); } : undefined, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, warrantsReplyGate, collaborationSurfacer, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, responseReviewGate, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, machinePoolRegistry, meshRpcDispatcher, workingSetPullCoordinator, commitmentReplicaStore, forwardCommitmentMutate, sessionOwnershipRegistry, topicPinStore: _topicPinStore ?? undefined, secretSync: _secretSyncHandle ?? undefined, meshSelfId: _meshSelfId ?? undefined, resolveRouterUrl: _resolveRouterUrl ?? undefined, resolvePeerUrls: _resolvePeerUrls ?? undefined, sessionPoolE2EResultStore, proxyCoordinator, topicIntentStore, topicIntentArcCheck, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, briefDeps, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, agentWorktreeReaper, mcpProcessReaper, geminiLoopRunner, sleepController, agentActivityState, reapLog, sleepWakeDetector, unjustifiedStopGate, stopGateDb, stopNotifier });
+    // Resolve the late-bound topic-operator getter (increment 2e): routing was
+    // wired before the server existed; from here on inbound binds use the
+    // server's own store instance.
+    _agentServerRef = server;
+
     // Boot-recovery (tunnel-failure-resilience spec Part 6): if the agent
     // died mid-relay-episode, the persisted tunnel.json carries
     // rotationPending=true. Rotate the dashboard PIN + authToken BEFORE
