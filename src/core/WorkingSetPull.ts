@@ -630,8 +630,21 @@ export class WorkingSetPuller {
   private async sendWithBusyRetry(cmd: WorkingSetPullCmd): Promise<ServeResult> {
     const cap = this.d.busyRetryCap ?? DEFAULT_BUSY_RETRY_CAP;
     let delay = 50;
+    let coldRetried = false;
     for (let i = 0; i < cap; i++) {
-      const res = await this.d.send(cmd);
+      let res: ServeResult;
+      try {
+        res = await this.d.send(cmd);
+      } catch (e) {
+        // ONE bounded immediate retry on a transport failure: the first mesh
+        // call over an idle tunnel was measured aborting cold and succeeding
+        // warm (live-matrix finding T1, 2026-06-06). A single re-send masks
+        // the cold hop; a second failure is real and propagates to the caller
+        // (refused → pending-pull ledger), so this can never loop.
+        if (coldRetried) throw e;
+        coldRetried = true;
+        res = await this.d.send(cmd);
+      }
       if (!res.busy) return res;
       await new Promise((r) => setTimeout(r, delay));
       delay = Math.min(delay * 2, 5000);

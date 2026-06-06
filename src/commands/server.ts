@@ -10826,7 +10826,11 @@ export async function startServer(options: StartOptions): Promise<void> {
                   return new wsPullMod.WorkingSetPuller({
                     stateDir: config.stateDir,
                     send: async (cmd) => {
-                      const r = await meshClient.send({ machineId: nominee, url }, cmd, 0);
+                      // 30s per-attempt: pull pages carry up to 1MiB and the 5s
+                      // default was measured aborting every cold tunnel hop
+                      // (live-matrix T1) — each abort costs a pending-pull
+                      // round instead of milliseconds.
+                      const r = await meshClient.send({ machineId: nominee, url }, cmd, 0, { timeoutMs: 30_000 });
                       if (!r.ok) throw new Error(`mesh ${r.status}: ${r.reason ?? 'error'}`);
                       return r.result as import('../core/WorkingSetPull.js').ServeResult;
                     },
@@ -10944,7 +10948,11 @@ export async function startServer(options: StartOptions): Promise<void> {
                   };
                   if (!url) return queue('owner unreachable (no known URL)');
                   try {
-                    const res = await meshClient.send({ machineId: ownerMachineId, url }, { type: 'commitment-mutate', payload }, 0);
+                    // 15s per-attempt: a cold tunnel hop was measured aborting the
+                    // 5s default on the FIRST call after idle (live-matrix T1) —
+                    // the ambiguous-outcome queue below then adds minutes of
+                    // latency to a mutation the warm link serves in <1s.
+                    const res = await meshClient.send({ machineId: ownerMachineId, url }, { type: 'commitment-mutate', payload }, 0, { timeoutMs: 15_000 });
                     if (res.ok && res.result && typeof res.result === 'object' && 'verdict' in (res.result as object)) {
                       await pendingMutationLedger!.clear(payload.opKey);
                       return { kind: 'verdict', outcome: res.result as import('../core/CommitmentMutation.js').MutateOutcome };
