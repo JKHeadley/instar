@@ -2624,6 +2624,17 @@ export async function startServer(options: StartOptions): Promise<void> {
     // same explicit replication gate; undefined = dark (verb answers
     // 'disabled', merge layer returns own rows only).
     let commitmentReplicaStore: import('../core/CommitmentsSync.js').CommitmentReplicaStore | undefined;
+    // P1.5b owner-routed mutation (§3.4): the owner-side replay window, the
+    // forwarder-side durable intent queue, and the route-facing forward fn.
+    // All undefined while dark.
+    let commitmentOpKeyWindow: import('../core/CommitmentMutation.js').OpKeyWindow | undefined;
+    let pendingMutationLedger: import('../core/CommitmentMutation.js').PendingMutationLedger | undefined;
+    let _commitmentReFire: ((ownerMachineId: string) => Promise<void>) | undefined;
+    let forwardCommitmentMutate:
+      | ((ownerMachineId: string, payload: import('../core/CommitmentMutation.js').CommitmentMutatePayload) => Promise<
+          { kind: 'verdict'; outcome: import('../core/CommitmentMutation.js').MutateOutcome } | { kind: 'queued'; reason: string }
+        >)
+      | undefined;
     {
       const cjCfg = config.multiMachine?.coherenceJournal;
       const cjEnabled = cjCfg?.enabled ?? !!config.developmentAgent;
@@ -10551,6 +10562,24 @@ export async function startServer(options: StartOptions): Promise<void> {
                 cmd as import('../core/WorkingSetPull.js').WorkingSetPullCmd,
               );
             },
+            // COMMITMENTS-COHERENCE-SPEC §3.4 — owner-side apply for the
+            // owner-routed mutation. opKey window first (replay returns the
+            // recorded verdict, applies nothing); the UNCHANGED state machine
+            // re-validates; the opKey records AFTER the store write (§4.5 —
+            // a crash between resolves as idempotent-noop on the re-fire).
+            'commitment-mutate': async (cmd) => {
+              const c = cmd as import('../core/MeshRpc.js').MeshCommand & { type: 'commitment-mutate' };
+              if (!commitmentOpKeyWindow || !commitmentTracker) return { ok: false, reason: 'commitment-mutate disabled' };
+              const mutMod = await import('../core/CommitmentMutation.js');
+              const replay = commitmentOpKeyWindow.check(c.payload.opKey);
+              if (replay) return { verdict: replay.verdict, ...(replay.status ? { status: replay.status } : {}), replayed: true };
+              const outcome = await mutMod.applyOwnerMutation(
+                commitmentTracker,
+                c.payload as import('../core/CommitmentMutation.js').CommitmentMutatePayload,
+              );
+              commitmentOpKeyWindow.record(c.payload.opKey, outcome);
+              return outcome;
+            },
             // COMMITMENTS-COHERENCE-SPEC §3.2 — serve OWN commitment records
             // as seq-windowed delta pages. Registered always (lockstep with
             // the union+RBAC edits); answers 'disabled' until the replication
@@ -10791,7 +10820,79 @@ export async function startServer(options: StartOptions): Promise<void> {
                   stateDir: config.stateDir,
                   logger: (m) => console.log(pc.dim(`  [commitments-sync] ${m}`)),
                 });
-                console.log(pc.dim('  [commitments-sync] replica store wired (serve + receive + advert)'));
+                // P1.5b: opKey window + pending-mutation ledger + forward fn.
+                const mutMod = await import('../core/CommitmentMutation.js');
+                const csCfg2 = config.multiMachine?.coherenceJournal?.commitments;
+                commitmentOpKeyWindow = new mutMod.OpKeyWindow({
+                  stateDir: config.stateDir,
+                  ttlDays: csCfg2?.opKeyTtlDays,
+                });
+                pendingMutationLedger = new mutMod.PendingMutationLedger({
+                  stateDir: config.stateDir,
+                  ttlDays: csCfg2?.pendingMutationTtlDays,
+                  maxPerCommitment: csCfg2?.maxPendingOpsPerCommitment,
+                  maxPerOwner: csCfg2?.maxPendingOpsPerOwner,
+                  onExpired: (rec) => {
+                    void telegram?.createAttentionItem({
+                      id: `CMT-MUT-EXPIRED-${rec.payload.opKey}`,
+                      title: `A queued commitment ${rec.payload.op} was never applied`,
+                      summary: `The ${rec.payload.op} for ${rec.payload.origin}::${rec.payload.id} stayed queued for the full retention window (${rec.attempts} attempts) — its home machine never returned. Re-issue it once that machine is back.`,
+                      category: 'agent-health',
+                      priority: 'NORMAL',
+                      lane: 'agent-health',
+                      sourceContext: 'commitments-coherence',
+                    }).catch(() => {});
+                  },
+                  logger: (m) => console.log(pc.dim(`  [commitment-mutate] ${m}`)),
+                });
+                const sendMutate = async (
+                  ownerMachineId: string,
+                  payload: import('../core/CommitmentMutation.js').CommitmentMutatePayload,
+                ): Promise<{ kind: 'verdict'; outcome: import('../core/CommitmentMutation.js').MutateOutcome } | { kind: 'queued'; reason: string }> => {
+                  const url = peerUrl(ownerMachineId);
+                  const queue = async (reason: string) => {
+                    await pendingMutationLedger!.enqueue(payload);
+                    return { kind: 'queued' as const, reason };
+                  };
+                  if (!url) return queue('owner unreachable (no known URL)');
+                  try {
+                    const res = await meshClient.send({ machineId: ownerMachineId, url }, { type: 'commitment-mutate', payload }, 0);
+                    if (res.ok && res.result && typeof res.result === 'object' && 'verdict' in (res.result as object)) {
+                      await pendingMutationLedger!.clear(payload.opKey);
+                      return { kind: 'verdict', outcome: res.result as import('../core/CommitmentMutation.js').MutateOutcome };
+                    }
+                    if (!res.ok && (res.status === 501 || res.status === 403)) {
+                      // Mutating-verb mixed-version honesty (§3.4): an old
+                      // owner queues durably + the caller answers honestly.
+                      return queue(`owner runs an older version (HTTP ${res.status}) — applies after it updates`);
+                    }
+                    return queue(`owner answered unexpectedly (HTTP ${res.status})`);
+                  } catch (e) {
+                    // Timeout/transport = AMBIGUOUS (B24): queue with the SAME
+                    // opKey — if the owner did apply, the re-fire returns the
+                    // recorded verdict (idempotent-noop), never a double-apply.
+                    return queue(`owner unreachable (${e instanceof Error ? e.message : String(e)}) — queued, confirming on its return`);
+                  }
+                };
+                forwardCommitmentMutate = sendMutate;
+                // Re-fire on the owner's return: ride the SAME presence seam
+                // the working-set drain uses; sequential, fresh envelopes.
+                const reFireForOwner = async (ownerMachineId: string): Promise<void> => {
+                  if (!pendingMutationLedger) return;
+                  const pending = await pendingMutationLedger.pendingForOwner(ownerMachineId);
+                  for (const rec of pending) {
+                    const r = await sendMutate(ownerMachineId, rec.payload);
+                    if (r.kind === 'verdict') continue; // cleared inside sendMutate
+                    await pendingMutationLedger.recordAttempt(rec.payload.opKey);
+                  }
+                };
+                _commitmentReFire = reFireForOwner;
+                // TTL sweep rides the working-set 10-min timer cadence.
+                const cmtSweepTimer = setInterval(() => {
+                  void pendingMutationLedger?.sweepExpired().catch(() => {});
+                }, 600_000);
+                if (typeof cmtSweepTimer.unref === 'function') cmtSweepTimer.unref();
+                console.log(pc.dim('  [commitments-sync] replica store wired (serve + receive + advert + owner-routed mutation)'));
               } catch (e) { /* @silent-fallback-ok: commitments-sync construction failure degrades to local-only commitments — never blocks boot (COMMITMENTS-COHERENCE-SPEC §4) */
                 commitmentReplicaStore = undefined;
                 console.log(pc.dim(`  [commitments-sync] not constructed: ${e instanceof Error ? e.message : String(e)}`));
@@ -11041,6 +11142,13 @@ export async function startServer(options: StartOptions): Promise<void> {
             if (!nested || typeof nested !== 'object') return undefined;
             return nested[machineId] ?? Object.values(nested)[0];
           };
+          // Returning-peer hook (one compact dep keeps the wiring-test window
+          // intact): working-set pending-pull drain (§3.4) + queued
+          // commitment-mutate re-fire (P1.5b §3.4). Both no-op while dark.
+          const onPeerBack = (machineId: string): void => {
+            workingSetPullCoordinator?.onPeerRecorded(machineId);
+            void _commitmentReFire?.(machineId).catch(() => {});
+          };
           const peerPresencePuller = new presenceMod.PeerPresencePuller({
             selfMachineId: meshSelfId,
             listPeers: () =>
@@ -11050,7 +11158,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                 .map((m) => ({ machineId: m.machineId, url: peerUrl(m.machineId) })),
             recordHeartbeat: (obs) => { machinePoolRegistry?.recordHeartbeat(obs); },
             log: (line) => console.log(pc.dim(`  [peer-presence] ${line}`)),
-            onPeerRecorded: (machineId) => workingSetPullCoordinator?.onPeerRecorded(machineId), // working-set re-arm (§3.4); no-op when dark
+            onPeerRecorded: (m) => onPeerBack(m), // ws re-arm + queued-commitment re-fire; no-op when dark
             fetchPeerCapacity: async (machineId, url) => {
               const res = await meshClient.send({ machineId, url }, { type: 'session-status' }, 0);
               if (res.ok && res.result && typeof res.result === 'object') {
@@ -11330,7 +11438,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       console.log(pc.dim(`  [session-pool] rollout gate not wired: ${err instanceof Error ? err.message : String(err)}`));
     }
 
-    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, semanticMemory, activitySentinel, rateLimitSentinel, releaseReadinessSentinel: releaseReadinessSentinel ?? undefined, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, localSigningKeyPem, leaseTransport, onLeasePullRequest: () => leaseCoordinatorRef?.currentLease() ?? null, liveTailReceiver, handoffWireTransport, onHandoffBegin, onHandoffInitiate: handoffInitiate, handoffInProgress: handoffSentinelInProgress, messageLedger, currentInboundByTopic, replyMarkerTransport, onReplyMarker: messageLedger ? (marker: unknown) => { const m = marker as { dedupeKey: string; platform: string; replyIdempotencyKey: string; epoch: number; topic?: string | null }; messageLedger!.applyRemoteReplyMarker(m.dedupeKey, { platform: m.platform, replyIdempotencyKey: m.replyIdempotencyKey, epoch: m.epoch, topic: m.topic ?? null }); } : undefined, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, warrantsReplyGate, collaborationSurfacer, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, responseReviewGate, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, machinePoolRegistry, meshRpcDispatcher, workingSetPullCoordinator, commitmentReplicaStore, sessionOwnershipRegistry, topicPinStore: _topicPinStore ?? undefined, secretSync: _secretSyncHandle ?? undefined, meshSelfId: _meshSelfId ?? undefined, resolveRouterUrl: _resolveRouterUrl ?? undefined, resolvePeerUrls: _resolvePeerUrls ?? undefined, sessionPoolE2EResultStore, proxyCoordinator, topicIntentStore, topicIntentArcCheck, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, briefDeps, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, agentWorktreeReaper, mcpProcessReaper, geminiLoopRunner, sleepController, agentActivityState, reapLog, sleepWakeDetector, unjustifiedStopGate, stopGateDb, stopNotifier });
+    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, semanticMemory, activitySentinel, rateLimitSentinel, releaseReadinessSentinel: releaseReadinessSentinel ?? undefined, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, localSigningKeyPem, leaseTransport, onLeasePullRequest: () => leaseCoordinatorRef?.currentLease() ?? null, liveTailReceiver, handoffWireTransport, onHandoffBegin, onHandoffInitiate: handoffInitiate, handoffInProgress: handoffSentinelInProgress, messageLedger, currentInboundByTopic, replyMarkerTransport, onReplyMarker: messageLedger ? (marker: unknown) => { const m = marker as { dedupeKey: string; platform: string; replyIdempotencyKey: string; epoch: number; topic?: string | null }; messageLedger!.applyRemoteReplyMarker(m.dedupeKey, { platform: m.platform, replyIdempotencyKey: m.replyIdempotencyKey, epoch: m.epoch, topic: m.topic ?? null }); } : undefined, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, warrantsReplyGate, collaborationSurfacer, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, responseReviewGate, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, machinePoolRegistry, meshRpcDispatcher, workingSetPullCoordinator, commitmentReplicaStore, forwardCommitmentMutate, sessionOwnershipRegistry, topicPinStore: _topicPinStore ?? undefined, secretSync: _secretSyncHandle ?? undefined, meshSelfId: _meshSelfId ?? undefined, resolveRouterUrl: _resolveRouterUrl ?? undefined, resolvePeerUrls: _resolvePeerUrls ?? undefined, sessionPoolE2EResultStore, proxyCoordinator, topicIntentStore, topicIntentArcCheck, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, briefDeps, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, agentWorktreeReaper, mcpProcessReaper, geminiLoopRunner, sleepController, agentActivityState, reapLog, sleepWakeDetector, unjustifiedStopGate, stopGateDb, stopNotifier });
     // Boot-recovery (tunnel-failure-resilience spec Part 6): if the agent
     // died mid-relay-episode, the persisted tunnel.json carries
     // rotationPending=true. Rotate the dashboard PIN + authToken BEFORE

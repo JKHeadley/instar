@@ -77,6 +77,30 @@
       "grandfathered": false
     },
     {
+      "category": "commitment-pending-mutations",
+      "description": "Durable owner-routed mutation intents awaiting an offline owner (COMMITMENTS-COHERENCE-SPEC P1.5 \u00a73.4). Stores INTENT only - a FRESH signed envelope is re-issued at fire time; single-writer serialized funnel; per-(origin,id) and per-owner enqueue bounds; TTL 7d with one honest expiry notice.",
+      "scope": "machine-local",
+      "freshness": "live",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "state/commitment-replicas/pending-mutations.json"
+      ],
+      "grandfathered": false
+    },
+    {
+      "category": "commitment-opkeys",
+      "description": "Owner-side durable opKey replay window for commitment-mutate (COMMITMENTS-COHERENCE-SPEC P1.5 \u00a73.4) - the replay control beyond the 60s envelope nonce window; records verdicts, survives restarts, TTL >= pending-mutation TTL.",
+      "scope": "machine-local",
+      "freshness": "live",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "state/coherence-journal/commitment-opkeys.json"
+      ],
+      "grandfathered": false
+    },
+    {
       "category": "attention-queue",
       "description": "Attention items surfaced to the user, plus the per-source coalescing/suppression ledger.",
       "scope": "must-be-coherent",

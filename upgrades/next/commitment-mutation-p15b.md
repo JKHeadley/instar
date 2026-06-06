@@ -1,0 +1,34 @@
+# Commitments owner-routed mutation (P1.5b) — close a promise from any machine
+
+## What Changed
+
+Final build slice of Commitments Coherence: "mark it delivered" now works
+from ANY of the agent's machines. A close issued on the wrong machine
+forwards ONE signed command to the promise's home machine, which applies
+it under the exact same rules as a local close and returns the real
+verdict. If the home machine is ASLEEP, the intent is written down
+durably (surviving restarts), the user gets an honest "queued — applies
+the moment it returns", and a FRESH signed command fires on its return —
+with a durable replay window making double-application impossible even
+when a timeout left the outcome ambiguous.
+
+## What to Tell Your User
+
+On synced machine pairs: tell ANY machine "mark that done" — it lands on
+the right machine, or queues honestly if that machine is asleep and
+applies when it wakes. Single-machine setups: nothing changes.
+
+## Summary of New Capabilities
+
+- `commitment-mutate` MeshCommand (own RBAC case; verifyEnvelope sole
+  authority; owner-side durable opKey replay window).
+- `src/core/CommitmentMutation.ts` — verdict-bearing apply + OpKeyWindow +
+  PendingMutationLedger (intent-only, bounded, fresh-envelope re-fire).
+- deliver / withdraw / resume / beacon-PATCH routes: owner-routing with
+  409-ambiguity (?origin), 202-queued honesty, owner verdicts.
+
+## Evidence
+
+10 unit + 2 integration tests (real signed transport; the offline case
+end-to-end incl. restart survival + idempotent post-apply re-fire);
+tracker's 77 tests unchanged; full lint/typecheck/registry (72) clean.
