@@ -5690,12 +5690,39 @@ export function createRoutes(ctx: RouteContext): Router {
   // Read-only cross-topic index: every topic with intent state + its current focus +
   // high-specificity tags + whether a session is live on it. Signal-only; never gates.
   // 503 when the index is unavailable (no stateDir / init failed).
-  router.get('/parallel-work/activities', (_req, res) => {
+  router.get('/parallel-work/activities', async (req, res) => {
     if (!ctx.parallelActivityIndex) {
       res.status(503).json({ error: 'parallel-activity index unavailable (no stateDir or init failed)' });
       return;
     }
     const activities = ctx.parallelActivityIndex.activities();
+    // P4 (POOL-WIDE-PARALLEL-WORK-SPEC §3): ?scope=pool composes the local
+    // rows with replica-derived remote rows (LOCAL replica files — no peer
+    // fan-out; an offline peer's last-replicated streams still answer).
+    // Default scope stays byte-identical; a dark replica layer degrades the
+    // pool scope to local rows only (200, never a new 503).
+    if (req.query.scope === 'pool') {
+      try {
+        const poolMod = await import('../core/PoolActivityView.js');
+        const readerMod = await import('../core/CoherenceJournalReader.js');
+        const view = poolMod.buildPoolActivityView({
+          ownMachineId: ctx.meshSelfId ?? 'local',
+          local: activities,
+          reader: new readerMod.CoherenceJournalReader({ stateDir: ctx.config.stateDir }),
+        });
+        res.json({
+          scope: 'pool',
+          count: view.rows.length,
+          runningCount: view.rows.filter((a) => a.running).length,
+          activities: view.rows,
+          pool: view.pool,
+        });
+        return;
+      } catch (err) {
+        res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+        return;
+      }
+    }
     res.json({
       count: activities.length,
       runningCount: activities.filter((a) => a.running).length,
