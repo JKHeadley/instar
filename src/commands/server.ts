@@ -118,6 +118,7 @@ import { StaleProcessGuard } from '../core/StaleProcessGuard.js';
 import { cleanupGlobalInstalls } from '../core/GlobalInstallCleanup.js';
 import { ForegroundRestartWatcher } from '../core/ForegroundRestartWatcher.js';
 import { NotificationBatcher } from '../messaging/NotificationBatcher.js';
+import { formatLocalTimestamp } from '../utils/localTime.js';
 import type { NotificationTier } from '../messaging/NotificationBatcher.js';
 import { MessageStore } from '../messaging/MessageStore.js';
 import { MessageFormatter } from '../messaging/MessageFormatter.js';
@@ -477,7 +478,7 @@ async function spawnSessionForTopic(
           const sender = m.fromUser
             ? (m.senderName || 'User')
             : 'Agent';
-          const ts = m.timestamp ? new Date(m.timestamp).toISOString().slice(11, 19) : '??:??';
+          const ts = formatLocalTimestamp(m.timestamp); // local + tz label (see src/utils/localTime.ts)
           const text = (m.text || '').slice(0, 2000);
           lines.push(`[${ts}] ${sender}: ${text}`);
         }

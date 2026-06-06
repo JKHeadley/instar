@@ -24,6 +24,7 @@ import readline from 'node:readline';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 import { NativeModuleHealer } from './NativeModuleHealer.js';
 import { registerSqliteHandle } from '../core/SqliteRegistry.js';
+import { formatLocalTimestamp } from '../utils/localTime.js';
 
 // Dynamic import for better-sqlite3
 type Database = import('better-sqlite3').Database;
@@ -941,7 +942,7 @@ export class TopicMemory {
         const sender = m.fromUser
           ? (m.senderName || 'User')
           : 'Agent';
-        const ts = m.timestamp ? new Date(m.timestamp).toISOString().slice(11, 19) : '??:??';
+        const ts = formatLocalTimestamp(m.timestamp); // local + tz label (see src/utils/localTime.ts)
         const text = (m.text || '').slice(0, 2000);
         lines.push(`[${ts}] ${sender}: ${text}`);
       }
@@ -995,7 +996,7 @@ export class TopicMemory {
         const sender = m.fromUser
           ? (m.senderName || 'User')
           : 'Agent';
-        const ts = m.timestamp ? new Date(m.timestamp).toISOString().slice(11, 19) : '??:??';
+        const ts = formatLocalTimestamp(m.timestamp); // local + tz label (see src/utils/localTime.ts)
         const text = (m.text || '').slice(0, 2000);
         lines.push(`[${ts}] ${sender}: ${text}`);
       }

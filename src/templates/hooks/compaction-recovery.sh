@@ -265,6 +265,12 @@ if [ -f "$CONFIG_FILE" ]; then
 
         echo "$SLACK_MSGS" | python3 -c "
 import sys, json
+def _localts(raw):
+    try:
+        from datetime import datetime
+        return datetime.fromisoformat(str(raw).replace('Z', '+00:00')).astimezone().strftime('%Y-%m-%d %H:%M %Z')
+    except Exception:
+        return str(raw)[:16].replace('T', ' ')
 try:
     data = json.load(sys.stdin)
     msgs = data.get('messages', [])
@@ -281,7 +287,7 @@ try:
         try:
             from datetime import datetime
             dt = datetime.fromtimestamp(float(ts))
-            time_str = dt.strftime('%H:%M:%S')
+            time_str = dt.astimezone().strftime('%H:%M:%S %Z')
         except:
             time_str = ts[:8] if ts else '??:??:??'
         user = m.get('user', 'unknown')
@@ -373,6 +379,12 @@ except Exception:
         # Format messages and detect unanswered user messages
         echo "$RECENT_MSGS" | python3 -c "
 import sys, json
+def _localts(raw):
+    try:
+        from datetime import datetime
+        return datetime.fromisoformat(str(raw).replace('Z', '+00:00')).astimezone().strftime('%Y-%m-%d %H:%M %Z')
+    except Exception:
+        return str(raw)[:16].replace('T', ' ')
 try:
     data = json.load(sys.stdin)
     msgs = data.get('messages', [])
@@ -383,7 +395,7 @@ try:
     print('--- RECENT TELEGRAM CONTEXT (restoring after compaction, last %d messages) ---' % len(msgs))
 
     for m in msgs:
-        ts = m.get('timestamp', '')[:16].replace('T', ' ')
+        ts = _localts(m.get('timestamp', ''))
         from_user = m.get('fromUser', m.get('direction', 'in') == 'in')
         text = m.get('text', '').strip()
         sender = 'User' if from_user else 'Agent'
@@ -409,7 +421,7 @@ try:
         print('UNANSWERED MESSAGE(S) FROM USER:')
         for pm in pending_user:
             pm_text = pm.get('text', '')[:200]
-            pm_ts = pm.get('timestamp', '')[:16].replace('T', ' ')
+            pm_ts = _localts(pm.get('timestamp', ''))
             print(f'  [{pm_ts}] \"{pm_text}\"')
         print()
         print('You MUST address these messages substantively. Do NOT respond')

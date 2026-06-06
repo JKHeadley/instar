@@ -14,6 +14,8 @@
  * Pure + caller-agnostic so it is unit-testable without a live two-machine setup.
  */
 
+import { formatLocalTimestamp } from '../utils/localTime.js';
+
 /** One historical message, matching TelegramAdapter.getTopicHistory()'s shape. */
 export interface ForwardedHistoryMessage {
   fromUser: boolean;
@@ -40,11 +42,9 @@ export function formatForwardedTopicContext(
   lines.push('');
   for (const m of messages) {
     const sender = m.fromUser ? (m.senderName || 'User') : 'Agent';
-    let ts = '??:??';
-    if (m.timestamp != null) {
-      const d = new Date(m.timestamp);
-      if (!Number.isNaN(d.getTime())) ts = d.toISOString().slice(11, 19);
-    }
+    // Local time + tz label — unlabeled UTC here caused the 2026-06-05
+    // "9:23pm" incoherency (see src/utils/localTime.ts).
+    const ts = formatLocalTimestamp(m.timestamp);
     const text = (m.text || '').slice(0, 2000);
     lines.push(`[${ts}] ${sender}: ${text}`);
   }
