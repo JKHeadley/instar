@@ -620,6 +620,48 @@ describe('CoherenceJournal — self-emission exclusion (§3.1)', () => {
   });
 });
 
+describe('CoherenceJournal — getOwnAdvert (§3.4 rule 5)', () => {
+  it('advertises per-kind incarnation + the DURABLY-FLUSHED lastSeq (highWaterSeq), zeros when empty', () => {
+    const j = makeJournal();
+    // Nothing written yet → every kind advertises lastSeq 0.
+    const empty = j.getOwnAdvert();
+    expect(Object.keys(empty).sort()).toEqual(['autonomous-run', 'session-lifecycle', 'topic-placement']);
+    for (const kind of ['topic-placement', 'session-lifecycle', 'autonomous-run'] as JournalKind[]) {
+      expect(empty[kind].lastSeq).toBe(0);
+    }
+    const incarnation = empty['topic-placement'].incarnation;
+    expect(typeof incarnation).toBe('string');
+    expect(incarnation.length).toBeGreaterThan(0);
+    // All kinds share the writer's single stream-set incarnation token.
+    expect(empty['session-lifecycle'].incarnation).toBe(incarnation);
+
+    // Two placement emits, flushed → advert advances to the flushed head.
+    j.emitPlacement(1, { owner: 'm_a', epoch: 1, reason: 'placed' });
+    j.emitPlacement(2, { owner: 'm_b', epoch: 2, reason: 'user-move' });
+    j.flush();
+    const adv = j.getOwnAdvert();
+    expect(adv['topic-placement'].lastSeq).toBe(2);
+    expect(adv['topic-placement'].incarnation).toBe(incarnation);
+    // Other kinds untouched.
+    expect(adv['session-lifecycle'].lastSeq).toBe(0);
+    j.close();
+  });
+
+  it('does NOT advertise an enqueued-but-unflushed seq (only durable heads are servable)', () => {
+    const j = makeJournal();
+    j.emitPlacement(1, { owner: 'm_a', epoch: 1, reason: 'placed' });
+    // Intentionally NOT flushed — the entry is queued, not durable.
+    expect(j.pendingCount).toBeGreaterThan(0);
+    const adv = j.getOwnAdvert();
+    // §3.4: advertise highWaterSeq (advanced only after fdatasync), so a peer
+    // never requests a delta we cannot serve from the file.
+    expect(adv['topic-placement'].lastSeq).toBe(0);
+    j.flush();
+    expect(j.getOwnAdvert()['topic-placement'].lastSeq).toBe(1);
+    j.close();
+  });
+});
+
 /** A clone of the real fs seam (the wedged test overrides one method). */
 function realFsClone(): JournalFs {
   return {

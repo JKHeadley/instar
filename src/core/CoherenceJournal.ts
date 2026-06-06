@@ -403,6 +403,23 @@ export class CoherenceJournal {
     }));
   }
 
+  /**
+   * The OWN-stream replication advert for the journal-sync transport (§3.4 rule
+   * 5): per kind, the incarnation + the highest DURABLY-FLUSHED seq this writer
+   * can serve. Unlike `streamStatuses().lastSeq`, this advertises `highWaterSeq`
+   * (advanced only after data fdatasync) — NEVER an enqueued-but-unflushed seq —
+   * so a peer never requests a delta we cannot serve from the file. Returns `{}`
+   * with a zeroed entry per kind when nothing has been flushed yet; callers may
+   * forward it verbatim (old peers ignore unknown fields).
+   */
+  getOwnAdvert(): Record<JournalKind, { incarnation: string; lastSeq: number }> {
+    const out = {} as Record<JournalKind, { incarnation: string; lastSeq: number }>;
+    for (const kind of JOURNAL_KINDS) {
+      out[kind] = { incarnation: this.incarnation, lastSeq: this.highWaterSeq[kind] };
+    }
+    return out;
+  }
+
   /** Number of entries enqueued but not yet flushed (tests / observability). */
   get pendingCount(): number {
     return this.queue.length;

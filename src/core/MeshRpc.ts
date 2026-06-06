@@ -33,7 +33,19 @@ export type MeshCommand =
   | { type: 'deliverMessage'; session: string; messageId: string; payload: unknown; ownershipEpoch: number }
   | { type: 'capacity-report' }
   | { type: 'session-status'; session?: string }
-  | { type: 'secret-share'; encrypted: string };
+  | { type: 'secret-share'; encrypted: string }
+  | {
+      // Coherence-journal replication transport (COHERENCE-JOURNAL-SPEC §3.4).
+      // Read/observe class — any registered peer may issue it (same RBAC as
+      // capacity-report/session-status). All three optional shapes ride one verb:
+      //   • advert  — what the sender holds per stream (delta-request hint).
+      //   • request — "serve me your own <kind> from > fromSeq" (first-hop).
+      //   • batch   — durably-flushed own-stream entries the sender is pushing.
+      type: 'journal-sync';
+      advert?: Record<string, Record<string, { incarnation: string; lastSeq: number }>>;
+      request?: { machineId: string; kind: string; fromSeq: number };
+      batch?: { kind: string; incarnation: string; entries: unknown[]; oldestRetainedSeq?: number }[];
+    };
 
 export interface MeshEnvelope {
   sender: MachineId;
@@ -145,9 +157,13 @@ export function checkCommandRBAC(command: MeshCommand, sender: MachineId, deps: 
     }
     case 'capacity-report':
     case 'session-status':
+    case 'journal-sync':
     case 'secret-share':
       // Read/observe class (or e2e-encrypted) — any registered peer (already
-      // proven a registered peer by verifyEnvelope).
+      // proven a registered peer by verifyEnvelope). journal-sync joins this
+      // class: it serves/applies own-stream coherence-journal deltas, which are
+      // self-binding (first-hop sender binding fences forged entries in the
+      // applier) — no router/owner role is required.
       return { ok: true, reason: 'ok' };
     default:
       return { ok: false, reason: 'claim-unauthorized' };
