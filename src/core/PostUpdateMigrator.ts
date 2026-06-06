@@ -1678,11 +1678,18 @@ export class PostUpdateMigrator {
     // injection), so bumping to it re-deploys the updated hook to every existing agent;
     // the bundled hook retains all prior features (P13 guard, codex stdout-safe, native
     // /goal); customized hooks (no stock fingerprint) are still left untouched.
+    // Marker bumped `CLOCK_SEG` → `RESTART_NOTE_SILENT`: the bundled hook no longer
+    // delivers the restart-resume note ("my session restarted… no action needed") to
+    // the user's topic — self-lifecycle narration is housekeeping and default-silent
+    // (the 2026-06-06 restart-note flood: walls of per-iteration notes under restart
+    // churn). The durable record remains the recovery-audit JSONL + stderr. Bumping
+    // re-deploys the silenced hook to every existing agent (which carries CLOCK_SEG
+    // but not RESTART_NOTE_SILENT); customized hooks are still left untouched.
     upgrade(
       '.claude/skills/autonomous/hooks/autonomous-stop-hook.sh',
-      'CLOCK_SEG',
+      'RESTART_NOTE_SILENT',
       'Autonomous Mode Stop Hook',
-      'skills/autonomous/hooks/autonomous-stop-hook.sh (SESSION CLOCK injection — rich elapsed/remaining each continuation)',
+      'skills/autonomous/hooks/autonomous-stop-hook.sh (restart-resume note silenced — audit-only; self-lifecycle narration is housekeeping)',
     );
     // setup-autonomous.sh marker bumped `native-goal/set` → `IS_CODEX_AGENT`: the bundled
     // setup now ALSO auto-delegates to native /goal for CODEX agents (the prior native /goal

@@ -55,6 +55,13 @@ export interface RecoveryResult {
   strategy?: TruncationStrategy;
   attemptNumber?: number;
   message: string;
+  /** True when the kill was DEFERRED because the work-check found the session
+   *  alive and actively producing work (active child processes). The session
+   *  was NOT killed and is NOT dead — callers MUST NOT treat this as a failed
+   *  recovery of a dead session, and MUST NOT notify the user (a deferral is
+   *  the system deciding the session is fine; telling the user it died is a
+   *  false death report — the 2026-06-06 "conversation too long" flood). */
+  deferred?: boolean;
 }
 
 export interface SessionRecoveryDeps {
@@ -305,7 +312,7 @@ export class SessionRecovery extends EventEmitter {
     // Kill and respawn (stalls don't need truncation — just resume)
     if ((await this.killForRecovery(sessionName)) === 'deferred-still-working') {
       return {
-        recovered: false, failureType: 'stall', attemptNumber,
+        recovered: false, failureType: 'stall', attemptNumber, deferred: true,
         message: `Stall recovery deferred for ${sessionName} — work-check found active children; the JSONL "stall" reading is unreliable while the process is producing work`,
       };
     }
@@ -367,7 +374,7 @@ export class SessionRecovery extends EventEmitter {
     // Kill the session — it's stuck at the "conversation too long" prompt
     if ((await this.killForRecovery(sessionName)) === 'deferred-still-working') {
       return {
-        recovered: false, failureType: 'context_exhaustion', attemptNumber,
+        recovered: false, failureType: 'context_exhaustion', attemptNumber, deferred: true,
         message: `Context-exhaustion recovery deferred for ${sessionName} — work-check found active children`,
       };
     }
@@ -495,7 +502,7 @@ export class SessionRecovery extends EventEmitter {
     // Kill (might already be dead) and respawn
     if ((await this.killForRecovery(sessionName)) === 'deferred-still-working') {
       return {
-        recovered: false, failureType: 'crash', attemptNumber,
+        recovered: false, failureType: 'crash', attemptNumber, deferred: true,
         message: `Crash recovery deferred for ${sessionName} — work-check found active children (the JSONL "crashed" reading conflicts with a running process)`,
       };
     }
@@ -561,7 +568,7 @@ export class SessionRecovery extends EventEmitter {
     // Kill and respawn
     if ((await this.killForRecovery(sessionName)) === 'deferred-still-working') {
       return {
-        recovered: false, failureType: 'error_loop', attemptNumber,
+        recovered: false, failureType: 'error_loop', attemptNumber, deferred: true,
         message: `Error-loop recovery deferred for ${sessionName} — work-check found active children`,
       };
     }

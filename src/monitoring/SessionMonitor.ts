@@ -48,6 +48,7 @@ export interface SessionMonitorEvents {
   'monitor:recovery-triggered': { topicId: number; sessionName: string; reason: string };
   'monitor:mechanical-recovery': { topicId: number; sessionName: string; result: RecoveryResult };
   'monitor:user-notified': { topicId: number; message: string };
+  'monitor:recovery-deferred': { topicId: number; sessionName: string };
 }
 
 export interface SessionMonitorDeps {
@@ -87,6 +88,12 @@ export class SessionMonitor extends EventEmitter {
    *  snap.notifiedAt resets to null. Without this, the dead-session notification
    *  fires every poll (60s) creating spam. */
   private notificationCooldowns = new Map<number, number>();
+  /** topicId -> sessionName already notified for context exhaustion. Makes the
+   *  user notification once-per-failure-EPISODE (per session instance), not
+   *  once-per-cooldown-window — the prior behavior re-posted the same death
+   *  every cycle while the condition persisted (the 2026-06-06 flood). A
+   *  successful recovery clears the flag so a future genuine death notifies. */
+  private ctxNotifiedSessions = new Map<number, string>();
 
   constructor(deps: SessionMonitorDeps, config?: Partial<SessionMonitorConfig>) {
     super();
@@ -225,24 +232,44 @@ export class SessionMonitor extends EventEmitter {
         if (ctxCheck.matched) {
           console.log(`[SessionMonitor] Context exhaustion detected in topic ${topicId} (pattern: ${ctxCheck.pattern})`);
           this.contextExhaustionCooldowns.set(topicId, now);
+          let recoveryResult: RecoveryResult | null = null;
           try {
-            const recoveryResult = await this.deps.sessionRecovery.checkAndRecover(topicId, sessionName);
+            recoveryResult = await this.deps.sessionRecovery.checkAndRecover(topicId, sessionName);
             this.emit('monitor:mechanical-recovery', { topicId, sessionName, result: recoveryResult });
             if (recoveryResult.recovered) {
               console.log(`[SessionMonitor] Context exhaustion recovery succeeded for topic ${topicId}: ${recoveryResult.message}`);
               snap.status = 'healthy';
               snap.notifiedAt = now;
+              this.ctxNotifiedSessions.delete(topicId); // episode over — a future genuine death may notify again
               return;
             }
           } catch (err) {
             console.error(`[SessionMonitor] Context exhaustion recovery error for topic ${topicId}:`, err);
           }
-          // If recovery failed/not available, notify user ONCE
+          // DEFERRED ≠ dead. The work-check found the session alive and actively
+          // producing work, so the kill was deferred — the session is FINE.
+          // Telling the user it "hit conversation too long and can't continue"
+          // here is a FALSE death report on a live session (2026-06-06 flood:
+          // 68 detections / 29+ deferrals / 0 real recoveries in one day).
+          // Housekeeping → log + event only, NEVER the user.
+          if (recoveryResult?.deferred) {
+            console.log(`[SessionMonitor] Context-exhaustion recovery deferred for topic ${topicId} (session alive + producing work) — suppressing user notification`);
+            this.emit('monitor:recovery-deferred', { topicId, sessionName });
+            return;
+          }
+          // Genuine failure: notify once per session INSTANCE (failure episode),
+          // not once per cooldown window — the same dead session must not
+          // re-announce its death every cycle.
+          if (this.ctxNotifiedSessions.get(topicId) === sessionName) {
+            console.log(`[SessionMonitor] Context-exhaustion already notified for topic ${topicId} session "${sessionName}" — suppressing duplicate`);
+            return;
+          }
           snap.status = 'dead';
           await this.deps.sendToTopic(topicId,
             `Session hit "conversation too long" and can't continue. Send a new message to start a fresh session with your recent history.`
           ).catch(() => {});
           this.emit('monitor:user-notified', { topicId, message: 'context_exhausted' });
+          this.ctxNotifiedSessions.set(topicId, sessionName);
           snap.notifiedAt = now;
           this.notificationCooldowns.set(topicId, now);
           return;

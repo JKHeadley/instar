@@ -328,6 +328,86 @@ describe('SessionMonitor', () => {
     });
   });
 
+  describe('context-exhaustion: deferred recovery is SILENT + per-episode notify dedup', () => {
+    // A REAL exhaustion error renders with its CLI recovery framing (post-#907
+    // detector requirement) — the fixture must carry it to trigger the path.
+    const exhaustedOutput = 'Error: Conversation too long. Press esc twice to go up a few messages and try again.';
+
+    it('does NOT notify the user when recovery defers (session alive + producing work)', async () => {
+      const mockRecovery = {
+        checkAndRecover: vi.fn(async () => ({
+          recovered: false, deferred: true, failureType: 'context_exhaustion' as const,
+          message: 'Context-exhaustion recovery deferred - work-check found active children',
+        })),
+      };
+      deps = createMockDeps({
+        getActiveTopicSessions: vi.fn(() => new Map([[200, 'session-ctx']])),
+        captureSessionOutput: vi.fn(() => exhaustedOutput),
+        sessionRecovery: mockRecovery as any,
+      });
+      monitor = new SessionMonitor(deps, { pollIntervalSec: 60 });
+      const deferredEvents: unknown[] = [];
+      monitor.on('monitor:recovery-deferred', (e) => deferredEvents.push(e));
+
+      await monitor.poll();
+
+      expect(mockRecovery.checkAndRecover).toHaveBeenCalled();
+      // The session is ALIVE — a "conversation too long, start fresh" message
+      // here is a false death report (the 2026-06-06 flood). Nothing is sent.
+      expect(deps.sendToTopic).not.toHaveBeenCalled();
+      expect(deferredEvents).toHaveLength(1);
+    });
+
+    it('genuine failure notifies ONCE per session instance, not once per cooldown window', async () => {
+      const mockRecovery = {
+        checkAndRecover: vi.fn(async () => ({
+          recovered: false, failureType: 'context_exhaustion' as const, message: 'recovery failed',
+        })),
+      };
+      deps = createMockDeps({
+        getActiveTopicSessions: vi.fn(() => new Map([[201, 'session-dead']])),
+        captureSessionOutput: vi.fn(() => exhaustedOutput),
+        sessionRecovery: mockRecovery as any,
+      });
+      monitor = new SessionMonitor(deps, { pollIntervalSec: 60, notificationCooldownMinutes: 5 });
+
+      await monitor.poll();
+      expect(deps.sendToTopic).toHaveBeenCalledTimes(1);
+
+      // Past the cooldown the SAME dead session must not re-announce its death.
+      vi.advanceTimersByTime(6 * 60_000);
+      await monitor.poll();
+      expect(deps.sendToTopic).toHaveBeenCalledTimes(1);
+    });
+
+    it('a successful recovery clears the episode so a later genuine death notifies again', async () => {
+      let mode: 'fail' | 'recover' = 'fail';
+      const mockRecovery = {
+        checkAndRecover: vi.fn(async () => (mode === 'recover'
+          ? { recovered: true, failureType: 'context_exhaustion' as const, message: 'recovered' }
+          : { recovered: false, failureType: 'context_exhaustion' as const, message: 'failed' })),
+      };
+      deps = createMockDeps({
+        getActiveTopicSessions: vi.fn(() => new Map([[202, 'session-cycle']])),
+        captureSessionOutput: vi.fn(() => exhaustedOutput),
+        sessionRecovery: mockRecovery as any,
+      });
+      monitor = new SessionMonitor(deps, { pollIntervalSec: 60, notificationCooldownMinutes: 5 });
+
+      await monitor.poll(); // genuine failure -> notify #1
+      expect(deps.sendToTopic).toHaveBeenCalledTimes(1);
+
+      mode = 'recover';
+      vi.advanceTimersByTime(6 * 60_000);
+      await monitor.poll(); // recovery succeeds -> episode cleared
+
+      mode = 'fail';
+      vi.advanceTimersByTime(6 * 60_000);
+      await monitor.poll(); // a NEW genuine death -> notify #2
+      expect(deps.sendToTopic).toHaveBeenCalledTimes(2);
+    });
+  });
+
   describe('mechanical recovery integration', () => {
     it('skips triage when mechanical recovery succeeds', async () => {
       const now = Date.now();

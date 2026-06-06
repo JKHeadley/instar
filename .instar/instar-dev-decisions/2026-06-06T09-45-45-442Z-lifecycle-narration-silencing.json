@@ -1,0 +1,22 @@
+{
+  "ts": "2026-06-06T09:45:45.442Z",
+  "slug": "lifecycle-narration-silencing",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)"
+  ],
+  "belowFloor": true,
+  "files": 3,
+  "loc": 57,
+  "causalAutopsy": {
+    "origin": "prior-pr",
+    "relatedPrs": [
+      492
+    ],
+    "notes": "The work-check deferral ('deferred-still-working') was introduced by #492 (session-lifecycle robustness P0 #8) as a correct kill veto, but it was collapsed into a plain recovered:false at the RecoveryResult boundary — silently converting every deferral into SessionMonitor's user-facing 'conversation too long' death notice (the notify predates #492, commit 32dc1b624). #907 later fixed the DETECTION-side false positive (stale-scrollback framing guard) but not this notify-side one. The restart-resume note is a latent design choice in the autonomous stop-hook's topic-keyed delivery, not a regression."
+  },
+  "verdict": "pass"
+}

@@ -206,6 +206,59 @@ describe('SessionRecovery', () => {
     });
   });
 
+  describe('work-check deferral surfaces deferred:true (false-death-report guard)', () => {
+    it('stall deferral returns recovered:false + deferred:true and does NOT kill', async () => {
+      // hasActiveProcesses=true -> killForRecovery vetoes the kill: the session is
+      // alive and producing work. The result MUST carry deferred:true so callers
+      // (SessionMonitor) can distinguish "alive - leave it, say nothing" from a
+      // genuine failed recovery of a dead session (the 2026-06-06 "conversation
+      // too long" flood was SessionMonitor notifying the user on deferrals).
+      deps = createMockDeps({ hasActiveProcesses: vi.fn(() => true) });
+      recovery = new SessionRecovery({ enabled: true, projectDir: tmpDir }, deps);
+      const fakeJsonlPath = path.join(tmpDir, 'fake-defer.jsonl');
+      fs.writeFileSync(fakeJsonlPath, '');
+      vi.spyOn(recovery as any, 'findJsonlForSession').mockReturnValue(fakeJsonlPath);
+      vi.mocked(detectToolCallStall).mockReturnValue({
+        jsonlPath: fakeJsonlPath,
+        sessionUuid: 'uuid-defer',
+        stalledAt: new Date().toISOString(),
+        stallDurationMs: 120000,
+        lastToolName: 'Bash',
+        lastToolInput: { command: 'npm test' },
+        lastToolUseId: 'tool-defer',
+      });
+
+      const result = await recovery.checkAndRecover(1, 'defer-session');
+
+      expect(result.recovered).toBe(false);
+      expect(result.deferred).toBe(true);
+      expect(result.failureType).toBe('stall');
+      expect(deps.killSession).not.toHaveBeenCalled();
+    });
+
+    it('a genuine recovery result does NOT carry deferred', async () => {
+      deps = createMockDeps({ hasActiveProcesses: vi.fn(() => false) });
+      recovery = new SessionRecovery({ enabled: true, projectDir: tmpDir }, deps);
+      const fakeJsonlPath = path.join(tmpDir, 'fake-real.jsonl');
+      fs.writeFileSync(fakeJsonlPath, '');
+      vi.spyOn(recovery as any, 'findJsonlForSession').mockReturnValue(fakeJsonlPath);
+      vi.mocked(detectToolCallStall).mockReturnValue({
+        jsonlPath: fakeJsonlPath,
+        sessionUuid: 'uuid-real',
+        stalledAt: new Date().toISOString(),
+        stallDurationMs: 120000,
+        lastToolName: 'Bash',
+        lastToolInput: { command: 'npm test' },
+        lastToolUseId: 'tool-real',
+      });
+
+      const result = await runWithTimers(() => recovery.checkAndRecover(2, 'real-session'));
+
+      expect(result.recovered).toBe(true);
+      expect(result.deferred).toBeUndefined();
+    });
+  });
+
   describe('cooldown prevents rapid recovery', () => {
     it('returns recovered:false within cooldown period', async () => {
       deps = createMockDeps({ isSessionAlive: vi.fn(() => true) });

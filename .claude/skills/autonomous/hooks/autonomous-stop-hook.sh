@@ -522,14 +522,19 @@ deliver_recovery_note() {
   esac
 }
 
+# RESTART_NOTE_SILENT — self-lifecycle narration is housekeeping; default-silent.
+# The restart-resume note ("my session restarted... no action needed") is, by its
+# own text, not user-actionable. Under restart churn it floods the user's topic
+# (2026-06-06: walls of per-iteration restart notes across topics). The durable
+# record is the RECOVERY_AUDIT JSONL + the stderr log below — never the user's
+# chat. deliver_recovery_note() is intentionally retained for FUTURE notes that
+# ARE user-actionable (e.g. "your work is holding a restart").
 if [[ "$RESTART_DETECTED" == "true" ]] && [[ "$STATE_SESSION" != "$HOOK_SESSION" ]]; then
   ITER_LABEL="${ITERATION:-?}"
-  NOTE="Heads up — my session restarted mid-run and I've picked the autonomous job back up (topic ${REPORT_TOPIC:-?}, iteration ${ITER_LABEL}). No action needed."
   TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   printf '{"ts":"%s","event":"restart-resume","channel":"%s","topic":"%s","oldSession":"%s","newSession":"%s","method":"%s","iteration":"%s"}\n' \
     "$TS" "$REPORT_CHANNEL" "${REPORT_TOPIC:-}" "$STATE_SESSION" "$HOOK_SESSION" "$OWNER_METHOD" "$ITER_LABEL" >> "$RECOVERY_AUDIT" 2>/dev/null || true
-  deliver_recovery_note "$REPORT_CHANNEL" "$REPORT_TOPIC" "$NOTE"
-  echo "[autonomous] restart-resume: channel=$REPORT_CHANNEL topic=${REPORT_TOPIC:-?} old=$STATE_SESSION new=$HOOK_SESSION method=$OWNER_METHOD" >&2
+  echo "[autonomous] restart-resume (silent — audit-only): channel=$REPORT_CHANNEL topic=${REPORT_TOPIC:-?} old=$STATE_SESSION new=$HOOK_SESSION method=$OWNER_METHOD" >&2
 fi
 
 # Reconcile recorded session_id to live (covers restart, bootstrap, adopt).
