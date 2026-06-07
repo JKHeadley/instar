@@ -9,7 +9,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { ensureWorktreeSpotlightExclusion, ensureClaudeTranscriptSpotlightExclusion } from '../../src/core/InstarWorktreeManager.js';
+import { ensureWorktreeSpotlightExclusion, ensureClaudeTranscriptSpotlightExclusion, ensureAgentDataSpotlightExclusion } from '../../src/core/InstarWorktreeManager.js';
 import { PostUpdateMigrator } from '../../src/core/PostUpdateMigrator.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
@@ -229,5 +229,82 @@ describe('PostUpdateMigrator.migrateClaudeTranscriptSpotlightExclusion', () => {
     const result2 = makeMigrator(path.join(agentHome, '.instar')).migrate();
     expect(result2.errors).toEqual([]);
     expect(result2.upgraded.some((s) => s.includes('claude-transcript-spotlight-exclusion'))).toBe(false);
+  });
+});
+
+// ── Agent runtime-data exclusion (the agent's OWN .instar churn: images/dbs/logs/state) ──
+
+describe('ensureAgentDataSpotlightExclusion', () => {
+  let stateDir: string;
+  beforeEach(() => { stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-data-spotlight-')); });
+  afterEach(() => { SafeFsExecutor.safeRmSync(stateDir, { recursive: true, force: true, operation: OP }); });
+
+  it('drops a marker in each high-churn subdir that exists', () => {
+    for (const sub of ['telegram-images', 'server-data', 'logs', 'state']) {
+      fs.mkdirSync(path.join(stateDir, sub), { recursive: true });
+    }
+    const created = ensureAgentDataSpotlightExclusion(stateDir);
+    expect(created.sort()).toEqual(['logs', 'server-data', 'state', 'telegram-images']);
+    for (const sub of created) {
+      expect(fs.existsSync(path.join(stateDir, sub, '.metadata_never_index'))).toBe(true);
+    }
+  });
+
+  it('only marks subdirs that exist — skips absent ones', () => {
+    fs.mkdirSync(path.join(stateDir, 'telegram-images'), { recursive: true });
+    const created = ensureAgentDataSpotlightExclusion(stateDir);
+    expect(created).toEqual(['telegram-images']);
+    expect(fs.existsSync(path.join(stateDir, 'server-data', '.metadata_never_index'))).toBe(false);
+  });
+
+  it('returns [] for a brand-new agent with no data subdirs yet', () => {
+    expect(ensureAgentDataSpotlightExclusion(stateDir)).toEqual([]);
+  });
+
+  it('is idempotent — second run returns [] (markers already present)', () => {
+    fs.mkdirSync(path.join(stateDir, 'logs'), { recursive: true });
+    expect(ensureAgentDataSpotlightExclusion(stateDir)).toEqual(['logs']);
+    expect(ensureAgentDataSpotlightExclusion(stateDir)).toEqual([]);
+  });
+});
+
+describe('PostUpdateMigrator.migrateAgentDataSpotlightExclusion', () => {
+  beforeEach(() => {
+    tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-data-spotlight-mig-'));
+    setHome(tmpHome);
+    originalAuditDir = process.env.INSTAR_AUDIT_LOG_DIR;
+    process.env.INSTAR_AUDIT_LOG_DIR = path.join(tmpHome, 'audit');
+  });
+  afterEach(() => {
+    if (originalAuditDir === undefined) delete process.env.INSTAR_AUDIT_LOG_DIR;
+    else process.env.INSTAR_AUDIT_LOG_DIR = originalAuditDir;
+    restoreHome();
+    SafeFsExecutor.safeRmSync(tmpHome, { recursive: true, force: true, maxRetries: 5, retryDelay: 100, operation: OP });
+  });
+
+  it('drops markers into the agent .instar/ churn subdirs on update', () => {
+    const { stateDir } = setupAgentHome('echo-agent-data');
+    fs.mkdirSync(path.join(stateDir, 'telegram-images'), { recursive: true });
+    fs.mkdirSync(path.join(stateDir, 'server-data'), { recursive: true });
+    const result = makeMigrator(stateDir).migrate();
+    expect(result.upgraded.some((s) => s.includes('agent-data-spotlight-exclusion'))).toBe(true);
+    expect(fs.existsSync(path.join(stateDir, 'telegram-images', '.metadata_never_index'))).toBe(true);
+    expect(fs.existsSync(path.join(stateDir, 'server-data', '.metadata_never_index'))).toBe(true);
+  });
+
+  it('skips without error when no churn subdirs exist (brand-new agent)', () => {
+    const { stateDir } = setupAgentHome('echo-agent-data-none');
+    const result = makeMigrator(stateDir).migrate();
+    expect(result.errors).toEqual([]);
+    expect(result.upgraded.some((s) => s.includes('agent-data-spotlight-exclusion'))).toBe(false);
+  });
+
+  it('is idempotent — second run does not re-report the exclusion', () => {
+    const { stateDir } = setupAgentHome('echo-agent-data-idem');
+    fs.mkdirSync(path.join(stateDir, 'logs'), { recursive: true });
+    makeMigrator(stateDir).migrate();
+    const result2 = makeMigrator(stateDir).migrate();
+    expect(result2.errors).toEqual([]);
+    expect(result2.upgraded.some((s) => s.includes('agent-data-spotlight-exclusion'))).toBe(false);
   });
 });

@@ -26,7 +26,7 @@ import { execFileSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import { SafeGitExecutor } from './SafeGitExecutor.js';
 import { ensureInstarBashPreToolUseHooks, type SettingsMatcherEntry } from './instarSettingsHooks.js';
-import { resolveAgentHome as resolveAgentHomeForWorktree, ensureWorktreeSpotlightExclusion, ensureClaudeTranscriptSpotlightExclusion } from './InstarWorktreeManager.js';
+import { resolveAgentHome as resolveAgentHomeForWorktree, ensureWorktreeSpotlightExclusion, ensureClaudeTranscriptSpotlightExclusion, ensureAgentDataSpotlightExclusion } from './InstarWorktreeManager.js';
 import { fileURLToPath } from 'node:url';
 import { TreeGenerator } from '../knowledge/TreeGenerator.js';
 import { HTTP_HOOK_TEMPLATES, buildHttpHookSettings } from '../data/http-hook-templates.js';
@@ -260,6 +260,7 @@ export class PostUpdateMigrator {
     this.migrateWorktreeSpotlightExclusion(result);
     this.migrateNodeModulesSpotlightExclusion(result);
     this.migrateClaudeTranscriptSpotlightExclusion(result);
+    this.migrateAgentDataSpotlightExclusion(result);
     this.migrateBootWrapperToCjs(result);
     this.migrateBootWrapperAbiCheck(result);
     this.migrateStaleLifelineSignal(result);
@@ -857,6 +858,29 @@ export class PostUpdateMigrator {
       }
     } catch (err) {
       result.errors.push(`claude-transcript-spotlight-exclusion: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  /**
+   * OS resource hygiene (Responsible Resource Usage standard): exclude the agent's
+   * OWN runtime data dir (`<stateDir>` = `<agentHome>/.instar`) from macOS Spotlight.
+   * The worktree (#588), node_modules (#606), and Claude-transcript (#903) exclusions
+   * cover everything EXCEPT the agent's own churning data: `telegram-images/` (every
+   * user photo, analyzed by mediaanalysisd ~72-78% CPU), `server-data/` (SQLite +
+   * WAL rewritten continuously), `logs/`, and `state/`. On a busy box whose
+   * ~/.instar was never excluded, these pinned mediaanalysisd + mds_stores. Drops a
+   * marker inside each high-churn subdir (gitignored runtime trees → no git noise);
+   * honored recursively, harmless on non-macOS, idempotent, graceful no-op for a
+   * brand-new agent whose subdirs don't exist yet.
+   */
+  private migrateAgentDataSpotlightExclusion(result: MigrationResult): void {
+    try {
+      const created = ensureAgentDataSpotlightExclusion(this.config.stateDir);
+      if (created.length > 0) {
+        result.upgraded.push(`agent-data-spotlight-exclusion: dropped .metadata_never_index in .instar/{${created.join(',')}} (excludes the agent's own images/databases/logs/state from Spotlight + mediaanalysisd)`);
+      }
+    } catch (err) {
+      result.errors.push(`agent-data-spotlight-exclusion: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 

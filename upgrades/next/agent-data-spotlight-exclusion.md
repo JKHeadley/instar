@@ -1,0 +1,48 @@
+<!-- bump: patch -->
+<!-- change_type: fix -->
+
+## What Changed
+
+macOS `mediaanalysisd` (~72-78% of a core) and Spotlight `mds_stores` (~28-48%)
+were top constant CPU consumers on a busy fleet box — pinning it at load average
+30 — because the agent's OWN runtime data dir (`<agentHome>/.instar/`) was never
+excluded from indexing. It holds `telegram-images/` (every user photo, vision-
+analyzed by mediaanalysisd), `server-data/` (SQLite DBs rewritten continuously),
+`logs/`, and `state/`. Instar already excluded `.worktrees/` (#588),
+`node_modules/` (#606), and Claude transcripts (#903); this closes the last gap.
+
+New `ensureAgentDataSpotlightExclusion()` helper drops the standard
+`.metadata_never_index` marker in each high-churn subdir + a `PostUpdateMigrator`
+backfill so existing agents get the relief on their next update.
+`.instar/telegram-images/` and `.instar/server-data/` are also gitignored.
+
+## What to Tell Your User
+
+Nothing required — silent OS-level resource hygiene. If their Mac was running
+hot, part of the cause was macOS endlessly indexing and photo-analyzing the
+agent's own chat images and databases; this stops that going forward.
+
+## Summary of New Capabilities
+
+- `ensureAgentDataSpotlightExclusion(stateDir)` — drops `.metadata_never_index`
+  in the agent's `.instar/{telegram-images,server-data,logs,state}` so macOS
+  Spotlight + mediaanalysisd stop indexing the agent's own churning runtime data.
+- `PostUpdateMigrator` backfill — existing agents get the exclusion on their next
+  update. Internal OS hygiene; no agent-facing API or config surface.
+
+## Scope (honest)
+
+This prevents FUTURE indexing/analysis. It does not instantly drop
+`mediaanalysisd`/`mds_stores` — macOS releases already-indexed content on its own
+schedule; forcing immediate eviction needs a one-time `sudo mdutil -E` the
+operator runs. One of several resource-efficiency fixes (2026-06-06). Does not
+address the ~300 accumulated worktrees (~100GB) — that is the AgentWorktreeReaper,
+gated separately on operator approval.
+
+## Evidence
+
+Unit + migration tests (both sides of every boundary: marker dropped in each
+existing subdir, only-existing subdirs marked, `[]` for a new agent, idempotent;
+migration backfills/skips/idempotent). 22/22 green in the spotlight-exclusion
+suite. `tsc --noEmit` clean. Mirrors the existing node_modules/worktree/transcript
+exclusion pattern exactly.
