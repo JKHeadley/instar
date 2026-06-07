@@ -1,0 +1,42 @@
+# Pool dashboard streaming — phase 1: the peer-stream relay core
+
+## What Changed
+
+First building block of the single-dashboard cross-machine streaming feature
+(POOL-DASHBOARD-STREAM-SPEC): the `PeerStreamProxy` — one multiplexed upstream
+connection per peer machine that the dashboard's WebSocket layer will use
+(phase 2) to relay a remote session's terminal stream. This phase ships the
+state machine ONLY; it is not yet wired to the live WebSocketManager, so it
+changes no user-visible behavior on its own.
+
+The proxy is the scalability + correctness core the reviewers stressed:
+reference-counted subscriptions, a 60s idle grace (cancelled if demand
+returns), ONE bounded reconnect on a drop with full resubscribe (a second drop
+or a reconnect timeout → machine-unreachable, never a reconnect storm),
+mid-reconnect subscribes merged from the source-of-truth subscription map (never
+lost), and peer-URL-change detection (stale-URL links are torn down). Capture
+stays on the owning machine; this only relays — so fleet cost is
+O(subscriptions), not O(sessions × clients × peers).
+
+## What to Tell Your User
+
+Nothing yet — this is internal plumbing. The visible result (click any
+machine's session and it streams) lands when phases 2–3 wire it to the
+dashboard.
+
+- audience: agent-only
+- maturity: preview
+
+## Summary of New Capabilities
+
+- `src/server/PeerStreamProxy.ts` — the per-peer upstream relay state machine,
+  fully transport/timer/clock-injected (no live wiring yet).
+
+## Evidence
+
+- `tests/unit/PeerStreamProxy.test.ts` (13 tests, deterministic): open+multiplex
+  (one upstream, no double-subscribe for a second client), idle-close +
+  mid-grace reactivate, bounded reconnect + resubscribe, second-drop →
+  unreachable, reconnect-timeout → unreachable, mid-reconnect subscribe merged,
+  url-change reopen, no-url → machine-unreachable, input-relay-only-when-active,
+  idempotent close.
