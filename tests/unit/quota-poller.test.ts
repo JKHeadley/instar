@@ -1,0 +1,171 @@
+/**
+ * Unit tests for QuotaPoller (P1.2 of the Subscription & Auth Standard).
+ * Fully hermetic: injected fetch + injected token resolver → zero credentials,
+ * zero network. Real SubscriptionPool over a temp dir. Covers the usage-shape
+ * mapper (both sides), pollAccount lifecycle, pollAll persistence, burn rate,
+ * and the deterministic branch of the default token resolver.
+ */
+
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { SubscriptionPool } from '../../src/core/SubscriptionPool.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import {
+  QuotaPoller,
+  mapUsageResponse,
+  defaultTokenResolver,
+  type FetchImpl,
+} from '../../src/core/QuotaPoller.js';
+
+// The real /api/oauth/usage shape, verified live 2026-06-06.
+const LIVE_USAGE_BODY = {
+  five_hour: { utilization: 10, resets_at: '2026-06-07T00:20:00Z' },
+  seven_day: { utilization: 71, resets_at: '2026-06-12T18:59:59Z' },
+  seven_day_sonnet: { utilization: 4, resets_at: '2026-06-12T19:00:00Z' },
+  seven_day_opus: null,
+  extra_usage: { is_enabled: true, monthly_limit: 20000, used_credits: 0 },
+};
+
+function okFetch(body: unknown): FetchImpl {
+  return async () => ({ ok: true, status: 200, json: async () => body });
+}
+function statusFetch(status: number): FetchImpl {
+  return async () => ({ ok: false, status, json: async () => ({}) });
+}
+function throwFetch(): FetchImpl {
+  return async () => {
+    throw new Error('network down');
+  };
+}
+
+const ACCT = {
+  id: 'claude-1',
+  nickname: 'primary',
+  provider: 'anthropic' as const,
+  framework: 'claude-code' as const,
+  configHome: '/home/x/.claude-primary',
+};
+
+describe('QuotaPoller', () => {
+  let dir: string;
+  let pool: SubscriptionPool;
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'qpoll-'));
+    pool = new SubscriptionPool({ stateDir: dir });
+  });
+  afterEach(() => {
+    try { SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/quota-poller.test.ts:cleanup' }); } catch { /* @silent-fallback-ok: best-effort temp cleanup */ }
+  });
+
+  // ── mapUsageResponse: real shape, both sides ──────────────────────
+  it('maps the real usage response shape', () => {
+    const snap = mapUsageResponse(LIVE_USAGE_BODY, 'oauth-usage-endpoint-fallback', '2026-06-07T05:00:00Z');
+    expect(snap.fiveHour).toEqual({ utilizationPct: 10, resetsAt: '2026-06-07T00:20:00Z' });
+    expect(snap.sevenDay).toEqual({ utilizationPct: 71, resetsAt: '2026-06-12T18:59:59Z' });
+    expect(snap.perModel?.sonnet).toBe(4);
+    expect(snap.perModel?.opus ?? null).toBeNull();
+    expect(snap.extraUsage).toEqual({ isEnabled: true, usedCredits: 0, monthlyLimit: 20000 });
+    expect(snap.source).toBe('oauth-usage-endpoint-fallback');
+    expect(snap.measuredAt).toBe('2026-06-07T05:00:00Z');
+  });
+
+  it('tolerates a sparse usage response (missing windows)', () => {
+    const snap = mapUsageResponse({ five_hour: { utilization: 2, resets_at: 'x' } }, 'oauth-usage-endpoint-fallback', 't');
+    expect(snap.fiveHour?.utilizationPct).toBe(2);
+    expect(snap.sevenDay).toBeUndefined();
+    expect(snap.extraUsage).toBeUndefined();
+  });
+
+  // ── pollAccount lifecycle ─────────────────────────────────────────
+  it('pollAccount returns a snapshot on a clean read', async () => {
+    const p = new QuotaPoller({ pool, fetchImpl: okFetch(LIVE_USAGE_BODY), tokenResolver: () => 'sk-ant-oat01-x' });
+    pool.add({ ...ACCT });
+    const snap = await p.pollAccount(pool.get('claude-1')!);
+    expect(snap?.sevenDay?.utilizationPct).toBe(71);
+  });
+
+  it('pollAccount returns null when the token is unresolvable', async () => {
+    const p = new QuotaPoller({ pool, fetchImpl: okFetch(LIVE_USAGE_BODY), tokenResolver: () => null });
+    pool.add({ ...ACCT });
+    expect(await p.pollAccount(pool.get('claude-1')!)).toBeNull();
+  });
+
+  it('pollAccount flags needs-reauth on a 401/403', async () => {
+    const p = new QuotaPoller({ pool, fetchImpl: statusFetch(401), tokenResolver: () => 'sk-ant-oat01-x' });
+    pool.add({ ...ACCT });
+    const snap = await p.pollAccount(pool.get('claude-1')!);
+    expect(snap).toBeNull();
+    expect(pool.get('claude-1')!.status).toBe('needs-reauth');
+  });
+
+  it('pollAccount returns null on a network error (no status change)', async () => {
+    const p = new QuotaPoller({ pool, fetchImpl: throwFetch(), tokenResolver: () => 'sk-ant-oat01-x' });
+    pool.add({ ...ACCT, status: 'active' });
+    expect(await p.pollAccount(pool.get('claude-1')!)).toBeNull();
+    expect(pool.get('claude-1')!.status).toBe('active');
+  });
+
+  // ── pollAll persistence + filtering ───────────────────────────────
+  it('pollAll persists lastQuota and skips non-claude / disabled accounts', async () => {
+    const p = new QuotaPoller({ pool, fetchImpl: okFetch(LIVE_USAGE_BODY), tokenResolver: () => 'sk-ant-oat01-x' });
+    pool.add({ ...ACCT, id: 'claude-1' });
+    pool.add({ ...ACCT, id: 'codex-1', provider: 'openai', framework: 'codex-cli' }); // skipped (not claude)
+    pool.add({ ...ACCT, id: 'claude-off', status: 'disabled' }); // skipped (disabled)
+    const res = await p.pollAll();
+    expect(res.polled).toBe(1);
+    expect(pool.get('claude-1')!.lastQuota?.sevenDay?.utilizationPct).toBe(71);
+    expect(pool.get('codex-1')!.lastQuota ?? null).toBeNull();
+    expect(pool.get('claude-off')!.lastQuota ?? null).toBeNull();
+  });
+
+  it('pollAll restores a needs-reauth account to active on a clean read', async () => {
+    const p = new QuotaPoller({ pool, fetchImpl: okFetch(LIVE_USAGE_BODY), tokenResolver: () => 'sk-ant-oat01-x' });
+    pool.add({ ...ACCT, status: 'needs-reauth' });
+    await p.pollAll();
+    expect(pool.get('claude-1')!.status).toBe('active');
+  });
+
+  // ── burn rate ─────────────────────────────────────────────────────
+  it('burnRate is null until two distinct reads, then is measured %/hr', async () => {
+    // Two reads one hour apart: 7-day 71 -> 73 = +2 pts/hr.
+    let body = { ...LIVE_USAGE_BODY };
+    let clock = Date.parse('2026-06-07T05:00:00Z');
+    const fetchImpl: FetchImpl = async () => ({ ok: true, status: 200, json: async () => body });
+    const p = new QuotaPoller({ pool, fetchImpl, tokenResolver: () => 'sk-ant-oat01-x' });
+    pool.add({ ...ACCT });
+
+    // Manually drive two reads with controlled measuredAt via mapUsageResponse paths:
+    // first read
+    await p.pollAccount(pool.get('claude-1')!);
+    expect(p.burnRate('claude-1')).toBeNull(); // only one sample
+
+    // second read, mutate body + advance: simulate by polling again after a tick.
+    body = { ...LIVE_USAGE_BODY, seven_day: { utilization: 73, resets_at: '2026-06-12T18:59:59Z' } };
+    // ensure a distinct measuredAt (real clock advances ms between calls)
+    await new Promise((r) => setTimeout(r, 5));
+    await p.pollAccount(pool.get('claude-1')!);
+    const br = p.burnRate('claude-1');
+    expect(br).not.toBeNull();
+    // span is tiny (~ms) so the rate is large; we assert direction + sign, not magnitude.
+    expect(br!.sevenDayPctPerHour!).toBeGreaterThan(0);
+    void clock;
+  });
+
+  // ── default token resolver: deterministic branch ──────────────────
+  it('defaultTokenResolver returns null for non-anthropic / non-claude-code accounts', () => {
+    expect(defaultTokenResolver({ ...ACCT, provider: 'openai', framework: 'codex-cli', status: 'active', enrolledAt: '', version: 1 })).toBeNull();
+    expect(defaultTokenResolver({ ...ACCT, framework: 'pi-cli', status: 'active', enrolledAt: '', version: 1 })).toBeNull();
+  });
+
+  it('defaultTokenResolver never returns a non-oauth token (file path, non-darwin only)', () => {
+    if (process.platform === 'darwin') return; // keychain path not hermetically testable
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'chome-'));
+    fs.writeFileSync(path.join(home, '.credentials.json'), JSON.stringify({ claudeAiOauth: { accessToken: 'not-an-oauth-token' } }));
+    const tok = defaultTokenResolver({ ...ACCT, configHome: home, status: 'active', enrolledAt: '', version: 1 });
+    expect(tok).toBeNull(); // rejected: doesn't start with sk-ant-oat
+    try { SafeFsExecutor.safeRmSync(home, { recursive: true, force: true, operation: 'tests/unit/quota-poller.test.ts:home-cleanup' }); } catch { /* @silent-fallback-ok */ }
+  });
+});
