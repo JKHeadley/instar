@@ -58,6 +58,7 @@ import {
   isTerminalForwardError,
   type VersionSkewBody,
 } from './forwardErrors.js';
+import { decideReplay, type ForwardOutcome } from './replayPolicy.js';
 import { writeStartupMarker } from './startupMarker.js';
 import { shouldOwnTelegramPoll } from './telegramPollOwnership.js';
 import { writeLease as writePollOwnerLease } from './TelegramPollOwnerLease.js';
@@ -1394,11 +1395,30 @@ export class TelegramLifeline {
     }
   }
 
+  /**
+   * Boolean façade kept for the inbound-handler callers that only care whether
+   * the forward landed. Replay uses {@link forwardToServerClassified} so it can
+   * tell a message-specific rejection (poison) from a transient outage.
+   */
   private async forwardToServer(
     topicId: number,
     text: string,
     rawMsg: NonNullable<TelegramUpdate['message']>,
   ): Promise<boolean> {
+    return (await this.forwardToServerClassified(topicId, text, rawMsg)) === 'ok';
+  }
+
+  /**
+   * Forward a message to the server and classify the result so replay can
+   * budget correctly: only a genuine HTTP-400 rejection ('poison') burns the
+   * drop budget; timeout / 5xx / 503-boot / network refusal are 'transient'
+   * (never drop a real message), and 426 is 'skew' (coordinated restart).
+   */
+  private async forwardToServerClassified(
+    topicId: number,
+    text: string,
+    rawMsg: NonNullable<TelegramUpdate['message']>,
+  ): Promise<ForwardOutcome> {
     // a2a spoof-defense fields (MENTOR-LIVE-READINESS-SPEC §Recipient side). The
     // server's /internal/telegram-forward handler passes these to
     // `TelegramAdapter.dispatchAgentMessageHook` so the a2a hook can distinguish
@@ -1508,15 +1528,21 @@ export class TelegramLifeline {
       // gets its own user-visible notification.
       this.versionSkewActive = false;
       this.versionSkewAlertSentAt = 0;
-      return true;
+      return 'ok';
     } catch (err) {
       // Version-skew handler: emit signal + request restart via orchestrator.
       if (err instanceof ForwardVersionSkewError) {
         this.handleVersionSkew(err, topicId);
-        return false;
+        return 'skew';
       }
       this.consecutiveForwardFailures++;
-      return false;
+      // A genuine HTTP-400 is the ONLY message-specific ("poison") failure —
+      // the server looked at this message and refused it. Everything else
+      // (transient 5xx, 503 boot, fetch timeout/AbortError, network refusal)
+      // is a capacity/availability failure that says nothing about the message
+      // and must NOT burn the replay drop budget.
+      if (err instanceof ForwardBadRequestError) return 'poison';
+      return 'transient';
     }
   }
 
@@ -1790,62 +1816,32 @@ export class TelegramLifeline {
 
   // ── Queue Replay ──────────────────────────────────────────
 
-  /** Max times a message can fail replay before being dropped. */
-  private static readonly MAX_REPLAY_FAILURES = 3;
-
   private async replayQueue(): Promise<void> {
-    const messages = this.queue.drain();
+    // Durable consume: work from a SNAPSHOT and remove a message from the
+    // PERSISTED queue only after it is delivered or deliberately dropped. The
+    // old drain() emptied the on-disk queue up front, so a process exit
+    // mid-replay (update / version-skew / launchd restart — all common during
+    // the very episodes that trigger queuing) lost the in-memory messages with
+    // no trace. That is the 2026-06-06 topic-21487 untracked-loss: a real user
+    // question vanished without even a dropped-messages.json record.
+    const messages = this.queue.peek();
     if (messages.length === 0) return;
 
     console.log(`[Lifeline] Replaying ${messages.length} queued messages`);
     let replayed = 0;
     let failed = 0;
     let dropped = 0;
+    const deliveredByTopic = new Map<number, number>();
 
     for (const msg of messages) {
-      // Drop messages that have failed too many times — they likely cause crashes
-      const failures = msg.replayFailures ?? 0;
-      // CRITICAL: never drop while a version-skew episode is in flight.
-      // The drop policy assumes failures are transient or message-specific;
-      // a hard incompatibility (HTTP 426) makes EVERY forward fail for a
-      // reason unrelated to the message. Dropping under skew turns a
-      // recoverable outage into silent data loss (the 2026-05-20
-      // b2lead-insights failure mode). Re-queue without incrementing the
-      // failure counter until the lifeline restarts onto a compatible
-      // version and forward starts succeeding again.
-      if (this.versionSkewActive) {
-        this.queue.enqueue(msg);
-        // Don't count toward replay-budget; the next replay tick will
-        // try again after the orchestrator-driven restart.
-        failed++;
-        continue;
-      }
-      if (failures >= TelegramLifeline.MAX_REPLAY_FAILURES) {
-        dropped++;
-        // Before the drop becomes silent: persist the record, report a
-        // degradation, and tell the original sender their message was lost.
-        try {
-          await notifyMessageDropped({
-            stateDir: this.projectConfig.stateDir,
-            topicId: msg.topicId,
-            messageId: msg.id,
-            senderName: msg.fromFirstName ?? msg.fromUsername ?? String(msg.fromUserId),
-            text: msg.text,
-            retryCount: failures,
-            reason: `Handoff to server failed after ${failures} replay attempts`,
-            sendToTopic: (topicId, body) => this.sendToTopic(topicId, body),
-          });
-        } catch (err) {
-          // notifyMessageDropped only throws on true disk failure after the notice/report paths
-          // had their chance — surface and continue; we still want to drop this message so
-          // the queue doesn't stall.
-          console.error(`[Lifeline] notifyMessageDropped threw for ${msg.id}:`, err instanceof Error ? err.message : err);
-        }
-        console.warn(`[Lifeline] Dropping message ${msg.id} after ${failures} replay failures: ${msg.text.slice(0, 80)}`);
-        continue;
-      }
+      // CRITICAL: never drop while a version-skew episode is in flight. A hard
+      // incompatibility (HTTP 426) makes EVERY forward fail for a reason
+      // unrelated to the message; the coordinated restart resolves it. Stop
+      // replaying and leave every remaining message safely on disk (the
+      // 2026-05-20 b2lead-insights silent-drop failure mode).
+      if (this.versionSkewActive) break;
 
-      const forwarded = await this.forwardToServer(msg.topicId, msg.text, {
+      const outcome = await this.forwardToServerClassified(msg.topicId, msg.text, {
         message_id: parseInt(msg.id.replace('tg-', ''), 10) || 0,
         from: {
           id: msg.fromUserId,
@@ -1858,34 +1854,56 @@ export class TelegramLifeline {
         date: Math.floor(new Date(msg.timestamp).getTime() / 1000),
       });
 
-      if (forwarded) {
+      const decision = decideReplay(outcome, {
+        poisonFailures: msg.replayFailures ?? 0,
+        transientFailures: msg.transientReplayFailures ?? 0,
+      });
+
+      if (decision.action === 'delivered') {
+        this.queue.remove(msg.id);
         replayed++;
+        deliveredByTopic.set(msg.topicId, (deliveredByTopic.get(msg.topicId) ?? 0) + 1);
+      } else if (decision.action === 'drop') {
+        dropped++;
+        // Before the drop becomes silent: persist the record, report a
+        // degradation, and tell the original sender their message was lost.
+        try {
+          await notifyMessageDropped({
+            stateDir: this.projectConfig.stateDir,
+            topicId: msg.topicId,
+            messageId: msg.id,
+            senderName: msg.fromFirstName ?? msg.fromUsername ?? String(msg.fromUserId),
+            text: msg.text,
+            retryCount: decision.poisonFailures + decision.transientFailures,
+            reason: decision.dropReason ?? 'Message could not be delivered',
+            sendToTopic: (topicId, body) => this.sendToTopic(topicId, body),
+          });
+        } catch (err) {
+          // notifyMessageDropped only throws on true disk failure after the notice/report paths
+          // had their chance — surface and continue; we still want to drop this message so
+          // the queue doesn't stall.
+          console.error(`[Lifeline] notifyMessageDropped threw for ${msg.id}:`, err instanceof Error ? err.message : err);
+        }
+        console.warn(`[Lifeline] Dropping message ${msg.id}: ${decision.dropReason} — ${msg.text.slice(0, 80)}`);
+        this.queue.remove(msg.id);
       } else {
-        // Re-queue — but only burn replay budget when the server is believed
-        // HEALTHY and still refused the message (a message-specific/poison
-        // failure, which is what the drop policy exists for). A forward that
-        // fails because the server is DOWN (update restart, crash window) says
-        // nothing about the message — same class as the versionSkewActive
-        // exemption above. Without this guard, a multi-minute restart window
-        // with 30s replay ticks burned all 3 attempts in ~90s and dropped
-        // head-of-queue messages (live: 39 dropped on codey, 9 on 2026-06-05
-        // alone, every one "Handoff to server failed" during a bounce).
-        msg.replayFailures = this.supervisor.healthy ? failures + 1 : failures;
-        this.queue.enqueue(msg);
+        // requeue — persist the updated strike counters IN PLACE; the message
+        // stays on disk for the next replay tick. A transient failure NEVER
+        // burns the poison budget, so a slow / overloaded / restarting server
+        // can no longer drop a real message (the 2026-06-06 topic-21487
+        // false-drop bug, where a CPU-starved-but-up server burned all 3
+        // attempts in ~90s and dropped the user's question).
+        this.queue.updateReplayCounters(msg.id, {
+          replayFailures: decision.poisonFailures,
+          transientReplayFailures: decision.transientFailures,
+        });
         failed++;
-        // If the server just went down during replay, stop replaying —
-        // remaining messages will be replayed on next recovery
-        if (!this.supervisor.healthy) {
+        // If the server is unavailable, stop replaying — the remaining messages
+        // are already safely persisted (we only remove on delivery/drop) and
+        // will be retried on the next recovery.
+        if (outcome === 'transient' && !this.supervisor.healthy) {
           const remaining = messages.length - replayed - failed - dropped;
-          if (remaining > 0) {
-            console.log(`[Lifeline] Server went down during replay — re-queuing ${remaining} remaining messages`);
-            // Re-queue remaining unprocessed messages (preserve their failure counts)
-            const currentIndex = messages.indexOf(msg);
-            for (let i = currentIndex + 1; i < messages.length; i++) {
-              this.queue.enqueue(messages[i]);
-            }
-            failed += remaining;
-          }
+          console.log(`[Lifeline] Server unavailable during replay — ${remaining} message(s) remain queued`);
           break;
         }
       }
@@ -1898,15 +1916,10 @@ export class TelegramLifeline {
       console.log(`[Lifeline] Replay complete: ${replayed} delivered, ${failed} re-queued, ${dropped} dropped`);
     }
 
-    // Notify the user that their queued messages were delivered
+    // Notify the user that their queued messages were delivered.
     if (replayed > 0) {
-      // Collect unique topics that received replayed messages
-      const replayedTopics = new Set(
-        messages.filter((_, i) => i < replayed + failed + dropped).map(m => m.topicId)
-      );
-      for (const topicId of replayedTopics) {
+      for (const [topicId, count] of deliveredByTopic) {
         try {
-          const count = messages.filter(m => m.topicId === topicId).length;
           await this.sendToTopic(topicId,
             count === 1
               ? '✓ Server recovered — your queued message has been delivered.'
