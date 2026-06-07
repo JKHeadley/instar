@@ -35,9 +35,18 @@ import type { SessionManager } from '../core/SessionManager.js';
 import type { StateManager } from '../core/StateManager.js';
 import type { HookEventReceiver } from '../monitoring/HookEventReceiver.js';
 import type { StreamTicketStore } from './StreamTicketStore.js';
+import { PeerStreamProxy, type UpstreamTransport, type UpstreamHandlers } from './PeerStreamProxy.js';
 
 /** Pool Dashboard Streaming §2.1: only tmux-safe session names ever reach tmux. */
 const SAFE_SESSION_NAME = /^[A-Za-z0-9_.:@-]+$/;
+
+/** Requesting side (§2.2): opens an upstream /pool-stream to a peer machine. The
+ *  connector owns mint-ticket + ws-connect (it has the mesh client + peer URLs). */
+export interface PoolStreamConnector {
+  /** Open an upstream link to `machineId`'s /pool-stream (mint a ticket, connect).
+   *  Returns null if the peer is unreachable / has no URL. */
+  connect: (machineId: string, handlers: UpstreamHandlers) => UpstreamTransport | null;
+}
 
 interface ClientState {
   ws: WebSocket;
@@ -49,6 +58,9 @@ interface ClientState {
   isPeer?: boolean;
   /** The authenticated peer machine id (from the consumed stream ticket). */
   peerMachineId?: string;
+  /** Remote sessions this local browser client is streaming from peers
+   *  (Pool Dashboard Streaming requesting side §2.2). Keyed `${machineId}::${session}`. */
+  remoteSubs?: Set<string>;
 }
 
 export class WebSocketManager {
@@ -69,6 +81,12 @@ export class WebSocketManager {
   /** Serving-side gate: may a PEER machine send input/key to a local session?
    *  Default false (security: keystroke forwarding is a lateral-movement vector). */
   private poolStreamAllowRemoteInput = false;
+  /** Requesting side (§2.2): opens upstream /pool-stream links to peers. */
+  private poolStreamConnector?: PoolStreamConnector;
+  /** This machine's id — a subscribe whose machineId === this is served locally. */
+  private selfMachineId?: string;
+  /** One multiplexed upstream proxy per peer machine (requesting side). */
+  private peerProxies = new Map<string, PeerStreamProxy>();
 
   constructor(options: {
     server: HttpServer;
@@ -79,6 +97,8 @@ export class WebSocketManager {
     hookEventReceiver?: HookEventReceiver;
     streamTicketStore?: StreamTicketStore;
     poolStreamAllowRemoteInput?: boolean;
+    poolStreamConnector?: PoolStreamConnector;
+    selfMachineId?: string;
   }) {
     this.sessionManager = options.sessionManager;
     this.state = options.state;
@@ -86,6 +106,8 @@ export class WebSocketManager {
     this.hookEventReceiver = options.hookEventReceiver;
     this.streamTicketStore = options.streamTicketStore;
     this.poolStreamAllowRemoteInput = options.poolStreamAllowRemoteInput ?? false;
+    this.poolStreamConnector = options.poolStreamConnector;
+    this.selfMachineId = options.selfMachineId;
     if (options.instarDir) {
       this.registryPath = path.join(options.instarDir, 'topic-session-registry.json');
     }
@@ -166,10 +188,12 @@ export class WebSocketManager {
       });
 
       ws.on('close', () => {
+        this.dropRemoteSubsForClient(client);
         this.clients.delete(ws);
       });
 
       ws.on('error', () => {
+        this.dropRemoteSubsForClient(client);
         this.clients.delete(ws);
       });
     });
@@ -251,6 +275,72 @@ export class WebSocketManager {
     return true;
   }
 
+  // ── Requesting side (§2.2): route a remote session through a peer proxy ──
+
+  /** True when the subscribe targets a session on ANOTHER machine. */
+  private isRemoteTarget(machineId: string | undefined, session: string): boolean {
+    if (!machineId || !this.poolStreamConnector) return false;
+    if (this.selfMachineId && machineId === this.selfMachineId) return false;
+    // A session that actually exists locally is served locally even if the
+    // client's machineId hint is stale (hint-staleness after a transfer, §2.1).
+    const local = this.sessionManager.listRunningSessions().some((s) => s.tmuxSession === session);
+    return !local;
+  }
+
+  /** Get-or-create the one multiplexed upstream proxy for a peer machine. */
+  private peerProxyFor(machineId: string): PeerStreamProxy {
+    let proxy = this.peerProxies.get(machineId);
+    if (proxy) return proxy;
+    proxy = new PeerStreamProxy({
+      peerMachineId: machineId,
+      // The connector owns URL resolution; a non-null sentinel keeps the proxy's
+      // url-change guard inert (one peer = one connector).
+      resolveUrl: () => 'pool-stream',
+      connect: (_url, handlers) => {
+        const t = this.poolStreamConnector?.connect(machineId, handlers);
+        if (!t) throw new Error(`no pool-stream connector route for ${machineId}`);
+        return t;
+      },
+      onFrameToClients: (session, frame) => this.fanRemoteFrame(machineId, session, frame),
+      onError: (session, code) => this.sendRemoteError(machineId, session, code),
+      now: () => Date.now(),
+      setTimer: (ms, fn) => { const h = setTimeout(fn, ms); return h as unknown as import('./PeerStreamProxy.js').TimerHandle; },
+      clearTimer: (h) => clearTimeout(h as unknown as ReturnType<typeof setTimeout>),
+      logger: (m) => { void m; },
+    });
+    this.peerProxies.set(machineId, proxy);
+    return proxy;
+  }
+
+  /** Fan a peer frame out to every LOCAL client subscribed to (machineId, session). */
+  private fanRemoteFrame(machineId: string, session: string, frame: Record<string, unknown>): void {
+    const key = `${machineId}::${session}`;
+    for (const c of this.clients.values()) {
+      if (c.remoteSubs?.has(key)) this.send(c.ws, { ...frame, machineId });
+    }
+  }
+
+  /** Surface an honest error to every local client subscribed to (machineId, session). */
+  private sendRemoteError(machineId: string, session: string, code: string): void {
+    const key = `${machineId}::${session}`;
+    for (const c of this.clients.values()) {
+      if (c.remoteSubs?.has(key)) this.send(c.ws, { type: 'error', code, session, machineId });
+    }
+  }
+
+  /** Tear down a client's remote subscriptions (on unsubscribe-all / close). */
+  private dropRemoteSubsForClient(client: ClientState): void {
+    if (!client.remoteSubs) return;
+    const clientId = this.clientId(client);
+    for (const key of client.remoteSubs) {
+      const sep = key.indexOf('::');
+      const machineId = key.slice(0, sep);
+      const session = key.slice(sep + 2);
+      this.peerProxies.get(machineId)?.unsubscribe(session, clientId);
+    }
+    client.remoteSubs.clear();
+  }
+
   private handleMessage(client: ClientState, msg: Record<string, unknown>): void {
     switch (msg.type) {
       case 'subscribe': {
@@ -263,6 +353,15 @@ export class WebSocketManager {
         if (!this.isValidSessionName(session)) {
           this.send(client.ws, { type: 'error', code: 'invalid-session', session });
           return;
+        }
+        // §2.2 requesting side: a session on ANOTHER machine routes through that
+        // peer's upstream proxy instead of the local capture path.
+        const subMachine = typeof msg.machineId === 'string' ? msg.machineId : undefined;
+        if (this.isRemoteTarget(subMachine, session)) {
+          (client.remoteSubs ??= new Set()).add(`${subMachine}::${session}`);
+          this.peerProxyFor(subMachine!).subscribe(session, this.clientId(client));
+          this.send(client.ws, { type: 'subscribed', session, machineId: subMachine });
+          break;
         }
         client.subscriptions.add(session);
         // Send current output immediately — use large capture for initial load
@@ -277,6 +376,13 @@ export class WebSocketManager {
 
       case 'unsubscribe': {
         const session = String(msg.session || '');
+        const unsubMachine = typeof msg.machineId === 'string' ? msg.machineId : undefined;
+        if (unsubMachine && client.remoteSubs?.has(`${unsubMachine}::${session}`)) {
+          client.remoteSubs.delete(`${unsubMachine}::${session}`);
+          this.peerProxies.get(unsubMachine)?.unsubscribe(session, this.clientId(client));
+          this.send(client.ws, { type: 'unsubscribed', session, machineId: unsubMachine });
+          break;
+        }
         client.subscriptions.delete(session);
         this.sessionOutputCache.delete(`${this.clientId(client)}:${session}`);
         this.send(client.ws, { type: 'unsubscribed', session });
@@ -290,6 +396,13 @@ export class WebSocketManager {
           this.send(client.ws, { type: 'error', message: 'Missing session or text' });
           return;
         }
+        const inMachine = typeof msg.machineId === 'string' ? msg.machineId : undefined;
+        if (inMachine && client.remoteSubs?.has(`${inMachine}::${session}`)) {
+          // Relay to the peer; the SERVING machine enforces its allowRemoteInput
+          // gate and replies input_ack / input-not-allowed, which we fan back.
+          this.peerProxies.get(inMachine)?.relayInput({ type: 'input', session, text });
+          break;
+        }
         if (!this.gateWrite(client, session)) return;
         const success = this.sessionManager.sendInput(session, text);
         this.send(client.ws, { type: 'input_ack', session, success });
@@ -302,6 +415,11 @@ export class WebSocketManager {
         if (!session || !key) {
           this.send(client.ws, { type: 'error', message: 'Missing session or key' });
           return;
+        }
+        const keyMachine = typeof msg.machineId === 'string' ? msg.machineId : undefined;
+        if (keyMachine && client.remoteSubs?.has(`${keyMachine}::${session}`)) {
+          this.peerProxies.get(keyMachine)?.relayInput({ type: 'key', session, key });
+          break;
         }
         if (!this.gateWrite(client, session)) return;
         const success = this.sessionManager.sendKey(session, key);

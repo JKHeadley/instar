@@ -389,6 +389,10 @@ let _secretSyncHandle: import('../core/SecretSync.js').SecretSyncHandle | null =
  *  ticket store — minted by the `pool-stream-ticket` mesh verb, consumed by the
  *  WebSocketManager's /pool-stream upgrade. Constructed in the mesh-setup block. */
 let _streamTicketStore: import('../server/StreamTicketStore.js').StreamTicketStore | null = null;
+/** Pool Dashboard Streaming requesting side (§2.2): opens upstream /pool-stream
+ *  links to peers (mint a ticket via the mesh verb, then connect). Injected into
+ *  the WebSocketManager so a remote-session subscribe streams from its owner. */
+let _poolStreamConnector: import('../server/WebSocketManager.js').PoolStreamConnector | null = null;
 /** Recognize + apply a "move/run this on <nickname>" relocation on inbound; returns handled=true when the message WAS a relocation command (so it must not also be dispatched). */
 let _tryNicknameRelocation: ((topicId: number, text: string) => Promise<{ handled: boolean }>) | null = null;
 /** Per-topic framework override (claude-code | codex-cli). Populated from
@@ -10877,6 +10881,44 @@ export async function startServer(options: StartOptions): Promise<void> {
               .getActiveMachines()
               .filter((m) => m.machineId !== meshSelfId && !!m.entry.lastKnownUrl)
               .map((m) => ({ machineId: m.machineId, url: m.entry.lastKnownUrl as string }));
+          // Pool Dashboard Streaming requesting side (§2.2): build the connector
+          // the WebSocketManager uses to open an upstream /pool-stream to a peer.
+          // connect() is synchronous (PeerStreamProxy contract) but the mint +
+          // ws-open are async — so we return a transport immediately that buffers
+          // sends until the socket opens, mints a single-use ticket over the
+          // machine-authed mesh verb, then connects ws://<peer>/pool-stream?ticket=.
+          // A failure at any step fires onClose (the proxy treats it as a drop →
+          // bounded reconnect → machine-unreachable).
+          {
+            const { WebSocket: WsClient } = await import('ws');
+            _poolStreamConnector = {
+              connect: (machineId, handlers) => {
+                const httpUrl = peerUrl(machineId);
+                if (!httpUrl) return null;
+                let ws: import('ws').WebSocket | null = null;
+                let open = false;
+                let closed = false;
+                const pending: string[] = [];
+                (async () => {
+                  try {
+                    const r = await meshClient.send({ machineId, url: httpUrl }, { type: 'pool-stream-ticket', session: '*' }, 0);
+                    const ticket = r.ok && r.result && typeof r.result === 'object' ? (r.result as { ticket?: string }).ticket : undefined;
+                    if (!ticket || closed) { if (!closed) handlers.onClose(); return; }
+                    const wsUrl = httpUrl.replace(/^http/, 'ws').replace(/\/$/, '') + `/pool-stream?ticket=${encodeURIComponent(ticket)}`;
+                    ws = new WsClient(wsUrl);
+                    ws.on('open', () => { open = true; for (const m of pending) ws!.send(m); pending.length = 0; handlers.onOpen(); });
+                    ws.on('message', (d: unknown) => { try { handlers.onFrame(JSON.parse(String(d))); } catch { /* @silent-fallback-ok: a non-JSON peer frame is dropped; the stream protocol is JSON-only (§2.2) */ } });
+                    ws.on('close', () => handlers.onClose());
+                    ws.on('error', () => { if (!open) handlers.onClose(); });
+                  } catch { if (!closed) handlers.onClose(); }
+                })();
+                return {
+                  send: (frame: Record<string, unknown>) => { const s = JSON.stringify(frame); if (open && ws) ws.send(s); else pending.push(s); },
+                  close: () => { closed = true; try { ws?.close(); } catch { /* @silent-fallback-ok: closing an unopened/dead upstream is best-effort (§2.2) */ } },
+                };
+              },
+            };
+          }
           // ── Self-nickname convergence (§L4, 2026-06-04 live-caught fix) ──
           // `updateNickname` (PATCH /pool/machines) is local-only, so a rename applied on a
           // PEER's registry never reaches the owning machine — leaving that machine unable to
@@ -11748,7 +11790,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       console.log(pc.dim(`  [session-pool] rollout gate not wired: ${err instanceof Error ? err.message : String(err)}`));
     }
 
-    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, subscriptionPool, quotaPoller, semanticMemory, activitySentinel, rateLimitSentinel, releaseReadinessSentinel: releaseReadinessSentinel ?? undefined, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, localSigningKeyPem, leaseTransport, onLeasePullRequest: () => leaseCoordinatorRef?.currentLease() ?? null, liveTailReceiver, handoffWireTransport, onHandoffBegin, onHandoffInitiate: handoffInitiate, handoffInProgress: handoffSentinelInProgress, messageLedger, currentInboundByTopic, replyMarkerTransport, onReplyMarker: messageLedger ? (marker: unknown) => { const m = marker as { dedupeKey: string; platform: string; replyIdempotencyKey: string; epoch: number; topic?: string | null }; messageLedger!.applyRemoteReplyMarker(m.dedupeKey, { platform: m.platform, replyIdempotencyKey: m.replyIdempotencyKey, epoch: m.epoch, topic: m.topic ?? null }); } : undefined, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, warrantsReplyGate, collaborationSurfacer, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, a2aDeliveryTracker: a2aDeliveryTracker ?? undefined, responseReviewGate, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, machinePoolRegistry, meshRpcDispatcher, workingSetPullCoordinator, commitmentReplicaStore, forwardCommitmentMutate, sessionOwnershipRegistry, topicPinStore: _topicPinStore ?? undefined, streamTicketStore: _streamTicketStore ?? undefined, poolStreamAllowRemoteInput: (config as { dashboard?: { poolStream?: { allowRemoteInput?: boolean } } }).dashboard?.poolStream?.allowRemoteInput ?? false, secretSync: _secretSyncHandle ?? undefined, meshSelfId: _meshSelfId ?? undefined, resolveRouterUrl: _resolveRouterUrl ?? undefined, resolvePeerUrls: _resolvePeerUrls ?? undefined, sessionPoolE2EResultStore, proxyCoordinator, topicIntentStore, topicIntentArcCheck, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, briefDeps, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, agentWorktreeReaper, mcpProcessReaper, geminiLoopRunner, sleepController, agentActivityState, reapLog, sleepWakeDetector, unjustifiedStopGate, stopGateDb, stopNotifier });
+    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, subscriptionPool, quotaPoller, semanticMemory, activitySentinel, rateLimitSentinel, releaseReadinessSentinel: releaseReadinessSentinel ?? undefined, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, localSigningKeyPem, leaseTransport, onLeasePullRequest: () => leaseCoordinatorRef?.currentLease() ?? null, liveTailReceiver, handoffWireTransport, onHandoffBegin, onHandoffInitiate: handoffInitiate, handoffInProgress: handoffSentinelInProgress, messageLedger, currentInboundByTopic, replyMarkerTransport, onReplyMarker: messageLedger ? (marker: unknown) => { const m = marker as { dedupeKey: string; platform: string; replyIdempotencyKey: string; epoch: number; topic?: string | null }; messageLedger!.applyRemoteReplyMarker(m.dedupeKey, { platform: m.platform, replyIdempotencyKey: m.replyIdempotencyKey, epoch: m.epoch, topic: m.topic ?? null }); } : undefined, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, warrantsReplyGate, collaborationSurfacer, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, a2aDeliveryTracker: a2aDeliveryTracker ?? undefined, responseReviewGate, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, machinePoolRegistry, meshRpcDispatcher, workingSetPullCoordinator, commitmentReplicaStore, forwardCommitmentMutate, sessionOwnershipRegistry, topicPinStore: _topicPinStore ?? undefined, streamTicketStore: _streamTicketStore ?? undefined, poolStreamAllowRemoteInput: (config as { dashboard?: { poolStream?: { allowRemoteInput?: boolean } } }).dashboard?.poolStream?.allowRemoteInput ?? false, poolStreamConnector: _poolStreamConnector ?? undefined, secretSync: _secretSyncHandle ?? undefined, meshSelfId: _meshSelfId ?? undefined, resolveRouterUrl: _resolveRouterUrl ?? undefined, resolvePeerUrls: _resolvePeerUrls ?? undefined, sessionPoolE2EResultStore, proxyCoordinator, topicIntentStore, topicIntentArcCheck, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, briefDeps, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, agentWorktreeReaper, mcpProcessReaper, geminiLoopRunner, sleepController, agentActivityState, reapLog, sleepWakeDetector, unjustifiedStopGate, stopGateDb, stopNotifier });
     // Resolve the late-bound topic-operator getter (increment 2e): routing was
     // wired before the server existed; from here on inbound binds use the
     // server's own store instance.

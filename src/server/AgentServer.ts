@@ -157,6 +157,8 @@ export class AgentServer {
   private hookEventReceiver?: import('../monitoring/HookEventReceiver.js').HookEventReceiver;
   private streamTicketStore?: import('./StreamTicketStore.js').StreamTicketStore;
   private poolStreamAllowRemoteInput = false;
+  private poolStreamConnector?: import('./WebSocketManager.js').PoolStreamConnector;
+  private meshSelfId?: string;
   private routeContext: { wsManager: import('./WebSocketManager.js').WebSocketManager | null } | null = null;
   private deliverySentinel: DeliveryFailureSentinel | null = null;
   private deliveryStore: PendingRelayStore | null = null;
@@ -303,6 +305,9 @@ export class AgentServer {
      *  session over /pool-stream? Default false (keystroke-forwarding is a
      *  lateral-movement vector). */
     poolStreamAllowRemoteInput?: boolean;
+    /** Pool Dashboard Streaming requesting side (§2.2) — opens upstream
+     *  /pool-stream links to peers so a remote-session subscribe streams. */
+    poolStreamConnector?: import('./WebSocketManager.js').PoolStreamConnector;
     /** Cross-machine secret-sync (spec Phase 4) — backs GET /secrets/sync-status + POST /secrets/sync-now. */
     secretSync?: import('../core/SecretSync.js').SecretSyncHandle;
     /** This machine's mesh id. */
@@ -490,6 +495,8 @@ export class AgentServer {
     this.sessionManager = options.sessionManager;
     this.streamTicketStore = options.streamTicketStore;
     this.poolStreamAllowRemoteInput = options.poolStreamAllowRemoteInput ?? false;
+    this.poolStreamConnector = options.poolStreamConnector;
+    this.meshSelfId = options.meshSelfId ?? undefined;
     this.state = options.state;
     this.hookEventReceiver = options.hookEventReceiver ?? undefined;
     this.toneGate = options.messagingToneGate ?? null;
@@ -2610,6 +2617,8 @@ export class AgentServer {
           hookEventReceiver: this.hookEventReceiver,
           streamTicketStore: this.streamTicketStore,
           poolStreamAllowRemoteInput: this.poolStreamAllowRemoteInput,
+          poolStreamConnector: this.poolStreamConnector,
+          selfMachineId: this.meshSelfId,
         });
 
         // Update route context with WebSocket manager (deferred — created after routes)
