@@ -5194,34 +5194,42 @@ export function createRoutes(ctx: RouteContext): Router {
       const path = await import('node:path');
       const events: { timestamp: string; type: string }[] = [];
       const tsField = (o: Record<string, unknown>): unknown =>
-        o.createdAt ?? o.timestamp ?? o.date ?? o.ts ?? o.loggedAt ?? o.addedAt;
+        o.createdAt ?? o.timestamp ?? o.date ?? o.ts ?? o.loggedAt ?? o.addedAt ?? o.discoveredAt;
       const push = (ts: unknown, type: string) => {
         if (ts === undefined || ts === null) return;
         const iso = typeof ts === 'number' ? new Date(ts).toISOString() : String(ts);
         events.push({ timestamp: iso, type });
       };
-      // learning-registry.json → registered learnings
+      // (1) Registered learnings — EvolutionManager writes to state/evolution/, and the
+      // timestamp lives at source.discoveredAt (not a top-level field). The old path
+      // (stateDir/learning-registry.json) and top-level tsField both missed → 0 events.
       try {
-        const p = path.join(ctx.config.stateDir, 'learning-registry.json');
+        const p = path.join(ctx.config.stateDir, 'state', 'evolution', 'learning-registry.json');
         if (fs.existsSync(p)) {
           const reg = JSON.parse(fs.readFileSync(p, 'utf-8'));
-          for (const l of (reg.learnings ?? [])) push(tsField(l), 'learning');
+          for (const l of (reg.learnings ?? [])) {
+            const src = (l && typeof l === 'object' ? (l as Record<string, unknown>).source : null) as Record<string, unknown> | null;
+            push(src?.discoveredAt ?? tsField(l), 'learning');
+          }
         }
       } catch { /* skip unreadable source */ }
-      // best-effort JSONL sources
-      const jsonlSources: [string, string][] = [
-        ['state/corrections.jsonl', 'correction'],
-        ['logs/evolution-actions.jsonl', 'evolution'],
-      ];
-      for (const [rel, type] of jsonlSources) {
+      // (2) Evolution actions — a JSON array under .actions (each with top-level
+      // createdAt), NOT a logs/*.jsonl stream.
+      try {
+        const p = path.join(ctx.config.stateDir, 'state', 'evolution', 'action-queue.json');
+        if (fs.existsSync(p)) {
+          const aq = JSON.parse(fs.readFileSync(p, 'utf-8'));
+          for (const a of (aq.actions ?? [])) push(tsField(a), 'evolution');
+        }
+      } catch { /* skip unreadable source */ }
+      // (3) Corrections — persisted in the SQLite CorrectionLedger, not a JSONL file.
+      // Guarded: correctionLearning ships off on many agents (ledger may be absent).
+      if (ctx.correctionLedger) {
         try {
-          const p = path.join(ctx.config.stateDir, rel);
-          if (!fs.existsSync(p)) continue;
-          for (const line of fs.readFileSync(p, 'utf-8').split('\n')) {
-            if (!line.trim()) continue;
-            try { push(tsField(JSON.parse(line)), type); } catch { /* skip bad line */ }
+          for (const r of ctx.correctionLedger.list({ limit: 1000 })) {
+            push((r as { detectedAt?: string; createdAt?: string }).detectedAt ?? (r as { createdAt?: string }).createdAt, 'correction');
           }
-        } catch { /* skip unreadable source */ }
+        } catch { /* skip ledger error */ }
       }
       res.json(computeLearningVelocity(events, new Date().toISOString(), windowDays));
     } catch (err) {

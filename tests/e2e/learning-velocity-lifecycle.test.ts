@@ -33,11 +33,15 @@ describe('GET /metrics/learning-velocity — (E2E over HTTP)', () => {
   beforeEach(async () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'learnvel-e2e-'));
     stateDir = path.join(tmpDir, '.instar');
-    fs.mkdirSync(stateDir, { recursive: true });
-    fs.writeFileSync(path.join(stateDir, 'learning-registry.json'), JSON.stringify({
+    // Seed the REAL learnings source the live agent writes: state/evolution/
+    // learning-registry.json with the timestamp at source.discoveredAt (not a
+    // top-level field, not stateDir root). Mirrors the route + integration test.
+    const evoDir = path.join(stateDir, 'state', 'evolution');
+    fs.mkdirSync(evoDir, { recursive: true });
+    fs.writeFileSync(path.join(evoDir, 'learning-registry.json'), JSON.stringify({
       learnings: [
-        { createdAt: agoIso(18) }, { createdAt: agoIso(12) },
-        { createdAt: agoIso(6) }, { createdAt: agoIso(2) },
+        { source: { discoveredAt: agoIso(18) } }, { source: { discoveredAt: agoIso(12) } },
+        { source: { discoveredAt: agoIso(6) } }, { source: { discoveredAt: agoIso(2) } },
       ],
     }));
     const app = express();
