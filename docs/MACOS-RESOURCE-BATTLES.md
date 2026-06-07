@@ -62,6 +62,32 @@ library, the indexable content) or (b) the operator disables SIP via a recovery-
 
 ## Battle log (chronological — newest first)
 
+### 2026-06-07 (afternoon) — "iCloud Photos off" did NOT stop `mediaanalysisd`
+- **Symptom:** after Justin turned off iCloud Photos, `mediaanalysisd` was *still* the #1 CPU
+  consumer (~66–77%), with `mds_stores` (Spotlight) #2 (~45–48%). Load kept the server flapping
+  between healthy (200) and starved (000).
+- **Root cause:** turning off iCloud Photos stops *sync*, but the **already-downloaded local
+  library stays on disk** (`~/Pictures/Photos Library.photoslibrary` + a smaller
+  `~/Library/Photos/Libraries/Syndication.photoslibrary` for "Shared with You"). `lsof` on the
+  daemon showed it actively reading `Photos.sqlite`, `mediaanalysis.db`, `CSUTaxonomy.sqlite`,
+  `scenetaxonomy.loctable` — i.e. still running scene/object/face taxonomy over the local library.
+  The process had been running continuously for **~1 day 21 hours** (since Jun 5 16:20) — a long
+  analysis backlog. As long as the local library exists, `mediaanalysisd` keeps analyzing it
+  regardless of the sync setting. Almost certainly the same root as the `mds_stores` churn
+  (Spotlight indexes the photo library too).
+- **Operator action (the real unlock):** remove the **local** library from this Mac (trash
+  `~/Pictures/Photos Library.photoslibrary`, and the Syndication one if desired). The agent is
+  **TCC-blocked** from the Photos library and won't delete a user's photos regardless — this is
+  the operator's action. Alternatively let it finish, but it had no end in sight after ~2 days.
+- **Also confirmed:** **Time Machine is NOT configured** on this box (`tmutil destinationinfo` =
+  0 destinations), so the transcript pile-up is NOT being backed up/scanned — that lead is a dead
+  end. The transcript problem is purely disk + unbounded growth.
+- **Lesson:** "turn off iCloud Photos" ≠ "remove the library." Sync-off leaves the local copy;
+  the daemon analyzes the copy. Confirm with `lsof -p <pid>` what a daemon is *actually* touching
+  before assuming a setting change fixed it. (Justin called this exactly: "do NOT assume this will
+  fix our macOS struggles.")
+- **Status:** awaiting operator removal of the local library. Tracking as item 1 below.
+
 ### 2026-06-07 — "server temporarily down on every message" + restart loop
 - **Symptom:** every inbound Telegram message returned "server temporarily down"; the server
   failed `/health` (HTTP 000); ~65 boots/day restart loop.
@@ -86,9 +112,13 @@ library, the indexable content) or (b) the operator disables SIP via a recovery-
     direct antidote to "macOS load → false wake → restart → more load."
 - **Front A:** confirmed the Spotlight exclusions are live and working (our churn dirs are
   excluded); confirmed `mediaanalysisd` is SIP-protected and cannot be disabled from userspace.
-- **Operator action:** Justin turning off iCloud Photos (removes `mediaanalysisd`).
-- **Status:** A+B shipped + deploying. **Open:** transcript pile-up (below); the host will still
-  spike on macOS's schedule — that's why Front B matters.
+- **Operator action:** Justin turned off iCloud Photos. **Caveat learned (see next entry):**
+  turning off iCloud *sync* does NOT remove the already-downloaded local library, so
+  `mediaanalysisd` keeps analyzing it — the local library must be *removed from the Mac* to stop it.
+- **Status:** A (#975) + B (#976) shipped, released (v1.3.407 / v1.3.408), and **confirmed
+  running** (server reports v1.3.408). A verified live (reaping on, durable candidacy file
+  writing). **Open:** transcript retention; the persistent `mediaanalysisd` (next entry); the
+  host will still spike on macOS's schedule — that's why Front B matters.
 
 ### 2026-06-06 — resource-overload root: reapers disabled fleet-wide
 - **Symptom:** dozens of 26h+ sessions × heavy MCP stacks (72 MCP procs / 175 node / 36 GB RSS)
@@ -148,19 +178,37 @@ answer to "what protects us when macOS spikes?"
 
 ## Open watchlist (unsolved / partial)
 
-- [ ] **Transcript retention.** `~/.claude/projects` is ~18 GB / ~151k files and growing.
-      Spotlight no longer indexes it, but the disk + open-file count still climbs. Need a
-      retention/pruning policy (age-out old session JSONL). **Not yet built.**
-- [ ] **Host-load observability surfaced to the operator.** We read load reactively. A standing
-      "macOS is spiking (which daemon)" signal — distinct from instar's own usage — would let us
-      attribute incidents instantly instead of re-running `ps` each time.
-- [ ] **Time Machine / `backupd` storms.** Seen as a periodic antagonist class; not yet measured
-      or mitigated on this box.
+### Actively tracked (Justin's five, 2026-06-07 — "track all five and take action as needed")
+
+1. [ ] **`mediaanalysisd` still pinning CPU after iCloud Photos off.** ROOT FOUND: the local
+       Photos library is still on disk; the daemon analyzes the local copy regardless of sync
+       (see 2026-06-07 afternoon entry). **Action = operator removes the local library** (agent
+       is TCC-blocked). Watching whether it winds down. *This is the keystone — it blocks #4/#5.*
+2. [ ] **`mds_stores` (Spotlight) ~45–48%.** Our dirs are excluded, so it's indexing something
+       else — most likely the same local Photos library, or re-evaluating after the Photos
+       teardown. Expect it to drop with item 1; confirm after the library is removed.
+3. [ ] **Transcript retention.** `~/.claude/projects` = **18 GB / ~322,000 files** in 133 folders,
+       growing. Already Spotlight-excluded AND Time Machine is not configured, so it is NOT a
+       macOS-CPU trigger today — but unbounded disk + file-count growth. **Action = build a
+       retention/pruning policy** (age-out finished-session JSONL beyond N days; keep recent for
+       `--resume`). Not yet built.
+4. [ ] **76 GB / 189 stale worktrees** under `~/.instar/agents/echo/.worktrees/` (all merged
+       `echo/*` branches). **Action = reclaim via AgentWorktreeReaper** (proper squash-merge
+       detection — manual `git` reaping is unsafe for squash-merged branches). Blocked on a
+       stably-healthy server (the reaper is an API), which is blocked on item 1.
+5. [ ] **Re-baseline the load now Photos is (being) removed.** Measure true steady-state top
+       consumers so we stop guessing. As of 2026-06-07 PM: load easing (~7–12) but items 1+2 still
+       dominate; instar's own footprint is secondary.
+
+### Standing (longer-horizon)
+
+- [ ] **Host-load observability surfaced to the operator.** A standing "macOS is spiking (which
+      daemon)" signal — distinct from instar's own usage — so incidents self-attribute instead of
+      re-running `ps` each time.
 - [ ] **Reaper fleet rollout.** Armed on echo (canary); each other agent still needs
       `staleCommitmentWindowMinutes: 480` + `dryRun: false` explicitly.
 - [ ] **Post-OS-update Spotlight reindex.** A full reindex after a macOS update transiently
-      re-touches everything (even excluded dirs get re-evaluated). Expect a load spike after
-      every OS update; Front B must absorb it.
+      re-touches everything; expect a load spike after every OS update — Front B must absorb it.
 
 ---
 
