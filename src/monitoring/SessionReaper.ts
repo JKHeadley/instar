@@ -260,9 +260,19 @@ export interface SessionReaperDeps {
   now?: () => number;
   /** Structured audit sink (sentinel-events.jsonl). */
   audit?: (event: Record<string, unknown>) => void;
+  /** Durable candidacy (A): load the persisted per-session idle-candidacy map on
+   *  start so the multi-minute idle clock (candidateSince) survives a server restart.
+   *  Without this the in-memory clock resets every restart — and on a box that
+   *  restarts every ~10min (SleepWake-under-load churn) the 45-min reap threshold is
+   *  never reached, so the reaper never reaps despite correctly seeing idle sessions
+   *  (2026-06-07 root). Absent ⇒ in-memory only (prior behavior). */
+  loadCandidacy?: () => Record<string, Obs>;
+  /** Durable candidacy (A): persist the candidacy map after each tick. Best-effort;
+   *  a failed write just means the clock resets on the next restart (prior behavior). */
+  saveCandidacy?: (map: Record<string, Obs>) => void;
 }
 
-interface Obs {
+export interface Obs {
   /** When continuous reap-candidacy began (ms). */
   candidateSince: number;
   /** Consecutive candidate observations. */
@@ -315,6 +325,30 @@ export class SessionReaper extends EventEmitter {
       protectOpenCommitments: this.cfg.protectOpenCommitments,
       staleCommitmentWindowMs: this.cfg.staleCommitmentWindowMinutes * 60_000,
     });
+    // Durable candidacy (A): restore the idle-candidacy clock across restarts.
+    // reapPendingSince is DROPPED on load so a stale "about to kill" state can never
+    // insta-reap on boot — the two-phase reap must re-confirm fresh. candidateSince
+    // (the long idle clock) + lastFrame/lastTranscript (render-stasis continuity)
+    // survive; every tick still re-checks all-clear + frame-stasis before reaping.
+    try {
+      const restored = this.deps.loadCandidacy?.();
+      if (restored) {
+        for (const [id, o] of Object.entries(restored)) {
+          if (!o || typeof o.candidateSince !== 'number') continue;
+          this.obs.set(id, { ...o, reapPendingSince: undefined });
+        }
+      }
+    } catch { /* @silent-fallback-ok — bad/absent state file ⇒ start in-memory (prior behavior) */ }
+  }
+
+  /** Serialize the in-memory candidacy map for durable persistence (A). */
+  private persistCandidacy(): void {
+    if (!this.deps.saveCandidacy) return;
+    try {
+      const out: Record<string, Obs> = {};
+      for (const [id, o] of this.obs.entries()) out[id] = o;
+      this.deps.saveCandidacy(out);
+    } catch { /* @silent-fallback-ok — a failed persist just resets the clock next restart */ }
   }
 
   start(): void {
@@ -720,6 +754,7 @@ export class SessionReaper extends EventEmitter {
         }
         this.obs.set(session.id, next);
       }
+      this.persistCandidacy(); // durable candidacy (A): the idle clock survives restarts
     } finally {
       this.running = false;
     }

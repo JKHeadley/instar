@@ -445,3 +445,40 @@ describe('SessionReaper.isPositivelyIdle — live markers vs scrollback (2026-06
     expect(SessionReaper.isPositivelyIdle('claude-code', 'claude\nbypass permissions on\n❯ ')).toBe(true);
   });
 });
+
+describe('SessionReaper — durable candidacy (A): idle clock survives restarts', () => {
+  it('persists the candidacy map after each tick (saveCandidacy)', async () => {
+    let saved: Record<string, unknown> | null = null;
+    const h = harness({ deps: { saveCandidacy: (m) => { saved = { ...m }; } } });
+    await h.reaper.tick();
+    expect(saved).not.toBeNull();
+    expect(Object.keys(saved as object).length).toBeGreaterThan(0); // the candidate session was persisted
+  });
+
+  it('restored candidacy lets a long-idle session reap immediately (clock survived the restart)', async () => {
+    const now = 1_000_000;
+    const old = now - 60 * 60_000; // idle 60 min — already past a 30-min threshold
+    const loaded = { s1: { candidateSince: old, consecutive: 5, lastFrame: IDLE_FRAME, lastTranscript: RESOLVED_STATIC } };
+    const h = harness({ cfg: { idleThresholdCriticalMinutes: 30, confirmObservations: 2, finalGraceSec: 1 }, deps: { loadCandidacy: () => loaded } });
+    h.setNow(now); await h.reaper.tick();            // frameStatic → candidateSince preserved (60min>30) + consecutive 6 → reap-pending
+    h.setNow(now + 2000); await h.reaper.tick();      // grace (1s) elapsed → terminate
+    expect(h.terminate).toHaveBeenCalledWith('s1', expect.any(String));
+  });
+
+  it('a FRESH reaper (no restore) would NOT reap that session yet — proving the restore mattered', async () => {
+    const now = 1_000_000;
+    const h = harness({ cfg: { idleThresholdCriticalMinutes: 30, confirmObservations: 2, finalGraceSec: 1 } });
+    h.setNow(now); await h.reaper.tick();             // candidateSince = now (idle 0 < 30min)
+    h.setNow(now + 2000); await h.reaper.tick();      // still far below the 30-min threshold
+    expect(h.terminate).not.toHaveBeenCalled();
+  });
+
+  it('drops reapPendingSince on load — no insta-kill from a stale "about to reap" state', async () => {
+    const now = 1_000_000;
+    const loaded = { s1: { candidateSince: now - 60 * 60_000, consecutive: 5, lastFrame: IDLE_FRAME, lastTranscript: RESOLVED_STATIC, reapPendingSince: now - 60 * 60_000 } };
+    // Long grace so a KEPT reapPendingSince would have terminated on tick 1; a DROPPED one re-enters pending and waits.
+    const h = harness({ cfg: { idleThresholdCriticalMinutes: 30, confirmObservations: 2, finalGraceSec: 600 }, deps: { loadCandidacy: () => loaded } });
+    h.setNow(now); await h.reaper.tick();
+    expect(h.terminate).not.toHaveBeenCalled(); // stale pending was dropped → fresh two-phase, grace not yet elapsed
+  });
+});

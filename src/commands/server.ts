@@ -10092,6 +10092,24 @@ export async function startServer(options: StartOptions): Promise<void> {
         // path so the reaper's fallback probe() can resolve + verify idle. Without this
         // the probe used '' and every transcript read as unresolved (kept everything).
         transcriptProjectDir: () => config.projectDir,
+        // Durable candidacy (A): persist the reaper's idle-candidacy clock to disk so
+        // it survives server restarts. On a box that restarts every ~10min (SleepWake-
+        // under-load churn) the in-memory 45-min clock never matured → reaper never
+        // reaped. The per-tick all-clear + render-stasis re-gate keeps it safe.
+        loadCandidacy: () => {
+          try {
+            const f = path.join(config.stateDir, 'state', 'session-reaper-candidacy.json');
+            if (!fs.existsSync(f)) return {};
+            return JSON.parse(fs.readFileSync(f, 'utf-8')) as Record<string, import('../monitoring/SessionReaper.js').Obs>;
+          } catch { return {}; }
+        },
+        saveCandidacy: (map) => {
+          try {
+            const dir = path.join(config.stateDir, 'state');
+            fs.mkdirSync(dir, { recursive: true });
+            fs.writeFileSync(path.join(dir, 'session-reaper-candidacy.json'), JSON.stringify(map));
+          } catch { /* @silent-fallback-ok — best-effort; clock resets next restart on failure */ }
+        },
         pressure: () => {
           const total = _os.totalmem();
           const freePct = total > 0 ? (_os.freemem() / total) * 100 : 100;

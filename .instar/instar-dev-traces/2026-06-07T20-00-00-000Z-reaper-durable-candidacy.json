@@ -1,0 +1,19 @@
+{
+    "slug": "reaper-durable-candidacy",
+    "sessionId": "96c61421-860a-48f9-92b4-26328f5640f1",
+    "timestamp": "2026-06-07T20:00:00.000Z",
+    "artifactPath": "upgrades/side-effects/reaper-durable-candidacy.md",
+    "artifactSha256": "b967c2742fc1216d7e0a3a25accaabe2abb13a2ed7c2ae325d418c5f3cb4e5d1",
+    "coveredFiles": ["src/monitoring/SessionReaper.ts","src/commands/server.ts","tests/unit/session-reaper.test.ts"],
+    "phase": "complete",
+    "tier": 1,
+    "tierReasoning": "Adds optional loadCandidacy/saveCandidacy deps so the reaper's in-memory idle-candidacy clock survives restarts (the blocker after #969: a box restarting every ~10min reset the 45-min clock so it never reaped). reapPendingSince dropped on load (no stale insta-kill); every tick still re-runs the full all-clear classifier + render-stasis before reaping, so restored candidacy only matures a reap for a STILL-continuously-idle session. Optional deps → absent = prior in-memory behavior. Best-effort IO (silent-fallback). No API/state-schema/migration. Reaper opt-in + dry-run-first. Both sides unit-tested incl. the restore-vs-fresh contrast + pending-dropped. No converged spec required for Tier 1.",
+    "eli16Path": "docs/eli16/reaper-durable-candidacy.eli16.md",
+    "sideEffectsPath": "upgrades/side-effects/reaper-durable-candidacy.md",
+    "causalAutopsy": {
+        "origin": "latent",
+        "notes": "The reaper's candidacy map has been in-memory since it was written — fine on a stable server, a latent fragility under restart churn. Became the blocker only once #969 made the reaper correctly identify idle sessions AND the box started restarting every ~10min (SleepWake-under-load, same instability as the laptop-eventloop-stall finding). 2026-06-07 grounding: 6 restarts/70min, reaper saw 11 all-clear, reaped 0 because candidateSince reset each restart. No prior PR regressed it; durability was never needed until the churn exposed it. Fix A of the operator-requested A+B pair (B = fix the churn itself)."
+    },
+    "secondPass": "not-required",
+    "reviewerConcurred": null
+}

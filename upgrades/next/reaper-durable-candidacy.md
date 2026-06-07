@@ -1,0 +1,35 @@
+<!-- bump: patch -->
+<!-- change_type: fix -->
+
+## What Changed
+
+The SessionReaper's idle-candidacy clock (the continuous-idle timer that must reach the
+idle threshold before a session is reaped) was in-memory and reset on every server
+restart. On a box restarting every ~10 min (SleepWake-under-load churn), it never
+reached the 45-min threshold, so the reaper never reaped despite correctly identifying
+idle sessions (#969). Now the candidacy map is persisted to
+`.instar/state/session-reaper-candidacy.json` after each tick and restored on startup.
+
+## What to Tell Your User
+
+Nothing required — internal reaper durability; reaper stays opt-in. The reaper's idle
+timer now survives restarts, so it can actually reclaim long-idle sessions even on an
+unstable box.
+
+## Summary of New Capabilities
+
+- `SessionReaperDeps.loadCandidacy` / `saveCandidacy` — persist + restore the candidacy
+  map. `reapPendingSince` is dropped on load (no stale insta-kill); per-tick all-clear +
+  render-stasis still gate every reap.
+
+## Scope (honest)
+
+Fix A of the operator's A+B pair. Makes the reaper reclaim despite restart churn; B (the
+SleepWake-under-load restart-churn fix) is the companion + deeper root. Absent the state
+file, behavior is unchanged (in-memory).
+
+## Evidence
+
+`tests/unit/session-reaper.test.ts`: candidacy persisted per tick; restored long-idle
+session reaps immediately while a fresh reaper would not (restore mattered);
+reapPendingSince dropped on load. 45/45 green. `tsc --noEmit` clean.
