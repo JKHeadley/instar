@@ -1,0 +1,17 @@
+{
+  "version": 2,
+  "sessionId": "cbdc2d51-a6de-446b-8215-773ec12f8e0b",
+  "timestamp": "2026-06-07T17:04:29.882Z",
+  "artifactPath": "upgrades/side-effects/pool-stream-connector-observability.md",
+  "artifactSha256": "f055478d038ec45fe4ba99ff8f2c4919bd53086d782acfc01bca559e404265f4",
+  "coveredFiles": [
+    "src/commands/server.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Diagnostic + robustness fix for the live cross-machine stream path: explicit 10s timeout on the connector's ticket-mint (was unbounded → silent indefinite hang found in live-verify) + per-step logging on the connector and serving mint verb. Removes a silent-swallow; no new route/capability; tsc clean.",
+  "eli16Path": "docs/specs/POOL-DASHBOARD-STREAM-SPEC.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/pool-stream-connector-observability.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

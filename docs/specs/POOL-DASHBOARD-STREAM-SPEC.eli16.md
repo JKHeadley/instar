@@ -58,3 +58,7 @@ Now the other half: when you're on the laptop dashboard and click a session that
 ## Phase 3 shipped — the on-screen part (it's now usable)
 
 The feature is now real on your screen: in the dashboard, a session running on another machine is no longer a dead tile — click it and its live terminal streams right there, with a small note telling you which machine it's coming from. Typing works too (if you've turned remote typing on for that machine); if you haven't, you get a clear "remote typing is disabled" message instead of your keystrokes vanishing. Every failure tells the truth on screen: an unreachable machine says so, a dropped stream says "reconnecting", a session that moved says "reselect it to follow" — never a frozen black box. And if the dashboard's own connection blips (e.g. a server restart), it reconnects and re-opens whatever you were watching automatically. One dashboard, every machine's sessions, click to watch.
+
+## Live-verify fix — making the cross-machine link observable
+
+First live test on the real machines caught the stream not coming through: the request started but nothing arrived, and nothing errored either — because the code that opens the machine-to-machine link kept all its problems to itself (no logging) and had no time limit on getting the one-time pass, so it could quietly hang forever. Fixed: the pass-fetch now gives up after 10 seconds (so a failure shows up as "reconnecting/unreachable" instead of an eternal blank), and every step now reports what it's doing — so the exact break can be pinpointed and fixed.
