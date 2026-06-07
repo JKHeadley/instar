@@ -212,9 +212,11 @@
       background: #3a2a1b;
       color: #fbbf24;
     }
-    /* A session running on ANOTHER machine — visible, but its terminal can't
-       stream here (open that machine's dashboard to interact). */
-    .session-item.remote { opacity: 0.8; cursor: default; }
+    /* A session running on ANOTHER machine — now clickable; selecting it
+       streams its terminal here via the cross-machine relay (§2.2). The badge
+       already names the machine, so a slightly dimmed row is enough hint. */
+    .session-item.remote { opacity: 0.9; cursor: pointer; }
+    .session-item.remote:hover { opacity: 1; }
 
     .type-badge {
       padding: 1px 6px;
@@ -3582,6 +3584,7 @@
     let remoteSessions = [];
     let selfMachineNickname = null;
     let activeSession = null;
+    let activeMachineId = null; // non-null when the active session streams from a peer (§2.2)
     let term = null;
     let fitAddon = null;
     let historyLinesLoaded = 2000; // matches initial subscribe capture
@@ -3677,6 +3680,12 @@
       ws.onopen = () => {
         reconnectAttempts = 0;
         updateConnectionStatus(true);
+        // Resubscribe the active session after a (re)connect so a server
+        // restart doesn't strand the terminal (§2.5). Remote sessions carry
+        // their machineId so the resubscribe re-opens the relay.
+        if (activeSession) {
+          wsSend({ type: 'subscribe', session: activeSession, ...(activeMachineId ? { machineId: activeMachineId } : {}) });
+        }
       };
 
       ws.onclose = () => {
@@ -3768,7 +3777,21 @@
           break;
 
         case 'error':
-          console.error('[ws]', msg.message);
+          // Pool Dashboard Streaming (§2.4): every remote-stream failure state
+          // is shown honestly in the terminal — never a frozen/black screen or
+          // a silent swallow. Only surface errors for the session in view.
+          if (msg.code && term && (msg.session === activeSession || !msg.session)) {
+            const m = {
+              'machine-unreachable': '\r\n\x1b[31m--- That machine is unreachable. ---\x1b[0m\r\n',
+              'peer-stream-lost': '\r\n\x1b[33m--- Stream lost — reconnecting… ---\x1b[0m\r\n',
+              'input-not-allowed': '\r\n\x1b[33m[remote typing is disabled on this machine — turn it on in that machine\'s settings]\x1b[0m\r\n',
+              'session-transferred': `\r\n\x1b[33m--- This session moved to ${msg.newMachineId || 'another machine'} — reselect it to follow. ---\x1b[0m\r\n`,
+              'invalid-session': '\r\n\x1b[31m--- Invalid session name. ---\x1b[0m\r\n',
+              'session-not-found': '\r\n\x1b[31m--- Session not found on that machine. ---\x1b[0m\r\n',
+            }[msg.code];
+            if (m) { term.write(m); break; }
+          }
+          console.error('[ws]', msg.code || msg.message);
           break;
       }
     }
@@ -3845,13 +3868,12 @@
           el = document.createElement('div');
           el.className = 'session-item';
           el.dataset.session = sessionRowKey(session);
-          if (session.remote) {
-            // A remote session's terminal streams on ITS machine's dashboard —
-            // clicking here can't subscribe to it, so the row is informational.
-            el.title = `Running on ${session.machineNickname || session.machineId || 'another machine'} — open that machine's dashboard to interact.`;
-          } else {
-            el.onclick = () => selectSession(session.tmuxSession, session);
-          }
+          // Pool Dashboard Streaming (§2.2): remote sessions are now clickable —
+          // selecting one streams it from its owning machine via the relay.
+          el.title = session.remote
+            ? `Running on ${session.machineNickname || session.machineId || 'another machine'} — click to stream it here.`
+            : '';
+          el.onclick = () => selectSession(session.tmuxSession, session);
           list.appendChild(el);
         }
 
@@ -3912,11 +3934,13 @@
 
     // ── Terminal ──────────────────────────────────────────────
     function selectSession(tmuxSession, session) {
-      // Unsubscribe from previous
+      // Unsubscribe from previous (carry its machineId so a remote unsub routes).
       if (activeSession) {
-        wsSend({ type: 'unsubscribe', session: activeSession });
+        wsSend({ type: 'unsubscribe', session: activeSession, ...(activeMachineId ? { machineId: activeMachineId } : {}) });
       }
 
+      // Pool Dashboard Streaming (§2.2): a remote session streams from its owner.
+      activeMachineId = session.remote ? (session.machineId || null) : null;
       activeSession = tmuxSession;
       userIsFollowing = true; // Reset scroll tracking on session switch
       hideResumeButton(); // Carry-over button from prior session would be misleading
@@ -3958,9 +3982,12 @@
         initTerminal();
       }
 
-      // Clear and subscribe
+      // Clear and subscribe (remote → carry machineId so the server relays).
       term.clear();
-      wsSend({ type: 'subscribe', session: tmuxSession });
+      if (activeMachineId) {
+        term.write(`\x1b[2m[streaming from ${session.machineNickname || activeMachineId}…]\x1b[0m\r\n`);
+      }
+      wsSend({ type: 'subscribe', session: tmuxSession, ...(activeMachineId ? { machineId: activeMachineId } : {}) });
 
       // Update active state in sidebar
       renderSessionList();
@@ -4203,25 +4230,28 @@
     }
 
     // ── Input ────────────────────────────────────────────────
+    // Remote sessions carry machineId so the server relays input to the owner
+    // (which enforces its own allowRemoteInput gate; a refusal returns an
+    // input-not-allowed error frame, surfaced in the terminal — never silent).
     function sendInput() {
       const input = document.getElementById('termInput');
       const text = input.value;
       if (!text || !activeSession) return;
 
-      wsSend({ type: 'input', session: activeSession, text });
+      wsSend({ type: 'input', session: activeSession, text, ...(activeMachineId ? { machineId: activeMachineId } : {}) });
       input.value = '';
       input.focus();
     }
 
     function sendKey(key) {
       if (!activeSession) return;
-      wsSend({ type: 'key', session: activeSession, key });
+      wsSend({ type: 'key', session: activeSession, key, ...(activeMachineId ? { machineId: activeMachineId } : {}) });
     }
 
     function sendSpecial(text) {
       if (!activeSession) return;
       // Send literal text without Enter
-      wsSend({ type: 'key', session: activeSession, key: text });
+      wsSend({ type: 'key', session: activeSession, key: text, ...(activeMachineId ? { machineId: activeMachineId } : {}) });
     }
 
     // ── New Session Modal ────────────────────────────────────

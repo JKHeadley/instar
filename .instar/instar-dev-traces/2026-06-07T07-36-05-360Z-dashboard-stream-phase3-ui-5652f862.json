@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "sessionId": "cbdc2d51-a6de-446b-8215-773ec12f8e0b",
+  "timestamp": "2026-06-07T07:36:05.360Z",
+  "artifactPath": "upgrades/side-effects/dashboard-stream-phase3-ui.md",
+  "artifactSha256": "042dd029bc31e9cfcc105661e9ca43af4608d1bc2e8462ea4baf16087e1f447d",
+  "coveredFiles": [
+    "dashboard/index.html",
+    "src/scaffold/templates.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Front-end-only delivery (dashboard/index.html inline JS) of the approved spec's UI layer: remote tiles clickable, machineId pass-through on subscribe/input, honest error-state rendering, resubscribe-on-reconnect; node --check clean. No server/TS logic (all gating server-side, phases 2a/2b). + CLAUDE.md template Agent Awareness line. The streaming engine is covered by the phase 1/2a/2b suites.",
+  "eli16Path": "docs/specs/POOL-DASHBOARD-STREAM-SPEC.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/dashboard-stream-phase3-ui.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
