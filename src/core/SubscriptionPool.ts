@@ -86,6 +86,11 @@ export interface SubscriptionAccount {
   id: string;
   /** Operator-facing handle (editable), like a machine nickname. */
   nickname: string;
+  /** Account email — the disambiguator across same-org accounts (e.g.
+   *  "SageMind - Justin" vs "SageMind - Adriana"). Auto-populated from the
+   *  account's own login (oauthAccount.emailAddress) on poll, so the stored email
+   *  always reflects which account actually authenticated. NEVER a secret. */
+  email?: string;
   /** Billing provider. */
   provider: SubscriptionProvider;
   /** Framework client that drives this account. */
@@ -126,6 +131,8 @@ export interface AddAccountInput {
   framework: SubscriptionFramework;
   configHome: string;
   status?: SubscriptionAccountStatus;
+  /** Optional at add time; auto-populated from the account's login on poll. */
+  email?: string;
 }
 
 /** Fields an operator may patch. id/provider/enrolledAt/version are immutable here. */
@@ -136,6 +143,7 @@ export interface UpdateAccountInput {
   status?: SubscriptionAccountStatus;
   lastQuota?: AccountQuotaSnapshot | null;
   lastUsedAt?: string;
+  email?: string;
 }
 
 const ID_RE = /^[a-z0-9-]+$/;
@@ -248,6 +256,7 @@ export class SubscriptionPool {
     const account: SubscriptionAccount = {
       id,
       nickname,
+      ...(input.email?.trim() ? { email: input.email.trim() } : {}),
       provider: input.provider,
       framework: input.framework,
       configHome,
@@ -300,6 +309,10 @@ export class SubscriptionPool {
     }
     if (patch.lastUsedAt !== undefined) {
       acct.lastUsedAt = patch.lastUsedAt;
+    }
+    if (patch.email !== undefined) {
+      const em = patch.email.trim();
+      acct.email = em || undefined;
     }
 
     acct.version += 1;

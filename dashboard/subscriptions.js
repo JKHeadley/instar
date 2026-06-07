@@ -132,6 +132,9 @@ export function renderAccounts(doc, target, accounts, now = Date.now()) {
     card.appendChild(head);
     card.appendChild(el(doc, 'div', 'sub-account-meta',
       `${friendlyProvider(a && a.provider)} · ${sanitizeForDisplay(a && a.framework, 'label')}`));
+    if (a && a.email) {
+      card.appendChild(el(doc, 'div', 'sub-account-email', sanitizeForDisplay(a.email, 'label')));
+    }
     const q = (a && a.lastQuota) || null;
     if (q && (q.fiveHour || q.sevenDay)) {
       if (q.fiveHour) card.appendChild(quotaBar(doc, '5-hour', q.fiveHour.utilizationPct, q.fiveHour.resetsAt, now));

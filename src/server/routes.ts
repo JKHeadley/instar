@@ -15697,7 +15697,7 @@ export function createRoutes(ctx: RouteContext): Router {
       res.status(404).json({ error: 'SubscriptionPool not configured' });
       return;
     }
-    const { id, nickname, provider, framework, configHome, status } = req.body ?? {};
+    const { id, nickname, provider, framework, configHome, status, email } = req.body ?? {};
     if (!id || !nickname || !provider || !framework || !configHome) {
       res.status(400).json({
         error: 'id, nickname, provider, framework, and configHome are required',
@@ -15708,7 +15708,7 @@ export function createRoutes(ctx: RouteContext): Router {
       // Pass the full body as rawExtra so the credential-field guard rejects any
       // attempt to smuggle a token into the registry (structural invariant).
       const account = ctx.subscriptionPool.add(
-        { id, nickname, provider, framework, configHome, status },
+        { id, nickname, provider, framework, configHome, status, email },
         req.body,
       );
       res.status(201).json(account);
@@ -15725,11 +15725,11 @@ export function createRoutes(ctx: RouteContext): Router {
       res.status(404).json({ error: 'SubscriptionPool not configured' });
       return;
     }
-    const { nickname, framework, configHome, status, lastQuota, lastUsedAt } = req.body ?? {};
+    const { nickname, framework, configHome, status, lastQuota, lastUsedAt, email } = req.body ?? {};
     try {
       const updated = ctx.subscriptionPool.update(
         req.params.id,
-        { nickname, framework, configHome, status, lastQuota, lastUsedAt },
+        { nickname, framework, configHome, status, lastQuota, lastUsedAt, email },
         req.body,
       );
       if (!updated) {

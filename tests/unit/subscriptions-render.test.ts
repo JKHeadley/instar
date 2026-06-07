@@ -100,10 +100,11 @@ describe('renderAccounts', () => {
   it('renders nickname, status, and two quota bars', () => {
     const t = el();
     renderAccounts(doc, t, [{
-      id: 'a1', nickname: 'personal', provider: 'anthropic', framework: 'claude-code', status: 'active',
+      id: 'a1', nickname: 'personal', provider: 'anthropic', framework: 'claude-code', status: 'active', email: 'justin@sagemindai.io',
       lastQuota: { fiveHour: { utilizationPct: 10, resetsAt: '2026-06-07T01:00:00Z' }, sevenDay: { utilizationPct: 71, resetsAt: '2026-06-12T00:00:00Z' } },
     }], NOW);
     expect(t.querySelector('.sub-account-nick')!.textContent).toBe('personal');
+    expect(t.querySelector('.sub-account-email')!.textContent).toBe('justin@sagemindai.io');
     expect(t.querySelector('.sub-account-status')!.textContent).toBe('Active');
     expect(t.querySelectorAll('.sub-quota').length).toBe(2);
   });

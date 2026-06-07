@@ -132,6 +132,32 @@ function expandHome(p: string): string {
 }
 
 /**
+ * Read the account email (`oauthAccount.emailAddress`) Claude Code records for a
+ * config home. This is a PUBLIC account identifier (not a secret) — it lets the
+ * pool show WHICH account a slot actually authenticated as, so a login into the
+ * wrong account surfaces instead of hiding. Tries `<configHome>/.claude.json`,
+ * then (for the default home) the home-root `~/.claude.json`. Null if unreadable.
+ */
+export function readAccountEmail(configHome: string): string | null {
+  const home = expandHome(configHome);
+  const candidates = [path.join(home, '.claude.json')];
+  if (home === expandHome('~/.claude')) {
+    candidates.push(path.join(process.env.HOME ?? '', '.claude.json'));
+  }
+  for (const f of candidates) {
+    try {
+      if (!fs.existsSync(f)) continue;
+      const j = JSON.parse(fs.readFileSync(f, 'utf-8'));
+      const email = j?.oauthAccount?.emailAddress;
+      if (typeof email === 'string' && email.includes('@')) return email;
+    } catch {
+      // @silent-fallback-ok: missing/unreadable config → no email (null)
+    }
+  }
+  return null;
+}
+
+/**
  * Map the REAL /api/oauth/usage response (verified live 2026-06-06) into an
  * AccountQuotaSnapshot. The live shape is `five_hour: {utilization, resets_at}`,
  * `seven_day: {utilization, resets_at}`, `seven_day_sonnet`, `seven_day_opus`,
@@ -292,6 +318,11 @@ export class QuotaPoller {
       const patch: Parameters<SubscriptionPool['update']>[1] = { lastQuota: snap };
       // A clean read on an account previously flagged needs-reauth restores it.
       if (account.status === 'needs-reauth') patch.status = 'active';
+      // Auto-populate the account email from the config home's own login record,
+      // so the stored email always reflects which account actually authenticated
+      // (a login into the wrong account surfaces here instead of hiding).
+      const email = readAccountEmail(account.configHome);
+      if (email && email !== account.email) patch.email = email;
       try {
         this.pool.update(account.id, patch);
       } catch {
