@@ -33,6 +33,21 @@ export interface FrameworkActivitySignal {
    */
   readonly toolCallOrSpinner: RegExp;
   /**
+   * LIVE-generation markers ONLY — the subset of activity signals that appear
+   * exclusively WHILE a turn is generating and vanish the instant it ends (the
+   * animated braille spinner, the "Working (Ns" status line, "generating"). It
+   * deliberately EXCLUDES the scrollback-persistent markers in toolCallOrSpinner —
+   * tool-call names (Read(/Write(/Bash(/exec(/…) and the bare framework word
+   * (e.g. "claude") — which linger in an IDLE session's visible history long after
+   * the turn finished. The SessionReaper's positive-idle proof must use THIS, not
+   * toolCallOrSpinner: a 200-line capture of an idle Claude session is full of past
+   * tool-names + "claude", so toolCallOrSpinner mis-read every idle session as
+   * "working" and the reaper could never reap (2026-06-07 grounding; same class as
+   * the codex "do not match bare 'codex'" lesson). Other consumers that genuinely
+   * want "is this a tool-using framework" keep using toolCallOrSpinner.
+   */
+  readonly liveActivity: RegExp;
+  /**
    * Matches text the framework shows when it wants the user to interrupt
    * a long-running tool call (e.g., Claude's "esc to interrupt").
    */
@@ -53,7 +68,14 @@ const CLAUDE_CODE_SIGNAL: FrameworkActivitySignal = {
   displayName: 'Claude Code',
   // Tool names from Claude Code's display, plus the Braille spinner
   // glyphs Claude renders while thinking.
-  toolCallOrSpinner: /claude|Read\(|Write\(|Edit\(|Bash\(|Grep\(|Glob\(|⠋|⠙|⠹|⠸|⠼|⠴|⠦|⠧|⠇|⠏/,
+  // NOTE: the bare word "claude" was REMOVED (2026-06-07) — it matched the
+  // omnipresent tool name in every Claude Code pane, making idle sessions read as
+  // working (the documented codex "do not match bare 'codex'" lesson, never applied
+  // here). Tool-call names remain for consumers that want "is this tool-using".
+  toolCallOrSpinner: /Read\(|Write\(|Edit\(|Bash\(|Grep\(|Glob\(|⠋|⠙|⠹|⠸|⠼|⠴|⠦|⠧|⠇|⠏/,
+  // Live-only: the animated braille spinner. Tool-names + "claude" persist in idle
+  // scrollback, so they are NOT live markers (see FrameworkActivitySignal.liveActivity).
+  liveActivity: /⠋|⠙|⠹|⠸|⠼|⠴|⠦|⠧|⠇|⠏/,
   escapeToInterrupt: /esc to interrupt/i,
   runningIndicator: /\(running\)/i,
   promptSignaturesLine:
@@ -87,6 +109,10 @@ const CODEX_CLI_SIGNAL: FrameworkActivitySignal = {
   // Tracker's observed-change requirement still gates "frozen before we watched").
   // These are structured JSON markers, not idle status text.
   toolCallOrSpinner: /Working\s*\(\d+\s*s|•\s*Ran\b|exec\(|shell\(|apply_patch\(|⠋|⠙|⠹|⠸|⠼|⠴|⠦|⠧|⠇|⠏|\bgenerating\b|"type":\s*"(thread|turn|item)\./i,
+  // Live-only: the working status line + spinner + "generating". Excludes "• Ran"
+  // and exec(/shell(/apply_patch( + the event-stream markers, which persist in
+  // scrollback / the JSONL after a turn ends.
+  liveActivity: /Working\s*\(\d+\s*s|⠋|⠙|⠹|⠸|⠼|⠴|⠦|⠧|⠇|⠏|\bgenerating\b/i,
   // Codex shows a BARE "esc to interrupt" (no "press"/"hit" prefix) inside
   // its working status line, so the Claude-style prefixed pattern never
   // matched a real Codex pane. Match the bare form.
@@ -108,6 +134,9 @@ const GEMINI_CLI_SIGNAL: FrameworkActivitySignal = {
   // the bare word "gemini" (which appears in idle status / the model name) to
   // avoid the codex idle-status false-positive that hid stuck sessions.
   toolCallOrSpinner: /⠋|⠙|⠹|⠸|⠼|⠴|⠦|⠧|⠇|⠏|\b(generating|thinking)\b/i,
+  // Gemini's toolCallOrSpinner is already live-only (spinner + generating/thinking,
+  // no scrollback-persistent tool-names), so liveActivity mirrors it.
+  liveActivity: /⠋|⠙|⠹|⠸|⠼|⠴|⠦|⠧|⠇|⠏|\b(generating|thinking)\b/i,
   escapeToInterrupt: /esc to interrupt/i,
   runningIndicator: /\((running|executing|streaming)\)/i,
   promptSignaturesLine:
@@ -126,6 +155,9 @@ const PI_CLI_SIGNAL: FrameworkActivitySignal = {
   // near boot even when idle — matching it would recreate the codex
   // idle-status false-positive that hid stuck sessions).
   toolCallOrSpinner: /⠋|⠙|⠹|⠸|⠼|⠴|⠦|⠧|⠇|⠏|^\s*\$\s\S|\bTook \d+(\.\d+)?s\b|\b(generating|thinking|streaming)\b/im,
+  // Live-only: spinner + generating/thinking/streaming. Excludes the "$ cmd" shell
+  // echo and "Took Ns" completion line, which persist in scrollback after a turn.
+  liveActivity: /⠋|⠙|⠹|⠸|⠼|⠴|⠦|⠧|⠇|⠏|\b(generating|thinking|streaming)\b/i,
   // pi's interrupt hint is the banner's "escape interrupt", but that banner is
   // visible while IDLE too — so it is NOT a reliable in-flight indicator. Use a
   // deliberately unmatchable pattern until a live-provider pane characterizes a
