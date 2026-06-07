@@ -1,0 +1,36 @@
+# Graduate the Subscription Pool to a surfaced capability
+
+<!-- bump: patch -->
+
+## What Changed
+
+The Subscription & Auth Standard's `/subscription-pool` routes graduated from the
+internal/dark list to a surfaced capability, now that all its phases are merged —
+the multi-account registry (P1.1), quota poller (P1.2), quota-aware auto-swap
+scheduler with the session-continuity guarantee (P1.3), mobile-first enrollment
+wizard (P2.1), and dashboard Subscriptions tab (P2.2).
+
+Three no-behavior edits: `/subscription-pool` moves from `INTERNAL_PREFIXES` to a
+`CAPABILITY_INDEX` entry (so it appears in `/capabilities` with its account count,
+quota poller / scheduler / enrollment-wizard wiring status, and full endpoint
+list); the CLAUDE.md template gains a "Subscription Pool" awareness blurb for new
+agents; and an idempotent `migrateClaudeMd` migration appends the same blurb to
+existing agents on update. No route, class, or runtime behavior is added — this
+surfaces an already-shipped, already-tested capability honestly (the original
+internal note set exactly this maturity bar).
+
+## What to Tell Your User
+
+I can now manage several of your subscriptions for a provider as one pool — show
+you how much of each is left and when it resets, keep a long session alive by
+moving it to another account when one hits its limit, and help you enroll a new
+account from your phone. Ask me "how much quota is left across my accounts?" or
+tell me you want to add another subscription.
+
+## Summary of New Capabilities
+
+- **`/subscription-pool` is now a surfaced capability** — visible in
+  `/capabilities` and documented in the agent's CLAUDE.md (new + existing agents).
+- **No behavior change** — the routes, scheduler, continuity guarantee, and
+  enrollment wizard already shipped (P1.1–P2.2); this makes the finished capability
+  discoverable and known.

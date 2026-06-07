@@ -56,8 +56,37 @@ export interface CapabilityEntry {
 
 export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
   // E2E-PAIRING: EXEMPT — capability classification metadata only (no new endpoint
-  // behavior); /pool + /mesh + /session-pool already have integration tests, and the
-  // capabilities-discoverability unit lint is the coverage for this classification.
+  // behavior); the subscription-pool routes already have integration + e2e tests
+  // (P1.1–P2.1), and the capabilities-discoverability unit lint is the coverage for
+  // this classification. Graduated from INTERNAL_PREFIXES once the quota-aware
+  // scheduler (P1.3) + mobile enrollment wizard (P2.1) + dashboard tab (P2.2) made
+  // it user-usable (the maturity-honesty bar the INTERNAL note set).
+  {
+    key: 'subscriptionPool',
+    prefixes: ['/subscription-pool'],
+    description: 'Subscription & Auth Standard — a multi-account subscription pool (N logins of the same provider) with live per-account quota (5h + weekly utilization + reset dates, measured burn), reset-date-optimal account selection, a hard session-continuity guarantee (a session that hits its account quota resumes on another account via --resume, never dies), and a mobile-first enrollment wizard (start a login, surface the public code/URL, auto-reissue an expired code). The registry stores login LOCATION (config home), never tokens. Backs the dashboard Subscriptions tab. Single-account pools are a no-op; auto-swap of live sessions is opt-in (subscriptionPool.autoSwapOnRateLimit).',
+    build: ({ ctx }) => ({
+      configured: !!ctx.subscriptionPool,
+      accounts: ctx.subscriptionPool ? ctx.subscriptionPool.size() : 0,
+      quotaPoller: !!ctx.quotaPoller,
+      scheduler: !!ctx.quotaAwareScheduler,
+      enrollmentWizard: !!ctx.enrollmentWizard,
+      endpoints: [
+        'GET /subscription-pool',
+        'POST /subscription-pool',
+        'GET /subscription-pool/:id',
+        'PATCH /subscription-pool/:id',
+        'DELETE /subscription-pool/:id',
+        'POST /subscription-pool/poll',
+        'GET /subscription-pool/:id/quota',
+        'POST /subscription-pool/swap',
+        'POST /subscription-pool/enroll',
+        'GET /subscription-pool/pending-logins',
+        'POST /subscription-pool/enroll/:id/complete',
+        'POST /subscription-pool/enroll/reissue-expired',
+      ],
+    }),
+  },
   {
     key: 'multiMachinePool',
     prefixes: ['/pool'],
@@ -974,7 +1003,6 @@ const FEATURE_GUIDE_TRIGGERS: ReadonlyArray<{ context: string; action: string }>
  */
 export const INTERNAL_PREFIXES: ReadonlyArray<{ prefix: string; reason: string }> = [
   { prefix: 'a2a', reason: 'same-machine agent-to-agent transport — peers discover each other via AgentRegistry, not /capabilities' },
-  { prefix: 'subscription-pool', reason: 'P1.1 foundation of the Subscription & Auth Standard — multi-account registry, ships dark; graduates to a surfaced CAPABILITY_INDEX entry (+ CLAUDE.md awareness blurb) once the quota-aware scheduler (P1.3) and mobile enrollment wizard (P2.1) make it user-usable. Surfacing the bare registry now would overclaim an unfinished capability (maturity honesty).' },
   { prefix: 'health', reason: 'basic liveness check, no auth' },
   { prefix: 'ping', reason: 'synchronous noop, used by tunnel/lifeline probes' },
   { prefix: 'whoami', reason: 'internal identity probe (sentinel/relay layer 1c)' },

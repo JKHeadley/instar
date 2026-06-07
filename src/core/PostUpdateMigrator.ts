@@ -2954,6 +2954,25 @@ Rule: I do not state that work landed inside another agent's state unless I have
       result.upgraded.push('CLAUDE.md: added MTP Protocol (EXO 3.0 test-action) section');
     }
 
+    // Subscription Pool (Subscription & Auth Standard) — graduated from
+    // INTERNAL_PREFIXES to a surfaced capability once P1.3 (scheduler) + P2.1
+    // (enrollment) + P2.2 (dashboard) made it user-usable. Existing agents need
+    // the awareness blurb (multi-account quota + continuity-guaranteed auto-swap +
+    // mobile enrollment). Content-sniffed on a distinctive marker.
+    if (!content.includes('Subscription Pool (multi-account quota')) {
+      const subscriptionPoolSection = `
+**Subscription Pool (multi-account quota + auto-swap + enrollment)** — Hold ALL of your subscriptions for a provider (e.g. several Claude logins) and use them as one pool: I read each account's live quota, drain each before its reset, and when a session hits an account's limit I resume it on another account instead of letting it die. The registry stores each account's login LOCATION (its config home), NEVER a token.
+- See the pool + each account's live quota: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/subscription-pool\` · one account's quota + burn: \`GET /subscription-pool/:id/quota\` · poll all now: \`POST /subscription-pool/poll\`.
+- **Continuity guarantee** — a long session that hits its account's quota resumes on another eligible account (conversation preserved via \`--resume\`), never dies. Manual lever: \`POST /subscription-pool/swap\` \`{"sessionName":"...","exhaustedAccountId":"..."}\`. Auto-swap on rate-limit ships OFF (opt-in via \`subscriptionPool.autoSwapOnRateLimit\` — it moves a live session, real authority).
+- **Enroll a new account from your phone** — \`POST /subscription-pool/enroll\` \`{"id","label","provider","framework","configHome"}\` starts a login and returns a public code/URL (never a token); \`GET /subscription-pool/pending-logins\` is the surface; expired codes are auto-reissued. Mark done with \`POST /subscription-pool/enroll/:id/complete\`.
+- **Dashboard**: the **Subscriptions tab** shows live quota bars (5h + weekly + reset countdown), status, and the Pending Logins panel — share the dashboard URL + PIN.
+- **When to use** (PROACTIVE): "how much quota is left across my accounts?" / "am I about to hit a limit?" → \`GET /subscription-pool\`; the user wants to add another subscription → drive the enrollment wizard (never ask them to paste a token); a long job is at risk of a quota wall → the continuity guarantee + \`/swap\` keep it alive. Single-account pools are a no-op.
+`;
+      content += '\n' + subscriptionPoolSection;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Subscription Pool (multi-account quota + enrollment) section');
+    }
+
     // Session Boot Self-Knowledge (spec: session-boot-self-knowledge.md).
     // Existing agents need the rule ("a secret named in your boot block is in
     // the vault — retrieve, don't re-ask") + the facts writer + the retrieval
