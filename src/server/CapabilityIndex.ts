@@ -974,6 +974,7 @@ const FEATURE_GUIDE_TRIGGERS: ReadonlyArray<{ context: string; action: string }>
  */
 export const INTERNAL_PREFIXES: ReadonlyArray<{ prefix: string; reason: string }> = [
   { prefix: 'a2a', reason: 'same-machine agent-to-agent transport — peers discover each other via AgentRegistry, not /capabilities' },
+  { prefix: 'subscription-pool', reason: 'P1.1 foundation of the Subscription & Auth Standard — multi-account registry, ships dark; graduates to a surfaced CAPABILITY_INDEX entry (+ CLAUDE.md awareness blurb) once the quota-aware scheduler (P1.3) and mobile enrollment wizard (P2.1) make it user-usable. Surfacing the bare registry now would overclaim an unfinished capability (maturity honesty).' },
   { prefix: 'health', reason: 'basic liveness check, no auth' },
   { prefix: 'ping', reason: 'synchronous noop, used by tunnel/lifeline probes' },
   { prefix: 'whoami', reason: 'internal identity probe (sentinel/relay layer 1c)' },

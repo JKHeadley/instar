@@ -582,6 +582,9 @@ export interface RouteContext {
   orphanReaper: OrphanProcessReaper | null;
   coherenceMonitor: CoherenceMonitor | null;
   commitmentTracker: CommitmentTracker | null;
+  /** SubscriptionPool (multi-account subscription registry, P1.1 of the
+   *  Subscription & Auth Standard). Null until an operator opts in / enrolls. */
+  subscriptionPool: import('../core/SubscriptionPool.js').SubscriptionPool | null;
   semanticMemory: SemanticMemory | null;
   activitySentinel: SessionActivitySentinel | null;
   rateLimitSentinel: import('../monitoring/RateLimitSentinel.js').RateLimitSentinel | null;
@@ -15636,6 +15639,101 @@ export function createRoutes(ctx: RouteContext): Router {
       return;
     }
     res.json({ resumed: true, id: updated.id, commitment: updated });
+  });
+
+  // ── Subscription Pool (multi-account subscription registry, P1.1) ──
+  // Subscription & Auth Standard, Pillar 2 foundation. The registry stores each
+  // account's login LOCATION (config home), never its tokens. Ships DARK: a
+  // pool of 0 accounts is a no-op; single-account agents are unaffected.
+  // GET routes return { enabled: false } when the pool is not configured so
+  // they answer 200 (not 503) on every install.
+
+  router.get('/subscription-pool', (_req, res) => {
+    if (!ctx.subscriptionPool) {
+      res.json({ enabled: false, accounts: [] });
+      return;
+    }
+    const accounts = ctx.subscriptionPool.list();
+    res.json({ enabled: true, count: accounts.length, accounts });
+  });
+
+  router.get('/subscription-pool/:id', (req, res) => {
+    if (!ctx.subscriptionPool) {
+      res.status(404).json({ error: 'SubscriptionPool not configured' });
+      return;
+    }
+    const account = ctx.subscriptionPool.get(req.params.id);
+    if (!account) {
+      res.status(404).json({ error: `account ${req.params.id} not found` });
+      return;
+    }
+    res.json(account);
+  });
+
+  router.post('/subscription-pool', (req, res) => {
+    if (!ctx.subscriptionPool) {
+      res.status(404).json({ error: 'SubscriptionPool not configured' });
+      return;
+    }
+    const { id, nickname, provider, framework, configHome, status } = req.body ?? {};
+    if (!id || !nickname || !provider || !framework || !configHome) {
+      res.status(400).json({
+        error: 'id, nickname, provider, framework, and configHome are required',
+      });
+      return;
+    }
+    try {
+      // Pass the full body as rawExtra so the credential-field guard rejects any
+      // attempt to smuggle a token into the registry (structural invariant).
+      const account = ctx.subscriptionPool.add(
+        { id, nickname, provider, framework, configHome, status },
+        req.body,
+      );
+      res.status(201).json(account);
+    } catch (err) {
+      const isValidation = err instanceof Error && err.name === 'ValidationError';
+      res.status(isValidation ? 400 : 500).json({
+        error: err instanceof Error ? err.message : 'failed to add account',
+      });
+    }
+  });
+
+  router.patch('/subscription-pool/:id', (req, res) => {
+    if (!ctx.subscriptionPool) {
+      res.status(404).json({ error: 'SubscriptionPool not configured' });
+      return;
+    }
+    const { nickname, framework, configHome, status, lastQuota, lastUsedAt } = req.body ?? {};
+    try {
+      const updated = ctx.subscriptionPool.update(
+        req.params.id,
+        { nickname, framework, configHome, status, lastQuota, lastUsedAt },
+        req.body,
+      );
+      if (!updated) {
+        res.status(404).json({ error: `account ${req.params.id} not found` });
+        return;
+      }
+      res.json(updated);
+    } catch (err) {
+      const isValidation = err instanceof Error && err.name === 'ValidationError';
+      res.status(isValidation ? 400 : 500).json({
+        error: err instanceof Error ? err.message : 'failed to update account',
+      });
+    }
+  });
+
+  router.delete('/subscription-pool/:id', (req, res) => {
+    if (!ctx.subscriptionPool) {
+      res.status(404).json({ error: 'SubscriptionPool not configured' });
+      return;
+    }
+    const removed = ctx.subscriptionPool.remove(req.params.id);
+    if (!removed) {
+      res.status(404).json({ error: `account ${req.params.id} not found` });
+      return;
+    }
+    res.json({ removed: true, id: req.params.id });
   });
 
   // ── Episodic Memory (Activity Sentinel) ──────────────────────────
