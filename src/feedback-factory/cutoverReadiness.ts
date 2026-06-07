@@ -107,10 +107,26 @@ export interface CutoverReadinessDeps {
   runImportDryRun?: (() => Promise<ImportRunResult>) | null;
   /** Freshness bound for the parity window (default 6h). */
   maxPassStalenessMs?: number;
+  /**
+   * Wall-clock max-hold for a single live fetch (parity pass OR import dry-run),
+   * enforced at the single-flight-lock boundary (default 12m). This is a
+   * defense-in-depth backstop ON TOP OF whatever internal timeout the injected
+   * fetch carries: if that fetch ever fails to settle (e.g. an AbortSignal that
+   * doesn't fire on a stalled socket, or a compare step with no timeout of its
+   * own), the lock would otherwise be held forever and every subsequent pass +
+   * dry-run is refused with "already in flight" — exactly the ~85-minute stuck
+   * lock observed in #948. The max-hold guarantees the lock releases within a
+   * bounded time so the next sweep can retry; it sits comfortably above
+   * HttpParitySource's 600s total budget so it only fires when that inner budget
+   * has genuinely failed, never on a legitimately-slow-but-working pass. */
+  maxLiveFetchMs?: number;
   now?: () => number;
 }
 
 const DEFAULT_MAX_PASS_STALENESS_MS = 6 * 60 * 60 * 1000;
+/** 12m — above HttpParitySource's 600s total budget + a working pass's compare,
+ *  so the lock-boundary max-hold is a true backstop, not a false-abort risk. */
+const DEFAULT_MAX_LIVE_FETCH_MS = 12 * 60 * 1000;
 
 interface PersistedIntegrityEnvelope {
   generatedAt: string;
@@ -126,6 +142,7 @@ interface PersistedDryRunEnvelope {
 export class CutoverReadiness {
   private readonly d: CutoverReadinessDeps;
   private readonly maxStaleMs: number;
+  private readonly maxLiveFetchMs: number;
   /**
    * Single-flight guard over the LIVE SOURCE FETCH — shared by the parity pass
    * and the import dry-run because both page the full live source. Without it,
@@ -146,10 +163,36 @@ export class CutoverReadiness {
     }
     this.d = deps;
     this.maxStaleMs = deps.maxPassStalenessMs ?? DEFAULT_MAX_PASS_STALENESS_MS;
+    this.maxLiveFetchMs = deps.maxLiveFetchMs ?? DEFAULT_MAX_LIVE_FETCH_MS;
   }
 
   private nowMs(): number {
     return this.d.now ? this.d.now() : Date.now();
+  }
+
+  /**
+   * Race an injected live-fetch promise against a wall-clock max-hold so the
+   * single-flight lock can NEVER be held indefinitely by a fetch that fails to
+   * settle (#948). On timeout this rejects (the caller's `finally` then releases
+   * the lock and the next sweep retries); the orphaned work is abandoned — a
+   * re-attempt is cheap and idempotent, an unreleasable lock is not. Uses real
+   * wall-clock time (NOT `nowMs()`), since the bug is a promise that never
+   * settles in real time regardless of an injected clock. */
+  private async withMaxHold<T>(work: Promise<T>, op: string): Promise<T> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const guard = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => {
+        reject(new Error(
+          `live ${op} fetch exceeded the max-hold budget (${this.maxLiveFetchMs}ms) — releasing the single-flight lock so a later sweep can retry; the underlying fetch did not settle within budget (see #948)`,
+        ));
+      }, this.maxLiveFetchMs);
+      if (typeof timer.unref === 'function') timer.unref();
+    });
+    try {
+      return await Promise.race([work, guard]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
   }
 
   /** Persist an import IntegrityReport (server-side import tooling only). */
@@ -213,7 +256,7 @@ export class CutoverReadiness {
     this.liveFetchInFlight = { op: 'parity-pass', startedAt: new Date(this.nowMs()).toISOString() };
     let result: ParityResult;
     try {
-      result = await this.d.runParityCheck();
+      result = await this.withMaxHold(this.d.runParityCheck(), 'parity-pass');
     } catch (err) {
       return { ok: false, reason: `parity check failed: ${err instanceof Error ? err.message : String(err)}` };
     } finally {
@@ -245,7 +288,7 @@ export class CutoverReadiness {
     this.liveFetchInFlight = { op: 'import-dry-run', startedAt: new Date(this.nowMs()).toISOString() };
     let result: ImportRunResult;
     try {
-      result = await this.d.runImportDryRun();
+      result = await this.withMaxHold(this.d.runImportDryRun(), 'import-dry-run');
     } catch (err) {
       return { ok: false, reason: `import dry-run failed: ${err instanceof Error ? err.message : String(err)}` };
     } finally {
