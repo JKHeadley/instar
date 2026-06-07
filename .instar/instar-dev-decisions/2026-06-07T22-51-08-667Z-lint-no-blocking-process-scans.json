@@ -1,0 +1,16 @@
+{
+  "ts": "2026-06-07T22:51:08.667Z",
+  "slug": "lint-no-blocking-process-scans",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 126,
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "Preventive gate for a LATENT class: synchronous process-enumeration scans (ps/pgrep/lsof) on a cadence were always present in monitors but dormant — they only became harmful on 2026-06-07 (topic 21816, docs/postmortems/2026-06-07-server-temporarily-down.md, root cause #4) when CPU/IO load made them run long enough to block the single-threaded event loop and starve /health, so the supervisor judged an alive server unresponsive and restarted it -> the restart loop. PR #972 converted the worst offender (SessionWatchdog) to async; this lint is the Structure>Willpower ratchet that stops the latent class from being re-introduced. Not a regression of a prior PR — a preventive gate closing the door behind the fix."
+  },
+  "verdict": "pass"
+}

@@ -1,0 +1,13 @@
+{
+  "ts": "2026-06-07T22:49:52.318Z",
+  "slug": "lint-no-blocking-process-scans",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 126,
+  "causalAutopsy": null,
+  "verdict": "blocked"
+}

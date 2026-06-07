@@ -100,6 +100,10 @@ export function makeAgentWorktreeReaperDeps(opts: {
   const defaultCwdRoots = (): Set<string> => {
     const roots = new Set<string>();
     let out: string;
+    // lint-allow-blocking-scan: AgentWorktreeReaper ships dark + dry-run + reviewed
+    // (off by default), so this full-cwd `lsof` is not on any live agent's hot path;
+    // bounded by a 15s timeout. Async conversion is tracked as a post-mortem
+    // follow-up (docs/postmortems/2026-06-07-server-temporarily-down.md, root cause #4).
     try {
       out = execFileSync('lsof', ['-w', '-d', 'cwd', '-Fn'], { encoding: 'utf-8', timeout: 15_000, maxBuffer: 32 * 1024 * 1024 });
     } catch { return roots; } // @silent-fallback-ok — no cwd signal ⇒ rely on locks

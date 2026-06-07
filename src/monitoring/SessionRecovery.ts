@@ -768,6 +768,10 @@ export class SessionRecovery extends EventEmitter {
       const pid = this.deps.getPanePid(sessionName);
       if (pid) {
         try {
+          // lint-allow-blocking-scan: targeted `lsof -p <pid>` (one specific process,
+          // not a full enumeration), 5s timeout, runs once during a session's JSONL
+          // recovery — not on a cadence, so it can't starve /health the way the #972
+          // every-tick scans did.
           const output = execFileSync('lsof', ['-p', String(pid), '-Fn'], {
             encoding: 'utf-8',
             timeout: 5000,

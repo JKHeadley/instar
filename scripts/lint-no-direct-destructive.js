@@ -77,6 +77,9 @@ const ALLOWLIST = new Set([
   // Same bootstrap-escape pattern (june15-headless-spawn-reroute funnel
   // lint) — read-only `git diff --cached --name-only` only.
   'scripts/lint-no-unfunneled-headless-launch.js',
+  // Same bootstrap-escape pattern (blocking-process-scan lint, topic 21816
+  // post-mortem #3) — read-only `git diff --cached --name-only` only.
+  'scripts/lint-no-blocking-process-scans.js',
   // Postinstall bootstrap script — runs before TypeScript is compiled and
   // before SafeFsExecutor is available. CommonJS, can't use ESM imports.
   'scripts/fix-better-sqlite3.cjs',
