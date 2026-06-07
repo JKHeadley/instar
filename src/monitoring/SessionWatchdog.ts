@@ -13,7 +13,8 @@
  *   Level 4: Kill tmux session
  */
 
-import { spawnSync } from 'node:child_process';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -25,9 +26,35 @@ import {
   type ThrottleSettleState,
 } from './rateLimitDetection.js';
 
-/** Drop-in replacement for execSync that avoids its security concerns. */
-function shellExec(cmd: string, timeout = 5000): string {
-  return spawnSync('/bin/sh', ['-c', cmd], { encoding: 'utf-8', timeout }).stdout ?? '';
+const execFileAsync = promisify(execFile);
+
+/**
+ * ASYNC shell exec — the watchdog poll runs every 30s over EVERY running
+ * session, several `ps`/`pgrep` probes each. With the old `spawnSync` those
+ * probes blocked the single Node event loop for the full duration of each
+ * subprocess; under load (dozens of sessions, a busy box) the cumulative stall
+ * made the server miss its own /health window → false "server temporarily down"
+ * + a restart loop (2026-06-07 incident). execFile is non-blocking: the event
+ * loop (and /health) stays responsive while `ps` runs. Returns captured stdout
+ * (or '' on a non-zero exit / timeout), matching the old spawnSync semantics
+ * where a pgrep/egrep no-match simply yielded ''.
+ */
+async function shellExecAsync(cmd: string, timeout = 5000): Promise<string> {
+  try {
+    const { stdout } = await execFileAsync('/bin/sh', ['-c', cmd], {
+      encoding: 'utf-8',
+      timeout,
+      maxBuffer: 4 * 1024 * 1024,
+    });
+    return stdout ?? '';
+  } catch (err: unknown) {
+    // @silent-fallback-ok — a failed process probe is not a degradation: a
+    // pgrep/egrep no-match, a dead PID, or a timeout legitimately means "no
+    // match", identical to the prior synchronous behavior where spawnSync simply
+    // yielded an empty stdout string. Return any captured stdout, else ''.
+    const e = err as { stdout?: string } | null;
+    return e && typeof e.stdout === 'string' ? e.stdout : '';
+  }
 }
 import type { SessionManager } from '../core/SessionManager.js';
 import type { StateManager } from '../core/StateManager.js';
@@ -286,6 +313,9 @@ export class SessionWatchdog extends EventEmitter {
         } catch (err) {
           console.error(`[Watchdog] Error checking "${session.tmuxSession}":`, err);
         }
+        // Yield to the event loop between sessions so a poll over many sessions
+        // can never monopolize the loop and starve /health (which shares it).
+        await new Promise<void>((resolve) => setImmediate(resolve));
       }
     } finally {
       this.running = false;
@@ -304,13 +334,13 @@ export class SessionWatchdog extends EventEmitter {
     // the stuck-command path but still run compaction-idle detection —
     // that path is output-based and doesn't strictly need a PID (its own
     // process guard is null-safe).
-    const claudePid = this.getClaudePid(tmuxSession);
+    const claudePid = await this.getClaudePid(tmuxSession);
     if (!claudePid) {
-      this.checkCompactionIdle(tmuxSession);
+      await this.checkCompactionIdle(tmuxSession);
       return;
     }
 
-    const children = this.getChildProcesses(claudePid);
+    const children = await this.getChildProcesses(claudePid);
     const stuckChild = children.find(c => {
       if (this.isExcluded(c.command)) return false;
       if (this.temporaryExclusions.has(c.pid)) return false;
@@ -330,7 +360,7 @@ export class SessionWatchdog extends EventEmitter {
       // contain active sibling producers, the "stuck" process is just
       // waiting for upstream output from a legitimate long-running
       // pipeline. Skip escalation.
-      if (this.hasActivePipelineSibling(stuckChild.pid, stuckChild.command)) {
+      if (await this.hasActivePipelineSibling(stuckChild.pid, stuckChild.command)) {
         console.log(
           `[Watchdog] "${tmuxSession}": ${stuckChild.command.slice(0, 60)} ` +
           `is consuming an active pipeline — skipping escalation`,
@@ -396,7 +426,7 @@ export class SessionWatchdog extends EventEmitter {
     // sitting at a bare prompt with no one at the terminal to nudge them.
     // This is the polling-based fallback for the PreCompact event path which
     // is unreliable (Claude Code doesn't always fire the event).
-    this.checkCompactionIdle(tmuxSession);
+    await this.checkCompactionIdle(tmuxSession);
 
     // Server-side throttle detection — catch sessions stopped at a prompt after
     // Anthropic's "temporarily limiting requests" throttle exhausted Claude's
@@ -479,7 +509,7 @@ export class SessionWatchdog extends EventEmitter {
    *   5. server.ts checks message history before activating triage (data-level guard)
    *   6. TriageOrchestrator Pattern 2b re-validates before reinjecting (redundant check)
    */
-  checkCompactionIdle(tmuxSession: string): void {
+  async checkCompactionIdle(tmuxSession: string): Promise<void> {
     // Cooldown — don't re-emit for the same session within 5 minutes
     const lastEmitted = this.compactionIdleCooldowns.get(tmuxSession);
     if (lastEmitted && (Date.now() - lastEmitted) < SessionWatchdog.COMPACTION_IDLE_COOLDOWN_MS) {
@@ -488,9 +518,9 @@ export class SessionWatchdog extends EventEmitter {
 
     // Guard 1: Structural process check — if Claude has active child processes,
     // it's executing tools/commands, not stalled. Skip entirely.
-    const claudePid = this.getClaudePid(tmuxSession);
+    const claudePid = await this.getClaudePid(tmuxSession);
     if (claudePid) {
-      const children = this.getChildProcesses(claudePid);
+      const children = await this.getChildProcesses(claudePid);
       const activeChildren = children.filter(c => !this.isExcluded(c.command));
       if (activeChildren.length > 0) return;
     }
@@ -695,16 +725,16 @@ export class SessionWatchdog extends EventEmitter {
    * @deprecated method name retained for v0.x compat — internal callers
    * use the framework-generic shape.
    */
-  private getClaudePid(tmuxSession: string): number | null {
+  private async getClaudePid(tmuxSession: string): Promise<number | null> {
     return this.getFrameworkPid(tmuxSession);
   }
 
-  private getFrameworkPid(tmuxSession: string): number | null {
+  private async getFrameworkPid(tmuxSession: string): Promise<number | null> {
     try {
       // Get pane PID
-      const panePidStr = shellExec(
+      const panePidStr = (await shellExecAsync(
         `${this.config.sessions.tmuxPath} list-panes -t "=${tmuxSession}" -F "#{pane_pid}" 2>/dev/null`
-      ).trim().split('\n')[0];
+      )).trim().split('\n')[0];
       if (!panePidStr) return null;
       const panePid = parseInt(panePidStr, 10);
       if (isNaN(panePid)) return null;
@@ -714,7 +744,7 @@ export class SessionWatchdog extends EventEmitter {
       // own command first — if it matches a known framework binary,
       // return it. Without this, pgrep -P finds no match and the
       // watchdog silently no-ops.
-      const paneCmd = shellExec(`ps -p ${panePid} -o comm= 2>/dev/null`).trim();
+      const paneCmd = (await shellExecAsync(`ps -p ${panePid} -o comm= 2>/dev/null`)).trim();
       // eslint-disable-next-line @typescript-eslint/no-var-requires
       const { listProcessSignals } = require('./frameworkProcessSignals.js');
       const signals = listProcessSignals();
@@ -735,9 +765,9 @@ export class SessionWatchdog extends EventEmitter {
       // Fallback: pane runs a shell wrapper that has a framework CLI as
       // a child. egrep alternation over every framework's bracket needle.
       const needle = signals.map((s: { psGrepNeedle: string }) => s.psGrepNeedle).join('|');
-      const childPidStr = shellExec(
+      const childPidStr = (await shellExecAsync(
         `pgrep -P ${panePid} 2>/dev/null | xargs -I@ ps -p @ -o pid=,command= 2>/dev/null | egrep -i '${needle}' | head -1 | awk '{print $1}'`
-      ).trim();
+      )).trim();
       if (!childPidStr) return null;
       const pid = parseInt(childPidStr, 10);
       return isNaN(pid) ? null : pid;
@@ -747,15 +777,15 @@ export class SessionWatchdog extends EventEmitter {
     }
   }
 
-  private getChildProcesses(pid: number): ChildProcessInfo[] {
+  private async getChildProcesses(pid: number): Promise<ChildProcessInfo[]> {
     try {
-      const childPidsStr = shellExec(`pgrep -P ${pid} 2>/dev/null`).trim();
+      const childPidsStr = (await shellExecAsync(`pgrep -P ${pid} 2>/dev/null`)).trim();
       if (!childPidsStr) return [];
 
       const childPids = childPidsStr.split('\n').filter(Boolean).join(',');
       if (!childPids) return [];
 
-      const output = shellExec(`ps -o pid=,etime=,command= -p ${childPids} 2>/dev/null`).trim();
+      const output = (await shellExecAsync(`ps -o pid=,etime=,command= -p ${childPids} 2>/dev/null`)).trim();
       if (!output) return [];
 
       const results: ChildProcessInfo[] = [];
@@ -788,7 +818,7 @@ export class SessionWatchdog extends EventEmitter {
    * Returns true if this PID looks like a waiting consumer in an active
    * pipeline — in which case escalation should be skipped.
    */
-  private hasActivePipelineSibling(pid: number, command: string): boolean {
+  private async hasActivePipelineSibling(pid: number, command: string): Promise<boolean> {
     // Step 1: is the command a stdin-consuming candidate at all?
     const consumer = STDIN_CONSUMER_PATTERNS.find(p => p.cmd.test(command));
     if (!consumer) return false;
@@ -799,14 +829,14 @@ export class SessionWatchdog extends EventEmitter {
 
     // Step 3: find the process group and peers.
     try {
-      const pgidStr = shellExec(`ps -o pgid= -p ${pid} 2>/dev/null`).trim();
+      const pgidStr = (await shellExecAsync(`ps -o pgid= -p ${pid} 2>/dev/null`)).trim();
       const pgid = parseInt(pgidStr, 10);
 
       // Check process group peers (pipelines share pgid on macOS/Linux).
       if (!isNaN(pgid) && pgid > 0) {
-        const peersOutput = shellExec(
+        const peersOutput = (await shellExecAsync(
           `ps -o pid=,command= -g ${pgid} 2>/dev/null`,
-        ).trim();
+        )).trim();
         for (const line of peersOutput.split('\n')) {
           const match = line.trim().match(/^(\d+)\s+(.+)$/);
           if (!match) continue;
@@ -822,11 +852,11 @@ export class SessionWatchdog extends EventEmitter {
       // Fallback: also check direct descendants of the consumer PID. In
       // some shell exec patterns the producer becomes a CHILD of the
       // exec'd consumer rather than a pgid sibling.
-      const childPidsStr = shellExec(`pgrep -P ${pid} 2>/dev/null`).trim();
+      const childPidsStr = (await shellExecAsync(`pgrep -P ${pid} 2>/dev/null`)).trim();
       if (childPidsStr) {
         const childPids = childPidsStr.split('\n').filter(Boolean).join(',');
         if (childPids) {
-          const childOutput = shellExec(`ps -o pid=,command= -p ${childPids} 2>/dev/null`).trim();
+          const childOutput = (await shellExecAsync(`ps -o pid=,command= -p ${childPids} 2>/dev/null`)).trim();
           for (const line of childOutput.split('\n')) {
             const match = line.trim().match(/^(\d+)\s+(.+)$/);
             if (!match) continue;

@@ -1,0 +1,16 @@
+{
+  "ts": "2026-06-07T19:07:04.763Z",
+  "slug": "watchdog-nonblocking-scans",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 86,
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "SessionWatchdog has used synchronous spawnSync('ps'/'pgrep') for its per-session probes since it was written. That is always event-loop-blocking, but it was harmless while session count and machine load were small (each poll's cumulative blocking was sub-second). It surfaced as a health-miss restart loop only on 2026-06-07 when ~38 sessions on a CPU-starved box made the cumulative per-poll stall exceed the supervisor's /health window (8s timeout, 30s healthy window), so the supervisor declared the alive-but-blocked server dead and restarted it repeatedly. No prior PR regressed it; it is a latent scalability flaw of the synchronous-scan design exposed by session-count x load growth. Same pattern remains in OrphanProcessReaper/mcpProcessReaper (lower cadence) as a follow-up."
+  },
+  "verdict": "pass"
+}
