@@ -233,6 +233,10 @@ export interface SessionReaperDeps {
   frameworkForSession: (tmuxSession: string) => 'claude-code' | 'codex-cli' | undefined;
   /** Resolve+stat the session's transcript. Defaults to {@link probeTranscript}. */
   probeTranscript?: (session: Session) => TranscriptProbe;
+  /** The agent's session-launch cwd (config.projectDir) — Claude Code encodes it into
+   *  the transcript path. Used by the fallback probe() to resolve transcripts; absent
+   *  ⇒ '' ⇒ transcripts read as unresolved ⇒ KEEP (safe). */
+  transcriptProjectDir?: () => string;
   isRecoveryActive: (session: Session) => boolean;
   isRelayLeaseActive: (sessionId: string) => boolean;
   hasPendingInjection: (tmuxSession: string) => boolean;
@@ -334,7 +338,14 @@ export class SessionReaper extends EventEmitter {
     // Claude uses claudeSessionId; Codex's transcript is globbed by its session
     // id which we do not separately track → unresolved → KEEP (safe).
     const sessionId = framework === 'claude-code' ? (session.claudeSessionId ?? '') : '';
-    return probeTranscript({ framework, sessionId, projectDir: '' });
+    // projectDir is the agent's session-launch cwd, which Claude Code encodes into the
+    // transcript path (~/.claude/projects/<encoded-cwd>/<sessionId>.jsonl). Passing ''
+    // resolved to an empty-encoded dir that never exists → EVERY session read as
+    // transcript-unresolved → the reaper could never PROVE a session idle and kept
+    // everything (2026-06-06 grounding). Inject it via `transcriptProjectDir`; an
+    // absent/wrong value still resolves to unresolved → KEEP (safe).
+    const projectDir = this.deps.transcriptProjectDir?.() ?? '';
+    return probeTranscript({ framework, sessionId, projectDir });
   }
 
   /**

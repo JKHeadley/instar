@@ -9955,6 +9955,10 @@ export async function startServer(options: StartOptions): Promise<void> {
         listRunningSessions: () => sessionManager.listRunningSessions(),
         captureOutput: (s, n) => sessionManager.captureOutput(s, n) ?? '',
         frameworkForSession: (s) => sessionManager.frameworkForSession(s) as 'claude-code' | 'codex-cli' | undefined,
+        // The agent's session-launch cwd — Claude Code encodes it into the transcript
+        // path so the reaper's fallback probe() can resolve + verify idle. Without this
+        // the probe used '' and every transcript read as unresolved (kept everything).
+        transcriptProjectDir: () => config.projectDir,
         pressure: () => {
           const total = _os.totalmem();
           const freePct = total > 0 ? (_os.freemem() / total) * 100 : 100;
@@ -10177,7 +10181,11 @@ export async function startServer(options: StartOptions): Promise<void> {
           snapshot: (session) => {
             const framework = session.framework ?? sessionManager.frameworkForSession(session.tmuxSession) ?? 'claude-code';
             const sessionId = framework === 'claude-code' ? (session.claudeSessionId ?? '') : '';
-            const tp = probeTranscript({ framework, sessionId, projectDir: '' });
+            // Real projectDir (the agent's session-launch cwd) so the transcript
+            // resolves; '' would encode to an empty dir that never exists →
+            // always-unresolved (the bug that made the reaper's idle-proof never work).
+            // See SessionReaper.probe().
+            const tp = probeTranscript({ framework, sessionId, projectDir: config.projectDir });
             // Tail hash: read the last progressFloorBytes so a heartbeat-byte append
             // (same tail) is NOT counted as a meaningful advance.
             let tailHash: string | null = null;

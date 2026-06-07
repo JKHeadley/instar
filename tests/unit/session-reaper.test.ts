@@ -7,6 +7,10 @@
  */
 
 import { describe, it, expect, vi } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import {
   SessionReaper,
   type SessionReaperDeps,
@@ -363,5 +367,47 @@ describe('SessionReaper — observability', () => {
     expect(snap.sessions[0].verdict).toBe('keep');
     expect(snap.sessions[0].keptBy).toBe('active-process');
     expect(snap.pressure.tier).toBe('critical');
+  });
+});
+
+describe('SessionReaper.probe fallback resolves the transcript via session.projectDir', () => {
+  // The production reaper has NO injected deps.probeTranscript, so it uses the fallback
+  // probe(). That fallback passed projectDir:'' → the transcript path resolved to an
+  // empty-encoded dir that never exists → EVERY session read transcript-unresolved →
+  // the reaper could never prove idle. Fix: pass session.projectDir. (deps.probeTranscript
+  // is set undefined here so the harness exposes the real fallback.)
+  function withHome(home: string, fn: () => void): void {
+    const orig = process.env.HOME;
+    process.env.HOME = home;
+    try { fn(); } finally { if (orig === undefined) delete process.env.HOME; else process.env.HOME = orig; }
+  }
+
+  it('resolves when transcriptProjectDir is wired (the projectDir:"" fix)', () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'reaper-probe-'));
+    withHome(home, () => {
+      const projectDir = '/tmp/proj/x';
+      const encoded = projectDir.replace(/[/.]/g, '-'); // Claude Code's cwd encoding
+      const dir = path.join(home, '.claude', 'projects', encoded);
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, 'c1.jsonl'), '{"t":1}\n');
+      const h = harness({ deps: { probeTranscript: undefined, hasActiveProcesses: () => false, transcriptProjectDir: () => projectDir } });
+      const e = h.reaper.evaluate(mkSession({ claudeSessionId: 'c1' }));
+      // Transcript now RESOLVES (file exists) → it is NOT kept as transcript-unresolved;
+      // with an idle frame it proceeds all the way to reap-eligible.
+      expect(e.keptBy).not.toBe('transcript-unresolved');
+      expect(e.verdict).toBe('reap-eligible');
+    });
+    SafeFsExecutor.safeRmSync(home, { recursive: true, force: true, operation: 'tests/unit/session-reaper.test.ts' });
+  });
+
+  it('stays transcript-unresolved (KEEP) when transcriptProjectDir is absent — the old broken path', () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'reaper-probe-none-'));
+    withHome(home, () => {
+      const h = harness({ deps: { probeTranscript: undefined, hasActiveProcesses: () => false } });
+      const e = h.reaper.evaluate(mkSession({ claudeSessionId: 'no-such-transcript' }));
+      expect(e.verdict).toBe('keep');
+      expect(e.keptBy).toBe('transcript-unresolved');
+    });
+    SafeFsExecutor.safeRmSync(home, { recursive: true, force: true, operation: 'tests/unit/session-reaper.test.ts' });
   });
 });
