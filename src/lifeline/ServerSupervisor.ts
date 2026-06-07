@@ -211,7 +211,18 @@ export class ServerSupervisor extends EventEmitter {
   private restartBackoffMs = 5000;
   private isRunning = false;
   private lastHealthy = 0;
-  private startupGraceMs = 180_000; // 3 minutes grace period — allows time for heavy init (Threadline, tunnel, agent discovery)
+  // 10-minute startup grace. Earned 2026-06-07 (topic 21816): the prior 3-minute
+  // grace was SHORTER than a heavy boot on a loaded box — the server synchronously
+  // loads large memory/state (TopicMemory with tens of thousands of messages,
+  // SemanticMemory) and reconciles dozens of sessions BEFORE it binds /health, so a
+  // full boot can take 5-6 min. With a 3-min grace the supervisor began acting on
+  // health failures mid-boot and restarted the server before it ever finished → an
+  // endless restart-before-boot loop (the "server temporarily down on every message"
+  // incident). 10 min comfortably exceeds a slow boot so a legitimate boot always
+  // completes; a genuinely hung boot is still caught after the grace. Tunable via
+  // startupGraceSeconds. (Deeper fix — bind /health before the heavy load — tracked
+  // separately; this grace makes restarts safe in the meantime.)
+  private startupGraceMs = 600_000;
   private spawnedAt = 0;
   private retryCooldownMs = 5 * 60_000; // 5 minutes cooldown after max retries exhausted
   private maxRetriesExhaustedAt = 0;

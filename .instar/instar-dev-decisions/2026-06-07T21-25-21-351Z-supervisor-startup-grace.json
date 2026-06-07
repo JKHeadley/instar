@@ -1,0 +1,16 @@
+{
+  "ts": "2026-06-07T21:25:21.351Z",
+  "slug": "supervisor-startup-grace",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 13,
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "startupGraceMs has been 180_000 (3min) since the supervisor's startup-grace was introduced. Latent because a fast/unloaded boot finishes well under 3min, so the grace never expired mid-boot. It surfaced 2026-06-07 (topic 21816) when boot work grew large enough on a loaded box — ~18k TopicMemory messages + SemanticMemory load + ~45-session reconcile, all synchronous and all BEFORE the server binds /health — to push a full boot past 3min. The grace then expired mid-boot, the supervisor treated the still-booting server as unresponsive and restarted it, and every subsequent boot hit the same wall: a restart-before-boot loop. No prior PR regressed it; it is the latent mismatch between a fixed grace and a boot cost that scales with memory/session volume. The deeper durable fix (bind /health before the heavy load) is tracked as the top post-mortem item; this grace bump is the proven immediate cure."
+  },
+  "verdict": "pass"
+}
