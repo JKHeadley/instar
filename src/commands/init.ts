@@ -1073,6 +1073,12 @@ async function initStandaloneAgent(agentName: string, options: InitOptions): Pro
     fs.mkdirSync(path.join(claudeDir, 'scripts'), { recursive: true });
     fs.mkdirSync(path.join(claudeDir, 'skills'), { recursive: true });
     fs.writeFileSync(path.join(claudeDir, 'settings.json'), JSON.stringify({
+      // Claude Code retains chat transcripts under ~/.claude/projects for
+      // cleanupPeriodDays (default 30). On a multi-agent fleet, every background
+      // `claude -p` one-shot (sentinels/gates) writes a transcript, so 30 days
+      // accumulates hundreds of thousands of files. 14 days keeps ample --resume
+      // headroom while capping the pile-up. Tunable per-agent in settings.json.
+      cleanupPeriodDays: 14,
       hooks: {
         PreToolUse: [],
         PostToolUse: [],

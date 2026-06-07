@@ -5565,6 +5565,19 @@ Create worktrees for collaborator repos with \`instar worktree create <branch>\`
       patched = true;
     }
 
+    // Cap Claude Code transcript retention. Claude retains chat transcripts under
+    // ~/.claude/projects for `cleanupPeriodDays` (default 30 when unset). On a
+    // multi-agent fleet every background `claude -p` one-shot (sentinels/gates)
+    // writes a transcript, so 30 days accumulates hundreds of thousands of files
+    // (observed: ~322k files / 18 GB on one box). 14 days keeps ample --resume
+    // headroom while capping the pile-up. Set-if-unset only — never overrides an
+    // operator's explicit value (respects a hand-tuned retention).
+    if (settings.cleanupPeriodDays === undefined) {
+      settings.cleanupPeriodDays = 14;
+      patched = true;
+      result.upgraded.push('.claude/settings.json: set cleanupPeriodDays=14 (transcript retention)');
+    }
+
     if (patched) {
       try {
         fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
