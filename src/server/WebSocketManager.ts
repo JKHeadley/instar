@@ -34,11 +34,21 @@ import path from 'node:path';
 import type { SessionManager } from '../core/SessionManager.js';
 import type { StateManager } from '../core/StateManager.js';
 import type { HookEventReceiver } from '../monitoring/HookEventReceiver.js';
+import type { StreamTicketStore } from './StreamTicketStore.js';
+
+/** Pool Dashboard Streaming §2.1: only tmux-safe session names ever reach tmux. */
+const SAFE_SESSION_NAME = /^[A-Za-z0-9_.:@-]+$/;
 
 interface ClientState {
   ws: WebSocket;
   subscriptions: Set<string>;
   isAlive: boolean;
+  /** True when this connection is a PEER machine streaming over /pool-stream
+   *  (not a local browser dashboard on /ws). Peer input is gated by
+   *  poolStreamAllowRemoteInput (default off). */
+  isPeer?: boolean;
+  /** The authenticated peer machine id (from the consumed stream ticket). */
+  peerMachineId?: string;
 }
 
 export class WebSocketManager {
@@ -53,6 +63,12 @@ export class WebSocketManager {
   private authToken?: string;
   private registryPath?: string;
   private hookEventReceiver?: HookEventReceiver;
+  /** Pool Dashboard Streaming (serving side): consumes one-time tickets on the
+   *  /pool-stream upgrade. Absent → /pool-stream is refused (feature dark). */
+  private streamTicketStore?: StreamTicketStore;
+  /** Serving-side gate: may a PEER machine send input/key to a local session?
+   *  Default false (security: keystroke forwarding is a lateral-movement vector). */
+  private poolStreamAllowRemoteInput = false;
 
   constructor(options: {
     server: HttpServer;
@@ -61,11 +77,15 @@ export class WebSocketManager {
     authToken?: string;
     instarDir?: string;
     hookEventReceiver?: HookEventReceiver;
+    streamTicketStore?: StreamTicketStore;
+    poolStreamAllowRemoteInput?: boolean;
   }) {
     this.sessionManager = options.sessionManager;
     this.state = options.state;
     this.authToken = options.authToken;
     this.hookEventReceiver = options.hookEventReceiver;
+    this.streamTicketStore = options.streamTicketStore;
+    this.poolStreamAllowRemoteInput = options.poolStreamAllowRemoteInput ?? false;
     if (options.instarDir) {
       this.registryPath = path.join(options.instarDir, 'topic-session-registry.json');
     }
@@ -76,8 +96,33 @@ export class WebSocketManager {
 
     // Handle upgrade manually for auth
     options.server.on('upgrade', (request, socket, head) => {
-      // Only handle /ws path
       const url = new URL(request.url || '/', `http://${request.headers.host || 'localhost'}`);
+
+      // ── /pool-stream: a PEER machine streaming a remote session (§2.3) ──
+      // Authenticated by a single-use bearer ticket minted over the machine-
+      // authed `pool-stream-ticket` mesh verb; identity comes from the ticket's
+      // mint record, never an unverified upgrade claim.
+      if (url.pathname === '/pool-stream') {
+        if (!this.streamTicketStore) {
+          socket.write('HTTP/1.1 503 Service Unavailable\r\n\r\n');
+          socket.destroy();
+          return;
+        }
+        const ticket = url.searchParams.get('ticket') || (request.headers['x-pool-stream-ticket'] as string) || '';
+        const res = this.streamTicketStore.consume(ticket);
+        if (!res.ok) {
+          socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
+          socket.destroy();
+          return;
+        }
+        const peerMachineId = res.forMachineId;
+        this.wss.handleUpgrade(request, socket, head, (ws) => {
+          this.wss.emit('connection', ws, request, { isPeer: true, peerMachineId });
+        });
+        return;
+      }
+
+      // ── /ws: a local browser dashboard ──
       if (url.pathname !== '/ws') {
         socket.destroy();
         return;
@@ -95,11 +140,12 @@ export class WebSocketManager {
       });
     });
 
-    this.wss.on('connection', (ws) => {
+    this.wss.on('connection', (ws, _request, peerCtx?: { isPeer: boolean; peerMachineId: string }) => {
       const client: ClientState = {
         ws,
         subscriptions: new Set(),
         isAlive: true,
+        ...(peerCtx?.isPeer ? { isPeer: true, peerMachineId: peerCtx.peerMachineId } : {}),
       };
       this.clients.set(ws, client);
 
@@ -176,12 +222,46 @@ export class WebSocketManager {
     return timingSafeEqual(ha, hb);
   }
 
+  /** §2.1: a session name must be tmux-safe before it ever reaches send-keys. */
+  private isValidSessionName(session: string): boolean {
+    return SAFE_SESSION_NAME.test(session);
+  }
+
+  /**
+   * Gate a write (input/key) before it reaches tmux. Returns true if allowed.
+   * On rejection it sends the honest error frame and returns false.
+   *  - invalid name  → invalid-session (§2.1 injection guard);
+   *  - PEER client + remote input disabled → input-not-allowed (§2.3 default-off);
+   *  - session not running locally → session-not-found (never relay to tmux blind).
+   */
+  private gateWrite(client: ClientState, session: string): boolean {
+    if (!this.isValidSessionName(session)) {
+      this.send(client.ws, { type: 'error', code: 'invalid-session', session });
+      return false;
+    }
+    if (client.isPeer && !this.poolStreamAllowRemoteInput) {
+      this.send(client.ws, { type: 'error', code: 'input-not-allowed', session });
+      return false;
+    }
+    const exists = this.sessionManager.listRunningSessions().some((s) => s.tmuxSession === session);
+    if (!exists) {
+      this.send(client.ws, { type: 'error', code: 'session-not-found', session });
+      return false;
+    }
+    return true;
+  }
+
   private handleMessage(client: ClientState, msg: Record<string, unknown>): void {
     switch (msg.type) {
       case 'subscribe': {
         const session = String(msg.session || '');
         if (!session) {
           this.send(client.ws, { type: 'error', message: 'Missing session name' });
+          return;
+        }
+        // §2.1: never let a crafted session name reach tmux (target injection).
+        if (!this.isValidSessionName(session)) {
+          this.send(client.ws, { type: 'error', code: 'invalid-session', session });
           return;
         }
         client.subscriptions.add(session);
@@ -210,6 +290,7 @@ export class WebSocketManager {
           this.send(client.ws, { type: 'error', message: 'Missing session or text' });
           return;
         }
+        if (!this.gateWrite(client, session)) return;
         const success = this.sessionManager.sendInput(session, text);
         this.send(client.ws, { type: 'input_ack', session, success });
         break;
@@ -222,6 +303,7 @@ export class WebSocketManager {
           this.send(client.ws, { type: 'error', message: 'Missing session or key' });
           return;
         }
+        if (!this.gateWrite(client, session)) return;
         const success = this.sessionManager.sendKey(session, key);
         this.send(client.ws, { type: 'input_ack', session, success });
         break;
