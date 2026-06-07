@@ -1,0 +1,23 @@
+{
+    "slug": "reaper-live-activity-idle",
+    "sessionId": "96c61421-860a-48f9-92b4-26328f5640f1",
+    "timestamp": "2026-06-07T17:00:00.000Z",
+    "artifactPath": "upgrades/side-effects/reaper-live-activity-idle.md",
+    "artifactSha256": "b268ea7a3ba745e793c954a58aa690963f2a627a5ade32d934398432b948b2f1",
+    "coveredFiles": [
+        "src/monitoring/frameworkActivitySignals.ts",
+        "src/monitoring/SessionReaper.ts",
+        "tests/unit/session-reaper.test.ts"
+    ],
+    "phase": "complete",
+    "tier": 1,
+    "tierReasoning": "Classifier fix: SessionReaper.isPositivelyIdle used toolCallOrSpinner (matches tool-call names + bare 'claude' that persist in idle scrollback) so every idle session read as working → reaper never reaped. Adds a live-only liveActivity signal (spinner + Working-status + generating) used by isPositivelyIdle, and removes bare 'claude' from the Claude toolCallOrSpinner (documented codex lesson). One-directional: only lets the reaper correctly recognize idle; transcript-growth + confirmObservations + 8h gates downstream backstop any momentary live-marker miss, so it cannot cause a wrong kill. No API/route/state/migration. Reaper opt-in + dry-run-first. Both sides unit-tested (idle-with-scrollback vs live-spinner). No converged spec required for Tier 1.",
+    "eli16Path": "docs/eli16/reaper-live-activity-idle.eli16.md",
+    "sideEffectsPath": "upgrades/side-effects/reaper-live-activity-idle.md",
+    "causalAutopsy": {
+        "origin": "latent",
+        "notes": "isPositivelyIdle has used the scrollback-matching toolCallOrSpinner (incl. bare 'claude' + tool-call names like Read(/Write(/Bash() since it was written — always wrong for 'is it active NOW' because those persist in an idle session's 200-line buffer, but never hit because earlier KEEP-guards (open-commitment, active-process) short-circuited before the positive-idle check ran. The 2026-06-07 #955/#958/#961 chain peeled those layers and #961 made transcripts resolve, so the reaper finally REACHED the positive-idle check and the latent bug surfaced as 0 reaps in 9.5h live / universal no-positive-idle. Grounded on a real idle echo pane: 2 bare 'claude' + 10 scrollback tool-names, 0 live spinner/esc. The bare-'claude' half is the exact analogue of the already-documented+fixed codex bare-word bug. No prior PR regressed it; deepest layer of the same conservatism stack."
+    },
+    "secondPass": "not-required",
+    "reviewerConcurred": null
+}

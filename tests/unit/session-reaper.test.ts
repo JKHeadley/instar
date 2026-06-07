@@ -411,3 +411,37 @@ describe('SessionReaper.probe fallback resolves the transcript via session.proje
     SafeFsExecutor.safeRmSync(home, { recursive: true, force: true, operation: 'tests/unit/session-reaper.test.ts' });
   });
 });
+
+describe('SessionReaper.isPositivelyIdle — live markers vs scrollback (2026-06-07 bug)', () => {
+  // An IDLE Claude pane: its scrollback is full of PAST tool-names + the word
+  // "claude", and the footer shows the ready-prompt — but NO live spinner/esc. This
+  // is the case that mis-read as "working" (toolCallOrSpinner matched the scrollback),
+  // so the reaper never reaped. It MUST now read as positively idle.
+  const IDLE_CLAUDE = [
+    'Read(src/foo.ts)',
+    'Bash(npm test)  ⎿ ok',
+    'claude finished the task; nothing pending.',
+    '✻ Cooked for 7m 8s · 1 shell still running',
+    '❯ ',
+    '⏵⏵ bypass permissions on · 1 shell · ← for agents · ↓ to manage   new task? /clear to save 193.3k tokens',
+  ].join('\n');
+
+  it('idle Claude pane (scrollback tool-names + "claude", no live marker) → positively idle', () => {
+    expect(SessionReaper.isPositivelyIdle('claude-code', IDLE_CLAUDE)).toBe(true);
+  });
+
+  it('working Claude pane (live spinner) → NOT idle', () => {
+    const working = 'Bash(npm test)\n⠹ Crunching the numbers…\nesc to interrupt';
+    expect(SessionReaper.isPositivelyIdle('claude-code', working)).toBe(false);
+  });
+
+  it('working Claude pane (spinner glyph only, no esc) → NOT idle', () => {
+    const spinning = 'Read(x.ts)\nbypass permissions on\n⠼ generating';
+    expect(SessionReaper.isPositivelyIdle('claude-code', spinning)).toBe(false);
+  });
+
+  it('the bare word "claude" alone no longer forces NOT-idle (the removed false match)', () => {
+    // Ready-prompt present, "claude" in scrollback, no live marker → idle.
+    expect(SessionReaper.isPositivelyIdle('claude-code', 'claude\nbypass permissions on\n❯ ')).toBe(true);
+  });
+});

@@ -356,8 +356,13 @@ export class SessionReaper extends EventEmitter {
   static isPositivelyIdle(framework: 'claude-code' | 'codex-cli' | 'gemini-cli' | 'pi-cli' | undefined, frame: string): boolean {
     if (!framework) return false; // unknown framework → cannot positively assert idle
     const sig = getActivitySignal(framework);
-    // Any active marker anywhere in the captured buffer ⇒ not idle.
-    if (sig.toolCallOrSpinner.test(frame) || sig.escapeToInterrupt.test(frame) || sig.runningIndicator.test(frame)) {
+    // Any LIVE-generation marker anywhere in the captured buffer ⇒ not idle. Uses
+    // `liveActivity` (spinner / "Working (Ns" / "generating"), NOT toolCallOrSpinner:
+    // the latter matches tool-call names + the bare framework word that PERSIST in an
+    // idle session's scrollback, which made every idle session read as "working" so
+    // the reaper never reaped (2026-06-07 root cause). The transcript-growth +
+    // confirmObservations gates downstream backstop any momentary live-marker miss.
+    if (sig.liveActivity.test(frame) || sig.escapeToInterrupt.test(frame) || sig.runningIndicator.test(frame)) {
       return false;
     }
     // Positive ready-prompt signatures (conservative; tunable via dry-run).

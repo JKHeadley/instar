@@ -1,0 +1,42 @@
+<!-- bump: patch -->
+<!-- change_type: fix -->
+
+## What Changed
+
+The idle-session reaper checked "is this session working?" with a pattern that matched
+tool-call names (Read(/Write(/Bash() and the bare word "claude" anywhere in the captured
+terminal — but those persist in an IDLE session's scrollback, so every idle Claude
+session read as "working" and the reaper never reaped one (0 reaps in 9.5h live; the
+residual blocker after #961). Fix: `isPositivelyIdle` now uses a new live-only signal
+(`liveActivity`: spinner glyphs + "Working (Ns" + "generating"), which vanish when a turn
+ends), not the scrollback-persistent `toolCallOrSpinner`. Also removed the bare word
+"claude" from the Claude activity pattern (the documented codex "do not match bare
+'codex'" lesson).
+
+## What to Tell Your User
+
+Nothing required — internal reaper classifier; reaper stays opt-in. For operators who
+enable it: the reaper can now correctly recognize a genuinely-idle session and reclaim it
+(it previously could not). The change also makes the silence/presence sentinels stop
+mis-reading idle Claude sessions as "working".
+
+## Summary of New Capabilities
+
+- `FrameworkActivitySignal.liveActivity` — live-generation-only markers per framework, so
+  callers that need "working RIGHT NOW" don't trip over scrollback history.
+- `SessionReaper.isPositivelyIdle` uses `liveActivity`; bare "claude" removed from the
+  Claude `toolCallOrSpinner`.
+
+## Scope (honest)
+
+Final functional fix in the chain (#952 → #955 → #958 → #961 → this): the reaper can now
+tell idle from working and actually reclaim. Validated by dry-run before any live flip.
+Does NOT address the transcript pile-up (151k files / 5.9 GB) — separate retention
+follow-up.
+
+## Evidence
+
+`tests/unit/session-reaper.test.ts`: idle Claude pane (scrollback tool-names + "claude",
+no live marker) → positively idle; working pane (spinner / spinner+esc) → not idle; bare
+"claude" alone no longer forces not-idle. 57/57 green. `tsc --noEmit` clean. causalAutopsy:
+latent (exposed by the #955/#958/#961 chain reaching the positive-idle check).
