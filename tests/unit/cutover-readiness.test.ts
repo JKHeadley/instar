@@ -149,6 +149,56 @@ describe('CutoverReadiness (spec §7 G2.4)', () => {
     }
   });
 
+  // ── single-flight lock max-hold (#948 regression) ──
+
+  it('runParityPass: a live fetch that NEVER settles hits the max-hold, returns ok:false, and RELEASES the lock so a later pass proceeds (#948)', async () => {
+    feedCleanWindow();
+    const fed = monitor.passes.length; // 3
+    let call = 0;
+    const r = new CutoverReadiness({
+      parityMonitor: monitor,
+      integrityReportPath: path.join(dir, 'integrity-report.json'),
+      // First trigger: a fetch that never settles (the #948 stall — an AbortSignal
+      // that didn't fire, or a compare with no timeout). Later: a normal clean check.
+      runParityCheck: () => (++call === 1 ? new Promise<ParityResult>(() => {}) : Promise.resolve(CLEAN)),
+      maxLiveFetchMs: 40,
+      now: () => nowMs,
+    });
+    const stuck = await r.runParityPass();
+    expect(stuck.ok).toBe(false);
+    if (!stuck.ok) expect(stuck.reason).toMatch(/max-hold budget|#948/);
+    expect(monitor.passes.length).toBe(fed); // the stalled pass recorded NOTHING
+
+    // THE FIX: the lock is released, so the next pass is NOT refused with
+    // "already in flight" (pre-fix it was stuck for ~85 minutes) — it runs.
+    const after = await r.runParityPass();
+    expect(after.ok).toBe(true);
+    expect(monitor.passes.length).toBe(fed + 1); // the recovered pass actually recorded
+  });
+
+  it('runImportDryRunPass: a live fetch that NEVER settles hits the max-hold and releases the lock (#948)', async () => {
+    let call = 0;
+    const r = new CutoverReadiness({
+      parityMonitor: monitor,
+      integrityReportPath: path.join(dir, 'integrity-report.json'),
+      runParityCheck: null,
+      importDryRunReportPath: path.join(dir, 'import-dryrun.json'),
+      runImportDryRun: ((): Promise<typeof PASSED_RUN> =>
+        (++call === 1 ? new Promise<typeof PASSED_RUN>(() => {}) : Promise.resolve(PASSED_RUN))),
+      maxLiveFetchMs: 40,
+      now: () => nowMs,
+    });
+    const stuck = await r.runImportDryRunPass();
+    expect(stuck.ok).toBe(false);
+    if (!stuck.ok) expect(stuck.reason).toMatch(/max-hold budget|#948/);
+    expect(fs.existsSync(path.join(dir, 'import-dryrun.json'))).toBe(false); // nothing recorded
+
+    // Lock released → the next dry-run proceeds (not refused as in-flight).
+    const after = await r.runImportDryRunPass();
+    expect(after.ok).toBe(true);
+    expect(fs.existsSync(path.join(dir, 'import-dryrun.json'))).toBe(true);
+  });
+
   // ── the composed signal + the door ──
 
   it('ready ONLY when integrity passed AND parity cleared AND fresh; door is machine-readably manual', () => {

@@ -1,0 +1,18 @@
+## What Changed
+
+Fixed a liveness bug in the cutover-readiness checker (#948): `CutoverReadiness`'s single-flight lock over the live source fetch (used by both the parity pass and the import dry-run) could be held **indefinitely** if the injected fetch never settled. In production the lock stuck for ~85 minutes (`logs/server.log`), so every subsequent parity pass and dry-run was refused with "live source fetch already in flight" — the parity-pass feeder kept no-opping and the cutover parity window went stale and never refreshed.
+
+`src/feedback-factory/cutoverReadiness.ts` now wraps the awaited live fetch in a wall-clock **max-hold guard** (`withMaxHold`, new optional `maxLiveFetchMs` dep, default 12 minutes) at the lock boundary. The lock is released in a `finally`, but a `finally` can't run while the awaited promise never settles — so the guard races the fetch against a timer and guarantees the lock releases within a bounded time regardless of *why* the fetch stalled (an `AbortSignal.timeout` that didn't fire on a stalled socket, or the un-timed compare step). The default sits comfortably above `HttpParitySource`'s 600s total budget, so it only fires when that inner budget has genuinely failed — never on a slow-but-working pass.
+
+## Evidence
+
+Before: a single stalled live fetch held the single-flight lock until the next server restart (~85 min observed), starving the parity feeder. After: the lock releases within `maxLiveFetchMs` and the next sweep retries. Pinned by a Tier-1 regression (`tests/unit/cutover-readiness.test.ts`): a `runParityCheck` (and `runImportDryRun`) that never settles now returns `ok:false` AND a subsequent pass on the same instance is NOT refused as in-flight — it runs and records normally. 22 cutover-readiness unit tests green (2 new + 20 existing through the new path); `tsc --noEmit` clean.
+
+## What to Tell Your User
+
+If you were ever told the feedback-migration "cutover readiness" check was stuck or its parity window had gone stale, this fixes the underlying cause: a single slow/hung check could jam the checker until the next restart. Now a check that takes too long is abandoned cleanly and the next one runs on schedule. It ships on by default with a safe 12-minute backstop and needs no configuration.
+
+## Summary of New Capabilities
+
+- A wall-clock max-hold backstop on the cutover-readiness live-fetch single-flight lock — a stalled parity pass or import dry-run can no longer hang the checker indefinitely.
+- New optional `maxLiveFetchMs` knob (default 12m); the default IS the fix, so existing agents get it automatically on update with no config change.
