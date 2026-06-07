@@ -168,6 +168,7 @@ export class InboundMessageGate {
     if (messageId && this.seenMessageIds.has(messageId)) {
       this.metrics.blocked++;
       this.metrics.blockedByReplay++;
+      this.logBlock('replay_detected', fingerprint);
       return { action: 'block', reason: 'replay_detected', fingerprint };
     }
 
@@ -176,6 +177,7 @@ export class InboundMessageGate {
     if (payloadSize > this.maxPayloadBytes) {
       this.metrics.blocked++;
       this.metrics.blockedBySize++;
+      this.logBlock('payload_too_large', fingerprint, `bytes=${payloadSize}`);
       return { action: 'block', reason: 'payload_too_large', fingerprint };
     }
 
@@ -187,11 +189,20 @@ export class InboundMessageGate {
     const trust = this.trustManager.getTrustLevelByFingerprint(fingerprint);
     const limits = this.getRateLimits(trust);
 
+    // Observability: every inbound evaluation is logged with the RESOLVED trust
+    // level + operation. A silently-blocked inbound (e.g. a trusted peer whose
+    // fingerprint representation does not match its trust-profile key → resolves
+    // 'untrusted' → insufficient_trust) is exactly how an A2A leg can go dark for
+    // days unnoticed. Making the gate's verdict visible is the structural fix for
+    // "comms must never die silently".
+    console.log(`[inbound-gate] eval from=${fingerprint.slice(0, 12)} trust=${trust} op=${opType}${isProbe ? ' (probe)' : ''}`);
+
     // 3. Handle probes (don't require 'message' permission)
     if (isProbe) {
       if (this.rateLimiter.isProbeRateLimited(fingerprint, limits.probesPerHour)) {
         this.metrics.blocked++;
         this.metrics.blockedByRate++;
+        this.logBlock('probe_rate_limited', fingerprint, `trust=${trust}`);
         return { action: 'block', reason: 'probe_rate_limited', fingerprint };
       }
       this.metrics.probesHandled++;
@@ -204,6 +215,7 @@ export class InboundMessageGate {
     if (!allowedOps.includes(opType)) {
       this.metrics.blocked++;
       this.metrics.blockedByTrust++;
+      this.logBlock('insufficient_trust', fingerprint, `trust=${trust} op=${opType} allowed=[${allowedOps.join(',')}]`);
       return { action: 'block', reason: 'insufficient_trust', fingerprint };
     }
 
@@ -211,11 +223,13 @@ export class InboundMessageGate {
     if (this.rateLimiter.isMessageHourLimited(fingerprint, limits.messagesPerHour)) {
       this.metrics.blocked++;
       this.metrics.blockedByRate++;
+      this.logBlock('rate_limited_hourly', fingerprint, `trust=${trust} limit=${limits.messagesPerHour}`);
       return { action: 'block', reason: 'rate_limited_hourly', fingerprint };
     }
     if (this.rateLimiter.isMessageDayLimited(fingerprint, limits.messagesPerDay)) {
       this.metrics.blocked++;
       this.metrics.blockedByRate++;
+      this.logBlock('rate_limited_daily', fingerprint, `trust=${trust} limit=${limits.messagesPerDay}`);
       return { action: 'block', reason: 'rate_limited_daily', fingerprint };
     }
 
@@ -229,7 +243,18 @@ export class InboundMessageGate {
 
     // 8. Pass to ThreadlineRouter -> AutonomyGate handles delivery mode
     this.metrics.passed++;
+    console.log(`[inbound-gate] PASS from=${fingerprint.slice(0, 12)} trust=${trust} op=${opType}`);
     return { action: 'pass', message, trustLevel: trust };
+  }
+
+  /**
+   * Log a block decision to server.log. A blocked inbound is otherwise silent
+   * (the decision lives only in the returned GateDecision + in-memory metric
+   * counters), which is precisely how an Echo↔peer A2A leg can go dark for days
+   * with no trace. The fingerprint is truncated; no payload content is logged.
+   */
+  private logBlock(reason: string, fingerprint: string, extra?: string): void {
+    console.log(`[inbound-gate] BLOCK ${reason} from=${fingerprint.slice(0, 12)}${extra ? ` ${extra}` : ''}`);
   }
 
   /**
