@@ -256,6 +256,7 @@ export class AgentServer {
     coherenceMonitor?: import('../monitoring/CoherenceMonitor.js').CoherenceMonitor;
     commitmentTracker?: import('../monitoring/CommitmentTracker.js').CommitmentTracker;
     subscriptionPool?: import('../core/SubscriptionPool.js').SubscriptionPool;
+    quotaPoller?: import('../core/QuotaPoller.js').QuotaPoller;
     semanticMemory?: import('../memory/SemanticMemory.js').SemanticMemory;
     activitySentinel?: import('../monitoring/SessionActivitySentinel.js').SessionActivitySentinel;
     rateLimitSentinel?: import('../monitoring/RateLimitSentinel.js').RateLimitSentinel;
@@ -1313,6 +1314,7 @@ export class AgentServer {
       coherenceMonitor: options.coherenceMonitor ?? null,
       commitmentTracker: options.commitmentTracker ?? null,
       subscriptionPool: options.subscriptionPool ?? null,
+      quotaPoller: options.quotaPoller ?? null,
       semanticMemory: options.semanticMemory ?? null,
       activitySentinel: options.activitySentinel ?? null,
       rateLimitSentinel: options.rateLimitSentinel ?? null,

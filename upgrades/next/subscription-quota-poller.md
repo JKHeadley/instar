@@ -1,0 +1,56 @@
+# Subscription quota poller (P1.2)
+
+<!-- bump: minor -->
+
+## What Changed
+
+Added `QuotaPoller` — the second piece of the Subscription & Auth Standard, built
+on the P1.1 account registry. For each enrolled Claude account it reads live
+usage (5-hour and weekly utilization, reset dates, per-model breakdown, and
+extra-usage credit state) and writes that snapshot onto the account in the
+registry. It also computes a MEASURED burn rate (utilization points per hour from
+consecutive reads) rather than relying on call counts, which the auto-swap
+scheduler (P1.3) will use to drain each account before its reset and switch
+before a limit.
+
+Read mechanism (operator decision C, hybrid): the poller resolves each account's
+login token transiently from that account's own config home — never persisted,
+never logged — and calls the read-only Anthropic usage endpoint (the same one
+the official client's usage screen calls) at low frequency, stamping each
+snapshot with its source. A hands-on finding shaped this: Claude Code does not
+persist usage to disk or expose a non-interactive usage command, so the "have the
+client report its own usage" primary we sketched does not exist; the endpoint
+read is the only viable mechanism and it stays inside the subscription-only,
+official-login-reused bounds. An authentication failure flags the account for
+re-login; a later clean read clears the flag.
+
+Two new routes under the existing subscription-pool surface: an on-demand poll
+trigger and a per-account quota+burn-rate read. The background poll loop runs
+only when at least one account is enrolled, so single-account agents and agents
+with an empty pool are completely unaffected. Coverage: 16 tests across all three
+tiers, fully hermetic (injected fetch and token resolver — zero credentials, zero
+network), including the feature-alive check that the poll route answers in both
+the dark and live states.
+
+## What to Tell Your User
+
+I can now read how much of each of your subscription accounts you've used — the
+5-hour and weekly windows, when they reset, and how fast each one is burning down
+— and I keep that fresh in the background. I never store your actual login
+secrets to do it; I read them just for the moment of the check and let them go.
+Nothing switches accounts yet — that's the next piece. This is still switched off
+until you enrol accounts, and it only ever reads, never changes anything.
+
+## Summary of New Capabilities
+
+- **Per-account live quota** — for each enrolled Claude account: 5-hour and weekly
+  utilization, reset dates, per-model breakdown, extra-usage credits. Stored on
+  the account and refreshed on a low-frequency background loop (only when accounts
+  exist) plus an on-demand poll.
+- **Measured burn rate** — utilization points per hour from consecutive reads, so
+  the upcoming scheduler decides on real burn, not call volume.
+- **Re-auth detection** — an account whose usage read returns an auth error is
+  flagged for re-login, and a later clean read clears it automatically.
+- **Read-only + dark + transient tokens** — observe-only (no behavior change),
+  inactive until accounts are enrolled, and login tokens are read transiently and
+  never persisted or logged.

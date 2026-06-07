@@ -585,6 +585,8 @@ export interface RouteContext {
   /** SubscriptionPool (multi-account subscription registry, P1.1 of the
    *  Subscription & Auth Standard). Null until an operator opts in / enrolls. */
   subscriptionPool: import('../core/SubscriptionPool.js').SubscriptionPool | null;
+  /** QuotaPoller (P1.2) — per-account live quota reader. Null until wired. */
+  quotaPoller: import('../core/QuotaPoller.js').QuotaPoller | null;
   semanticMemory: SemanticMemory | null;
   activitySentinel: SessionActivitySentinel | null;
   rateLimitSentinel: import('../monitoring/RateLimitSentinel.js').RateLimitSentinel | null;
@@ -15734,6 +15736,44 @@ export function createRoutes(ctx: RouteContext): Router {
       return;
     }
     res.json({ removed: true, id: req.params.id });
+  });
+
+  // ── Subscription quota (P1.2 — QuotaPoller, decision C hybrid read) ──
+  // On-demand poll of every claude-code/anthropic account: reads each account's
+  // live usage (transient per-account token, never persisted) and writes the
+  // snapshot into the pool. The persisted snapshots are then visible on the
+  // normal GET /subscription-pool. { enabled:false } when the poller is unwired
+  // (200, never 503).
+
+  router.post('/subscription-pool/poll', async (_req, res) => {
+    if (!ctx.quotaPoller) {
+      res.json({ enabled: false, polled: 0, failed: 0 });
+      return;
+    }
+    try {
+      const result = await ctx.quotaPoller.pollAll();
+      res.json({ enabled: true, ...result });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : 'poll failed' });
+    }
+  });
+
+  router.get('/subscription-pool/:id/quota', (req, res) => {
+    if (!ctx.subscriptionPool) {
+      res.status(404).json({ error: 'SubscriptionPool not configured' });
+      return;
+    }
+    const account = ctx.subscriptionPool.get(req.params.id);
+    if (!account) {
+      res.status(404).json({ error: `account ${req.params.id} not found` });
+      return;
+    }
+    const burnRate = ctx.quotaPoller ? ctx.quotaPoller.burnRate(req.params.id) : null;
+    res.json({
+      accountId: account.id,
+      snapshot: account.lastQuota ?? null,
+      burnRate,
+    });
   });
 
   // ── Episodic Memory (Activity Sentinel) ──────────────────────────

@@ -53,6 +53,12 @@ const ALLOWLIST = new Set([
   'src/providers/adapters/anthropic-headless/errors.ts',
   'src/providers/adapters/anthropic-headless/_smoketest.ts',
   'src/providers/adapters/anthropic-headless/capability/fileSystemAccess.ts',
+  // Subscription & Auth Standard P1.2: QuotaPoller calls the READ-ONLY
+  // /api/oauth/usage telemetry endpoint (the same one the official client's
+  // /usage screen calls) to read per-account quota — NOT an LLM inference call,
+  // so there is nothing for burn-detection to attribute. Same class as the
+  // anthropic-headless usageMeterProvider above.
+  'src/core/QuotaPoller.ts',
 ]);
 
 /**
