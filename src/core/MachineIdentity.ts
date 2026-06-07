@@ -347,6 +347,21 @@ export class MachineIdentityManager {
     // re-register), else auto-assign a friendly, collision-free one derived from
     // the machine's own properties. Collision set = every OTHER machine's nickname.
     const existing = registry.machines[identity.machineId];
+
+    // Sticky revocation (2026-06-07 Mac Mini resurrection, topic 21816): a revoked
+    // machine must NOT be silently brought back to 'active' by a re-register
+    // (re-join / re-pair / post-update self-registration). The merge path already
+    // keeps revocation sticky (mergeRegistry.mergeEntry); this is the OTHER door —
+    // a direct re-register would clobber `status` to 'active' via the spread below.
+    // Staying revoked across updates is the requirement; the only path back to
+    // active is an explicit un-revoke. Refuse loudly and leave the entry untouched.
+    if (existing && (existing.status === 'revoked' || existing.revokedAt)) {
+      console.warn(
+        `[MachineIdentity] Refusing to re-register revoked machine ${identity.machineId} `
+        + `(${identity.name}) as active — it stays revoked across updates. Un-revoke explicitly to restore.`,
+      );
+      return;
+    }
     const existingNicknames = Object.entries(registry.machines)
       .filter(([id]) => id !== identity.machineId)
       .map(([, e]) => e.nickname)

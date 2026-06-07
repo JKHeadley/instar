@@ -464,6 +464,48 @@ describe('MachineIdentityManager', () => {
     });
   });
 
+  describe('registerMachine — sticky revocation (no resurrection across updates)', () => {
+    // 2026-06-07 (topic 21816): a revoked Mac Mini peer came back "active" after
+    // an update because a re-register clobbered status to 'active' via the spread.
+    // A revoked machine must STAY revoked across updates; only an explicit
+    // un-revoke restores it. (mergeRegistry already keeps the merge path sticky;
+    // this guards the direct re-register door.)
+    function peerIdentity(machineId: string, name: string): any {
+      return {
+        machineId,
+        name,
+        platform: 'darwin',
+        signingPublicKey: 'pk',
+        encryptionPublicKey: 'ek',
+        createdAt: new Date().toISOString(),
+        capabilities: ['relay'],
+      };
+    }
+    const MINI = 'm_' + '1'.repeat(32);
+    const FRESH = 'm_' + '2'.repeat(32);
+
+    it('refuses to re-register a revoked machine as active', async () => {
+      await manager.generateIdentity(); // self (awake)
+      manager.registerMachine(peerIdentity(MINI, 'mac-mini'), 'standby');
+      manager.revokeMachine(MINI, 'm_operator', 'stale peer');
+
+      // A post-update re-join attempts to register the same machine again.
+      manager.registerMachine(peerIdentity(MINI, 'mac-mini'), 'standby');
+
+      const entry = manager.loadRegistry().machines[MINI];
+      expect(entry.status).toBe('revoked');   // still revoked — NOT resurrected
+      expect(entry.role).toBe('standby');
+      expect(entry.revokedAt).toBeTruthy();    // revocation metadata preserved
+      expect(entry.revokedBy).toBe('m_operator');
+    });
+
+    it('still registers a brand-new (never-revoked) machine normally', async () => {
+      await manager.generateIdentity();
+      manager.registerMachine(peerIdentity(FRESH, 'fresh-box'), 'standby');
+      expect(manager.loadRegistry().machines[FRESH].status).toBe('active');
+    });
+  });
+
   describe('ensureSelfRegistered', () => {
     it('self-registers when machine missing from registry (registry wiped scenario)', async () => {
       // Generate identity (this also registers it once), then simulate a wiped registry
