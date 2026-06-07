@@ -113,7 +113,9 @@ describe('SessionReaper — protect-gates each force KEEP', () => {
     ['active subagent', { activeSubagentCount: () => 1 }, 'active-subagent'],
     ['build/autonomous', { buildOrAutonomousActive: () => true }, 'structural-long-work'],
     ['recent user msg', { topicBinding: () => 42, recentUserMessage: () => true }, 'recent-user-message'],
-    ['open commitment', { topicBinding: () => 42, activeCommitmentForTopic: () => true }, 'open-commitment'],
+    // Open commitment keeps only while a message is within the staleness window (24h)
+    // but outside the 30min recent-user window — a window-aware mock distinguishes them.
+    ['open commitment', { topicBinding: () => 42, activeCommitmentForTopic: () => true, recentUserMessage: (_t, withinMs) => withinMs >= 24 * 60 * 60_000 }, 'open-commitment'],
   ];
   for (const [name, deps, expectedGate] of cases) {
     it(`KEEPs on ${name}`, () => {

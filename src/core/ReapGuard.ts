@@ -61,12 +61,23 @@ export interface ReapGuardOptions {
   recentUserWindowMs: number;
   /** Whether an open commitment on the bound topic blocks reaping. */
   protectOpenCommitments: boolean;
+  /**
+   * Staleness horizon for the open-commitment veto. An open commitment protects a
+   * session ONLY while there has been a user message within this window; past it
+   * the commitment is treated as abandoned and no longer blocks reaping. A
+   * commitment left open for days on a session the user hasn't touched is itself
+   * stale — without this bound it pins the dead session forever (the dominant
+   * keep-reason behind un-reaped idle sessions). Set to `Infinity` to restore the
+   * always-protect behavior. Must be ≥ `recentUserWindowMs`.
+   */
+  staleCommitmentWindowMs: number;
 }
 
 export const DEFAULT_REAP_GUARD_OPTIONS: ReapGuardOptions = {
   minAgeMs: 30 * 60_000,
   recentUserWindowMs: 30 * 60_000,
   protectOpenCommitments: true,
+  staleCommitmentWindowMs: 24 * 60 * 60_000, // 24h — "no user message today ⇒ commitment is stale"
 };
 
 export class ReapGuard {
@@ -125,9 +136,19 @@ export class ReapGuard {
     if (topicId != null && this.deps.recentUserMessage(topicId, this.opts.recentUserWindowMs)) {
       return keep('recent-user-message');
     }
-    // J. Open commitment on the bound topic.
+    // J. Open commitment on the bound topic — but only while still recently active.
+    //    Guard I above already kept on a message within `recentUserWindowMs`; this
+    //    widens the commitment veto to the longer `staleCommitmentWindowMs` horizon.
+    //    Past that horizon (no user message — Justin's "no message today" rule) the
+    //    commitment is abandoned and must NOT pin the dead session, so we fall
+    //    through to the activeness guards below. (2026-06-06 grounding: open-commitment
+    //    was the dominant keep-reason — 19/26 sessions, many 26h-idle — that blocked
+    //    all idle-session reaping.)
     if (this.opts.protectOpenCommitments && topicId != null && this.deps.activeCommitmentForTopic(topicId)) {
-      return keep('open-commitment');
+      if (this.deps.recentUserMessage(topicId, this.opts.staleCommitmentWindowMs)) {
+        return keep('open-commitment');
+      }
+      // else: stale commitment — do not veto; continue to activeness guards.
     }
     // K. Active subagent spawned by this session.
     if (this.deps.activeSubagentCount(session.claudeSessionId) > 0) return keep('active-subagent');

@@ -44,6 +44,9 @@ export interface SessionReaperConfig {
   maxReapsPerHour: number;
   finalGraceSec: number;
   protectOpenCommitments: boolean;
+  /** Staleness horizon (minutes) for the open-commitment veto; past it a commitment
+   *  no longer pins an inactive session. Default 1440 (24h) = "no message today". */
+  staleCommitmentWindowMinutes: number;
   /** CPU pressure: 1-min load ÷ cores at/above which pressure is `moderate`.
    *  The overall tier is the WORST of the memory tier and this CPU tier, so a
    *  CPU-bound box raises pressure even when free memory is fine. */
@@ -109,6 +112,7 @@ export const DEFAULT_SESSION_REAPER_CONFIG: SessionReaperConfig = {
   maxReapsPerHour: 12,
   finalGraceSec: 60,
   protectOpenCommitments: true,
+  staleCommitmentWindowMinutes: 1440, // 24h
   cpuModerateLoadPerCore: 1.0,
   cpuCriticalLoadPerCore: 1.5,
   cpuAwareActiveProcessKeep: false,
@@ -291,6 +295,7 @@ export class SessionReaper extends EventEmitter {
       minAgeMs: this.cfg.minAgeMinutes * 60_000,
       recentUserWindowMs: this.cfg.recentUserWindowMinutes * 60_000,
       protectOpenCommitments: this.cfg.protectOpenCommitments,
+      staleCommitmentWindowMs: this.cfg.staleCommitmentWindowMinutes * 60_000,
     });
   }
 
