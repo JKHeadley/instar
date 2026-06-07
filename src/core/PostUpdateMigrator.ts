@@ -5156,6 +5156,22 @@ Create worktrees for collaborator repos with \`instar worktree create <branch>\`
     } catch (err) {
       result.errors.push(`emit-session-clock.sh: ${err instanceof Error ? err.message : String(err)}`);
     }
+
+    // Fleet git maintenance helpers — always overwrite. These are shipped
+    // infrastructure templates used by the built-in git-maintenance AgentMD
+    // job. Audit mode is the default; explicit apply only removes safe ignored
+    // generated paths from the git index, never from disk.
+    for (const filename of ['git-hygiene-classify.mjs', 'git-maintenance.mjs']) {
+      try {
+        const content = this.loadRelayTemplate(filename);
+        if (content) {
+          fs.writeFileSync(path.join(instarScriptsDir, filename), content, { mode: 0o755 });
+          result.upgraded.push(`scripts/${filename} (git hygiene maintenance)`);
+        }
+      } catch (err) {
+        result.errors.push(`${filename}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
   }
 
   /**

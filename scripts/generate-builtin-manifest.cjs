@@ -333,6 +333,7 @@ function scanTemplates() {
   const templateDirs = [
     { dir: 'src/templates/hooks', type: 'template', domain: 'safety' },
     { dir: 'src/templates/scripts', type: 'template', domain: 'operations' },
+    { dir: 'src/scaffold/templates/jobs/instar', type: 'job-template', domain: 'scheduling' },
     { dir: 'playbook-scripts', type: 'playbook-script', domain: 'context' },
   ];
 

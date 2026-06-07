@@ -430,6 +430,8 @@ async function initFreshProject(projectName: string, options: InitOptions): Prom
   console.log(`  ${pc.green('✓')} Created .instar/scripts/secret-get.mjs`);
   installEmitSessionClock(projectDir);
   console.log(`  ${pc.green('✓')} Created .instar/scripts/emit-session-clock.sh`);
+  installGitMaintenanceScripts(projectDir);
+  console.log(`  ${pc.green('✓')} Created .instar/scripts/git-maintenance.mjs + git-hygiene-classify.mjs`);
 
   // Create .claude/skills/ directory and install built-in skills (gated)
   if (claudeEnabled) {
@@ -818,6 +820,8 @@ async function initExistingProject(options: InitOptions): Promise<void> {
   console.log(pc.green('  Created:') + ' .instar/scripts/secret-drop-retrieve.mjs');
   installSecretGet(projectDir);
   console.log(pc.green('  Created:') + ' .instar/scripts/secret-get.mjs');
+  installGitMaintenanceScripts(projectDir);
+  console.log(pc.green('  Created:') + ' .instar/scripts/git-maintenance.mjs + git-hygiene-classify.mjs');
 
   // Create .claude/skills/ directory and install built-in skills (gated)
   if (claudeEnabled) {
@@ -3807,6 +3811,7 @@ function refreshScripts(projectDir: string, stateDir: string): void {
   // framework-neutral).
   installSerendipityCapture(projectDir);
   installSecretDropRetrieve(projectDir);
+  installGitMaintenanceScripts(projectDir);
 }
 
 /**
@@ -4773,6 +4778,30 @@ function installEmitSessionClock(projectDir: string): void {
     return;
   }
   fs.writeFileSync(scriptPath, scriptContent, { mode: 0o755 });
+}
+
+function installGitMaintenanceScripts(projectDir: string): void {
+  const scriptsDir = path.join(projectDir, '.instar', 'scripts');
+  fs.mkdirSync(scriptsDir, { recursive: true });
+
+  for (const filename of ['git-hygiene-classify.mjs', 'git-maintenance.mjs']) {
+    const scriptContent = loadScriptTemplate(filename);
+    fs.writeFileSync(path.join(scriptsDir, filename), scriptContent, { mode: 0o755 });
+  }
+}
+
+function loadScriptTemplate(filename: string): string {
+  const modDir = __dirname;
+  const candidates = [
+    path.resolve(modDir, '..', 'templates', 'scripts', filename),
+    path.resolve(modDir, '..', '..', 'src', 'templates', 'scripts', filename),
+  ];
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) {
+      return fs.readFileSync(candidate, 'utf-8');
+    }
+  }
+  throw new Error(`Template not found: ${filename}`);
 }
 
 function installClaudeSettings(projectDir: string, serverPort?: number): void {

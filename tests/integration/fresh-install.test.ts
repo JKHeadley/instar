@@ -228,6 +228,37 @@ describe('Fresh install: instar init <project-name>', () => {
     expect(content).toContain('EXPERIENTIAL'); // experiential fabrication check present
   });
 
+  it('installs git maintenance scripts in .instar/scripts/', () => {
+    for (const filename of ['git-hygiene-classify.mjs', 'git-maintenance.mjs']) {
+      const scriptPath = path.join(projectDir, '.instar', 'scripts', filename);
+      expect(fs.existsSync(scriptPath)).toBe(true);
+
+      const stats = fs.statSync(scriptPath);
+      expect(stats.mode & 0o111).toBeGreaterThan(0);
+    }
+
+    const maintenance = fs.readFileSync(path.join(projectDir, '.instar', 'scripts', 'git-maintenance.mjs'), 'utf-8');
+    expect(maintenance).toContain('git-hygiene-classify.mjs');
+    expect(maintenance).toContain('--apply');
+  });
+
+  it('installs the built-in git-maintenance AgentMD job', () => {
+    const bodyPath = path.join(projectDir, '.instar', 'jobs', 'instar', 'git-maintenance.md');
+    const manifestPath = path.join(projectDir, '.instar', 'jobs', 'schedule', 'git-maintenance.json');
+
+    expect(fs.existsSync(bodyPath)).toBe(true);
+    expect(fs.existsSync(manifestPath)).toBe(true);
+
+    const body = fs.readFileSync(bodyPath, 'utf-8');
+    expect(body).toContain('.instar/scripts/git-maintenance.mjs --no-fail');
+
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
+    expect(manifest.slug).toBe('git-maintenance');
+    expect(manifest.origin).toBe('instar');
+    expect(manifest.execute.type).toBe('agentmd');
+    expect(manifest.enabled).toBe(true);
+  });
+
   it('grounding-before-messaging.sh calls convergence check', () => {
     const hookPath = path.join(projectDir, '.instar', 'hooks', 'instar', 'grounding-before-messaging.sh');
     const content = fs.readFileSync(hookPath, 'utf-8');
