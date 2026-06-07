@@ -91,7 +91,14 @@ export function buildPassport(input: PassportInput): AgentPassport {
  * capability-scope (if scoped, the action must be in scope) → ok.
  */
 export function permits(passport: AgentPassport, action: string): PermitVerdict {
-  for (const f of passport.forbiddenActions) {
+  // A passport supplied by a PEER may be partial/malformed — its whole purpose is
+  // that another agent reads it. Default the array fields so a missing field yields
+  // a verdict, never a crash (was: HTTP 500 "Cannot read properties of undefined
+  // (reading 'length')" when allowedCapabilities was omitted; forbiddenActions was
+  // likewise unguarded → "not iterable"). See exo3-harness passport-verify-robustness.
+  const forbiddenActions = passport.forbiddenActions ?? [];
+  const allowedCapabilities = passport.allowedCapabilities ?? [];
+  for (const f of forbiddenActions) {
     if (overlap(action, f) >= MATCH) {
       return { permitted: false, basis: 'forbidden-action', reason: `Forbidden by the passport: "${f}".`, matched: f };
     }
@@ -99,8 +106,8 @@ export function permits(passport: AgentPassport, action: string): PermitVerdict 
   if (passport.trustLevel === 'untrusted' && isActing(action)) {
     return { permitted: false, basis: 'trust-floor', reason: 'Untrusted passport may observe but not act.' };
   }
-  if (passport.allowedCapabilities.length > 0) {
-    const inScope = passport.allowedCapabilities.some((c) => overlap(action, c) >= MATCH);
+  if (allowedCapabilities.length > 0) {
+    const inScope = allowedCapabilities.some((c) => overlap(action, c) >= MATCH);
     if (!inScope) {
       return { permitted: false, basis: 'out-of-scope', reason: 'Action is outside the passport\'s allowed capabilities.' };
     }

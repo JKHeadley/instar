@@ -1,0 +1,32 @@
+---
+change_type: fix
+audience: agent-only
+maturity: stable
+---
+<!-- bump: patch -->
+
+## What Changed
+
+Three latent bugs in EXO 3.0 capabilities, surfaced by a new from-every-angle test harness, are fixed — each with a regression test:
+
+- Agent-passport verification no longer returns a 500 when a peer's passport omits a field. `permits()` defaults `forbiddenActions`/`allowedCapabilities` to `[]`, so a partial peer card yields a verdict instead of throwing "Cannot read properties of undefined (reading 'length')".
+- The org-intent Tradeoff Hierarchy parser now accepts the documented single-line `Safety > Operator trust > ...` chained form, not only bullet lists. The resolver previously saw an empty hierarchy and reported "no tradeoff hierarchy defined".
+- The learning-velocity metric now reads its three real event sources — the registered-learnings registry under `state/evolution/` (timestamp at `source.discoveredAt`), the `action-queue.json` evolution actions, and the SQLite correction ledger — instead of three paths the agent never writes. It previously always reported zero events.
+
+## Evidence
+
+Before: `POST /passport/verify` with a passport missing `allowedCapabilities` returned HTTP 500 "Cannot read properties of undefined (reading 'length')". `POST /intent/tradeoff-resolve` returned "no tradeoff hierarchy defined" even though the hierarchy was present in the org-intent file. `GET /metrics/learning-velocity` returned `totalEvents: 0` / `insufficient-data` on an agent with hundreds of real evolution actions and registered learnings on disk.
+
+After: the same partial-passport request returns a 200 verdict (covered by a unit test, plus a regression test that still denies a forbidden action on a partial card). tradeoff-resolve resolves a value pair against the parsed order (unit test asserts the chained line parses to the ordered array; the bulleted form still parses). learning-velocity returns the real event count across learnings, evolution actions, and corrections (integration test seeds the real source paths/shapes and asserts a non-zero total). The pre-existing learning-velocity integration test had encoded the buggy paths, which is why the bug stayed green — it now seeds the real paths.
+
+## What to Tell Your User
+
+- "I found and fixed three small internal bugs in my EXO 3.0 self-checks, each surfaced by a new test harness that probes every capability from several angles. A peer-passport check could crash on an incomplete card; a value-priority list wasn't being read; and a learning-pace number was stuck at zero because it looked in the wrong places. These are correctness fixes with no change to how I behave for you — the learning-pace number will now reflect my real activity."
+
+## Summary of New Capabilities
+
+| Capability | How to Use |
+|-----------|-----------|
+| Passport verify tolerates a partial peer passport | Automatic. A passport missing a field yields a verdict instead of a 500. |
+| Tradeoff Hierarchy chained-form parsing | Automatic. The org-intent A-greater-than-B line now resolves via the tradeoff endpoint. |
+| Learning-velocity real sources | Automatic. The metric reads the real learnings / evolution-actions / corrections stores. |
