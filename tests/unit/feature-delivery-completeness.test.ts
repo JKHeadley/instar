@@ -150,6 +150,7 @@ describe('Feature Delivery Completeness', () => {
       '**Operator Binding (Know Your Principal)**',
       "Working-Set Handoff (fetch a topic", // P2 multi-machine coherence: fetch-reflex awareness (POST /coherence/fetch-working-set; WORKING-SET-HANDOFF-SPEC §3.7; templates.ts + migrator parity)
       'Threadline Conversation Coherence (which machine holds', // P3: the A2A holder view (GET /threadline/conversations?scope=mesh; THREADLINE-CONVERSATION-COHERENCE-SPEC §3.4; templates.ts + migrator + shadow parity) // Caroline credential/identity-bleed fix: verified operator auto-bound from authenticated sender + /topic-operator routes + observe-only cross-principal coherence guard (#904/#906/#908/#909/#910; templates.ts + migrator + shadow-marker parity). `**`-wrapped form matches the migrator content-sniff guard + markers (like Session Boot Self-Knowledge).
+      'Subscription Pool (multi-account quota', // Subscription & Auth Standard graduate: multi-account quota pool + continuity-guaranteed auto-swap + mobile enrollment, graduated from INTERNAL_PREFIXES to a surfaced capability (templates.ts generateClaudeMd + migrator migrateClaudeMd + shadow-marker parity).
     ];
 
     for (const section of featureSections) {

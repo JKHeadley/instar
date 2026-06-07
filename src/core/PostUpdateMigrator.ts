@@ -4892,6 +4892,12 @@ Create worktrees for collaborator repos with \`instar worktree create <branch>\`
       '**Coordination Mandate**',
       '**ReviewExchange (autonomous code review)**',
       '**Cutover Readiness**',
+      // Subscription Pool (Subscription & Auth Standard): a framework-agnostic
+      // capability — a Codex/Gemini agent should also know it can manage a
+      // multi-account subscription pool, swap to keep a session alive, and drive
+      // the enrollment wizard (never ask the user to paste a token). Mirrored to
+      // the shadows like every agent-facing capability.
+      '**Subscription Pool (multi-account quota + auto-swap + enrollment)**',
       // Working-Set Handoff (WORKING-SET-HANDOFF-SPEC §3.7): the fetch reflex
       // (POST /coherence/fetch-working-set). A Codex/Gemini agent that never
       // learns it will tell the user the files "aren't on this machine"
