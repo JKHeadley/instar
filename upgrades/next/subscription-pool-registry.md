@@ -1,32 +1,52 @@
-# SubscriptionPool Registry (P1.1) — Plain-English Overview
+# SubscriptionPool multi-account registry (P1.1)
 
-> The one-line version: the first piece of multi-account subscription management — a registry that remembers each of your subscription accounts by nickname and *where it logs in*, never its tokens.
+<!-- bump: minor -->
 
-## The problem in one breath
+## What Changed
 
-Justin runs 5–6 Claude subscriptions but instar only ever uses one at a time, and swapping between them means the full browser login ritual every time. The goal (this project) is to pool all the accounts, track each one's quota, and auto-swap before any hits its limit — with phone-friendly login. This change builds the foundation: the place that remembers which accounts exist.
+Added `SubscriptionPool` — a new file-backed registry that records an operator's
+subscription accounts, the first building block of the Subscription & Auth
+Standard (multi-account quota-aware load balancing). Each account entry carries a
+nickname, its provider and framework, a lifecycle status, and — by design — only
+the LOCATION of its login (its config home, e.g. the per-account
+`CLAUDE_CONFIG_DIR`), never any tokens. A structural guard rejects any attempt to
+store a credential-bearing field, so "store the location, not the secret" is
+enforced in code rather than by convention.
 
-## What already exists
+A CRUD API was added behind the new `/subscription-pool` route family
+(GET / POST / PATCH / DELETE), wired through the server, AgentServer, and route
+context. The registry is file-backed (atomic write, per-record version counter),
+mirroring the existing CommitmentTracker durable-registry pattern.
 
-- **Claude Code per-account config homes** — Claude Code already supports pointing each login at its own config directory, so multiple accounts can coexist on one machine. Instar wasn't using this yet.
-- **The live quota endpoint** — each account's 5-hour and weekly usage + reset dates are readable. (Used by a later phase, not this one.)
-- **Durable registry pattern** — instar already has file-backed registries with atomic writes and single-writer versioning (e.g. the commitment tracker). This reuses that shape.
+This ships DARK and ADDITIVE: an empty pool is a pure no-op, so single-account
+agents are unaffected. The route is deliberately classified agent-internal for
+now (it does not appear in the capabilities self-discovery surface and is not yet
+mentioned in the agent template), because a bare registry with no enrollment
+wizard or quota-aware scheduler is not a finished capability to advertise. It
+graduates to a surfaced capability when those later phases land.
 
-## What this adds
+Coverage: 27 tests across all three tiers — unit (both sides of every validation
+boundary, the credential-rejection guard, corruption resilience), integration
+(full CRUD over real HTTP), and an e2e feature-alive check (the route answers 200
+in the dark state and supports live enroll / read-back / persisted-to-disk).
 
-A registry — `SubscriptionPool` — that stores one entry per subscription account. Each entry has a nickname (like a machine nickname), which provider and framework it's for, its lifecycle status, and — the load-bearing part — only the **location** of its login (its config home), never the actual access/refresh tokens. A full CRUD API (`GET/POST/PATCH/DELETE /subscription-pool`) lets accounts be listed, added, renamed, re-statused, and removed.
+## What to Tell Your User
 
-## The new pieces
+I've started building the system that lets me manage several of your
+subscriptions at once. The first piece just remembers each account by a friendly
+nickname and where it logs in — never its passwords or tokens, which stay where
+your real login tool keeps them. Nothing changes for you yet: it's switched off
+until the later pieces (logging in from your phone, and automatically switching
+accounts before one hits its limit) are ready. When you ask me to set that up, I
+can walk you through it then.
 
-- **SubscriptionPool** — a file-backed JSON registry (atomic writes, per-record version counter). It can add/list/update/remove accounts. It is **not** allowed to store credentials: any attempt to save a field that looks like a token/secret/password is rejected outright. That's what makes "store the location, not the secret" a structural guarantee rather than a good intention — and it's what keeps us clear of Anthropic's enforced rule against putting Claude tokens into non-Claude-Code tools.
+## Summary of New Capabilities
 
-## The safeguards
-
-- **Ships dark.** An empty pool is a pure no-op — no background work, no behavior change. Agents with one account are completely unaffected.
-- **Agent-invisible for now (maturity honesty).** The route is classified internal: it does not appear in `/capabilities` and there's no "I can do this" line in the agent template yet. A bare registry with no enrollment wizard or auto-swap scheduler isn't a finished capability to advertise; it graduates when those land (P1.3 / P2.1).
-- **No migration footprint.** No config/hook/skill/template changes — the route ships with the code on update.
-- **Tested both ways.** 27 tests across unit, integration (real HTTP), and e2e feature-alive — including both sides of every validation boundary, the never-store-tokens guard, and corruption resilience.
-
-## Decisions baked in (from Justin, topic 20905)
-
-Quota-read = hybrid (C); cross-machine = re-enroll per machine now but architected so sync is a clean later add (1A→B); mid-session account swap will carry a hard session-continuity guarantee (lands in the P1.3 scheduler); Claude-first; warm only the accounts likely to be picked next.
+- **Subscription account registry** — records each subscription account (nickname,
+  provider, framework, login location, status). Stores the login location only,
+  never credentials; a structural guard rejects credential-bearing fields.
+- **Account management API** — list, add, rename/re-status, and remove accounts
+  via the new `/subscription-pool` routes (operator/internal for now).
+- **Dark + additive** — an empty pool is a no-op; existing single-account agents
+  are unaffected, and the capability stays agent-invisible until the enrollment
+  wizard and quota-aware scheduler make it user-usable.
