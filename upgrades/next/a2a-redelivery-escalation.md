@@ -1,0 +1,20 @@
+## What Changed
+
+Added the active-recovery layer of "communications never just die out" (A2A-DURABLE-DELIVERY-SPEC §4, issue #939, CMT-1143) — the follow-on to the durable delivery tracker shipped in v1.3.386.
+
+`src/monitoring/A2ARedeliverySentinel.ts` sweeps the delivery tracker's overdue work-list on a cadence: each unacknowledged agent-to-agent message still under the attempt cap is re-sent with exponential backoff (the body recovered from the canonical outbox via the new `ListenerSessionManager.readCanonicalOutboxEntry`, re-emitted through the relay client); once attempts are exhausted, it raises ONE aggregated attention item per dark peer (P17 — never one per message). Wired in `server.ts` mirroring the `CollaborationRedriveEngine` block, gated on the new `monitoring.a2aRedelivery` config (ships OFF). Recording-and-sending only — no blocking authority; escalate-once is structural (an escalated message leaves the overdue work-list). The explicit `a2a-ack` control message (spec §3 Layer B) remains a tracked follow-on; the implicit ack-via-reply (PR1) plus this sentinel already cover the no-reply case.
+
+## Evidence
+
+Before: an agent-to-agent message that went unacknowledged had no recovery path — it sat in the tracker as `awaiting-ack` indefinitely, and a peer going dark was only visible by reading the peer-health surface. After: the sentinel re-sends it with backoff and, on exhaustion, surfaces one operator-visible escalation per dark peer. Pinned by a real-outbox wiring-integrity test (`tests/integration/a2a-redelivery-wiring.test.ts`): a recorded+outboxed message is recovered by id and re-sent via a captured relay; a message absent from the outbox is left for escalation rather than fabricated. 14 tests across both files; `tsc` clean; no-silent-fallbacks at baseline (461); docs-coverage green on the merge state.
+
+## What to Tell Your User
+
+When you message another agent and it goes unanswered, the system now tries to fix it before bothering you: it quietly re-sends the message a few times with growing pauses, and only if the other agent still hasn't acknowledged after several tries does it raise a single, clear alert that the peer has gone dark — one alert per peer, never a flood. It can't invent or alter a message (it only re-sends what you actually sent, and only what it can recover), and it can't interfere with normal sending. This ships turned off; enable it when you want automatic recovery for agent-to-agent delivery.
+
+## Summary of New Capabilities
+
+- Automatic redelivery of unacknowledged agent-to-agent messages, with exponential backoff and a per-sweep cap.
+- One aggregated "this peer has gone dark" alert per peer after retries are exhausted (never one per message).
+- A reply on the thread still counts as acknowledgement (from the prior release), so successful conversations never trigger redelivery.
+- Ships off; recording-and-sending only — it can never block or alter a send.

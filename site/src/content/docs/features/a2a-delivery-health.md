@@ -48,7 +48,17 @@ A non-zero `staleCount` (or `stale: true` for a peer) means a message has been a
 acknowledgement past the threshold — the peer may be dark or unreachable, so check the relay and
 the peer's address before assuming they are simply ignoring you.
 
-## What's next
+## Active recovery: the redelivery sentinel
 
-Automatic redelivery with backoff and a single aggregated escalation when a peer stays dark past a
-deadline build directly on the `threadline/A2ADeliveryTracker` `findOverdue` work-list.
+Built on the tracker's `findOverdue` work-list, `monitoring/A2ARedeliverySentinel` is the
+active-recovery layer. On a cadence it sweeps overdue (unacknowledged) messages and, for each one
+still under the attempt cap, re-sends it with exponential backoff — recovering the original body
+from the canonical outbox by message id. Once a message exhausts its attempts, the sentinel raises
+**one aggregated attention item per dark peer** (never one per message), so a peer that has gone
+offline or unreachable surfaces to the operator instead of failing silently.
+
+It is recording-and-sending only — it holds no blocking authority and never alters a live send.
+Ships **off** by default (it re-sends and escalates); enable via
+`monitoring.a2aRedelivery.enabled` in `.instar/config.json`. The escalate-once guarantee is
+structural: a message marked escalated leaves the `findOverdue` work-list, so it is never
+re-escalated.
