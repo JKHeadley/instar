@@ -105,12 +105,12 @@ describe('Version-skew recovery — replay drop-policy', () => {
       src.indexOf('private async replayQueue(') + 6000,
     );
     expect(replayLoop).toContain('versionSkewActive');
-    // Drop branch must come AFTER the versionSkew bypass in the loop body.
+    // The per-message replay decision must come AFTER the versionSkew bypass.
     const skewIdx = replayLoop.indexOf('versionSkewActive');
-    const dropIdx = replayLoop.indexOf('MAX_REPLAY_FAILURES');
+    const decisionIdx = replayLoop.indexOf('decideReplay(');
     expect(skewIdx).toBeGreaterThan(0);
-    expect(dropIdx).toBeGreaterThan(0);
-    expect(skewIdx).toBeLessThan(dropIdx);
+    expect(decisionIdx).toBeGreaterThan(0);
+    expect(skewIdx).toBeLessThan(decisionIdx);
   });
 
   it('handleVersionSkew sets the active flag + alert dedupe', () => {
@@ -162,17 +162,17 @@ describe('Version-skew recovery — stuck-lock detection', () => {
   });
 });
 
-describe('Down-server replay drop-policy — restart windows must not burn replay budget', () => {
-  // Failure shape (2026-06-05, codey): each fleet-release restart window made
-  // every forwardToServer fail; 30s replay ticks burned all 3 replay attempts
-  // in ~90s and DROPPED head-of-queue messages. 39 records in codey's
-  // dropped-messages.json, 9 on 2026-06-05 alone, every one
-  // "Handoff to server failed after 3 replay attempts" — including the
-  // mentor's coaching messages. The drop policy exists for message-specific
-  // (poison) failures; a down server says nothing about the message — the
-  // same class the versionSkewActive exemption already covers.
+describe('Replay drop-policy — only a message-specific (HTTP 400) failure may drop a message', () => {
+  // Failure shape (2026-06-05 codey; 2026-06-06 topic-21487): a restart /
+  // CPU-starvation window made every forward fail transiently; the old
+  // single-counter policy (`supervisor.healthy ? failures + 1 : failures`)
+  // burned all 3 attempts and DROPPED real messages. The classified policy
+  // (replayPolicy.decideReplay) only burns the drop budget on a genuine 400
+  // ('poison'); timeout / 5xx / 503-boot / network refusal are 'transient' and
+  // never drop a real message. The behavioral coverage lives in
+  // tests/unit/lifeline/replayPolicy.test.ts — these assertions pin the wiring.
 
-  it('replay failure increments the budget ONLY when the supervisor believes the server is healthy', () => {
+  it('replayQueue routes failures through the classified forward + decideReplay (not the old healthy-gated counter)', () => {
     const src = fs.readFileSync(
       path.join(repoRoot, 'src', 'lifeline', 'TelegramLifeline.ts'),
       'utf-8',
@@ -183,15 +183,16 @@ describe('Down-server replay drop-policy — restart windows must not burn repla
       8000,
     );
     expect(replayLoop).toBeTruthy();
-    // The healthy-gated increment must be present in the failure branch…
-    expect(replayLoop).toMatch(
-      /replayFailures\s*=\s*this\.supervisor\.healthy\s*\?\s*failures\s*\+\s*1\s*:\s*failures/,
+    // New policy is wired in…
+    expect(replayLoop).toContain('forwardToServerClassified(');
+    expect(replayLoop).toContain('decideReplay(');
+    // …and the old coarse single-counter increment is GONE.
+    expect(replayLoop).not.toMatch(
+      /replayFailures\s*=\s*this\.supervisor\.healthy\s*\?\s*failures\s*\+\s*1/,
     );
-    // …and the old unconditional increment must be gone.
-    expect(replayLoop).not.toMatch(/replayFailures\s*=\s*failures\s*\+\s*1\s*;/);
   });
 
-  it('the healthy-gated increment lives in the same loop as the drop check (one policy, one place)', () => {
+  it('replay consumes the queue DURABLY (peek + remove), never drain() — no untracked loss', () => {
     const src = fs.readFileSync(
       path.join(repoRoot, 'src', 'lifeline', 'TelegramLifeline.ts'),
       'utf-8',
@@ -202,12 +203,29 @@ describe('Down-server replay drop-policy — restart windows must not burn repla
       8000,
     );
     expect(replayLoop).toBeTruthy();
-    const guardIdx = replayLoop!.indexOf('this.supervisor.healthy ? failures + 1');
-    const dropIdx = replayLoop!.indexOf('MAX_REPLAY_FAILURES');
-    expect(guardIdx).toBeGreaterThan(0);
-    expect(dropIdx).toBeGreaterThan(0);
-    // Drop check first (top of loop), guarded increment in the failure branch.
-    expect(dropIdx).toBeLessThan(guardIdx);
+    // A message leaves the persisted queue only after delivery/drop.
+    expect(replayLoop).toContain('this.queue.peek()');
+    expect(replayLoop).toContain('this.queue.remove(');
+    expect(replayLoop).toContain('this.queue.updateReplayCounters(');
+    // The destructive up-front drain() must NOT be used by replay.
+    expect(replayLoop).not.toContain('this.queue.drain()');
+  });
+
+  it('forwardToServerClassified maps a 400 to poison and everything else to transient/skew', () => {
+    const src = fs.readFileSync(
+      path.join(repoRoot, 'src', 'lifeline', 'TelegramLifeline.ts'),
+      'utf-8',
+    );
+    const fn = extractSectionAroundFirstMatch(
+      src,
+      /private async forwardToServerClassified\(/,
+      8000,
+    );
+    expect(fn).toBeTruthy();
+    expect(fn).toMatch(/ForwardBadRequestError\)\s*return 'poison'/);
+    expect(fn).toContain("return 'transient'");
+    expect(fn).toContain("return 'skew'");
+    expect(fn).toContain("return 'ok'");
   });
 });
 

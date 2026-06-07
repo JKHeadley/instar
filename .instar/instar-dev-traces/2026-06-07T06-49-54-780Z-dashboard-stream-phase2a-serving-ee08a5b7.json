@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "sessionId": "cbdc2d51-a6de-446b-8215-773ec12f8e0b",
+  "timestamp": "2026-06-07T06:49:54.780Z",
+  "artifactPath": "upgrades/side-effects/dashboard-stream-phase2a-serving.md",
+  "artifactSha256": "25acef61806ac62d5f6f20513e21cfb658d55d0297e8b2aca36e2414fde140c1",
+  "specPath": "docs/specs/POOL-DASHBOARD-STREAM-SPEC.md",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "src/core/MeshRpc.ts",
+    "src/core/types.ts",
+    "src/data/state-coherence-registry.json",
+    "src/server/AgentServer.ts",
+    "src/server/StreamTicketStore.ts",
+    "src/server/WebSocketManager.ts",
+    "tests/e2e/pool-stream-serving-alive.test.ts",
+    "tests/unit/StreamTicketStore.test.ts",
+    "tests/unit/WebSocketManager.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Serving side of the approved dashboard-streaming spec: StreamTicketStore subsystem + /pool-stream WS endpoint + pool-stream-ticket mesh verb + serving-side input/name gates + config type + state-registry entry. Reuses existing WSManager client path + mesh auth (no new auth surface). 11 ticket-store unit tests + 6 real-server feature-alive e2e tests covering every security boundary.",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

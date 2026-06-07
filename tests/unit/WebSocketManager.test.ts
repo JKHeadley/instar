@@ -214,7 +214,9 @@ describe('WebSocketManager', () => {
     });
 
     it('input forwards to sessionManager.sendInput and returns ack', () => {
-      const { connectClient, sendMessage, sessionManager } = createTestManager();
+      // §2.1: input only reaches tmux for a session that actually exists locally.
+      const sm = createMockSessionManager({ listRunningSessions: vi.fn(() => [{ tmuxSession: 'sess-1', name: 'sess-1' } as any]) });
+      const { connectClient, sendMessage, sessionManager } = createTestManager({ sessionManager: sm });
       sessionManager.sendInput.mockReturnValue(true);
       const { ws, client } = connectClient();
 
@@ -238,7 +240,8 @@ describe('WebSocketManager', () => {
     });
 
     it('key forwards to sessionManager.sendKey and returns ack', () => {
-      const { connectClient, sendMessage, sessionManager } = createTestManager();
+      const sm = createMockSessionManager({ listRunningSessions: vi.fn(() => [{ tmuxSession: 'sess-1', name: 'sess-1' } as any]) });
+      const { connectClient, sendMessage, sessionManager } = createTestManager({ sessionManager: sm });
       sessionManager.sendKey.mockReturnValue(true);
       const { ws, client } = connectClient();
 

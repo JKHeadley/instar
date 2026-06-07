@@ -2961,6 +2961,17 @@ export interface LedgerSessionRegistration {
 export interface DashboardConfig {
   /** File viewer configuration */
   fileViewer?: FileViewerConfig;
+  /** Pool Dashboard Streaming (POOL-DASHBOARD-STREAM-SPEC §2.3) — cross-machine
+   *  session streaming from one dashboard. */
+  poolStream?: PoolStreamConfig;
+}
+
+export interface PoolStreamConfig {
+  /** May a PEER machine send keystrokes (input/key) to a session on THIS
+   *  machine over /pool-stream? Default false — remote keystroke forwarding is
+   *  a lateral-movement vector (security review §2.3). Watching is always on;
+   *  remote typing is per-machine opt-in. */
+  allowRemoteInput?: boolean;
 }
 
 export interface FileViewerConfig {

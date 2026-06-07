@@ -959,6 +959,18 @@
         "state/session-monitor-ctx-notified.json"
       ],
       "grandfathered": false
+    },
+    {
+      "category": "stream-tickets",
+      "description": "Pool Dashboard Streaming single-use bearer tickets (POOL-DASHBOARD-STREAM-SPEC \u00a72.3). Minted by the pool-stream-ticket mesh verb, consumed once on the /pool-stream WS upgrade. Persisted so a captured ticket cannot replay across a serving-machine restart (consumed-set survives). Machine-local; single-writer (the store's own funnel); TTL-bounded + GC'd.",
+      "scope": "machine-local",
+      "freshness": "live",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "state/stream-tickets.json"
+      ],
+      "grandfathered": false
     }
   ]
 }

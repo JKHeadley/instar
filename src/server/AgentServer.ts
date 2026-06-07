@@ -155,6 +155,8 @@ export class AgentServer {
   private sessionManager: SessionManager;
   private state: StateManager;
   private hookEventReceiver?: import('../monitoring/HookEventReceiver.js').HookEventReceiver;
+  private streamTicketStore?: import('./StreamTicketStore.js').StreamTicketStore;
+  private poolStreamAllowRemoteInput = false;
   private routeContext: { wsManager: import('./WebSocketManager.js').WebSocketManager | null } | null = null;
   private deliverySentinel: DeliveryFailureSentinel | null = null;
   private deliveryStore: PendingRelayStore | null = null;
@@ -295,6 +297,13 @@ export class AgentServer {
     sessionOwnershipRegistry?: import('../core/SessionOwnershipRegistry.js').SessionOwnershipRegistry;
     /** Topic placement pin store (§L4) — backs GET /pool/placement + POST /pool/transfer. */
     topicPinStore?: import('../core/TopicPlacementPinStore.js').TopicPlacementPinStore;
+    /** Pool Dashboard Streaming (§2.3) — shared single-use ticket store the
+     *  WebSocketManager's /pool-stream upgrade consumes. */
+    streamTicketStore?: import('./StreamTicketStore.js').StreamTicketStore;
+    /** Pool Dashboard Streaming (§2.3) — may a PEER send input to a local
+     *  session over /pool-stream? Default false (keystroke-forwarding is a
+     *  lateral-movement vector). */
+    poolStreamAllowRemoteInput?: boolean;
     /** Cross-machine secret-sync (spec Phase 4) — backs GET /secrets/sync-status + POST /secrets/sync-now. */
     secretSync?: import('../core/SecretSync.js').SecretSyncHandle;
     /** This machine's mesh id. */
@@ -480,6 +489,8 @@ export class AgentServer {
     this.telegramAdapter = options.telegram ?? null;
     this.startTime = new Date();
     this.sessionManager = options.sessionManager;
+    this.streamTicketStore = options.streamTicketStore;
+    this.poolStreamAllowRemoteInput = options.poolStreamAllowRemoteInput ?? false;
     this.state = options.state;
     this.hookEventReceiver = options.hookEventReceiver ?? undefined;
     this.toneGate = options.messagingToneGate ?? null;
@@ -2599,6 +2610,8 @@ export class AgentServer {
           authToken: this.config.authToken,
           instarDir: this.config.stateDir,
           hookEventReceiver: this.hookEventReceiver,
+          streamTicketStore: this.streamTicketStore,
+          poolStreamAllowRemoteInput: this.poolStreamAllowRemoteInput,
         });
 
         // Update route context with WebSocket manager (deferred — created after routes)

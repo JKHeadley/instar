@@ -34,6 +34,12 @@ export type MeshCommand =
   | { type: 'capacity-report' }
   | { type: 'session-status'; session?: string }
   | { type: 'secret-share'; encrypted: string }
+  // Pool Dashboard Streaming (POOL-DASHBOARD-STREAM-SPEC §2.3): a peer asks this
+  // machine to mint a single-use bearer ticket so it may open a /pool-stream WS
+  // and watch `session`. Read/observe class — minting a ticket discloses
+  // nothing; the ticket is consumed once, and any keystrokes are gated
+  // serving-side by allowRemoteInput (default off).
+  | { type: 'pool-stream-ticket'; session: string }
   | {
       // Coherence-journal replication transport (COHERENCE-JOURNAL-SPEC §3.4).
       // Read/observe class — any registered peer may issue it (same RBAC as
@@ -208,6 +214,7 @@ export function checkCommandRBAC(command: MeshCommand, sender: MachineId, deps: 
       return { ok: true, reason: 'ok' };
     case 'capacity-report':
     case 'session-status':
+    case 'pool-stream-ticket':
     case 'journal-sync':
     case 'working-set-pull':
     case 'commitments-sync':
