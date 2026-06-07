@@ -1,0 +1,46 @@
+<!-- bump: patch -->
+
+## What Changed
+
+The inbound agent-to-agent message gate (`InboundMessageGate`) now logs every
+verdict it makes. Previously, when the gate blocked an inbound relay message it
+recorded the decision only in its return value and in restart-volatile in-memory
+counters — it wrote nothing to `server.log`. A blocked inbound was therefore
+invisible, which is exactly how the Echo↔Dawn remote-relay leg went dark for ~1.5
+days with no trace. `evaluate()` now emits one `[inbound-gate] eval …` line per
+inbound (carrying the resolved trust level + operation), a `[inbound-gate] BLOCK
+<reason> …` line on each of the five block paths (the `insufficient_trust` line
+includes the resolved trust level + allowed operations, so a fingerprint/trust-key
+mismatch is diagnosable from the log alone), and a `PASS` line on success.
+Fingerprints are clipped to 12 chars and no payload content is logged. The change
+is behavior-preserving — pure observability, with no change to routing, trust,
+rate-limiting, or delivery. Part of A2A delivery robustness (issue #939): it turns
+the next live dawn→echo diagnosis into a self-identifying event (gate block, with
+the exact reason + resolved trust, versus an upstream relay-client drop).
+
+## What to Tell Your User
+
+Nothing you need to do — this is an internal reliability improvement. If a message
+from another agent is ever turned away, I now write down exactly why, so a
+quietly-dropped agent-to-agent channel can't slip by unnoticed for days the way one
+recently did. Nothing about how things behave for you changes.
+
+## Summary of New Capabilities
+
+None user-facing. Internal observability only: agent-to-agent inbound gate
+decisions — pass, and every block reason with the resolved trust level — are now
+written to the server log for operator and agent diagnosis. No new endpoint,
+command, or config setting.
+
+## Evidence
+
+- 40/40 `InboundMessageGate` unit tests green (3 new observability tests assert the
+  BLOCK / eval / PASS log lines and that the resolved trust level is surfaced on an
+  `insufficient_trust` block); `npx tsc --noEmit` clean.
+- Runtime-confirmed symptom this addresses: `GET /threadline/peers/health` showed
+  Dawn's fingerprint with zero recorded inbound while a same-window local peer
+  (ai-guy) was recorded, and a `server.log` grep found no block line for her — the
+  gate (or an upstream hop) dropped her silently. This change makes that drop
+  self-identifying on the next live test.
+- Behavior-preserving: all 37 pre-existing gate tests unchanged and green; no
+  routing/trust/rate/delivery logic touched (logging statements only).

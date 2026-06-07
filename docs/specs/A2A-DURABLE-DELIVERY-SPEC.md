@@ -130,10 +130,42 @@ A periodic sweep (scheduler job, default every 15m) calls `findOverdue(ttlMs)`:
 pendingCount, oldestPendingAgeMs, escalatedCount, stale }`. Turns "is my channel
 to Dawn alive?" into a lookup. Read-only — never gates.
 
+### 6. Inbound gate observability (PR4a) — make a silent block impossible
+
+The peer-health surface answers "is my channel alive?" but not "*why* did an
+inbound die?". `InboundMessageGate.evaluate()` returns `{action:'block', reason}`
+and bumps in-memory metric counters — but **logs nothing**. A blocked inbound is
+therefore invisible: it leaves no line in `server.log`, and the counters are
+aggregate (not per-fingerprint) and reset on restart. That silence is the exact
+mechanism by which the dawn→echo remote-relay leg went dark for ~1.5 days with
+no trace — runtime grounding confirmed `/threadline/peers/health` shows Dawn's
+fp with **zero** recorded inbound while `gate-passed` never fired for her, and a
+`server.log` grep found **no** block line. The leading hypothesis (a trusted
+peer whose inbound fingerprint representation does not match its trust-profile
+key → resolves `untrusted` → `insufficient_trust`) cannot be confirmed because
+the verdict is silent.
+
+PR4a makes every gate verdict visible (the structural form of "comms must never
+die *silently*"): `evaluate()` logs one `[inbound-gate] eval from=<fp12>
+trust=<level> op=<type>` line per inbound, a `[inbound-gate] BLOCK <reason>
+from=<fp12> …` line on each of the five block paths (carrying the **resolved
+trust level** + allowed-ops for `insufficient_trust`, so a fingerprint/trust
+mismatch is diagnosable from `server.log` alone), and a `PASS` line on success.
+Fingerprints are truncated to 12 chars; **no payload content is logged**.
+Behavior-preserving — pure observability, no routing/trust/rate change. This is
+the decisive, in-Echo's-control diagnostic step: once deployed, the next live
+dawn→echo test self-identifies as either a gate block (with the exact reason +
+resolved trust) or an upstream relay-client drop (no eval line at all),
+selecting the targeted fix (PR4b) without guesswork.
+
 ## Testing (Testing Integrity Standard — all three tiers)
 
 - **Tier 1**: A2ADeliveryTracker lifecycle, idempotency, overdue/stale gates,
   peer-health composition, thread-fallback ack (19 tests, GREEN).
+- **Tier 1 (PR4a)**: `InboundMessageGate` block-decision observability — a
+  not-permitted op logs `BLOCK insufficient_trust` with the resolved trust level
+  + fingerprint; an allowed message logs `eval` + `PASS`; an oversized payload
+  logs `BLOCK payload_too_large` (3 tests, GREEN; full gate suite 40/40 GREEN).
 - **Tier 2**: `/threadline/peers/health` + `/threadline/peers/:fp/health` over
   the full HTTP pipeline return 200 with composed data when the feature is wired.
 - **Tier 3**: feature-is-alive — the routes answer 200 (not 503) from the
