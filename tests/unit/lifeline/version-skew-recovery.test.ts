@@ -203,9 +203,12 @@ describe('Replay drop-policy — only a message-specific (HTTP 400) failure may 
       8000,
     );
     expect(replayLoop).toBeTruthy();
-    // A message leaves the persisted queue only after delivery/drop.
+    // A message leaves the persisted queue only after delivery/drop — now via
+    // markDelivered(), which removes it AND records the id so an already-delivered
+    // copy can't be re-queued (2026-06-07 replay-dedupe). markDelivered() calls
+    // remove() internally, so the durable-consume guarantee is preserved.
     expect(replayLoop).toContain('this.queue.peek()');
-    expect(replayLoop).toContain('this.queue.remove(');
+    expect(replayLoop).toContain('this.queue.markDelivered(');
     expect(replayLoop).toContain('this.queue.updateReplayCounters(');
     // The destructive up-front drain() must NOT be used by replay.
     expect(replayLoop).not.toContain('this.queue.drain()');

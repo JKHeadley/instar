@@ -43,7 +43,7 @@ describe('recoverStuckMessages', () => {
       ledger: led, holdsLease: () => false, epoch: 2, maxProcessingMs: -1,
       reinject: () => reinjected.push(1),
     });
-    expect(res).toEqual({ recovered: 0, skipped: 0 });
+    expect(res).toEqual({ recovered: 0, skipped: 0, alreadyHandled: 0 });
     expect(reinjected).toHaveLength(0);
   });
 
@@ -100,6 +100,76 @@ describe('recoverStuckMessages', () => {
     expect(res.recovered).toBe(0);
     expect(res.skipped).toBe(1);
   });
+
+  // ── 1A: reply-evidence guard (the 2026-06-07 every-~10-min "from Unknown" loop) ──
+  it('does NOT re-run a stuck entry whose topic was already answered since it arrived (commits it instead)', () => {
+    const led = MessageProcessingLedger.openMemory();
+    claim(led); // entry stuck in processing, its own reply never committed
+    const reinjected: unknown[] = [];
+    const res = recoverStuckMessages({
+      ledger: led, holdsLease: () => true, epoch: 2, maxProcessingMs: -1,
+      // The agent DID reply to this topic since the entry arrived — evidence the
+      // message was effectively handled (a duplicate / a reply that failed to commit).
+      hasRepliedSince: () => true,
+      reinject: () => reinjected.push(1),
+    });
+    expect(res.recovered).toBe(0);
+    expect(res.alreadyHandled).toBe(1);
+    expect(reinjected).toHaveLength(0);
+    // Committed so it leaves 'processing' for good — no more ~10-min re-runs.
+    expect(led.isActedOn(KEY)).toBe(true);
+  });
+
+  it('reply-evidence guard defaults to the ledger: a reply committed on the topic AFTER the stuck entry arrived suppresses the re-run', () => {
+    const led = MessageProcessingLedger.openMemory();
+    // The stuck entry (a duplicate / a turn whose own reply failed to commit) arrives FIRST.
+    claim(led);
+    // THEN the agent answers the topic (commits a sibling inbound) — exactly the
+    // real incident: the report arrived, then I replied to the topic repeatedly.
+    const sibling = dedupeKeyFor('telegram', TOPIC, 6000);
+    decideIngress(led, sibling, { platform: 'telegram', topic: TOPIC, input: 'later', epoch: 1, maxProcessingMs: 300_000 });
+    commitInboundReply(led, sibling, 1); // reply_committed_at >= the stuck entry's receivedAt
+    const reinjected: unknown[] = [];
+    const res = recoverStuckMessages({
+      ledger: led, holdsLease: () => true, epoch: 2, maxProcessingMs: -1,
+      reinject: () => reinjected.push(1), // NO explicit hasRepliedSince → uses ledger query
+    });
+    expect(res.alreadyHandled).toBe(1);
+    expect(reinjected).toHaveLength(0);
+    expect(led.isActedOn(KEY)).toBe(true);
+  });
+
+  it('still re-runs a genuinely unanswered stuck entry (no reply evidence on the topic)', () => {
+    const led = MessageProcessingLedger.openMemory();
+    claim(led);
+    const reinjected: unknown[] = [];
+    const res = recoverStuckMessages({
+      ledger: led, holdsLease: () => true, epoch: 2, maxProcessingMs: -1,
+      hasRepliedSince: () => false, // no reply since the entry arrived → legitimately lost
+      reinject: () => reinjected.push(1),
+    });
+    expect(res.recovered).toBe(1);
+    expect(res.alreadyHandled).toBe(0);
+    expect(reinjected).toHaveLength(1);
+  });
+
+  // ── 1B: sender preservation (no "from Unknown" on a legitimate re-run) ──
+  it('preserves the original sender envelope when re-injecting a recovered entry', () => {
+    const led = MessageProcessingLedger.openMemory();
+    decideIngress(led, KEY, {
+      platform: 'telegram', topic: TOPIC, input: 'do the thing',
+      sender: { userId: 7812716706, username: 'justin', firstName: 'Justin' },
+      epoch: 1, maxProcessingMs: 300_000,
+    });
+    const reinjected: Array<[string, string, string, unknown]> = [];
+    const res = recoverStuckMessages({
+      ledger: led, holdsLease: () => true, epoch: 2, maxProcessingMs: -1,
+      hasRepliedSince: () => false,
+      reinject: (t, k, text, sender) => reinjected.push([t, k, text, sender]),
+    });
+    expect(res.recovered).toBe(1);
+    expect(reinjected[0][3]).toEqual({ userId: 7812716706, username: 'justin', firstName: 'Justin' });
+  });
 });
 
 /**
@@ -123,5 +193,36 @@ describe('stuck-message recovery — boot wiring integrity', () => {
     const block = src.slice(startIdx, callIdx + 400);
     expect(block).toMatch(/if \(messageLedger && currentInboundByTopic && telegram\)/);
     expect(block).toMatch(/holdsLease: \(\) => coordinator\.holdsLease\(\)/);
+  });
+
+  it('reinjectStuck forwards the stored sender (no "from Unknown") into the replayed message metadata', () => {
+    // The replay must carry the real sender into the metadata fields
+    // messageToPipeline reads (firstName/username/telegramUserId), not a hardcoded
+    // userId:'unknown'. This is the identity-loss half of the 2026-06-07 fix.
+    const reinjectIdx = src.indexOf('const reinjectStuck =');
+    expect(reinjectIdx).toBeGreaterThan(0);
+    const block = src.slice(reinjectIdx, reinjectIdx + 1200);
+    expect(block).toMatch(/sender\??\.userId/);     // uses the preserved sender id
+    expect(block).toMatch(/firstName: sender\.firstName/); // sets the prefix name
+  });
+});
+
+/**
+ * Wiring-integrity: the forward route must CAPTURE the sender into the ledger at
+ * ingress — otherwise a recovery re-run has nothing to replay as and falls back
+ * to "Unknown". Source-level guard against the capture silently regressing.
+ */
+describe('exactly-once ingress — sender capture wiring', () => {
+  const src = fs.readFileSync(
+    path.join(__dirname, '..', '..', 'src', 'server', 'routes.ts'),
+    'utf-8',
+  );
+  it('decideIngress is called with a sender envelope built from the inbound', () => {
+    const callIdx = src.indexOf('decideIngress(ctx.messageLedger, dedupeKey, {');
+    expect(callIdx).toBeGreaterThan(0);
+    const block = src.slice(callIdx, callIdx + 400);
+    expect(block).toMatch(/sender:\s*\{/);
+    expect(block).toMatch(/userId: fromUserId/);
+    expect(block).toMatch(/firstName: fromFirstName/);
   });
 });

@@ -11973,15 +11973,30 @@ export async function startServer(options: StartOptions): Promise<void> {
     if (messageLedger && currentInboundByTopic && telegram) {
       const ledgerForRecovery = messageLedger;
       const inboundMap = currentInboundByTopic;
-      const reinjectStuck = (topicId: string, dedupeKey: string, replayText: string): void => {
+      const reinjectStuck = (
+        topicId: string,
+        dedupeKey: string,
+        replayText: string,
+        sender: import('../messaging/MessageProcessingLedger.js').SenderEnvelope | null,
+      ): void => {
         inboundMap.set(topicId, dedupeKey); // so the eventual reply commits THIS entry
+        // Preserve the original sender so the replay routes as the real user, not
+        // "from Unknown" (Know Your Principal). messageToPipeline reads these
+        // metadata fields to build the [telegram:N "topic" from NAME] prefix.
         void telegram.onTopicMessage?.({
           id: `replay-${dedupeKey}`,
-          userId: 'unknown',
+          userId: sender?.userId != null ? String(sender.userId) : 'unknown',
           content: replayText,
           channel: { type: 'telegram', identifier: topicId },
           receivedAt: new Date().toISOString(),
-          metadata: { messageThreadId: Number(topicId), viaLifeline: true, replay: true },
+          metadata: {
+            messageThreadId: Number(topicId),
+            viaLifeline: true,
+            replay: true,
+            ...(sender?.userId != null ? { telegramUserId: Number(sender.userId) } : {}),
+            ...(sender?.firstName ? { firstName: sender.firstName } : {}),
+            ...(sender?.username ? { username: sender.username } : {}),
+          },
         } as Message);
       };
       const runStuckRecovery = (): void => {

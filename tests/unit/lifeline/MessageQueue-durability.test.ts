@@ -129,3 +129,32 @@ describe('durable consume survives a mid-replay process exit', () => {
     expect(got[0].replayFailures).toBe(0); // poison budget never touched
   });
 });
+
+// ── 1C: replay dedupe (2026-06-07 "stale already-delivered copies kept retrying") ──
+describe('MessageQueue dedup', () => {
+  it('enqueue skips a duplicate id already in the queue (no duplicate copy to retry)', () => {
+    const q = new MessageQueue(stateDir);
+    expect(q.enqueue(msg('tg-1'))).toBe(true);
+    expect(q.enqueue(msg('tg-1'))).toBe(false); // same id — not added again
+    expect(q.peek().map(m => m.id)).toEqual(['tg-1']);
+  });
+
+  it('markDelivered removes the message AND blocks any later re-enqueue of that id', () => {
+    const q = new MessageQueue(stateDir);
+    q.enqueue(msg('tg-1'));
+    q.markDelivered('tg-1');
+    expect(q.peek()).toHaveLength(0);
+    // A redelivery of the SAME id (provider retry / re-poll) must not re-queue it —
+    // this is the loop that pushed the server into restart churn.
+    expect(q.enqueue(msg('tg-1'))).toBe(false);
+    expect(q.peek()).toHaveLength(0);
+  });
+
+  it('distinct ids are unaffected by the delivered guard', () => {
+    const q = new MessageQueue(stateDir);
+    q.enqueue(msg('tg-1'));
+    q.markDelivered('tg-1');
+    expect(q.enqueue(msg('tg-2'))).toBe(true);
+    expect(q.peek().map(m => m.id)).toEqual(['tg-2']);
+  });
+});

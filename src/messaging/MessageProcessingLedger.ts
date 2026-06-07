@@ -46,6 +46,19 @@ export interface LedgerEntry {
   replyEpoch: number | null;
   inputSnapshot: string | null;
   attempts: number;
+  /**
+   * The inbound sender, captured at ingress so a stuck-recovery re-run replays
+   * the message AS the real sender — not "from Unknown" (the 2026-06-07
+   * identity-loss bug). JSON `{ userId, username?, firstName? }` or null.
+   */
+  senderEnvelope: SenderEnvelope | null;
+}
+
+/** Inbound sender identity, stored so a replay preserves "Know Your Principal". */
+export interface SenderEnvelope {
+  userId?: string | number;
+  username?: string;
+  firstName?: string;
 }
 
 const SCHEMA = `
@@ -61,10 +74,30 @@ CREATE TABLE IF NOT EXISTS message_ledger (
   reply_idempotency_key TEXT,
   reply_epoch INTEGER,
   input_snapshot TEXT,
-  attempts INTEGER NOT NULL DEFAULT 0
+  attempts INTEGER NOT NULL DEFAULT 0,
+  sender_envelope TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_message_ledger_state ON message_ledger(state);
+CREATE INDEX IF NOT EXISTS idx_message_ledger_topic_committed ON message_ledger(topic, reply_committed_at);
 `;
+
+/**
+ * Apply the schema, then idempotently add columns introduced after a DB was
+ * first created. ALTER TABLE ADD COLUMN throws "duplicate column name" on a DB
+ * that already has it — caught and ignored. This keeps existing agents' ledgers
+ * upgrading in place with no PostUpdateMigrator step (SQLite schema, per the
+ * file-header contract).
+ */
+function ensureSchema(db: BetterSqliteDatabase): void {
+  db.exec(SCHEMA);
+  for (const col of ['sender_envelope TEXT']) {
+    try {
+      db.exec(`ALTER TABLE message_ledger ADD COLUMN ${col}`);
+    } catch {
+      /* column already exists — idempotent */
+    }
+  }
+}
 
 export function resolveMessageLedgerPath(stateDir: string, agentId: string): string {
   const safe = agentId.replace(/[^A-Za-z0-9._-]/g, '_') || 'default';
@@ -100,7 +133,7 @@ export class MessageProcessingLedger {
     db.pragma('journal_mode = WAL');
     db.pragma('synchronous = NORMAL');
     db.pragma('busy_timeout = 5000');
-    db.exec(SCHEMA);
+    ensureSchema(db);
     return new MessageProcessingLedger(db, dbPath);
   }
 
@@ -108,7 +141,7 @@ export class MessageProcessingLedger {
   static openMemory(): MessageProcessingLedger {
     const db = new Database(':memory:');
     db.pragma('busy_timeout = 5000');
-    db.exec(SCHEMA);
+    ensureSchema(db);
     return new MessageProcessingLedger(db, ':memory:');
   }
 
@@ -117,17 +150,18 @@ export class MessageProcessingLedger {
    * Returns whether this is the first time we've seen it + the current state.
    * A caller seeing firstSeen:false with an acted-on state must DROP the event.
    */
-  record(dedupeKey: string, opts: { platform: string; topic?: string | null; input?: string }): {
+  record(dedupeKey: string, opts: { platform: string; topic?: string | null; input?: string; sender?: SenderEnvelope | null }): {
     firstSeen: boolean;
     state: LedgerState;
   } {
     const now = new Date().toISOString();
+    const senderJson = opts.sender ? JSON.stringify(opts.sender) : null;
     const info = this.db
       .prepare(
-        `INSERT OR IGNORE INTO message_ledger (dedupe_key, platform, topic, state, received_at, input_snapshot)
-         VALUES (?, ?, ?, 'received', ?, ?)`,
+        `INSERT OR IGNORE INTO message_ledger (dedupe_key, platform, topic, state, received_at, input_snapshot, sender_envelope)
+         VALUES (?, ?, ?, 'received', ?, ?, ?)`,
       )
-      .run(dedupeKey, opts.platform, opts.topic ?? null, now, opts.input ?? null);
+      .run(dedupeKey, opts.platform, opts.topic ?? null, now, opts.input ?? null, senderJson);
     const row = this.get(dedupeKey)!;
     return { firstSeen: info.changes === 1, state: row.state };
   }
@@ -221,6 +255,28 @@ export class MessageProcessingLedger {
       });
   }
 
+  /**
+   * Reply-evidence check (the no-DUPLICATE-re-run half of stuck recovery): has
+   * ANY inbound on this topic been reply_committed at/after `sinceISO`? If so the
+   * agent already answered this topic since the stuck entry arrived, so re-running
+   * it would re-deliver an already-handled message (the 2026-06-07 every-~10-min
+   * "from Unknown" replay loop). Durable across restarts (reads the ledger, not
+   * in-memory state). Cheap: indexed on (topic, reply_committed_at).
+   */
+  hasReplyCommittedForTopicSince(topic: string, sinceISO: string): boolean {
+    const row = this.db
+      .prepare(
+        `SELECT 1 FROM message_ledger
+         WHERE topic = ?
+           AND state IN ('reply_committed','cursor_advanced')
+           AND reply_committed_at IS NOT NULL
+           AND reply_committed_at >= ?
+         LIMIT 1`,
+      )
+      .get(topic, sinceISO);
+    return !!row;
+  }
+
   get(dedupeKey: string): LedgerEntry | null {
     const row = this.db.prepare(`SELECT * FROM message_ledger WHERE dedupe_key = ?`).get(dedupeKey) as any;
     return row ? rowToEntry(row) : null;
@@ -245,5 +301,16 @@ function rowToEntry(row: any): LedgerEntry {
     replyEpoch: row.reply_epoch ?? null,
     inputSnapshot: row.input_snapshot ?? null,
     attempts: row.attempts ?? 0,
+    senderEnvelope: parseSender(row.sender_envelope),
   };
+}
+
+function parseSender(raw: unknown): SenderEnvelope | null {
+  if (typeof raw !== 'string' || !raw) return null;
+  try {
+    const v = JSON.parse(raw);
+    return v && typeof v === 'object' ? (v as SenderEnvelope) : null;
+  } catch {
+    return null;
+  }
 }

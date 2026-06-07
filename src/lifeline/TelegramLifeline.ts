@@ -1860,7 +1860,7 @@ export class TelegramLifeline {
       });
 
       if (decision.action === 'delivered') {
-        this.queue.remove(msg.id);
+        this.queue.markDelivered(msg.id); // remember id so a redelivery can't re-queue it
         replayed++;
         deliveredByTopic.set(msg.topicId, (deliveredByTopic.get(msg.topicId) ?? 0) + 1);
       } else if (decision.action === 'drop') {
@@ -1885,7 +1885,7 @@ export class TelegramLifeline {
           console.error(`[Lifeline] notifyMessageDropped threw for ${msg.id}:`, err instanceof Error ? err.message : err);
         }
         console.warn(`[Lifeline] Dropping message ${msg.id}: ${decision.dropReason} — ${msg.text.slice(0, 80)}`);
-        this.queue.remove(msg.id);
+        this.queue.markDelivered(msg.id); // deliberately handled — don't let a redelivery re-queue it
       } else {
         // requeue — persist the updated strike counters IN PLACE; the message
         // stays on disk for the next replay tick. A transient failure NEVER
