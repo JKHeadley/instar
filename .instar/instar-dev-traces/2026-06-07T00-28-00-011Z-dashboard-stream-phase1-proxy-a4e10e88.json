@@ -1,0 +1,17 @@
+{
+  "version": 2,
+  "sessionId": "cbdc2d51-a6de-446b-8215-773ec12f8e0b",
+  "timestamp": "2026-06-07T00:28:00.011Z",
+  "artifactPath": "upgrades/side-effects/dashboard-stream-phase1-proxy.md",
+  "artifactSha256": "b5ff06e03e8c008ee4d2a96ffabc15010108cec953972a731f2b1652d87e5698",
+  "specPath": "docs/specs/POOL-DASHBOARD-STREAM-SPEC.md",
+  "coveredFiles": [
+    "src/server/PeerStreamProxy.ts",
+    "tests/unit/PeerStreamProxy.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "New exported subsystem (PeerStreamProxy class) → Tier 2, driven by the converged + Justin-approved POOL-DASHBOARD-STREAM-SPEC (approved 'Go' 2026-06-06, remote-input OFF by default). Phase 1 ships the module ONLY, transport/timer/clock-injected, NOT wired to live boot (E2E-pairing exempt in-file; route lands phase 2); 13 deterministic tests cover every spec-flagged race.",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
