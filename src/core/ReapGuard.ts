@@ -77,7 +77,7 @@ export const DEFAULT_REAP_GUARD_OPTIONS: ReapGuardOptions = {
   minAgeMs: 30 * 60_000,
   recentUserWindowMs: 30 * 60_000,
   protectOpenCommitments: true,
-  staleCommitmentWindowMs: 24 * 60 * 60_000, // 24h — "no user message today ⇒ commitment is stale"
+  staleCommitmentWindowMs: 8 * 60 * 60_000, // 8h — "silent 8h ⇒ stale" (operator: restarts are cheap, prefer free resources)
 };
 
 export class ReapGuard {

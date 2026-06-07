@@ -54,12 +54,12 @@ describe('ReapGuard — each guard blocks with its reason', () => {
     ['relay-lease', { isRelayLeaseActive: () => true }],
     ['recent-user-message', { topicBinding: () => 42, recentUserMessage: () => true }],
     // Open commitment keeps ONLY while a message arrived within the staleness window
-    // (here: within 24h but NOT within the 30min recent-user window, so guard I above
-    // doesn't pre-empt it). A window-aware mock distinguishes the two horizons.
+    // but NOT within the 30min recent-user window (so guard I above doesn't pre-empt
+    // it). A window-aware mock distinguishes the two horizons, robust to the default.
     ['open-commitment', {
       topicBinding: () => 42,
       activeCommitmentForTopic: () => true,
-      recentUserMessage: (_t, withinMs) => withinMs >= 24 * 60 * 60_000,
+      recentUserMessage: (_t, withinMs) => withinMs > 60 * 60_000,
     }],
     ['active-subagent', { activeSubagentCount: () => 2 }],
     ['structural-long-work', { buildOrAutonomousActive: () => true }],
@@ -93,11 +93,11 @@ describe('ReapGuard — stale-commitment override (2026-06-06: open-commitment w
     expect(g.blockedReason(mkSession())).toBeNull(); // falls through, reap-eligible
   });
 
-  it('STILL keeps on an open commitment while a message is within the stale window (default 24h)', () => {
+  it('STILL keeps on an open commitment while a message is within the stale window (default 8h)', () => {
     const g = new ReapGuard(clearDeps({
       topicBinding: () => 42,
       activeCommitmentForTopic: () => true,
-      recentUserMessage: (_t, withinMs) => withinMs >= 24 * 60 * 60_000, // active within 24h, not 30min
+      recentUserMessage: (_t, withinMs) => withinMs > 60 * 60_000, // active within the stale window, not the 30min recent-user window
     }));
     expect(g.blockedReason(mkSession())?.reason).toBe('open-commitment');
   });

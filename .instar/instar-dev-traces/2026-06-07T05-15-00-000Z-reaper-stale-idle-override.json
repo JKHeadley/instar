@@ -1,0 +1,27 @@
+{
+    "slug": "reaper-stale-idle-override",
+    "sessionId": "96c61421-860a-48f9-92b4-26328f5640f1",
+    "timestamp": "2026-06-07T05:15:00.000Z",
+    "artifactPath": "upgrades/side-effects/reaper-stale-idle-override.md",
+    "artifactSha256": "0313b308c04dcb099fba1be8d2c34e7edc337fe978fa042ec12b8754cdea4bcc",
+    "coveredFiles": [
+        "src/monitoring/SessionReaper.ts",
+        "src/core/ReapGuard.ts",
+        "src/core/types.ts",
+        "src/config/ConfigDefaults.ts",
+        "tests/unit/session-reaper.test.ts",
+        "tests/unit/reap-guard.test.ts"
+    ],
+    "phase": "complete",
+    "tier": 1,
+    "tierReasoning": "Completes the #955 staleness pattern for the active-process veto in the multi-tick SessionReaper.evaluate (NOT the terminate authority, which stays conservative): a stale-idle session (no user msg within the staleness window) has its active-process existence-veto relaxed, still gated by positive-idle + flat-transcript + confirmObservations. One-directional (only widens reap-eligibility), config-gated (reapStaleIdleWithActiveChildren default true) + disable-able, observability flag for kill clarity. Also lowers the shared staleness default 24h->8h per operator. No API route, no persistent state, no migration. Both sides of every boundary unit-tested. No converged spec required for Tier 1.",
+    "eli16Path": "docs/eli16/reaper-stale-idle-override.eli16.md",
+    "sideEffectsPath": "upgrades/side-effects/reaper-stale-idle-override.md",
+    "causalAutopsy": {
+        "origin": "prior-pr",
+        "relatedPrs": [955],
+        "notes": "Latent veto exposed BY #955. The active-process existence-veto has unconditionally kept any session with a live child since it was added (correct for short-lived sessions). #955 removed the open-commitment veto that was the outer blocker; a post-#955-deploy dry-run on echo (v1.3.391) then showed idle sessions moved 100% to keep-reason active-process (their own idle MCP servers), 0 reap-eligible — and the McpProcessReaper correctly refuses to kill MCP procs under a live session, so idle-MCP-heavy sessions sat in a gap neither reaper would touch. This adds the matching staleness bound to the active-process veto and lowers the shared window 24h->8h at the operator's request (so many resource issues; restarts are cheap). Not a regression — #955 peeled the outer layer and revealed this inner one."
+    },
+    "secondPass": "not-required",
+    "reviewerConcurred": null
+}

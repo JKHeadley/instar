@@ -45,8 +45,15 @@ export interface SessionReaperConfig {
   finalGraceSec: number;
   protectOpenCommitments: boolean;
   /** Staleness horizon (minutes) for the open-commitment veto; past it a commitment
-   *  no longer pins an inactive session. Default 1440 (24h) = "no message today". */
+   *  no longer pins an inactive session. Default 480 (8h). */
   staleCommitmentWindowMinutes: number;
+  /** When true, the `active-process` existence-veto is ALSO relaxed for a stale-idle
+   *  session (no user message within staleCommitmentWindowMinutes), so a session's own
+   *  idle children (e.g. idle MCP servers) stop shielding a 8h-abandoned session. The
+   *  session STILL must clear positive-idle + flat-transcript + confirmObservations to
+   *  reap — this only drops the existence-veto. The active-process analogue of the
+   *  stale-commitment override. Default true (operator wants idle sessions reclaimed). */
+  reapStaleIdleWithActiveChildren: boolean;
   /** CPU pressure: 1-min load ÷ cores at/above which pressure is `moderate`.
    *  The overall tier is the WORST of the memory tier and this CPU tier, so a
    *  CPU-bound box raises pressure even when free memory is fine. */
@@ -112,7 +119,8 @@ export const DEFAULT_SESSION_REAPER_CONFIG: SessionReaperConfig = {
   maxReapsPerHour: 12,
   finalGraceSec: 60,
   protectOpenCommitments: true,
-  staleCommitmentWindowMinutes: 1440, // 24h
+  staleCommitmentWindowMinutes: 480, // 8h
+  reapStaleIdleWithActiveChildren: true,
   cpuModerateLoadPerCore: 1.0,
   cpuCriticalLoadPerCore: 1.5,
   cpuAwareActiveProcessKeep: false,
@@ -191,6 +199,12 @@ export interface SessionEvaluation {
    *  transcript). Observe-only — the verdict is unchanged; tick() tracks the dwell
    *  and emits a `busy-orphan-suspected` audit row past busyOrphanConfirmTicks. */
   busyOrphanSuspect?: boolean;
+  /** True when the `active-process` existence-veto was relaxed this eval because the
+   *  session is stale-idle — no user message within `staleCommitmentWindowMinutes`
+   *  (reapStaleIdleWithActiveChildren). The session STILL had to clear the stateful
+   *  transcript-growth + positive-idle checks to be reap-eligible; this only drops the
+   *  "it has idle children" shield for an 8h-silent session. Audited for kill clarity. */
+  staleIdleRelaxed?: boolean;
 }
 
 export interface PressureReading {
@@ -365,9 +379,19 @@ export class SessionReaper extends EventEmitter {
     const transcript = this.probe(session);
     let cpuTightened = false;
     let busyOrphanSuspect = false;
+    let staleIdleRelaxed = false;
 
     const keep = (reason: string, confidence: Confidence = 'high'): SessionEvaluation =>
-      ({ verdict: 'keep', keptBy: reason, confidence, frame, transcript, cpuTightened, busyOrphanSuspect });
+      ({ verdict: 'keep', keptBy: reason, confidence, frame, transcript, cpuTightened, busyOrphanSuspect, staleIdleRelaxed });
+
+    // Stale-idle: no user message within the staleness window on the bound topic.
+    // An 8h-silent session is treated as abandoned (Justin's "no message today"
+    // rule) — see the active-process relax below. Unbindable topic ⇒ NOT stale
+    // (conservative: never relax a veto on a session we can't time-bound).
+    const staleTopicId = this.deps.topicBinding(session.tmuxSession);
+    const staleIdle = this.cfg.reapStaleIdleWithActiveChildren
+      && staleTopicId != null
+      && !this.deps.recentUserMessage(staleTopicId, this.cfg.staleCommitmentWindowMinutes * 60_000);
 
     // ── Stateless KEEP-guards (§P2): protected, spawn-grace, recovery,
     //    pending-injection, relay-lease, recent-user, open-commitment,
@@ -384,8 +408,16 @@ export class SessionReaper extends EventEmitter {
       // growth + positive-idle checks below, which STILL must all clear before
       // the session is reap-eligible. Every other keep-reason — and the
       // off-pressure / can't-measure cases (cpuFlat !== true) — is unchanged.
-      if (blocked.reason === 'active-process' && opts?.cpuFlat === true) {
-        cpuTightened = true; // relax this veto only; fall through (no return)
+      if (blocked.reason === 'active-process' && (opts?.cpuFlat === true || staleIdle)) {
+        // Relax the active-process veto and fall through (no return) to the stateful
+        // transcript-growth + positive-idle checks, which STILL must all clear before
+        // the session is reap-eligible. Two independent reasons to relax:
+        //   • cpuFlat — the child exists but burns ~no CPU under pressure (wedged/idle).
+        //   • staleIdle — no user message in 8h (abandoned); its idle children (e.g. the
+        //     session's own idle MCP servers) must not shield a dead session forever.
+        //     This is the active-process analogue of the #955 stale-commitment override.
+        if (opts?.cpuFlat === true) cpuTightened = true;
+        if (staleIdle) staleIdleRelaxed = true;
       } else {
         // OBSERVE-ONLY busy-orphan detection — the inverse of the relax above.
         // A child is keeping this session, but if that child is provably BURNING
@@ -421,7 +453,7 @@ export class SessionReaper extends EventEmitter {
     if (!SessionReaper.isPositivelyIdle(framework, frame)) return keep('no-positive-idle');
 
     // All gates clear: this tick the session is a reap candidate.
-    return { verdict: 'reap-eligible', keptBy: 'all-clear', confidence: 'high', frame, transcript, cpuTightened, busyOrphanSuspect };
+    return { verdict: 'reap-eligible', keptBy: 'all-clear', confidence: 'high', frame, transcript, cpuTightened, busyOrphanSuspect, staleIdleRelaxed };
   }
 
   /**

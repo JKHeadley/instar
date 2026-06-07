@@ -104,7 +104,8 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       maxReapsPerHour: 12,
       finalGraceSec: 60,
       protectOpenCommitments: true,
-      staleCommitmentWindowMinutes: 1440, // 24h — open commitment stops pinning an inactive session past a day
+      staleCommitmentWindowMinutes: 480, // 8h — silent 8h stops an open commitment/idle children from pinning a session (operator: restarts are cheap)
+      reapStaleIdleWithActiveChildren: true, // 24h-silent + idle + flat-transcript reaps even with idle children (e.g. idle MCP servers)
 
       // CPU pressure: overall tier = WORST of memory (free %) and CPU (1-min load
       // ÷ cores), so a CPU-bound box raises pressure even when memory is fine.

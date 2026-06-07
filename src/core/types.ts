@@ -3563,8 +3563,13 @@ export interface MonitoringConfig {
     /** Staleness horizon (minutes) for the open-commitment veto: an open commitment
      *  protects a session only while a user message arrived within this window; past
      *  it the commitment is treated as abandoned and no longer blocks reaping.
-     *  Default 1440 (24h) — "no message today ⇒ reapable even with an open commitment". */
+     *  Default 480 (8h) — "no message today ⇒ reapable even with an open commitment". */
     staleCommitmentWindowMinutes?: number;
+    /** When true, a stale-idle session (no user message within staleCommitmentWindowMinutes)
+     *  also has its `active-process` existence-veto relaxed, so its own idle children
+     *  (e.g. idle MCP servers) stop shielding a 24h-abandoned session. It STILL must be
+     *  positively idle + flat-transcript + confirmed across ticks to reap. Default true. */
+    reapStaleIdleWithActiveChildren?: boolean;
     /** CPU pressure: 1-min load ÷ cores at/above which pressure is `moderate`
      *  (overall tier = worst of memory and CPU). Default 1.0. */
     cpuModerateLoadPerCore?: number;

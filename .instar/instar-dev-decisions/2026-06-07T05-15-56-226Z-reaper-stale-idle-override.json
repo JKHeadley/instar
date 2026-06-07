@@ -1,0 +1,15 @@
+{
+  "ts": "2026-06-07T05:15:56.226Z",
+  "slug": "reaper-stale-idle-override",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/monitoring/SessionReaper.ts matches session reaper"
+  ],
+  "belowFloor": true,
+  "files": 4,
+  "loc": 56,
+  "causalAutopsy": null,
+  "verdict": "blocked"
+}

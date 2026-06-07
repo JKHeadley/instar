@@ -115,7 +115,7 @@ describe('SessionReaper — protect-gates each force KEEP', () => {
     ['recent user msg', { topicBinding: () => 42, recentUserMessage: () => true }, 'recent-user-message'],
     // Open commitment keeps only while a message is within the staleness window (24h)
     // but outside the 30min recent-user window — a window-aware mock distinguishes them.
-    ['open commitment', { topicBinding: () => 42, activeCommitmentForTopic: () => true, recentUserMessage: (_t, withinMs) => withinMs >= 24 * 60 * 60_000 }, 'open-commitment'],
+    ['open commitment', { topicBinding: () => 42, activeCommitmentForTopic: () => true, recentUserMessage: (_t, withinMs) => withinMs > 60 * 60_000 }, 'open-commitment'],
   ];
   for (const [name, deps, expectedGate] of cases) {
     it(`KEEPs on ${name}`, () => {
@@ -170,6 +170,55 @@ describe('SessionReaper — positive-evidence & confidence contract', () => {
     const e = h.reaper.evaluate(mkSession());
     expect(e.verdict).toBe('reap-eligible');
     expect(e.keptBy).toBe('all-clear');
+  });
+});
+
+describe('SessionReaper — stale-idle active-process override (reapStaleIdleWithActiveChildren)', () => {
+  // A 24h-silent session whose ONLY "activity" is idle children (e.g. idle MCP servers)
+  // is abandoned: relax the active-process veto, but it STILL must be positively idle +
+  // transcript-flat to reap. The active-process analogue of the #955 stale-commitment override.
+  const staleIdleDeps = {
+    topicBinding: () => 42,
+    recentUserMessage: () => false, // no message in any window ⇒ stale-idle
+    hasActiveProcesses: () => true, // idle MCP children keep it "active"
+  };
+
+  it('REAPS a stale-idle session held only by idle children (and flags staleIdleRelaxed)', () => {
+    const h = harness({ deps: staleIdleDeps });
+    const e = h.reaper.evaluate(mkSession());
+    expect(e.verdict).toBe('reap-eligible');
+    expect(e.staleIdleRelaxed).toBe(true);
+  });
+
+  it('KEEPs on active-process when the session is NOT stale (message within the window)', () => {
+    // Active within 24h (not 30min) ⇒ not stale ⇒ veto stands. (Window-aware mock so the
+    // 30min recent-user guard doesn't pre-empt with recent-user-message.)
+    const h = harness({ deps: { topicBinding: () => 42, hasActiveProcesses: () => true, recentUserMessage: (_t, withinMs) => withinMs > 60 * 60_000 } });
+    const e = h.reaper.evaluate(mkSession());
+    expect(e.verdict).toBe('keep');
+    expect(e.keptBy).toBe('active-process');
+  });
+
+  it('does NOT relax when reapStaleIdleWithActiveChildren is off (old conservative behavior)', () => {
+    const h = harness({ cfg: { reapStaleIdleWithActiveChildren: false }, deps: staleIdleDeps });
+    const e = h.reaper.evaluate(mkSession());
+    expect(e.verdict).toBe('keep');
+    expect(e.keptBy).toBe('active-process');
+  });
+
+  it('STILL keeps a stale-idle session that is not positively idle (safety holds after relax)', () => {
+    const h = harness({ deps: staleIdleDeps });
+    h.setFrame(WORKING_FRAME); // pane shows work in progress, not a ready prompt
+    const e = h.reaper.evaluate(mkSession());
+    expect(e.verdict).toBe('keep');
+    expect(e.keptBy).toBe('no-positive-idle');
+  });
+
+  it('does NOT relax a stale-idle session with NO bound topic (cannot time-bound ⇒ conservative)', () => {
+    const h = harness({ deps: { topicBinding: () => null, recentUserMessage: () => false, hasActiveProcesses: () => true } });
+    const e = h.reaper.evaluate(mkSession());
+    expect(e.verdict).toBe('keep');
+    expect(e.keptBy).toBe('active-process');
   });
 });
 
