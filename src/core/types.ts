@@ -3312,6 +3312,16 @@ export interface MonitoringConfig {
     trustFloor?: string;
     dedupeJaccard?: number;
   };
+  /** A2A redelivery + dark-peer escalation sentinel (A2A-DURABLE-DELIVERY-SPEC §4,
+   *  #939). Ships OFF — it re-sends unacked agent-to-agent messages and escalates. */
+  a2aRedelivery?: {
+    enabled?: boolean;
+    sweepIntervalMs?: number;
+    ttlMs?: number;
+    maxAttempts?: number;
+    backoffBaseMs?: number;
+    maxRedrivesPerTick?: number;
+  };
   /** Session watchdog — auto-remediation for stuck commands */
   watchdog?: {
     enabled: boolean;

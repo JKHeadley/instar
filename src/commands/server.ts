@@ -9404,6 +9404,64 @@ export async function startServer(options: StartOptions): Promise<void> {
       console.warn('[CollaborationRedrive] init failed:', (err as Error).message);
     }
 
+    // ── A2ARedeliverySentinel ─────────────────────────────────────────
+    // The active-recovery layer of "communications never just die out"
+    // (A2A-DURABLE-DELIVERY-SPEC §4, #939, CMT-1143, PR2). Sweeps the delivery
+    // tracker's overdue work-list: re-sends unacknowledged A2A messages with
+    // backoff (body recovered from the canonical outbox), and after the attempt
+    // cap raises ONE aggregated attention item per dark peer. Recording/sending
+    // only — no blocking authority. Ships OFF (it re-sends + escalates).
+    try {
+      const a2aDelivCfg = config.monitoring?.a2aRedelivery ?? {};
+      if (a2aDelivCfg.enabled && a2aDeliveryTracker) {
+        const { A2ARedeliverySentinel, DEFAULT_A2A_REDELIVERY_CONFIG } = await import('../monitoring/A2ARedeliverySentinel.js');
+        const a2aRedeliverySentinel = new A2ARedeliverySentinel(
+          {
+            tracker: a2aDeliveryTracker,
+            // Re-send: recover the body from the canonical outbox by messageId,
+            // then re-emit via the relay. Body missing → return false (the
+            // sentinel leaves it awaiting-ack and escalates at the cap, never
+            // fabricating a send).
+            redeliver: (threadlineRelayClient && listenerManager)
+              ? (entry) => {
+                  const stored = listenerManager!.readCanonicalOutboxEntry(entry.messageId);
+                  if (!stored) return false;
+                  threadlineRelayClient!.sendAuto(entry.peerFp, stored.text, entry.threadId ?? stored.threadId);
+                  return true;
+                }
+              : undefined,
+            raiseAttention: telegram
+              ? async (item) => {
+                  const priorityMap: Record<string, 'URGENT' | 'HIGH' | 'NORMAL' | 'LOW'> = {
+                    high: 'HIGH', medium: 'NORMAL', low: 'LOW',
+                  };
+                  return telegram!.createAttentionItem({
+                    id: `a2a-redelivery-${Date.now()}`,
+                    title: item.title,
+                    summary: item.body.slice(0, 160),
+                    description: item.body,
+                    category: 'a2a-redelivery',
+                    priority: priorityMap[item.priority ?? 'medium'] ?? 'NORMAL',
+                    sourceContext: item.source ?? 'a2a-redelivery',
+                  });
+                }
+              : undefined,
+          },
+          { ...DEFAULT_A2A_REDELIVERY_CONFIG, ...a2aDelivCfg, enabled: true },
+        );
+        a2aRedeliverySentinel.start();
+        (globalThis as Record<string, unknown>).__instarA2ARedeliverySentinel = a2aRedeliverySentinel;
+        console.log(pc.green('  A2ARedeliverySentinel: armed (A2A redelivery + dark-peer escalation)'));
+      } else {
+        console.log(pc.dim('  A2ARedeliverySentinel: disabled (monitoring.a2aRedelivery.enabled=false; the ship-OFF default)'));
+      }
+    } catch (err) {
+      // @silent-fallback-ok: cascade-isolation — a sentinel init failure must never
+      // crash server boot (mirrors the CollaborationRedrive init block above). Logged;
+      // the feature simply stays inert.
+      console.warn('[A2ARedelivery] init failed:', (err as Error).message);
+    }
+
     // Register feature-discovery probe for self-knowledge tree (Phase 4: Agent Integration)
     if (selfKnowledgeTree && featureRegistry) {
       selfKnowledgeTree.probes.register('feature-discovery', async () => {

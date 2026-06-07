@@ -247,6 +247,44 @@ export class ListenerSessionManager {
   }
 
   /**
+   * Look up a previously-sent outbound message's body+target by its messageId,
+   * scanning the canonical outbox (most-recent first). Used by the A2A redelivery
+   * sentinel (A2A-DURABLE-DELIVERY-SPEC §4) to re-send a message that went
+   * unacknowledged — the delivery tracker stores only id/peer/thread, not the
+   * body, so the body is recovered here. Returns null if not found (→ the
+   * sentinel escalates instead of fabricating a re-send).
+   */
+  readCanonicalOutboxEntry(messageId: string): { id: string; to: string; recipientName?: string; threadId?: string; text: string } | null {
+    if (!messageId) return null;
+    const outboxPath = this.canonicalOutboxPath;
+    let raw: string;
+    try {
+      raw = fs.readFileSync(outboxPath, 'utf-8');
+    } catch {
+      // @silent-fallback-ok: no outbox file yet (or unreadable) → null; the
+      // redelivery sentinel then escalates rather than fabricating a re-send.
+      return null;
+    }
+    const lines = raw.split('\n');
+    // Scan newest-first so the latest send for an id wins.
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const line = lines[i].trim();
+      if (!line) continue;
+      try {
+        const e = JSON.parse(line) as { id?: string; to?: string; recipientName?: string; threadId?: string; text?: string };
+        if (e.id === messageId && typeof e.text === 'string' && typeof e.to === 'string') {
+          return { id: e.id, to: e.to, recipientName: e.recipientName, threadId: e.threadId, text: e.text };
+        }
+      } catch {
+        // @silent-fallback-ok: a malformed/partial JSONL line is skipped — never
+        // aborts the scan; a real entry on another line still resolves.
+        continue;
+      }
+    }
+    return null;
+  }
+
+  /**
    * Write a message to the inbox file.
    * Called by the server process when a message is routed to the warm listener.
    * Returns the entry ID for tracking.
