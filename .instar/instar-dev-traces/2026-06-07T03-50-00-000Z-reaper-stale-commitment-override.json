@@ -1,0 +1,26 @@
+{
+    "slug": "reaper-stale-commitment-override",
+    "sessionId": "96c61421-860a-48f9-92b4-26328f5640f1",
+    "timestamp": "2026-06-07T03:50:00.000Z",
+    "artifactPath": "upgrades/side-effects/reaper-stale-commitment-override.md",
+    "artifactSha256": "5d327eb5a8ee90950496c291b6993aca3b2994454776e11438d540d973465fa4",
+    "coveredFiles": [
+        "src/core/ReapGuard.ts",
+        "src/monitoring/SessionReaper.ts",
+        "src/core/types.ts",
+        "src/config/ConfigDefaults.ts",
+        "tests/unit/reap-guard.test.ts",
+        "tests/unit/session-reaper.test.ts"
+    ],
+    "phase": "complete",
+    "tier": 1,
+    "tierReasoning": "Single guard-loosening in the stateless ReapGuard: the open-commitment KEEP-guard gains a staleness bound (staleCommitmentWindowMs, default 24h) so an abandoned commitment stops pinning an inactive session. One-directional (only widens reap-eligibility, never the reverse), only affects sessions that are BOTH commitment-pinned AND 24h-user-silent, reuses the existing recentUserMessage dep, no new I/O, no API route, no persistent state. The reaper it feeds is itself opt-in + dry-run-first, and the change was validated with the dry-run that surfaced the problem. Both sides of the new boundary unit-tested. No converged spec required for Tier 1.",
+    "eli16Path": "docs/eli16/reaper-stale-commitment-override.eli16.md",
+    "sideEffectsPath": "upgrades/side-effects/reaper-stale-commitment-override.md",
+    "causalAutopsy": {
+        "origin": "latent",
+        "notes": "The open-commitment KEEP-guard has unconditionally protected commitment-bearing sessions since it was added — correct when sessions were short-lived and commitments closed promptly. As the fleet grew to dozens of multi-day sessions with commitments left open, the unconditional veto became the dominant blocker to idle-session reaping: 2026-06-06 grounding during a load-avg-30 overload (a SessionReaper dry-run on echo) showed 19 of 26 session-evaluations kept by open-commitment, many on sessions the user had not messaged in 26h. No prior PR regressed this; an always-on protection simply never had a staleness bound. This adds the bound (Justin's 'no message today -> reap' rule)."
+    },
+    "secondPass": "not-required",
+    "reviewerConcurred": null
+}

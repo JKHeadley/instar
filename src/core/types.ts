@@ -3560,6 +3560,11 @@ export interface MonitoringConfig {
     maxReapsPerHour?: number;
     finalGraceSec?: number;
     protectOpenCommitments?: boolean;
+    /** Staleness horizon (minutes) for the open-commitment veto: an open commitment
+     *  protects a session only while a user message arrived within this window; past
+     *  it the commitment is treated as abandoned and no longer blocks reaping.
+     *  Default 1440 (24h) — "no message today ⇒ reapable even with an open commitment". */
+    staleCommitmentWindowMinutes?: number;
     /** CPU pressure: 1-min load ÷ cores at/above which pressure is `moderate`
      *  (overall tier = worst of memory and CPU). Default 1.0. */
     cpuModerateLoadPerCore?: number;

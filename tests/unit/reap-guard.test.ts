@@ -53,7 +53,14 @@ describe('ReapGuard — each guard blocks with its reason', () => {
     ['pending-injection', { hasPendingInjection: () => true }],
     ['relay-lease', { isRelayLeaseActive: () => true }],
     ['recent-user-message', { topicBinding: () => 42, recentUserMessage: () => true }],
-    ['open-commitment', { topicBinding: () => 42, activeCommitmentForTopic: () => true }],
+    // Open commitment keeps ONLY while a message arrived within the staleness window
+    // (here: within 24h but NOT within the 30min recent-user window, so guard I above
+    // doesn't pre-empt it). A window-aware mock distinguishes the two horizons.
+    ['open-commitment', {
+      topicBinding: () => 42,
+      activeCommitmentForTopic: () => true,
+      recentUserMessage: (_t, withinMs) => withinMs >= 24 * 60 * 60_000,
+    }],
     ['active-subagent', { activeSubagentCount: () => 2 }],
     ['structural-long-work', { buildOrAutonomousActive: () => true }],
     ['active-process', { hasActiveProcesses: () => true }],
@@ -71,6 +78,54 @@ describe('ReapGuard — each guard blocks with its reason', () => {
     expect(new ReapGuard(clearDeps()).blockedReason(young)?.reason).toBe('spawn-grace');
     // A caller that wants no spawn grace (e.g. boot purge reaping a dead session) sets minAgeMs:0.
     expect(new ReapGuard(clearDeps(), { minAgeMs: 0 }).blockedReason(young)).toBeNull();
+  });
+});
+
+describe('ReapGuard — stale-commitment override (2026-06-06: open-commitment was pinning 26h-idle sessions)', () => {
+  // An open commitment + NO user message within the staleness window ⇒ the commitment
+  // is abandoned and must NOT keep the session. Other guards clear ⇒ reap-eligible.
+  it('does NOT keep on an open commitment when no user message within the stale window', () => {
+    const g = new ReapGuard(clearDeps({
+      topicBinding: () => 42,
+      activeCommitmentForTopic: () => true,
+      recentUserMessage: () => false, // no message in any window — the commitment is stale
+    }));
+    expect(g.blockedReason(mkSession())).toBeNull(); // falls through, reap-eligible
+  });
+
+  it('STILL keeps on an open commitment while a message is within the stale window (default 24h)', () => {
+    const g = new ReapGuard(clearDeps({
+      topicBinding: () => 42,
+      activeCommitmentForTopic: () => true,
+      recentUserMessage: (_t, withinMs) => withinMs >= 24 * 60 * 60_000, // active within 24h, not 30min
+    }));
+    expect(g.blockedReason(mkSession())?.reason).toBe('open-commitment');
+  });
+
+  it('honors a custom staleCommitmentWindowMs (a message just outside it ⇒ stale ⇒ reapable)', () => {
+    // Window = 2h. A message within 2h keeps; one only within 24h is now stale.
+    const within2h = new ReapGuard(clearDeps({
+      topicBinding: () => 42,
+      activeCommitmentForTopic: () => true,
+      recentUserMessage: (_t, withinMs) => withinMs >= 2 * 60 * 60_000,
+    }), { staleCommitmentWindowMs: 2 * 60 * 60_000 });
+    expect(within2h.blockedReason(mkSession())?.reason).toBe('open-commitment');
+
+    const only24h = new ReapGuard(clearDeps({
+      topicBinding: () => 42,
+      activeCommitmentForTopic: () => true,
+      recentUserMessage: (_t, withinMs) => withinMs >= 24 * 60 * 60_000, // not within 2h
+    }), { staleCommitmentWindowMs: 2 * 60 * 60_000 });
+    expect(only24h.blockedReason(mkSession())).toBeNull();
+  });
+
+  it('Infinity restores always-protect (any open commitment keeps, regardless of activity)', () => {
+    const g = new ReapGuard(clearDeps({
+      topicBinding: () => 42,
+      activeCommitmentForTopic: () => true,
+      recentUserMessage: (_t, withinMs) => Number.isFinite(withinMs) ? false : true,
+    }), { staleCommitmentWindowMs: Infinity });
+    expect(g.blockedReason(mkSession())?.reason).toBe('open-commitment');
   });
 });
 

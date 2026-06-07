@@ -1,0 +1,47 @@
+<!-- bump: patch -->
+<!-- change_type: fix -->
+
+## What Changed
+
+The idle-session reaper's "never reap a session with an open commitment" safety
+guard is now activity-aware. An open commitment protects a session only while a
+user message arrived within a staleness window (default 24h); past that the
+commitment is treated as abandoned and no longer blocks reaping. Found 2026-06-06
+during a load-avg-30 overload: a reaper dry-run would have reaped NOTHING because
+19 of 26 sessions were pinned by `open-commitment`, many on sessions untouched for
+26h. The unconditional veto was the dominant blocker to idle-session cleanup.
+
+New `staleCommitmentWindowMs` on `ReapGuard` (default 24h; `Infinity` = old
+always-protect) + `monitoring.sessionReaper.staleCommitmentWindowMinutes`
+(default 1440), threaded through to the terminate-time authority guard too.
+
+## What to Tell Your User
+
+Nothing required — internal reaper policy, and the reaper itself remains opt-in.
+For operators turning the reaper on: idle sessions that have an open commitment
+but no user message for 24h+ will now become reap-eligible (they previously stayed
+alive forever). Active sessions and recently-touched sessions are unaffected.
+
+## Summary of New Capabilities
+
+- `ReapGuard.staleCommitmentWindowMs` — bounds the open-commitment KEEP-guard so a
+  stale commitment stops pinning an inactive session. Default 24h; `Infinity`
+  restores always-protect.
+- `sessionReaper.staleCommitmentWindowMinutes` config (default 1440). Internal
+  reaper policy; no agent-facing API/CLI surface.
+
+## Scope (honest)
+
+UNBLOCKS the reaper — it changes which sessions are eligible, it does not by itself
+kill anything (the reaper is opt-in + dry-run-first). Pairs with enabling
+sessionReaper + mcpProcessReaper + SleepController (which ship opt-in and were off
+fleet-wide). Does NOT auto-expire the commitments themselves (separate follow-up);
+it only stops a stale commitment from vetoing a reap.
+
+## Evidence
+
+`tests/unit/reap-guard.test.ts` + `tests/unit/session-reaper.test.ts`: both sides
+of the boundary (stale commitment ⇒ falls through to reap-eligible; fresh
+commitment within window ⇒ still keeps; custom window honored; `Infinity` restores
+always-protect; existing open-commitment cases updated to window-aware mocks).
+49/49 green. `tsc --noEmit` clean.

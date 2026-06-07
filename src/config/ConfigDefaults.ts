@@ -104,6 +104,8 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       maxReapsPerHour: 12,
       finalGraceSec: 60,
       protectOpenCommitments: true,
+      staleCommitmentWindowMinutes: 1440, // 24h — open commitment stops pinning an inactive session past a day
+
       // CPU pressure: overall tier = WORST of memory (free %) and CPU (1-min load
       // ÷ cores), so a CPU-bound box raises pressure even when memory is fine.
       cpuModerateLoadPerCore: 1.0,
