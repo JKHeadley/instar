@@ -60,6 +60,14 @@ export interface SleepWakeDetectorConfig {
    * recovery storms. Long sleeps bypass the cooldown. Default: 60000 (1 min).
    */
   minWakeIntervalMs?: number;
+  /**
+   * Number of BACK-TO-BACK drift ticks at/above which a drift is treated as a CPU-
+   * starvation burst and suppressed — regardless of duration or the (lagging) load
+   * ratio. A genuine sleep is a single isolated drift (the next tick is on-time, which
+   * resets the counter); sustained starvation produces consecutive drifts. Default: 2
+   * (the 2nd consecutive drift is already a storm). Set 0 to disable.
+   */
+  driftBurstSuppressFloor?: number;
   /** Injectable system-load source (testing). Default: os.loadavg. */
   loadAvgProvider?: () => number[];
   /** Injectable CPU-count source (testing). Default: os.cpus().length. */
@@ -102,6 +110,14 @@ export class SleepWakeDetector extends EventEmitter {
   private maxLoadRatio: number;
   private longSleepFloorSeconds: number;
   private minWakeIntervalMs: number;
+  private driftBurstSuppressFloor: number;
+  /** Count of BACK-TO-BACK drift ticks (reset by any on-time tick). A real sleep is
+   *  ONE isolated drift; sustained CPU starvation produces consecutive drifts. The
+   *  Nth+ consecutive drift is a storm, not a sleep, and is suppressed regardless of
+   *  the (lagging, fluctuating) 1-min load ratio — the gap maxLoadRatio alone missed
+   *  (2026-06-07: tunnel-restart storm from 10-42s drifts firing whenever loadRatio
+   *  momentarily dipped below maxLoadRatio). */
+  private consecutiveDrifts = 0;
   private loadAvgProvider: () => number[];
   private cpuCountProvider: () => number;
   private now: () => number;
@@ -115,6 +131,7 @@ export class SleepWakeDetector extends EventEmitter {
     this.maxLoadRatio = config.maxLoadRatio ?? 1.5;
     this.longSleepFloorSeconds = config.longSleepFloorSeconds ?? 300;
     this.minWakeIntervalMs = config.minWakeIntervalMs ?? 60000;
+    this.driftBurstSuppressFloor = config.driftBurstSuppressFloor ?? 2;
     this.loadAvgProvider = config.loadAvgProvider ?? (() => os.loadavg());
     this.cpuCountProvider = config.cpuCountProvider ?? (() => os.cpus().length);
     this.now = config.nowProvider ?? (() => Date.now());
@@ -130,11 +147,29 @@ export class SleepWakeDetector extends EventEmitter {
       const elapsed = now - this.lastTick;
       this.lastTick = now;
 
-      if (elapsed <= this.driftThresholdMs) return;
+      if (elapsed <= this.driftThresholdMs) { this.consecutiveDrifts = 0; return; } // on-time tick → not starving
 
       const sleepDuration = Math.round((elapsed - this.checkIntervalMs) / 1000);
       const isLongSleep = sleepDuration >= this.longSleepFloorSeconds;
       const loadRatio = this.currentLoadRatio();
+      this.consecutiveDrifts += 1;
+
+      // Consecutive-drift burst = sustained CPU starvation, not sleep. A genuine sleep
+      // is ONE isolated drift (the next on-time tick resets the counter); the 2nd+
+      // back-to-back SHORT drift is a storm. Suppress it regardless of the (lagging,
+      // fluctuating) load ratio — this catches the drifts maxLoadRatio missed when the
+      // 1-min average momentarily dipped below the threshold (2026-06-07 tunnel-restart
+      // storm). A genuine LONG sleep (>= longSleepFloorSeconds) is exempt — it always
+      // emits (real-sleep recovery is essential), and the FIRST short drift still falls
+      // through to the checks below, so an isolated real wake is unaffected.
+      if (!isLongSleep && this.driftBurstSuppressFloor > 0 && this.consecutiveDrifts >= this.driftBurstSuppressFloor) {
+        this.recordSuppression('cpu-starvation', sleepDuration, loadRatio, now);
+        console.warn(
+          `[SleepWakeDetector] Drift ~${sleepDuration}s — consecutive drift #${this.consecutiveDrifts} ` +
+            `(>= ${this.driftBurstSuppressFloor}) = starvation burst, suppressing wake`,
+        );
+        return;
+      }
 
       // Short drift under heavy CPU load = event-loop starvation, not sleep.
       if (!isLongSleep && loadRatio > this.maxLoadRatio) {

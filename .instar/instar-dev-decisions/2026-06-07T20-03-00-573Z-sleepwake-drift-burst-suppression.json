@@ -1,0 +1,16 @@
+{
+  "ts": "2026-06-07T20:03:00.573Z",
+  "slug": "sleepwake-drift-burst-suppression",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 37,
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "SleepWakeDetector has inferred sleep from timer drift since it was written; #867 added the load-ratio starvation guard (short drift + high 1-min load ratio => suppress). That guard is correct but the 1-min load average lags and fluctuates, leaving a latent gap: on a box bouncing between load ~8 and ~20, a lag-drift landing during a momentary dip below maxLoadRatio still fired a wake. 2026-06-07 grounding: a tunnel-restart storm every 1-3min (some timing out) under exactly this churn. No prior PR regressed it; #867 improved the common case and this completes it for the fluctuating-load case. Fix B of the operator-requested A+B pair (A = #975 durable reaper candidacy, which survives whatever restart churn remains; B reduces the churn at its source). Related prior work: #867 (laptop-eventloop-stall load-ratio guard)."
+  },
+  "verdict": "pass"
+}
