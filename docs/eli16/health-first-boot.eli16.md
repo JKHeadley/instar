@@ -14,7 +14,7 @@ A **boot health beacon**: a tiny HTTP listener that comes up instantly at the st
 
 - **Off by default.** It ships dark behind `monitoring.bootHealthBeacon.enabled`. Until that's turned on, nothing changes at all. Rollout is dark → try it on Echo → fleet.
 - **Clean handoff.** The beacon force-closes its connections and fully releases the port *before* the real server binds it, so there's no "address already in use" clash. A test proves the real server can grab the port immediately after the beacon lets go.
-- **Never blocks boot.** If the beacon fails to start (or to stop), it's caught and ignored — the server boots anyway. The beacon can only ever help, never hold up startup.
+- **Never blocks boot.** If the beacon fails to start (or to stop), it's caught and ignored — the server boots anyway. The beacon can only ever help, never hold up startup. (Those two guards are deliberately marked `@silent-fallback-ok` — they log the error, and a best-effort beacon must not block boot.)
 - **Right place in a tricky boot.** The server has a foreground/daemon split; daemon mode actually re-launches itself in "foreground", so the beacon is placed in that shared path — it runs no matter how the server was started.
 
 ## Honest scope

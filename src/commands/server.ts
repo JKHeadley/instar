@@ -2330,7 +2330,9 @@ export async function startServer(options: StartOptions): Promise<void> {
         await bootBeacon.start();
         console.log(pc.dim('  Boot health beacon: answering /health during boot'));
       } catch (err) {
-        // Non-fatal — boot proceeds without the beacon (the grace bump still covers it).
+        // @silent-fallback-ok — the boot beacon is best-effort liveness; a bind
+        // failure must NEVER block the server boot (the startupGrace bump still
+        // covers the health window). Logged here, not swallowed silently.
         bootBeacon = undefined;
         console.error('  Boot health beacon failed to start (non-fatal):', err instanceof Error ? err.message : err);
       }
@@ -11988,6 +11990,8 @@ export async function startServer(options: StartOptions): Promise<void> {
     try {
       await bootBeacon?.stop();
     } catch (err) {
+      // @silent-fallback-ok — a beacon stop failure must not stop the real server
+      // from binding; logged, and the OS releases the listening socket regardless.
       console.error('  Boot health beacon stop failed (continuing to bind real server):', err instanceof Error ? err.message : err);
     }
     await server.start();

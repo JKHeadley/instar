@@ -36,7 +36,9 @@ turned on.
 
 Wrapped in try/catch — non-fatal. Boot proceeds without the beacon (the grace bump
 still covers the window). The server is never blocked from booting by a beacon
-problem.
+problem. Both guards (start + stop) log the error and are marked
+`@silent-fallback-ok` (intentional best-effort fallback, not a silent swallow) so
+the no-silent-fallbacks ratchet stays at its baseline.
 
 ## 2. Handoff race (EADDRINUSE on the real listen)
 
