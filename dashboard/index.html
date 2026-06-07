@@ -2692,6 +2692,7 @@
           <button class="tab" data-tab="threadline" onclick="switchTab('threadline')">Threadline</button>
           <button class="tab" data-tab="evidence" onclick="switchTab('evidence')">Evidence</button>
           <button class="tab" data-tab="process-health" onclick="switchTab('process-health')">Process Health</button>
+          <button class="tab" data-tab="subscriptions" onclick="switchTab('subscriptions')">Subscriptions</button>
           <button class="tab" data-tab="preferences-learning" onclick="switchTab('preferences-learning')">Preferences</button>
           <button class="tab" data-tab="machines" onclick="switchTab('machines')">Machines</button>
           <button class="tab" data-tab="mandates" onclick="switchTab('mandates')">Mandates</button>
@@ -3241,6 +3242,44 @@
         <summary class="ph-detail-summary">More detail</summary>
         <div id="phDetail" class="ph-detail-body"></div>
       </details>
+    </div>
+
+    <!-- subscriptions tab (Subscription & Auth Standard P2.2 — live quota + pending logins) -->
+    <style>
+      .sub-account { border:1px solid var(--border,#2a2a2a); border-radius:10px; padding:14px 16px; margin-bottom:12px; }
+      .sub-account-head { display:flex; justify-content:space-between; align-items:baseline; gap:12px; }
+      .sub-account-nick { font-weight:600; font-size:15px; }
+      .sub-account-status { font-size:12px; opacity:.75; }
+      .sub-account-meta { font-size:12px; opacity:.6; margin:2px 0 10px; }
+      .sub-account-noquota { font-size:12px; opacity:.6; }
+      .sub-quota { margin:8px 0; }
+      .sub-quota-head { display:flex; justify-content:space-between; font-size:12px; margin-bottom:4px; }
+      .sub-quota-label { opacity:.8; }
+      .sub-quota-pct { opacity:.65; }
+      .sub-quota-track { height:8px; border-radius:4px; background:var(--border,#2a2a2a); overflow:hidden; }
+      .sub-quota-fill { height:100%; background:linear-gradient(90deg,#4caf80,#3a9); }
+      .sub-pending { border:1px solid var(--border,#2a2a2a); border-radius:10px; padding:12px 16px; margin-bottom:10px; }
+      .sub-pending-head { display:flex; justify-content:space-between; align-items:baseline; gap:12px; }
+      .sub-pending-label { font-weight:600; }
+      .sub-pending-ttl { font-size:12px; opacity:.7; }
+      .sub-pending-code { font-family:monospace; font-size:14px; margin-top:6px; }
+      .sub-pending-url { font-size:12px; opacity:.7; word-break:break-all; margin-top:4px; }
+      .sub-pending-reissue { font-size:11px; opacity:.55; margin-top:4px; }
+      .sub-empty, .sub-disabled { font-size:13px; opacity:.7; padding:8px 0; }
+    </style>
+    <div id="subscriptionsPanel" class="ph-root" style="display:none;flex-direction:column;padding:28px;gap:24px;overflow-y:auto">
+      <h2 class="ph-title">Subscriptions</h2>
+      <p class="ph-intro">Your subscription accounts and how much of each is left before it resets — plus any logins waiting for you to approve on your phone.</p>
+      <section class="ph-section">
+        <h3 class="ph-h">Accounts</h3>
+        <p class="ph-h-sub">Each account’s live usage (5-hour and weekly) and when it resets.</p>
+        <div id="subAccounts"></div>
+      </section>
+      <section class="ph-section">
+        <h3 class="ph-h">Pending logins</h3>
+        <p class="ph-h-sub">Logins waiting for approval — open the link on your phone and confirm. An expired code is re-issued automatically.</p>
+        <div id="subPending"></div>
+      </section>
     </div>
 
     <!-- mandates tab (coordination-mandate spec, decision 2A — the operator's PIN-gated surface) -->
@@ -4649,6 +4688,13 @@
         display: ['flex'],
         onActivate: () => { if (typeof startProcessHealth === 'function') startProcessHealth(); },
         onDeactivate: () => { if (typeof stopProcessHealth === 'function') stopProcessHealth(); },
+      },
+      {
+        id: 'subscriptions',
+        panels: ['subscriptionsPanel'],
+        display: ['flex'],
+        onActivate: () => { if (typeof startSubscriptions === 'function') startSubscriptions(); },
+        onDeactivate: () => { if (typeof stopSubscriptions === 'function') stopSubscriptions(); },
       },
       {
         id: 'preferences-learning',
@@ -8600,6 +8646,34 @@
     }
     function stopProcessHealth() {
       if (__phController) __phController.stop();
+    }
+
+    // ── Subscriptions tab (Subscription & Auth Standard P2.2) ──
+    // Same lazy dynamic-import pattern as Process Health: the controller lives in
+    // this (classic) scope so it can read `token`; the module ships the pure
+    // renderers + the polling controller.
+    let __subController = null;
+    let __subModule = null;
+    async function startSubscriptions() {
+      if (!__subModule) {
+        try { __subModule = await import('/dashboard/subscriptions.js'); }
+        catch (e) { console.error('[subscriptions] module load failed', e); return; }
+      }
+      if (!__subController) {
+        const els = {
+          accounts: document.getElementById('subAccounts'),
+          pending: document.getElementById('subPending'),
+        };
+        const fetchImpl = (url, opts = {}) => fetch(url, {
+          headers: { 'Authorization': `Bearer ${token}`, ...(opts.headers || {}) },
+          signal: opts.signal,
+        });
+        __subController = __subModule.createController({ doc: document, els, fetchImpl });
+      }
+      __subController.start();
+    }
+    function stopSubscriptions() {
+      if (__subController) __subController.stop();
     }
 
     // ── Mandates tab (coordination-mandate spec, decision 2A) ──
