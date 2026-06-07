@@ -67,6 +67,8 @@ function createTestManager(options: {
   sessionManager?: MockSessionManager;
   authToken?: string;
   hookEventReceiver?: any;
+  poolStreamConnector?: any;
+  selfMachineId?: string;
 } = {}) {
   const sessionManager = options.sessionManager ?? createMockSessionManager();
   const httpServer = createMockHttpServer();
@@ -80,6 +82,8 @@ function createTestManager(options: {
     state: createMockStateManager(),
     authToken: options.authToken,
     hookEventReceiver: options.hookEventReceiver,
+    poolStreamConnector: options.poolStreamConnector,
+    selfMachineId: options.selfMachineId,
   });
 
   /**
@@ -558,5 +562,96 @@ describe('WebSocketManager', () => {
       expect((ws.close as any)).toHaveBeenCalledWith(1001, 'Server shutting down');
       expect((manager as any).clients.size).toBe(0);
     });
+  });
+});
+
+// ── Pool Dashboard Streaming — requesting side (§2.2) ────────────────────
+describe('WebSocketManager — remote session routing (requesting side)', () => {
+  /** A fake connector that captures the proxy's handlers so the test can drive
+   *  onOpen/onFrame/onClose, and records frames the proxy sends upstream. */
+  function fakeConnector() {
+    const state: { handlers?: any; sent: any[]; closed: boolean; connectCount: number } = { sent: [], closed: false, connectCount: 0 };
+    const connector = {
+      connect: (_machineId: string, handlers: any) => {
+        state.handlers = handlers;
+        state.connectCount++;
+        return {
+          send: (f: any) => state.sent.push(f),
+          close: () => { state.closed = true; },
+        };
+      },
+    };
+    return { connector, state };
+  }
+
+  it('a subscribe with a remote machineId opens a peer proxy and fans output back to the client', () => {
+    const { connector, state } = fakeConnector();
+    const { connectClient, sendMessage } = createTestManager({ poolStreamConnector: connector, selfMachineId: 'm_self' });
+    const { ws, client } = connectClient();
+
+    sendMessage(client, { type: 'subscribe', session: 'mini-sess', machineId: 'm_mini' });
+    expect(state.connectCount).toBe(1);                       // upstream opened
+    expect(client.remoteSubs.has('m_mini::mini-sess')).toBe(true);
+    expect(ws.sentMessages.some(m => m.type === 'subscribed' && m.machineId === 'm_mini')).toBe(true);
+
+    // Peer comes online and streams output → fans to the subscribed client, tagged.
+    state.handlers.onOpen();
+    state.handlers.onFrame({ type: 'output', session: 'mini-sess', data: 'remote hello' });
+    const out = ws.sentMessages.find(m => m.type === 'output' && m.session === 'mini-sess');
+    expect(out).toBeDefined();
+    expect(out!.machineId).toBe('m_mini');
+    expect(out!.data).toBe('remote hello');
+  });
+
+  it('a subscribe whose machineId is SELF uses the local path (no proxy)', () => {
+    const { connector, state } = fakeConnector();
+    const { connectClient, sendMessage } = createTestManager({ poolStreamConnector: connector, selfMachineId: 'm_self' });
+    const { client } = connectClient();
+    sendMessage(client, { type: 'subscribe', session: 'local-sess', machineId: 'm_self' });
+    expect(state.connectCount).toBe(0);
+    expect(client.subscriptions.has('local-sess')).toBe(true);
+  });
+
+  it('a session that exists LOCALLY is served locally even if a (stale) remote machineId is hinted', () => {
+    const sm = createMockSessionManager({ listRunningSessions: vi.fn(() => [{ tmuxSession: 'here', name: 'here' } as any]) });
+    const { connector, state } = fakeConnector();
+    const { connectClient, sendMessage } = createTestManager({ sessionManager: sm, poolStreamConnector: connector, selfMachineId: 'm_self' });
+    const { client } = connectClient();
+    sendMessage(client, { type: 'subscribe', session: 'here', machineId: 'm_mini' });
+    expect(state.connectCount).toBe(0);                       // not routed remote
+    expect(client.subscriptions.has('here')).toBe(true);
+  });
+
+  it('remote input is relayed upstream (the SERVING machine enforces its gate)', () => {
+    const { connector, state } = fakeConnector();
+    const { connectClient, sendMessage } = createTestManager({ poolStreamConnector: connector, selfMachineId: 'm_self' });
+    const { client } = connectClient();
+    sendMessage(client, { type: 'subscribe', session: 'mini-sess', machineId: 'm_mini' });
+    state.handlers.onOpen();
+    sendMessage(client, { type: 'input', session: 'mini-sess', machineId: 'm_mini', text: 'ls\n' });
+    expect(state.sent.some((f: any) => f.type === 'input' && f.session === 'mini-sess' && f.text === 'ls\n')).toBe(true);
+  });
+
+  it('an upstream drop fans an honest peer-stream-lost error frame to the subscribed client', () => {
+    const { connector, state } = fakeConnector();
+    const { connectClient, sendMessage } = createTestManager({ poolStreamConnector: connector, selfMachineId: 'm_self' });
+    const { ws, client } = connectClient();
+    sendMessage(client, { type: 'subscribe', session: 'mini-sess', machineId: 'm_mini' });
+    state.handlers.onOpen();
+    state.handlers.onClose();   // the upstream drops → proxy surfaces peer-stream-lost
+    const err = ws.sentMessages.find(m => m.type === 'error' && m.code === 'peer-stream-lost');
+    expect(err).toBeDefined();
+    expect(err!.machineId).toBe('m_mini');
+    expect(err!.session).toBe('mini-sess');
+  });
+
+  it('a remote unsubscribe stops routing and drops the remote sub', () => {
+    const { connector } = fakeConnector();
+    const { connectClient, sendMessage } = createTestManager({ poolStreamConnector: connector, selfMachineId: 'm_self' });
+    const { client } = connectClient();
+    sendMessage(client, { type: 'subscribe', session: 'mini-sess', machineId: 'm_mini' });
+    expect(client.remoteSubs.has('m_mini::mini-sess')).toBe(true);
+    sendMessage(client, { type: 'unsubscribe', session: 'mini-sess', machineId: 'm_mini' });
+    expect(client.remoteSubs.has('m_mini::mini-sess')).toBe(false);
   });
 });
