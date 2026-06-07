@@ -10882,9 +10882,10 @@ export async function startServer(options: StartOptions): Promise<void> {
             // the ticket is bound to that sender and consumed once on upgrade.
             'pool-stream-ticket': (cmd, sender) => {
               const c = cmd as import('../core/MeshRpc.js').MeshCommand & { type: 'pool-stream-ticket' };
-              if (!_streamTicketStore) return { ok: false, reason: 'pool-stream disabled' };
+              if (!_streamTicketStore) { console.log(pc.dim(`  [pool-stream-ticket] mint request from ${sender} REFUSED: store disabled`)); return { ok: false, reason: 'pool-stream disabled' }; }
               if (!c.session || typeof c.session !== 'string') return { ok: false, reason: 'session required' };
               const minted = _streamTicketStore.mint(sender);
+              console.log(pc.dim(`  [pool-stream-ticket] minted ticket for ${sender}`));
               return { ok: true, ticket: minted.ticket, expiresAtMs: minted.expiresAtMs };
             },
             // COHERENCE-JOURNAL-SPEC §3.4 — always-registered journal-sync verb
@@ -11016,26 +11017,35 @@ export async function startServer(options: StartOptions): Promise<void> {
           // bounded reconnect → machine-unreachable).
           {
             const { WebSocket: WsClient } = await import('ws');
+            const psLog = (m: string) => console.log(pc.dim(`  [pool-stream-connector] ${m}`));
             _poolStreamConnector = {
               connect: (machineId, handlers) => {
                 const httpUrl = peerUrl(machineId);
-                if (!httpUrl) return null;
+                if (!httpUrl) { psLog(`connect ${machineId}: no peer url → unreachable`); return null; }
                 let ws: import('ws').WebSocket | null = null;
                 let open = false;
                 let closed = false;
                 const pending: string[] = [];
                 (async () => {
                   try {
-                    const r = await meshClient.send({ machineId, url: httpUrl }, { type: 'pool-stream-ticket', session: '*' }, 0);
+                    psLog(`minting ticket from ${machineId} (${httpUrl})`);
+                    // EXPLICIT 10s timeout (live-verify finding 2026-06-07): without
+                    // it a wedged mint hung indefinitely — the stream never opened
+                    // AND never errored (the connector's onClose never fired), so the
+                    // dashboard sat silent forever. A bounded send fails honestly →
+                    // onClose → the proxy surfaces peer-stream-lost / unreachable.
+                    const r = await meshClient.send({ machineId, url: httpUrl }, { type: 'pool-stream-ticket', session: '*' }, 0, { timeoutMs: 10_000 });
                     const ticket = r.ok && r.result && typeof r.result === 'object' ? (r.result as { ticket?: string }).ticket : undefined;
-                    if (!ticket || closed) { if (!closed) handlers.onClose(); return; }
+                    if (!ticket) { psLog(`mint failed for ${machineId}: ok=${r.ok} status=${r.status} reason=${r.reason ?? ''} hasTicket=${!!ticket}`); if (!closed) handlers.onClose(); return; }
+                    if (closed) return;
                     const wsUrl = httpUrl.replace(/^http/, 'ws').replace(/\/$/, '') + `/pool-stream?ticket=${encodeURIComponent(ticket)}`;
+                    psLog(`ticket ok; opening upstream ws to ${machineId}`);
                     ws = new WsClient(wsUrl);
-                    ws.on('open', () => { open = true; for (const m of pending) ws!.send(m); pending.length = 0; handlers.onOpen(); });
+                    ws.on('open', () => { open = true; psLog(`upstream OPEN to ${machineId}`); for (const m of pending) ws!.send(m); pending.length = 0; handlers.onOpen(); });
                     ws.on('message', (d: unknown) => { try { handlers.onFrame(JSON.parse(String(d))); } catch { /* @silent-fallback-ok: a non-JSON peer frame is dropped; the stream protocol is JSON-only (§2.2) */ } });
-                    ws.on('close', () => handlers.onClose());
-                    ws.on('error', () => { if (!open) handlers.onClose(); });
-                  } catch { if (!closed) handlers.onClose(); }
+                    ws.on('close', (code: number) => { psLog(`upstream CLOSE from ${machineId} (code ${code}, wasOpen ${open})`); handlers.onClose(); });
+                    ws.on('error', (e: Error) => { psLog(`upstream ERROR to ${machineId}: ${e?.message ?? e}`); if (!open) handlers.onClose(); });
+                  } catch (e) { psLog(`connect to ${machineId} threw: ${(e as Error)?.message ?? e}`); if (!closed) handlers.onClose(); }
                 })();
                 return {
                   send: (frame: Record<string, unknown>) => { const s = JSON.stringify(frame); if (open && ws) ws.send(s); else pending.push(s); },
