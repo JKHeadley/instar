@@ -3334,6 +3334,18 @@ export interface MonitoringConfig {
   /** Health check interval in ms */
   healthCheckIntervalMs: number;
   /**
+   * Boot health beacon — a minimal /health responder bound from the very start
+   * of the server boot so the supervisor sees liveness during the heavy
+   * memory/session load (which runs before AgentServer binds its port). Closed
+   * at the handoff just before the real server listens. The durable cure for the
+   * restart-before-boot loop (topic 21816 root cause #1 — "Liveness Before
+   * Load"); the startupGrace bump is the interim cover. Ships OFF (dark → canary
+   * → fleet). When absent, treated as disabled.
+   */
+  bootHealthBeacon?: {
+    enabled?: boolean;
+  };
+  /**
    * CollaborationRedriveEngine — proactively re-engage a counterpart that
    * has gone silent on an open threadline-reply commitment. Ships OFF.
    * Spec: docs/specs/collaboration-redrive-on-counterpart-silence.md.

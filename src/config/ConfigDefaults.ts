@@ -19,6 +19,12 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
   monitoring: {
     memoryMonitoring: true,
     healthCheckIntervalMs: 30000,
+    // Boot health beacon — ships OFF (dark). When enabled, a minimal /health
+    // responder answers from the start of boot so the supervisor can't mistake a
+    // slow boot for a dead process (topic 21816 root cause #1). Absent ⇒ off.
+    bootHealthBeacon: {
+      enabled: false,
+    },
     // Default-on so SessionWatchdog runs everywhere — required for the
     // compaction-idle polling fallback to actually fire.
     watchdog: {

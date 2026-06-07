@@ -27,6 +27,7 @@ import { JobScheduler } from '../scheduler/JobScheduler.js';
 import { IntegrationGate } from '../scheduler/IntegrationGate.js';
 import { JobRunHistory } from '../scheduler/JobRunHistory.js';
 import { AgentServer } from '../server/AgentServer.js';
+import { BootHealthBeacon } from '../server/BootHealthBeacon.js';
 import { TelegramAdapter, TOPIC_STYLE, selectTopicEmoji } from '../messaging/TelegramAdapter.js';
 import { getTelegramInboundDir } from '../messaging/shared/telegramInboundFiles.js';
 import { RelationshipManager } from '../core/RelationshipManager.js';
@@ -2313,6 +2314,27 @@ export async function startServer(options: StartOptions): Promise<void> {
 
     // Set up file logging for observability
     setupServerLog(config.stateDir);
+
+    // ── Boot health beacon (topic 21816 root cause #1 — Liveness Before Load) ──
+    // The heavy boot below (TopicMemory/SemanticMemory load + session reconcile)
+    // runs BEFORE AgentServer binds its port, so for minutes nothing answers
+    // /health and the supervisor can mistake a slow boot for a dead process →
+    // the restart loop. This minimal beacon answers /health from the very start
+    // of boot; it is closed at the handoff just before server.start(). Dark by
+    // default (monitoring.bootHealthBeacon.enabled); the grace bump (#979) covers
+    // the window until this is enabled. Belt-and-suspenders, not a boot reorder.
+    let bootBeacon: BootHealthBeacon | undefined;
+    if (config.monitoring?.bootHealthBeacon?.enabled) {
+      try {
+        bootBeacon = new BootHealthBeacon(config.port);
+        await bootBeacon.start();
+        console.log(pc.dim('  Boot health beacon: answering /health during boot'));
+      } catch (err) {
+        // Non-fatal — boot proceeds without the beacon (the grace bump still covers it).
+        bootBeacon = undefined;
+        console.error('  Boot health beacon failed to start (non-fatal):', err instanceof Error ? err.message : err);
+      }
+    }
 
     // ── Shadow installation detection (v0.9.72) ────────────────────────
     // The Luna Incident: a local `npm install instar` created node_modules/
@@ -11959,6 +11981,15 @@ export async function startServer(options: StartOptions): Promise<void> {
       await tunnel.recoverPendingRotation();
     }
 
+    // Hand off from the boot beacon to the real server: stop() fully releases the
+    // port (force-closes lingering sockets, awaits 'close') BEFORE listen, so the
+    // gap is sub-second and the supervisor never observes a hole. No-op if the
+    // beacon was never started (dark) or already failed.
+    try {
+      await bootBeacon?.stop();
+    } catch (err) {
+      console.error('  Boot health beacon stop failed (continuing to bind real server):', err instanceof Error ? err.message : err);
+    }
     await server.start();
     void taskFlowSweeper; void taskFlowDueWaker; void divergenceChecker;
 

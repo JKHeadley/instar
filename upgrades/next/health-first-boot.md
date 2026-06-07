@@ -1,0 +1,45 @@
+<!-- bump: patch -->
+<!-- change_type: fix -->
+
+## What Changed
+
+Adds a **boot health beacon** — the durable cure for the 2026-06-07 "server
+temporarily down" restart loop (topic 21816 root cause #1, "Liveness Before Load").
+The server boot loads large TopicMemory/SemanticMemory + reconciles sessions BEFORE
+AgentServer binds its port, so for minutes nothing answers `/health` and the
+supervisor can mistake a slow boot for a dead process → restart-before-boot loop.
+
+`BootHealthBeacon` (`src/server/BootHealthBeacon.ts`) is a minimal HTTP listener
+that answers `/health` from the very start of boot and is closed at the handoff
+just before the real server binds (force-closing sockets so there's no EADDRINUSE).
+Wired in `commands/server.ts`, gated by `monitoring.bootHealthBeacon.enabled`
+(default OFF). The startupGrace bump (#979) covers the window until this is enabled.
+
+## What to Tell Your User
+
+If an agent ever sat in a restart loop right after an update on a busy machine,
+showing "server temporarily down" — this is the deeper, permanent fix: the server
+now (when enabled) reports it's alive from the first second of boot, so a slow
+startup can't be mistaken for a crash. Ships off; rolled out carefully.
+
+## Summary of New Capabilities
+
+- `monitoring.bootHealthBeacon.enabled` (default false): when true, a minimal
+  `/health` responder answers during boot and hands the port to the real server at
+  listen time. Off ⇒ no behavior change.
+
+## Scope (honest)
+
+Ships DARK (default off) — zero behavior change until enabled. Additive: a new
+isolated module + an import + two guarded blocks in the boot + an optional config
+field. NOT a risky whole-boot reorder. The interim grace bump (#979) already
+stopped the live loop; this is the durable belt-and-suspenders. Live canary
+verification (flag on, watch /health during a real boot) is the rollout step.
+
+## Evidence
+
+`tests/unit/BootHealthBeacon.test.ts` (4 tests, all passing — incl. the port
+handoff). `tsc --noEmit` clean. Boot wiring placed in the universal foreground boot
+path (daemon re-execs into `--foreground`, verified). causalAutopsy: latent — the
+health-bound-after-heavy-load boot order was always present, harmful only once
+memory/session volume on a loaded box pushed boot past the supervisor's window.
