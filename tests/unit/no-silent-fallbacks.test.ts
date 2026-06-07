@@ -266,7 +266,14 @@ describe('No Silent Fallbacks', () => {
     // failure it absorbs is counted in the pull report (goneFromDisk /
     // refusal counters) rather than swallowed. Verified: the PR adds zero
     // unjustified swallows; honest degradations surface as counted outcomes.
-    const BASELINE = 461;
+    //
+    // 461 -> 462 by dashboard-stream phase 1 (PeerStreamProxy): one
+    // parser-counted catch — teardownTransport's `transport?.close()` guard,
+    // which swallows an error from closing an ALREADY-dead upstream (the link
+    // is being torn down regardless). Carries an in-brace @silent-fallback-ok;
+    // not a real degradation (the close is best-effort cleanup, the link's
+    // demise is already surfaced to clients via peer-stream-lost/unreachable).
+    const BASELINE = 462;
 
     if (silentFallbacks.length > 0) {
       const report = silentFallbacks.map(fb =>
