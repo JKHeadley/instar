@@ -30,9 +30,20 @@ export interface QueuedMessage {
   transientReplayFailures?: number;
 }
 
+/** Max delivered-ids remembered (bounded so the guard can't grow without limit). */
+const MAX_DELIVERED_IDS = 2000;
+
 export class MessageQueue {
   private queuePath: string;
   private queue: QueuedMessage[] = [];
+  /**
+   * Bounded FIFO set of ids already delivered (or deliberately dropped) in this
+   * process. enqueue() consults it so a message that was already delivered can't
+   * be re-queued and retried — the 2026-06-07 "stale already-delivered copies
+   * kept getting retried, pushing the server into a restart loop" bug. Insertion
+   * order = eviction order (oldest dropped first past the cap).
+   */
+  private deliveredIds = new Set<string>();
 
   constructor(stateDir: string) {
     this.queuePath = path.join(stateDir, 'lifeline-queue.json');
@@ -40,11 +51,39 @@ export class MessageQueue {
   }
 
   /**
-   * Add a message to the queue.
+   * Add a message to the queue. Idempotent on `id`:
+   *  - skips a message whose id is already queued (no duplicate copies to retry), and
+   *  - skips a message whose id was already delivered/dropped this process (the
+   *    replay-of-already-delivered loop).
+   * Returns true if the message was actually added.
    */
-  enqueue(msg: QueuedMessage): void {
+  enqueue(msg: QueuedMessage): boolean {
+    if (this.deliveredIds.has(msg.id)) return false;       // already handled — never re-queue
+    if (this.queue.some(m => m.id === msg.id)) return false; // already queued — no duplicate copy
     this.queue.push(msg);
     this.save();
+    return true;
+  }
+
+  /**
+   * Record that a message id was delivered (or deliberately dropped) so a later
+   * redelivery of the SAME id is recognized and not re-queued. Also removes it
+   * from the queue. Use this on the replay success/drop path instead of bare
+   * remove() so the dedup guard is fed.
+   */
+  markDelivered(id: string): void {
+    this.remember(id);
+    this.remove(id);
+  }
+
+  private remember(id: string): void {
+    if (this.deliveredIds.has(id)) return;
+    this.deliveredIds.add(id);
+    if (this.deliveredIds.size > MAX_DELIVERED_IDS) {
+      // Evict oldest (Set preserves insertion order).
+      const oldest = this.deliveredIds.values().next().value;
+      if (oldest !== undefined) this.deliveredIds.delete(oldest);
+    }
   }
 
   /**

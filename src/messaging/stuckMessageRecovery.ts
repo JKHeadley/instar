@@ -18,7 +18,8 @@
  * answered is not re-run forever). Lease-gated: a standby never re-injects.
  */
 
-import type { MessageProcessingLedger } from './MessageProcessingLedger.js';
+import type { MessageProcessingLedger, SenderEnvelope } from './MessageProcessingLedger.js';
+import { computeReplyIdempotencyKey } from './MessageProcessingLedger.js';
 
 export interface StuckRecoveryDeps {
   ledger: MessageProcessingLedger;
@@ -30,8 +31,17 @@ export interface StuckRecoveryDeps {
   maxProcessingMs: number;
   /** Give up re-running an entry after this many attempts (avoid storms). Default 3. */
   maxReplayAttempts?: number;
+  /**
+   * Reply-evidence guard (no-DUPLICATE-re-run half): true if the agent already
+   * replied to `topic` at/after `sinceISO`. When true, a stuck entry is treated
+   * as already-handled — committed, NOT re-injected. Defaults to the ledger's own
+   * `hasReplyCommittedForTopicSince`; injectable for tests. This is what stops the
+   * 2026-06-07 "re-run an already-answered message every ~10 min" loop, even when
+   * the original reply failed to commit its own entry (server flap / dup orphan).
+   */
+  hasRepliedSince?: (topic: string, sinceISO: string) => boolean;
   /** Re-route the stored input as the holder (set current-inbound key, then inject). */
-  reinject: (topicId: string, dedupeKey: string, text: string) => void;
+  reinject: (topicId: string, dedupeKey: string, text: string, sender: SenderEnvelope | null) => void;
   now?: () => number;
   logger?: (msg: string) => void;
 }
@@ -39,6 +49,8 @@ export interface StuckRecoveryDeps {
 export interface StuckRecoveryResult {
   recovered: number;
   skipped: number;
+  /** Entries recognized as already-answered (reply evidence) and committed, not re-run. */
+  alreadyHandled: number;
 }
 
 /**
@@ -48,14 +60,30 @@ export interface StuckRecoveryResult {
  */
 export function recoverStuckMessages(deps: StuckRecoveryDeps): StuckRecoveryResult {
   const maxAttempts = deps.maxReplayAttempts ?? 3;
-  if (!deps.holdsLease()) return { recovered: 0, skipped: 0 };
+  if (!deps.holdsLease()) return { recovered: 0, skipped: 0, alreadyHandled: 0 };
+
+  const repliedSince =
+    deps.hasRepliedSince ?? ((topic, sinceISO) => deps.ledger.hasReplyCommittedForTopicSince(topic, sinceISO));
 
   const stuck = deps.ledger.reclaimStuck(deps.maxProcessingMs, deps.now ? deps.now() : undefined);
   let recovered = 0;
   let skipped = 0;
+  let alreadyHandled = 0;
   for (const entry of stuck) {
     if (!entry.inputSnapshot || !entry.topic) {
       skipped++;
+      continue;
+    }
+    // Reply-evidence guard: if the agent already answered this topic since the
+    // stuck entry arrived, the entry is a duplicate/superseded inbound that was
+    // effectively handled (its own reply just failed to commit — server flap, or
+    // a same-topic dup orphaned by the current-inbound overwrite). Commit it so
+    // it leaves 'processing' for good; do NOT re-inject (that is the replay loop).
+    if (repliedSince(entry.topic, entry.receivedAt)) {
+      deps.ledger.commitReply(entry.dedupeKey, computeReplyIdempotencyKey(entry.dedupeKey, 0), deps.epoch);
+      deps.ledger.advanceCursor(entry.dedupeKey);
+      deps.logger?.(`stuck-recovery: ${entry.dedupeKey} already answered on its topic since receipt — committing, not re-running`);
+      alreadyHandled++;
       continue;
     }
     if (entry.attempts >= maxAttempts) {
@@ -65,11 +93,12 @@ export function recoverStuckMessages(deps: StuckRecoveryDeps): StuckRecoveryResu
       skipped++;
       continue;
     }
-    // Re-claim under the current epoch (bumps attempts) and re-route the turn.
+    // Re-claim under the current epoch (bumps attempts) and re-route the turn,
+    // preserving the real sender so the replay is not "from Unknown".
     deps.ledger.beginProcessing(entry.dedupeKey, deps.epoch);
-    deps.reinject(entry.topic, entry.dedupeKey, entry.inputSnapshot);
+    deps.reinject(entry.topic, entry.dedupeKey, entry.inputSnapshot, entry.senderEnvelope);
     deps.logger?.(`stuck-recovery: re-ran ${entry.dedupeKey} (attempt ${entry.attempts + 1})`);
     recovered++;
   }
-  return { recovered, skipped };
+  return { recovered, skipped, alreadyHandled };
 }

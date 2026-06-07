@@ -273,7 +273,16 @@ describe('No Silent Fallbacks', () => {
     // is being torn down regardless). Carries an in-brace @silent-fallback-ok;
     // not a real degradation (the close is best-effort cleanup, the link's
     // demise is already surfaced to clients via peer-stream-lost/unreachable).
-    const BASELINE = 462;
+    //
+    // 462 -> 463 by stuck-recovery replay dedupe (MessageProcessingLedger):
+    // one parser-counted catch — parseSender's JSON.parse guard, which returns
+    // null on a malformed/absent sender_envelope column (an old row, or
+    // corrupt JSON) so a replay falls back to today's "unknown sender" behavior
+    // rather than crashing the ledger read. Not a real degradation — a missing
+    // sender envelope is an expected pre-migration state, and the replay path
+    // already tolerates a null sender. (The sibling ALTER-TABLE idempotency
+    // catch carries an in-brace @silent-fallback-ok and is exempt.)
+    const BASELINE = 463;
 
     if (silentFallbacks.length > 0) {
       const report = silentFallbacks.map(fb =>

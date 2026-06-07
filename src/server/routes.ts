@@ -11539,6 +11539,11 @@ export function createRoutes(ctx: RouteContext): Router {
           platform: 'telegram',
           topic: String(topicId),
           input: text,
+          sender: {
+            userId: fromUserId,
+            username: fromUsername,
+            firstName: fromFirstName,
+          },
           epoch,
           maxProcessingMs: ctx.config.multiMachine?.maxProcessingMs ?? 5 * 60_000,
         });

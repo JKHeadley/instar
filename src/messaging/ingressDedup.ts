@@ -25,6 +25,7 @@
 import {
   MessageProcessingLedger,
   computeReplyIdempotencyKey,
+  type SenderEnvelope,
 } from './MessageProcessingLedger.js';
 
 /** Stable provider-level identity for an inbound event (spec §2 contract item 4). */
@@ -45,6 +46,8 @@ export interface DecideIngressOpts {
   topic?: string | null;
   /** The raw inbound text/context, stored so a future replay can re-run it. */
   input?: string;
+  /** Inbound sender, stored so a stuck re-run replays as the real user (not "Unknown"). */
+  sender?: SenderEnvelope | null;
   /** The lease fencing epoch this machine holds (0 if no lease). */
   epoch: number;
   /** A 'processing' entry older than this was abandoned by a fenced holder. */
@@ -64,7 +67,7 @@ export function decideIngress(
 ): IngressDecision {
   const now = opts.now ?? Date.now;
   // Idempotent insert — firstSeen tells us if this is a brand-new event.
-  ledger.record(dedupeKey, { platform: opts.platform, topic: opts.topic ?? null, input: opts.input });
+  ledger.record(dedupeKey, { platform: opts.platform, topic: opts.topic ?? null, input: opts.input, sender: opts.sender ?? null });
 
   const entry = ledger.get(dedupeKey);
   // Defensive: record() just inserted-or-found it, so entry is non-null.
