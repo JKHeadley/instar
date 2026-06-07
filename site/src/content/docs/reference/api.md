@@ -882,6 +882,43 @@ Verified per-topic operator binding (Know Your Principal). The operator is estab
 - `POST /view/:id/unlock`
 - `PUT /view/:id`
 
+## /subscription-pool
+
+Multi-account subscription registry + per-account quota (the Subscription & Auth
+Standard). The registry stores each account's login *location* (its config home),
+never tokens. These routes are **operator/internal** and ship dark — they do
+nothing until accounts are enrolled, and are not surfaced in `/capabilities`
+until the standard's later phases (scheduler + enrollment wizard) make them
+user-usable.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/subscription-pool` | List enrolled accounts (nickname, provider, framework, config home, status, last quota) |
+| POST | `/subscription-pool` | Add an account. Body: `id`, `nickname`, `provider`, `framework`, `configHome` |
+| GET | `/subscription-pool/:id` | Get one account |
+| PATCH | `/subscription-pool/:id` | Update mutable fields (nickname, framework, configHome, status) |
+| DELETE | `/subscription-pool/:id` | Remove an account |
+| POST | `/subscription-pool/poll` | Poll every account's live quota now (writes each account's `lastQuota`) |
+| GET | `/subscription-pool/:id/quota` | Read an account's latest quota snapshot + measured burn rate |
+
+Examples:
+
+```bash
+# List accounts and add one (login location only — never tokens)
+curl -H "Authorization: Bearer $AUTH" http://localhost:4040/subscription-pool
+curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:4040/subscription-pool \
+  -d '{"id":"claude-personal","nickname":"personal","provider":"anthropic","framework":"claude-code","configHome":"~/.claude-personal"}'
+
+# Inspect, update, remove a specific account
+curl -H "Authorization: Bearer $AUTH" http://localhost:4040/subscription-pool/claude-personal
+curl -X PATCH -H "Authorization: Bearer $AUTH" http://localhost:4040/subscription-pool/claude-personal -d '{"nickname":"personal-max"}'
+curl -X DELETE -H "Authorization: Bearer $AUTH" http://localhost:4040/subscription-pool/claude-personal
+
+# Refresh live quota for all accounts, then read one account's snapshot + burn rate
+curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:4040/subscription-pool/poll
+curl -H "Authorization: Bearer $AUTH" http://localhost:4040/subscription-pool/claude-personal/quota
+```
+
 ## /views
 - `GET /views`
 
