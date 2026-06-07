@@ -44,3 +44,9 @@ The design is written and reviewed. Building it is the next phase — it's a rea
 feature (a new streaming relay, the secure pass, and the dashboard screens for
 every state), so it goes through the full build-and-test pipeline like everything
 else, not a quick patch. I've registered it so it doesn't get lost.
+
+## Phase 2a shipped — the serving side (the machine that HAS the session)
+
+The machine that owns a session can now safely hand its live terminal to another of your machines. When your laptop wants to watch a session running on the Mini, it first asks the Mini (over the already-secure machine-to-machine channel) for a one-time pass. The Mini hands back a single-use ticket that expires in a minute and can't be reused — even if the Mini restarts in between. The laptop opens a streaming connection to the Mini using that ticket; the Mini checks it once, then streams the terminal.
+
+Two safety rails are live and tested: typing into a remote machine's session is OFF by default (you opt in per machine), so by default another machine can only WATCH, never type; and a session name is checked against a strict safe-character list and confirmed to actually be running before anything touches the terminal — so a malformed or made-up name can never reach the machine's shell. Six real end-to-end tests prove all of this over actual sockets (valid ticket streams, bad ticket rejected, ticket can't be reused, typing blocked by default, typing works when enabled, malformed name refused). Still to come: the laptop side that opens these connections automatically when you click a tile (phase 2b) and the on-screen states (phase 3).

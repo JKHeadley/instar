@@ -385,6 +385,10 @@ let _resolvePeerUrls: (() => Array<{ machineId: string; url: string }>) | null =
 let _topicPinStore: import('../core/TopicPlacementPinStore.js').TopicPlacementPinStore | null = null;
 /** Cross-machine secret-sync (spec Phase 4): route-facing handle (push lever + read-only status). */
 let _secretSyncHandle: import('../core/SecretSync.js').SecretSyncHandle | null = null;
+/** Pool Dashboard Streaming (POOL-DASHBOARD-STREAM-SPEC §2.3): shared single-use
+ *  ticket store — minted by the `pool-stream-ticket` mesh verb, consumed by the
+ *  WebSocketManager's /pool-stream upgrade. Constructed in the mesh-setup block. */
+let _streamTicketStore: import('../server/StreamTicketStore.js').StreamTicketStore | null = null;
 /** Recognize + apply a "move/run this on <nickname>" relocation on inbound; returns handled=true when the message WAS a relocation command (so it must not also be dispatched). */
 let _tryNicknameRelocation: ((topicId: number, text: string) => Promise<{ handled: boolean }>) | null = null;
 /** Per-topic framework override (claude-code | codex-cli). Populated from
@@ -10508,6 +10512,20 @@ export async function startServer(options: StartOptions): Promise<void> {
         ?? (meshIdMgr?.hasIdentity() ? meshIdMgr.loadIdentity().machineId : null);
       if (meshIdMgr && meshSelfId) {
         const meshClockToleranceMs = config.multiMachine?.sessionPool?.meshRpcClockToleranceMs ?? 30000;
+        // Pool Dashboard Streaming (§2.3): the shared single-use ticket store —
+        // the `pool-stream-ticket` verb mints into it; the WS /pool-stream
+        // upgrade consumes from it. Crypto-random tickets; persisted so a
+        // captured ticket can't replay across a restart.
+        {
+          const stsMod = await import('../server/StreamTicketStore.js');
+          const cryptoMod = await import('node:crypto');
+          _streamTicketStore = new stsMod.StreamTicketStore({
+            filePath: path.join(config.stateDir, 'state', 'stream-tickets.json'),
+            now: () => Date.now(),
+            mintId: () => cryptoMod.randomBytes(32).toString('hex'),
+            logger: (m) => console.log(pc.dim(`  ${m}`)),
+          });
+        }
         const seenMeshNonces = new Map<string, number>(); // `${sender}:${nonce}` → ts, age-pruned
         const meshPruneMs = Math.max(meshClockToleranceMs * 4, 120_000);
         // SessionOwnership registry (§L3) — in-memory store (single-machine correct;
@@ -10728,6 +10746,17 @@ export async function startServer(options: StartOptions): Promise<void> {
                 ? commitmentTracker.getReplicationAdvert() ?? undefined
                 : undefined;
               return { ...base, journalAdvert, ...(commitmentsAdvert ? { commitmentsAdvert } : {}) };
+            },
+            // Pool Dashboard Streaming (§2.3): mint a single-use bearer ticket
+            // for the authenticated peer so it may open a /pool-stream WS to
+            // watch `session`. verifyEnvelope already proved the peer's identity;
+            // the ticket is bound to that sender and consumed once on upgrade.
+            'pool-stream-ticket': (cmd, sender) => {
+              const c = cmd as import('../core/MeshRpc.js').MeshCommand & { type: 'pool-stream-ticket' };
+              if (!_streamTicketStore) return { ok: false, reason: 'pool-stream disabled' };
+              if (!c.session || typeof c.session !== 'string') return { ok: false, reason: 'session required' };
+              const minted = _streamTicketStore.mint(sender);
+              return { ok: true, ticket: minted.ticket, expiresAtMs: minted.expiresAtMs };
             },
             // COHERENCE-JOURNAL-SPEC §3.4 — always-registered journal-sync verb
             // (harmless when no peer sends): serve our OWN stream on `request`
@@ -11719,7 +11748,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       console.log(pc.dim(`  [session-pool] rollout gate not wired: ${err instanceof Error ? err.message : String(err)}`));
     }
 
-    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, subscriptionPool, quotaPoller, semanticMemory, activitySentinel, rateLimitSentinel, releaseReadinessSentinel: releaseReadinessSentinel ?? undefined, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, localSigningKeyPem, leaseTransport, onLeasePullRequest: () => leaseCoordinatorRef?.currentLease() ?? null, liveTailReceiver, handoffWireTransport, onHandoffBegin, onHandoffInitiate: handoffInitiate, handoffInProgress: handoffSentinelInProgress, messageLedger, currentInboundByTopic, replyMarkerTransport, onReplyMarker: messageLedger ? (marker: unknown) => { const m = marker as { dedupeKey: string; platform: string; replyIdempotencyKey: string; epoch: number; topic?: string | null }; messageLedger!.applyRemoteReplyMarker(m.dedupeKey, { platform: m.platform, replyIdempotencyKey: m.replyIdempotencyKey, epoch: m.epoch, topic: m.topic ?? null }); } : undefined, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, warrantsReplyGate, collaborationSurfacer, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, a2aDeliveryTracker: a2aDeliveryTracker ?? undefined, responseReviewGate, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, machinePoolRegistry, meshRpcDispatcher, workingSetPullCoordinator, commitmentReplicaStore, forwardCommitmentMutate, sessionOwnershipRegistry, topicPinStore: _topicPinStore ?? undefined, secretSync: _secretSyncHandle ?? undefined, meshSelfId: _meshSelfId ?? undefined, resolveRouterUrl: _resolveRouterUrl ?? undefined, resolvePeerUrls: _resolvePeerUrls ?? undefined, sessionPoolE2EResultStore, proxyCoordinator, topicIntentStore, topicIntentArcCheck, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, briefDeps, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, agentWorktreeReaper, mcpProcessReaper, geminiLoopRunner, sleepController, agentActivityState, reapLog, sleepWakeDetector, unjustifiedStopGate, stopGateDb, stopNotifier });
+    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, subscriptionPool, quotaPoller, semanticMemory, activitySentinel, rateLimitSentinel, releaseReadinessSentinel: releaseReadinessSentinel ?? undefined, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, localSigningKeyPem, leaseTransport, onLeasePullRequest: () => leaseCoordinatorRef?.currentLease() ?? null, liveTailReceiver, handoffWireTransport, onHandoffBegin, onHandoffInitiate: handoffInitiate, handoffInProgress: handoffSentinelInProgress, messageLedger, currentInboundByTopic, replyMarkerTransport, onReplyMarker: messageLedger ? (marker: unknown) => { const m = marker as { dedupeKey: string; platform: string; replyIdempotencyKey: string; epoch: number; topic?: string | null }; messageLedger!.applyRemoteReplyMarker(m.dedupeKey, { platform: m.platform, replyIdempotencyKey: m.replyIdempotencyKey, epoch: m.epoch, topic: m.topic ?? null }); } : undefined, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, warrantsReplyGate, collaborationSurfacer, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, a2aDeliveryTracker: a2aDeliveryTracker ?? undefined, responseReviewGate, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, machinePoolRegistry, meshRpcDispatcher, workingSetPullCoordinator, commitmentReplicaStore, forwardCommitmentMutate, sessionOwnershipRegistry, topicPinStore: _topicPinStore ?? undefined, streamTicketStore: _streamTicketStore ?? undefined, poolStreamAllowRemoteInput: (config as { dashboard?: { poolStream?: { allowRemoteInput?: boolean } } }).dashboard?.poolStream?.allowRemoteInput ?? false, secretSync: _secretSyncHandle ?? undefined, meshSelfId: _meshSelfId ?? undefined, resolveRouterUrl: _resolveRouterUrl ?? undefined, resolvePeerUrls: _resolvePeerUrls ?? undefined, sessionPoolE2EResultStore, proxyCoordinator, topicIntentStore, topicIntentArcCheck, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, briefDeps, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, agentWorktreeReaper, mcpProcessReaper, geminiLoopRunner, sleepController, agentActivityState, reapLog, sleepWakeDetector, unjustifiedStopGate, stopGateDb, stopNotifier });
     // Resolve the late-bound topic-operator getter (increment 2e): routing was
     // wired before the server existed; from here on inbound binds use the
     // server's own store instance.
