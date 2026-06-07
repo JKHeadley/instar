@@ -589,6 +589,8 @@ export interface RouteContext {
   quotaPoller: import('../core/QuotaPoller.js').QuotaPoller | null;
   /** QuotaAwareScheduler (P1.3) — account selection + swap-and-resume guarantee. */
   quotaAwareScheduler: import('../core/QuotaAwareScheduler.js').QuotaAwareScheduler | null;
+  /** EnrollmentWizard (P2.1) — mobile-first login + auto-reissue. Null until wired. */
+  enrollmentWizard: import('../core/EnrollmentWizard.js').EnrollmentWizard | null;
   semanticMemory: SemanticMemory | null;
   activitySentinel: SessionActivitySentinel | null;
   rateLimitSentinel: import('../monitoring/RateLimitSentinel.js').RateLimitSentinel | null;
@@ -15661,6 +15663,17 @@ export function createRoutes(ctx: RouteContext): Router {
     res.json({ enabled: true, count: accounts.length, accounts });
   });
 
+  // P2.1 — the "Pending Logins" surface (the phone/dashboard panel). MUST be
+  // registered before GET /subscription-pool/:id, or the param route shadows the
+  // literal "pending-logins" segment. 200 { enabled:false } when unwired.
+  router.get('/subscription-pool/pending-logins', (_req, res) => {
+    if (!ctx.enrollmentWizard) {
+      res.json({ enabled: false, logins: [] });
+      return;
+    }
+    res.json({ enabled: true, logins: ctx.enrollmentWizard.pending() });
+  });
+
   router.get('/subscription-pool/:id', (req, res) => {
     if (!ctx.subscriptionPool) {
       res.status(404).json({ error: 'SubscriptionPool not configured' });
@@ -15802,6 +15815,57 @@ export function createRoutes(ctx: RouteContext): Router {
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : 'swap failed' });
     }
+  });
+
+  // ── Subscription enrollment (P2.1 — mobile-first enrollment wizard) ──
+  // Assist a new-account login from the phone: drive the framework's login,
+  // surface the PUBLIC code/URL (never a token), and auto-reissue an expired
+  // code. List/sweep routes answer 200 { enabled:false } when the wizard is
+  // unwired (dark) — never 503.
+
+  router.post('/subscription-pool/enroll', async (req, res) => {
+    if (!ctx.enrollmentWizard) {
+      res.json({ enabled: false, started: false, reason: 'enrollment wizard not configured' });
+      return;
+    }
+    const { id, label, provider, framework, kind, configHome } = req.body ?? {};
+    if (!id || !label || !provider || !framework) {
+      res.status(400).json({ error: 'id, label, provider, and framework are required' });
+      return;
+    }
+    try {
+      const login = await ctx.enrollmentWizard.start({ id, label, provider, framework, kind, configHome });
+      res.status(201).json({ enabled: true, login });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : 'failed to start enrollment' });
+    }
+  });
+
+  // Single-segment path → no collision with /enroll/:id/complete (3 segments).
+  router.post('/subscription-pool/enroll/reissue-expired', async (_req, res) => {
+    if (!ctx.enrollmentWizard) {
+      res.json({ enabled: false, reissued: [] });
+      return;
+    }
+    try {
+      const reissued = await ctx.enrollmentWizard.reissueExpired();
+      res.json({ enabled: true, reissued });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : 'reissue sweep failed' });
+    }
+  });
+
+  router.post('/subscription-pool/enroll/:id/complete', (req, res) => {
+    if (!ctx.enrollmentWizard) {
+      res.json({ enabled: false, completed: false, reason: 'enrollment wizard not configured' });
+      return;
+    }
+    const login = ctx.enrollmentWizard.complete(req.params.id);
+    if (!login) {
+      res.status(404).json({ error: `pending login ${req.params.id} not found` });
+      return;
+    }
+    res.json({ enabled: true, login });
   });
 
   // ── Episodic Memory (Activity Sentinel) ──────────────────────────

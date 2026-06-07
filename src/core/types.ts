@@ -2513,6 +2513,14 @@ export interface InstarConfig {
      *  pool-managed session auto-swaps it to another account. Opt-in (auto-
      *  swapping live sessions is real authority — tier-2). */
     autoSwapOnRateLimit?: boolean;
+    /** P2.1 enrollment wizard knobs (all optional). */
+    enrollment?: {
+      /** Per-framework login command override (defaults: claude-code →
+       *  `claude auth login`, codex-cli → `codex login`). */
+      loginCommands?: Record<string, string>;
+      /** Auto-reissue sweep cadence in ms (default 300000 = 5 min). */
+      reissueSweepMs?: number;
+    };
   };
   /** Secret handling config */
   secrets?: {

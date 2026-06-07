@@ -466,6 +466,27 @@ letting a long-lived session die on a quota limit.
   swap. If no alternate is eligible it raises a single deduped HIGH attention item
   rather than letting the session die silently.
 
+Enrollment (P2.1) — adding a new account from a phone, expiry-proof:
+
+- **`PendingLoginStore`** (`src/core/PendingLoginStore.ts`) — a durable ledger of
+  logins-in-progress. Each record holds PUBLIC artifacts only (verification URL,
+  optional device code, flow kind, TTL, re-issue count, the target config home as a
+  path) — there is no field to hold a token, the same credential-safety-by-
+  construction guard the account registry uses. Persists to disk, so an in-flight
+  login survives a server restart.
+- **`EnrollmentWizard`** (`src/core/EnrollmentWizard.ts`) — orchestration on top of
+  the store: start a login (drive the framework's flow via an injected
+  `LoginDriver`, capture the public code/URL, store it with its TTL visible), and a
+  sweep that auto-reissues any EXPIRED login without the operator asking — the gap
+  the pi-harness live-test exposed. A failed re-drive is skipped + retried next
+  sweep. Per-provider default flow kind: Codex/OpenAI = device-code, everyone else
+  = url-code-paste (the phone-friendly Claude path).
+- **`FrameworkLoginDriver`** (`src/core/FrameworkLoginDriver.ts`) — the concrete
+  `LoginDriver`: spawns the framework's own login command under the new account's
+  `CLAUDE_CONFIG_DIR` (reusing the proven tmux-spawn + capture-pane primitive) and
+  scrapes the public verification URL + device code + TTL from the pane. The scrape
+  logic is pure and unit-tested against real captured-output fixtures.
+
 Spec: `docs/specs/_drafts/subscription-auth-standard-master-spec.md`.
 
 ## Inter-agent comms (agent-to-agent Telegram primitive)

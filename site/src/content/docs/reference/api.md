@@ -901,6 +901,10 @@ user-usable.
 | POST | `/subscription-pool/poll` | Poll every account's live quota now (writes each account's `lastQuota`) |
 | GET | `/subscription-pool/:id/quota` | Read an account's latest quota snapshot + measured burn rate |
 | POST | `/subscription-pool/swap` | Resume a session on another eligible account (continuity guarantee — never dies on a quota limit). Body: `sessionName`, `exhaustedAccountId` |
+| POST | `/subscription-pool/enroll` | Start a mobile-first new-account login. Body: `id`, `label`, `provider`, `framework`, optional `kind`, `configHome`. Returns the pending login (public code/URL + TTL — never a token). |
+| GET | `/subscription-pool/pending-logins` | The "Pending Logins" surface — active logins awaiting approval (code/URL + TTL). |
+| POST | `/subscription-pool/enroll/:id/complete` | Mark a login completed once the operator approved + the account enrolled. |
+| POST | `/subscription-pool/enroll/reissue-expired` | Sweep + auto-reissue every expired login with a fresh code/URL (the background tick calls the same path). |
 
 The quota-aware scheduler picks accounts reset-date-optimally ("use before reset")
 and guarantees a long-lived session that hits its account's quota resumes on
@@ -915,6 +919,13 @@ background poller that measures each account's live burn + reset windows), and
 `QuotaAwareScheduler` (reset-date-optimal account selection + the swap continuity
 guarantee). The swap itself drives `SessionRefresh` with an account-swap option so
 the resumed session launches under the new account's `CLAUDE_CONFIG_DIR`.
+
+The enrollment routes are backed by `PendingLoginStore` (a durable ledger of
+in-flight logins — public code/URL/TTL only, never a token), `EnrollmentWizard`
+(start a login + auto-reissue expired codes on a background sweep), and
+`FrameworkLoginDriver` (spawns the framework's own login under the new account's
+`CLAUDE_CONFIG_DIR` and scrapes the public code/URL). Enrollment ships dark — the
+routes answer `200 { enabled:false }` until the wizard is wired.
 
 Examples:
 

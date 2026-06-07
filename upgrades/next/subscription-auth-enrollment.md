@@ -1,0 +1,63 @@
+# Mobile-first enrollment wizard (P2.1)
+
+<!-- bump: minor -->
+
+## What Changed
+
+Added the enrollment wizard — the fourth piece of the Subscription & Auth
+Standard, on top of the P1.1 account registry, P1.2 quota poller, and P1.3
+auto-swap scheduler. It assists logging a new subscription account into the pool
+from a phone, and makes the flow expiry-proof.
+
+Three new core pieces:
+
+- **`PendingLoginStore`** — a durable ledger of logins-in-progress. Each record
+  holds PUBLIC artifacts only: the verification URL, the optional short device
+  code, the flow kind, when it expires, and a re-issue count. There is no field
+  to hold a token — credential-safety by construction, the same structural guard
+  the account registry uses. The store persists to disk, so an in-flight login
+  survives a server restart.
+- **`EnrollmentWizard`** — orchestration on top of the store: start a login
+  (drive the framework's login flow, capture the public code/URL, store it with
+  its TTL visible), and a sweep that auto-reissues any expired login WITHOUT the
+  operator asking — the exact gap the pi-harness live-test exposed (a code that
+  expired before the operator got to it). A failed re-drive is skipped and retried
+  next sweep, so one bad login can't abort the sweep.
+- **`FrameworkLoginDriver`** — the concrete driver: spawns the framework's login
+  command under the target account's config home and scrapes the public
+  verification URL + device code + TTL from the pane (Codex = device-code; Claude =
+  URL + paste-back-code). The scrape logic is pure and unit-tested against real
+  captured-output fixtures.
+
+Routes (under `/subscription-pool`, internal/dark until graduation):
+`POST /subscription-pool/enroll`, `GET /subscription-pool/pending-logins`,
+`POST /subscription-pool/enroll/:id/complete`,
+`POST /subscription-pool/enroll/reissue-expired`. A low-frequency background tick
+calls the reissue sweep. The list/sweep routes answer `200 { enabled:false }` when
+the wizard is unwired — never 503.
+
+Coverage: unit tests for the store, the wizard (incl. the auto-reissue gap +
+driver-failure resilience), and the driver scrape logic; integration tests for
+the HTTP routes (asserting no token field ever appears in a response); an
+end-to-end test that confirms the routes are alive and a started enrollment
+survives a server restart.
+
+## What to Tell Your User
+
+You can add another subscription account from your phone. I'll show you a short
+code and a link; you open the provider's own page and approve. Nothing secret
+ever passes through me — only the public code and link. And if the code expires
+before you get to it, I quietly issue a fresh one instead of leaving you stuck —
+no trip back to a terminal. An enrollment you start is remembered even if I
+restart in the middle.
+
+## Summary of New Capabilities
+
+- **Phone-friendly enrollment** — start a new-account login and get a short
+  code + link to approve on the provider's own page; nothing secret transits the
+  agent.
+- **Auto-reissue on expiry** — an expired login code is silently refreshed on a
+  sweep, so a code that ages out before you act doesn't strand the flow.
+- **Durable pending logins** — in-flight logins survive a server restart.
+- **Pending-logins surface** — `GET /subscription-pool/pending-logins` lists the
+  active codes/links + their TTL (the phone surface + the dashboard panel feed).
