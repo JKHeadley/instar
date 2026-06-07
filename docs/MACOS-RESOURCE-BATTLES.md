@@ -187,11 +187,17 @@ answer to "what protects us when macOS spikes?"
 2. [ ] **`mds_stores` (Spotlight) ~45–48%.** Our dirs are excluded, so it's indexing something
        else — most likely the same local Photos library, or re-evaluating after the Photos
        teardown. Expect it to drop with item 1; confirm after the library is removed.
-3. [ ] **Transcript retention.** `~/.claude/projects` = **18 GB / ~322,000 files** in 133 folders,
-       growing. Already Spotlight-excluded AND Time Machine is not configured, so it is NOT a
-       macOS-CPU trigger today — but unbounded disk + file-count growth. **Action = build a
-       retention/pruning policy** (age-out finished-session JSONL beyond N days; keep recent for
-       `--resume`). Not yet built.
+3. [ ] **Transcript retention.** `~/.claude/projects` = **18 GB / ~322,000 files** in 133 folders.
+       Already Spotlight-excluded AND Time Machine is not configured, so it is NOT a macOS-CPU
+       trigger — purely disk + file-count. Diagnosis (2026-06-07): Claude Code's native 30-day
+       cleanup IS working (only ~1,300 files older than 30d); the bulk — **~289k files are 7–30
+       days old**, within the retention window — is the fleet's background `claude -p` one-shots
+       (sentinels/gates) each writing a transcript. **Fix = lower `cleanupPeriodDays`** (currently
+       unset → Claude's default 30; instar does NOT manage it). Add `cleanupPeriodDays` (~14,
+       config-overridable) to instar's settings.json defaults (`src/scaffold/templates.ts`) +
+       `PostUpdateMigrator.migrateSettings()` (set-if-unset, respect any user value) so the whole
+       fleet gets it on update. Small config PR, NOT a new feature. *Lower priority — minor disk
+       issue, not the CPU war.*
 4. [ ] **76 GB / 189 stale worktrees** under `~/.instar/agents/echo/.worktrees/` (all merged
        `echo/*` branches). **Action = reclaim via AgentWorktreeReaper** (proper squash-merge
        detection — manual `git` reaping is unsafe for squash-merged branches). Blocked on a
