@@ -900,6 +900,14 @@ user-usable.
 | DELETE | `/subscription-pool/:id` | Remove an account |
 | POST | `/subscription-pool/poll` | Poll every account's live quota now (writes each account's `lastQuota`) |
 | GET | `/subscription-pool/:id/quota` | Read an account's latest quota snapshot + measured burn rate |
+| POST | `/subscription-pool/swap` | Resume a session on another eligible account (continuity guarantee — never dies on a quota limit). Body: `sessionName`, `exhaustedAccountId` |
+
+The quota-aware scheduler picks accounts reset-date-optimally ("use before reset")
+and guarantees a long-lived session that hits its account's quota resumes on
+another account (via `claude --resume`, which is account-agnostic, so the
+conversation is preserved) rather than dying. Auto-swap on rate-limit detection
+ships dark behind `subscriptionPool.autoSwapOnRateLimit` in `.instar/config.json`;
+the swap route above is the manual lever.
 
 Examples:
 
@@ -917,6 +925,10 @@ curl -X DELETE -H "Authorization: Bearer $AUTH" http://localhost:4040/subscripti
 # Refresh live quota for all accounts, then read one account's snapshot + burn rate
 curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:4040/subscription-pool/poll
 curl -H "Authorization: Bearer $AUTH" http://localhost:4040/subscription-pool/claude-personal/quota
+
+# Manually swap a session off a quota-exhausted account (continuity preserved)
+curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:4040/subscription-pool/swap \
+  -d '{"sessionName":"my-session","exhaustedAccountId":"claude-personal"}'
 ```
 
 ## /views

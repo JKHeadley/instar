@@ -109,7 +109,7 @@ describe('SessionRefresh', () => {
       const result = await refresh.refreshSession({ sessionName: 'echo-qalatra', followUpPrompt: 'continue' });
 
       expect(result).toEqual({ ok: true, newSessionName: 'new-tmux-session', topicId: 9235 });
-      expect(respawner).toHaveBeenCalledWith('echo-qalatra', 9235, 'continue');
+      expect(respawner).toHaveBeenCalledWith('echo-qalatra', 9235, 'continue', undefined);
     });
 
     it('kills the old session via sessionManager BEFORE invoking the respawner', async () => {
@@ -126,7 +126,7 @@ describe('SessionRefresh', () => {
     it('forwards undefined followUpPrompt when omitted', async () => {
       const { refresh, respawner } = makeDeps();
       await refresh.refreshSession({ sessionName: 'echo-qalatra' });
-      expect(respawner).toHaveBeenCalledWith('echo-qalatra', 9235, undefined);
+      expect(respawner).toHaveBeenCalledWith('echo-qalatra', 9235, undefined, undefined);
     });
 
     it('does NOT call findUuidForSession on the SessionRefresh side', async () => {
@@ -292,7 +292,7 @@ describe('SessionRefresh', () => {
       expect(telegram.resolveTopicForSessionFromDisk).toHaveBeenCalledWith('echo-codey-collaboration');
       // The respawn used the disk-resolved topic end-to-end.
       expect(sessionManager.killSession).toHaveBeenCalledWith('state-codey');
-      expect(respawner).toHaveBeenCalledWith('echo-codey-collaboration', 13435, undefined);
+      expect(respawner).toHaveBeenCalledWith('echo-codey-collaboration', 13435, undefined, undefined);
     });
 
     it('does NOT consult the disk fallback when the in-memory lookup hits', async () => {

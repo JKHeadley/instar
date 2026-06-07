@@ -2848,6 +2848,12 @@ rm()  { "${shimRunner}" rm  "$@"; }
     /** Warm-session A2A (claude-code only): pin a deterministic --session-id so an
      *  eviction mid-thread can --resume losslessly (#746). Ignored when resuming. */
     sessionId?: string;
+    /** Subscription & Auth Standard P1.3 (claude-code only): launch this session
+     *  under the given account's config home (CLAUDE_CONFIG_DIR) — the account-swap
+     *  mechanism. Additive; unset = inherit the parent's login (unchanged). */
+    configHome?: string;
+    /** P1.3: record which subscription-pool account this session runs under. */
+    subscriptionAccountId?: string;
   }): Promise<string> {
     const sanitized = name
       ? name.toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '').slice(0, 40)
@@ -2942,6 +2948,9 @@ rm()  { "${shimRunner}" rm  "$@"; }
       // when resuming) so eviction mid-thread falls back to --resume losslessly.
       ...(options?.sessionId && !options?.resumeSessionId ? { sessionId: options.sessionId } : {}),
       ...(options?.codexLocalProvider ? { codexLocalProvider: options.codexLocalProvider } : {}),
+      // Subscription & Auth Standard P1.3: per-account config home (claude-only,
+      // ignored by other builders) → CLAUDE_CONFIG_DIR for the launched session.
+      ...(options?.configHome ? { configHome: options.configHome } : {}),
       // Per-agent codex threadline MCP override (ignored by non-codex builders).
       ...(this.config.codexThreadlineMcp ? { codexThreadlineMcp: this.config.codexThreadlineMcp } : {}),
       // pi-cli: pin session transcripts into the agent state dir so they are
@@ -3039,6 +3048,9 @@ rm()  { "${shimRunner}" rm  "$@"; }
       // account default).
       framework,
       ...(resolveModelForFramework(framework, launchDefaultModel) ? { model: resolveModelForFramework(framework, launchDefaultModel) } : {}),
+      // P1.3: which subscription-pool account this session runs under (set on a
+      // quota-aware account swap / placement). Undefined for single-account agents.
+      ...(options?.subscriptionAccountId ? { subscriptionAccountId: options.subscriptionAccountId } : {}),
       prompt: effectiveInitialMessage,
       maxDurationMinutes: this.effectiveMaxDurationMinutes,
     };

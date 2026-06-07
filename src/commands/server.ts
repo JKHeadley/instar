@@ -418,6 +418,9 @@ let _slackAdapter: import('../messaging/slack/SlackAdapter.js').SlackAdapter | n
 // Null until startServer constructs it; the Telegram /restart handler falls
 // back to the inline kill+respawn path when null (e.g. early in boot).
 let _sessionRefresh: import('../core/SessionRefresh.js').SessionRefresh | null = null;
+// Subscription & Auth Standard P1.3 — quota-aware account-swap scheduler. Null
+// until wired (requires SessionRefresh + the subscription pool).
+let _quotaAwareScheduler: import('../core/QuotaAwareScheduler.js').QuotaAwareScheduler | null = null;
 
 async function spawnSessionForTopic(
   sessionManager: SessionManager,
@@ -428,6 +431,10 @@ async function spawnSessionForTopic(
   topicMemory?: TopicMemory,
   userProfile?: UserProfile,
   precomputedContext?: string,
+  /** Subscription & Auth Standard P1.3 (additive): launch under this account's
+   *  config home + record its id (the quota-aware account-swap mechanism).
+   *  Omitted = unchanged behaviour. */
+  accountSwap?: { configHome?: string; accountId?: string },
 ): Promise<string> {
   const msg = latestMessage || 'Session started — send a message to continue.';
 
@@ -692,6 +699,10 @@ async function spawnSessionForTopic(
     framework,
     ...(codexLocalProvider ? { codexLocalProvider } : {}),
     ...(codexLocalModelOverride ? { defaultModel: codexLocalModelOverride } : {}),
+    // Subscription & Auth Standard P1.3 (additive): account-swap — launch under
+    // this account's config home + record its id. Unset = unchanged.
+    ...(accountSwap?.configHome ? { configHome: accountSwap.configHome } : {}),
+    ...(accountSwap?.accountId ? { subscriptionAccountId: accountSwap.accountId } : {}),
   });
 
   // Clear the resume entry after successful spawn to prevent stale reuse
@@ -736,7 +747,7 @@ async function respawnSessionForTopic(
   topicMemory?: TopicMemory,
   userProfile?: UserProfile,
   recoveryPrompt?: string,
-  options?: { silent?: boolean },
+  options?: { silent?: boolean; configHome?: string; accountId?: string },
 ): Promise<void> {
   console.log(`[telegram→session] Session "${targetSession}" needs respawn for topic ${topicId}`);
 
@@ -784,7 +795,8 @@ async function respawnSessionForTopic(
     ? `${recoveryPrompt}\n\n${latestMessage || 'Session recovered — continue where you left off.'}`
     : latestMessage;
 
-  const newSessionName = await spawnSessionForTopic(sessionManager, telegram, topicName, topicId, effectiveMessage, topicMemory, userProfile);
+  const newSessionName = await spawnSessionForTopic(sessionManager, telegram, topicName, topicId, effectiveMessage, topicMemory, userProfile, undefined,
+    (options?.configHome || options?.accountId) ? { configHome: options?.configHome, accountId: options?.accountId } : undefined);
 
   telegram.registerTopicSession(topicId, newSessionName, topicName);
   if (!options?.silent) {
@@ -9876,15 +9888,72 @@ export async function startServer(options: StartOptions): Promise<void> {
         state,
         telegram: telegramRef,
         topicResumeMap: _topicResumeMap,
-        respawner: async (sessionName: string, topicId: number, followUpPrompt: string | undefined): Promise<string> => {
+        respawner: async (sessionName: string, topicId: number, followUpPrompt: string | undefined, accountSwap?: { configHome?: string; accountId?: string }): Promise<string> => {
           // killSession (called inside SessionRefresh) has already fired
           // beforeSessionKill (UUID persisted) and destroyed the tmux
           // session. respawnSessionForTopic spawns the new tmux running
           // `claude --resume <uuid>` and registers the topic mapping.
-          await respawnSessionForTopic(sessionManager, telegramRef, sessionName, topicId, followUpPrompt, topicMemory);
+          // P1.3: accountSwap (when present) re-launches the resume under a
+          // different account's config home — the --resume uuid is account-
+          // agnostic, so the conversation is preserved across the swap.
+          await respawnSessionForTopic(sessionManager, telegramRef, sessionName, topicId, followUpPrompt, topicMemory, undefined, undefined,
+            accountSwap ? { configHome: accountSwap.configHome, accountId: accountSwap.accountId } : undefined);
           return telegramRef.getSessionForTopic(topicId) ?? sessionName;
         },
       });
+
+      // ── QuotaAwareScheduler (Subscription & Auth Standard P1.3) ──
+      // Selects the optimal account + enforces the continuity guarantee: on
+      // quota pressure it resumes the session under another account (via the
+      // SessionRefresh account-swap path), never letting it die. Auto-trigger
+      // off RateLimitSentinel ships DARK behind a config flag (default off);
+      // the manual route + selection logic are always available.
+      const { QuotaAwareScheduler } = await import('../core/QuotaAwareScheduler.js');
+      _quotaAwareScheduler = new QuotaAwareScheduler({
+        listAccounts: () => subscriptionPool.list(),
+        softThresholdPct: config.subscriptionPool?.swapSoftThresholdPct,
+        refreshFn: async (o) => {
+          if (!_sessionRefresh) return false;
+          const r = await _sessionRefresh.refreshSession({
+            sessionName: o.sessionName,
+            reason: o.reason,
+            configHome: o.configHome,
+            accountId: o.accountId,
+          });
+          return r.ok;
+        },
+        onNoAlternate: (sessionName, exhaustedAccountId) => {
+          void telegramRef.createAttentionItem({
+            id: `subpool-no-alternate-${exhaustedAccountId}`,
+            title: 'Subscription pool — no alternate account to swap to',
+            summary: `Session "${sessionName}" hit account "${exhaustedAccountId}"'s quota and there's no other eligible account in the pool. The session falls back to the existing rate-limit back-off; consider enrolling another account.`,
+            category: 'subscription-pool',
+            priority: 'HIGH',
+            sourceContext: 'subscription-pool:no-alternate',
+          }).catch(() => { /* @silent-fallback-ok: attention is best-effort */ });
+        },
+        logger: { log: (m) => console.log(m), warn: (m) => console.warn(m) },
+      });
+
+      // DARK auto-trigger: only when explicitly enabled does a rate-limit
+      // escalation drive an account swap. Default off — opt-in per Justin's
+      // tier-2 sign-off (auto-swapping live sessions is real authority).
+      if (config.subscriptionPool?.autoSwapOnRateLimit) {
+        rateLimitSentinel.on('rate-limit:escalated', (rlState: { sessionName?: string }) => {
+          const sessionName = rlState?.sessionName;
+          if (!sessionName) return;
+          // Resolve which account this session is running under; only pool-managed
+          // sessions are swap-eligible (others fall back to the existing back-off).
+          const accountId = state.listSessions({ status: 'running' })
+            .find(s => s.tmuxSession === sessionName)?.subscriptionAccountId;
+          if (!accountId) return;
+          void _quotaAwareScheduler?.onQuotaPressure({
+            sessionName,
+            exhaustedAccountId: accountId,
+            nowMs: Date.now(),
+          });
+        });
+      }
     }
 
     // ── SessionReaper (SESSION-REAPER-SPEC) ──────────────────────────────
@@ -11711,7 +11780,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       console.log(pc.dim(`  [session-pool] rollout gate not wired: ${err instanceof Error ? err.message : String(err)}`));
     }
 
-    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, subscriptionPool, quotaPoller, semanticMemory, activitySentinel, rateLimitSentinel, releaseReadinessSentinel: releaseReadinessSentinel ?? undefined, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, localSigningKeyPem, leaseTransport, onLeasePullRequest: () => leaseCoordinatorRef?.currentLease() ?? null, liveTailReceiver, handoffWireTransport, onHandoffBegin, onHandoffInitiate: handoffInitiate, handoffInProgress: handoffSentinelInProgress, messageLedger, currentInboundByTopic, replyMarkerTransport, onReplyMarker: messageLedger ? (marker: unknown) => { const m = marker as { dedupeKey: string; platform: string; replyIdempotencyKey: string; epoch: number; topic?: string | null }; messageLedger!.applyRemoteReplyMarker(m.dedupeKey, { platform: m.platform, replyIdempotencyKey: m.replyIdempotencyKey, epoch: m.epoch, topic: m.topic ?? null }); } : undefined, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, warrantsReplyGate, collaborationSurfacer, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, a2aDeliveryTracker: a2aDeliveryTracker ?? undefined, responseReviewGate, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, machinePoolRegistry, meshRpcDispatcher, workingSetPullCoordinator, commitmentReplicaStore, forwardCommitmentMutate, sessionOwnershipRegistry, topicPinStore: _topicPinStore ?? undefined, secretSync: _secretSyncHandle ?? undefined, meshSelfId: _meshSelfId ?? undefined, resolveRouterUrl: _resolveRouterUrl ?? undefined, resolvePeerUrls: _resolvePeerUrls ?? undefined, sessionPoolE2EResultStore, proxyCoordinator, topicIntentStore, topicIntentArcCheck, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, briefDeps, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, agentWorktreeReaper, mcpProcessReaper, geminiLoopRunner, sleepController, agentActivityState, reapLog, sleepWakeDetector, unjustifiedStopGate, stopGateDb, stopNotifier });
+    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, subscriptionPool, quotaPoller, quotaAwareScheduler: _quotaAwareScheduler ?? undefined, semanticMemory, activitySentinel, rateLimitSentinel, releaseReadinessSentinel: releaseReadinessSentinel ?? undefined, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, localSigningKeyPem, leaseTransport, onLeasePullRequest: () => leaseCoordinatorRef?.currentLease() ?? null, liveTailReceiver, handoffWireTransport, onHandoffBegin, onHandoffInitiate: handoffInitiate, handoffInProgress: handoffSentinelInProgress, messageLedger, currentInboundByTopic, replyMarkerTransport, onReplyMarker: messageLedger ? (marker: unknown) => { const m = marker as { dedupeKey: string; platform: string; replyIdempotencyKey: string; epoch: number; topic?: string | null }; messageLedger!.applyRemoteReplyMarker(m.dedupeKey, { platform: m.platform, replyIdempotencyKey: m.replyIdempotencyKey, epoch: m.epoch, topic: m.topic ?? null }); } : undefined, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, warrantsReplyGate, collaborationSurfacer, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, a2aDeliveryTracker: a2aDeliveryTracker ?? undefined, responseReviewGate, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, machinePoolRegistry, meshRpcDispatcher, workingSetPullCoordinator, commitmentReplicaStore, forwardCommitmentMutate, sessionOwnershipRegistry, topicPinStore: _topicPinStore ?? undefined, secretSync: _secretSyncHandle ?? undefined, meshSelfId: _meshSelfId ?? undefined, resolveRouterUrl: _resolveRouterUrl ?? undefined, resolvePeerUrls: _resolvePeerUrls ?? undefined, sessionPoolE2EResultStore, proxyCoordinator, topicIntentStore, topicIntentArcCheck, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, briefDeps, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, agentWorktreeReaper, mcpProcessReaper, geminiLoopRunner, sleepController, agentActivityState, reapLog, sleepWakeDetector, unjustifiedStopGate, stopGateDb, stopNotifier });
     // Resolve the late-bound topic-operator getter (increment 2e): routing was
     // wired before the server existed; from here on inbound binds use the
     // server's own store instance.

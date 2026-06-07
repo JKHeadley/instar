@@ -42,6 +42,28 @@ describe('frameworkSessionLaunch.buildInteractiveLaunch', () => {
       expect(spec.argv).toEqual(['/usr/local/bin/claude', '--dangerously-skip-permissions']);
     });
 
+    it('injects CLAUDE_CONFIG_DIR when a configHome is set (P1.3 account swap)', () => {
+      const spec = buildInteractiveLaunch('claude-code', {
+        binaryPath: '/usr/local/bin/claude',
+        configHome: '/Users/x/.claude-personal',
+      });
+      expect(spec.envOverrides.CLAUDE_CONFIG_DIR).toBe('/Users/x/.claude-personal');
+      // Conversation continuity is account-agnostic: --resume still applies.
+      const resumed = buildInteractiveLaunch('claude-code', {
+        binaryPath: '/usr/local/bin/claude',
+        configHome: '/Users/x/.claude-work',
+        resumeSessionId: 'uuid-1',
+      });
+      expect(resumed.envOverrides.CLAUDE_CONFIG_DIR).toBe('/Users/x/.claude-work');
+      expect(resumed.argv).toContain('--resume');
+      expect(resumed.argv).toContain('uuid-1');
+    });
+
+    it('does NOT set CLAUDE_CONFIG_DIR when no configHome (inherits parent — unchanged default)', () => {
+      const spec = buildInteractiveLaunch('claude-code', { binaryPath: '/usr/local/bin/claude' });
+      expect(spec.envOverrides.CLAUDE_CONFIG_DIR).toBeUndefined();
+    });
+
     it('appends --resume <id> when a resumeSessionId is provided', () => {
       const spec = buildInteractiveLaunch('claude-code', {
         binaryPath: '/usr/local/bin/claude',

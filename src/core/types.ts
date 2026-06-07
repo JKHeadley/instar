@@ -69,6 +69,11 @@ export interface Session {
   maxDurationMinutes?: number;
   /** Claude Code's own session UUID (from hook events). Populated lazily on first hook event. */
   claudeSessionId?: string;
+  /** Subscription & Auth Standard P1.3: which subscription-pool account this
+   *  session is running under (the account whose config home it launched/resumed
+   *  with). Set at spawn + updated on a quota-aware account swap. Undefined on
+   *  legacy records and single-account agents. */
+  subscriptionAccountId?: string;
   /** Why the session ended. Set by the single-writer terminateSession() path
    *  (e.g. 'idle-zombie', 'reaped-idle', 'manual-kill'). Undefined on records
    *  ended before this field existed. */
@@ -2496,6 +2501,19 @@ export interface InstarConfig {
   publishing?: PublishingConfig;
   /** Cloudflare Tunnel config */
   tunnel?: TunnelConfigType;
+  /**
+   * Subscription & Auth Standard P1.3 — multi-account quota-aware scheduler.
+   * All optional; absence preserves today's single-account behaviour.
+   */
+  subscriptionPool?: {
+    /** Soft binding-window utilization % above which an account is "at pressure"
+     *  and excluded from proactive selection (default 90). */
+    swapSoftThresholdPct?: number;
+    /** DARK by default: when true, a RateLimitSentinel escalation on a
+     *  pool-managed session auto-swaps it to another account. Opt-in (auto-
+     *  swapping live sessions is real authority — tier-2). */
+    autoSwapOnRateLimit?: boolean;
+  };
   /** Secret handling config */
   secrets?: {
     /**

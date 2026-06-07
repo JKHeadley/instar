@@ -587,6 +587,8 @@ export interface RouteContext {
   subscriptionPool: import('../core/SubscriptionPool.js').SubscriptionPool | null;
   /** QuotaPoller (P1.2) — per-account live quota reader. Null until wired. */
   quotaPoller: import('../core/QuotaPoller.js').QuotaPoller | null;
+  /** QuotaAwareScheduler (P1.3) — account selection + swap-and-resume guarantee. */
+  quotaAwareScheduler: import('../core/QuotaAwareScheduler.js').QuotaAwareScheduler | null;
   semanticMemory: SemanticMemory | null;
   activitySentinel: SessionActivitySentinel | null;
   rateLimitSentinel: import('../monitoring/RateLimitSentinel.js').RateLimitSentinel | null;
@@ -15774,6 +15776,32 @@ export function createRoutes(ctx: RouteContext): Router {
       snapshot: account.lastQuota ?? null,
       burnRate,
     });
+  });
+
+  // P1.3 — manual account swap (the deterministic lever + the continuity-guarantee
+  // surface). Resumes `sessionName` on another eligible account, preserving the
+  // conversation via --resume. Body: { sessionName, exhaustedAccountId }.
+  // POST (not GET) so it never collides with GET /subscription-pool/:id.
+  router.post('/subscription-pool/swap', async (req, res) => {
+    if (!ctx.quotaAwareScheduler) {
+      res.json({ enabled: false, swapped: false, reason: 'scheduler not configured' });
+      return;
+    }
+    const { sessionName, exhaustedAccountId } = req.body ?? {};
+    if (!sessionName || !exhaustedAccountId) {
+      res.status(400).json({ error: 'sessionName and exhaustedAccountId are required' });
+      return;
+    }
+    try {
+      const result = await ctx.quotaAwareScheduler.onQuotaPressure({
+        sessionName,
+        exhaustedAccountId,
+        nowMs: Date.now(),
+      });
+      res.json({ enabled: true, ...result });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : 'swap failed' });
+    }
   });
 
   // ── Episodic Memory (Activity Sentinel) ──────────────────────────

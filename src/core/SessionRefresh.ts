@@ -50,7 +50,14 @@ export interface SessionRefreshDeps {
    *
    * Resolves to the new tmux session name on success.
    */
-  respawner: (sessionName: string, topicId: number, followUpPrompt: string | undefined) => Promise<string>;
+  respawner: (
+    sessionName: string,
+    topicId: number,
+    followUpPrompt: string | undefined,
+    /** P1.3 account swap (optional, additive): launch the respawn under this
+     *  account's config home + record the account id. Omitted = unchanged. */
+    accountSwap?: { configHome?: string; accountId?: string },
+  ) => Promise<string>;
   /** Rate-guard config. Defaults: 5 refreshes per 10-minute rolling window. */
   rateLimit?: { maxPerWindow: number; windowMs: number };
   /** Injectable clock for tests. Defaults to Date.now. */
@@ -82,6 +89,17 @@ export interface RefreshOptions {
    * resume, the original self-refresh behavior).
    */
   fresh?: boolean;
+  /**
+   * Subscription & Auth Standard P1.3 (quota-aware account swap): when set, the
+   * respawned session is launched/resumed under THIS account's config home
+   * (CLAUDE_CONFIG_DIR) instead of the parent's, and `accountId` is recorded on
+   * the new session record. Both optional + additive — when unset, refresh
+   * behaviour is byte-for-byte unchanged (the resume UUID is account-agnostic,
+   * so conversation continuity is preserved across the swap). Only meaningful
+   * for claude-code sessions.
+   */
+  configHome?: string;
+  accountId?: string;
 }
 
 const DEFAULT_MAX_PER_WINDOW = 5;
@@ -213,7 +231,10 @@ export class SessionRefresh {
       // --resume <uuid>` (resolved by spawnSessionForTopic via the saved
       // TopicResumeMap entry) and re-registers the topic mapping. With
       // `fresh`, the entry was just cleared, so it spawns without --resume.
-      const newSessionName = await this.deps.respawner(sessionName, topicId, followUpPrompt);
+      const accountSwap = (opts.configHome || opts.accountId)
+        ? { configHome: opts.configHome, accountId: opts.accountId }
+        : undefined;
+      const newSessionName = await this.deps.respawner(sessionName, topicId, followUpPrompt, accountSwap);
 
       // ── verify + finalize ────────────────────────────────────────────
       console.log(`[SessionRefresh] Refreshed "${sessionName}" → "${newSessionName}" (topic ${topicId})${reason ? ` reason="${reason}"` : ''}`);

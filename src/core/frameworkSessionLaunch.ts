@@ -165,6 +165,16 @@ export interface InteractiveLaunchOptions {
    * No effect on non-pi frameworks.
    */
   piSessionDir?: string;
+  /**
+   * Subscription & Auth Standard P1.3 (claude-code only): the per-account config
+   * home for this session. When set, the builder injects
+   * `CLAUDE_CONFIG_DIR=<configHome>` into envOverrides so the launched Claude
+   * session authenticates under THAT account's login instead of inheriting the
+   * parent agent's. This is the swap mechanism — selecting/swapping an account =
+   * launching (or `--resume`-ing) with that account's configHome. No effect on
+   * non-claude frameworks. NEVER a token — just the login location.
+   */
+  configHome?: string;
 }
 
 export interface InteractiveLaunchSpec {
@@ -206,13 +216,17 @@ const claudeCodeBuilder: Builder = (options) => {
   if (resolvedModel) {
     argv.push('--model', resolvedModel);
   }
-  return {
-    argv,
-    envOverrides: {
-      // Prevent nested Claude Code detection when Echo runs inside Claude.
-      CLAUDECODE: '',
-    },
+  const envOverrides: Record<string, string> = {
+    // Prevent nested Claude Code detection when Echo runs inside Claude.
+    CLAUDECODE: '',
   };
+  // Subscription & Auth Standard P1.3: when a per-account config home is given,
+  // launch this Claude session under THAT account's login (the swap mechanism).
+  // The login location only — never a token.
+  if (options.configHome) {
+    envOverrides.CLAUDE_CONFIG_DIR = options.configHome;
+  }
+  return { argv, envOverrides };
 };
 
 const codexCliBuilder: Builder = (options) => {
