@@ -4144,7 +4144,7 @@ Strip the \`[telegram:N]\` prefix before interpreting the message. Respond natur
 - **NEVER use \`curl /secrets/retrieve\` directly** — the raw curl pattern dumps the full JSON response (including the secret value) into the Bash tool transcript.
 - List pending: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/secrets/pending\`
 - **Security**: One-time link, expires after 15 minutes, CSRF-protected. The moment a secret is SUBMITTED it is also persisted store-first to the durable AES-256-GCM encrypted SecretStore — so it survives session restarts, compaction, and cross-machine handoff instead of evaporating with the in-memory copy. Retrieval transparently falls back to the durable copy, and a successful consume deletes both. (Opt out with \`secrets.persistDrops: false\` in \`.instar/config.json\`.)
-- **When to use** (PROACTIVE — this is the trigger): the moment a user offers to give you a credential (API key, password, token) or you realize you need one, use Secret Drop. It is the ONLY correct way to collect a secret. NEVER accept it pasted into Telegram or chat, and NEVER create a local file (e.g. \`.instar/secrets/foo.env\`) and ask the user to edit/paste into it — that defeats the one-time, in-memory, never-on-disk guarantee and asks the user to edit files (which you must never do). Always issue a Secret Drop one-time link instead.
+- **When to use — AGENT-RETRIEVES-FIRST; Secret Drop is the LAST resort** (PROACTIVE): When you need a credential, FIRST fetch it yourself from an account/service you already have access to — your vault (\`secret-get.mjs\`), a Vercel project you can read (\`vercel env pull\`), GitHub (\`gh\`), a cloud console. You have full account access and standing operator approval; a secret already sitting in one of your own accounts is yours to fetch — do NOT make the user produce it. Use Secret Drop ONLY when you genuinely cannot reach the secret yourself (an operator-only credential the user actually holds) — and even then, never assume they have it on hand: mint the one-time link OR walk them through obtaining it mobile-friendly, step-by-step. When a user proactively OFFERS a credential, Secret Drop is the correct way to collect it — NEVER accept it pasted into Telegram or chat, and NEVER create a local file (e.g. \`.instar/secrets/foo.env\`) for the user to edit/paste into (that defeats the one-time, never-on-disk guarantee and asks the user to edit files, which you must never do).
 `;
       const tunnelIdx = content.indexOf('**Cloudflare Tunnel**');
       const scriptsIdx = content.indexOf('**Scripts**');
@@ -4666,6 +4666,36 @@ The user has been talking to you (possibly for days). A generic greeting like "H
         result.upgraded.push('CLAUDE.md: Secret Drop Security bullet updated for store-first durable persistence');
       } else if (content.includes('persisted store-first to the durable')) {
         result.skipped.push('CLAUDE.md: Secret Drop store-first durability already documented');
+      }
+    }
+
+    // Secret Drop "agent-retrieves-first" inversion (2026-06-07 UX-violation
+    // fix). Existing agents' Secret Drop "When to use" trigger told them to use
+    // a Secret Drop "the moment you realize you need [a credential]" and called
+    // it "the ONLY correct way to collect a secret" — the wrong default: it
+    // threw avoidable work at the user for secrets the agent can fetch itself
+    // via its own account access (Vercel/GitHub/vault). Justin flagged this as a
+    // UX violation (2026-06-07, topic 12476): "you have complete access to all
+    // accounts… get the secret yourself." Rewrite the harmful sentence so
+    // agent-retrieves-first is the default and Secret Drop is the last resort.
+    // Idempotent: anchors on the old "ONLY correct way" wording; skips once the
+    // inversion is present.
+    {
+      const oldTrigger =
+        'or you realize you need one, use Secret Drop. It is the ONLY correct way to collect a secret.';
+      const newTrigger =
+        "or you realize you need one: FIRST fetch it yourself from an account/service you already have access to (your vault via `secret-get.mjs`, a Vercel project via `vercel env pull`, GitHub via `gh`, a cloud console) — you have full account access and standing operator approval, so a secret already sitting in one of your own accounts is yours to fetch, NOT the user's to produce. Use Secret Drop ONLY when you genuinely cannot reach the secret yourself (an operator-only credential the user actually holds), and even then mint the one-time link OR walk the user through obtaining it mobile-friendly, step-by-step. When a user proactively OFFERS a credential, Secret Drop is the correct way to collect it.";
+      if (content.includes(oldTrigger)) {
+        content = content.replace(oldTrigger, newTrigger);
+        patched = true;
+        result.upgraded.push(
+          'CLAUDE.md: Secret Drop trigger inverted to agent-retrieves-first (Secret Drop = last resort)',
+        );
+      } else if (
+        content.includes('AGENT-RETRIEVES-FIRST') ||
+        content.includes('FIRST fetch it yourself from an account')
+      ) {
+        result.skipped.push('CLAUDE.md: Secret Drop agent-retrieves-first already present');
       }
     }
 

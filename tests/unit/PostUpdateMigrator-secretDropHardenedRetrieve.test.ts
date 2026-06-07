@@ -344,6 +344,60 @@ describe('PostUpdateMigrator — CLAUDE.md Secret Drop rewrite', () => {
     expect(after).not.toContain('curl http://localhost:4042/capabilities');
     expect(result.upgraded.some(u => u.includes('added Self-Discovery section'))).toBe(true);
   });
+
+  // Secret Drop "agent-retrieves-first" inversion (2026-06-07 UX-violation fix).
+  // Existing agents carry the harmful "use Secret Drop … the ONLY correct way"
+  // trigger; the migration must flip it to agent-retrieves-first so the agent
+  // fetches secrets it can reach itself (Vercel/GitHub/vault) and only falls
+  // back to Secret Drop as a last resort.
+  it('rewrites the legacy "ONLY correct way" trigger to agent-retrieves-first', () => {
+    fs.writeFileSync(claudeMdPath, [
+      '# CLAUDE.md — test',
+      '',
+      '**Secret Drop** — secure secret intake.',
+      '- **When to use** (PROACTIVE — this is the trigger): the moment a user offers to give you a credential (API key, password, token) or you realize you need one, use Secret Drop. It is the ONLY correct way to collect a secret. NEVER accept it pasted into Telegram or chat.',
+      '',
+    ].join('\n'));
+
+    const result = runMigrateClaudeMd(createMigrator(projectDir));
+    expect(result.errors).toEqual([]);
+
+    const after = fs.readFileSync(claudeMdPath, 'utf-8');
+    expect(after).not.toContain('It is the ONLY correct way to collect a secret');
+    expect(after).toContain('FIRST fetch it yourself from an account');
+    expect(after).toContain('vercel env pull');
+    expect(result.upgraded.some(u => u.includes('agent-retrieves-first'))).toBe(true);
+  });
+
+  it('is idempotent — agent-retrieves-first wording is not rewritten again', () => {
+    fs.writeFileSync(claudeMdPath, [
+      '# CLAUDE.md — test',
+      '',
+      '**Secret Drop** — secure secret intake.',
+      '- **When to use — AGENT-RETRIEVES-FIRST; Secret Drop is the LAST resort** (PROACTIVE): When you need a credential, FIRST fetch it yourself from an account you already have access to.',
+      '',
+    ].join('\n'));
+
+    const result = runMigrateClaudeMd(createMigrator(projectDir));
+    expect(result.errors).toEqual([]);
+
+    const after = fs.readFileSync(claudeMdPath, 'utf-8');
+    expect(after).toContain('AGENT-RETRIEVES-FIRST');
+    expect(result.upgraded.some(u => u.includes('agent-retrieves-first'))).toBe(false);
+    expect(result.skipped.some(s => s.includes('agent-retrieves-first already present'))).toBe(true);
+  });
+
+  it('a freshly injected Secret Drop section carries agent-retrieves-first (no stale inject)', () => {
+    fs.writeFileSync(claudeMdPath, '# CLAUDE.md — test\n\n**Cloudflare Tunnel** — tunnel stuff.\n');
+
+    const result = runMigrateClaudeMd(createMigrator(projectDir));
+    expect(result.errors).toEqual([]);
+
+    const after = fs.readFileSync(claudeMdPath, 'utf-8');
+    expect(after).toContain('**Secret Drop**');
+    expect(after).toContain('AGENT-RETRIEVES-FIRST');
+    expect(after).not.toContain('It is the ONLY correct way to collect a secret');
+  });
 });
 
 // Store-first durable persistence (2026-06-04): existing agents' Security
