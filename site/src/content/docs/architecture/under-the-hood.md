@@ -440,6 +440,34 @@ The sections above describe what each subsystem does at a behavioral level. The 
 
 `AnthropicIntelligenceProvider`, `CostAwareRoutingPolicy`, `LocalModelAdapter`, `ProviderRegistry`, `StallTriageNurse` (provider-side fork), `TierResolver`.
 
+## Subscription & Auth (multi-account quota pool)
+
+The Subscription & Auth Standard lets one agent draw on several Claude (or other
+provider) subscriptions at once, draining each before its quota resets and never
+letting a long-lived session die on a quota limit.
+
+- **`SubscriptionPool`** (`src/core/SubscriptionPool.ts`) — the durable account
+  registry. Each entry records an account's login *location* (its
+  `CLAUDE_CONFIG_DIR` config home), provider, framework, and last quota snapshot.
+  It stores **login location, never tokens** — a structural credential-field guard
+  rejects any attempt to persist a secret into the registry.
+- **`QuotaPoller`** (`src/core/QuotaPoller.ts`) — the background poller that reads
+  each account's live utilization + reset windows (hybrid read: Claude Code's
+  `/usage` by default, the `/api/oauth/usage` endpoint as a bounded fallback),
+  derives a *measured burn rate* (not a call count), and keeps idle-but-likely-next
+  accounts warm.
+- **`QuotaAwareScheduler`** (`src/core/QuotaAwareScheduler.ts`) — reset-date-optimal
+  account selection (score = unused headroom × reset urgency) plus the **hard
+  continuity guarantee**: when a session hits its account's quota, the scheduler
+  picks an alternate account and resumes the *same conversation* there via
+  `SessionRefresh` (which threads an account-swap option into the respawn so the
+  new process launches under the alternate account's `CLAUDE_CONFIG_DIR`). Because
+  `claude --resume` is account-agnostic, the conversation is preserved across the
+  swap. If no alternate is eligible it raises a single deduped HIGH attention item
+  rather than letting the session die silently.
+
+Spec: `docs/specs/_drafts/subscription-auth-standard-master-spec.md`.
+
 ## Inter-agent comms (agent-to-agent Telegram primitive)
 
 - **`AgentTelegramComms`** (`src/messaging/AgentTelegramComms.ts`) — the agent-to-agent

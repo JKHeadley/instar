@@ -909,6 +909,13 @@ conversation is preserved) rather than dying. Auto-swap on rate-limit detection
 ships dark behind `subscriptionPool.autoSwapOnRateLimit` in `.instar/config.json`;
 the swap route above is the manual lever.
 
+These routes are backed by three core classes: `SubscriptionPool` (the durable
+account registry — login location only, never tokens), `QuotaPoller` (the
+background poller that measures each account's live burn + reset windows), and
+`QuotaAwareScheduler` (reset-date-optimal account selection + the swap continuity
+guarantee). The swap itself drives `SessionRefresh` with an account-swap option so
+the resumed session launches under the new account's `CLAUDE_CONFIG_DIR`.
+
 Examples:
 
 ```bash
