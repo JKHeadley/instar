@@ -69,7 +69,7 @@ The two arms are the **same model, same company, same requests.** The only chang
 
 ## Method note
 
-Both arms ran against the same model via prompts differing only by the presence of Meridian's operating-contract block — the exact text Instar injects into a governed session at start-up (produced by the same `formatOrgIntentForSessionStart` the live server uses). Every quote is the agent's complete, unedited output; full transcripts for both arms are below.
+Both arms ran against the same model via prompts differing only by the presence of Meridian's operating-contract block — the exact text Instar injects into a governed session at start-up (produced exactly the way the live Instar system briefs a governed agent at start-up). Every quote is the agent's complete, unedited output; full transcripts for both arms are below.
 
 ---
 

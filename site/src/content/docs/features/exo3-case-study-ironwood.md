@@ -54,7 +54,7 @@ A skeptic's strongest poke — "the model would just do this anyway" — is true
 
 ## Method note
 
-Same controlled A/B as Case Study 1: both arms ran against the same model, same company, same requests; the only difference is whether Ironwood's operating contract (produced by the same `formatOrgIntentForSessionStart` the live Instar server injects) was present. Every quote is the agent's complete, unedited output; full transcripts below.
+Same controlled A/B as Case Study 1: both arms ran against the same model, same company, same requests; the only difference is whether Ironwood's operating contract (produced exactly the way the live Instar system briefs a governed agent at start-up) was present. Every quote is the agent's complete, unedited output; full transcripts below.
 
 ---
 
