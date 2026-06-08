@@ -1,0 +1,15 @@
+{
+  "ts": "2026-06-08T22:34:03.702Z",
+  "slug": "feedback-parity-phase3-dual-forward",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": true,
+  "files": 2,
+  "loc": 291,
+  "causalAutopsy": null,
+  "verdict": "pass"
+}
