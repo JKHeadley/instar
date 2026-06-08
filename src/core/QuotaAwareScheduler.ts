@@ -44,12 +44,20 @@ function isEligibleStatus(a: SubscriptionAccount): boolean {
   return a.status === 'active' || a.status === 'warming';
 }
 
-/** Binding-window utilization (7-day); falls back to 5-hour, else 0 (unknown = empty). */
+/**
+ * Most-constrained-window utilization: the MAX across the account's known
+ * windows (5-hour AND weekly). Taking the max means EITHER window crossing the
+ * threshold counts as pressure — the 5-hour limit blocks you independently of
+ * the weekly (you can be locked out for hours with plenty of weekly headroom
+ * left), so the binding constraint is whichever window is the most used. 0 when
+ * there is no reading yet (unknown = treated as empty / still selectable).
+ */
 function bindingUtilization(snap: AccountQuotaSnapshot | null | undefined): number {
   if (!snap) return 0;
-  if (snap.sevenDay) return snap.sevenDay.utilizationPct;
-  if (snap.fiveHour) return snap.fiveHour.utilizationPct;
-  return 0;
+  const utils: number[] = [];
+  if (snap.sevenDay) utils.push(snap.sevenDay.utilizationPct);
+  if (snap.fiveHour) utils.push(snap.fiveHour.utilizationPct);
+  return utils.length ? Math.max(...utils) : 0;
 }
 
 /** Soonest reset across the account's known windows (ms epoch), or +Infinity. */
