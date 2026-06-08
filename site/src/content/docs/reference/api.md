@@ -91,6 +91,19 @@ The Instar server exposes a REST API on `localhost:4040` (configurable). All end
 | GET | `/project-map` | Auto-generated project territory map |
 | POST | `/coherence/check` | Pre-action coherence verification |
 
+## EXO 3.0 Governance
+
+The endpoints behind the [EXO 3.0 Alignment](/features/exo3/) capabilities. See the [Meridian](/features/exo3-case-study-meridian/) and [Ironwood](/features/exo3-case-study-ironwood/) case studies for the controlled proof.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/intent/org/test-action` | Run the refusal + endorsement tests on a proposed action against the org intent |
+| POST | `/intent/tradeoff-resolve` | Resolve a value tradeoff via the org's tradeoff hierarchy |
+| GET | `/passport` | The agent's digital passport (identity, trust level, forbidden actions) |
+| POST | `/passport/verify` | Verify a peer's proposed action against its passport |
+| POST | `/agent-readiness/score` | Score a task or workflow on its coordination-vs-judgment ratio |
+| GET | `/metrics/learning-velocity` | Learning-velocity metric (the EXO 3.0 KPI inversion) |
+
 ## Updates & Dispatches
 
 | Method | Path | Description |

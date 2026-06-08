@@ -90,7 +90,8 @@ coordination-vs-judgment ratio. Coordination work (routing, approvals,
 scheduling, status-tracking) is agent-ready; judgment work (ambiguity,
 exceptions, relationships) stays human. Instar scores a task and recommends
 deploy-agent, agent-with-oversight, hybrid, or human-led — the check to run
-before delegating work to an agent.
+before delegating work to an agent. The agent-readiness skill is the proactive
+entry point.
 
 ## Agent digital passport
 
@@ -98,7 +99,8 @@ Every agent carries a portable passport — its identity, its trust level, and t
 constraints from its organization's intent — and other agents verify a proposed
 action against it before trusting it. As Salim puts it: every agent carries
 metadata saying what it's allowed and forbidden to do, and other agents watch
-compliance.
+compliance. The agent-passport skill is the proactive entry point before
+trusting a peer's proposed action.
 
 ## Learning-velocity metric
 
