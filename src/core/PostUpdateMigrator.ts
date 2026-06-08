@@ -7091,7 +7091,13 @@ done
 # (never on main) and main carries remote branch protection that rejects a force-push regardless.
 FORCE_WITH_LEASE_OWN_BRANCH=0
 if echo "$INPUT" | grep -qiE 'git +push[^|;&]*--force-with-lease'; then
-  if echo "$INPUT" | grep -qiE '(^|[[:space:]:/])(main|master|develop|release[A-Za-z0-9._/-]*)([[:space:]]|:|$)'; then
+  # Scan ONLY the git-push invocation for a protected branch — NOT the whole \$INPUT.
+  # The previous whole-input scan false-positived on unrelated text in the command
+  # (e.g. a heredoc status message mentioning "release cadence" or "main"), blocking a
+  # legitimate PR-branch force-with-lease update (2026-06-07, topic 19437). Isolating to
+  # the push invocation keeps the main/master/release block precise.
+  PUSH_INVOCATION=$(echo "$INPUT" | grep -oiE 'git +push[^|;&]*' | head -1)
+  if echo "$PUSH_INVOCATION" | grep -qiE '(^|[[:space:]:/])(main|master|develop|release[A-Za-z0-9._/-]*)([[:space:]]|:|$)'; then
     FORCE_WITH_LEASE_OWN_BRANCH=0
   else
     FORCE_WITH_LEASE_OWN_BRANCH=1
