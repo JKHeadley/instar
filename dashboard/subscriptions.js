@@ -90,6 +90,20 @@ export function countdown(iso, now = Date.now(), { expiredWord = 'expired' } = {
   return `${sec}s`;
 }
 
+/** A coarse "N ago" for a PAST ISO timestamp (token-refresh recency). '' if invalid. */
+export function relativeAge(iso, now = Date.now()) {
+  const t = typeof iso === 'string' ? Date.parse(iso) : NaN;
+  if (Number.isNaN(t)) return '';
+  const sec = Math.floor((now - t) / 1000);
+  if (sec < 0) return 'just now';
+  if (sec < 60) return 'just now';
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `${min}m ago`;
+  const hr = Math.floor(min / 60);
+  if (hr < 24) return `${hr}h ago`;
+  return `${Math.floor(hr / 24)}d ago`;
+}
+
 // ── DOM helpers (textContent ONLY — never innerHTML) ────────────────────────
 function el(doc, tag, cls, text) {
   const node = doc.createElement(tag);
@@ -141,6 +155,13 @@ export function renderAccounts(doc, target, accounts, now = Date.now()) {
       if (q.sevenDay) card.appendChild(quotaBar(doc, 'Weekly', q.sevenDay.utilizationPct, q.sevenDay.resetsAt, now));
     } else {
       card.appendChild(el(doc, 'div', 'sub-account-noquota', 'No quota reading yet.'));
+    }
+    // Token health: when the poller silently refreshed the access token from the
+    // refresh token, show it — so a routine access-token expiry reads as healthy
+    // (auto-handled) rather than looking like a re-auth event.
+    const refAge = a && a.lastRefreshAt ? relativeAge(a.lastRefreshAt, now) : null;
+    if (refAge) {
+      card.appendChild(el(doc, 'div', 'sub-account-refresh', `Token auto-refreshed ${refAge}`));
     }
     target.appendChild(card);
   }

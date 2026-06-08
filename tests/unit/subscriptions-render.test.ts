@@ -17,6 +17,7 @@ import {
   friendlyStatus,
   friendlyProvider,
   countdown,
+  relativeAge,
   quotaBar,
   renderAccounts,
   renderPendingLogins,
@@ -118,6 +119,32 @@ describe('renderAccounts', () => {
     const t = el();
     renderAccounts(doc, t, [{ id: 'a', nickname: 'n', provider: 'anthropic', framework: 'claude-code', status: 'warming' }], NOW);
     expect(t.querySelector('.sub-account-noquota')).toBeTruthy();
+  });
+  it('shows a token-health line when the account was auto-refreshed', () => {
+    const t = el();
+    renderAccounts(doc, t, [{
+      id: 'a1', nickname: 'personal', provider: 'anthropic', framework: 'claude-code', status: 'active',
+      lastRefreshAt: new Date(NOW - 5 * 60_000).toISOString(),
+    }], NOW);
+    const line = t.querySelector('.sub-account-refresh');
+    expect(line).toBeTruthy();
+    expect(line!.textContent).toContain('auto-refreshed');
+    expect(line!.textContent).toContain('5m ago');
+  });
+  it('omits the token-health line when never refreshed', () => {
+    const t = el();
+    renderAccounts(doc, t, [{ id: 'a', nickname: 'n', provider: 'anthropic', framework: 'claude-code', status: 'active' }], NOW);
+    expect(t.querySelector('.sub-account-refresh')).toBeNull();
+  });
+});
+
+describe('relativeAge', () => {
+  it('formats coarse past ages and tolerates junk', () => {
+    expect(relativeAge(new Date(NOW - 30_000).toISOString(), NOW)).toBe('just now');
+    expect(relativeAge(new Date(NOW - 5 * 60_000).toISOString(), NOW)).toBe('5m ago');
+    expect(relativeAge(new Date(NOW - 3 * 3600_000).toISOString(), NOW)).toBe('3h ago');
+    expect(relativeAge(new Date(NOW - 2 * 86_400_000).toISOString(), NOW)).toBe('2d ago');
+    expect(relativeAge('not-a-date', NOW)).toBe('');
   });
 });
 
