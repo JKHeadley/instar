@@ -4074,7 +4074,11 @@ done
 # and any force-push explicitly targeting a protected branch (main/master/develop/release*).
 FORCE_WITH_LEASE_OWN_BRANCH=0
 if echo "\$INPUT" | grep -qiE 'git +push[^|;&]*--force-with-lease'; then
-  if echo "\$INPUT" | grep -qiE '(^|[[:space:]:/])(main|master|develop|release[A-Za-z0-9._/-]*)([[:space:]]|:|\$)'; then
+  # Scan ONLY the git-push invocation for a protected branch — NOT the whole input.
+  # The whole-input scan false-positived on unrelated text (e.g. a heredoc mentioning
+  # "release cadence"/"main"), blocking a legitimate PR-branch update (2026-06-07).
+  PUSH_INVOCATION=\$(echo "\$INPUT" | grep -oiE 'git +push[^|;&]*' | head -1)
+  if echo "\$PUSH_INVOCATION" | grep -qiE '(^|[[:space:]:/])(main|master|develop|release[A-Za-z0-9._/-]*)([[:space:]]|:|\$)'; then
     FORCE_WITH_LEASE_OWN_BRANCH=0
   else
     FORCE_WITH_LEASE_OWN_BRANCH=1

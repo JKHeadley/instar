@@ -84,8 +84,15 @@ RISKY_PATTERNS=(
 # main carries remote branch protection that rejects a force-push regardless.
 FORCE_WITH_LEASE_OWN_BRANCH=0
 if echo "$INPUT" | grep -qiE 'git +push[^|;&]*--force-with-lease'; then
-  if echo "$INPUT" | grep -qiE '(^|[[:space:]:/])(main|master|develop|release[A-Za-z0-9._/-]*)([[:space:]]|:|$)'; then
-    FORCE_WITH_LEASE_OWN_BRANCH=0   # explicit protected target — keep blocking
+  # Scan ONLY the `git push …` invocation for a protected branch — NOT the whole
+  # $INPUT. The previous whole-$INPUT scan false-positived on any unrelated text in the
+  # command (e.g. a heredoc status message mentioning "release cadence" or "main"),
+  # blocking a legitimate PR-branch force-with-lease update — the recurring friction
+  # the carve-out exists to remove (2026-06-07, topic 19437). Isolating to the push
+  # invocation keeps the main/master/release block precise.
+  PUSH_INVOCATION=$(echo "$INPUT" | grep -oiE 'git +push[^|;&]*' | head -1)
+  if echo "$PUSH_INVOCATION" | grep -qiE '(^|[[:space:]:/])(main|master|develop|release[A-Za-z0-9._/-]*)([[:space:]]|:|$)'; then
+    FORCE_WITH_LEASE_OWN_BRANCH=0   # explicit protected target in the push command — keep blocking
   else
     FORCE_WITH_LEASE_OWN_BRANCH=1   # safe: force-with-lease to a non-protected branch
   fi
