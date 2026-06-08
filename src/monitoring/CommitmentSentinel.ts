@@ -328,6 +328,22 @@ IMPORTANT: Only return genuine commitments where the user asked for something du
         maxTokens: 500,
         temperature: 0,
         attribution: { component: 'CommitmentSentinel' }, // attribution for /metrics/features
+        // Observable Intelligence: the sentinel ACTS (fired) when it detects at
+        // least one genuine commitment; an empty array is a no-op. Mirrors the
+        // parse below so /metrics/features reports a real fireRate.
+        classifyVerdict: (result) => {
+          try {
+            const t = result.trim();
+            const j = t.startsWith('```') ? t.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '') : t;
+            const arr = JSON.parse(j);
+            const acted = Array.isArray(arr) && arr.some((c: any) =>
+              c?.type && c.userRequest && c.agentResponse &&
+              ['config-change', 'behavioral', 'one-time-action'].includes(c.type));
+            return { acted };
+          } catch {
+            return { acted: false };
+          }
+        },
       });
 
       // Parse JSON from response

@@ -165,6 +165,7 @@ export class AgentServer {
   private toneGate: import('../core/MessagingToneGate.js').MessagingToneGate | null = null;
   private tokenLedger: TokenLedger | null = null;
   private featureMetricsLedger: FeatureMetricsLedger | null = null;
+  private featureMetricsPruneTimer: ReturnType<typeof setInterval> | null = null;
   private a2aDeliveryTracker: import('../threadline/A2ADeliveryTracker.js').A2ADeliveryTracker | null = null;
   private tokenLedgerPoller: TokenLedgerPoller | null = null;
   private resourceLedger: ResourceLedger | null = null;
@@ -812,6 +813,25 @@ export class AgentServer {
         // Phase 1b: wire the funnel → ledger. One injection point covers every
         // wrapped provider (current and future). Null-safe; no-op if it failed above.
         setFeatureMetricsRecorder(this.featureMetricsLedger);
+
+        // Observable Intelligence × Responsible Resource: the audit trail is kept
+        // long enough to see behaviour/performance trends, then aged out — never
+        // hoarded forever. Default 30d; tune via monitoring.featureMetrics.retentionDays
+        // (0/negative disables pruning). Prune once at boot + every 6h thereafter.
+        const fmCfg = (options.config as {
+          monitoring?: { featureMetrics?: { retentionDays?: number } };
+        }).monitoring?.featureMetrics;
+        const retentionDays = fmCfg?.retentionDays ?? 30;
+        if (retentionDays > 0) {
+          const retentionMs = retentionDays * 24 * 60 * 60 * 1000;
+          const prune = () => {
+            try { this.featureMetricsLedger?.pruneOlderThan(Date.now() - retentionMs); } catch { /* @silent-fallback-ok: retention prune is best-effort housekeeping — a failed prune just leaves old rows for the next tick */ }
+          };
+          prune();
+          this.featureMetricsPruneTimer = setInterval(prune, 6 * 60 * 60 * 1000);
+          // Don't keep the event loop alive solely for retention housekeeping.
+          this.featureMetricsPruneTimer.unref?.();
+        }
       } catch (err) {
         console.warn('[instar] feature-metrics-ledger init failed (non-fatal):', err);
         this.featureMetricsLedger = null;
@@ -2936,6 +2956,10 @@ export class AgentServer {
     if (this.resourceLedger) {
       try { this.resourceLedger.close(); } catch { /* best-effort */ }
       this.resourceLedger = null;
+    }
+    if (this.featureMetricsPruneTimer) {
+      try { clearInterval(this.featureMetricsPruneTimer); } catch { /* @silent-fallback-ok: timer teardown is best-effort cleanup at shutdown */ }
+      this.featureMetricsPruneTimer = null;
     }
     if (this.tokenLedger) {
       try {

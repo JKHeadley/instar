@@ -60,6 +60,22 @@ describe('GET /metrics/features (integration)', () => {
     expect(tone.fireRate).toBeCloseTo(0.5, 5);
   });
 
+  it('surfaces provider/model + fired through the route (Observable Intelligence)', async () => {
+    ledger = new FeatureMetricsLedger({ dbPath: ':memory:' });
+    ledger.record({ feature: 'MessageSentinel', outcome: 'fired', model: 'gpt-5.4-mini', framework: 'codex-cli' });
+    ledger.record({ feature: 'MessageSentinel', outcome: 'noop', model: 'gpt-5.4-mini', framework: 'codex-cli' });
+
+    const res = await request(appWith(ledger)).get('/metrics/features');
+
+    expect(res.status).toBe(200);
+    const ms = res.body.features.find((f: any) => f.feature === 'MessageSentinel');
+    expect(ms.frameworks).toEqual(['codex-cli']);
+    expect(ms.models).toEqual(['gpt-5.4-mini']);
+    expect(ms.fired).toBe(1);
+    expect(ms.shed).toBe(0);
+    expect(ms.fireRate).toBeCloseTo(0.5, 5);
+  });
+
   it('503s when the feature-metrics ledger is unavailable', async () => {
     const res = await request(appWith(null)).get('/metrics/features');
     expect(res.status).toBe(503);

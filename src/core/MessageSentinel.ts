@@ -560,6 +560,13 @@ export class MessageSentinel {
         maxTokens: 10,
         temperature: 0,
         attribution: { component: 'MessageSentinel' }, // attribution for /metrics/features
+        // Observable Intelligence: the sentinel ACTS (fired) on any non-normal
+        // category (emergency-stop / pause / redirect); 'normal' is a no-op. Lets
+        // /metrics/features report a real fireRate instead of every call as noop.
+        classifyVerdict: (result) => {
+          const p = this.extractCategory(result);
+          return { acted: !!p && p.category !== 'normal' };
+        },
       });
 
       const parsed = this.extractCategory(response);

@@ -3344,16 +3344,16 @@ For any active time-boxed (autonomous) session, this returns the computed elapse
     // the template, so a freshly-initialized agent is never double-patched).
     if (!content.includes('/metrics/features')) {
       const metricsSection = `
-### Per-Feature LLM Metrics (\`/metrics/features\`)
+### Per-Feature LLM Metrics & LLM Activity (\`/metrics/features\`, Observable Intelligence)
 
-See what each LLM-driven gate/sentinel actually costs and how often it fires, so tuning them is evidence-based (which to thin, which to strengthen). Read-only observability (like token usage) — it never gates anything.
-- Check: \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/metrics/features?sinceHours=24"\`
-- Returns \`{ totals, features: [{ feature, calls, tokensIn, tokensOut, fired, noop, fireRate, p50LatencyMs, p95LatencyMs, ... }] }\` — one row per system (e.g. MessagingToneGate, CoherenceReviewer). Filter with \`?feature=<name>\`.
-- **When to use**: "which checks cost the most / fire the least?", "is this gate worth it?", or before tuning a sentinel/gate. Spec: \`docs/specs/llm-feature-metrics-spec.md\`.
+Audit what each LLM-driven gate/sentinel actually does: WHICH provider + model ran it, how often it ACTED (fired) vs found nothing (noop), how often it was skipped to save rate limits (shed), cost, and latency. This is the *Observable Intelligence* standard — no autonomous AI action the system takes is allowed to be invisible. Read-only observability (like token usage) — it never gates anything.
+- Check: \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/metrics/features?sinceHours=24"\` → \`{ totals, features: [{ feature, frameworks, models, calls, realCalls, tokensIn, tokensOut, fired, noop, shed, fireRate, p50LatencyMs, p95LatencyMs, ... }] }\`. \`frameworks\`/\`models\` = which provider(s) actually served the call; \`fireRate\` = how often it acts; \`shed\` = skipped by the rate-limit guard. Filter with \`?feature=<name>\`.
+- **Dashboard:** the **LLM Activity** tab renders this in plain language over a 24h / 7d / 30d window — point the user there rather than pasting curl output.
+- **When to use** (PROACTIVE): "which provider is this sentinel running on?" / "are the sentinels actually doing real work or just being skipped?" / "which checks cost the most or fire the least?" / before tuning a sentinel or gate → read the numbers (\`frameworks\`/\`models\` for provider, \`fireRate\` for effectiveness, \`shed\` for skip rate) instead of guessing. Bounded retention (~30 days; tune \`monitoring.featureMetrics.retentionDays\`). Specs: \`docs/specs/observable-intelligence.md\`, \`docs/specs/llm-feature-metrics-spec.md\`.
 `;
       content += '\n' + metricsSection;
       patched = true;
-      result.upgraded.push('CLAUDE.md: added Per-Feature LLM Metrics (/metrics/features) awareness (llm-feature-metrics)');
+      result.upgraded.push('CLAUDE.md: added Per-Feature LLM Metrics (/metrics/features) awareness (llm-feature-metrics + observable-intelligence)');
     }
 
     // correction-capture-backlog (Agent Awareness + Migration Parity): existing

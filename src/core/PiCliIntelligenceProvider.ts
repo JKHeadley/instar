@@ -84,9 +84,24 @@ export class PiCliIntelligenceProvider implements IntelligenceProvider {
     // the subscription guard. The construction-time pattern — already
     // guard-checked — governs every call. This mirrors the spec's rule that
     // the override is file-config-only, never per-call (§4.3).
+    // Observable Intelligence: surface the resolved pi model (which already
+    // encodes provider/model, e.g. "github-copilot/gpt-5.4-mini") + framework
+    // before the call, so the metrics funnel attributes it even on error.
+    try { options?.onModel?.({ model: this.model, framework: 'pi-cli' }); } catch { /* @silent-fallback-ok: onModel is pure observability — a throw must never break the LLM path */ }
     const result = await this.oneShot.evaluate(prompt, {
       timeoutMs: options?.timeoutMs ?? DEFAULT_TIMEOUT_MS,
     });
+    // pi's OneShotCompletion surfaces token usage/cost — forward it to the funnel
+    // when present (unlike codex/gemini, pi reports tokens). Defensive: shape may
+    // vary, so guard every access and never throw into the result path.
+    try {
+      const u = (result as { usage?: { inputTokens?: number; input?: number; outputTokens?: number; output?: number } }).usage;
+      if (u && options?.onUsage) {
+        const inputTokens = Number(u.inputTokens ?? u.input ?? 0) || 0;
+        const outputTokens = Number(u.outputTokens ?? u.output ?? 0) || 0;
+        if (inputTokens > 0 || outputTokens > 0) options.onUsage({ inputTokens, outputTokens });
+      }
+    } catch { /* @silent-fallback-ok: usage is best-effort observability — never break the result path */ }
     const text = result.text.trim();
     if (!text) {
       throw new Error('pi CLI returned an empty completion');

@@ -2689,6 +2689,7 @@
           <button class="tab" data-tab="commitments" onclick="switchTab('commitments')">Commitments <span class="tab-count" id="tabCommitmentCount">0</span></button>
           <button class="tab" data-tab="tokens" onclick="switchTab('tokens')">Tokens</button>
           <button class="tab" data-tab="resources" onclick="switchTab('resources')">Resource Usage</button>
+          <button class="tab" data-tab="llm-activity" onclick="switchTab('llm-activity')">LLM Activity</button>
           <button class="tab" data-tab="threadline" onclick="switchTab('threadline')">Threadline</button>
           <button class="tab" data-tab="evidence" onclick="switchTab('evidence')">Evidence</button>
           <button class="tab" data-tab="process-health" onclick="switchTab('process-health')">Process Health</button>
@@ -3208,6 +3209,46 @@
       <div style="border:1px solid var(--border);border-radius:8px;padding:16px;display:flex;flex-direction:column;gap:8px">
         <div style="font-weight:600">Recent trend</div>
         <div id="resourcesTrendBody" style="font-size:13px">
+          <div style="color:var(--text-dim)">Loading...</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- LLM Activity tab — Observable Intelligence (docs/specs/observable-intelligence.md).
+         Every LLM call the system makes on its own behalf: which component, which
+         provider/model, whether it acted or no-op'd, was skipped, cost + latency.
+         Read-only; data from /metrics/features. -->
+    <div id="llmActivityPanel" style="display:none;flex-direction:column;padding:20px;gap:16px;overflow-y:auto">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">
+        <h2 style="margin:0">LLM Activity</h2>
+        <div style="display:flex;gap:8px;align-items:center">
+          <select id="llmActivityWindow" onchange="loadLlmActivity()" style="padding:6px 10px;background:transparent;color:var(--text);border:1px solid var(--border);border-radius:4px">
+            <option value="24">Last 24h</option>
+            <option value="168" selected>Last 7 days</option>
+            <option value="720">Last 30 days</option>
+          </select>
+          <button onclick="loadLlmActivity()" style="padding:6px 12px">Refresh</button>
+        </div>
+      </div>
+      <div style="font-size:12px;color:var(--text-dim);line-height:1.4">
+        Every decision the system's "autopilot" makes with an AI call — sentinels, gates, background checks.
+        For each one: which AI provider ran it, how often it actually <b>acted</b> on something vs. found
+        nothing to do, how often it was <b>skipped</b> to save on rate limits, and what it cost. A row that
+        only ever finds nothing is a quiet smoke detector; a row that's mostly skipped may be starved.
+      </div>
+
+      <!-- Totals headline -->
+      <div id="llmActivityHeadlineCard" style="border:1px solid var(--border);border-radius:8px;padding:16px;display:flex;flex-direction:column;gap:8px">
+        <div style="font-weight:600">All components (selected window)</div>
+        <div id="llmActivityHeadlineBody" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:12px;font-size:13px">
+          <div style="color:var(--text-dim)">Loading...</div>
+        </div>
+      </div>
+
+      <!-- Per-component breakdown -->
+      <div style="border:1px solid var(--border);border-radius:8px;padding:16px;display:flex;flex-direction:column;gap:8px">
+        <div style="font-weight:600">By component</div>
+        <div id="llmActivityBody" style="font-size:13px;overflow-x:auto">
           <div style="color:var(--text-dim)">Loading...</div>
         </div>
       </div>
@@ -4669,6 +4710,12 @@
         onActivate: () => { if (typeof loadResources === 'function') loadResources(); },
       },
       {
+        id: 'llm-activity',
+        panels: ['llmActivityPanel'],
+        display: ['flex'],
+        onActivate: () => { if (typeof loadLlmActivity === 'function') loadLlmActivity(); },
+      },
+      {
         id: 'threadline',
         panels: ['threadlineTab'],
         display: ['flex'],
@@ -5230,6 +5277,80 @@
       }
       return String(src || '—');
     }
+    async function loadLlmActivity() {
+      const headlineEl = document.getElementById('llmActivityHeadlineBody');
+      const bodyEl = document.getElementById('llmActivityBody');
+      const winSel = document.getElementById('llmActivityWindow');
+      const hours = Number((winSel && winSel.value) || 168);
+      const card = (label, val) =>
+        '<div><div style="color:var(--text-dim)">' + escapeHtml(label) + '</div>' +
+        '<div style="font-size:18px;font-weight:600">' + escapeHtml(String(val)) + '</div></div>';
+      const fmtNum = (n) => {
+        n = Number(n) || 0;
+        if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M';
+        if (n >= 1e3) return (n / 1e3).toFixed(1) + 'k';
+        return String(n);
+      };
+      const pct = (num, den) => (den > 0 ? Math.round((100 * num) / den) + '%' : '—');
+      try {
+        const data = await apiFetch('/metrics/features?sinceHours=' + hours);
+        const totals = data.totals || {};
+        const features = (data.features || []).slice().sort((a, b) => (b.calls || 0) - (a.calls || 0));
+        const realCalls = totals.realCalls || 0;
+        headlineEl.innerHTML =
+          card('Components', features.length) +
+          card('Calls', totals.calls || 0) +
+          card('Real calls', realCalls) +
+          card('Acted', totals.fired || 0) +
+          card('Fire rate', pct(totals.fired || 0, realCalls)) +
+          card('Skipped', pct(totals.shed || 0, totals.calls || 0)) +
+          card('Errors', totals.errors || 0) +
+          card('Tokens', fmtNum((totals.tokensIn || 0) + (totals.tokensOut || 0)));
+
+        if (features.length === 0) {
+          bodyEl.innerHTML = '<div style="color:var(--text-dim)">No LLM activity recorded in this window yet.</div>';
+          return;
+        }
+        const th = (t, right) => '<th style="padding:6px 8px;' + (right ? 'text-align:right' : 'text-align:left') + '">' + t + '</th>';
+        const td = (v, right) => '<td style="padding:6px 8px;' + (right ? 'text-align:right' : '') + '">' + v + '</td>';
+        bodyEl.innerHTML =
+          '<table style="width:100%;border-collapse:collapse;font-size:12px;min-width:760px">' +
+          '<thead><tr style="color:var(--text-dim)">' +
+            th('Component') + th('Provider') + th('Model') +
+            th('Calls', true) + th('Real', true) + th('Acted', true) + th('Fire rate', true) +
+            th('Skipped', true) + th('Errors', true) + th('Tokens', true) + th('Latency p50/p95', true) +
+          '</tr></thead><tbody>' +
+          features.map((f) => {
+            const real = f.realCalls || 0;
+            const provider = (f.frameworks && f.frameworks.length) ? f.frameworks.join(', ') : '—';
+            const model = (f.models && f.models.length) ? f.models.join(', ') : '—';
+            const tokens = (f.tokensIn || 0) + (f.tokensOut || 0);
+            return '<tr style="border-top:1px solid var(--border)">' +
+              td(escapeHtml(f.feature)) +
+              td(escapeHtml(provider)) +
+              td(escapeHtml(model)) +
+              td(String(f.calls || 0), true) +
+              td(String(real), true) +
+              td(String(f.fired || 0), true) +
+              td(pct(f.fired || 0, real), true) +
+              td(pct(f.shed || 0, f.calls || 0), true) +
+              td(String(f.errors || 0), true) +
+              td(fmtNum(tokens), true) +
+              td((f.p50LatencyMs || 0) + '/' + (f.p95LatencyMs || 0) + 'ms', true) +
+            '</tr>';
+          }).join('') +
+          '</tbody></table>';
+      } catch (err) {
+        const m = err && err.message ? String(err.message) : String(err);
+        if (/503|unavailable|not initialized/i.test(m)) {
+          headlineEl.innerHTML = '<div style="color:var(--text-dim)">LLM activity tracking isn\'t available on this agent yet.</div>';
+        } else {
+          headlineEl.innerHTML = '<div style="color:var(--red)">Error: ' + escapeHtml(m) + '</div>';
+        }
+        bodyEl.innerHTML = '';
+      }
+    }
+
     async function loadResources() {
       const headlineEl = document.getElementById('resourcesHeadlineBody');
       const sourcesEl = document.getElementById('resourcesSourcesBody');

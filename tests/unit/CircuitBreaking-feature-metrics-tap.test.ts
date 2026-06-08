@@ -187,4 +187,93 @@ describe('CircuitBreakingIntelligenceProvider — feature metrics tap (Phase 1b)
       ledger.close();
     }
   });
+
+  // ── Observable Intelligence: provider/model attribution + fired verdict ──
+
+  it('forwards provider model/framework (onModel) into the recorder', async () => {
+    setFeatureMetricsRecorder(recorder);
+    const inner: IntelligenceProvider = {
+      evaluate: async (_p, opts) => { opts?.onModel?.({ model: 'gpt-5.4-mini', framework: 'codex-cli' }); return 'ok'; },
+    };
+    const p = new CircuitBreakingIntelligenceProvider(inner, fakeBreaker());
+    await p.evaluate('x', { attribution: { component: 'MessageSentinel' } });
+    expect(recorded[0]).toMatchObject({ feature: 'MessageSentinel', outcome: 'noop', model: 'gpt-5.4-mini', framework: 'codex-cli' });
+  });
+
+  it('composes with (does not clobber) a caller-supplied onModel', async () => {
+    setFeatureMetricsRecorder(recorder);
+    const callerSpy = vi.fn();
+    const inner: IntelligenceProvider = {
+      evaluate: async (_p, opts) => { opts?.onModel?.({ model: 'claude-haiku-4-5', framework: 'claude-code' }); return 'ok'; },
+    };
+    const p = new CircuitBreakingIntelligenceProvider(inner, fakeBreaker());
+    await p.evaluate('x', { onModel: callerSpy } as any);
+    expect(callerSpy).toHaveBeenCalledWith({ model: 'claude-haiku-4-5', framework: 'claude-code' });
+    expect(recorded[0]).toMatchObject({ model: 'claude-haiku-4-5', framework: 'claude-code' });
+  });
+
+  it('attributes the model/framework on the error path too', async () => {
+    setFeatureMetricsRecorder(recorder);
+    const inner: IntelligenceProvider = {
+      evaluate: async (_p, opts) => { opts?.onModel?.({ model: 'gpt-5.4-mini', framework: 'codex-cli' }); throw new Error('boom'); },
+    };
+    const p = new CircuitBreakingIntelligenceProvider(inner, fakeBreaker());
+    await expect(p.evaluate('x', { attribution: { component: 'X' } })).rejects.toThrow('boom');
+    expect(recorded[0]).toMatchObject({ outcome: 'error', model: 'gpt-5.4-mini', framework: 'codex-cli' });
+  });
+
+  it('classifyVerdict(acted:true) records outcome=fired with verdictId', async () => {
+    setFeatureMetricsRecorder(recorder);
+    const inner: IntelligenceProvider = { evaluate: async () => 'emergency-stop' };
+    const p = new CircuitBreakingIntelligenceProvider(inner, fakeBreaker());
+    await p.evaluate('x', {
+      attribution: { component: 'MessageSentinel' },
+      classifyVerdict: (r) => ({ acted: r === 'emergency-stop', verdictId: 'v1' }),
+    } as any);
+    expect(recorded[0]).toMatchObject({ outcome: 'fired', verdictId: 'v1' });
+  });
+
+  it('classifyVerdict(acted:false) records outcome=noop', async () => {
+    setFeatureMetricsRecorder(recorder);
+    const inner: IntelligenceProvider = { evaluate: async () => 'normal' };
+    const p = new CircuitBreakingIntelligenceProvider(inner, fakeBreaker());
+    await p.evaluate('x', {
+      attribution: { component: 'MessageSentinel' },
+      classifyVerdict: () => ({ acted: false }),
+    } as any);
+    expect(recorded[0]).toMatchObject({ outcome: 'noop' });
+  });
+
+  it('a throwing classifyVerdict defaults to noop and never breaks the call', async () => {
+    setFeatureMetricsRecorder(recorder);
+    const inner: IntelligenceProvider = { evaluate: async () => 'ok' };
+    const p = new CircuitBreakingIntelligenceProvider(inner, fakeBreaker());
+    await expect(p.evaluate('x', { classifyVerdict: () => { throw new Error('bad'); } } as any)).resolves.toBe('ok');
+    expect(recorded[0]).toMatchObject({ outcome: 'noop' });
+  });
+
+  it('surfaces provider/model + fired in the REAL ledger rollup (frameworks/models/fireRate)', async () => {
+    const ledger = new FeatureMetricsLedger({ dbPath: ':memory:' });
+    try {
+      setFeatureMetricsRecorder(ledger);
+      const acted: IntelligenceProvider = {
+        evaluate: async (_p, opts) => { opts?.onModel?.({ model: 'gpt-5.4-mini', framework: 'codex-cli' }); return 'fire'; },
+      };
+      const quiet: IntelligenceProvider = {
+        evaluate: async (_p, opts) => { opts?.onModel?.({ model: 'gpt-5.4-mini', framework: 'codex-cli' }); return 'normal'; },
+      };
+      const cv = (r: string) => ({ acted: r === 'fire' });
+      await new CircuitBreakingIntelligenceProvider(acted, fakeBreaker()).evaluate('a', { attribution: { component: 'MS' }, classifyVerdict: cv } as any);
+      await new CircuitBreakingIntelligenceProvider(quiet, fakeBreaker()).evaluate('b', { attribution: { component: 'MS' }, classifyVerdict: cv } as any);
+
+      const ms = ledger.byFeature().find(f => f.feature === 'MS')!;
+      expect(ms.frameworks).toEqual(['codex-cli']);
+      expect(ms.models).toEqual(['gpt-5.4-mini']);
+      expect(ms.fired).toBe(1);
+      expect(ms.noop).toBe(1);
+      expect(ms.fireRate).toBeCloseTo(0.5, 5);
+    } finally {
+      ledger.close();
+    }
+  });
 });
