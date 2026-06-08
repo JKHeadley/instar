@@ -312,15 +312,42 @@ describe('SessionReaper — dry-run and blast radius', () => {
     expect(h.audits.some(a => a.event === 'would-reap')).toBe(true);
   });
 
-  it('auto-disables to dry-run after an ambiguous reap outcome', async () => {
+  it('does NOT auto-disable on a safe skip (terminate declined with a known reason)', async () => {
+    // Regression (2026-06-07): a refusal WITH a reason (e.g. active-process) is a
+    // deliberate, safe decline by the terminate dep — a normal skip, not a failure.
+    // It must NOT shut off the whole reaper (the old behavior auto-disabled every boot
+    // on the first busy session, so the reaper never reaped any of the 36 idle ones).
     const h = harness();
-    h.terminate.mockResolvedValueOnce({ terminated: false, skipped: 'already-completed' });
+    h.terminate.mockResolvedValueOnce({ terminated: false, skipped: 'active-process' });
+    await driveToReap(h);
+    expect(h.audits.some(a => a.event === 'reap-skipped')).toBe(true);
+    expect(h.audits.some(a => a.event === 'reap-skipped-auto-disable')).toBe(false);
+    const snap = h.reaper.snapshot();
+    expect(snap.autoDisabled).toBe(false); // reaper stays LIVE
+    expect(snap.dryRun).toBe(false);
+  });
+
+  it('auto-disables (fail-safe) on a reasonless terminated:false (genuinely unexpected)', async () => {
+    const h = harness();
+    h.terminate.mockResolvedValueOnce({ terminated: false }); // no skip reason = unexpected
     await driveToReap(h);
     expect(h.audits.some(a => a.event === 'reap-skipped-auto-disable')).toBe(true);
-    // a subsequent maturity would be dry-run now
     const snap = h.reaper.snapshot();
     expect(snap.autoDisabled).toBe(true);
     expect(snap.dryRun).toBe(true);
+  });
+
+  it('a busy session (safe skip) does NOT block reaping other idle sessions', async () => {
+    // The core bug: one perpetually-busy session auto-disabled the whole reaper, so the
+    // genuinely-idle ones never got reaped. With the fix the busy one is skipped and the
+    // next idle candidate is still reaped in the same run.
+    const sessions = [mkSession({ id: 'a', tmuxSession: 'ta' }), mkSession({ id: 'b', tmuxSession: 'tb' })];
+    const h = harness({ sessions, cfg: { maxReapsPerTick: 5, maxReapsPerHour: 12 } });
+    h.terminate.mockResolvedValueOnce({ terminated: false, skipped: 'active-process' }); // first busy
+    await driveToReap(h);
+    expect(h.terminate).toHaveBeenCalledTimes(2); // both attempted — busy one didn't halt the run
+    expect(h.reaper.snapshot().autoDisabled).toBe(false);
+    expect(h.audits.some(a => a.event === 'reaped')).toBe(true); // the other was reaped
   });
 
   it('respects maxReapsPerHour across sessions', async () => {

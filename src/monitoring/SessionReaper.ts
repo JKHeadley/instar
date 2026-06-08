@@ -773,11 +773,19 @@ export class SessionReaper extends EventEmitter {
         this.reapTimestamps.push(this.now());
         this.audit('reaped', session, detail);
         this.emit('reaped', session);
+      } else if (r.skipped) {
+        // A refusal WITH a known reason (session is busy/protected/already gone) is a
+        // deliberate, safe decline by the terminate dep — a normal skip. Move on to the
+        // next candidate; do NOT disable the whole reaper. Disabling here was a bug: one
+        // perpetually-busy session (e.g. skipped:'active-process') auto-disabled the
+        // reaper every boot, so it never reaped any of the OTHER genuinely-idle sessions
+        // (observed 2026-06-07: 8 self-shutoffs on a 37-session fleet, 0 real reaps).
+        this.audit('reap-skipped', session, { ...detail, skipped: r.skipped });
       } else {
-        // Ambiguous outcome (already gone, protected, in-flight) — fail safe.
+        // terminated:false with NO reason given = genuinely unexpected — fail safe.
         this.autoDisabled = true;
         this.audit('reap-skipped-auto-disable', session, { ...detail, skipped: r.skipped });
-        this.emit('auto-disabled', { session, reason: r.skipped });
+        this.emit('auto-disabled', { session, reason: 'unexpected-no-skip-reason' });
       }
     } catch (err) {
       this.autoDisabled = true;

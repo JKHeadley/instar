@@ -1,0 +1,19 @@
+{
+    "slug": "reaper-safe-skip-no-autodisable",
+    "sessionId": "96c61421-860a-48f9-92b4-26328f5640f1",
+    "timestamp": "2026-06-08T01:15:00.000Z",
+    "artifactPath": "upgrades/side-effects/reaper-safe-skip-no-autodisable.md",
+    "artifactSha256": "1675643c1626d3947abe2fda5256b01374384da8b771681943eb14236e309dfc",
+    "coveredFiles": ["src/monitoring/SessionReaper.ts","tests/unit/session-reaper.test.ts"],
+    "phase": "complete",
+    "tier": 1,
+    "tierReasoning": "Single-method logic fix in SessionReaper.performReap(): a terminate refusal carrying a `skipped` reason (busy/protected/already-gone) is now a normal skip (reap-skipped audit) instead of tripping the autoDisabled fail-safe; auto-disable fires ONLY on a reasonless terminated:false or a thrown error (both preserved). Does NOT change candidate selection or any KEEP-guard — only stops a safe decline from disabling the whole reaper. No API/route/config/state-schema/migration. Both sides unit-tested (safe-skip→no-disable+stays-live; reasonless→disable; busy-session-doesn't-block-others); 47/47 in-file + 44/44 sibling reaper suites green; tsc clean. No converged spec required for Tier 1.",
+    "eli16Path": "docs/eli16/reaper-safe-skip-no-autodisable.eli16.md",
+    "sideEffectsPath": "upgrades/side-effects/reaper-safe-skip-no-autodisable.md",
+    "causalAutopsy": {
+        "origin": "latent",
+        "notes": "The over-broad fail-safe (ANY terminated:false → autoDisabled=true) has been in performReap since the auto-disable safety was written — a latent flaw harmless while the reaper ran dry-run, but fatal once armed live. Surfaced 2026-06-07 when the reaper was set to actively reap on a 37-session fleet: it picked the busy session 'topic scope creep' (active-process) first each boot, terminate correctly refused with skipped:'active-process', and the reaper auto-disabled itself — reap-log shows 8 self-shutoffs, 0 real reaps. So config dryRun:false was read but autoDisabled (reported as dryRun via `cfg.dryRun||autoDisabled`) overrode it. NOT a regression from a specific prior PR; the fail-safe simply never distinguished a deliberate safe decline from a genuinely unexpected outcome. Directly serves Justin's standing 'make the reaper work correctly and robustly' directive."
+    },
+    "secondPass": "not-required",
+    "reviewerConcurred": null
+}

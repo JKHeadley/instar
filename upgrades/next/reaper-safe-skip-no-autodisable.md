@@ -1,0 +1,31 @@
+<!-- bump: patch -->
+<!-- change_type: fix -->
+
+## What Changed
+
+The idle-session reaper had a self-disable bug: when it declined to kill a session that was
+busy/protected (a correct, safe refusal), it wrongly shut the whole reaper off until the next
+restart. On a fleet with one always-busy session it disabled itself every boot and reaped
+nothing. Now a safe refusal is a normal skip — the reaper moves on and still reaps the
+genuinely-idle sessions. The fail-safe is preserved for real errors and reasonless refusals.
+
+## What to Tell Your User
+
+If idle sessions were piling up and never getting cleaned, this is why — the reaper was
+shutting itself off the first time it met a busy session. It now skips the busy one and
+cleans up the rest, so idle sessions get reclaimed as intended. Nothing for you to do; it
+takes effect on the next restart.
+
+## Summary of New Capabilities
+
+- Reaper distinguishes a deliberate safe decline (skip + continue) from a genuinely
+  unexpected outcome (fail-safe). New `reap-skipped` audit event.
+
+## Scope (honest)
+
+One-method logic fix. Does not change what gets reaped or any KEEP-guard — only stops a safe
+refusal from disabling the whole reaper.
+
+## Evidence
+
+`tests/unit/session-reaper.test.ts` 47/47 (3 new) + 44/44 sibling reaper suites; `tsc` clean.
