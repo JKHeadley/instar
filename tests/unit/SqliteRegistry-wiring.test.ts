@@ -47,6 +47,7 @@ const LONG_LIVED_STORES = [
   'src/memory/TopicMemory.ts',
   'src/memory/SemanticMemory.ts',
   'src/messaging/MessageProcessingLedger.ts',
+  'src/messaging/OutboundDedupStore.ts',
   'src/messaging/pending-relay-store.ts',
   'src/messaging/imessage/NativeBackend.ts',
   'src/threadline/A2ADeliveryTracker.ts',

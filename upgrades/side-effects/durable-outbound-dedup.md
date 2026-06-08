@@ -55,6 +55,16 @@ but the incident's 5 sends were byte-identical (verified), so this is the right
 shape. (A deeper inbound "don't re-inject an in-flight message across restart"
 guard is noted as a follow-up in the finding; this closes the observed symptom.)
 
+## 2b. DB lifecycle + hygiene (CI follow-up)
+
+The store registers its handle via `registerSqliteHandle` (SqliteRegistry close-on-
+exit) so it's closed once at shutdown and never leaks — db-leak hygiene that fits the
+topic-21816 resource theme; listed in the SqliteRegistry-wiring LONG_LIVED_STORES
+allowlist. The route-level dedup test got an isolated per-test `stateDir` (the durable
+db persists to `stateDir/outbound-dedup.db`, so a shared dir leaked fingerprints
+across cases — the cross-process persistence this feature adds, surfaced as a
+test-isolation requirement).
+
 ## 3. Blast radius
 
 `/telegram/reply` adds one SQLite point-query per reply (fast; better-sqlite3 is

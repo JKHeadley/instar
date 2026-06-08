@@ -8,8 +8,12 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import express from 'express';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import type { AddressInfo } from 'node:net';
 import { createRoutes } from '../../src/server/routes.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 const LONG =
   '✅ The vault-GitHub-token security piece (your option C) just landed clean on the main branch.';
@@ -17,14 +21,19 @@ const LONG =
 describe('content-dedup — /telegram/reply chokepoint', () => {
   let server: { url: string; close: () => Promise<void> };
   let sendToTopic: ReturnType<typeof vi.fn>;
+  let stateDir: string;
 
   beforeEach(async () => {
     sendToTopic = vi.fn().mockResolvedValue({ messageId: 42, topicId: 12476 });
+    // Isolated stateDir per test: the durable outbound-dedup store persists to
+    // stateDir/outbound-dedup.db, so a shared dir would leak fingerprints across
+    // cases (a record in one case would suppress sends in the next).
+    stateDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'dedup-route-')));
     const ctx: any = {
       telegram: { sendToTopic },
       sessionManager: { clearInjectionTracker: vi.fn() },
-      config: { authToken: 't', stateDir: '/tmp', port: 0 },
-      stateDir: '/tmp',
+      config: { authToken: 't', stateDir, port: 0 },
+      stateDir,
       // No tone gate — the dedup must hold without it.
     };
     const app = express();
@@ -40,7 +49,10 @@ describe('content-dedup — /telegram/reply chokepoint', () => {
     });
   });
 
-  afterEach(async () => { await server.close(); });
+  afterEach(async () => {
+    await server.close();
+    try { SafeFsExecutor.safeRmSync(stateDir, { recursive: true, force: true, operation: 'tests/unit/outbound-content-dedup-route.test.ts:cleanup' }); } catch { /* best-effort */ }
+  });
 
   async function reply(text: string, metadata?: Record<string, unknown>) {
     const res = await fetch(`${server.url}/telegram/reply/12476`, {

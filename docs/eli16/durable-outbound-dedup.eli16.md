@@ -19,6 +19,14 @@ A duplicate-suppressor that *wrongly* blocks a real reply is worse than the dupl
 - It only catches *byte-identical* recent repeats to the same topic (which is what the bug was — verified identical). It deliberately won't touch different text, a different topic, brief acks (under 40 chars), or anything outside the time window.
 - It catches the duplicate *send*; a deeper guard to stop the message from being *re-processed* across a restart in the first place is noted as a follow-up.
 
+## Housekeeping
+
+The on-disk store also registers itself to be closed cleanly when the server shuts
+down (so it never leaks a database handle — good hygiene, and on-theme for an
+incident about resource usage). The route test that exercises this was given its own
+private temp folder per run, since the new on-disk memory would otherwise carry over
+between test cases.
+
 ## Evidence
 
 `tests/unit/outbound-dedup-durable.test.ts` (6 tests): catches a duplicate across a simulated restart (fresh instance, same db file — the actual bug); in-memory still works; different text/topic/past-window are NOT suppressed; fail-open on a throwing store and on an unwritable path. The existing dedup tests (11) still pass; `tsc` clean. causalAutopsy: the dedup state was in-memory-only, which the restart churn (this incident) exposed.

@@ -21,6 +21,7 @@
 import Database from 'better-sqlite3';
 import type { Database as BetterSqliteDatabase } from 'better-sqlite3';
 import path from 'node:path';
+import { registerSqliteHandle } from '../core/SqliteRegistry.js';
 
 export interface OutboundDedupStore {
   /** True if `fingerprint` was recorded for `topicId` at or after `sinceMs`. */
@@ -54,6 +55,12 @@ export class SqliteOutboundDedupStore implements OutboundDedupStore {
            PRIMARY KEY (topic_id, fingerprint)
          )`,
       );
+      // Close-on-exit registry (SqliteRegistry.ts) — closed once at shutdown so
+      // the handle never leaks (db-leak hygiene; relevant to the topic-21816
+      // resource theme). Registered only after the db is successfully open.
+      registerSqliteHandle(() => {
+        try { this.db?.close(); } catch { /* already closed */ }
+      });
     } catch {
       // @silent-fallback-ok — fail-open by design: no durable layer (e.g. native
       // binding broken / fs unwritable). A dedup store must never block startup.
