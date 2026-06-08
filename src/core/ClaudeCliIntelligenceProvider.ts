@@ -34,6 +34,9 @@ export class ClaudeCliIntelligenceProvider implements IntelligenceProvider {
 
   async evaluate(prompt: string, options?: IntelligenceOptions): Promise<string> {
     const model = resolveCliFlag(options?.model ?? DEFAULT_MODEL);
+    // Observable Intelligence: surface the resolved provider/model before the
+    // call runs, so the metrics funnel can attribute it even on error/timeout.
+    try { options?.onModel?.({ model, framework: 'claude-code' }); } catch { /* @silent-fallback-ok: onModel is pure observability — a throw must never break the LLM path */ }
 
     return new Promise((resolve, reject) => {
       const args = [

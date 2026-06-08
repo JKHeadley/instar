@@ -55,6 +55,16 @@ export interface FeatureMetricsRecorder {
      */
     tokensIn?: number;
     tokensOut?: number;
+    /**
+     * Observable Intelligence: the resolved model + framework that actually
+     * served this call, surfaced by the provider via IntelligenceOptions.onModel.
+     * Recorded independently of token usage so codex/gemini/pi calls (which
+     * report no tokens) are still attributable to a provider.
+     */
+    model?: string;
+    framework?: string;
+    /** Correlates a 'fired' verdict to a downstream record (e.g. a commitment id). */
+    verdictId?: string;
   }): void;
 }
 
@@ -89,12 +99,17 @@ export class CircuitBreakingIntelligenceProvider implements IntelligenceProvider
    */
   private recordMetric(
     feature: string,
-    outcome: 'noop' | 'error' | 'shed',
+    outcome: 'fired' | 'noop' | 'error' | 'shed',
     latencyMs: number,
     waited: boolean,
     waitMs: number | undefined,
-    tokensIn?: number,
-    tokensOut?: number,
+    extra?: {
+      tokensIn?: number;
+      tokensOut?: number;
+      model?: string;
+      framework?: string;
+      verdictId?: string;
+    },
   ): void {
     const rec = _featureMetricsRecorder;
     if (!rec) return;
@@ -102,7 +117,9 @@ export class CircuitBreakingIntelligenceProvider implements IntelligenceProvider
       rec.record({
         feature, kind: 'llm', outcome, latencyMs,
         waited, waitMs: waited ? waitMs : undefined,
-        tokensIn, tokensOut,
+        tokensIn: extra?.tokensIn, tokensOut: extra?.tokensOut,
+        model: extra?.model, framework: extra?.framework,
+        verdictId: extra?.verdictId,
       });
     } catch {
       /* never break the LLM path on a metrics write */
@@ -134,30 +151,63 @@ export class CircuitBreakingIntelligenceProvider implements IntelligenceProvider
       }
     }
 
+    // Capture token usage the underlying provider surfaces, composing with
+    // any caller-supplied onUsage so we don't clobber it. This is the only
+    // path token cost reaches the metrics ledger (Iris-audit item 1).
+    let usage: { inputTokens: number; outputTokens: number } | undefined;
+    // Observable Intelligence: capture the resolved provider/model the same
+    // way, composing with any caller-supplied onModel. Recorded for EVERY
+    // provider, including those that report no token usage. Declared outside the
+    // try so the error path can attribute a failed call to its provider too.
+    let resolved: { model: string; framework?: string } | undefined;
     try {
-      // Capture token usage the underlying provider surfaces, composing with
-      // any caller-supplied onUsage so we don't clobber it. This is the only
-      // path token cost reaches the metrics ledger (Iris-audit item 1).
-      let usage: { inputTokens: number; outputTokens: number } | undefined;
       const callerOnUsage = options?.onUsage;
+      const callerOnModel = options?.onModel;
       const innerOptions: IntelligenceOptions = {
         ...(options ?? {}),
         onUsage: (u) => {
           usage = u;
           callerOnUsage?.(u);
         },
+        onModel: (info) => {
+          resolved = info;
+          callerOnModel?.(info);
+        },
       };
       const result = await this.inner.evaluate(prompt, innerOptions);
       this.breaker.onResolved();
+      // Observable Intelligence: let the caller classify whether the system ACTED
+      // on this call (fired) vs took no action (noop). Pure side-channel — a
+      // throw here must never change what evaluate() returns.
+      let outcome: 'fired' | 'noop' = 'noop';
+      let verdictId: string | undefined;
+      if (options?.classifyVerdict) {
+        try {
+          const v = options.classifyVerdict(result);
+          if (v?.acted) outcome = 'fired';
+          verdictId = v?.verdictId;
+        } catch {
+          /* @silent-fallback-ok: a verdict-classification throw falls back to 'noop'; never break the observed path */
+        }
+      }
       this.recordMetric(
-        feature, 'noop', Date.now() - startedAt, waited, options?.rateLimitWaitMs,
-        usage?.inputTokens, usage?.outputTokens,
+        feature, outcome, Date.now() - startedAt, waited, options?.rateLimitWaitMs,
+        {
+          tokensIn: usage?.inputTokens,
+          tokensOut: usage?.outputTokens,
+          model: resolved?.model,
+          framework: resolved?.framework,
+          verdictId,
+        },
       );
       return result;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       const parsed = classifyRateLimit(message);
-      this.recordMetric(feature, 'error', Date.now() - startedAt, waited, options?.rateLimitWaitMs);
+      this.recordMetric(feature, 'error', Date.now() - startedAt, waited, options?.rateLimitWaitMs, {
+        model: resolved?.model,
+        framework: resolved?.framework,
+      });
       if (err instanceof RateLimitError || parsed.isLimit) {
         // Pass the parsed retry-after hint through so the breaker can shorten
         // the open window when the provider told us when it resets.

@@ -62,6 +62,14 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       idleSampleIntervalMs: 5 * 60_000,
       retentionDays: 7,
     },
+    // Observable Intelligence (docs/specs/observable-intelligence.md): the
+    // per-feature LLM audit trail (/metrics/features + the LLM Activity dashboard
+    // tab) is kept long enough to see behaviour/performance trends, then aged out.
+    // retentionDays bounds the table (0/negative disables pruning). Recording
+    // itself is always on at the funnel; this only governs how long it's kept.
+    featureMetrics: {
+      retentionDays: 30,
+    },
     // SocketDisconnectSentinel + ActiveWorkSilenceSentinel — default-on so
     // every agent recovers from connection drops and silent mid-task freezes
     // without anyone having to notice manually. enabled:false restores

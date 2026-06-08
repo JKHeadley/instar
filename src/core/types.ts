@@ -826,6 +826,31 @@ export interface IntelligenceOptions {
    * reported 0 because no usage ever reached the tap.
    */
   onUsage?: (usage: { inputTokens: number; outputTokens: number }) => void;
+  /**
+   * Observable Intelligence standard (docs/specs/observable-intelligence.md):
+   * surface the resolved provider/model so the per-feature metrics funnel can
+   * record WHICH provider + model actually ran on this call. Distinct from
+   * onUsage on purpose — onUsage only fires when a provider can parse token
+   * counts (Claude can; codex/gemini/pi cannot), so tying model to it would
+   * leave the exact providers we most need to audit unlabeled. Every provider
+   * invokes onModel once per call regardless of whether it can report tokens.
+   * ADDITIVE + OPTIONAL: evaluate() still returns Promise<string>; existing
+   * callers are byte-identical. The wrapper CircuitBreakingIntelligenceProvider
+   * sets it to feed model/framework into the metrics ledger.
+   */
+  onModel?: (info: { model: string; framework?: string }) => void;
+  /**
+   * Observable Intelligence standard: let the caller classify whether THIS call
+   * led the system to ACT (fired) vs take no action (noop). The funnel calls it
+   * on the successful result string and records 'fired' or 'noop' accordingly,
+   * so /metrics/features reports real effectiveness (fireRate = fired/realCalls)
+   * instead of every completed call reading as noop. OPTIONAL: when omitted the
+   * outcome defaults to 'noop' (today's behavior). The callback must be pure and
+   * cheap — it runs inside the funnel and is wrapped in try/catch so a throw can
+   * never break the observed path. `verdictId` optionally correlates the call to
+   * a downstream record (e.g. a commitment id).
+   */
+  classifyVerdict?: (result: string) => { acted: boolean; verdictId?: string };
 }
 
 // ── Drift Checker ───────────────────────────────────────────────────

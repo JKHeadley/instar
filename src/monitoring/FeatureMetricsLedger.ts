@@ -49,7 +49,10 @@ export interface FeatureMetricRecord {
   tokensIn?: number;
   tokensOut?: number;
   latencyMs?: number;
+  /** Resolved model string the provider actually ran (e.g. "gpt-5.4-mini", "claude-haiku-4-5"). */
   model?: string;
+  /** Resolved framework that served the call (e.g. "codex-cli", "claude-code"). Observable Intelligence. */
+  framework?: string;
   /** Post-#638: did this call wait for a rate-limit window before running. */
   waited?: boolean;
   waitMs?: number;
@@ -69,6 +72,10 @@ export interface FeatureRollup {
   events: number;
   tokensIn: number;
   tokensOut: number;
+  /** Distinct frameworks that served this feature in the window (Observable Intelligence). */
+  frameworks: string[];
+  /** Distinct models this feature ran in the window. */
+  models: string[];
   fired: number;
   noop: number;
   errors: number;
@@ -121,12 +128,23 @@ const SCHEMA = [
      tokens_out  INTEGER,
      latency_ms  INTEGER,
      model       TEXT,
+     framework   TEXT,
      waited      INTEGER NOT NULL DEFAULT 0,
      wait_ms     INTEGER,
      verdict_id  TEXT
    )`,
   `CREATE INDEX IF NOT EXISTS idx_feature_metrics_ts ON feature_metrics (ts)`,
   `CREATE INDEX IF NOT EXISTS idx_feature_metrics_feature ON feature_metrics (feature, ts)`,
+];
+
+/**
+ * Columns added after the table's first ship. CREATE TABLE IF NOT EXISTS never
+ * alters an existing table, so a DB created by an earlier instar lacks these —
+ * we add them idempotently at open (pragma-guarded). `model` predates this list
+ * (it shipped in the original schema) so only genuinely-new columns appear here.
+ */
+const ADDED_COLUMNS: Array<{ name: string; ddl: string }> = [
+  { name: 'framework', ddl: 'ALTER TABLE feature_metrics ADD COLUMN framework TEXT' },
 ];
 
 function percentile(sortedAsc: number[], p: number): number {
@@ -158,13 +176,30 @@ export class FeatureMetricsLedger {
     this.db.pragma('journal_mode = WAL');
     this.db.pragma('synchronous = NORMAL');
     for (const ddl of SCHEMA) this.db.exec(ddl);
+    this.ensureAddedColumns();
     // Close-on-exit registry (SqliteRegistry.ts) — closed once at shutdown.
     registerSqliteHandle(() => { try { this.db?.close(); } catch { /* already closed */ } });
     this.insertStmt = this.db.prepare(
       `INSERT INTO feature_metrics
-         (ts, feature, kind, outcome, tokens_in, tokens_out, latency_ms, model, waited, wait_ms, verdict_id)
-       VALUES (@ts, @feature, @kind, @outcome, @tokensIn, @tokensOut, @latencyMs, @model, @waited, @waitMs, @verdictId)`,
+         (ts, feature, kind, outcome, tokens_in, tokens_out, latency_ms, model, framework, waited, wait_ms, verdict_id)
+       VALUES (@ts, @feature, @kind, @outcome, @tokensIn, @tokensOut, @latencyMs, @model, @framework, @waited, @waitMs, @verdictId)`,
     );
+  }
+
+  /** Add post-ship columns to an existing table, idempotently (pragma-guarded). */
+  private ensureAddedColumns(): void {
+    try {
+      const existing = new Set(
+        (this.db.prepare(`PRAGMA table_info(feature_metrics)`).all() as Array<{ name: string }>).map((c) => c.name),
+      );
+      for (const col of ADDED_COLUMNS) {
+        if (!existing.has(col.name)) this.db.exec(col.ddl);
+      }
+    } catch {
+      // @silent-fallback-ok: a failed column add leaves the DB on the old shape;
+      // record() writes the new field as null and the rollup degrades to []
+      // rather than throwing. Observability must never break its own open path.
+    }
   }
 
   /** Record a metric row (typically one LLM funnel call). Never throws to callers. */
@@ -180,6 +215,7 @@ export class FeatureMetricsLedger {
         tokensOut: r.tokensOut ?? null,
         latencyMs: r.latencyMs ?? null,
         model: r.model ?? null,
+        framework: r.framework ?? null,
         waited: r.waited ? 1 : 0,
         waitMs: r.waitMs ?? null,
         verdictId: r.verdictId ?? null,
@@ -237,6 +273,29 @@ export class FeatureMetricsLedger {
       latByFeature.set(row.feature, arr);
     }
 
+    // Distinct provider/model per feature in the window (Observable Intelligence:
+    // "which provider actually ran this sentinel"). Bounded by GROUP BY DISTINCT.
+    const fwRows = this.db
+      .prepare(
+        `SELECT DISTINCT feature, framework, model FROM feature_metrics
+          WHERE ts >= ? AND (framework IS NOT NULL OR model IS NOT NULL)`,
+      )
+      .all(sinceMs) as Array<{ feature: string; framework: string | null; model: string | null }>;
+    const fwByFeature = new Map<string, Set<string>>();
+    const modelByFeature = new Map<string, Set<string>>();
+    for (const row of fwRows) {
+      if (row.framework) {
+        const s = fwByFeature.get(row.feature) ?? new Set<string>();
+        s.add(row.framework);
+        fwByFeature.set(row.feature, s);
+      }
+      if (row.model) {
+        const s = modelByFeature.get(row.feature) ?? new Set<string>();
+        s.add(row.model);
+        modelByFeature.set(row.feature, s);
+      }
+    }
+
     return agg.map((a) => {
       const calls = Number(a.calls) || 0;
       const fired = Number(a.fired) || 0;
@@ -251,6 +310,8 @@ export class FeatureMetricsLedger {
         events: Number(a.events) || 0,
         tokensIn: Number(a.tokensIn) || 0,
         tokensOut: Number(a.tokensOut) || 0,
+        frameworks: Array.from(fwByFeature.get(String(a.feature)) ?? []).sort(),
+        models: Array.from(modelByFeature.get(String(a.feature)) ?? []).sort(),
         fired,
         noop: Number(a.noop) || 0,
         errors: Number(a.errors) || 0,
@@ -287,6 +348,25 @@ export class FeatureMetricsLedger {
       { calls: 0, realCalls: 0, llmCalls: 0, events: 0, tokensIn: 0, tokensOut: 0, fired: 0, noop: 0, errors: 0, shed: 0 },
     );
     return { sinceMs, totals, features };
+  }
+
+  /**
+   * Delete rows older than `cutoffMs`. Returns rows deleted. Fail-open.
+   * Observable Intelligence is balanced by the Responsible Resource standard:
+   * the audit trail is kept long enough to see behaviour/performance trends, then
+   * aged out — never hoarded forever. Mirrors ResourceLedger.pruneOlderThan.
+   */
+  pruneOlderThan(cutoffMs: number): number {
+    if (this.closed) return 0;
+    try {
+      const res = this.db.prepare(`DELETE FROM feature_metrics WHERE ts < ?`).run(cutoffMs);
+      return Number(res.changes ?? 0);
+    } catch {
+      // @silent-fallback-ok: retention prune is best-effort housekeeping. A failed
+      // prune just leaves older rows for the next tick; it must never throw into
+      // the path it observes.
+      return 0;
+    }
   }
 
   close(): void {

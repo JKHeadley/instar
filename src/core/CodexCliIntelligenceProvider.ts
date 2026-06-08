@@ -95,6 +95,12 @@ export class CodexCliIntelligenceProvider implements IntelligenceProvider {
 
   async evaluate(prompt: string, options?: IntelligenceOptions): Promise<string> {
     const model = resolveCliModelFlag(options?.model);
+    // Observable Intelligence: surface the resolved provider/model up front so
+    // the metrics funnel attributes the call to codex even though codex `exec`
+    // (non-JSON) surfaces no token usage. (Per-call token parsing would require
+    // switching to `exec --json` event-stream parsing — a separate change;
+    // account-level codex cost is observable via /codex/usage.)
+    try { options?.onModel?.({ model, framework: 'codex-cli' }); } catch { /* @silent-fallback-ok: onModel is pure observability — a throw must never break the LLM path */ }
 
     const scratchDir = resolveIntelligenceScratchDir();
 

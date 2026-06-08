@@ -86,6 +86,10 @@ export class GeminiCliIntelligenceProvider implements IntelligenceProvider {
     // eslint-disable-next-line no-constant-condition
     while (true) {
     const args = buildGeminiOneShotArgv(currentModel, prompt);
+    // Observable Intelligence: surface the model actually being run this attempt
+    // (currentModel can change across capacity-retries) so the funnel records the
+    // provider/model that produced the result.
+    try { options?.onModel?.({ model: currentModel, framework: 'gemini-cli' }); } catch { /* @silent-fallback-ok: onModel is pure observability — a throw must never break the LLM path */ }
     const result = await spawnGeminiAndWait(this.geminiPath, args, {
       timeoutMs: options?.timeoutMs ?? DEFAULT_TIMEOUT_MS,
       env: childEnv,
