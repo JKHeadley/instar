@@ -4579,6 +4579,45 @@ export async function startServer(options: StartOptions): Promise<void> {
         const { SlackAdapter } = await import('../messaging/slack/index.js');
         slackAdapter = new SlackAdapter(slackConfig.config as Record<string, unknown>, config.stateDir);
 
+        // ── Slack org permission gate (Slice 0) — DARK by default ──────────
+        // Attached only when `permissionGate.observeOnly` (or `.enforce`) is set in
+        // the Slack config. Observe-only logs what the gate WOULD decide for every
+        // authorized message and never blocks. See docs/specs/SLACK-ORG-INTEGRATION-SPEC.md.
+        try {
+          const slackCfg = slackConfig.config as Record<string, unknown>;
+          const pgCfg = slackCfg.permissionGate as { observeOnly?: boolean; enforce?: boolean } | undefined;
+          if (pgCfg && (pgCfg.observeOnly || pgCfg.enforce)) {
+            const {
+              SlackPermissionObserver,
+              SlackPrincipalResolver,
+              SlackPermissionGate,
+              PermissionDecisionLedger,
+              RolePolicy,
+              HeuristicIntentClassifier,
+              HeuristicAnomalyScorer,
+            } = await import('../permissions/index.js');
+            // Own UserManager instance for verified-principal resolution (the
+            // Telegram-block userManager is out of scope here). Reads users.json.
+            const slackUserManager = new UserManager(config.stateDir, config.users);
+            const observer = new SlackPermissionObserver({
+              resolver: new SlackPrincipalResolver({
+                resolveFromSlackUserId: (id: string) => slackUserManager.resolveFromSlackUserId(id),
+              }),
+              gate: new SlackPermissionGate({
+                rolePolicy: new RolePolicy(),
+                classifier: new HeuristicIntentClassifier(),
+                anomalyScorer: new HeuristicAnomalyScorer(),
+              }),
+              ledger: new PermissionDecisionLedger(config.stateDir),
+              enforce: pgCfg.enforce === true,
+            });
+            slackAdapter.setPermissionObserver(observer);
+            console.log(`[slack] permission gate attached (${pgCfg.enforce ? 'ENFORCE' : 'observe-only'})`);
+          }
+        } catch (e) {
+          console.warn('[slack] permission gate wiring skipped:', (e as Error).message);
+        }
+
         // Wire message handler — inject Slack messages into sessions
         slackAdapter.onMessage(async (message) => {
           const channelId = message.channel.identifier;

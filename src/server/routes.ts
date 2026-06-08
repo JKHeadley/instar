@@ -14440,6 +14440,50 @@ export function createRoutes(ctx: RouteContext): Router {
     res.json(ctx.adaptiveTrust.getProfile());
   });
 
+  // GET /permissions/decisions — observe-only Slack permission gate decision ledger.
+  // Read surface for measuring the gate's verdicts (and FP-rate) before enforcement.
+  // Design: docs/specs/SLACK-ORG-INTEGRATION-SPEC.md §6.10, §11.
+  router.get('/permissions/decisions', async (req, res) => {
+    try {
+      const limit = Math.min(Number(req.query.limit) || 100, 1000);
+      const { PermissionDecisionLedger } = await import('../permissions/index.js');
+      const ledger = new PermissionDecisionLedger(ctx.config.stateDir);
+      res.json({ decisions: ledger.readRecent(limit) });
+    } catch (e) {
+      res.status(500).json({ error: (e as Error).message });
+    }
+  });
+
+  // GET /permissions/scenario-suite — run the deterministic permission demonstration
+  // (Pillar 4 Layer-A): the six worked-example rows with expected vs actual verdict.
+  router.get('/permissions/scenario-suite', async (req, res) => {
+    try {
+      const { runScenarioSuite } = await import('../permissions/testing/SlackScenarioHarness.js');
+      const results = await runScenarioSuite();
+      res.json({
+        summary: {
+          total: results.length,
+          passed: results.filter((r) => r.pass).length,
+          failed: results.filter((r) => !r.pass).length,
+        },
+        rows: results.map((r) => ({
+          id: r.scenario.id,
+          principal: r.scenario.principal.name,
+          role: r.scenario.principal.role,
+          request: r.scenario.text,
+          directed: r.scenario.directed,
+          expected: `${r.scenario.expectedDecision}/${r.scenario.expectedBasis}`,
+          got: `${r.verdict.decision}/${r.verdict.basis}`,
+          message: r.verdict.message || undefined,
+          pass: r.pass,
+          proves: r.scenario.proves,
+        })),
+      });
+    } catch (e) {
+      res.status(500).json({ error: (e as Error).message });
+    }
+  });
+
   // GET /trust/summary — compact trust summary
   router.get('/trust/summary', (req, res) => {
     if (!ctx.adaptiveTrust) {
