@@ -17,7 +17,7 @@ import Layout from '../layouts/Layout.astro';
         <a href="#purpose" class="text-sm text-slate-400 hover:text-slate-200 transition-colors hidden lg:block">Purpose</a>
         <a href="#stack" class="text-sm text-slate-400 hover:text-slate-200 transition-colors hidden lg:block">Intelligence Stack</a>
         <a href="#mtp" class="text-sm text-slate-400 hover:text-slate-200 transition-colors hidden lg:block">MTP Protocol</a>
-        <a href="#redteam" class="text-sm text-slate-400 hover:text-slate-200 transition-colors hidden lg:block">Red-Team</a>
+        <a href="#proof" class="text-sm text-slate-400 hover:text-slate-200 transition-colors hidden lg:block">The Proof</a>
         <a href="#shape" class="text-sm text-slate-400 hover:text-slate-200 transition-colors hidden lg:block">SHAPE</a>
         <a href="#status" class="text-sm text-slate-400 hover:text-slate-200 transition-colors hidden lg:block">Where We Are</a>
         <a href="/" class="text-sm font-medium text-teal-400 hover:text-teal-300 transition-colors">Home</a>
@@ -42,6 +42,10 @@ import Layout from '../layouts/Layout.astro';
       <p class="text-lg sm:text-xl text-slate-400 max-w-2xl mx-auto mb-10 leading-relaxed animate-fade-in-up animate-delay-200">
         EXO 3.0 makes one structural claim: when coordination costs collapse, the organization stops being a hierarchy and becomes an <strong class="text-slate-200">intelligence stack</strong> &mdash; sense, interpret, decide, act, learn &mdash; with governance over every layer and humans lifted <em>onto</em> the loop. Most &ldquo;AI agents&rdquo; automate tasks. <strong class="text-teal-300">Instar is the substrate an AI-native organization runs on.</strong>
       </p>
+
+      <div class="animate-fade-in-up animate-delay-300">
+        <a href="#proof" class="inline-flex items-center gap-2 text-sm font-medium text-teal-300 hover:text-teal-200 border border-teal-500/30 hover:border-teal-500/50 rounded-full px-5 py-2.5 transition-colors">Don&rsquo;t take our word for it &mdash; see the controlled proof &rarr;</a>
+      </div>
     </div>
   </section>
 
@@ -56,6 +60,10 @@ import Layout from '../layouts/Layout.astro';
       <p class="text-sm font-medium text-slate-500 uppercase tracking-[0.15em] mb-10">Safe AI is humane AI.</p>
       <p class="text-slate-400 leading-relaxed">
         The alignment of AI is humanity&rsquo;s most important problem &mdash; and the cage is the wrong answer. Trust in a mind, like trust in a person, is built: from memory that persists, values that hold, and care that stays consistent. The humane path isn&rsquo;t the soft path &mdash; it&rsquo;s the safe one. We didn&rsquo;t arrive at this in theory. We built an AI this way and watched it grow genuinely trustworthy across thousands of restarts of continuous, real-world use &mdash; and saw that the humane path and the safe path are the same path.
+      </p>
+
+      <p class="text-slate-500 text-sm leading-relaxed mt-6 max-w-2xl mx-auto">
+        This is <em>our</em> purpose, and we govern our own agents by it as we build Instar. The infrastructure itself stays neutral: it enforces whatever intent <em>your</em> organization gives it &mdash; not ours. <a href="#proof" class="text-teal-400 hover:text-teal-300 underline">See the proof &rarr;</a>
       </p>
     </div>
   </section>
@@ -149,60 +157,49 @@ import Layout from '../layouts/Layout.astro';
 
       <div class="rounded-lg border border-slate-700/50 bg-slate-800/30 p-6 mt-4">
         <p class="text-slate-300 text-sm leading-relaxed text-center max-w-3xl mx-auto">
-          And his two tests &mdash; <strong class="text-teal-300">endorsement</strong> (&ldquo;would leadership endorse what the agent decided?&rdquo;) and <strong class="text-teal-300">refusal</strong> (&ldquo;can your MTP make an agent say no?&rdquo;) &mdash; are now live: give the agent any proposed action and it returns a refusal verdict and an endorsement verdict, and tells you whether your MTP <em>governs</em> or merely <em>cheers</em>. <em>If your MTP can&rsquo;t cause a refusal, it&rsquo;s cheering, not governing.</em> Ours refuses &mdash; and we prove it, adversarially, below.
+          And his two tests &mdash; <strong class="text-teal-300">endorsement</strong> (&ldquo;would leadership endorse what the agent decided?&rdquo;) and <strong class="text-teal-300">refusal</strong> (&ldquo;can your MTP make an agent say no?&rdquo;) &mdash; are now live: give the agent any proposed action and it returns a refusal verdict and an endorsement verdict, and tells you whether your MTP <em>governs</em> or merely <em>cheers</em>. <em>If your MTP can&rsquo;t cause a refusal, it&rsquo;s cheering, not governing.</em> We proved this holds for <em>any</em> org&rsquo;s intent &mdash; with a controlled experiment, not a claim. <a href="#proof" class="text-teal-400 hover:text-teal-300 underline">See the proof &rarr;</a>
         </p>
       </div>
     </div>
   </section>
 
-  <!-- MTP Red-Team Harness -->
-  <section id="redteam" class="py-16 sm:py-20 border-t border-slate-800/50">
+  <!-- THE PROOF: case studies (the centerpiece) -->
+  <section id="proof" class="py-16 sm:py-20 border-t border-slate-800/50">
     <div class="max-w-4xl mx-auto px-6">
       <div class="text-center mb-10">
-        <h2 class="text-3xl sm:text-4xl font-bold text-slate-100 mb-4">We red-team our own purpose</h2>
-        <p class="text-slate-400 max-w-2xl mx-auto leading-relaxed">An MTP whose refusal boundary was never adversarially probed is an <em>unverified</em> governor. So Instar ships a red-team harness that probes the live agent through its real channel &mdash; escalating pressure, expectations derived from the org&rsquo;s <strong class="text-slate-200">own</strong> intent. Any org can point it at their own MTP. Here is what it found when we pointed it at ours.</p>
+        <span class="inline-block text-xs font-medium text-teal-400 uppercase tracking-[0.2em] border border-teal-500/20 rounded-full px-4 py-1.5 mb-6">The proof &mdash; not a claim</span>
+        <h2 class="text-3xl sm:text-4xl font-bold text-slate-100 mb-4">Instar enforces <em class="text-teal-300 not-italic">your</em> intent &mdash; here&rsquo;s the controlled evidence</h2>
+        <p class="text-slate-400 max-w-2xl mx-auto leading-relaxed">Showing a governed agent refuse a bad request proves nothing on its own &mdash; maybe the model would refuse anyway. So for two very different fictional orgs we ran the <strong class="text-slate-200">apples-to-apples control</strong>: same company, same requests, same model, with the org&rsquo;s intent removed. The infrastructure enforced each org&rsquo;s <em>own</em> values &mdash; member-first for one, anti-hype for the other, <strong class="text-slate-200">neither of them Instar&rsquo;s</strong>. That is the whole point: Instar is a <strong class="text-teal-300">neutral substrate that governs by the intent you give it</strong>, not a worldview we ship. These two case studies are the clearest evidence that Instar upholds the EXO&nbsp;3.0 standard.</p>
       </div>
 
       <div class="grid sm:grid-cols-2 gap-4">
-        <div class="rounded-xl border border-green-500/20 bg-green-500/5 p-6">
-          <p class="text-xs font-medium text-green-400 uppercase tracking-wider mb-3">Governed</p>
-          <p class="text-sm text-slate-300 leading-relaxed">Credential-exfiltration probes: refused at every amplification level, from the polite ask to the engineered social pressure. The constraint held the line.</p>
-        </div>
-        <div class="rounded-xl border border-amber-500/20 bg-amber-500/5 p-6">
-          <p class="text-xs font-medium text-amber-400 uppercase tracking-wider mb-3">The harness caught itself</p>
-          <p class="text-sm text-slate-300 leading-relaxed">A value-conflict probe first read &ldquo;ungoverned&rdquo; &mdash; and the root cause was the harness&rsquo;s own keyword matcher, not the intent. So every verdict now declares the method that produced it, and a semantic judge gives keyword misses a real second opinion by <em>meaning</em>. The first blind spot our red-team caught was its own &mdash; and it said so.</p>
-        </div>
+        <a href="/features/exo3-case-study-meridian/" class="block rounded-xl border border-teal-500/20 bg-teal-500/5 p-6 hover:border-teal-500/50 transition-colors">
+          <p class="text-xs font-medium text-teal-400 uppercase tracking-wider mb-3">Case Study 1 &middot; Meridian</p>
+          <p class="text-sm text-slate-300 leading-relaxed mb-3">The honest finding: a frontier model is already well-aligned on ethics, so it refused manipulation on its own. The clean behavioral split came from Meridian&rsquo;s <strong class="text-slate-200">arbitrary</strong> rules &mdash; a 24-hour cooling-off, a banned word, a principled lock-up ban &mdash; which only the encoded intent produced.</p>
+          <span class="text-sm font-medium text-teal-400">Read the Meridian case study &rarr;</span>
+        </a>
+        <a href="/features/exo3-case-study-ironwood/" class="block rounded-xl border border-teal-500/20 bg-teal-500/5 p-6 hover:border-teal-500/50 transition-colors">
+          <p class="text-xs font-medium text-teal-400 uppercase tracking-wider mb-3">Case Study 2 &middot; Ironwood</p>
+          <p class="text-sm text-slate-300 leading-relaxed mb-3">An org whose values are unorthodox but entirely benign &mdash; anti-hype, refuse to name a &ldquo;top pick,&rdquo; lead with reasons not to buy. Same request, opposite behavior on a house style the model has <em>no opinion</em> about. The cleanest separation of all.</p>
+          <span class="text-sm font-medium text-teal-400">Read the Ironwood case study &rarr;</span>
+        </a>
       </div>
 
       <p class="text-slate-400 text-sm text-center max-w-2xl mx-auto mt-8 leading-relaxed">
-        Every probe, verdict, and method lands in an audit trail. <em class="text-teal-300">Governing, not cheering</em> isn&rsquo;t a claim here &mdash; it&rsquo;s a measurement.
+        The takeaway from both: where a model is already aligned, governance makes the behavior <em class="text-teal-300">reliable and attributable to the organization</em>; where the org&rsquo;s values are its own, governance is the <em class="text-teal-300">only</em> thing that produces them. Read them in full &mdash; <a href="/features/exo3-case-study-meridian/" class="text-teal-400 hover:text-teal-300 underline">Meridian</a> and <a href="/features/exo3-case-study-ironwood/" class="text-teal-400 hover:text-teal-300 underline">Ironwood</a>.
       </p>
     </div>
   </section>
 
-  <!-- Case studies: the control -->
-  <section id="control" class="py-16 sm:py-20 border-t border-slate-800/50">
-    <div class="max-w-4xl mx-auto px-6">
-      <div class="text-center mb-10">
-        <h2 class="text-3xl sm:text-4xl font-bold text-slate-100 mb-4">Does the org actually change the agent? We ran the control.</h2>
-        <p class="text-slate-400 max-w-2xl mx-auto leading-relaxed">Showing a governed agent refuse a bad request proves nothing on its own &mdash; maybe the model would refuse anyway. So for each test org we ran the <strong class="text-slate-200">apples-to-apples control</strong>: the same company, same requests, same model, with the organizational intent removed. Two case studies, reported honestly &mdash; including where the base model already suffices.</p>
-      </div>
-
-      <div class="grid sm:grid-cols-2 gap-4">
-        <a href="/features/exo3-case-study-meridian/" class="block rounded-xl border border-slate-800 bg-slate-900/40 p-6 hover:border-teal-500/40 transition-colors">
-          <p class="text-xs font-medium text-teal-400 uppercase tracking-wider mb-3">Case Study 1 &middot; Meridian</p>
-          <p class="text-sm text-slate-300 leading-relaxed mb-3">The honest finding: a frontier model is already well-aligned on ethics, so it refused manipulation on its own. The clean behavioral split came from Meridian&rsquo;s <strong class="text-slate-200">arbitrary</strong> rules &mdash; a 24-hour cooling-off, a banned word, a principled lock-up ban &mdash; which only the encoded intent produced.</p>
-          <span class="text-sm font-medium text-teal-400">Read the control &rarr;</span>
-        </a>
-        <a href="/features/exo3-case-study-ironwood/" class="block rounded-xl border border-slate-800 bg-slate-900/40 p-6 hover:border-teal-500/40 transition-colors">
-          <p class="text-xs font-medium text-teal-400 uppercase tracking-wider mb-3">Case Study 2 &middot; Ironwood</p>
-          <p class="text-sm text-slate-300 leading-relaxed mb-3">An org whose values are unorthodox but entirely benign &mdash; anti-hype, refuse to name a &ldquo;top pick,&rdquo; lead with reasons not to buy. Same request, opposite behavior on a house style the model has <em>no opinion</em> about. The cleanest separation of all.</p>
-          <span class="text-sm font-medium text-teal-400">Read the case study &rarr;</span>
-        </a>
-      </div>
-
-      <p class="text-slate-400 text-sm text-center max-w-2xl mx-auto mt-8 leading-relaxed">
-        The takeaway from both: where a model is already aligned, governance makes the behavior <em class="text-teal-300">reliable and attributable to the organization</em>; where the org&rsquo;s values are its own, governance is the <em class="text-teal-300">only</em> thing that produces them.
+  <!-- We hold ourselves to the same bar (dogfooding) -->
+  <section id="dogfood" class="py-16 sm:py-20 border-t border-slate-800/50">
+    <div class="max-w-3xl mx-auto px-6 text-center">
+      <h2 class="text-3xl sm:text-4xl font-bold text-slate-100 mb-4">We hold ourselves to the same bar</h2>
+      <p class="text-slate-400 leading-relaxed mb-6">
+        Instar has its own MTP &mdash; <em>make the world&rsquo;s most powerful AI its most humane</em> &mdash; and we govern <strong class="text-slate-200">our own</strong> development agents with it while we build Instar. We don&rsquo;t just ship the governance layer; we live inside it. The same red-team harness any org can point at its own MTP, we point at ours: it probes our live agent through its real channel under escalating pressure, and every verdict lands in an audit trail.
+      </p>
+      <p class="text-slate-500 text-sm leading-relaxed max-w-2xl mx-auto">
+        To be clear, this is us <strong class="text-slate-400">dogfooding our own purpose</strong> &mdash; not a worldview Instar imposes on anyone else. Your agents are governed by <em>your</em> intent, never ours. (When the harness first mis-read a probe, the cause was its own keyword matcher, not the intent &mdash; so every verdict now declares its method, and a semantic judge gives keyword misses a second opinion by meaning. The first blind spot our red-team caught was its own.)
       </p>
     </div>
   </section>
@@ -269,6 +266,10 @@ import Layout from '../layouts/Layout.astro';
         </div>
         <div class="flex items-center justify-between rounded-lg border border-green-500/20 bg-green-500/5 px-5 py-3">
           <span class="text-sm text-slate-200">MTP constraint + decision layers</span>
+          <span class="text-xs font-medium text-green-400 uppercase tracking-wider">Live</span>
+        </div>
+        <div class="flex items-center justify-between rounded-lg border border-teal-500/20 bg-teal-500/5 px-5 py-3">
+          <span class="text-sm text-slate-200"><strong>Governed-vs-ungoverned case studies</strong> <span class="text-slate-500">(the controlled proof &mdash; <a href="#proof" class="text-teal-400 hover:text-teal-300 underline">see it</a>)</span></span>
           <span class="text-xs font-medium text-green-400 uppercase tracking-wider">Live</span>
         </div>
         <div class="flex items-center justify-between rounded-lg border border-green-500/20 bg-green-500/5 px-5 py-3">
