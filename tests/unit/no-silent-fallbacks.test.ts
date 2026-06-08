@@ -282,6 +282,13 @@ describe('No Silent Fallbacks', () => {
     // sender envelope is an expected pre-migration state, and the replay path
     // already tolerates a null sender. (The sibling ALTER-TABLE idempotency
     // catch carries an in-brace @silent-fallback-ok and is exempt.)
+    //
+    // 463 unchanged by the fail-closed gate-flips ("No Silent Degradation to
+    // Brittle Fallback" standard): ExternalOperationGate.consultLLM swapped its
+    // exemption from an in-brace @silent-fallback-ok to a real fail-closed
+    // (show-plan) that REPORTS via DegradationReporter — still exempt, net zero.
+    // ContentClassifier.classify also now reports its fail-closed degradation (it
+    // was already not parser-counted). Both LLM-failure paths are now non-silent.
     const BASELINE = 463;
 
     if (silentFallbacks.length > 0) {

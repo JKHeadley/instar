@@ -530,7 +530,11 @@ describe('ExternalOperationGate', () => {
       expect(result.llmEvaluated).toBe(true);
     });
 
-    it('LLM failure falls back to programmatic decision', async () => {
+    it('LLM failure FAILS CLOSED to show-plan (never silently proceeds)', async () => {
+      // Regression for "No Silent Degradation to Brittle Fallback": when the LLM
+      // (the proportionality-escalation layer) is unavailable, the gate must NOT
+      // return 'proceed' — it requires a plan/approval. Silent 'proceed' on LLM
+      // failure is the exact incident this gate exists to prevent.
       const gate = createGate({
         intelligence: {
           evaluate: async () => { throw new Error('LLM down'); },
@@ -542,8 +546,8 @@ describe('ExternalOperationGate', () => {
         reversibility: 'irreversible',
         description: 'Send email',
       });
-      // Should not block on LLM failure
-      expect(result.action).not.toBe('block');
+      expect(result.action).toBe('show-plan'); // fail-CLOSED, not 'proceed'
+      expect(result.action).not.toBe('proceed');
       expect(result.llmEvaluated).toBe(true);
     });
   });

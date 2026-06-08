@@ -21,6 +21,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { IntelligenceProvider } from './types.js';
 import { maybeRotateJsonl } from '../utils/jsonl-rotation.js';
+import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -499,9 +500,24 @@ export class ExternalOperationGate {
       }
       // If LLM response is unparseable, default to cautious
       return 'show-plan';
-    } catch {
-      // @silent-fallback-ok — LLM fails, proceed (fail-open)
-      return 'proceed';
+    } catch (err) {
+      // FAIL-CLOSED: the LLM is the proportionality-escalation layer for
+      // medium/high-risk ops; when it's unavailable (rate-limit, circuit-open,
+      // error) we must NOT silently 'proceed' — that silently downgrades the
+      // gate to its deterministic floor and lets a risky op the LLM would have
+      // escalated sail through (the exact incident this gate exists to prevent).
+      // Require a plan/approval instead, and REPORT the degradation (never silent).
+      // (No Silent Degradation to Brittle Fallback — constitution standard.)
+      // Provider-swap upstream reduces how often this fires; this is the
+      // all-providers-down backstop.
+      DegradationReporter.getInstance().report({
+        feature: 'ExternalOperationGate.consultLLM',
+        primary: 'LLM proportionality judgment for a medium/high-risk operation',
+        fallback: 'fail-closed to show-plan (require operator approval)',
+        reason: `LLM unavailable: ${err instanceof Error ? err.message : 'unknown'}`,
+        impact: 'risky operations require a plan/approval while the LLM is down instead of silently proceeding',
+      });
+      return 'show-plan';
     }
   }
 
