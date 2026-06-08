@@ -73,4 +73,35 @@ describe('/subscription-pool quota — E2E feature-alive', () => {
     const onDisk = JSON.parse(fs.readFileSync(path.join(dir, 'subscription-pool.json'), 'utf-8'));
     expect(onDisk.accounts[0].lastQuota.sevenDay.utilizationPct).toBe(42);
   });
+
+  it('LIVE: an expired access token auto-refreshes end-to-end (account stays active, stamped on disk)', async () => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'qpoll-e2e-ref-'));
+    const pool = new SubscriptionPool({ stateDir: dir });
+    pool.add({ id: 'claude-primary', nickname: 'primary', provider: 'anthropic', framework: 'claude-code', configHome: path.join(dir, '.claude-primary'), status: 'active' });
+    // First usage read 401 (access token expired); after the refresh, 200.
+    let calls = 0;
+    const expiredThenOk: FetchImpl = async () => {
+      calls += 1;
+      return calls === 1
+        ? { ok: false, status: 401, json: async () => ({}) }
+        : { ok: true, status: 200, json: async () => USAGE };
+    };
+    const quotaPoller = new QuotaPoller({
+      pool,
+      fetchImpl: expiredThenOk,
+      tokenResolver: () => 'sk-ant-oat01-EXPIRED',
+      refresher: async () => ({ ok: true, accessToken: 'sk-ant-oat01-FRESH', expiresAt: 9e12, rotated: true }),
+    });
+    server = await boot({ config: { authToken: 't', stateDir: dir, port: 0 }, startTime: new Date(), subscriptionPool: pool, quotaPoller });
+
+    const poll = await fetch(server.url + '/subscription-pool/poll', { method: 'POST' });
+    expect((await poll.json())).toMatchObject({ enabled: true, polled: 1, failed: 0 });
+
+    const acct = await (await fetch(server.url + '/subscription-pool/claude-primary')).json();
+    expect(acct.status).toBe('active'); // recovered silently, NOT needs-reauth
+
+    const onDisk = JSON.parse(fs.readFileSync(path.join(dir, 'subscription-pool.json'), 'utf-8'));
+    expect(onDisk.accounts[0].status).toBe('active');
+    expect(onDisk.accounts[0].lastRefreshAt).toBeTruthy(); // auto-refresh recorded durably
+  });
 });

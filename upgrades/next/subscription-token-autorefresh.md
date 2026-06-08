@@ -1,0 +1,24 @@
+<!-- bump: patch -->
+
+## What Changed
+
+The subscription-pool quota poller now auto-refreshes an expired OAuth access token from its stored refresh token before declaring an account `needs-reauth`. Previously any 401/403 from the usage endpoint was treated as a dead login — but a Claude Code access token expires routinely (~8–12h) while its refresh token stays valid for weeks, so the poller was wrongly flagging healthy accounts as needing re-authentication every time the short-lived token lapsed.
+
+New `OAuthRefresher` performs the `refresh_token` grant against the public Claude Code OAuth token endpoint and writes the rotated credential back corruption-safely (validated-200 only, read-merge-write preserving all fields, fail-closed on any error). `QuotaPoller` calls it on a 401 and retries once; only a genuinely dead refresh token now yields `needs-reauth`. A new optional `lastRefreshAt` field plus a dashboard "Token auto-refreshed" line make the silent refresh visible.
+
+## What to Tell Your User
+
+Your accounts no longer ask you to sign in again just because a day went by. A Claude login actually holds two keys — a short-lived one that turns over every several hours, and a long-lived one that lasts weeks. I now renew the short-lived key automatically using the long-lived one, exactly the way the Claude app does, so a routine daily expiry is invisible to you. I'll only ask you to sign in again when the real login is genuinely gone — a password change, a sign-out, or a new login elsewhere. The dashboard also shows a small "token auto-refreshed" note so you can see I'm handling it.
+
+## Summary of New Capabilities
+
+| Capability | How to Use |
+|-----------|-----------|
+| Auto-refresh of expired access tokens | automatic (subscription-pool quota poller) |
+| Token-health visibility | Subscriptions dashboard tab — "Token auto-refreshed" line |
+
+## Evidence
+
+Reproduction (live, 2026-06-08, echo's two enrolled max accounts): both showed `status: needs-reauth` and a fresh `POST /subscription-pool/poll` failed 2/2. Inspecting the macOS keychain entries (`Claude Code-credentials-5939f6c8` / `-63465191`) showed `hasRefreshToken: true` with the access token `expiresAt` ~11–12h in the past — i.e. only the short-lived token had lapsed; the login was intact. The old code path mapped that 401 straight to `needs-reauth`.
+
+After the fix: the unit/integration/e2e suites reproduce the exact sequence (usage read 401 → refresh-token exchange → retry 200) and assert the account stays `active` with a `lastRefreshAt` stamp rather than flipping to `needs-reauth`; the dead-refresh-token case still flips to `needs-reauth`. All three tiers green (`tests/unit/oauth-refresher.test.ts`, `tests/unit/quota-poller.test.ts`, `tests/integration/subscription-quota-routes.test.ts`, `tests/e2e/subscription-quota-lifecycle.test.ts`), tsc + repo lint clean.
