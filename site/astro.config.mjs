@@ -67,6 +67,14 @@ export default defineConfig({
           ],
         },
         {
+          label: 'EXO 3.0',
+          items: [
+            { label: 'EXO 3.0 Alignment', slug: 'features/exo3' },
+            { label: 'Case Study: Governed vs Ungoverned (the control)', slug: 'features/exo3-case-study-meridian' },
+            { label: 'Case Study: Unorthodox Values (Ironwood)', slug: 'features/exo3-case-study-ironwood' },
+          ],
+        },
+        {
           label: 'Features',
           items: [
             { label: 'Job Scheduler', slug: 'features/scheduler' },
