@@ -62,6 +62,7 @@ import { FailureAttributionEngine } from '../monitoring/FailureAttributionEngine
 import { CiFailurePoller } from '../monitoring/CiFailurePoller.js';
 import { RevertDetector } from '../monitoring/RevertDetector.js';
 import { CorrectionLedger } from '../monitoring/CorrectionLedger.js';
+import { GrowthMilestoneAnalyst, resolveGrowthSettings } from '../monitoring/GrowthMilestoneAnalyst.js';
 import { ApprenticeshipProgram } from '../core/ApprenticeshipProgram.js';
 import { ApprenticeshipCycleStore } from '../monitoring/ApprenticeshipCycleStore.js';
 import { ApprenticeshipCycleSlaMonitor } from '../monitoring/ApprenticeshipCycleSlaMonitor.js';
@@ -212,6 +213,7 @@ export class AgentServer {
   private ciFailurePoller: CiFailurePoller | null = null;
   private revertDetector: RevertDetector | null = null;
   private correctionLedger: CorrectionLedger | null = null;
+  private growthMilestoneAnalyst: GrowthMilestoneAnalyst | null = null;
   private apprenticeshipProgram: ApprenticeshipProgram | null = null;
   private apprenticeshipCycleStore: ApprenticeshipCycleStore | null = null;
   private apprenticeshipCycleSlaMonitor: ApprenticeshipCycleSlaMonitor | null = null;
@@ -1215,6 +1217,31 @@ export class AgentServer {
       this.correctionLedger = null;
     }
 
+    // GrowthMilestoneAnalyst (docs/specs/PROACTIVE-GROWTH-MILESTONE-ANALYST-SPEC.md)
+    // — the proactive growth & milestone analyst. Ships DARK: constructed only
+    // when monitoring.growthAnalyst.enabled is true; otherwise the /growth/*
+    // routes 503-stub via the null instance (the "off → 503" contract). Composes
+    // the InitiativeTracker (rollout stages + staleness), ApprovalLedger
+    // (approve-vs-change), and CorrectionLedger (recurrence) — all read-only.
+    // Own try/catch so a failure here can never cascade into other init.
+    try {
+      if (options.config.monitoring?.growthAnalyst?.enabled === true && options.config.stateDir && options.initiativeTracker) {
+        this.growthMilestoneAnalyst = new GrowthMilestoneAnalyst({
+          stateDir: options.config.stateDir,
+          settings: resolveGrowthSettings(options.config.monitoring.growthAnalyst),
+          tracker: options.initiativeTracker,
+          approvalLedger: this.approvalLedger,
+          correctionLedger: this.correctionLedger,
+          // evidenceCounter intentionally unwired in this slice → proof:'unknown'
+          // (honest: a feature with no evidence source cannot be promotion-ready).
+          onError: (where, err) => console.warn(`[GrowthMilestoneAnalyst] ${where}:`, err),
+        });
+      }
+    } catch (err) {
+      console.warn('[instar] growth-milestone-analyst init failed (non-fatal):', err);
+      this.growthMilestoneAnalyst = null;
+    }
+
     // Apprenticeship Program (Step 1) — the instance-as-project registry + the
     // retro-gate (pending→active) and doc-as-required-artifact gate
     // (active→complete). Ships ON (additive, passive registry; no config flag —
@@ -1430,6 +1457,7 @@ export class AgentServer {
       failureLedger: this.failureLedger,
       failureAttributionEngine: this.failureAttributionEngine,
       correctionLedger: this.correctionLedger,
+      growthMilestoneAnalyst: this.growthMilestoneAnalyst,
       apprenticeshipProgram: this.apprenticeshipProgram,
       apprenticeshipCycleStore: this.apprenticeshipCycleStore,
       apprenticeshipCycleSlaMonitor: this.apprenticeshipCycleSlaMonitor,

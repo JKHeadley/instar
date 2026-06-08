@@ -120,6 +120,20 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     }),
   },
   {
+    key: 'growthAnalyst',
+    prefixes: ['/growth'],
+    description: 'Growth & Milestone Analyst — composes InitiativeTracker rollout stages + staleness, ApprovalLedger approve-vs-change, and CorrectionLedger recurrence into one digest with explicit notify-rules (R1 promotion-ready, R2 incubation-expired-unproven, R3 initiative-stalling, R4 spec-pattern, R5 correction-pattern). A TIGHT incubation window whose expiry is itself the trigger, so a feature is never silently left behind; promotion requires real proof-of-life, never elapsed time alone. Ships dark (monitoring.growthAnalyst.enabled) and is compute + read-only — no Telegram sending in this slice. Null/503 when disabled.',
+    build: ({ ctx }) => ({
+      configured: !!ctx.growthMilestoneAnalyst,
+      endpoints: [
+        'GET /growth/digest',
+        'GET /growth/findings',
+        'GET /growth/status',
+        'POST /growth/tick',
+      ],
+    }),
+  },
+  {
     key: 'agentReadiness',
     prefixes: ['/agent-readiness'],
     description: 'Agent-Readiness Scoring (EXO 3.0 task-decomposition matrix) — score a task or workflow on its coordination-vs-judgment ratio to decide whether it is a good agent candidate. Coordination work (routing, approvals, scheduling, status-tracking) is agent-ready; judgment work (ambiguity, exceptions, relationships) stays human. Deterministic + advisory — answers a question, never gates.',
