@@ -6,8 +6,9 @@ parent-principle: "Structure > Willpower"
 parent-principle-fit: "Permissions today are a context-injected hint the model is asked to obey (UserContextBuilder), and hasPermission() has zero callsites — a wish, not a rule. This spec makes authority STRUCTURAL: a deterministic Layer-0 floor in code, role→tier ceilings, and a gate at the inbound chokepoint. The dangerous actions are gated in code, not in the agent's discretion — the foundational principle applied to the conversational permission problem."
 eli16-overview: SLACK-ORG-INTEGRATION-SPEC.eli16.md
 review-convergence: pending
-approved: false
-approval-status: "Justin approved the DIRECTION (all three recommendations) and authorized a 24h autonomous build (topic 22367, 2026-06-08). The explicit `approved: true` token is deliberately left for his PR review — an agent must not self-approve an infra change (the gate's purpose). Set approved:true + approved-by/approved-via at review."
+approved: true
+approved-by: Justin
+approved-via: "Telegram topic 22367 (2026-06-08): 'OK, a few things here first I approve the spec'. Explicit operator approval after reviewing the Slice-0 build + ELI16."
 ---
 
 # Slack Organizational Integration & Conversational Permission System — Design Spec

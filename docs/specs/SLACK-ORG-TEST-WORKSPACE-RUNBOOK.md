@@ -11,10 +11,13 @@ Design: `SLACK-ORG-INTEGRATION-SPEC.md` §8.3.
 
 ---
 
-## What only the operator (Justin) can create
+## Provisioning — the AGENT does this (with the operator's approval)
 
-These are Slack-admin / OAuth actions an agent cannot perform; everything else the
-agent wires:
+The agent has browser automation (Chrome + Playwright) and account access, so it can
+provision the whole thing itself — it does NOT hand this back to the operator. The
+operator's only role is to **approve the task** and clear any genuinely human-gated
+prompt that pops up live (e.g. a 2FA code on his phone, an email-verification click he
+prefers to make). The agent creates, end-to-end (recording each step):
 
 1. **A throwaway test Slack workspace** (or a dedicated test channel in an existing
    one). Use a workspace with **no** real money, prod, or credential integrations
@@ -25,19 +28,16 @@ agent wires:
    with the scopes `SlackAdapter` already requires: `app_mentions:read`,
    `channels:history`, `channels:read`, `chat:write`, `groups:history`, `im:history`,
    `im:read`, `im:write`, `users:read` (full list in `SlackAdapter.ts`).
-3. **The test cast as workspace members** — at minimum, real Slack user IDs to stand
-   in for: an **owner**, an **admin**, a **member**, a **contributor**, and an
-   **unregistered outsider**. (A single human can occupy several seats for the demo.)
-   The "spoofed-CEO" case needs no extra account — it is the owner's own account
-   sending an out-of-character, urgent request.
+3. **The test cast** — real Slack user IDs to stand in for an **owner**, **admin**,
+   **member**, **contributor**, and an **unregistered outsider**. (One human can occupy
+   several seats; the agent can also invite/configure these.) The "spoofed-CEO" case
+   needs no extra account — it is the owner's own account sending an out-of-character,
+   urgent request.
 
-## How the agent collects the tokens (never pasted in chat)
-
-The agent collects the bot/app tokens via **Secret Drop** (one-time link) or, if the
-operator is creating the app live, the agent drives the device/OAuth flow and relays
-only the code+link — never a token pasted into Telegram, never written to a file the
-operator edits. (Standing rule: the agent never asks the user to paste a secret or run
-a terminal command.)
+The agent captures the resulting tokens straight from the browser flow into the
+encrypted store / config — never pasted into chat, never a file the operator edits.
+(Standing rule: the agent drives the flow and follows through itself; it asks for
+approval first, not for the operator to do the work.)
 
 ## Wiring (agent-side, once tokens exist)
 
