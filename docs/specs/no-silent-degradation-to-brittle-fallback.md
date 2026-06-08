@@ -27,6 +27,8 @@ Provider-swap is the *preferred* response; fail-closed is the **all-providers-do
 
 Only a converged audit (a re-run that finds nothing new) may be called "thorough." This applies to security audits, safety audits, and any "find all instances of X" sweep. Track the rounds; do not declare an audit complete on round 1.
 
+**Operationalized as a skill.** The `iterative-converging-audit` built-in skill (`skills/iterative-converging-audit/SKILL.md`, registered in `installBuiltinSkills`) makes this loop runnable for any agent: FRAME → AUDIT → fix-or-classify → RE-AUDIT the full surface → repeat to convergence, with the honest-incompleteness rule (say "incomplete" if you stop early) and a leave-a-standing-ratchet step. This very document's LLM-fallback audit is the skill's first worked example. Both standards are also recorded in the constitution (`docs/STANDARDS-REGISTRY.md`).
+
 ## Audit (round 1) — LLM-fallback-to-brittle-code
 
 ~20 LLM-fallback sites found. Most are advisory (safe to degrade). **2 are safety-gating AND fail OPEN** (the dangerous ones); 3 more are safety-gating but mitigated.

@@ -18,6 +18,7 @@ These work with zero dependencies. Copy a SKILL.md into your project and go:
 | [smart-web-fetch](https://github.com/JKHeadley/instar/tree/main/skills/smart-web-fetch) | Fetch web content with markdown conversion |
 | [knowledge-base](https://github.com/JKHeadley/instar/tree/main/skills/knowledge-base) | Ingest and search a local knowledge base |
 | [systematic-debugging](https://github.com/JKHeadley/instar/tree/main/skills/systematic-debugging) | Structured debugging methodology for complex issues |
+| [iterative-converging-audit](https://github.com/JKHeadley/instar/tree/main/skills/iterative-converging-audit) | Run any find-all audit/review/research as an audit→fix→re-audit loop to convergence |
 
 ## Instar-Powered Skills
 

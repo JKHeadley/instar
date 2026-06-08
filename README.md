@@ -154,7 +154,7 @@ started, stopped, or restarted for fleet maintenance.
 
 ## Agent Skills
 
-Instar ships fourteen skills total — twelve user-facing, plus two internal skills (`instar-dev` and `spec-converge`) used only by the agent that develops instar itself. The standard is the [Agent Skills open standard](https://agentskills.io) -- portable across Claude Code, Codex, Cursor, VS Code, and 35+ other platforms.
+Instar ships fifteen skills total — thirteen user-facing, plus two internal skills (`instar-dev` and `spec-converge`) used only by the agent that develops instar itself. The standard is the [Agent Skills open standard](https://agentskills.io) -- portable across Claude Code, Codex, Cursor, VS Code, and 35+ other platforms.
 
 **Standalone skills** work with zero dependencies. Copy a SKILL.md into your project and go:
 
@@ -167,6 +167,7 @@ Instar ships fourteen skills total — twelve user-facing, plus two internal ski
 | [smart-web-fetch](skills/smart-web-fetch/) | Fetch web content with automatic markdown conversion and intelligent extraction |
 | [knowledge-base](skills/knowledge-base/) | Ingest and search a local knowledge base |
 | [systematic-debugging](skills/systematic-debugging/) | Structured debugging methodology for complex issues |
+| [iterative-converging-audit](skills/iterative-converging-audit/) | Run any find-all audit, review, or research sweep as an audit→fix→re-audit loop until a clean pass finds nothing new |
 
 **Instar-powered skills** unlock capabilities that need persistent infrastructure:
 
