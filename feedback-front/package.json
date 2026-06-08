@@ -1,0 +1,15 @@
+{
+  "name": "instar-feedback-receiver-front",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "Instar canonical feedback receiver front (Phase-0: no-traffic, HMAC round-trip). Bundles the canonical receiver defense layer from ../../src at build time (zero runtime drift; the published instar package blocks subpath imports).",
+  "scripts": {
+    "verify": "node ./scripts/local-hmac-roundtrip.mjs",
+    "bundle": "esbuild src/feedback.ts src/health.ts --bundle --platform=node --target=node20 --format=esm --packages=external --outdir=api"
+  },
+  "devDependencies": {
+    "@vercel/node": "^3.2.0",
+    "esbuild": "^0.21.5"
+  }
+}
