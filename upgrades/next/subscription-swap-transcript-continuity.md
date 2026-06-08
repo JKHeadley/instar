@@ -1,0 +1,46 @@
+# Account-swap conversation continuity (transcript copy)
+
+<!-- bump: patch -->
+
+## What Changed
+
+Fixes a gap in the quota-swap continuity guarantee: Claude stores conversation
+transcripts per config home, so a swap that changed `CLAUDE_CONFIG_DIR` and then
+ran `claude --resume <uuid>` found "no conversation" — the transcript was still in
+the OLD account's config home, so the conversation was lost (resume → fresh start).
+`SessionRefresh.refreshSession` now copies the transcript into the target account's
+config home (via `ensureResumeTranscriptInConfigHome`) before the `--resume`
+respawn. Best-effort + idempotent; only runs on an account swap; skipped on a
+`fresh` respawn; never throws (a miss falls back to today's fresh-start behavior).
+
+## Evidence
+
+Caught by live testing (topic 20905) — the merged e2e passed only because it mocked
+the refresh and never moved a real conversation between real config homes.
+
+Reproduction (real accounts):
+- Started a conversation under the SageMind config home (it recalled a test marker).
+- Tried to resume that session id under the Justin config home (as a swap would):
+  **Before:** `claude --resume <uuid>` → "No conversation found with session ID …"
+  — the conversation is lost.
+  **After:** the shipped `ensureResumeTranscriptInConfigHome` copies the transcript
+  into the Justin config home, then `claude --resume <uuid>` → succeeds and correctly
+  recalls the marker (verified end-to-end with marker SWAP-FIX-VERIFY-8852).
+
+Confirmed transcripts are config-home-local: a conversation run under
+`~/.claude-echo-sagemind` wrote to `~/.claude-echo-sagemind/projects/…`, not the
+default `~/.claude/projects`.
+
+## What to Tell Your User
+
+When I balance a session across your subscription accounts and one account hits
+its limit, the session now moves to another account AND keeps its conversation —
+it picks up exactly where it left off instead of starting blank. Earlier, the
+move worked but the conversation history didn't follow it across, so a swapped
+session would have lost its context. That gap is closed.
+
+## Summary of New Capabilities
+
+- **Conversation survives an account swap** — the transcript is carried into the new
+  account's config home before resume, so a swapped session continues intact instead
+  of starting fresh.

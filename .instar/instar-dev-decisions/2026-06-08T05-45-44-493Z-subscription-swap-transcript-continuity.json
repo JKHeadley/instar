@@ -1,0 +1,13 @@
+{
+  "ts": "2026-06-08T05:45:44.493Z",
+  "slug": "subscription-swap-transcript-continuity",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 79,
+  "causalAutopsy": null,
+  "verdict": "pass"
+}
