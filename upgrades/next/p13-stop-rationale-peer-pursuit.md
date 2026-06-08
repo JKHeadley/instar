@@ -1,0 +1,21 @@
+<!-- bump: patch -->
+<!-- audience: agent-only -->
+
+## What Changed
+
+Extended the P13 "Stop Reason Is the Work" guard (`CompletionEvaluator.evaluateStopRationale`, wired at `/autonomous/evaluate-stop`) to BLOCK two more autonomous-stop rationales: "I'm blocked / waiting on another agent (or the operator)" and "an idle/polling/waiting loop burns the box / wastes resources." A peer dependency is not a terminal blocker — the agent must keep pursuing it (re-ping, check for a reply on a cadence, find an alternate path, or advance other open work); waiting on a peer is not a CPU burn. Also tightened the operator-only ALLOW exception to "already pursued AND no other work to advance," and fixed a latent parse bug where a bare `STOP_BLOCKED` verdict echoed the token as guidance instead of the rich default steering.
+
+## What to Tell Your User
+
+Internal autonomy-robustness change — nothing to configure. If you run autonomous sessions, the agent is now structurally prevented from ending a run by claiming it's "blocked on another agent" or that "an idle loop wastes resources" — it keeps pursuing the dependency (and periodically checking for a reply) instead of stopping. This closes a real failure mode where an autonomous run declared itself complete while work remained — and a peer had in fact already replied.
+
+## Summary of New Capabilities
+
+| Capability | How to use |
+|-----------|-----------|
+| P13 guard blocks "blocked-on-peer" stops | Automatic in autonomous mode — no config |
+| P13 guard blocks "resource-burn" stops | Automatic in autonomous mode — no config |
+
+## Evidence
+
+`CompletionEvaluator` unit tests 15/15 green — including 2 new cases: the independent judge's prompt now names both new BLOCK rationales, and a bare-verdict stop falls through to pursuit-steering guidance. `tsc --noEmit` clean. The P13 standard doc (`docs/INSTAR-DESIGN-PRINCIPLES-AND-LESSONS.md`) gains the 2026-06-08 extension + earned-from note. Tier-1 change; side-effects review at `upgrades/side-effects/p13-stop-rationale-peer-pursuit.md`. Earned from topic 12476 (operator correction: a peer dependency is not a blocker; waiting is not a resource burn).

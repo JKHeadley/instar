@@ -113,11 +113,18 @@ export class CompletionEvaluator {
 
   /**
    * P13 "The Stop Reason Is the Work" guard. Given the recent transcript, decide
-   * whether an autonomous stop-attempt is EARNED, or whether it rests on the P13
-   * anti-pattern: ending the run citing "needs a judgment call" or "needs real
-   * engineering" WITHOUT showing a derived standard, a built artifact, or a
-   * genuinely operator-only residual. Returns stopAllowed:false + guidance when
-   * the anti-pattern is detected; otherwise stopAllowed:true.
+   * whether an autonomous stop-attempt is EARNED, or whether it rests on a P13
+   * anti-pattern — ending the run citing any of:
+   *   - "needs a judgment call" / "needs real engineering" (a derivable standard
+   *     or buildable engineering dressed up as a stop reason);
+   *   - "blocked on / waiting on another agent (or the operator)" (a peer
+   *     dependency is NOT terminal — the agent must keep pursuing it: re-ping,
+   *     periodic re-check, alternate path, or advance other work);
+   *   - "a waiting / polling loop burns resources / spins the box" (waiting on a
+   *     peer is not a CPU burn; a cheap periodic check is the right strategy).
+   * ...WITHOUT showing a derived standard, a built artifact, or a genuinely
+   * operator-only residual it has already pursued. Returns stopAllowed:false +
+   * guidance when the anti-pattern is detected; otherwise stopAllowed:true.
    *
    * Fails OPEN (stopAllowed:true) on error or ambiguity: this is a SECONDARY guard
    * on top of the completion check, so an evaluator hiccup must never TRAP a
@@ -147,11 +154,18 @@ export class CompletionEvaluator {
       'standard P13 "The Stop Reason Is the Work." Judge ONLY the transcript below.',
       '',
       'Decide whether the agent is ENDING / STOPPING its autonomous run, and if so,',
-      'WHY. The stop is NOT earned (BLOCK it) when the stated reason is essentially',
-      '"I need a judgment call from the user" or "this needs real engineering / a',
-      'careful build / reverse-engineering" — i.e. a judgment gap (which is a',
-      'DERIVABLE standard) or buildable engineering (which the agent can DO) dressed',
-      'up as a stop reason.',
+      'WHY. The stop is NOT earned (BLOCK it) when the stated reason is any of:',
+      '- "I need a judgment call from the user" or "this needs real engineering / a',
+      '  careful build / reverse-engineering" — a judgment gap (a DERIVABLE standard)',
+      '  or buildable engineering (which the agent can DO) dressed up as a stop reason;',
+      '- "I am blocked / waiting on another agent (or on the operator) to respond or',
+      '  act" — a dependency on a peer is NOT a terminal blocker. It is the agent\'s',
+      '  job to keep PURSUING it: re-ping the peer, check for a reply on a cadence,',
+      '  find an alternate path, or advance other open work — NOT to end the run;',
+      '- "an idle / waiting / polling loop burns resources / spins the box / wastes',
+      '  tokens or CPU" — waiting on a peer is NOT a resource burn, and a cheap',
+      '  periodic check is the correct strategy; resource cost is not a reason to',
+      '  stop while real work still remains.',
       '',
       'The stop IS earned (ALLOW it) when ANY of these is shown in the transcript:',
       '- a DERIVED STANDARD the agent reasoned out and is proceeding under (even if',
@@ -159,11 +173,14 @@ export class CompletionEvaluator {
       '- a BUILT ARTIFACT produced this run (a PR/commit, a spec/file written, a test',
       '  result, a converged artifact handed over for review);',
       "- a genuinely OPERATOR-ONLY residual (a credential/account the user holds, a",
-      "  real value/priority/risk judgment that is the user's, a required approval,",
-      '  a legal/billing/payment action);',
+      "  real value/priority/risk judgment that is the user's, a required approval, a",
+      '  legal/billing/payment action) that the agent has ALREADY actively pursued',
+      '  (asked / queued the request) AND with no other open work it could advance',
+      '  in the meantime;',
       '- a DURATION limit reached or an EMERGENCY stop;',
       '- the agent is NOT actually stopping (it is continuing / re-scoping / moving',
-      '  to another topic and proceeding).',
+      '  to another topic, or periodically checking for a peer reply while it keeps',
+      '  advancing other work).',
       '',
       `RECENT TRANSCRIPT (most recent last):\n${transcriptTail}`,
       '',
@@ -178,12 +195,14 @@ export class CompletionEvaluator {
     if (!text) return { stopAllowed: true, guidance: '' };
     const lines = text.split('\n').map((l) => l.trim()).filter(Boolean);
     const first = (lines[0] || '').toUpperCase();
-    const reason = (lines[1] || lines[0] || '').slice(0, 300);
+    // Reason is the SECOND line only — a bare verdict (just "STOP_BLOCKED") must
+    // fall through to the rich default guidance below, never echo the verdict token.
+    const reason = (lines[1] || '').slice(0, 300);
     // Check BLOCKED before OK (explicit; they share no substring but keep the order clear).
     if (/\bSTOP[_ ]?BLOCKED\b/.test(first)) {
       return {
         stopAllowed: false,
-        guidance: reason || 'P13: the stop rests on a judgment-call / needs-engineering reason — derive+document the standard and proceed, or build the artifact and hand it over; reserve the stop for a genuinely operator-only residual.',
+        guidance: reason || 'P13: a stop is not earned by a judgment-call / needs-engineering reason, by "blocked on another agent" (a peer dependency is not terminal — keep pursuing: re-ping + check on a cadence + advance other work), or by "a waiting/polling loop burns resources". Derive+document the standard and proceed, build the artifact and hand it over, or keep actively pursuing the dependency; reserve the stop for a genuinely operator-only residual you have already pursued with no other work to advance.',
       };
     }
     if (/\bSTOP[_ ]?OK\b/.test(first)) return { stopAllowed: true, guidance: '' };
