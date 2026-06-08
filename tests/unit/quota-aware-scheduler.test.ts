@@ -134,3 +134,42 @@ describe('QuotaAwareScheduler — the continuity guarantee', () => {
     expect(sched.placeNewSession(NOW)?.id).toBe('b'); // sooner reset, same headroom
   });
 });
+
+// Either-window pressure (the gap surfaced in live testing 2026-06-07): an
+// account is "at pressure" when EITHER the 5-hour OR the weekly window crosses
+// the threshold — the 5-hour limit blocks independently of the weekly.
+function acct2(
+  id: string,
+  fiveHourPct: number,
+  weeklyPct: number,
+  resetsAt = '2026-06-12T00:00:00Z',
+): SubscriptionAccount {
+  return {
+    id, nickname: id, provider: 'anthropic', framework: 'claude-code',
+    configHome: `/h/.claude-${id}`, status: 'active',
+    lastQuota: {
+      fiveHour: { utilizationPct: fiveHourPct, resetsAt },
+      sevenDay: { utilizationPct: weeklyPct, resetsAt },
+      source: 'oauth-usage-endpoint-fallback',
+    },
+    enrolledAt: '2026-06-01T00:00:00Z', version: 1,
+  };
+}
+
+describe('QuotaAwareScheduler — either-window pressure', () => {
+  it('at pressure when the 5-HOUR window is maxed even if weekly has room', () => {
+    expect(accountAtPressure(acct2('x', 95, 40), 90)).toBe(true);
+  });
+  it('at pressure when the WEEKLY window is maxed even if 5-hour has room', () => {
+    expect(accountAtPressure(acct2('x', 10, 95), 90)).toBe(true);
+  });
+  it('NOT at pressure when BOTH windows are below the threshold', () => {
+    expect(accountAtPressure(acct2('x', 80, 88), 90)).toBe(false);
+  });
+  it('selection excludes an account maxed on 5-hour, picks the one with room on both', () => {
+    const hot = acct2('hot', 95, 40);   // 5h maxed
+    const cool = acct2('cool', 30, 50); // both fine
+    expect(selectAccount([hot, cool], { nowMs: NOW, softThresholdPct: 90 })?.id).toBe('cool');
+    expect(selectAccount([hot], { nowMs: NOW, softThresholdPct: 90 })).toBeNull();
+  });
+});

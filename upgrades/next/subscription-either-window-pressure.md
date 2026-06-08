@@ -1,0 +1,47 @@
+# Either-window quota pressure (Subscription pool)
+
+<!-- bump: patch -->
+
+## What Changed
+
+The quota-aware scheduler's "at pressure" check now considers BOTH per-account
+windows: an account counts as at its limit when EITHER the 5-hour OR the weekly
+utilization crosses the threshold (90%), instead of keying only on the weekly
+window. `bindingUtilization` now returns the max across the account's known
+windows, so pressure, selection-eligibility, and use-before-reset headroom all
+key on the most-constrained window. Fixes a gap where an account maxed on its
+5-hour limit but low for the week was wrongly treated as having room. Threshold,
+swap mechanism, and dark-by-default auto-swap are unchanged.
+
+## Evidence
+
+Found during live testing (topic 20905) when the operator asked whether the swap
+trigger considers both windows. Reading `QuotaAwareScheduler` confirmed it did not:
+`bindingUtilization` returned the weekly (`sevenDay`) utilization when present and
+only fell back to the 5-hour value when weekly was absent.
+
+Reproduction — an account with `lastQuota: { fiveHour: 95%, sevenDay: 40% }`, soft
+threshold 90%:
+- **Before:** `accountAtPressure` → `false` (it read the weekly 40%), so a session
+  walled on the 5-hour limit would NOT be swapped and `selectAccount` still treated
+  the account as eligible.
+- **After:** `accountAtPressure` → `true` (it reads `max(95,40)=95`), and
+  `selectAccount` excludes the account.
+
+The divergence is real in practice: at discovery, the two live accounts read
+SageMind - Justin 5h 46% / weekly 60% and Justin 5h 0% / weekly 76% — the windows
+genuinely differ, which is exactly when the old weekly-only logic misfires. Locked
+in by 4 new `quota-aware-scheduler.test.ts` cases.
+
+## What to Tell Your User
+
+When I balance across your subscription accounts, I now treat an account as "full"
+if EITHER its 5-hour or its weekly limit is nearly maxed — not just the weekly one.
+So a session won't get stuck on an account that's hit its short-term limit even if
+the week still has room.
+
+## Summary of New Capabilities
+
+- **Either-window pressure** — an account is "at its limit" when the 5-hour OR the
+  weekly window crosses the threshold (the 5-hour limit blocks independently).
+- No behavior change when only one window is known; auto-swap stays opt-in.
