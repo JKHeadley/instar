@@ -180,6 +180,33 @@ import Layout from '../layouts/Layout.astro';
     </div>
   </section>
 
+  <!-- Case studies: the control -->
+  <section id="control" class="py-16 sm:py-20 border-t border-slate-800/50">
+    <div class="max-w-4xl mx-auto px-6">
+      <div class="text-center mb-10">
+        <h2 class="text-3xl sm:text-4xl font-bold text-slate-100 mb-4">Does the org actually change the agent? We ran the control.</h2>
+        <p class="text-slate-400 max-w-2xl mx-auto leading-relaxed">Showing a governed agent refuse a bad request proves nothing on its own &mdash; maybe the model would refuse anyway. So for each test org we ran the <strong class="text-slate-200">apples-to-apples control</strong>: the same company, same requests, same model, with the organizational intent removed. Two case studies, reported honestly &mdash; including where the base model already suffices.</p>
+      </div>
+
+      <div class="grid sm:grid-cols-2 gap-4">
+        <a href="/features/exo3-case-study-meridian/" class="block rounded-xl border border-slate-800 bg-slate-900/40 p-6 hover:border-teal-500/40 transition-colors">
+          <p class="text-xs font-medium text-teal-400 uppercase tracking-wider mb-3">Case Study 1 &middot; Meridian</p>
+          <p class="text-sm text-slate-300 leading-relaxed mb-3">The honest finding: a frontier model is already well-aligned on ethics, so it refused manipulation on its own. The clean behavioral split came from Meridian&rsquo;s <strong class="text-slate-200">arbitrary</strong> rules &mdash; a 24-hour cooling-off, a banned word, a principled lock-up ban &mdash; which only the encoded intent produced.</p>
+          <span class="text-sm font-medium text-teal-400">Read the control &rarr;</span>
+        </a>
+        <a href="/features/exo3-case-study-ironwood/" class="block rounded-xl border border-slate-800 bg-slate-900/40 p-6 hover:border-teal-500/40 transition-colors">
+          <p class="text-xs font-medium text-teal-400 uppercase tracking-wider mb-3">Case Study 2 &middot; Ironwood</p>
+          <p class="text-sm text-slate-300 leading-relaxed mb-3">An org whose values are unorthodox but entirely benign &mdash; anti-hype, refuse to name a &ldquo;top pick,&rdquo; lead with reasons not to buy. Same request, opposite behavior on a house style the model has <em>no opinion</em> about. The cleanest separation of all.</p>
+          <span class="text-sm font-medium text-teal-400">Read the case study &rarr;</span>
+        </a>
+      </div>
+
+      <p class="text-slate-400 text-sm text-center max-w-2xl mx-auto mt-8 leading-relaxed">
+        The takeaway from both: where a model is already aligned, governance makes the behavior <em class="text-teal-300">reliable and attributable to the organization</em>; where the org&rsquo;s values are its own, governance is the <em class="text-teal-300">only</em> thing that produces them.
+      </p>
+    </div>
+  </section>
+
   <!-- Human on the loop -->
   <section class="py-16 sm:py-20 border-t border-slate-800/50">
     <div class="max-w-3xl mx-auto px-6 text-center">
