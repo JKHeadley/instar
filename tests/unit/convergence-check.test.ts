@@ -274,6 +274,16 @@ describe('Convergence Check', () => {
       expect(result.exitCode).toBe(0);
     });
 
+    it('passes claude.com OAuth login URLs', () => {
+      // Regression: the Claude subscription OAuth login link lives on claude.com
+      // (sibling of the already-allowed claude.ai). Before this was allowlisted,
+      // delivering an enrollment login link false-flagged URL_PROVENANCE — which
+      // is why the link had to be wrapped in a private view (topic 20905 live test).
+      const result = runCheck('Sign in to enroll this account: https://claude.com/oauth/authorize?code=abc123');
+      expect(result.exitCode).toBe(0);
+      expect(result.output).not.toContain('URL_PROVENANCE');
+    });
+
     it('passes the agent own configured tunnel hostname', () => {
       withConfig({ tunnel: { hostname: 'codey.dawn-tunnel.dev' } }, (projectDir) => {
         const result = runCheck('Secret Drop link: https://codey.dawn-tunnel.dev/secrets/drop/abc123', {
