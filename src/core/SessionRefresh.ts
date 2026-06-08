@@ -25,10 +25,69 @@
  * { ok: false, code: 'not_telegram_bound' } and remain a follow-up.
  */
 
+import fs from 'node:fs';
+import path from 'node:path';
 import type { SessionManager } from './SessionManager.js';
 import type { StateManager } from './StateManager.js';
 import type { TelegramAdapter } from '../messaging/TelegramAdapter.js';
 import type { TopicResumeMap } from './TopicResumeMap.js';
+
+/**
+ * Account-swap conversation continuity. Claude stores conversation transcripts
+ * PER CONFIG HOME (`<CLAUDE_CONFIG_DIR>/projects/<projectDir>/<uuid>.jsonl`), so a
+ * quota swap that changes CLAUDE_CONFIG_DIR and then runs `claude --resume <uuid>`
+ * finds "No conversation found" — the transcript is still in the OLD account's
+ * config home. (The resume UUID is account-agnostic, but the transcript STORAGE
+ * is config-home-local — the gap a mocked refresh test can't see.) Before the
+ * respawn, copy the transcript into the target config home so --resume succeeds.
+ *
+ * Self-contained: finds the transcript by uuid across the user's `~/.claude*`
+ * config homes (default + enrollment-wizard slots) and copies it, preserving the
+ * `projects/<projectDir>/` relative path. Idempotent (no-op if already present),
+ * best-effort (never throws). Returns true if the transcript is in the target
+ * afterward.
+ */
+function transcriptRelPath(projectsDir: string, uuid: string): string | null {
+  try {
+    for (const proj of fs.readdirSync(projectsDir)) {
+      const f = path.join(projectsDir, proj, `${uuid}.jsonl`);
+      if (fs.existsSync(f)) return path.join(proj, `${uuid}.jsonl`);
+    }
+  } catch { /* @silent-fallback-ok: missing/unreadable projects dir */ }
+  return null;
+}
+
+export function ensureResumeTranscriptInConfigHome(uuid: string, targetConfigHome: string): boolean {
+  try {
+    const home = process.env.HOME || '';
+    const target = targetConfigHome.startsWith('~')
+      ? path.join(home, targetConfigHome.slice(1))
+      : targetConfigHome;
+    const targetProjects = path.join(target, 'projects');
+    if (transcriptRelPath(targetProjects, uuid)) return true; // already there → no-op
+    let homes: string[] = [];
+    try {
+      homes = fs.readdirSync(home)
+        .filter((n) => n === '.claude' || n.startsWith('.claude-'))
+        .map((n) => path.join(home, n));
+    } catch { /* @silent-fallback-ok: HOME unreadable */ }
+    for (const ch of homes) {
+      if (path.resolve(ch) === path.resolve(target)) continue;
+      const rel = transcriptRelPath(path.join(ch, 'projects'), uuid);
+      if (rel) {
+        const dst = path.join(targetProjects, rel);
+        fs.mkdirSync(path.dirname(dst), { recursive: true });
+        fs.copyFileSync(path.join(ch, 'projects', rel), dst);
+        return true;
+      }
+    }
+    return false;
+  } catch {
+    // @silent-fallback-ok: continuity-copy is best-effort; a failure means the
+    // swap may start fresh (logged by the caller), not crash the refresh.
+    return false;
+  }
+}
 
 export interface SessionRefreshDeps {
   sessionManager: SessionManager;
@@ -234,6 +293,26 @@ export class SessionRefresh {
       const accountSwap = (opts.configHome || opts.accountId)
         ? { configHome: opts.configHome, accountId: opts.accountId }
         : undefined;
+
+      // Account-swap continuity: claude stores transcripts per config home, so a
+      // swap to a new CLAUDE_CONFIG_DIR must carry the conversation transcript
+      // across or `--resume` finds nothing. Skip on `fresh` (we intentionally
+      // start a new conversation then). Best-effort: a miss just means the
+      // resumed session starts fresh — logged, never fatal.
+      if (accountSwap?.configHome && !fresh) {
+        const resumeUuid = stateSession.claudeSessionId;
+        if (resumeUuid) {
+          const ok = ensureResumeTranscriptInConfigHome(resumeUuid, accountSwap.configHome);
+          console.log(
+            `[SessionRefresh] account-swap continuity: transcript ${ok ? 'ensured in' : 'NOT found for'} ${accountSwap.configHome} (uuid=${resumeUuid}, sessionName=${sessionName})`,
+          );
+        } else {
+          console.log(
+            `[SessionRefresh] account-swap continuity: no claudeSessionId on session "${sessionName}" — cannot pre-copy transcript; resumed session may start fresh`,
+          );
+        }
+      }
+
       const newSessionName = await this.deps.respawner(sessionName, topicId, followUpPrompt, accountSwap);
 
       // ── verify + finalize ────────────────────────────────────────────
