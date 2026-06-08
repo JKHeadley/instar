@@ -161,6 +161,11 @@ export function renderPendingLogins(doc, target, logins, now = Date.now()) {
     const ttl = l && l.ttlExpiresAt ? countdown(l.ttlExpiresAt, now) : '';
     head.appendChild(el(doc, 'span', 'sub-pending-ttl', ttl ? `expires in ${ttl}` : 'expired'));
     row.appendChild(head);
+    // Flow heads-up (e.g. the Claude two-code sequence) — shown before the code so
+    // the operator knows what to expect. Plain text, sanitized; never a live href.
+    if (l && l.notice) {
+      row.appendChild(el(doc, 'div', 'sub-pending-notice', sanitizeForDisplay(l.notice, 'summary')));
+    }
     if (l && l.userCode) {
       row.appendChild(el(doc, 'div', 'sub-pending-code', `Code: ${sanitizeForDisplay(l.userCode, 'code')}`));
     }

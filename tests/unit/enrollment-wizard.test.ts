@@ -47,6 +47,30 @@ describe('EnrollmentWizard', () => {
     expect(EnrollmentWizard.defaultKind('github-copilot')).toBe('url-code-paste');
   });
 
+  it('flowNotice: url-code-paste (Claude) warns about the two-code sequence; device-code does not', () => {
+    const claude = EnrollmentWizard.flowNotice('url-code-paste');
+    expect(claude).toBeTruthy();
+    expect(claude).toMatch(/two codes/i);
+    expect(claude).toMatch(/email/i);
+    expect(EnrollmentWizard.flowNotice('device-code')).toBeUndefined();
+  });
+
+  it('start attaches the two-code notice on a Claude (url-code-paste) enrollment', async () => {
+    const w = wizard([{ verificationUrl: 'https://claude.com/oauth/authorize?code=abc', ttlMs: 15 * 60_000 }]);
+    const l = await w.start({ id: 'sagemind-1', label: 'SageMind - Justin', provider: 'anthropic', framework: 'claude-code' });
+    expect(l.kind).toBe('url-code-paste');
+    expect(l.notice).toMatch(/two codes/i);
+    // it survives the store round-trip onto the phone surface
+    expect(w.pending()[0].notice).toMatch(/two codes/i);
+  });
+
+  it('start attaches NO notice on a device-code (Codex) enrollment', async () => {
+    const w = wizard([{ verificationUrl: 'https://auth.openai.com/codex/device', userCode: '7DAU-W4XJA', ttlMs: 15 * 60_000 }]);
+    const l = await w.start({ id: 'codex-1', label: 'codex', provider: 'openai', framework: 'codex-cli' });
+    expect(l.kind).toBe('device-code');
+    expect(l.notice).toBeUndefined();
+  });
+
   it('start drives the login + stores the public code/URL with TTL', async () => {
     const w = wizard([{ verificationUrl: 'https://auth.openai.com/codex/device', userCode: '7DAU-W4XJA', ttlMs: 15 * 60_000 }]);
     const l = await w.start({ id: 'codex-1', label: 'codex', provider: 'openai', framework: 'codex-cli' });

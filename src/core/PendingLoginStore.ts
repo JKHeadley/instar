@@ -53,6 +53,10 @@ export interface PendingLogin {
   verificationUrl: string;
   /** Device-code (e.g. "7DAU-W4XJA") for device-code flows; absent for url-code-paste. */
   userCode?: string;
+  /** Operator-facing heads-up about this flow's quirks (never a secret) — e.g. the
+   *  Claude two-code sequence (email-verification code first, then the sign-in code).
+   *  Surfaced on the pending-login so the operator knows what to expect. */
+  notice?: string;
   /** ISO timestamp the code/URL expires. */
   ttlExpiresAt: string;
   status: PendingLoginStatus;
@@ -85,6 +89,8 @@ export interface IssueLoginInput {
   configHome?: string;
   verificationUrl: string;
   userCode?: string;
+  /** Operator-facing flow heads-up (e.g. the Claude two-code sequence). */
+  notice?: string;
   /** TTL in ms from now (default 15 min — the observed Codex device-code TTL). */
   ttlMs?: number;
 }
@@ -165,6 +171,7 @@ export class PendingLoginStore {
       ...(input.configHome ? { configHome: input.configHome } : {}),
       verificationUrl: input.verificationUrl.trim(),
       ...(input.userCode ? { userCode: input.userCode.trim() } : {}),
+      ...(input.notice?.trim() ? { notice: input.notice.trim() } : {}),
       ttlExpiresAt: new Date(this.now() + (input.ttlMs ?? DEFAULT_TTL_MS)).toISOString(),
       status: 'pending',
       reissueCount: 0,
