@@ -197,6 +197,7 @@ import type { MessageRouter } from '../messaging/MessageRouter.js';
 import type { SessionSummarySentinel } from '../messaging/SessionSummarySentinel.js';
 import { decideIngress, commitInboundReply, dedupeKeyFor } from '../messaging/ingressDedup.js';
 import { OutboundContentDedup } from '../messaging/OutboundContentDedup.js';
+import { SqliteOutboundDedupStore } from '../messaging/OutboundDedupStore.js';
 import { RelayContentDedup } from '../messaging/relayContentDedup.js';
 import type { SpawnRequestManager } from '../messaging/SpawnRequestManager.js';
 import { getOutboundQueueStatus, cleanupDeliveredOutbound, buildAgentList } from '../messaging/GitSyncTransport.js';
@@ -1211,6 +1212,11 @@ export function createRoutes(ctx: RouteContext): Router {
   const outboundContentDedup = new OutboundContentDedup(
     (ctx.config as unknown as { outboundContentDedup?: import('../messaging/OutboundContentDedup.js').OutboundContentDedupConfig })
       .outboundContentDedup ?? {},
+    Date.now,
+    // Durable backing — survives restarts + overlapping processes so a byte-identical
+    // reply isn't re-sent across a restart (finding_cross_restart_duplicate_replies,
+    // topic 21816). Fail-open: a backing hiccup degrades to in-memory-only.
+    new SqliteOutboundDedupStore(SqliteOutboundDedupStore.defaultPath(ctx.config.stateDir)),
   );
 
   // ── Messaging tone gate ──────────────────────────────────────────

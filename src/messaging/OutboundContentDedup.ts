@@ -67,10 +67,21 @@ export class OutboundContentDedup {
   /** topicId -> (fingerprint -> last-sent epoch ms) */
   private readonly seen = new Map<number, Map<string, number>>();
   private readonly now: () => number;
+  /** Optional durable backing so a duplicate is caught ACROSS a restart / across
+   *  overlapping processes (the in-memory `seen` Map resets on restart — the exact
+   *  window the 2026-06-07 restart churn opened, finding_cross_restart_duplicate_replies).
+   *  Fail-open: the store itself never throws, so a backing hiccup degrades to the
+   *  in-memory-only behavior — it can never suppress a legitimate message. */
+  private readonly store: import('./OutboundDedupStore.js').OutboundDedupStore | null;
 
-  constructor(cfg: OutboundContentDedupConfig = {}, now: () => number = Date.now) {
+  constructor(
+    cfg: OutboundContentDedupConfig = {},
+    now: () => number = Date.now,
+    store: import('./OutboundDedupStore.js').OutboundDedupStore | null = null,
+  ) {
     this.cfg = { ...DEFAULTS, ...cfg };
     this.now = now;
+    this.store = store;
   }
 
   /** Is `text` an exact duplicate of a message sent to `topicId` within the
@@ -80,12 +91,17 @@ export class OutboundContentDedup {
     if (!this.cfg.enabled) return false;
     const norm = normalizeForDedup(text);
     if (norm.length < this.cfg.minLength) return false;
-    const topicMap = this.seen.get(topicId);
-    if (!topicMap) return false;
     const fp = fingerprint(norm);
-    const last = topicMap.get(fp);
-    if (last === undefined) return false;
-    return this.now() - last < this.cfg.windowMs;
+    const topicMap = this.seen.get(topicId);
+    const last = topicMap?.get(fp);
+    if (last !== undefined && this.now() - last < this.cfg.windowMs) return true;
+    // In-memory missed (or was reset by a restart) — consult the durable store so
+    // an identical send across a restart / overlapping process is still caught.
+    // Fail-open: the store swallows its own errors and returns false on trouble.
+    if (this.store) {
+      return this.store.wasSentSince(topicId, fp, this.now() - this.cfg.windowMs);
+    }
+    return false;
   }
 
   /** Record that `text` was sent to `topicId` now. Call AFTER a successful send.
@@ -100,8 +116,11 @@ export class OutboundContentDedup {
       this.seen.set(topicId, topicMap);
     }
     const now = this.now();
-    topicMap.set(fingerprint(norm), now);
+    const fp = fingerprint(norm);
+    topicMap.set(fp, now);
     this.pruneTopic(topicMap);
+    // Mirror to the durable store so a post-restart process sees it. Fail-open.
+    this.store?.record(topicId, fp, now);
   }
 
   /** Drop expired entries, then enforce the per-topic ring cap (oldest-first). */

@@ -1,0 +1,43 @@
+<!-- bump: patch -->
+<!-- change_type: fix -->
+
+## What Changed
+
+Fixes a cross-restart duplicate-reply bug (topic 21816): the outbound
+duplicate-suppressor (`OutboundContentDedup`) kept its "recently sent" fingerprints
+only in per-process memory, so a restart (or overlapping processes during restart
+churn) wiped that memory and the same reply could go out multiple times — observed
+as a byte-identical reply sent 5× in 19s during the "server temporarily down"
+instability. Adds `OutboundDedupStore` (SQLite-backed durable fingerprints); the
+suppressor now consults it when the in-memory map misses, so an identical recent
+send is caught across restarts/processes. Wired at the existing `/telegram/reply`
+dedup point.
+
+## What to Tell Your User
+
+If you ever saw the agent post the exact same reply several times in a row
+(especially right around a restart/update), that's fixed — the duplicate-catcher
+now remembers across restarts instead of forgetting.
+
+## Summary of New Capabilities
+
+- Outbound content-dedup is now durable across restarts/processes. **Fail-open**: a
+  db hiccup degrades to the prior in-memory-only behavior and can never suppress a
+  legitimate message. No config change (reuses the `outboundContentDedup` block);
+  a per-agent `outbound-dedup.db` is auto-created.
+
+## Scope (honest)
+
+Contained fix in messaging. Catches byte-identical recent re-sends to the same
+topic (the observed bug, verified identical); does not catch near-identical
+*regenerations* — a deeper inbound "don't re-process an in-flight message across a
+restart" guard is a noted follow-up. Fail-open is the load-bearing safety property.
+
+## Evidence
+
+`tests/unit/outbound-dedup-durable.test.ts` (6, incl the cross-restart catch +
+fail-open paths); existing `OutboundContentDedup.test` (11) still green;
+no-silent-fallbacks at baseline (fail-open catches marked `@silent-fallback-ok`);
+`tsc --noEmit` clean. causalAutopsy: latent — the dedup was in-memory-only since it
+shipped (2026-06-06); harmful only once restart churn (this incident) reset/split
+the in-memory state mid-window.
