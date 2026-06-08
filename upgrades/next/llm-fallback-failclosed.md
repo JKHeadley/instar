@@ -1,0 +1,30 @@
+---
+change_type: fix
+audience: agent-only
+maturity: stable
+---
+<!-- bump: patch -->
+
+## What Changed
+
+Two safety-gating LLM fallbacks flipped from fail-OPEN to fail-CLOSED, implementing the new "No Silent Degradation to Brittle Fallback" standard:
+- `ExternalOperationGate.consultLLM`: on LLM failure (rate-limit/circuit-open/timeout) it returned `proceed` — now returns `show-plan` (require approval). A risky op the LLM would have escalated can no longer slip through while the LLM is down.
+- `ContentClassifier` (A2A outbound-leak gate): on parse-fail or error it returned `safe` — now returns `sensitive`, so unverifiable content is held, not shipped to a peer.
+
+Also lands `docs/specs/no-silent-degradation-to-brittle-fallback.md`: the standard + the "Iterative Audit to Convergence" standard + round-1 audit (2 dangerous fail-open gates fixed here; provider-swap + lint + re-audit + throwaway-agent are the follow-ups).
+
+## Evidence
+
+Before: with the LLM rate-limited (circuit open), `ExternalOperationGate` returned `proceed` for any op its deterministic floor didn't catch, and `ContentClassifier` returned `safe` for any content it couldn't classify. Surfaced live during the EXO 3.0 harness rate-limit. After: both fail closed (`show-plan` / `sensitive`). Regression tests: ExternalOperationGate "FAILS CLOSED to show-plan", ContentClassifier "FAILS CLOSED to sensitive" (parse-fail + throw). 98 unit tests green; tsc clean.
+
+## What to Tell Your User
+
+- "I hardened two safety checks: when the AI behind them is rate-limited or down, they now pause for your approval (or hold the content) instead of silently allowing the action. The honest tradeoff is that during a heavy AI rate-limit, a few more operations will wait for your OK — that's the safe direction, and I'm adding an automatic swap-to-another-AI-provider so it happens less often."
+
+## Summary of New Capabilities
+
+| Capability | How to Use |
+|-----------|-----------|
+| Operations gate fails closed on LLM failure | Automatic. On AI failure the gate requires a plan/approval instead of proceeding. |
+| A2A leak gate fails closed on LLM failure | Automatic. Unverifiable outbound content is held as sensitive, not shipped. |
+| No-Silent-Degradation + Iterative-Audit standards | docs/specs/no-silent-degradation-to-brittle-fallback.md |

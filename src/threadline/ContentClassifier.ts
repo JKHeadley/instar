@@ -14,6 +14,8 @@
  * Part of PROP-relay-auto-connect, Layer 5.
  */
 
+import { DegradationReporter } from '../monitoring/DegradationReporter.js';
+
 // ── Types ────────────────────────────────────────────────────────────
 
 export type ContentClassification = 'safe' | 'sensitive' | 'blocked';
@@ -135,8 +137,12 @@ function parseLLMResponse(response: string): ClassificationResult {
   const reasonLine = response.match(/REASON:\s*(.+)/i);
 
   if (!classLine) {
-    // If LLM didn't follow format, default to safe (fail-open for availability)
-    return { classification: 'safe' };
+    // FAIL-CLOSED: an unparseable LLM reply is NOT evidence the content is safe.
+    // The LLM is the layer that catches subtle outbound leaks (system prompts,
+    // business logic, contextual PII); defaulting to 'safe' silently ships them.
+    // Treat as 'sensitive' (blockSensitive policy escalates to blocked). See the
+    // "No Silent Degradation to Brittle Fallback" standard.
+    return { classification: 'sensitive', reason: 'Unparseable classifier reply — fail-closed to sensitive' };
   }
 
   const classification = classLine[1].toLowerCase() as ContentClassification;
@@ -247,11 +253,23 @@ export class ContentClassifier {
       return { classification: 'safe' };
     } catch (err) {
       this.metrics.errors++;
-      // Fail-open: classification errors don't block messages
-      // (availability > perfect security for a behavioral layer)
+      // FAIL-CLOSED: a classification error (LLM rate-limit, circuit-open, timeout)
+      // is NOT evidence the content is safe to send to an external peer. Defaulting
+      // to 'safe' silently downgrades real leak-protection to none. Treat as
+      // 'sensitive' (blockSensitive escalates to blocked) so unverifiable content
+      // is held, not leaked, and REPORT the degradation (never silent).
+      // ("No Silent Degradation to Brittle Fallback" standard; provider-swap
+      // upstream reduces how often this fires.)
+      DegradationReporter.getInstance().report({
+        feature: 'ContentClassifier.classify',
+        primary: 'LLM outbound-leak classification for an A2A message',
+        fallback: 'fail-closed to sensitive (held; blockSensitive escalates to blocked)',
+        reason: `Classification error: ${err instanceof Error ? err.message : 'unknown'}`,
+        impact: 'unverifiable outbound content is held as sensitive instead of silently shipped to a peer',
+      });
       return {
-        classification: 'safe',
-        reason: `Classification error (fail-open): ${err instanceof Error ? err.message : 'unknown'}`,
+        classification: 'sensitive',
+        reason: `Classification error (fail-closed to sensitive): ${err instanceof Error ? err.message : 'unknown'}`,
       };
     }
   }
