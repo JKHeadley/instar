@@ -1,0 +1,16 @@
+{
+  "ts": "2026-06-08T05:57:59.395Z",
+  "slug": "iterative-converging-audit-skill",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 138,
+  "causalAutopsy": {
+    "origin": "new-code",
+    "notes": "Net-new capability requested by the operator (2026-06-07, topic 19437): a generalized, reusable iterative-converging-audit skill + a constitutionally-grounded standard. Not a fix of a prior PR — it generalizes the audit-to-convergence loop already executed for the LLM-fallback safety work (#991/#992/#996) into a standing skill + two registry standards."
+  },
+  "verdict": "pass"
+}
