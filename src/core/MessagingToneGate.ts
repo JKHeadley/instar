@@ -212,7 +212,7 @@ export class MessagingToneGate {
         maxTokens: 200,
         temperature: 0,
         rateLimitWaitMs: RATE_LIMIT_WAIT_MS,
-        attribution: { component: 'MessagingToneGate' }, // attribution for /metrics/features
+        attribution: { component: 'MessagingToneGate', gating: true }, // attribution for /metrics/features
       });
       const parsed = this.parseResponse(raw);
 

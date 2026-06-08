@@ -813,6 +813,16 @@ export interface IntelligenceOptions {
      * registry for an ad-hoc label.
      */
     category?: 'sentinel' | 'gate' | 'job' | 'reflector' | 'other';
+    /**
+     * SAFETY-GATING marker. When true, this LLM call gates a real action/message,
+     * so on a provider failure the IntelligenceRouter tries the configured
+     * `componentFrameworks.failureSwap` frameworks (each circuit-checked) before
+     * the error propagates — letting the caller fail CLOSED rather than silently
+     * degrade to a brittle heuristic. Only gating calls swap, keeping the herd
+     * small. Advisory (non-gating) calls keep today's propagate-to-heuristic
+     * behavior. See docs/specs/no-silent-degradation-to-brittle-fallback.md.
+     */
+    gating?: boolean;
   };
   /**
    * Optional token-usage callback (Iris-audit item 1, spec

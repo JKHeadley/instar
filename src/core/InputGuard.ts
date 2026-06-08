@@ -324,7 +324,7 @@ Respond with ONLY valid JSON (no markdown, no explanation):
           temperature: 0,
           // Attribution so /metrics/features can see this high-frequency caller
           // (the "is this stuck?" review) instead of bucketing it under 'unlabeled'.
-          attribution: { component: 'InputGuard' },
+          attribution: { component: 'InputGuard', gating: true },
         }),
         new Promise<never>((_, reject) =>
           setTimeout(() => reject(new Error(`Review timeout after ${timeout}ms`)), timeout),

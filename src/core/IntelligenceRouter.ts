@@ -41,6 +41,18 @@ export interface ComponentFrameworksConfig {
   overrides?: Record<string, IntelligenceFramework>;
   /** When a routed framework's provider is unavailable (binary missing): 'default' degrades, 'none' errors. */
   fallback?: 'default' | 'none';
+  /**
+   * Ordered fallback frameworks to try when a SAFETY-GATING call's primary
+   * provider FAILS at runtime (rate-limit / circuit-open / error), BEFORE the
+   * caller falls closed. Each target has its OWN circuit breaker, so a target
+   * whose circuit is already open throws fast and is skipped — no herd onto a
+   * stressed provider. Only calls flagged `attribution.gating` swap, keeping the
+   * herd tiny. If every target is also down, the original error re-throws so the
+   * caller fails closed. Default: undefined ⇒ no swap (exactly today's behavior).
+   * This implements the "No Silent Degradation to Brittle Fallback" standard:
+   * swap-provider before fail-closed, never silently degrade to a brittle heuristic.
+   */
+  failureSwap?: IntelligenceFramework[];
 }
 
 export interface RouterDegradeInfo {
@@ -122,6 +134,11 @@ export class IntelligenceRouter implements IntelligenceProvider {
     return provider;
   }
 
+  /** Default framework → shared provider; else the cached per-framework provider (null if binary missing). */
+  private resolveProvider(framework: IntelligenceFramework): IntelligenceProvider | null {
+    return framework === this.opts.defaultFramework ? this.opts.defaultProvider : this.providerFor(framework);
+  }
+
   async evaluate(prompt: string, options?: IntelligenceOptions): Promise<string> {
     const component = options?.attribution?.component;
     const explicitCategory = (options?.attribution as { category?: unknown } | undefined)?.category;
@@ -134,32 +151,60 @@ export class IntelligenceRouter implements IntelligenceProvider {
     if (!cfg) return this.opts.defaultProvider.evaluate(prompt, options);
 
     const framework = this.resolveFramework(component, category, cfg);
-    if (framework === this.opts.defaultFramework) {
+    const primary = this.resolveProvider(framework);
+
+    // Provider unavailable (binary missing / not built) — unchanged: degrade or error.
+    if (!primary) {
+      if ((cfg.fallback ?? 'default') === 'none') {
+        throw new Error(
+          `IntelligenceRouter: framework '${framework}' for component '${component ?? '(none)'}' ` +
+            `is unavailable and fallback is 'none'.`,
+        );
+      }
+      this.opts.onDegrade?.({
+        component: component ?? '(none)',
+        category,
+        from: framework,
+        to: this.opts.defaultFramework,
+        reason: `framework '${framework}' unavailable (binary missing / not built) — degraded to default`,
+      });
       return this.opts.defaultProvider.evaluate(prompt, options);
     }
 
-    const provider = this.providerFor(framework);
-    if (provider) {
-      // Per-framework breaker handles rate-limit isolation. If that breaker is
-      // open, LlmCircuitOpenError propagates and the caller swallows it into its
-      // heuristic — we deliberately do NOT herd onto the default framework here.
-      return provider.evaluate(prompt, options);
-    }
+    // Failure-swap: ONLY a safety-gating call with configured failureSwap targets
+    // swaps on a RUNTIME failure (rate-limit / circuit-open / error). Non-gating
+    // calls keep today's behavior — the error propagates and the caller swallows it
+    // into its heuristic (no herd onto the fallback). This is the herd-aware half of
+    // "No Silent Degradation to Brittle Fallback": swap-before-fail-closed, scoped
+    // tightly so a rate-limited framework can't dump its whole load onto another.
+    const gating = options?.attribution?.gating === true;
+    const swapTargets = gating && cfg.failureSwap ? cfg.failureSwap : [];
 
-    // Provider unavailable (binary missing / not built).
-    if ((cfg.fallback ?? 'default') === 'none') {
-      throw new Error(
-        `IntelligenceRouter: framework '${framework}' for component '${component ?? '(none)'}' ` +
-          `is unavailable and fallback is 'none'.`,
-      );
+    try {
+      return await primary.evaluate(prompt, options);
+    } catch (err) {
+      if (swapTargets.length === 0) throw err; // not gating / no swap configured ⇒ today's behavior
+      for (const target of swapTargets) {
+        if (target === framework) continue; // don't retry the framework that just failed
+        const tp = this.resolveProvider(target);
+        if (!tp) continue; // target binary missing → skip
+        try {
+          const result = await tp.evaluate(prompt, options);
+          this.opts.onDegrade?.({
+            component: component ?? '(none)',
+            category,
+            from: framework,
+            to: target,
+            reason: `failure-swap: '${framework}' failed (${err instanceof Error ? err.message : 'error'}); served by '${target}'`,
+          });
+          return result;
+        } catch {
+          continue; // target also down (circuit-open / error) → try the next one
+        }
+      }
+      // Every swap target is also down → re-throw so the (gating) caller fails CLOSED,
+      // never silently degrading to a brittle heuristic.
+      throw err;
     }
-    this.opts.onDegrade?.({
-      component: component ?? '(none)',
-      category,
-      from: framework,
-      to: this.opts.defaultFramework,
-      reason: `framework '${framework}' unavailable (binary missing / not built) — degraded to default`,
-    });
-    return this.opts.defaultProvider.evaluate(prompt, options);
   }
 }

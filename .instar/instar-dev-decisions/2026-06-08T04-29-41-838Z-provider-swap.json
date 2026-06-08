@@ -1,0 +1,16 @@
+{
+  "ts": "2026-06-08T04:29:41.838Z",
+  "slug": "provider-swap",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 7,
+  "loc": 109,
+  "causalAutopsy": {
+    "origin": "new-code",
+    "notes": "Step 2 of Justin's 'No Silent Degradation to Brittle Fallback' directive (2026-06-07, topic 19437). The gate-flips (#991) made safety gates fail closed; this adds swap-before-fail-closed so a rate-limited provider routes to another healthy one first, only failing closed if all are down. Herd-aware (gating-only + circuit-skip) to preserve the router's deliberate anti-herding design."
+  },
+  "verdict": "pass"
+}

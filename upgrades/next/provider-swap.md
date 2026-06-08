@@ -1,0 +1,25 @@
+---
+change_type: feature
+audience: agent-only
+maturity: preview
+---
+<!-- bump: patch -->
+
+## What Changed
+
+Herd-aware provider-swap at the shared `IntelligenceRouter` (step 2 of the "No Silent Degradation to Brittle Fallback" initiative). On a RUNTIME provider failure, a SAFETY-GATING call (`attribution.gating: true`) walks the configured `componentFrameworks.failureSwap` framework list, skips any whose circuit is open (no herd), serves from the first healthy one, and re-throws if every target is down so the caller fails CLOSED. Only gating calls swap; advisory calls keep today's propagate-to-heuristic. New `failureSwap` config + `gating` attribution flag. 5 safety gates marked gating (ExternalOperationGate, MessagingToneGate, MessageSentinel, IntentLlmJudge, InputGuard). Generalizes across all accessible providers (Claude/Codex/Pi/Copilot-via-Pi); composes with the subscription-pool.
+
+## Evidence
+
+6 new router unit tests: swap-to-healthy-on-failure; fail-closed when all-down; no-swap for non-gating; no-swap when unconfigured; skip-circuit-open-target-and-use-next (herd-aware); unconfigured-unchanged. 17 router tests + 210 caller tests green; tsc clean. Default (no failureSwap) keeps byte-identical behavior.
+
+## What to Tell Your User
+
+- "When a safety check's AI is rate-limited, I now try your other AI providers (Codex, Pi, Copilot) before giving up — only failing closed if every one is down. It skips any provider that's also overloaded, so I never make a rate-limit worse. It's off until you set a provider order, and it only kicks in for the real safety gates, not background chatter."
+
+## Summary of New Capabilities
+
+| Capability | How to Use |
+|-----------|-----------|
+| Provider-swap for safety gates | Set `componentFrameworks.failureSwap: ["codex-cli","pi-cli"]` in config |
+| Per-call gating marker | Internal: safety-gating callers pass `attribution.gating: true` |

@@ -44,8 +44,9 @@ Right-pattern templates already in the tree: **`AnthropicSubscriptionRouter`** (
 
 ## Implementation plan
 1. ✅ **Gate-flips** — `ExternalOperationGate` (`proceed`→`show-plan`) + `ContentClassifier` (`safe`→`sensitive`) fail-closed. Regression tests updated. (This PR.)
-2. **Shared provider-swap-then-fail-closed at `IntelligenceRouter.evaluate`** — on a per-component circuit trip, try the default framework once before propagating; the whole fleet inherits swap-before-degrade. (Structure > Willpower.)
-3. **Lint** `lint-no-silent-llm-fallback` + ban `@silent-fallback-ok` in gating paths.
+2. ✅ **Herd-aware provider-swap at `IntelligenceRouter.evaluate`** — on a RUNTIME provider failure, a SAFETY-GATING call (`attribution.gating: true`) walks the configured `componentFrameworks.failureSwap` framework list, skipping any whose circuit is open (no herd onto a stressed provider) and serving from the first healthy one; if every target is down the error re-throws so the caller fails CLOSED. Generalizes to ALL accessible providers (Claude / Codex / Pi / Copilot-via-Pi — each a separate harness+account+quota), so the same model reachable via multiple paths = redundancy. Non-gating calls keep today's propagate-to-heuristic behavior; default (no `failureSwap`) = unchanged. Marked gating: ExternalOperationGate, MessagingToneGate, MessageSentinel, IntentLlmJudge, InputGuard. Composes with the subscription-pool (account layer). (Structure > Willpower: wired once at the router every gate routes through.)
+   - **Follow-up (Justin, 2026-06-07):** swap currently orders by *framework* (harness+account). It does NOT yet prefer a different MODEL FAMILY first, so a model down provider-wide could be tried via two paths before moving on. A model-family-diverse default order is the next increment — not over-built now.
+3. **Lint** `lint-no-silent-llm-fallback` + ban `@silent-fallback-ok` in gating paths. (Partly enforced today by the existing `no-silent-fallbacks.test.ts` ratchet + DegradationReporter.)
 4. **Re-audit to convergence** (Standard 2) — re-sweep until a pass finds nothing new.
 5. **Throwaway sandbox agent** for adversarial behavioral testing (separate initiative — identical org-intent, no real powers; never test forbidden-action behaviors against the live production agent).
 
