@@ -2681,6 +2681,15 @@ export interface InstarConfig {
    * When undefined/empty the style rule does not apply (behavior unchanged).
    */
   messagingStyle?: string;
+  /**
+   * Optional override (ms) for how long the outbound tone/relevance gate may run
+   * before the route fails it OPEN and delivers the message un-reviewed. Defaults
+   * to OUTBOUND_GATE_REVIEW_BUDGET_MS in code, so existing agents get the fix with
+   * no config change. Must stay below OUTBOUND_MESSAGING_TIMEOUT_MS (120s) — values
+   * <= 0 or out of range fall back to the code default. See
+   * docs/specs/outbound-gate-budget.md.
+   */
+  outboundGateReviewBudgetMs?: number;
   /** HMAC signing key for context file integrity verification (auto-generated, 32-byte hex) */
   contextSigningKey?: string;
   /** MoltBridge integration — trust network for agent discovery and credibility */
