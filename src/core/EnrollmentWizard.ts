@@ -80,6 +80,27 @@ export class EnrollmentWizard {
   }
 
   /**
+   * Operator-facing heads-up about a flow's quirks, surfaced on the pending login.
+   * The url-code-paste (Claude) flow on a brand-new account slot frequently issues
+   * TWO codes in sequence: Anthropic first emails an email-VERIFICATION code, then
+   * (after that's accepted) the page shows the sign-in code to paste back. Enrolling
+   * is always a new slot, so the operator should expect — and not be confused by —
+   * the two-step sequence (this confusion was flagged in live testing, topic 20905).
+   * device-code (Codex) is a single code, so no notice. Returns undefined when there
+   * is nothing to warn about.
+   */
+  static flowNotice(kind: LoginFlowKind): string | undefined {
+    if (kind === 'url-code-paste') {
+      return (
+        'Heads up: a brand-new Claude login often asks for TWO codes in order — ' +
+        'first an email-verification code Anthropic sends you, then the sign-in code ' +
+        'shown after that. Enter the email code first; the sign-in code comes next.'
+      );
+    }
+    return undefined;
+  }
+
+  /**
    * Start an enrollment: drive the login, capture the public code/URL, store it
    * as a pending login (TTL visible). Returns the stored PendingLogin — the
    * surface the operator's phone shows.
@@ -101,6 +122,7 @@ export class EnrollmentWizard {
       configHome: input.configHome,
       verificationUrl: artifact.verificationUrl,
       userCode: artifact.userCode,
+      notice: EnrollmentWizard.flowNotice(kind),
       ttlMs: artifact.ttlMs,
     });
     this.logger.log(`[EnrollmentWizard] started ${kind} login for ${input.label} (${input.provider})`);

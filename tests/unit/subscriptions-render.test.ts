@@ -145,6 +145,24 @@ describe('renderPendingLogins', () => {
     expect(t.querySelector('a')).toBeNull();
     expect(t.querySelector('.sub-pending-url')!.textContent).toContain('javascript:alert(1)');
   });
+  it('renders the flow notice (two-code heads-up) when present', () => {
+    const t = el();
+    renderPendingLogins(doc, t, [{
+      id: 'sagemind-1', label: 'SageMind - Justin', kind: 'url-code-paste',
+      verificationUrl: 'https://claude.com/oauth/authorize?code=abc',
+      notice: 'Heads up: a brand-new Claude login often asks for TWO codes in order — first an email-verification code, then the sign-in code.',
+      ttlExpiresAt: '2026-06-07T00:12:00Z', reissueCount: 0,
+    }], NOW);
+    expect(t.querySelector('.sub-pending-notice')!.textContent).toContain('TWO codes');
+  });
+  it('omits the notice element when there is none', () => {
+    const t = el();
+    renderPendingLogins(doc, t, [{
+      id: 'codex-1', label: 'codex', kind: 'device-code', userCode: '7DAU-W4XJA',
+      verificationUrl: 'https://auth.openai.com/codex/device', ttlExpiresAt: '2026-06-07T00:12:00Z', reissueCount: 0,
+    }], NOW);
+    expect(t.querySelector('.sub-pending-notice')).toBeNull();
+  });
 });
 
 describe('renderDisabled', () => {
