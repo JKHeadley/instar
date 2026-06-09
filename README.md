@@ -18,7 +18,7 @@
 </p>
 
 <p align="center">
-  <a href="https://www.npmjs.com/package/instar">npm</a> · <a href="https://github.com/JKHeadley/instar">GitHub</a> · <a href="https://instar.sh">instar.sh</a> · <a href="https://instar.sh/introduction/">Docs</a>
+  <a href="https://www.npmjs.com/package/instar">npm</a> · <a href="https://github.com/JKHeadley/instar">GitHub</a> · <a href="https://instar.sh">instar.sh</a> · <a href="https://instar.sh/introduction/">Docs</a> · <a href="https://instar.sh/exo3">EXO&nbsp;3.0</a>
 </p>
 
 ---
@@ -115,6 +115,14 @@ An agent that forgets what you discussed yesterday, doesn't recognize someone it
 | **Growth** | Evolves its capabilities and understanding over time | Evolution system: proposals, learnings, gap tracking, follow-through |
 
 > **Deep dive:** [The Coherence Problem](https://instar.sh/concepts/coherence/) · [Values & Identity](https://instar.sh/concepts/values/) · [Coherence Is Safety](https://instar.sh/concepts/safety/)
+
+## EXO 3.0 — governed by your organization's intent
+
+Instar independently converged on Salim Ismail's **EXO 3.0 / "The Organizational Singularity"** framework: the idea that an organization's purpose should be encoded as *machine-readable* intent — "in code, not culture" — that actually **governs** its agents rather than just inspiring them. Instar was built around coherence before the framework existed, and the overlap turned out to be close to the line.
+
+We didn't just claim it works. We ran controlled experiments — same model, same requests, with the organization's intent switched off as the control — to show the intent itself is what changes the agent's behavior. The engine stays **neutral**: it enforces whatever intent a deploying organization gives it, never Instar's own values. Two case studies enforce two very different fictional companies' values equally well, neither of them ours.
+
+> **See the controlled proof → [instar.sh/exo3](https://instar.sh/exo3)** — two governed-vs-ungoverned case studies, with full transcripts.
 
 ## Features
 
