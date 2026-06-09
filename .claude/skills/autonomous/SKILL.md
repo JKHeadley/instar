@@ -75,7 +75,20 @@ if json.dumps(hooks) != before:
 
 **2b. Write the state file DIRECTLY** (do NOT shell out to bash — the session ID env var is only available inside Claude Code):
 
-Use the **Write tool** to create `.instar/autonomous-state.local.md` with this content:
+Use the **Write tool** to create the **per-topic** state file `.instar/autonomous/<topicId>.local.md`,
+where `<topicId>` is the `report_topic` value you set below (the Telegram topic id you already know
+in-context). For example, if `report_topic` is `19437`, write `.instar/autonomous/19437.local.md`.
+
+**WHY PER-TOPIC (setup-race hardening):** the stop hook reads this per-topic file **directly**
+(`.instar/autonomous/<topicId>.local.md`) — it is the canonical state path, keyed on topic so
+multiple topics run concurrent autonomous jobs without collision. Writing the per-topic path here
+closes a boot-window race: two autonomous sessions starting near-simultaneously must NOT both write
+the single legacy file `.instar/autonomous-state.local.md` (the hook still migrates that legacy file
+for in-flight older jobs, but new jobs write the per-topic file from the start so there is nothing to
+collide on). If you somehow have no `report_topic`, fall back to `.instar/autonomous-state.local.md`
+(one-at-a-time, back-compat only).
+
+Write this content:
 
 ```markdown
 ---
@@ -197,17 +210,20 @@ The stop hook detects the promise and allows exit.
 The user can always stop autonomous mode:
 
 1. **Via messaging**: Send "stop everything" or "emergency stop" — the MessageSentinel intercepts
-2. **Via file**: `touch .instar/autonomous-emergency-stop` — the stop hook checks for this
-3. **Via cancel**: `/cancel-autonomous` — removes the state file
+2. **Via file**: `touch .instar/autonomous-emergency-stop` — the stop hook checks for this (this flag is
+   global, so it halts EVERY topic's autonomous job at once)
+3. **Via cancel**: `/cancel-autonomous` — removes this topic's state file
 
 The stop hook checks for emergency stop on EVERY iteration. User safety is never compromised.
 
 ### /cancel-autonomous
 
-To manually cancel:
+To manually cancel THIS topic's job, remove its per-topic state file (substitute the topic id):
 ```bash
-rm -f .instar/autonomous-state.local.md
+rm -f .instar/autonomous/<topicId>.local.md
 ```
+(Older one-at-a-time jobs may still live at the legacy `.instar/autonomous-state.local.md` — remove
+that instead if the per-topic file is absent.)
 
 ---
 
@@ -259,7 +275,9 @@ Feeling tired (as an AI) and deferring. **You don't get tired. The hook knows th
 
 The stop hook is at `.claude/skills/autonomous/hooks/autonomous-stop-hook.sh`.
 
-It reads state from `.instar/autonomous-state.local.md` and:
+It reads state from the per-topic file `.instar/autonomous/<topicId>.local.md` (resolving the topic
+from the tmux session), and migrates the legacy single file `.instar/autonomous-state.local.md` into
+the per-topic path on first run for any in-flight older job. It then:
 - Blocks exit if tasks are incomplete
 - Feeds the task list + goal back as the next prompt
 - Increments the iteration counter
