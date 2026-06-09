@@ -30,3 +30,4 @@ Instar already has a decent Slack adapter (it can read channels, respond when me
 - **Approve the spec** (set `approved: true`) so the code can land through the gate — that's the one thing only you can do. The build is done and tested (38 tests, all green); it's waiting on your review.
 - **Later, when you want to demo it for real:** provide a throwaway test Slack workspace + a bot token, and we can show the whole thing happening in a real Slack with real test users. Until then, the automated suite proves the logic.
 - Nothing here ships to other agents or users until you say so, and even then it starts in watch-only mode.
+- (Housekeeping) While the gate is dark, its `/permissions/*` routes are deliberately kept *internal* — they don't appear in the agent's `/capabilities` self-discovery — until the enforce path is live and it becomes a real, advertised capability.

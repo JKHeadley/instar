@@ -74,3 +74,7 @@ The review produced no design changes — the slice was built observe-only and f
 - 38 tests green: `tests/unit/slack-permission-gate.test.ts` (23), `tests/unit/slack-principal-resolver.test.ts` (7), `tests/unit/slack-permission-wiring.test.ts` (5), `tests/integration/permissions-routes.test.ts` (3).
 - The six worked-example rows + their expected/actual verdicts: `GET /permissions/scenario-suite` (and `src/permissions/testing/SlackScenarioHarness.ts`).
 - No-regression: 90 tests green across touched modules (slack adapter, user-manager, permissions).
+
+## Follow-up (capabilities classification, 2026-06-09)
+
+The `/permissions/*` routes are registered in `routes.ts`, so the capabilities-discoverability lint requires the prefix to be classified. **Decision: `INTERNAL_PREFIXES`** in `src/server/CapabilityIndex.ts` (agent-invisible) — Slice 0 is dark/observe-only and its routes (registration approval, the decision ledger, the scenario suite) are operator/internal, not a user-surfaced capability. When the enforce path ships and the gate becomes a live capability, the prefix should graduate to `CAPABILITY_INDEX`. Side-effect: the permission gate is intentionally NOT advertised in `/capabilities` while dark (consistent with §6 "dark by default").
