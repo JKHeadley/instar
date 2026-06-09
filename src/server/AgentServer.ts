@@ -1017,6 +1017,12 @@ export class AgentServer {
             const source = new HttpParitySource({
               baseUrl: paritySourceCfg.baseUrl!,
               token,
+              // Parity-pass needs ONLY the clusters (invariant-1 fingerprint) and
+              // Portal returns the full cluster set on every page — so stop after
+              // page 0 instead of grinding all ~146 feedback pages. Without this
+              // the contended server can't finish inside the single-flight
+              // max-hold budget and the parity window goes permanently stale (#948).
+              clustersOnly: true,
               ...(paritySourceCfg.pageSize ? { pageSize: paritySourceCfg.pageSize } : {}),
               ...(paritySourceCfg.status ? { status: paritySourceCfg.status } : {}),
               ...(paritySourceCfg.pageTimeoutMs ? { pageTimeoutMs: paritySourceCfg.pageTimeoutMs } : {}),
