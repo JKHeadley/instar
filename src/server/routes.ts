@@ -780,6 +780,11 @@ export interface RouteContext {
    *  records only). Null/absent when monitoring.correctionLearning.enabled is
    *  false (default) → /corrections 503s. */
   correctionLedger?: import('../monitoring/CorrectionLedger.js').CorrectionLedger | null;
+  /** GrowthMilestoneAnalyst — the proactive growth & milestone analyst. Null/absent
+   *  when monitoring.growthAnalyst.enabled is false (default, ships dark) →
+   *  /growth/* 503s. Powers GET /growth/digest, GET /growth/findings,
+   *  GET /growth/status, POST /growth/tick. */
+  growthMilestoneAnalyst?: import('../monitoring/GrowthMilestoneAnalyst.js').GrowthMilestoneAnalyst | null;
   /** Apprenticeship Program registry + lifecycle gates (Apprenticeship Step 1).
    *  Null when stateDir is unavailable → /apprenticeship/* 503s. Powers the
    *  instance-as-project registry, the retro-gate (pending→active) and the
@@ -5205,6 +5210,61 @@ export function createRoutes(ctx: RouteContext): Router {
       ? summary.features.filter((f) => f.feature === feature)
       : summary.features;
     res.json({ ...summary, features });
+  });
+
+  // ── GrowthMilestoneAnalyst (the proactive growth & milestone analyst) ──────
+  // Read-only observability over the maturity/initiative/spec/correction
+  // surfaces. The analyst ships DARK (monitoring.growthAnalyst.enabled false) —
+  // when off, ctx.growthMilestoneAnalyst is null and every route 503s. POST
+  // /growth/tick only runs the OBSERVE + COMPUTE pass (updates the stage journal,
+  // returns the digest); it never sends to Telegram in this slice.
+  // Spec: docs/specs/PROACTIVE-GROWTH-MILESTONE-ANALYST-SPEC.md
+  router.get('/growth/digest', (_req, res) => {
+    if (!ctx.growthMilestoneAnalyst) {
+      res.status(503).json({ error: 'GrowthMilestoneAnalyst not initialized (monitoring.growthAnalyst.enabled is false)' });
+      return;
+    }
+    try {
+      res.json(ctx.growthMilestoneAnalyst.buildDigest());
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+  router.get('/growth/findings', (_req, res) => {
+    if (!ctx.growthMilestoneAnalyst) {
+      res.status(503).json({ error: 'GrowthMilestoneAnalyst not initialized (monitoring.growthAnalyst.enabled is false)' });
+      return;
+    }
+    try {
+      res.json({ findings: ctx.growthMilestoneAnalyst.computeFindings() });
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+  router.get('/growth/status', (_req, res) => {
+    if (!ctx.growthMilestoneAnalyst) {
+      res.status(503).json({ error: 'GrowthMilestoneAnalyst not initialized (monitoring.growthAnalyst.enabled is false)' });
+      return;
+    }
+    try {
+      res.json(ctx.growthMilestoneAnalyst.getStatus());
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+  router.post('/growth/tick', (_req, res) => {
+    if (!ctx.growthMilestoneAnalyst) {
+      res.status(503).json({ error: 'GrowthMilestoneAnalyst not initialized (monitoring.growthAnalyst.enabled is false)' });
+      return;
+    }
+    try {
+      res.json(ctx.growthMilestoneAnalyst.buildDigest());
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message });
+    }
   });
 
   // Learning-velocity metric (EXO 3.0 — Salim Ismail, "Your KPI System Is
