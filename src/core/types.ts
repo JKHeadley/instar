@@ -3443,6 +3443,18 @@ export interface MonitoringConfig {
      * throttled poll (~30-60s). Lower only for tests.
      */
     rateLimitSettleMs?: number;
+    /**
+     * Deterministic hard ceiling (seconds) for the stuck-command Ctrl+C when the
+     * LLM "stuck vs legitimate" judge is UNAVAILABLE (no provider) or ERRORS
+     * (rate-limited / circuit-open / timeout — common under load). In that case
+     * the watchdog fails CLOSED (does NOT interrupt) below this ceiling, and only
+     * sends Ctrl+C once a command has run past it — so a genuinely hung command
+     * (e.g. `crontab -` waiting on stdin) is still recovered deterministically,
+     * but legitimate long builds/tests are no longer killed just because the
+     * judge couldn't run. Default: 1800 (30 min). Set 0 to disable the ceiling
+     * (pure fail-closed — never interrupt without a positive LLM "stuck" verdict).
+     */
+    hardCeilingSec?: number;
   };
   /**
    * RateLimitSentinel — rides out Anthropic's server-side capacity throttle
