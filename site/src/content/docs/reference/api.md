@@ -974,6 +974,17 @@ curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:4040/subscription
 - `GET /whatsapp/status`
 - `POST /whatsapp/send/:jid`
 
+## /permissions
+
+The Slack org permission gate (dark/observe-only by default — these routes are operator/internal, not surfaced in `/capabilities` until the enforce path is enabled in a later phase).
+
+- `GET /permissions/decisions` — recent permission-gate verdicts from the observe ledger (operator review).
+- `GET /permissions/scenario-suite` — the worked-example verdict suite (deploy-allow, junior-deny, ambiguous-clarify, social-engineering-deny, compromised-CEO step-up) with expected vs actual verdicts.
+- `GET /permissions/registrations/pending` — list pending self-registration requests awaiting admin approval.
+- `POST /permissions/registrations/register` — admin registers a Slack user with an org role (`{ slackUserId, displayName, role }`).
+- `POST /permissions/registrations/approve` — approve a pending registration (`{ slackUserId, role }`).
+- `POST /permissions/registrations/deny` — deny/drop a pending registration (`{ slackUserId }`).
+
 ## /whoami
 - `GET /whoami`
 
