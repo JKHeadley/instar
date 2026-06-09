@@ -5586,6 +5586,64 @@ export function createRoutes(ctx: RouteContext): Router {
     res.json({ revoked: true, mandate: m });
   });
 
+  // Add user→agent authority grant(s) to a mandate — PIN-GATED (the same human-
+  // authenticated surface as issuance; an agent's Bearer token cannot mint a grant).
+  // Re-signs the mandate so `authProof` covers the new grant(s); each grant decision
+  // (accepted or rejected) lands in the SAME hash-chained MandateAudit. The grant rides
+  // the signed, expiring, revocable mandate model — deny-by-default is inherited.
+  // Design: docs/specs/SLACK-ORG-INTEGRATION-SPEC.md (floor grants) + coordination-mandate.md.
+  router.post('/mandate/:id/grants', (req, res) => {
+    if (!ctx.coordination) {
+      res.status(503).json({ error: 'coordination mandate engine unavailable (no stateDir or init failed)' });
+      return;
+    }
+    if (!checkMandatePin(req, res)) return;
+    const b = req.body ?? {};
+    // Accept either a single grant or an array.
+    const rawGrants = Array.isArray(b.grants) ? b.grants : (b.grant ? [b.grant] : []);
+    if (!Array.isArray(rawGrants) || rawGrants.length === 0) {
+      res.status(400).json({ error: 'grants (array) or grant (object) is required' });
+      return;
+    }
+    // Shallow shape check at the boundary; MandateStore.addGrants is the authoritative
+    // validator (incl. the expiresAt <= mandate.expiresAt clamp).
+    const grants = rawGrants.map((g: any) => ({
+      floorAction: typeof g?.floorAction === 'string' ? g.floorAction : '',
+      grantedTo: typeof g?.grantedTo === 'string' ? g.grantedTo : '',
+      authorizedBy: typeof g?.authorizedBy === 'string' ? g.authorizedBy : '',
+      expiresAt: typeof g?.expiresAt === 'string' ? g.expiresAt : '',
+      ...(g?.bounds && typeof g.bounds === 'object' ? { bounds: g.bounds } : {}),
+    }));
+
+    const result = ctx.coordination.store.addGrants(req.params.id, grants);
+    if (!result.ok) {
+      // Audit the rejection so a refused grant is reconstructable too.
+      for (const g of grants) {
+        ctx.coordination.audit.record({
+          mandateId: req.params.id,
+          agentFp: g.grantedTo || 'unknown',
+          action: `grant-floor:${g.floorAction || 'unknown'}`,
+          decision: 'deny',
+          reason: `grant rejected: ${result.reason}`,
+        });
+      }
+      const status = result.reason === 'mandate not found' ? 404 : 400;
+      res.status(status).json({ error: result.reason });
+      return;
+    }
+    // Audit each accepted grant.
+    for (const g of grants) {
+      ctx.coordination.audit.record({
+        mandateId: req.params.id,
+        agentFp: g.grantedTo,
+        action: `grant-floor:${g.floorAction}`,
+        decision: 'allow',
+        reason: `grant signed by ${g.authorizedBy} until ${g.expiresAt}`,
+      });
+    }
+    res.status(201).json({ granted: true, mandate: { ...result.mandate, authorshipValid: ctx.coordination.store.verifyAuthorship(result.mandate) } });
+  });
+
   // ── ReviewExchange — autonomous code-review protocol (coordination-mandate spec §7 G2.3) ──
   // One mutual, MANDATE-GATED sign-off of a review artifact between the two agents named
   // in a mandate. Both sign-offs run through /the same/ MandateGate (named party, bounds,

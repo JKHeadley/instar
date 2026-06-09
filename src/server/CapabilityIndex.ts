@@ -650,6 +650,7 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
         'GET /mandate/audit?limit=N — the chained decision audit (chain.ok:false = tampering — surface it)',
         'POST /mandate/issue — PIN-GATED (operator only; agent Bearer token is refused)',
         'POST /mandate/:id/revoke — PIN-GATED (the operator kill switch)',
+        'POST /mandate/:id/grants — PIN-GATED: sign user→agent floor-action grant(s) into a mandate { grants:[{floorAction,grantedTo,authorizedBy,expiresAt}] } (expiresAt MUST be <= mandate.expiresAt); re-signs so authProof covers them',
       ],
     }),
   },
