@@ -174,6 +174,40 @@ interface FixCommandDeps {
 }
 
 /**
+ * Pure: should the emergency "fix command" gate intercept this message?
+ *
+ * Fix commands ("fix auth", "restart sessions", "clean processes", …) are
+ * mechanical server-side operations that only make sense in the Agent Attention
+ * topic, where the agent posts actionable notifications the user taps to resolve.
+ * In ANY other topic, a message that merely starts with "restart" / "fix " /
+ * "clean " is ordinary conversation ("restart the build", "fix the login page",
+ * "clean up this function") and must route to the session — never be swallowed.
+ *
+ * The previous logic ran this verb test in every topic and, on a non-attention
+ * topic, bounced the message back with "I didn't recognize that command" while
+ * also swallowing it (the gate `return`s). That is exactly why a user trying to
+ * revive a stuck session by typing "restart sessions" in that session's own
+ * topic never reached the session: the gate ate the message and replied with a
+ * help list that even advertised "restart sessions" as valid. Scoping the gate
+ * to the attention topic closes that hole.
+ */
+export function shouldInterceptFixCommand(
+  text: string,
+  topicId: number,
+  attentionTopicId: number | null | undefined,
+): boolean {
+  if (!attentionTopicId || topicId !== attentionTopicId) return false;
+  const cmd = text.trim().toLowerCase();
+  return (
+    cmd.startsWith('fix ') ||
+    cmd.startsWith('clean ') ||
+    cmd.startsWith('restart') ||
+    cmd === 'fix' ||
+    cmd === 'clean'
+  );
+}
+
+/**
  * Handle "fix X" and "clean X" commands from Agent Attention notifications.
  * These are mechanical server-side operations — no Claude session needed.
  * Returns true if the command was recognized and handled.
@@ -1251,6 +1285,11 @@ export function wireTelegramRouting(
   // lose updates between the two in-memory caches). Know Your Principal #898,
   // increment 2e: the polling-path operator auto-bind.
   getTopicOperatorStore?: () => import('../users/TopicOperatorStore.js').TopicOperatorStore | null,
+  // Late-bound resolver for the Agent Attention topic id. The emergency
+  // fix-command gate (below) only fires in that topic; everywhere else a
+  // message starting with restart/fix/clean is normal conversation and must
+  // route to the session instead of being swallowed.
+  getAttentionTopicId?: () => number | null | undefined,
 ): void {
   // Guard: tracks which topic IDs have a spawn in progress.
   // Prevents duplicate concurrent spawns for the same topic when messages
@@ -1364,37 +1403,38 @@ export function wireTelegramRouting(
     // ── Fix commands from notification messages ──────────────────────
     // Handle "fix auth", "clean processes", "restart", etc. directly
     // in the server process — no need to spawn a Claude session for these.
-    if (fixCommandHandler) {
-      const cmdText = text.trim().toLowerCase();
-      const isFixCommand = cmdText.startsWith('fix ') || cmdText.startsWith('clean ') ||
-        cmdText.startsWith('restart') || cmdText === 'fix' || cmdText === 'clean';
-      if (isFixCommand) {
-        (async () => {
-          try {
-            const handled = await fixCommandHandler(topicId, text);
-            if (!handled) {
-              // Not a recognized fix command — fall through to session routing
-              // Re-trigger the normal routing by calling the topic message handler again
-              // Actually, since we can't re-trigger, just send a help message
-              await telegram.sendToTopic(topicId,
-                `I didn't recognize that command. Available fix commands:\n` +
-                `• "fix auth" — Generate an API security token\n` +
-                `• "fix lifeline" — Restart the crash-recovery system\n` +
-                `• "fix shadow" — Remove shadow installation\n` +
-                `• "clean processes" — Kill external Claude processes\n` +
-                `• "restart" — Restart the server\n` +
-                `• "restart sessions" — Restart stuck sessions`
-              );
-            }
-          } catch (err) {
-            console.error(`[telegram] Fix command error:`, err);
+    //
+    // These ONLY apply in the Agent Attention topic. Scoping the gate there
+    // (shouldInterceptFixCommand) is deliberate: previously the verb test ran
+    // in every topic, so a message starting with restart/fix/clean in a normal
+    // conversation was swallowed and bounced back with an "I didn't recognize
+    // that command" help list — which is exactly why typing "restart sessions"
+    // in a stuck session's own topic never reached the session. Outside the
+    // attention topic the message now falls through to session routing below.
+    if (fixCommandHandler && shouldInterceptFixCommand(text, topicId, getAttentionTopicId?.())) {
+      (async () => {
+        try {
+          const handled = await fixCommandHandler(topicId, text);
+          if (!handled) {
+            // In the attention topic, but not a recognized fix command — show help.
             await telegram.sendToTopic(topicId,
-              `Something went wrong while trying to fix that: ${err instanceof Error ? err.message : String(err)}`
-            ).catch(() => {});
+              `I didn't recognize that command. Available fix commands:\n` +
+              `• "fix auth" — Generate an API security token\n` +
+              `• "fix lifeline" — Restart the crash-recovery system\n` +
+              `• "fix shadow" — Remove shadow installation\n` +
+              `• "clean processes" — Kill external Claude processes\n` +
+              `• "restart" — Restart the server\n` +
+              `• "restart sessions" — Restart stuck sessions`
+            );
           }
-        })();
-        return;
-      }
+        } catch (err) {
+          console.error(`[telegram] Fix command error:`, err);
+          await telegram.sendToTopic(topicId,
+            `Something went wrong while trying to fix that: ${err instanceof Error ? err.message : String(err)}`
+          ).catch(() => {});
+        }
+      })();
+      return;
     }
 
     // ── Pipeline-typed routing ──────────────────────────────────────
@@ -4022,7 +4062,8 @@ export async function startServer(options: StartOptions): Promise<void> {
       wireTelegramRouting(telegram, sessionManager, quotaTracker, topicMemory, userManagerSendOnly,
         (topicId, text) => handleFixCommand(topicId, text, _fixDeps!),
         () => (collaborationSurfacer && conversationStore && telegram) ? { collaborationSurfacer, conversationStore, commitmentTracker, telegram, brief: briefDeps } : null,
-        () => _agentServerRef?.getTopicOperatorStore() ?? null);
+        () => _agentServerRef?.getTopicOperatorStore() ?? null,
+        () => state.get<number>('agent-attention-topic'));
       wireTelegramCallbacks(telegram, sessionManager, state, quotaTracker, undefined, config.sessions.claudePath, topicMemory);
       console.log(pc.green('  Telegram routing + command callbacks wired (send-only)'));
     }
@@ -4162,7 +4203,8 @@ export async function startServer(options: StartOptions): Promise<void> {
       wireTelegramRouting(telegram, sessionManager, quotaTracker, topicMemory, userManager,
         (topicId, text) => handleFixCommand(topicId, text, _fixDeps!),
         () => (collaborationSurfacer && conversationStore && telegram) ? { collaborationSurfacer, conversationStore, commitmentTracker, telegram, brief: briefDeps } : null,
-        () => _agentServerRef?.getTopicOperatorStore() ?? null);
+        () => _agentServerRef?.getTopicOperatorStore() ?? null,
+        () => state.get<number>('agent-attention-topic'));
       wireTelegramCallbacks(telegram, sessionManager, state, quotaTracker, accountSwitcher, config.sessions.claudePath, topicMemory);
 
       // Wire up unknown-user handling (Multi-User Setup Wizard Phase 4.5)
