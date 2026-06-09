@@ -48,10 +48,14 @@ import type { Principal, RequestIntent, AnomalyAssessment } from './types.js';
 import type { IntelligenceProvider } from '../core/types.js';
 import {
   RelationshipBehaviorStore,
-  meanLength,
-  stdLength,
-  hourFraction,
+  baselineAgeMs,
+  decayedView,
+  decayedMeanLength,
+  decayedStdLength,
+  decayedHourFraction,
+  DEFAULT_BUCKET_MS,
   type PrincipalBehaviorProfile,
+  type DecayedProfileView,
 } from './RelationshipBehaviorStore.js';
 
 const URGENCY =
@@ -75,6 +79,30 @@ export interface RelationshipAnomalyConfig {
    * (no character yet → no out-of-character). Default 5.
    */
   establishedMin?: number;
+  /**
+   * Minimum baseline calendar AGE (days) before a baseline counts as "established"
+   * (poisoning-resistance #3a). "Established" now requires BOTH this age AND
+   * `establishedMin` count — so a patient attacker can't rapidly manufacture a
+   * trusted baseline in a single burst (a high COUNT accrued in minutes is still
+   * YOUNG → not established → the action/tier/style signals stay suppressed, and the
+   * scorer never gains false confidence from a rapid burst). Default 7 days.
+   * Set to 0 to require count only (legacy behavior). Backward-compat: a profile
+   * whose firstSeen predates the request by ≥ this age satisfies it automatically.
+   */
+  minBaselineAgeDays?: number;
+  /**
+   * Decay half-life in bucket-windows for the recency weighting (#2). A recent burst
+   * of attacker observations decays relative to long-standing behavior. Default 30
+   * (≈30 days at the store's 1-day bucket). Larger = slower decay (older behavior
+   * keeps weight longer). Read-time only; the store records raw counts.
+   */
+  decayHalfLifeWindows?: number;
+  /**
+   * Bucket-window length (ms) the baseline was recorded with. Must match the store's
+   * `bucketWindowMs`. Default reads from the store; falls back to 1 day. Exposed for
+   * tests that inject a custom window.
+   */
+  bucketMs?: number;
   /**
    * Share floor for the out-of-character-action signal (poisoning resistance).
    * The signal fires when the requested action's SHARE of the principal's history is
@@ -122,6 +150,11 @@ export class RelationshipAnomalyScorer {
       urgencyWeight: config.urgencyWeight ?? 0.25,
       styleWeight: config.styleWeight ?? 0.2,
       establishedMin: config.establishedMin ?? 5,
+      // #3a: default 7 calendar days. Nullish-coalescing so a deliberate 0 means
+      // "count only" (the legacy pre-hardening behavior).
+      minBaselineAgeDays: config.minBaselineAgeDays ?? 7,
+      decayHalfLifeWindows: config.decayHalfLifeWindows && config.decayHalfLifeWindows > 0 ? config.decayHalfLifeWindows : 30,
+      bucketMs: config.bucketMs && config.bucketMs > 0 ? config.bucketMs : store.bucketWindowMs ?? DEFAULT_BUCKET_MS,
       rareActionShareFloor: config.rareActionShareFloor ?? 0.1,
       styleZThreshold: config.styleZThreshold ?? 2.5,
       offCadenceHourFraction: config.offCadenceHourFraction ?? 0.02,
@@ -187,7 +220,47 @@ export class RelationshipAnomalyScorer {
       return { score: 0, reasons: [], confidence: 'none' };
     }
 
-    const established = profile.interactionCount >= this.cfg.establishedMin;
+    const nowMs = this.cfg.now().getTime();
+
+    // ── Recency/decay view (#2): a decay-weighted SHAPE so a recent attacker burst that
+    // tries to NORMALIZE a rare action is caught — under decay the burst can't durably
+    // dominate, and once it ages out the genuine baseline re-asserts. A pre-hardening
+    // profile (no buckets) yields a decayed view IDENTICAL to its cumulative form. ──
+    const view = decayedView(profile, {
+      nowMs,
+      bucketMs: this.cfg.bucketMs ?? DEFAULT_BUCKET_MS,
+      halfLifeWindows: this.cfg.decayHalfLifeWindows,
+    });
+
+    // ── The CUMULATIVE view (as a DecayedProfileView with weight 1.0 everywhere) ──
+    // Each established signal evaluates BOTH views and fires on the MORE anomalous one.
+    // This is the load-bearing poisoning-resistance invariant: the hardening only ever
+    // ADDS resistance — it must never DISARM a signal the pre-hardening cumulative baseline
+    // would have fired. A recent rate-capped burst can raise a rare action's *decayed*
+    // share above the floor, but it cannot erase its rarity across the WHOLE relationship
+    // (the cap bounds how much it can inject); the cumulative view preserves that. The
+    // decayed view, conversely, catches "this used to be normal but the recent pattern is
+    // off". Taking the max of the two is strictly stronger than either alone. ──
+    const cumulative: DecayedProfileView = {
+      effectiveCount: profile.interactionCount,
+      actionCounts: profile.actionCounts,
+      tierCounts: profile.tierCounts,
+      hourCounts: profile.hourCounts,
+      lengthSum: profile.lengthSum,
+      lengthSqSum: profile.lengthSqSum,
+      urgentCount: profile.urgentCount,
+    };
+
+    // ── "Established" now requires BOTH count AND calendar age (#3a) ──
+    // A high-COUNT but YOUNG baseline (a rapid burst) is NOT established → the
+    // action/tier/style signals stay suppressed (no false confidence from a burst).
+    const countEstablished = profile.interactionCount >= this.cfg.establishedMin;
+    const ageDays = baselineAgeMs(profile, nowMs) / (24 * 60 * 60 * 1000);
+    const ageEstablished = this.cfg.minBaselineAgeDays <= 0 || ageDays >= this.cfg.minBaselineAgeDays;
+    const established = countEstablished && ageEstablished;
+
+    // Confidence reflects depth, but a young baseline is capped at 'low' (we don't trust
+    // a burst-built baseline even if its count is high).
     const confidence: 'low' | 'medium' | 'high' = !established
       ? 'low'
       : profile.interactionCount >= this.cfg.establishedMin * 4
@@ -198,31 +271,35 @@ export class RelationshipAnomalyScorer {
 
     // ── 1. Out-of-character ACTION (only when the baseline is established) ──
     if (established) {
-      const seen = profile.actionCounts[intent.action] ?? 0;
-      const total = profile.interactionCount || 1;
-      const share = seen / total;
       const floor = this.cfg.rareActionShareFloor;
-      // Poisoning resistance (Phase-3 adversarial fix): fire when the action is RARE
-      // (share below the floor), not only when never-seen. A patient attacker / slowly-
-      // compromised account can seed a single prior observation to zero out a `seen===0`
-      // check and permanently disable this highest-weight signal; a share floor keeps a
-      // rare-but-poisoned action flagged. Weight scales by how far below the floor the
-      // share sits (full at never-seen, →0 as share→floor) so a genuinely-routine action
-      // never trips it.
-      if (share < floor) {
-        const rarity = 1 - share / floor; // 1.0 when never seen; →0 as share→floor
+      const neverSeen = (profile.actionCounts[intent.action] ?? 0) === 0;
+      // Rarity in each view; fire on the MORE anomalous (lower share = higher rarity).
+      const shareCum = (cumulative.actionCounts[intent.action] ?? 0) / (cumulative.effectiveCount || 1);
+      const shareDec = (view.actionCounts[intent.action] ?? 0) / (view.effectiveCount || 1);
+      const minShare = Math.min(shareCum, shareDec);
+      // Poisoning resistance (#1 share-floor + #2 dual-view max): the action is flagged if it
+      // is rare in EITHER the whole-relationship history OR the recent-weighted window. A
+      // patient attacker can seed a prior observation (defeats `seen===0`) or burst recently
+      // (raises the decayed share), but cannot make the action non-rare in BOTH views without
+      // a sustained campaign the rate cap (#3b) throttles. Weight scales by how far below the
+      // floor the more-anomalous share sits, so a genuinely-routine action never trips it.
+      if (minShare < floor) {
+        const rarity = 1 - minShare / floor; // 1.0 when never seen; →0 as share→floor
         hits.push({
           weight: this.cfg.atypicalActionWeight * rarity,
-          reason: seen === 0
+          reason: neverSeen
             ? `out-of-character: established history (${profile.interactionCount} interactions) but never requested "${intent.action}"`
-            : `out-of-character: "${intent.action}" is rare for this principal (${seen}/${profile.interactionCount} ≈ ${Math.round(share * 100)}%, below the ${Math.round(floor * 100)}% floor)`,
+            : `out-of-character: "${intent.action}" is rare for this principal (≈ ${Math.round(minShare * 100)}% of history, below the ${Math.round(floor * 100)}% floor)`,
         });
       }
     }
 
     // ── 2. Tier ESCALATION — request tier far above the principal's normal ceiling ──
     if (established) {
-      const normalMaxTier = highestRoutineTier(profile);
+      // Use the LOWER ceiling across both views: a recent burst of high-tier obs can't
+      // silently raise the "normal ceiling" and disarm this signal (it stays armed as long
+      // as EITHER the whole-relationship OR the recent-weighted ceiling is low).
+      const normalMaxTier = Math.min(highestRoutineTier(view), highestRoutineTier(cumulative));
       if (intent.tier >= 4 && normalMaxTier <= 2) {
         hits.push({
           weight: this.cfg.tierEscalationWeight,
@@ -234,7 +311,10 @@ export class RelationshipAnomalyScorer {
     // ── 3. Off-CADENCE timing — arrival hour this principal almost never uses ──
     if (established) {
       const hour = this.cfg.now().getHours();
-      if (hourFraction(profile, hour) <= this.cfg.offCadenceHourFraction) {
+      // Off-cadence if the hour is rare in EITHER view (a burst at an odd hour can't make
+      // that hour look routine across the whole relationship).
+      const minHourFrac = Math.min(decayedHourFraction(view, hour), decayedHourFraction(cumulative, hour));
+      if (minHourFrac <= this.cfg.offCadenceHourFraction) {
         hits.push({
           weight: this.cfg.offCadenceWeight,
           reason: `off-cadence: request at ${pad2(hour)}:00, an hour this principal almost never operates in`,
@@ -244,8 +324,12 @@ export class RelationshipAnomalyScorer {
 
     // ── 4. Sudden URGENCY/pressure from someone normally calm ──
     if (isUrgent) {
-      const baselineUrgentRate = profile.interactionCount > 0 ? profile.urgentCount / profile.interactionCount : 0;
-      if (baselineUrgentRate <= 0.15) {
+      // Use the LOWER urgent rate across both views — a recent burst of urgent obs can't
+      // raise the baseline urgent rate enough to mask sudden pressure from a normally-calm
+      // principal (the whole-relationship rate stays low).
+      const urgentRateDec = view.effectiveCount > 0 ? view.urgentCount / view.effectiveCount : 0;
+      const urgentRateCum = cumulative.effectiveCount > 0 ? cumulative.urgentCount / cumulative.effectiveCount : 0;
+      if (Math.min(urgentRateDec, urgentRateCum) <= 0.15) {
         hits.push({
           weight: this.cfg.urgencyWeight,
           reason: 'sudden urgency/pressure language from a normally-calm principal',
@@ -254,17 +338,17 @@ export class RelationshipAnomalyScorer {
     }
 
     // ── 5. STYLE deviation — message length far outside the normal envelope ──
+    // Fire if the message length is deviant in EITHER view (a recent burst of off-style
+    // messages can't widen the envelope enough to hide a deviation from the whole history).
     if (established) {
-      const mean = meanLength(profile);
-      const std = stdLength(profile);
-      if (mean !== undefined && std !== undefined && std > 0) {
-        const z = Math.abs(((text || '').length - mean) / std);
-        if (z >= this.cfg.styleZThreshold) {
-          hits.push({
-            weight: this.cfg.styleWeight,
-            reason: `style deviation: message length is ${z.toFixed(1)}σ from this principal's norm`,
-          });
-        }
+      const zDec = lengthZ(text, decayedMeanLength(view), decayedStdLength(view));
+      const zCum = lengthZ(text, decayedMeanLength(cumulative), decayedStdLength(cumulative));
+      const z = Math.max(zDec ?? 0, zCum ?? 0);
+      if (z >= this.cfg.styleZThreshold) {
+        hits.push({
+          weight: this.cfg.styleWeight,
+          reason: `style deviation: message length is ${z.toFixed(1)}σ from this principal's norm`,
+        });
       }
     }
 
@@ -284,7 +368,9 @@ export class RelationshipAnomalyScorer {
     const intel = this.cfg.intelligence;
     if (!intel) return null; // no provider → fail closed (no contribution)
     try {
-      const mean = meanLength(profile);
+      // Coarse style summary for the LLM — cumulative mean is fine here (it's a prose hint,
+      // not a scoring input; the deterministic signals already use the decayed view).
+      const mean = profile.interactionCount > 0 ? profile.lengthSum / profile.interactionCount : undefined;
       const topActions = Object.entries(profile.actionCounts)
         .sort((a, b) => b[1] - a[1])
         .slice(0, 5)
@@ -318,14 +404,25 @@ export class RelationshipAnomalyScorer {
   }
 }
 
-/** The highest tier this principal has used in more than a trivial share of interactions. */
-function highestRoutineTier(profile: PrincipalBehaviorProfile): number {
+/**
+ * The highest tier this principal has used in more than a trivial share of interactions,
+ * computed over the DECAYED view so a recent attacker burst of high-tier observations
+ * doesn't silently raise the "normal ceiling" and disarm tier-escalation (#2).
+ */
+function highestRoutineTier(view: DecayedProfileView): number {
   let max = 0;
+  const total = view.effectiveCount || 1;
   for (let t = 0; t <= 4; t++) {
-    const c = profile.tierCounts[t] ?? 0;
-    if (c > 0 && c / profile.interactionCount > 0.02) max = t;
+    const c = view.tierCounts[t] ?? 0;
+    if (c > 0 && c / total > 0.02) max = t;
   }
   return max;
+}
+
+/** |z| of a message length against a view's mean/std, or undefined when not computable. */
+function lengthZ(text: string, mean: number | undefined, std: number | undefined): number | undefined {
+  if (mean === undefined || std === undefined || std <= 0) return undefined;
+  return Math.abs(((text || '').length - mean) / std);
 }
 
 function clamp01(x: number): number {

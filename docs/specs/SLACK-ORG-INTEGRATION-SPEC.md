@@ -325,6 +325,20 @@ Dawn has actually stress-tested relationship infrastructure; ours exists but has
 
 The anomaly detector ships **dark / observe-only**: it logs would-be step-ups and scores against real traffic so we can measure its false-positive rate before it ever interrupts a real request. Nothing in Pillar 3 gates until the FP rate is known-good.
 
+### 7.7 Baseline-poisoning resistance (Phase-3 adversarial follow-ups)
+
+The behavioral baseline is the thing an attacker would attack. The threat: a *patient attacker* or *slowly-compromised account* injects many normal-looking observations (and/or a burst) to reshape the baseline so a later out-of-character request scores low. Three additive, backward-compatible, observe-only hardenings defend it. All are config-driven with conservative defaults and **never lower** a bar — they only ever *add* resistance (a hardening must never disarm a signal the pre-hardening cumulative baseline would have fired).
+
+- **#1 Share-floor out-of-character (already landed):** the out-of-character signal fires when the requested action's *share* of history is below `rareActionShareFloor` (default 0.10), not only when never-seen — so seeding a single prior observation can't zero out a `seen===0` check and disable the highest-weight signal.
+
+- **#2 Recency / decay weighting:** `RelationshipBehaviorStore` keeps optional time-bucketed history (one bucket per rolling window, `bucketMs`, default 1 day). At scoring time the scorer computes a *decayed view* — bucket counts weighted by `0.5^(ageWindows / decayHalfLifeWindows)` (default half-life 30 windows) plus the pre-bucketing "legacy base" at full weight. Each established signal evaluates **both** the cumulative view and the decayed view and fires on the *more anomalous* one. This makes a one-time burst **non-durable** (once the attacker stops and genuine traffic resumes, the burst decays back below the floor and the signal re-arms) while preserving the whole-relationship rarity the cumulative view encodes (which a rate-capped burst cannot erase). A pre-hardening profile (no buckets) yields a decayed view *identical* to its cumulative form — perfect backward-compat.
+
+- **#3a Minimum-baseline-AGE for "established":** a baseline counts as "established" only when **both** `interactionCount >= establishedMin` (default 5) **and** `firstSeen` is older than `minBaselineAgeDays` (default 7) — so a high-COUNT but YOUNG baseline (a rapid burst) is *not* trusted: the action/tier/style signals stay suppressed and confidence is capped at `low`. An attacker can't manufacture a trusted baseline in a burst. Set `minBaselineAgeDays: 0` to restore the legacy count-only behavior.
+
+- **#3b Per-principal observation-rate cap:** the store caps observations RECORDED per principal per rolling window (`maxObservationsPerWindow`, default 50/window). Excess observations in the window are **dropped** (logged via `onCapDrop`, not recorded — the cumulative counts are not touched either, so the buckets-sum invariant holds). One session can't hammer the histogram to shift it; combined with #1 this keeps a burst's *share* small relative to an established baseline so the share-floor signal survives. Set a non-positive value to disable.
+
+Config surface (`permissionGate.relationshipAnomaly.poisoningResistance`, all optional): `minBaselineAgeDays`, `maxObservationsPerWindow`, `decayHalfLifeWindows`, `bucketMs`. Defaults are baked into the store/scorer; absence preserves shipped behavior. The SHAPE-only / privacy / observe-only / never-lower invariants of §7.1–7.4 are unchanged.
+
 ---
 
 ## 8. Pillar 4 — Demonstration & verification (test-as-self for Slack)

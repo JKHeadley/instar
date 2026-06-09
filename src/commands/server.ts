@@ -4650,6 +4650,24 @@ export async function startServer(options: StartOptions): Promise<void> {
               enabled?: boolean;
               useLlmStyleCheck?: boolean;
               stepUpThreshold?: number;
+              /**
+               * Baseline-poisoning resistance knobs (Phase-3 follow-ups #2/#3).
+               * All optional with conservative defaults baked into the store/scorer:
+               *   - minBaselineAgeDays (#3a, default 7): a baseline isn't "established"
+               *     until BOTH a calendar age AND interaction count are met — a burst
+               *     can't manufacture trust.
+               *   - maxObservationsPerWindow (#3b, default 50/day): per-principal cap
+               *     on observations recorded per rolling window — excess is dropped.
+               *   - decayHalfLifeWindows (#2, default 30): recency decay so a recent
+               *     attacker burst can't durably dominate the histogram.
+               *   - bucketMs (default 1 day): the rolling-window length both use.
+               */
+              poisoningResistance?: {
+                minBaselineAgeDays?: number;
+                maxObservationsPerWindow?: number;
+                decayHalfLifeWindows?: number;
+                bucketMs?: number;
+              };
             };
           } | undefined;
           if (pgCfg && (pgCfg.observeOnly || pgCfg.enforce)) {
@@ -4728,14 +4746,33 @@ export async function startServer(options: StartOptions): Promise<void> {
             let anomalyScorer: import('../permissions/index.js').AnomalyScorer = new HeuristicAnomalyScorer();
             let behaviorStore: import('../permissions/index.js').RelationshipBehaviorStore | undefined;
             if (raCfg?.enabled && config.stateDir) {
-              behaviorStore = new RelationshipBehaviorStore(config.stateDir);
+              const pr = raCfg.poisoningResistance ?? {};
+              behaviorStore = new RelationshipBehaviorStore(
+                config.stateDir,
+                () => new Date().toISOString(),
+                {
+                  // #3b observation-rate cap + #2 decay bucket sizing. Undefined →
+                  // the store's conservative defaults (50/day, 1-day buckets).
+                  maxObservationsPerWindow: pr.maxObservationsPerWindow,
+                  bucketMs: pr.bucketMs,
+                  onCapDrop: (uid, windowStartMs, dropped) => {
+                    console.log(
+                      `[slack] behavior-baseline rate cap: dropped ${dropped} observation(s) for principal in window ${new Date(windowStartMs).toISOString()} (poisoning resistance #3b)`,
+                    );
+                  },
+                },
+              );
               anomalyScorer = new RelationshipAnomalyScorer(behaviorStore, {
                 useLlmStyleCheck: raCfg.useLlmStyleCheck === true,
                 // Fail-closed LLM style check uses the shared internal provider when present.
                 intelligence: sharedIntelligence ?? undefined,
+                // #3a min-age + #2 decay half-life — undefined → scorer defaults (7d, 30 windows).
+                minBaselineAgeDays: pr.minBaselineAgeDays,
+                decayHalfLifeWindows: pr.decayHalfLifeWindows,
+                bucketMs: pr.bucketMs,
               });
               console.log(
-                `[slack] relationship-aware anomaly scorer attached (observe-only baseline; LLM style check ${raCfg.useLlmStyleCheck ? 'ON' : 'off'})`,
+                `[slack] relationship-aware anomaly scorer attached (observe-only baseline; LLM style check ${raCfg.useLlmStyleCheck ? 'ON' : 'off'}; poisoning-resistance: min-age ${pr.minBaselineAgeDays ?? 7}d, rate-cap ${pr.maxObservationsPerWindow ?? 50}/window, decay ${pr.decayHalfLifeWindows ?? 30}w)`,
               );
             }
             const observer = new SlackPermissionObserver({
