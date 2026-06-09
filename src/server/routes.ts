@@ -591,6 +591,10 @@ export interface RouteContext {
   quotaPoller: import('../core/QuotaPoller.js').QuotaPoller | null;
   /** QuotaAwareScheduler (P1.3) — account selection + swap-and-resume guarantee. */
   quotaAwareScheduler: import('../core/QuotaAwareScheduler.js').QuotaAwareScheduler | null;
+  /** InUseAccountResolver — which pool account the agent is currently running on
+   *  (for the dashboard "in use" badge). Optional; the route lazily constructs a
+   *  default when absent so it never 503s. */
+  inUseAccountResolver?: import('../core/InUseAccountResolver.js').InUseAccountResolver;
   /** EnrollmentWizard (P2.1) — mobile-first login + auto-reissue. Null until wired. */
   enrollmentWizard: import('../core/EnrollmentWizard.js').EnrollmentWizard | null;
   semanticMemory: SemanticMemory | null;
@@ -15713,6 +15717,27 @@ export function createRoutes(ctx: RouteContext): Router {
       return;
     }
     res.json({ enabled: true, logins: ctx.enrollmentWizard.pending() });
+  });
+
+  // Which pool account is the agent ACTUALLY running on right now (vs "active" =
+  // merely healthy). Resolved from Claude's own auth surface, not a config guess.
+  // MUST be registered before GET /subscription-pool/:id (literal beats :id).
+  // 200 { enabled:false } when the pool is unconfigured.
+  router.get('/subscription-pool/in-use', async (_req, res) => {
+    if (!ctx.subscriptionPool) {
+      res.json({ enabled: false, activeAccountId: null, activeEmail: null });
+      return;
+    }
+    try {
+      const resolver =
+        ctx.inUseAccountResolver ??
+        new (await import('../core/InUseAccountResolver.js')).InUseAccountResolver();
+      const result = await resolver.resolve(ctx.subscriptionPool.list());
+      res.json({ enabled: true, ...result });
+    } catch {
+      // @silent-fallback-ok: resolver failure → "unknown" (never 500 the dashboard).
+      res.json({ enabled: true, activeAccountId: null, activeEmail: null });
+    }
   });
 
   router.get('/subscription-pool/:id', (req, res) => {

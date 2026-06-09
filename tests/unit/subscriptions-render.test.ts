@@ -136,6 +136,23 @@ describe('renderAccounts', () => {
     renderAccounts(doc, t, [{ id: 'a', nickname: 'n', provider: 'anthropic', framework: 'claude-code', status: 'active' }], NOW);
     expect(t.querySelector('.sub-account-refresh')).toBeNull();
   });
+  it('marks the in-use account with a badge and a distinct card class', () => {
+    const t = el();
+    const accounts = [
+      { id: 'gmail', nickname: 'Justin', provider: 'anthropic', framework: 'claude-code', status: 'active' },
+      { id: 'dawn', nickname: 'SageMind - Dawn', provider: 'anthropic', framework: 'claude-code', status: 'active' },
+    ];
+    renderAccounts(doc, t, accounts, NOW, 'dawn');
+    const inUse = t.querySelector('.sub-account-inuse');
+    expect(inUse).toBeTruthy();
+    expect(inUse!.querySelector('.sub-account-inuse-badge')!.textContent).toContain('In use');
+    expect(t.querySelectorAll('.sub-account-inuse').length).toBe(1); // exactly one card marked
+  });
+  it('shows no in-use badge when the active account id is null/unknown', () => {
+    const t = el();
+    renderAccounts(doc, t, [{ id: 'gmail', nickname: 'Justin', provider: 'anthropic', framework: 'claude-code', status: 'active' }], NOW, null);
+    expect(t.querySelector('.sub-account-inuse-badge')).toBeNull();
+  });
 });
 
 describe('relativeAge', () => {

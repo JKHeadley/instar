@@ -1,0 +1,16 @@
+{
+  "ts": "2026-06-09T01:01:08.842Z",
+  "slug": "subscription-inuse-account",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new route (router.<verb>() added",
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": true,
+  "files": 4,
+  "loc": 179,
+  "causalAutopsy": null,
+  "verdict": "pass"
+}
