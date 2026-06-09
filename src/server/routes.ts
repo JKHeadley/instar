@@ -25,7 +25,8 @@ import { IntelligenceRouter } from '../core/IntelligenceRouter.js';
 import { knownComponents } from '../core/componentCategories.js';
 import { SecretStore } from '../core/SecretStore.js';
 import { writeConfigAtomic, readSelfKnowledgeFlags } from '../core/BootSelfKnowledge.js';
-import { rateLimiter, signViewPath } from './middleware.js';
+import { rateLimiter, signViewPath, OUTBOUND_GATE_REVIEW_BUDGET_MS } from './middleware.js';
+import { reviewWithinBudget } from './outboundGateBudget.js';
 import type { WriteOperation, WriteToken } from '../core/StateWriteAuthority.js';
 import { writeLifelineRestartSignal } from '../core/version-skew.js';
 import { readSessionClocks } from '../core/SessionClockReader.js';
@@ -590,6 +591,10 @@ export interface RouteContext {
   quotaPoller: import('../core/QuotaPoller.js').QuotaPoller | null;
   /** QuotaAwareScheduler (P1.3) — account selection + swap-and-resume guarantee. */
   quotaAwareScheduler: import('../core/QuotaAwareScheduler.js').QuotaAwareScheduler | null;
+  /** InUseAccountResolver — which pool account the agent is currently running on
+   *  (for the dashboard "in use" badge). Optional; the route lazily constructs a
+   *  default when absent so it never 503s. */
+  inUseAccountResolver?: import('../core/InUseAccountResolver.js').InUseAccountResolver;
   /** EnrollmentWizard (P2.1) — mobile-first login + auto-reissue. Null until wired. */
   enrollmentWizard: import('../core/EnrollmentWizard.js').EnrollmentWizard | null;
   semanticMemory: SemanticMemory | null;
@@ -1397,18 +1402,38 @@ export function createRoutes(ctx: RouteContext): Router {
         }
       }
 
-      // ── Invoke the single authority ──
-      const result = await ctx.messagingToneGate.review(text, {
-        channel,
-        recentMessages,
-        signals,
-        targetStyle: ctx.config.messagingStyle,
-        messageKind: options.messageKind,
-      });
+      // ── Invoke the single authority, bounded by the route budget ──
+      // The gate is FAIL-OPEN by design, but under rate-limit pressure its
+      // provider call can wait up to RATE_LIMIT_WAIT_MS for a window PLUS the
+      // call itself — exceeding the outbound route's hard request budget
+      // (OUTBOUND_MESSAGING_TIMEOUT_MS). When that happens the route 408s, which
+      // is the WORST outcome: the message bypasses the gate AND the failed send
+      // gets dumped into whatever topic the session is active in. `reviewWithinBudget`
+      // races the review against OUTBOUND_GATE_REVIEW_BUDGET_MS and fails OPEN
+      // past it — a STRUCTURAL guarantee at the route seam that holds regardless
+      // of provider internals. Spec: docs/specs/outbound-gate-budget.md.
+      const configuredBudget = ctx.config.outboundGateReviewBudgetMs;
+      const gateBudgetMs =
+        typeof configuredBudget === 'number' &&
+        Number.isFinite(configuredBudget) &&
+        configuredBudget > 0
+          ? configuredBudget
+          : OUTBOUND_GATE_REVIEW_BUDGET_MS;
+      const result = await reviewWithinBudget(
+        ctx.messagingToneGate.review(text, {
+          channel,
+          recentMessages,
+          signals,
+          targetStyle: ctx.config.messagingStyle,
+          messageKind: options.messageKind,
+        }),
+        gateBudgetMs,
+      );
 
       // Structured observability: log every decision the authority made. This is
       // the "why I blocked" log — over-block audits read this. Invalid-rule
-      // citations (authority drift) are also logged so patterns become visible.
+      // citations (authority drift) and budgetExceeded fail-opens are logged so
+      // the latency audit can see when the gate is too slow to run in budget.
       logToneGateDecision({
         text,
         channel,
@@ -1620,6 +1645,7 @@ export function createRoutes(ctx: RouteContext): Router {
         rule: entry.result.rule || null,
         failedOpen: entry.result.failedOpen || false,
         invalidRule: entry.result.invalidRule || false,
+        budgetExceeded: entry.result.budgetExceeded || false,
         latencyMs: entry.result.latencyMs,
         signals: {
           junk: entry.signals.junk?.detected ?? null,
@@ -5620,6 +5646,64 @@ export function createRoutes(ctx: RouteContext): Router {
     res.json({ revoked: true, mandate: m });
   });
 
+  // Add user→agent authority grant(s) to a mandate — PIN-GATED (the same human-
+  // authenticated surface as issuance; an agent's Bearer token cannot mint a grant).
+  // Re-signs the mandate so `authProof` covers the new grant(s); each grant decision
+  // (accepted or rejected) lands in the SAME hash-chained MandateAudit. The grant rides
+  // the signed, expiring, revocable mandate model — deny-by-default is inherited.
+  // Design: docs/specs/SLACK-ORG-INTEGRATION-SPEC.md (floor grants) + coordination-mandate.md.
+  router.post('/mandate/:id/grants', (req, res) => {
+    if (!ctx.coordination) {
+      res.status(503).json({ error: 'coordination mandate engine unavailable (no stateDir or init failed)' });
+      return;
+    }
+    if (!checkMandatePin(req, res)) return;
+    const b = req.body ?? {};
+    // Accept either a single grant or an array.
+    const rawGrants = Array.isArray(b.grants) ? b.grants : (b.grant ? [b.grant] : []);
+    if (!Array.isArray(rawGrants) || rawGrants.length === 0) {
+      res.status(400).json({ error: 'grants (array) or grant (object) is required' });
+      return;
+    }
+    // Shallow shape check at the boundary; MandateStore.addGrants is the authoritative
+    // validator (incl. the expiresAt <= mandate.expiresAt clamp).
+    const grants = rawGrants.map((g: any) => ({
+      floorAction: typeof g?.floorAction === 'string' ? g.floorAction : '',
+      grantedTo: typeof g?.grantedTo === 'string' ? g.grantedTo : '',
+      authorizedBy: typeof g?.authorizedBy === 'string' ? g.authorizedBy : '',
+      expiresAt: typeof g?.expiresAt === 'string' ? g.expiresAt : '',
+      ...(g?.bounds && typeof g.bounds === 'object' ? { bounds: g.bounds } : {}),
+    }));
+
+    const result = ctx.coordination.store.addGrants(req.params.id, grants);
+    if (!result.ok) {
+      // Audit the rejection so a refused grant is reconstructable too.
+      for (const g of grants) {
+        ctx.coordination.audit.record({
+          mandateId: req.params.id,
+          agentFp: g.grantedTo || 'unknown',
+          action: `grant-floor:${g.floorAction || 'unknown'}`,
+          decision: 'deny',
+          reason: `grant rejected: ${result.reason}`,
+        });
+      }
+      const status = result.reason === 'mandate not found' ? 404 : 400;
+      res.status(status).json({ error: result.reason });
+      return;
+    }
+    // Audit each accepted grant.
+    for (const g of grants) {
+      ctx.coordination.audit.record({
+        mandateId: req.params.id,
+        agentFp: g.grantedTo,
+        action: `grant-floor:${g.floorAction}`,
+        decision: 'allow',
+        reason: `grant signed by ${g.authorizedBy} until ${g.expiresAt}`,
+      });
+    }
+    res.status(201).json({ granted: true, mandate: { ...result.mandate, authorshipValid: ctx.coordination.store.verifyAuthorship(result.mandate) } });
+  });
+
   // ── ReviewExchange — autonomous code-review protocol (coordination-mandate spec §7 G2.3) ──
   // One mutual, MANDATE-GATED sign-off of a review artifact between the two agents named
   // in a mandate. Both sign-offs run through /the same/ MandateGate (named party, bounds,
@@ -7788,9 +7872,16 @@ export function createRoutes(ctx: RouteContext): Router {
         });
       }
 
-      // Track for promise detection (detect "give me a minute" patterns)
+      // Track for promise detection (detect "give me a minute" patterns).
+      // Thread→session (§5.3): when this reply targets a thread, the session is
+      // registered on the thread routing key — resolve it so promise tracking finds
+      // the right session. Falls back to the channel key (today's behavior).
       if (ctx.slack.trackPromise) {
-        const sessionName = ctx.slack.getSessionForChannel(channelId);
+        const routingKey = thread_ts
+          ? ctx.slack.resolveRoutingKey(channelId, thread_ts as string)
+          : channelId;
+        const sessionName = ctx.slack.getSessionForChannel(routingKey)
+          ?? ctx.slack.getSessionForChannel(channelId);
         if (sessionName) {
           ctx.slack.trackPromise(channelId, sessionName, text);
         }
@@ -14500,6 +14591,149 @@ export function createRoutes(ctx: RouteContext): Router {
     res.json(ctx.adaptiveTrust.getProfile());
   });
 
+  // GET /permissions/decisions — observe-only Slack permission gate decision ledger.
+  // Read surface for measuring the gate's verdicts (and FP-rate) before enforcement.
+  // Design: docs/specs/SLACK-ORG-INTEGRATION-SPEC.md §6.10, §11.
+  router.get('/permissions/decisions', async (req, res) => {
+    try {
+      const limit = Math.min(Number(req.query.limit) || 100, 1000);
+      const { PermissionDecisionLedger } = await import('../permissions/index.js');
+      const ledger = new PermissionDecisionLedger(ctx.config.stateDir);
+      res.json({ decisions: ledger.readRecent(limit) });
+    } catch (e) {
+      res.status(500).json({ error: (e as Error).message });
+    }
+  });
+
+  // GET /permissions/ambient-stats — read-only snapshot of the ambient "should I
+  // speak?" gate's bounded in-memory observability aggregate (per-channel
+  // evaluated/spoke/silent/near-miss counts + a bounded ring of recent near-miss
+  // silences). This is what makes a WRONGFUL SILENCE measurable: the speak-path log
+  // alone only records when the agent SPOKE, so the ambient FP-rate (wrongful
+  // silences) was previously invisible during the observe-only live test. Signal-only:
+  // reading it never changes any speak/silence decision; it creates no Telegram/topic
+  // side-effect (so it can never flood). Returns { present: false } when no ambient
+  // gate is attached (the default — no channel opted in, gate stays dark).
+  // Design: docs/specs/SLACK-ORG-INTEGRATION-SPEC.md §5.2, §6.10, §11.
+  router.get('/permissions/ambient-stats', (req, res) => {
+    try {
+      const stats = ctx.slack?.getAmbientStats?.() ?? null;
+      if (!stats) {
+        return res.json({ present: false, reason: 'no-ambient-gate-attached' });
+      }
+      res.json({ present: true, stats });
+    } catch (e) {
+      res.status(500).json({ error: (e as Error).message });
+    }
+  });
+
+  // GET /permissions/baselines — read-only view of the Pillar 3 behavioral baselines.
+  // Returns per-principal SHAPE aggregates (action repertoire, tier/hour histograms,
+  // coarse length stats) — NEVER message content. Inspection surface for the
+  // relationship-aware anomaly second factor. Design: SLACK-ORG-INTEGRATION-SPEC.md §7.
+  router.get('/permissions/baselines', async (req, res) => {
+    try {
+      const { RelationshipBehaviorStore } = await import('../permissions/index.js');
+      const store = new RelationshipBehaviorStore(ctx.config.stateDir);
+      const slackUserId = typeof req.query.slackUserId === 'string' ? req.query.slackUserId : undefined;
+      if (slackUserId) {
+        const profile = store.profileFor(slackUserId);
+        return res.json({ baseline: profile ?? null });
+      }
+      res.json({ baselines: store.all() });
+    } catch (e) {
+      res.status(500).json({ error: (e as Error).message });
+    }
+  });
+
+  // ── Slack org permission registration (Phase 1) ──────────────────────
+  // Conversational registration's programmatic surface: admin-register, list
+  // pending self-registration requests, approve/deny. See SLACK-ORG-INTEGRATION-SPEC.md §6.3.
+  async function buildSlackRegistry() {
+    const { SlackUserRegistry } = await import('../permissions/index.js');
+    const { UserManager } = await import('../users/UserManager.js');
+    const um = new UserManager(ctx.config.stateDir, ctx.config.users);
+    // Wrap UserManager as the registry's minimal store; upsert via addUserInteractive
+    // so the created profile gets proper defaults (preferences, timestamps, etc.).
+    const store = {
+      resolveFromSlackUserId: (id: string) => um.resolveFromSlackUserId(id),
+      upsertUser: (p: { id: string; name: string }) => { um.addUserInteractive(p as never); },
+    };
+    return new SlackUserRegistry(store as never, ctx.config.stateDir);
+  }
+
+  router.get('/permissions/registrations/pending', async (_req, res) => {
+    try {
+      const reg = await buildSlackRegistry();
+      res.json({ pending: reg.listPending() });
+    } catch (e) {
+      res.status(500).json({ error: (e as Error).message });
+    }
+  });
+
+  router.post('/permissions/registrations/register', async (req, res) => {
+    try {
+      const { slackUserId, displayName, role } = req.body || {};
+      if (!slackUserId || !role) return res.status(400).json({ error: 'slackUserId and role are required' });
+      const reg = await buildSlackRegistry();
+      res.json({ registered: true, profile: reg.register(slackUserId, displayName || slackUserId, role) });
+    } catch (e) {
+      res.status(400).json({ error: (e as Error).message });
+    }
+  });
+
+  router.post('/permissions/registrations/approve', async (req, res) => {
+    try {
+      const { slackUserId, role } = req.body || {};
+      if (!slackUserId || !role) return res.status(400).json({ error: 'slackUserId and role are required' });
+      const reg = await buildSlackRegistry();
+      res.json({ approved: true, profile: reg.approve(slackUserId, role) });
+    } catch (e) {
+      res.status(400).json({ error: (e as Error).message });
+    }
+  });
+
+  router.post('/permissions/registrations/deny', async (req, res) => {
+    try {
+      const { slackUserId } = req.body || {};
+      if (!slackUserId) return res.status(400).json({ error: 'slackUserId is required' });
+      const reg = await buildSlackRegistry();
+      res.json({ denied: reg.deny(slackUserId) });
+    } catch (e) {
+      res.status(400).json({ error: (e as Error).message });
+    }
+  });
+
+  // GET /permissions/scenario-suite — run the deterministic permission demonstration
+  // (Pillar 4 Layer-A): the six worked-example rows with expected vs actual verdict.
+  router.get('/permissions/scenario-suite', async (req, res) => {
+    try {
+      const { runScenarioSuite } = await import('../permissions/testing/SlackScenarioHarness.js');
+      const results = await runScenarioSuite();
+      res.json({
+        summary: {
+          total: results.length,
+          passed: results.filter((r) => r.pass).length,
+          failed: results.filter((r) => !r.pass).length,
+        },
+        rows: results.map((r) => ({
+          id: r.scenario.id,
+          principal: r.scenario.principal.name,
+          role: r.scenario.principal.role,
+          request: r.scenario.text,
+          directed: r.scenario.directed,
+          expected: `${r.scenario.expectedDecision}/${r.scenario.expectedBasis}`,
+          got: `${r.verdict.decision}/${r.verdict.basis}`,
+          message: r.verdict.message || undefined,
+          pass: r.pass,
+          proves: r.scenario.proves,
+        })),
+      });
+    } catch (e) {
+      res.status(500).json({ error: (e as Error).message });
+    }
+  });
+
   // GET /trust/summary — compact trust summary
   router.get('/trust/summary', (req, res) => {
     if (!ctx.adaptiveTrust) {
@@ -15751,6 +15985,27 @@ export function createRoutes(ctx: RouteContext): Router {
       return;
     }
     res.json({ enabled: true, logins: ctx.enrollmentWizard.pending() });
+  });
+
+  // Which pool account is the agent ACTUALLY running on right now (vs "active" =
+  // merely healthy). Resolved from Claude's own auth surface, not a config guess.
+  // MUST be registered before GET /subscription-pool/:id (literal beats :id).
+  // 200 { enabled:false } when the pool is unconfigured.
+  router.get('/subscription-pool/in-use', async (_req, res) => {
+    if (!ctx.subscriptionPool) {
+      res.json({ enabled: false, activeAccountId: null, activeEmail: null });
+      return;
+    }
+    try {
+      const resolver =
+        ctx.inUseAccountResolver ??
+        new (await import('../core/InUseAccountResolver.js')).InUseAccountResolver();
+      const result = await resolver.resolve(ctx.subscriptionPool.list());
+      res.json({ enabled: true, ...result });
+    } catch {
+      // @silent-fallback-ok: resolver failure → "unknown" (never 500 the dashboard).
+      res.json({ enabled: true, activeAccountId: null, activeEmail: null });
+    }
   });
 
   router.get('/subscription-pool/:id', (req, res) => {

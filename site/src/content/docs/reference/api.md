@@ -91,6 +91,19 @@ The Instar server exposes a REST API on `localhost:4040` (configurable). All end
 | GET | `/project-map` | Auto-generated project territory map |
 | POST | `/coherence/check` | Pre-action coherence verification |
 
+## EXO 3.0 Governance
+
+The endpoints behind the [EXO 3.0 Alignment](/features/exo3/) capabilities. See the [Meridian](/features/exo3-case-study-meridian/) and [Ironwood](/features/exo3-case-study-ironwood/) case studies for the controlled proof.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/intent/org/test-action` | Run the refusal + endorsement tests on a proposed action against the org intent |
+| POST | `/intent/tradeoff-resolve` | Resolve a value tradeoff via the org's tradeoff hierarchy |
+| GET | `/passport` | The agent's digital passport (identity, trust level, forbidden actions) |
+| POST | `/passport/verify` | Verify a peer's proposed action against its passport |
+| POST | `/agent-readiness/score` | Score a task or workflow on its coordination-vs-judgment ratio |
+| GET | `/metrics/learning-velocity` | Learning-velocity metric (the EXO 3.0 KPI inversion) |
+
 ## Updates & Dispatches
 
 | Method | Path | Description |
@@ -960,6 +973,17 @@ curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:4040/subscription
 - `GET /whatsapp/qr`
 - `GET /whatsapp/status`
 - `POST /whatsapp/send/:jid`
+
+## /permissions
+
+The Slack org permission gate (dark/observe-only by default — these routes are operator/internal, not surfaced in `/capabilities` until the enforce path is enabled in a later phase).
+
+- `GET /permissions/decisions` — recent permission-gate verdicts from the observe ledger (operator review).
+- `GET /permissions/scenario-suite` — the worked-example verdict suite (deploy-allow, junior-deny, ambiguous-clarify, social-engineering-deny, compromised-CEO step-up) with expected vs actual verdicts.
+- `GET /permissions/registrations/pending` — list pending self-registration requests awaiting admin approval.
+- `POST /permissions/registrations/register` — admin registers a Slack user with an org role (`{ slackUserId, displayName, role }`).
+- `POST /permissions/registrations/approve` — approve a pending registration (`{ slackUserId, role }`).
+- `POST /permissions/registrations/deny` — deny/drop a pending registration (`{ slackUserId }`).
 
 ## /whoami
 - `GET /whoami`

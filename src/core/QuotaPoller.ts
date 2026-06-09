@@ -32,8 +32,6 @@
  * poller runs hermetically with zero credentials and zero network in tests.
  */
 
-import { execFileSync } from 'node:child_process';
-import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import type {
@@ -41,9 +39,22 @@ import type {
   SubscriptionAccount,
   AccountQuotaSnapshot,
 } from './SubscriptionPool.js';
+import {
+  readClaudeOauth,
+  refreshClaudeToken,
+  expandHome,
+  type RefreshResult,
+} from './OAuthRefresher.js';
 
 /** Injectable token resolver — returns an account's OAuth access token or null. */
 export type TokenResolver = (account: SubscriptionAccount) => string | null;
+
+/**
+ * Injectable account refresher — exchanges a config home's stored refresh token
+ * for a fresh access token (see OAuthRefresher). Defaults to the real keychain/
+ * file-backed refresh; tests inject a stub so the poller runs hermetically.
+ */
+export type AccountRefresher = (account: SubscriptionAccount) => Promise<RefreshResult>;
 
 /** Minimal fetch surface so tests inject a stub (no global fetch dependency). */
 export type FetchImpl = (
@@ -59,9 +70,20 @@ export interface QuotaPollerConfig {
   fetchImpl?: FetchImpl;
   /** Injected for tests; defaults to the config-home credential resolver. */
   tokenResolver?: TokenResolver;
+  /**
+   * Injected for tests; defaults to the real OAuth refresh-token exchange. On a
+   * usage-read auth failure the poller calls this BEFORE declaring needs-reauth,
+   * so a routine access-token expiry recovers silently instead of crying wolf.
+   */
+  refresher?: AccountRefresher;
   /** Logger (defaults to console). */
   logger?: { log: (m: string) => void; warn: (m: string) => void };
 }
+
+/** Outcome of a single usage read (internal). */
+type UsageRead =
+  | { authFailed: false; body: Record<string, unknown> | null }
+  | { authFailed: true };
 
 export interface BurnRate {
   /** Utilization points per hour on the binding (7-day) window. */
@@ -76,59 +98,20 @@ const USAGE_URL = 'https://api.anthropic.com/api/oauth/usage';
 
 /**
  * Resolve a claude-code account's OAuth access token from its config home,
- * TRANSIENTLY. Never persisted, never logged. macOS: the per-config-home
- * keychain entry `Claude Code-credentials-<sha256(configHome)[0:8]>` (verified
- * empirically). Linux/other: `<configHome>/.credentials.json`. The default
- * (`~/.claude`) keychain entry has no hash suffix.
+ * TRANSIENTLY. Never persisted, never logged. Reads via the shared OAuthRefresher
+ * locator (macOS keychain `Claude Code-credentials-<sha256(configHome)[0:8]>`,
+ * else `<configHome>/.credentials.json`) so the resolver and the refresher always
+ * agree on WHERE a config home's credentials live. NOTE: an EXPIRED access token
+ * is still returned here (it's a valid string) — expiry is detected by the usage
+ * read's 401 and recovered by the refresher, not by this resolver.
  */
 export function defaultTokenResolver(account: SubscriptionAccount): string | null {
   if (account.provider !== 'anthropic' || account.framework !== 'claude-code') {
     return null;
   }
-  const configHome = expandHome(account.configHome);
-
-  // Linux / non-darwin: per-config-home credentials file.
-  if (process.platform !== 'darwin') {
-    try {
-      const credPath = path.join(configHome, '.credentials.json');
-      if (fs.existsSync(credPath)) {
-        const data = JSON.parse(fs.readFileSync(credPath, 'utf-8'));
-        const tok = data?.claudeAiOauth?.accessToken;
-        return typeof tok === 'string' && tok.startsWith('sk-ant-oat') ? tok : null;
-      }
-    } catch {
-      // @silent-fallback-ok: missing/unreadable creds → unresolvable token (null)
-    }
-    return null;
-  }
-
-  // macOS: keychain service name, hash-suffixed by config-home path.
-  const defaultHome = expandHome('~/.claude');
-  const service =
-    configHome === defaultHome
-      ? 'Claude Code-credentials'
-      : `Claude Code-credentials-${crypto.createHash('sha256').update(configHome).digest('hex').slice(0, 8)}`;
-  try {
-    const raw = execFileSync(
-      'security',
-      ['find-generic-password', '-s', service, '-w'],
-      { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] },
-    ).trim();
-    if (!raw) return null;
-    const data = JSON.parse(raw);
-    const tok = data?.claudeAiOauth?.accessToken;
-    return typeof tok === 'string' && tok.startsWith('sk-ant-oat') ? tok : null;
-  } catch {
-    // @silent-fallback-ok: no keychain entry for this config home → null
-    return null;
-  }
-}
-
-function expandHome(p: string): string {
-  if (p === '~' || p.startsWith('~/')) {
-    return path.join(process.env.HOME ?? '', p.slice(1));
-  }
-  return p;
+  const oauth = readClaudeOauth(account.configHome);
+  const tok = oauth?.accessToken;
+  return typeof tok === 'string' && tok.startsWith('sk-ant-oat') ? tok : null;
 }
 
 /**
@@ -216,6 +199,7 @@ export class QuotaPoller {
   private readonly pollIntervalMs: number;
   private readonly fetchImpl: FetchImpl;
   private readonly tokenResolver: TokenResolver;
+  private readonly refresher: AccountRefresher;
   private readonly logger: { log: (m: string) => void; warn: (m: string) => void };
   private interval: ReturnType<typeof setInterval> | null = null;
   /** Most-recent snapshot per account id. */
@@ -230,6 +214,8 @@ export class QuotaPoller {
       config.fetchImpl ??
       ((url, init) => fetch(url, init as RequestInit) as unknown as ReturnType<FetchImpl>);
     this.tokenResolver = config.tokenResolver ?? defaultTokenResolver;
+    this.refresher =
+      config.refresher ?? ((account) => refreshClaudeToken(expandHome(account.configHome)));
     this.logger = config.logger ?? { log: () => {}, warn: () => {} };
   }
 
@@ -249,18 +235,11 @@ export class QuotaPoller {
   }
 
   /**
-   * Poll one account: resolve token transiently, read usage, map to snapshot.
-   * Returns null when the token is unresolvable or the read fails. NEVER logs
-   * or returns the token.
+   * One usage read. Returns the parsed body (or null body on a non-auth non-ok),
+   * an auth-failed marker (401/403), or null on a network failure. NEVER logs the
+   * token.
    */
-  async pollAccount(account: SubscriptionAccount): Promise<AccountQuotaSnapshot | null> {
-    const token = this.tokenResolver(account);
-    if (!token) {
-      this.logger.warn(`[QuotaPoller] no resolvable token for account ${account.id} — skipping`);
-      return null;
-    }
-    let body: Record<string, unknown> | null = null;
-    let authFailed = false;
+  private async readUsage(token: string): Promise<UsageRead | null> {
     try {
       const res = await this.fetchImpl(USAGE_URL, {
         headers: {
@@ -270,24 +249,73 @@ export class QuotaPoller {
         },
       });
       if (res.ok) {
-        body = (await res.json()) as Record<string, unknown>;
-      } else if (res.status === 401 || res.status === 403) {
-        authFailed = true;
+        return { authFailed: false, body: (await res.json()) as Record<string, unknown> };
       }
+      if (res.status === 401 || res.status === 403) return { authFailed: true };
+      return { authFailed: false, body: null }; // 5xx etc. → no snapshot, not auth
     } catch {
       // @silent-fallback-ok: network failure → no snapshot this cycle (retry next)
       return null;
     }
-    if (authFailed) {
-      // Genuine auth failure (revoked / password change) — surface for re-auth.
-      try {
-        this.pool.update(account.id, { status: 'needs-reauth' });
-      } catch {
-        // @silent-fallback-ok: pool update best-effort; status reflects next read
-      }
-      this.logger.warn(`[QuotaPoller] account ${account.id} usage read returned auth error → needs-reauth`);
+  }
+
+  private markNeedsReauth(account: SubscriptionAccount, reason: string): void {
+    try {
+      this.pool.update(account.id, { status: 'needs-reauth' });
+    } catch {
+      // @silent-fallback-ok: pool update best-effort; status reflects next read
+    }
+    this.logger.warn(`[QuotaPoller] account ${account.id} → needs-reauth (${reason})`);
+  }
+
+  /**
+   * Poll one account: resolve token transiently, read usage, map to snapshot.
+   * On a usage-read auth failure (401/403) the access token may simply have
+   * EXPIRED while the refresh token is still valid — so the poller attempts a
+   * refresh-token exchange and ONE retry BEFORE declaring needs-reauth. Only a
+   * genuinely dead login (no refresh token / refresh rejected / still 401 after
+   * a fresh token) yields needs-reauth. Returns null when the token is
+   * unresolvable or the read fails. NEVER logs or returns the token.
+   */
+  async pollAccount(account: SubscriptionAccount): Promise<AccountQuotaSnapshot | null> {
+    const token = this.tokenResolver(account);
+    if (!token) {
+      this.logger.warn(`[QuotaPoller] no resolvable token for account ${account.id} — skipping`);
       return null;
     }
+
+    const read = await this.readUsage(token);
+    if (read === null) return null; // network failure
+
+    let body: Record<string, unknown> | null;
+    if (read.authFailed) {
+      const refreshed = await this.refresher(account);
+      if (!refreshed.ok) {
+        // No refresh token, or the exchange was rejected — genuine re-auth.
+        this.markNeedsReauth(account, refreshed.reason);
+        return null;
+      }
+      const retry = await this.readUsage(refreshed.accessToken);
+      if (retry === null) return null; // network blip on the retry → next cycle
+      if (retry.authFailed) {
+        // Fresh token still rejected — treat as genuinely failed.
+        this.markNeedsReauth(account, 'usage still auth-failed after refresh');
+        return null;
+      }
+      // Recovered silently — no operator action needed. Record for visibility.
+      try {
+        this.pool.update(account.id, { lastRefreshAt: new Date().toISOString() });
+      } catch {
+        // @silent-fallback-ok: visibility-only write
+      }
+      this.logger.log(
+        `[QuotaPoller] account ${account.id} access token refreshed silently (no re-auth needed)`,
+      );
+      body = retry.body;
+    } else {
+      body = read.body;
+    }
+
     if (!body) return null;
 
     const snap = mapUsageResponse(body, 'oauth-usage-endpoint-fallback', new Date().toISOString());

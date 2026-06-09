@@ -48,7 +48,7 @@ instar knowledge ingest "$(cat /tmp/fetched.md)" --title "Article Title" --url "
 ### Via API
 
 ```bash
-curl -X POST http://localhost:4040/knowledge/ingest \
+curl -X POST http://localhost:${INSTAR_PORT:-4040}/knowledge/ingest \
   -H "Content-Type: application/json" \
   -d '{
     "content": "The article content...",
@@ -105,11 +105,11 @@ instar memory search "notification batching"
 
 ```bash
 # Knowledge-scoped search
-curl "http://localhost:4040/memory/search?q=notification+batching&source=knowledge/&limit=5"
+curl "http://localhost:${INSTAR_PORT:-4040}/memory/search?q=notification+batching&source=knowledge/&limit=5"
 
 # Browse the catalog
-curl "http://localhost:4040/knowledge/catalog"
-curl "http://localhost:4040/knowledge/catalog?tag=AI"
+curl "http://localhost:${INSTAR_PORT:-4040}/knowledge/catalog"
+curl "http://localhost:${INSTAR_PORT:-4040}/knowledge/catalog?tag=AI"
 ```
 
 ---
@@ -140,7 +140,7 @@ instar memory sync
 
 ```bash
 # Remove
-curl -X DELETE "http://localhost:4040/knowledge/kb_20260225123456_abc123"
+curl -X DELETE "http://localhost:${INSTAR_PORT:-4040}/knowledge/kb_20260225123456_abc123"
 ```
 
 ---

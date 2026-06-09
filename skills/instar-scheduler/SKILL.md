@@ -36,7 +36,7 @@ Before using this skill, check if Instar is available:
    If the user agrees, run `npx instar` and follow the interactive setup.
    If they decline, acknowledge and suggest they visit https://instar.sh when ready.
 
-3. If Instar is installed, verify the server: `curl -sf http://localhost:4040/health`
+3. If Instar is installed, verify the server: `curl -sf http://localhost:${INSTAR_PORT:-4040}/health`
 4. If server is not running: "The Instar server needs to be running. Want me to start it? (`instar server start`)"
 5. Once running, proceed with the instructions below.
 
@@ -182,7 +182,7 @@ instar job add \
 Open `.instar/jobs.json` and add a job object to the array. The scheduler reloads jobs automatically within 60 seconds, or trigger a reload:
 
 ```bash
-curl -X POST http://localhost:4040/jobs/reload
+curl -X POST http://localhost:${INSTAR_PORT:-4040}/jobs/reload
 ```
 
 ### Option 3: The agent adds its own jobs
@@ -196,13 +196,13 @@ When a user says "check my emails every two hours," the correct agent behavior i
 ### View all jobs and their next run times
 
 ```bash
-curl http://localhost:4040/jobs | python3 -m json.tool
+curl http://localhost:${INSTAR_PORT:-4040}/jobs | python3 -m json.tool
 ```
 
 ### Trigger a job manually (test it now)
 
 ```bash
-curl -X POST http://localhost:4040/jobs/check-email/trigger
+curl -X POST http://localhost:${INSTAR_PORT:-4040}/jobs/check-email/trigger
 ```
 
 ### Disable a job without deleting it
@@ -216,7 +216,7 @@ instar job disable check-email
 ### View recent execution history
 
 ```bash
-curl "http://localhost:4040/events?type=job_completed&since=24" | python3 -m json.tool
+curl "http://localhost:${INSTAR_PORT:-4040}/events?type=job_completed&since=24" | python3 -m json.tool
 ```
 
 ---
@@ -251,9 +251,9 @@ You can modify or disable any of these by editing `.instar/jobs.json`.
 
 Agents using Instar are expected to create and modify their own jobs. When the user asks for a new recurring capability, the agent should:
 
-1. Check if a suitable job already exists: `curl http://localhost:4040/jobs`
+1. Check if a suitable job already exists: `curl http://localhost:${INSTAR_PORT:-4040}/jobs`
 2. Write the job definition to `.instar/jobs.json`
-3. Trigger a test run: `curl -X POST http://localhost:4040/jobs/SLUG/trigger`
+3. Trigger a test run: `curl -X POST http://localhost:${INSTAR_PORT:-4040}/jobs/SLUG/trigger`
 4. Confirm the result to the user
 
 The agent doesn't ask permission before adding jobs. Scheduling work is continuation, not a decision point.

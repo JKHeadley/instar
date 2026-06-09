@@ -1748,20 +1748,41 @@ export class PostUpdateMigrator {
       'autonomous-state.local.md',
       'skills/autonomous/scripts/setup-autonomous.sh (codex native /goal auto-wire)',
     );
-    // SKILL.md Step 2a registration-path fix: the prior bundled SKILL.md registered the
-    // stop hook at `.instar/hooks/instar/autonomous-stop-hook.sh` (a path where the hook is
-    // never deployed → silent Stop-hook failure → the autonomous loop never re-engaged and
-    // the session went idle). The fixed SKILL.md registers the deployed skill path and
-    // self-heals any stale entry. Marker `Stop hook registered (correct skill path)` is
-    // present ONLY in the fixed version (the old printed plain `Stop hook registered`), so
-    // bumping to it re-deploys the corrected prompt to existing agents; customized SKILL.md
-    // files (missing the stock `ALL_TASKS_COMPLETE` fingerprint) are left untouched. Pairs
-    // with the settings.json wrong-path repair in ensureAutonomousStopHook().
+    // SKILL.md fixes (cumulative — the upgrade re-deploys the whole bundled SKILL.md, so a
+    // single marker bump carries every fix to date):
+    //   (1) Step 2a registration-path fix: the prior bundled SKILL.md registered the stop hook
+    //       at `.instar/hooks/instar/autonomous-stop-hook.sh` (a path where the hook is never
+    //       deployed → silent Stop-hook failure → the autonomous loop never re-engaged). The
+    //       fixed SKILL.md registers the deployed skill path and self-heals any stale entry.
+    //   (2) Step 2b per-topic state-file write (setup-race hardening): the prior SKILL.md told
+    //       the agent to Write the single legacy file `.instar/autonomous-state.local.md`. The
+    //       hook migrates that on first run, but in the boot window before migration two
+    //       sessions starting near-simultaneously can both write the legacy file and collide.
+    //       The fixed SKILL.md instructs writing the per-topic file the hook reads directly,
+    //       `.instar/autonomous/<topicId>.local.md` (keyed on report_topic), so new jobs never
+    //       touch the shared legacy path. The hook's reading logic is unchanged (per-topic
+    //       preferred, legacy fallback + migrate for in-flight older jobs).
+    //   (3) Legitimate Stop Conditions: a new top-level section enumerating the ONLY three
+    //       valid reasons a pre-approved autonomous session may exit — (a) a genuine hard
+    //       external blocker the agent cannot resolve, (b) duration expiry, (c) the completion
+    //       condition/promise genuinely met — plus an explicit NON-stops table (reversible
+    //       decisions, milestones, late-hour, "needs your steer/opinion", "good stopping point",
+    //       quiet off-ramp-with-no-reply). Born from the 2026-06-09 disappointment: an agent in
+    //       a pre-approved 24h autonomous session stopped early citing "clean milestone" / "this
+    //       decision needs your steer" / late-hour. Reinforces the Defer-to-Future-Self trap +
+    //       the anti-pattern list (now also "This Needs Your Steer" + "Quiet Off-Ramp").
+    // Marker bumped `PER-TOPIC (setup-race hardening)` → `LEGITIMATE_STOP_CONDITIONS`: the new
+    // marker is present ONLY in fix (3)'s version (an embedded sentinel comment in the new
+    // section), so an agent that already received fix (1)/(2) (it carries the prior marker but
+    // not the new one) still gets re-deployed to fix (3). The upgrade re-deploys the WHOLE
+    // bundled SKILL.md, so this single marker bump carries every fix to date. Customized
+    // SKILL.md files (missing the stock `ALL_TASKS_COMPLETE` fingerprint) are left untouched
+    // (idempotent — a second run finds the new marker and no-ops).
     upgrade(
       '.claude/skills/autonomous/SKILL.md',
-      'Stop hook registered (correct skill path)',
+      'LEGITIMATE_STOP_CONDITIONS',
       'ALL_TASKS_COMPLETE',
-      'skills/autonomous/SKILL.md (autonomous stop-hook registration path fix — loop re-engages)',
+      'skills/autonomous/SKILL.md (Legitimate Stop Conditions — only (a) hard blocker / (b) duration expiry / (c) completion are valid exits; reversible decisions/milestones/late-hour are NON-stops)',
     );
   }
 
@@ -5118,6 +5139,9 @@ Create worktrees for collaborator repos with \`instar worktree create <branch>\`
       shippedMarker: 'slack-reply.sh — Send a message to a Slack channel via the instar server',
       label: 'scripts/slack-reply.sh',
       result,
+      // Threads-as-sessions (§5.3): refresh a deployed script that lacks the
+      // optional thread_ts 2nd-arg support, so thread replies route correctly.
+      featureMarker: 'slack-reply-feature: thread-ts-arg',
     });
 
     // WhatsApp reply script — lives in .instar/scripts/ per init.ts, not
@@ -8830,6 +8854,15 @@ process.stdin.on('end', async () => {
     shippedMarker: string;
     label: string;
     result: MigrationResult;
+    /**
+     * Optional additional feature marker. When set, a script that is otherwise
+     * "fully current" (408 + auth-env) but LACKS this marker is still refreshed
+     * from the template. Used to ship the slack-reply.sh thread_ts argument
+     * (threads-as-sessions §5.3) to already-deployed agents — without it, a
+     * deployed-but-stale slack-reply.sh would mis-parse `CHANNEL_ID THREAD_TS …`
+     * and corrupt the reply once a thread session forwards that invocation.
+     */
+    featureMarker?: string;
   }): void {
     if (!fs.existsSync(opts.scriptPath)) return; // Not installed — not our responsibility here
     try {
@@ -8844,7 +8877,10 @@ process.stdin.on('end', async () => {
       // pattern as a separate upgrade marker so a deployed-but-stale script
       // gets refreshed rather than skipped as "already up to date".
       const hasAuthEnvHandling = existing.includes('INSTAR_AUTH_TOKEN');
-      const fullyCurrent = hasNewHandling && hasAuthEnvHandling;
+      // A feature marker (when requested) is a hard requirement for "current":
+      // a script missing it is stale even if it already has 408 + auth-env.
+      const hasFeatureMarker = opts.featureMarker ? existing.includes(opts.featureMarker) : true;
+      const fullyCurrent = hasNewHandling && hasAuthEnvHandling && hasFeatureMarker;
       if (!looksShipped || fullyCurrent) {
         opts.result.skipped.push(`${opts.label} (already up to date or customized)`);
         return;
@@ -8855,9 +8891,13 @@ process.stdin.on('end', async () => {
         return;
       }
       fs.writeFileSync(opts.scriptPath, template, { mode: 0o755 });
-      const reason = hasNewHandling
-        ? 'auth-env-first (secret-externalization survivability)'
-        : 'HTTP 408 ambiguous-outcome handling';
+      // Report the most fundamental thing that was missing, oldest tier first
+      // (a script lacking 408 is older than one merely lacking the feature marker).
+      const reason = !hasNewHandling
+        ? 'HTTP 408 ambiguous-outcome handling'
+        : !hasAuthEnvHandling
+          ? 'auth-env-first (secret-externalization survivability)'
+          : 'thread_ts reply argument (threads-as-sessions §5.3)';
       opts.result.upgraded.push(`${opts.label} (upgraded to ${reason})`);
     } catch (err) {
       opts.result.errors.push(`${opts.label} migration: ${err instanceof Error ? err.message : String(err)}`);

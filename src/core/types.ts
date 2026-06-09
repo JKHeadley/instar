@@ -567,6 +567,14 @@ export interface UserProfile {
   createdAt?: string;
   /** Telegram numeric user ID (canonical identifier for identity binding) */
   telegramUserId?: number;
+  /** Slack workspace user ID (U…) — canonical identifier for Slack identity binding (mirrors telegramUserId). */
+  slackUserId?: string;
+  /**
+   * Organizational role for the Slack permission system
+   * (guest | member | contributor | operator | admin | owner). Optional — when
+   * absent it is derived from `permissions`. See src/permissions/SlackPrincipalResolver.ts.
+   */
+  orgRole?: string;
 }
 
 export interface UserChannel {
@@ -2548,6 +2556,12 @@ export interface InstarConfig {
      *  pool-managed session auto-swaps it to another account. Opt-in (auto-
      *  swapping live sessions is real authority — tier-2). */
     autoSwapOnRateLimit?: boolean;
+    /** DARK by default: when true, new claude-code session spawns launch under
+     *  the optimal pool account's config home (scheduler-picked) and are tagged
+     *  with `subscriptionAccountId`. This is the prerequisite that makes
+     *  auto-swap functional (a session must carry which account it's on for the
+     *  swap engine to move it). Unset → spawns use the default config (no-op). */
+    pinSessionsToPool?: boolean;
     /** P2.1 enrollment wizard knobs (all optional). */
     enrollment?: {
       /** Per-framework login command override (defaults: claude-code →
@@ -2681,6 +2695,15 @@ export interface InstarConfig {
    * When undefined/empty the style rule does not apply (behavior unchanged).
    */
   messagingStyle?: string;
+  /**
+   * Optional override (ms) for how long the outbound tone/relevance gate may run
+   * before the route fails it OPEN and delivers the message un-reviewed. Defaults
+   * to OUTBOUND_GATE_REVIEW_BUDGET_MS in code, so existing agents get the fix with
+   * no config change. Must stay below OUTBOUND_MESSAGING_TIMEOUT_MS (120s) — values
+   * <= 0 or out of range fall back to the code default. See
+   * docs/specs/outbound-gate-budget.md.
+   */
+  outboundGateReviewBudgetMs?: number;
   /** HMAC signing key for context file integrity verification (auto-generated, 32-byte hex) */
   contextSigningKey?: string;
   /** MoltBridge integration — trust network for agent discovery and credibility */
@@ -3420,6 +3443,18 @@ export interface MonitoringConfig {
      * throttled poll (~30-60s). Lower only for tests.
      */
     rateLimitSettleMs?: number;
+    /**
+     * Deterministic hard ceiling (seconds) for the stuck-command Ctrl+C when the
+     * LLM "stuck vs legitimate" judge is UNAVAILABLE (no provider) or ERRORS
+     * (rate-limited / circuit-open / timeout — common under load). In that case
+     * the watchdog fails CLOSED (does NOT interrupt) below this ceiling, and only
+     * sends Ctrl+C once a command has run past it — so a genuinely hung command
+     * (e.g. `crontab -` waiting on stdin) is still recovered deterministically,
+     * but legitimate long builds/tests are no longer killed just because the
+     * judge couldn't run. Default: 1800 (30 min). Set 0 to disable the ceiling
+     * (pure fail-closed — never interrupt without a positive LLM "stuck" verdict).
+     */
+    hardCeilingSec?: number;
   };
   /**
    * RateLimitSentinel — rides out Anthropic's server-side capacity throttle

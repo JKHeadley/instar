@@ -29,6 +29,8 @@ import { RingBuffer } from './RingBuffer.js';
 import { MessageLogger, type LogEntry } from '../shared/MessageLogger.js';
 import type { SlackConfig, SlackMessage, PendingPrompt, InteractionPayload, InteractionAction, SlackWorkspaceMode, SlackRespondMode } from './types.js';
 import { sanitizeDisplayName, validateChannelId, escapeMrkdwn } from './sanitize.js';
+import type { SlackPermissionObserver } from '../../permissions/SlackPermissionObserver.js';
+import type { AmbientContributionGate } from '../../permissions/AmbientContributionGate.js';
 
 const RING_BUFFER_CAPACITY = 50;
 const SLACK_MAX_TEXT_LENGTH = 4000;
@@ -55,8 +57,29 @@ export class SlackAdapter implements MessagingAdapter {
   private respondMode: SlackRespondMode;
   private botUserId: string | null = null;
 
+  // Threads-as-first-class-sessions (§5.3). Resolved once from config. When a
+  // channel is opted in, a message carrying a thread_ts routes to a session keyed
+  // on `<channelId>:<thread_ts>` instead of the channel-wide session. OPT-IN /
+  // migration-safe — empty + allChannels:false means today's channel→session model.
+  private threadSessionChannels: Set<string>;
+  private threadSessionAllChannels: boolean;
+
   // State
   private messageHandler: ((message: Message) => Promise<void>) | null = null;
+  /**
+   * Optional observe-only permission gate (Slack org permission system, Slice 0).
+   * When set, every authorized inbound message is evaluated and logged; it NEVER
+   * blocks delivery. See src/permissions/SlackPermissionObserver.ts.
+   */
+  private permissionObserver: SlackPermissionObserver | null = null;
+  /**
+   * Optional conservative ambient "should I speak?" gate (Slack considered/ambient
+   * mode, §5.2). DARK by default — when null, undirected messages are dropped exactly
+   * as today (mention-only). When set, an UNDIRECTED message in an explicitly
+   * opted-in channel runs the gate; fail-to-silence is the invariant.
+   * See src/permissions/AmbientContributionGate.ts.
+   */
+  private ambientGate: AmbientContributionGate | null = null;
   private started = false;
   private authorizedUsers: Set<string>;
   private channelHistory: Map<string, RingBuffer<SlackMessage>> = new Map();
@@ -135,7 +158,14 @@ export class SlackAdapter implements MessagingAdapter {
     this.autoJoinChannels = this.config.autoJoinChannels ?? isDedicated;
     this.respondMode = this.config.respondMode ?? (isDedicated ? 'all' : 'mention-only');
 
+    // Resolve thread-session opt-in (§5.3). Default OFF for every channel.
+    this.threadSessionChannels = new Set(this.config.threadSessions?.enabledChannelIds ?? []);
+    this.threadSessionAllChannels = this.config.threadSessions?.allChannels === true;
+
     console.log(`[slack] Workspace mode: ${this.workspaceMode} (autoJoin: ${this.autoJoinChannels}, respond: ${this.respondMode})`);
+    if (this.threadSessionAllChannels || this.threadSessionChannels.size > 0) {
+      console.log(`[slack] Thread→session routing: ${this.threadSessionAllChannels ? 'ALL channels' : `${this.threadSessionChannels.size} channel(s)`}`);
+    }
 
     // Initialize components
     this.apiClient = new SlackApiClient(this.config.botToken, this.config.appToken);
@@ -303,6 +333,37 @@ export class SlackAdapter implements MessagingAdapter {
     this.messageHandler = handler;
   }
 
+  /**
+   * Attach an observe-only permission gate (Slack org permission system, Slice 0).
+   * Wired during server startup when the feature is enabled. Observe-only — it logs
+   * what the gate WOULD decide and never blocks delivery.
+   */
+  setPermissionObserver(observer: SlackPermissionObserver | null): void {
+    this.permissionObserver = observer;
+  }
+
+  /**
+   * Attach the conservative ambient "should I speak?" gate (Slack considered/ambient
+   * mode, §5.2). DARK by default — wired during server startup only when at least one
+   * channel is explicitly opted into proactive contribution. When null (the default),
+   * undirected messages are dropped exactly as today (mention-only). The gate can only
+   * ever make the agent QUIETER (fail-to-silence).
+   */
+  setAmbientGate(gate: AmbientContributionGate | null): void {
+    this.ambientGate = gate;
+  }
+
+  /**
+   * Read-only snapshot of the ambient gate's bounded observability aggregate
+   * (per-channel evaluated/spoke/silent/near-miss counts + a bounded ring of recent
+   * near-miss silences). Returns null when no ambient gate is attached (the default —
+   * no channel opted in). Signal-only: reading it never affects any decision. Surfaced
+   * via GET /permissions/ambient-stats for the observe-only live test.
+   */
+  getAmbientStats(): ReturnType<AmbientContributionGate['getStats']> | null {
+    return this.ambientGate ? this.ambientGate.getStats() : null;
+  }
+
   async resolveUser(channelIdentifier: string): Promise<string | null> {
     // For Slack, the channel identifier IS the user reference
     return channelIdentifier || null;
@@ -324,15 +385,83 @@ export class SlackAdapter implements MessagingAdapter {
     return this.botUserId;
   }
 
+  // ── Thread → Session routing (§5.3) ──
+
+  /**
+   * Is thread-level session routing enabled for this channel?
+   * OPT-IN: true only when `threadSessions.allChannels` is set OR the channel is
+   * listed in `threadSessions.enabledChannelIds`. Default false everywhere.
+   */
+  isThreadRoutingEnabled(channelId: string): boolean {
+    return this.threadSessionAllChannels || this.threadSessionChannels.has(channelId);
+  }
+
+  /**
+   * Resolve the SESSION ROUTING KEY for an inbound message. This is the key the
+   * channel→session registry and the resume map are keyed on — NOT the Slack channel
+   * id used to talk to the API (replies/reactions/history always use the raw
+   * channelId + thread_ts).
+   *
+   * - Thread routing DISABLED for the channel (the default): always returns
+   *   `channelId` → byte-for-byte today's channel→session behavior.
+   * - Thread routing ENABLED + a `thread_ts` present AND distinct from the message's
+   *   own ts (i.e. this is a reply INSIDE a thread, the analog of a Telegram topic):
+   *   returns `<channelId>:<thread_ts>` so the thread gets its own isolated session.
+   * - Thread routing ENABLED but no thread_ts (a top-level channel message, including
+   *   a thread ROOT before anyone has replied): returns `channelId` — the documented
+   *   default. The channel-root conversation keeps the channel-wide session; a thread
+   *   only forks once a reply lands in it.
+   *
+   * `ownTs` lets us treat the thread-parent message (where Slack sets thread_ts ===
+   * ts on the root) as a channel message rather than spinning a degenerate
+   * thread-session keyed on the root's own ts.
+   */
+  resolveRoutingKey(channelId: string, threadTs?: string, ownTs?: string): string {
+    if (!threadTs) return channelId;
+    if (!this.isThreadRoutingEnabled(channelId)) return channelId;
+    // A message whose thread_ts equals its own ts is a thread ROOT, not a reply —
+    // route it to the channel session (the thread has no replies yet).
+    if (ownTs && threadTs === ownTs) return channelId;
+    return `${channelId}:${threadTs}`;
+  }
+
+  /** Does a routing key denote a thread session (vs a plain channel session)? */
+  isThreadRoutingKey(routingKey: string): boolean {
+    return routingKey.includes(':');
+  }
+
+  /**
+   * Split a routing key back into its channel id + optional thread_ts. The Slack
+   * channel id never contains ':' (always `C…`/`D…`/`G…`), so the first ':' is the
+   * safe boundary.
+   */
+  parseRoutingKey(routingKey: string): { channelId: string; threadTs?: string } {
+    const idx = routingKey.indexOf(':');
+    if (idx === -1) return { channelId: routingKey };
+    return { channelId: routingKey.slice(0, idx), threadTs: routingKey.slice(idx + 1) };
+  }
+
   /** Check if a user is authorized. */
   isAuthorized(userId: string): boolean {
     return this.authorizedUsers.has(userId);
   }
 
-  /** Send a message to a specific channel. */
+  /**
+   * Send a message to a specific channel.
+   *
+   * Thread→session safety (§5.3): the first argument is normally a raw Slack channel
+   * id (`C…`/`D…`/`G…`), but several internal relays (PresenceProxy/standby, proxy
+   * forwarding) resolve a SESSION ROUTING KEY back to a target — and for a thread
+   * session that key is `<channelId>:<thread_ts>`. A raw routing key passed straight
+   * to `chat.postMessage` would be rejected as an invalid channel. So we tolerate a
+   * routing key here: if `channelId` contains ':' we split it and thread the reply
+   * under the embedded thread_ts. An explicit `options.thread_ts` always wins.
+   */
   async sendToChannel(channelId: string, text: string, options?: { thread_ts?: string }): Promise<string> {
-    const params: Record<string, unknown> = { channel: channelId, text };
-    if (options?.thread_ts) params.thread_ts = options.thread_ts;
+    const parsed = this.parseRoutingKey(channelId);
+    const params: Record<string, unknown> = { channel: parsed.channelId, text };
+    const threadTs = options?.thread_ts ?? parsed.threadTs;
+    if (threadTs) params.thread_ts = threadTs;
     const result = await this.apiClient.call('chat.postMessage', params);
     return result.ts as string;
   }
@@ -479,9 +608,12 @@ export class SlackAdapter implements MessagingAdapter {
     this._saveChannelRegistry();
   }
 
-  /** Check if a channel is a system channel (dashboard, lifeline) that should not have interactive sessions. */
+  /** Check if a channel is a system channel (dashboard, lifeline) that should not have interactive sessions.
+   * Tolerates a routing key (`<channelId>:<thread_ts>`) — a thread in a system channel
+   * is still a system channel. */
   isSystemChannel(channelId: string): boolean {
-    return channelId === this.config.dashboardChannelId || channelId === this.config.lifelineChannelId;
+    const id = this.parseRoutingKey(channelId).channelId;
+    return id === this.config.dashboardChannelId || id === this.config.lifelineChannelId;
   }
 
   /** Get all channel → session mappings. */
@@ -844,12 +976,66 @@ export class SlackAdapter implements MessagingAdapter {
 
     // In mention-only mode, skip messages that don't @mention the bot (except DMs and commands)
     const isDM = channelId.startsWith('D');
+
+    // Slack org permission gate (Slice 0 observe-only → Phase 1 enforce).
+    // Observe-only (default): log the verdict for FP-rate measurement; never block.
+    // Enforce (opt-in, dark): on a non-allow verdict, send the conversational reply
+    // and stop processing — the gate refused / asked to clarify / requires step-up.
+    if (this.permissionObserver) {
+      const directed = isDM || this._isBotMentioned(text);
+      const pInput = { slackUserId: userId, displayName: userId, text, directed, channel: channelId };
+      if (this.permissionObserver.enforcing) {
+        const verdict = await this.permissionObserver.observe(pInput);
+        if (verdict && verdict.decision !== 'allow') {
+          if (verdict.message) {
+            this.sendToChannel(channelId, verdict.message, threadTs ? { thread_ts: threadTs } : undefined).catch(() => {});
+          }
+          return; // refused / clarify / step-up — do not process this message
+        }
+        // null verdict (benign gate-infra error) or an allow decision → fall through.
+        // The deterministic floor inside the gate is itself fail-closed; this fall-through
+        // covers infra hiccups only and is part of the enforce-enablement review (§4).
+      } else {
+        void this.permissionObserver.observe(pInput).catch(() => {});
+      }
+    }
+
     if (this.respondMode === 'mention-only' && !isDM && !this._isBotMentioned(text)) {
-      // Still populate ring buffer for context, but don't process
-      const buffer = this.channelHistory.get(channelId) ?? new RingBuffer<SlackMessage>(RING_BUFFER_CAPACITY);
-      buffer.push({ ts, user: userId, text, channel: channelId, thread_ts: threadTs });
-      this.channelHistory.set(channelId, buffer);
-      return;
+      // ── Ambient "should I speak?" gate (considered/ambient mode, §5.2) ──────────
+      // This is the ONLY change to undirected handling. The gate can ONLY make the
+      // agent quieter: it runs solely when (1) a gate is attached AND (2) this exact
+      // channel is explicitly opted into proactive contribution. For every other
+      // channel — and whenever no gate is attached at all — behavior is byte-for-byte
+      // the mention-only drop below. FAIL-TO-SILENCE: any failure inside the gate
+      // returns speak=false, so we fall through to the same drop. A speak=true here
+      // means the undirected message is processed exactly like a directed one
+      // (the code below this block is unchanged); directed messages never reach here.
+      let ambientSpeak = false;
+      if (this.ambientGate && this.ambientGate.isChannelEnabled(channelId)) {
+        try {
+          const decision = await this.ambientGate.shouldSpeak({ channelId, text, channelName: undefined });
+          ambientSpeak = decision.speak === true;
+          if (ambientSpeak) {
+            // Consume one unit of the per-channel rolling-window budget only now that
+            // we've committed to processing this proactive turn.
+            this.ambientGate.recordSpoke(channelId);
+            console.log(`[slack] ambient gate cleared for ${channelId}: ${decision.reason}${decision.detail ? ` — ${decision.detail}` : ''}`);
+          }
+        } catch {
+          // Fail-to-silence: any unexpected throw at the call site stays silent too.
+          ambientSpeak = false;
+        }
+      }
+
+      if (!ambientSpeak) {
+        // Still populate ring buffer for context, but don't process
+        const buffer = this.channelHistory.get(channelId) ?? new RingBuffer<SlackMessage>(RING_BUFFER_CAPACITY);
+        buffer.push({ ts, user: userId, text, channel: channelId, thread_ts: threadTs });
+        this.channelHistory.set(channelId, buffer);
+        return;
+      }
+      // ambientSpeak === true → fall through and process this undirected message
+      // exactly as a directed one (no special-casing downstream).
     }
 
     // Check for standby commands (unstick, quiet, resume, restart) — these bypass normal processing
@@ -1877,6 +2063,12 @@ export class SlackAdapter implements MessagingAdapter {
    *   2. files.info API actually responds (not just scope present)
    *   3. File download auth works (redirect handling)
    */
+  // RULE 3: EXEMPT — _selfVerify is a startup-only, WARN-ONLY credential/scope
+  // self-diagnostic: it reads the bot token's own OAuth scopes (auth.test) and a
+  // self-test file download to fail-fast/log on a misconfigured Slack app at init.
+  // It is NOT ongoing provider state-detection feeding live decisions — its result
+  // is only logged, never acted on downstream as truth, so a drift in Slack's
+  // response degrades to a startup warning, not silent corruption (the Rule-3 class).
   private async _selfVerify(): Promise<void> {
     const results: Array<{ check: string; status: 'pass' | 'fail' | 'skip'; detail: string }> = [];
 

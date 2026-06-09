@@ -204,6 +204,10 @@ export class SessionWatchdog extends EventEmitter {
 
   private stuckThresholdMs: number;
   private pollIntervalMs: number;
+  /** Deterministic ceiling (ms) past which a command is killed even when the LLM
+   *  stuck-judge is unavailable/errors. Below it, the watchdog fails CLOSED (no
+   *  interrupt) rather than fail-open. 0 disables the ceiling (pure fail-closed). */
+  private hardCeilingMs: number;
   private logPath: string;
 
   /** Intelligence provider — gates escalation entry with LLM command analysis */
@@ -245,6 +249,8 @@ export class SessionWatchdog extends EventEmitter {
     const wdConfig = config.monitoring.watchdog;
     this.stuckThresholdMs = (wdConfig?.stuckCommandSec ?? 180) * 1000;
     this.pollIntervalMs = wdConfig?.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
+    // Default 30 min. `?? `, not `||`, so an explicit 0 (disable ceiling) is honored.
+    this.hardCeilingMs = (wdConfig?.hardCeilingSec ?? 1800) * 1000;
     this.rateLimitSettleMs = wdConfig?.rateLimitSettleMs ?? RATE_LIMIT_DEFAULT_SETTLE_MS;
 
     // Persistent log path
@@ -648,10 +654,21 @@ export class SessionWatchdog extends EventEmitter {
    *
    * Returns true if the command appears stuck and should be escalated.
    * Returns false if the LLM thinks it's a legitimate long-running task.
-   * If no LLM is available, returns true (fail-open — stuck commands need recovery).
+   *
+   * When the LLM judge is UNAVAILABLE (no provider) or ERRORS (rate-limited /
+   * circuit-open / timeout — common under load), this FAILS CLOSED: it does NOT
+   * interrupt below the deterministic hard ceiling, and only returns "stuck"
+   * once the command has run past `hardCeilingMs`. This is the "No Silent
+   * Degradation to Brittle Fallback" rule applied to a DESTRUCTIVE action
+   * (Ctrl+C kills the running command): a false interrupt of a legitimate long
+   * build/test is frequent and costly, so the safe direction when the judge
+   * can't run is to leave the command alone — while the hard ceiling still
+   * deterministically recovers a genuinely hung command (e.g. `crontab -`
+   * waiting on stdin) without any LLM. (Previously this fail-opened, which under
+   * load Ctrl+C'd every command running past the 3-min threshold.)
    */
   private async isCommandStuck(command: string, elapsedMs: number, recentOutput = ''): Promise<boolean> {
-    if (!this.intelligence) return true; // No LLM → fail-open
+    if (!this.intelligence) return this.hardCeilingExceeded(elapsedMs); // No LLM → fail CLOSED (ceiling only)
 
     const elapsedMin = Math.round(elapsedMs / 60000);
     // Keep the output sample small — enough for context, not enough to blow the token budget.
@@ -708,10 +725,27 @@ export class SessionWatchdog extends EventEmitter {
       }
       return true;
     } catch (err) {
-      // @silent-fallback-ok — LLM intelligence is optional; fail-open to recover stuck processes
-      console.warn(`[Watchdog] LLM command check failed, assuming stuck:`, err);
-      return true; // Fail-open
+      // LLM judge errored (rate-limit / circuit-open / timeout — common under
+      // load). A destructive Ctrl+C must NOT fail-open to a brittle default
+      // (that interrupted legitimate builds/tests under load). Fail CLOSED: only
+      // escalate once the deterministic hard ceiling is exceeded.
+      const stuck = this.hardCeilingExceeded(elapsedMs);
+      console.warn(
+        `[Watchdog] LLM command check failed; failing CLOSED ` +
+        `(${stuck ? 'past hard ceiling → escalate' : 'no interrupt'}):`,
+        err,
+      );
+      return stuck;
     }
+  }
+
+  /**
+   * Deterministic backstop for the fail-closed paths: true once a command has
+   * run past `hardCeilingMs`. A ceiling of 0 disables it (pure fail-closed —
+   * never interrupt without a positive LLM "stuck" verdict).
+   */
+  private hardCeilingExceeded(elapsedMs: number): boolean {
+    return this.hardCeilingMs > 0 && elapsedMs > this.hardCeilingMs;
   }
 
   // --- Process utilities (self-contained, no shared module) ---

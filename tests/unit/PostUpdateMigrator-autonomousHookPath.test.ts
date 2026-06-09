@@ -164,6 +164,21 @@ describe('autonomous SKILL.md — Step 2a registers the deployed skill path', ()
   });
 });
 
+describe('autonomous SKILL.md — Step 2b writes the per-topic state file (setup-race hardening)', () => {
+  it('the bundled SKILL.md instructs writing the per-topic file the hook reads directly', () => {
+    const skillMd = path.resolve(__dirname, '../../.claude/skills/autonomous/SKILL.md');
+    const content = fs.readFileSync(skillMd, 'utf8');
+    // Step 2b must instruct the per-topic write (closes the boot-window race) and carry the marker.
+    expect(content).toContain('PER-TOPIC (setup-race hardening)');
+    expect(content).toContain('.instar/autonomous/<topicId>.local.md');
+    // The legacy single file may still be MENTIONED (back-compat fallback + the hook's own
+    // migration of in-flight older jobs), but it must NOT be the primary Write instruction:
+    // the Write-tool step must name the per-topic path.
+    const writeStep = content.slice(content.indexOf('Use the **Write tool**'));
+    expect(writeStep.slice(0, 200)).toContain('.instar/autonomous/<topicId>.local.md');
+  });
+});
+
 describe('PostUpdateMigrator — migrateAutonomousStopHookTopicKeyed re-deploys fixed SKILL.md', () => {
   let projectDir: string;
   let skillMd: string;
@@ -198,7 +213,49 @@ describe('PostUpdateMigrator — migrateAutonomousStopHookTopicKeyed re-deploys 
 
     const after = fs.readFileSync(skillMd, 'utf8');
     expect(after).toContain('Stop hook registered (correct skill path)');
+    // The re-deployed bundled SKILL.md also carries the per-topic setup-race fix.
+    expect(after).toContain('PER-TOPIC (setup-race hardening)');
+    expect(after).toContain('.instar/autonomous/<topicId>.local.md');
     expect(result.upgraded.some(u => u.includes('SKILL.md'))).toBe(true);
+  });
+
+  it('re-deploys a fix-1 SKILL.md (has the old marker, lacks the per-topic marker) → per-topic fix lands', () => {
+    // An agent that already received the Step-2a registration-path fix carries the old marker
+    // `Stop hook registered (correct skill path)` but NOT the new per-topic marker. The bumped
+    // marker must still re-deploy so the setup-race (per-topic write) fix reaches it.
+    fs.writeFileSync(skillMd, [
+      '# Autonomous Mode',
+      'Completion promise: "ALL_TASKS_COMPLETE"',
+      "    print('Stop hook registered (correct skill path)')",
+      'Use the Write tool to create `.instar/autonomous-state.local.md`',
+    ].join('\n'));
+    const before = fs.readFileSync(skillMd, 'utf8');
+    expect(before).toContain('Stop hook registered (correct skill path)');
+    expect(before).not.toContain('PER-TOPIC (setup-race hardening)');
+
+    const result = runTopicKeyed(newMigrator(projectDir));
+
+    const after = fs.readFileSync(skillMd, 'utf8');
+    expect(after).toContain('PER-TOPIC (setup-race hardening)');           // per-topic fix present
+    expect(after).toContain('.instar/autonomous/<topicId>.local.md');     // per-topic write instruction
+    expect(result.upgraded.some(u => u.includes('SKILL.md'))).toBe(true);
+  });
+
+  it('is idempotent — a second run over the per-topic SKILL.md makes no change and reports nothing', () => {
+    // Seed a stock fix-1 copy, run once to upgrade, then run again.
+    fs.writeFileSync(skillMd, [
+      '# Autonomous Mode',
+      'Completion promise: "ALL_TASKS_COMPLETE"',
+      'Use the Write tool to create `.instar/autonomous-state.local.md`',
+    ].join('\n'));
+    runTopicKeyed(newMigrator(projectDir)); // first run upgrades to the bundled (per-topic) version
+    const afterFirst = fs.readFileSync(skillMd, 'utf8');
+    expect(afterFirst).toContain('PER-TOPIC (setup-race hardening)');
+
+    const second = runTopicKeyed(newMigrator(projectDir));
+    expect(fs.readFileSync(skillMd, 'utf8')).toBe(afterFirst); // unchanged second time
+    expect(second.upgraded.some(u => u.includes('SKILL.md'))).toBe(false);
+    expect(second.errors).toEqual([]);
   });
 
   it('leaves a customized SKILL.md (missing the stock fingerprint) untouched', () => {
