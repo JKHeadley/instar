@@ -5,6 +5,7 @@
 export * from './types.js';
 export * from './RolePolicy.js';
 export * from './IntentClassifier.js';
+export * from './LlmIntentClassifier.js';
 export * from './AnomalyScorer.js';
 export * from './PermissionDecisionLedger.js';
 export * from './SlackPermissionGate.js';

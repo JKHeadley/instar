@@ -1,0 +1,20 @@
+## What Changed
+
+feat(permissions): `LlmIntentClassifier` — an LLM-backed implementation of the Slack permission gate's judgment band (Phase 2, piece 1), wired so the LLM can only ever NARROW access, never widen it. The deterministic heuristic stays the floor authority + the fail-closed fallback. Config-selectable + **dark** (default = heuristic).
+
+- Heuristic floor runs FIRST and short-circuits (LLM skipped) on any floor candidate — the LLM cannot soften a floor decision.
+- `reconcile()` drops LLM-asserted floors, drops LLM tier>=4, and narrows `directed` only — a prompt-injected message cannot widen access.
+- No silent degradation: `IntelligenceProvider.evaluate` with `gating: true` (provider-swap on failure); any LLM failure → the deterministic heuristic (→ clarify on ambiguity), never a silent allow.
+
+## What to Tell Your User
+
+Nothing changes by default — this ships dark and opt-in. When you eventually enable the smarter judgment band, the gate's "how sensitive / how ambiguous is this request?" call becomes LLM-powered instead of keyword-based — but it's built so the LLM can only make the gate *more* careful (ask to clarify, treat as more sensitive), never less. It can't be talked into widening access even by a crafted Slack message, and if the model is unavailable it falls back to the safe keyword rules.
+
+## Summary of New Capabilities
+
+- **`permissionGate.classifier: 'llm'`** (opt-in) — selects the LLM-backed judgment band for the Slack permission gate (requires a live intelligence provider). Default stays the deterministic heuristic. Internal/operator config; the gate itself is dark/observe-only.
+
+## Evidence
+
+- 17 unit tests incl. floor short-circuit (LLM never consulted), never-widen reconcile, overheard-never-promoted, and the fail-closed paths (throw / no-provider / unparseable / out-of-range → heuristic, never allow), plus two gate-level fail-closed assertions. `tsc --noEmit` clean; full lint suite green; 48/48 in the slack-permission regression set.
+- Side-effects review (`upgrades/side-effects/slack-llm-intent-classifier.md`) + an independent adversarial Phase-5 second-pass focused on prompt-injection / widening.
