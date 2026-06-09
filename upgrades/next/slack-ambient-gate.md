@@ -1,0 +1,19 @@
+## What Changed
+
+feat(permissions): conservative ambient "should I speak?" gate for Slack (`AmbientContributionGate`) — Phase 2, piece 2. For an UNDIRECTED message in an explicitly opted-in channel, the agent decides whether to proactively contribute, defaulting to **silence**. **FAIL-TO-SILENCE + dark/opt-in.**
+
+- Speak=true only when ALL hold: channel opted-in + under a hard per-channel rolling-window rate-limit (default 1 / 30 min) + LLM judges meaningful contribution above a conservative confidence floor (default 0.85). Any failure / uncertainty / malformed LLM output → silent.
+- Wires at the `_handleMessage` mention-only skip; **directed messages (DM/@mention) are untouched**; no config → byte-for-byte today's mention-only behavior. **Zero new Slack Web API calls.**
+
+## What to Tell Your User
+
+Nothing changes by default — this ships dark/opt-in. When you turn ambient mode on for a specific channel, the agent can occasionally chime in on messages that weren't addressed to it — but only when it genuinely adds value, at most rarely (a hard rate limit), and never if it's uncertain. It defaults to staying quiet; the worst case is it's too quiet, never too chatty, and it can't be talked into over-speaking by a crafted message. Direct mentions and DMs are unaffected.
+
+## Summary of New Capabilities
+
+- **`ambientContribution.enabledChannelIds` (+ `maxProactivePerChannel`, `windowMs`, `minConfidence`)** (opt-in, per-channel) — turns on the conservative ambient "should I speak?" gate for the named channels. Off everywhere by default; operator/internal config; the gate grants no permissions (a proactive turn still passes the permission gate).
+
+## Evidence
+
+- 32 tests: 23 gate (dark/opt-in, speak-path, silence-on-low-value, 8 fail-to-silence paths, rate-limit incl. per-channel/zero-cap/window-refill) + 9 wiring (dark default drops with no LLM call, DM/@mention unaffected, ambient+speak processes, ambient+silent drops, LLM-throws drops, rate-limit drops, unauthorized rejected-before-gate). `tsc --noEmit` clean; full lint suite green (incl. notification-flood-burst-invariant); 42 adjacent slack-permission tests green.
+- Side-effects review (`upgrades/side-effects/slack-ambient-gate.md`) + an independent adversarial Phase-5 second-pass on over-speak / fail-open / opt-in-bypass.

@@ -4679,6 +4679,45 @@ export async function startServer(options: StartOptions): Promise<void> {
           console.warn('[slack] permission gate wiring skipped:', (e as Error).message);
         }
 
+        // ── Ambient "should I speak?" gate (considered/ambient mode, §5.2) — DARK ──
+        // Attached ONLY when at least one channel is explicitly opted into proactive
+        // contribution (`ambientContribution.enabledChannelIds` non-empty). With no
+        // such config, no gate is attached and undirected messages drop exactly as
+        // today (mention-only). The gate can only ever make the agent quieter
+        // (fail-to-silence): no LLM provider / error / low confidence / rate-limit →
+        // stay silent.
+        try {
+          const slackCfg = slackConfig.config as Record<string, unknown>;
+          const amCfg = slackCfg.ambientContribution as {
+            enabledChannelIds?: string[];
+            maxProactivePerChannel?: number;
+            windowMs?: number;
+            minConfidence?: number;
+          } | undefined;
+          if (amCfg && Array.isArray(amCfg.enabledChannelIds) && amCfg.enabledChannelIds.length > 0) {
+            const { AmbientContributionGate } = await import('../permissions/index.js');
+            const ambientGate = new AmbientContributionGate({
+              config: {
+                enabledChannelIds: amCfg.enabledChannelIds,
+                maxProactivePerChannel: amCfg.maxProactivePerChannel,
+                windowMs: amCfg.windowMs,
+                minConfidence: amCfg.minConfidence,
+              },
+              // No provider ⇒ the gate stays silent for every message (fail-to-silence).
+              intelligence: sharedIntelligence ?? undefined,
+              onDecision: (decision, channelId) => {
+                if (decision.speak) {
+                  console.log(`[slack] ambient gate: SPEAK in ${channelId} (${decision.reason})`);
+                }
+              },
+            });
+            slackAdapter.setAmbientGate(ambientGate);
+            console.log(`[slack] ambient contribution gate attached for ${amCfg.enabledChannelIds.length} channel(s)${sharedIntelligence ? '' : ' (no LLM provider — gate stays silent)'}`);
+          }
+        } catch (e) {
+          console.warn('[slack] ambient gate wiring skipped:', (e as Error).message);
+        }
+
         // Wire message handler — inject Slack messages into sessions
         slackAdapter.onMessage(async (message) => {
           const channelId = message.channel.identifier;

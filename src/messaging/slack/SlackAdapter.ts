@@ -30,6 +30,7 @@ import { MessageLogger, type LogEntry } from '../shared/MessageLogger.js';
 import type { SlackConfig, SlackMessage, PendingPrompt, InteractionPayload, InteractionAction, SlackWorkspaceMode, SlackRespondMode } from './types.js';
 import { sanitizeDisplayName, validateChannelId, escapeMrkdwn } from './sanitize.js';
 import type { SlackPermissionObserver } from '../../permissions/SlackPermissionObserver.js';
+import type { AmbientContributionGate } from '../../permissions/AmbientContributionGate.js';
 
 const RING_BUFFER_CAPACITY = 50;
 const SLACK_MAX_TEXT_LENGTH = 4000;
@@ -64,6 +65,14 @@ export class SlackAdapter implements MessagingAdapter {
    * blocks delivery. See src/permissions/SlackPermissionObserver.ts.
    */
   private permissionObserver: SlackPermissionObserver | null = null;
+  /**
+   * Optional conservative ambient "should I speak?" gate (Slack considered/ambient
+   * mode, §5.2). DARK by default — when null, undirected messages are dropped exactly
+   * as today (mention-only). When set, an UNDIRECTED message in an explicitly
+   * opted-in channel runs the gate; fail-to-silence is the invariant.
+   * See src/permissions/AmbientContributionGate.ts.
+   */
+  private ambientGate: AmbientContributionGate | null = null;
   private started = false;
   private authorizedUsers: Set<string>;
   private channelHistory: Map<string, RingBuffer<SlackMessage>> = new Map();
@@ -317,6 +326,17 @@ export class SlackAdapter implements MessagingAdapter {
    */
   setPermissionObserver(observer: SlackPermissionObserver | null): void {
     this.permissionObserver = observer;
+  }
+
+  /**
+   * Attach the conservative ambient "should I speak?" gate (Slack considered/ambient
+   * mode, §5.2). DARK by default — wired during server startup only when at least one
+   * channel is explicitly opted into proactive contribution. When null (the default),
+   * undirected messages are dropped exactly as today (mention-only). The gate can only
+   * ever make the agent QUIETER (fail-to-silence).
+   */
+  setAmbientGate(gate: AmbientContributionGate | null): void {
+    this.ambientGate = gate;
   }
 
   async resolveUser(channelIdentifier: string): Promise<string | null> {
@@ -885,11 +905,41 @@ export class SlackAdapter implements MessagingAdapter {
     }
 
     if (this.respondMode === 'mention-only' && !isDM && !this._isBotMentioned(text)) {
-      // Still populate ring buffer for context, but don't process
-      const buffer = this.channelHistory.get(channelId) ?? new RingBuffer<SlackMessage>(RING_BUFFER_CAPACITY);
-      buffer.push({ ts, user: userId, text, channel: channelId, thread_ts: threadTs });
-      this.channelHistory.set(channelId, buffer);
-      return;
+      // ── Ambient "should I speak?" gate (considered/ambient mode, §5.2) ──────────
+      // This is the ONLY change to undirected handling. The gate can ONLY make the
+      // agent quieter: it runs solely when (1) a gate is attached AND (2) this exact
+      // channel is explicitly opted into proactive contribution. For every other
+      // channel — and whenever no gate is attached at all — behavior is byte-for-byte
+      // the mention-only drop below. FAIL-TO-SILENCE: any failure inside the gate
+      // returns speak=false, so we fall through to the same drop. A speak=true here
+      // means the undirected message is processed exactly like a directed one
+      // (the code below this block is unchanged); directed messages never reach here.
+      let ambientSpeak = false;
+      if (this.ambientGate && this.ambientGate.isChannelEnabled(channelId)) {
+        try {
+          const decision = await this.ambientGate.shouldSpeak({ channelId, text, channelName: undefined });
+          ambientSpeak = decision.speak === true;
+          if (ambientSpeak) {
+            // Consume one unit of the per-channel rolling-window budget only now that
+            // we've committed to processing this proactive turn.
+            this.ambientGate.recordSpoke(channelId);
+            console.log(`[slack] ambient gate cleared for ${channelId}: ${decision.reason}${decision.detail ? ` — ${decision.detail}` : ''}`);
+          }
+        } catch {
+          // Fail-to-silence: any unexpected throw at the call site stays silent too.
+          ambientSpeak = false;
+        }
+      }
+
+      if (!ambientSpeak) {
+        // Still populate ring buffer for context, but don't process
+        const buffer = this.channelHistory.get(channelId) ?? new RingBuffer<SlackMessage>(RING_BUFFER_CAPACITY);
+        buffer.push({ ts, user: userId, text, channel: channelId, thread_ts: threadTs });
+        this.channelHistory.set(channelId, buffer);
+        return;
+      }
+      // ambientSpeak === true → fall through and process this undirected message
+      // exactly as a directed one (no special-casing downstream).
     }
 
     // Check for standby commands (unstick, quiet, resume, restart) — these bypass normal processing
