@@ -263,13 +263,17 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       captureBacklogDrainPerTick: 5,
       captureBacklogMaxRetries: 3,
     },
-    // GrowthMilestoneAnalyst — the proactive growth & milestone analyst. Ships
-    // DARK (enabled false). The window-expiry trigger keeps the incubation window
-    // TIGHT (3d low-risk / 7d standard) so a feature can never be silently left
-    // behind. Promotion requires real proof-of-life, never elapsed time alone.
+    // GrowthMilestoneAnalyst — the proactive growth & milestone analyst.
+    // `enabled` is deliberately OMITTED so the runtime resolves it through the
+    // standard developmentAgent dark-feature gate (`enabled ?? !!developmentAgent`,
+    // standard_development_agent_dark_feature_gate) in AgentServer: LIVE on the
+    // dev agent (the dogfooding ground, e.g. echo), DARK fleet-wide. The
+    // live-fleet flip is registering `enabled: true` here. The window-expiry
+    // trigger keeps the incubation window TIGHT (3d low-risk / 7d standard) so a
+    // feature can never be silently left behind. Promotion requires real
+    // proof-of-life, never elapsed time alone.
     // Spec: docs/specs/PROACTIVE-GROWTH-MILESTONE-ANALYST-SPEC.md
     growthAnalyst: {
-      enabled: false,
       digestCron: '0 11 * * 1',
       incubationWindows: { lowRisk: 3, standard: 7, highRisk: 7 },
       proofOfLifeMinActivations: 1,

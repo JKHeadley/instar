@@ -1218,17 +1218,31 @@ export class AgentServer {
     }
 
     // GrowthMilestoneAnalyst (docs/specs/PROACTIVE-GROWTH-MILESTONE-ANALYST-SPEC.md)
-    // — the proactive growth & milestone analyst. Ships DARK: constructed only
-    // when monitoring.growthAnalyst.enabled is true; otherwise the /growth/*
-    // routes 503-stub via the null instance (the "off → 503" contract). Composes
-    // the InitiativeTracker (rollout stages + staleness), ApprovalLedger
-    // (approve-vs-change), and CorrectionLedger (recurrence) — all read-only.
-    // Own try/catch so a failure here can never cascade into other init.
+    // — the proactive growth & milestone analyst. Resolved through the standard
+    // developmentAgent dark-feature gate (standard_development_agent_dark_feature_gate):
+    // `enabled ?? !!developmentAgent` → LIVE on the dev agent (the dogfooding
+    // ground), DARK fleet-wide. An explicit `enabled` in config always wins (set
+    // false to force-dark a dev agent, true for the live-fleet flip). When the
+    // gate resolves false the analyst stays null and /growth/* routes 503-stub
+    // (the "off → 503" contract). Composes the InitiativeTracker (rollout stages
+    // + staleness), ApprovalLedger (approve-vs-change), and CorrectionLedger
+    // (recurrence) — all read-only. Own try/catch so a failure here can never
+    // cascade into other init.
+    const growthAnalystEnabled =
+      options.config.monitoring?.growthAnalyst?.enabled ?? !!options.config.developmentAgent;
     try {
-      if (options.config.monitoring?.growthAnalyst?.enabled === true && options.config.stateDir && options.initiativeTracker) {
+      if (growthAnalystEnabled && options.config.stateDir && options.initiativeTracker) {
         this.growthMilestoneAnalyst = new GrowthMilestoneAnalyst({
           stateDir: options.config.stateDir,
-          settings: resolveGrowthSettings(options.config.monitoring.growthAnalyst),
+          // Feed the gate-resolved enabled into settings so GET /growth/status
+          // honestly reports `enabled: true` on a dev agent (config omits the
+          // flag → resolveGrowthSettings would otherwise read false while the
+          // routes are live). Optional-chained: the gate can be true with no
+          // monitoring.growthAnalyst block present (dev agent, defaults only).
+          settings: resolveGrowthSettings({
+            ...(options.config.monitoring?.growthAnalyst ?? {}),
+            enabled: growthAnalystEnabled,
+          }),
           tracker: options.initiativeTracker,
           approvalLedger: this.approvalLedger,
           correctionLedger: this.correctionLedger,
