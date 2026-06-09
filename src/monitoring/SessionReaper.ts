@@ -254,7 +254,16 @@ export interface SessionReaperDeps {
   buildOrAutonomousActive: (topicId: number | null) => boolean;
   protectedSessions: () => string[];
   pressure: () => PressureReading;
-  terminate: (sessionId: string, reason: string) => Promise<{ terminated: boolean; skipped?: string }>;
+  /** `opts.bypassActiveProcessKeep` lets the reaper carry its already-made
+   *  active-process relaxation through to the terminate authority, which would
+   *  otherwise re-veto the reap on the un-relaxed shared guard (see
+   *  performReap). It lifts ONLY the active-process keep-reason; every other
+   *  KEEP-guard is re-checked by the authority and still vetoes. */
+  terminate: (
+    sessionId: string,
+    reason: string,
+    opts?: { bypassActiveProcessKeep?: boolean },
+  ) => Promise<{ terminated: boolean; skipped?: string }>;
   markReaping: (sessionId: string) => void;
   clearReaping: (sessionId: string) => void;
   now?: () => number;
@@ -724,7 +733,14 @@ export class SessionReaper extends EventEmitter {
             // (we're here ⇒ still reap-eligible + render-static). Terminate.
             const canReap = threshold != null && reapedThisTick < this.cfg.maxReapsPerTick && this.hourlyBudgetRemaining() > 0;
             if (canReap) {
-              await this.performReap(session, pressure, next); // clears the lease on every path
+              // Carry THIS reap's active-process relaxation through to the terminate
+              // authority. evaln reached reap-eligible; if it got there by relaxing the
+              // active-process veto (cpuFlat under pressure, or 8h-stale-idle children),
+              // the authority's un-relaxed re-check would otherwise skip:active-process
+              // and the reap would never land. False ⇒ no active process was the blocker,
+              // so the bypass is a harmless no-op.
+              const relaxedActiveProcess = evaln.cpuTightened || evaln.staleIdleRelaxed;
+              await this.performReap(session, pressure, next, relaxedActiveProcess); // clears the lease on every path
               reapedThisTick++;
             } else {
               // Grace elapsed but the reap is gated (tier dropped / budget spent).
@@ -760,7 +776,12 @@ export class SessionReaper extends EventEmitter {
     }
   }
 
-  private async performReap(session: Session, pressure: PressureReading, obs: Obs): Promise<void> {
+  private async performReap(
+    session: Session,
+    pressure: PressureReading,
+    obs: Obs,
+    relaxedActiveProcess = false,
+  ): Promise<void> {
     const detail = { tier: pressure.tier, idleMs: this.now() - obs.candidateSince, dryRun: !this.killsEnabled };
     if (!this.killsEnabled) {
       this.audit('would-reap', session, detail); // dry-run: log, do not kill
@@ -768,7 +789,13 @@ export class SessionReaper extends EventEmitter {
       return;
     }
     try {
-      const r = await this.deps.terminate(session.id, 'reaped-idle');
+      // bypassActiveProcessKeep: carry the reaper's already-applied active-process
+      // relaxation to the authority so it doesn't re-veto on the un-relaxed shared
+      // guard (the 1,532× skipped:active-process stalemate). Scoped to active-process
+      // only; every other KEEP-guard is still enforced by terminateSession.
+      const r = await this.deps.terminate(session.id, 'reaped-idle', {
+        bypassActiveProcessKeep: relaxedActiveProcess,
+      });
       if (r.terminated) {
         this.reapTimestamps.push(this.now());
         this.audit('reaped', session, detail);
