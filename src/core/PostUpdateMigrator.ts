@@ -1762,16 +1762,27 @@ export class PostUpdateMigrator {
     //       `.instar/autonomous/<topicId>.local.md` (keyed on report_topic), so new jobs never
     //       touch the shared legacy path. The hook's reading logic is unchanged (per-topic
     //       preferred, legacy fallback + migrate for in-flight older jobs).
-    // Marker bumped `Stop hook registered (correct skill path)` → `PER-TOPIC (setup-race hardening)`:
-    // the new marker is present ONLY in fix (2)'s version, so an agent that already received
-    // fix (1) (it carries the old marker but not the new one) still gets re-deployed to fix (2).
-    // Customized SKILL.md files (missing the stock `ALL_TASKS_COMPLETE` fingerprint) are left
-    // untouched (idempotent — a second run finds the new marker and no-ops).
+    //   (3) Legitimate Stop Conditions: a new top-level section enumerating the ONLY three
+    //       valid reasons a pre-approved autonomous session may exit — (a) a genuine hard
+    //       external blocker the agent cannot resolve, (b) duration expiry, (c) the completion
+    //       condition/promise genuinely met — plus an explicit NON-stops table (reversible
+    //       decisions, milestones, late-hour, "needs your steer/opinion", "good stopping point",
+    //       quiet off-ramp-with-no-reply). Born from the 2026-06-09 disappointment: an agent in
+    //       a pre-approved 24h autonomous session stopped early citing "clean milestone" / "this
+    //       decision needs your steer" / late-hour. Reinforces the Defer-to-Future-Self trap +
+    //       the anti-pattern list (now also "This Needs Your Steer" + "Quiet Off-Ramp").
+    // Marker bumped `PER-TOPIC (setup-race hardening)` → `LEGITIMATE_STOP_CONDITIONS`: the new
+    // marker is present ONLY in fix (3)'s version (an embedded sentinel comment in the new
+    // section), so an agent that already received fix (1)/(2) (it carries the prior marker but
+    // not the new one) still gets re-deployed to fix (3). The upgrade re-deploys the WHOLE
+    // bundled SKILL.md, so this single marker bump carries every fix to date. Customized
+    // SKILL.md files (missing the stock `ALL_TASKS_COMPLETE` fingerprint) are left untouched
+    // (idempotent — a second run finds the new marker and no-ops).
     upgrade(
       '.claude/skills/autonomous/SKILL.md',
-      'PER-TOPIC (setup-race hardening)',
+      'LEGITIMATE_STOP_CONDITIONS',
       'ALL_TASKS_COMPLETE',
-      'skills/autonomous/SKILL.md (per-topic state-file write at setup — closes boot-window race)',
+      'skills/autonomous/SKILL.md (Legitimate Stop Conditions — only (a) hard blocker / (b) duration expiry / (c) completion are valid exits; reversible decisions/milestones/late-hour are NON-stops)',
     );
   }
 

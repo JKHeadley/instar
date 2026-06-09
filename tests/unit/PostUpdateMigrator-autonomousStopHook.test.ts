@@ -20,6 +20,30 @@ type MigrationResult = { upgraded: string[]; skipped: string[]; errors: string[]
 
 const HOOK_REL = path.join('.claude', 'skills', 'autonomous', 'hooks', 'autonomous-stop-hook.sh');
 const SETUP_REL = path.join('.claude', 'skills', 'autonomous', 'scripts', 'setup-autonomous.sh');
+const SKILL_REL = path.join('.claude', 'skills', 'autonomous', 'SKILL.md');
+
+// A prior-version SKILL.md: carries the stock fingerprint (`ALL_TASKS_COMPLETE`) and the
+// previous per-topic marker, but LACKS the new `LEGITIMATE_STOP_CONDITIONS` section sentinel.
+// Under the old marker this would be SKIPPED as current; after the marker bump it must be
+// re-deployed so existing agents get the Legitimate Stop Conditions section.
+const PRIOR_SKILL_MD = `---
+name: autonomous
+---
+
+# Autonomous Mode (Structurally Enforced)
+
+The completion promise is "ALL_TASKS_COMPLETE".
+
+## Step 2b: Write the state file DIRECTLY
+**WHY PER-TOPIC (setup-race hardening):** the stop hook reads this per-topic file directly.
+`;
+
+function deploySkill(projectDir: string, content: string): string {
+  const dst = path.join(projectDir, SKILL_REL);
+  fs.mkdirSync(path.dirname(dst), { recursive: true });
+  fs.writeFileSync(dst, content);
+  return dst;
+}
 
 // A representative OLD (session-UUID-keyed) hook: carries the stock fingerprint
 // but lacks the topic-session-registry marker.
@@ -195,6 +219,55 @@ describe('PostUpdateMigrator — autonomous stop hook topic-keying', () => {
     expect(updated).toContain("'codex-cli' in");            // detects codex via enabledFrameworks
     expect((fs.statSync(dst).mode & 0o111)).not.toBe(0);    // executable
     expect(result.upgraded.some(u => u.includes('setup-autonomous.sh'))).toBe(true);
+    expect(result.errors).toEqual([]);
+  });
+
+  it('re-deploys a prior SKILL.md so existing agents get the Legitimate Stop Conditions section', () => {
+    // Prior SKILL.md carries the stock fingerprint + the per-topic marker but NOT the new
+    // `LEGITIMATE_STOP_CONDITIONS` sentinel — under the old marker it would be wrongly skipped.
+    const dst = deploySkill(projectDir, PRIOR_SKILL_MD);
+    const before = fs.readFileSync(dst, 'utf8');
+    expect(before).toContain('ALL_TASKS_COMPLETE');         // stock fingerprint
+    expect(before).not.toContain('LEGITIMATE_STOP_CONDITIONS');
+
+    const result = runMigration(newMigrator(projectDir));
+
+    const updated = fs.readFileSync(dst, 'utf8');
+    expect(updated).toContain('LEGITIMATE_STOP_CONDITIONS');            // new section sentinel present
+    expect(updated).toContain('## Legitimate Stop Conditions');        // human-readable header
+    expect(result.upgraded.some(u => u.includes('SKILL.md') && u.includes('Legitimate Stop Conditions'))).toBe(true);
+    expect(result.errors).toEqual([]);
+  });
+
+  it('is idempotent on SKILL.md — a second run makes no change and reports nothing', () => {
+    deploySkill(projectDir, PRIOR_SKILL_MD);
+    runMigration(newMigrator(projectDir)); // first run upgrades
+
+    const dst = path.join(projectDir, SKILL_REL);
+    const afterFirst = fs.readFileSync(dst, 'utf8');
+    expect(afterFirst).toContain('LEGITIMATE_STOP_CONDITIONS');
+
+    const second = runMigration(newMigrator(projectDir));
+    expect(fs.readFileSync(dst, 'utf8')).toBe(afterFirst); // unchanged
+    expect(second.upgraded.some(u => u.includes('SKILL.md'))).toBe(false);
+    expect(second.errors).toEqual([]);
+  });
+
+  it('leaves a customized SKILL.md untouched (no stock fingerprint)', () => {
+    const custom = '---\nname: autonomous\n---\n# My heavily customized autonomous skill\n';
+    const dst = deploySkill(projectDir, custom);
+
+    const result = runMigration(newMigrator(projectDir));
+
+    expect(fs.readFileSync(dst, 'utf8')).toBe(custom); // untouched
+    expect(result.skipped.some(s => s.includes('SKILL.md') && s.includes('customized'))).toBe(true);
+    expect(result.errors).toEqual([]);
+  });
+
+  it('is a no-op when no SKILL.md is deployed (fresh installs handled by init)', () => {
+    const result = runMigration(newMigrator(projectDir));
+    expect(fs.existsSync(path.join(projectDir, SKILL_REL))).toBe(false);
+    expect(result.upgraded.some(u => u.includes('SKILL.md'))).toBe(false);
     expect(result.errors).toEqual([]);
   });
 

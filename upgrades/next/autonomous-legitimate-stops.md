@@ -1,0 +1,19 @@
+## What Changed
+
+feat(autonomous): add an explicit **"Legitimate Stop Conditions" allowlist** to the autonomous skill, so an agent in a pre-approved autonomous session doesn't exit early for reversible decisions, milestones, late-hour, or "the operator might have an opinion."
+
+- New `## Legitimate Stop Conditions (the ONLY valid reasons to exit)` section in `.claude/skills/autonomous/SKILL.md`: the only valid stops are (a) a genuine HARD external blocker the agent can't resolve, (b) duration expiry, (c) the completion-condition/promise genuinely met — with a NON-stops table naming each early-exit rationalization (decisions/milestones/2 AM/"needs your steer"/quiet off-ramp) and why it's a *continue*. Quotes the operator's own framing ("decisions are not that critical … ship dark … use best judgment").
+- Two new anti-pattern entries ("This Needs Your Steer", "Quiet Off-Ramp"); cross-referenced into the existing Defer-to-Future-Self trap.
+- **Migration Parity:** reuses the existing `migrateAutonomousStopHookTopicKeyed` migration (marker bumped to `LEGITIMATE_STOP_CONDITIONS`), so existing agents receive the section on update. Content-sniffing + idempotent: deploys only when the section is absent AND the SKILL.md still matches the stock fingerprint; a customized SKILL.md is left untouched.
+
+## What to Tell Your User
+
+Autonomous sessions now run to completion more reliably. Previously an agent in a pre-approved autonomous run could talk itself into stopping early — "this is a clean milestone," "this decision needs your steer," "it's late." The autonomous skill now spells out, in the agent's own playbook, that the only valid reasons to stop are a genuine external blocker it can't resolve, the time running out, or the work actually being done — and that reversible, dark-shipped decisions are for it to make and keep moving. Nothing for you to configure; existing agents pick it up on their next update.
+
+## Summary of New Capabilities
+
+- The autonomous skill carries an explicit legitimate-stops allowlist + NON-stops table, reinforcing "make the reversible call and keep going" in a pre-approved autonomous session. Reaches existing agents via a content-sniffing `PostUpdateMigrator` migration that never clobbers a customized skill.
+
+## Evidence
+
+- `tests/unit/PostUpdateMigrator-autonomousStopHook.test.ts` — 12 pass (incl. re-deploys-to-existing-agent, idempotent-on-second-run, leaves-customized-untouched, no-op-when-absent). Related suites (autonomous-skill-deployment, migration-parity, autonomousHookPath, idle-backoff): 52 pass. `tsc --noEmit` clean; lint clean. Tier 1 (skill content + a marker bump on an existing tested migration; gate signaled Tier 2 for the migration surface → declared Tier 1, recorded `belowFloor` in the decision audit).
