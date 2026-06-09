@@ -1,0 +1,15 @@
+<!-- internal-only -->
+
+## What Changed
+
+feat(permissions): Slack org permissions **Phase 1** — conversational user registration + the enforce path, both **dark by default**. Builds on Slice 0 (the observe-only permission gate, #1005).
+
+- **Registration** (`SlackUserRegistry` + `POST /permissions/registrations/{register,approve,deny}`, `GET …/pending`): admins register users with a role; self-registration creates a pending entry for approval. Persists to `state/slack-pending-registrations.json` (registered machine-local).
+- **Enforce path** (`SlackAdapter._handleMessage`): when the injected permission observer is `enforcing`, a non-`allow` verdict sends the conversational refusal/clarify reply (in-thread, via the existing `sendToChannel`) and blocks the message from reaching the session. When NOT enforcing (the default), behavior is identical to Slice 0 observe-only.
+
+The enforce path installs the blocking authority but leaves it **inert** — enabling `enforce:true` is gated behind a later phase that requires real false-positive-rate data from the observe ledger and the LLM judgment band holding authority (carried over from the Slice 0 §4 follow-up). No new Slack Web API surface (the reply reuses the contract-tested `sendToChannel`).
+
+## Evidence
+
+- 14 tests green: `slack-user-registry.test.ts` (7), `slack-permission-enforce.test.ts` (3), `slack-registration-routes.test.ts` (4). `tsc --noEmit` clean. `/permissions` prefix classified INTERNAL in CapabilityIndex (capabilities lint green).
+- Side-effects review (`upgrades/side-effects/slack-org-permissions-phase1.md`) with an independent Phase-5 second-pass (block/allow on inbound messaging).

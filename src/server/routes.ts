@@ -14480,6 +14480,64 @@ export function createRoutes(ctx: RouteContext): Router {
     }
   });
 
+  // ── Slack org permission registration (Phase 1) ──────────────────────
+  // Conversational registration's programmatic surface: admin-register, list
+  // pending self-registration requests, approve/deny. See SLACK-ORG-INTEGRATION-SPEC.md §6.3.
+  async function buildSlackRegistry() {
+    const { SlackUserRegistry } = await import('../permissions/index.js');
+    const { UserManager } = await import('../users/UserManager.js');
+    const um = new UserManager(ctx.config.stateDir, ctx.config.users);
+    // Wrap UserManager as the registry's minimal store; upsert via addUserInteractive
+    // so the created profile gets proper defaults (preferences, timestamps, etc.).
+    const store = {
+      resolveFromSlackUserId: (id: string) => um.resolveFromSlackUserId(id),
+      upsertUser: (p: { id: string; name: string }) => { um.addUserInteractive(p as never); },
+    };
+    return new SlackUserRegistry(store as never, ctx.config.stateDir);
+  }
+
+  router.get('/permissions/registrations/pending', async (_req, res) => {
+    try {
+      const reg = await buildSlackRegistry();
+      res.json({ pending: reg.listPending() });
+    } catch (e) {
+      res.status(500).json({ error: (e as Error).message });
+    }
+  });
+
+  router.post('/permissions/registrations/register', async (req, res) => {
+    try {
+      const { slackUserId, displayName, role } = req.body || {};
+      if (!slackUserId || !role) return res.status(400).json({ error: 'slackUserId and role are required' });
+      const reg = await buildSlackRegistry();
+      res.json({ registered: true, profile: reg.register(slackUserId, displayName || slackUserId, role) });
+    } catch (e) {
+      res.status(400).json({ error: (e as Error).message });
+    }
+  });
+
+  router.post('/permissions/registrations/approve', async (req, res) => {
+    try {
+      const { slackUserId, role } = req.body || {};
+      if (!slackUserId || !role) return res.status(400).json({ error: 'slackUserId and role are required' });
+      const reg = await buildSlackRegistry();
+      res.json({ approved: true, profile: reg.approve(slackUserId, role) });
+    } catch (e) {
+      res.status(400).json({ error: (e as Error).message });
+    }
+  });
+
+  router.post('/permissions/registrations/deny', async (req, res) => {
+    try {
+      const { slackUserId } = req.body || {};
+      if (!slackUserId) return res.status(400).json({ error: 'slackUserId is required' });
+      const reg = await buildSlackRegistry();
+      res.json({ denied: reg.deny(slackUserId) });
+    } catch (e) {
+      res.status(400).json({ error: (e as Error).message });
+    }
+  });
+
   // GET /permissions/scenario-suite — run the deterministic permission demonstration
   // (Pillar 4 Layer-A): the six worked-example rows with expected vs actual verdict.
   router.get('/permissions/scenario-suite', async (req, res) => {

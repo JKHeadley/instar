@@ -126,6 +126,18 @@
       "grandfathered": false
     },
     {
+      "category": "slack-pending-registrations",
+      "description": "Durable pending Slack self-registration requests awaiting admin approval (SlackUserRegistry). Cleared on approve/deny. See docs/specs/SLACK-ORG-INTEGRATION-SPEC.md §6.3.",
+      "scope": "machine-local",
+      "freshness": "eventual",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "state/slack-pending-registrations.json"
+      ],
+      "grandfathered": false
+    },
+    {
       "category": "topic-placement-history",
       "description": "Topic<->machine placement history (does not exist as its own store yet; the journal's first stream materializes it). Distinct from current-owner pool state.",
       "scope": "must-be-coherent",

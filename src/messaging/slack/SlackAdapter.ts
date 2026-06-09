@@ -861,14 +861,27 @@ export class SlackAdapter implements MessagingAdapter {
     // In mention-only mode, skip messages that don't @mention the bot (except DMs and commands)
     const isDM = channelId.startsWith('D');
 
-    // Observe-only permission evaluation (Slack org permission system, Slice 0).
-    // Runs for every authorized message — directed or overheard — and only LOGS the
-    // verdict (FP-rate measurement before enforcement). Fire-and-forget; never blocks.
+    // Slack org permission gate (Slice 0 observe-only → Phase 1 enforce).
+    // Observe-only (default): log the verdict for FP-rate measurement; never block.
+    // Enforce (opt-in, dark): on a non-allow verdict, send the conversational reply
+    // and stop processing — the gate refused / asked to clarify / requires step-up.
     if (this.permissionObserver) {
       const directed = isDM || this._isBotMentioned(text);
-      void this.permissionObserver
-        .observe({ slackUserId: userId, displayName: userId, text, directed, channel: channelId })
-        .catch(() => {});
+      const pInput = { slackUserId: userId, displayName: userId, text, directed, channel: channelId };
+      if (this.permissionObserver.enforcing) {
+        const verdict = await this.permissionObserver.observe(pInput);
+        if (verdict && verdict.decision !== 'allow') {
+          if (verdict.message) {
+            this.sendToChannel(channelId, verdict.message, threadTs ? { thread_ts: threadTs } : undefined).catch(() => {});
+          }
+          return; // refused / clarify / step-up — do not process this message
+        }
+        // null verdict (benign gate-infra error) or an allow decision → fall through.
+        // The deterministic floor inside the gate is itself fail-closed; this fall-through
+        // covers infra hiccups only and is part of the enforce-enablement review (§4).
+      } else {
+        void this.permissionObserver.observe(pInput).catch(() => {});
+      }
     }
 
     if (this.respondMode === 'mention-only' && !isDM && !this._isBotMentioned(text)) {
@@ -1904,6 +1917,12 @@ export class SlackAdapter implements MessagingAdapter {
    *   2. files.info API actually responds (not just scope present)
    *   3. File download auth works (redirect handling)
    */
+  // RULE 3: EXEMPT — _selfVerify is a startup-only, WARN-ONLY credential/scope
+  // self-diagnostic: it reads the bot token's own OAuth scopes (auth.test) and a
+  // self-test file download to fail-fast/log on a misconfigured Slack app at init.
+  // It is NOT ongoing provider state-detection feeding live decisions — its result
+  // is only logged, never acted on downstream as truth, so a drift in Slack's
+  // response degrades to a startup warning, not silent corruption (the Rule-3 class).
   private async _selfVerify(): Promise<void> {
     const results: Array<{ check: string; status: 'pass' | 'fail' | 'skip'; detail: string }> = [];
 
