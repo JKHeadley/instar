@@ -353,6 +353,17 @@ export class SlackAdapter implements MessagingAdapter {
     this.ambientGate = gate;
   }
 
+  /**
+   * Read-only snapshot of the ambient gate's bounded observability aggregate
+   * (per-channel evaluated/spoke/silent/near-miss counts + a bounded ring of recent
+   * near-miss silences). Returns null when no ambient gate is attached (the default —
+   * no channel opted in). Signal-only: reading it never affects any decision. Surfaced
+   * via GET /permissions/ambient-stats for the observe-only live test.
+   */
+  getAmbientStats(): ReturnType<AmbientContributionGate['getStats']> | null {
+    return this.ambientGate ? this.ambientGate.getStats() : null;
+  }
+
   async resolveUser(channelIdentifier: string): Promise<string | null> {
     // For Slack, the channel identifier IS the user reference
     return channelIdentifier || null;

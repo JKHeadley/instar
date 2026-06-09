@@ -14545,6 +14545,28 @@ export function createRoutes(ctx: RouteContext): Router {
     }
   });
 
+  // GET /permissions/ambient-stats — read-only snapshot of the ambient "should I
+  // speak?" gate's bounded in-memory observability aggregate (per-channel
+  // evaluated/spoke/silent/near-miss counts + a bounded ring of recent near-miss
+  // silences). This is what makes a WRONGFUL SILENCE measurable: the speak-path log
+  // alone only records when the agent SPOKE, so the ambient FP-rate (wrongful
+  // silences) was previously invisible during the observe-only live test. Signal-only:
+  // reading it never changes any speak/silence decision; it creates no Telegram/topic
+  // side-effect (so it can never flood). Returns { present: false } when no ambient
+  // gate is attached (the default — no channel opted in, gate stays dark).
+  // Design: docs/specs/SLACK-ORG-INTEGRATION-SPEC.md §5.2, §6.10, §11.
+  router.get('/permissions/ambient-stats', (req, res) => {
+    try {
+      const stats = ctx.slack?.getAmbientStats?.() ?? null;
+      if (!stats) {
+        return res.json({ present: false, reason: 'no-ambient-gate-attached' });
+      }
+      res.json({ present: true, stats });
+    } catch (e) {
+      res.status(500).json({ error: (e as Error).message });
+    }
+  });
+
   // GET /permissions/baselines — read-only view of the Pillar 3 behavioral baselines.
   // Returns per-principal SHAPE aggregates (action repertoire, tier/hour histograms,
   // coarse length stats) — NEVER message content. Inspection surface for the

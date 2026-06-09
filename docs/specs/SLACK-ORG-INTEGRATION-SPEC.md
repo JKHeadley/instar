@@ -144,17 +144,32 @@ For org/`shared` mode, the agent is present **only in channels she's invited to*
 
 Principle: **she is present where she's asked to be, nowhere else.** Leaving a channel (kick/`/leave`) immediately stops ingestion for it.
 
-### 5.2 Response modes — add a third: `considered` (ambient)
+### 5.2 Response modes + the `considered`/ambient capability
 
-Today's modes are binary. We add a third that matches Justin's "good employee" model:
+Today's `respondMode` is binary — and it STAYS binary. The two shipped values are:
 
 | Mode | Reads | Speaks |
 |---|---|---|
 | `all` | everything | replies to every message (good for a dedicated 1:1 channel) |
-| `mention-only` | everything | only when `@`-mentioned |
-| **`considered`** (new) | **everything** | when `@`-mentioned **OR** when a "should I speak?" gate clears a **high** confidence bar |
+| `mention-only` | everything | only when `@`-mentioned (or in a DM) |
 
-`considered` is the org default for shared channels. The **ingest half already exists** (every message lands in the ring buffer / context). The **new half** is a *decision-to-engage gate*, built on the `MessagingToneGate` pattern but inbound:
+> **Implementation note — there is NO third `respondMode` value.** Earlier drafts of
+> this section proposed a distinct `respondMode: 'considered'`. The shipped design is
+> simpler: the `SlackRespondMode` type stays `'all' | 'mention-only'`, and the
+> "good-employee" / **`considered`** behavior is a **config-driven capability layered
+> on top of `mention-only`**, not a new enum value. A channel "runs in considered
+> mode" exactly when it is in `mention-only` AND its channel id is listed in
+> `slack.config.ambientContribution.enabledChannelIds`. With that list empty (the
+> default everywhere), `mention-only` behaves byte-for-byte as today — undirected
+> messages are dropped. Throughout this doc, "`considered`/ambient mode" names that
+> layered capability (`mention-only` + ambient opt-in), never a `respondMode` literal.
+
+The "should I speak?" behavior matches Justin's "good employee" model: in a
+`considered`/ambient channel, an undirected message — which `mention-only` would
+silently drop — instead runs a conservative engagement gate that may (rarely) let her
+volunteer an unprompted contribution. The **ingest half already exists** (every message
+lands in the ring buffer / context). The **engage half** is a *decision-to-engage gate*,
+built on the `MessagingToneGate` pattern but inbound (`AmbientContributionGate`):
 
 - **Signals:** is she @mentioned? is this a question in her domain? is a topic she owns being discussed? has she already spoken recently (rate-limit)? is the channel opted into proactive contribution?
 - **Authority:** a fast LLM judgment that **defaults to silence** and only returns "speak" when it can name a concrete, meaningful contribution.
@@ -459,7 +474,7 @@ Following instar norms: **dark → canary → fleet**, **observe-only before gat
 - **Fail directions are deliberate and opposite:** the **floor gate fails closed** (deny on error — never let a money/prod/credential action through on a timeout); the **ambient/should-speak gate fails to silence** (say nothing on error); the **classifier fails to clarify/escalate**, never to silent-allow.
 - **3-tier test standard** (unit / integration / e2e "feature is alive") for each phase, plus wiring-integrity tests (the permission gate is actually called, not a no-op — directly fixing the current "stored but never enforced" defect) and semantic tests on both sides of each decision boundary.
 - **Observe-only first** for every judgment surface (Layers 1–3, anomaly) so we measure before we gate.
-- **Migration parity** for `UserProfile.slackUserId`, config defaults (new `respondMode: 'considered'`), and any CLAUDE.md template additions.
+- **Migration parity** for `UserProfile.slackUserId`, config defaults (the `ambientContribution` opt-in block — NOT a new `respondMode` value; see §5.2), and any CLAUDE.md template additions.
 
 ## 13. Open questions for Justin
 

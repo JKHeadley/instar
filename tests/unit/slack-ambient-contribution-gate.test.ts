@@ -306,3 +306,162 @@ describe('AmbientContributionGate — wiring integrity', () => {
     expect(seen[0].d.reason).toBe('llm-declined');
   });
 });
+
+// ── Cleanup #2: ambient-silence observability (so wrongful silences are measurable) ──
+// The speak-path log only fires on speak=true, so a wrongful SILENCE left no trace.
+// getStats() exposes a bounded in-memory aggregate: per-channel
+// {evaluated, spoke, silent, nearMissSilent, silentByReason} + a bounded ring of recent
+// near-miss silences. SIGNAL-ONLY: recording never changes the verdict.
+describe('AmbientContributionGate — silence observability aggregate (getStats)', () => {
+  it('records a SILENCE in the aggregate (the previously-invisible FP candidate)', async () => {
+    const gate = new AmbientContributionGate({
+      config: { enabledChannelIds: [CH] },
+      intelligence: fakeProvider(() => silentJson(0.2)),
+    });
+    await gate.shouldSpeak({ channelId: CH, text: 'lunch?' });
+    const stats = gate.getStats();
+    const ch = stats.channels.find(c => c.channelId === CH);
+    expect(ch).toBeDefined();
+    expect(ch!.evaluated).toBe(1);
+    expect(ch!.silent).toBe(1);
+    expect(ch!.spoke).toBe(0);
+    expect(ch!.silentByReason['llm-declined']).toBe(1);
+  });
+
+  it('records a SPEAK in the aggregate', async () => {
+    const gate = new AmbientContributionGate({
+      config: { enabledChannelIds: [CH], minConfidence: 0.85 },
+      intelligence: fakeProvider(() => speakJson(0.95)),
+    });
+    await gate.shouldSpeak({ channelId: CH, text: 'CI flake again' });
+    const ch = gate.getStats().channels.find(c => c.channelId === CH)!;
+    expect(ch.evaluated).toBe(1);
+    expect(ch.spoke).toBe(1);
+    expect(ch.silent).toBe(0);
+  });
+
+  it('classifies a near-miss SILENCE (confidence just below the floor, within delta)', async () => {
+    // minConfidence 0.85, delta 0.1 ⇒ near-miss window is [0.75, 0.85). 0.8 lands in it.
+    const gate = new AmbientContributionGate({
+      config: { enabledChannelIds: [CH], minConfidence: 0.85, nearMissDelta: 0.1 },
+      intelligence: fakeProvider(() => speakJson(0.8)),
+    });
+    const d = await gate.shouldSpeak({ channelId: CH, text: 'maybe relevant' });
+    expect(d.speak).toBe(false);
+    expect(d.reason).toBe('low-confidence');
+    const stats = gate.getStats();
+    const ch = stats.channels.find(c => c.channelId === CH)!;
+    expect(ch.silent).toBe(1);
+    expect(ch.nearMissSilent).toBe(1);
+    expect(stats.recentNearMisses).toHaveLength(1);
+    expect(stats.recentNearMisses[0].channelId).toBe(CH);
+    expect(stats.recentNearMisses[0].confidence).toBeCloseTo(0.8);
+    expect(stats.recentNearMisses[0].nearMiss).toBe(true);
+  });
+
+  it('a FAR silence (confidence well below the floor, outside delta) is NOT a near-miss', async () => {
+    const gate = new AmbientContributionGate({
+      config: { enabledChannelIds: [CH], minConfidence: 0.85, nearMissDelta: 0.1 },
+      intelligence: fakeProvider(() => speakJson(0.3)), // far below 0.75 → not a near-miss
+    });
+    await gate.shouldSpeak({ channelId: CH, text: 'unrelated' });
+    const stats = gate.getStats();
+    const ch = stats.channels.find(c => c.channelId === CH)!;
+    expect(ch.silent).toBe(1);
+    expect(ch.nearMissSilent).toBe(0);
+    expect(stats.recentNearMisses).toHaveLength(0);
+  });
+
+  it('a confidence-less silence path (not-opted-in / no-intelligence) is never a near-miss', async () => {
+    // no-intelligence path: opted-in channel but no provider.
+    const gate = new AmbientContributionGate({ config: { enabledChannelIds: [CH] } });
+    const d = await gate.shouldSpeak({ channelId: CH, text: 'x' });
+    expect(d.reason).toBe('no-intelligence');
+    const ch = gate.getStats().channels.find(c => c.channelId === CH)!;
+    expect(ch.silent).toBe(1);
+    expect(ch.nearMissSilent).toBe(0);
+    expect(ch.silentByReason['no-intelligence']).toBe(1);
+  });
+
+  it('the speak/silence DECISION is unchanged by stats recording (regression)', async () => {
+    // Same inputs as the canonical speak / silence tests; the verdict must be identical
+    // whether or not the aggregate is present.
+    const speakGate = new AmbientContributionGate({
+      config: { enabledChannelIds: [CH], minConfidence: 0.85 },
+      intelligence: fakeProvider(() => speakJson(0.95)),
+    });
+    expect((await speakGate.shouldSpeak({ channelId: CH, text: 'CI flake' })).speak).toBe(true);
+
+    const silentGate = new AmbientContributionGate({
+      config: { enabledChannelIds: [CH], minConfidence: 0.85 },
+      intelligence: fakeProvider(() => speakJson(0.7)),
+    });
+    const sd = await silentGate.shouldSpeak({ channelId: CH, text: 'maybe' });
+    expect(sd.speak).toBe(false);
+    expect(sd.reason).toBe('low-confidence');
+  });
+
+  it('with NO opted-in channel nothing is ever recorded (gate stays dark)', async () => {
+    const gate = new AmbientContributionGate({ intelligence: fakeProvider(() => speakJson()) });
+    // The real wiring never even calls shouldSpeak when no channel is enabled, but even
+    // if a stray call lands, it short-circuits at channel-not-opted-in and records that.
+    expect(gate.getStats().channels).toHaveLength(0);
+    expect(gate.getStats().recentNearMisses).toHaveLength(0);
+  });
+
+  it('the near-miss ring is BOUNDED — no unbounded growth under a flood of near-misses', async () => {
+    const cap = 5;
+    const gate = new AmbientContributionGate({
+      config: { enabledChannelIds: [CH], minConfidence: 0.85, nearMissDelta: 0.1, nearMissRingCapacity: cap },
+      intelligence: fakeProvider(() => speakJson(0.8)), // every one is a near-miss
+    });
+    for (let i = 0; i < 100; i++) {
+      await gate.shouldSpeak({ channelId: CH, text: `near-miss ${i}` });
+    }
+    const stats = gate.getStats();
+    // The counter keeps the true total; the ring is capped.
+    const ch = stats.channels.find(c => c.channelId === CH)!;
+    expect(ch.nearMissSilent).toBe(100);
+    expect(stats.recentNearMisses.length).toBe(cap);
+    expect(stats.ringCapacity).toBe(cap);
+  });
+
+  it('aggregate is per-channel (counts do not bleed across channels)', async () => {
+    const CH2 = 'C_AMBIENT_2';
+    const gate = new AmbientContributionGate({
+      config: { enabledChannelIds: [CH, CH2], minConfidence: 0.85 },
+      intelligence: fakeProvider((prompt) => (prompt.includes('speakme') ? speakJson(0.95) : silentJson(0.2))),
+    });
+    await gate.shouldSpeak({ channelId: CH, text: 'speakme please' });
+    await gate.shouldSpeak({ channelId: CH2, text: 'be quiet' });
+    const stats = gate.getStats();
+    expect(stats.channels.find(c => c.channelId === CH)!.spoke).toBe(1);
+    expect(stats.channels.find(c => c.channelId === CH2)!.silent).toBe(1);
+  });
+
+  it('getStats returns copies — mutating the snapshot does not corrupt internal state', async () => {
+    const gate = new AmbientContributionGate({
+      config: { enabledChannelIds: [CH] },
+      intelligence: fakeProvider(() => silentJson(0.2)),
+    });
+    await gate.shouldSpeak({ channelId: CH, text: 'x' });
+    const stats = gate.getStats();
+    stats.channels[0].silent = 999;
+    stats.channels[0].silentByReason['llm-declined'] = 999;
+    const fresh = gate.getStats();
+    expect(fresh.channels[0].silent).toBe(1);
+    expect(fresh.channels[0].silentByReason['llm-declined']).toBe(1);
+  });
+
+  it('a near-miss is NOT created by a SPEAK at exactly the floor (boundary: confidence === minConfidence ⇒ speak)', async () => {
+    const gate = new AmbientContributionGate({
+      config: { enabledChannelIds: [CH], minConfidence: 0.85, nearMissDelta: 0.1 },
+      intelligence: fakeProvider(() => speakJson(0.85)), // exactly at the floor → speaks
+    });
+    const d = await gate.shouldSpeak({ channelId: CH, text: 'CI flake' });
+    expect(d.speak).toBe(true);
+    const ch = gate.getStats().channels.find(c => c.channelId === CH)!;
+    expect(ch.spoke).toBe(1);
+    expect(ch.nearMissSilent).toBe(0);
+  });
+});
