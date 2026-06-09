@@ -4766,6 +4766,21 @@ export async function startServer(options: StartOptions): Promise<void> {
           const isDM = message.metadata?.isDM as boolean;
           const senderName = message.metadata?.senderName as string || 'User';
 
+          // ── Thread → session routing (§5.3) ──────────────────────────────────
+          // The Slack channelId is ALWAYS the address we talk to the Slack API with
+          // (replies, reactions, history). The session REGISTRY + resume map are
+          // keyed on a routing key that, when thread routing is opted in for this
+          // channel and the message is a reply inside a thread, becomes
+          // `<channelId>:<thread_ts>` — giving that thread its own isolated session,
+          // mirroring Telegram topic→session. Default (no opt-in / no thread_ts):
+          // routingKey === channelId, byte-for-byte today's behavior.
+          const messageTs = message.metadata?.ts as string | undefined;
+          const threadTs = message.metadata?.threadTs as string | undefined;
+          const routingKey = slackAdapter!.resolveRoutingKey(channelId, threadTs, messageTs);
+          const isThreadSession = slackAdapter!.isThreadRoutingKey(routingKey);
+          // The thread_ts to thread replies under (only when this is a thread session).
+          const replyThreadTs = isThreadSession ? threadTs : undefined;
+
           // Sentinel intercept — classify message for emergency stop/pause
           if (sentinel) {
             try {
@@ -4779,7 +4794,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                 slackAdapter!.sendToChannel(channelId, '🛑 Emergency stop — all sessions killed.').catch(() => {});
                 return;
               } else if (classification.category === 'pause') {
-                const existingSession = slackAdapter!.getSessionForChannel(channelId);
+                const existingSession = slackAdapter!.getSessionForChannel(routingKey);
                 if (existingSession) {
                   sessionManager.sendKey(existingSession, 'Escape');
                   slackAdapter!.sendToChannel(channelId, '⏸️ Session paused.').catch(() => {});
@@ -4837,9 +4852,16 @@ export async function startServer(options: StartOptions): Promise<void> {
           contextLines.push('CRITICAL: You MUST relay your response back to Slack after responding.');
           contextLines.push('Use the relay script (write ONLY your reply text — do NOT pipe or cat this file into the script):');
           contextLines.push('');
-          contextLines.push(`cat <<'EOF' | .claude/scripts/slack-reply.sh ${channelId}`);
+          // Thread session: pass the thread_ts as the 2nd arg so the reply lands IN
+          // the thread (not the channel root). Channel session: channelId only.
+          const replyTarget = replyThreadTs ? `${channelId} ${replyThreadTs}` : `${channelId}`;
+          contextLines.push(`cat <<'EOF' | .claude/scripts/slack-reply.sh ${replyTarget}`);
           contextLines.push('Your response text here');
           contextLines.push('EOF');
+          if (replyThreadTs) {
+            contextLines.push('');
+            contextLines.push('(This is a THREAD conversation — keep your reply in this thread by passing the thread id shown above as the 2nd argument.)');
+          }
           contextLines.push('');
           contextLines.push('Strip the [slack:] prefix before interpreting the message.');
           contextLines.push('Only relay conversational text — not tool output, file contents, or internal reasoning.');
@@ -4886,8 +4908,8 @@ export async function startServer(options: StartOptions): Promise<void> {
             bootstrapMessage = fullMessage;
           }
 
-          // Check for existing session bound to this channel
-          const existingSession = slackAdapter!.getSessionForChannel(channelId);
+          // Check for existing session bound to this channel/thread (routing key)
+          const existingSession = slackAdapter!.getSessionForChannel(routingKey);
           if (existingSession) {
             // Try to inject into existing session via tmux
             const sessions = sessionManager.listRunningSessions();
@@ -4923,25 +4945,35 @@ export async function startServer(options: StartOptions): Promise<void> {
             console.log(`[slack→session] Session "${existingSession}" died, respawning...`);
           }
 
-          // Check resume map for session continuity
-          const resumeInfo = slackAdapter!.getChannelResume(channelId);
+          // Check resume map for session continuity (keyed on routing key, so a
+          // thread resumes its OWN session and not the channel-root one).
+          const resumeInfo = slackAdapter!.getChannelResume(routingKey);
           const resumeSessionId = resumeInfo?.uuid ?? undefined;
           if (resumeInfo) {
-            slackAdapter!.removeChannelResume(channelId);
+            slackAdapter!.removeChannelResume(routingKey);
           }
 
-          // Route: DMs go to lifeline session, channels spawn new sessions
-          const targetSession = isDM ? 'lifeline' : undefined;
+          // Route: DMs go to lifeline session, channels/threads spawn new sessions.
+          // A thread session NEVER folds into the DM lifeline — it is its own
+          // isolated work session (DMs don't carry thread_ts anyway).
+          const targetSession = (isDM && !isThreadSession) ? 'lifeline' : undefined;
           try {
             const newSessionName = await sessionManager.spawnInteractiveSession(
               bootstrapMessage,
               targetSession,
-              { resumeSessionId, slackChannelId: channelId },
+              { resumeSessionId, slackChannelId: channelId, slackThreadTs: replyThreadTs },
             );
             if (newSessionName) {
-              slackAdapter!.registerChannelSession(channelId, newSessionName);
+              // Register on the routing key (channelId for a channel session,
+              // `<channelId>:<thread_ts>` for a thread session). channelName carries
+              // a thread hint so the registry stays human-readable.
+              slackAdapter!.registerChannelSession(
+                routingKey,
+                newSessionName,
+                isThreadSession ? `${channelId} (thread ${replyThreadTs})` : undefined,
+              );
               slackAdapter!.trackMessageInjection(channelId, newSessionName, message.content);
-              console.log(`[slack→session] ${resumeSessionId ? 'Resumed' : 'Spawned'} "${newSessionName}" for channel ${channelId}`);
+              console.log(`[slack→session] ${resumeSessionId ? 'Resumed' : 'Spawned'} "${newSessionName}" for ${isThreadSession ? `thread ${routingKey}` : `channel ${channelId}`}`);
             }
           } catch (err) {
             console.error(`[slack] Session spawn failed: ${err instanceof Error ? err.message : err}`);
@@ -5984,11 +6016,19 @@ export async function startServer(options: StartOptions): Promise<void> {
             console.log(`[respawnSessionFresh] topicId=${topicId} slackChId=${slackChId || 'none'} slackAdapter=${!!_slackAdapter} session=${_sessionName} mapSize=${slackProxyChannelMap.size}`);
 
             if (slackChId && _slackAdapter) {
+              // Thread→session (§5.3): slackChId may be a routing key
+              // (`<channelId>:<thread_ts>`). The registry + resume map are keyed on
+              // the routing key (slackChId); the Slack API + reply instruction need
+              // the RAW channel id, and a thread reply needs the embedded thread_ts.
+              const parsedTarget = _slackAdapter.parseRoutingKey(slackChId);
+              const slackApiChannel = parsedTarget.channelId;
+              const slackReplyThread = parsedTarget.threadTs;
+
               // Kill existing session (already flagged in contextExhaustionKills via event listener)
               const session = sessionManager.listRunningSessions().find(s => s.tmuxSession === _sessionName);
               if (session) sessionManager.killSession(session.id);
 
-              // Clear the channel resume so the new session starts fresh
+              // Clear the channel/thread resume so the new session starts fresh
               _slackAdapter.removeChannelResume(slackChId);
 
               // Spawn a fresh session with recovery context
@@ -5996,7 +6036,7 @@ export async function startServer(options: StartOptions): Promise<void> {
 
               // Build a recovery bootstrap message with thread history (inline, matching Telegram pattern)
               // Use async fallback to fetch from Slack API if ring buffer is empty (race condition on restart)
-              const history = await _slackAdapter.getChannelMessagesWithFallback(slackChId, 30);
+              const history = await _slackAdapter.getChannelMessagesWithFallback(slackApiChannel, 30);
               const botUserId = _slackAdapter.getBotUserId?.() ?? null;
               const lines: string[] = [];
               lines.push(`CONTINUATION — You are resuming an EXISTING Slack conversation after context exhaustion. Read the context below and pick up where you left off. Do NOT ask what was being discussed.`);
@@ -6015,28 +6055,31 @@ export async function startServer(options: StartOptions): Promise<void> {
                 }
                 lines.push('--- End Thread History ---');
               } else {
-                console.warn(`[slack→recovery] WARNING: No history available for channel ${slackChId} — recovery context is empty. Ring buffer may not be populated yet.`);
+                console.warn(`[slack→recovery] WARNING: No history available for channel ${slackApiChannel} — recovery context is empty. Ring buffer may not be populated yet.`);
                 lines.push('[WARNING: Thread history unavailable — ring buffer may not be populated. Check Slack channel for recent messages before responding.]');
               }
               lines.push('');
               lines.push('CRITICAL: You MUST relay your response back to Slack.');
-              lines.push(`cat <<'EOF' | .claude/scripts/slack-reply.sh ${slackChId}`);
+              // Thread session: include the thread_ts so the recovered reply threads.
+              const recoveryReplyTarget = slackReplyThread ? `${slackApiChannel} ${slackReplyThread}` : `${slackApiChannel}`;
+              lines.push(`cat <<'EOF' | .claude/scripts/slack-reply.sh ${recoveryReplyTarget}`);
               lines.push('Your response text here');
               lines.push('EOF');
 
               const tmpDir = '/tmp/instar-slack';
               fs.mkdirSync(tmpDir, { recursive: true });
-              const ctxPath = path.join(tmpDir, `recovery-${slackChId}-${Date.now()}.txt`);
+              const ctxPath = path.join(tmpDir, `recovery-${slackApiChannel}-${Date.now()}.txt`);
               const contextData = lines.join('\n');
               fs.writeFileSync(ctxPath, contextData);
 
-              const bootstrapMessage = `[slack:${slackChId}] ${contextData}`;
+              const bootstrapMessage = `[slack:${slackApiChannel}] ${contextData}`;
 
               try {
-                const newSessionName = await sessionManager.spawnInteractiveSession(bootstrapMessage, undefined, { slackChannelId: slackChId });
+                // Spawn with the RAW channel (+ thread_ts) but register on the routing key.
+                const newSessionName = await sessionManager.spawnInteractiveSession(bootstrapMessage, undefined, { slackChannelId: slackApiChannel, slackThreadTs: slackReplyThread });
                 if (newSessionName) {
                   _slackAdapter.registerChannelSession(slackChId, newSessionName);
-                  console.log(`[slack→recovery] Fresh session "${newSessionName}" spawned for channel ${slackChId} (context exhaustion recovery)`);
+                  console.log(`[slack→recovery] Fresh session "${newSessionName}" spawned for ${slackReplyThread ? `thread ${slackChId}` : `channel ${slackApiChannel}`} (context exhaustion recovery)`);
                 }
               } catch (err) {
                 console.error(`[slack→recovery] Fresh session spawn failed for ${slackChId}: ${err instanceof Error ? err.message : err}`);

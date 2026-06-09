@@ -40,7 +40,8 @@ describe('Slack session continuity (anti-amnesia)', () => {
     });
 
     it('Recovery spawn passes slackChannelId', () => {
-      expect(serverSource).toContain('slackChannelId: slackChId');
+      // Recovery now spawns with the routing-key-resolved raw channel id.
+      expect(serverSource).toContain('slackChannelId: slackApiChannel');
     });
 
     it('compaction-recovery hook checks INSTAR_SLACK_CHANNEL', () => {
@@ -90,7 +91,10 @@ describe('Slack session continuity (anti-amnesia)', () => {
     });
 
     it('recovery spawn uses async fallback', () => {
-      expect(serverSource).toContain('getChannelMessagesWithFallback(slackChId, 30)');
+      // The recovery path resolves the routing key into the raw API channel
+      // (`slackApiChannel`) before fetching history — for a channel session this
+      // equals the old slackChId; for a thread session it strips the thread_ts.
+      expect(serverSource).toContain('getChannelMessagesWithFallback(slackApiChannel, 30)');
     });
   });
 
@@ -124,14 +128,15 @@ describe('Slack session continuity (anti-amnesia)', () => {
       // The recovery bootstrap message must contain the actual context, not just a file path
       const recoveryStart = serverSource.indexOf('recovery bootstrap message with thread history');
       const recoveryBlock = serverSource.slice(recoveryStart, recoveryStart + 3000);
-      // Must construct bootstrap from context content, not just a pointer to a file
-      expect(recoveryBlock).toContain('`[slack:${slackChId}] ${contextData}`');
+      // Must construct bootstrap from context content, not just a pointer to a file.
+      // (Uses the routing-key-resolved raw channel id `slackApiChannel`.)
+      expect(recoveryBlock).toContain('`[slack:${slackApiChannel}] ${contextData}`');
     });
 
     it('normal spawn writes inline context to message file for long messages', () => {
       const slackBlock = serverSource.slice(
         serverSource.indexOf('Build context for the session'),
-        serverSource.indexOf('Build context for the session') + 5000,
+        serverSource.indexOf('Build context for the session') + 6000,
       );
       // When message is long, the file must include the context data too
       expect(slackBlock).toContain('fullContent');

@@ -7812,9 +7812,16 @@ export function createRoutes(ctx: RouteContext): Router {
         });
       }
 
-      // Track for promise detection (detect "give me a minute" patterns)
+      // Track for promise detection (detect "give me a minute" patterns).
+      // Thread→session (§5.3): when this reply targets a thread, the session is
+      // registered on the thread routing key — resolve it so promise tracking finds
+      // the right session. Falls back to the channel key (today's behavior).
       if (ctx.slack.trackPromise) {
-        const sessionName = ctx.slack.getSessionForChannel(channelId);
+        const routingKey = thread_ts
+          ? ctx.slack.resolveRoutingKey(channelId, thread_ts as string)
+          : channelId;
+        const sessionName = ctx.slack.getSessionForChannel(routingKey)
+          ?? ctx.slack.getSessionForChannel(channelId);
         if (sessionName) {
           ctx.slack.trackPromise(channelId, sessionName, text);
         }

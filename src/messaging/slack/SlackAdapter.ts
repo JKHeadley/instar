@@ -57,6 +57,13 @@ export class SlackAdapter implements MessagingAdapter {
   private respondMode: SlackRespondMode;
   private botUserId: string | null = null;
 
+  // Threads-as-first-class-sessions (§5.3). Resolved once from config. When a
+  // channel is opted in, a message carrying a thread_ts routes to a session keyed
+  // on `<channelId>:<thread_ts>` instead of the channel-wide session. OPT-IN /
+  // migration-safe — empty + allChannels:false means today's channel→session model.
+  private threadSessionChannels: Set<string>;
+  private threadSessionAllChannels: boolean;
+
   // State
   private messageHandler: ((message: Message) => Promise<void>) | null = null;
   /**
@@ -151,7 +158,14 @@ export class SlackAdapter implements MessagingAdapter {
     this.autoJoinChannels = this.config.autoJoinChannels ?? isDedicated;
     this.respondMode = this.config.respondMode ?? (isDedicated ? 'all' : 'mention-only');
 
+    // Resolve thread-session opt-in (§5.3). Default OFF for every channel.
+    this.threadSessionChannels = new Set(this.config.threadSessions?.enabledChannelIds ?? []);
+    this.threadSessionAllChannels = this.config.threadSessions?.allChannels === true;
+
     console.log(`[slack] Workspace mode: ${this.workspaceMode} (autoJoin: ${this.autoJoinChannels}, respond: ${this.respondMode})`);
+    if (this.threadSessionAllChannels || this.threadSessionChannels.size > 0) {
+      console.log(`[slack] Thread→session routing: ${this.threadSessionAllChannels ? 'ALL channels' : `${this.threadSessionChannels.size} channel(s)`}`);
+    }
 
     // Initialize components
     this.apiClient = new SlackApiClient(this.config.botToken, this.config.appToken);
@@ -360,15 +374,83 @@ export class SlackAdapter implements MessagingAdapter {
     return this.botUserId;
   }
 
+  // ── Thread → Session routing (§5.3) ──
+
+  /**
+   * Is thread-level session routing enabled for this channel?
+   * OPT-IN: true only when `threadSessions.allChannels` is set OR the channel is
+   * listed in `threadSessions.enabledChannelIds`. Default false everywhere.
+   */
+  isThreadRoutingEnabled(channelId: string): boolean {
+    return this.threadSessionAllChannels || this.threadSessionChannels.has(channelId);
+  }
+
+  /**
+   * Resolve the SESSION ROUTING KEY for an inbound message. This is the key the
+   * channel→session registry and the resume map are keyed on — NOT the Slack channel
+   * id used to talk to the API (replies/reactions/history always use the raw
+   * channelId + thread_ts).
+   *
+   * - Thread routing DISABLED for the channel (the default): always returns
+   *   `channelId` → byte-for-byte today's channel→session behavior.
+   * - Thread routing ENABLED + a `thread_ts` present AND distinct from the message's
+   *   own ts (i.e. this is a reply INSIDE a thread, the analog of a Telegram topic):
+   *   returns `<channelId>:<thread_ts>` so the thread gets its own isolated session.
+   * - Thread routing ENABLED but no thread_ts (a top-level channel message, including
+   *   a thread ROOT before anyone has replied): returns `channelId` — the documented
+   *   default. The channel-root conversation keeps the channel-wide session; a thread
+   *   only forks once a reply lands in it.
+   *
+   * `ownTs` lets us treat the thread-parent message (where Slack sets thread_ts ===
+   * ts on the root) as a channel message rather than spinning a degenerate
+   * thread-session keyed on the root's own ts.
+   */
+  resolveRoutingKey(channelId: string, threadTs?: string, ownTs?: string): string {
+    if (!threadTs) return channelId;
+    if (!this.isThreadRoutingEnabled(channelId)) return channelId;
+    // A message whose thread_ts equals its own ts is a thread ROOT, not a reply —
+    // route it to the channel session (the thread has no replies yet).
+    if (ownTs && threadTs === ownTs) return channelId;
+    return `${channelId}:${threadTs}`;
+  }
+
+  /** Does a routing key denote a thread session (vs a plain channel session)? */
+  isThreadRoutingKey(routingKey: string): boolean {
+    return routingKey.includes(':');
+  }
+
+  /**
+   * Split a routing key back into its channel id + optional thread_ts. The Slack
+   * channel id never contains ':' (always `C…`/`D…`/`G…`), so the first ':' is the
+   * safe boundary.
+   */
+  parseRoutingKey(routingKey: string): { channelId: string; threadTs?: string } {
+    const idx = routingKey.indexOf(':');
+    if (idx === -1) return { channelId: routingKey };
+    return { channelId: routingKey.slice(0, idx), threadTs: routingKey.slice(idx + 1) };
+  }
+
   /** Check if a user is authorized. */
   isAuthorized(userId: string): boolean {
     return this.authorizedUsers.has(userId);
   }
 
-  /** Send a message to a specific channel. */
+  /**
+   * Send a message to a specific channel.
+   *
+   * Thread→session safety (§5.3): the first argument is normally a raw Slack channel
+   * id (`C…`/`D…`/`G…`), but several internal relays (PresenceProxy/standby, proxy
+   * forwarding) resolve a SESSION ROUTING KEY back to a target — and for a thread
+   * session that key is `<channelId>:<thread_ts>`. A raw routing key passed straight
+   * to `chat.postMessage` would be rejected as an invalid channel. So we tolerate a
+   * routing key here: if `channelId` contains ':' we split it and thread the reply
+   * under the embedded thread_ts. An explicit `options.thread_ts` always wins.
+   */
   async sendToChannel(channelId: string, text: string, options?: { thread_ts?: string }): Promise<string> {
-    const params: Record<string, unknown> = { channel: channelId, text };
-    if (options?.thread_ts) params.thread_ts = options.thread_ts;
+    const parsed = this.parseRoutingKey(channelId);
+    const params: Record<string, unknown> = { channel: parsed.channelId, text };
+    const threadTs = options?.thread_ts ?? parsed.threadTs;
+    if (threadTs) params.thread_ts = threadTs;
     const result = await this.apiClient.call('chat.postMessage', params);
     return result.ts as string;
   }
@@ -515,9 +597,12 @@ export class SlackAdapter implements MessagingAdapter {
     this._saveChannelRegistry();
   }
 
-  /** Check if a channel is a system channel (dashboard, lifeline) that should not have interactive sessions. */
+  /** Check if a channel is a system channel (dashboard, lifeline) that should not have interactive sessions.
+   * Tolerates a routing key (`<channelId>:<thread_ts>`) — a thread in a system channel
+   * is still a system channel. */
   isSystemChannel(channelId: string): boolean {
-    return channelId === this.config.dashboardChannelId || channelId === this.config.lifelineChannelId;
+    const id = this.parseRoutingKey(channelId).channelId;
+    return id === this.config.dashboardChannelId || id === this.config.lifelineChannelId;
   }
 
   /** Get all channel → session mappings. */

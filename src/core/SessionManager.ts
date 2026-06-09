@@ -2889,7 +2889,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
    * Used for Telegram-driven conversational sessions.
    * Optionally sends an initial message after Claude is ready.
    */
-  async spawnInteractiveSession(initialMessage?: string, name?: string, options?: { telegramTopicId?: number; slackChannelId?: string; resumeSessionId?: string; framework?: IntelligenceFramework; codexLocalProvider?: 'ollama' | 'lmstudio'; defaultModel?: string;
+  async spawnInteractiveSession(initialMessage?: string, name?: string, options?: { telegramTopicId?: number; slackChannelId?: string; slackThreadTs?: string; resumeSessionId?: string; framework?: IntelligenceFramework; codexLocalProvider?: 'ollama' | 'lmstudio'; defaultModel?: string;
     /** Warm-session A2A (claude-code only): pin a deterministic --session-id so an
      *  eviction mid-thread can --resume losslessly (#746). Ignored when resuming. */
     sessionId?: string;
@@ -3054,6 +3054,13 @@ rm()  { "${shimRunner}" rm  "$@"; }
         tmuxArgs.push('-e', `INSTAR_SLACK_CHANNEL=${options.slackChannelId}`);
       }
 
+      // Thread→session (§5.3): when this session belongs to a Slack thread, carry the
+      // thread_ts so the session's reply path can thread its replies. Absent for
+      // channel-level sessions (today's behavior unchanged).
+      if (options?.slackThreadTs) {
+        tmuxArgs.push('-e', `INSTAR_SLACK_THREAD_TS=${options.slackThreadTs}`);
+      }
+
       tmuxArgs.push(...launchSpec.argv);
 
       if (options?.resumeSessionId) {
@@ -3147,7 +3154,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
     originalName: string | undefined,
     initialMessage: string,
     readyTimeout: number,
-    options?: { telegramTopicId?: number; slackChannelId?: string; resumeSessionId?: string },
+    options?: { telegramTopicId?: number; slackChannelId?: string; slackThreadTs?: string; resumeSessionId?: string },
   ): Promise<void> {
     const ready = await this.waitForClaudeReadyWithRetry(tmuxSession, readyTimeout);
     if (ready) {
@@ -3188,6 +3195,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
         resumeSessionId: options.resumeSessionId,
         telegramTopicId: options.telegramTopicId,
         slackChannelId: options.slackChannelId,
+        slackThreadTs: options.slackThreadTs,
       });
 
       // Best-effort tmux cleanup in case a zombie pane survived.
@@ -3205,6 +3213,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
         await this.spawnInteractiveSession(initialMessage, originalName, {
           telegramTopicId: options.telegramTopicId,
           slackChannelId: options.slackChannelId,
+          slackThreadTs: options.slackThreadTs,
         });
         // HONEST LOG (finding 8d300555): the recursive spawn returns BEFORE its
         // own readiness wait + inject complete — "succeeded" here only means

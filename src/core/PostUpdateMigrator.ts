@@ -5128,6 +5128,9 @@ Create worktrees for collaborator repos with \`instar worktree create <branch>\`
       shippedMarker: 'slack-reply.sh — Send a message to a Slack channel via the instar server',
       label: 'scripts/slack-reply.sh',
       result,
+      // Threads-as-sessions (§5.3): refresh a deployed script that lacks the
+      // optional thread_ts 2nd-arg support, so thread replies route correctly.
+      featureMarker: 'slack-reply-feature: thread-ts-arg',
     });
 
     // WhatsApp reply script — lives in .instar/scripts/ per init.ts, not
@@ -8840,6 +8843,15 @@ process.stdin.on('end', async () => {
     shippedMarker: string;
     label: string;
     result: MigrationResult;
+    /**
+     * Optional additional feature marker. When set, a script that is otherwise
+     * "fully current" (408 + auth-env) but LACKS this marker is still refreshed
+     * from the template. Used to ship the slack-reply.sh thread_ts argument
+     * (threads-as-sessions §5.3) to already-deployed agents — without it, a
+     * deployed-but-stale slack-reply.sh would mis-parse `CHANNEL_ID THREAD_TS …`
+     * and corrupt the reply once a thread session forwards that invocation.
+     */
+    featureMarker?: string;
   }): void {
     if (!fs.existsSync(opts.scriptPath)) return; // Not installed — not our responsibility here
     try {
@@ -8854,7 +8866,10 @@ process.stdin.on('end', async () => {
       // pattern as a separate upgrade marker so a deployed-but-stale script
       // gets refreshed rather than skipped as "already up to date".
       const hasAuthEnvHandling = existing.includes('INSTAR_AUTH_TOKEN');
-      const fullyCurrent = hasNewHandling && hasAuthEnvHandling;
+      // A feature marker (when requested) is a hard requirement for "current":
+      // a script missing it is stale even if it already has 408 + auth-env.
+      const hasFeatureMarker = opts.featureMarker ? existing.includes(opts.featureMarker) : true;
+      const fullyCurrent = hasNewHandling && hasAuthEnvHandling && hasFeatureMarker;
       if (!looksShipped || fullyCurrent) {
         opts.result.skipped.push(`${opts.label} (already up to date or customized)`);
         return;
@@ -8865,9 +8880,13 @@ process.stdin.on('end', async () => {
         return;
       }
       fs.writeFileSync(opts.scriptPath, template, { mode: 0o755 });
-      const reason = hasNewHandling
-        ? 'auth-env-first (secret-externalization survivability)'
-        : 'HTTP 408 ambiguous-outcome handling';
+      // Report the most fundamental thing that was missing, oldest tier first
+      // (a script lacking 408 is older than one merely lacking the feature marker).
+      const reason = !hasNewHandling
+        ? 'HTTP 408 ambiguous-outcome handling'
+        : !hasAuthEnvHandling
+          ? 'auth-env-first (secret-externalization survivability)'
+          : 'thread_ts reply argument (threads-as-sessions §5.3)';
       opts.result.upgraded.push(`${opts.label} (upgraded to ${reason})`);
     } catch (err) {
       opts.result.errors.push(`${opts.label} migration: ${err instanceof Error ? err.message : String(err)}`);
