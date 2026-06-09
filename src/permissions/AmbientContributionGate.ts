@@ -57,6 +57,68 @@ export interface AmbientDecision {
   detail?: string;
 }
 
+/**
+ * Observability — a bounded, in-memory record of a SINGLE silence the gate is
+ * about to return. Used only to populate the near-miss ring; never affects the
+ * decision. No message text is stored — just the channel, reason, and how close
+ * the (clamped) confidence was to the threshold.
+ */
+export interface AmbientSilenceSample {
+  /** The Slack channel the silence occurred in. */
+  channelId: string;
+  /** Why the gate stayed silent. */
+  reason: AmbientDecisionReason;
+  /**
+   * The LLM's clamped confidence for this evaluation, when one was produced
+   * (only the LLM paths carry it; the channel-not-opted-in / rate-limited /
+   * no-intelligence / llm-error / llm-unparseable paths leave it undefined).
+   */
+  confidence?: number;
+  /** Whether this silence was within `nearMissDelta` below the speak threshold. */
+  nearMiss: boolean;
+  /** When the sample was taken (gate clock). */
+  at: number;
+}
+
+/**
+ * Per-channel ambient observability counters + a bounded ring of recent near-miss
+ * silences. Pure aggregate — NO message content, NO per-event Telegram/topic
+ * side-effect (so it can never flood). This is the read surface the observe-only
+ * live test polls to measure the ambient gate's false-positive (wrongful-silence)
+ * and false-negative (wrongful-speak) rates. Signal-only: reading or computing it
+ * NEVER changes the speak/silence verdict.
+ */
+export interface AmbientChannelStats {
+  channelId: string;
+  /** Every shouldSpeak() call for this channel (spoke + silent). */
+  evaluated: number;
+  /** Decisions that returned speak=true. */
+  spoke: number;
+  /** Decisions that returned speak=false (the FP candidates). */
+  silent: number;
+  /**
+   * Silences where the LLM's confidence was within `nearMissDelta` BELOW the
+   * speak threshold — i.e. it nearly spoke. The highest-signal subset for tuning
+   * the confidence floor.
+   */
+  nearMissSilent: number;
+  /** Per-reason silence breakdown (channel-not-opted-in, rate-limited, …). */
+  silentByReason: Partial<Record<AmbientDecisionReason, number>>;
+}
+
+export interface AmbientStats {
+  /** Per-channel aggregate counters. */
+  channels: AmbientChannelStats[];
+  /** Bounded ring (most-recent-first) of recent near-miss silences for spot-inspection. */
+  recentNearMisses: AmbientSilenceSample[];
+  /** The near-miss delta in use (confidence within this far below the threshold). */
+  nearMissDelta: number;
+  /** The confidence floor a "speak" verdict must clear. */
+  minConfidence: number;
+  /** Cap on the recentNearMisses ring (bounded — no unbounded growth). */
+  ringCapacity: number;
+}
+
 export type AmbientDecisionReason =
   | 'channel-not-opted-in' // (a) failed — channel is not ambient-enabled → silent
   | 'rate-limited' // (b) failed — per-channel window budget exhausted → silent
@@ -84,6 +146,18 @@ export interface AmbientChannelConfig {
    * this, the gate stays silent even if the LLM said speak. Default: 0.85 (high bar).
    */
   minConfidence?: number;
+  /**
+   * Observability only — a silence whose confidence lands within this far BELOW
+   * `minConfidence` is flagged a "near-miss" (it nearly spoke). Default: 0.1. Has
+   * NO effect on the verdict; it only classifies silences for the stats surface.
+   */
+  nearMissDelta?: number;
+  /**
+   * Observability only — cap on the in-memory ring of recent near-miss silence
+   * samples kept for spot-inspection. Bounded so the gate can never grow unbounded.
+   * Default: 50.
+   */
+  nearMissRingCapacity?: number;
 }
 
 export interface AmbientContributionGateDeps {
@@ -119,6 +193,8 @@ export interface AmbientGateInput {
 const DEFAULT_MAX_PROACTIVE = 1;
 const DEFAULT_WINDOW_MS = 30 * 60 * 1000; // 30 minutes
 const DEFAULT_MIN_CONFIDENCE = 0.85;
+const DEFAULT_NEAR_MISS_DELTA = 0.1;
+const DEFAULT_NEAR_MISS_RING_CAPACITY = 50;
 
 interface RawAmbientVerdict {
   speak?: unknown;
@@ -135,6 +211,21 @@ export class AmbientContributionGate {
   private readonly timeoutMs: number;
   private readonly onDecision?: (decision: AmbientDecision, channelId: string) => void;
   private readonly now: () => number;
+  private readonly nearMissDelta: number;
+  private readonly nearMissRingCapacity: number;
+
+  /**
+   * Observability — bounded, in-memory aggregate of every decision, per channel.
+   * Populated in recordDecisionStats() (called from decide() AFTER the verdict is
+   * formed), so it can never change the verdict. No message content is stored. A
+   * restart resets it; this is acceptable for an FP-rate measurement surface (the
+   * durable per-decision ledger is the file-backed /permissions/decisions). The map
+   * is keyed by channelId — bounded by the set of opted-in channels, which is small
+   * and config-controlled.
+   */
+  private readonly channelStats: Map<string, AmbientChannelStats> = new Map();
+  /** Bounded ring (newest-last) of recent near-miss silences for spot-inspection. */
+  private readonly nearMissRing: AmbientSilenceSample[] = [];
 
   /**
    * Rate-limit state lives HERE — a per-channel in-memory ring of the timestamps at
@@ -159,6 +250,8 @@ export class AmbientContributionGate {
     this.timeoutMs = deps.timeoutMs ?? 8000;
     this.onDecision = deps.onDecision;
     this.now = deps.now ?? (() => Date.now());
+    this.nearMissDelta = cfg.nearMissDelta ?? DEFAULT_NEAR_MISS_DELTA;
+    this.nearMissRingCapacity = cfg.nearMissRingCapacity ?? DEFAULT_NEAR_MISS_RING_CAPACITY;
   }
 
   /** Is ANY channel opted into ambient contribution? Used to skip the gate entirely. */
@@ -226,11 +319,19 @@ export class AmbientContributionGate {
 
     // Conservative confidence bar. Below it (or no named contribution) → silence.
     if (parsed.confidence < this.minConfidence || !parsed.contribution) {
-      return this.decide(input.channelId, { speak: false, reason: 'low-confidence', detail: parsed.contribution });
+      return this.decide(
+        input.channelId,
+        { speak: false, reason: 'low-confidence', detail: parsed.contribution },
+        parsed.confidence,
+      );
     }
 
     // ALL fail-to-silence conditions held → speak.
-    return this.decide(input.channelId, { speak: true, reason: 'speak', detail: parsed.contribution });
+    return this.decide(
+      input.channelId,
+      { speak: true, reason: 'speak', detail: parsed.contribution },
+      parsed.confidence,
+    );
   }
 
   /**
@@ -270,13 +371,85 @@ export class AmbientContributionGate {
     return fresh.length;
   }
 
-  private decide(channelId: string, decision: AmbientDecision): AmbientDecision {
+  private decide(
+    channelId: string,
+    decision: AmbientDecision,
+    confidence?: number,
+  ): AmbientDecision {
+    // Observability — record into the bounded in-memory aggregate. This runs AFTER
+    // the verdict is fully formed and returns `decision` UNCHANGED, so it can never
+    // alter the speak/silence outcome. Wrapped so a stats bug can never break a send.
+    try {
+      this.recordDecisionStats(channelId, decision, confidence);
+    } catch {
+      /* aggregate is best-effort and must never affect the verdict */
+    }
     try {
       this.onDecision?.(decision, channelId);
     } catch {
       /* observability is best-effort and must never affect the verdict */
     }
     return decision;
+  }
+
+  /**
+   * Update the per-channel counters and (for a near-miss silence) the bounded ring.
+   * A SILENCE is a "near-miss" when the LLM produced a confidence that fell within
+   * `nearMissDelta` BELOW the speak threshold — i.e. it nearly spoke. Paths with no
+   * confidence (not-opted-in, rate-limited, no-intelligence, llm-error, unparseable)
+   * are never near-misses. Pure in-memory; no content stored; no side-effect.
+   */
+  private recordDecisionStats(channelId: string, decision: AmbientDecision, confidence?: number): void {
+    let s = this.channelStats.get(channelId);
+    if (!s) {
+      s = { channelId, evaluated: 0, spoke: 0, silent: 0, nearMissSilent: 0, silentByReason: {} };
+      this.channelStats.set(channelId, s);
+    }
+    s.evaluated += 1;
+
+    if (decision.speak) {
+      s.spoke += 1;
+      return;
+    }
+
+    s.silent += 1;
+    s.silentByReason[decision.reason] = (s.silentByReason[decision.reason] ?? 0) + 1;
+
+    // A near-miss requires a real confidence within the delta below the threshold.
+    const nearMiss =
+      typeof confidence === 'number' &&
+      confidence < this.minConfidence &&
+      confidence >= this.minConfidence - this.nearMissDelta;
+    if (nearMiss) {
+      s.nearMissSilent += 1;
+      this.nearMissRing.push({ channelId, reason: decision.reason, confidence, nearMiss: true, at: this.now() });
+      // Bounded: drop the oldest once over capacity (FIFO).
+      while (this.nearMissRing.length > this.nearMissRingCapacity) this.nearMissRing.shift();
+    }
+  }
+
+  /**
+   * Read-only snapshot of the bounded observability aggregate. Safe to call any time
+   * (returns copies — the caller can't mutate internal state). With no opted-in
+   * channel the gate is never consulted, so `channels` stays empty and nothing is
+   * recorded. This is the surface the observe-only live test polls.
+   */
+  getStats(): AmbientStats {
+    return {
+      channels: Array.from(this.channelStats.values()).map(s => ({
+        channelId: s.channelId,
+        evaluated: s.evaluated,
+        spoke: s.spoke,
+        silent: s.silent,
+        nearMissSilent: s.nearMissSilent,
+        silentByReason: { ...s.silentByReason },
+      })),
+      // Newest-first for readability.
+      recentNearMisses: this.nearMissRing.slice().reverse(),
+      nearMissDelta: this.nearMissDelta,
+      minConfidence: this.minConfidence,
+      ringCapacity: this.nearMissRingCapacity,
+    };
   }
 }
 

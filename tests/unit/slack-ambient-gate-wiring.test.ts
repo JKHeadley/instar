@@ -155,4 +155,24 @@ describe('SlackAdapter ambient gate wiring', () => {
     expect(messages).toHaveLength(0);
     expect(cap.calls).toBe(0); // AuthGate fails closed before ambient logic
   });
+
+  // ── Cleanup #2: getAmbientStats() passthrough (observability surface) ──
+  it('getAmbientStats() returns null when no gate is attached (DARK default)', () => {
+    const { adapter } = harness(tmp);
+    expect(adapter.getAmbientStats()).toBeNull();
+  });
+
+  it('getAmbientStats() surfaces the live aggregate after the gate processes messages', async () => {
+    const { adapter, handle } = harness(tmp);
+    adapter.setAmbientGate(new AmbientContributionGate({
+      config: { enabledChannelIds: [CH] },
+      intelligence: fakeProvider(() => silentJson), // a wrongful-silence candidate
+    }));
+    await handle({ user: 'U_TEST', text: 'overheard chatter', channel: CH, ts: '10.1' });
+    const stats = adapter.getAmbientStats();
+    expect(stats).not.toBeNull();
+    const ch = stats!.channels.find(c => c.channelId === CH)!;
+    expect(ch.evaluated).toBe(1);
+    expect(ch.silent).toBe(1); // the silence is now measurable
+  });
 });

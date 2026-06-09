@@ -95,6 +95,37 @@ describe('GET /permissions/decisions (integration)', () => {
   });
 });
 
+describe('GET /permissions/ambient-stats (integration — Cleanup #2 observability)', () => {
+  it('returns { present: false } when no Slack adapter / ambient gate is attached', async () => {
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'perm-routes-'));
+    const res = await request(appWith(tmp)).get('/permissions/ambient-stats');
+    expect(res.status).toBe(200);
+    expect(res.body.present).toBe(false);
+  });
+
+  it('surfaces the ambient aggregate from the live Slack adapter when attached', async () => {
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'perm-routes-'));
+    const app = express();
+    app.use(express.json());
+    const ctx = ctxWith(tmp);
+    // Stub a Slack adapter exposing getAmbientStats() (the live passthrough).
+    (ctx as any).slack = {
+      getAmbientStats: () => ({
+        channels: [{ channelId: 'C1', evaluated: 3, spoke: 1, silent: 2, nearMissSilent: 1, silentByReason: { 'low-confidence': 1, 'llm-declined': 1 } }],
+        recentNearMisses: [{ channelId: 'C1', reason: 'low-confidence', confidence: 0.8, nearMiss: true, at: 123 }],
+        nearMissDelta: 0.1, minConfidence: 0.85, ringCapacity: 50,
+      }),
+    };
+    app.use('/', createRoutes(ctx));
+    const res = await request(app).get('/permissions/ambient-stats');
+    expect(res.status).toBe(200);
+    expect(res.body.present).toBe(true);
+    expect(res.body.stats.channels[0].silent).toBe(2);
+    expect(res.body.stats.channels[0].nearMissSilent).toBe(1);
+    expect(res.body.stats.recentNearMisses).toHaveLength(1);
+  });
+});
+
 describe('GET /permissions/baselines (integration — Pillar 3)', () => {
   it('returns the per-principal behavioral baselines (SHAPE only, never content)', async () => {
     tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'perm-routes-'));

@@ -62,6 +62,7 @@ import { FailureAttributionEngine } from '../monitoring/FailureAttributionEngine
 import { CiFailurePoller } from '../monitoring/CiFailurePoller.js';
 import { RevertDetector } from '../monitoring/RevertDetector.js';
 import { CorrectionLedger } from '../monitoring/CorrectionLedger.js';
+import { GrowthMilestoneAnalyst, resolveGrowthSettings } from '../monitoring/GrowthMilestoneAnalyst.js';
 import { ApprenticeshipProgram } from '../core/ApprenticeshipProgram.js';
 import { ApprenticeshipCycleStore } from '../monitoring/ApprenticeshipCycleStore.js';
 import { ApprenticeshipCycleSlaMonitor } from '../monitoring/ApprenticeshipCycleSlaMonitor.js';
@@ -212,6 +213,7 @@ export class AgentServer {
   private ciFailurePoller: CiFailurePoller | null = null;
   private revertDetector: RevertDetector | null = null;
   private correctionLedger: CorrectionLedger | null = null;
+  private growthMilestoneAnalyst: GrowthMilestoneAnalyst | null = null;
   private apprenticeshipProgram: ApprenticeshipProgram | null = null;
   private apprenticeshipCycleStore: ApprenticeshipCycleStore | null = null;
   private apprenticeshipCycleSlaMonitor: ApprenticeshipCycleSlaMonitor | null = null;
@@ -1222,6 +1224,45 @@ export class AgentServer {
       this.correctionLedger = null;
     }
 
+    // GrowthMilestoneAnalyst (docs/specs/PROACTIVE-GROWTH-MILESTONE-ANALYST-SPEC.md)
+    // — the proactive growth & milestone analyst. Resolved through the standard
+    // developmentAgent dark-feature gate (standard_development_agent_dark_feature_gate):
+    // `enabled ?? !!developmentAgent` → LIVE on the dev agent (the dogfooding
+    // ground), DARK fleet-wide. An explicit `enabled` in config always wins (set
+    // false to force-dark a dev agent, true for the live-fleet flip). When the
+    // gate resolves false the analyst stays null and /growth/* routes 503-stub
+    // (the "off → 503" contract). Composes the InitiativeTracker (rollout stages
+    // + staleness), ApprovalLedger (approve-vs-change), and CorrectionLedger
+    // (recurrence) — all read-only. Own try/catch so a failure here can never
+    // cascade into other init.
+    const growthAnalystEnabled =
+      options.config.monitoring?.growthAnalyst?.enabled ?? !!options.config.developmentAgent;
+    try {
+      if (growthAnalystEnabled && options.config.stateDir && options.initiativeTracker) {
+        this.growthMilestoneAnalyst = new GrowthMilestoneAnalyst({
+          stateDir: options.config.stateDir,
+          // Feed the gate-resolved enabled into settings so GET /growth/status
+          // honestly reports `enabled: true` on a dev agent (config omits the
+          // flag → resolveGrowthSettings would otherwise read false while the
+          // routes are live). Optional-chained: the gate can be true with no
+          // monitoring.growthAnalyst block present (dev agent, defaults only).
+          settings: resolveGrowthSettings({
+            ...(options.config.monitoring?.growthAnalyst ?? {}),
+            enabled: growthAnalystEnabled,
+          }),
+          tracker: options.initiativeTracker,
+          approvalLedger: this.approvalLedger,
+          correctionLedger: this.correctionLedger,
+          // evidenceCounter intentionally unwired in this slice → proof:'unknown'
+          // (honest: a feature with no evidence source cannot be promotion-ready).
+          onError: (where, err) => console.warn(`[GrowthMilestoneAnalyst] ${where}:`, err),
+        });
+      }
+    } catch (err) {
+      console.warn('[instar] growth-milestone-analyst init failed (non-fatal):', err);
+      this.growthMilestoneAnalyst = null;
+    }
+
     // Apprenticeship Program (Step 1) — the instance-as-project registry + the
     // retro-gate (pending→active) and doc-as-required-artifact gate
     // (active→complete). Ships ON (additive, passive registry; no config flag —
@@ -1438,6 +1479,7 @@ export class AgentServer {
       failureLedger: this.failureLedger,
       failureAttributionEngine: this.failureAttributionEngine,
       correctionLedger: this.correctionLedger,
+      growthMilestoneAnalyst: this.growthMilestoneAnalyst,
       apprenticeshipProgram: this.apprenticeshipProgram,
       apprenticeshipCycleStore: this.apprenticeshipCycleStore,
       apprenticeshipCycleSlaMonitor: this.apprenticeshipCycleSlaMonitor,
