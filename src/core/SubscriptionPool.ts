@@ -109,6 +109,13 @@ export interface SubscriptionAccount {
   enrolledAt: string;
   /** ISO timestamp the account was last selected for a session. */
   lastUsedAt?: string;
+  /**
+   * ISO timestamp the poller last silently refreshed this account's access token
+   * from its refresh token (P1.2 hardening). Visibility only — lets the dashboard
+   * show "token auto-refreshed" so a routine access-token expiry reads as healthy
+   * rather than a re-auth event.
+   */
+  lastRefreshAt?: string;
   /** Monotonic version for optimistic CAS in update(). */
   version: number;
 }
@@ -143,6 +150,7 @@ export interface UpdateAccountInput {
   status?: SubscriptionAccountStatus;
   lastQuota?: AccountQuotaSnapshot | null;
   lastUsedAt?: string;
+  lastRefreshAt?: string;
   email?: string;
 }
 
@@ -309,6 +317,9 @@ export class SubscriptionPool {
     }
     if (patch.lastUsedAt !== undefined) {
       acct.lastUsedAt = patch.lastUsedAt;
+    }
+    if (patch.lastRefreshAt !== undefined) {
+      acct.lastRefreshAt = patch.lastRefreshAt;
     }
     if (patch.email !== undefined) {
       const em = patch.email.trim();

@@ -93,11 +93,52 @@ describe('QuotaPoller', () => {
     expect(await p.pollAccount(pool.get('claude-1')!)).toBeNull();
   });
 
-  it('pollAccount flags needs-reauth on a 401/403', async () => {
-    const p = new QuotaPoller({ pool, fetchImpl: statusFetch(401), tokenResolver: () => 'sk-ant-oat01-x' });
+  it('pollAccount flags needs-reauth on a 401 when the refresh token is dead', async () => {
+    // 401 AND the refresher reports no usable refresh token → genuine re-auth.
+    const p = new QuotaPoller({
+      pool,
+      fetchImpl: statusFetch(401),
+      tokenResolver: () => 'sk-ant-oat01-x',
+      refresher: async () => ({ ok: false, reason: 'no-refresh-token' }),
+    });
     pool.add({ ...ACCT });
     const snap = await p.pollAccount(pool.get('claude-1')!);
     expect(snap).toBeNull();
+    expect(pool.get('claude-1')!.status).toBe('needs-reauth');
+  });
+
+  it('pollAccount refreshes silently and recovers on a 401 with a live refresh token', async () => {
+    // First usage read 401 (access token expired), then 200 after the refresh.
+    let calls = 0;
+    const fetchImpl: FetchImpl = async () => {
+      calls += 1;
+      return calls === 1
+        ? { ok: false, status: 401, json: async () => ({}) }
+        : { ok: true, status: 200, json: async () => LIVE_USAGE_BODY };
+    };
+    const p = new QuotaPoller({
+      pool,
+      fetchImpl,
+      tokenResolver: () => 'sk-ant-oat01-EXPIRED',
+      refresher: async () => ({ ok: true, accessToken: 'sk-ant-oat01-FRESH', expiresAt: 9e12, rotated: true }),
+    });
+    pool.add({ ...ACCT, status: 'active' });
+    const snap = await p.pollAccount(pool.get('claude-1')!);
+    expect(snap?.sevenDay?.utilizationPct).toBe(71); // recovered: got the usage
+    expect(pool.get('claude-1')!.status).toBe('active'); // NOT needs-reauth
+    expect(pool.get('claude-1')!.lastRefreshAt).toBeTruthy(); // visibility stamp set
+    expect(calls).toBe(2); // one failed read + one successful retry
+  });
+
+  it('pollAccount marks needs-reauth when the usage read still 401s after a refresh', async () => {
+    const p = new QuotaPoller({
+      pool,
+      fetchImpl: statusFetch(401), // always 401, even with a fresh token
+      tokenResolver: () => 'sk-ant-oat01-x',
+      refresher: async () => ({ ok: true, accessToken: 'sk-ant-oat01-FRESH', expiresAt: 9e12, rotated: false }),
+    });
+    pool.add({ ...ACCT });
+    expect(await p.pollAccount(pool.get('claude-1')!)).toBeNull();
     expect(pool.get('claude-1')!.status).toBe('needs-reauth');
   });
 

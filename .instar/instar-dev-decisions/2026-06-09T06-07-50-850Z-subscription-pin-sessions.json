@@ -1,0 +1,16 @@
+{
+  "ts": "2026-06-09T06:07:50.850Z",
+  "slug": "subscription-pin-sessions",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 66,
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "Auto-swap shipped wired to `session.subscriptionAccountId` (it does `if (!accountId) return;`), but no spawn path ever WROTE that field — sessions launched on the default config, not via the pool. The gap sat latent: auto-swap looked enabled but was a structural no-op, surfacing only when a session actually hit a quota wall (2026-06-08 incident). This change writes the tag + launches on a pool account, the missing prerequisite."
+  },
+  "verdict": "pass"
+}

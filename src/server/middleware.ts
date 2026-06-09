@@ -357,6 +357,27 @@ export function rateLimiter(windowMs: number = 60_000, maxRequests: number = 10)
 export const OUTBOUND_MESSAGING_TIMEOUT_MS = 120_000;
 
 /**
+ * Hard budget (ms) the outbound tone/relevance gate is allowed to spend BEFORE
+ * the route fails it open and delivers the message un-reviewed.
+ *
+ * This MUST stay comfortably below OUTBOUND_MESSAGING_TIMEOUT_MS. The reason is
+ * a real production failure (2026-06-08): the tone gate is FAIL-OPEN by design,
+ * but `MessagingToneGate.review` will wait up to RATE_LIMIT_WAIT_MS (120s) for a
+ * rate-limit window PLUS the call itself — and that whole wait sat inside an
+ * un-raced `await` in `checkOutboundMessage`. Under rate-limit pressure the gate
+ * routinely finished at 121s–185s (observed in the tone-gate decision log, all
+ * failedOpen), blowing past the 120s route budget. The route then 408s, which is
+ * the WORST outcome: the message both bypasses the gate AND, because the send
+ * "failed", the calling session dumps the note into whatever topic it is active
+ * in (the "patch notes landing in the Invoices topic" bug). Capping the gate at
+ * this budget — and failing OPEN past it (same contract as the ArcCheck 200ms
+ * race) — guarantees the route always returns a verdict in budget. The invariant
+ * `OUTBOUND_GATE_REVIEW_BUDGET_MS < OUTBOUND_MESSAGING_TIMEOUT_MS` is asserted in
+ * the wiring test so the two budgets can never drift into conflict again.
+ */
+export const OUTBOUND_GATE_REVIEW_BUDGET_MS = 20_000;
+
+/**
  * Extended budget for the standards-conformance gate route (`/spec/conformance-check`).
  * It makes a single heavy top-tier review call over a full spec; the 30s default
  * 408s on any real spec. Set ABOVE the reviewer's inner CONFORMANCE_REVIEW_TIMEOUT_MS

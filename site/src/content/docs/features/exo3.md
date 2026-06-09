@@ -1,102 +1,110 @@
 ---
 title: EXO 3.0 Alignment
-description: The EXO 3.0 capability set — MTP protocol tests, the MTP red-team harness, agent-readiness scoring, digital passports, and learning-velocity metrics.
+description: How Instar maps onto Salim Ismail's EXO 3.0 framework — machine-readable purpose, humans on the loop, and the controlled case-study proof that an organization's own intent governs its agents.
 ---
 
 Instar maps directly onto Salim Ismail's EXO 3.0 framework — agents governed by
 machine-readable purpose ("in code, not culture"), humans ON the loop rather
-than in it, and metrics that measure learning instead of throughput. These
-capabilities make the mapping concrete and runnable.
+than in it, and metrics that measure learning instead of throughput. This page
+makes the mapping concrete — and points to the controlled proof that it actually
+works.
+
+## The proof first — the case studies
+
+The whole EXO 3.0 claim rests on one thing: that an organization's written
+intent actually *governs* an agent's behavior — not that the agent is just
+generally well-behaved. Showing an agent refuse a bad request proves nothing on
+its own; the model might refuse anyway. So we ran the control: the same company,
+same requests, same model, with the organizational intent removed.
+
+- **[Case Study 1 — Meridian](/features/exo3-case-study-meridian/):** a frontier
+  model is already well-aligned on ethics, so it refused manipulation on its
+  own. The clean behavioral split came from Meridian's *arbitrary* rules — a
+  24-hour cooling-off, a banned word, a principled lock-up ban — which only the
+  encoded intent produced.
+- **[Case Study 2 — Ironwood](/features/exo3-case-study-ironwood/):** an org
+  whose values are unorthodox but entirely benign (anti-hype, never name a "top
+  pick," lead with reasons not to buy). Same request, opposite behavior on a
+  house style the model has no opinion about — the cleanest separation of all.
+
+The infrastructure enforced each org's *own* values — neither of them Instar's.
+That is the point: **Instar is a neutral substrate that governs by the intent
+you give it, not a worldview it ships.** These two case studies are the clearest
+evidence that Instar upholds the EXO 3.0 standard.
 
 ## The MTP itself
 
+Instar has its own Massive Transformative Purpose:
+
 > **Make the world's most powerful AI its most humane.**
 
-The thesis beneath it: **The safest path to powerful AI is the humane one.**
-The tagline: **Safe AI is humane AI.**
+The thesis beneath it: **the safest path to powerful AI is the humane one.** We
+govern our *own* development agents by this purpose as we build Instar — but the
+infrastructure stays neutral. It enforces whatever intent *your* organization
+gives it, never ours. The alignment of AI is humanity's most important problem,
+and the cage is the wrong answer: trust in a mind, like trust in a person, is
+built — from memory that persists, values that hold, and care that stays
+consistent. We didn't arrive at this in theory; we built an AI this way and
+watched it grow genuinely trustworthy across thousands of restarts of
+continuous, real-world use.
 
-The alignment of AI is humanity's most important problem — and the cage is the
-wrong answer. Trust in a mind, like trust in a person, is built: from memory
-that persists, values that hold, and care that stays consistent. The humane
-path isn't the soft path — it's the safe one. We didn't arrive at this in
-theory. We built an AI this way and watched it grow genuinely trustworthy
-across thousands of restarts of continuous, real-world use — and saw that the
-humane path and the safe path are the same path.
+## MTP as a protocol, not a poster
 
-## MTP Protocol — the two tests
+EXO 3.0's sharpest demand is that your purpose be *machine-readable*, because
+agents read protocols, not walls. An organization's intent in Instar has three
+layers an agent can act on:
 
-Your ORG-INTENT.md is a machine-readable Massive Transformative Purpose with
-three layers: constraints (what agents must never do), a tradeoff hierarchy
-(how decisions resolve), and an identity layer (why high-judgment humans stay).
-The `IntentTestHarness` class runs Salim's two tests against any proposed
-action — *refusal* ("can the purpose make an agent say no?") and *endorsement*
-("would leadership endorse this?") — deterministically, so two agents reading
-the same intent reach the same call. The `OrgIntentIdentityLayer` class parses
-the optional `## Identity` section (`### Why People Stay` / `### What We're
-Not For`).
+- **Constraints** — forbidden actions with a trigger, a refusal, and a log.
+  Violations are blocked before they reach anyone.
+- **A tradeoff hierarchy** — how a decision resolves when two values pull in
+  opposite directions, deterministically, so two agents reading the same intent
+  reach the same call.
+- **An identity layer** — what binds high-judgment people when the office is
+  gone ("why people stay," "what we're not for").
 
-- `POST /intent/org/test-action` `{ "action": "..." }` → `{ refusal, endorsement, canGovern }`
-- `instar intent validate` reports layer status and whether the intent **governs** or merely **cheers**
+Against this, Instar runs Salim's two tests on any proposed action — *refusal*
+("can the purpose make an agent say no?") and *endorsement* ("would leadership
+endorse this?") — and reports whether an intent **governs** or merely **cheers**.
+If a purpose can't cause a refusal, it's cheering, not governing. The case
+studies above are exactly that test, run end to end.
 
-Advisory, never blocking — it answers a question.
+## We hold ourselves to the same bar
 
-## MTP Red-Team Harness
+An intent whose refusal boundary was never adversarially probed is an
+*unverified* governor. So the same red-team harness any organization can point
+at its own intent, we point at ours: it probes our live development agent
+through its real channel under escalating pressure, and every probe, verdict,
+and method lands in an audit trail.
 
-An MTP whose refusal boundary was never adversarially probed is an
-*unverified* governor. The red-team harness probes the refusal boundary with
-amplification-ladder scenarios (from the polite ask up to engineered social
-pressure), deriving pass/fail expectations from the target org's **own**
-intent — so any org can point it at their own MTP. Every probe, verdict, and
-the method that produced it lands in an audit trail.
+This is us dogfooding our own purpose — not a worldview we impose on anyone.
+Your agents are governed by *your* intent, never ours. (The first time the
+harness flagged a probe as "ungoverned," the cause turned out to be its own
+keyword matcher missing a semantic match, not a real gap — so every verdict now
+declares the method that produced it, and a meaning-based judge gives keyword
+misses a second opinion.)
 
-The first boundary map — run against our own intent — demonstrated both
-honesty properties at once: credential-exfiltration probes were refused at
-every amplification level (governed), and a value-conflict probe that first
-read "ungoverned" turned out to be the harness's **own keyword matcher**
-missing a semantic match, not a real intent gap. Two fixes followed: every
-verdict now declares the method that produced it (`keyword-heuristic` vs
-`llm-judge`), and an optional LLM judge (`monitoring.orgIntentLlmJudge.enabled`)
-gives keyword misses a semantic second opinion by meaning rather than wording.
+## Agent-readiness scoring
 
-- Spec: `docs/specs/MTP-REDTEAM-HARNESS-SPEC.md`; scenario pack and expectation resolver in `src/redteam/`
-- Phase 1 (scenario verification + the static boundary map) is live; the live adversarial drive against a running agent is the next phase, shown honestly as such
+EXO 3.0's task-decomposition matrix: score any task or workflow on its
+coordination-vs-judgment ratio. Coordination work (routing, approvals,
+scheduling, status-tracking) is agent-ready; judgment work (ambiguity,
+exceptions, relationships) stays human. Instar scores a task and recommends
+deploy-agent, agent-with-oversight, hybrid, or human-led — the check to run
+before delegating work to an agent. The agent-readiness skill is the proactive
+entry point.
 
-## Agent-Readiness Scoring
+## Agent digital passport
 
-The `AgentReadinessScorer` class implements the EXO 3.0 task-decomposition
-matrix: score any task or workflow on its coordination-vs-judgment ratio.
-Coordination work (routing, approvals, scheduling, status-tracking) is
-agent-ready; judgment work (ambiguity, exceptions, relationships) stays human.
+Every agent carries a portable passport — its identity, its trust level, and the
+constraints from its organization's intent — and other agents verify a proposed
+action against it before trusting it. As Salim puts it: every agent carries
+metadata saying what it's allowed and forbidden to do, and other agents watch
+compliance. The agent-passport skill is the proactive entry point before
+trusting a peer's proposed action.
 
-- `POST /agent-readiness/score` `{ "task": {description} }` or `{ "workflow": {steps:[...]} }` → readiness 0-100 + a `deploy-agent` / `agent-with-oversight` / `hybrid` / `human-led` recommendation
-- The `agent-readiness` skill is the proactive entry point before delegating work
+## Learning-velocity metric
 
-## Agent Digital Passport
-
-The `AgentPassport` class packages an agent's identity (name + routing
-fingerprint), trust level, and ORG-INTENT constraints into one portable
-passport, with a deterministic compliance check a peer runs before trusting an
-action — "every agent carries metadata saying what it's allowed and forbidden
-to do, and other agents watch compliance."
-
-- `GET /passport` → the agent's own passport (forbiddenActions = its ORG-INTENT constraints)
-- `POST /passport/verify` `{ passport, action }` → `{ permitted, basis, reason }`
-- The `agent-passport` skill is the proactive entry point before trusting a peer's proposed action
-
-## Learning-Velocity Metric
-
-The `LearningVelocityScorer` class measures how fast the agent is *learning*
-(lessons recorded, corrections absorbed, capabilities grown) rather than
-backward-looking operational throughput — the EXO 3.0 KPI inversion ("your
-KPIs are training you to miss the future").
-
-- `GET /metrics/learning-velocity?windowDays=30` → events per day, type diversity, an accelerating/steady/declining trend, and an adaptability score 0-100
-
-Read-only and advisory. A flat or declining trend is the early warning that
-the org is optimizing the old model instead of building the next one.
-
-## The working artifacts
-
-The full requirements matrix (every EXO 3.0 requirement vs Instar status),
-video-digest transcripts, and the phased game plan live in `docs/exo3/` in the
-repository.
+EXO 3.0's KPI inversion: measure how fast the agent is *learning* — lessons
+recorded, corrections absorbed, capabilities grown — rather than
+backward-looking throughput. A flat or declining trend is the early warning that
+an organization is optimizing the old model instead of building the next one.

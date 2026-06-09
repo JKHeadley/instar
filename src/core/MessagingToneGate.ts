@@ -47,6 +47,14 @@ export interface ToneReviewResult {
   failedOpen?: boolean;
   /** True if the LLM's rule citation was invalid (not in B1..B18) — gate failed open. */
   invalidRule?: boolean;
+  /**
+   * True if the gate review exceeded the outbound route's hard budget and the
+   * route failed it open without waiting for the verdict. Distinguishes a
+   * budget-cap fail-open (gate too slow under load) from an error fail-open
+   * (`failedOpen`) in the latency/over-block audit. Set by the route seam, not
+   * by `review()` itself.
+   */
+  budgetExceeded?: boolean;
 }
 
 const VALID_RULES = new Set([

@@ -258,6 +258,17 @@ export class SessionManager extends EventEmitter {
    *  `effectiveBoundIdleKillMinutes` since "idle at prompt" is the healthy waiting state. */
   private topicBindingChecker?: (tmuxSession: string) => string | number | null;
 
+  /**
+   * Subscription-pool pinning resolver (Subscription & Auth Standard). When set,
+   * a new claude-code spawn launches under the returned account's config home
+   * (`CLAUDE_CONFIG_DIR`) and the session is tagged with `subscriptionAccountId`
+   * — which is the linkage auto-swap needs to move a session when its account
+   * hits a quota wall. Null/unset → spawns use the default config exactly as
+   * before (the gate: this stays unset unless `subscriptionPool.pinSessionsToPool`
+   * is enabled, so it is a strict no-op by default). Returns null per-call when
+   * no eligible account exists. */
+  private spawnAccountResolver?: () => { configHome: string; accountId: string } | null;
+
   /** Prompt Gate InputDetector — monitors terminal output for interactive prompts */
   private promptDetector?: InputDetector;
 
@@ -519,6 +530,17 @@ rm()  { "${shimRunner}" rm  "$@"; }
    */
   setTopicBindingChecker(checker: (tmuxSession: string) => string | number | null): void {
     this.topicBindingChecker = checker;
+  }
+
+  /**
+   * Wire the subscription-pool pinning resolver (Subscription & Auth Standard).
+   * Called from server startup ONLY when `subscriptionPool.pinSessionsToPool` is
+   * enabled, so leaving it unwired keeps spawns on the default config (no-op).
+   * The resolver picks the optimal pool account (the scheduler's reset-date /
+   * headroom score) at spawn time and returns its configHome + id, or null.
+   */
+  setSpawnAccountResolver(resolver: () => { configHome: string; accountId: string } | null): void {
+    this.spawnAccountResolver = resolver;
   }
 
   /**
@@ -1625,6 +1647,16 @@ rm()  { "${shimRunner}" rm  "$@"; }
     // for Codex, the env-allowlist enforcement happens inside Codex CLI's
     // process tree via Spec 12 Rule 1a, not via tmux -e flags (which
     // would be unscrubbed parent inheritance).
+    // Subscription-pool pinning (Subscription & Auth Standard): launch this
+    // claude-code session under a chosen pool account's config home and tag it,
+    // so auto-swap can move it when that account walls. No-op unless the resolver
+    // is wired (pinSessionsToPool enabled) and returns an account.
+    const pinnedAccount = headlessFramework === 'claude-code'
+      ? (this.spawnAccountResolver?.() ?? null)
+      : null;
+    if (pinnedAccount) {
+      headlessSpec.envOverrides.CLAUDE_CONFIG_DIR = pinnedAccount.configHome;
+    }
     const frameworkEnvFlags: string[] = [];
     for (const [k, v] of Object.entries(headlessSpec.envOverrides)) {
       frameworkEnvFlags.push('-e', `${k}=${v}`);
@@ -1699,6 +1731,9 @@ rm()  { "${shimRunner}" rm  "$@"; }
       framework: headlessFramework,
       prompt: options.prompt,
       maxDurationMinutes: options.maxDurationMinutes,
+      // Subscription-pool pinning: tag the session with the account it launched
+      // under, so auto-swap can move it when that account hits a quota wall.
+      ...(pinnedAccount ? { subscriptionAccountId: pinnedAccount.accountId } : {}),
       // Positive-lane observability (june15-headless-spawn-reroute O4): always
       // populated now, so the soak's "zero headless under force" criterion is
       // machine-checkable from GET /sessions. completionMode stays 'exit' (the
@@ -1877,6 +1912,13 @@ rm()  { "${shimRunner}" rm  "$@"; }
     const inheritedPath = process.env.PATH ?? '';
     const shimmedPath = shimDir ? `${shimDir}:${inheritedPath}` : inheritedPath;
 
+    // Subscription-pool pinning (Subscription & Auth Standard): this lane is
+    // always claude-code, so launch under the chosen pool account's config home
+    // and tag the session. No-op unless the resolver is wired + returns an account.
+    const pinnedAccount = this.spawnAccountResolver?.() ?? null;
+    if (pinnedAccount) {
+      launchSpec.envOverrides.CLAUDE_CONFIG_DIR = pinnedAccount.configHome;
+    }
     const frameworkEnvFlags: string[] = [];
     for (const [k, v] of Object.entries(launchSpec.envOverrides)) {
       frameworkEnvFlags.push('-e', `${k}=${v}`);
@@ -1943,6 +1985,9 @@ rm()  { "${shimRunner}" rm  "$@"; }
       framework: 'claude-code',
       prompt: options.prompt,
       maxDurationMinutes: options.maxDurationMinutes,
+      // Subscription-pool pinning: tag with the account this launched under, so
+      // auto-swap can move it when that account hits a quota wall.
+      ...(pinnedAccount ? { subscriptionAccountId: pinnedAccount.accountId } : {}),
       // The reroute's completion contract (spec O1 + O4):
       launchLane: 'rerouted-interactive',
       completionMode: 'pattern',

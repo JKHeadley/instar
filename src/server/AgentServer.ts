@@ -263,6 +263,7 @@ export class AgentServer {
     subscriptionPool?: import('../core/SubscriptionPool.js').SubscriptionPool;
     quotaPoller?: import('../core/QuotaPoller.js').QuotaPoller;
     quotaAwareScheduler?: import('../core/QuotaAwareScheduler.js').QuotaAwareScheduler;
+    inUseAccountResolver?: import('../core/InUseAccountResolver.js').InUseAccountResolver;
     enrollmentWizard?: import('../core/EnrollmentWizard.js').EnrollmentWizard;
     semanticMemory?: import('../memory/SemanticMemory.js').SemanticMemory;
     activitySentinel?: import('../monitoring/SessionActivitySentinel.js').SessionActivitySentinel;
@@ -1017,6 +1018,12 @@ export class AgentServer {
             const source = new HttpParitySource({
               baseUrl: paritySourceCfg.baseUrl!,
               token,
+              // Parity-pass needs ONLY the clusters (invariant-1 fingerprint) and
+              // Portal returns the full cluster set on every page — so stop after
+              // page 0 instead of grinding all ~146 feedback pages. Without this
+              // the contended server can't finish inside the single-flight
+              // max-hold budget and the parity window goes permanently stale (#948).
+              clustersOnly: true,
               ...(paritySourceCfg.pageSize ? { pageSize: paritySourceCfg.pageSize } : {}),
               ...(paritySourceCfg.status ? { status: paritySourceCfg.status } : {}),
               ...(paritySourceCfg.pageTimeoutMs ? { pageTimeoutMs: paritySourceCfg.pageTimeoutMs } : {}),
@@ -1356,6 +1363,7 @@ export class AgentServer {
       subscriptionPool: options.subscriptionPool ?? null,
       quotaPoller: options.quotaPoller ?? null,
       quotaAwareScheduler: options.quotaAwareScheduler ?? null,
+      inUseAccountResolver: options.inUseAccountResolver,
       enrollmentWizard: options.enrollmentWizard ?? null,
       semanticMemory: options.semanticMemory ?? null,
       activitySentinel: options.activitySentinel ?? null,

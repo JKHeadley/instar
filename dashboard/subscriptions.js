@@ -90,6 +90,20 @@ export function countdown(iso, now = Date.now(), { expiredWord = 'expired' } = {
   return `${sec}s`;
 }
 
+/** A coarse "N ago" for a PAST ISO timestamp (token-refresh recency). '' if invalid. */
+export function relativeAge(iso, now = Date.now()) {
+  const t = typeof iso === 'string' ? Date.parse(iso) : NaN;
+  if (Number.isNaN(t)) return '';
+  const sec = Math.floor((now - t) / 1000);
+  if (sec < 0) return 'just now';
+  if (sec < 60) return 'just now';
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `${min}m ago`;
+  const hr = Math.floor(min / 60);
+  if (hr < 24) return `${hr}h ago`;
+  return `${Math.floor(hr / 24)}d ago`;
+}
+
 // ── DOM helpers (textContent ONLY — never innerHTML) ────────────────────────
 function el(doc, tag, cls, text) {
   const node = doc.createElement(tag);
@@ -116,8 +130,11 @@ export function quotaBar(doc, label, pct, resetIso, now = Date.now()) {
   return wrap;
 }
 
-/** Per-account rows: nickname, status, provider·framework, 5h + weekly quota bars. */
-export function renderAccounts(doc, target, accounts, now = Date.now()) {
+/** Per-account rows: nickname, status, provider·framework, 5h + weekly quota bars.
+ *  `inUseAccountId` (optional) is the account the agent is CURRENTLY running on —
+ *  that card gets an "In use" marker so "active" (healthy) reads distinct from
+ *  "actually running right now". */
+export function renderAccounts(doc, target, accounts, now = Date.now(), inUseAccountId = null) {
   if (!target) return;
   target.replaceChildren();
   if (!Array.isArray(accounts) || accounts.length === 0) {
@@ -125,9 +142,11 @@ export function renderAccounts(doc, target, accounts, now = Date.now()) {
     return;
   }
   for (const a of accounts) {
-    const card = el(doc, 'div', 'sub-account');
+    const inUse = !!(inUseAccountId && a && a.id === inUseAccountId);
+    const card = el(doc, 'div', inUse ? 'sub-account sub-account-inuse' : 'sub-account');
     const head = el(doc, 'div', 'sub-account-head');
     head.appendChild(el(doc, 'span', 'sub-account-nick', sanitizeForDisplay(a && a.nickname, 'label')));
+    if (inUse) head.appendChild(el(doc, 'span', 'sub-account-inuse-badge', '● In use now'));
     head.appendChild(el(doc, 'span', 'sub-account-status', friendlyStatus(a && a.status)));
     card.appendChild(head);
     card.appendChild(el(doc, 'div', 'sub-account-meta',
@@ -141,6 +160,13 @@ export function renderAccounts(doc, target, accounts, now = Date.now()) {
       if (q.sevenDay) card.appendChild(quotaBar(doc, 'Weekly', q.sevenDay.utilizationPct, q.sevenDay.resetsAt, now));
     } else {
       card.appendChild(el(doc, 'div', 'sub-account-noquota', 'No quota reading yet.'));
+    }
+    // Token health: when the poller silently refreshed the access token from the
+    // refresh token, show it — so a routine access-token expiry reads as healthy
+    // (auto-handled) rather than looking like a re-auth event.
+    const refAge = a && a.lastRefreshAt ? relativeAge(a.lastRefreshAt, now) : null;
+    if (refAge) {
+      card.appendChild(el(doc, 'div', 'sub-account-refresh', `Token auto-refreshed ${refAge}`));
     }
     target.appendChild(card);
   }
@@ -192,6 +218,7 @@ export function renderDisabled(doc, els) {
 const URLS = {
   accounts: '/subscription-pool',
   pending: '/subscription-pool/pending-logins',
+  inUse: '/subscription-pool/in-use',
 };
 
 export function createController(opts) {
@@ -218,11 +245,14 @@ export function createController(opts) {
     if (state.inFlight) { try { state.inFlight.abort(); } catch { /* superseded */ } }
     const controller = typeof AbortController !== 'undefined' ? new AbortController() : { signal: undefined, abort() {} };
     state.inFlight = controller;
-    let accountsBody, pendingBody;
+    let accountsBody, pendingBody, inUseBody;
     try {
-      [accountsBody, pendingBody] = await Promise.all([
+      // in-use is best-effort — its failure must not blank the accounts list, so
+      // it's caught independently and degrades to "unknown" (no badge).
+      [accountsBody, pendingBody, inUseBody] = await Promise.all([
         fetchJson(URLS.accounts, controller),
         fetchJson(URLS.pending, controller),
+        fetchJson(URLS.inUse, controller).catch(() => null),
       ]);
     } catch {
       if (controller.signal && controller.signal.aborted) return;
@@ -238,14 +268,15 @@ export function createController(opts) {
       reschedule();
       return;
     }
-    render(accountsBody, pendingBody);
+    render(accountsBody, pendingBody, inUseBody);
     reschedule();
   }
 
-  function render(accountsBody, pendingBody) {
+  function render(accountsBody, pendingBody, inUseBody) {
     const accounts = accountsBody && Array.isArray(accountsBody.accounts) ? accountsBody.accounts : [];
     const logins = pendingBody && Array.isArray(pendingBody.logins) ? pendingBody.logins : [];
-    renderAccounts(doc, els.accounts, accounts, now());
+    const inUseAccountId = inUseBody && inUseBody.activeAccountId ? inUseBody.activeAccountId : null;
+    renderAccounts(doc, els.accounts, accounts, now(), inUseAccountId);
     renderPendingLogins(doc, els.pending, logins, now());
   }
 

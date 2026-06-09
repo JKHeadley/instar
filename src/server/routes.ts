@@ -25,7 +25,8 @@ import { IntelligenceRouter } from '../core/IntelligenceRouter.js';
 import { knownComponents } from '../core/componentCategories.js';
 import { SecretStore } from '../core/SecretStore.js';
 import { writeConfigAtomic, readSelfKnowledgeFlags } from '../core/BootSelfKnowledge.js';
-import { rateLimiter, signViewPath } from './middleware.js';
+import { rateLimiter, signViewPath, OUTBOUND_GATE_REVIEW_BUDGET_MS } from './middleware.js';
+import { reviewWithinBudget } from './outboundGateBudget.js';
 import type { WriteOperation, WriteToken } from '../core/StateWriteAuthority.js';
 import { writeLifelineRestartSignal } from '../core/version-skew.js';
 import { readSessionClocks } from '../core/SessionClockReader.js';
@@ -590,6 +591,10 @@ export interface RouteContext {
   quotaPoller: import('../core/QuotaPoller.js').QuotaPoller | null;
   /** QuotaAwareScheduler (P1.3) — account selection + swap-and-resume guarantee. */
   quotaAwareScheduler: import('../core/QuotaAwareScheduler.js').QuotaAwareScheduler | null;
+  /** InUseAccountResolver — which pool account the agent is currently running on
+   *  (for the dashboard "in use" badge). Optional; the route lazily constructs a
+   *  default when absent so it never 503s. */
+  inUseAccountResolver?: import('../core/InUseAccountResolver.js').InUseAccountResolver;
   /** EnrollmentWizard (P2.1) — mobile-first login + auto-reissue. Null until wired. */
   enrollmentWizard: import('../core/EnrollmentWizard.js').EnrollmentWizard | null;
   semanticMemory: SemanticMemory | null;
@@ -1392,18 +1397,38 @@ export function createRoutes(ctx: RouteContext): Router {
         }
       }
 
-      // ── Invoke the single authority ──
-      const result = await ctx.messagingToneGate.review(text, {
-        channel,
-        recentMessages,
-        signals,
-        targetStyle: ctx.config.messagingStyle,
-        messageKind: options.messageKind,
-      });
+      // ── Invoke the single authority, bounded by the route budget ──
+      // The gate is FAIL-OPEN by design, but under rate-limit pressure its
+      // provider call can wait up to RATE_LIMIT_WAIT_MS for a window PLUS the
+      // call itself — exceeding the outbound route's hard request budget
+      // (OUTBOUND_MESSAGING_TIMEOUT_MS). When that happens the route 408s, which
+      // is the WORST outcome: the message bypasses the gate AND the failed send
+      // gets dumped into whatever topic the session is active in. `reviewWithinBudget`
+      // races the review against OUTBOUND_GATE_REVIEW_BUDGET_MS and fails OPEN
+      // past it — a STRUCTURAL guarantee at the route seam that holds regardless
+      // of provider internals. Spec: docs/specs/outbound-gate-budget.md.
+      const configuredBudget = ctx.config.outboundGateReviewBudgetMs;
+      const gateBudgetMs =
+        typeof configuredBudget === 'number' &&
+        Number.isFinite(configuredBudget) &&
+        configuredBudget > 0
+          ? configuredBudget
+          : OUTBOUND_GATE_REVIEW_BUDGET_MS;
+      const result = await reviewWithinBudget(
+        ctx.messagingToneGate.review(text, {
+          channel,
+          recentMessages,
+          signals,
+          targetStyle: ctx.config.messagingStyle,
+          messageKind: options.messageKind,
+        }),
+        gateBudgetMs,
+      );
 
       // Structured observability: log every decision the authority made. This is
       // the "why I blocked" log — over-block audits read this. Invalid-rule
-      // citations (authority drift) are also logged so patterns become visible.
+      // citations (authority drift) and budgetExceeded fail-opens are logged so
+      // the latency audit can see when the gate is too slow to run in budget.
       logToneGateDecision({
         text,
         channel,
@@ -1615,6 +1640,7 @@ export function createRoutes(ctx: RouteContext): Router {
         rule: entry.result.rule || null,
         failedOpen: entry.result.failedOpen || false,
         invalidRule: entry.result.invalidRule || false,
+        budgetExceeded: entry.result.budgetExceeded || false,
         latencyMs: entry.result.latencyMs,
         signals: {
           junk: entry.signals.junk?.detected ?? null,
@@ -15735,6 +15761,27 @@ export function createRoutes(ctx: RouteContext): Router {
       return;
     }
     res.json({ enabled: true, logins: ctx.enrollmentWizard.pending() });
+  });
+
+  // Which pool account is the agent ACTUALLY running on right now (vs "active" =
+  // merely healthy). Resolved from Claude's own auth surface, not a config guess.
+  // MUST be registered before GET /subscription-pool/:id (literal beats :id).
+  // 200 { enabled:false } when the pool is unconfigured.
+  router.get('/subscription-pool/in-use', async (_req, res) => {
+    if (!ctx.subscriptionPool) {
+      res.json({ enabled: false, activeAccountId: null, activeEmail: null });
+      return;
+    }
+    try {
+      const resolver =
+        ctx.inUseAccountResolver ??
+        new (await import('../core/InUseAccountResolver.js')).InUseAccountResolver();
+      const result = await resolver.resolve(ctx.subscriptionPool.list());
+      res.json({ enabled: true, ...result });
+    } catch {
+      // @silent-fallback-ok: resolver failure → "unknown" (never 500 the dashboard).
+      res.json({ enabled: true, activeAccountId: null, activeEmail: null });
+    }
   });
 
   router.get('/subscription-pool/:id', (req, res) => {

@@ -145,6 +145,62 @@ describe('HttpParitySource — pagination', () => {
   });
 });
 
+describe('HttpParitySource — clustersOnly fast path (#948 fix)', () => {
+  it('stops after page 0 even when the page is FULL (Portal returns all clusters every page)', async () => {
+    // Portal returns the COMPLETE cluster set on every page, so paginating the
+    // whole feedback table to collect clusters is wasted work that blows the
+    // single-flight budget. clustersOnly must stop after page 0 — proven here by
+    // a FULL page-0 (returned_count == pageSize) that would otherwise continue.
+    const offsets: number[] = [];
+    const fetchStub: FetchLike = vi.fn(async (url) => {
+      const offset = Number(new URL(url).searchParams.get('offset'));
+      offsets.push(offset);
+      // Always a full page (returned_count == pageSize) → normal pagination would
+      // keep walking. The 2nd page returns a DIFFERENT cluster so, if the fast
+      // path failed to stop, the snapshot would wrongly include c99.
+      if (offset === 0) {
+        return okResponse({
+          data: { clusters: [sampleCluster(1), sampleCluster(2)], feedback: new Array(100).fill({}), dispatches: [] },
+          meta: { returned_count: 100 },
+        });
+      }
+      return okResponse({
+        data: { clusters: [sampleCluster(99)], feedback: new Array(100).fill({}), dispatches: [] },
+        meta: { returned_count: 100 },
+      });
+    });
+
+    const source = new HttpParitySource({ baseUrl: 'https://p', token: 't', pageSize: 100, fetchImpl: fetchStub, clustersOnly: true });
+    await source.prepare();
+    const ids = source.readPortalClusters().map((c) => c.clusterId).sort();
+    expect(ids).toEqual(['c1', 'c2']); // page-0 clusters only; c99 from page 1 NOT fetched
+    expect(offsets).toEqual([0]); // exactly ONE fetch
+  });
+
+  it('captureRaw overrides clustersOnly — the import rehearsal still paginates the full feedback table', async () => {
+    const offsets: number[] = [];
+    const fetchStub: FetchLike = vi.fn(async (url) => {
+      const offset = Number(new URL(url).searchParams.get('offset'));
+      offsets.push(offset);
+      if (offset === 0) {
+        return okResponse({
+          data: { clusters: [sampleCluster(1)], feedback: new Array(100).fill({ feedbackId: `f${offset}` }), dispatches: [] },
+          meta: { returned_count: 100 },
+        });
+      }
+      return okResponse({
+        data: { clusters: [sampleCluster(2)], feedback: new Array(20).fill({ feedbackId: `f${offset}` }), dispatches: [] },
+        meta: { returned_count: 20 },
+      });
+    });
+    // Both flags set: captureRaw must win (import needs every feedback row).
+    const source = new HttpParitySource({ baseUrl: 'https://p', token: 't', pageSize: 100, fetchImpl: fetchStub, clustersOnly: true, captureRaw: true });
+    await source.prepare();
+    expect(offsets).toEqual([0, 100]); // full pagination, NOT short-circuited
+    expect(source.readRawClusters().map((c) => c.clusterId).sort()).toEqual(['c1', 'c2']);
+  });
+});
+
 describe('HttpParitySource — field-name tolerance', () => {
   it('accepts snake_case cluster keys (cluster_id, recurrence_count)', async () => {
     const fetchStub: FetchLike = vi.fn(async () =>

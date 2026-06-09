@@ -1748,20 +1748,30 @@ export class PostUpdateMigrator {
       'autonomous-state.local.md',
       'skills/autonomous/scripts/setup-autonomous.sh (codex native /goal auto-wire)',
     );
-    // SKILL.md Step 2a registration-path fix: the prior bundled SKILL.md registered the
-    // stop hook at `.instar/hooks/instar/autonomous-stop-hook.sh` (a path where the hook is
-    // never deployed → silent Stop-hook failure → the autonomous loop never re-engaged and
-    // the session went idle). The fixed SKILL.md registers the deployed skill path and
-    // self-heals any stale entry. Marker `Stop hook registered (correct skill path)` is
-    // present ONLY in the fixed version (the old printed plain `Stop hook registered`), so
-    // bumping to it re-deploys the corrected prompt to existing agents; customized SKILL.md
-    // files (missing the stock `ALL_TASKS_COMPLETE` fingerprint) are left untouched. Pairs
-    // with the settings.json wrong-path repair in ensureAutonomousStopHook().
+    // SKILL.md fixes (cumulative — the upgrade re-deploys the whole bundled SKILL.md, so a
+    // single marker bump carries every fix to date):
+    //   (1) Step 2a registration-path fix: the prior bundled SKILL.md registered the stop hook
+    //       at `.instar/hooks/instar/autonomous-stop-hook.sh` (a path where the hook is never
+    //       deployed → silent Stop-hook failure → the autonomous loop never re-engaged). The
+    //       fixed SKILL.md registers the deployed skill path and self-heals any stale entry.
+    //   (2) Step 2b per-topic state-file write (setup-race hardening): the prior SKILL.md told
+    //       the agent to Write the single legacy file `.instar/autonomous-state.local.md`. The
+    //       hook migrates that on first run, but in the boot window before migration two
+    //       sessions starting near-simultaneously can both write the legacy file and collide.
+    //       The fixed SKILL.md instructs writing the per-topic file the hook reads directly,
+    //       `.instar/autonomous/<topicId>.local.md` (keyed on report_topic), so new jobs never
+    //       touch the shared legacy path. The hook's reading logic is unchanged (per-topic
+    //       preferred, legacy fallback + migrate for in-flight older jobs).
+    // Marker bumped `Stop hook registered (correct skill path)` → `PER-TOPIC (setup-race hardening)`:
+    // the new marker is present ONLY in fix (2)'s version, so an agent that already received
+    // fix (1) (it carries the old marker but not the new one) still gets re-deployed to fix (2).
+    // Customized SKILL.md files (missing the stock `ALL_TASKS_COMPLETE` fingerprint) are left
+    // untouched (idempotent — a second run finds the new marker and no-ops).
     upgrade(
       '.claude/skills/autonomous/SKILL.md',
-      'Stop hook registered (correct skill path)',
+      'PER-TOPIC (setup-race hardening)',
       'ALL_TASKS_COMPLETE',
-      'skills/autonomous/SKILL.md (autonomous stop-hook registration path fix — loop re-engages)',
+      'skills/autonomous/SKILL.md (per-topic state-file write at setup — closes boot-window race)',
     );
   }
 

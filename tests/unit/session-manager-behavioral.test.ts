@@ -89,6 +89,7 @@ vi.mock('node:child_process', () => {
 });
 
 // Import after mock
+import { execFileSync } from 'node:child_process';
 import { SessionManager } from '../../src/core/SessionManager.js';
 import { StateManager } from '../../src/core/StateManager.js';
 import type { SessionManagerConfig } from '../../src/core/types.js';
@@ -144,6 +145,40 @@ describe('SessionManager behavioral tests', () => {
       const saved = state.getSession(session.id);
       expect(saved).not.toBeNull();
       expect(saved!.name).toBe('test-job');
+    });
+
+    // ── Subscription-pool pinning (Subscription & Auth Standard) ──
+    const newSessionArgs = (): string[] => {
+      const call = vi.mocked(execFileSync).mock.calls.find(
+        (c) => Array.isArray(c[1]) && (c[1] as string[])[0] === 'new-session',
+      );
+      return (call?.[1] as string[]) ?? [];
+    };
+
+    it('pins a claude-code spawn to the resolved pool account (CLAUDE_CONFIG_DIR + subscriptionAccountId)', async () => {
+      manager.setSpawnAccountResolver(() => ({ configHome: '/h/.claude-echo-6', accountId: 'sagemind-adriana' }));
+      vi.mocked(execFileSync).mockClear(); // isolate THIS spawn's tmux calls
+      const session = await manager.spawnSession({ name: 'pin-job', prompt: 'p' });
+      expect(session.subscriptionAccountId).toBe('sagemind-adriana');
+      // the launched tmux session carries the account's config home
+      expect(newSessionArgs()).toContain('CLAUDE_CONFIG_DIR=/h/.claude-echo-6');
+      // and it's persisted, so auto-swap can read it
+      expect(state.getSession(session.id)!.subscriptionAccountId).toBe('sagemind-adriana');
+    });
+
+    it('does NOT pin when no resolver is set (default config, no tag)', async () => {
+      vi.mocked(execFileSync).mockClear();
+      const session = await manager.spawnSession({ name: 'nopin-job', prompt: 'p' });
+      expect(session.subscriptionAccountId).toBeUndefined();
+      expect(newSessionArgs().some((a) => typeof a === 'string' && a.startsWith('CLAUDE_CONFIG_DIR='))).toBe(false);
+    });
+
+    it('does NOT pin when the resolver returns null (no eligible account)', async () => {
+      manager.setSpawnAccountResolver(() => null);
+      vi.mocked(execFileSync).mockClear();
+      const session = await manager.spawnSession({ name: 'nullpin-job', prompt: 'p' });
+      expect(session.subscriptionAccountId).toBeUndefined();
+      expect(newSessionArgs().some((a) => typeof a === 'string' && a.startsWith('CLAUDE_CONFIG_DIR='))).toBe(false);
     });
 
     it('throws when max sessions reached', async () => {

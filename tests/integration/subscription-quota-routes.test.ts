@@ -88,3 +88,83 @@ describe('/subscription-pool quota routes (integration)', () => {
     expect(r.status).toBe(404);
   });
 });
+
+// ── Token-refresh recovery through the live HTTP poll route (P1.2 hardening) ──
+describe('/subscription-pool/poll auto-refresh recovery (integration)', () => {
+  let server: TestServer;
+  let dir: string;
+  let pool: SubscriptionPool;
+
+  async function boot(opts: {
+    fetchImpl: FetchImpl;
+    refresher: ConstructorParameters<typeof QuotaPoller>[0]['refresher'];
+    status?: 'active' | 'needs-reauth';
+  }): Promise<void> {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'qpoll-rec-'));
+    pool = new SubscriptionPool({ stateDir: dir });
+    pool.add({
+      id: 'claude-1',
+      nickname: 'primary',
+      provider: 'anthropic',
+      framework: 'claude-code',
+      configHome: '/h/.claude-1',
+      status: opts.status ?? 'active',
+    });
+    const quotaPoller = new QuotaPoller({
+      pool,
+      fetchImpl: opts.fetchImpl,
+      tokenResolver: () => 'sk-ant-oat01-EXPIRED',
+      refresher: opts.refresher,
+    });
+    const app = express();
+    app.use(express.json());
+    const ctx: any = { config: { authToken: 't', stateDir: dir, port: 0 }, startTime: new Date(), subscriptionPool: pool, quotaPoller };
+    app.use(createRoutes(ctx));
+    server = await listen(app);
+  }
+
+  afterEach(async () => {
+    await server?.close();
+    try { SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/integration/subscription-quota-routes.test.ts:rec-cleanup' }); } catch { /* @silent-fallback-ok */ }
+  });
+
+  const api = (p: string, init?: RequestInit) =>
+    fetch(server.url + p, { headers: { 'Content-Type': 'application/json' }, ...init })
+      .then(async (r) => ({ status: r.status, body: await r.json().catch(() => ({})) }));
+
+  it('an expired access token recovers via refresh — account stays active, not needs-reauth', async () => {
+    let calls = 0;
+    const fetchImpl: FetchImpl = async () => {
+      calls += 1;
+      return calls === 1
+        ? { ok: false, status: 401, json: async () => ({}) }
+        : { ok: true, status: 200, json: async () => USAGE };
+    };
+    await boot({
+      fetchImpl,
+      refresher: async () => ({ ok: true, accessToken: 'sk-ant-oat01-FRESH', expiresAt: 9e12, rotated: true }),
+    });
+
+    const poll = await api('/subscription-pool/poll', { method: 'POST' });
+    expect(poll.status).toBe(200);
+    expect(poll.body).toMatchObject({ enabled: true, polled: 1, failed: 0 });
+
+    const acct = await api('/subscription-pool/claude-1');
+    expect(acct.body.status).toBe('active'); // recovered, NOT needs-reauth
+    expect(acct.body.lastQuota.sevenDay.utilizationPct).toBe(71);
+    expect(acct.body.lastRefreshAt).toBeTruthy(); // visible "auto-refreshed" stamp
+  });
+
+  it('a genuinely dead login (refresh rejected) still flips to needs-reauth', async () => {
+    await boot({
+      fetchImpl: async () => ({ ok: false, status: 401, json: async () => ({}) }),
+      refresher: async () => ({ ok: false, reason: 'no-refresh-token' }),
+    });
+
+    const poll = await api('/subscription-pool/poll', { method: 'POST' });
+    expect(poll.body).toMatchObject({ enabled: true, polled: 0, failed: 1 });
+
+    const acct = await api('/subscription-pool/claude-1');
+    expect(acct.body.status).toBe('needs-reauth');
+  });
+});
