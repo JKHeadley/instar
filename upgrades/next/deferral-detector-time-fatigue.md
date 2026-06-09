@@ -16,6 +16,6 @@ If I ever start deferring real work with "it's late / let's not rush / I'll pick
 
 ## Evidence
 
-Reproduction (live, 2026-06-09): at **3:41 PM** the agent deferred a doable fix to "the next session, rather than rush at the tail of tonight." The existing deferral-detector did not catch it — it had no time/fatigue patterns, and its infrastructure-backed exemption suppressed the orphan-TODO check *because* the work had been tracked as a commitment (CMT-1246), laundering the deferral.
+Reproduction (live, 2026-06-09): at **3:41 PM** the agent deferred a doable fix to "the next session, rather than rush at the tail of tonight." The existing deferral-detector did not catch it — it had no time/fatigue patterns, and its infrastructure-backed exemption suppressed the orphan-follow-up check *because* the work had been tracked as a commitment (CMT-1246), laundering the deferral.
 
 After the fix: `tests/unit/deferral-detector-orphan-todo.test.ts` gains a `time/fatigue` describe block (9 cases) including the exact incident phrasing and the key "tracked work still fires" laundering case; the deployed hook was verified end-to-end to emit `TIME/FATIGUE DEFERRAL DETECTED` (`Detected: tail_of_period, avoid_rushing`) while correctly suppressing the orphan section on infra-backed input. 25/25 deferral-detector tests pass; migration-parity + pretooluse-parity + upgrade-guide (3964) tests green; tsc + lint clean.
