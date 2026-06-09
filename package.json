@@ -73,6 +73,7 @@
     "upgrades",
     "src/templates",
     "src/data",
+    "skills",
     "playbook-scripts",
     "scripts",
     ".claude/skills/setup-wizard",

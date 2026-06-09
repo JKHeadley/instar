@@ -2942,6 +2942,57 @@ Cherry-picked from the GSD verifier role. The insight: task completion is not go
 
   // Install autonomous skill with hooks and scripts (special case — needs full directory structure)
   installAutonomousSkill(skillsDir);
+
+  // Install the bundled developer-skill toolkit (spec-converge, instar-dev, …) —
+  // the tools Instar uses to develop itself, so EVERY agent has the complete
+  // capability to develop Instar (Agent Awareness + Framework-Agnostic
+  // "one shared source of truth"). Single source: the repo's skills/<slug>/ dirs
+  // (referenced by SourceTreeGuard / crossModelReviewer), shipped via
+  // package.json files[] and installed here by copy, install-if-missing.
+  installBundledDevSkills(skillsDir);
+}
+
+/**
+ * Canonical bundled developer-skill toolkit — the authored allowlist (single
+ * source of truth) of skills Instar uses to develop itself, installed to every
+ * agent. The skill files live as tracked dirs under the repo's `skills/<slug>/`
+ * (the one source, also referenced by SourceTreeGuard / crossModelReviewer /
+ * PostUpdateMigrator); they ship via the `skills` entry in package.json files[].
+ * Excludes document-only skills superseded by built-in infra (instar-telegram →
+ * telegram-reply.sh, command-guard → dangerous-command-guard.sh hook, etc.).
+ */
+export const BUNDLED_DEV_SKILLS = [
+  'spec-converge',
+  'instar-dev',
+  'systematic-debugging',
+  'smart-web-fetch',
+  'knowledge-base',
+  'instar-scheduler',
+  'agent-memory',
+  'agent-identity',
+  'instar-identity',
+  'credential-leak-detector',
+] as const;
+
+/**
+ * Install the bundled dev-skill toolkit by copying each allowlisted skill's
+ * directory from the packaged `skills/<slug>/` source into the agent's
+ * `.claude/skills/<slug>/`. Install-if-missing (preserves user customizations);
+ * recursive so scripts/ and templates/ subdirs come along.
+ */
+export function installBundledDevSkills(skillsDir: string): void {
+  const modDir = __dirname;
+  // Package layout: dist/commands/init.js → ../../skills/<slug>
+  const bundledRoot = path.join(modDir, '..', '..', 'skills');
+  for (const slug of BUNDLED_DEV_SKILLS) {
+    const targetDir = path.join(skillsDir, slug);
+    const targetSkill = path.join(targetDir, 'SKILL.md');
+    // Install-if-missing — check both casings (matches installBuildSkill).
+    if (fs.existsSync(targetSkill) || fs.existsSync(path.join(targetDir, 'skill.md'))) continue;
+    const bundledDir = path.join(bundledRoot, slug);
+    if (!fs.existsSync(path.join(bundledDir, 'SKILL.md'))) continue; // not packaged — defensive skip
+    fs.cpSync(bundledDir, targetDir, { recursive: true });
+  }
 }
 
 /**
