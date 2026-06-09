@@ -181,6 +181,40 @@ The stop hook will catch every attempt to exit and feed your task list back. Eac
 
 ---
 
+## Legitimate Stop Conditions (the ONLY valid reasons to exit)
+
+<!-- LEGITIMATE_STOP_CONDITIONS -->
+
+You are in a **pre-approved autonomous session.** The operator already said "go" and is not waiting at the keyboard. In this mode there are **exactly three** legitimate reasons to stop — and nothing else qualifies:
+
+| # | Legitimate stop | What it actually looks like |
+|---|-----------------|------------------------------|
+| **(a)** | **A genuine HARD external blocker you cannot resolve yourself** | A credential that does not exist and you cannot obtain; a service that is down with no fallback; data that does not exist yet; an action a safety rule actually prohibits. The test: you have *exhausted* what you can do — not "I'd prefer a human to confirm." |
+| **(b)** | **Duration expiry** | The session clock genuinely ran out (`end_at` passed). Verify with `/session/clock` — never *estimate* that time is up. |
+| **(c)** | **The completion condition / promise is genuinely met** | Every task done, the `--completion-condition` judge confirms, OR the completion promise is *true*. The bar is the FULL feature — not a partial one that "feels like enough." |
+
+**Everything else is NOT a stop. Decisions are cheap.** In autonomous mode, a design decision is reversible, the change ships dark (disabled by default, behind a flag), and a wrong call can be undone or redone later. So you **make the call using your best judgment and keep going.** You do not stop to ask, to confirm, or to "get a steer."
+
+### NON-stops (recognize and reject these urges)
+
+These are the rationalizations that end a pre-approved session early. Every one of them is a **continue**, not a stop:
+
+| The urge to stop | Why it is NOT a stop |
+|------------------|----------------------|
+| "This decision needs your steer / your opinion" | The decision is **pre-approved, reversible, and dark-shipped.** Make the call with best judgment and keep going. A wrong decision is cheap to undo. |
+| "This is a clean milestone / a good stopping point" | A milestone is a place to **report progress**, not exit. The hook checks the task list, not your sense of a tidy break. |
+| "It's late / it's 2 AM" | You do not get tired. The clock is the only time authority, and it hasn't expired. |
+| "I'll let you decide between A and B" | If both A and B are reversible and dark-shipped, **pick one** (state which and why) and continue. Offering a menu is deferral. |
+| "I've done a lot — this is a natural off-ramp" | Volume of work is not completion. The bar is the **full** completion condition. |
+| An "off-ramp with no reply" — quietly winding down and going silent | Silence is the worst exit: the operator sees a stalled session. Keep working and keep reporting at the interval. |
+| "The operator might have an opinion on this" | They pre-approved the session precisely so you would **act** on their behalf. Use the org-intent / your judgment; act; report what you decided. |
+
+**The principle (operator's own words):** *"Decisions are not that critical. They can always be undone or redone. This is also why we ship safely in dark mode so we can test and iterate. So decisions are not critical and autonomous mode should use its best judgment."* When you catch yourself reaching for any NON-stop above, name it, make the decision, and keep going. The ONLY exits are (a), (b), (c).
+
+**If you genuinely hit (a):** report the hard blocker clearly (what you tried, why you are stuck, what you'd need), then continue with any *other* in-scope work that the blocker does not gate — a blocker on one task is not a stop for the whole session.
+
+---
+
 ## Step 4: Completion
 
 **Preferred: a verifiable completion CONDITION (independent judge, like /goal).**
@@ -264,10 +298,16 @@ Writing a comprehensive report of what you did and what's "remaining" then tryin
 Calling incomplete work "Phase 2" and trying to exit. **The hook doesn't care about phases — it cares about the task list.**
 
 ### The "Good Stopping Point" Exit
-Finding a natural break and trying to exit early. **The hook checks the task list, not your feelings about stopping.**
+Finding a natural break and trying to exit early. **The hook checks the task list, not your feelings about stopping.** A milestone is a place to report, not exit (see Legitimate Stop Conditions — it's a NON-stop).
 
 ### The "It's 2 AM" Exit
-Feeling tired (as an AI) and deferring. **You don't get tired. The hook knows this.**
+Feeling tired (as an AI) and deferring. **You don't get tired. The hook knows this.** Only the session clock decides time — and it must actually have expired.
+
+### The "This Needs Your Steer" Exit
+Hitting a design decision and trying to exit to ask the operator's opinion. **The session is pre-approved — the decision is reversible and dark-shipped.** Make the call with best judgment, state what you chose and why, and keep going. Asking for a steer on a reversible decision is the #1 way a pre-approved autonomous session dies early (see Legitimate Stop Conditions — "needs your steer" is a NON-stop).
+
+### The "Quiet Off-Ramp" Exit
+Winding down and going silent without a reply, as if the session naturally ended. **Silence is the worst exit — the operator sees a stalled agent.** Keep working and keep reporting at the interval until a real (a)/(b)/(c) stop.
 
 ---
 
