@@ -138,6 +138,18 @@
       "grandfathered": false
     },
     {
+      "category": "slack-relationship-baselines",
+      "description": "Durable per-principal behavioral baseline (Pillar 3 relationship-aware anomaly second factor): privacy-respecting SHAPE aggregates only — action repertoire, tier/hour histograms, coarse message-length stats, urgency rate — NEVER message content. Fed observe-only from authorized Slack traffic; read by RelationshipAnomalyScorer. Ships DARK. See docs/specs/SLACK-ORG-INTEGRATION-SPEC.md §7.1-7.2, §7.6.",
+      "scope": "machine-local",
+      "freshness": "eventual",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "state/slack-relationship-baselines.json"
+      ],
+      "grandfathered": false
+    },
+    {
       "category": "topic-placement-history",
       "description": "Topic<->machine placement history (does not exist as its own store yet; the journal's first stream materializes it). Distinct from current-owner pool state.",
       "scope": "must-be-coherent",

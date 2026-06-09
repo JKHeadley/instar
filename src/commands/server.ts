@@ -4636,6 +4636,21 @@ export async function startServer(options: StartOptions): Promise<void> {
              * the deterministic floor (fail-closed to the heuristic on LLM failure).
              */
             classifier?: 'heuristic' | 'llm';
+            /**
+             * Relationship-aware anomaly second factor (Pillar 3). DARK by default.
+             * When `relationshipAnomaly.enabled` is true, a durable per-principal
+             * behavioral baseline (RelationshipBehaviorStore) is fed from observed
+             * traffic and the RelationshipAnomalyScorer scores out-of-character
+             * requests — which, on a would-be-allowed FLOOR action, RAISE the verdict
+             * to step-up (OBSERVE-ONLY: logged, never live-challenged yet, §7.6).
+             * `relationshipAnomaly.useLlmStyleCheck` (default false) adds a fail-closed
+             * LLM voice check on top of the deterministic signals.
+             */
+            relationshipAnomaly?: {
+              enabled?: boolean;
+              useLlmStyleCheck?: boolean;
+              stepUpThreshold?: number;
+            };
           } | undefined;
           if (pgCfg && (pgCfg.observeOnly || pgCfg.enforce)) {
             const {
@@ -4647,6 +4662,8 @@ export async function startServer(options: StartOptions): Promise<void> {
               HeuristicIntentClassifier,
               LlmIntentClassifier,
               HeuristicAnomalyScorer,
+              RelationshipBehaviorStore,
+              RelationshipAnomalyScorer,
               MandateBackedGrantStore,
             } = await import('../permissions/index.js');
             // Own UserManager instance for verified-principal resolution (the
@@ -4701,6 +4718,26 @@ export async function startServer(options: StartOptions): Promise<void> {
             } else {
               intentClassifier = new HeuristicIntentClassifier();
             }
+            // ── Pillar 3 relationship-aware anomaly second factor (DARK by default) ──
+            // With `relationshipAnomaly.enabled`, wire the durable behavioral baseline
+            // store + the RelationshipAnomalyScorer. The baseline grows from observed
+            // traffic (recorded SHAPE only, never content) via the observer. With the
+            // flag OFF, we keep the placeholder HeuristicAnomalyScorer (urgency-only)
+            // exactly as before — nothing changes.
+            const raCfg = pgCfg.relationshipAnomaly;
+            let anomalyScorer: import('../permissions/index.js').AnomalyScorer = new HeuristicAnomalyScorer();
+            let behaviorStore: import('../permissions/index.js').RelationshipBehaviorStore | undefined;
+            if (raCfg?.enabled && config.stateDir) {
+              behaviorStore = new RelationshipBehaviorStore(config.stateDir);
+              anomalyScorer = new RelationshipAnomalyScorer(behaviorStore, {
+                useLlmStyleCheck: raCfg.useLlmStyleCheck === true,
+                // Fail-closed LLM style check uses the shared internal provider when present.
+                intelligence: sharedIntelligence ?? undefined,
+              });
+              console.log(
+                `[slack] relationship-aware anomaly scorer attached (observe-only baseline; LLM style check ${raCfg.useLlmStyleCheck ? 'ON' : 'off'})`,
+              );
+            }
             const observer = new SlackPermissionObserver({
               resolver: new SlackPrincipalResolver({
                 resolveFromSlackUserId: (id: string) => slackUserManager.resolveFromSlackUserId(id),
@@ -4708,11 +4745,13 @@ export async function startServer(options: StartOptions): Promise<void> {
               gate: new SlackPermissionGate({
                 rolePolicy: new RolePolicy(),
                 classifier: intentClassifier,
-                anomalyScorer: new HeuristicAnomalyScorer(),
+                anomalyScorer,
                 grants: grantStore,
+                ...(raCfg?.stepUpThreshold !== undefined ? { stepUpThreshold: raCfg.stepUpThreshold } : {}),
               }),
               ledger: new PermissionDecisionLedger(config.stateDir),
               enforce: pgCfg.enforce === true,
+              behaviorStore,
             });
             slackAdapter.setPermissionObserver(observer);
             console.log(`[slack] permission gate attached (${pgCfg.enforce ? 'ENFORCE' : 'observe-only'})`);
