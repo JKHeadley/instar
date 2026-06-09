@@ -434,6 +434,9 @@ export function buildRequestTimeoutOverrides(opts?: { paritySourceTotalTimeoutMs
     // The import dry-run does the same full live source fetch as a parity pass
     // (plus an in-memory import + gate, which is fast) — same budget.
     '/cutover-readiness/import-dryrun': parityBudgetMs,
+    // The REAL integrity pass spawns a child that does the same full-corpus fetch +
+    // a persisted import + gate; the route awaits the child — same extended budget.
+    '/cutover-readiness/integrity-pass': parityBudgetMs,
   };
 }
 

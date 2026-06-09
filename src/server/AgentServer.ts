@@ -24,7 +24,7 @@ import { CutoverReadiness } from '../feedback-factory/cutoverReadiness.js';
 import { DurableParityMonitor, JsonlPassPersistence } from '../feedback-factory/monitor/parityMonitorStore.js';
 import { HttpParitySource } from '../feedback-factory/dryrun/HttpParitySource.js';
 import { runDryRunCompare } from '../feedback-factory/dryrun/dryRunCompare.js';
-import { InMemoryImportTarget, runImport } from '../feedback-factory/migration/importRunner.js';
+import { InMemoryImportTarget, runImport, type ImportRunResult } from '../feedback-factory/migration/importRunner.js';
 import { SecretStore } from '../core/SecretStore.js';
 import { fileURLToPath } from 'node:url';
 import type { SessionManager } from '../core/SessionManager.js';
@@ -1057,12 +1057,61 @@ export class AgentServer {
             );
           }
           : null;
+        // REAL pre-click integrity pass: spawn the import-integrity runner as a CHILD
+        // process so the full-corpus captureRaw fetch + AS-IS import into a persisted
+        // shadow runs OFF the server event loop. The in-process import-dryrun closure
+        // above CANNOT settle the 145K-row fetch inside the single-flight budget (#948);
+        // a child process has no event-loop contention (measured ~2.7min). The child
+        // prints the verdict JSON to stdout; we parse it into an ImportRunResult for
+        // CutoverReadiness.runIntegrityPass() to record to the canonical integrity path.
+        const runIntegrityImport = paritySourceCfg?.baseUrl
+          ? async (): Promise<ImportRunResult> => {
+            const token = String(new SecretStore({ stateDir: options.config.stateDir }).get(paritySourceCfg.secretKey ?? 'portal.instarReadToken') ?? '');
+            if (!token) throw new Error(`parity source token "${paritySourceCfg.secretKey ?? 'portal.instarReadToken'}" not found in the SecretStore`);
+            const runnerPath = fileURLToPath(new URL('../feedback-factory/migration/integrityPassRunner.js', import.meta.url));
+            const shadowDir = path.join(options.config.stateDir, 'state', 'cutover-integrity-shadow');
+            const { execFile } = await import('node:child_process');
+            const { promisify } = await import('node:util');
+            const execFileAsync = promisify(execFile);
+            let stdout: string;
+            try {
+              ({ stdout } = await execFileAsync(
+                process.execPath,
+                ['--max-old-space-size=4096', runnerPath],
+                {
+                  env: { ...process.env, TOKEN: token, BASE_URL: paritySourceCfg.baseUrl!, SHADOW_DIR: shadowDir },
+                  maxBuffer: 16 * 1024 * 1024,
+                  timeout: 11 * 60 * 1000, // child wall-clock cap, under CutoverReadiness's 12min max-hold
+                },
+              ));
+            } catch (err) {
+              // Exit code 1 = ran-but-failed/aborted — the runner STILL printed a valid
+              // verdict on stdout (a failing integrity report we must record to flip the
+              // door closed). Only a no-verdict crash (exit 2 / killed) is a real error.
+              const e = err as { stdout?: string; stderr?: string; code?: number; message?: string };
+              if (e && typeof e.stdout === 'string' && e.stdout.trim()) {
+                stdout = e.stdout;
+              } else {
+                throw new Error(`integrity-pass runner failed (code ${e?.code ?? '?'}): ${e?.stderr || e?.message || String(err)}`);
+              }
+            }
+            const lastLine = stdout.trim().split('\n').filter(Boolean).pop() ?? '';
+            let verdict: { passed: boolean; imported: ImportRunResult['imported']; abortedPreImport: ImportRunResult['abortedPreImport']; report: ImportRunResult['report'] };
+            try {
+              verdict = JSON.parse(lastLine);
+            } catch {
+              throw new Error(`integrity-pass runner produced no parseable verdict (stdout tail: ${lastLine.slice(0, 200)})`);
+            }
+            return { passed: verdict.passed, imported: verdict.imported, abortedPreImport: verdict.abortedPreImport, report: verdict.report };
+          }
+          : null;
         const readiness = new CutoverReadiness({
           parityMonitor,
           integrityReportPath: path.join(options.config.stateDir, 'state', 'feedback-integrity-report.json'),
           runParityCheck,
           importDryRunReportPath: path.join(options.config.stateDir, 'state', 'feedback-import-dryrun.json'),
           runImportDryRun: runImportDryRunCheck,
+          runIntegrityImport,
         });
         // The REAL resolvers (replacing the former deny-safe stubs): both read
         // durable server-side state; both stay false until that state genuinely

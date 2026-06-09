@@ -5757,6 +5757,33 @@ export function createRoutes(ctx: RouteContext): Router {
     res.json({ recorded: true, mode: 'dry-run', generatedAt: outcome.generatedAt, result: outcome.result });
   });
 
+  // TRIGGER the REAL pre-click integrity pass: live source fetch → AS-IS import into a
+  // PERSISTED shadow (run OFF the event loop, in a child process) → integrity gate over
+  // the readback → the report is recorded to the CANONICAL integrity path. UNLIKE the
+  // import-dryrun, this IS load-bearing on `ready`: a passing report greens the integrity
+  // leg, a failing one flips it closed (the door reflects the LATEST real verdict). The
+  // cutover flip itself remains the operator's manual click — this only resolves the
+  // confidence signal up to the door. Same T7 discipline + always-logged outcome.
+  router.post('/cutover-readiness/integrity-pass', async (_req, res) => {
+    if (!ctx.cutoverReadiness) {
+      res.status(503).json({ error: 'cutover-readiness unavailable (no stateDir or init failed)' });
+      return;
+    }
+    const outcome = await ctx.cutoverReadiness.runIntegrityPass();
+    if (outcome.ok) {
+      const r = outcome.result;
+      console.log(`[cutover-readiness] integrity pass recorded=${outcome.recorded}: passed=${r.passed} clusters=${r.imported.clusters} feedback=${r.imported.feedback}${r.abortedPreImport ? ` abortedPreImport=${r.abortedPreImport.reason}` : ''}`);
+    } else {
+      console.warn(`[cutover-readiness] integrity pass FAILED (nothing recorded): ${outcome.reason}`);
+    }
+    if (res.headersSent) return; // 408 already went out — outcome logged above
+    if (!outcome.ok) {
+      res.status(409).json({ error: outcome.reason });
+      return;
+    }
+    res.json({ recorded: outcome.recorded, generatedAt: outcome.generatedAt, result: outcome.result });
+  });
+
   // The last import dry-run's verdict. Read-only, informational — never a `ready` input.
   router.get('/cutover-readiness/import-dryrun', (_req, res) => {
     if (!ctx.cutoverReadiness) {
