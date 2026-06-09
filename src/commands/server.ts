@@ -10048,6 +10048,21 @@ export async function startServer(options: StartOptions): Promise<void> {
           });
         });
       }
+
+      // Subscription-pool session PINNING (Subscription & Auth Standard): when
+      // enabled, new claude-code spawns launch on the scheduler-picked optimal
+      // account (reset-date / headroom score) and carry its id. This is the
+      // prerequisite that makes auto-swap functional — without a session→account
+      // tag, the swap engine has nothing to move. Default off → spawns use the
+      // default config exactly as before (the resolver stays unwired).
+      if (config.subscriptionPool?.pinSessionsToPool) {
+        const { selectAccount } = await import('../core/QuotaAwareScheduler.js');
+        sessionManager.setSpawnAccountResolver(() => {
+          const acct = selectAccount(subscriptionPool.list(), { nowMs: Date.now() });
+          return acct ? { configHome: acct.configHome, accountId: acct.id } : null;
+        });
+        console.log(pc.green('  Subscription-pool session pinning enabled'));
+      }
     }
 
     // ── SessionReaper (SESSION-REAPER-SPEC) ──────────────────────────────

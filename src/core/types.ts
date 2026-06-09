@@ -2548,6 +2548,12 @@ export interface InstarConfig {
      *  pool-managed session auto-swaps it to another account. Opt-in (auto-
      *  swapping live sessions is real authority — tier-2). */
     autoSwapOnRateLimit?: boolean;
+    /** DARK by default: when true, new claude-code session spawns launch under
+     *  the optimal pool account's config home (scheduler-picked) and are tagged
+     *  with `subscriptionAccountId`. This is the prerequisite that makes
+     *  auto-swap functional (a session must carry which account it's on for the
+     *  swap engine to move it). Unset → spawns use the default config (no-op). */
+    pinSessionsToPool?: boolean;
     /** P2.1 enrollment wizard knobs (all optional). */
     enrollment?: {
       /** Per-framework login command override (defaults: claude-code →
