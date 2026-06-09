@@ -2,7 +2,7 @@
 title: Slack Organizational Integration & Conversational Permission System
 date: 2026-06-08
 author: echo
-parent-principle: "Structure > Willpower"
+parent-principle: "Structure beats Willpower"
 parent-principle-fit: "Permissions today are a context-injected hint the model is asked to obey (UserContextBuilder), and hasPermission() has zero callsites — a wish, not a rule. This spec makes authority STRUCTURAL: a deterministic Layer-0 floor in code, role→tier ceilings, and a gate at the inbound chokepoint. The dangerous actions are gated in code, not in the agent's discretion — the foundational principle applied to the conversational permission problem."
 eli16-overview: SLACK-ORG-INTEGRATION-SPEC.eli16.md
 review-convergence: pending

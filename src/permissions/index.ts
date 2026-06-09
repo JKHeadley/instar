@@ -8,6 +8,8 @@ export * from './IntentClassifier.js';
 export * from './LlmIntentClassifier.js';
 export * from './AmbientContributionGate.js';
 export * from './AnomalyScorer.js';
+export * from './RelationshipBehaviorStore.js';
+export * from './RelationshipAnomalyScorer.js';
 export * from './PermissionDecisionLedger.js';
 export * from './SlackPermissionGate.js';
 export * from './MandateBackedGrantStore.js';

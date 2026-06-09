@@ -31,3 +31,16 @@ Instar already has a decent Slack adapter (it can read channels, respond when me
 - **Later, when you want to demo it for real:** provide a throwaway test Slack workspace + a bot token, and we can show the whole thing happening in a real Slack with real test users. Until then, the automated suite proves the logic.
 - Nothing here ships to other agents or users until you say so, and even then it starts in watch-only mode.
 - (Housekeeping) While the gate is dark, its `/permissions/*` routes are deliberately kept *internal* — they don't appear in the agent's `/capabilities` self-discovery — until the enforce path is live and it becomes a real, advertised capability.
+
+## Update — Phase 3 ("does this feel like them?") is now built (watch-only, off by default)
+
+The "does this feel like them?" check from item 5 above is now a real thing, not just a plan. In plain English:
+
+- The agent quietly keeps a **shape-only sketch** of how each person normally behaves: which kinds of requests they make, at what risk level, around what time of day, how long their messages tend to be, and whether they usually sound calm or urgent. It stores **none of the actual message text** — just the shape.
+- When a request would otherwise be allowed on a **dangerous (floor) action**, the agent compares it to that sketch. If it's wildly out of character — a money transfer from someone who never moves money, fired off at 3am when they only work mornings, urgent when they're normally calm, in a much longer message than usual — the agent raises a flag that *would* ask for a second factor ("let me confirm it's really you on a channel I already know is yours").
+- **It only ever makes the bar HIGHER, never lower.** A perfectly in-character request still can't clear a dangerous action without proper authority, and it can't turn a "no" into a "maybe" — a refusal stays a refusal.
+- **It's conservative when it doesn't know you yet.** A brand-new person, or someone we've only seen a couple of times, gets *no* out-of-character flag — there's no "character" to be out of yet, so the agent won't invent a challenge. (The hard floor still protects the dangerous action regardless.)
+- **It's still watch-only and off by default.** When on, it writes down what it *would* have asked for; it never actually challenges or blocks anyone yet. That's so we can measure how often it would fire (and whether it'd annoy legitimate people) before we ever let it interrupt a real request.
+- There's an **optional AI voice-check** that can be layered on top to spot a message that doesn't sound like the person — but it's off by default, and if the AI is unavailable it simply doesn't contribute (it never quietly loosens anything).
+
+Nothing new to decide here — this is the build catching up to the plan, still dark, still watch-only.

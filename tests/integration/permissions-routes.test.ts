@@ -15,6 +15,7 @@ import path from 'node:path';
 import { createRoutes, type RouteContext } from '../../src/server/routes.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { PermissionDecisionLedger } from '../../src/permissions/PermissionDecisionLedger.js';
+import { RelationshipBehaviorStore } from '../../src/permissions/RelationshipBehaviorStore.js';
 import { buildSliceZeroGate, CAST } from '../../src/permissions/testing/SlackScenarioHarness.js';
 
 let tmp: string | null = null;
@@ -91,5 +92,41 @@ describe('GET /permissions/decisions (integration)', () => {
     const res = await request(appWith(tmp)).get('/permissions/decisions');
     expect(res.status).toBe(200);
     expect(res.body.decisions).toEqual([]);
+  });
+});
+
+describe('GET /permissions/baselines (integration — Pillar 3)', () => {
+  it('returns the per-principal behavioral baselines (SHAPE only, never content)', async () => {
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'perm-routes-'));
+    const store = new RelationshipBehaviorStore(tmp);
+    for (let i = 0; i < 6; i++) store.record('U_OLIVIA', { action: 'read', tier: 1, hour: 10, length: 30, urgent: false });
+
+    const res = await request(appWith(tmp)).get('/permissions/baselines');
+    expect(res.status).toBe(200);
+    expect(res.body.baselines.U_OLIVIA.interactionCount).toBe(6);
+    expect(res.body.baselines.U_OLIVIA.actionCounts.read).toBe(6);
+    // No message content anywhere in the payload.
+    expect(JSON.stringify(res.body)).not.toMatch(/summarize|the incident|message text/i);
+  });
+
+  it('returns a single principal baseline via ?slackUserId, and null for an unknown one', async () => {
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'perm-routes-'));
+    const store = new RelationshipBehaviorStore(tmp);
+    store.record('U_AMIR', { action: 'operational', tier: 3, hour: 14, length: 40, urgent: false });
+
+    const found = await request(appWith(tmp)).get('/permissions/baselines?slackUserId=U_AMIR');
+    expect(found.status).toBe(200);
+    expect(found.body.baseline.interactionCount).toBe(1);
+
+    const missing = await request(appWith(tmp)).get('/permissions/baselines?slackUserId=U_NOBODY');
+    expect(missing.status).toBe(200);
+    expect(missing.body.baseline).toBeNull();
+  });
+
+  it('returns an empty object (not an error) when no baselines exist yet', async () => {
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'perm-routes-'));
+    const res = await request(appWith(tmp)).get('/permissions/baselines');
+    expect(res.status).toBe(200);
+    expect(res.body.baselines).toEqual({});
   });
 });

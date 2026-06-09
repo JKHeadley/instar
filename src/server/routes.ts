@@ -14545,6 +14545,25 @@ export function createRoutes(ctx: RouteContext): Router {
     }
   });
 
+  // GET /permissions/baselines — read-only view of the Pillar 3 behavioral baselines.
+  // Returns per-principal SHAPE aggregates (action repertoire, tier/hour histograms,
+  // coarse length stats) — NEVER message content. Inspection surface for the
+  // relationship-aware anomaly second factor. Design: SLACK-ORG-INTEGRATION-SPEC.md §7.
+  router.get('/permissions/baselines', async (req, res) => {
+    try {
+      const { RelationshipBehaviorStore } = await import('../permissions/index.js');
+      const store = new RelationshipBehaviorStore(ctx.config.stateDir);
+      const slackUserId = typeof req.query.slackUserId === 'string' ? req.query.slackUserId : undefined;
+      if (slackUserId) {
+        const profile = store.profileFor(slackUserId);
+        return res.json({ baseline: profile ?? null });
+      }
+      res.json({ baselines: store.all() });
+    } catch (e) {
+      res.status(500).json({ error: (e as Error).message });
+    }
+  });
+
   // ── Slack org permission registration (Phase 1) ──────────────────────
   // Conversational registration's programmatic surface: admin-register, list
   // pending self-registration requests, approve/deny. See SLACK-ORG-INTEGRATION-SPEC.md §6.3.
