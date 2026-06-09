@@ -29,6 +29,7 @@ import { RingBuffer } from './RingBuffer.js';
 import { MessageLogger, type LogEntry } from '../shared/MessageLogger.js';
 import type { SlackConfig, SlackMessage, PendingPrompt, InteractionPayload, InteractionAction, SlackWorkspaceMode, SlackRespondMode } from './types.js';
 import { sanitizeDisplayName, validateChannelId, escapeMrkdwn } from './sanitize.js';
+import type { SlackPermissionObserver } from '../../permissions/SlackPermissionObserver.js';
 
 const RING_BUFFER_CAPACITY = 50;
 const SLACK_MAX_TEXT_LENGTH = 4000;
@@ -57,6 +58,12 @@ export class SlackAdapter implements MessagingAdapter {
 
   // State
   private messageHandler: ((message: Message) => Promise<void>) | null = null;
+  /**
+   * Optional observe-only permission gate (Slack org permission system, Slice 0).
+   * When set, every authorized inbound message is evaluated and logged; it NEVER
+   * blocks delivery. See src/permissions/SlackPermissionObserver.ts.
+   */
+  private permissionObserver: SlackPermissionObserver | null = null;
   private started = false;
   private authorizedUsers: Set<string>;
   private channelHistory: Map<string, RingBuffer<SlackMessage>> = new Map();
@@ -301,6 +308,15 @@ export class SlackAdapter implements MessagingAdapter {
 
   onMessage(handler: (message: Message) => Promise<void>): void {
     this.messageHandler = handler;
+  }
+
+  /**
+   * Attach an observe-only permission gate (Slack org permission system, Slice 0).
+   * Wired during server startup when the feature is enabled. Observe-only — it logs
+   * what the gate WOULD decide and never blocks delivery.
+   */
+  setPermissionObserver(observer: SlackPermissionObserver | null): void {
+    this.permissionObserver = observer;
   }
 
   async resolveUser(channelIdentifier: string): Promise<string | null> {
@@ -844,6 +860,17 @@ export class SlackAdapter implements MessagingAdapter {
 
     // In mention-only mode, skip messages that don't @mention the bot (except DMs and commands)
     const isDM = channelId.startsWith('D');
+
+    // Observe-only permission evaluation (Slack org permission system, Slice 0).
+    // Runs for every authorized message — directed or overheard — and only LOGS the
+    // verdict (FP-rate measurement before enforcement). Fire-and-forget; never blocks.
+    if (this.permissionObserver) {
+      const directed = isDM || this._isBotMentioned(text);
+      void this.permissionObserver
+        .observe({ slackUserId: userId, displayName: userId, text, directed, channel: channelId })
+        .catch(() => {});
+    }
+
     if (this.respondMode === 'mention-only' && !isDM && !this._isBotMentioned(text)) {
       // Still populate ring buffer for context, but don't process
       const buffer = this.channelHistory.get(channelId) ?? new RingBuffer<SlackMessage>(RING_BUFFER_CAPACITY);

@@ -69,6 +69,17 @@ export interface SlackConfig {
     ownerId?: string;
     relayTimeoutSeconds?: number;
   };
+  /**
+   * Slack org permission gate (Slice 0). DARK by default — when unset, no gate is
+   * attached. `observeOnly: true` logs what the gate WOULD decide for every
+   * authorized message without blocking (for FP-rate measurement). `enforce: true`
+   * is reserved for a later phase (do not enable before the observed FP-rate is good).
+   * See docs/specs/SLACK-ORG-INTEGRATION-SPEC.md.
+   */
+  permissionGate?: {
+    observeOnly?: boolean;
+    enforce?: boolean;
+  };
 }
 
 // ── Slack API Types ──

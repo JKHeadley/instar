@@ -1019,6 +1019,7 @@ export const INTERNAL_PREFIXES: ReadonlyArray<{ prefix: string; reason: string }
   { prefix: 'episodes', reason: 'legacy episode log, replaced by topicMemory' },
   { prefix: 'reflection', reason: 'legacy reflection log, replaced by topicMemory' },
   { prefix: 'serendipity', reason: 'operator review surface, not agent-facing' },
+  { prefix: 'permissions', reason: 'Slack org permission gate (Slice 0) — dark/observe-only; registration/decision/scenario routes are operator/internal, not a user-surfaced capability until the enforce path ships' },
   { prefix: 'system-review', reason: 'legacy system review log, replaced by responseReview' },
   { prefix: 'system-reviews', reason: 'legacy system review log, replaced by responseReview' },
   { prefix: 'systems', reason: 'legacy systems registry, replaced by canonicalState.projects' },

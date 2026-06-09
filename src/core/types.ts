@@ -567,6 +567,14 @@ export interface UserProfile {
   createdAt?: string;
   /** Telegram numeric user ID (canonical identifier for identity binding) */
   telegramUserId?: number;
+  /** Slack workspace user ID (U…) — canonical identifier for Slack identity binding (mirrors telegramUserId). */
+  slackUserId?: string;
+  /**
+   * Organizational role for the Slack permission system
+   * (guest | member | contributor | operator | admin | owner). Optional — when
+   * absent it is derived from `permissions`. See src/permissions/SlackPrincipalResolver.ts.
+   */
+  orgRole?: string;
 }
 
 export interface UserChannel {
