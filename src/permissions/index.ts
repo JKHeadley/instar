@@ -8,6 +8,7 @@ export * from './IntentClassifier.js';
 export * from './AnomalyScorer.js';
 export * from './PermissionDecisionLedger.js';
 export * from './SlackPermissionGate.js';
+export * from './MandateBackedGrantStore.js';
 export * from './SlackPrincipalResolver.js';
 export * from './SlackPermissionObserver.js';
 export * from './SlackUserRegistry.js';

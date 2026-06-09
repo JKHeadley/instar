@@ -1,0 +1,23 @@
+## What Changed
+
+feat(coordination): user→agent authority grants in the Coordination Mandate — a verified operator can grant a specific floor action to a specific Slack user, **signed into the mandate** so it can't be forged. Completes the Slack-permission floor-authorization path (the gate's `GrantStore.activeGrant` now has a signature-backed implementation).
+
+- `canonicalMandate()` appends grants to the signed bytes **only when non-empty**, so every existing no-grant mandate serializes byte-for-byte as before and its `authProof` still verifies (backward-compatible by construction).
+- `addGrants()` re-signs through the PIN-gated path and rejects any grant whose expiry exceeds the mandate's (a grant can't outlive its delegation); `issue()` enforces the same clamp.
+- `MandateBackedGrantStore` reads grants deny-by-default: authorship + mandate-revocation + mandate-expiry + grant-expiry all checked before a grant clears a floor action.
+- New PIN-gated route `POST /mandate/:id/grants`; every grant decision audited through the hash-chained `MandateAudit`.
+
+Dark/no-op until an operator mints a grant; the Slack gate that consumes it is still observe-only.
+
+## What to Tell Your User
+
+Nothing changes for you right now — this ships dark. It's an operator capability that becomes useful once the Slack permission gate is enabled: from then on you (the verified operator) can grant a *specific* Slack person permission for a *specific* high-risk action (e.g. a production deploy), time-boxed, signed so it can't be forged, and minted only behind your dashboard PIN. Until you mint a grant and turn the gate on, agent behavior is unchanged.
+
+## Summary of New Capabilities
+
+- **PIN-gated `POST /mandate/:id/grants`** — your verified operator grants a Slack user a specific floor authority, signed into the Coordination Mandate (can't be forged or widened by an agent; can't outlive its mandate; every grant decision is written to the tamper-evident audit log). Operator/internal — not surfaced in `/capabilities` while the Slack gate is dark.
+
+## Evidence
+
+- 19 new unit tests incl. the backward-compat test (legacy no-grant mandate verifies) + the forged-grant tamper test (grant added without re-signing → verification FAILS) + expiry-clamp/revoke/expiry-bypass coverage. `tsc --noEmit` clean; lint clean; 130/130 in the related coordination/permission sweep.
+- Side-effects review (`upgrades/side-effects/mandate-user-grants.md`) + an independent adversarial Phase-5 second-pass on the signing path.

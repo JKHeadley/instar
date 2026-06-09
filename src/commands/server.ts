@@ -4595,10 +4595,41 @@ export async function startServer(options: StartOptions): Promise<void> {
               RolePolicy,
               HeuristicIntentClassifier,
               HeuristicAnomalyScorer,
+              MandateBackedGrantStore,
             } = await import('../permissions/index.js');
             // Own UserManager instance for verified-principal resolution (the
             // Telegram-block userManager is out of scope here). Reads users.json.
             const slackUserManager = new UserManager(config.stateDir, config.users);
+            // ── Floor-action grants are read from the SIGNED Coordination Mandate ──
+            // A MandateStore reader over the SAME file + SAME HMAC sign/verify deps as
+            // the coordination engine in AgentServer (which is constructed later, so we
+            // can't share the instance) — a stateless reader, so a second instance over
+            // the same on-disk mandates is correct. With no stateDir, leave grants
+            // unset (deny-by-default: the gate then refuses every floor action).
+            let grantStore: import('../permissions/index.js').GrantStore | undefined;
+            if (config.stateDir) {
+              try {
+                const { MandateStore } = await import('../coordination/MandateStore.js');
+                const cryptoMod = await import('node:crypto');
+                const issuanceKey = config.authToken || 'mandate-issuance-unsigned-dev-key';
+                const mSign = (canonical: string) => cryptoMod.createHmac('sha256', issuanceKey).update(canonical).digest('hex');
+                const mVerify = (canonical: string, proof: string) => {
+                  const expected = mSign(canonical);
+                  try {
+                    return expected.length === proof.length
+                      && cryptoMod.timingSafeEqual(Buffer.from(expected), Buffer.from(proof));
+                  } catch { /* @silent-fallback-ok — a malformed proof must verify FALSE (deny-safe), never throw */ return false; }
+                };
+                const mandateStore = new MandateStore({
+                  filePath: path.join(config.stateDir, 'state', 'coordination-mandates.json'),
+                  sign: mSign,
+                  verifySig: mVerify,
+                });
+                grantStore = new MandateBackedGrantStore({ store: mandateStore });
+              } catch (ge) {
+                console.warn('[slack] mandate-backed grant store wiring skipped:', (ge as Error).message);
+              }
+            }
             const observer = new SlackPermissionObserver({
               resolver: new SlackPrincipalResolver({
                 resolveFromSlackUserId: (id: string) => slackUserManager.resolveFromSlackUserId(id),
@@ -4607,6 +4638,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                 rolePolicy: new RolePolicy(),
                 classifier: new HeuristicIntentClassifier(),
                 anomalyScorer: new HeuristicAnomalyScorer(),
+                grants: grantStore,
               }),
               ledger: new PermissionDecisionLedger(config.stateDir),
               enforce: pgCfg.enforce === true,
