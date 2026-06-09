@@ -5586,6 +5586,64 @@ export function createRoutes(ctx: RouteContext): Router {
     res.json({ revoked: true, mandate: m });
   });
 
+  // Add user→agent authority grant(s) to a mandate — PIN-GATED (the same human-
+  // authenticated surface as issuance; an agent's Bearer token cannot mint a grant).
+  // Re-signs the mandate so `authProof` covers the new grant(s); each grant decision
+  // (accepted or rejected) lands in the SAME hash-chained MandateAudit. The grant rides
+  // the signed, expiring, revocable mandate model — deny-by-default is inherited.
+  // Design: docs/specs/SLACK-ORG-INTEGRATION-SPEC.md (floor grants) + coordination-mandate.md.
+  router.post('/mandate/:id/grants', (req, res) => {
+    if (!ctx.coordination) {
+      res.status(503).json({ error: 'coordination mandate engine unavailable (no stateDir or init failed)' });
+      return;
+    }
+    if (!checkMandatePin(req, res)) return;
+    const b = req.body ?? {};
+    // Accept either a single grant or an array.
+    const rawGrants = Array.isArray(b.grants) ? b.grants : (b.grant ? [b.grant] : []);
+    if (!Array.isArray(rawGrants) || rawGrants.length === 0) {
+      res.status(400).json({ error: 'grants (array) or grant (object) is required' });
+      return;
+    }
+    // Shallow shape check at the boundary; MandateStore.addGrants is the authoritative
+    // validator (incl. the expiresAt <= mandate.expiresAt clamp).
+    const grants = rawGrants.map((g: any) => ({
+      floorAction: typeof g?.floorAction === 'string' ? g.floorAction : '',
+      grantedTo: typeof g?.grantedTo === 'string' ? g.grantedTo : '',
+      authorizedBy: typeof g?.authorizedBy === 'string' ? g.authorizedBy : '',
+      expiresAt: typeof g?.expiresAt === 'string' ? g.expiresAt : '',
+      ...(g?.bounds && typeof g.bounds === 'object' ? { bounds: g.bounds } : {}),
+    }));
+
+    const result = ctx.coordination.store.addGrants(req.params.id, grants);
+    if (!result.ok) {
+      // Audit the rejection so a refused grant is reconstructable too.
+      for (const g of grants) {
+        ctx.coordination.audit.record({
+          mandateId: req.params.id,
+          agentFp: g.grantedTo || 'unknown',
+          action: `grant-floor:${g.floorAction || 'unknown'}`,
+          decision: 'deny',
+          reason: `grant rejected: ${result.reason}`,
+        });
+      }
+      const status = result.reason === 'mandate not found' ? 404 : 400;
+      res.status(status).json({ error: result.reason });
+      return;
+    }
+    // Audit each accepted grant.
+    for (const g of grants) {
+      ctx.coordination.audit.record({
+        mandateId: req.params.id,
+        agentFp: g.grantedTo,
+        action: `grant-floor:${g.floorAction}`,
+        decision: 'allow',
+        reason: `grant signed by ${g.authorizedBy} until ${g.expiresAt}`,
+      });
+    }
+    res.status(201).json({ granted: true, mandate: { ...result.mandate, authorshipValid: ctx.coordination.store.verifyAuthorship(result.mandate) } });
+  });
+
   // ── ReviewExchange — autonomous code-review protocol (coordination-mandate spec §7 G2.3) ──
   // One mutual, MANDATE-GATED sign-off of a review artifact between the two agents named
   // in a mandate. Both sign-offs run through /the same/ MandateGate (named party, bounds,
@@ -14464,6 +14522,108 @@ export function createRoutes(ctx: RouteContext): Router {
       return res.status(404).json({ error: 'AdaptiveTrust not configured' });
     }
     res.json(ctx.adaptiveTrust.getProfile());
+  });
+
+  // GET /permissions/decisions — observe-only Slack permission gate decision ledger.
+  // Read surface for measuring the gate's verdicts (and FP-rate) before enforcement.
+  // Design: docs/specs/SLACK-ORG-INTEGRATION-SPEC.md §6.10, §11.
+  router.get('/permissions/decisions', async (req, res) => {
+    try {
+      const limit = Math.min(Number(req.query.limit) || 100, 1000);
+      const { PermissionDecisionLedger } = await import('../permissions/index.js');
+      const ledger = new PermissionDecisionLedger(ctx.config.stateDir);
+      res.json({ decisions: ledger.readRecent(limit) });
+    } catch (e) {
+      res.status(500).json({ error: (e as Error).message });
+    }
+  });
+
+  // ── Slack org permission registration (Phase 1) ──────────────────────
+  // Conversational registration's programmatic surface: admin-register, list
+  // pending self-registration requests, approve/deny. See SLACK-ORG-INTEGRATION-SPEC.md §6.3.
+  async function buildSlackRegistry() {
+    const { SlackUserRegistry } = await import('../permissions/index.js');
+    const { UserManager } = await import('../users/UserManager.js');
+    const um = new UserManager(ctx.config.stateDir, ctx.config.users);
+    // Wrap UserManager as the registry's minimal store; upsert via addUserInteractive
+    // so the created profile gets proper defaults (preferences, timestamps, etc.).
+    const store = {
+      resolveFromSlackUserId: (id: string) => um.resolveFromSlackUserId(id),
+      upsertUser: (p: { id: string; name: string }) => { um.addUserInteractive(p as never); },
+    };
+    return new SlackUserRegistry(store as never, ctx.config.stateDir);
+  }
+
+  router.get('/permissions/registrations/pending', async (_req, res) => {
+    try {
+      const reg = await buildSlackRegistry();
+      res.json({ pending: reg.listPending() });
+    } catch (e) {
+      res.status(500).json({ error: (e as Error).message });
+    }
+  });
+
+  router.post('/permissions/registrations/register', async (req, res) => {
+    try {
+      const { slackUserId, displayName, role } = req.body || {};
+      if (!slackUserId || !role) return res.status(400).json({ error: 'slackUserId and role are required' });
+      const reg = await buildSlackRegistry();
+      res.json({ registered: true, profile: reg.register(slackUserId, displayName || slackUserId, role) });
+    } catch (e) {
+      res.status(400).json({ error: (e as Error).message });
+    }
+  });
+
+  router.post('/permissions/registrations/approve', async (req, res) => {
+    try {
+      const { slackUserId, role } = req.body || {};
+      if (!slackUserId || !role) return res.status(400).json({ error: 'slackUserId and role are required' });
+      const reg = await buildSlackRegistry();
+      res.json({ approved: true, profile: reg.approve(slackUserId, role) });
+    } catch (e) {
+      res.status(400).json({ error: (e as Error).message });
+    }
+  });
+
+  router.post('/permissions/registrations/deny', async (req, res) => {
+    try {
+      const { slackUserId } = req.body || {};
+      if (!slackUserId) return res.status(400).json({ error: 'slackUserId is required' });
+      const reg = await buildSlackRegistry();
+      res.json({ denied: reg.deny(slackUserId) });
+    } catch (e) {
+      res.status(400).json({ error: (e as Error).message });
+    }
+  });
+
+  // GET /permissions/scenario-suite — run the deterministic permission demonstration
+  // (Pillar 4 Layer-A): the six worked-example rows with expected vs actual verdict.
+  router.get('/permissions/scenario-suite', async (req, res) => {
+    try {
+      const { runScenarioSuite } = await import('../permissions/testing/SlackScenarioHarness.js');
+      const results = await runScenarioSuite();
+      res.json({
+        summary: {
+          total: results.length,
+          passed: results.filter((r) => r.pass).length,
+          failed: results.filter((r) => !r.pass).length,
+        },
+        rows: results.map((r) => ({
+          id: r.scenario.id,
+          principal: r.scenario.principal.name,
+          role: r.scenario.principal.role,
+          request: r.scenario.text,
+          directed: r.scenario.directed,
+          expected: `${r.scenario.expectedDecision}/${r.scenario.expectedBasis}`,
+          got: `${r.verdict.decision}/${r.verdict.basis}`,
+          message: r.verdict.message || undefined,
+          pass: r.pass,
+          proves: r.scenario.proves,
+        })),
+      });
+    } catch (e) {
+      res.status(500).json({ error: (e as Error).message });
+    }
   });
 
   // GET /trust/summary — compact trust summary

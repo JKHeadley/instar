@@ -56,6 +56,25 @@ export class UserManager {
   }
 
   /**
+   * Resolve a user profile from a verified Slack user ID (U…).
+   *
+   * The authenticated Slack user ID is the basis of Slack identity (Know Your
+   * Principal) — never a name in message content. Prefers the direct
+   * `slackUserId` field, falling back to a `slack`-typed channel identifier for
+   * profiles registered before the field existed.
+   */
+  resolveFromSlackUserId(slackUserId: string): UserProfile | null {
+    if (!slackUserId) return null;
+    for (const user of this.users.values()) {
+      if (user.slackUserId === slackUserId) return user;
+    }
+    for (const user of this.users.values()) {
+      if (user.channels?.some((c) => c.type === 'slack' && c.identifier === slackUserId)) return user;
+    }
+    return null;
+  }
+
+  /**
    * Get a user by ID.
    */
   getUser(userId: string): UserProfile | null {

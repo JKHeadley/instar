@@ -4621,6 +4621,145 @@ export async function startServer(options: StartOptions): Promise<void> {
         const { SlackAdapter } = await import('../messaging/slack/index.js');
         slackAdapter = new SlackAdapter(slackConfig.config as Record<string, unknown>, config.stateDir);
 
+        // ── Slack org permission gate (Slice 0) — DARK by default ──────────
+        // Attached only when `permissionGate.observeOnly` (or `.enforce`) is set in
+        // the Slack config. Observe-only logs what the gate WOULD decide for every
+        // authorized message and never blocks. See docs/specs/SLACK-ORG-INTEGRATION-SPEC.md.
+        try {
+          const slackCfg = slackConfig.config as Record<string, unknown>;
+          const pgCfg = slackCfg.permissionGate as {
+            observeOnly?: boolean;
+            enforce?: boolean;
+            /**
+             * Judgment-band intent classifier. 'heuristic' (default) keeps the
+             * deterministic keyword classifier; 'llm' uses LlmIntentClassifier above
+             * the deterministic floor (fail-closed to the heuristic on LLM failure).
+             */
+            classifier?: 'heuristic' | 'llm';
+          } | undefined;
+          if (pgCfg && (pgCfg.observeOnly || pgCfg.enforce)) {
+            const {
+              SlackPermissionObserver,
+              SlackPrincipalResolver,
+              SlackPermissionGate,
+              PermissionDecisionLedger,
+              RolePolicy,
+              HeuristicIntentClassifier,
+              LlmIntentClassifier,
+              HeuristicAnomalyScorer,
+              MandateBackedGrantStore,
+            } = await import('../permissions/index.js');
+            // Own UserManager instance for verified-principal resolution (the
+            // Telegram-block userManager is out of scope here). Reads users.json.
+            const slackUserManager = new UserManager(config.stateDir, config.users);
+            // ── Floor-action grants are read from the SIGNED Coordination Mandate ──
+            // A MandateStore reader over the SAME file + SAME HMAC sign/verify deps as
+            // the coordination engine in AgentServer (which is constructed later, so we
+            // can't share the instance) — a stateless reader, so a second instance over
+            // the same on-disk mandates is correct. With no stateDir, leave grants
+            // unset (deny-by-default: the gate then refuses every floor action).
+            let grantStore: import('../permissions/index.js').GrantStore | undefined;
+            if (config.stateDir) {
+              try {
+                const { MandateStore } = await import('../coordination/MandateStore.js');
+                const cryptoMod = await import('node:crypto');
+                const issuanceKey = config.authToken || 'mandate-issuance-unsigned-dev-key';
+                const mSign = (canonical: string) => cryptoMod.createHmac('sha256', issuanceKey).update(canonical).digest('hex');
+                const mVerify = (canonical: string, proof: string) => {
+                  const expected = mSign(canonical);
+                  try {
+                    return expected.length === proof.length
+                      && cryptoMod.timingSafeEqual(Buffer.from(expected), Buffer.from(proof));
+                  } catch { /* @silent-fallback-ok — a malformed proof must verify FALSE (deny-safe), never throw */ return false; }
+                };
+                const mandateStore = new MandateStore({
+                  filePath: path.join(config.stateDir, 'state', 'coordination-mandates.json'),
+                  sign: mSign,
+                  verifySig: mVerify,
+                });
+                grantStore = new MandateBackedGrantStore({ store: mandateStore });
+              } catch (ge) {
+                console.warn('[slack] mandate-backed grant store wiring skipped:', (ge as Error).message);
+              }
+            }
+            // ── Judgment-band classifier selection (opt-in, dark by default) ──
+            // Default stays the deterministic HeuristicIntentClassifier. When
+            // `permissionGate.classifier === 'llm'` AND an internal LLM provider is
+            // available, use LlmIntentClassifier for the judgment band ABOVE the
+            // deterministic floor — it fails CLOSED to the heuristic on any LLM
+            // failure (never a silent allow). With 'llm' selected but no provider,
+            // we stay on the heuristic and say so.
+            let intentClassifier: import('../permissions/index.js').IntentClassifier;
+            if (pgCfg.classifier === 'llm') {
+              if (sharedIntelligence) {
+                intentClassifier = new LlmIntentClassifier({ intelligence: sharedIntelligence });
+                console.log('[slack] permission gate using LLM judgment-band intent classifier (fail-closed to heuristic)');
+              } else {
+                intentClassifier = new HeuristicIntentClassifier();
+                console.warn('[slack] permissionGate.classifier=llm requested but no intelligence provider available — staying on heuristic classifier');
+              }
+            } else {
+              intentClassifier = new HeuristicIntentClassifier();
+            }
+            const observer = new SlackPermissionObserver({
+              resolver: new SlackPrincipalResolver({
+                resolveFromSlackUserId: (id: string) => slackUserManager.resolveFromSlackUserId(id),
+              }),
+              gate: new SlackPermissionGate({
+                rolePolicy: new RolePolicy(),
+                classifier: intentClassifier,
+                anomalyScorer: new HeuristicAnomalyScorer(),
+                grants: grantStore,
+              }),
+              ledger: new PermissionDecisionLedger(config.stateDir),
+              enforce: pgCfg.enforce === true,
+            });
+            slackAdapter.setPermissionObserver(observer);
+            console.log(`[slack] permission gate attached (${pgCfg.enforce ? 'ENFORCE' : 'observe-only'})`);
+          }
+        } catch (e) {
+          console.warn('[slack] permission gate wiring skipped:', (e as Error).message);
+        }
+
+        // ── Ambient "should I speak?" gate (considered/ambient mode, §5.2) — DARK ──
+        // Attached ONLY when at least one channel is explicitly opted into proactive
+        // contribution (`ambientContribution.enabledChannelIds` non-empty). With no
+        // such config, no gate is attached and undirected messages drop exactly as
+        // today (mention-only). The gate can only ever make the agent quieter
+        // (fail-to-silence): no LLM provider / error / low confidence / rate-limit →
+        // stay silent.
+        try {
+          const slackCfg = slackConfig.config as Record<string, unknown>;
+          const amCfg = slackCfg.ambientContribution as {
+            enabledChannelIds?: string[];
+            maxProactivePerChannel?: number;
+            windowMs?: number;
+            minConfidence?: number;
+          } | undefined;
+          if (amCfg && Array.isArray(amCfg.enabledChannelIds) && amCfg.enabledChannelIds.length > 0) {
+            const { AmbientContributionGate } = await import('../permissions/index.js');
+            const ambientGate = new AmbientContributionGate({
+              config: {
+                enabledChannelIds: amCfg.enabledChannelIds,
+                maxProactivePerChannel: amCfg.maxProactivePerChannel,
+                windowMs: amCfg.windowMs,
+                minConfidence: amCfg.minConfidence,
+              },
+              // No provider ⇒ the gate stays silent for every message (fail-to-silence).
+              intelligence: sharedIntelligence ?? undefined,
+              onDecision: (decision, channelId) => {
+                if (decision.speak) {
+                  console.log(`[slack] ambient gate: SPEAK in ${channelId} (${decision.reason})`);
+                }
+              },
+            });
+            slackAdapter.setAmbientGate(ambientGate);
+            console.log(`[slack] ambient contribution gate attached for ${amCfg.enabledChannelIds.length} channel(s)${sharedIntelligence ? '' : ' (no LLM provider — gate stays silent)'}`);
+          }
+        } catch (e) {
+          console.warn('[slack] ambient gate wiring skipped:', (e as Error).message);
+        }
+
         // Wire message handler — inject Slack messages into sessions
         slackAdapter.onMessage(async (message) => {
           const channelId = message.channel.identifier;

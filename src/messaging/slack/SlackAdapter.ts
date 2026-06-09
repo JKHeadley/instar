@@ -29,6 +29,8 @@ import { RingBuffer } from './RingBuffer.js';
 import { MessageLogger, type LogEntry } from '../shared/MessageLogger.js';
 import type { SlackConfig, SlackMessage, PendingPrompt, InteractionPayload, InteractionAction, SlackWorkspaceMode, SlackRespondMode } from './types.js';
 import { sanitizeDisplayName, validateChannelId, escapeMrkdwn } from './sanitize.js';
+import type { SlackPermissionObserver } from '../../permissions/SlackPermissionObserver.js';
+import type { AmbientContributionGate } from '../../permissions/AmbientContributionGate.js';
 
 const RING_BUFFER_CAPACITY = 50;
 const SLACK_MAX_TEXT_LENGTH = 4000;
@@ -57,6 +59,20 @@ export class SlackAdapter implements MessagingAdapter {
 
   // State
   private messageHandler: ((message: Message) => Promise<void>) | null = null;
+  /**
+   * Optional observe-only permission gate (Slack org permission system, Slice 0).
+   * When set, every authorized inbound message is evaluated and logged; it NEVER
+   * blocks delivery. See src/permissions/SlackPermissionObserver.ts.
+   */
+  private permissionObserver: SlackPermissionObserver | null = null;
+  /**
+   * Optional conservative ambient "should I speak?" gate (Slack considered/ambient
+   * mode, §5.2). DARK by default — when null, undirected messages are dropped exactly
+   * as today (mention-only). When set, an UNDIRECTED message in an explicitly
+   * opted-in channel runs the gate; fail-to-silence is the invariant.
+   * See src/permissions/AmbientContributionGate.ts.
+   */
+  private ambientGate: AmbientContributionGate | null = null;
   private started = false;
   private authorizedUsers: Set<string>;
   private channelHistory: Map<string, RingBuffer<SlackMessage>> = new Map();
@@ -301,6 +317,26 @@ export class SlackAdapter implements MessagingAdapter {
 
   onMessage(handler: (message: Message) => Promise<void>): void {
     this.messageHandler = handler;
+  }
+
+  /**
+   * Attach an observe-only permission gate (Slack org permission system, Slice 0).
+   * Wired during server startup when the feature is enabled. Observe-only — it logs
+   * what the gate WOULD decide and never blocks delivery.
+   */
+  setPermissionObserver(observer: SlackPermissionObserver | null): void {
+    this.permissionObserver = observer;
+  }
+
+  /**
+   * Attach the conservative ambient "should I speak?" gate (Slack considered/ambient
+   * mode, §5.2). DARK by default — wired during server startup only when at least one
+   * channel is explicitly opted into proactive contribution. When null (the default),
+   * undirected messages are dropped exactly as today (mention-only). The gate can only
+   * ever make the agent QUIETER (fail-to-silence).
+   */
+  setAmbientGate(gate: AmbientContributionGate | null): void {
+    this.ambientGate = gate;
   }
 
   async resolveUser(channelIdentifier: string): Promise<string | null> {
@@ -844,12 +880,66 @@ export class SlackAdapter implements MessagingAdapter {
 
     // In mention-only mode, skip messages that don't @mention the bot (except DMs and commands)
     const isDM = channelId.startsWith('D');
+
+    // Slack org permission gate (Slice 0 observe-only → Phase 1 enforce).
+    // Observe-only (default): log the verdict for FP-rate measurement; never block.
+    // Enforce (opt-in, dark): on a non-allow verdict, send the conversational reply
+    // and stop processing — the gate refused / asked to clarify / requires step-up.
+    if (this.permissionObserver) {
+      const directed = isDM || this._isBotMentioned(text);
+      const pInput = { slackUserId: userId, displayName: userId, text, directed, channel: channelId };
+      if (this.permissionObserver.enforcing) {
+        const verdict = await this.permissionObserver.observe(pInput);
+        if (verdict && verdict.decision !== 'allow') {
+          if (verdict.message) {
+            this.sendToChannel(channelId, verdict.message, threadTs ? { thread_ts: threadTs } : undefined).catch(() => {});
+          }
+          return; // refused / clarify / step-up — do not process this message
+        }
+        // null verdict (benign gate-infra error) or an allow decision → fall through.
+        // The deterministic floor inside the gate is itself fail-closed; this fall-through
+        // covers infra hiccups only and is part of the enforce-enablement review (§4).
+      } else {
+        void this.permissionObserver.observe(pInput).catch(() => {});
+      }
+    }
+
     if (this.respondMode === 'mention-only' && !isDM && !this._isBotMentioned(text)) {
-      // Still populate ring buffer for context, but don't process
-      const buffer = this.channelHistory.get(channelId) ?? new RingBuffer<SlackMessage>(RING_BUFFER_CAPACITY);
-      buffer.push({ ts, user: userId, text, channel: channelId, thread_ts: threadTs });
-      this.channelHistory.set(channelId, buffer);
-      return;
+      // ── Ambient "should I speak?" gate (considered/ambient mode, §5.2) ──────────
+      // This is the ONLY change to undirected handling. The gate can ONLY make the
+      // agent quieter: it runs solely when (1) a gate is attached AND (2) this exact
+      // channel is explicitly opted into proactive contribution. For every other
+      // channel — and whenever no gate is attached at all — behavior is byte-for-byte
+      // the mention-only drop below. FAIL-TO-SILENCE: any failure inside the gate
+      // returns speak=false, so we fall through to the same drop. A speak=true here
+      // means the undirected message is processed exactly like a directed one
+      // (the code below this block is unchanged); directed messages never reach here.
+      let ambientSpeak = false;
+      if (this.ambientGate && this.ambientGate.isChannelEnabled(channelId)) {
+        try {
+          const decision = await this.ambientGate.shouldSpeak({ channelId, text, channelName: undefined });
+          ambientSpeak = decision.speak === true;
+          if (ambientSpeak) {
+            // Consume one unit of the per-channel rolling-window budget only now that
+            // we've committed to processing this proactive turn.
+            this.ambientGate.recordSpoke(channelId);
+            console.log(`[slack] ambient gate cleared for ${channelId}: ${decision.reason}${decision.detail ? ` — ${decision.detail}` : ''}`);
+          }
+        } catch {
+          // Fail-to-silence: any unexpected throw at the call site stays silent too.
+          ambientSpeak = false;
+        }
+      }
+
+      if (!ambientSpeak) {
+        // Still populate ring buffer for context, but don't process
+        const buffer = this.channelHistory.get(channelId) ?? new RingBuffer<SlackMessage>(RING_BUFFER_CAPACITY);
+        buffer.push({ ts, user: userId, text, channel: channelId, thread_ts: threadTs });
+        this.channelHistory.set(channelId, buffer);
+        return;
+      }
+      // ambientSpeak === true → fall through and process this undirected message
+      // exactly as a directed one (no special-casing downstream).
     }
 
     // Check for standby commands (unstick, quiet, resume, restart) — these bypass normal processing
@@ -1877,6 +1967,12 @@ export class SlackAdapter implements MessagingAdapter {
    *   2. files.info API actually responds (not just scope present)
    *   3. File download auth works (redirect handling)
    */
+  // RULE 3: EXEMPT — _selfVerify is a startup-only, WARN-ONLY credential/scope
+  // self-diagnostic: it reads the bot token's own OAuth scopes (auth.test) and a
+  // self-test file download to fail-fast/log on a misconfigured Slack app at init.
+  // It is NOT ongoing provider state-detection feeding live decisions — its result
+  // is only logged, never acted on downstream as truth, so a drift in Slack's
+  // response degrades to a startup warning, not silent corruption (the Rule-3 class).
   private async _selfVerify(): Promise<void> {
     const results: Array<{ check: string; status: 'pass' | 'fail' | 'skip'; detail: string }> = [];
 
