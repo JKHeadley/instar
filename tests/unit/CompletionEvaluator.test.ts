@@ -55,7 +55,9 @@ describe('CompletionEvaluator', () => {
 
   it('defaults to the fast model tier', () => {
     const e = new CompletionEvaluator({ intelligence: stubProvider('MET\nok') });
-    expect(e.promptVersion).toBe('completion-eval-v1');
+    // Bumped to v2 for the signal extension (objective-signals block + fenced
+    // transcript + folded milestone floor). Spec §2b.4.
+    expect(e.promptVersion).toBe('completion-eval-v2');
   });
 });
 

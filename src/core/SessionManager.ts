@@ -880,7 +880,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
    * Look up the topic binding for a tmux session from the topic-session registry.
    * Returns null if the session is not bound to any topic.
    */
-  private getTopicBinding(tmuxSession: string): TopicBinding | null {
+  private getTopicBinding(tmuxSession: string, preferTopicId?: number | null): TopicBinding | null {
     if (!this.registryPath) return null;
     try {
       if (!fs.existsSync(this.registryPath)) return null;
@@ -888,19 +888,33 @@ rm()  { "${shimRunner}" rm  "$@"; }
       const topicToSession = registry.topicToSession || {};
       const topicToName = registry.topicToName || {};
 
-      // Reverse lookup: find which topic maps to this session
+      // Reverse lookup: collect ALL topics mapping to this session. Two topics
+      // whose names slug to the same tmux session name COLLIDE here — e.g.
+      // "Initiatives and maturation check-ins" (#21487) and the case-variant
+      // "initiatives and maturation check-ins" (#21624) both produce
+      // `echo-initiatives-and-maturation-check-ins`. With a single-match reverse
+      // lookup that returned the FIRST entry, a legitimate message from the OTHER
+      // colliding topic was blocked by the InputGuard as cross-topic (incident
+      // 2026-06-09: topic 21624 silently unresponsive — every message dropped).
+      const matches: number[] = [];
       for (const [topicIdStr, sessionName] of Object.entries(topicToSession)) {
-        if (sessionName === tmuxSession) {
-          const topicId = parseInt(topicIdStr, 10);
-          return {
-            topicId,
-            topicName: (topicToName[topicIdStr] as string) || `Topic ${topicId}`,
-            channel: 'telegram', // Currently only Telegram uses the registry
-            sessionName: tmuxSession,
-          };
-        }
+        if (sessionName === tmuxSession) matches.push(parseInt(topicIdStr, 10));
       }
-      return null;
+      if (matches.length === 0) return null;
+
+      // Disambiguate on collision: if the incoming message names one of the
+      // colliding topics (preferTopicId, parsed from its [telegram:N] tag),
+      // bind to THAT topic so the provenance check passes. Otherwise fall back
+      // to the first match (single-topic case is unchanged).
+      const topicId = (preferTopicId != null && matches.includes(preferTopicId))
+        ? preferTopicId
+        : matches[0];
+      return {
+        topicId,
+        topicName: (topicToName[String(topicId)] as string) || `Topic ${topicId}`,
+        channel: 'telegram', // Currently only Telegram uses the registry
+        sessionName: tmuxSession,
+      };
     } catch {
       // Registry read failure — fail open (no binding = no check)
       return null;
@@ -3672,7 +3686,14 @@ rm()  { "${shimRunner}" rm  "$@"; }
   injectMessage(tmuxSession: string, text: string): boolean {
     // ── Input Guard: Layer 1 + 1.5 (deterministic, synchronous) ──
     if (this.inputGuard) {
-      const binding = this.getTopicBinding(tmuxSession);
+      // Parse the message's own [telegram:N] tag so getTopicBinding can
+      // disambiguate when multiple topics collide onto one tmux session name
+      // (case-variant topic names). Without this, a colliding session binds to
+      // the first-registered topic and legitimate messages from the other topic
+      // are dropped as cross-topic.
+      const tagMatch = text.match(/^\[telegram:(\d+)/);
+      const preferTopicId = tagMatch ? parseInt(tagMatch[1], 10) : null;
+      const binding = this.getTopicBinding(tmuxSession, preferTopicId);
       if (binding) {
         const provenance = this.inputGuard.checkProvenance(text, binding);
 

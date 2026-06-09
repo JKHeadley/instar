@@ -2663,6 +2663,31 @@ export interface InstarConfig {
       /** Per-turn gemini spawn timeout in ms (default 180000). */
       turnTimeoutMs?: number;
     };
+    /**
+     * Autonomous Completion Discipline (spec: AUTONOMOUS-COMPLETION-DISCIPLINE.md).
+     * The structural enforcement of "don't stop a pre-approved autonomous run early."
+     * Read in the stop-hook at the chokepoint (no restart needed to toggle `enabled`
+     * or `judgeTimeoutMs`). Defaults seeded in ConfigDefaults.SHARED_DEFAULTS, so
+     * applyDefaults backfills existing agents on update (Migration Parity). `enabled`
+     * defaults `true` (operator-mandated, not dark) — flip to `false` for instant
+     * rollback (reverts to the prior promise/condition + prior P13 path).
+     */
+    completionDiscipline?: {
+      /** Master off-switch. Read in the hook; false reverts to pre-spec behavior. */
+      enabled?: boolean;
+      /** curl -m budget (ms) for a single judge call (default 35000). Distinct from the hook timeout. */
+      judgeTimeoutMs?: number;
+      /** Coarse rotation threshold (bytes) for logs/autonomous-hard-blocker.jsonl (default 1048576). */
+      hardBlockerLogRotateBytes?: number;
+      /** Consecutive judge failures that trip the circuit-breaker (default 3). */
+      judgeFailBreakerThreshold?: number;
+      /** Window (ms) over which consecutive judge failures are counted (default 600000). */
+      judgeFailWindowMs?: number;
+      /** Cooldown (ms) the breaker stays open after tripping (default 600000). */
+      judgeFailCooldownMs?: number;
+      /** Per-field clamp (chars) on the <hard-blocker> marker fields (default 500). */
+      markerFieldMaxChars?: number;
+    };
   };
   /** Notification preferences for autonomy events */
   notifications?: NotificationPreferences;

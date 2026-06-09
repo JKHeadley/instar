@@ -578,6 +578,38 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
     },
     operationalFacts: [],
   },
+  // Autonomous Completion Discipline (spec: AUTONOMOUS-COMPLETION-DISCIPLINE.md §5).
+  // The structural enforcement of "don't stop a pre-approved autonomous run early."
+  // `autonomousSessions` is NOT otherwise seeded in SHARED_DEFAULTS, so we add the
+  // whole object; `maxConcurrent` is read elsewhere with a `?? 5` fallback and is
+  // intentionally LEFT OUT here to avoid changing that behavior. applyDefaults is
+  // add-missing-only → existing agents backfill these on update (Migration Parity),
+  // and an operator's explicit value is never overwritten. The hook reads
+  // `enabled` + `judgeTimeoutMs` at the chokepoint (no restart needed to toggle).
+  autonomousSessions: {
+    completionDiscipline: {
+      // Operator-mandated behavior ("the completion bar is the FULL feature"),
+      // not a dark-launch experiment (Open-Q2 → on). The flag exists for instant
+      // rollback, not a graduated ramp.
+      enabled: true,
+      // curl -m budget (ms) for a single judge HTTP call before the hook gives up
+      // and falls open per §3 item 4 / §4. DISTINCT from the Claude hook `timeout`
+      // (effectively unbounded at 10000 seconds) — this bounds judge REACHABILITY
+      // under load, sized generously given this fleet's rate-limit latency history.
+      judgeTimeoutMs: 35000,
+      // Coarse rotation for logs/autonomous-hard-blocker.jsonl (consistent with
+      // other logs/*.jsonl).
+      hardBlockerLogRotateBytes: 1048576,
+      // Circuit-breaker (cites IntelligenceRouter precedent §3 item 4): after K
+      // consecutive judge failures in the window, short-circuit to the cheap
+      // checkbox-only decision for the cooldown.
+      judgeFailBreakerThreshold: 3,
+      judgeFailWindowMs: 600000,
+      judgeFailCooldownMs: 600000,
+      // Per-field clamp on the <hard-blocker> marker fields before JSON-encoding.
+      markerFieldMaxChars: 500,
+    },
+  },
 };
 
 /**

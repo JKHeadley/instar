@@ -1729,11 +1729,25 @@ export class PostUpdateMigrator {
     // re-injected the full frame ~15×/min all night. Bumping re-deploys the paced
     // hook to every existing agent (which carries RESTART_NOTE_SILENT but not
     // IDLE_BACKOFF); customized hooks are still left untouched.
+    // Marker bumped `IDLE_BACKOFF` → `COMPLETION_DISCIPLINE`: the bundled hook now
+    // structurally enforces "don't stop a pre-approved autonomous run early"
+    // (AUTONOMOUS-COMPLETION-DISCIPLINE.md). New behavior: a deterministic checkbox
+    // scan (the PRIMARY "buildable work remains" signal), a milestone-phrase + a
+    // prompt-injection scan over the judge's tail-6 window fed to the (extended,
+    // signal-aware) P13 judge, a nonce-validated `<hard-blocker>` (a) exit branch
+    // gated by P13's external-vs-buildable classification, a fail-open
+    // record-and-CONTINUE path (writes an evaluator-unreachable-exit row, never a
+    // silent exit), a K-of-window judge-failure circuit-breaker + verdict cache, the
+    // version-skew three-case detection (p13ProtocolVersion), and the off-switch
+    // `autonomousSessions.completionDiscipline.enabled` + `judgeTimeoutMs` read at
+    // the chokepoint (no restart). Bumping re-deploys the enforced hook to every
+    // existing agent (which carries IDLE_BACKOFF but not COMPLETION_DISCIPLINE);
+    // customized hooks are still left untouched.
     upgrade(
       '.claude/skills/autonomous/hooks/autonomous-stop-hook.sh',
-      'IDLE_BACKOFF',
+      'COMPLETION_DISCIPLINE',
       'Autonomous Mode Stop Hook',
-      'skills/autonomous/hooks/autonomous-stop-hook.sh (idle backoff — consecutive quick stops pace frame re-injection; early-break on inbound/emergency/stop)',
+      'skills/autonomous/hooks/autonomous-stop-hook.sh (completion discipline — checkbox/milestone/injection scans + nonce-gated (a) hard-blocker branch + breaker/cache + off-switch)',
     );
     // setup-autonomous.sh marker bumped `native-goal/set` → `IS_CODEX_AGENT`: the bundled
     // setup now ALSO auto-delegates to native /goal for CODEX agents (the prior native /goal
@@ -1742,11 +1756,17 @@ export class PostUpdateMigrator {
     // sustained multi-turn). Bumping the marker re-deploys the FIXED setup to existing agents
     // (which carry `native-goal/set` but not `IS_CODEX_AGENT`); customized scripts (no stock
     // `autonomous-state.local.md` fingerprint) are still left untouched.
+    // Marker bumped `IS_CODEX_AGENT` → `COMPLETION_DISCIPLINE`: the bundled setup now
+    // writes a per-run `hard_blocker_nonce` (authenticates the (a) terminal marker) and
+    // enforces a bounded-duration backstop (a 0/unset duration under completion-discipline
+    // defaults to 8h instead of running truly unbounded) — AUTONOMOUS-COMPLETION-DISCIPLINE.md
+    // §2b.3 / §4. Bumping re-deploys the updated setup to existing agents (which carry
+    // IS_CODEX_AGENT but not COMPLETION_DISCIPLINE); customized scripts are left untouched.
     upgrade(
       '.claude/skills/autonomous/scripts/setup-autonomous.sh',
-      'IS_CODEX_AGENT',
+      'COMPLETION_DISCIPLINE',
       'autonomous-state.local.md',
-      'skills/autonomous/scripts/setup-autonomous.sh (codex native /goal auto-wire)',
+      'skills/autonomous/scripts/setup-autonomous.sh (hard_blocker_nonce + bounded-duration backstop)',
     );
     // SKILL.md fixes (cumulative — the upgrade re-deploys the whole bundled SKILL.md, so a
     // single marker bump carries every fix to date):
@@ -1778,11 +1798,22 @@ export class PostUpdateMigrator {
     // bundled SKILL.md, so this single marker bump carries every fix to date. Customized
     // SKILL.md files (missing the stock `ALL_TASKS_COMPLETE` fingerprint) are left untouched
     // (idempotent — a second run finds the new marker and no-ops).
+    //   (4) Completion-condition default + honest-exit marker (AUTONOMOUS-COMPLETION-DISCIPLINE.md
+    //       §2a/§2b.3): the Step-2b Write-tool frontmatter template now defaults to a verifiable
+    //       `completion_condition` (independent judge) with the self-declared promise as a
+    //       RECORDED fallback (`completion_mode` + `promise_fallback_reason`), seeds a per-run
+    //       `hard_blocker_nonce`, and documents the nonce'd `<hard-blocker>` terminal-exit marker
+    //       (DISTINCT from routine (a) reporting-while-continuing prose).
+    // Marker bumped `LEGITIMATE_STOP_CONDITIONS` → `COMPLETION_CONDITION_DEFAULT`: present ONLY
+    // in fix (4)'s version (an embedded sentinel comment above the Step-2b template), so an agent
+    // that received fix (3) (carries the prior marker but not the new one) gets re-deployed to
+    // fix (4). The upgrade re-deploys the WHOLE bundled SKILL.md; customized SKILL.md files
+    // (missing the stock `ALL_TASKS_COMPLETE` fingerprint) are left untouched (idempotent).
     upgrade(
       '.claude/skills/autonomous/SKILL.md',
-      'LEGITIMATE_STOP_CONDITIONS',
+      'COMPLETION_CONDITION_DEFAULT',
       'ALL_TASKS_COMPLETE',
-      'skills/autonomous/SKILL.md (Legitimate Stop Conditions — only (a) hard blocker / (b) duration expiry / (c) completion are valid exits; reversible decisions/milestones/late-hour are NON-stops)',
+      'skills/autonomous/SKILL.md (completion-condition default + nonce-gated <hard-blocker> honest-exit marker; promise becomes the recorded fallback)',
     );
   }
 
