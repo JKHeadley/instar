@@ -4585,7 +4585,16 @@ export async function startServer(options: StartOptions): Promise<void> {
         // authorized message and never blocks. See docs/specs/SLACK-ORG-INTEGRATION-SPEC.md.
         try {
           const slackCfg = slackConfig.config as Record<string, unknown>;
-          const pgCfg = slackCfg.permissionGate as { observeOnly?: boolean; enforce?: boolean } | undefined;
+          const pgCfg = slackCfg.permissionGate as {
+            observeOnly?: boolean;
+            enforce?: boolean;
+            /**
+             * Judgment-band intent classifier. 'heuristic' (default) keeps the
+             * deterministic keyword classifier; 'llm' uses LlmIntentClassifier above
+             * the deterministic floor (fail-closed to the heuristic on LLM failure).
+             */
+            classifier?: 'heuristic' | 'llm';
+          } | undefined;
           if (pgCfg && (pgCfg.observeOnly || pgCfg.enforce)) {
             const {
               SlackPermissionObserver,
@@ -4594,6 +4603,7 @@ export async function startServer(options: StartOptions): Promise<void> {
               PermissionDecisionLedger,
               RolePolicy,
               HeuristicIntentClassifier,
+              LlmIntentClassifier,
               HeuristicAnomalyScorer,
               MandateBackedGrantStore,
             } = await import('../permissions/index.js');
@@ -4630,13 +4640,32 @@ export async function startServer(options: StartOptions): Promise<void> {
                 console.warn('[slack] mandate-backed grant store wiring skipped:', (ge as Error).message);
               }
             }
+            // ── Judgment-band classifier selection (opt-in, dark by default) ──
+            // Default stays the deterministic HeuristicIntentClassifier. When
+            // `permissionGate.classifier === 'llm'` AND an internal LLM provider is
+            // available, use LlmIntentClassifier for the judgment band ABOVE the
+            // deterministic floor — it fails CLOSED to the heuristic on any LLM
+            // failure (never a silent allow). With 'llm' selected but no provider,
+            // we stay on the heuristic and say so.
+            let intentClassifier: import('../permissions/index.js').IntentClassifier;
+            if (pgCfg.classifier === 'llm') {
+              if (sharedIntelligence) {
+                intentClassifier = new LlmIntentClassifier({ intelligence: sharedIntelligence });
+                console.log('[slack] permission gate using LLM judgment-band intent classifier (fail-closed to heuristic)');
+              } else {
+                intentClassifier = new HeuristicIntentClassifier();
+                console.warn('[slack] permissionGate.classifier=llm requested but no intelligence provider available — staying on heuristic classifier');
+              }
+            } else {
+              intentClassifier = new HeuristicIntentClassifier();
+            }
             const observer = new SlackPermissionObserver({
               resolver: new SlackPrincipalResolver({
                 resolveFromSlackUserId: (id: string) => slackUserManager.resolveFromSlackUserId(id),
               }),
               gate: new SlackPermissionGate({
                 rolePolicy: new RolePolicy(),
-                classifier: new HeuristicIntentClassifier(),
+                classifier: intentClassifier,
                 anomalyScorer: new HeuristicAnomalyScorer(),
                 grants: grantStore,
               }),
