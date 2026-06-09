@@ -14705,7 +14705,8 @@ export function createRoutes(ctx: RouteContext): Router {
   });
 
   // GET /permissions/scenario-suite — run the deterministic permission demonstration
-  // (Pillar 4 Layer-A): the six worked-example rows with expected vs actual verdict.
+  // (Pillar 4 Layer-A): the worked-example rows with expected vs actual verdict.
+  // This is the gate-direct (logic-only) view: it proves each row's DECISION.
   router.get('/permissions/scenario-suite', async (req, res) => {
     try {
       const { runScenarioSuite } = await import('../permissions/testing/SlackScenarioHarness.js');
@@ -14726,6 +14727,40 @@ export function createRoutes(ctx: RouteContext): Router {
           got: `${r.verdict.decision}/${r.verdict.basis}`,
           message: r.verdict.message || undefined,
           pass: r.pass,
+          proves: r.scenario.proves,
+        })),
+      });
+    } catch (e) {
+      res.status(500).json({ error: (e as Error).message });
+    }
+  });
+
+  // POST /permissions/scenario-suite/run — the AUDIT-ASSERTING demonstration
+  // (Pillar 4 milestone 4, "verified, not narrated", §8.4). Drives every row through
+  // the SAME observer the live SlackAdapter._handleMessage calls (resolver → gate →
+  // decision ledger), then asserts BOTH the verdict AND that the matching audit/ledger
+  // entry actually landed. Read-only/dev: it writes only into a throwaway temp state
+  // dir (never ctx.config.stateDir) and mutates nothing in the running agent.
+  // A green run (failed:0) is the executable, self-verified proof.
+  router.post('/permissions/scenario-suite/run', async (_req, res) => {
+    try {
+      const { runAuditedScenarioSuite } = await import('../permissions/testing/SlackScenarioHarness.js');
+      const report = await runAuditedScenarioSuite();
+      res.json({
+        summary: report.summary,
+        ledgerPath: report.ledgerPath,
+        rows: report.rows.map((r) => ({
+          id: r.scenario.id,
+          principal: r.scenario.principal.name,
+          role: r.scenario.principal.role,
+          request: r.scenario.text,
+          directed: r.scenario.directed,
+          expected: `${r.scenario.expectedDecision}/${r.scenario.expectedBasis}`,
+          got: r.verdict ? `${r.verdict.decision}/${r.verdict.basis}` : 'null',
+          verdictOk: r.verdictOk,
+          auditOk: r.auditOk,
+          pass: r.pass,
+          mismatch: r.mismatch,
           proves: r.scenario.proves,
         })),
       });

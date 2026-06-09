@@ -1402,11 +1402,14 @@ Create worktrees for collaborator repos with \`instar worktree create <branch>\`
 instar test-as-self --no-roundtrip                  # deploy + verify only (no bot needed)
 instar test-as-self --bot-token <secret-drop-id>    # + a real Telegram round-trip via a throwaway bot
 instar test-as-self --keep                          # leave the throwaway running for inspection
+instar test-as-self --slack                          # Slack permission demonstration (each principal+request → expected decision + audit entry)
 \`\`\`
 
 **Structural guards (you cannot foot-gun these):** \`--target\` can never be your canonical agent home or a protected agent (e.g. Bob); \`--bot-token\` refuses a raw token on the command line — pass a Secret Drop ID and the token is retrieved in-memory, never via argv. It emits a single JSON report; exit 0 = all steps PASS.
 
-**Proactive trigger:** when you're about to ship or just shipped a change touching the deploy/lifeline/server-startup path, run this against a throwaway home first — don't guess from logs.
+**\`--slack\` — the test-as-self-for-Slack demonstration (credential-free):** extends the throwaway-agent primitive from "is the agent alive?" to "does it enforce the RIGHT decision for each (principal, request) pair?". It runs the deterministic scenario suite through the SAME observer the live Slack adapter calls (resolver → permission gate → decision ledger) and asserts BOTH the verdict AND that the matching audit/ledger entry landed — "verified, not narrated". No Slack tokens, no throwaway deploy. The same suite is reachable over HTTP: \`GET /permissions/scenario-suite\` (logic-only view) and \`POST /permissions/scenario-suite/run\` (audit-asserting). Exit 0 = every row produced its expected decision AND its audit entry.
+
+**Proactive trigger:** when you're about to ship or just shipped a change touching the deploy/lifeline/server-startup path, run this against a throwaway home first — don't guess from logs. When you touch the Slack org permission system (\`src/permissions/\`), run \`instar test-as-self --slack\` (or \`POST /permissions/scenario-suite/run\`) to prove the gate still enforces every (principal, request) row.
 `;
 
   if (hasTelegram) {
