@@ -1,0 +1,21 @@
+{
+  "ts": "2026-06-09T03:28:49.848Z",
+  "slug": "threadline-local-linkage",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new config key added"
+  ],
+  "belowFloor": true,
+  "files": 1,
+  "loc": 57,
+  "causalAutopsy": {
+    "origin": "prior-pr",
+    "relatedPrs": [
+      146
+    ],
+    "notes": "Thread-Topic Linkage (THREAD-TOPIC-LINKAGE-SPEC.md, follow-up to PR #146) routed peer replies back to the origin topic on the cross-machine relay path but never the same-machine local path: /messages/relay-agent called handleInboundMessage with no relayContext, so the anti-hijack guard saw the sender name vs the stored fingerprint owner and isolated every co-located reply to a fresh thread (no originTopicId -> fell to the hub). Fix resolves name->fingerprint locally and passes the context."
+  },
+  "verdict": "pass"
+}

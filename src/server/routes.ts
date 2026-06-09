@@ -16210,13 +16210,68 @@ export function createRoutes(ctx: RouteContext): Router {
         // The actual reply still flows back via the reply-waiter mechanism
         // (resolved above), decoupled from this HTTP response.
         if (ctx.threadlineRouter) {
+          // THREAD-TOPIC-LINKAGE / anti-hijack fix: this same-machine
+          // relay-agent path previously called handleInboundMessage with NO
+          // relayContext, so the anti-hijack guard saw the sender's NAME
+          // (message.from.agent) as its only identity while the thread stores
+          // the peer's FINGERPRINT as owner. The name-vs-fingerprint mismatch
+          // made the guard isolate EVERY reply from a co-located peer to a
+          // fresh thread, which has no originTopicId — so the reply fell to the
+          // Threadline hub topic instead of routing back to the originating
+          // Telegram topic (the "clumsy local collaboration" bug). Resolve the
+          // local sender's name -> registry fingerprint and pass a proper relay
+          // context so identityMatches succeeds. This endpoint is same-machine
+          // only (middleware source-gate; '/messages/relay-agent' has no remote
+          // reach), so resolving from the local agent registry is trustworthy.
+          // Trust kind stays 'plaintext-tofu' (honest: not per-message crypto),
+          // so the guard still runs and affinity optimizations that gate on
+          // 'verified' stay conservative — the cross-machine relay path and its
+          // strict isolation are untouched.
+          let localRelayContext:
+            | import('../threadline/ThreadlineRouter.js').RelayMessageContext
+            | undefined;
+          try {
+            const senderName = envelope.message?.from?.agent;
+            if (senderName) {
+              // Resolve the local sender's name -> fingerprint from the same
+              // threadline known-agents registry the relay-send path uses, so
+              // the anti-hijack identity check has the FINGERPRINT to match the
+              // thread owner against (the thread stores the peer fingerprint).
+              const knownAgentsPath = path.join(ctx.config.stateDir, 'threadline', 'known-agents.json');
+              let senderFp: string | undefined;
+              if (fs.existsSync(knownAgentsPath)) {
+                const knownData = JSON.parse(fs.readFileSync(knownAgentsPath, 'utf-8'));
+                const agents: Array<{ name?: string; fingerprint?: string; publicKey?: string }> =
+                  knownData.agents ?? [];
+                const match = agents.find(
+                  (a) => a.name === senderName || a.name?.toLowerCase() === senderName.toLowerCase(),
+                );
+                senderFp = match?.fingerprint || match?.publicKey?.substring(0, 32);
+              }
+              if (senderFp) {
+                localRelayContext = {
+                  trust: { kind: 'plaintext-tofu', senderFingerprint: senderFp },
+                  senderFingerprint: senderFp,
+                  senderName,
+                  trustLevel: 'verified',
+                };
+              }
+            }
+          } catch (err) {
+            // @silent-fallback-ok: identity resolution is best-effort — on
+            // failure the call falls back to prior no-context behavior
+            // (isolation), never a throw. Logged.
+            console.warn(
+              `[relay-agent] local relay-context resolve failed (non-fatal): ${err instanceof Error ? err.message : err}`,
+            );
+          }
           res.json({ ok: true, accepted: true, threadline: { accepted: true, async: true } });
           // Process asynchronously — the response is already sent.
           // handleInboundMessage is NOT dropped: it runs to completion in the
           // background; its outcome is logged (never surfaced to the closed
           // response), and a failure can't 500 a request that already returned.
           void ctx.threadlineRouter
-            .handleInboundMessage(envelope)
+            .handleInboundMessage(envelope, localRelayContext)
             .then((threadlineResult) => {
               console.log(
                 `[relay-agent] async handleInboundMessage complete (thread ${envelope.message?.threadId ?? 'none'}): ${JSON.stringify(threadlineResult)}`,

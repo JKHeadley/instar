@@ -180,4 +180,51 @@ describe('ThreadlineRouter — anti-hijack guard', () => {
     const reason = spawnManager.evaluate.mock.calls[0][0].reason as string;
     expect(reason).toMatch(/^New thread/);
   });
+
+  // ── Regression: same-machine local-delivery topic linkage (relay-agent fix) ──
+  // The /messages/relay-agent route (same-machine only) previously called
+  // handleInboundMessage with NO relayContext, so the guard saw the sender's
+  // NAME as its only identity while the thread stores the peer FINGERPRINT —
+  // a name-vs-fingerprint mismatch that isolated EVERY co-located reply to a
+  // fresh thread (no originTopicId → fell to the hub topic). The fix resolves
+  // the local sender's name -> registry fingerprint and passes a proper relay
+  // context. These two tests model that context at the router boundary: with
+  // the resolved fingerprint the co-located reply resumes (topic linkage holds);
+  // without it (the pre-fix no-context shape) it still isolates — proving the
+  // fix is what makes the difference, and that the strict guard is preserved.
+
+  it('resumes a co-located peer reply when the route resolved its name to the owner fingerprint (the relay-agent fix)', async () => {
+    const threadId = 'local-topic-thread';
+    const peerFp = '1db85f00aa11bb22cc33dd44ee55ff66';
+    // Owner stored as the peer's full fingerprint (captureOrigin on the send).
+    threadResumeMap._set(threadId, ownedEntry(peerFp));
+
+    // The fix's relay context: sender NAME from the envelope, FINGERPRINT
+    // resolved from the local agent registry, honest plaintext-tofu trust.
+    const result = await router.handleInboundMessage(
+      envelopeFrom('sagemind', threadId),
+      relayCtx({ senderName: 'sagemind', senderFingerprint: peerFp }),
+    );
+
+    expect(result.threadId).toBe(threadId);
+    const reason = spawnManager.evaluate.mock.calls[0][0].reason as string;
+    expect(reason).toMatch(/^Resume thread/);
+  });
+
+  it('still isolates a co-located reply when no fingerprint could be resolved (pre-fix no-context shape) — guard preserved', async () => {
+    const threadId = 'local-topic-thread-2';
+    const peerFp = '1db85f00aa11bb22cc33dd44ee55ff66';
+    threadResumeMap._set(threadId, ownedEntry(peerFp));
+
+    // Pre-fix shape: only the NAME is known (no relay context resolved the
+    // fingerprint), so the name cannot match the fingerprint owner → isolate.
+    const result = await router.handleInboundMessage(
+      envelopeFrom('sagemind', threadId),
+      relayCtx({ senderName: 'sagemind', senderFingerprint: 'sagemind' }),
+    );
+
+    expect(result.threadId).not.toBe(threadId);
+    const reason = spawnManager.evaluate.mock.calls[0][0].reason as string;
+    expect(reason).toMatch(/^New thread/);
+  });
 });
