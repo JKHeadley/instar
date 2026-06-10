@@ -65,7 +65,11 @@ input. All git access is read-only via `SafeGitExecutor.readSync` (arg-form, no
 shell interpolation). Routes are Bearer-auth'd like all instar routes; writes have
 no open route (in-process only). Summaries served as JSON (consumers escape before
 any HTML render). `scaffold()` is bounded by maxDepth + a symlink-loop guard
-(visited realpaths) so a pathological repo cannot hang it.
+(visited realpaths) so a pathological repo cannot hang it. The one destructive fs
+path — pruning stale node files in `rewriteAll()` — is funneled through
+`SafeFsExecutor.safeUnlinkSync` (operation-tagged `cartographer-prune-stale-node`,
+source-tree-guarded with the agent-runtime-state carveout for `.instar/`), never a
+raw `fs.unlinkSync`, so the destructive-fs lint and audit trail both cover it.
 
 ## 7. Observability / failure modes
 `GET /cartographer/health` exposes node/authored/stale counts (the Tier-3 "alive"
