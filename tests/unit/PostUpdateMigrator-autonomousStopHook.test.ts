@@ -222,20 +222,22 @@ describe('PostUpdateMigrator — autonomous stop hook topic-keying', () => {
     expect(result.errors).toEqual([]);
   });
 
-  it('re-deploys a prior SKILL.md so existing agents get the Legitimate Stop Conditions section', () => {
+  it('re-deploys a prior SKILL.md so existing agents get the completion-condition default + honest-exit marker', () => {
     // Prior SKILL.md carries the stock fingerprint + the per-topic marker but NOT the new
-    // `LEGITIMATE_STOP_CONDITIONS` sentinel — under the old marker it would be wrongly skipped.
+    // `COMPLETION_CONDITION_DEFAULT` sentinel — under the old marker it would be wrongly skipped.
     const dst = deploySkill(projectDir, PRIOR_SKILL_MD);
     const before = fs.readFileSync(dst, 'utf8');
     expect(before).toContain('ALL_TASKS_COMPLETE');         // stock fingerprint
-    expect(before).not.toContain('LEGITIMATE_STOP_CONDITIONS');
+    expect(before).not.toContain('COMPLETION_CONDITION_DEFAULT');
 
     const result = runMigration(newMigrator(projectDir));
 
     const updated = fs.readFileSync(dst, 'utf8');
-    expect(updated).toContain('LEGITIMATE_STOP_CONDITIONS');            // new section sentinel present
-    expect(updated).toContain('## Legitimate Stop Conditions');        // human-readable header
-    expect(result.upgraded.some(u => u.includes('SKILL.md') && u.includes('Legitimate Stop Conditions'))).toBe(true);
+    expect(updated).toContain('COMPLETION_CONDITION_DEFAULT');          // new section sentinel present
+    expect(updated).toContain('## Legitimate Stop Conditions');        // human-readable header (carried forward)
+    expect(updated).toContain('completion_condition');                 // the new default field
+    expect(updated).toContain('hard_blocker_nonce');                   // the (a) exit nonce
+    expect(result.upgraded.some(u => u.includes('SKILL.md') && u.includes('completion-condition default'))).toBe(true);
     expect(result.errors).toEqual([]);
   });
 
@@ -245,7 +247,7 @@ describe('PostUpdateMigrator — autonomous stop hook topic-keying', () => {
 
     const dst = path.join(projectDir, SKILL_REL);
     const afterFirst = fs.readFileSync(dst, 'utf8');
-    expect(afterFirst).toContain('LEGITIMATE_STOP_CONDITIONS');
+    expect(afterFirst).toContain('COMPLETION_CONDITION_DEFAULT');
 
     const second = runMigration(newMigrator(projectDir));
     expect(fs.readFileSync(dst, 'utf8')).toBe(afterFirst); // unchanged

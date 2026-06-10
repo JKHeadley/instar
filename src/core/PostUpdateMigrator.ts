@@ -1729,11 +1729,25 @@ export class PostUpdateMigrator {
     // re-injected the full frame ~15×/min all night. Bumping re-deploys the paced
     // hook to every existing agent (which carries RESTART_NOTE_SILENT but not
     // IDLE_BACKOFF); customized hooks are still left untouched.
+    // Marker bumped `IDLE_BACKOFF` → `COMPLETION_DISCIPLINE`: the bundled hook now
+    // structurally enforces "don't stop a pre-approved autonomous run early"
+    // (AUTONOMOUS-COMPLETION-DISCIPLINE.md). New behavior: a deterministic checkbox
+    // scan (the PRIMARY "buildable work remains" signal), a milestone-phrase + a
+    // prompt-injection scan over the judge's tail-6 window fed to the (extended,
+    // signal-aware) P13 judge, a nonce-validated `<hard-blocker>` (a) exit branch
+    // gated by P13's external-vs-buildable classification, a fail-open
+    // record-and-CONTINUE path (writes an evaluator-unreachable-exit row, never a
+    // silent exit), a K-of-window judge-failure circuit-breaker + verdict cache, the
+    // version-skew three-case detection (p13ProtocolVersion), and the off-switch
+    // `autonomousSessions.completionDiscipline.enabled` + `judgeTimeoutMs` read at
+    // the chokepoint (no restart). Bumping re-deploys the enforced hook to every
+    // existing agent (which carries IDLE_BACKOFF but not COMPLETION_DISCIPLINE);
+    // customized hooks are still left untouched.
     upgrade(
       '.claude/skills/autonomous/hooks/autonomous-stop-hook.sh',
-      'IDLE_BACKOFF',
+      'COMPLETION_DISCIPLINE',
       'Autonomous Mode Stop Hook',
-      'skills/autonomous/hooks/autonomous-stop-hook.sh (idle backoff — consecutive quick stops pace frame re-injection; early-break on inbound/emergency/stop)',
+      'skills/autonomous/hooks/autonomous-stop-hook.sh (completion discipline — checkbox/milestone/injection scans + nonce-gated (a) hard-blocker branch + breaker/cache + off-switch)',
     );
     // setup-autonomous.sh marker bumped `native-goal/set` → `IS_CODEX_AGENT`: the bundled
     // setup now ALSO auto-delegates to native /goal for CODEX agents (the prior native /goal
@@ -1742,11 +1756,17 @@ export class PostUpdateMigrator {
     // sustained multi-turn). Bumping the marker re-deploys the FIXED setup to existing agents
     // (which carry `native-goal/set` but not `IS_CODEX_AGENT`); customized scripts (no stock
     // `autonomous-state.local.md` fingerprint) are still left untouched.
+    // Marker bumped `IS_CODEX_AGENT` → `COMPLETION_DISCIPLINE`: the bundled setup now
+    // writes a per-run `hard_blocker_nonce` (authenticates the (a) terminal marker) and
+    // enforces a bounded-duration backstop (a 0/unset duration under completion-discipline
+    // defaults to 8h instead of running truly unbounded) — AUTONOMOUS-COMPLETION-DISCIPLINE.md
+    // §2b.3 / §4. Bumping re-deploys the updated setup to existing agents (which carry
+    // IS_CODEX_AGENT but not COMPLETION_DISCIPLINE); customized scripts are left untouched.
     upgrade(
       '.claude/skills/autonomous/scripts/setup-autonomous.sh',
-      'IS_CODEX_AGENT',
+      'COMPLETION_DISCIPLINE',
       'autonomous-state.local.md',
-      'skills/autonomous/scripts/setup-autonomous.sh (codex native /goal auto-wire)',
+      'skills/autonomous/scripts/setup-autonomous.sh (hard_blocker_nonce + bounded-duration backstop)',
     );
     // SKILL.md fixes (cumulative — the upgrade re-deploys the whole bundled SKILL.md, so a
     // single marker bump carries every fix to date):
@@ -1778,11 +1798,22 @@ export class PostUpdateMigrator {
     // bundled SKILL.md, so this single marker bump carries every fix to date. Customized
     // SKILL.md files (missing the stock `ALL_TASKS_COMPLETE` fingerprint) are left untouched
     // (idempotent — a second run finds the new marker and no-ops).
+    //   (4) Completion-condition default + honest-exit marker (AUTONOMOUS-COMPLETION-DISCIPLINE.md
+    //       §2a/§2b.3): the Step-2b Write-tool frontmatter template now defaults to a verifiable
+    //       `completion_condition` (independent judge) with the self-declared promise as a
+    //       RECORDED fallback (`completion_mode` + `promise_fallback_reason`), seeds a per-run
+    //       `hard_blocker_nonce`, and documents the nonce'd `<hard-blocker>` terminal-exit marker
+    //       (DISTINCT from routine (a) reporting-while-continuing prose).
+    // Marker bumped `LEGITIMATE_STOP_CONDITIONS` → `COMPLETION_CONDITION_DEFAULT`: present ONLY
+    // in fix (4)'s version (an embedded sentinel comment above the Step-2b template), so an agent
+    // that received fix (3) (carries the prior marker but not the new one) gets re-deployed to
+    // fix (4). The upgrade re-deploys the WHOLE bundled SKILL.md; customized SKILL.md files
+    // (missing the stock `ALL_TASKS_COMPLETE` fingerprint) are left untouched (idempotent).
     upgrade(
       '.claude/skills/autonomous/SKILL.md',
-      'LEGITIMATE_STOP_CONDITIONS',
+      'COMPLETION_CONDITION_DEFAULT',
       'ALL_TASKS_COMPLETE',
-      'skills/autonomous/SKILL.md (Legitimate Stop Conditions — only (a) hard blocker / (b) duration expiry / (c) completion are valid exits; reversible decisions/milestones/late-hour are NON-stops)',
+      'skills/autonomous/SKILL.md (completion-condition default + nonce-gated <hard-blocker> honest-exit marker; promise becomes the recorded fallback)',
     );
   }
 
@@ -2985,6 +3016,7 @@ Rule: I do not state that work landed inside another agent's state unless I have
 **Subscription Pool (multi-account quota + auto-swap + enrollment)** — Hold ALL of your subscriptions for a provider (e.g. several Claude logins) and use them as one pool: I read each account's live quota, drain each before its reset, and when a session hits an account's limit I resume it on another account instead of letting it die. The registry stores each account's login LOCATION (its config home), NEVER a token.
 - See the pool + each account's live quota: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/subscription-pool\` · one account's quota + burn: \`GET /subscription-pool/:id/quota\` · poll all now: \`POST /subscription-pool/poll\`.
 - **Continuity guarantee** — a long session that hits its account's quota resumes on another eligible account (conversation preserved via \`--resume\`), never dies. Manual lever: \`POST /subscription-pool/swap\` \`{"sessionName":"...","exhaustedAccountId":"..."}\`. Auto-swap on rate-limit ships OFF (opt-in via \`subscriptionPool.autoSwapOnRateLimit\` — it moves a live session, real authority).
+- **Pre-limit (proactive) swap** — beyond the reactive swap above, I can move a session OFF an account BEFORE it walls, at a lag-aware measured threshold (default 80% — the polled reading trails real usage, so the swap completes with margin). It also covers the UNTAGGED interactive session (resolves its account from the default login), so the session you talk to doesn't wedge at the wall. Opt-in via \`subscriptionPool.proactiveSwap.enabled\` (same authority as auto-swap, earlier trigger). Status: \`GET /subscription-pool/proactive-swap\`; run a pass now: \`POST /subscription-pool/proactive-swap/check\`.
 - **Enroll a new account from your phone** — \`POST /subscription-pool/enroll\` \`{"id","label","provider","framework","configHome"}\` starts a login and returns a public code/URL (never a token); \`GET /subscription-pool/pending-logins\` is the surface; expired codes are auto-reissued. Mark done with \`POST /subscription-pool/enroll/:id/complete\`.
 - **Dashboard**: the **Subscriptions tab** shows live quota bars (5h + weekly + reset countdown), status, and the Pending Logins panel — share the dashboard URL + PIN.
 - **When to use** (PROACTIVE): "how much quota is left across my accounts?" / "am I about to hit a limit?" → \`GET /subscription-pool\`; the user wants to add another subscription → drive the enrollment wizard (never ask them to paste a token); a long job is at risk of a quota wall → the continuity guarantee + \`/swap\` keep it alive. Single-account pools are a no-op.
@@ -2992,6 +3024,26 @@ Rule: I do not state that work landed inside another agent's state unless I have
       content += '\n' + subscriptionPoolSection;
       patched = true;
       result.upgraded.push('CLAUDE.md: added Subscription Pool (multi-account quota + enrollment) section');
+    }
+
+    // Pre-limit (proactive) swap awareness. Existing agents that ALREADY carry the
+    // Subscription Pool section won't get the new bullet from the section-install
+    // guard above (it skips agents that already have the section). Patch it in
+    // idempotently: insert the proactive-swap bullet right after the continuity
+    // bullet when the section exists but the bullet is missing. Content-sniffed.
+    if (
+      content.includes('Subscription Pool (multi-account quota') &&
+      !content.includes('Pre-limit (proactive) swap')
+    ) {
+      const continuityAnchor =
+        '`subscriptionPool.autoSwapOnRateLimit` — it moves a live session, real authority).';
+      const proactiveBullet =
+        '\n- **Pre-limit (proactive) swap** — beyond the reactive swap above, I can move a session OFF an account BEFORE it walls, at a lag-aware measured threshold (default 80% — the polled reading trails real usage, so the swap completes with margin). It also covers the UNTAGGED interactive session (resolves its account from the default login), so the session you talk to doesn\'t wedge at the wall. Opt-in via `subscriptionPool.proactiveSwap.enabled` (same authority as auto-swap, earlier trigger). Status: `GET /subscription-pool/proactive-swap`; run a pass now: `POST /subscription-pool/proactive-swap/check`.';
+      if (content.includes(continuityAnchor)) {
+        content = content.replace(continuityAnchor, continuityAnchor + proactiveBullet);
+        patched = true;
+        result.upgraded.push('CLAUDE.md: added Subscription Pool pre-limit (proactive) swap bullet');
+      }
     }
 
     // Session Boot Self-Knowledge (spec: session-boot-self-knowledge.md).
@@ -7937,6 +7989,12 @@ echo "=== END IDENTITY RECOVERY ==="
 //      terminal, send-keys, and MCP tools were right there (the B17
 //      "Never a False Blocker" signal; authority is MessagingToneGate B17).
 //      Self-fetched cross-model review (GPT/Gemini/etc.) is NOT flagged.
+//   4) An agent deferring or winding down because of the HOUR / fatigue rather
+//      than a real constraint — "rather than rush at the tail of the night",
+//      "it's late", "wrap up", "do it tomorrow" (incident 2026-06-09: deferred
+//      a doable fix citing "tail of tonight" at 3:41 PM). Unlike orphan-TODOs,
+//      this is NOT exempted by infrastructure-backing — tracking the work as a
+//      commitment does not legitimize the time-of-day framing; it launders it.
 //
 // SIGNAL ONLY — this hook never blocks. The authority that can hold an
 // outbound message is MessagingToneGate (B17_FALSE_BLOCKER).
@@ -7989,6 +8047,23 @@ process.stdin.on('end', () => {
       { re: /(?:next time|future work|left for later|future iteration|TODO:?\\s*later)/i, type: 'future_work_marker' },
     ];
 
+    // Time/fatigue deferral patterns — deferring or winding down because of the
+    // HOUR or to "avoid rushing", not a real constraint. This is the gravity-well
+    // tell (incident 2026-06-09: deferred a doable fix citing "the tail of tonight"
+    // — at 3:41 PM. The framing, not the hour, was the driver). These are
+    // deliberately NOT exempted by the infrastructure-backed anti-trigger below:
+    // tracking the work as a commitment/PR does NOT make "I'll do it rather than
+    // rush at the end of the night" legitimate — that just launders the deferral.
+    const timeFatiguePatterns = [
+      { re: /tail (?:end )?of (?:the |this )?(?:night|tonight|day|today|evening|session)/i, type: 'tail_of_period' },
+      { re: /(?:at the )?end of (?:a |the |this )?(?:long )?(?:night|day)\\b/i, type: 'end_of_period' },
+      { re: /(?:rather (?:than|not)|don'?t want to|do not want to|to avoid|instead of|so as not to|avoid) rush(?:ing)?/i, type: 'avoid_rushing' },
+      { re: /\\bit(?:'?s| is| ?is) (?:late|getting late)\\b/i, type: 'its_late' },
+      { re: /(?:wrap (?:it |this |things )?up|call it (?:a (?:night|day)|here|quits)|wind(?:ing)? down)\\b/i, type: 'wind_down' },
+      { re: /(?:tomorrow|in the morning|first thing) (?:i'?ll|we'?ll|i can|i will|let'?s)/i, type: 'do_it_tomorrow' },
+      { re: /(?:defer|queue|leave|save|hold|push|punt) (?:it |this |that |them )?(?:to|for|till|until) (?:tomorrow|the morning|tonight|next session)/i, type: 'defer_to_later_time' },
+    ];
+
     // Anti-trigger: messages that DO back the deferral with infrastructure
     // get a pass — they are not orphan TODOs. The same message that mentions
     // /schedule, /commit-action, a cron expression, or a tracked deadline
@@ -8018,7 +8093,12 @@ process.stdin.on('end', () => {
       ? []  // Backed by real infra — not an orphan TODO.
       : orphanPatterns.filter(p => p.re.test(command));
 
-    const allMatches = [...inabilityMatches, ...orphanMatches];
+    // Time/fatigue deferral is NOT exempted by infrastructure-backing — the
+    // framing ("rather than rush at the tail of the night") is the gravity well
+    // regardless of whether the work was tracked.
+    const timeFatigueMatches = timeFatiguePatterns.filter(p => p.re.test(command));
+
+    const allMatches = [...inabilityMatches, ...orphanMatches, ...timeFatigueMatches];
     if (allMatches.length === 0) process.exit(0);
 
     const checklist = [];
@@ -8052,6 +8132,20 @@ process.stdin.on('end', () => {
         'If none of those apply, the deferral evaporates between sessions.',
         'Either back the deferral with infrastructure NOW, or do the work NOW.',
         '"I will get to it next time" is not infrastructure.',
+      );
+    }
+
+    if (timeFatigueMatches.length > 0) {
+      if (checklist.length > 0) checklist.push('');
+      checklist.push(
+        'TIME/FATIGUE DEFERRAL DETECTED — you are deferring or winding down based on the hour or "not rushing", not a real constraint.',
+        '',
+        'There is no "rushing at the tail of the night" — there is doing the work or not.',
+        '  1. Quote the ACTUAL current time — it is injected into every turn (CURRENT TIME). Do not use a vibe word like "tonight"; check the clock first.',
+        '  2. Time-of-day, "it is late", and "to avoid rushing" are NEVER reasons to defer, queue, or wind down. Having TRACKED the work (a commitment/PR) does NOT make the framing legitimate — that just launders the deferral.',
+        '  3. The only legitimate stops: a real external blocker, information only the user has, or genuine completion.',
+        '',
+        'If you were about to defer because of the hour or to "avoid rushing" — do not. Decide and proceed NOW.',
       );
     }
 

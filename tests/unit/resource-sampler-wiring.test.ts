@@ -28,9 +28,11 @@ describe('W1 — ResourceSampler is constructed behind the developmentAgent gate
     expect(AGENT_SERVER_SRC).toMatch(/this\.resourceSampler\.start\(\)/);
   });
 
-  it('gates sampling on the developmentAgent standard (explicit ?? developmentAgent)', () => {
-    // The gate: sampling resolves to ON for dev agents, dark on the fleet.
-    expect(AGENT_SERVER_SRC).toMatch(/rlCfg\?\.enabled\s*\?\?\s*!!options\.config\.developmentAgent/);
+  it('gates sampling on the developmentAgent standard (via the resolveDevAgentGate funnel)', () => {
+    // The gate: sampling resolves to ON for dev agents, dark on the fleet —
+    // now through the resolveDevAgentGate funnel (DEV-AGENT-DARK-GATE-CONFORMANCE-SPEC)
+    // rather than a hand-rolled `?? !!developmentAgent`.
+    expect(AGENT_SERVER_SRC).toMatch(/resolveDevAgentGate\(\s*rlCfg\?\.enabled,\s*options\.config\s*\)/);
   });
 
   it('hands the sampler the REAL session-pid source (not a no-op stub)', () => {

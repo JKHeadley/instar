@@ -80,6 +80,10 @@ const ALLOWLIST = new Set([
   // Same bootstrap-escape pattern (blocking-process-scan lint, topic 21816
   // post-mortem #3) — read-only `git diff --cached --name-only` only.
   'scripts/lint-no-blocking-process-scans.js',
+  // Same bootstrap-escape pattern (dev-agent dark-gate conformance lint) —
+  // read-only `git diff --cached --name-only` for --staged. Cannot depend on
+  // the TS funnel because TS is not compiled when the lint runs in pre-push.
+  'scripts/lint-dev-agent-dark-gate.js',
   // Postinstall bootstrap script — runs before TypeScript is compiled and
   // before SafeFsExecutor is available. CommonJS, can't use ESM imports.
   'scripts/fix-better-sqlite3.cjs',

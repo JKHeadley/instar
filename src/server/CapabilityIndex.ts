@@ -64,12 +64,13 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
   {
     key: 'subscriptionPool',
     prefixes: ['/subscription-pool'],
-    description: 'Subscription & Auth Standard — a multi-account subscription pool (N logins of the same provider) with live per-account quota (5h + weekly utilization + reset dates, measured burn), reset-date-optimal account selection, a hard session-continuity guarantee (a session that hits its account quota resumes on another account via --resume, never dies), and a mobile-first enrollment wizard (start a login, surface the public code/URL, auto-reissue an expired code). The registry stores login LOCATION (config home), never tokens. Backs the dashboard Subscriptions tab. Single-account pools are a no-op; auto-swap of live sessions is opt-in (subscriptionPool.autoSwapOnRateLimit).',
+    description: 'Subscription & Auth Standard — a multi-account subscription pool (N logins of the same provider) with live per-account quota (5h + weekly utilization + reset dates, measured burn), reset-date-optimal account selection, a hard session-continuity guarantee (a session that hits its account quota resumes on another account via --resume, never dies), proactive PRE-LIMIT swap (move a session off an account before it walls, at a lag-aware threshold — covers untagged sessions on the default login), and a mobile-first enrollment wizard (start a login, surface the public code/URL, auto-reissue an expired code). The registry stores login LOCATION (config home), never tokens. Backs the dashboard Subscriptions tab. Single-account pools are a no-op; auto-swap of live sessions is opt-in (subscriptionPool.autoSwapOnRateLimit reactive; subscriptionPool.proactiveSwap pre-limit).',
     build: ({ ctx }) => ({
       configured: !!ctx.subscriptionPool,
       accounts: ctx.subscriptionPool ? ctx.subscriptionPool.size() : 0,
       quotaPoller: !!ctx.quotaPoller,
       scheduler: !!ctx.quotaAwareScheduler,
+      proactiveSwap: !!ctx.proactiveSwapMonitor,
       enrollmentWizard: !!ctx.enrollmentWizard,
       endpoints: [
         'GET /subscription-pool',
@@ -80,6 +81,8 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
         'POST /subscription-pool/poll',
         'GET /subscription-pool/:id/quota',
         'POST /subscription-pool/swap',
+        'GET /subscription-pool/proactive-swap',
+        'POST /subscription-pool/proactive-swap/check',
         'POST /subscription-pool/enroll',
         'GET /subscription-pool/pending-logins',
         'POST /subscription-pool/enroll/:id/complete',
@@ -117,6 +120,20 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     build: ({ ctx }) => ({
       configured: !!ctx.parallelActivityIndex,
       endpoints: ['GET /parallel-work/activities'],
+    }),
+  },
+  {
+    key: 'growthAnalyst',
+    prefixes: ['/growth'],
+    description: 'Growth & Milestone Analyst — composes InitiativeTracker rollout stages + staleness, ApprovalLedger approve-vs-change, and CorrectionLedger recurrence into one digest with explicit notify-rules (R1 promotion-ready, R2 incubation-expired-unproven, R3 initiative-stalling, R4 spec-pattern, R5 correction-pattern). A TIGHT incubation window whose expiry is itself the trigger, so a feature is never silently left behind; promotion requires real proof-of-life, never elapsed time alone. Ships dark (monitoring.growthAnalyst.enabled) and is compute + read-only — no Telegram sending in this slice. Null/503 when disabled.',
+    build: ({ ctx }) => ({
+      configured: !!ctx.growthMilestoneAnalyst,
+      endpoints: [
+        'GET /growth/digest',
+        'GET /growth/findings',
+        'GET /growth/status',
+        'POST /growth/tick',
+      ],
     }),
   },
   {
@@ -681,6 +698,7 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
         'POST /cutover-readiness/parity-pass — TRIGGER a server-side live parity check (fetch+compare server-side; the body contributes nothing); records the pass into the durable window',
         'POST /cutover-readiness/import-dryrun — TRIGGER a server-side import REHEARSAL (live source fetch → AS-IS import into an in-memory target → integrity gate over readback); zero durable data writes; NEVER greens the canonical integrity condition',
         'GET /cutover-readiness/import-dryrun — the last rehearsal\'s verdict (read-only, informational — not a `ready` input)',
+        'POST /cutover-readiness/integrity-pass — TRIGGER the REAL pre-click integrity pass (live fetch → AS-IS import into a PERSISTED shadow, run off the event loop in a child process → integrity gate); records the verdict to the CANONICAL integrity path, so a passing report GREENS the integrity leg (and a failing one flips it closed). Load-bearing on `ready`; the cutover flip itself stays the operator\'s manual click',
       ],
     }),
   },

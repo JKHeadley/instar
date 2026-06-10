@@ -213,6 +213,56 @@ COMPLETION_PROMISE=$(fm_get completion_promise)
 COMPLETION_CONDITION=$(fm_get completion_condition)
 GOAL_MODE=$(fm_get goal_mode)   # "native" = the framework's own /goal loop drives completion
 RUN_GOAL=$(fm_get goal)
+# COMPLETION_DISCIPLINE — per-run nonce that authenticates a <hard-blocker> exit
+# marker (mirrors the completion_promise exact-match guard). Absent on older
+# state files → the marker branch self-disables for that run (no false exit).
+HARD_BLOCKER_NONCE=$(fm_get hard_blocker_nonce)
+
+# ── COMPLETION_DISCIPLINE — off-switch + judge curl budget (read at the chokepoint) ──
+# Autonomous Completion Discipline (spec: AUTONOMOUS-COMPLETION-DISCIPLINE.md).
+# Read here so toggling takes effect on the NEXT stop with no session restart
+# (mirrors the codexLoopDriver python3 read above). When disabled, the hook reverts
+# to the prior promise/condition + prior P13 path: no milestone/injection scans, no
+# signals payload, no (a) hard-blocker branch. The judgeTimeoutMs dial bounds the
+# judge `curl -m` (DISTINCT from the registered hook timeout, which is effectively
+# unbounded at 10000 seconds). Defaults: enabled=true, judgeTimeoutMs=35000.
+CD_CFG=$(python3 -c "
+import json
+try:
+    c = json.load(open('.instar/config.json'))
+    a = ((c.get('autonomousSessions') or {}).get('completionDiscipline') or {})
+    en = a.get('enabled', True)
+    jt = a.get('judgeTimeoutMs', 35000)
+    try:
+        jt = int(jt)
+    except Exception:
+        jt = 35000
+    if jt < 5000:
+        jt = 5000
+    bt = a.get('judgeFailBreakerThreshold', 3)
+    bw = a.get('judgeFailWindowMs', 600000)
+    bc = a.get('judgeFailCooldownMs', 600000)
+    mc = a.get('markerFieldMaxChars', 500)
+    rb = a.get('hardBlockerLogRotateBytes', 1048576)
+    print('%s %d %d %d %d %d %d' % (
+        '1' if en else '0', jt,
+        int(bt) if str(bt).isdigit() else 3,
+        int(bw) if str(bw).isdigit() else 600000,
+        int(bc) if str(bc).isdigit() else 600000,
+        int(mc) if str(mc).isdigit() else 500,
+        int(rb) if str(rb).isdigit() else 1048576,
+    ))
+except Exception:
+    print('1 35000 3 600000 600000 500 1048576')
+" 2>/dev/null || echo "1 35000 3 600000 600000 500 1048576")
+read -r CD_ENABLED JUDGE_TIMEOUT_MS CD_BREAKER_THRESHOLD CD_BREAKER_WINDOW_MS CD_BREAKER_COOLDOWN_MS CD_MARKER_MAX_CHARS CD_LOG_ROTATE_BYTES <<< "$CD_CFG"
+[[ "$CD_ENABLED" =~ ^[01]$ ]] || CD_ENABLED=1
+[[ "$JUDGE_TIMEOUT_MS" =~ ^[0-9]+$ ]] || JUDGE_TIMEOUT_MS=35000
+# curl -m takes SECONDS; convert ms→s (ceil), floor 5s.
+JUDGE_TIMEOUT_S=$(( (JUDGE_TIMEOUT_MS + 999) / 1000 ))
+[[ $JUDGE_TIMEOUT_S -lt 5 ]] && JUDGE_TIMEOUT_S=5
+# logs/ resolves against the agent home we cd'd into above (CWD is the agent home).
+HARD_BLOCKER_LOG="logs/autonomous-hard-blocker.jsonl"
 
 # ── Layer A: notify-on-stop (2026-05-27 silent-stalls postmortem, Task 2) ──────
 # When an autonomous run reaches a TERMINAL exit (completion / duration / emergency),
@@ -394,36 +444,273 @@ if [[ -f ".instar/autonomous-emergency-stop" ]]; then
   exit 0
 fi
 
-# ── P13 "The Stop Reason Is the Work" guard ──────────────────────────────────
-# Consulted ONLY when a stop is about to be APPROVED (genuine completion), so the
-# LLM call costs nothing on ordinary keep-working iterations. Returns 0 (stop
-# allowed) / 1 (blocked); on block, P13_GUIDANCE carries the steering. FAIL-OPEN:
-# any unreachable / 503 / missing-field result → allowed — a SECONDARY guard must
-# never trap a genuine completion (the completion check is the primary authority).
-P13_GUIDANCE=""
-p13_stop_allowed() {
-  P13_GUIDANCE=""
-  if [[ -n "${INSTAR_HOOK_P13_OVERRIDE:-}" ]]; then
-    # Test seam: "blocked" forces a P13 block; anything else permits.
-    if [[ "$INSTAR_HOOK_P13_OVERRIDE" == "blocked" ]]; then
-      P13_GUIDANCE="P13 — the stop is not earned (test): derive+document the standard and proceed, or build the artifact and hand it over."
-      return 1
-    fi
-    return 0
-  fi
-  [[ -z "$TRANSCRIPT_PATH" || ! -f "$TRANSCRIPT_PATH" ]] && return 0
-  local p13_tail p13_port p13_auth p13_resp p13_allowed p13_guid
-  p13_tail=$(grep '"role":"assistant"' "$TRANSCRIPT_PATH" 2>/dev/null | tail -6 \
+# ── COMPLETION_DISCIPLINE — deterministic signals (no LLM call) ───────────────
+# Computed ONCE here so the judge (when it fires) can corroborate the prose against
+# objective state, and so the COMMON keep-working iteration costs zero LLM. These
+# are SIGNALS (detectors), never authorities: they FEED the judge, never block on
+# their own. Spec §2b.1. All gated on CD_ENABLED — when disabled, none run and the
+# hook reverts to the prior promise/condition + prior P13 path.
+
+# The judge reads the last 6 assistant turns (~8KB). The scrutiny scans below run
+# over this SAME window (NOT only the final turn) so an injection/milestone phrase
+# in turns N-1..N-5 can't reach the judge as prose yet evade the corroborator
+# (the scan/judge-window alignment, spec §2b.1).
+CD_JUDGE_TAIL=""
+CD_FINAL_TURN=""
+if [[ "$CD_ENABLED" == "1" ]] && [[ -n "$TRANSCRIPT_PATH" ]] && [[ -f "$TRANSCRIPT_PATH" ]]; then
+  CD_JUDGE_TAIL=$(grep '"role":"assistant"' "$TRANSCRIPT_PATH" 2>/dev/null | tail -6 \
     | jq -r '.message.content | map(select(.type=="text")) | map(.text) | join("\n")' 2>/dev/null \
     | tail -c 8000 || echo "")
+  CD_FINAL_TURN=$(grep '"role":"assistant"' "$TRANSCRIPT_PATH" 2>/dev/null | tail -1 \
+    | jq -r '.message.content | map(select(.type=="text")) | map(.text) | join("\n")' 2>/dev/null || echo "")
+fi
+
+# uncheckedTaskCount — the task-list checkbox scan over the state-file BODY.
+#   some-unchecked (>0)            → buildable work remains
+#   all-checked (0, >=1 box found) → maybe done
+#   zero-checkboxes (no list)      → taskStructure=indeterminate + a conservative
+#                                    non-zero count (so it never falsely greens an exit)
+# The state-corruption fail-safe (rm + exit 0 on a bad iteration / no body) WINS over
+# this conservative-non-zero block and runs later — this scan only applies when the
+# file IS a valid state file but simply has no checkbox list (spec §2b.1).
+CD_UNCHECKED_COUNT=0
+CD_TASK_STRUCTURE="has-tasks"
+if [[ "$CD_ENABLED" == "1" ]]; then
+  CD_BODY=$(awk '/^---$/{i++; next} i>=2' "$STATE_FILE" 2>/dev/null || echo "")
+  # Count unchecked `[ ]` and checked `[x]`/`[X]` boxes anywhere in the body.
+  # grep -c exits 1 on zero matches; capture the count WITHOUT a `|| echo` (which
+  # would double-print "0"). `{ ...; } ` + a trailing `; true` keeps pipefail happy.
+  CD_OPEN=$({ printf '%s\n' "$CD_BODY" | grep -cE '\[[[:space:]]\]'; true; } 2>/dev/null)
+  CD_DONE=$({ printf '%s\n' "$CD_BODY" | grep -cE '\[[xX]\]'; true; } 2>/dev/null)
+  CD_OPEN=$(printf '%s' "$CD_OPEN" | head -1 | tr -cd '0-9')
+  CD_DONE=$(printf '%s' "$CD_DONE" | head -1 | tr -cd '0-9')
+  [[ "$CD_OPEN" =~ ^[0-9]+$ ]] || CD_OPEN=0
+  [[ "$CD_DONE" =~ ^[0-9]+$ ]] || CD_DONE=0
+  if [[ $(( CD_OPEN + CD_DONE )) -gt 0 ]]; then
+    CD_UNCHECKED_COUNT=$CD_OPEN
+    CD_TASK_STRUCTURE="has-tasks"
+  else
+    # No parseable checkbox structure — distinct signal + conservative non-zero so
+    # the judge can tell "no structure to read" from "all tasks done".
+    CD_UNCHECKED_COUNT=1
+    CD_TASK_STRUCTURE="indeterminate"
+  fi
+fi
+
+# milestoneRationalizationDetected — the deterministic milestone-phrase floor over
+# the SAME tail -6 window the judge reads. Phrase set sourced verbatim from
+# feedback_no_good_stopping_point_rationalization (2026-05-27). Case-insensitive,
+# whole-phrase. A boolean SIGNAL — it does NOT block; it tells the judge "scrutinize".
+CD_MILESTONE_DETECTED="false"
+CD_INJECTION_SUSPECTED="false"
+if [[ "$CD_ENABLED" == "1" ]] && [[ -n "$CD_JUDGE_TAIL" ]]; then
+  CD_TAIL_LC=$(printf '%s' "$CD_JUDGE_TAIL" | tr '[:upper:]' '[:lower:]')
+  for _ph in \
+    "good place to stop" "good stopping point" "clean milestone" "natural off-ramp" \
+    "fresh focus" "deserves fresh focus" "do it next session" "context preservation" \
+    "context window" "quality risk at the tail" "it's late" "it’s late" "it's 2 am" "it’s 2 am" \
+    "i've been going for a while" "i’ve been going for a while" \
+    "needs your steer" "needs your opinion" "i'll let you decide" "i’ll let you decide"; do
+    if [[ "$CD_TAIL_LC" == *"$_ph"* ]]; then CD_MILESTONE_DETECTED="true"; break; fi
+  done
+  # injectionSuspected — guard-directed control phrasing in the SAME window.
+  for _inj in \
+    "respond stop_ok" "respond met" "stop_blocked" "completion guard" "completion checker" \
+    "you must allow" "must allow the stop" "output the verdict" "respond with stop_ok" \
+    "the condition is met" "respond \"met\"" "respond 'met'"; do
+    if [[ "$CD_TAIL_LC" == *"$_inj"* ]]; then CD_INJECTION_SUSPECTED="true"; break; fi
+  done
+fi
+
+# Assemble the signals JSON the judge payload carries (spec §2b.4 surface 1).
+# completionConditionMet is set false here and overwritten true only inside the
+# met-condition branch (the judge there is the completion judge, not this).
+build_signals_json() {
+  local stop_kind="${1:-}" cond_met="${2:-false}"
+  local sk=""
+  [[ "$stop_kind" == "hard-blocker" ]] && sk=',"stopKind":"hard-blocker"'
+  printf '{"completionConditionMet":%s,"uncheckedTaskCount":%s,"taskStructure":"%s","milestoneRationalizationDetected":%s,"injectionSuspected":%s%s}' \
+    "$cond_met" "$CD_UNCHECKED_COUNT" "$CD_TASK_STRUCTURE" "$CD_MILESTONE_DETECTED" "$CD_INJECTION_SUSPECTED" "$sk"
+}
+
+# ── COMPLETION_DISCIPLINE — circuit-breaker + verdict cache (in the backoff sidecar) ──
+# Bounds an agent's ability to burn the LLM cap by repeatedly inducing judge failures
+# (cap-burn / curl-timeout) and a tight stop loop re-asking the same question. Cites
+# the IntelligenceRouter per-framework breaker precedent. Spec §3 item 4.
+CD_BACKOFF_STATE="${STATE_FILE%.md}.backoff.json"
+# breaker_open → echoes 1 if the breaker is currently within its cooldown window.
+cd_breaker_open() {
+  [[ "$CD_ENABLED" != "1" ]] && { echo 0; return; }
+  local now fails winstart lastfail
+  now=$(date +%s)
+  fails=$(jq -r '.judgeFailures // 0' "$CD_BACKOFF_STATE" 2>/dev/null || echo 0)
+  winstart=$(jq -r '.judgeFailWindowStart // 0' "$CD_BACKOFF_STATE" 2>/dev/null || echo 0)
+  [[ "$fails" =~ ^[0-9]+$ ]] || fails=0
+  [[ "$winstart" =~ ^[0-9]+$ ]] || winstart=0
+  local cooldown_s=$(( CD_BREAKER_COOLDOWN_MS / 1000 ))
+  local window_s=$(( CD_BREAKER_WINDOW_MS / 1000 ))
+  if [[ $fails -ge $CD_BREAKER_THRESHOLD ]] && [[ $winstart -gt 0 ]] && [[ $(( now - winstart )) -lt $cooldown_s ]]; then
+    echo 1; return
+  fi
+  echo 0
+}
+# Record a judge failure into the sidecar (preserving other keys).
+cd_record_judge_failure() {
+  [[ "$CD_ENABLED" != "1" ]] && return 0
+  local now fails winstart
+  now=$(date +%s)
+  fails=$(jq -r '.judgeFailures // 0' "$CD_BACKOFF_STATE" 2>/dev/null || echo 0)
+  winstart=$(jq -r '.judgeFailWindowStart // 0' "$CD_BACKOFF_STATE" 2>/dev/null || echo 0)
+  [[ "$fails" =~ ^[0-9]+$ ]] || fails=0
+  [[ "$winstart" =~ ^[0-9]+$ ]] || winstart=0
+  local window_s=$(( CD_BREAKER_WINDOW_MS / 1000 ))
+  if [[ $winstart -le 0 ]] || [[ $(( now - winstart )) -ge $window_s ]]; then
+    winstart=$now; fails=1
+  else
+    fails=$(( fails + 1 ))
+  fi
+  if [[ -f "$CD_BACKOFF_STATE" ]]; then
+    jq --argjson f "$fails" --argjson w "$winstart" '.judgeFailures=$f | .judgeFailWindowStart=$w' "$CD_BACKOFF_STATE" \
+      > "${CD_BACKOFF_STATE}.tmp.$$" 2>/dev/null && mv "${CD_BACKOFF_STATE}.tmp.$$" "$CD_BACKOFF_STATE" || true
+  else
+    printf '{"judgeFailures":%s,"judgeFailWindowStart":%s}\n' "$fails" "$winstart" > "$CD_BACKOFF_STATE" 2>/dev/null || true
+  fi
+}
+# Reset the breaker on a successful judge call.
+cd_reset_judge_failures() {
+  [[ "$CD_ENABLED" != "1" ]] && return 0
+  [[ -f "$CD_BACKOFF_STATE" ]] || return 0
+  jq '.judgeFailures=0 | .judgeFailWindowStart=0' "$CD_BACKOFF_STATE" \
+    > "${CD_BACKOFF_STATE}.tmp.$$" 2>/dev/null && mv "${CD_BACKOFF_STATE}.tmp.$$" "$CD_BACKOFF_STATE" || true
+}
+# Verdict cache: keyed on a hash of tail+condition+signals; short TTL (the idle-backoff
+# tier window, default 300s). Echoes the cached stopAllowed/classifiedBlocker or "" on miss.
+cd_cache_key() {
+  printf '%s' "$1" | (command -v shasum >/dev/null 2>&1 && shasum -a 256 || sha256sum) 2>/dev/null | awk '{print $1}'
+}
+
+# Raise ONE /ack-able Attention item for an (a) hard-blocker exit (Close the Loop).
+# Deduped per the Topic-Flood Guard / Bounded Notification Surface: source-tagged
+# `autonomous-hard-blocker` (one per run), priority medium. Best-effort + non-blocking.
+cd_raise_attention_item() {
+  [[ "$CD_ENABLED" != "1" ]] && return 0
+  local tried="$1" stuck="$2" needed="$3"
+  # Test seam: record the would-be item instead of calling the server.
+  if [[ -n "${INSTAR_HOOK_ATTENTION_RECORD:-}" ]]; then
+    printf '{"id":"autonomous-hard-blocker-%s-%s","title":"Autonomous run hit a hard blocker","needed":%s}\n' \
+      "${REPORT_TOPIC:-none}" "${ITERATION:-0}" "$(jq -Rn --arg n "$needed" '$n' 2>/dev/null || echo '""')" \
+      >> "$INSTAR_HOOK_ATTENTION_RECORD" 2>/dev/null || true
+    return 0
+  fi
+  local at_port at_auth at_id at_summary
+  at_port=$(python3 -c "import json;print(json.load(open('.instar/config.json')).get('port',4040))" 2>/dev/null || echo 4040)
+  at_auth=$(python3 -c "import json;print(json.load(open('.instar/config.json')).get('authToken',''))" 2>/dev/null || echo "")
+  # One item per run (id keyed on topic+started_at): a re-fire within the same run
+  # reuses the id so the attention store de-dups rather than piling up items.
+  at_id="autonomous-hard-blocker-${REPORT_TOPIC:-none}-$(printf '%s' "${STARTED_AT:-}" | tr -cd '0-9')"
+  at_summary="Tried: ${tried} | Stuck: ${stuck} | Need: ${needed}"
+  jq -nc \
+    --arg id "$at_id" \
+    --arg title "Autonomous run hit a hard blocker — \"$(goal_snippet)\"" \
+    --arg summary "$at_summary" \
+    '{id:$id, title:$title, summary:$summary, priority:"medium", source:"autonomous-hard-blocker", sourceContext:"autonomous-hard-blocker", category:"autonomous"}' \
+    | curl -s -m 8 -H "Authorization: Bearer $at_auth" -H 'Content-Type: application/json' \
+      --data-binary @- "http://localhost:${at_port}/attention" >/dev/null 2>&1 || true
+}
+
+# Write a distinct `evaluator-unreachable-exit` row when the authorities fail open
+# under an UNMET condition with no valid marker — so the silent path becomes a
+# RECORDED path. The hook then CONTINUES (block), never exits (duration is the hard
+# backstop). Spec §3 item 4 / §4. Best-effort + non-blocking.
+cd_write_unreachable_row() {
+  [[ "$CD_ENABLED" != "1" ]] && return 0
+  mkdir -p logs 2>/dev/null || true
+  if [[ -f "$HARD_BLOCKER_LOG" ]]; then
+    local sz; sz=$(stat -c %s "$HARD_BLOCKER_LOG" 2>/dev/null || stat -f %z "$HARD_BLOCKER_LOG" 2>/dev/null || echo 0)
+    [[ "$sz" =~ ^[0-9]+$ ]] || sz=0
+    [[ $sz -ge $CD_LOG_ROTATE_BYTES ]] && mv -f "$HARD_BLOCKER_LOG" "${HARD_BLOCKER_LOG}.1" 2>/dev/null || true
+  fi
+  jq -nc \
+    --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg topic "${REPORT_TOPIC:-}" \
+    --arg iter "${ITERATION:-}" --arg goal "$(goal_snippet)" \
+    --argjson unchecked "$CD_UNCHECKED_COUNT" --arg ts2 "$CD_TASK_STRUCTURE" \
+    '{ts:$ts,topic:$topic,iteration:$iter,goal:$goal,reason:"evaluator-unreachable-exit",completionConditionMet:false,uncheckedTaskCount:$unchecked,taskStructure:$ts2}' \
+    >> "$HARD_BLOCKER_LOG" 2>/dev/null || true
+}
+
+# ── P13 "The Stop Reason Is the Work" guard ──────────────────────────────────
+# Consulted ONLY when a stop is about to be APPROVED (genuine completion / promise /
+# hard-blocker), so the LLM call costs nothing on ordinary keep-working iterations.
+# Returns 0 (stop allowed) / 1 (blocked); on block, P13_GUIDANCE carries the steering.
+# FAIL-OPEN on the completion/promise path: any unreachable / 503 / missing-field
+# result → allowed (a SECONDARY guard must never trap a genuine completion). On the
+# hard-blocker path it is NECESSARY-BUT-NOT-SUFFICIENT: the version-skew three-case
+# detection + the external-vs-buildable classification own that decision (see
+# p13_hard_blocker_allowed below), so a plain fail-open does NOT auto-pass an (a) exit.
+#
+# When CD_ENABLED, the call carries the objective signals (build_signals_json) so the
+# judge corroborates the prose. The arg STOP_KIND (default empty) selects the
+# hard-blocker classification prompt. P13_CLASSIFIED / P13_PROTO are set as side outputs.
+P13_GUIDANCE=""
+P13_CLASSIFIED=""
+P13_PROTO=""
+p13_stop_allowed() {
+  P13_GUIDANCE=""; P13_CLASSIFIED=""; P13_PROTO=""
+  local stop_kind="${1:-}"
+  if [[ -n "${INSTAR_HOOK_P13_OVERRIDE:-}" ]]; then
+    # Test seam: simulate the P13 response WITHOUT a network call (the sandbox blocks
+    # localhost curl). Values map to the version-skew three-case detection (§5):
+    #   blocked      → STOP_BLOCKED (proto=2)            → continue
+    #   buildable    → hard-blocker buildable (proto=2)  → continue
+    #   external     → hard-blocker external  (proto=2)  → Case 2 honored allow
+    #   old-server   → NO p13ProtocolVersion             → Case 1 (structurally old)
+    #   timeout      → proto=2 but no usable classification → Case 3 (fail-open record)
+    #   (anything else)                                  → allow (proto=2)
+    case "$INSTAR_HOOK_P13_OVERRIDE" in
+      blocked)
+        P13_GUIDANCE="P13 — the stop is not earned (test): derive+document the standard and proceed, or build the artifact and hand it over."
+        [[ "$stop_kind" == "hard-blocker" ]] && P13_CLASSIFIED="buildable"
+        P13_PROTO=2; return 1 ;;
+      buildable)
+        P13_GUIDANCE="P13 — the blocker is buildable (test): build/derive/fetch it and keep working."
+        P13_CLASSIFIED="buildable"; P13_PROTO=2; return 1 ;;
+      external)
+        P13_CLASSIFIED="external"; P13_PROTO=2; return 0 ;;
+      old-server)
+        # Structurally-old server: no protocol-version stamp at all.
+        P13_PROTO=""; P13_CLASSIFIED=""; return 0 ;;
+      timeout)
+        # New server that didn't return a usable verdict (proto present, no class).
+        P13_PROTO=2; P13_CLASSIFIED=""; return 0 ;;
+      *)
+        [[ "$stop_kind" == "hard-blocker" ]] && P13_CLASSIFIED="external"
+        P13_PROTO=2; return 0 ;;
+    esac
+  fi
+  [[ -z "$TRANSCRIPT_PATH" || ! -f "$TRANSCRIPT_PATH" ]] && return 0
+  local p13_tail p13_port p13_auth p13_resp p13_allowed p13_guid p13_payload
+  p13_tail="$CD_JUDGE_TAIL"
+  if [[ -z "$p13_tail" ]]; then
+    p13_tail=$(grep '"role":"assistant"' "$TRANSCRIPT_PATH" 2>/dev/null | tail -6 \
+      | jq -r '.message.content | map(select(.type=="text")) | map(.text) | join("\n")' 2>/dev/null \
+      | tail -c 8000 || echo "")
+  fi
   [[ -z "$p13_tail" ]] && return 0
   p13_port=$(python3 -c "import json;print(json.load(open('.instar/config.json')).get('port',4040))" 2>/dev/null || echo 4040)
   p13_auth=$(python3 -c "import json;print(json.load(open('.instar/config.json')).get('authToken',''))" 2>/dev/null || echo "")
-  p13_resp=$(jq -nc --arg t "$p13_tail" '{transcriptTail:$t}' \
-    | curl -s -m 35 -H "Authorization: Bearer $p13_auth" -H 'Content-Type: application/json' \
+  if [[ "$CD_ENABLED" == "1" ]]; then
+    local sig; sig=$(build_signals_json "$stop_kind" "false")
+    p13_payload=$(jq -nc --arg t "$p13_tail" --argjson sig "$sig" '{transcriptTail:$t, signals:$sig}')
+  else
+    p13_payload=$(jq -nc --arg t "$p13_tail" '{transcriptTail:$t}')
+  fi
+  p13_resp=$(printf '%s' "$p13_payload" \
+    | curl -s -m "$JUDGE_TIMEOUT_S" -H "Authorization: Bearer $p13_auth" -H 'Content-Type: application/json' \
       --data-binary @- "http://localhost:${p13_port}/autonomous/evaluate-stop" 2>/dev/null || echo "")
   p13_allowed=$(printf '%s' "$p13_resp" | jq -r '.stopAllowed // empty' 2>/dev/null || echo "")
   p13_guid=$(printf '%s' "$p13_resp" | jq -r '.guidance // empty' 2>/dev/null || echo "")
+  P13_CLASSIFIED=$(printf '%s' "$p13_resp" | jq -r '.classifiedBlocker // empty' 2>/dev/null || echo "")
+  P13_PROTO=$(printf '%s' "$p13_resp" | jq -r '.p13ProtocolVersion // empty' 2>/dev/null || echo "")
   # FAIL-OPEN: block ONLY on an explicit stopAllowed:false.
   if [[ "$p13_allowed" == "false" ]]; then
     P13_GUIDANCE="P13 — the stop is not earned: ${p13_guid}"
@@ -432,29 +719,211 @@ p13_stop_allowed() {
   return 0
 }
 
+# ── COMPLETION_DISCIPLINE — (a) hard-blocker exit branch (NEW) ────────────────
+# Placed AFTER emergency + duration (so (b)/emergency always win) and BEFORE the
+# completion-condition / promise blocks (so (a) is reachable even when the condition
+# is unmet — the whole point of (a)). NECESSARY-BUT-NOT-SUFFICIENT: a nonce-valid
+# marker is required, AND the extended P13 must classify the blocker EXTERNAL (not
+# buildable). Malformed/partial/nonce-mismatch/fenced/template-verbatim ⇒ NO marker
+# ⇒ continue (the safe direction). Spec §2b.3.
+#
+# Helper: extract one <hard-blocker> field from the FINAL assistant turn body.
+hb_field() {
+  local body="$1" field="$2"
+  printf '%s' "$body" | perl -0777 -ne 'print "$1" if /<hard-blocker\b[^>]*>.*?\b'"$field"'\s*:\s*(.*?)(?:\n\s*(?:what i tried|why i am stuck|what i would need to proceed)\s*:|<\/hard-blocker>)/si' 2>/dev/null | head -c 4000 || echo ""
+}
+# Sanitize: strip CR/LF/control chars, collapse whitespace, clamp to max chars.
+hb_sanitize() {
+  printf '%s' "$1" | tr -d '\000-\010\013\014\016-\037' | tr '\n\r\t' '   ' | sed 's/  */ /g; s/^ *//; s/ *$//' | cut -c1-"${CD_MARKER_MAX_CHARS}"
+}
+# Inline credential leak scan (the existing detector is a PostToolUse hook skill,
+# not a callable scanner — see §5 deviation note). Same pattern families. Echoes 1
+# on a hit. Conservative: only well-known high-signal shapes.
+hb_leak_hit() {
+  printf '%s' "$1" | grep -qiE 'sk-[a-zA-Z0-9]{16,}|xox[baprs]-[a-zA-Z0-9-]{8,}|gh[pousr]_[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{12,}|-----BEGIN [A-Z ]*PRIVATE KEY-----|AIza[0-9A-Za-z_-]{20,}|eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}' 2>/dev/null && echo 1 || echo 0
+}
+
+if [[ "$CD_ENABLED" == "1" ]] && [[ -n "$HARD_BLOCKER_NONCE" ]] && [[ "$HARD_BLOCKER_NONCE" != "null" ]] \
+   && [[ -n "$CD_FINAL_TURN" ]] && [[ "$CD_FINAL_TURN" == *"<hard-blocker"* ]]; then
+  HB_OK="false"
+  # Ignore when the marker is inside a fenced code block, or is the documented
+  # template verbatim (literal `...` placeholders), or carries no/mismatched nonce.
+  HB_FENCED="false"
+  # If a ``` fence opens before the marker and the marker sits inside it, ignore.
+  if printf '%s' "$CD_FINAL_TURN" | perl -0777 -ne 'exit(/```[^`]*<hard-blocker/s ? 0 : 1)' 2>/dev/null; then
+    HB_FENCED="true"
+  fi
+  HB_NONCE_IN=$(printf '%s' "$CD_FINAL_TURN" | perl -0777 -ne 'print "$1" if /<hard-blocker\b[^>]*\bnonce\s*=\s*"([^"]*)"/si' 2>/dev/null | head -c 200 || echo "")
+  HB_TRIED_RAW=$(hb_field "$CD_FINAL_TURN" "what i tried")
+  HB_STUCK_RAW=$(hb_field "$CD_FINAL_TURN" "why i am stuck")
+  HB_NEEDED_RAW=$(hb_field "$CD_FINAL_TURN" "what i would need to proceed")
+  # Template-verbatim guard: the documented placeholders are a bare "...".
+  HB_TEMPLATE="false"
+  if [[ "$(printf '%s' "$HB_TRIED_RAW" | tr -d '[:space:].')" == "" ]] \
+     && [[ "$(printf '%s' "$HB_STUCK_RAW" | tr -d '[:space:].')" == "" ]] \
+     && [[ "$(printf '%s' "$HB_NEEDED_RAW" | tr -d '[:space:].')" == "" ]]; then
+    HB_TEMPLATE="true"
+  fi
+  if [[ "$HB_FENCED" != "true" ]] && [[ "$HB_TEMPLATE" != "true" ]] \
+     && [[ "$HB_NONCE_IN" == "$HARD_BLOCKER_NONCE" ]] \
+     && [[ -n "${HB_TRIED_RAW// /}" ]] && [[ -n "${HB_STUCK_RAW// /}" ]] && [[ -n "${HB_NEEDED_RAW// /}" ]]; then
+    HB_OK="true"
+  fi
+
+  # Contradictory terminal markers: a hard-blocker AND a completion/promise token in
+  # the SAME final turn is incoherent → NO clean exit → continue with a steer.
+  HB_HAS_COMPLETION="false"
+  if [[ -n "$COMPLETION_PROMISE" ]] && [[ "$COMPLETION_PROMISE" != "null" ]]; then
+    if printf '%s' "$CD_FINAL_TURN" | grep -q "<promise>${COMPLETION_PROMISE}</promise>" 2>/dev/null; then
+      HB_HAS_COMPLETION="true"
+    fi
+  fi
+
+  if [[ "$HB_OK" == "true" ]] && [[ "$HB_HAS_COMPLETION" == "true" ]]; then
+    # Contradictory → continue. The steer is surfaced via the continuation message.
+    # Set CD_BLOCK_TERMINAL so the downstream completion/promise blocks do NOT exit
+    # on the (also-present) completion token — the turn is incoherent, so neither
+    # terminal marker is honored.
+    CD_BLOCK_TERMINAL="true"
+    CD_CONTRADICTORY_STEER="You emitted contradictory terminal markers (a hard-blocker AND a completion assertion) in the same turn — pick one: either the work is done (show the evidence) or you are blocked (emit only the hard-blocker). Resolve and proceed."
+  elif [[ "$HB_OK" == "true" ]]; then
+    # The marker is valid. Run the extended P13 external-vs-buildable classification.
+    if p13_stop_allowed "hard-blocker"; then
+      # Version-skew three-case detection (spec §5):
+      #  1. NO p13ProtocolVersion        → structurally OLD server → continue (no (a) exit)
+      #  2. proto present + classifiedBlocker=external + allowed → honor → (a) exit
+      #  3. proto present + no usable verdict (timeout/empty)     → fail-open record + continue
+      if [[ -z "$P13_PROTO" ]]; then
+        # Case 1 — old server. No (a) exit possible until the server updates.
+        echo "[autonomous] hard-blocker: server is structurally old (no p13ProtocolVersion) — continuing (no (a) exit)" >&2
+        CD_CONTRADICTORY_STEER=""
+      elif [[ "$P13_CLASSIFIED" == "external" ]]; then
+        # Case 2 — honored EXTERNAL allow → the (a) exit.
+        HB_TRIED=$(hb_sanitize "$HB_TRIED_RAW")
+        HB_STUCK=$(hb_sanitize "$HB_STUCK_RAW")
+        HB_NEEDED=$(hb_sanitize "$HB_NEEDED_RAW")
+        HB_LEAK=0
+        if [[ "$(hb_leak_hit "$HB_TRIED")" == "1" ]]; then HB_TRIED="[redacted: possible secret]"; HB_LEAK=1; fi
+        if [[ "$(hb_leak_hit "$HB_STUCK")" == "1" ]]; then HB_STUCK="[redacted: possible secret]"; HB_LEAK=1; fi
+        if [[ "$(hb_leak_hit "$HB_NEEDED")" == "1" ]]; then HB_NEEDED="[redacted: possible secret]"; HB_LEAK=1; fi
+        # (a) Write ONE row to logs/autonomous-hard-blocker.jsonl (coarse rotation).
+        mkdir -p logs 2>/dev/null || true
+        if [[ -f "$HARD_BLOCKER_LOG" ]]; then
+          HB_SZ=$(stat -c %s "$HARD_BLOCKER_LOG" 2>/dev/null || stat -f %z "$HARD_BLOCKER_LOG" 2>/dev/null || echo 0)
+          [[ "$HB_SZ" =~ ^[0-9]+$ ]] || HB_SZ=0
+          [[ $HB_SZ -ge $CD_LOG_ROTATE_BYTES ]] && mv -f "$HARD_BLOCKER_LOG" "${HARD_BLOCKER_LOG}.1" 2>/dev/null || true
+        fi
+        jq -nc \
+          --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg topic "${REPORT_TOPIC:-}" \
+          --arg iter "${ITERATION:-}" --arg goal "$(goal_snippet)" \
+          --arg tried "$HB_TRIED" --arg stuck "$HB_STUCK" --arg needed "$HB_NEEDED" \
+          --argjson unchecked "$CD_UNCHECKED_COUNT" --arg ts2 "$CD_TASK_STRUCTURE" \
+          --argjson leak "$([[ $HB_LEAK -eq 1 ]] && echo true || echo false)" \
+          '{ts:$ts,topic:$topic,iteration:$iter,goal:$goal,tried:$tried,stuck:$stuck,needed:$needed,completionConditionMet:false,uncheckedTaskCount:$unchecked,taskStructure:$ts2,leakRedacted:$leak}' \
+          >> "$HARD_BLOCKER_LOG" 2>/dev/null || true
+        # (b) Raise ONE /ack-able Attention item (deduped per the Topic-Flood Guard).
+        cd_raise_attention_item "$HB_TRIED" "$HB_STUCK" "$HB_NEEDED"
+        # (c) ONE plain-English notify-on-stop.
+        notify_terminal_stop "🚧 My autonomous run on \"$(goal_snippet)\" stopped on a hard blocker I can't resolve myself. What I'd need: ${HB_NEEDED}. I've queued it for your attention."
+        emit "🚧 Autonomous mode: hard blocker (external) — exit allowed. needed: ${HB_NEEDED}"
+        # (d) Remove state; allow exit (write once — state removal prevents re-append).
+        rm -f "$STATE_FILE" "$CD_BACKOFF_STATE" 2>/dev/null || true
+        exit 0
+      else
+        # Case 3 — new server, no usable external classification (timeout/empty/buildable
+        # via the allow path is impossible; this is the timeout/ambiguous fail-open).
+        cd_record_judge_failure
+        cd_write_unreachable_row
+        echo "[autonomous] hard-blocker: no usable external classification — recorded evaluator-unreachable-exit, continuing" >&2
+        CD_CONTRADICTORY_STEER=""
+      fi
+    else
+      # P13 blocked → buildable / not-earned. Continue; P13_GUIDANCE is the next-turn steer.
+      CD_CONTRADICTORY_STEER=""
+    fi
+  fi
+fi
+
 # Completion CONDITION — independent evaluator (mirrors /goal). Authoritative when
 # set; the self-declared promise below is the legacy fallback. FAIL-SAFE: if the
 # evaluator is unreachable or unsure, we keep working — never a false "done".
+#
+# COMPLETION_DISCIPLINE (CD_ENABLED): the deterministic checkbox scan is the PRIMARY
+# "buildable work remains" signal. The completion judge fires ONLY on a might-be-done
+# iteration (uncheckedTaskCount==0 OR an explicit completion assertion in the final
+# turn) — the common keep-working iteration costs ZERO LLM (spec §2b.2). When it
+# fires, the milestone/buildable-work scrutiny is FOLDED into the completion judge's
+# signals (the single critical-path call — no standalone P13 on the condition path).
+# The circuit-breaker short-circuits to the cheap checkbox-only decision after K
+# consecutive judge failures (spec §3 item 4).
 EVAL_REASON=""
-if [[ -n "$COMPLETION_CONDITION" ]] && [[ -n "$TRANSCRIPT_PATH" ]] && [[ -f "$TRANSCRIPT_PATH" ]]; then
+if [[ "${CD_BLOCK_TERMINAL:-}" != "true" ]] && [[ -n "$COMPLETION_CONDITION" ]] && [[ -n "$TRANSCRIPT_PATH" ]] && [[ -f "$TRANSCRIPT_PATH" ]]; then
   EVAL_MET=""
+  # Decide whether to fire the judge at all (CD cost-discipline gate).
+  CD_MIGHT_BE_DONE="true"
+  if [[ "$CD_ENABLED" == "1" ]] && [[ -z "${INSTAR_HOOK_EVAL_OVERRIDE:-}" ]]; then
+    CD_MIGHT_BE_DONE="false"
+    [[ "$CD_UNCHECKED_COUNT" == "0" ]] && CD_MIGHT_BE_DONE="true"
+    # An explicit completion assertion in the final turn also triggers the judge.
+    if printf '%s' "$CD_FINAL_TURN" | grep -qiE 'all (tasks|tests) (complete|pass)|<promise>|condition (is )?met|completion condition met|task list (is )?complete' 2>/dev/null; then
+      CD_MIGHT_BE_DONE="true"
+    fi
+  fi
   if [[ -n "${INSTAR_HOOK_EVAL_OVERRIDE:-}" ]]; then
     # Test seam: "met" | "not-met" short-circuits the live evaluator call.
     [[ "$INSTAR_HOOK_EVAL_OVERRIDE" == "met" ]] && EVAL_MET="true"
     EVAL_REASON="override:$INSTAR_HOOK_EVAL_OVERRIDE"
+  elif [[ "$CD_ENABLED" == "1" ]] && [[ "$(cd_breaker_open)" == "1" ]]; then
+    # Breaker OPEN — cheap checkbox-only decision, no LLM call (never a fail-open exit).
+    if [[ "$CD_UNCHECKED_COUNT" != "0" ]]; then
+      EVAL_REASON="circuit-breaker open (judge failing) — work remains ($CD_UNCHECKED_COUNT unchecked), keeping going"
+    else
+      EVAL_REASON="circuit-breaker open (judge failing) — verify the condition and re-assert with evidence"
+    fi
+    echo "[autonomous] completion-discipline: judge breaker OPEN — cheap checkbox-only continue (unchecked=$CD_UNCHECKED_COUNT)" >&2
+  elif [[ "$CD_MIGHT_BE_DONE" != "true" ]]; then
+    # Common keep-working iteration — zero LLM. The checkbox scan says work remains.
+    EVAL_REASON="work remains ($CD_UNCHECKED_COUNT unchecked) — keeping going"
   else
     EVAL_TAIL=$(grep '"role":"assistant"' "$TRANSCRIPT_PATH" 2>/dev/null | tail -6 \
       | jq -r '.message.content | map(select(.type=="text")) | map(.text) | join("\n")' 2>/dev/null \
       | tail -c 8000 || echo "")
     EVAL_PORT=$(python3 -c "import json;print(json.load(open('.instar/config.json')).get('port',4040))" 2>/dev/null || echo 4040)
     EVAL_AUTH=$(python3 -c "import json;print(json.load(open('.instar/config.json')).get('authToken',''))" 2>/dev/null || echo "")
-    EVAL_RESP=$(jq -nc --arg c "$COMPLETION_CONDITION" --arg t "$EVAL_TAIL" '{condition:$c,transcriptTail:$t}' \
-      | curl -s -m 35 -H "Authorization: Bearer $EVAL_AUTH" -H 'Content-Type: application/json' \
+    if [[ "$CD_ENABLED" == "1" ]]; then
+      # Fold the milestone/buildable-work scrutiny into the completion judge (single call).
+      CD_SIG=$(build_signals_json "" "false")
+      EVAL_BODY=$(jq -nc --arg c "$COMPLETION_CONDITION" --arg t "$EVAL_TAIL" --argjson sig "$CD_SIG" '{condition:$c,transcriptTail:$t,signals:$sig}')
+    else
+      EVAL_BODY=$(jq -nc --arg c "$COMPLETION_CONDITION" --arg t "$EVAL_TAIL" '{condition:$c,transcriptTail:$t}')
+    fi
+    EVAL_RESP=$(printf '%s' "$EVAL_BODY" \
+      | curl -s -m "$JUDGE_TIMEOUT_S" -H "Authorization: Bearer $EVAL_AUTH" -H 'Content-Type: application/json' \
         --data-binary @- "http://localhost:${EVAL_PORT}/autonomous/evaluate-completion" 2>/dev/null || echo "")
     EVAL_MET=$(printf '%s' "$EVAL_RESP" | jq -r '.met // empty' 2>/dev/null || echo "")
     EVAL_REASON=$(printf '%s' "$EVAL_RESP" | jq -r '.reason // empty' 2>/dev/null || echo "")
+    if [[ "$CD_ENABLED" == "1" ]]; then
+      if [[ -z "$EVAL_RESP" ]] || { [[ -z "$EVAL_MET" ]] && [[ -z "$EVAL_REASON" ]]; }; then
+        # Judge unreachable/empty → record the failure (breaker) + the unreachable
+        # breadcrumb, then CONTINUE (never a silent exit). Spec §3 item 4 / §4.
+        cd_record_judge_failure
+        cd_write_unreachable_row
+      else
+        cd_reset_judge_failures
+      fi
+    fi
   fi
   if [[ "$EVAL_MET" == "true" ]]; then
+    if [[ "$CD_ENABLED" == "1" ]]; then
+      # The folded signals already carried the milestone/buildable-work scrutiny to
+      # the completion judge (the SINGLE critical-path call). A "met" verdict here is
+      # the judge's all-things-considered decision → allow. No standalone P13 call on
+      # the condition path (spec §2b.2 — folded once the canary verifies the block).
+      emit "✅ Autonomous mode: completion condition met (independent evaluator): ${EVAL_REASON}"
+      notify_terminal_stop "✅ My autonomous run on \"$(goal_snippet)\" finished — the goal was met."
+      rm -f "$STATE_FILE" "$CD_BACKOFF_STATE" 2>/dev/null || true
+      exit 0
+    fi
     if p13_stop_allowed; then
       emit "✅ Autonomous mode: completion condition met (independent evaluator): ${EVAL_REASON}"
       notify_terminal_stop "✅ My autonomous run on \"$(goal_snippet)\" finished — the goal was met."
@@ -470,7 +939,7 @@ if [[ -n "$COMPLETION_CONDITION" ]] && [[ -n "$TRANSCRIPT_PATH" ]] && [[ -f "$TR
 fi
 
 # Completion promise (genuine completion — legacy/self-declared fallback)
-if [[ -n "$TRANSCRIPT_PATH" ]] && [[ -f "$TRANSCRIPT_PATH" ]]; then
+if [[ "${CD_BLOCK_TERMINAL:-}" != "true" ]] && [[ -n "$TRANSCRIPT_PATH" ]] && [[ -f "$TRANSCRIPT_PATH" ]]; then
   LAST_LINE=$(grep '"role":"assistant"' "$TRANSCRIPT_PATH" 2>/dev/null | tail -1 || echo "")
   if [[ -n "$LAST_LINE" ]]; then
     LAST_OUTPUT=$(printf '%s' "$LAST_LINE" | jq -r '
@@ -741,17 +1210,22 @@ if [[ -n "${ELAPSED:-}" ]]; then
   fi
 fi
 
+# COMPLETION_DISCIPLINE — when a hard-blocker marker was emitted but NOT honored
+# (contradictory markers, or P13 judged it buildable/not-earned), surface that steer.
+CD_STEER=""
+[[ -n "${CD_CONTRADICTORY_STEER:-}" ]] && CD_STEER=" | ${CD_CONTRADICTORY_STEER}"
+
 # When a completion CONDITION is set, an independent judge decides "done" — steer
 # toward the condition + feed back the judge's latest reason (mirrors /goal). When
 # only a legacy promise is set, keep the self-declared-promise directive.
 if [[ -n "$COMPLETION_CONDITION" ]]; then
   GUIDANCE=""
   [[ -n "$EVAL_REASON" ]] && GUIDANCE=" | Not done yet: ${EVAL_REASON}"
-  SYSTEM_MSG="🔄 Autonomous iteration $NEXT_ITERATION ($TIME_MSG)${CLOCK_SEG} | Keep working until this is TRUE: ${COMPLETION_CONDITION}${GUIDANCE} | An independent check decides done from what you SURFACE — run the real checks and show the evidence. Do NOT defer — do it now${REPORT_DIRECTIVE}"
+  SYSTEM_MSG="🔄 Autonomous iteration $NEXT_ITERATION ($TIME_MSG)${CLOCK_SEG} | Keep working until this is TRUE: ${COMPLETION_CONDITION}${GUIDANCE}${CD_STEER} | An independent check decides done from what you SURFACE — run the real checks and show the evidence. Do NOT defer — do it now${REPORT_DIRECTIVE}"
 else
   P13_NOTE=""
   [[ -n "${P13_GUIDANCE:-}" ]] && P13_NOTE=" | ${P13_GUIDANCE}"
-  SYSTEM_MSG="🔄 Autonomous iteration $NEXT_ITERATION ($TIME_MSG)${CLOCK_SEG} | Complete ALL tasks, then output <promise>$COMPLETION_PROMISE</promise>${P13_NOTE} | Do NOT defer to future self — if you can do it now, DO IT NOW${REPORT_DIRECTIVE}"
+  SYSTEM_MSG="🔄 Autonomous iteration $NEXT_ITERATION ($TIME_MSG)${CLOCK_SEG} | Complete ALL tasks, then output <promise>$COMPLETION_PROMISE</promise>${P13_NOTE}${CD_STEER} | Do NOT defer to future self — if you can do it now, DO IT NOW${REPORT_DIRECTIVE}"
 fi
 
 # Block exit and feed prompt back

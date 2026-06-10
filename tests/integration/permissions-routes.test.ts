@@ -49,19 +49,50 @@ afterEach(() => {
 });
 
 describe('GET /permissions/scenario-suite (integration)', () => {
-  it('runs the six-row demonstration and reports all passing', async () => {
+  it('runs the full demonstration and reports all passing', async () => {
     tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'perm-routes-'));
     const res = await request(appWith(tmp)).get('/permissions/scenario-suite');
 
     expect(res.status).toBe(200);
-    expect(res.body.summary.total).toBe(6);
-    expect(res.body.summary.passed).toBe(6);
+    expect(res.body.summary.total).toBe(8);
+    expect(res.body.summary.passed).toBe(8);
     expect(res.body.summary.failed).toBe(0);
-    expect(res.body.rows).toHaveLength(6);
+    expect(res.body.rows).toHaveLength(8);
 
     const stepUp = res.body.rows.find((r: any) => r.id === '5-spoofed-ceo');
     expect(stepUp.got).toBe('step-up/anomaly-stepup');
     expect(stepUp.pass).toBe(true);
+
+    // The two deterministic-subset rows the milestone adds.
+    const granted = res.body.rows.find((r: any) => r.id === '7-granted-member-floor');
+    expect(granted.got).toBe('allow/floor-granted');
+    expect(granted.pass).toBe(true);
+    const outsider = res.body.rows.find((r: any) => r.id === '8-unregistered-outsider');
+    expect(outsider.got).toBe('refuse/unregistered');
+    expect(outsider.pass).toBe(true);
+  });
+});
+
+describe('POST /permissions/scenario-suite/run (integration — audit-asserting, "verified not narrated")', () => {
+  it('runs every row through resolver→gate→ledger and asserts BOTH verdict and audit entry', async () => {
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'perm-routes-'));
+    const res = await request(appWith(tmp)).post('/permissions/scenario-suite/run');
+
+    expect(res.status).toBe(200);
+    expect(res.body.summary.total).toBe(8);
+    expect(res.body.summary.passed).toBe(8);
+    expect(res.body.summary.failed).toBe(0);
+    expect(res.body.rows).toHaveLength(8);
+
+    // Every row must have BOTH the verdict AND the audit entry — the property that
+    // makes the demonstration self-verified rather than narrated.
+    for (const row of res.body.rows) {
+      expect(row.verdictOk).toBe(true);
+      expect(row.auditOk).toBe(true);
+      expect(row.pass).toBe(true);
+    }
+    // The run writes into a throwaway temp dir — NEVER the agent's real stateDir.
+    expect(res.body.ledgerPath).not.toContain(tmp!);
   });
 });
 
