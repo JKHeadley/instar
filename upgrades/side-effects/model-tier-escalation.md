@@ -41,6 +41,7 @@ a routing decision, never a block).
 - src/monitoring/BurnDetector.ts (optional ultraCapMonitor dep, ticked before early-returns)
 - src/monitoring/TokenLedger.ts (tokensByModelSince read-only aggregate)
 - src/monitoring/UltraSessionCapMonitor.ts (new) + tests/unit/ultraSessionCapMonitor.test.ts + tests/unit/guardPosture-modelTier.test.ts (new)
+- src/templates/hooks/model-tier-skill-entry.sh (new — §5.4 PostToolUse/Skill mode-state writer, write-on-transition, instance-keyed, fail-closed) + src/templates/hooks/model-tier-reconciler.js (new — §5.4 UserPromptSubmit reconciler, pure-fs fast path, TTL quarantine, asymmetric hysteresis, observed-outcome reconciliation; canonical sources mirrored byte-identical into PostUpdateMigrator getters)
 - (updated as the build progresses)
 
 ---
