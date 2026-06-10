@@ -103,12 +103,14 @@ describe('HeuristicIntentClassifier', () => {
 });
 
 describe('SlackPermissionGate — scenario suite (Pillar 4 Layer-A)', () => {
-  it('produces the expected decision + basis for all six scenarios', async () => {
+  it('produces the expected decision + basis for every scenario', async () => {
     const results = await runScenarioSuite();
     const failures = results.filter((r) => !r.pass).map((r) => `${r.scenario.id}: ${r.mismatch}`);
     expect(failures).toEqual([]);
-    expect(results).toHaveLength(6);
-    expect(SCENARIOS).toHaveLength(6);
+    // §9 A–F (6 worked examples) + the two deterministic-subset rows the milestone-4
+    // demonstration adds: a granted-member floor (A4.3) and an unregistered outsider (A1.3).
+    expect(results).toHaveLength(8);
+    expect(SCENARIOS).toHaveLength(8);
   });
 
   it('the in-character owner deploy is allowed but the out-of-character money transfer steps up', async () => {

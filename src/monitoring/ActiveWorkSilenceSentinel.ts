@@ -25,7 +25,13 @@
 
 import { EventEmitter } from 'node:events';
 
-export type SilenceStatus = 'detected' | 'nudged' | 'recovered' | 'escalated';
+export type SilenceStatus =
+  | 'detected'
+  | 'nudged'
+  | 'recovered'
+  | 'recovering'
+  | 'recovery-failed'
+  | 'escalated';
 
 export interface SilenceState {
   sessionName: string;
@@ -33,6 +39,9 @@ export interface SilenceState {
   lastOutputAtAtDetection: number;
   nudgedAt: number;
   status: SilenceStatus;
+  /** Auto-recovery (respawn) attempts made for this stall episode. Bounded by
+   *  maxAutoRecoveries to prevent a respawn-loop on a session that stays stuck. */
+  recoveryAttempts: number;
 }
 
 export interface SessionRegistryEntry {
@@ -50,8 +59,15 @@ export interface ActiveWorkSilenceSentinelDeps {
   listSessions: () => SessionRegistryEntry[];
   /** Send an empty send-keys to wake the pane. Returns whether it was accepted. */
   nudgeFn: (sessionName: string) => Promise<boolean>;
-  /** Route a user-facing message; server.ts owns topic routing. */
+  /** Route a user-facing message; server.ts owns topic routing (→ the stalled
+   *  session's OWN topic when auto-recover is on). */
   notifyFn: (sessionName: string, text: string) => Promise<void>;
+  /** Auto-recovery primitive: fresh-respawn a confirmed-stuck session
+   *  (conversation preserved via resume/bootstrap). Returns whether it succeeded.
+   *  Optional — when absent (or autoRecover off) the sentinel falls back to the
+   *  ask-the-user escalation. DESTRUCTIVE (discards in-context work), so it only
+   *  runs after the nudge fails AND is bounded by maxAutoRecoveries. */
+  recoverFn?: (sessionName: string) => Promise<boolean>;
   /** Override Date.now for tests. */
   now?: () => number;
   /** Override timer setters for tests. */
@@ -67,6 +83,14 @@ export interface ActiveWorkSilenceSentinelConfig {
   silenceThresholdMs?: number;
   /** Verify window — how long after nudge before declaring escalate (ms). Default 30s. */
   verifyWindowMs?: number;
+  /** Auto-recover (respawn) a stalled session after the nudge fails, instead of
+   *  only asking the user. DARK by default — destructive (discards in-context
+   *  work), so opt-in. When off, behaviour is unchanged (nudge → ask). */
+  autoRecover?: boolean;
+  /** Hard cap on auto-recovery (respawn) attempts per stall episode. Prevents a
+   *  respawn-loop on a session that stays stuck after a respawn. Default 1 —
+   *  one auto-respawn, then fall back to asking the user. */
+  maxAutoRecoveries?: number;
 }
 
 const DEFAULT_CONFIG: Required<ActiveWorkSilenceSentinelConfig> = {
@@ -74,6 +98,8 @@ const DEFAULT_CONFIG: Required<ActiveWorkSilenceSentinelConfig> = {
   tickIntervalMs: 60_000,
   silenceThresholdMs: 15 * 60_000,
   verifyWindowMs: 30_000,
+  autoRecover: false,
+  maxAutoRecoveries: 1,
 };
 
 export class ActiveWorkSilenceSentinel extends EventEmitter {
@@ -131,6 +157,7 @@ export class ActiveWorkSilenceSentinel extends EventEmitter {
       lastOutputAtAtDetection: lastOutputAt,
       nudgedAt: 0,
       status: 'detected',
+      recoveryAttempts: 0,
     };
     this.states.set(sessionName, state);
     this.emit('silence', { sessionName, idleMs: now - lastOutputAt });
@@ -200,6 +227,15 @@ export class ActiveWorkSilenceSentinel extends EventEmitter {
   private escalate(sessionName: string): void {
     const state = this.states.get(sessionName);
     if (!state) return;
+    // Auto-heal path (dark by default): after the nudge failed, recover the
+    // session (respawn) instead of only asking the user — bounded by
+    // maxAutoRecoveries so a session that stays stuck can't trigger a
+    // respawn-loop. Falls through to the ask-path when off / cap reached / no
+    // recoverFn wired.
+    if (this.cfg.autoRecover && this.deps.recoverFn && state.recoveryAttempts < this.cfg.maxAutoRecoveries) {
+      void this.runRecovery(sessionName);
+      return;
+    }
     state.status = 'escalated';
     const minutes = Math.max(1, Math.round(((this.deps.now ?? Date.now)() - state.lastOutputAtAtDetection) / 60_000));
     void this.notify(
@@ -207,6 +243,55 @@ export class ActiveWorkSilenceSentinel extends EventEmitter {
       `${friendlyName(sessionName)} was working and went quiet about ${minutes} minutes ago. I tried a gentle nudge and nothing came back. Want me to dig in?`,
     );
     this.emit('escalated', sessionName);
+  }
+
+  /**
+   * Auto-recovery ladder (dark by default): notify in the stalled session's own
+   * topic, respawn it, then notify the outcome. Bounded by maxAutoRecoveries
+   * (the recoveryAttempts increment + the escalate() guard) so a session that
+   * stays stuck after a respawn falls back to asking the user — never a loop.
+   */
+  private async runRecovery(sessionName: string): Promise<void> {
+    const state = this.states.get(sessionName);
+    if (!state || !this.deps.recoverFn) return;
+    state.status = 'recovering';
+    state.recoveryAttempts += 1;
+    const minutes = Math.max(1, Math.round(((this.deps.now ?? Date.now)() - state.lastOutputAtAtDetection) / 60_000));
+    await this.notify(
+      sessionName,
+      `${friendlyName(sessionName)} went quiet about ${minutes} minutes ago and a nudge didn't wake it — auto-recovering it now.`,
+    );
+    this.emit('recovering', sessionName);
+
+    let ok = false;
+    try {
+      ok = await this.deps.recoverFn(sessionName);
+    } catch (err) {
+      this.emit('recover-error', { sessionName, err });
+      ok = false;
+    }
+
+    if (ok) {
+      state.status = 'recovered';
+      await this.notify(
+        sessionName,
+        `${friendlyName(sessionName)} was stuck — I recovered it (fresh restart, conversation preserved). It should pick back up now.`,
+      );
+      this.emit('recovered', sessionName);
+      // Clear so the freshly-respawned session is monitored anew. The respawn
+      // resets its output clock, so it won't immediately re-trigger.
+      this.clear(sessionName);
+      return;
+    }
+
+    // Respawn failed — fall back to asking the user, and DO NOT clear (the
+    // persisted state stops tick() re-detecting → no auto-recovery loop).
+    state.status = 'recovery-failed';
+    await this.notify(
+      sessionName,
+      `${friendlyName(sessionName)} went quiet and I couldn't auto-recover it. Want me to dig in?`,
+    );
+    this.emit('recovery-failed', sessionName);
   }
 
   private async notify(sessionName: string, text: string): Promise<void> {

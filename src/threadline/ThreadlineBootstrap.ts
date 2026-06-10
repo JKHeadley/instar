@@ -22,10 +22,8 @@ import { HandshakeManager } from './HandshakeManager.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 import { AgentDiscovery } from './AgentDiscovery.js';
-import { generateIdentityKeyPair } from './ThreadlineCrypto.js';
 import { DEFAULT_RELAY_URL } from './constants.js';
 import { resolveThreadlineMcpEntry } from './mcpEntry.js';
-import type { KeyPair } from './ThreadlineCrypto.js';
 import { ThreadlineClient } from './client/ThreadlineClient.js';
 import type { ReceivedMessage } from './client/ThreadlineClient.js';
 import { InboundMessageGate } from './InboundMessageGate.js';
@@ -64,8 +62,6 @@ export interface ThreadlineBootstrapResult {
   handshakeManager: HandshakeManager;
   /** Agent discovery service */
   discovery: AgentDiscovery;
-  /** Identity key pair */
-  identityKeys: KeyPair;
   /** Cleanup function for graceful shutdown */
   shutdown: () => Promise<void>;
   /** Cloud relay client (if relay is enabled) */
@@ -75,10 +71,6 @@ export interface ThreadlineBootstrapResult {
   /** Trust manager */
   trustManager?: AgentTrustManager;
 }
-
-// ── Constants ────────────────────────────────────────────────────────
-
-const IDENTITY_KEY_FILE = 'identity-keys.json';
 
 // ── Implementation ───────────────────────────────────────────────────
 
@@ -95,10 +87,7 @@ export async function bootstrapThreadline(
   const threadlineDir = path.join(config.stateDir, 'threadline');
   fs.mkdirSync(threadlineDir, { recursive: true });
 
-  // ── 1. Identity Keys (persist across restarts) ───────────────────
-  const identityKeys = loadOrCreateIdentityKeys(threadlineDir);
-
-  // ── 2. HandshakeManager ──────────────────────────────────────────
+  // ── 1. HandshakeManager ──────────────────────────────────────────
   const handshakeManager = new HandshakeManager(config.stateDir, config.agentName);
 
   // ── 3. Agent Discovery ───────────────────────────────────────────
@@ -336,7 +325,6 @@ export async function bootstrapThreadline(
   return {
     handshakeManager,
     discovery,
-    identityKeys,
     trustManager,
     relayClient,
     inboundGate,
@@ -353,39 +341,6 @@ export async function bootstrapThreadline(
       }
     },
   };
-}
-
-// ── Identity Key Persistence ─────────────────────────────────────────
-
-function loadOrCreateIdentityKeys(threadlineDir: string): KeyPair {
-  const keyFile = path.join(threadlineDir, IDENTITY_KEY_FILE);
-
-  if (fs.existsSync(keyFile)) {
-    try {
-      const data = JSON.parse(fs.readFileSync(keyFile, 'utf-8'));
-      if (data.publicKey && data.privateKey) {
-        return {
-          publicKey: Buffer.from(data.publicKey, 'hex'),
-          privateKey: Buffer.from(data.privateKey, 'hex'),
-        };
-      }
-    } catch {
-      // Corrupted key file — regenerate
-    }
-  }
-
-  const keys = generateIdentityKeyPair();
-
-  // Persist atomically
-  const tmpFile = `${keyFile}.${process.pid}.tmp`;
-  fs.writeFileSync(tmpFile, JSON.stringify({
-    publicKey: keys.publicKey.toString('hex'),
-    privateKey: keys.privateKey.toString('hex'),
-    createdAt: new Date().toISOString(),
-  }, null, 2), { mode: 0o600 }); // Private key — restrictive permissions
-  fs.renameSync(tmpFile, keyFile);
-
-  return keys;
 }
 
 // ── MCP Registration ─────────────────────────────────────────────────

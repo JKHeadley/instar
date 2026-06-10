@@ -2576,6 +2576,33 @@ export interface InstarConfig {
      *  auto-swap functional (a session must carry which account it's on for the
      *  swap engine to move it). Unset → spawns use the default config (no-op). */
     pinSessionsToPool?: boolean;
+    /**
+     * DARK by default: the PRE-LIMIT swap. When enabled, the ProactiveSwapMonitor
+     * moves a session OFF an account that crosses `thresholdPct` on its binding
+     * window BEFORE it walls — vs. the reactive `autoSwapOnRateLimit`, which only
+     * fires AFTER the wall. Same authority as the reactive swap (it moves live
+     * sessions), earlier trigger → opt-in. Covers untagged sessions too by
+     * resolving the default-config login (so the primary interactive session is
+     * swap-visible instead of wedging at the wall).
+     */
+    proactiveSwap?: {
+      /** Master switch. Default false (dark). */
+      enabled?: boolean;
+      /** Measured binding-window utilization % that triggers a pre-emptive swap.
+       *  Default 80 — below the real wall to absorb poll-lag (measured trails
+       *  real ~5%), so the swap completes with margin. */
+      thresholdPct?: number;
+      /** Refresh the poll before deciding when an at-risk account is within this
+       *  many points of the threshold (catch a fast burn between baseline polls).
+       *  Default 15. */
+      watchMarginPct?: number;
+      /** Max sessions swapped per evaluation cycle (storm guard). Default 3. */
+      maxSwapsPerCycle?: number;
+      /** Per-session cooldown (ms) after a successful swap. Default 600000 (10m). */
+      cooldownMs?: number;
+      /** Monitor tick cadence (ms). Default 180000 (3m). */
+      tickMs?: number;
+    };
     /** P2.1 enrollment wizard knobs (all optional). */
     enrollment?: {
       /** Per-framework login command override (defaults: claude-code →
@@ -3590,6 +3617,16 @@ export interface MonitoringConfig {
     silenceThresholdMs?: number;
     /** Wait after the nudge before escalating (ms) (default: 30_000). */
     verifyWindowMs?: number;
+    /**
+     * Auto-heal ladder (DARK, default: false). When true, a confirmed-silent
+     * session that doesn't respond to the nudge is respawned fresh
+     * (conversation preserved via --resume) instead of only asking the user.
+     * The respawn is loop-capped by maxAutoRecoveries, and a failed respawn
+     * leaves a recovery-failed state so it never re-fires on the same session.
+     */
+    autoRecover?: boolean;
+    /** Max auto-respawn attempts per session before falling back to asking (default: 1). */
+    maxAutoRecoveries?: number;
   };
   /**
    * BurnDetection — the token-burn detection + bounded auto-heal system

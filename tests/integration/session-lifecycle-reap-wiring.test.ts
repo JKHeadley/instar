@@ -192,4 +192,40 @@ describe('session-lifecycle reap wiring (integration)', () => {
     expect(state.getSession('prot-1')!.status).toBe('running');
     expect(log.read().at(-1)).toMatchObject({ type: 'skipped', skipped: 'protected' });
   });
+
+  // ── active-process relaxation parity (the 1,532× skipped:active-process bug) ──
+  // Proves the REAL terminateSession + REAL ReapGuard agree on the bypass: an
+  // active-process veto refuses an autonomous reap, but the reaper's relaxation
+  // (carried via bypassActiveProcessKeep) actually lands the kill end-to-end.
+  it('active-process keep refuses an autonomous reap; bypassActiveProcessKeep lands it', async () => {
+    // Re-wire a guard whose ONLY live veto is active-process (e.g. the standing MCP stack).
+    manager.setReapGuard(new ReapGuard(
+      {
+        protectedSessions: () => ['proj-server'],
+        isRecoveryActive: () => false,
+        hasPendingInjection: () => false,
+        isRelayLeaseActive: (id) => id === relayLeased,
+        topicBinding: () => null,
+        recentUserMessage: () => false,
+        activeCommitmentForTopic: () => false,
+        activeSubagentCount: () => 0,
+        buildOrAutonomousActive: () => false,
+        hasActiveProcesses: () => true,
+      },
+      { minAgeMs: 0 },
+    ));
+    const s = await spawn('ap-wire');
+
+    // Without the bypass: the authority re-vetoes (the original stalemate).
+    const refused = await manager.terminateSession(s.id, 'reaped-idle');
+    expect(refused).toEqual({ terminated: false, skipped: 'active-process' });
+    expect(state.getSession(s.id)!.status).toBe('running');
+    expect(log.read().at(-1)).toMatchObject({ type: 'skipped', skipped: 'active-process' });
+
+    // With the bypass (what performReap now sends): the kill actually lands.
+    const reaped = await manager.terminateSession(s.id, 'reaped-idle', { bypassActiveProcessKeep: true });
+    expect(reaped.terminated).toBe(true);
+    expect(state.getSession(s.id)!.status).toBe('completed');
+    expect(log.read().at(-1)).toMatchObject({ type: 'reaped', reason: 'reaped-idle' });
+  });
 });

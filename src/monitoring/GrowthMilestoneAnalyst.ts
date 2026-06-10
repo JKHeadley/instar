@@ -40,14 +40,17 @@ import path from 'node:path';
 import type { InitiativeTracker, Initiative, RolloutStage } from '../core/InitiativeTracker.js';
 import type { ApprovalLedger, ClassSummary, DivergenceCategory } from '../core/ApprovalLedger.js';
 import type { CorrectionLedger, CorrectionRecord } from './CorrectionLedger.js';
+import { DEV_GATED_FEATURES, getConfigByPath } from '../core/devGatedFeatures.js';
+import { resolveDevAgentGate } from '../core/devAgentGate.js';
 
 /** Risk tiers govern how long a feature may incubate before the window expires. */
 export type GrowthRiskTier = 'lowRisk' | 'standard' | 'highRisk';
 
-/** The five notify-rules. R1/R2 = feature maturity (the key lever); R3 =
+/** The six notify-rules. R1/R2 = feature maturity (the key lever); R3 =
  *  initiatives left behind; R4 = spec approve-vs-change pattern; R5 = correction
- *  pattern. */
-export type GrowthRuleId = 'R1' | 'R2' | 'R3' | 'R4' | 'R5';
+ *  pattern; R6 = dev-gate conformance (a registered dev-gated feature observed
+ *  DARK on this dev agent — the forgot-the-gate / misconfig class). */
+export type GrowthRuleId = 'R1' | 'R2' | 'R3' | 'R4' | 'R5' | 'R6';
 
 export type GrowthFindingPriority = 'low' | 'normal' | 'high';
 
@@ -81,6 +84,8 @@ export interface GrowthDigestCounts {
   stalling: number;
   specPatterns: number;
   correctionPatterns: number;
+  /** R6: dev-gated features observed DARK on this dev agent (should be live). */
+  devGateDark: number;
 }
 
 export interface GrowthDigest {
@@ -109,6 +114,7 @@ export interface GrowthAnalystSettings {
     initiativeStalling: boolean;
     specPattern: boolean;
     correctionPattern: boolean;
+    devGateConformance: boolean;
   };
   /** R4: minimum decisions in a class before a spec-pattern is worth surfacing. */
   specPatternMinTotal: number;
@@ -136,6 +142,7 @@ export const DEFAULT_GROWTH_SETTINGS: GrowthAnalystSettings = {
     initiativeStalling: true,
     specPattern: true,
     correctionPattern: true,
+    devGateConformance: true,
   },
   specPatternMinTotal: 3,
   specPatternMinChangeRatio: 0.6,
@@ -163,6 +170,7 @@ export function resolveGrowthSettings(raw?: Partial<GrowthAnalystSettings> | Rec
       initiativeStalling: rules.initiativeStalling !== false,
       specPattern: rules.specPattern !== false,
       correctionPattern: rules.correctionPattern !== false,
+      devGateConformance: rules.devGateConformance !== false,
     },
     specPatternMinTotal: numOr(r.specPatternMinTotal, DEFAULT_GROWTH_SETTINGS.specPatternMinTotal),
     specPatternMinChangeRatio: numOr(r.specPatternMinChangeRatio, DEFAULT_GROWTH_SETTINGS.specPatternMinChangeRatio),
@@ -268,6 +276,10 @@ export interface GrowthMilestoneAnalystDeps {
   now?: () => Date;
   /** Optional error sink. */
   onError?: (where: string, err: unknown) => void;
+  /** R6: the live agent config, for the dev-gate conformance cross-check. Only
+   *  meaningful on a development agent; absent/null ⇒ R6 is skipped. Read with
+   *  getConfigByPath (which accepts unknown), so no index signature is required. */
+  liveConfig?: { developmentAgent?: boolean } | null;
 }
 
 export class GrowthMilestoneAnalyst {
@@ -517,7 +529,47 @@ export class GrowthMilestoneAnalyst {
       ...this.computeStallingFindings(now),
       ...this.computeSpecPatternFindings(),
       ...this.computeCorrectionFindings(now),
+      ...this.computeDevGateConformanceFindings(),
     ];
+  }
+
+  /** R6 (dev-gate conformance): on a development agent, every registered
+   *  dev-gated feature MUST resolve LIVE. One observed DARK means it was wired
+   *  wrong / misconfigured (a hardcoded enabled:false default, or an operator
+   *  override) — the forgot-the-gate class the Slice-1 lint can't see and the
+   *  Slice-2 default test only catches at the default level. Surfacing it here
+   *  makes it a live finding on the very dev agent it affects.
+   *  Spec: DEV-AGENT-DARK-GATE-CONFORMANCE-SPEC (Slice 3). */
+  private computeDevGateConformanceFindings(): GrowthFinding[] {
+    if (!this.settings.rules.devGateConformance) return [];
+    const cfg = this.deps.liveConfig;
+    if (!cfg || cfg.developmentAgent !== true) return []; // only meaningful on a dev agent
+    const findings: GrowthFinding[] = [];
+    for (const feature of DEV_GATED_FEATURES) {
+      let live: boolean;
+      try {
+        const explicit = getConfigByPath(cfg, feature.configPath) as boolean | undefined;
+        live = resolveDevAgentGate(explicit, cfg);
+      } catch (err) {
+        this.deps.onError?.('devGateConformance', err);
+        continue;
+      }
+      if (!live) {
+        findings.push({
+          rule: 'R6',
+          priority: 'normal',
+          subjectId: feature.name,
+          title: `Dev-gated feature "${feature.name}" is DARK on this dev agent`,
+          detail:
+            `${feature.description} It follows the developmentAgent dark-feature gate, ` +
+            `so it should run LIVE on a development agent — but the live config resolves ` +
+            `it DARK at ${feature.configPath}. Likely a hardcoded enabled:false default or ` +
+            `an operator override (the forgot-the-gate / misconfig class the lint can't see).`,
+          suggestedAction: 'review',
+        });
+      }
+    }
+    return findings;
   }
 
   /** Build the operator-facing digest. Calm digests still render so the operator
@@ -528,7 +580,8 @@ export class GrowthMilestoneAnalyst {
     const stalling = this.computeStallingFindings(now);
     const spec = this.computeSpecPatternFindings();
     const corr = this.computeCorrectionFindings(now);
-    const findings = [...rollout, ...stalling, ...spec, ...corr];
+    const devGate = this.computeDevGateConformanceFindings();
+    const findings = [...rollout, ...stalling, ...spec, ...corr, ...devGate];
 
     const counts: GrowthDigestCounts = {
       incubating: this.countIncubating(now, journal),
@@ -537,6 +590,7 @@ export class GrowthMilestoneAnalyst {
       stalling: stalling.length,
       specPatterns: spec.length,
       correctionPatterns: corr.length,
+      devGateDark: devGate.length,
     };
 
     const nextWindowClosesInDays = this.nextWindowClose(now, journal);
@@ -632,6 +686,7 @@ export class GrowthMilestoneAnalyst {
     if (counts.stalling) parts.push(`${counts.stalling} stalling`);
     if (counts.specPatterns) parts.push(`${counts.specPatterns} spec pattern(s)`);
     if (counts.correctionPatterns) parts.push(`${counts.correctionPatterns} correction pattern(s)`);
+    if (counts.devGateDark) parts.push(`${counts.devGateDark} dev-gated-dark`);
     return `Growth digest: ${parts.join(', ')}.`;
   }
 }

@@ -262,6 +262,14 @@ export function buildActiveWorkSilenceDeps(opts: {
   tracker: OutputActivityTracker;
   sessions: SentinelSessionSurface;
   escalate: EscalateFn;
+  /** Auto-recovery respawn primitive (DARK; only wired when autoRecover is on).
+   *  Returns whether the respawn succeeded. */
+  recoverFn?: (sessionName: string) => Promise<boolean>;
+  /** Resolve a session to its Telegram topic, so silence/recovery notices land
+   *  in the STALLED session's OWN topic (operator ask, 2026-06-09). */
+  getTopicForSession?: (sessionName: string) => number | null | undefined;
+  /** Deliver a notice to a specific topic. Returns success; never throws. */
+  deliverToTopic?: (topicId: number, text: string) => Promise<boolean>;
 }): ActiveWorkSilenceSentinelDeps {
   return {
     listSessions: () => opts.tracker.snapshot(),
@@ -270,8 +278,17 @@ export function buildActiveWorkSilenceDeps(opts: {
       return opts.sessions.sendKey(sessionName, 'Enter');
     },
     notifyFn: async (sessionName, text) => {
+      // Route to the stalled session's OWN topic when we can resolve it
+      // (operator ask: "messages should only go to the topic that's stalled").
+      // Fall back to the consolidated tone-gated escalate path otherwise.
+      const topicId = opts.getTopicForSession?.(sessionName);
+      if (topicId != null && opts.deliverToTopic) {
+        const ok = await opts.deliverToTopic(topicId, text).catch(() => false);
+        if (ok) return;
+      }
       await opts.escalate(sessionName, text);
     },
+    recoverFn: opts.recoverFn,
   };
 }
 

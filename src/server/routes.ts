@@ -19,6 +19,7 @@ import type { StateManager } from '../core/StateManager.js';
 import { describeTopicPlacement } from '../core/TopicPlacementDescription.js';
 import { buildRelocationNicknameSet } from '../core/RelocationNicknameSet.js';
 import { resolveSelfNickname } from '../core/SelfNicknameResolver.js';
+import { resolveDevAgentGate } from '../core/devAgentGate.js';
 import { planTransferByNickname } from '../core/TransferByNickname.js';
 import type { JobScheduler } from '../scheduler/JobScheduler.js';
 import type { InstarConfig, JobPriority } from '../core/types.js';
@@ -220,6 +221,7 @@ import { createThreadlineRoutes } from '../threadline/ThreadlineEndpoints.js';
 import type { UnifiedTrustSystem } from '../threadline/UnifiedTrustWiring.js';
 import { DEFAULT_RELAY_URL } from '../threadline/constants.js';
 import { ThreadlineNicknames } from '../threadline/ThreadlineNicknames.js';
+import { resolvePeerFingerprint, resolvePeerFingerprintByName } from '../threadline/peerFingerprint.js';
 import { ScopeCoherenceTracker } from '../core/ScopeCoherenceTracker.js';
 import type { ScopeCoherenceState } from '../core/ScopeCoherenceTracker.js';
 import type { HookEventReceiver } from '../monitoring/HookEventReceiver.js';
@@ -594,6 +596,9 @@ export interface RouteContext {
   quotaPoller: import('../core/QuotaPoller.js').QuotaPoller | null;
   /** QuotaAwareScheduler (P1.3) — account selection + swap-and-resume guarantee. */
   quotaAwareScheduler: import('../core/QuotaAwareScheduler.js').QuotaAwareScheduler | null;
+  /** ProactiveSwapMonitor (P1.3, pre-limit half) — moves a session off an account
+   *  BEFORE it walls. Optional; the routes report enabled:false when absent. */
+  proactiveSwapMonitor?: import('../core/ProactiveSwapMonitor.js').ProactiveSwapMonitor;
   /** InUseAccountResolver — which pool account the agent is currently running on
    *  (for the dashboard "in use" badge). Optional; the route lazily constructs a
    *  default when absent so it never 503s. */
@@ -5961,6 +5966,33 @@ export function createRoutes(ctx: RouteContext): Router {
       return;
     }
     res.json({ recorded: true, mode: 'dry-run', generatedAt: outcome.generatedAt, result: outcome.result });
+  });
+
+  // TRIGGER the REAL pre-click integrity pass: live source fetch → AS-IS import into a
+  // PERSISTED shadow (run OFF the event loop, in a child process) → integrity gate over
+  // the readback → the report is recorded to the CANONICAL integrity path. UNLIKE the
+  // import-dryrun, this IS load-bearing on `ready`: a passing report greens the integrity
+  // leg, a failing one flips it closed (the door reflects the LATEST real verdict). The
+  // cutover flip itself remains the operator's manual click — this only resolves the
+  // confidence signal up to the door. Same T7 discipline + always-logged outcome.
+  router.post('/cutover-readiness/integrity-pass', async (_req, res) => {
+    if (!ctx.cutoverReadiness) {
+      res.status(503).json({ error: 'cutover-readiness unavailable (no stateDir or init failed)' });
+      return;
+    }
+    const outcome = await ctx.cutoverReadiness.runIntegrityPass();
+    if (outcome.ok) {
+      const r = outcome.result;
+      console.log(`[cutover-readiness] integrity pass recorded=${outcome.recorded}: passed=${r.passed} clusters=${r.imported.clusters} feedback=${r.imported.feedback}${r.abortedPreImport ? ` abortedPreImport=${r.abortedPreImport.reason}` : ''}`);
+    } else {
+      console.warn(`[cutover-readiness] integrity pass FAILED (nothing recorded): ${outcome.reason}`);
+    }
+    if (res.headersSent) return; // 408 already went out — outcome logged above
+    if (!outcome.ok) {
+      res.status(409).json({ error: outcome.reason });
+      return;
+    }
+    res.json({ recorded: outcome.recorded, generatedAt: outcome.generatedAt, result: outcome.result });
   });
 
   // The last import dry-run's verdict. Read-only, informational — never a `ready` input.
@@ -13342,7 +13374,7 @@ export function createRoutes(ctx: RouteContext): Router {
       const configPath = path.join(ctx.config.projectDir, '.instar', 'config.json');
       const { BootSelfKnowledge, DEFAULT_MAX_BYTES } = await import('../core/BootSelfKnowledge.js');
       const freshFlags = readSelfKnowledgeFlags(configPath);
-      const enabled = freshFlags.enabled ?? Boolean(ctx.config.developmentAgent);
+      const enabled = resolveDevAgentGate(freshFlags.enabled, ctx.config);
       if (!enabled) {
         res.status(503).json({ error: 'self-knowledge session-context disabled' });
         return;
@@ -14793,7 +14825,8 @@ export function createRoutes(ctx: RouteContext): Router {
   });
 
   // GET /permissions/scenario-suite — run the deterministic permission demonstration
-  // (Pillar 4 Layer-A): the six worked-example rows with expected vs actual verdict.
+  // (Pillar 4 Layer-A): the worked-example rows with expected vs actual verdict.
+  // This is the gate-direct (logic-only) view: it proves each row's DECISION.
   router.get('/permissions/scenario-suite', async (req, res) => {
     try {
       const { runScenarioSuite } = await import('../permissions/testing/SlackScenarioHarness.js');
@@ -14814,6 +14847,40 @@ export function createRoutes(ctx: RouteContext): Router {
           got: `${r.verdict.decision}/${r.verdict.basis}`,
           message: r.verdict.message || undefined,
           pass: r.pass,
+          proves: r.scenario.proves,
+        })),
+      });
+    } catch (e) {
+      res.status(500).json({ error: (e as Error).message });
+    }
+  });
+
+  // POST /permissions/scenario-suite/run — the AUDIT-ASSERTING demonstration
+  // (Pillar 4 milestone 4, "verified, not narrated", §8.4). Drives every row through
+  // the SAME observer the live SlackAdapter._handleMessage calls (resolver → gate →
+  // decision ledger), then asserts BOTH the verdict AND that the matching audit/ledger
+  // entry actually landed. Read-only/dev: it writes only into a throwaway temp state
+  // dir (never ctx.config.stateDir) and mutates nothing in the running agent.
+  // A green run (failed:0) is the executable, self-verified proof.
+  router.post('/permissions/scenario-suite/run', async (_req, res) => {
+    try {
+      const { runAuditedScenarioSuite } = await import('../permissions/testing/SlackScenarioHarness.js');
+      const report = await runAuditedScenarioSuite();
+      res.json({
+        summary: report.summary,
+        ledgerPath: report.ledgerPath,
+        rows: report.rows.map((r) => ({
+          id: r.scenario.id,
+          principal: r.scenario.principal.name,
+          role: r.scenario.principal.role,
+          request: r.scenario.text,
+          directed: r.scenario.directed,
+          expected: `${r.scenario.expectedDecision}/${r.scenario.expectedBasis}`,
+          got: r.verdict ? `${r.verdict.decision}/${r.verdict.basis}` : 'null',
+          verdictOk: r.verdictOk,
+          auditOk: r.auditOk,
+          pass: r.pass,
+          mismatch: r.mismatch,
           proves: r.scenario.proves,
         })),
       });
@@ -16096,6 +16163,34 @@ export function createRoutes(ctx: RouteContext): Router {
     }
   });
 
+  // P1.3 (pre-limit half) — proactive swap status + on-demand check. The monitor
+  // moves a session OFF an account BEFORE it walls (vs. the reactive swap, which
+  // only fires after). Literal segments registered before GET /subscription-pool/:id.
+  // 200 { enabled:false } when the monitor is unwired (dark) — never 503.
+  router.get('/subscription-pool/proactive-swap', (_req, res) => {
+    if (!ctx.proactiveSwapMonitor) {
+      res.json({ enabled: false });
+      return;
+    }
+    res.json({ enabled: true, ...ctx.proactiveSwapMonitor.status() });
+  });
+
+  // Run ONE proactive-swap pass now (the deterministic "show me it works" lever):
+  // refresh the poll if near the wall, then pre-emptively swap at-pressure sessions.
+  // POST so it never collides with GET /subscription-pool/:id.
+  router.post('/subscription-pool/proactive-swap/check', async (_req, res) => {
+    if (!ctx.proactiveSwapMonitor) {
+      res.json({ enabled: false, swapped: [], considered: 0, refreshed: false });
+      return;
+    }
+    try {
+      const result = await ctx.proactiveSwapMonitor.tick();
+      res.json({ enabled: true, ...result });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : 'proactive check failed' });
+    }
+  });
+
   router.get('/subscription-pool/:id', (req, res) => {
     if (!ctx.subscriptionPool) {
       res.status(404).json({ error: 'SubscriptionPool not configured' });
@@ -16571,8 +16666,17 @@ export function createRoutes(ctx: RouteContext): Router {
           // handleInboundMessage is NOT dropped: it runs to completion in the
           // background; its outcome is logged (never surfaced to the closed
           // response), and a failure can't 500 a request that already returned.
+          // LOCAL co-located delivery carries the sender as a NAME in
+          // `from.agent` (the relay path carries a fingerprint). Resolve that
+          // name → the peer's canonical fingerprint via the SAME derivation the
+          // thread owner was recorded with, and pass it as a narrow hint so the
+          // anti-hijack guard compares fingerprint-to-fingerprint instead of
+          // isolating a legitimate reply. Unresolvable → undefined → name-based
+          // fallback (fail-safe). See threadline-local-delivery-fingerprint-attribution.
+          const inboundSenderFingerprint =
+            resolvePeerFingerprintByName(ctx.config.stateDir, envelope.message?.from?.agent) ?? undefined;
           void ctx.threadlineRouter
-            .handleInboundMessage(envelope)
+            .handleInboundMessage(envelope, undefined, { inboundSenderFingerprint })
             .then((threadlineResult) => {
               console.log(
                 `[relay-agent] async handleInboundMessage complete (thread ${envelope.message?.threadId ?? 'none'}): ${JSON.stringify(threadlineResult)}`,
@@ -17590,7 +17694,7 @@ export function createRoutes(ctx: RouteContext): Router {
                   // the anti-hijack guard instead of being false-isolated.
                   await captureOrigin(
                     effectiveThreadId,
-                    localTarget.fingerprint || localTarget.publicKey?.substring(0, 32) || localTarget.name,
+                    resolvePeerFingerprint(localTarget) || localTarget.name,
                     localTarget.name,
                   );
                   // Durable delivery record (A2A-DURABLE-DELIVERY-SPEC.md) —
@@ -17598,7 +17702,7 @@ export function createRoutes(ctx: RouteContext): Router {
                   try {
                     ctx.a2aDeliveryTracker?.recordSent({
                       messageId: msgId,
-                      peerFp: localTarget.fingerprint || localTarget.publicKey?.substring(0, 32) || localTarget.name,
+                      peerFp: resolvePeerFingerprint(localTarget) || localTarget.name,
                       peerName: localTarget.name,
                       threadId: effectiveThreadId,
                       transport: 'local',
