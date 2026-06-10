@@ -2348,6 +2348,20 @@ export interface InstarConfig {
      */
     operationalFacts?: Array<string | { fact: string; updatedAt?: string; machine?: string }>;
   };
+  /**
+   * Model-routing config. `tierEscalation` is the Model-Tier Escalation
+   * Policy (docs/specs/FABLE-MODEL-ESCALATION-SPEC.md §9): default every
+   * session to its framework's default model, escalate to the framework's
+   * ultra model (first populated entry: claude-fable-5) only for the two
+   * spec-defined work-modes. Ships `enabled:false` fleet-wide; dev agents
+   * (Echo/Codey) ship enabled behind dryRun + the live-swap canary. Partial
+   * shapes are normalized at read time (normalizeTierEscalationConfig);
+   * PostUpdateMigrator backfills add-missing-only and NEVER overwrites an
+   * operator's `enabled`/`dryRun`.
+   */
+  models?: {
+    tierEscalation?: Partial<import('./ModelTierEscalation.js').TierEscalationConfig>;
+  };
   /** Session manager config */
   sessions: SessionManagerConfig;
   /**

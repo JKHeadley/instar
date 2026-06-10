@@ -87,6 +87,12 @@ export interface GuardPostureTripwireResult {
  *   - `monitoring.<key>` (plain boolean)   → `monitoring.<key>`
  *   - `scheduler.enabled` (boolean)        → `scheduler.enabled`
  */
+/** Posture keys whose false→true transition is COST-INCREASING and must be
+ *  surfaced as loudly as a guard-disable (FABLE-MODEL-ESCALATION-SPEC §10). */
+export const COST_INCREASING_ENABLE_KEYS: ReadonlySet<string> = new Set([
+  'models.tierEscalation.enabled',
+]);
+
 export function extractGuardPosture(config: unknown): GuardPosture {
   const posture: GuardPosture = {};
   if (!config || typeof config !== 'object') return posture;
@@ -108,6 +114,19 @@ export function extractGuardPosture(config: unknown): GuardPosture {
   if (scheduler && typeof scheduler === 'object' && !Array.isArray(scheduler)) {
     const enabled = (scheduler as Record<string, unknown>).enabled;
     if (typeof enabled === 'boolean') posture['scheduler.enabled'] = enabled;
+  }
+
+  // Model-tier escalation (FABLE-MODEL-ESCALATION-SPEC §10): a COST-INCREASING
+  // enable gets the same visibility as a guard-disable, and a dryRun-off flip
+  // is the moment real swaps start — both are posture.
+  const models = cfg.models;
+  if (models && typeof models === 'object' && !Array.isArray(models)) {
+    const tierEscalation = (models as Record<string, unknown>).tierEscalation;
+    if (tierEscalation && typeof tierEscalation === 'object' && !Array.isArray(tierEscalation)) {
+      const te = tierEscalation as Record<string, unknown>;
+      if (typeof te.enabled === 'boolean') posture['models.tierEscalation.enabled'] = te.enabled;
+      if (typeof te.dryRun === 'boolean') posture['models.tierEscalation.dryRun'] = te.dryRun;
+    }
   }
 
   return posture;
@@ -218,6 +237,32 @@ export async function runGuardPostureTripwire(
             `These guards were ON at the previous server boot and are OFF now: ${list}. ` +
             `Nothing in instar code flips these flags — this was a config edit. ` +
             `If it was deliberate (e.g. load-shedding), acknowledge this item; otherwise re-enable them in .instar/config.json. ` +
+            `History: logs/guard-posture.jsonl.`,
+          category: 'monitoring',
+          priority: 'HIGH',
+          sourceContext: 'guard-posture-tripwire',
+        });
+        result.attentionEmitted = true;
+      } catch (err) {
+        result.error = `attention emit failed: ${err instanceof Error ? err.message : String(err)}`;
+      }
+    }
+
+    // Cost-increasing ENABLES get the same visibility as a guard-disable
+    // (FABLE-MODEL-ESCALATION-SPEC §10): flipping model-tier escalation ON
+    // roughly doubles the per-token cost of escalated work, so the flip must
+    // be as loud as turning a guard off.
+    const costIncreasing = diff.enabled.filter(k => COST_INCREASING_ENABLE_KEYS.has(k));
+    if (costIncreasing.length > 0 && opts.emitAttention) {
+      const list = costIncreasing.join(', ');
+      try {
+        await opts.emitAttention({
+          id: `guard-posture-cost-enable:${now.toISOString().slice(0, 10)}:${costIncreasing.join(',')}`,
+          title: `Cost-increasing feature enabled since last boot`,
+          summary:
+            `These cost-increasing flags were OFF at the previous server boot and are ON now: ${list}. ` +
+            `Model-tier escalation routes eligible work to the ultra model (~2x cost). ` +
+            `If this was deliberate, acknowledge this item; otherwise flip it back in .instar/config.json. ` +
             `History: logs/guard-posture.jsonl.`,
           category: 'monitoring',
           priority: 'HIGH',

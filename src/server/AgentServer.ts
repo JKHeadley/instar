@@ -114,6 +114,10 @@ import { parseCodexRollout } from '../monitoring/CodexRolloutParser.js';
 import { extractCodexFinalMessage, extractClaudeFinalMessage, findClaudeTranscriptShallow } from '../monitoring/SessionReplyExtractor.js';
 import type { ForensicFinding } from '../monitoring/FrameworkIssueLedger.js';
 import { BurnDetector, type BurnDetectionConfig } from '../monitoring/BurnDetector.js';
+import { EscalationGovernor } from '../core/EscalationGovernor.js';
+import { ModelSwapService } from '../core/ModelSwapService.js';
+import { UltraSessionCapMonitor, startOfUtcDayMs } from '../monitoring/UltraSessionCapMonitor.js';
+import { escalatedModelIds, normalizeTierEscalationConfig } from '../core/ModelTierEscalation.js';
 import { BurnThrottleRunbook, type BurnThrottleConfig } from '../monitoring/BurnThrottleRunbook.js';
 import { BurnVerifier } from '../monitoring/BurnVerifier.js';
 import { LlmRateGate } from '../monitoring/LlmRateGate.js';
@@ -226,6 +230,11 @@ export class AgentServer {
   private burnDetector: BurnDetector | null = null;
   private burnThrottleRunbook: BurnThrottleRunbook | null = null;
   private burnVerifier: BurnVerifier | null = null;
+  // Model-Tier Escalation (FABLE-MODEL-ESCALATION-SPEC): the §5.3 swap
+  // engine (behind POST /sessions/:name/model-swap) and the §8 mid-run
+  // ultra-cap monitor (rides BurnDetector's tick — no own poller).
+  private modelTierSwap: ModelSwapService | null = null;
+  private ultraCapMonitor: UltraSessionCapMonitor | null = null;
   // Stored from constructor options for use in start()'s listen callback.
   // The burn-detection system needs this to route alerts; no other
   // AgentServer code reads it (the route handlers go through routeCtx).
@@ -1423,6 +1432,106 @@ export class AgentServer {
       this.geminiCapacityEscalationMonitor = null;
     }
 
+    // ── Model-Tier Escalation (FABLE-MODEL-ESCALATION-SPEC §5.3/§7/§8) ──
+    // Always constructed (cheap, file-backed, inert while enabled:false) so
+    // the swap route is ALIVE on the production init path — the feature
+    // gates itself via config, never via missing wiring. Worst-case failure
+    // of any piece here = sessions stay on their default model (§3.5).
+    try {
+      const teConfig = () =>
+        normalizeTierEscalationConfig(
+          (options.config as { models?: { tierEscalation?: unknown } }).models?.tierEscalation,
+        );
+      const escalationGovernor = new EscalationGovernor({
+        stateDir: options.config.stateDir,
+        getConfig: teConfig,
+        // CACHED quota snapshot only (§7 — never a live poll). For a session
+        // pinned to a pool account, that account's snapshot; otherwise the
+        // freshest cached snapshot in the pool. No pool / no snapshot ⇒ null
+        // ⇒ fail closed when requireQuotaHeadroom.
+        quotaSnapshot: (accountId) => {
+          const pool = options.subscriptionPool ?? null;
+          if (!pool) return null;
+          if (accountId !== 'default') return pool.get(accountId)?.lastQuota ?? null;
+          const snapshots = pool
+            .list()
+            .map((a) => a.lastQuota)
+            .filter((q): q is NonNullable<typeof q> => q != null);
+          if (snapshots.length === 0) return null;
+          snapshots.sort((a, b) => (b.measuredAt ?? '').localeCompare(a.measuredAt ?? ''));
+          return snapshots[0];
+        },
+        // §8 daily-cap admission input: today's (UTC) ultra-model spend from
+        // the read-only token ledger. Ledger absent ⇒ null ⇒ fail closed
+        // when a cap is configured.
+        ultraTokensTodayUtc: () => {
+          const ledger = this.tokenLedger;
+          if (!ledger) return null;
+          const ultraIds = [...escalatedModelIds(teConfig())];
+          if (ultraIds.length === 0) return 0;
+          try {
+            return ledger.tokensByModelSince(ultraIds, startOfUtcDayMs(Date.now()));
+          } catch {
+            // @silent-fallback-ok: a ledger read error ⇒ null ⇒ the §8 daily-cap
+            // admission fails CLOSED (conservative — denies escalation when a cap
+            // is configured), exactly as a missing ledger does. Never crashes init.
+            return null;
+          }
+        },
+        // Lease reclaim probe: the holder's session record must still be
+        // running. Unknown id ⇒ not live ⇒ reclaimable (TTL also bounds it).
+        isHolderLive: (instanceId) => {
+          try {
+            return options.sessionManager
+              .listRunningSessions()
+              .some((s) => s.id === instanceId);
+          } catch {
+            // @silent-fallback-ok: a liveness-probe error ⇒ keep the lease
+            // (conservative — never reclaims on a transient error); the lease's
+            // TTL still bounds it, so a genuinely dead holder is reclaimed anyway.
+            return true;
+          }
+        },
+      });
+      // §7: release the lease on the SAME close event that retires the
+      // session (the reap-log emit) — crash-safe alongside TTL + liveness.
+      options.sessionManager.on(
+        'sessionReaped',
+        (e: { session: { id: string } }) => {
+          try {
+            escalationGovernor.releaseLease(e.session.id);
+          } catch { /* @silent-fallback-ok: a release error is non-fatal — the lease is lazy-reclaimable via TTL + liveness probe, so the next escalation reclaims it regardless. */ }
+        },
+      );
+      const telegramForSwap = this.telegramAdapter;
+      this.modelTierSwap = new ModelSwapService({
+        stateDir: options.config.stateDir,
+        sessions: options.sessionManager,
+        saveSession: (s) => options.state.saveSession(s),
+        protectedSessions: () => options.sessionManager.getProtectedSessions(),
+        getConfig: teConfig,
+        governor: escalationGovernor,
+        attention: telegramForSwap
+          ? (item) => telegramForSwap.createAttentionItem(item)
+          : undefined,
+      });
+      // §8 mid-run cap monitor — rides BurnDetector's tick (constructed in
+      // setupTokenLedgerObservability; the field is read there).
+      this.ultraCapMonitor = new UltraSessionCapMonitor({
+        ledger: this.tokenLedger,
+        listRunningSessions: () => options.sessionManager.listRunningSessions(),
+        getConfig: teConfig,
+        attention: telegramForSwap
+          ? (item) => telegramForSwap.createAttentionItem(item)
+          : undefined,
+      });
+    } catch (err) {
+      // @silent-fallback-ok: cascade-isolation — a model-tier init failure must never 503 the server; the feature degrades to no-escalation (default model) and re-attempts on the next boot.
+      console.warn('[instar] model-tier escalation init failed (non-fatal):', err);
+      this.modelTierSwap = null;
+      this.ultraCapMonitor = null;
+    }
+
     // Routes
     const routeCtx = {
       config: options.config,
@@ -1478,6 +1587,7 @@ export class AgentServer {
       coverageAuditor: options.coverageAuditor ?? null,
       topicResumeMap: options.topicResumeMap ?? null,
       sessionRefresh: options.sessionRefresh ?? null,
+      modelTierSwap: this.modelTierSwap,
       autonomyManager: options.autonomyManager ?? null,
       trustElevationTracker: options.trustElevationTracker ?? null,
       autonomousEvolution: options.autonomousEvolution ?? null,
@@ -2839,7 +2949,14 @@ export class AgentServer {
               registerBurnDetectionSubscriber(reporter, this.burnThrottleRunbook, (outcome, event) => {
                 this.burnVerifier!.scheduleVerification(outcome, event);
               });
-              this.burnDetector = new BurnDetector({ ledger, reporter, config: detectorConfig });
+              this.burnDetector = new BurnDetector({
+                ledger,
+                reporter,
+                config: detectorConfig,
+                // §8 ultra-cap monitor rides this tick (no new poller —
+                // FABLE-MODEL-ESCALATION-SPEC round-3 Integration-NEW-2).
+                ...(this.ultraCapMonitor ? { ultraCapMonitor: this.ultraCapMonitor } : {}),
+              });
               this.burnDetector.start();
               console.log('[instar] burn-detection auto-heal system started');
             } catch (err) {

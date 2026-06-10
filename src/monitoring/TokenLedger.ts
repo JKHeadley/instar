@@ -1115,6 +1115,25 @@ export class TokenLedger {
     };
   }
 
+  /**
+   * Total tokens since `sinceMs` across events whose model is in `models`.
+   * Model-Tier Escalation §8 (FABLE-MODEL-ESCALATION-SPEC): backs the
+   * `dailyUltraTokenCap` admission check — "how much ultra-model spend has
+   * landed today (UTC)?". Read-only, like every TokenLedger surface.
+   */
+  tokensByModelSince(models: readonly string[], sinceMs: number): number {
+    if (models.length === 0) return 0;
+    const placeholders = models.map(() => '?').join(',');
+    const row = this.db
+      .prepare(
+        `SELECT COALESCE(SUM(input_tokens + output_tokens + cache_creation_tokens + cache_read_tokens), 0) AS tokens
+         FROM token_events
+         WHERE model IN (${placeholders}) AND ts >= ?`,
+      )
+      .get(...models, sinceMs) as { tokens: number };
+    return Number(row?.tokens) || 0;
+  }
+
   /** Aggregate by project (cwd). */
   byProject({ sinceMs }: { sinceMs?: number } = {}): ProjectRow[] {
     const since = sinceMs ?? 0;

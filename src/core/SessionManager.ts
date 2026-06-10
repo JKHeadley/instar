@@ -98,8 +98,11 @@ const FALLBACK_MAX_DURATION_MINUTES = DEFAULT_MAX_DURATION_MINUTES;
 const FALLBACK_IDLE_PROMPT_KILL_MINUTES = IDLE_PROMPT_KILL_MINUTES;
 const FALLBACK_IDLE_PROMPT_KILL_MINUTES_BOUND_TO_TOPIC = IDLE_PROMPT_KILL_MINUTES_BOUND_TO_TOPIC;
 
-/** Patterns that indicate Claude is sitting at its idle prompt (not actively working) */
-const IDLE_PROMPT_PATTERNS = [
+/** Patterns that indicate Claude is sitting at its idle prompt (not actively working).
+ *  Exported for ModelSwapService (§5.3 of FABLE-MODEL-ESCALATION-SPEC) — the
+ *  mid-session swap must verify prompt-ready idleness from the same source of
+ *  truth the monitor loop uses, not a parallel copy that can drift. */
+export const IDLE_PROMPT_PATTERNS = [
   'bypass permissions on',
   'shift+tab to cycle',
   'auto-accept edits',
@@ -2562,10 +2565,12 @@ rm()  { "${shimRunner}" rm  "$@"; }
   sendInput(tmuxSession: string, input: string): boolean {
     try {
       // Note: use `=session:` (trailing colon) for pane-level tmux commands
-      // Send text literally, then Enter separately
+      // Send text literally, then Enter separately. `--` terminates option
+      // parsing so input can never be interpreted as a send-keys flag
+      // (FABLE-MODEL-ESCALATION-SPEC §5.3 hardening; safe for all callers).
       execFileSync(
         this.config.tmuxPath,
-        ['send-keys', '-t', `=${tmuxSession}:`, '-l', input],
+        ['send-keys', '-t', `=${tmuxSession}:`, '-l', '--', input],
         { encoding: 'utf-8', timeout: 5000 }
       );
       execFileSync(

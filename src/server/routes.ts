@@ -13,6 +13,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import type { SessionManager } from '../core/SessionManager.js';
+import { KNOWN_CLAUDE_MODEL_IDS } from '../core/ModelTierEscalation.js';
 import type { SessionRefresh } from '../core/SessionRefresh.js';
 import type { StateManager } from '../core/StateManager.js';
 import { describeTopicPlacement } from '../core/TopicPlacementDescription.js';
@@ -625,6 +626,11 @@ export interface RouteContext {
   /** Agent-initiated session respawn. Null when no Telegram adapter is
    *  wired (v1 requires a Telegram-bound session). */
   sessionRefresh: SessionRefresh | null;
+  /** Model-Tier Escalation §5.3 (FABLE-MODEL-ESCALATION-SPEC) — the
+   *  server-side mid-session swap engine behind POST /sessions/:name/
+   *  model-swap. Null only when no SessionManager exists; the route then
+   *  reports unwired honestly (503). */
+  modelTierSwap?: import('../core/ModelSwapService.js').ModelSwapService | null;
   autonomyManager: AutonomyProfileManager | null;
   trustElevationTracker: TrustElevationTracker | null;
   autonomousEvolution: AutonomousEvolution | null;
@@ -4887,6 +4893,52 @@ export function createRoutes(ctx: RouteContext): Router {
     res.json({ ok: true });
   });
 
+  // Model-Tier Escalation §5.3 (FABLE-MODEL-ESCALATION-SPEC): the ONE narrow
+  // mid-session swap surface. Body carries a TIER only — the model id is
+  // derived server-side via the §5.1 resolver and is never accepted from the
+  // caller. Auth: the global Bearer authMiddleware (AgentServer) gates this
+  // like every mutating route. All other refusals (protected, non-idle,
+  // disabled, cost guards) are decided inside ModelSwapService.
+  router.post('/sessions/:name/model-swap', async (req, res) => {
+    if (!SESSION_NAME_RE.test(req.params.name)) {
+      res.status(400).json({ error: 'Invalid session name' });
+      return;
+    }
+    const { tier } = (req.body ?? {}) as { tier?: unknown };
+    if (tier !== 'default' && tier !== 'escalated') {
+      res.status(400).json({ error: '"tier" must be "default" or "escalated" — model ids are never accepted here' });
+      return;
+    }
+    if ('model' in (req.body ?? {})) {
+      // Hard refusal, not a silent ignore: a caller supplying a model id is
+      // either confused or probing (Sec-F5).
+      res.status(400).json({ error: 'The model id is derived server-side; remove "model" from the request' });
+      return;
+    }
+    if (!ctx.modelTierSwap) {
+      res.status(503).json({ error: 'Model-tier swap engine not wired on this server' });
+      return;
+    }
+    try {
+      const result = await ctx.modelTierSwap.swap(req.params.name, tier);
+      const httpStatus =
+        result.status === 'refused'
+          ? result.reason === 'unknown-session'
+            ? 404
+            : result.reason === 'protected-session'
+              ? 403
+              : result.reason === 'dwell' || result.reason?.startsWith('cost-guard:')
+                ? 429
+                : 409
+          : result.status === 'unconfirmed'
+            ? 202
+            : 200;
+      res.status(httpStatus).json(result);
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
   // Rate limit session spawning — each session is a real Claude Code process.
   // Default: 10 spawns per 60 seconds, which is generous for normal use.
   const spawnLimiter = rateLimiter(60_000, 10);
@@ -4915,11 +4967,14 @@ export function createRoutes(ctx: RouteContext): Router {
     // and resolve per-framework inside buildHeadlessLaunch. Framework-
     // specific names are accepted when they match the framework slot.
     const GENERIC_TIERS = ['fast', 'balanced', 'capable'];
-    const CLAUDE_TIERS = ['opus', 'sonnet', 'haiku'];
-    // E2E-PAIRING: EXEMPT — adds one value ('gpt-5.4-mini') to an existing
-    // model allowlist on the already-live /sessions/create route. No new route,
-    // no route-aliveness change, no 503 surface; route-create E2E coverage is
-    // unchanged by extending the accepted-model set.
+    // E2E-PAIRING: EXEMPT — extends an existing model allowlist on the
+    // already-live spawn route. No new route, no route-aliveness change, no
+    // 503 surface; route-create E2E coverage is unchanged by extending the
+    // accepted-model set.
+    // Claude branch (FABLE-MODEL-ESCALATION-SPEC): the closed per-adapter
+    // enum from ModelTierEscalation.ts — includes the concrete model ids
+    // (claude-fable-5, claude-opus-4-8, …) AND the CLI tier aliases
+    // (opus/sonnet/haiku), so instar can natively spawn Fable sessions.
     const CODEX_MODELS_SUBSCRIPTION = ['gpt-5.2', 'gpt-5.3-codex', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.5'];
     if (model !== undefined) {
       if (typeof model !== 'string') {
@@ -4931,7 +4986,7 @@ export function createRoutes(ctx: RouteContext): Router {
         ? [...GENERIC_TIERS, ...CODEX_MODELS_SUBSCRIPTION]
         : requestedFramework === 'gemini-cli'
           ? [...GENERIC_TIERS, ...KNOWN_GEMINI_MODELS]
-          : [...GENERIC_TIERS, ...CLAUDE_TIERS];
+          : [...GENERIC_TIERS, ...KNOWN_CLAUDE_MODEL_IDS];
       if (!allowed.includes(model)) {
         res.status(400).json({
           error: `"model" must be one of: ${allowed.join(', ')} (framework: ${requestedFramework})`,
