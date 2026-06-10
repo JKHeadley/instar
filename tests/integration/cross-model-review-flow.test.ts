@@ -159,13 +159,17 @@ describe('cross-model review flow — codex PRESENT', () => {
 
 describe('cross-model review flow — codex ABSENT', () => {
   it('returns unavailable, completes internal-only, banner reads UNAVAILABLE, spec STILL taggable (never blocks)', async () => {
-    const detection = detectCrossModelReviewer({ codexPathDetected: null, env: {} });
+    const detection = detectCrossModelReviewer({
+      codexPathDetected: null,
+      geminiPathDetected: null,
+      env: {},
+    });
     expect(detection.available).toBe(false);
     expect(detection.reason).toBe('codex-not-installed');
 
     const result = await runCrossModelReview({
       assembled: { promptText: 'unused', truncated: false, bytes: 6 },
-      detectInputs: { codexPathDetected: null, env: {} },
+      detectInputs: { codexPathDetected: null, geminiPathDetected: null, env: {} },
     });
     expect(result.status).toBe('unavailable');
     expect(result.flag).toBe('cross-model-review: unavailable');

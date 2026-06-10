@@ -22,18 +22,37 @@
  *     from `degraded` (framework present, this call failed) and
  *     `skipped-abbreviated` (author chose the fast path).
  *
- * codex is the FIRST supported framework; the registry
- * (`SUPPORTED_REVIEWER_FRAMEWORKS`) is the single seam for gemini-cli and
- * others to plug in later (Out of Scope here). Adding a framework is one
- * registry entry + one `id`-union extension — no skill change.
+ * codex is the FIRST supported framework; gemini-cli is the SECOND (Piece 3 of
+ * docs/specs/AUTONOMY-PRINCIPLES-ENFORCEMENT-SPEC.md — cross-model convergence
+ * hardening). The registry (`SUPPORTED_REVIEWER_FRAMEWORKS`) remains the single
+ * seam for further frameworks. Adding a framework is one registry entry + one
+ * `id`-union extension — no skill change.
+ *
+ * Piece 3 additions (all signal-only, never-throw, same invariants as above):
+ *   - `detectGeminiReviewer` + the gemini registry entry (family diversity).
+ *   - `detectAllCrossModelReviewers` — collect EVERY available framework, not
+ *     just the first match, so the skill runs one external pass per family.
+ *   - `isConcreteReviewerModel` — the fail-loud model canary: a tier word
+ *     ('capable', 'fast', …) falling through model resolution degrades the
+ *     review LOUDLY instead of silently selecting a dead reviewer.
+ *   - `hashSpecReviewableBody` — delta-gating: externals re-run only when the
+ *     spec's reviewable body (frontmatter stripped) actually changed.
+ *   - `recordFrameworkActivationObservation` / `wasNonClaudeFrameworkActiveWithin`
+ *     — the durable standing-framework baseline: activation is judged against
+ *     a lookback window of recorded observations, not a just-in-time reading,
+ *     so a just-before-converge framework deactivation cannot exempt a spec.
+ *   - `TRUSTED_REVIEWER_FRAMEWORKS` — the provider allowlist (no spec egress
+ *     to untrusted/custom endpoints).
  */
 
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { detectCodexPath } from './Config.js';
+import { detectCodexPath, detectGeminiPath } from './Config.js';
 import { validateRule1 } from '../providers/adapters/openai-codex/credentials.js';
 import { resolveCliModelFlag } from '../providers/adapters/openai-codex/models.js';
+import { resolveCliModelFlag as resolveGeminiModelFlag } from '../providers/adapters/gemini-cli/models.js';
 import {
   buildIntelligenceProvider,
   type IntelligenceFramework,
@@ -122,6 +141,8 @@ export type CrossModelUnavailableReason =
   | 'codex-not-installed'
   | 'codex-not-authed'
   | 'codex-auth-apikey-forbidden'
+  | 'gemini-not-installed'
+  | 'gemini-not-authed'
   | 'no-supported-framework';
 
 export interface CrossModelDetectionResult {
@@ -153,6 +174,16 @@ export interface CrossModelDetectInputs {
   env?: NodeJS.ProcessEnv;
   /** Clock injection for the Rule-1 killswitch sunset check. */
   now?: Date;
+  /**
+   * Path to the gemini binary if detected, else null. Defaults to
+   * `detectGeminiPath()` (PATH + known-location resolution).
+   */
+  geminiPathDetected?: string | null;
+  /**
+   * Path to the gemini CLI's cached OAuth credentials. Defaults to
+   * `${GEMINI_HOME || ~/.gemini}/oauth_creds.json`.
+   */
+  geminiOauthCredsPath?: string;
 }
 
 /** Resolve the default codex auth.json path (CODEX_HOME-aware). */
@@ -219,6 +250,75 @@ export function detectCodexReviewer(
   };
 }
 
+/**
+ * Resolve the default gemini oauth_creds.json path. DELIBERATELY no env-var
+ * override: the gemini CLI (verified v0.25.2) resolves creds at
+ * `~/.gemini/oauth_creds.json` UNCONDITIONALLY — there is no GEMINI_HOME.
+ * Honoring one here would make detection probe a path the CLI never reads
+ * (false-unavailable on an authed host -> the gemini pass silently skipped AND
+ * a false `gemini-cli:false` recorded into the activation baseline — the exact
+ * suppression Piece 3 exists to prevent). Tests inject `geminiOauthCredsPath`.
+ */
+function defaultGeminiOauthCredsPath(): string {
+  return path.join(os.homedir(), '.gemini', 'oauth_creds.json');
+}
+
+/**
+ * Is the gemini CLI's cached OAuth credentials file an authed shape? Authed
+ * iff the file parses as JSON with a non-empty string `access_token` OR
+ * `refresh_token` (the CLI refreshes an expired access token from the refresh
+ * token, so either is a usable seat). A missing / unreadable / malformed file
+ * → false (not authed). Never throws.
+ */
+function geminiOauthCredsAuthed(credsPath: string): boolean {
+  try {
+    const raw = fs.readFileSync(credsPath, 'utf-8');
+    const parsed = JSON.parse(raw) as { access_token?: unknown; refresh_token?: unknown };
+    const nonEmptyString = (v: unknown): boolean => typeof v === 'string' && v.length > 0;
+    return nonEmptyString(parsed?.access_token) || nonEmptyString(parsed?.refresh_token);
+  } catch {
+    // @silent-fallback-ok — deny-safe: missing/unreadable/malformed creds mean
+    // "not authed" (the reviewer is reported unavailable with a named reason);
+    // mirrors the codex auth probe above.
+    return false;
+  }
+}
+
+/**
+ * Detect a gemini reviewer (Piece 3 — the second family in the registry).
+ * Returns `{ available: true, framework, model }` iff BOTH of: gemini binary
+ * detected, cached OAuth credentials present (`access_token` or
+ * `refresh_token`). Any miss → a specific reason.
+ *
+ * Pure-ish: all external inputs are injectable (mirrors
+ * `detectCodexReviewer`). With no inputs it probes the real host. It NEVER
+ * throws.
+ */
+export function detectGeminiReviewer(
+  inputs: CrossModelDetectInputs = {},
+): CrossModelDetectionResult {
+  const env = inputs.env ?? process.env;
+  const geminiPath =
+    inputs.geminiPathDetected !== undefined ? inputs.geminiPathDetected : detectGeminiPath();
+  const credsPath = inputs.geminiOauthCredsPath ?? defaultGeminiOauthCredsPath();
+
+  // 1. Binary present?
+  if (!geminiPath) {
+    return { available: false, reason: 'gemini-not-installed' };
+  }
+
+  // 2. Authed via the CLI's cached OAuth?
+  if (!geminiOauthCredsAuthed(credsPath)) {
+    return { available: false, reason: 'gemini-not-authed' };
+  }
+
+  return {
+    available: true,
+    framework: 'gemini-cli',
+    model: resolveGeminiModelFlag(REVIEW_MODEL_TIER),
+  };
+}
+
 // ── Supported-reviewer registry (the extension point) ───────────────────
 
 export interface ReviewerResult {
@@ -273,6 +373,31 @@ export interface ReviewerInvokeArgs {
    * happens. Production passes nothing and the factory builds the real one.
    */
   providerOverride?: { evaluate(prompt: string, options?: { model?: 'fast' | 'balanced' | 'capable'; timeoutMs?: number }): Promise<string> };
+  /**
+   * Optional detection override — `runCrossModelReview` passes the detection
+   * it already computed (so review never re-probes the host), and tests inject
+   * synthetic detections (e.g. a tier-word model to exercise the canary).
+   * Absent → the entry runs its own real-host detect, as before (back-compat).
+   */
+  detectionOverride?: CrossModelDetectionResult;
+}
+
+/**
+ * Fail-loud model canary (Piece 3). A cross-model review must run on a
+ * CONCRETE model id — never a bare tier word that fell through a
+ * tier→model resolution map (the `resolveModelForFramework` fall-through
+ * failure class: the literal string 'capable' is not a model, and silently
+ * passing it selects a dead reviewer). Returns false for undefined/empty
+ * strings and for bare tier words (case-insensitive). Both registry entries
+ * check this BEFORE invoking the provider and degrade LOUDLY
+ * (`model-resolution-canary`) on a failure.
+ */
+export function isConcreteReviewerModel(model: string | undefined): boolean {
+  if (typeof model !== 'string') return false;
+  const trimmed = model.trim();
+  if (trimmed.length === 0) return false;
+  const TIER_WORDS = new Set(['fast', 'balanced', 'capable', 'haiku', 'sonnet', 'opus']);
+  return !TIER_WORDS.has(trimmed.toLowerCase());
 }
 
 /**
@@ -283,9 +408,21 @@ const codexReviewer: SupportedReviewerFramework = {
   id: 'codex-cli',
   detect: (inputs) => detectCodexReviewer(inputs),
   review: async (args) => {
-    const detection = detectCodexReviewer();
+    const detection = args.detectionOverride ?? detectCodexReviewer();
     const model = detection.model ?? resolveCliModelFlag(REVIEW_MODEL_TIER);
     const tag = `cross-model:codex-cli:${model}`;
+
+    // Fail-loud model canary (Piece 3): NEVER silently review with a
+    // tier-word model — a fall-through 'capable' is a dead reviewer.
+    if (!isConcreteReviewerModel(model)) {
+      return {
+        status: 'degraded',
+        framework: 'codex-cli',
+        model,
+        reason: 'model-resolution-canary',
+        flag: `cross-model-review: codex-cli:${model} (degraded: model-resolution-canary)`,
+      };
+    }
 
     // Build (or accept an injected) provider. The factory wraps it in the
     // account-global circuit breaker, so a rate-limited review degrades the
@@ -337,16 +474,115 @@ const codexReviewer: SupportedReviewerFramework = {
 };
 
 /**
- * The supported-reviewer registry. codex first — the order IS the preference
- * order. gemini-cli and others land here as later steps (Out of Scope).
+ * The gemini reviewer entry (Piece 3 — family diversity: a second non-Claude
+ * model family alongside GPT). Detection delegates to `detectGeminiReviewer`;
+ * `review` routes through the factory-built `GeminiCliIntelligenceProvider`
+ * (same circuit-breaker wrapping, same degraded semantics as codex).
  */
-export const SUPPORTED_REVIEWER_FRAMEWORKS: SupportedReviewerFramework[] = [codexReviewer];
+const geminiReviewer: SupportedReviewerFramework = {
+  id: 'gemini-cli',
+  detect: (inputs) => detectGeminiReviewer(inputs),
+  review: async (args) => {
+    const detection = args.detectionOverride ?? detectGeminiReviewer();
+    const model = detection.model ?? resolveGeminiModelFlag(REVIEW_MODEL_TIER);
+    const tag = `cross-model:gemini-cli:${model}`;
+
+    // Fail-loud model canary (Piece 3): NEVER silently review with a
+    // tier-word model — a fall-through 'capable' is a dead reviewer.
+    if (!isConcreteReviewerModel(model)) {
+      return {
+        status: 'degraded',
+        framework: 'gemini-cli',
+        model,
+        reason: 'model-resolution-canary',
+        flag: `cross-model-review: gemini-cli:${model} (degraded: model-resolution-canary)`,
+      };
+    }
+
+    // Build (or accept an injected) provider. The factory wraps it in the
+    // account-global circuit breaker, so a rate-limited review degrades the
+    // same way every other instar LLM call does.
+    const provider =
+      args.providerOverride ??
+      buildIntelligenceProvider({ framework: 'gemini-cli' });
+
+    if (!provider) {
+      // Binary vanished between detect and review (or detection said
+      // unavailable and review was called anyway). Degraded, not a throw.
+      return {
+        status: 'degraded',
+        framework: 'gemini-cli',
+        model,
+        reason: 'provider-unavailable',
+        flag: `cross-model-review: gemini-cli:${model} (degraded: provider-unavailable)`,
+      };
+    }
+
+    let raw: string;
+    try {
+      raw = await provider.evaluate(args.promptText, {
+        model: REVIEW_MODEL_TIER,
+        timeoutMs: args.timeoutMs,
+        attribution: { component: 'crossModelReviewer' }, // attribution for /metrics/features
+      });
+    } catch (err) {
+      const reason = classifyReviewFailure(err);
+      return {
+        status: 'degraded',
+        framework: 'gemini-cli',
+        model,
+        reason,
+        flag: `cross-model-review: gemini-cli:${model} (degraded: ${reason})`,
+      };
+    }
+
+    const parsed = parseReviewerReply(raw, tag);
+    return {
+      status: 'ok',
+      framework: 'gemini-cli',
+      model,
+      verdict: parsed.verdict,
+      findings: [parsed],
+      flag: `cross-model-review: gemini-cli:${model}`,
+    };
+  },
+};
+
+/**
+ * The supported-reviewer registry. codex first — the order IS the preference
+ * order. gemini second (Piece 3). Further frameworks land here as later
+ * registry entries. NOTE: the registry only ever carries first-party OAuth
+ * CLI adapters — see `TRUSTED_REVIEWER_FRAMEWORKS` below.
+ */
+export const SUPPORTED_REVIEWER_FRAMEWORKS: SupportedReviewerFramework[] = [
+  codexReviewer,
+  geminiReviewer,
+];
+
+/**
+ * Trusted-provider allowlist (Piece 3 — no spec egress to untrusted
+ * endpoints). The registry only ever carries FIRST-PARTY OAuth CLI adapters:
+ * the full spec text is handed to the reviewer model, so it must NEVER be
+ * sent to a custom/base-URL endpoint an operator (or attacker) pointed a
+ * framework at. The pi-cli multi-provider case is deliberately EXCLUDED from
+ * cross-model review for exactly this reason — its provider may be a custom
+ * endpoint. A framework id outside this list is refused by the script
+ * wrapper (`--family`) with reason `untrusted-framework`.
+ */
+export const TRUSTED_REVIEWER_FRAMEWORKS: readonly string[] = ['codex-cli', 'gemini-cli'];
+
+/** Is `id` on the trusted first-party reviewer allowlist? */
+export function isTrustedReviewerFramework(id: string): boolean {
+  return TRUSTED_REVIEWER_FRAMEWORKS.includes(id);
+}
 
 /**
  * Walk the registry in preference order and return the FIRST available
- * framework's detection result. If none is available, returns the codex
- * reason when there's exactly one entry (so the report can be specific), else
- * the generic `no-supported-framework`.
+ * framework's detection result (back-compat single-reviewer entry point —
+ * the multi-family collection is `detectAllCrossModelReviewers`). If none is
+ * available, returns the preference-leader's specific reason (codex today) so
+ * the report can render a concrete remediation, rather than the generic
+ * `no-supported-framework`.
  *
  * SIGNAL-ONLY: never throws, never blocks. A `false` simply routes the skill
  * to the internal-only fallback (spec §4).
@@ -358,12 +594,29 @@ export function detectCrossModelReviewer(
     const result = framework.detect(inputs);
     if (result.available) return result;
   }
-  // Nothing available. Surface the single framework's specific reason when
-  // there's only one entry (codex today); otherwise the generic reason.
-  if (SUPPORTED_REVIEWER_FRAMEWORKS.length === 1) {
-    return SUPPORTED_REVIEWER_FRAMEWORKS[0].detect(inputs);
-  }
+  // Nothing available. Surface the preference-leader's specific reason.
+  const leader = SUPPORTED_REVIEWER_FRAMEWORKS[0];
+  if (leader) return leader.detect(inputs);
   return { available: false, reason: 'no-supported-framework' };
+}
+
+/**
+ * Collect EVERY available reviewer framework, in registry preference order
+ * (Piece 3 — family diversity: GPT and Gemini catch different failure
+ * classes, so the externals pass runs one review PER available family, not
+ * first-match-only). Returns an empty array when none is available.
+ *
+ * SIGNAL-ONLY: never throws, never blocks.
+ */
+export function detectAllCrossModelReviewers(
+  inputs: CrossModelDetectInputs = {},
+): CrossModelDetectionResult[] {
+  const available: CrossModelDetectionResult[] = [];
+  for (const framework of SUPPORTED_REVIEWER_FRAMEWORKS) {
+    const result = framework.detect(inputs);
+    if (result.available) available.push(result);
+  }
+  return available;
 }
 
 // ── Failure classification ──────────────────────────────────────────────
@@ -708,6 +961,138 @@ export async function runCrossModelReview(args: {
   return framework.review({
     promptText: args.assembled.promptText,
     timeoutMs: args.timeoutMs ?? REVIEW_TIMEOUT_MS,
+    // Hand the already-computed detection down so the entry never re-probes
+    // the host (and tests stay hermetic to the injected inputs).
+    detectionOverride: detection,
     ...(args.providerOverride ? { providerOverride: args.providerOverride } : {}),
   });
+}
+
+// ── Delta-gating (reviewable-body hash) ─────────────────────────────────
+
+/**
+ * Hash the spec's REVIEWABLE body (Piece 3 delta-gating): sha256 hex of the
+ * spec text with the leading YAML frontmatter block stripped and line endings
+ * normalized (\r\n → \n). Frontmatter is excluded so tag-writes
+ * (`review-convergence`, `approved: true`, cross-model flags) and other
+ * metadata edits do NOT change the hash — externals re-run only when the
+ * content a reviewer would actually read changed. The skill runs externals on
+ * round 1 and on any round where this hash differs from the last external
+ * pass's hash; an unchanged round records a skip-with-logged-note.
+ */
+export function hashSpecReviewableBody(specText: string): string {
+  const normalized = (specText ?? '').replace(/\r\n/g, '\n');
+  // Strip ONE leading frontmatter block: `---\n ... \n---` at the very top,
+  // where the close fence is a WHOLE line (anchored `(\n|$)`) — `\n---\n?`
+  // could terminate mid-line on `--- text` / `----` inside the block
+  // (second-pass finding, PR 3).
+  const body = normalized.replace(/^---\n[\s\S]*?\n---(\n|$)/, '');
+  return crypto.createHash('sha256').update(body, 'utf-8').digest('hex');
+}
+
+// ── Durable framework-activation history ────────────────────────────────
+
+/**
+ * One recorded observation of which reviewer frameworks were available at a
+ * moment in time. Appended (JSONL) to
+ * `<stateDir>/state/framework-activation-history.jsonl` by the script
+ * wrapper's `--detect-only --state-dir` path on every detection.
+ */
+export interface FrameworkActivationObservation {
+  /** ISO timestamp; defaults to now. */
+  ts?: string;
+  /** framework id → was it available/active at observation time. */
+  frameworks: Record<string, boolean>;
+}
+
+/** Max JSONL lines retained in the activation-history file. */
+const ACTIVATION_HISTORY_MAX_LINES = 2000;
+
+function activationHistoryPath(stateDir: string): string {
+  return path.join(stateDir, 'state', 'framework-activation-history.jsonl');
+}
+
+/**
+ * Append ONE observation line to the durable framework-activation history
+ * (Piece 3 — the standing-framework baseline). The externals-mandatory check
+ * is judged against this recorded history over a lookback window, NOT a
+ * just-in-time reading — so deactivating a framework right before converging
+ * cannot present the agent as "genuinely single-framework."
+ *
+ * mkdir -p's the state dir; caps the file at the most recent
+ * `ACTIVATION_HISTORY_MAX_LINES` lines on every write. Filesystem errors
+ * propagate — a silently-unrecorded baseline would quietly weaken the
+ * mandatory check (fail-loud).
+ */
+export function recordFrameworkActivationObservation(
+  stateDir: string,
+  observation: FrameworkActivationObservation,
+): void {
+  const file = activationHistoryPath(stateDir);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const entry = JSON.stringify({
+    ts: observation.ts ?? new Date().toISOString(),
+    frameworks: observation.frameworks,
+  });
+  let lines: string[] = [];
+  try {
+    lines = fs.readFileSync(file, 'utf-8').split('\n').filter((l) => l.trim().length > 0);
+  } catch {
+    // No file yet — first observation.
+  }
+  lines.push(entry);
+  if (lines.length > ACTIVATION_HISTORY_MAX_LINES) {
+    lines = lines.slice(-ACTIVATION_HISTORY_MAX_LINES);
+  }
+  fs.writeFileSync(file, lines.join('\n') + '\n', 'utf-8');
+}
+
+/**
+ * Was ANY non-Claude reviewer framework active at ANY point within the
+ * lookback window, per the durable activation history? This is the
+ * externals-mandatory check (Piece 3): `true` means the cross-model pass is
+ * NON-SKIPPABLE for the spec — including when a framework was deactivated
+ * inside the window (a just-before-converge deactivation does not exempt the
+ * spec). The advisory "externals unavailable" floor is legitimate only when
+ * this returns `false` across the whole lookback.
+ *
+ * NEVER throws: a missing file → false; corrupt lines are skipped.
+ */
+export function wasNonClaudeFrameworkActiveWithin(
+  stateDir: string,
+  lookbackDays: number,
+  now?: Date,
+): boolean {
+  try {
+    const file = activationHistoryPath(stateDir);
+    const raw = fs.readFileSync(file, 'utf-8');
+    const cutoff = (now ?? new Date()).getTime() - lookbackDays * 24 * 60 * 60 * 1000;
+    for (const line of raw.split('\n')) {
+      if (!line.trim()) continue;
+      try {
+        const parsed = JSON.parse(line) as { ts?: unknown; frameworks?: unknown };
+        const ts = typeof parsed.ts === 'string' ? Date.parse(parsed.ts) : NaN;
+        if (!Number.isFinite(ts) || ts < cutoff) continue;
+        const frameworks = parsed.frameworks;
+        if (frameworks && typeof frameworks === 'object') {
+          // Only TRUSTED reviewer framework ids count toward the baseline — a
+          // stray/hand-written key (e.g. "claude-code": true) must not flip
+          // the externals-mandatory decision (second-pass finding, PR 3).
+          const entries = Object.entries(frameworks as Record<string, unknown>);
+          if (entries.some(([id, v]) => v === true && isTrustedReviewerFramework(id))) {
+            return true;
+          }
+        }
+      } catch {
+        // @silent-fallback-ok — a corrupt history line is skipped (never throws);
+        // the read is a union-over-time, so a lost line can only UNDER-report
+        // activation, which keeps externals mandatory-safe, never lies them off.
+      }
+    }
+    return false;
+  } catch {
+    // @silent-fallback-ok — a missing/unreadable history file is the expected
+    // pre-first-run state: no recorded activation is the correct answer.
+    return false;
+  }
 }

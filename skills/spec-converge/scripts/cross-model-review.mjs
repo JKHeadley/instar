@@ -15,20 +15,37 @@
  * access, so context must be inlined before the spawn.
  *
  * Modes:
- *   --detect-only            Print detection JSON and exit (no codex spawn).
- *                            { available, framework?, model?, reason? }
+ *   --detect-only            Print detection JSON and exit (no spawn).
+ *                            { available, frameworks: [...all available...],
+ *                              framework?, model?, reason? } — the `frameworks`
+ *                            array is the Piece-3 family-diverse collection;
+ *                            the single-framework fields stay for back-compat.
+ *                            With --state-dir <dir>, also records the
+ *                            activation observation to the durable
+ *                            framework-activation history (the standing-
+ *                            framework baseline for the mandatory check).
+ *   --hash-only              Print { hash } — sha256 of the spec's reviewable
+ *                            body (frontmatter-stripped, CRLF-normalized) for
+ *                            the skill's delta-gating. Requires --spec.
  *   (default)                Detect; if available, assemble the prompt + run
- *                            the codex review; print the ReviewerResult JSON.
+ *                            the review; print the ReviewerResult JSON. With
+ *                            --family <id>, run through THAT framework
+ *                            specifically (must be on the trusted first-party
+ *                            allowlist — spec text is never sent to a custom/
+ *                            base-URL endpoint; pi-cli is excluded by design).
  *
  * Usage:
  *   node skills/spec-converge/scripts/cross-model-review.mjs \
  *     --spec docs/specs/<slug>.md \
  *     [--context docs/foo.md --context docs/bar.md ...] \
- *     [--detect-only] \
+ *     [--detect-only] [--state-dir .instar] \
+ *     [--hash-only] \
+ *     [--family codex-cli|gemini-cli] \
  *     [--timeout-ms 120000]
  *
  * Output: a single JSON object on stdout (machine-readable for the skill).
- *   On detect-only: the CrossModelDetectionResult.
+ *   On detect-only: the detection JSON above.
+ *   On hash-only:   { hash }.
  *   On full run:    the ReviewerResult ({ status, framework?, model?, verdict?,
  *                   findings?, reason?, flag }).
  *
@@ -60,19 +77,30 @@ function fail(msg) {
 
 function parseArgs() {
   const args = process.argv.slice(2);
-  const out = { spec: null, context: [], detectOnly: false, timeoutMs: null };
+  const out = {
+    spec: null,
+    context: [],
+    detectOnly: false,
+    hashOnly: false,
+    family: null,
+    stateDir: null,
+    timeoutMs: null,
+  };
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     if (a === '--spec') out.spec = args[++i];
     else if (a === '--context') out.context.push(args[++i]);
     else if (a === '--detect-only') out.detectOnly = true;
+    else if (a === '--hash-only') out.hashOnly = true;
+    else if (a === '--family') out.family = args[++i];
+    else if (a === '--state-dir') out.stateDir = args[++i];
     else if (a === '--timeout-ms') out.timeoutMs = parseInt(args[++i], 10);
     else fail(`Unknown arg: ${a}`);
   }
   if (!out.detectOnly && !out.spec) {
     fail(
       'Usage: cross-model-review.mjs --spec PATH [--context PATH ...] ' +
-        '[--detect-only] [--timeout-ms N]',
+        '[--detect-only] [--hash-only] [--family ID] [--state-dir DIR] [--timeout-ms N]',
     );
   }
   return out;
@@ -98,16 +126,80 @@ function readRepoFile(rel) {
 }
 
 async function main() {
-  const { spec, context, detectOnly, timeoutMs } = parseArgs();
+  const { spec, context, detectOnly, hashOnly, family, stateDir, timeoutMs } = parseArgs();
   const mod = await loadModule();
 
-  // Detection is the same in both modes.
-  const detection = mod.detectCrossModelReviewer();
-
-  if (detectOnly) {
-    process.stdout.write(JSON.stringify(detection) + '\n');
+  // ── --hash-only: the delta-gating hash of the spec's reviewable body ──
+  if (hashOnly) {
+    if (!spec) fail('--hash-only requires --spec PATH');
+    const specMarkdown = readRepoFile(spec);
+    process.stdout.write(JSON.stringify({ hash: mod.hashSpecReviewableBody(specMarkdown) }) + '\n');
     process.exit(0);
   }
+
+  // ── --detect-only: report ALL available families (Piece 3) ──
+  if (detectOnly) {
+    const all = mod.detectAllCrossModelReviewers();
+    // Back-compat: keep the old single-framework fields (first-match shape).
+    const first = mod.detectCrossModelReviewer();
+    const report = {
+      available: all.length > 0,
+      frameworks: all,
+      ...(first.framework ? { framework: first.framework } : {}),
+      ...(first.model ? { model: first.model } : {}),
+      ...(first.reason ? { reason: first.reason } : {}),
+    };
+    // Record the activation observation into the durable standing-framework
+    // baseline when a state dir was provided. A record failure is surfaced in
+    // the JSON (fail-loud), never silently swallowed — a missing baseline
+    // would quietly weaken the externals-mandatory check.
+    if (stateDir) {
+      const frameworks = {};
+      for (const entry of mod.SUPPORTED_REVIEWER_FRAMEWORKS) {
+        frameworks[entry.id] = all.some((d) => d.framework === entry.id);
+      }
+      try {
+        mod.recordFrameworkActivationObservation(stateDir, { frameworks });
+        report.activationRecorded = true;
+      } catch (err) {
+        report.activationRecorded = false;
+        report.activationRecordError =
+          err instanceof Error ? err.message.slice(0, 200) : String(err);
+      }
+    }
+    process.stdout.write(JSON.stringify(report) + '\n');
+    process.exit(0);
+  }
+
+  // ── full run ──
+  // --family: run through ONE specific framework. Allowlist-gated — the full
+  // spec text is never sent to a custom/base-URL endpoint (pi-cli excluded).
+  let familyEntry = null;
+  if (family) {
+    if (!mod.isTrustedReviewerFramework(family)) {
+      process.stdout.write(
+        JSON.stringify({
+          status: 'unavailable',
+          reason: 'untrusted-framework',
+          flag: 'cross-model-review: unavailable',
+        }) + '\n',
+      );
+      process.exit(0);
+    }
+    familyEntry = mod.SUPPORTED_REVIEWER_FRAMEWORKS.find((f) => f.id === family) ?? null;
+    if (!familyEntry) {
+      process.stdout.write(
+        JSON.stringify({
+          status: 'unavailable',
+          reason: 'no-supported-framework',
+          flag: 'cross-model-review: unavailable',
+        }) + '\n',
+      );
+      process.exit(0);
+    }
+  }
+
+  const detection = familyEntry ? familyEntry.detect() : mod.detectCrossModelReviewer();
 
   // Unavailable → print the unavailable flag, exit 0. Never block.
   if (!detection.available) {
@@ -130,10 +222,16 @@ async function main() {
     context: contextDocs,
   });
 
-  const result = await mod.runCrossModelReview({
-    assembled,
-    ...(Number.isFinite(timeoutMs) ? { timeoutMs } : {}),
-  });
+  const result = familyEntry
+    ? await familyEntry.review({
+        promptText: assembled.promptText,
+        timeoutMs: Number.isFinite(timeoutMs) ? timeoutMs : mod.REVIEW_TIMEOUT_MS,
+        detectionOverride: detection,
+      })
+    : await mod.runCrossModelReview({
+        assembled,
+        ...(Number.isFinite(timeoutMs) ? { timeoutMs } : {}),
+      });
 
   // Surface truncation in the emitted result so the skill/report can note it.
   process.stdout.write(JSON.stringify({ ...result, promptTruncated: assembled.truncated }) + '\n');
