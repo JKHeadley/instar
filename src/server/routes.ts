@@ -805,6 +805,12 @@ export interface RouteContext {
    *  records only). Null/absent when monitoring.correctionLearning.enabled is
    *  false (default) → /corrections 503s. */
   correctionLedger?: import('../monitoring/CorrectionLedger.js').CorrectionLedger | null;
+  /** BlockerLedger — the resolution-workflow + memory layer completing Principle 1.
+   *  Null/absent when monitoring.blockerLedger.enabled is false (default, ships dark)
+   *  → /blockers/* 503s. Powers GET /blockers, GET /blockers/:id, POST /blockers,
+   *  POST /blockers/:id/advance, POST /blockers/:id/settle. Signal-only — it never
+   *  blocks a message; the true-blocker settle routes through the B17 authority. */
+  blockerLedger?: import('../monitoring/BlockerLedger.js').BlockerLedger | null;
   /** GrowthMilestoneAnalyst — the proactive growth & milestone analyst. Null/absent
    *  when monitoring.growthAnalyst.enabled is false (default, ships dark) →
    *  /growth/* 503s. Powers GET /growth/digest, GET /growth/findings,
@@ -5684,6 +5690,112 @@ export function createRoutes(ctx: RouteContext): Router {
       res.json(ctx.growthMilestoneAnalyst.buildDigest());
     } catch (err) {
       res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+  // ── Blocker Ledger (Autonomy Principles Enforcement, Piece 1) ────────────────
+  // The resolution-workflow + memory layer that COMPLETES Principle 1 ("almost
+  // every blocker is a false blocker — work it"). Signal-only: it RECORDS and
+  // STRUCTURES; it never blocks an outbound message (B16/B17 keep that authority).
+  // Ships DARK — every route 503s unless monitoring.blockerLedger.enabled.
+  const BLOCKER_DARK = 'BlockerLedger not initialized (monitoring.blockerLedger.enabled is false)';
+  const blockerWriteLimiter = rateLimiter(60_000, 30);
+  // Map a BlockerLedgerError code to an HTTP status. Validation/evidence failures
+  // are the caller's to fix (4xx); an unexpected error is 500.
+  const blockerErrStatus = (err: unknown): number => {
+    const code = (err as { code?: string })?.code;
+    if (!code) return 500;
+    if (code === 'not_found') return 404;
+    if (code === 'already_settled') return 409;
+    // every other code is an input/evidence validation refusal
+    return 422;
+  };
+
+  router.get('/blockers', (req, res) => {
+    if (!ctx.blockerLedger) {
+      res.status(503).json({ error: BLOCKER_DARK });
+      return;
+    }
+    try {
+      const limit = req.query.limit ? Number(req.query.limit) : undefined;
+      const offset = req.query.offset ? Number(req.query.offset) : undefined;
+      const includeArchived = req.query.includeArchived === '1' || req.query.includeArchived === 'true';
+      res.json(ctx.blockerLedger.list({ limit, offset, includeArchived }));
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      res.status(500).json({ error: msg });
+    }
+  });
+
+  router.get('/blockers/:id', (req, res) => {
+    if (!ctx.blockerLedger) {
+      res.status(503).json({ error: BLOCKER_DARK });
+      return;
+    }
+    const entry = ctx.blockerLedger.get(req.params.id);
+    if (!entry) {
+      res.status(404).json({ error: `unknown blocker ${req.params.id}` });
+      return;
+    }
+    res.json(entry);
+  });
+
+  router.post('/blockers', blockerWriteLimiter, async (req, res) => {
+    if (!ctx.blockerLedger) {
+      res.status(503).json({ error: BLOCKER_DARK });
+      return;
+    }
+    if (req.headers['x-instar-request'] !== '1') {
+      res.status(403).json({ error: 'POST /blockers requires the X-Instar-Request: 1 intent header' });
+      return;
+    }
+    try {
+      const { detectedText, origin } = (req.body ?? {}) as { detectedText?: string; origin?: string };
+      if (!detectedText || !origin) {
+        res.status(400).json({ error: 'detectedText and origin are required' });
+        return;
+      }
+      const entry = await ctx.blockerLedger.open({ detectedText, origin });
+      res.status(201).json(entry);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      res.status(blockerErrStatus(err)).json({ error: msg });
+    }
+  });
+
+  router.post('/blockers/:id/advance', blockerWriteLimiter, async (req, res) => {
+    if (!ctx.blockerLedger) {
+      res.status(503).json({ error: BLOCKER_DARK });
+      return;
+    }
+    if (req.headers['x-instar-request'] !== '1') {
+      res.status(403).json({ error: 'POST /blockers/:id/advance requires the X-Instar-Request: 1 intent header' });
+      return;
+    }
+    try {
+      const entry = await ctx.blockerLedger.advance(req.params.id, req.body ?? {});
+      res.json(entry);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      res.status(blockerErrStatus(err)).json({ error: msg });
+    }
+  });
+
+  router.post('/blockers/:id/settle', blockerWriteLimiter, async (req, res) => {
+    if (!ctx.blockerLedger) {
+      res.status(503).json({ error: BLOCKER_DARK });
+      return;
+    }
+    if (req.headers['x-instar-request'] !== '1') {
+      res.status(403).json({ error: 'POST /blockers/:id/settle requires the X-Instar-Request: 1 intent header' });
+      return;
+    }
+    try {
+      const entry = await ctx.blockerLedger.settle(req.params.id, req.body ?? {});
+      res.json(entry);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      res.status(blockerErrStatus(err)).json({ error: msg });
     }
   });
 

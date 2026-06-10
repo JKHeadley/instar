@@ -8272,6 +8272,46 @@ echo "=== END IDENTITY RECOVERY ==="
 // SIGNAL ONLY — this hook never blocks. The authority that can hold an
 // outbound message is MessagingToneGate (B17_FALSE_BLOCKER).
 
+// Best-effort, NON-BLOCKING auto-open of a candidate Blocker Ledger entry
+// (Structure > Willpower — the agent does not have to remember to log a blocker).
+// Fires a fire-and-forget POST /blockers when false-blocker/inability framing is
+// detected. Wrapped so a failure (e.g. 503 when the ledger ships dark, no auth, no
+// server) can NEVER alter the hook's existing stdout checklist behavior. Auth
+// mirrors hook-event-reporter.js (INSTAR_AUTH_TOKEN / INSTAR_SERVER_URL env).
+function autoOpenBlocker(detectedText, origin) {
+  try {
+    const authToken = process.env.INSTAR_AUTH_TOKEN || '';
+    if (!authToken) return; // no auth → nothing to call; never blocks the checklist.
+    const serverUrl = process.env.INSTAR_SERVER_URL || 'http://localhost:4042';
+    void (async () => {
+      try {
+        const { request } = await import('node:http');
+        const payload = JSON.stringify({
+          detectedText: String(detectedText || '').slice(0, 4000),
+          origin: String(origin || 'deferral-detector'),
+        });
+        const url = new URL(serverUrl + '/blockers');
+        const req = request({
+          hostname: url.hostname,
+          port: url.port,
+          path: url.pathname,
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': 'Bearer ' + authToken,
+            'X-Instar-Request': '1',
+          },
+          timeout: 1500,
+        }, (res) => { res.resume(); });
+        req.on('error', () => {});
+        req.on('timeout', () => { try { req.destroy(); } catch (e) {} });
+        req.write(payload);
+        req.end();
+      } catch (e) { /* best-effort — never break the hook */ }
+    })();
+  } catch (e) { /* best-effort — never break the hook */ }
+}
+
 let data = '';
 process.stdin.on('data', chunk => data += chunk);
 process.stdin.on('end', () => {
@@ -8464,9 +8504,22 @@ process.stdin.on('end', () => {
     checklist.push('', 'Detected: ' + allMatches.map(m => m.type).join(', '));
 
     process.stdout.write(JSON.stringify({ decision: 'approve', additionalContext: checklist.join('\\n') }));
+
+    // Auto-open a candidate Blocker Ledger entry for the false-blocker/inability
+    // framing (the B17 shape). Best-effort + non-blocking; the checklist above has
+    // already been written. We hold the process open just long enough to flush the
+    // fire-and-forget POST, then exit. A failure (503 dark / no server) is silent.
+    if (inabilityMatches.length > 0) {
+      autoOpenBlocker(command, 'deferral-detector');
+      setTimeout(() => process.exit(0), 200);
+      return;
+    }
   } catch { /* don't break on errors */ }
   process.exit(0);
 });
+
+// Safety net — never let the process hang open beyond the fire-and-forget window.
+setTimeout(() => process.exit(0), 2000);
 `;
   }
 

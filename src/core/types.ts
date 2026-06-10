@@ -3549,6 +3549,33 @@ export interface MonitoringConfig {
     /** Cadence between overlap scans, in minutes (default 15). */
     cadenceMinutes?: number;
   };
+  /**
+   * Blocker Ledger — the durable resolution-workflow + memory layer that
+   * COMPLETES Principle 1 ("almost every blocker is a false blocker — work it").
+   * The deferral-detector / B16 / B17 path already DETECTS false-blocker framing;
+   * the ledger turns a detected blocker into a gated pipeline
+   * (candidate → authority-checked → access-requested → dry-run → live-run →
+   * terminal) with structural evidence-of-work at every terminal so it can't be
+   * gamed into deferral-laundering. Signal-only: it RECORDS and STRUCTURES;
+   * it never blocks an outbound message (B16/B17 keep that authority). The one
+   * judgment it carries — the `true-blocker` settle — routes through the Tier-1
+   * B17 gate, never a brittle field-presence check.
+   *
+   * Ships DARK (enabled defaults false → routes 503). See
+   * docs/specs/AUTONOMY-PRINCIPLES-ENFORCEMENT-SPEC.md (Piece 1).
+   */
+  blockerLedger?: {
+    /** Master kill-switch (default: false → ships dark; gates the /blockers routes). */
+    enabled: boolean;
+    /** Move terminal entries older than this many days to the archive file (default 30). */
+    archiveAfterDays?: number;
+    /** Default days until a settled true-blocker is reopened for a re-walk (default 30). */
+    recheckAfterDays?: number;
+    /** Consecutive no-new-evidence re-settles before escalating to the user (default 2). */
+    maxNoEvidenceResettles?: number;
+    /** Max free-text length accepted on any ledger field, in chars (default 4000). */
+    maxFreeTextChars?: number;
+  };
   rateLimitSentinel?: {
     /** Master kill switch (default: true). false → pre-feature behavior. */
     enabled: boolean;

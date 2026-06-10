@@ -137,6 +137,21 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     }),
   },
   {
+    key: 'blockerLedger',
+    prefixes: ['/blockers'],
+    description: 'Blocker Ledger — the resolution-workflow + memory layer completing Principle 1 ("almost every blocker is a false blocker — work it through"). Turns a detected blocker into a gated pipeline (candidate → authority-checked → access-requested → dry-run → live-run → resolved | true-blocker) with structural evidence-of-work at every terminal so it cannot be gamed into deferral-laundering. `resolved` requires a confined, id-referencing playbook + a successful live-run; `true-blocker` requires a closed-taxonomy reason + a recorded failed self-fetch/dry-run + a post-attempt access-request + a Tier-1 B17 LLM-authority PASS, and is stored as a decaying hypothesis re-tested on a cadence. Signal-only: it records/structures and never blocks a message (B16/B17 keep that authority); the one judgment (the true-blocker settle) routes through the B17 authority. Ships dark (monitoring.blockerLedger.enabled) → null/503 when disabled.',
+    build: ({ ctx }) => ({
+      configured: !!ctx.blockerLedger,
+      endpoints: [
+        'GET /blockers',
+        'GET /blockers/:id',
+        'POST /blockers',
+        'POST /blockers/:id/advance',
+        'POST /blockers/:id/settle',
+      ],
+    }),
+  },
+  {
     key: 'agentReadiness',
     prefixes: ['/agent-readiness'],
     description: 'Agent-Readiness Scoring (EXO 3.0 task-decomposition matrix) — score a task or workflow on its coordination-vs-judgment ratio to decide whether it is a good agent candidate. Coordination work (routing, approvals, scheduling, status-tracking) is agent-ready; judgment work (ambiguity, exceptions, relationships) stays human. Deterministic + advisory — answers a question, never gates.',

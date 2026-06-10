@@ -250,6 +250,12 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
     // deep-merges this into existing agents without surprise activation (no
     // separate migrateConfig block needed — verified deep-merge at
     // ConfigDefaults.deepMerge + applyDefaults add-missing recursion).
+    // BlockerLedger (docs/specs/AUTONOMY-PRINCIPLES-ENFORCEMENT-SPEC.md, Piece 1)
+    // — the resolution-workflow + memory layer completing Principle 1. Ships DARK;
+    // the /blockers routes 503 until this is enabled.
+    blockerLedger: {
+      enabled: false,
+    },
     correctionLearning: {
       enabled: false,
       // Self-Violation Signal extension (ships DARK). Even when correctionLearning

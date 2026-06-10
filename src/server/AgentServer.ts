@@ -63,6 +63,8 @@ import { FailureAttributionEngine } from '../monitoring/FailureAttributionEngine
 import { CiFailurePoller } from '../monitoring/CiFailurePoller.js';
 import { RevertDetector } from '../monitoring/RevertDetector.js';
 import { CorrectionLedger } from '../monitoring/CorrectionLedger.js';
+import { BlockerLedger } from '../monitoring/BlockerLedger.js';
+import { buildB17SettleAuthority } from '../monitoring/blockerSettleAuthority.js';
 import { GrowthMilestoneAnalyst, resolveGrowthSettings } from '../monitoring/GrowthMilestoneAnalyst.js';
 import { GrowthDigestPublisher, createGrowthDigestAuditSink } from '../monitoring/GrowthDigestPublisher.js';
 import { ApprenticeshipProgram } from '../core/ApprenticeshipProgram.js';
@@ -219,6 +221,7 @@ export class AgentServer {
   private ciFailurePoller: CiFailurePoller | null = null;
   private revertDetector: RevertDetector | null = null;
   private correctionLedger: CorrectionLedger | null = null;
+  private blockerLedger: BlockerLedger | null = null;
   private growthMilestoneAnalyst: GrowthMilestoneAnalyst | null = null;
   private growthDigestPublisher: GrowthDigestPublisher | null = null;
   private apprenticeshipProgram: ApprenticeshipProgram | null = null;
@@ -1287,6 +1290,34 @@ export class AgentServer {
       this.correctionLedger = null;
     }
 
+    // BlockerLedger (docs/specs/AUTONOMY-PRINCIPLES-ENFORCEMENT-SPEC.md, Piece 1)
+    // — the resolution-workflow + memory layer completing Principle 1 ("almost
+    // every blocker is a false blocker — work it through"). Ships DARK; constructed
+    // ONLY when monitoring.blockerLedger.enabled is true (else the /blockers routes
+    // 503-stub via the null ledger). The `true-blocker` settle judgment routes
+    // through the injected Tier-1 B17 authority, built from the shared intelligence
+    // provider (fails CLOSED when no provider is available). Own try/catch so an
+    // init failure can never cascade into other init.
+    try {
+      if (options.config.monitoring?.blockerLedger?.enabled === true && options.config.stateDir) {
+        const bl = options.config.monitoring.blockerLedger;
+        this.blockerLedger = new BlockerLedger({
+          stateDir: options.config.stateDir,
+          settleAuthority: buildB17SettleAuthority(options.intelligence ?? null),
+          archiveAfterDays: bl.archiveAfterDays,
+          recheckAfterDays: bl.recheckAfterDays,
+          maxNoEvidenceResettles: bl.maxNoEvidenceResettles,
+          maxFreeTextChars: bl.maxFreeTextChars,
+        });
+      }
+    } catch (err) {
+      // @silent-fallback-ok — reported via console.warn; a blocker-ledger init
+      // failure must never block server boot. Leaves the ledger null → /blockers
+      // routes 503 (deny-safe), exactly as if the feature were dark.
+      console.warn('[instar] blocker-ledger init failed (non-fatal):', err);
+      this.blockerLedger = null;
+    }
+
     // GrowthMilestoneAnalyst (docs/specs/PROACTIVE-GROWTH-MILESTONE-ANALYST-SPEC.md)
     // — the proactive growth & milestone analyst. Resolved through the standard
     // developmentAgent dark-feature gate (standard_development_agent_dark_feature_gate):
@@ -1703,6 +1734,7 @@ export class AgentServer {
       failureLedger: this.failureLedger,
       failureAttributionEngine: this.failureAttributionEngine,
       correctionLedger: this.correctionLedger,
+      blockerLedger: this.blockerLedger,
       growthMilestoneAnalyst: this.growthMilestoneAnalyst,
       growthDigestPublisher: this.growthDigestPublisher,
       apprenticeshipProgram: this.apprenticeshipProgram,
