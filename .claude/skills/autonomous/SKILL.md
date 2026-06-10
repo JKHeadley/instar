@@ -100,6 +100,10 @@ Write this content:
 <!-- COMPLETION_CONDITION_DEFAULT — the Write-tool template defaults to a verifiable
      completion_condition (judged by an INDEPENDENT model), NOT the self-declared
      promise. The promise is the recorded fallback. Spec: AUTONOMOUS-COMPLETION-DISCIPLINE.md -->
+<!-- REALCHECK_VERIFY — the template ALSO supports an OPTIONAL verification_command (ACT-152):
+     when set, the stop-hook RUNS it on a met:true verdict and only allows the exit if it ALSO
+     passes (fail/timeout → keep working). This sentinel is the PostUpdateMigrator marker that
+     re-deploys this SKILL.md to existing agents. Spec: autonomous-completion-real-checks.md -->
 
 ```markdown
 ---
@@ -120,6 +124,12 @@ completion_mode: condition         # "condition" (default) | "promise-fallback"
 promise_fallback_reason: ""         # one line, REQUIRED iff completion_mode == promise-fallback
 completion_promise: "ALL_TASKS_COMPLETE"   # retained as the fallback token
 hard_blocker_nonce: "{a random per-run token — get via: openssl rand -hex 8}"
+# OPTIONAL real-check (ACT-152): a command that must exit 0 before the run may stop. When set, a
+# met:true verdict RUNS it and gates the exit on it (fail/timeout → keep working). Omit if the
+# goal isn't checkable by a single command. work_dir is captured by setup so a relative command
+# (e.g. `npm test`) runs in the right tree; override with verification_cwd if the build is elsewhere.
+# verification_command: "npm test --silent"
+# verification_cwd: "/path/to/build/worktree"
 ---
 
 # Autonomous Session

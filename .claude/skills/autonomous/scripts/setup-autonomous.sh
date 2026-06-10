@@ -16,6 +16,8 @@ TASKS=""
 COMPLETION_PROMISE=""
 COMPLETION_CONDITION=""   # verifiable end-state; an independent judge decides "done" (mirrors /goal). Preferred over the self-declared promise.
 REPORT_INTERVAL="30m"
+VERIFICATION_COMMAND=""   # opt-in real check (ACT-152): the stop-hook RUNS this on a met:true verdict and gates the exit on exit-0.
+VERIFICATION_CWD=""       # directory the verification command runs in (resolves verification_cwd → work_dir → agent home).
 
 while [[ $# -gt 0 ]]; do
   case $1 in
@@ -49,6 +51,14 @@ while [[ $# -gt 0 ]]; do
       ;;
     --completion-condition)
       COMPLETION_CONDITION="$2"
+      shift 2
+      ;;
+    --verification-command)
+      VERIFICATION_COMMAND="$2"
+      shift 2
+      ;;
+    --verification-cwd)
+      VERIFICATION_CWD="$2"
       shift 2
       ;;
     --report-interval)
@@ -158,6 +168,24 @@ else
   STATE_PATH=".instar/autonomous-state.local.md"
 fi
 
+# ── REALCHECK_VERIFY — Real-check verification fields (ACT-152). work_dir is ALWAYS
+# captured so the hook resolves the command's CWD structurally (verification_cwd →
+# work_dir → agent home) — the worktree-default build runs OUTSIDE the agent home,
+# and a relative `npm test` from the home would test the wrong tree. The verification_*
+# fields are OMITTED when the flags are absent (→ byte-identical to today). This
+# REALCHECK_VERIFY sentinel is the PostUpdateMigrator marker that re-deploys this setup
+# to existing agents carrying COMPLETION_DISCIPLINE but not REALCHECK_VERIFY. ──
+WORK_DIR="$(pwd)"
+VERIFICATION_FIELDS="work_dir: \"$WORK_DIR\""
+if [[ -n "$VERIFICATION_COMMAND" ]]; then
+  VERIFICATION_FIELDS="verification_command: \"$VERIFICATION_COMMAND\"
+$VERIFICATION_FIELDS"
+fi
+if [[ -n "$VERIFICATION_CWD" ]]; then
+  VERIFICATION_FIELDS="verification_cwd: \"$VERIFICATION_CWD\"
+$VERIFICATION_FIELDS"
+fi
+
 cat > "$STATE_PATH" <<EOF
 ---
 active: true
@@ -176,6 +204,7 @@ level_up: $LEVEL_UP
 completion_promise: "$COMPLETION_PROMISE"
 completion_condition: "$COMPLETION_CONDITION"
 hard_blocker_nonce: "$HARD_BLOCKER_NONCE"
+$VERIFICATION_FIELDS
 ---
 
 # Autonomous Session

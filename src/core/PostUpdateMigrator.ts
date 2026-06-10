@@ -1851,11 +1851,21 @@ export class PostUpdateMigrator {
     // the chokepoint (no restart). Bumping re-deploys the enforced hook to every
     // existing agent (which carries IDLE_BACKOFF but not COMPLETION_DISCIPLINE);
     // customized hooks are still left untouched.
+    // Marker bumped `COMPLETION_DISCIPLINE` → `REALCHECK_VERIFY` (ACT-152 /
+    // autonomous-completion-real-checks spec): the bundled hook now runs an OPTIONAL
+    // `verification_command` on a met:true verdict and gates the exit on it — `realcheck_gate`
+    // runs the declared command (portable timeout ladder, source-bounded capture, sanitize→
+    // UTF8→leak-scrub→clamp, destructive pre-block, P19 breaker, audit JSONL) and only allows
+    // the exit if it PASSES; any fail/timeout/refused/unavailable/breaker-open → keep working
+    // (the SAFE direction — never a premature exit). The `REALCHECK_VERIFY` sentinel is present
+    // ONLY in the new bundled hook, so bumping re-deploys it to every existing agent that carries
+    // COMPLETION_DISCIPLINE but not REALCHECK_VERIFY; customized hooks (no stock fingerprint) are
+    // still left untouched. (Setup + SKILL.md markers bumped to REALCHECK_VERIFY in the same PR.)
     upgrade(
       '.claude/skills/autonomous/hooks/autonomous-stop-hook.sh',
-      'COMPLETION_DISCIPLINE',
+      'REALCHECK_VERIFY',
       'Autonomous Mode Stop Hook',
-      'skills/autonomous/hooks/autonomous-stop-hook.sh (completion discipline — checkbox/milestone/injection scans + nonce-gated (a) hard-blocker branch + breaker/cache + off-switch)',
+      'skills/autonomous/hooks/autonomous-stop-hook.sh (real-check verification gate — opt-in verification_command run on met:true, exit gated on it; fail/timeout/breaker → keep working)',
     );
     // setup-autonomous.sh marker bumped `native-goal/set` → `IS_CODEX_AGENT`: the bundled
     // setup now ALSO auto-delegates to native /goal for CODEX agents (the prior native /goal
@@ -1870,11 +1880,16 @@ export class PostUpdateMigrator {
     // defaults to 8h instead of running truly unbounded) — AUTONOMOUS-COMPLETION-DISCIPLINE.md
     // §2b.3 / §4. Bumping re-deploys the updated setup to existing agents (which carry
     // IS_CODEX_AGENT but not COMPLETION_DISCIPLINE); customized scripts are left untouched.
+    // Marker bumped `COMPLETION_DISCIPLINE` → `REALCHECK_VERIFY` (ACT-152): the bundled setup
+    // now parses `--verification-command` / `--verification-cwd` and always records `work_dir`
+    // (so the hook resolves the real-check CWD structurally). The REALCHECK_VERIFY sentinel is
+    // present ONLY in the new bundled setup; bumping re-deploys it to existing agents carrying
+    // COMPLETION_DISCIPLINE but not REALCHECK_VERIFY; customized scripts left untouched.
     upgrade(
       '.claude/skills/autonomous/scripts/setup-autonomous.sh',
-      'COMPLETION_DISCIPLINE',
+      'REALCHECK_VERIFY',
       'autonomous-state.local.md',
-      'skills/autonomous/scripts/setup-autonomous.sh (hard_blocker_nonce + bounded-duration backstop)',
+      'skills/autonomous/scripts/setup-autonomous.sh (--verification-command/--verification-cwd flags + work_dir capture)',
     );
     // SKILL.md fixes (cumulative — the upgrade re-deploys the whole bundled SKILL.md, so a
     // single marker bump carries every fix to date):
@@ -1917,11 +1932,19 @@ export class PostUpdateMigrator {
     // that received fix (3) (carries the prior marker but not the new one) gets re-deployed to
     // fix (4). The upgrade re-deploys the WHOLE bundled SKILL.md; customized SKILL.md files
     // (missing the stock `ALL_TASKS_COMPLETE` fingerprint) are left untouched (idempotent).
+    //   (5) Real-check verification (ACT-152): the Step-2b Write-tool template documents the
+    //       OPTIONAL `verification_command` / `verification_cwd` fields (run on a met:true verdict,
+    //       exit gated on the command). Marker bumped `COMPLETION_CONDITION_DEFAULT` →
+    //       `REALCHECK_VERIFY`: present ONLY in fix (5)'s version (the embedded sentinel comment
+    //       above the Step-2b template), so an agent that received fix (4) (carries the prior marker
+    //       but not the new one) gets re-deployed to fix (5). The upgrade re-deploys the WHOLE
+    //       bundled SKILL.md; customized SKILL.md files (missing the stock ALL_TASKS_COMPLETE
+    //       fingerprint) are left untouched (idempotent).
     upgrade(
       '.claude/skills/autonomous/SKILL.md',
-      'COMPLETION_CONDITION_DEFAULT',
+      'REALCHECK_VERIFY',
       'ALL_TASKS_COMPLETE',
-      'skills/autonomous/SKILL.md (completion-condition default + nonce-gated <hard-blocker> honest-exit marker; promise becomes the recorded fallback)',
+      'skills/autonomous/SKILL.md (optional verification_command/verification_cwd real-check fields in the Write-tool template)',
     );
   }
 
@@ -3049,6 +3072,16 @@ setTimeout(() => process.exit(0), 2000);
 
     let patched = false;
     const port = this.config.port;
+
+    // Real-check verification (ACT-152 / autonomous-completion-real-checks). The existing
+    // "Autonomous Completion Discipline" section is never edited in place (migrateClaudeMd only
+    // APPENDS), so an existing agent learns about `verification_command` only via this appended
+    // subsection (Agent Awareness Standard). Gated on a fresh content-sniff marker.
+    if (!content.includes('Real-Check Verification')) {
+      content += `\n### Real-Check Verification (autonomous, optional)\n\nThe autonomous completion judge reads my TRANSCRIPT — it does not run tools. When a goal is checkable by a command (a test suite, build, grep, or CI status), an autonomous job can declare a \`verification_command\` (\`instar\`'s autonomous setup takes \`--verification-command "<cmd>"\` and \`--verification-cwd "<dir>"\`, and always records \`work_dir\` so a relative command runs in the right tree). When set, a met:true verdict RUNS the command and the run may stop ONLY if it ALSO passes (exit 0); a fail/timeout/breaker-open keeps me working with the command's output as guidance — it can never CAUSE a premature exit (the safe direction). Bounded timeout, output scrubbed for secrets, destructive commands refused, P19 breaker on a stuck/flaky check. Audit: \`logs/autonomous-realcheck.jsonl\`. Off-switch: \`autonomousSessions.completionDiscipline.realCheck.enabled\` (read at the chokepoint — no restart). NO-OP unless a job declares a \`verification_command\`.\n`;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Real-Check Verification section');
+    }
 
     // Cartographer doc-tree (cartographer-doc-tree-schema spec #1) — a hierarchical
     // semantic map with git-hash staleness. Ships dark; documented so agents that
