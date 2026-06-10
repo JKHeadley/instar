@@ -1356,7 +1356,18 @@ export class PostUpdateMigrator {
       }
 
       // Reload only if plist changed (script-only changes don't need launchd touch).
-      if (plistChanged) {
+      //
+      // NEVER under a test harness: launchd is a MACHINE-GLOBAL registry that a
+      // $HOME redirect does not scope. Before this guard, every darwin test that
+      // ran migrate() with a redirected HOME booted out the REAL fleet watchdog
+      // and bootstrapped one pointing at the test tmpdir — the RunAtLoad run then
+      // wrote watchdog-launchd.{log,err} into the tmpdir mid-cleanup (the
+      // worktree-spotlight-exclusion ENOTEMPTY flake, 2026-06-09), and after
+      // cleanup the machine's watchdog service pointed at a DELETED plist (fleet
+      // watchdog silently dead until the next real update). File writes above
+      // stay active under tests (hermetic, HOME-scoped); only the launchd
+      // mutation is skipped.
+      if (plistChanged && !process.env.VITEST && process.env.NODE_ENV !== 'test') {
         const uid = process.getuid?.() ?? 501;
         try { execFileSync('launchctl', ['bootout', `gui/${uid}`, plistPath], { stdio: 'ignore' }); } catch { /* not loaded */ }
         try { execFileSync('launchctl', ['bootstrap', `gui/${uid}`, plistPath], { stdio: 'ignore' }); } catch { /* non-fatal */ }
