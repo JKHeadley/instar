@@ -1471,6 +1471,9 @@ export class AgentServer {
           try {
             return ledger.tokensByModelSince(ultraIds, startOfUtcDayMs(Date.now()));
           } catch {
+            // @silent-fallback-ok: a ledger read error ⇒ null ⇒ the §8 daily-cap
+            // admission fails CLOSED (conservative — denies escalation when a cap
+            // is configured), exactly as a missing ledger does. Never crashes init.
             return null;
           }
         },
@@ -1482,7 +1485,10 @@ export class AgentServer {
               .listRunningSessions()
               .some((s) => s.id === instanceId);
           } catch {
-            return true; // probe error ⇒ keep the lease; TTL still bounds it
+            // @silent-fallback-ok: a liveness-probe error ⇒ keep the lease
+            // (conservative — never reclaims on a transient error); the lease's
+            // TTL still bounds it, so a genuinely dead holder is reclaimed anyway.
+            return true;
           }
         },
       });
@@ -1493,7 +1499,7 @@ export class AgentServer {
         (e: { session: { id: string } }) => {
           try {
             escalationGovernor.releaseLease(e.session.id);
-          } catch { /* release is also lazy-reclaimable — never fatal */ }
+          } catch { /* @silent-fallback-ok: a release error is non-fatal — the lease is lazy-reclaimable via TTL + liveness probe, so the next escalation reclaims it regardless. */ }
         },
       );
       const telegramForSwap = this.telegramAdapter;

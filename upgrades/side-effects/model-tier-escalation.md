@@ -252,3 +252,16 @@ GuardPostureTripwire surfaces the cost-increasing enable on its next tick.
   annotation, so the ratchet counted it (464 > baseline 463). Annotated
   `@silent-fallback-ok` at the catch (mirrors the a2a-delivery-tracker init
   guard); local run now 462. No behavior change.
+- **no-silent-fallbacks gate (main-merge reconciliation)**: branch alone counts
+  462, but CI runs the branch MERGED with `main`, and main had advanced 25
+  commits to exactly the ceiling (463) while this branch was open — so the union
+  surfaced at 464. Per-file diff localized the single net catch this feature adds
+  beyond main to `AgentServer.ts` (46→47): the `EscalationGovernor` lease/cap
+  wiring carried three genuine safe-degrades that had inline rationale but lacked
+  the `@silent-fallback-ok` token — (1) `ultraTokensTodayUtc` ledger-read catch
+  (error ⇒ null ⇒ §8 cap admission fails CLOSED, same as a missing ledger),
+  (2) `isHolderLive` probe catch (error ⇒ keep the lease conservatively; TTL
+  still bounds it), (3) `releaseLease` catch (error is non-fatal; the lease is
+  lazy-reclaimable via TTL + liveness). Annotated all three; merged ratchet now
+  463 ≤ 463 (test 5/5). No baseline bump, no behavior change — these were under-
+  annotated, not new swallows.
