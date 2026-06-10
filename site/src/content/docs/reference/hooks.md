@@ -32,6 +32,8 @@ Hooks ship from two install paths. The static scripts under `src/templates/hooks
 | `intercept-imsg-send.js` | PreToolUse (blocking) | Outbound safety layer for iMessage sends — validates recipient + send-token before `imsg send` |
 | `skill-usage-telemetry.sh` | PostToolUse (advisory) | Records which skills the agent invoked during the session |
 | `build-stop-hook.sh` | Stop (structural enforcement) | Used by `/build` and `/instar-dev` skills to prevent premature exit from phase-structured work |
+| `model-tier-skill-entry.sh` | PostToolUse (signal) | Records that a tier-triggering skill (e.g. `/build`, `/autonomous`, `/instar-dev`, `/spec-converge`) started by writing the per-instance model-tier mode-state — only on a tier transition. Pure signal writer: never swaps a model, never carries a model id; the reconciler + server-side swap service decide what happens. Fail-closed (any missing input exits 0). |
+| `model-tier-reconciler.js` | UserPromptSubmit (signal) | Computes the desired model tier from durable signals and, only on a transition, asks the server-side swap endpoint to act. Never swaps itself, never blocks the turn, emits no prompt context; the common path is a pure-filesystem early-exit no-op. Fail-closed to the session's default model. |
 
 ### Dynamically-generated hooks
 
