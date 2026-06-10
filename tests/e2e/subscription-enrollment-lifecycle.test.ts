@@ -84,4 +84,39 @@ describe('/subscription-pool enrollment — E2E feature-alive', () => {
     expect(body.logins.map((l: any) => l.id)).toEqual(['codex-1']);
     expect(body.logins[0].userCode).toBe('AAAA-BBBB');
   });
+
+  it('FEATURE ALIVE: completing a claude-code enrollment leaves its config home interactive-ready (2026-06-09 incident)', async () => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'enroll-e2e-ready-'));
+    // The home exactly as headless `claude auth login` leaves it: an
+    // oauthAccount, NO interactive first-launch flags — the state that wedged
+    // ~8 live sessions when pin/swap relaunched into it.
+    const configHome = path.join(dir, '.claude-new-account');
+    fs.mkdirSync(configHome);
+    const oauthAccount = { accountUuid: 'u-e2e', emailAddress: 'e2e@example.com' };
+    fs.writeFileSync(path.join(configHome, '.claude.json'), JSON.stringify({ oauthAccount }));
+
+    // Production wiring: real store + real wizard with the DEFAULT seeding path.
+    const store = new PendingLoginStore({ stateDir: dir });
+    const wizard = new EnrollmentWizard({
+      store,
+      driveLogin: async () => ({ verificationUrl: 'https://claude.com/oauth/authorize', ttlMs: 15 * 60_000 }),
+    });
+    server = await bootApp({ config: { authToken: 't', stateDir: dir, port: 0 }, startTime: new Date(), enrollmentWizard: wizard });
+
+    const started = await fetch(server.url + '/subscription-pool/enroll', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: 'sm-1', label: 'SageMind - Justin', provider: 'anthropic', framework: 'claude-code', configHome }),
+    });
+    expect(started.status).toBe(201);
+
+    const completed = await fetch(server.url + '/subscription-pool/enroll/sm-1/complete', { method: 'POST' });
+    expect(completed.status).toBe(200);
+
+    const cfg = JSON.parse(fs.readFileSync(path.join(configHome, '.claude.json'), 'utf-8'));
+    expect(cfg.hasCompletedOnboarding).toBe(true);
+    expect(cfg.bypassPermissionsModeAccepted).toBe(true);
+    expect(cfg.hasTrustDialogAccepted).toBe(true);
+    expect(cfg.oauthAccount).toEqual(oauthAccount); // credentials byte-identical
+  });
 });

@@ -27,6 +27,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { ensureInteractiveReady } from './ensureInteractiveReady.js';
 import type { SessionManager } from './SessionManager.js';
 import type { StateManager } from './StateManager.js';
 import type { TelegramAdapter } from '../messaging/TelegramAdapter.js';
@@ -293,6 +294,21 @@ export class SessionRefresh {
       const accountSwap = (opts.configHome || opts.accountId)
         ? { configHome: opts.configHome, accountId: opts.accountId }
         : undefined;
+
+      // Onboarding-safe swap (2026-06-09 incident): the target config home was
+      // enrolled headlessly, so it has OAuth tokens but NOT the interactive
+      // first-launch flags — relaunching an interactive session into it would
+      // wedge on the onboarding screens. Seed the flags BEFORE the respawn.
+      // Applies to `fresh` too (the new session is interactive either way).
+      // Idempotent + fail-safe: a failure here is logged and the respawn
+      // proceeds (worst case is the pre-fix behavior, not a dead refresh).
+      if (accountSwap?.configHome) {
+        const ready = ensureInteractiveReady(accountSwap.configHome);
+        console.log(
+          `[SessionRefresh] account-swap onboarding-readiness: ${accountSwap.configHome} ` +
+          `${ready.patched ? `patched (${ready.reason})` : ready.reason} (sessionName=${sessionName})`,
+        );
+      }
 
       // Account-swap continuity: claude stores transcripts per config home, so a
       // swap to a new CLAUDE_CONFIG_DIR must carry the conversation transcript

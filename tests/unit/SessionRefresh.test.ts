@@ -7,8 +7,12 @@
  * silently absent because respawnSessionForTopic doesn't kill, only spawns).
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { SessionRefresh } from '../../src/core/SessionRefresh.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import type { SessionManager } from '../../src/core/SessionManager.js';
 import type { StateManager } from '../../src/core/StateManager.js';
 import type { TelegramAdapter } from '../../src/messaging/TelegramAdapter.js';
@@ -352,6 +356,87 @@ describe('SessionRefresh', () => {
       });
       expect(respawner).not.toHaveBeenCalled();
       expect(sessionManager.killSession).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('account-swap onboarding readiness (2026-06-09 incident)', () => {
+    // A quota swap relaunches the session INTERACTIVELY under the target
+    // account's config home. A headless-enrolled home (tokens, no onboarding
+    // flags) wedges that relaunch on the first-launch screens — so the
+    // refresh must seed the flags BEFORE the respawner runs.
+    let tmpHome: string;
+    beforeEach(() => {
+      tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'refresh-swap-home-'));
+    });
+    afterEach(() => {
+      try { SafeFsExecutor.safeRmSync(tmpHome, { recursive: true, force: true, operation: 'tests/unit/SessionRefresh.test.ts:cleanup' }); } catch { /* @silent-fallback-ok */ }
+    });
+
+    function flagsOnDisk(): Record<string, unknown> | null {
+      try {
+        return JSON.parse(fs.readFileSync(path.join(tmpHome, '.claude.json'), 'utf-8'));
+      } catch {
+        return null;
+      }
+    }
+
+    it('seeds the onboarding flags in the target config home BEFORE the respawn', async () => {
+      // headless-enrolled home: tokens present, flags absent
+      fs.writeFileSync(path.join(tmpHome, '.claude.json'), JSON.stringify({ oauthAccount: { accountUuid: 'u-1' } }));
+      let flagsAtRespawnTime: Record<string, unknown> | null = null;
+      const { refresh } = makeDeps({
+        respawnerImpl: async () => {
+          flagsAtRespawnTime = flagsOnDisk();
+          return 'new-tmux-session';
+        },
+      });
+      const result = await refresh.refreshSession({
+        sessionName: 'echo-qalatra',
+        configHome: tmpHome,
+        accountId: 'acct-2',
+      });
+      expect(result.ok).toBe(true);
+      // Order is load-bearing: the new session launches into this home, so
+      // the flags must already be on disk when the respawner fires.
+      expect(flagsAtRespawnTime).toMatchObject({
+        hasCompletedOnboarding: true,
+        bypassPermissionsModeAccepted: true,
+        hasTrustDialogAccepted: true,
+        oauthAccount: { accountUuid: 'u-1' }, // never touched
+      });
+    });
+
+    it('seeds the flags on a FRESH swap too (the relaunch is interactive either way)', async () => {
+      const { refresh } = makeDeps();
+      const result = await refresh.refreshSession({
+        sessionName: 'echo-qalatra',
+        fresh: true,
+        configHome: tmpHome,
+        accountId: 'acct-2',
+      });
+      expect(result.ok).toBe(true);
+      expect(flagsOnDisk()).toMatchObject({ hasCompletedOnboarding: true });
+    });
+
+    it('a refresh with NO account swap touches no config home', async () => {
+      const { refresh } = makeDeps();
+      const result = await refresh.refreshSession({ sessionName: 'echo-qalatra' });
+      expect(result.ok).toBe(true);
+      expect(flagsOnDisk()).toBeNull();
+    });
+
+    it('a seeding failure never aborts the refresh (fail-safe)', async () => {
+      // Make the config home unwritable-as-a-home: a FILE in its place.
+      const fileAsHome = path.join(tmpHome, 'not-a-dir');
+      fs.writeFileSync(fileAsHome, 'x');
+      const { refresh, respawner } = makeDeps();
+      const result = await refresh.refreshSession({
+        sessionName: 'echo-qalatra',
+        configHome: fileAsHome,
+        accountId: 'acct-2',
+      });
+      expect(result.ok).toBe(true);
+      expect(respawner).toHaveBeenCalled();
     });
   });
 });
