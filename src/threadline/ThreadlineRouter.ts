@@ -501,7 +501,23 @@ export class ThreadlineRouter {
    * - Has threadId + existing resume entry → resume session
    * - Has threadId + no resume entry → spawn new session
    */
-  async handleInboundMessage(envelope: MessageEnvelope, relayContext?: RelayMessageContext): Promise<ThreadlineHandleResult> {
+  async handleInboundMessage(
+    envelope: MessageEnvelope,
+    relayContext?: RelayMessageContext,
+    opts?: {
+      /**
+       * Resolved canonical fingerprint for the inbound sender, supplied by a
+       * LOCAL-delivery ingress where `message.from.agent` is a NAME (the relay
+       * path carries the fingerprint via relayContext). Consumed ONLY by the
+       * anti-hijack identity comparison below — a narrow hint, NOT a full
+       * relayContext, so it has zero effect on grounding, history depth,
+       * affinity, or persisted records. Null/absent → name-based fallback
+       * (fail-safe isolation). Spec:
+       * docs/specs/threadline-local-delivery-fingerprint-attribution.md
+       */
+      inboundSenderFingerprint?: string;
+    },
+  ): Promise<ThreadlineHandleResult> {
     const { message } = envelope;
 
     // Only handle messages from other agents (not self-delivery)
@@ -537,7 +553,11 @@ export class ThreadlineRouter {
       const presented = this.threadResumeMap.get(message.threadId);
       if (presented) {
         const cryptoVerified = relayContext?.trust.kind === 'verified';
-        const inboundFp = relayContext?.senderFingerprint || message.from.agent || '';
+        // Local-delivery ingress resolves the sender's NAME → canonical fingerprint
+        // and supplies it as `opts.inboundSenderFingerprint`, so the guard compares
+        // fingerprint-to-fingerprint against the (fingerprint-derived) owner instead
+        // of mismatching name-vs-fingerprint. Relay path (relayContext) still wins.
+        const inboundFp = relayContext?.senderFingerprint || opts?.inboundSenderFingerprint || message.from.agent || '';
         const inboundName = relayContext?.senderName || '';
         const peer = presented.remoteAgent || '';
         const identityMatches = !!peer && (peer === inboundFp || peer === inboundName);

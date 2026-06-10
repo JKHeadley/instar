@@ -180,4 +180,58 @@ describe('ThreadlineRouter — anti-hijack guard', () => {
     const reason = spawnManager.evaluate.mock.calls[0][0].reason as string;
     expect(reason).toMatch(/^New thread/);
   });
+
+  // ── Local-delivery fingerprint hint (threadline-local-delivery-fingerprint-attribution) ──
+  // The LIVE Luna incident: a same-machine reply carries the sender's NAME in
+  // `from.agent` (no relayContext), but the thread owner is a FINGERPRINT
+  // (publicKey[:32]). The local ingress resolves name→fingerprint and supplies it
+  // as `opts.inboundSenderFingerprint` so the guard matches instead of isolating.
+
+  it('resumes a same-machine reply when from.agent is a NAME but the resolved-fingerprint hint matches the owner (the Luna incident, fixed)', async () => {
+    const threadId = '199c20fe-thread';
+    const ownerFp = '1db85f0011223344556677889900aabb'; // publicKey[:32], the recorded owner
+    threadResumeMap._set(threadId, ownedEntry(ownerFp));
+
+    // No relayContext (local delivery); from.agent is the NAME; hint carries the fp.
+    const result = await router.handleInboundMessage(
+      envelopeFrom('sagemind', threadId),
+      undefined,
+      { inboundSenderFingerprint: ownerFp },
+    );
+
+    expect(result.threadId).toBe(threadId); // resumed, not isolated
+    const reason = spawnManager.evaluate.mock.calls[0][0].reason as string;
+    expect(reason).toMatch(/^Resume thread/);
+  });
+
+  it('ISOLATES the same reply with NO hint (reproduces the bug on current main: name vs fingerprint owner)', async () => {
+    const threadId = '199c20fe-thread';
+    const ownerFp = '1db85f0011223344556677889900aabb';
+    threadResumeMap._set(threadId, ownedEntry(ownerFp));
+
+    // No relayContext, no hint → inboundFp falls back to the NAME → mismatch → isolate.
+    const result = await router.handleInboundMessage(
+      envelopeFrom('sagemind', threadId),
+      undefined,
+    );
+
+    expect(result.threadId).not.toBe(threadId);
+    const reason = spawnManager.evaluate.mock.calls[0][0].reason as string;
+    expect(reason).toMatch(/^New thread/);
+  });
+
+  it('ISOLATES when the hint fingerprint does NOT match the owner (fail-safe preserved)', async () => {
+    const threadId = 'mismatch-thread';
+    threadResumeMap._set(threadId, ownedEntry('1db85f0011223344556677889900aabb'));
+
+    const result = await router.handleInboundMessage(
+      envelopeFrom('impostor', threadId),
+      undefined,
+      { inboundSenderFingerprint: 'ffffffffffffffffffffffffffffffff' }, // different fp
+    );
+
+    expect(result.threadId).not.toBe(threadId);
+    const reason = spawnManager.evaluate.mock.calls[0][0].reason as string;
+    expect(reason).toMatch(/^New thread/);
+  });
 });
