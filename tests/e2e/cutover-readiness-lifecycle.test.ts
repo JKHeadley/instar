@@ -155,6 +155,17 @@ describe('Cutover-readiness E2E lifecycle — alive + conditions resolve from RE
     expect(res.body.error).toMatch(/no parity source configured/);
   });
 
+  it('POST /cutover-readiness/integrity-pass is ALIVE on the production path (Bearer-gated; 409 without a source — not 404, not 503)', async () => {
+    // Feature-is-alive: the REAL pre-click integrity trigger exists + is wired through
+    // production init. With no feedbackMigration.paritySource configured it REFUSES
+    // (409) — proving the handler ran (not a routing miss). This is the route that, on
+    // a configured server, records the canonical report that greens the door.
+    expect((await request(app).post('/cutover-readiness/integrity-pass')).status).toBe(401);
+    const res = await request(app).post('/cutover-readiness/integrity-pass').set(auth());
+    expect(res.status).toBe(409);
+    expect(res.body.error).toMatch(/no import source configured/);
+  });
+
   it('import-dryrun routes are ALIVE on the production path (Bearer-gated; 409 without a source — not 404, not 503)', async () => {
     // Feature-is-alive: the trigger route exists and is wired through the
     // production init. With no feedbackMigration.paritySource configured the
