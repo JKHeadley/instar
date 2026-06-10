@@ -532,6 +532,16 @@ export class CartographerTree {
     return this.currentOid(nodePath);
   }
 
+  /**
+   * Public: ONE batched current-oid map (path → oid) for the whole HEAD tree. The
+   * spec #5 navigator derives per-node `fresh` from a SINGLE read of this map
+   * (compared to each node's stored `codeHash`) instead of a per-node staleness
+   * call — keeping the "cheap on a wide frontier" guarantee.
+   */
+  currentOidMap(): Map<string, string> {
+    return this.currentOids();
+  }
+
   /** Derive staleness for the whole tree from ONE batched git read. */
   staleNodes(): CartographerStaleEntry[] {
     const index = this.loadIndex();

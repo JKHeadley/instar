@@ -75,6 +75,25 @@ authority. Read surfaces (owner-gated):
 A CI ratchet (`scripts/standards-coverage.mjs`) holds an enforced-ratio floor and a
 hard zero ceiling on dangling references.
 
+## Spec #5 — Subtree navigation (`CartographerNavigator`)
+
+The doc-tree was built so a sub-agent could be scoped to the *relevant* code instead
+of the whole repo. `CartographerNavigator` is the piece that does it: given a task or
+query, it walks the tree's summaries top-down (a bounded frontier, not every node),
+scores each node by relevance (distinctive code identifiers outweigh common words),
+and returns the **minimal relevant subtree** — the smallest set of paths whose union
+covers the relevant code, collapsing a directory into one path when most of its
+visited children are relevant and keeping individual files when relevance is
+scattered. The core is fully deterministic (local reads only, zero token cost, zero
+egress); an optional language-model re-rank for close calls ships off by default.
+Every emitted summary is rendered as quoted, neutralized data — a summary was authored
+by a model over untrusted code, so the navigator declaws instruction-shaped text
+before a downstream sub-agent reads it. Read surface:
+
+- `GET /cartographer/navigate?query=…` — the scoped manifest: `relevantPaths` (scope a
+  sub-agent here) + the scored nodes + `summaryCoverage` (honesty about how much of the
+  ranking was summary-informed vs path-only on a not-yet-swept tree).
+
 ## Architecture at a glance
 
 | Layer | Core modules | Read surface |
@@ -82,11 +101,12 @@ hard zero ceiling on dangling references.
 | Doc-tree (spec #1) | `CartographerTree`, `skipDirs` | `/cartographer/tree`, `/cartographer/node`, `/cartographer/stale`, `/cartographer/health` |
 | Freshness sweep (spec #2) | `CartographerSweepEngine`, `CartographerSweepPoller`, `HostPressureSampler`, `cartographerSummary` | `/cartographer/node/refresh` |
 | Conformance audit (spec #3) | `StandardsRegistryParser`, `StandardEnforcementExtractor`, `StandardsEnforcementAuditor` | `/conformance/coverage`, `/conformance/coverage/health` |
+| Subtree navigation (spec #5) | `CartographerNavigator` | `/cartographer/navigate` |
 
 `CartographerTree` is the substrate every layer reads; `CartographerSweepEngine`
 authors against it; `StandardsEnforcementAuditor` audits the constitution's
-enforcement, never the code itself. All three are observe-only — they inform, they
-never block.
+enforcement, never the code itself; `CartographerNavigator` scopes a sub-agent to the
+relevant subtree. All are observe-only — they inform, they never block.
 
 ## Enabling
 

@@ -811,6 +811,7 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
             'GET /cartographer/stale — nodes whose summary has drifted from the code',
             'GET /cartographer/health — node count + staleness + freshness backlog (spec #2)',
             'POST /cartographer/node/refresh {path,summary} — inline-refresh one node\'s summary (spec #2; 503 unless freshnessSweep enabled)',
+            'GET /cartographer/navigate?query=…&maxDepth=&maxResults= — minimal relevant subtree for a query: paths to scope a sub-agent to (spec #5; deterministic, observe-only)',
             'GET /conformance/coverage — per-standard enforcement-coverage of docs/STANDARDS-REGISTRY.md (spec #3; filters ?family=/?kind=/?status=gap; X-Instar-Request:1; 503 unless conformanceAudit enabled)',
             'GET /conformance/coverage/health — coverage summary: counts by enforcementKind, enforced ratio, gap + dangling-ref counts (spec #3)',
           ]

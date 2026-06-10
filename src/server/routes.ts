@@ -19,6 +19,7 @@ import {
   neutralizeInstructionShapedContent,
   extractCodeSymbols,
 } from '../core/cartographerSummary.js';
+import { navigate as cartographerNavigate } from '../core/CartographerNavigator.js';
 import {
   computeCoverage as computeStandardsCoverage,
   type CoverageReport as StandardsCoverageReport,
@@ -4234,6 +4235,55 @@ export function createRoutes(ctx: RouteContext): Router {
     });
     cartoRefreshLog.push(nowMs);
     res.json({ refreshed: true, path: p, status: ctx.cartographer.computeStaleness(p) });
+  });
+
+  // Subtree Navigation (cartographer-subtree-nav spec #5). Given a query, the
+  // deterministic navigator walks the doc-tree's summaries top-down and returns the
+  // minimal relevant subtree (paths to scope a sub-agent to). Read-only, observe-only,
+  // zero egress (reads the local index/summaries only). Behind cartographer.enabled
+  // (503 when off; lazy-scaffold) + Bearer-auth (inherited). NO path input is consumed
+  // from the request — paths are PRODUCED, never taken — so there is no traversal
+  // surface; only `query` (length-bounded) + the numeric bounds are validated.
+  router.get('/cartographer/navigate', (req, res) => {
+    if (!ctx.cartographer) { res.status(503).json({ error: 'Cartographer not enabled' }); return; }
+
+    const query = typeof req.query.query === 'string' ? req.query.query : '';
+    if (!query || query.trim().length === 0) { res.status(400).json({ error: 'missing query' }); return; }
+    if (query.length > 2048) { res.status(400).json({ error: 'query too long (max 2048 chars)' }); return; }
+
+    const navCfg = (ctx.config as {
+      cartographer?: {
+        subtreeNav?: {
+          maxDepth?: number; branchingFactor?: number; maxNodesVisited?: number;
+          maxResults?: number; minScore?: number; collapseFraction?: number;
+        };
+      };
+    }).cartographer?.subtreeNav ?? {};
+
+    // Optional per-request overrides for maxDepth/maxResults (the spec's documented
+    // query params). Out-of-range or non-numeric → 400 (no silent clamp).
+    const parseBound = (raw: unknown, lo: number, hi: number): number | null | undefined => {
+      if (raw === undefined) return undefined; // not supplied → use config default
+      const n = typeof raw === 'string' ? Number(raw) : NaN;
+      if (!Number.isInteger(n) || n < lo || n > hi) return null; // invalid
+      return n;
+    };
+    const maxDepthOverride = parseBound(req.query.maxDepth, 1, 32);
+    const maxResultsOverride = parseBound(req.query.maxResults, 1, 500);
+    if (maxDepthOverride === null) { res.status(400).json({ error: 'maxDepth out of range (1..32)' }); return; }
+    if (maxResultsOverride === null) { res.status(400).json({ error: 'maxResults out of range (1..500)' }); return; }
+
+    if (!ctx.cartographer.loadIndex()) ctx.cartographer.scaffold();
+
+    const manifest = cartographerNavigate(ctx.cartographer, query, {
+      maxDepth: maxDepthOverride ?? navCfg.maxDepth,
+      branchingFactor: navCfg.branchingFactor,
+      maxNodesVisited: navCfg.maxNodesVisited,
+      maxResults: maxResultsOverride ?? navCfg.maxResults,
+      minScore: navCfg.minScore,
+      collapseFraction: navCfg.collapseFraction,
+    });
+    res.json(manifest);
   });
 
   // Standards Enforcement-Coverage Audit (cartographer-conformance-audit spec #3).

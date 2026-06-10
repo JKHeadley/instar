@@ -693,6 +693,27 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       // is advisory (the script's hardcoded constant is the read baseline).
       ratchetFloor: 0,
     },
+    // Subtree Navigation (cartographer-subtree-nav spec #5). A nested key under
+    // cartographer so the deep-merge add-missing path backfills it to existing
+    // agents (no migrateConfig block needed). The deterministic navigator is the
+    // shipped value (zero egress — reads the local index/summaries only) and is
+    // available whenever cartographer.enabled. The OPTIONAL llmRerank path is the
+    // only egress and ships OFF (it additionally requires egressAcknowledged:true);
+    // it is a dark structural stub — no real LLM pipeline is wired here.
+    subtreeNav: {
+      maxDepth: 6,
+      branchingFactor: 4,
+      maxNodesVisited: 200,
+      maxResults: 25,
+      minScore: 0.1,
+      collapseFraction: 0.6,
+      llmRerank: {
+        enabled: false,
+        egressAcknowledged: false,
+        framework: 'codex-cli',
+        allowClaudeFallback: false,
+      },
+    },
   },
 };
 
