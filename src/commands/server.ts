@@ -7025,24 +7025,64 @@ export async function startServer(options: StartOptions): Promise<void> {
       const silenceCfg = config.monitoring?.activeWorkSilenceSentinel ?? { enabled: true };
       if (silenceCfg.enabled !== false) {
         const tracker = new OutputActivityTracker(sessionSurface);
+        // Auto-heal ladder (DARK, off by default): when a confirmed-silent session
+        // can't be nudged back, respawn it fresh (conversation preserved via
+        // --resume) instead of only asking the user. Gated by autoRecover; the
+        // respawn is loop-capped by maxAutoRecoveries inside the sentinel, and a
+        // failed respawn leaves a recovery-failed state so it never re-fires.
+        const silenceAutoRecover = silenceCfg.autoRecover === true;
         const silenceSentinel = new ActiveWorkSilenceSentinel(
           buildActiveWorkSilenceDeps({
             tracker, sessions: sessionSurface,
             escalate: (name, text) => notifier.escalate('active-silence', name, text),
+            // Operator ask (2026-06-09): silence/recovery notices land in the
+            // STALLED session's OWN topic, not the consolidated lifeline feed.
+            getTopicForSession: (name) => telegram?.getTopicForSession(name),
+            deliverToTopic: async (topicId, text) => {
+              try {
+                const resp = await fetch(`http://localhost:${config.port}/telegram/reply/${topicId}`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${config.authToken}` },
+                  body: JSON.stringify({ text }),
+                });
+                return resp.ok;
+              } catch {
+                // @silent-fallback-ok: a failed per-topic delivery returns false so
+                // notifyFn falls back to the consolidated `escalate` path (which is
+                // the reported/audited route) — not a silent degradation.
+                return false;
+              }
+            },
+            recoverFn: silenceAutoRecover
+              ? async (name: string): Promise<boolean> => {
+                  if (!_sessionRefresh) return false;
+                  const result = await _sessionRefresh.refreshSession({
+                    sessionName: name,
+                    fresh: true,
+                    reason: 'active-silence-autoheal',
+                  });
+                  return result.ok;
+                }
+              : undefined,
           }),
           silenceCfg,
         );
         silenceSentinel.on('silence', (e: { sessionName: string; idleMs: number }) =>
           notifier.record('detected', 'active-silence', e.sessionName, `idleMs=${e.idleMs}`));
         silenceSentinel.on('recovered', (n: string) => notifier.record('recovered', 'active-silence', n));
+        silenceSentinel.on('recovering', (n: string) => notifier.record('recovering', 'active-silence', n));
+        silenceSentinel.on('recovery-failed', (n: string) => notifier.record('escalated', 'active-silence', n, 'auto-recover failed — asked user'));
+        silenceSentinel.on('recover-error', (e: { sessionName: string; err: unknown }) =>
+          notifier.record('recovery-error', 'active-silence', e.sessionName, e.err instanceof Error ? e.err.message : String(e.err)));
         silenceSentinel.on('nudge-error', (e: { sessionName: string; err: unknown }) =>
           notifier.record('nudge-error', 'active-silence', e.sessionName, e.err instanceof Error ? e.err.message : String(e.err)));
         silenceSentinel.start();
         silenceRecoveryActive = (s: string) => silenceSentinel.isRecoveryActive(s);
+        const silenceMode = silenceAutoRecover ? ' — auto-heal LIVE' : '';
         console.log(pc.green(
           telegramEscalation
-            ? '  ActiveWorkSilenceSentinel enabled (silent-freeze watchdog — Telegram escalation ON, consolidated)'
-            : '  ActiveWorkSilenceSentinel enabled (silent-freeze watchdog — logs only, Telegram escalation OFF)',
+            ? `  ActiveWorkSilenceSentinel enabled (silent-freeze watchdog — Telegram escalation ON, consolidated${silenceMode})`
+            : `  ActiveWorkSilenceSentinel enabled (silent-freeze watchdog — logs only, Telegram escalation OFF${silenceMode})`,
         ));
       }
 
