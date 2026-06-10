@@ -245,3 +245,10 @@ GuardPostureTripwire surfaces the cost-increasing enable on its next tick.
   AUDITED structured refusal ('quota-unavailable' / 'daily-cap-exhausted') on
   the very next branch — so they carry in-brace @silent-fallback-ok
   justifications rather than a baseline bump.
+- **no-silent-fallbacks gate (CI follow-up)**: CI shard 3/4 (node 20+22)
+  flagged one more — the model-tier escalation init in `AgentServer` is wrapped
+  in a cascade-isolation `try/catch` (an init failure must never 503 the server;
+  the feature degrades to no-escalation and re-attempts next boot) but lacked the
+  annotation, so the ratchet counted it (464 > baseline 463). Annotated
+  `@silent-fallback-ok` at the catch (mirrors the a2a-delivery-tracker init
+  guard); local run now 462. No behavior change.

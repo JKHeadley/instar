@@ -1465,6 +1465,7 @@ export class AgentServer {
           : undefined,
       });
     } catch (err) {
+      // @silent-fallback-ok: cascade-isolation — a model-tier init failure must never 503 the server; the feature degrades to no-escalation (default model) and re-attempts on the next boot.
       console.warn('[instar] model-tier escalation init failed (non-fatal):', err);
       this.modelTierSwap = null;
       this.ultraCapMonitor = null;
