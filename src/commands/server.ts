@@ -8419,6 +8419,75 @@ export async function startServer(options: StartOptions): Promise<void> {
       : null;
     if (cartographer) console.log(pc.green('  Cartographer doc-tree enabled'));
 
+    // Cartographer doc-freshness sweep (spec #2). In-process poller that authors
+    // stale/never-authored node summaries on a LIGHT model routed OFF Claude.
+    // Ships dark behind freshnessSweep.enabled AND egressAcknowledged (off-Claude
+    // authoring transmits source content to a third-party framework — a separate
+    // consent gate). The off-Claude guarantee needs the IntelligenceRouter
+    // (router.for + defaultFramework); if routing is an unrouted provider the
+    // sweep refuses to start (it could not enforce off-Claude).
+    let cartographerSweepPoller: import('../monitoring/CartographerSweepPoller.js').CartographerSweepPoller | null = null;
+    if (cartographer) {
+      const fsCfg = (config as {
+        cartographer?: { freshnessSweep?: Record<string, unknown> & { enabled?: boolean; egressAcknowledged?: boolean } };
+      }).cartographer?.freshnessSweep;
+      const num = (v: unknown, d: number): number => (typeof v === 'number' && Number.isFinite(v) ? v : d);
+      if (fsCfg?.enabled && fsCfg?.egressAcknowledged && sharedLlmQueue) {
+        const routerLike =
+          sharedIntelligence &&
+          typeof (sharedIntelligence as { for?: unknown }).for === 'function' &&
+          typeof (sharedIntelligence as { defaultFramework?: unknown }).defaultFramework === 'string'
+            ? (sharedIntelligence as unknown as import('../core/CartographerSweepEngine.js').SweepRouterLike)
+            : null;
+        if (!routerLike) {
+          console.log(pc.yellow('  Cartographer sweep: NOT started (off-Claude routing requires the IntelligenceRouter)'));
+        } else {
+          const { CartographerSweepEngine } = await import('../core/CartographerSweepEngine.js');
+          const { CartographerSweepPoller } = await import('../monitoring/CartographerSweepPoller.js');
+          const { sampleHostPressure: _sampleHostPressure } = await import('../monitoring/HostPressureSampler.js');
+          const rcfg = config.monitoring?.sessionReaper;
+          const engine = new CartographerSweepEngine({
+            tree: cartographer,
+            router: routerLike,
+            llmQueue: sharedLlmQueue,
+            pressure: () => _sampleHostPressure({
+              cpuModerateLoadPerCore: rcfg?.cpuModerateLoadPerCore ?? 1.0,
+              cpuCriticalLoadPerCore: rcfg?.cpuCriticalLoadPerCore ?? 1.5,
+            }),
+            // Author ONLY on the lease holder (multi-machine N× burn fix); single-machine ⇒ always holder.
+            holdsLease: () => (leaseCoordinatorRef ? leaseCoordinatorRef.holdsLease() : true),
+            config: {
+              maxNodesPerPass: num(fsCfg.maxNodesPerPass, 25),
+              maxCentsPerPass: num(fsCfg.maxCentsPerPass, 25),
+              estCentsPerAuthor: num(fsCfg.estCentsPerAuthor, 1),
+              maxLeafBytes: num(fsCfg.maxLeafBytes, 24576),
+              minSummaryChars: num(fsCfg.minSummaryChars, 24),
+              maxSummaryChars: num(fsCfg.maxSummaryChars, 600),
+              allowClaudeFallback: fsCfg.allowClaudeFallback === true,
+              nodeFailQuarantineThreshold: num(fsCfg.nodeFailQuarantineThreshold, 3),
+              maxDeferredPasses: num(fsCfg.maxDeferredPasses, 5),
+              revalidateSamplePerPass: num(fsCfg.revalidateSamplePerPass, 2),
+              minNodesUnderPressure: num(fsCfg.minNodesUnderPressure, 3),
+            },
+            stateDir: config.stateDir,
+            log: (m) => console.log(pc.gray(m)),
+          });
+          cartographerSweepPoller = new CartographerSweepPoller({
+            engine,
+            cadenceMs: num(fsCfg.cadenceMs, 600000),
+            idleCadenceMs: num(fsCfg.idleCadenceMs, 1800000),
+            zeroProgressTicksToBreak: num(fsCfg.zeroProgressTicksToBreak, 3),
+            breakerReescalateHours: num(fsCfg.breakerReescalateHours, 6),
+            log: (m) => console.log(pc.gray(m)),
+            reportDegradation: (d) => { try { DegradationReporter.getInstance().report(d); } catch { /* never break boot on a report */ } },
+          });
+          cartographerSweepPoller.start();
+          console.log(pc.green('  Cartographer doc-freshness sweep enabled (off-Claude, lease-gated)'));
+        }
+      }
+    }
+    void cartographerSweepPoller;
+
     // Self-Knowledge Tree — tree-based agent self-knowledge with LLM triage
     let selfKnowledgeTree: SelfKnowledgeTree | undefined;
     let coverageAuditor: CoverageAuditor | undefined;
@@ -10476,7 +10545,8 @@ export async function startServer(options: StartOptions): Promise<void> {
     // for v1 (advisory; spawn-denial-primary is a tracked follow-up) — and note
     // an over-eager tier can only reap a GENUINELY-idle session sooner, never a
     // working one (the classifier protects working sessions regardless of tier).
-    const { SessionReaper, computePressure, reaperAuditSink } = await import('../monitoring/SessionReaper.js');
+    const { SessionReaper, reaperAuditSink } = await import('../monitoring/SessionReaper.js');
+    const { sampleHostPressure } = await import('../monitoring/HostPressureSampler.js');
     const _os = await import('node:os');
     const _resolveTopic = (tmuxSession: string): number | null => {
       const t = telegram?.getTopicForSession(tmuxSession);
@@ -10559,21 +10629,15 @@ export async function startServer(options: StartOptions): Promise<void> {
           } catch { /* @silent-fallback-ok — best-effort; clock resets next restart on failure */ }
         },
         pressure: () => {
-          const total = _os.totalmem();
-          const freePct = total > 0 ? (_os.freemem() / total) * 100 : 100;
-          // CPU pressure: 1-min load average ÷ core count. The overall tier is the
-          // WORST of memory and CPU, so a CPU-bound box (the common case) raises
-          // pressure even when free memory is fine. cores unknown ⇒ memory-only.
-          const cores = _os.cpus()?.length ?? 0;
-          const loadPerCore = cores > 0 ? _os.loadavg()[0] / cores : null;
+          // Behavior-preserving: the host CPU+memory pressure computation lives in
+          // the shared HostPressureSampler (so the SessionReaper and the
+          // CartographerSweepPoller read ONE definition of host pressure and cannot
+          // drift). Identical math to the prior inline code; same reaper thresholds.
           const rcfg = config.monitoring?.sessionReaper;
-          return computePressure(
-            { freePct, loadPerCore },
-            {
-              cpuModerateLoadPerCore: rcfg?.cpuModerateLoadPerCore ?? 1.0,
-              cpuCriticalLoadPerCore: rcfg?.cpuCriticalLoadPerCore ?? 1.5,
-            },
-          );
+          return sampleHostPressure({
+            cpuModerateLoadPerCore: rcfg?.cpuModerateLoadPerCore ?? 1.0,
+            cpuCriticalLoadPerCore: rcfg?.cpuCriticalLoadPerCore ?? 1.5,
+          });
         },
         terminate: (id, reason, opts) =>
           sessionManager.terminateSession(id, reason, {

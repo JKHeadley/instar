@@ -40,6 +40,27 @@ jobs:
             .instar/docs-coverage.md
             .instar/docs-coverage.json
 
+  cartographer-freshness:
+    name: Cartographer Freshness
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      # Pure node stdlib + git — no install needed (cartographer-doc-freshness
+      # spec #2 Tier-3 ratchet). Floors ship loose (ratio>=0); cartographer state
+      # is gitignored so a fresh checkout is a vacuous structural pass — the
+      # ratchet's teeth engage on machines that have authored the doc-tree.
+      - run: node scripts/cartographer-freshness.mjs --check
+      - name: Upload freshness report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cartographer-freshness
+          path: |
+            .instar/cartographer-freshness.json
+
   lint:
     name: Type Check
     runs-on: ubuntu-latest

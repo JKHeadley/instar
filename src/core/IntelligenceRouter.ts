@@ -89,6 +89,16 @@ export class IntelligenceRouter implements IntelligenceProvider {
 
   constructor(private readonly opts: IntelligenceRouterOptions) {}
 
+  /**
+   * The framework the default (shared, global-breaker) provider speaks — i.e. the
+   * framework a component routes to when nothing routes it elsewhere. The
+   * CartographerSweep off-Claude probe compares `for(...).framework` against this
+   * to detect a silent resolve-to-default (Claude) and refuse to author there.
+   */
+  get defaultFramework(): IntelligenceFramework {
+    return this.opts.defaultFramework;
+  }
+
   /** Resolve the framework for a component+category against a config (pure). */
   resolveFramework(
     component: string | undefined,

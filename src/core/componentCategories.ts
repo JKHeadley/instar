@@ -73,6 +73,13 @@ export const COMPONENT_CATEGORY: Readonly<Record<string, ComponentCategory>> = {
 
   // ── Jobs (scheduled work) ──
   PipeSessionSpawner: 'job',
+  // The doc-freshness sweep author (spec #2). Category 'job' so an operator can
+  // route it OFF Claude via sessions.componentFrameworks.categories.job — the
+  // background summary authoring then never spends Anthropic quota. The runtime
+  // routing probe (CartographerSweepEngine.probeRouting) enforces off-Claude;
+  // this registration guards the categoryForComponent path so a missing entry
+  // fails the wiring test rather than silently routing to the default framework.
+  CartographerSweep: 'job',
 };
 
 /**

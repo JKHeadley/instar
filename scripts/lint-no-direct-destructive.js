@@ -104,6 +104,12 @@ const ALLOWLIST = new Set([
   // previous release. Build-time only; never executes on an agent's
   // machine. Per INSTAR-JOBS-AS-AGENTMD spec §Drift Classifier.
   'scripts/classify-default-drift.mjs',
+  // Tier-3 CI ratchet for the cartographer doc-tree (cartographer-doc-freshness
+  // spec #2). A standalone .mjs (parity with docs-coverage.mjs) that runs in CI
+  // with NO build step, so it cannot import the TS SafeGitExecutor funnel. All
+  // git invocations are READ-ONLY (`rev-parse HEAD^{tree}`, `ls-tree`, `show
+  // HEAD:<path>`) to re-derive staleness — never a destructive op.
+  'scripts/cartographer-freshness.mjs',
   // Bootstrap script for the builtin-manifest — runs as part of `npm run
   // build` before tsc emits dist/.
   'scripts/generate-builtin-manifest.cjs',

@@ -14,6 +14,11 @@ import os from 'node:os';
 import path from 'node:path';
 import type { SessionManager } from '../core/SessionManager.js';
 import { KNOWN_CLAUDE_MODEL_IDS } from '../core/ModelTierEscalation.js';
+import {
+  validateSummaryDeterministic,
+  neutralizeInstructionShapedContent,
+  extractCodeSymbols,
+} from '../core/cartographerSummary.js';
 import type { SessionRefresh } from '../core/SessionRefresh.js';
 import type { StateManager } from '../core/StateManager.js';
 import { describeTopicPlacement } from '../core/TopicPlacementDescription.js';
@@ -4062,7 +4067,85 @@ export function createRoutes(ctx: RouteContext): Router {
   router.get('/cartographer/health', (_req, res) => {
     if (!ctx.cartographer) { res.status(503).json({ error: 'Cartographer not enabled' }); return; }
     if (!ctx.cartographer.loadIndex()) ctx.cartographer.scaffold();
-    res.json({ enabled: true, ...ctx.cartographer.health() });
+    const sweepCfg = (ctx.config as { cartographer?: { freshnessSweep?: { enabled?: boolean; cadenceMs?: number } } })
+      .cartographer?.freshnessSweep;
+    // Spec #2: surface the freshness ratio + the two ABSOLUTE backlog counts so a
+    // green ratio can't hide a growing un-authored/quarantined backlog. Grace =
+    // one cadence so a just-scaffolded node isn't counted as debt immediately.
+    const graceMs = (sweepCfg?.cadenceMs ?? 600000) * 2;
+    res.json({
+      enabled: true,
+      ...ctx.cartographer.health(),
+      freshness: ctx.cartographer.freshnessHealth({ graceMs }),
+      sweepEnabled: sweepCfg?.enabled === true,
+    });
+  });
+
+  // Tier-1 (inline opportunistic) write route (spec #2 — doc-freshness). The ONE
+  // deliberate write surface: an agent that just edited code refreshes that node's
+  // summary itself. Behind auth + BOTH gates (cartographer.enabled via the null
+  // tree, AND freshnessSweep.enabled). Full path validation (incl. encoded
+  // traversal) so it can only ever target a known scaffolded node, the SAME
+  // deterministic quality bar as the sweep (no lower-validation backdoor),
+  // instruction-shaped-content neutralization, and a modest write-rate bound.
+  const cartoRefreshLog: number[] = [];
+  router.post('/cartographer/node/refresh', (req, res) => {
+    if (!ctx.cartographer) { res.status(503).json({ error: 'Cartographer not enabled' }); return; }
+    const sweepCfg = (ctx.config as {
+      cartographer?: { freshnessSweep?: { enabled?: boolean; minSummaryChars?: number; maxSummaryChars?: number; maxLeafBytes?: number } };
+    }).cartographer?.freshnessSweep;
+    if (!sweepCfg?.enabled) { res.status(503).json({ error: 'Cartographer freshness sweep not enabled' }); return; }
+
+    // Write-rate bound (per-process): at most 30 inline refreshes / 60s.
+    const nowMs = Date.now();
+    while (cartoRefreshLog.length > 0 && nowMs - cartoRefreshLog[0] > 60_000) cartoRefreshLog.shift();
+    if (cartoRefreshLog.length >= 30) { res.status(429).json({ error: 'refresh rate limit exceeded (30/min)' }); return; }
+
+    const body = (req.body ?? {}) as { path?: unknown; summary?: unknown };
+    const p = typeof body.path === 'string' ? body.path : '';
+    const summaryRaw = typeof body.summary === 'string' ? body.summary : '';
+    // Path validation parity with the sweep: repo-relative; no leading '/'; no '..'
+    // segment; no encoded traversal; bounded length. A write route must never be
+    // able to create an arbitrary file from request input.
+    const decoded = (() => { try { return decodeURIComponent(p); } catch { return p; } })();
+    const traversal = /(^|[\\/])\.\.([\\/]|$)/.test(p) || /(^|[\\/])\.\.([\\/]|$)/.test(decoded)
+      || /%2e%2e/i.test(p) || /%2f/i.test(p);
+    if (p.length > 1024 || p.startsWith('/') || p.includes('\\') || traversal) {
+      res.status(400).json({ error: 'invalid path' }); return;
+    }
+    if (!summaryRaw || summaryRaw.length > 4096) { res.status(400).json({ error: 'invalid summary' }); return; }
+
+    if (!ctx.cartographer.loadIndex()) ctx.cartographer.scaffold();
+    const node = ctx.cartographer.getNode(p);
+    if (!node) { res.status(400).json({ error: 'no such node — only an existing scaffolded node can be refreshed' }); return; }
+
+    const { text: neutralized } = neutralizeInstructionShapedContent(summaryRaw);
+    // Covered symbols: leaf → committed content; dir → child summaries + basenames.
+    let coveredSymbols: Set<string>;
+    if (node.kind === 'file') {
+      const read = ctx.cartographer.committedContent(p, sweepCfg.maxLeafBytes ?? 24576);
+      coveredSymbols = extractCodeSymbols(read?.content ?? '');
+    } else {
+      const children = ctx.cartographer.getChildren(p);
+      const basename = (s: string) => { const i = s.lastIndexOf('/'); return i >= 0 ? s.slice(i + 1) : s; };
+      coveredSymbols = extractCodeSymbols(
+        children.map((c) => c.summary).join('\n') + '\n' + children.map((c) => basename(c.path)).join(' '),
+      );
+    }
+    const validation = validateSummaryDeterministic({
+      summary: neutralized,
+      minChars: sweepCfg.minSummaryChars ?? 24,
+      maxChars: sweepCfg.maxSummaryChars ?? 600,
+      coveredSymbols,
+    });
+    if (!validation.ok) { res.status(400).json({ error: validation.reason }); return; }
+
+    ctx.cartographer.setSummary(p, neutralized.trim(), {
+      provenance: { source: 'inline-agent' },
+      meta: { lastAuthoredBy: 'inline-agent', confidence: 'medium' },
+    });
+    cartoRefreshLog.push(nowMs);
+    res.json({ refreshed: true, path: p, status: ctx.cartographer.computeStaleness(p) });
   });
 
   router.post('/project-map/refresh', (_req, res) => {

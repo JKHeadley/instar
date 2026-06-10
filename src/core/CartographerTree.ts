@@ -28,7 +28,17 @@ export interface CartographerNodeProvenance {
   framework?: string;
   /** Size tier of the model that authored the summary — never a vendor name. */
   modelTier?: 'light' | 'standard';
+  /**
+   * Which tier authored this summary (spec #2 — doc-freshness). 'inline-agent' =
+   * a Tier-1 opportunistic refresh by the agent that edited the code; 'sweep' =
+   * the background CartographerSweep poller. Inline summaries are NOT protected
+   * ground truth — the sweep may re-author them on a later pass.
+   */
+  source?: 'inline-agent' | 'sweep';
 }
+
+/** Coarse trust signal for a summary (spec #2). `fresh` ≠ correct; this hints how much. */
+export type CartographerConfidence = 'low' | 'medium' | 'high';
 
 export interface CartographerNode {
   /** Repo-relative POSIX path this node covers ('' = repo root). */
@@ -49,6 +59,30 @@ export interface CartographerNode {
   provenance?: CartographerNodeProvenance;
   /** True if codeHash was a working-tree hash rather than a committed oid. */
   dirtyAtAuthor?: boolean;
+
+  // ── Spec #2 (doc-freshness) — owned-here fields ──────────────────────────
+  // These are added by spec #2; spec #1 leaves them undefined. They are
+  // preserved across scaffold() (structure-only refresh) like the authored
+  // fields, and never wipe spec #1 behavior.
+  /** ISO timestamp this node path was first scaffolded — the grace-clock anchor. */
+  firstSeenAt?: string;
+  /** Who last authored: 'inline-agent' | `sweep:<framework>`. Consumers must not read fresh as trusted. */
+  lastAuthoredBy?: string;
+  /** Coarse trust signal — `fresh` means fingerprint-current, NOT verified-correct. */
+  confidence?: CartographerConfidence;
+  /**
+   * Hash of the concatenated DIRECT-child summaries at this dir's last author.
+   * The dir re-author amplification guard: a dir whose tree-oid flipped but whose
+   * childDigestHash is unchanged (e.g. a comment-only deep edit) gets its
+   * fingerprint refreshed WITHOUT an LLM call. Leaf nodes leave this null.
+   */
+  childDigestHash?: string | null;
+  /** Anti-starvation: passes this node has been deferred (dir authored after its children). */
+  staleSincePass?: number;
+  /** Consecutive failed author attempts — drives per-node quarantine. */
+  consecutiveAuthorFailures?: number;
+  /** True once consecutiveAuthorFailures crossed the quarantine threshold. Surfaced in health(). */
+  authorFailed?: boolean;
 }
 
 export interface CartographerIndexEntry {
@@ -268,6 +302,15 @@ export class CartographerTree {
       builtinKind: 'cartographer-node',
       provenance: existing?.provenance,
       dirtyAtAuthor: existing?.dirtyAtAuthor,
+      // Spec #2 fields are preserved across a structure-only rescaffold. A node
+      // first seen now anchors its grace clock; existing nodes keep theirs.
+      firstSeenAt: existing?.firstSeenAt ?? this.nowIso(),
+      lastAuthoredBy: existing?.lastAuthoredBy,
+      confidence: existing?.confidence,
+      childDigestHash: existing?.childDigestHash,
+      staleSincePass: existing?.staleSincePass,
+      consecutiveAuthorFailures: existing?.consecutiveAuthorFailures,
+      authorFailed: existing?.authorFailed,
     });
   }
 
@@ -360,7 +403,17 @@ export class CartographerTree {
   setSummary(
     nodePath: string,
     summary: string,
-    opts: { codeHash?: string; codeRev?: string; provenance?: CartographerNodeProvenance } = {},
+    opts: {
+      codeHash?: string;
+      codeRev?: string;
+      provenance?: CartographerNodeProvenance;
+      /** Spec #2 authoring metadata, written atomically with the summary. */
+      meta?: {
+        lastAuthoredBy?: string;
+        confidence?: CartographerConfidence;
+        childDigestHash?: string | null;
+      };
+    } = {},
   ): CartographerNode {
     this.ensureDirs();
     const existing = this.readNodeFile(nodePath);
@@ -375,6 +428,15 @@ export class CartographerTree {
       codeHash,
       codeRev: opts.codeRev ?? this.headShort(),
       provenance: opts.provenance ?? existing.provenance,
+      // Spec #2: a successful author clears the failure/defer state and records
+      // who authored + confidence. childDigestHash is set for dir authors.
+      lastAuthoredBy: opts.meta?.lastAuthoredBy ?? existing.lastAuthoredBy,
+      confidence: opts.meta?.confidence ?? existing.confidence,
+      childDigestHash:
+        opts.meta?.childDigestHash !== undefined ? opts.meta.childDigestHash : existing.childDigestHash,
+      staleSincePass: 0,
+      consecutiveAuthorFailures: 0,
+      authorFailed: false,
     };
     this.atomicWrite(this.nodeFilePath(nodePath), JSON.stringify(node, null, 2));
     // Patch the index entry (node file already on disk).
@@ -385,6 +447,89 @@ export class CartographerTree {
       this.atomicWrite(this.indexPath, JSON.stringify(index, null, 2));
     }
     return node;
+  }
+
+  /**
+   * Spec #2: patch a node's freshness METADATA without re-authoring its summary.
+   * Used by the sweep for failure counters / quarantine / defer-pass bookkeeping,
+   * and for a fingerprint-only refresh (the dir re-author amplification guard:
+   * bump `codeHash` to the current oid so a comment-only deep edit goes `fresh`
+   * with NO LLM call). Never touches `summary` or `summaryUpdatedAt` unless
+   * `codeHash` is supplied (a fingerprint refresh) — then the index entry is
+   * patched too so staleness derives correctly. No-op (returns null) if absent.
+   */
+  patchNodeMeta(
+    nodePath: string,
+    partial: {
+      codeHash?: string | null;
+      codeRev?: string | null;
+      childDigestHash?: string | null;
+      lastAuthoredBy?: string;
+      confidence?: CartographerConfidence;
+      staleSincePass?: number;
+      consecutiveAuthorFailures?: number;
+      authorFailed?: boolean;
+      provenance?: CartographerNodeProvenance;
+    },
+  ): CartographerNode | null {
+    const existing = this.readNodeFile(nodePath);
+    if (!existing) return null;
+    const codeHashChanged = Object.prototype.hasOwnProperty.call(partial, 'codeHash');
+    const node: CartographerNode = {
+      ...existing,
+      codeHash: codeHashChanged ? (partial.codeHash ?? null) : existing.codeHash,
+      codeRev: partial.codeRev !== undefined ? partial.codeRev : existing.codeRev,
+      childDigestHash:
+        partial.childDigestHash !== undefined ? partial.childDigestHash : existing.childDigestHash,
+      lastAuthoredBy: partial.lastAuthoredBy ?? existing.lastAuthoredBy,
+      confidence: partial.confidence ?? existing.confidence,
+      staleSincePass: partial.staleSincePass ?? existing.staleSincePass,
+      consecutiveAuthorFailures:
+        partial.consecutiveAuthorFailures ?? existing.consecutiveAuthorFailures,
+      authorFailed: partial.authorFailed ?? existing.authorFailed,
+      provenance: partial.provenance ?? existing.provenance,
+    };
+    this.atomicWrite(this.nodeFilePath(nodePath), JSON.stringify(node, null, 2));
+    if (codeHashChanged) {
+      const index = this.loadIndex();
+      if (index && index.nodes[nodePath]) {
+        index.nodes[nodePath].codeHash = node.codeHash;
+        this.atomicWrite(this.indexPath, JSON.stringify(index, null, 2));
+      }
+    }
+    return node;
+  }
+
+  /**
+   * Spec #2: read the COMMITTED content of a leaf node's covered file, bounded to
+   * `maxBytes` (head-truncated). Reads `git show HEAD:<path>` — never the dirty
+   * working tree — so an uncommitted edit (possibly containing just-typed secrets)
+   * is never read, and a long-lived uncommitted edit never causes re-author churn.
+   * Returns null when the path is absent from HEAD or git is unavailable.
+   */
+  committedContent(nodePath: string, maxBytes: number): { content: string; truncated: boolean } | null {
+    if (nodePath === '') return null; // root is a dir, not a file
+    const out = this.git(['show', `HEAD:${nodePath}`]);
+    if (out == null) return null;
+    if (Buffer.byteLength(out, 'utf8') <= maxBytes) return { content: out, truncated: false };
+    // Head-truncate on a byte budget without splitting a multibyte char.
+    const buf = Buffer.from(out, 'utf8').subarray(0, maxBytes);
+    return { content: buf.toString('utf8'), truncated: true };
+  }
+
+  /** Public: the current short HEAD sha (compare-and-skip / provenance). */
+  currentHeadShort(): string | null {
+    return this.headShort();
+  }
+
+  /** Public: the current root tree oid (the CI ratchet short-circuit key). */
+  rootTreeOid(): string | null {
+    return this.currentOid('');
+  }
+
+  /** Public: the current git oid for a single node path (compare-and-skip on HEAD). */
+  currentNodeOid(nodePath: string): string | null {
+    return this.currentOid(nodePath);
   }
 
   /** Derive staleness for the whole tree from ONE batched git read. */
@@ -445,6 +590,74 @@ export class CartographerTree {
       authoredCount,
       neverAuthoredCount: entries.length - authoredCount,
       staleCount: this.staleNodes().filter((s) => s.status === 'stale').length,
+      generatedAt: index.generatedAt,
+    };
+  }
+
+  /**
+   * Spec #2 (doc-freshness) richer health: the freshness ratio over AUTHORABLE
+   * nodes (excludes `path-gone`), plus the two ABSOLUTE backlog counts the CI
+   * ratchet also gates on so a green ratio over a small authored set cannot hide
+   * a growing un-authored backlog (Goodhart guard). `freshRatio` is `fresh /
+   * authorable` with 1 when there are no authorable nodes. A node is
+   * never-authored "past grace" when it has no summary AND was first seen longer
+   * ago than `graceMs`.
+   */
+  freshnessHealth(opts: { graceMs: number; now?: number } = { graceMs: 0 }): {
+    nodeCount: number;
+    authorableCount: number;
+    freshCount: number;
+    staleCount: number;
+    neverAuthoredCount: number;
+    neverAuthoredWithinGrace: number;
+    neverAuthoredPastGrace: number;
+    authorFailedCount: number;
+    freshRatio: number;
+    generatedAt: string | null;
+  } {
+    const index = this.loadIndex();
+    const empty = {
+      nodeCount: 0, authorableCount: 0, freshCount: 0, staleCount: 0,
+      neverAuthoredCount: 0, neverAuthoredWithinGrace: 0, neverAuthoredPastGrace: 0,
+      authorFailedCount: 0, freshRatio: 1, generatedAt: null as string | null,
+    };
+    if (!index) return empty;
+    const nowMs = opts.now ?? Date.parse(this.nowIso());
+    const current = this.currentOids();
+    let authorable = 0, fresh = 0, stale = 0, never = 0, neverWithin = 0, neverPast = 0, authorFailed = 0;
+    for (const [nodePath, entry] of Object.entries(index.nodes)) {
+      const status = this.deriveStatus(entry.codeHash, current.get(nodePath));
+      if (status === 'path-gone') continue; // not authorable
+      authorable += 1;
+      // One node-file read per path: used for both the grace clock AND the
+      // orthogonal author-failed quarantine flag (a quarantined node that never
+      // successfully authored is still `never-authored`, so the read can't be
+      // skipped for that status).
+      const node = this.readNodeFile(nodePath);
+      if (node?.authorFailed) authorFailed += 1;
+      if (status === 'fresh') fresh += 1;
+      else if (status === 'stale') stale += 1;
+      else if (status === 'never-authored') {
+        never += 1;
+        const firstSeen = node?.firstSeenAt ? Date.parse(node.firstSeenAt) : nowMs;
+        if (Number.isFinite(firstSeen) && nowMs - firstSeen > opts.graceMs) neverPast += 1;
+        else neverWithin += 1;
+      }
+    }
+    // The ratio denominator EXCLUDES never-authored-within-grace (a freshly
+    // scaffolded node has a grace period to get authored before it counts as debt).
+    // denominator = fresh + stale + never-authored-past-grace.
+    const ratioDenom = fresh + stale + neverPast;
+    return {
+      nodeCount: Object.keys(index.nodes).length,
+      authorableCount: authorable,
+      freshCount: fresh,
+      staleCount: stale,
+      neverAuthoredCount: never,
+      neverAuthoredWithinGrace: neverWithin,
+      neverAuthoredPastGrace: neverPast,
+      authorFailedCount: authorFailed,
+      freshRatio: ratioDenom === 0 ? 1 : fresh / ratioDenom,
       generatedAt: index.generatedAt,
     };
   }

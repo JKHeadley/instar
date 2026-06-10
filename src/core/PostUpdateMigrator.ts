@@ -3021,6 +3021,15 @@ setTimeout(() => process.exit(0), 2000);
       result.upgraded.push('CLAUDE.md: added Cartographer Doc-Tree section');
     }
 
+    // Cartographer doc-freshness (spec #2) — the Tier-1 inline-refresh affordance.
+    // Keyed on this spec's OWN marker ('Keep the map true') so it is independent of
+    // spec #1's marker and idempotent (run twice → single block).
+    if (!content.includes('Keep the map true')) {
+      content += `\n### Cartographer Doc-Freshness — Keep the map true\n\nWhen the cartographer doc-tree + freshness sweep are enabled (\`cartographer.freshnessSweep.enabled\`), the map self-heals: a background sweep authors stale/never-authored node summaries on a LIGHT model routed OFF Claude (it never spends your Anthropic quota — it refuses to author rather than fall back to Claude), and a CI ratchet keeps aggregate freshness from backsliding.\n- **You can help keep it true:** when you finish editing a subsystem, refresh its node so the map reflects your change immediately — \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/cartographer/node/refresh -H 'Content-Type: application/json' -d '{"path":"src/foo/Bar.ts","summary":"…"}'\` (503 unless the sweep is enabled; the summary must name a real symbol in the code).\n- **Freshness state:** \`GET /cartographer/health\` reports the fresh ratio + the un-authored/quarantined backlog. \`fresh\` means a summary is fingerprint-current, NOT verified-correct — always re-ground against the code.\n`;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Cartographer Doc-Freshness section');
+    }
+
     // Cross-Agent Communication Discipline (anti-confabulation) — codex-instar
     // audit Item 11. Existing agents need this section even if they were
     // initialized before it existed. The check uses a content-sniffing marker

@@ -809,7 +809,8 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
             'GET /cartographer/tree — full doc-tree (nodes with summaries + staleness)',
             'GET /cartographer/node?path=… — a single node',
             'GET /cartographer/stale — nodes whose summary has drifted from the code',
-            'GET /cartographer/health — node count + staleness summary',
+            'GET /cartographer/health — node count + staleness + freshness backlog (spec #2)',
+            'POST /cartographer/node/refresh {path,summary} — inline-refresh one node\'s summary (spec #2; 503 unless freshnessSweep enabled)',
           ]
         : [],
     }),

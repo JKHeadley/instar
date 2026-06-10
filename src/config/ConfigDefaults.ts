@@ -638,6 +638,34 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
   cartographer: {
     enabled: false,
     maxDepth: 12,
+    // Doc-freshness sweep (spec #2). A nested key under cartographer so the
+    // deep-merge add-missing path backfills it to existing agents (no migrateConfig
+    // block needed). Ships dark behind BOTH enabled AND freshnessSweep.enabled, and
+    // additionally requires egressAcknowledged:true (enabling the off-Claude sweep
+    // transmits source content to a third-party framework — a separate consent gate).
+    freshnessSweep: {
+      enabled: false,
+      egressAcknowledged: false,
+      cadenceMs: 600000,          // 10 min, idle-aware backoff
+      idleCadenceMs: 1800000,     // 30 min while there is no work / breaker-open
+      maxNodesPerPass: 25,
+      maxCentsPerPass: 25,        // dual bound with node count; whichever binds first
+      estCentsPerAuthor: 1,
+      maxLeafBytes: 24576,        // 24 KB committed-content cap per leaf author
+      minSummaryChars: 24,
+      maxSummaryChars: 600,
+      // Target off-Claude framework. The §5 runtime probe is what actually
+      // guarantees off-Claude; this is the documented intent. 'default' is refused
+      // unless allowClaudeFallback is true.
+      framework: 'codex-cli',
+      allowClaudeFallback: false,
+      zeroProgressTicksToBreak: 3,
+      breakerReescalateHours: 6,
+      nodeFailQuarantineThreshold: 3,
+      maxDeferredPasses: 5,
+      revalidateSamplePerPass: 2,
+      minNodesUnderPressure: 3,
+    },
   },
 };
 
