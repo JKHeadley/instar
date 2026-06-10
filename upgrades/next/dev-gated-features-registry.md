@@ -11,6 +11,21 @@ on dev agents. Seven features are registered; two (`mcpProcessReaper`,
 `resourceLedger`) are deliberately excluded with documented reasons (intentionally
 not dark-on-fleet).
 
+## Evidence
+
+This is a preventive CI guard, not a runtime bug fix — so "evidence" is a
+demonstration that the guard has teeth on the #1001 mechanism:
+- **Before (no guard):** a dev-gated feature whose shipped default hardcodes
+  `enabled: false` ships dark on dev agents undetected — exactly #1001, which was
+  caught only by operator review.
+- **Reproduction (guard fires):** copied `src/config/ConfigDefaults.ts`, injected
+  `enabled: false` as the first field of the real `growthAnalyst` block, and ran
+  the both-sides test → the live-on-dev assertion **FAILS** (red). A baked-in
+  `enabled: true` would fail the dark-on-fleet assertion instead.
+- **After (clean tree):** the unmodified tree → **16/16 green** (no registered
+  feature currently hardcodes a default). So the guard fires on the regression and
+  stays quiet otherwise.
+
 ## What to Tell Your User
 
 Nothing user-facing — internal developer/CI tooling (audience: agent-only). No
