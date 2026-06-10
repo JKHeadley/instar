@@ -56,6 +56,7 @@ import { TopicMemory } from '../memory/TopicMemory.js';
 import { SemanticMemory } from '../memory/SemanticMemory.js';
 import { WorkingMemoryAssembler } from '../memory/WorkingMemoryAssembler.js';
 import { QuotaTracker } from '../monitoring/QuotaTracker.js';
+import { sendConsolidatedWithSelfHeal } from '../monitoring/sentinelConsolidatedSend.js';
 import { AccountSwitcher } from '../monitoring/AccountSwitcher.js';
 import { QuotaNotifier } from '../monitoring/QuotaNotifier.js';
 import { QuotaManager } from '../monitoring/QuotaManager.js';
@@ -6985,17 +6986,17 @@ export async function startServer(options: StartOptions): Promise<void> {
       // Consolidated Telegram delivery — reuses the existing system (lifeline)
       // topic. When telegramEscalation is off, this callback is never invoked.
       const localTelegram = telegram;
+      // Self-healing consolidated delivery: if the lifeline/system topic was
+      // deleted on the Telegram side, recreate it and retry instead of silently
+      // swallowing the "message thread not found" error (incident 2026-06-09:
+      // 41 stall escalations black-holed against a dead lifeline topic).
       const sendConsolidated = localTelegram
-        ? async (text: string): Promise<boolean> => {
-            const topicId = localTelegram.getLifelineTopicId();
-            if (!topicId) return false;
-            try {
-              await localTelegram.sendToTopic(topicId, text);
-              return true;
-            } catch {
-              return false;
-            }
-          }
+        ? (text: string): Promise<boolean> =>
+            sendConsolidatedWithSelfHeal(
+              localTelegram,
+              text,
+              (line) => console.warn(pc.yellow(`  [sentinel-notify] ${line}`)),
+            )
         : undefined;
 
       const telegramEscalation = config.monitoring?.sentinelTelegramEscalation === true;
@@ -9685,11 +9686,12 @@ export async function startServer(options: StartOptions): Promise<void> {
         const stopLog = (entry: { kind: string; sessionName: string; detail?: string }): void => {
           try { fs.appendFileSync(stopLogPath, JSON.stringify({ ...entry, sentinel: 'stop-notify', ts: new Date().toISOString() }) + '\n'); } catch { /* best-effort */ }
         };
-        const send = async (text: string): Promise<boolean> => {
-          const topicId = localTg.getLifelineTopicId();
-          if (!topicId) return false;
-          try { await localTg.sendToTopic(topicId, text); return true; } catch { return false; }
-        };
+        const send = (text: string): Promise<boolean> =>
+          sendConsolidatedWithSelfHeal(
+            localTg,
+            text,
+            (line) => console.warn(pc.yellow(`  [stop-notify] ${line}`)),
+          );
         const { SentinelNotifier } = await import('../monitoring/SentinelNotifier.js');
         const stopSink = new SentinelNotifier(
           { log: stopLog, sendConsolidated: send },
