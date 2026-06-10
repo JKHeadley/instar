@@ -219,6 +219,7 @@ import { createThreadlineRoutes } from '../threadline/ThreadlineEndpoints.js';
 import type { UnifiedTrustSystem } from '../threadline/UnifiedTrustWiring.js';
 import { DEFAULT_RELAY_URL } from '../threadline/constants.js';
 import { ThreadlineNicknames } from '../threadline/ThreadlineNicknames.js';
+import { resolvePeerFingerprint, resolvePeerFingerprintByName } from '../threadline/peerFingerprint.js';
 import { ScopeCoherenceTracker } from '../core/ScopeCoherenceTracker.js';
 import type { ScopeCoherenceState } from '../core/ScopeCoherenceTracker.js';
 import type { HookEventReceiver } from '../monitoring/HookEventReceiver.js';
@@ -16551,8 +16552,17 @@ export function createRoutes(ctx: RouteContext): Router {
           // handleInboundMessage is NOT dropped: it runs to completion in the
           // background; its outcome is logged (never surfaced to the closed
           // response), and a failure can't 500 a request that already returned.
+          // LOCAL co-located delivery carries the sender as a NAME in
+          // `from.agent` (the relay path carries a fingerprint). Resolve that
+          // name → the peer's canonical fingerprint via the SAME derivation the
+          // thread owner was recorded with, and pass it as a narrow hint so the
+          // anti-hijack guard compares fingerprint-to-fingerprint instead of
+          // isolating a legitimate reply. Unresolvable → undefined → name-based
+          // fallback (fail-safe). See threadline-local-delivery-fingerprint-attribution.
+          const inboundSenderFingerprint =
+            resolvePeerFingerprintByName(ctx.config.stateDir, envelope.message?.from?.agent) ?? undefined;
           void ctx.threadlineRouter
-            .handleInboundMessage(envelope)
+            .handleInboundMessage(envelope, undefined, { inboundSenderFingerprint })
             .then((threadlineResult) => {
               console.log(
                 `[relay-agent] async handleInboundMessage complete (thread ${envelope.message?.threadId ?? 'none'}): ${JSON.stringify(threadlineResult)}`,
@@ -17570,7 +17580,7 @@ export function createRoutes(ctx: RouteContext): Router {
                   // the anti-hijack guard instead of being false-isolated.
                   await captureOrigin(
                     effectiveThreadId,
-                    localTarget.fingerprint || localTarget.publicKey?.substring(0, 32) || localTarget.name,
+                    resolvePeerFingerprint(localTarget) || localTarget.name,
                     localTarget.name,
                   );
                   // Durable delivery record (A2A-DURABLE-DELIVERY-SPEC.md) —
@@ -17578,7 +17588,7 @@ export function createRoutes(ctx: RouteContext): Router {
                   try {
                     ctx.a2aDeliveryTracker?.recordSent({
                       messageId: msgId,
-                      peerFp: localTarget.fingerprint || localTarget.publicKey?.substring(0, 32) || localTarget.name,
+                      peerFp: resolvePeerFingerprint(localTarget) || localTarget.name,
                       peerName: localTarget.name,
                       threadId: effectiveThreadId,
                       transport: 'local',
