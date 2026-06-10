@@ -594,6 +594,9 @@ export interface RouteContext {
   quotaPoller: import('../core/QuotaPoller.js').QuotaPoller | null;
   /** QuotaAwareScheduler (P1.3) — account selection + swap-and-resume guarantee. */
   quotaAwareScheduler: import('../core/QuotaAwareScheduler.js').QuotaAwareScheduler | null;
+  /** ProactiveSwapMonitor (P1.3, pre-limit half) — moves a session off an account
+   *  BEFORE it walls. Optional; the routes report enabled:false when absent. */
+  proactiveSwapMonitor?: import('../core/ProactiveSwapMonitor.js').ProactiveSwapMonitor;
   /** InUseAccountResolver — which pool account the agent is currently running on
    *  (for the dashboard "in use" badge). Optional; the route lazily constructs a
    *  default when absent so it never 503s. */
@@ -16074,6 +16077,34 @@ export function createRoutes(ctx: RouteContext): Router {
     } catch {
       // @silent-fallback-ok: resolver failure → "unknown" (never 500 the dashboard).
       res.json({ enabled: true, activeAccountId: null, activeEmail: null });
+    }
+  });
+
+  // P1.3 (pre-limit half) — proactive swap status + on-demand check. The monitor
+  // moves a session OFF an account BEFORE it walls (vs. the reactive swap, which
+  // only fires after). Literal segments registered before GET /subscription-pool/:id.
+  // 200 { enabled:false } when the monitor is unwired (dark) — never 503.
+  router.get('/subscription-pool/proactive-swap', (_req, res) => {
+    if (!ctx.proactiveSwapMonitor) {
+      res.json({ enabled: false });
+      return;
+    }
+    res.json({ enabled: true, ...ctx.proactiveSwapMonitor.status() });
+  });
+
+  // Run ONE proactive-swap pass now (the deterministic "show me it works" lever):
+  // refresh the poll if near the wall, then pre-emptively swap at-pressure sessions.
+  // POST so it never collides with GET /subscription-pool/:id.
+  router.post('/subscription-pool/proactive-swap/check', async (_req, res) => {
+    if (!ctx.proactiveSwapMonitor) {
+      res.json({ enabled: false, swapped: [], considered: 0, refreshed: false });
+      return;
+    }
+    try {
+      const result = await ctx.proactiveSwapMonitor.tick();
+      res.json({ enabled: true, ...result });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : 'proactive check failed' });
     }
   });
 

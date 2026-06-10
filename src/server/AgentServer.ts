@@ -266,6 +266,7 @@ export class AgentServer {
     subscriptionPool?: import('../core/SubscriptionPool.js').SubscriptionPool;
     quotaPoller?: import('../core/QuotaPoller.js').QuotaPoller;
     quotaAwareScheduler?: import('../core/QuotaAwareScheduler.js').QuotaAwareScheduler;
+    proactiveSwapMonitor?: import('../core/ProactiveSwapMonitor.js').ProactiveSwapMonitor;
     inUseAccountResolver?: import('../core/InUseAccountResolver.js').InUseAccountResolver;
     enrollmentWizard?: import('../core/EnrollmentWizard.js').EnrollmentWizard;
     semanticMemory?: import('../memory/SemanticMemory.js').SemanticMemory;
@@ -1408,6 +1409,7 @@ export class AgentServer {
       subscriptionPool: options.subscriptionPool ?? null,
       quotaPoller: options.quotaPoller ?? null,
       quotaAwareScheduler: options.quotaAwareScheduler ?? null,
+      proactiveSwapMonitor: options.proactiveSwapMonitor,
       inUseAccountResolver: options.inUseAccountResolver,
       enrollmentWizard: options.enrollmentWizard ?? null,
       semanticMemory: options.semanticMemory ?? null,
