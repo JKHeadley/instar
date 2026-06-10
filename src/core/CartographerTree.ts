@@ -206,6 +206,8 @@ export class CartographerTree {
       try {
         real = fs.realpathSync(absDir);
       } catch {
+        // @silent-fallback-ok — an unresolvable path is simply not mapped; the
+        // scaffold skips it and continues. No degraded state to report.
         return [];
       }
       if (visitedReal.has(real)) return [];
@@ -216,6 +218,8 @@ export class CartographerTree {
       try {
         entries = fs.readdirSync(absDir, { withFileTypes: true });
       } catch {
+        // @silent-fallback-ok — an unreadable directory contributes no child
+        // nodes; the scaffold treats it as empty and moves on (read-only map).
         return [];
       }
       const children: string[] = [];
@@ -319,6 +323,8 @@ export class CartographerTree {
     try {
       return JSON.parse(fs.readFileSync(fp, 'utf8')) as CartographerNode;
     } catch {
+      // @silent-fallback-ok — a corrupt/partial node file reads as "absent"; the
+      // next scaffold/sweep re-authors it. Treating it as null is the recovery.
       return null;
     }
   }
@@ -328,6 +334,8 @@ export class CartographerTree {
     try {
       return JSON.parse(fs.readFileSync(this.indexPath, 'utf8')) as CartographerIndex;
     } catch {
+      // @silent-fallback-ok — a corrupt index reads as "no index yet"; callers
+      // then scaffold() a fresh one. Treating it as null is the recovery path.
       return null;
     }
   }

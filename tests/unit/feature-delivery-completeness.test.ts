@@ -199,6 +199,7 @@ describe('Feature Delivery Completeness', () => {
     // Some migrator sections are legacy patches for old agents that have since been
     // absorbed into the base template differently. These don't need template parity.
     const legacyMigratorSections = [
+      'Cartographer Doc-Tree',    // cartographer-doc-tree-schema spec #1: GET /cartographer/* READ surface the agent uses to orient in deep code — added via migrator as a full `### ` section; the template carries only a Registry-table row (no full section), so it's migrator-only awareness like '/session/clock' / '/resources/summary', not template-shadow parity.
       '/secrets/sync-status',     // cross-machine secret-sync status route (concurrent multi-machine workstream) — migrator-only awareness, no user-invokable capability. Was untracked on main → a pre-existing red in this guard; tracked here per the Zero-Failure Standard.
       'Coherence Gate',           // absorbed into base template
       'External Operation Safety', // absorbed into base template

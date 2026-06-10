@@ -799,6 +799,22 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     }),
   },
   {
+    key: 'cartographer',
+    prefixes: ['/cartographer'],
+    description: 'Cartographer doc-tree — semantic codebase map with git-hash staleness',
+    build: ({ ctx }) => ({
+      enabled: !!ctx.cartographer,
+      endpoints: ctx.cartographer
+        ? [
+            'GET /cartographer/tree — full doc-tree (nodes with summaries + staleness)',
+            'GET /cartographer/node?path=… — a single node',
+            'GET /cartographer/stale — nodes whose summary has drifted from the code',
+            'GET /cartographer/health — node count + staleness summary',
+          ]
+        : [],
+    }),
+  },
+  {
     key: 'contextHierarchy',
     prefixes: ['/context'],
     description: 'Context hierarchy + dispatch table',
