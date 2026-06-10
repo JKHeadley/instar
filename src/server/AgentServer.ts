@@ -1292,15 +1292,21 @@ export class AgentServer {
 
     // BlockerLedger (docs/specs/AUTONOMY-PRINCIPLES-ENFORCEMENT-SPEC.md, Piece 1)
     // — the resolution-workflow + memory layer completing Principle 1 ("almost
-    // every blocker is a false blocker — work it through"). Ships DARK; constructed
-    // ONLY when monitoring.blockerLedger.enabled is true (else the /blockers routes
+    // every blocker is a false blocker — work it through"). Dev-gated dark feature
+    // (DEV_GATED_FEATURES): `enabled` resolves via resolveDevAgentGate — LIVE on a
+    // development agent (dogfood), DARK on the fleet (the /blockers routes
     // 503-stub via the null ledger). The `true-blocker` settle judgment routes
     // through the injected Tier-1 B17 authority, built from the shared intelligence
     // provider (fails CLOSED when no provider is available). Own try/catch so an
     // init failure can never cascade into other init.
     try {
-      if (options.config.monitoring?.blockerLedger?.enabled === true && options.config.stateDir) {
-        const bl = options.config.monitoring.blockerLedger;
+      const blockerLedgerEnabled = resolveDevAgentGate(
+        options.config.monitoring?.blockerLedger?.enabled,
+        options.config,
+      );
+      if (blockerLedgerEnabled && options.config.stateDir) {
+        // The gate can resolve true on a dev agent with no config block at all.
+        const bl = options.config.monitoring?.blockerLedger ?? ({} as NonNullable<NonNullable<typeof options.config.monitoring>['blockerLedger']>);
         this.blockerLedger = new BlockerLedger({
           stateDir: options.config.stateDir,
           settleAuthority: buildB17SettleAuthority(options.intelligence ?? null),

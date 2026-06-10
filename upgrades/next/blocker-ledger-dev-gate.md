@@ -1,0 +1,25 @@
+# Upgrade Guide — Blocker Ledger dev-gate registration
+
+<!-- bump: patch -->
+
+## What Changed
+
+Conforms the Blocker Ledger (PR #1055) to the developmentAgent dark-feature gate standard (PR #1056) — the two merged from divergent branch points within minutes, so the new `lint-dev-agent-dark-gate` never saw #1055's hardcoded `monitoring.blockerLedger.enabled: false` default, leaving main latently lint-red. Fix: ConfigDefaults omits `enabled`, `AgentServer` resolves it via `resolveDevAgentGate` (LIVE on a development agent for dogfooding, DARK on the fleet → `/blockers` routes 503), the config type makes `enabled` optional, and the feature is registered in `DEV_GATED_FEATURES` with its safety justification (signal-only, no egress, no destructive action; one bounded fail-closed B17 settle check). Fleet behavior is unchanged; existing agents that already received the explicit `enabled: false` default keep it (applyDefaults adds only missing keys — no surprise activation).
+
+## What to Tell Your User
+
+- **Development agents only:** "My Blocker Ledger is now live on me (the dev agent) for dogfooding — when I hit something that feels like a wall, it's logged and worked through a pipeline instead of becoming an excuse. Fleet agents are unaffected; it stays off for them until it matures."
+- **Fleet agents:** None — no behavior change (the ledger stays dark until explicitly enabled).
+
+## Summary of New Capabilities
+
+| Capability | How to Use |
+|-----------|-----------|
+| Blocker Ledger live-on-dev (dogfood) | Automatic on agents with `developmentAgent: true` — no config edit needed; explicit `monitoring.blockerLedger.enabled: true/false` still wins |
+
+## Evidence
+
+- `node scripts/lint-dev-agent-dark-gate.js`: clean (was failing with `[C: unclassified dark default]` at `src/config/ConfigDefaults.ts:257`).
+- `tests/unit/devGatedFeatures-wiring.test.ts`: green with the new `blockerLedger` registry entry — proves live-on-dev / dark-on-fleet resolution against real ConfigDefaults.
+- Blocker Ledger unit (35) + integration (7) + e2e (4): green, unchanged.
+- `npx tsc --noEmit`: exit 0.

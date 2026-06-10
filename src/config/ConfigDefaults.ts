@@ -251,11 +251,11 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
     // separate migrateConfig block needed — verified deep-merge at
     // ConfigDefaults.deepMerge + applyDefaults add-missing recursion).
     // BlockerLedger (docs/specs/AUTONOMY-PRINCIPLES-ENFORCEMENT-SPEC.md, Piece 1)
-    // — the resolution-workflow + memory layer completing Principle 1. Ships DARK;
-    // the /blockers routes 503 until this is enabled.
-    blockerLedger: {
-      enabled: false,
-    },
+    // — the resolution-workflow + memory layer completing Principle 1. Dev-gated
+    // dark feature: `enabled` is deliberately OMITTED so the runtime resolves it
+    // via resolveDevAgentGate — LIVE on a development agent (dogfood), DARK on
+    // the fleet (the /blockers routes 503). Registered in DEV_GATED_FEATURES.
+    blockerLedger: {},
     correctionLearning: {
       enabled: false,
       // Self-Violation Signal extension (ships DARK). Even when correctionLearning

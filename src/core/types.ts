@@ -3565,8 +3565,13 @@ export interface MonitoringConfig {
    * docs/specs/AUTONOMY-PRINCIPLES-ENFORCEMENT-SPEC.md (Piece 1).
    */
   blockerLedger?: {
-    /** Master kill-switch (default: false → ships dark; gates the /blockers routes). */
-    enabled: boolean;
+    /**
+     * Master switch. Deliberately OPTIONAL (dev-gate convention): when omitted,
+     * the runtime resolves it via resolveDevAgentGate — LIVE on a development
+     * agent, DARK on the fleet (the /blockers routes 503). Set explicitly to
+     * force either way. Registered in DEV_GATED_FEATURES.
+     */
+    enabled?: boolean;
     /** Move terminal entries older than this many days to the archive file (default 30). */
     archiveAfterDays?: number;
     /** Default days until a settled true-blocker is reopened for a re-walk (default 30). */
