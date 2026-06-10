@@ -98,6 +98,22 @@ if [[ -z "$COMPLETION_PROMISE" ]]; then
   COMPLETION_PROMISE="ALL_TASKS_COMPLETE"
 fi
 
+# ── COMPLETION_DISCIPLINE — bounded-duration backstop (spec §4 resolved Open-Q) ──
+# A run under completion-discipline REQUIRES a duration > 0 (the hard backstop that
+# makes the judge fail-open safe). A 0/unset duration is treated as a config error and
+# defaulted to a conservative 8h, rather than running truly unbounded.
+if [[ "$DURATION_SECONDS" -le 0 ]]; then
+  echo "⚠️  No bounded duration set — defaulting to 8h (completion-discipline requires a duration backstop)." >&2
+  DURATION_SECONDS=28800
+  DURATION="8h"
+  END_AT=$(date -u -v+${DURATION_SECONDS}S +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d "+${DURATION_SECONDS} seconds" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "unknown")
+fi
+
+# ── COMPLETION_DISCIPLINE — per-run hard-blocker nonce ──
+# Authenticates a <hard-blocker> terminal exit marker (mirrors the completion_promise
+# exact-match guard) so incidental marker prose can never trip an exit. Spec §2b.3.
+HARD_BLOCKER_NONCE=$(openssl rand -hex 8 2>/dev/null || head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n' || echo "$(date +%s)$$")
+
 # ── Multi-session start gate: concurrency cap + quota (refuse-new) ──
 # Primary check is the server (precise active-count + QuotaTracker). If the
 # server is unreachable, fall back to a local file-count cap so the cap still
@@ -159,6 +175,7 @@ last_report_at: ""
 level_up: $LEVEL_UP
 completion_promise: "$COMPLETION_PROMISE"
 completion_condition: "$COMPLETION_CONDITION"
+hard_blocker_nonce: "$HARD_BLOCKER_NONCE"
 ---
 
 # Autonomous Session

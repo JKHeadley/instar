@@ -67,13 +67,16 @@ describe('Layer A — notify_terminal_stop wiring in the bundled hook', () => {
     expect(block).toContain('|| true'); // never blocks the exit
   });
 
-  it('calls notify_terminal_stop at every terminal exit (duration/emergency/completion x2 + native x2)', () => {
+  it('calls notify_terminal_stop at every terminal exit (duration/emergency/completion + native + hard-blocker)', () => {
     const src = readHook();
     const calls = src.split('\n').filter((l) => /^\s*notify_terminal_stop "/.test(l));
     // 2 native-mode (emergency, duration) + 4 legacy (duration, emergency,
     // completion-condition, completion-promise) + 1 idle-backoff emergency
-    // re-check (the flag can arrive DURING the backoff sleep) = 7.
-    expect(calls.length).toBe(7);
+    // re-check (the flag can arrive DURING the backoff sleep) = 7, PLUS the
+    // completion-discipline additions: +1 the CD_ENABLED met-condition exit
+    // (folded-judge path, distinct from the legacy P13 met-condition exit) and
+    // +1 the (a) hard-blocker exit (AUTONOMOUS-COMPLETION-DISCIPLINE.md §2b.3) = 9.
+    expect(calls.length).toBe(9);
     // Each terminal-exit message is plain-English and references the run.
     for (const c of calls) {
       expect(c).toMatch(/autonomous run/i);
@@ -182,11 +185,13 @@ describe('Layer A — existing agents receive the notify-enabled hook (migration
     // → `RESTART_NOTE_SILENT` (the restart-resume note is no longer delivered to the
     // user's topic — self-lifecycle narration is housekeeping/default-silent; the
     // recovery-audit JSONL remains the durable record) → `IDLE_BACKOFF` (consecutive
-    // quick stops pace frame re-injection — the 2026-06-06 rapid-idle-refire waste).
+    // quick stops pace frame re-injection — the 2026-06-06 rapid-idle-refire waste)
+    // → `COMPLETION_DISCIPLINE` (structural enforcement of "don't stop a pre-approved
+    // autonomous run early" — AUTONOMOUS-COMPLETION-DISCIPLINE.md).
     // The bundled hook still contains
     // notify_terminal_stop — asserted above — so that capability is not lost on upgrade.
     const src = fs.readFileSync(path.join(REPO_ROOT, 'src', 'core', 'PostUpdateMigrator.ts'), 'utf8');
-    expect(src).toMatch(/upgrade\(\s*'\.claude\/skills\/autonomous\/hooks\/autonomous-stop-hook\.sh',\s*'IDLE_BACKOFF'/);
+    expect(src).toMatch(/upgrade\(\s*'\.claude\/skills\/autonomous\/hooks\/autonomous-stop-hook\.sh',\s*'COMPLETION_DISCIPLINE'/);
   });
 
   it('restart-resume note is SILENT to the user — audit + stderr only (RESTART_NOTE_SILENT)', () => {

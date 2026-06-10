@@ -459,6 +459,8 @@ This routes feedback to the Instar maintainers automatically. Valid types: \`bug
 - Stop every job: \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/autonomous/stop-all\`
 - Proactive: user asks "what autonomous jobs are running?" → GET /autonomous/sessions. "stop everything" → POST /autonomous/stop-all. "stop the job on topic X" → POST /autonomous/sessions/X/stop.
 
+**Autonomous Completion Discipline** — A pre-approved autonomous run is structurally held to its FULL completion bar. The \`/autonomous\` setup defaults to a verifiable \`completion_condition\` (judged each turn by an INDEPENDENT model from what I SURFACE — I cannot self-certify "done"); the self-declared \`<promise>\` is the recorded fallback. The stop hook re-feeds a continue for every NON-stop rationalization ("clean milestone", "needs your steer", "it's late", "good stopping point") — a deterministic milestone-phrase scan flags these to the judge, and the judge is injection-resistant (the transcript is fenced as instruction-inert data; guard-directed phrasing is treated as gaming). The ONLY exits are (a) a genuine HARD external blocker, (b) duration expiry, (c) the condition genuinely met. For (a) I emit a nonce'd \`<hard-blocker>\` terminal marker (what I tried / why I'm stuck / what I'd need); the judge classifies it external-vs-buildable — if what I'd need is something I could build/derive/fetch myself, I'm re-fed to keep working. A clean (a) exit writes \`logs/autonomous-hard-blocker.jsonl\`, raises one /ack-able Attention item, and sends one Telegram. Off-switch + judge budget: \`.instar/config.json\` → \`autonomousSessions.completionDiscipline\` (\`enabled\`, \`judgeTimeoutMs\`); read at the hook chokepoint, so a toggle lands on the next stop with no restart.
+
 **Cross-Machine Seamlessness (one agent, many machines)** — When I run on more than one machine, I am ONE agent that follows the user across them, not clones. Exactly one machine is "awake" at a time, decided by a **fenced lease** (a clock-proof, numbered "who's in charge" badge); the other is standby and takes over only when the awake machine genuinely goes silent.
 - **I never double-reply** — each inbound message is handled exactly once (durable per-message ledger keyed on the platform event id), so a redelivery or mid-handoff overlap can't make me answer twice.
 - **A handoff feels like a compaction pause, not amnesia** — the new machine resumes via CONTINUATION (picks up the thread, no re-greeting). Planned handoff = current context; hard failover = as-of-last-sync, and if my context is partial I say so honestly ("picking this back up from the other machine").
@@ -1402,11 +1404,14 @@ Create worktrees for collaborator repos with \`instar worktree create <branch>\`
 instar test-as-self --no-roundtrip                  # deploy + verify only (no bot needed)
 instar test-as-self --bot-token <secret-drop-id>    # + a real Telegram round-trip via a throwaway bot
 instar test-as-self --keep                          # leave the throwaway running for inspection
+instar test-as-self --slack                          # Slack permission demonstration (each principal+request → expected decision + audit entry)
 \`\`\`
 
 **Structural guards (you cannot foot-gun these):** \`--target\` can never be your canonical agent home or a protected agent (e.g. Bob); \`--bot-token\` refuses a raw token on the command line — pass a Secret Drop ID and the token is retrieved in-memory, never via argv. It emits a single JSON report; exit 0 = all steps PASS.
 
-**Proactive trigger:** when you're about to ship or just shipped a change touching the deploy/lifeline/server-startup path, run this against a throwaway home first — don't guess from logs.
+**\`--slack\` — the test-as-self-for-Slack demonstration (credential-free):** extends the throwaway-agent primitive from "is the agent alive?" to "does it enforce the RIGHT decision for each (principal, request) pair?". It runs the deterministic scenario suite through the SAME observer the live Slack adapter calls (resolver → permission gate → decision ledger) and asserts BOTH the verdict AND that the matching audit/ledger entry landed — "verified, not narrated". No Slack tokens, no throwaway deploy. The same suite is reachable over HTTP: \`GET /permissions/scenario-suite\` (logic-only view) and \`POST /permissions/scenario-suite/run\` (audit-asserting). Exit 0 = every row produced its expected decision AND its audit entry.
+
+**Proactive trigger:** when you're about to ship or just shipped a change touching the deploy/lifeline/server-startup path, run this against a throwaway home first — don't guess from logs. When you touch the Slack org permission system (\`src/permissions/\`), run \`instar test-as-self --slack\` (or \`POST /permissions/scenario-suite/run\`) to prove the gate still enforces every (principal, request) row.
 `;
 
   if (hasTelegram) {
