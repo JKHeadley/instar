@@ -31,6 +31,16 @@ a routing decision, never a block).
 ## Files touched (running inventory)
 
 - src/core/ModelTierEscalation.ts (new) + tests/unit/modelTierEscalation-resolver.test.ts (new)
+- src/core/EscalationGovernor.ts (new) + tests/unit/escalationGovernor.test.ts (new)
+- src/core/ModelSwapService.ts (new) + tests/unit/modelSwapService.test.ts (new) + tests/unit/modelTier-launchMechanisms.test.ts (new §5.2 pins)
+- src/core/SessionManager.ts (export IDLE_PROMPT_PATTERNS; sendInput gains `--` end-of-options hardening)
+- src/server/routes.ts (POST /sessions/:name/model-swap; spawn allowlist claude branch → closed claude id enum incl. claude-fable-5)
+- src/server/AgentServer.ts (governor + swap service + UltraSessionCapMonitor constructed on the production init path; sessionReaped lease release; BurnDetector receives ultraCapMonitor)
+- src/core/types.ts (InstarConfig.models.tierEscalation typed)
+- src/monitoring/GuardPostureTripwire.ts (models.tierEscalation.enabled/dryRun posture + HIGH cost-increasing-enable attention)
+- src/monitoring/BurnDetector.ts (optional ultraCapMonitor dep, ticked before early-returns)
+- src/monitoring/TokenLedger.ts (tokensByModelSince read-only aggregate)
+- src/monitoring/UltraSessionCapMonitor.ts (new) + tests/unit/ultraSessionCapMonitor.test.ts + tests/unit/guardPosture-modelTier.test.ts (new)
 - (updated as the build progresses)
 
 ---

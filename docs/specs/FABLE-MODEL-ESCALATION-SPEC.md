@@ -2,6 +2,7 @@
 title: "Model-Tier Escalation Policy"
 slug: "model-tier-escalation"
 author: "echo"
+parent-principle: "Structure beats Willpower"
 eli16-overview: "model-tier-escalation.eli16.md"
 status: "draft (convergence round 4)"
 date: "2026-06-09"

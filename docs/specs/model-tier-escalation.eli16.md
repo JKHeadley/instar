@@ -63,3 +63,7 @@ work and switches back when it's done. It ships turned **off** for everyone by d
 Smarter results on hard work, at 2x cost — so the whole design is about spending that 2x
 **only** where it actually helps, and never by accident. Cheap by default, expensive on
 purpose, with the brakes wired in.
+
+---
+
+*Constitutional anchor: this spec serves the "Structure beats Willpower" article of docs/STANDARDS-REGISTRY.md — the model choice is enforced by launch args, hooks, and a server-side gate, never by an agent remembering a rule.*

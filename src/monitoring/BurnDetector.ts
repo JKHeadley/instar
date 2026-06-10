@@ -87,6 +87,13 @@ export interface BurnDetectorDeps {
   config?: Partial<BurnDetectionConfig>;
   /** Injectable clock for tests. Defaults to `Date.now`. */
   now?: () => number;
+  /**
+   * Model-tier escalation §8 mid-run cap monitor (UltraSessionCapMonitor).
+   * Rides THIS detector's tick cadence so no new poller exists
+   * (FABLE-MODEL-ESCALATION-SPEC round-3 Integration-NEW-2). Its tick()
+   * never throws. Optional — absent on agents without the feature wired.
+   */
+  ultraCapMonitor?: { tick(): void };
 }
 
 export class BurnDetector {
@@ -94,6 +101,7 @@ export class BurnDetector {
   private readonly reporter: BurnDetectorDeps['reporter'];
   private readonly config: BurnDetectionConfig;
   private readonly now: () => number;
+  private readonly ultraCapMonitor?: { tick(): void };
   /** First time a given attribution_key was seen. Used for cold-start cutoff. */
   private readonly firstSeen = new Map<string, number>();
   /** Last alert emit time per key — gates per-key alert cooldown. */
@@ -105,6 +113,7 @@ export class BurnDetector {
     this.reporter = deps.reporter;
     this.config = { ...DEFAULT_BURN_DETECTION_CONFIG, ...(deps.config ?? {}) };
     this.now = deps.now ?? (() => Date.now());
+    this.ultraCapMonitor = deps.ultraCapMonitor;
   }
 
   start(): void {
@@ -136,6 +145,10 @@ export class BurnDetector {
    */
   tick(): BurnSignal[] {
     if (!this.config.enabled) return [];
+    // §8 ultra-cap monitor rides this cadence — BEFORE the empty-ledger
+    // early-returns below, so a quiet attribution ledger can't starve the
+    // per-session cap check. Its tick() is self-guarding (never throws).
+    this.ultraCapMonitor?.tick();
     const now = this.now();
     const since24h = now - 24 * 60 * 60 * 1000;
     const since1h = now - 60 * 60 * 1000;
