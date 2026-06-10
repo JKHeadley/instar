@@ -239,3 +239,9 @@ GuardPostureTripwire surfaces the cost-increasing enable on its next tick.
   has exactly ONE entry in settings-template.json; the model-tier reconciler
   registration makes it two. Fixed to assert membership of the entry it
   cares about, not a count.
+- **no-silent-fallbacks gate**: the two §7 fail-closed probe catches in
+  EscalationGovernor (quota snapshot, ultra-token ledger) were parser-counted
+  as silent. They are fail-closed CONVERSIONS — each errored probe becomes an
+  AUDITED structured refusal ('quota-unavailable' / 'daily-cap-exhausted') on
+  the very next branch — so they carry in-brace @silent-fallback-ok
+  justifications rather than a baseline bump.

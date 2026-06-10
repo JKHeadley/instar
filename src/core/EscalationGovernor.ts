@@ -191,7 +191,10 @@ export class EscalationGovernor {
       try {
         snapshot = this.deps.quotaSnapshot?.(accountId) ?? null;
       } catch {
-        snapshot = null; // errored ⇒ treated as unavailable (fail closed)
+        // @silent-fallback-ok — fail-closed conversion, not a swallow: an
+        // erroring probe reads as "unavailable" and the very next branch
+        // refuses with the AUDITED structured reason 'quota-unavailable'.
+        snapshot = null;
       }
       if (!snapshot) {
         this.saveState(state);
@@ -213,6 +216,9 @@ export class EscalationGovernor {
       try {
         spent = this.deps.ultraTokensTodayUtc?.() ?? null;
       } catch {
+        // @silent-fallback-ok — fail-closed conversion, not a swallow: an
+        // unreadable ledger reads as null and the next branch refuses with
+        // the AUDITED structured reason 'daily-cap-exhausted'.
         spent = null;
       }
       if (spent == null || spent >= guards.dailyUltraTokenCap) {
