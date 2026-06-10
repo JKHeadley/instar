@@ -140,6 +140,9 @@ export class EscalationGovernor {
     modelId: string;
     /** e.g. 'default→escalated' — the episode key half (§8 once-per-episode). */
     transition: string;
+    /** dryRun evaluation: run every check but acquire NOTHING — a dry-run
+     *  swap must never consume lease capacity (§9 dryRun semantics). */
+    dry?: boolean;
   }): AdmitResult {
     const cfg = this.deps.getConfig();
     if (!cfg.enabled) {
@@ -216,6 +219,19 @@ export class EscalationGovernor {
         this.saveState(state);
         return this.refuse(input, 'daily-cap-exhausted');
       }
+    }
+
+    if (input.dry) {
+      this.saveState(state); // persist reclaim/expiry-note work only
+      this.audit({
+        type: 'dry-admit',
+        instanceId: input.instanceId,
+        accountId,
+        modelId: input.modelId,
+        transition: input.transition,
+        freeWindow,
+      });
+      return { allow: true, freeWindow };
     }
 
     // Admit: acquire/refresh the lease (TTL = maxEscalationTtlMs).
