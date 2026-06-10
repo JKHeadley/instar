@@ -146,4 +146,36 @@ describe('subscription-pool session pinning (integration)', () => {
     expect(cfg.hasTrustDialogAccepted).toBe(true);
     expect(cfg.oauthAccount).toEqual({ accountUuid: 'u-2' });
   });
+
+  // ── B1: the INTERACTIVE (user-facing) lane pins via the resolver too ──────
+  // The user's own Telegram conversation must be tagged under a pool account so
+  // auto-swap can move it — not ride the default login untagged. Same resolver
+  // wiring server.ts performs under pinSessionsToPool, now consulted by the
+  // interactive lane just like the headless lane.
+
+  const interactiveRecord = (tmux: string) =>
+    state.listSessions({ status: 'running' }).find((s) => s.tmuxSession === tmux);
+
+  it('pins the interactive session to the scheduler-picked account, end to end', async () => {
+    pool.add({ id: 'gmail-justin', nickname: 'Justin', provider: 'anthropic', framework: 'claude-code', configHome: '/h/.claude-echo-justin-gmail', email: 'headley.justin@gmail.com' });
+    pool.add({ id: 'sagemind-adriana', nickname: 'SageMind - Adriana', provider: 'anthropic', framework: 'claude-code', configHome: '/h/.claude-echo-6', email: 'adriana@sagemindai.io' });
+    pool.update('gmail-justin', { lastQuota: { sevenDay: { utilizationPct: 95, resetsAt: '2026-06-20T00:00:00Z' } } });
+    pool.update('sagemind-adriana', { lastQuota: { sevenDay: { utilizationPct: 0, resetsAt: '2026-06-11T00:00:00Z' } } });
+
+    wireResolver();
+    vi.mocked(execFileSync).mockClear();
+    const tmux = await manager.spawnInteractiveSession(undefined, 'pin-interactive');
+
+    expect(interactiveRecord(tmux)?.subscriptionAccountId).toBe('sagemind-adriana');
+    expect(newSessionArgs()).toContain('CLAUDE_CONFIG_DIR=/h/.claude-echo-6');
+  });
+
+  it('does not pin the interactive session when the pool is empty (default config)', async () => {
+    wireResolver(); // wired, but pool has no accounts → selectAccount returns null
+    vi.mocked(execFileSync).mockClear();
+    const tmux = await manager.spawnInteractiveSession(undefined, 'empty-interactive');
+
+    expect(interactiveRecord(tmux)?.subscriptionAccountId).toBeUndefined();
+    expect(newSessionArgs().some((a) => typeof a === 'string' && a.startsWith('CLAUDE_CONFIG_DIR='))).toBe(false);
+  });
 });

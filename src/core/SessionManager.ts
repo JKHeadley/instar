@@ -2956,9 +2956,14 @@ rm()  { "${shimRunner}" rm  "$@"; }
     sessionId?: string;
     /** Subscription & Auth Standard P1.3 (claude-code only): launch this session
      *  under the given account's config home (CLAUDE_CONFIG_DIR) — the account-swap
-     *  mechanism. Additive; unset = inherit the parent's login (unchanged). */
+     *  mechanism. Additive; an explicit value always wins. When unset AND the
+     *  spawn-account resolver is wired (pinSessionsToPool), B1 resolves the
+     *  scheduler-picked pool home automatically so the interactive lane pins like
+     *  the headless lane; unset + no resolver = inherit the parent's login. */
     configHome?: string;
-    /** P1.3: record which subscription-pool account this session runs under. */
+    /** P1.3: record which subscription-pool account this session runs under. An
+     *  explicit value wins; otherwise B1 fills it from the resolver-pinned account
+     *  (kept in lockstep with configHome). */
     subscriptionAccountId?: string;
   }): Promise<string> {
     const sanitized = name
@@ -3046,12 +3051,35 @@ rm()  { "${shimRunner}" rm  "$@"; }
     // Codex rate-limit model-swap (see resolveCodexLaunchModel) — applies to the
     // interactive (user-facing) codex session too, not just headless spawns.
     const launchDefaultModel = await this.resolveCodexLaunchModel(framework, defaultModel);
-    // Account-swap lane (Subscription & Auth P1.3): this interactive session is
-    // about to launch under a pool account's config home — seed the onboarding
-    // flags first or a headless-enrolled home wedges it on first-launch
-    // onboarding (2026-06-09 incident).
-    if (options?.configHome && framework === 'claude-code') {
-      this.ensurePinnedHomeInteractiveReady(options.configHome, 'interactive account-swap');
+    // Subscription-pool pinning for the INTERACTIVE (user-facing) lane (B1).
+    // Mirrors the headless lane (spawnSession): when pinSessionsToPool wired the
+    // spawn-account resolver, launch this claude-code session under the
+    // scheduler-picked optimal account's config home and TAG it. That makes the
+    // user's own conversation first-class for auto-swap — it can be moved when
+    // its account walls — instead of riding the default login untagged, where
+    // only ProactiveSwapMonitor's default-login fallback could rescue it.
+    //   • An explicit caller-supplied configHome ALWAYS wins (the account-swap
+    //     path, SessionRefresh, passes one) — the resolver is only consulted when
+    //     the caller didn't pin a home itself.
+    //   • claude-code only: the pool holds claude logins; a pool configHome is
+    //     meaningless for a codex/pi launch.
+    //   • No-op unless the resolver is wired (pinSessionsToPool) and returns an
+    //     account → default-login behavior is exactly unchanged when off.
+    const explicitConfigHome = options?.configHome;
+    const pinnedAccount = (!explicitConfigHome && framework === 'claude-code')
+      ? (this.spawnAccountResolver?.() ?? null)
+      : null;
+    const effectiveConfigHome = explicitConfigHome ?? pinnedAccount?.configHome;
+    const effectiveAccountId = options?.subscriptionAccountId ?? pinnedAccount?.accountId;
+    // This interactive session is about to launch under a pool account's config
+    // home — seed the onboarding flags first or a headless-enrolled home wedges
+    // it on the first-launch onboarding wizard (2026-06-09 incident). Applies to
+    // both the explicit account-swap target and a resolver-pinned home.
+    if (effectiveConfigHome && framework === 'claude-code') {
+      this.ensurePinnedHomeInteractiveReady(
+        effectiveConfigHome,
+        explicitConfigHome ? 'interactive account-swap' : 'interactive pin',
+      );
     }
     const launchSpec = buildInteractiveLaunch(framework, {
       binaryPath,
@@ -3063,7 +3091,8 @@ rm()  { "${shimRunner}" rm  "$@"; }
       ...(options?.codexLocalProvider ? { codexLocalProvider: options.codexLocalProvider } : {}),
       // Subscription & Auth Standard P1.3: per-account config home (claude-only,
       // ignored by other builders) → CLAUDE_CONFIG_DIR for the launched session.
-      ...(options?.configHome ? { configHome: options.configHome } : {}),
+      // effectiveConfigHome = explicit caller home, else the resolver-pinned one.
+      ...(effectiveConfigHome ? { configHome: effectiveConfigHome } : {}),
       // Per-agent codex threadline MCP override (ignored by non-codex builders).
       ...(this.config.codexThreadlineMcp ? { codexThreadlineMcp: this.config.codexThreadlineMcp } : {}),
       // pi-cli: pin session transcripts into the agent state dir so they are
@@ -3168,9 +3197,11 @@ rm()  { "${shimRunner}" rm  "$@"; }
       // account default).
       framework,
       ...(resolveModelForFramework(framework, launchDefaultModel) ? { model: resolveModelForFramework(framework, launchDefaultModel) } : {}),
-      // P1.3: which subscription-pool account this session runs under (set on a
-      // quota-aware account swap / placement). Undefined for single-account agents.
-      ...(options?.subscriptionAccountId ? { subscriptionAccountId: options.subscriptionAccountId } : {}),
+      // P1.3: which subscription-pool account this session runs under (an explicit
+      // quota-aware swap/placement, OR the resolver-pinned account for B1 — the
+      // user-facing interactive lane is now tagged just like the headless lane).
+      // Undefined for single-account agents (resolver unwired → no pin).
+      ...(effectiveAccountId ? { subscriptionAccountId: effectiveAccountId } : {}),
       prompt: effectiveInitialMessage,
       maxDurationMinutes: this.effectiveMaxDurationMinutes,
     };

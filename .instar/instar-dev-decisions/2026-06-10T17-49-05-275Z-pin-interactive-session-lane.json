@@ -1,0 +1,19 @@
+{
+  "ts": "2026-06-10T17:49:05.275Z",
+  "slug": "pin-interactive-session-lane",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 55,
+  "causalAutopsy": {
+    "origin": "prior-pr",
+    "relatedPrs": [
+      1035
+    ],
+    "notes": "B1 was explicitly logged as the follow-up to the proactive pre-limit swap (PR #1035): the ProactiveSwapMonitor covered the UNTAGGED interactive session only via a default-login fallback. This pins the interactive lane natively so the user's conversation is first-class for swap, closing that gap."
+  },
+  "verdict": "pass"
+}

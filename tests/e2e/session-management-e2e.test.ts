@@ -383,6 +383,47 @@ describeMaybe('Session Management E2E', () => {
     });
   });
 
+  // ── Feature: Subscription-pool pinning of the interactive lane (B1) ──
+  // Tier-3 with a REAL tmux session: when the spawn-account resolver is wired
+  // (pinSessionsToPool, exactly as server.ts does it), the user-facing
+  // interactive session launches TAGGED under the resolved pool account — so
+  // auto-swap can move the user's own conversation, instead of it riding the
+  // default login untagged. Proves the behavior is alive end-to-end, not just
+  // in a hand-wired unit harness.
+
+  describe('Feature: Subscription-pool pinning (B1, interactive lane)', () => {
+    it('tags a real interactive session with the resolver-picked account + seeds its home onboarding-ready', async () => {
+      const claudePath = createMockClaudeInteractive(project.dir);
+      const sm = createManager(project, claudePath);
+      managers.push(sm);
+
+      // A headless-enrolled pool home: tokens present, interactive flags absent.
+      const home = path.join(project.dir, '.claude-pool-home');
+      fs.mkdirSync(home, { recursive: true });
+      fs.writeFileSync(path.join(home, '.claude.json'), JSON.stringify({ oauthAccount: { accountUuid: 'u-e2e' } }));
+
+      // Wire the resolver exactly as server.ts does under pinSessionsToPool.
+      sm.setSpawnAccountResolver(() => ({ configHome: home, accountId: 'pool-acct-e2e' }));
+
+      // When the user's interactive session spawns (no explicit configHome)
+      const tmuxSession = await sm.spawnInteractiveSession(undefined, `${TMUX_PREFIX}pin-b1`);
+      await new Promise(r => setTimeout(r, 1500));
+      expect(sm.isSessionAlive(tmuxSession)).toBe(true);
+
+      // Then the persisted record is tagged with the pool account
+      const rec = project.state.listSessions({ status: 'running' }).find(s => s.tmuxSession === tmuxSession);
+      expect(rec?.subscriptionAccountId).toBe('pool-acct-e2e');
+
+      // And the headless home was seeded onboarding-ready (tokens untouched) so
+      // the interactive launch can't wedge on the first-launch wizard.
+      const cfg = JSON.parse(fs.readFileSync(path.join(home, '.claude.json'), 'utf-8'));
+      expect(cfg.hasCompletedOnboarding).toBe(true);
+      expect(cfg.bypassPermissionsModeAccepted).toBe(true);
+      expect(cfg.hasTrustDialogAccepted).toBe(true);
+      expect(cfg.oauthAccount).toEqual({ accountUuid: 'u-e2e' });
+    });
+  });
+
   // ── Feature: Prompt Detection ─────────────────────────────────────
 
   describe('Feature: Claude prompt detection', () => {
