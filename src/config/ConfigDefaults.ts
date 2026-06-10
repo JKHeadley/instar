@@ -298,6 +298,13 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
     // Spec: docs/specs/PROACTIVE-GROWTH-MILESTONE-ANALYST-SPEC.md
     growthAnalyst: {
       digestCron: '0 11 * * 1',
+      // Slice 2 (GrowthDigestPublisher) ships dark even on a dev agent: COMPUTE +
+      // EXPOSE is already live, but the new SEND behavior stays opt-in until the
+      // operator advances it, so merging the code buzzes no one.
+      digestDelivery: 'off',
+      // A fully-calm week is silent by default (no "all healthy" heartbeat — the
+      // exact noise burnDetection was killed for).
+      digestSendOnCalmWeeks: false,
       incubationWindows: { lowRisk: 3, standard: 7, highRisk: 7 },
       proofOfLifeMinActivations: 1,
       rules: {

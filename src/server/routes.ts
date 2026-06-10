@@ -805,6 +805,11 @@ export interface RouteContext {
    *  /growth/* 503s. Powers GET /growth/digest, GET /growth/findings,
    *  GET /growth/status, POST /growth/tick. */
   growthMilestoneAnalyst?: import('../monitoring/GrowthMilestoneAnalyst.js').GrowthMilestoneAnalyst | null;
+  /** Slice-2 proactive growth-digest publisher (cadence + delivery). Null/absent
+   *  when digestDelivery is 'off' or the analyst is unwired. The route layer
+   *  attaches its guarded sender (`postToUpdatesTopic`) via `attachSender` at
+   *  registration so the publisher shares the single `evaluateOutbound` funnel. */
+  growthDigestPublisher?: import('../monitoring/GrowthDigestPublisher.js').GrowthDigestPublisher | null;
   /** Apprenticeship Program registry + lifecycle gates (Apprenticeship Step 1).
    *  Null when stateDir is unavailable → /apprenticeship/* 503s. Powers the
    *  instance-as-project registry, the retro-gate (pending→active) and the
@@ -1278,10 +1283,24 @@ export function createRoutes(ctx: RouteContext): Router {
    *
    * Returns true if blocked (response already sent as 422). False if safe.
    */
-  async function checkOutboundMessage(
+  /**
+   * Outbound-message DECISION — the pure, res-free chokepoint. Both the route
+   * adapter (`checkOutboundMessage`) and the proactive publisher
+   * (`postToUpdatesTopic`) call THIS identical function, so there is provably ONE
+   * guarded path, not two (Slice-2 spec §3.3 — the Structure-beats-Willpower fix
+   * against a second un-guarded send path). It performs the localhost-link guard +
+   * the tone-gate review and RETURNS a decision; it never writes a response and
+   * never fires the observe-only observers. The observers (operator-role /
+   * principal coherence) have nothing to catch on the proactive-digest path, so
+   * they stay route-side in `checkOutboundMessage` — byte-identical for callers.
+   */
+  type OutboundEvaluation =
+    | { ok: true }
+    | { ok: false; status: number; reason: string; body: Record<string, unknown> };
+
+  async function evaluateOutbound(
     text: string,
     channel: string,
-    res: import('express').Response,
     options: {
       topicId?: number;
       allowDebugText?: boolean;
@@ -1290,33 +1309,7 @@ export function createRoutes(ctx: RouteContext): Router {
       messageKind?: 'reply' | 'health-alert' | 'unknown';
       jargon?: boolean;
     },
-  ): Promise<boolean> {
-    // ── Self-Violation Signal (OBSERVE-ONLY) ──────────────────────────
-    // Record — but NEVER act on — the case where this finalized outbound
-    // message contradicts a stored preference. This runs as a fire-and-forget
-    // VOID call that is structurally independent of the tone-gate verdict and
-    // of this function's return value: it cannot block, delay, or rewrite the
-    // message. It runs FIRST (before the gate-availability early-return below)
-    // so the observation happens regardless of whether the tone gate exists or
-    // what it decides. Dark by default (gated inside on enabled+selfViolationSignal).
-    void observeSelfViolation(text, options.topicId).catch(() => {
-      /* @silent-fallback-ok — observe-only; a detector error never affects delivery */
-    });
-
-    // ── Principal-Coherence Signal (OBSERVE-ONLY) ─────────────────────
-    // Record — but NEVER act on — the case where this finalized outbound
-    // message credits an operator-ROLE decision (approval / mandate / credential
-    // / lock / acting-for) to a principal who is NOT the topic's VERIFIED
-    // operator. That is the "Caroline" identity-bleed failure, caught in the
-    // agent's OWN output where no inbound gate watches. Same fire-and-forget
-    // VOID contract as observeSelfViolation: structurally independent of the
-    // tone-gate verdict and of this function's return value — it cannot block,
-    // delay, or rewrite the message. Dark by default (gated inside on
-    // monitoring.principalCoherence.enabled + a wired TopicOperatorStore).
-    void observePrincipalCoherence(text, options.topicId).catch(() => {
-      /* @silent-fallback-ok — observe-only; a detector error never affects delivery */
-    });
-
+  ): Promise<OutboundEvaluation> {
     // ── Localhost-link guard (operator-mandated HARD rule, 2026-06-05) ──
     // A clickable localhost/loopback link must never reach a user — the user
     // is almost never on the machine this server runs on. This is a
@@ -1328,19 +1321,23 @@ export function createRoutes(ctx: RouteContext): Router {
     if (!options.allowLocalhostLink) {
       const localLink = detectLocalhostLink(text);
       if (localLink.detected) {
-        res.status(422).json({
-          error:
-            `Message blocked: contains a machine-local link (${localLink.match}) that the user cannot open from their device. ` +
-            `Replace it with the public tunnel URL (GET /tunnel → url + path), or omit the link and say it will follow. ` +
-            `If the operator explicitly asked for the raw local URL, resend with metadata.allowLocalhostLink: true.`,
-          blockedBy: 'localhost-link-guard',
-          match: localLink.match,
-        });
-        return true;
+        return {
+          ok: false,
+          status: 422,
+          reason: 'localhost-link-guard',
+          body: {
+            error:
+              `Message blocked: contains a machine-local link (${localLink.match}) that the user cannot open from their device. ` +
+              `Replace it with the public tunnel URL (GET /tunnel → url + path), or omit the link and say it will follow. ` +
+              `If the operator explicitly asked for the raw local URL, resend with metadata.allowLocalhostLink: true.`,
+            blockedBy: 'localhost-link-guard',
+            match: localLink.match,
+          },
+        };
       }
     }
 
-    if (!ctx.messagingToneGate) return false; // No authority configured — pass through
+    if (!ctx.messagingToneGate) return { ok: true }; // No authority configured — pass through
 
     try {
       // ── Collect signals from upstream detectors ──
@@ -1463,20 +1460,107 @@ export function createRoutes(ctx: RouteContext): Router {
       });
 
       if (!result.pass) {
-        res.status(422).json({
-          error: 'tone-gate-blocked',
-          rule: result.rule,
-          issue: result.issue,
-          suggestion: result.suggestion,
-          latencyMs: result.latencyMs,
-        });
-        return true;
+        return {
+          ok: false,
+          status: 422,
+          reason: 'tone-gate-blocked',
+          body: {
+            error: 'tone-gate-blocked',
+            rule: result.rule,
+            issue: result.issue,
+            suggestion: result.suggestion,
+            latencyMs: result.latencyMs,
+          },
+        };
       }
     } catch {
       // Fail-open — any error short of a clean block lets the message through.
     }
+    return { ok: true };
+  }
+
+  /**
+   * Route adapter — fires the observe-only observers (route-side) then delegates
+   * the block/allow decision to the shared res-free `evaluateOutbound`. Returns
+   * true if blocked (the mapped status/body already written). Behavior is
+   * byte-identical to the pre-extraction function for every existing caller.
+   */
+  async function checkOutboundMessage(
+    text: string,
+    channel: string,
+    res: import('express').Response,
+    options: {
+      topicId?: number;
+      allowDebugText?: boolean;
+      allowDuplicate?: boolean;
+      allowLocalhostLink?: boolean;
+      messageKind?: 'reply' | 'health-alert' | 'unknown';
+      jargon?: boolean;
+    },
+  ): Promise<boolean> {
+    // ── Self-Violation Signal (OBSERVE-ONLY) ──────────────────────────
+    // Record — but NEVER act on — the case where this finalized outbound message
+    // contradicts a stored preference. Fire-and-forget VOID, structurally
+    // independent of the decision and of this function's return value: it cannot
+    // block, delay, or rewrite the message. Stays route-side (NOT in
+    // evaluateOutbound) — there is nothing for it to catch on the proactive-digest
+    // path, and keeping it here preserves byte-identical behavior for callers.
+    void observeSelfViolation(text, options.topicId).catch(() => {
+      /* @silent-fallback-ok — observe-only; a detector error never affects delivery */
+    });
+    // ── Principal-Coherence Signal (OBSERVE-ONLY) ─────────────────────
+    // Same fire-and-forget VOID contract for the operator-role / principal
+    // identity-bleed ("Caroline") case. Route-side for the same reason.
+    void observePrincipalCoherence(text, options.topicId).catch(() => {
+      /* @silent-fallback-ok — observe-only; a detector error never affects delivery */
+    });
+
+    const decision = await evaluateOutbound(text, channel, options);
+    if (!decision.ok) {
+      res.status(decision.status).json(decision.body);
+      return true;
+    }
     return false;
   }
+
+  /**
+   * Shared guarded delivery to the Agent Updates topic — the proactive growth
+   * digest publisher's `send`. Resolves the Updates topic server-side (never a
+   * fallback topic, mirroring the /telegram/post-update 400), runs the SAME
+   * `evaluateOutbound` chokepoint as the route, then sends. Returns a flat
+   * DeliveryResult and never throws — a guard block is a normal, non-error
+   * outcome that the publisher records and never re-acts on.
+   */
+  async function postToUpdatesTopic(
+    text: string,
+    opts?: { allowDuplicate?: boolean; allowDebugText?: boolean },
+  ): Promise<{ ok: boolean; reason?: string }> {
+    if (!ctx.telegram) return { ok: false, reason: 'telegram-not-configured' };
+    const updatesTopicId = ctx.state.get<number>('agent-updates-topic');
+    if (!updatesTopicId || typeof updatesTopicId !== 'number') {
+      return { ok: false, reason: 'no-updates-topic' };
+    }
+    if (typeof text !== 'string' || text.length === 0) return { ok: false, reason: 'empty-text' };
+    if (text.length > 4096) return { ok: false, reason: 'too-long' };
+    const decision = await evaluateOutbound(text, 'telegram', {
+      topicId: updatesTopicId,
+      allowDebugText: opts?.allowDebugText === true,
+      allowDuplicate: opts?.allowDuplicate === true,
+    });
+    if (!decision.ok) return { ok: false, reason: decision.reason };
+    try {
+      await ctx.telegram.sendToTopic(updatesTopicId, text);
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, reason: err instanceof Error ? err.message : 'send-error' };
+    }
+  }
+
+  // Attach the shared guarded sender to the growth-digest publisher (if wired).
+  // Runs once at route registration — the publisher was constructed + started in
+  // AgentServer; this is the §3.3 single-funnel hookup, so the publisher can never
+  // reach sendToTopic without passing through the identical evaluateOutbound.
+  ctx.growthDigestPublisher?.attachSender((text: string) => postToUpdatesTopic(text));
 
   /**
    * Self-Violation Signal — OBSERVE-ONLY (Correction & Preference Learning

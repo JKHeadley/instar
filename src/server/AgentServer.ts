@@ -64,6 +64,7 @@ import { CiFailurePoller } from '../monitoring/CiFailurePoller.js';
 import { RevertDetector } from '../monitoring/RevertDetector.js';
 import { CorrectionLedger } from '../monitoring/CorrectionLedger.js';
 import { GrowthMilestoneAnalyst, resolveGrowthSettings } from '../monitoring/GrowthMilestoneAnalyst.js';
+import { GrowthDigestPublisher, createGrowthDigestAuditSink } from '../monitoring/GrowthDigestPublisher.js';
 import { ApprenticeshipProgram } from '../core/ApprenticeshipProgram.js';
 import { ApprenticeshipCycleStore } from '../monitoring/ApprenticeshipCycleStore.js';
 import { ApprenticeshipCycleSlaMonitor } from '../monitoring/ApprenticeshipCycleSlaMonitor.js';
@@ -219,6 +220,7 @@ export class AgentServer {
   private revertDetector: RevertDetector | null = null;
   private correctionLedger: CorrectionLedger | null = null;
   private growthMilestoneAnalyst: GrowthMilestoneAnalyst | null = null;
+  private growthDigestPublisher: GrowthDigestPublisher | null = null;
   private apprenticeshipProgram: ApprenticeshipProgram | null = null;
   private apprenticeshipCycleStore: ApprenticeshipCycleStore | null = null;
   private apprenticeshipCycleSlaMonitor: ApprenticeshipCycleSlaMonitor | null = null;
@@ -1327,6 +1329,61 @@ export class AgentServer {
       this.growthMilestoneAnalyst = null;
     }
 
+    // GrowthDigestPublisher (Slice 2 — docs/specs/PROACTIVE-GROWTH-DIGEST-PUBLISHER-SLICE2-SPEC.md)
+    // — the cadence + delivery VOICE for the analyst above. Constructed ONLY when
+    // the analyst exists AND digestDelivery !== 'off' (the default 'off' means
+    // merging the code sends nothing). Lease-gated so only the awake machine sends
+    // (an in-process cron runs on BOTH the awake and standby machine — §3.7). The
+    // guarded sender (postToUpdatesTopic) is attached later at route registration,
+    // so the publisher can never reach sendToTopic without the shared
+    // evaluateOutbound funnel. Own try/catch so an init failure can never cascade.
+    const digestDelivery = options.config.monitoring?.growthAnalyst?.digestDelivery ?? 'off';
+    try {
+      if (this.growthMilestoneAnalyst && digestDelivery !== 'off' && options.config.stateDir) {
+        const analyst = this.growthMilestoneAnalyst;
+        const stateRoot = options.config.stateDir;
+        const auditSink = createGrowthDigestAuditSink(stateRoot);
+        const supersededJobPath = path.join(stateRoot, 'jobs', 'schedule', 'initiative-digest-review.json');
+        this.growthDigestPublisher = new GrowthDigestPublisher({
+          buildDigest: (now) => analyst.buildDigest(now),
+          cron: options.config.monitoring?.growthAnalyst?.digestCron ?? '0 11 * * 1',
+          timezone: options.config.monitoring?.growthAnalyst?.digestTimezone,
+          mode: digestDelivery,
+          sendOnCalmWeeks: options.config.monitoring?.growthAnalyst?.digestSendOnCalmWeeks === true,
+          // Multi-machine lease gate. MultiMachineCoordinator.isAwake is a GETTER
+          // (not a method); the single-machine no-op keys on `.enabled`, matching
+          // the server.ts scheduler / ActivitySentinel precedents.
+          isAwake: () => (options.coordinator?.enabled ? options.coordinator.isAwake : true),
+          audit: auditSink.write,
+          recordedWindows: auditSink.recordedWindows,
+          // §3.5 belt: a SIGNAL (never a mutation) on a live send while the
+          // superseded initiative-digest-review job is still enabled. The durable
+          // supersede flips the SOURCE template at the live-flip (a later change);
+          // this read is the awareness backstop. Enabled flag lives in the
+          // schedule manifest (the update-preserved one), not the .md template.
+          supersededJobStillEnabled: () => {
+            try {
+              const m = JSON.parse(fs.readFileSync(supersededJobPath, 'utf-8')) as { enabled?: boolean };
+              return m.enabled === true;
+            } catch {
+              // @silent-fallback-ok — a missing/unreadable supersede manifest is an
+              // expected state (no job installed); not-conflicting is the correct
+              // read, not a degradation. The belt is a one-time awareness signal only.
+              return false;
+            }
+          },
+          onError: (where, err) => console.warn(`[GrowthDigestPublisher] ${where}:`, err),
+        });
+        this.growthDigestPublisher.start(); // sender attached at route registration
+      }
+    } catch (err) {
+      // @silent-fallback-ok — mirrors the sibling component-init guards above; the
+      // publisher is a non-critical observe-only-derived component, so nulling it on
+      // an init failure (logged here) is the safe direction, never a degradation.
+      console.warn('[instar] growth-digest-publisher init failed (non-fatal):', err);
+      this.growthDigestPublisher = null;
+    }
+
     // Apprenticeship Program (Step 1) — the instance-as-project registry + the
     // retro-gate (pending→active) and doc-as-required-artifact gate
     // (active→complete). Ships ON (additive, passive registry; no config flag —
@@ -1647,6 +1704,7 @@ export class AgentServer {
       failureAttributionEngine: this.failureAttributionEngine,
       correctionLedger: this.correctionLedger,
       growthMilestoneAnalyst: this.growthMilestoneAnalyst,
+      growthDigestPublisher: this.growthDigestPublisher,
       apprenticeshipProgram: this.apprenticeshipProgram,
       apprenticeshipCycleStore: this.apprenticeshipCycleStore,
       apprenticeshipCycleSlaMonitor: this.apprenticeshipCycleSlaMonitor,
@@ -3175,6 +3233,11 @@ export class AgentServer {
     if (this.parallelWorkSentinelTimer) {
       try { clearInterval(this.parallelWorkSentinelTimer); } catch { /* best-effort */ }
       this.parallelWorkSentinelTimer = null;
+    }
+    // Stop the growth-digest publisher's cron + pending catch-up timer.
+    if (this.growthDigestPublisher) {
+      try { this.growthDigestPublisher.stop(); } catch { /* @silent-fallback-ok — best-effort teardown at shutdown */ }
+      this.growthDigestPublisher = null;
     }
     this.parallelWorkSentinel = null;
     if (this.resourceLedger) {

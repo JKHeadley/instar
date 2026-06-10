@@ -32,6 +32,8 @@ import path from 'node:path';
 import { TelegramAdapter } from '../../src/messaging/TelegramAdapter.js';
 import { TopicFloodBudgetError, DEFAULT_ATTENTION_TOPIC_GUARD } from '../../src/messaging/AttentionTopicGuard.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { formatDigest } from '../../src/monitoring/GrowthDigestPublisher.js';
+import type { GrowthDigest, GrowthFinding } from '../../src/monitoring/GrowthMilestoneAnalyst.js';
 
 interface Recorder {
   forumTopicsCreated: number;
@@ -212,5 +214,42 @@ describe('Notification-flood burst invariant (production-default budgets)', () =
     expect(rec.forumTopicsCreated).toBe(before + 1); // its own topic, no refusal
     expect(urgent.topicId).toBeDefined();
     expect(urgent.coalesced).not.toBe(true);
+  });
+});
+
+// ── Growth digest — aggregation invariant ─────────────────────────────────────
+//
+// The GrowthDigestPublisher is exactly the "feature that notifies per-element over
+// a collection" the Bounded Notification Surface standard targets. It MUST
+// aggregate: ONE message for a 500-finding burst, never one-per-finding (and it
+// has no per-element topic path at all — it sends ONE message into the existing
+// Updates topic). This pins the render-level invariant that protects the bound.
+
+describe('Growth digest aggregation invariant (500 findings → one bounded message)', () => {
+  function finding(rule: GrowthFinding['rule'], priority: GrowthFinding['priority'], i: number): GrowthFinding {
+    return { rule, priority, subjectId: `${rule}-${i}`, title: `${rule} item ${i}`, detail: 'No movement.', suggestedAction: 'review' };
+  }
+  function burstDigest(): GrowthDigest {
+    const bulk = Array.from({ length: 500 }, (_, i) => finding('R3', 'low', i));
+    const high = finding('R3', 'high', 9999);
+    high.title = 'CRITICAL — decide now';
+    return {
+      generatedAt: '2026-06-08T11:00:00.000Z',
+      calm: false,
+      summary: 'Growth digest: 501 stalling.',
+      findings: [...bulk, high],
+      counts: { incubating: 0, promotionReady: 0, expiredUnproven: 0, stalling: 501, specPatterns: 0, correctionPatterns: 0, devGateDark: 0 },
+    };
+  }
+
+  it('renders exactly ONE message, ≤4096 chars, with the high-priority finding never truncated', () => {
+    const text = formatDigest(burstDigest());
+    // ONE message (a single string — not an array/stream of per-finding messages).
+    expect(typeof text).toBe('string');
+    expect(text.length).toBeLessThanOrEqual(4096);
+    // The bulk overflowed into a "+N more" summary line, never a wall of 500.
+    expect(text).toContain('more (see full digest)');
+    // The high-priority finding is rendered in full despite the burst.
+    expect(text).toContain('CRITICAL — decide now');
   });
 });

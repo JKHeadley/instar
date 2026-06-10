@@ -1,0 +1,63 @@
+# The growth analyst can now proactively check in (ships dark)
+
+## What Changed
+
+The growth analyst (`GrowthMilestoneAnalyst`) has, since Slice 1, *computed* a full growth
+picture — stalling initiatives (R3), features that earned promotion (R1), incubation
+windows that expired unproven (R2), spec approve-vs-change patterns (R4), recurring
+corrections (R5), and dev-gate conformance (R6) — but nothing ever *sent* it. This slice
+adds the voice: `GrowthDigestPublisher` (`src/monitoring/GrowthDigestPublisher.ts`), an
+in-process component that, on the existing `monitoring.growthAnalyst.digestCron` cadence
+(default Monday 11:00), formats ONE consolidated "growth check-in" and routes it to the
+Agent Updates topic through the same flood-guarded path `/telegram/post-update` uses.
+
+To guarantee the publisher cannot bypass the dedup/budget/tone guards, the change carves a
+pure `res`-free `evaluateOutbound` funnel out of `checkOutboundMessage` and adds a
+`postToUpdatesTopic` helper the route and the publisher both share — one guarded chokepoint,
+not two. Hardening from the 8-reviewer convergence: a multi-machine lease gate (`isAwake`)
+so an in-process cron never double-sends on a paired agent, calm-week silence by default,
+missed-run catch-up (idempotent on the window ISO), a cadence sanity-floor, an in-flight
+guard, and a render-boundary secret-scrub with high-priority findings never abbreviated.
+
+It ships **dark**: `monitoring.growthAnalyst.digestDelivery` defaults to `'off'` — even on a
+development agent — so merging the code sends nothing. The rollout path is
+`off → dry-run (logs the would-send sample to logs/growth-digest.jsonl) → live`, opt-in by
+the operator, dogfooded on Echo first. The fleet stays off.
+
+## What to Tell Your User
+
+Nothing changes yet — this ships off by default, so no message is sent when it merges. Once
+you ask me to turn it on, I'll start in a quiet "show me what you'd send" mode and only go
+live once you're happy with a sample. From then on I post one short weekly growth check-in to
+your Agent Updates topic: a consolidated summary of what's waiting on you, what's ready to
+promote, and what's drifting — never a wall of items (big lists collapse to the top few with
+a "plus N more"), and I stay silent on a fully-calm week unless you ask me to send a steady
+heartbeat. I can only send the message or stay quiet — I never block or rewrite anything. You
+can also just ask me for the same picture on demand any time.
+
+## Summary of New Capabilities
+
+- `GrowthDigestPublisher` — cadenced, lease-gated, deterministic-format proactive growth
+  check-in to the Agent Updates topic (ships dark behind `digestDelivery`).
+- `monitoring.growthAnalyst.digestDelivery` (`off` | `dry-run` | `live`, default `off`),
+  `digestSendOnCalmWeeks` (default `false`), `digestTimezone` (default `UTC`).
+- A shared, `res`-free `evaluateOutbound` outbound-guard funnel + `postToUpdatesTopic`
+  helper — one chokepoint the route and the publisher both pass through.
+
+## Evidence
+
+- `src/monitoring/GrowthDigestPublisher.ts` — the publisher, pure `formatDigest`, and the
+  `logs/growth-digest.jsonl` audit sink.
+- `src/server/routes.ts` — `evaluateOutbound` (pure funnel), `checkOutboundMessage` (thin
+  adapter), `postToUpdatesTopic` (the publisher's guarded sender), `attachSender` hookup.
+- `src/server/AgentServer.ts` — construction gate (`analyst && digestDelivery !== 'off'`),
+  lease gate (`isAwake`), `.stop()` teardown.
+- 3-tier tests + wiring-integrity + burst-invariant: `tests/unit/GrowthDigestPublisher.test.ts`
+  (21), `tests/integration/growth-digest-publisher{,-wiring}.test.ts` (10),
+  `tests/e2e/growth-digest-publisher-lifecycle.test.ts` (3), and the growth-digest aggregation
+  block added to `tests/integration/notification-flood-burst-invariant.test.ts`.
+- The pre-existing outbound-guard route suites (`post-update-gate-budget-route`,
+  `localhost-link-guard-route`, `outbound-content-dedup-route`, `outbound-gate-budget`) pass
+  unchanged — the `evaluateOutbound` extraction is behavior-preserving.
+- Side-effects review: `upgrades/side-effects/proactive-growth-digest-publisher-slice2.md`.
+- Spec: `docs/specs/PROACTIVE-GROWTH-DIGEST-PUBLISHER-SLICE2-SPEC.md` (converged + approved).

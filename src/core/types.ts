@@ -4236,6 +4236,19 @@ export interface MonitoringConfig {
     enabled?: boolean;
     /** Cron for the weekly digest (later slice; default '0 11 * * 1'). */
     digestCron?: string;
+    /** Slice 2 (GrowthDigestPublisher) delivery stage: 'off' (default — merging
+     *  the code sends nothing), 'dry-run' (log the would-send sample to
+     *  logs/growth-digest.jsonl, no Telegram), 'live' (send one weekly check-in to
+     *  the Agent Updates topic). Honors dark → dry-run → live maturity. */
+    digestDelivery?: 'off' | 'dry-run' | 'live';
+    /** IANA timezone for the digest cron fire AND the rendered header date
+     *  (default 'UTC') so "Monday 11:00" and the printed date agree. */
+    digestTimezone?: string;
+    /** Send the weekly digest on a fully-calm week (default false — a no-action
+     *  "all healthy" heartbeat is the exact noise burnDetection was killed for;
+     *  opt in for a steady heartbeat). Decoupled from `digestEvenWhenCalm`, which
+     *  only governs whether the digest OBJECT/API renders a calm summary. */
+    digestSendOnCalmWeeks?: boolean;
     /** Incubation windows in DAYS per risk tier (defaults 3 / 7 / 7). */
     incubationWindows?: {
       lowRisk?: number;
