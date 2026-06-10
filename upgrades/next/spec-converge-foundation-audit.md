@@ -1,0 +1,47 @@
+# spec-converge now audits the foundation a spec is built on, not just the spec
+
+## What Changed
+
+The `/spec-converge` review's Lessons-aware reviewer gained a new mandate — clause
+**(d) FOUNDATION/SUBSYSTEM AUDIT**: the review must now reach one layer below the spec
+boundary and weigh the subsystem the spec *tests, extends, or builds on* against known
+standards and lessons, not just the spec's own surface. When that foundation is flawed,
+the finding is "this spec is sound but the subsystem it depends on violates standard X /
+repeats mistake Y — surface it before building on/around it."
+
+This closes a real review gap (2026-06-09): a test-harness spec converged cleanly while
+the permission gate it proved still held brittle blocking authority in violation of
+Signal-vs-Authority. The convergence audited only the harness and took the flawed
+foundation as given. A new idempotent `PostUpdateMigrator` step
+(`migrateSpecConvergeFoundationAudit`) backfills the clause into existing agents'
+installed spec-converge skill on update (fingerprint-guarded; customized skills are left
+untouched).
+
+## What to Tell Your User
+
+Nothing changes for end users — this is an internal hardening of the instar
+spec-review process used by instar-developing agents. No runtime behavior, gate, or
+message path changes. The practical effect is that future instar specs are reviewed one
+layer deeper, so a spec can no longer pass review while quietly testing or extending a
+component that itself violates a standard.
+
+## Summary of New Capabilities
+
+- `/spec-converge` Lessons-aware reviewer clause (d): foundation/subsystem audit one
+  layer below the spec boundary.
+- `PostUpdateMigrator.migrateSpecConvergeFoundationAudit`: idempotent, fingerprint-guarded
+  backfill of the clause for existing agents (customized skills untouched).
+
+## Evidence
+
+- `skills/spec-converge/SKILL.md` — clause (d) added to the Lessons-aware bullet.
+- `src/core/PostUpdateMigrator.ts` — `migrateSpecConvergeFoundationAudit` registered in
+  the migrate runner; mirrors the established fingerprint-guarded skill-content migration
+  idiom (`migrateInstarDevInternalOnlyReleaseNoteLane`, `migrateTestAsSelfSkill`).
+- `tests/unit/migrate-spec-converge-foundation-audit.test.ts` — 5 tests: updates a stock
+  skill, idempotent when the marker is present, leaves a customized skill untouched,
+  no-ops when not installed, and a wiring-integrity test asserting the bundled source
+  actually carries the marker (so the migration cannot silently no-op for every agent).
+- `tsc --noEmit` clean; sibling skill-migration + builtin-dev-skills suites green (19
+  tests across the touched area).
+- Side-effects review: `upgrades/side-effects/spec-converge-foundation-audit.md`.
