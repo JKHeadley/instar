@@ -914,6 +914,8 @@ user-usable.
 | POST | `/subscription-pool/poll` | Poll every account's live quota now (writes each account's `lastQuota`) |
 | GET | `/subscription-pool/:id/quota` | Read an account's latest quota snapshot + measured burn rate |
 | POST | `/subscription-pool/swap` | Resume a session on another eligible account (continuity guarantee — never dies on a quota limit). Body: `sessionName`, `exhaustedAccountId` |
+| GET | `/subscription-pool/proactive-swap` | Pre-limit swap monitor status — `thresholdPct`, `watchPct`, `maxSwapsPerCycle`, `cooldownMs`, `running`, `lastResult`. `200 { enabled:false }` when the monitor is dark. |
+| POST | `/subscription-pool/proactive-swap/check` | Run one proactive pass now (refresh the poll if near the wall, then pre-emptively swap at-pressure sessions). The deterministic "show me it works" lever. |
 | POST | `/subscription-pool/enroll` | Start a mobile-first new-account login. Body: `id`, `label`, `provider`, `framework`, optional `kind`, `configHome`. Returns the pending login (public code/URL + TTL — never a token). |
 | GET | `/subscription-pool/pending-logins` | The "Pending Logins" surface — active logins awaiting approval (code/URL + TTL). |
 | POST | `/subscription-pool/enroll/:id/complete` | Mark a login completed once the operator approved + the account enrolled. |
@@ -922,9 +924,16 @@ user-usable.
 The quota-aware scheduler picks accounts reset-date-optimally ("use before reset")
 and guarantees a long-lived session that hits its account's quota resumes on
 another account (via `claude --resume`, which is account-agnostic, so the
-conversation is preserved) rather than dying. Auto-swap on rate-limit detection
-ships dark behind `subscriptionPool.autoSwapOnRateLimit` in `.instar/config.json`;
-the swap route above is the manual lever.
+conversation is preserved) rather than dying. There are two automatic swap
+triggers, both dark by default in `.instar/config.json`: the **reactive** swap
+(`subscriptionPool.autoSwapOnRateLimit`) fires AFTER a rate-limit escalation, and
+the **proactive** pre-limit swap (`subscriptionPool.proactiveSwap.enabled`) moves a
+session OFF an account BEFORE it walls, at a lag-aware measured `thresholdPct`
+(default 80 — below the real limit because the polled reading trails real usage).
+The proactive monitor resolves an UNTAGGED session's effective account from the
+default-config login, so the primary interactive session is swap-visible instead
+of wedging at the wall. The `/subscription-pool/swap` route is the manual lever;
+`/subscription-pool/proactive-swap/check` runs one proactive pass on demand.
 
 These routes are backed by three core classes: `SubscriptionPool` (the durable
 account registry — login location only, never tokens), `QuotaPoller` (the
@@ -960,6 +969,10 @@ curl -H "Authorization: Bearer $AUTH" http://localhost:4040/subscription-pool/cl
 # Manually swap a session off a quota-exhausted account (continuity preserved)
 curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:4040/subscription-pool/swap \
   -d '{"sessionName":"my-session","exhaustedAccountId":"claude-personal"}'
+
+# Proactive pre-limit swap: check status, then run one pass on demand
+curl -H "Authorization: Bearer $AUTH" http://localhost:4040/subscription-pool/proactive-swap
+curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:4040/subscription-pool/proactive-swap/check
 ```
 
 ## /views
