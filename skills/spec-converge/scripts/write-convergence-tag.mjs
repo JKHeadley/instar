@@ -46,6 +46,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { checkEli16Overview } from '../../../scripts/eli16-overview-check.mjs';
 
 function parseArgs() {
@@ -56,6 +57,11 @@ function parseArgs() {
     report: null,
     crossModelReview: null,
     crossModelReason: null,
+    // Decision-Completeness counts (Autonomy Principle 2, Piece 2). Optional —
+    // when provided, the spec earns `single-run-completable: true` + the counts.
+    frontloadedDecisions: null,
+    cheapTags: null,
+    contestedCleared: null,
   };
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
@@ -64,6 +70,9 @@ function parseArgs() {
     else if (a === '--report') out.report = args[++i];
     else if (a === '--cross-model-review') out.crossModelReview = args[++i];
     else if (a === '--cross-model-reason') out.crossModelReason = args[++i];
+    else if (a === '--frontloaded-decisions') out.frontloadedDecisions = parseInt(args[++i], 10);
+    else if (a === '--cheap-tags') out.cheapTags = parseInt(args[++i], 10);
+    else if (a === '--contested-cleared') out.contestedCleared = parseInt(args[++i], 10);
     else {
       console.error(`Unknown arg: ${a}`);
       process.exit(1);
@@ -72,22 +81,79 @@ function parseArgs() {
   if (!out.spec || !out.report || !Number.isFinite(out.iterations)) {
     console.error(
       'Usage: write-convergence-tag.mjs --spec PATH --iterations N --report PATH ' +
-        '[--cross-model-review VALUE] [--cross-model-reason REASON]',
+        '[--cross-model-review VALUE] [--cross-model-reason REASON] ' +
+        '[--frontloaded-decisions N --cheap-tags N --contested-cleared N]',
     );
     process.exit(1);
   }
   return out;
 }
 
+/**
+ * Decision-Completeness convergence criterion 2 (Autonomy Principle 2):
+ * a spec CANNOT converge while an unresolved user-decision remains in
+ * `## Open questions`. Returns the list of unresolved entry lines (empty = ok).
+ *
+ * Resolution markers that do NOT count as unresolved:
+ *   - a none-marker line: `*(none)*`, `(none)`, `None`, `None.`, `N/A`
+ *   - blockquote commentary (`> …`) explaining the section
+ *   - blank lines / horizontal rules
+ * Anything else with content (e.g. a `- **Q1:** …` bullet or a paragraph posing
+ * a question) is an unresolved entry.
+ */
+export function findOpenQuestions(specBody) {
+  // \b…[^\n]*$ (not \s*$) so heading variants like "## Open questions (round 2)"
+  // or "## Open Questions & Decisions" are still recognized — a variant heading
+  // must not make the section invisible to the gate (reviewer finding, PR 2).
+  const m = specBody.match(/^##\s+Open questions\b[^\n]*$/im);
+  if (!m) return []; // no section → nothing parked on the user
+  const start = m.index + m[0].length;
+  const restAfter = specBody.slice(start);
+  const nextHeading = restAfter.search(/^##\s+/m);
+  const section = nextHeading === -1 ? restAfter : restAfter.slice(0, nextHeading);
+  const NONE_RE = /^\s*[*_]*\(?\s*(none|n\/a)\s*\.?\)?[*_]*\s*$/i;
+  return section
+    .split('\n')
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0)
+    .filter((l) => !l.startsWith('>')) // blockquote commentary
+    .filter((l) => !/^-{3,}$/.test(l)) // horizontal rule
+    .filter((l) => !NONE_RE.test(l));
+}
+
+// ─── main (guarded so the module is importable for tests) ────────────────
+// fileURLToPath (not URL.pathname) so %-encoded paths (spaces) compare correctly,
+// and realpathSync so a symlinked invocation still matches — a mismatch here
+// would otherwise silently exit 0 having done NOTHING (fail-loud lesson).
+const IS_MAIN = (() => {
+  if (!process.argv[1]) return false;
+  try {
+    return (
+      fs.realpathSync(path.resolve(process.argv[1])) ===
+      fs.realpathSync(fileURLToPath(import.meta.url))
+    );
+  } catch {
+    // @silent-fallback-ok — an unresolvable argv path simply isn't this module.
+    return false;
+  }
+})();
+if (IS_MAIN) {
+  main();
+}
+
+function main() {
 const {
   spec: specArg,
   iterations,
   report: reportArg,
   crossModelReview,
   crossModelReason,
+  frontloadedDecisions,
+  cheapTags,
+  contestedCleared,
 } = parseArgs();
 
-const ROOT = path.resolve(new URL('../../..', import.meta.url).pathname);
+const ROOT = path.resolve(fileURLToPath(new URL('../../..', import.meta.url)));
 const specPath = path.resolve(ROOT, specArg);
 const reportPath = path.resolve(ROOT, reportArg);
 
@@ -130,6 +196,21 @@ if (!_eli16Result.ok) {
   process.exit(1);
 }
 
+// ─── Open-questions gate (Decision-Completeness, Autonomy Principle 2) ────
+// Convergence criterion 2: a spec CANNOT converge while an unresolved
+// user-decision remains in `## Open questions`. Structural — prose can't skip it.
+const openQuestions = findOpenQuestions(content);
+if (openQuestions.length > 0) {
+  console.error(
+    `Spec ${specArg} still has ${openQuestions.length} unresolved entr${openQuestions.length === 1 ? 'y' : 'ies'} in ## Open questions:\n` +
+      openQuestions.map((q) => `  • ${q.slice(0, 120)}`).join('\n') +
+      `\n\nA spec cannot converge while a user-decision is still open (Autonomy Principle 2).\n` +
+      `Resolve each into ## Frontloaded Decisions (or a contested-and-surviving\n` +
+      `cheap-to-change-after tag), leave the section reading "*(none)*", then re-run.`,
+  );
+  process.exit(1);
+}
+
 // Parse YAML frontmatter manually (no dependency).
 // Expect: /^---\n<body>\n---\n<rest>/
 const FM_RE = /^---\n([\s\S]*?)\n---\n([\s\S]*)$/;
@@ -143,8 +224,9 @@ if (!match) {
 }
 const [, fmBody, rest] = match;
 
-// Strip any existing managed lines (review-* chain + cross-model-review chain)
-// so re-runs are idempotent — the field is rewritten, never duplicated.
+// Strip any existing managed lines (review-* chain + cross-model-review chain +
+// the single-run-completable chain) so re-runs are idempotent — the field is
+// rewritten, never duplicated.
 const preservedLines = fmBody
   .split('\n')
   .filter(
@@ -154,7 +236,11 @@ const preservedLines = fmBody
       !/^\s*review-completed-at\s*:/.test(l) &&
       !/^\s*review-report\s*:/.test(l) &&
       !/^\s*cross-model-review\s*:/.test(l) &&
-      !/^\s*cross-model-review-reason\s*:/.test(l),
+      !/^\s*cross-model-review-reason\s*:/.test(l) &&
+      !/^\s*single-run-completable\s*:/.test(l) &&
+      !/^\s*frontloaded-decisions\s*:/.test(l) &&
+      !/^\s*cheap-to-change-tags\s*:/.test(l) &&
+      !/^\s*contested-then-cleared\s*:/.test(l),
   )
   .join('\n')
   .trim();
@@ -186,6 +272,25 @@ if (crossModelReview) {
   }
 }
 
+// Decision-Completeness evidence (Autonomy Principle 2). The tag is EARNED:
+// it is only written here, after the open-questions gate above passed, and it
+// carries the reviewer's final-round counts so a downstream reader sees WHAT
+// was frontloaded, not just that a boolean is true.
+if (
+  Number.isFinite(frontloadedDecisions) ||
+  Number.isFinite(cheapTags) ||
+  Number.isFinite(contestedCleared)
+) {
+  newFmLines.push('single-run-completable: true');
+  if (Number.isFinite(frontloadedDecisions)) {
+    newFmLines.push(`frontloaded-decisions: ${frontloadedDecisions}`);
+  }
+  if (Number.isFinite(cheapTags)) newFmLines.push(`cheap-to-change-tags: ${cheapTags}`);
+  if (Number.isFinite(contestedCleared)) {
+    newFmLines.push(`contested-then-cleared: ${contestedCleared}`);
+  }
+}
+
 const newFm = newFmLines.join('\n');
 
 const newContent = `---\n${newFm}\n---\n${rest}`;
@@ -197,3 +302,4 @@ console.log(
     `  review-iterations=${iterations}\n` +
     `  review-report=${reportRel}`,
 );
+}
