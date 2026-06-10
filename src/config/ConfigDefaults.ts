@@ -77,6 +77,16 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
     socketDisconnectSentinel: {
       enabled: true,
     },
+    // ActiveWorkSilenceSentinel — detect a session that was working then went
+    // silent → nudge → escalate. ONLY the detection switch is persisted here
+    // (default-ON is stable; it kills nothing). The destructive auto-heal flag
+    // `autoRecover` (respawn the stalled session) is DELIBERATELY OMITTED for
+    // the same reason as ContextWedgeSentinel.autoRecovery above: applyDefaults()
+    // is add-missing-only, so persisting `autoRecover: false` now would freeze it
+    // and a later default-on flip could never reach existing agents. The dark
+    // default lives as the runtime fallback in server.ts (`autoRecover === true`).
+    // Graduated-Feature-Rollout promotion = flip that runtime check's effect and
+    // add `autoRecover: true` here so new agents + the rollout observer see it.
     activeWorkSilenceSentinel: {
       enabled: true,
     },

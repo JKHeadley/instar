@@ -3603,6 +3603,16 @@ export interface MonitoringConfig {
     silenceThresholdMs?: number;
     /** Wait after the nudge before escalating (ms) (default: 30_000). */
     verifyWindowMs?: number;
+    /**
+     * Auto-heal ladder (DARK, default: false). When true, a confirmed-silent
+     * session that doesn't respond to the nudge is respawned fresh
+     * (conversation preserved via --resume) instead of only asking the user.
+     * The respawn is loop-capped by maxAutoRecoveries, and a failed respawn
+     * leaves a recovery-failed state so it never re-fires on the same session.
+     */
+    autoRecover?: boolean;
+    /** Max auto-respawn attempts per session before falling back to asking (default: 1). */
+    maxAutoRecoveries?: number;
   };
   /**
    * BurnDetection — the token-burn detection + bounded auto-heal system
