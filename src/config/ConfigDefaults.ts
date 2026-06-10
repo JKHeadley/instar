@@ -620,6 +620,12 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       markerFieldMaxChars: 500,
     },
   },
+  // Cartographer doc-tree — hierarchical semantic map with git-hash staleness
+  // (cartographer-doc-tree-schema spec #1). Ships dark; routes 503 when disabled.
+  cartographer: {
+    enabled: false,
+    maxDepth: 12,
+  },
 };
 
 /**

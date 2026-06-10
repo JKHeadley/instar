@@ -253,6 +253,7 @@ export class AgentServer {
     topicMemory?: TopicMemory;
     feedbackAnomalyDetector?: FeedbackAnomalyDetector;
     projectMapper?: import('../core/ProjectMapper.js').ProjectMapper;
+    cartographer?: import('../core/CartographerTree.js').CartographerTree;
     coherenceGate?: import('../core/ScopeVerifier.js').ScopeVerifier;
     contextHierarchy?: import('../core/ContextHierarchy.js').ContextHierarchy;
     canonicalState?: import('../core/CanonicalState.js').CanonicalState;
@@ -1445,6 +1446,7 @@ export class AgentServer {
       topicMemory: options.topicMemory ?? null,
       feedbackAnomalyDetector: options.feedbackAnomalyDetector ?? null,
       projectMapper: options.projectMapper ?? null,
+      cartographer: options.cartographer ?? null,
       coherenceGate: options.coherenceGate ?? null,
       contextHierarchy: options.contextHierarchy ?? null,
       canonicalState: options.canonicalState ?? null,

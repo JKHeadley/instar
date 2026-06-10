@@ -17,6 +17,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { SafeGitExecutor } from './SafeGitExecutor.js';
+import { DEFAULT_SKIP_DIRS } from './skipDirs.js';
 
 export interface ProjectMapConfig {
   /** Project root directory */
@@ -86,11 +87,8 @@ export interface RelatedWorktreeSummary {
   keyDirectories: string[];
 }
 
-const DEFAULT_SKIP_DIRS = new Set([
-  'node_modules', '.git', 'dist', 'build', '.next', '.vercel',
-  '.turbo', '.cache', 'coverage', '.nyc_output', '__pycache__',
-  '.instar', '.claude', '.agent-kit',
-]);
+// DEFAULT_SKIP_DIRS now lives in ./skipDirs.ts — one shared source of truth for
+// repo-structure walkers (ProjectMapper + CartographerTree), so they cannot drift.
 
 const KEY_FILE_PATTERNS = [
   'package.json', 'tsconfig.json',

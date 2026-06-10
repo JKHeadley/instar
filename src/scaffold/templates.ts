@@ -916,6 +916,7 @@ This is the structural enforcement gate: questions about how the system works MU
 | How does X work? | \`instar X --help\` or \`instar help X\` | CLI self-documents every command |
 | What context do I have? | \`curl -s -H "Authorization: Bearer $AUTH" http://localhost:${port}/context/dispatch\` | The context dispatch table |
 | What's my project structure? | \`curl -s -H "Authorization: Bearer $AUTH" http://localhost:${port}/project-map?format=compact\` | Auto-generated project map |
+| What does each part of the code DO? | \`curl -s -H "Authorization: Bearer $AUTH" http://localhost:${port}/cartographer/tree?format=compact\` | Semantic doc-tree map w/ staleness (when cartographer enabled) |
 
 **The rule is absolute**: If you haven't run at least ONE lookup command before answering an architecture question, you are guessing. Guessing about your own infrastructure is incoherent — you have the tools to KNOW. Use them.
 

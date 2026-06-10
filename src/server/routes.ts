@@ -169,6 +169,7 @@ import type { OrphanProcessReaper } from '../monitoring/OrphanProcessReaper.js';
 import type { TopicMemory } from '../memory/TopicMemory.js';
 import type { FeedbackAnomalyDetector } from '../monitoring/FeedbackAnomalyDetector.js';
 import type { ProjectMapper } from '../core/ProjectMapper.js';
+import type { CartographerTree } from '../core/CartographerTree.js';
 import { verifyMergedItemsViaGit } from '../core/ProjectRoundExecution.js';
 import type { ProjectDriftChecker } from '../core/ProjectDriftChecker.js';
 import type { ScopeVerifier } from '../core/ScopeVerifier.js';
@@ -578,6 +579,7 @@ export interface RouteContext {
   topicMemory: TopicMemory | null;
   feedbackAnomalyDetector: FeedbackAnomalyDetector | null;
   projectMapper: ProjectMapper | null;
+  cartographer?: CartographerTree | null;
   coherenceGate: ScopeVerifier | null;
   contextHierarchy: ContextHierarchy | null;
   canonicalState: CanonicalState | null;
@@ -4013,6 +4015,48 @@ export function createRoutes(ctx: RouteContext): Router {
     } else {
       res.json(map);
     }
+  });
+
+  // Cartographer doc-tree — hierarchical, semantic map of the codebase with
+  // git-hash staleness derivation (cartographer-doc-tree-schema spec #1). Ships
+  // dark behind cartographer.enabled (503 when disabled). Read-only — authoring
+  // is in-process only. Routes lazy-scaffold the structural skeleton on first use.
+  router.get('/cartographer/tree', (req, res) => {
+    if (!ctx.cartographer) { res.status(503).json({ error: 'Cartographer not enabled' }); return; }
+    let index = ctx.cartographer.loadIndex();
+    if (!index) index = ctx.cartographer.scaffold();
+    if (req.query.format === 'compact') {
+      res.json({ root: index.root, generatedAt: index.generatedAt, nodeCount: Object.keys(index.nodes).length });
+      return;
+    }
+    res.json(index);
+  });
+
+  router.get('/cartographer/node', (req, res) => {
+    if (!ctx.cartographer) { res.status(503).json({ error: 'Cartographer not enabled' }); return; }
+    const p = typeof req.query.path === 'string' ? req.query.path : '';
+    // Validate: repo-relative, no leading slash, no `..` segment. The validated
+    // path indexes the in-memory node store — it never builds a filesystem path.
+    if (p.startsWith('/') || p.split('/').includes('..')) {
+      res.status(400).json({ error: 'invalid path' }); return;
+    }
+    if (!ctx.cartographer.loadIndex()) ctx.cartographer.scaffold();
+    const node = ctx.cartographer.getNode(p);
+    if (!node) { res.status(404).json({ error: 'no such node' }); return; }
+    res.json(node);
+  });
+
+  router.get('/cartographer/stale', (_req, res) => {
+    if (!ctx.cartographer) { res.status(503).json({ error: 'Cartographer not enabled' }); return; }
+    if (!ctx.cartographer.loadIndex()) ctx.cartographer.scaffold();
+    const nodes = ctx.cartographer.staleNodes();
+    res.json({ count: nodes.length, nodes });
+  });
+
+  router.get('/cartographer/health', (_req, res) => {
+    if (!ctx.cartographer) { res.status(503).json({ error: 'Cartographer not enabled' }); return; }
+    if (!ctx.cartographer.loadIndex()) ctx.cartographer.scaffold();
+    res.json({ enabled: true, ...ctx.cartographer.health() });
   });
 
   router.post('/project-map/refresh', (_req, res) => {

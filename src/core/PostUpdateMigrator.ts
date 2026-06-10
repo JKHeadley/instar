@@ -2926,6 +2926,15 @@ setTimeout(() => process.exit(0), 2000);
     let patched = false;
     const port = this.config.port;
 
+    // Cartographer doc-tree (cartographer-doc-tree-schema spec #1) — a hierarchical
+    // semantic map with git-hash staleness. Ships dark; documented so agents that
+    // enable it know the routes exist (Agent Awareness Standard).
+    if (!content.includes('Cartographer Doc-Tree')) {
+      content += `\n### Cartographer Doc-Tree\n\nA hierarchical, semantic map of the codebase with per-node freshness (ships dark behind \`cartographer.enabled\`; routes 503 when off). Each node summarizes what a dir/file does; staleness is derived from git, free.\n- Tree (compact = index): \`curl -s -H "Authorization: Bearer $AUTH" http://localhost:${port}/cartographer/tree?format=compact\`\n- One node: \`curl -s -H "Authorization: Bearer $AUTH" "http://localhost:${port}/cartographer/node?path=src/core"\`\n- What's stale: \`GET /cartographer/stale\` · Health: \`GET /cartographer/health\`\n- **When to use:** orienting in unfamiliar/deep code, or scoping a sub-agent to one subtree without loading the whole repo. Summaries are hints — re-ground against the code before acting.\n`;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Cartographer Doc-Tree section');
+    }
+
     // Cross-Agent Communication Discipline (anti-confabulation) — codex-instar
     // audit Item 11. Existing agents need this section even if they were
     // initialized before it existed. The check uses a content-sniffing marker
