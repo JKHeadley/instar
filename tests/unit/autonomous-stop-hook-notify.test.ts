@@ -187,11 +187,13 @@ describe('Layer A — existing agents receive the notify-enabled hook (migration
     // recovery-audit JSONL remains the durable record) → `IDLE_BACKOFF` (consecutive
     // quick stops pace frame re-injection — the 2026-06-06 rapid-idle-refire waste)
     // → `COMPLETION_DISCIPLINE` (structural enforcement of "don't stop a pre-approved
-    // autonomous run early" — AUTONOMOUS-COMPLETION-DISCIPLINE.md).
+    // autonomous run early" — AUTONOMOUS-COMPLETION-DISCIPLINE.md)
+    // → `REALCHECK_VERIFY` (ACT-152: the hook now runs an opt-in verification_command on a
+    // met:true verdict and gates the exit on it — autonomous-completion-real-checks.md).
     // The bundled hook still contains
     // notify_terminal_stop — asserted above — so that capability is not lost on upgrade.
     const src = fs.readFileSync(path.join(REPO_ROOT, 'src', 'core', 'PostUpdateMigrator.ts'), 'utf8');
-    expect(src).toMatch(/upgrade\(\s*'\.claude\/skills\/autonomous\/hooks\/autonomous-stop-hook\.sh',\s*'COMPLETION_DISCIPLINE'/);
+    expect(src).toMatch(/upgrade\(\s*'\.claude\/skills\/autonomous\/hooks\/autonomous-stop-hook\.sh',\s*'REALCHECK_VERIFY'/);
   });
 
   it('restart-resume note is SILENT to the user — audit + stderr only (RESTART_NOTE_SILENT)', () => {
