@@ -666,6 +666,26 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       revalidateSamplePerPass: 2,
       minNodesUnderPressure: 3,
     },
+    // Standards Enforcement-Coverage Audit (cartographer-conformance-audit spec #3).
+    // A nested key under cartographer so the deep-merge add-missing path backfills
+    // it to existing agents (no migrateConfig block needed). Ships dark behind BOTH
+    // cartographer.enabled AND conformanceAudit.enabled. The deterministic core reads
+    // local files only (zero egress); the OPTIONAL llmEnrichment path is the only
+    // egress and ships OFF (it additionally requires egressAcknowledged:true). The
+    // value shipped today is the deterministic coverage map — the LLM path is dark.
+    conformanceAudit: {
+      enabled: false,
+      llmEnrichment: {
+        enabled: false,
+        egressAcknowledged: false,
+        framework: 'codex-cli',
+        allowClaudeFallback: false,
+      },
+      // CI ratchet floor on the enforced ratio (ratchet+gate+lint / total). The
+      // committed floor lives in scripts/standards-coverage.mjs; this config mirror
+      // is advisory (the script's hardcoded constant is the read baseline).
+      ratchetFloor: 0,
+    },
   },
 };
 

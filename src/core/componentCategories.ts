@@ -80,6 +80,12 @@ export const COMPONENT_CATEGORY: Readonly<Record<string, ComponentCategory>> = {
   // this registration guards the categoryForComponent path so a missing entry
   // fails the wiring test rather than silently routing to the default framework.
   CartographerSweep: 'job',
+  // The OPTIONAL dark LLM-enrichment path of the standards enforcement-coverage
+  // audit (cartographer-conformance-audit spec #3). Category 'job' so an operator
+  // can route it OFF Claude via sessions.componentFrameworks.categories.job — the
+  // enrichment then never spends Anthropic quota. Only used by the dark
+  // llmEnrichment path; the shipped deterministic auditor makes no LLM calls.
+  StandardsCoverageEnrichment: 'job',
 };
 
 /**

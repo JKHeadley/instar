@@ -3030,6 +3030,16 @@ setTimeout(() => process.exit(0), 2000);
       result.upgraded.push('CLAUDE.md: added Cartographer Doc-Freshness section');
     }
 
+    // Standards Enforcement Coverage (cartographer-conformance-audit spec #3) — the
+    // registry-wide enforcement-coverage audit. Keyed on this spec's OWN marker
+    // ('Standards Enforcement Coverage') so it is independent of specs #1/#2 and
+    // idempotent (run twice → single block).
+    if (!content.includes('Standards Enforcement Coverage')) {
+      content += `\n### Standards Enforcement Coverage\n\nFor each constitutional standard in \`docs/STANDARDS-REGISTRY.md\`, this audit verifies whether the structural guard its prose names (a test ratchet, a lint, a gate marker, a route) actually exists on disk — then classifies each standard's enforcement strength (\`ratchet\` > \`gate\` > \`lint\` > \`spec-only\` > \`documented-only\` gap) and surfaces the GAPS + any **dangling refs** (a guard cited by a standard that is no longer on disk — a broken guarantee). Deterministic, observe-only, non-gating; ships dark behind \`cartographer.conformanceAudit.enabled\` (routes 503 when off).\n- Full per-standard report: \`curl -s -H "Authorization: Bearer $AUTH" -H "X-Instar-Request: 1" "http://localhost:${port}/conformance/coverage"\` (filters \`?family=\`, \`?kind=\`, \`?status=gap\`).\n- Summary (counts by kind, enforced ratio, gap + dangling counts): \`GET /conformance/coverage/health\`.\n- **A gap is a guard worth building, surfaced — not auto-fixed.** The audit measures "Structure beats Willpower" against the constitution itself: it tells you which standards are still wishes someone has to remember, so you can decide which guard to build next. It never blocks anything.\n`;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Standards Enforcement Coverage section');
+    }
+
     // Cross-Agent Communication Discipline (anti-confabulation) — codex-instar
     // audit Item 11. Existing agents need this section even if they were
     // initialized before it existed. The check uses a content-sniffing marker
