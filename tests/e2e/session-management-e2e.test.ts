@@ -768,7 +768,12 @@ describeMaybe('Session Management E2E', () => {
 
       const buildName = `${TMUX_PREFIX}build-ctx`;
       const buildTmux = await buildSm.spawnInteractiveSession(undefined, buildName);
-      await waitFor(() => buildSm.isSessionAlive(buildTmux), 10_000);
+      // Wait for the mock's PROMPT OUTPUT, not just tmux-session existence:
+      // the mock cd's into the worktree before printing, and monitorTick's
+      // recordBuildContext below must observe the post-cd pane cwd. Gating on
+      // isSessionAlive alone races bash startup — on a loaded machine the
+      // tick records the spawn dir and the restore note never fires.
+      await waitFor(() => (buildSm.captureOutput(buildTmux, 30) ?? '').includes('bypass permissions on'), 10_000);
       const buildSession = project.state.listSessions({ status: 'running' }).find(s => s.tmuxSession === buildTmux)!;
       buildSession.startedAt = new Date(Date.now() - 20_000).toISOString();
       project.state.saveSession(buildSession);
