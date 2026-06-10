@@ -30,6 +30,8 @@ import { reviewWithinBudget } from './outboundGateBudget.js';
 import type { WriteOperation, WriteToken } from '../core/StateWriteAuthority.js';
 import { writeLifelineRestartSignal } from '../core/version-skew.js';
 import { readSessionClocks } from '../core/SessionClockReader.js';
+import { P13_PROTOCOL_VERSION } from '../core/CompletionEvaluator.js';
+import type { StopSignals } from '../core/CompletionEvaluator.js';
 import { CoherenceJournalReader, InvalidCursorError } from '../core/CoherenceJournalReader.js';
 import { creditUsherOnOutbound } from '../core/UsherActedCorrelator.js';
 import { validateWriteToken, canPerformOperation } from '../core/StateWriteAuthority.js';
@@ -780,6 +782,11 @@ export interface RouteContext {
    *  records only). Null/absent when monitoring.correctionLearning.enabled is
    *  false (default) → /corrections 503s. */
   correctionLedger?: import('../monitoring/CorrectionLedger.js').CorrectionLedger | null;
+  /** GrowthMilestoneAnalyst — the proactive growth & milestone analyst. Null/absent
+   *  when monitoring.growthAnalyst.enabled is false (default, ships dark) →
+   *  /growth/* 503s. Powers GET /growth/digest, GET /growth/findings,
+   *  GET /growth/status, POST /growth/tick. */
+  growthMilestoneAnalyst?: import('../monitoring/GrowthMilestoneAnalyst.js').GrowthMilestoneAnalyst | null;
   /** Apprenticeship Program registry + lifecycle gates (Apprenticeship Step 1).
    *  Null when stateDir is unavailable → /apprenticeship/* 503s. Powers the
    *  instance-as-project registry, the retro-gate (pending→active) and the
@@ -3595,6 +3602,29 @@ export function createRoutes(ctx: RouteContext): Router {
     res.status(stopped ? 200 : 404).json({ ok: stopped, topic });
   });
 
+  // Parse the optional, backward-compatible `signals` (+ `stopKind`) object the
+  // completion-discipline stop-hook sends (AUTONOMOUS-COMPLETION-DISCIPLINE.md
+  // §2b.4 surface 2). Unknown/absent → undefined, so the evaluator omits the
+  // OBJECTIVE-SIGNALS block and an OLD hook gets the identical verdict.
+  const parseStopSignals = (body: unknown): StopSignals | undefined => {
+    if (!body || typeof body !== 'object') return undefined;
+    const raw = (body as Record<string, unknown>).signals;
+    if (!raw || typeof raw !== 'object') return undefined;
+    const s = raw as Record<string, unknown>;
+    const out: StopSignals = {};
+    if (typeof s.completionConditionMet === 'boolean') out.completionConditionMet = s.completionConditionMet;
+    if (typeof s.uncheckedTaskCount === 'number' && Number.isFinite(s.uncheckedTaskCount)) out.uncheckedTaskCount = s.uncheckedTaskCount;
+    if (s.taskStructure === 'has-tasks' || s.taskStructure === 'indeterminate') out.taskStructure = s.taskStructure;
+    if (typeof s.milestoneRationalizationDetected === 'boolean') out.milestoneRationalizationDetected = s.milestoneRationalizationDetected;
+    if (typeof s.injectionSuspected === 'boolean') out.injectionSuspected = s.injectionSuspected;
+    // stopKind may arrive either inside signals or as a sibling field of the body.
+    const stopKind = s.stopKind ?? (body as Record<string, unknown>).stopKind;
+    if (stopKind === 'hard-blocker') out.stopKind = 'hard-blocker';
+    // Only return an object when at least one field is set, so a `{signals:{}}`
+    // payload still behaves like no-signals (byte-identical prompt).
+    return Object.keys(out).length > 0 ? out : undefined;
+  };
+
   // Independent completion judge for the autonomous stop-hook (mirrors /goal):
   // given a verifiable condition + the recent transcript, decide met/not-met.
   // The hook treats 503/unreachable as "keep working" (fail-safe — never a false done).
@@ -3612,6 +3642,7 @@ export function createRoutes(ctx: RouteContext): Router {
       const verdict = await ctx.completionEvaluator.evaluate(
         condition,
         typeof transcriptTail === 'string' ? transcriptTail : '',
+        parseStopSignals(req.body),
       );
       res.json(verdict);
     } catch (err) {
@@ -3620,23 +3651,30 @@ export function createRoutes(ctx: RouteContext): Router {
   });
 
   // P13 "The Stop Reason Is the Work" guard for the autonomous stop-hook: given the
-  // recent transcript, decide whether a stop-attempt is EARNED or rests on a
-  // judgment-call / needs-real-engineering deferral. Fail-open: the hook treats
-  // 503/unreachable/error and stopAllowed:true as permit — a SECONDARY guard must
-  // never trap a genuine completion (the completion check is the primary authority).
+  // recent transcript (+ optional objective signals), decide whether a stop-attempt
+  // is EARNED or rests on a judgment-call / needs-real-engineering deferral, and —
+  // on a `stopKind:'hard-blocker'` request — classify the blocker external-vs-buildable.
+  // Fail-open: the hook treats 503/unreachable/error and stopAllowed:true as permit —
+  // a SECONDARY guard must never trap a genuine completion (the completion check is the
+  // primary authority).
+  //
+  // Every response (allow / block / error / 503) carries `p13ProtocolVersion` so a
+  // newer hook can tell a NEW server from a structurally-OLD one even when the verdict
+  // itself is missing (a timeout). Spec §2b.4 surface 5 + §5 version-skew detection.
   router.post('/autonomous/evaluate-stop', async (req, res) => {
     if (!ctx.completionEvaluator) {
-      res.status(503).json({ error: 'No completion evaluator (IntelligenceProvider not configured)' });
+      res.status(503).json({ error: 'No completion evaluator (IntelligenceProvider not configured)', p13ProtocolVersion: P13_PROTOCOL_VERSION });
       return;
     }
     const { transcriptTail } = req.body ?? {};
     try {
       const verdict = await ctx.completionEvaluator.evaluateStopRationale(
         typeof transcriptTail === 'string' ? transcriptTail : '',
+        parseStopSignals(req.body),
       );
-      res.json(verdict);
+      res.json({ ...verdict, p13ProtocolVersion: P13_PROTOCOL_VERSION });
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err), p13ProtocolVersion: P13_PROTOCOL_VERSION });
     }
   });
 
@@ -5205,6 +5243,61 @@ export function createRoutes(ctx: RouteContext): Router {
       ? summary.features.filter((f) => f.feature === feature)
       : summary.features;
     res.json({ ...summary, features });
+  });
+
+  // ── GrowthMilestoneAnalyst (the proactive growth & milestone analyst) ──────
+  // Read-only observability over the maturity/initiative/spec/correction
+  // surfaces. The analyst ships DARK (monitoring.growthAnalyst.enabled false) —
+  // when off, ctx.growthMilestoneAnalyst is null and every route 503s. POST
+  // /growth/tick only runs the OBSERVE + COMPUTE pass (updates the stage journal,
+  // returns the digest); it never sends to Telegram in this slice.
+  // Spec: docs/specs/PROACTIVE-GROWTH-MILESTONE-ANALYST-SPEC.md
+  router.get('/growth/digest', (_req, res) => {
+    if (!ctx.growthMilestoneAnalyst) {
+      res.status(503).json({ error: 'GrowthMilestoneAnalyst not initialized (monitoring.growthAnalyst.enabled is false)' });
+      return;
+    }
+    try {
+      res.json(ctx.growthMilestoneAnalyst.buildDigest());
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+  router.get('/growth/findings', (_req, res) => {
+    if (!ctx.growthMilestoneAnalyst) {
+      res.status(503).json({ error: 'GrowthMilestoneAnalyst not initialized (monitoring.growthAnalyst.enabled is false)' });
+      return;
+    }
+    try {
+      res.json({ findings: ctx.growthMilestoneAnalyst.computeFindings() });
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+  router.get('/growth/status', (_req, res) => {
+    if (!ctx.growthMilestoneAnalyst) {
+      res.status(503).json({ error: 'GrowthMilestoneAnalyst not initialized (monitoring.growthAnalyst.enabled is false)' });
+      return;
+    }
+    try {
+      res.json(ctx.growthMilestoneAnalyst.getStatus());
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+  router.post('/growth/tick', (_req, res) => {
+    if (!ctx.growthMilestoneAnalyst) {
+      res.status(503).json({ error: 'GrowthMilestoneAnalyst not initialized (monitoring.growthAnalyst.enabled is false)' });
+      return;
+    }
+    try {
+      res.json(ctx.growthMilestoneAnalyst.buildDigest());
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message });
+    }
   });
 
   // Learning-velocity metric (EXO 3.0 — Salim Ismail, "Your KPI System Is
@@ -14645,7 +14738,8 @@ export function createRoutes(ctx: RouteContext): Router {
   });
 
   // GET /permissions/scenario-suite — run the deterministic permission demonstration
-  // (Pillar 4 Layer-A): the six worked-example rows with expected vs actual verdict.
+  // (Pillar 4 Layer-A): the worked-example rows with expected vs actual verdict.
+  // This is the gate-direct (logic-only) view: it proves each row's DECISION.
   router.get('/permissions/scenario-suite', async (req, res) => {
     try {
       const { runScenarioSuite } = await import('../permissions/testing/SlackScenarioHarness.js');
@@ -14666,6 +14760,40 @@ export function createRoutes(ctx: RouteContext): Router {
           got: `${r.verdict.decision}/${r.verdict.basis}`,
           message: r.verdict.message || undefined,
           pass: r.pass,
+          proves: r.scenario.proves,
+        })),
+      });
+    } catch (e) {
+      res.status(500).json({ error: (e as Error).message });
+    }
+  });
+
+  // POST /permissions/scenario-suite/run — the AUDIT-ASSERTING demonstration
+  // (Pillar 4 milestone 4, "verified, not narrated", §8.4). Drives every row through
+  // the SAME observer the live SlackAdapter._handleMessage calls (resolver → gate →
+  // decision ledger), then asserts BOTH the verdict AND that the matching audit/ledger
+  // entry actually landed. Read-only/dev: it writes only into a throwaway temp state
+  // dir (never ctx.config.stateDir) and mutates nothing in the running agent.
+  // A green run (failed:0) is the executable, self-verified proof.
+  router.post('/permissions/scenario-suite/run', async (_req, res) => {
+    try {
+      const { runAuditedScenarioSuite } = await import('../permissions/testing/SlackScenarioHarness.js');
+      const report = await runAuditedScenarioSuite();
+      res.json({
+        summary: report.summary,
+        ledgerPath: report.ledgerPath,
+        rows: report.rows.map((r) => ({
+          id: r.scenario.id,
+          principal: r.scenario.principal.name,
+          role: r.scenario.principal.role,
+          request: r.scenario.text,
+          directed: r.scenario.directed,
+          expected: `${r.scenario.expectedDecision}/${r.scenario.expectedBasis}`,
+          got: r.verdict ? `${r.verdict.decision}/${r.verdict.basis}` : 'null',
+          verdictOk: r.verdictOk,
+          auditOk: r.auditOk,
+          pass: r.pass,
+          mismatch: r.mismatch,
           proves: r.scenario.proves,
         })),
       });

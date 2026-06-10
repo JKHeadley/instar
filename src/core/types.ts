@@ -2663,6 +2663,31 @@ export interface InstarConfig {
       /** Per-turn gemini spawn timeout in ms (default 180000). */
       turnTimeoutMs?: number;
     };
+    /**
+     * Autonomous Completion Discipline (spec: AUTONOMOUS-COMPLETION-DISCIPLINE.md).
+     * The structural enforcement of "don't stop a pre-approved autonomous run early."
+     * Read in the stop-hook at the chokepoint (no restart needed to toggle `enabled`
+     * or `judgeTimeoutMs`). Defaults seeded in ConfigDefaults.SHARED_DEFAULTS, so
+     * applyDefaults backfills existing agents on update (Migration Parity). `enabled`
+     * defaults `true` (operator-mandated, not dark) — flip to `false` for instant
+     * rollback (reverts to the prior promise/condition + prior P13 path).
+     */
+    completionDiscipline?: {
+      /** Master off-switch. Read in the hook; false reverts to pre-spec behavior. */
+      enabled?: boolean;
+      /** curl -m budget (ms) for a single judge call (default 35000). Distinct from the hook timeout. */
+      judgeTimeoutMs?: number;
+      /** Coarse rotation threshold (bytes) for logs/autonomous-hard-blocker.jsonl (default 1048576). */
+      hardBlockerLogRotateBytes?: number;
+      /** Consecutive judge failures that trip the circuit-breaker (default 3). */
+      judgeFailBreakerThreshold?: number;
+      /** Window (ms) over which consecutive judge failures are counted (default 600000). */
+      judgeFailWindowMs?: number;
+      /** Cooldown (ms) the breaker stays open after tripping (default 600000). */
+      judgeFailCooldownMs?: number;
+      /** Per-field clamp (chars) on the <hard-blocker> marker fields (default 500). */
+      markerFieldMaxChars?: number;
+    };
   };
   /** Notification preferences for autonomy events */
   notifications?: NotificationPreferences;
@@ -4138,6 +4163,53 @@ export interface MonitoringConfig {
     enabled?: boolean;
     /** Minutes between periodic scans (default: 30). Clamped to >= 5. */
     scanIntervalMinutes?: number;
+  };
+  /**
+   * GrowthMilestoneAnalyst — the proactive growth & milestone analyst.
+   * Composes the existing tracking surfaces (InitiativeTracker rollout stages,
+   * ApprovalLedger approve-vs-change, CorrectionLedger recurrence) into one
+   * opinionated digest + window-expiry milestones, with explicit notify-rules.
+   *
+   * THE KEY LEVER: a TIGHT incubation window whose EXPIRY is itself the trigger,
+   * so a feature can never be silently "left behind" — it either proved itself
+   * (→ promote?) or it never did (→ extend/fix/kill?). Promotion requires REAL
+   * proof-of-life, never elapsed time alone (maturity honesty).
+   *
+   * Ships DARK (enabled defaults false) and rides the Graduated Feature Rollout
+   * track (rollout-flag-path: monitoring.growthAnalyst). This slice COMPUTES +
+   * exposes findings via read routes; it does not send to Telegram. See
+   * docs/specs/PROACTIVE-GROWTH-MILESTONE-ANALYST-SPEC.md.
+   */
+  growthAnalyst?: {
+    /** Master kill-switch (default: false → ships dark). Gates the routes too. */
+    enabled?: boolean;
+    /** Cron for the weekly digest (later slice; default '0 11 * * 1'). */
+    digestCron?: string;
+    /** Incubation windows in DAYS per risk tier (defaults 3 / 7 / 7). */
+    incubationWindows?: {
+      lowRisk?: number;
+      standard?: number;
+      highRisk?: number;
+    };
+    /** Min real activations before a feature counts as proven (default: 1). */
+    proofOfLifeMinActivations?: number;
+    /** Per-rule enable flags (all default true). */
+    rules?: {
+      promotionReady?: boolean;
+      incubationExpired?: boolean;
+      initiativeStalling?: boolean;
+      specPattern?: boolean;
+      correctionPattern?: boolean;
+    };
+    /** R4: min decisions in a class before a spec-pattern is surfaced (default 3). */
+    specPatternMinTotal?: number;
+    /** R4: fraction approved-with-change to flag the pattern (default 0.6). */
+    specPatternMinChangeRatio?: number;
+    /** R5: occurrences before a correction pattern is surfaced (default 3). */
+    correctionPatternMinOccurrences?: number;
+    /** Render the "all healthy" line even when calm so the operator knows the
+     *  analyst ran — the deliberate reversal of over-silence (default true). */
+    digestEvenWhenCalm?: boolean;
   };
 }
 
