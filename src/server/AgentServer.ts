@@ -14,6 +14,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import { ApprovalLedger } from '../core/ApprovalLedger.js';
+import { resolveDevAgentGate } from '../core/devAgentGate.js';
 import { TopicOperatorStore } from '../users/TopicOperatorStore.js';
 import { MandateStore } from '../coordination/MandateStore.js';
 import { MandateGate } from '../coordination/MandateGate.js';
@@ -896,7 +897,7 @@ export class AgentServer {
         // OFF on the fleet, so this dogfoods on echo before fleet rollout. This
         // is read-only observability — the sampler only reads ps/process.* and
         // writes the ledger; it never gates, throttles, or mutates anything.
-        const samplingEnabled = rlCfg?.enabled ?? !!options.config.developmentAgent;
+        const samplingEnabled = resolveDevAgentGate(rlCfg?.enabled, options.config);
         if (samplingEnabled) {
           const sessionManager = options.sessionManager;
           this.resourceSampler = new ResourceSampler({
@@ -1236,7 +1237,7 @@ export class AgentServer {
     // (recurrence) — all read-only. Own try/catch so a failure here can never
     // cascade into other init.
     const growthAnalystEnabled =
-      options.config.monitoring?.growthAnalyst?.enabled ?? !!options.config.developmentAgent;
+      resolveDevAgentGate(options.config.monitoring?.growthAnalyst?.enabled, options.config);
     try {
       if (growthAnalystEnabled && options.config.stateDir && options.initiativeTracker) {
         this.growthMilestoneAnalyst = new GrowthMilestoneAnalyst({

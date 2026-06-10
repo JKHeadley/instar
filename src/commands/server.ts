@@ -18,6 +18,7 @@ import pc from 'picocolors';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 import { loadConfig, ensureStateDir, detectTmuxPath, detectGeminiPath } from '../core/Config.js';
 import { isNonFatalUncaught, shouldLogStackForUncaught } from '../core/uncaughtExceptionPolicy.js';
+import { resolveDevAgentGate } from '../core/devAgentGate.js';
 import { closeAllSqlite } from '../core/SqliteRegistry.js';
 import { SessionManager } from '../core/SessionManager.js';
 import { StateManager } from '../core/StateManager.js';
@@ -2755,7 +2756,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       | undefined;
     {
       const cjCfg = config.multiMachine?.coherenceJournal;
-      const cjEnabled = cjCfg?.enabled ?? !!config.developmentAgent;
+      const cjEnabled = resolveDevAgentGate(cjCfg?.enabled, config);
       if (cjEnabled) {
         try {
           const cjMod = await import('../core/CoherenceJournal.js');
@@ -3210,7 +3211,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       ...(codexThreadlineMcp ? { codexThreadlineMcp } : {}),
       respawnBuildContext: {
         ...(config.sessions.respawnBuildContext ?? {}),
-        enabled: config.sessions.respawnBuildContext?.enabled ?? !!config.developmentAgent,
+        enabled: resolveDevAgentGate(config.sessions.respawnBuildContext?.enabled, config),
       },
       subscriptionPathMode: subscriptionPathCfg?.mode ?? 'off',
       ...(subscriptionPathCfg?.maxRerouted != null ? { subscriptionMaxRerouted: subscriptionPathCfg.maxRerouted } : {}),
@@ -8895,7 +8896,7 @@ export async function startServer(options: StartOptions): Promise<void> {
     // LIVE on Echo, DARK on the fleet. The pool is null when disabled, so the
     // ThreadlineRouter falls back to the proven cold-spawn path byte-for-byte.
     const warmCfg = config.threadline?.warmSessionA2A;
-    const warmEnabled = warmCfg?.enabled ?? !!config.developmentAgent;
+    const warmEnabled = resolveDevAgentGate(warmCfg?.enabled, config);
     const warmSessionPool = warmEnabled
       ? new WarmSessionPool({
           globalCap: warmCfg?.globalCap ?? 3,
@@ -10505,10 +10506,10 @@ export async function startServer(options: StartOptions): Promise<void> {
         if (!rcfg) return rcfg; // reaper config absent ⇒ reaper disabled ⇒ flag moot
         return {
           ...rcfg,
-          cpuAwareActiveProcessKeep: rcfg.cpuAwareActiveProcessKeep ?? !!config.developmentAgent,
+          cpuAwareActiveProcessKeep: resolveDevAgentGate(rcfg.cpuAwareActiveProcessKeep, config),
           // Observe-only busy-orphan detection rides the same dev-gate (dark fleet,
           // live on dev agents). Zero risk — it never changes a keep/kill verdict.
-          busyOrphanDetection: rcfg.busyOrphanDetection ?? !!config.developmentAgent,
+          busyOrphanDetection: resolveDevAgentGate(rcfg.busyOrphanDetection, config),
         };
       })(),
     );
@@ -10549,7 +10550,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       // developmentAgent gate: `enabled` defaults ON for dev agents (dark fleet-
       // wide); an explicit config value always wins. `dryRun` is untouched (stays
       // true by default) so a dev agent only observes — never kills.
-      return { ...(mcfg ?? {}), enabled: mcfg?.enabled ?? !!config.developmentAgent };
+      return { ...(mcfg ?? {}), enabled: resolveDevAgentGate(mcfg?.enabled, config) };
     })();
     const mcpProcessReaper = new McpProcessReaper(
       makeMcpProcessReaperDeps({
@@ -10578,7 +10579,7 @@ export async function startServer(options: StartOptions): Promise<void> {
     let geminiLoopRunner: import('../monitoring/GeminiLoopRunner.js').GeminiLoopRunner | null = null;
     {
       const gcfg = config.autonomousSessions?.geminiLoopDriver;
-      const enabled = gcfg?.enabled ?? !!config.developmentAgent; // dark fleet-wide; live on dev agents
+      const enabled = resolveDevAgentGate(gcfg?.enabled, config); // dark fleet-wide; live on dev agents
       if (enabled) {
         const { GeminiLoopRunner } = await import('../monitoring/GeminiLoopRunner.js');
         const { createGeminiLoopSpawn, createGeminiHandleCapture, createQuotaBudgetGate } =
@@ -11170,7 +11171,7 @@ export async function startServer(options: StartOptions): Promise<void> {
         // after the MeshRpcClient is constructed (below).
         const _secretSyncCfg =
           (config.multiMachine as { secretSync?: { enabled?: boolean; pushEnabled?: boolean } } | undefined)?.secretSync;
-        const _secretSyncEnabled = _secretSyncCfg?.enabled ?? !!config.developmentAgent;
+        const _secretSyncEnabled = resolveDevAgentGate(_secretSyncCfg?.enabled, config);
         // SAFETY: pushing is opt-in SEPARATELY from receiving and DEFAULTS OFF. A machine
         // whose local secret store is stale/divergent (e.g. recovered from a key drift) would
         // otherwise auto-push its stale set to peers on boot and CLOBBER their good secrets —

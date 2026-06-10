@@ -18,6 +18,7 @@ import type { StateManager } from '../core/StateManager.js';
 import { describeTopicPlacement } from '../core/TopicPlacementDescription.js';
 import { buildRelocationNicknameSet } from '../core/RelocationNicknameSet.js';
 import { resolveSelfNickname } from '../core/SelfNicknameResolver.js';
+import { resolveDevAgentGate } from '../core/devAgentGate.js';
 import { planTransferByNickname } from '../core/TransferByNickname.js';
 import type { JobScheduler } from '../scheduler/JobScheduler.js';
 import type { InstarConfig, JobPriority } from '../core/types.js';
@@ -13254,7 +13255,7 @@ export function createRoutes(ctx: RouteContext): Router {
       const configPath = path.join(ctx.config.projectDir, '.instar', 'config.json');
       const { BootSelfKnowledge, DEFAULT_MAX_BYTES } = await import('../core/BootSelfKnowledge.js');
       const freshFlags = readSelfKnowledgeFlags(configPath);
-      const enabled = freshFlags.enabled ?? Boolean(ctx.config.developmentAgent);
+      const enabled = resolveDevAgentGate(freshFlags.enabled, ctx.config);
       if (!enabled) {
         res.status(503).json({ error: 'self-knowledge session-context disabled' });
         return;

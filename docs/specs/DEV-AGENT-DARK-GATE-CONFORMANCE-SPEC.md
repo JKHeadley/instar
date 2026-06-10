@@ -1,12 +1,20 @@
 ---
 title: Dev-Agent Dark-Gate Conformance Guard
-status: draft
-tags: []
+status: active
+parent-principle: "Structure beats Willpower"
+tags: [side-effects]
 author: echo
 created: 2026-06-09
 relates_to:
   - PROACTIVE-GROWTH-MILESTONE-ANALYST-SPEC.md
   - STANDARDS-REGISTRY.md (standard_development_agent_dark_feature_gate)
+review-convergence: "2026-06-10T00:08:49.703Z"
+review-iterations: 2
+review-completed-at: "2026-06-10T00:08:49.703Z"
+review-report: "docs/specs/reports/dev-agent-dark-gate-conformance-convergence.md"
+approved: true
+approved-by: "Justin (topic 21624)"
+approved-at: "2026-06-10T00:22:34Z"
 ---
 
 # Dev-Agent Dark-Gate Conformance Guard
@@ -62,8 +70,8 @@ named:
 
 | Layer | Catches | Misses |
 |-------|---------|--------|
-| 1. Helper funnel + lint | Hand-rolled gate resolutions that drift from the canonical form; the gate being forked/typo'd | A feature that never resolves the gate at all |
-| 2. ConfigDefaults marker check | A dev-gate-tagged config block that hardcodes `enabled: false/true` (the exact #1001 shape) | A dev-gated default with no marker comment |
+| 1. Helper funnel + lint | Hand-rolled gate resolutions in the realistic spellings (`!!`, `Boolean(...)`, bracket access) outside the funnel | A feature that never resolves the gate at all; an arbitrary alias/wrapper (`const dev = config.developmentAgent`) — A bans the spellings, not every possible expression |
+| 2. ConfigDefaults marker check | A gate-*marked* config block that hardcodes `enabled: false` (bare or quoted key) — brace-matched, so comment length doesn't matter (the literal #1001 shape *when the block carries a dev-gate marker*) | A dev-gated default with **no** marker comment (the literal #1001 bug had none); a *marked* block whose `enabled` is a non-literal expression (`… ?? false`) — both fall to Layer 3/4 |
 | 3. Registry + both-sides wiring test | A *registered* dev-gated feature wired so it resolves dark on a dev agent | A feature not added to the registry |
 | 4. Spec-intent cross-check (FeatureRolloutReconciler) | A spec that declares "ships dark / live on dev agents" whose feature is observed dark on this dev agent — **the only layer that catches forgot-entirely** | A feature whose spec never declares dark-ship intent |
 
@@ -75,37 +83,57 @@ Add `resolveDevAgentGate(explicitEnabled: boolean | undefined, config: { develop
 returning `explicitEnabled ?? !!config.developmentAgent`. One funnel, one place
 to get it right, trivially unit-testable on both sides of the boundary.
 
-Migrate the existing ~10 hand-rolled sites (enumerated by the lint below) to it.
-This is a pure refactor — behavior identical — so it carries no runtime risk and
-makes every dev-gate resolution greppable and uniform.
+Migrate the existing **11** hand-rolled sites (enumerated by the lint) to it —
+this includes `routes.ts`'s `?? Boolean(ctx.config.developmentAgent)` form, which
+the first pass missed (an `!!`-only grep) and which the convergence review's
+integration reviewer surfaced. This is a pure refactor — behavior identical (each
+site returns the same boolean) — so it carries no runtime risk and makes every
+dev-gate resolution greppable and uniform.
 
 ### 1b. `scripts/lint-dev-agent-dark-gate.js` (joins Repo Invariants)
 
-Two assertions, both AST/text over `src/`:
+Two assertions, both line/regex text scans over `src/`:
 
-1. **No hand-rolled gate.** Any occurrence of `?? !!<x>.developmentAgent` or
-   `?? <x>.developmentAgent` **outside** `resolveDevAgentGate` is a violation
-   (same shape as `lint-no-direct-destructive`: the funnel is the only legal
-   path). Allowlist the helper's own definition.
-2. **No hardcoded enabled under a dev-gate marker.** In
-   `src/config/ConfigDefaults.ts`, any config block whose adjacent comment
-   references the dev-gate standard (`developmentAgent` + `dark`/`gate`) MUST NOT
-   set `enabled: false` or `enabled: true` — the convention is to omit it. This
-   catches the #1001 shape directly.
+1. **No hand-rolled gate.** Any `?? [!! | Boolean(]<x>.developmentAgent` —
+   including bracket access `['developmentAgent']` — **outside**
+   `resolveDevAgentGate` is a violation. The funnel is the only sanctioned path
+   for the *realistic spellings*; the lint cannot catch an arbitrary alias or a
+   wrapper helper (`const dev = config.developmentAgent; … ?? dev`) — that is the
+   Layer-1 "misses" limit, named honestly rather than papered over. Allowlist the
+   helper's own definition.
+2. **No hardcoded `enabled: false` under a dev-gate marker.** In any
+   `ConfigDefaults.ts`, a config block introduced by a comment referencing the
+   dev-gate convention (`developmentAgent` + `dark`/`gate`) must not hardcode
+   `enabled: false` (bare or quoted key). The scan is **brace-matched on the
+   block** — NOT a fixed line window — because the convergence review found that a
+   fixed 8-line window let the *real* growthAnalyst block (a ~10-line marker
+   comment) slip a regressed `enabled: false` through: the guard silently
+   no-op'd on its own origin case. `enabled: true` is NOT flagged (it is the
+   allowed deliberate fleet-flip); comment prose is skipped (code lines only).
+   This catches the #1001 shape **when the block is gate-marked**; a markerless
+   dev-gated default is the Layer-2 miss above.
 
 The lint prints each violation as `file:line` with the offending text and the
-fix, and exits non-zero. Wired into the `lint` npm script (the Repo Invariants
-CI job) alongside the existing `lint-*` checks.
+fix, and exits non-zero. Wired into the `lint` npm script (run by the Repo
+Invariants posture in CI and by the pre-commit hook) alongside the existing
+`lint-*` checks.
 
-### 1c. Tests (all three tiers per Testing Integrity Standard)
+### 1c. Tests (per Testing Integrity Standard)
 
 - **Unit:** `resolveDevAgentGate` — dev agent + omitted → true; fleet + omitted →
-  false; explicit false on dev agent → false; explicit true on fleet → true.
-- **Lint self-test:** a fixture with a hand-rolled gate and a marker+`enabled:false`
-  block → lint exits non-zero; the real `src/` tree → lint exits zero (proves it
-  passes on the corrected codebase, the #1001 fix included).
+  false; explicit false on dev agent → false; explicit true on fleet → true;
+  undefined config → false.
+- **Lint self-test:** fixtures proving both assertions fire AND both stay quiet on
+  the legitimate cases — a hand-rolled `!!` gate and a `Boolean(...)` gate → A
+  fires; a marker + `enabled: false` block, **including a ≥10-line marker comment
+  (the growthAnalyst-window regression)** → B fires; `enabled: true` and
+  comment-prose mentions of `enabled: true` → B stays quiet; the real `src/` tree
+  → lint exits zero (it passes on the corrected codebase, with the #1001 fix and
+  all 11 migrated sites — green because the gate is structurally absent, not
+  because the scan misses the block).
 
 ## Slice 2 (follow-up) — dev-gated-feature registry + both-sides wiring test
+<!-- tracked: CMT-1253 -->
 
 An explicit `DEV_GATED_FEATURES` registry (config path + a construction probe per
 feature). A test asserts each resolves **live** under a `developmentAgent: true`
@@ -115,6 +143,7 @@ then guards it permanently. (Catches a *registered* feature wired wrong — Laye
 3.)
 
 ## Slice 3 (follow-up) — spec-intent cross-check
+<!-- tracked: CMT-1253 -->
 
 Extend `FeatureRolloutReconciler` to read declared dark-ship intent from spec
 frontmatter and cross-check it against observed dev-agent resolution. A spec that
@@ -130,7 +159,7 @@ and it routes through the very analyst #1001 introduced. (Layer 4.)
 - Not auto-fixing violations — the lint reports; the developer fixes (same
   contract as the other `lint-*` checks).
 - Slice 1 does not attempt Layer 3/4 coverage; those are explicitly deferred and
-  tracked so the limit is visible, not silent.
+  tracked so the limit is visible, not silent. <!-- tracked: CMT-1253 -->
 
 ## Migration parity
 
