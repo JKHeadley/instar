@@ -491,6 +491,72 @@ goal: try escape
     expect(tracker.get(itemId)?.pipelineStage).toBe('spec-drafted');
   });
 
+  it('POST /projects/:id/advance — spec-drafted → spec-converged accepts the canonical TIMESTAMP tag + report (Part A bug-fix through the real route)', async () => {
+    const { projectVersion, itemId } = await seedProject('adv-converge');
+    // The canonical converging-audit format: review-convergence is the ISO
+    // TIMESTAMP STRING the tooling writes — NOT boolean true. Pre-fix this
+    // advance was REJECTED with CONVERGENCE_TAG_MISSING (`"<ts>" !== true`).
+    fs.writeFileSync(
+      path.join(targetRepo, 'docs/specs/a.md'),
+      `---\ntitle: a\nslug: a\nreview-convergence: "2026-06-10T18:10:05Z"\n---\n\n# spec body\n`,
+    );
+    fs.mkdirSync(path.join(targetRepo, 'docs/specs/reports'), { recursive: true });
+    fs.writeFileSync(path.join(targetRepo, 'docs/specs/reports/a-convergence.md'), '# convergence report\n');
+
+    // Step 1: outline → spec-drafted.
+    const drafted = await request(app)
+      .post('/projects/adv-converge/advance')
+      .set('Authorization', `Bearer ${AUTH_TOKEN}`)
+      .set('If-Match', String(projectVersion))
+      .send({ itemId, targetStage: 'spec-drafted', artifact: { specPath: 'docs/specs/a.md' } });
+    expect(drafted.status).toBe(200);
+
+    // Step 2: spec-drafted → spec-converged (the bug-fix path).
+    const v2 = tracker.get('adv-converge')!.version;
+    const converged = await request(app)
+      .post('/projects/adv-converge/advance')
+      .set('Authorization', `Bearer ${AUTH_TOKEN}`)
+      .set('If-Match', String(v2))
+      .send({ itemId, fromStage: 'spec-drafted', targetStage: 'spec-converged', artifact: { specPath: 'docs/specs/a.md' } });
+    expect(converged.status).toBe(200);
+    expect(converged.body.item.pipelineStage).toBe('spec-converged');
+    expect(tracker.get(itemId)?.pipelineStage).toBe('spec-converged');
+
+    // Restore the empty spec for subsequent tests.
+    fs.writeFileSync(path.join(targetRepo, 'docs/specs/a.md'), '');
+  });
+
+  it('POST /projects/:id/advance — spec-drafted → spec-converged with timestamp tag but MISSING report returns 409 (report check stays unconditional)', async () => {
+    const { projectVersion, itemId } = await seedProject('adv-converge-noreport');
+    fs.writeFileSync(
+      path.join(targetRepo, 'docs/specs/a.md'),
+      `---\ntitle: a\nslug: a\nreview-convergence: "2026-06-10T18:10:05Z"\n---\n\n# spec body\n`,
+    );
+    // The reports/ dir exists but the specific report file for slug `a` does
+    // not → CONVERGENCE_REPORT_MISSING (not ESCAPE, which is the dir-absent case).
+    fs.mkdirSync(path.join(targetRepo, 'docs/specs/reports'), { recursive: true });
+    SafeFsExecutor.safeRmSync(path.join(targetRepo, 'docs/specs/reports/a-convergence.md'), { force: true, operation: 'tests/integration/projects-api.test.ts:advance-converge-noreport' });
+
+    const drafted = await request(app)
+      .post('/projects/adv-converge-noreport/advance')
+      .set('Authorization', `Bearer ${AUTH_TOKEN}`)
+      .set('If-Match', String(projectVersion))
+      .send({ itemId, targetStage: 'spec-drafted', artifact: { specPath: 'docs/specs/a.md' } });
+    expect(drafted.status).toBe(200);
+
+    const v2 = tracker.get('adv-converge-noreport')!.version;
+    const converged = await request(app)
+      .post('/projects/adv-converge-noreport/advance')
+      .set('Authorization', `Bearer ${AUTH_TOKEN}`)
+      .set('If-Match', String(v2))
+      .send({ itemId, fromStage: 'spec-drafted', targetStage: 'spec-converged', artifact: { specPath: 'docs/specs/a.md' } });
+    expect(converged.status).toBe(409);
+    expect(converged.body.code).toBe('CONVERGENCE_REPORT_MISSING');
+
+    // Restore the empty spec for subsequent tests.
+    fs.writeFileSync(path.join(targetRepo, 'docs/specs/a.md'), '');
+  });
+
   it('POST /projects/:id/advance — missing If-Match returns 428', async () => {
     const { itemId } = await seedProject('adv-2');
     const res = await request(app)

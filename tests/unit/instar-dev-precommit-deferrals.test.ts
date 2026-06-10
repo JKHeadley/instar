@@ -77,13 +77,16 @@ describe('instar-dev pre-commit — orphan deferrals enforcement', () => {
       'export function verifyProposalDerivedRunbooks() { return { ok: true, reason: "no-proposal-derived-runbooks-or-all-verified" }; }\n',
     );
 
-    // Copy the hook script under test + its new pure tier classifier dependency
-    // (scripts/lib/classify-tier.mjs) into the sandbox.
+    // Copy the hook script under test + its pure lib dependencies
+    // (scripts/lib/classify-tier.mjs + scripts/lib/convergence-recognition.mjs)
+    // into the sandbox so the spawned hook's relative imports resolve.
     fs.mkdirSync(path.join(sandbox, 'scripts', 'lib'), { recursive: true });
-    fs.copyFileSync(
-      path.join(path.dirname(HOOK_SCRIPT), 'lib', 'classify-tier.mjs'),
-      path.join(sandbox, 'scripts', 'lib', 'classify-tier.mjs'),
-    );
+    for (const lib of ['classify-tier.mjs', 'convergence-recognition.mjs']) {
+      fs.copyFileSync(
+        path.join(path.dirname(HOOK_SCRIPT), 'lib', lib),
+        path.join(sandbox, 'scripts', 'lib', lib),
+      );
+    }
     fs.copyFileSync(HOOK_SCRIPT, path.join(sandbox, 'scripts', 'instar-dev-precommit.js'));
   });
 

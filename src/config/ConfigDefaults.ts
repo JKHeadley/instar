@@ -458,6 +458,19 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
     conformance: {
       enabled: true,
     },
+    // Report-Backed Converging Audit (docs/specs/CONVERGING-AUDIT-DEFAULT.md).
+    // When true, the instar-dev PRECOMMIT gate ADDITIONALLY requires the
+    // converging-audit report file (docs/specs/reports/<slug>-convergence.md) to
+    // exist for each in-scope spec — proving the audit actually RAN, not that a
+    // tag was hand-added. Default FALSE = byte-identical to today's precommit
+    // behavior (the report requirement is inert). The precommit script reads NO
+    // config (it runs pre-compile), so the .husky/pre-commit hook exports this
+    // as the env var INSTAR_DEV_REQUIRE_CONVERGENCE_REPORT=1 when true. The
+    // FORMAL StageTransitionValidator already requires the report
+    // unconditionally; this flag only brings the precommit UP to that strictness.
+    // applyDefaults is add-missing-only deep-merge, so this backfills into every
+    // existing agent on update with no separate migrateConfig block.
+    requireConvergenceReport: false,
   },
   // Usher (rung 4) — signal-only mid-task re-surface watcher. Default-on: it only
   // writes suggestions to a read-only pull surface (never injects, never pushes to

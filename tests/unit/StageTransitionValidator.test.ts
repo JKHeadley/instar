@@ -17,6 +17,7 @@ import path from 'node:path';
 import {
   validateStageTransition,
   jailPath,
+  isConvergenceTagPresent,
   type ValidationContext,
 } from '../../src/core/StageTransitionValidator.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
@@ -26,6 +27,13 @@ describe('StageTransitionValidator', () => {
   let goodSpecRel: string;
   let convergedSpecRel: string;
   let approvedSpecRel: string;
+  // Canonical converging-audit format: review-convergence is the ISO TIMESTAMP
+  // STRING that write-convergence-tag.mjs writes — NOT boolean true. This is the
+  // Part-A bug-fix case (previously rejected as `"<ts>" !== true`).
+  let timestampConvergedSpecRel: string;
+  // Same timestamp tag, but NO report file → still fails the unconditional
+  // CONVERGENCE_REPORT_MISSING check.
+  let timestampNoReportSpecRel: string;
 
   beforeAll(() => {
     tmpRepo = fs.mkdtempSync(path.join(os.tmpdir(), 'stage-validator-'));
@@ -33,6 +41,8 @@ describe('StageTransitionValidator', () => {
     goodSpecRel = 'docs/specs/example-feature.md';
     convergedSpecRel = 'docs/specs/converged-feature.md';
     approvedSpecRel = 'docs/specs/approved-feature.md';
+    timestampConvergedSpecRel = 'docs/specs/timestamp-converged.md';
+    timestampNoReportSpecRel = 'docs/specs/timestamp-no-report.md';
 
     fs.writeFileSync(
       path.join(tmpRepo, goodSpecRel),
@@ -45,6 +55,20 @@ describe('StageTransitionValidator', () => {
     fs.writeFileSync(
       path.join(tmpRepo, 'docs/specs/reports/converged-feature-convergence.md'),
       `# convergence report\n`
+    );
+    // Timestamp-string convergence tag (the real tooling output) + present report.
+    fs.writeFileSync(
+      path.join(tmpRepo, timestampConvergedSpecRel),
+      `---\ntitle: ts converged\nslug: timestamp-converged\nreview-convergence: "2026-06-10T18:10:05Z"\n---\n\n# body\n`
+    );
+    fs.writeFileSync(
+      path.join(tmpRepo, 'docs/specs/reports/timestamp-converged-convergence.md'),
+      `# convergence report for the timestamp-tagged spec\n`
+    );
+    // Timestamp tag but NO report file on disk.
+    fs.writeFileSync(
+      path.join(tmpRepo, timestampNoReportSpecRel),
+      `---\ntitle: ts no report\nslug: timestamp-no-report\nreview-convergence: "2026-06-10T18:10:05Z"\n---\n\n# body\n`
     );
     fs.writeFileSync(
       path.join(tmpRepo, approvedSpecRel),
@@ -111,6 +135,39 @@ describe('StageTransitionValidator', () => {
       specPath: convergedSpecRel,
     });
     expect(r.ok).toBe(true);
+  });
+
+  it('spec-drafted → spec-converged: accepts the canonical ISO-TIMESTAMP tag + report (Part A bug-fix)', async () => {
+    // Previously REJECTED because `"<ts>" !== true`. The tooling writes the
+    // timestamp string, so this is the real-world converged spec.
+    const r = await validateStageTransition('spec-drafted', 'spec-converged', {
+      targetRepoPath: tmpRepo,
+      specPath: timestampConvergedSpecRel,
+    });
+    expect(r.ok).toBe(true);
+  });
+
+  it('spec-drafted → spec-converged: timestamp tag but MISSING report still fails (report check stays unconditional)', async () => {
+    const r = await validateStageTransition('spec-drafted', 'spec-converged', {
+      targetRepoPath: tmpRepo,
+      specPath: timestampNoReportSpecRel,
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.code).toBe('CONVERGENCE_REPORT_MISSING');
+  });
+
+  it('spec-drafted → spec-converged: rejects an EMPTY-string review-convergence tag', async () => {
+    const emptyTagSpec = 'docs/specs/empty-convergence-tag.md';
+    fs.writeFileSync(
+      path.join(tmpRepo, emptyTagSpec),
+      `---\ntitle: empty\nslug: empty-convergence-tag\nreview-convergence: ""\n---\n# body\n`
+    );
+    const r = await validateStageTransition('spec-drafted', 'spec-converged', {
+      targetRepoPath: tmpRepo,
+      specPath: emptyTagSpec,
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.code).toBe('CONVERGENCE_TAG_MISSING');
   });
 
   it('spec-drafted → spec-converged: rejects when review-convergence missing', async () => {
@@ -411,5 +468,43 @@ describe('jailPath helper', () => {
     expect(r.ok).toBe(false);
     SafeFsExecutor.safeRmSync(symRoot, { recursive: true, force: true, operation: 'tests/unit/StageTransitionValidator.test.ts:symlinks-symRoot' });
     SafeFsExecutor.safeRmSync(outside, { recursive: true, force: true, operation: 'tests/unit/StageTransitionValidator.test.ts:symlinks-outside' });
+  });
+});
+
+describe('isConvergenceTagPresent predicate (Part A)', () => {
+  it('accepts boolean true (legacy / hand-added form)', () => {
+    expect(isConvergenceTagPresent(true)).toBe(true);
+  });
+
+  it('accepts a non-empty ISO timestamp string (canonical tooling form)', () => {
+    expect(isConvergenceTagPresent('2026-06-10T18:10:05Z')).toBe(true);
+  });
+
+  it('accepts any non-empty string (lenient like the precommit regex)', () => {
+    expect(isConvergenceTagPresent('yes')).toBe(true);
+  });
+
+  it('rejects the empty string', () => {
+    expect(isConvergenceTagPresent('')).toBe(false);
+  });
+
+  it('rejects a whitespace-only string', () => {
+    expect(isConvergenceTagPresent('   ')).toBe(false);
+  });
+
+  it('rejects boolean false', () => {
+    expect(isConvergenceTagPresent(false)).toBe(false);
+  });
+
+  it('rejects undefined and null', () => {
+    expect(isConvergenceTagPresent(undefined)).toBe(false);
+    expect(isConvergenceTagPresent(null)).toBe(false);
+  });
+
+  it('rejects non-string / non-boolean types', () => {
+    expect(isConvergenceTagPresent(0)).toBe(false);
+    expect(isConvergenceTagPresent(1)).toBe(false);
+    expect(isConvergenceTagPresent({})).toBe(false);
+    expect(isConvergenceTagPresent([])).toBe(false);
   });
 });
