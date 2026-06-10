@@ -31,6 +31,15 @@ import { fileURLToPath } from 'node:url';
 import { checkEli16Overview, MIN_ELI16_CHARS } from './eli16-overview-check.mjs';
 import { verifyProposalDerivedRunbooks } from '../skills/instar-dev/scripts/verify-proposal-derived-runbook.mjs';
 import { classifyTier, decideRequirementSet } from './lib/classify-tier.mjs';
+import { recognizeConvergence } from './lib/convergence-recognition.mjs';
+
+// Report-Backed Converging Audit (docs/specs/CONVERGING-AUDIT-DEFAULT.md, Part B).
+// The precommit reads NO config file and runs pre-compile, so it cannot import
+// the TS config loader. The flag specReview.requireConvergenceReport is threaded
+// in as an ENV VAR by the .husky/pre-commit hook, mirroring the existing in-file
+// INSTAR_DEV_ALLOW_ORPHAN_DEFERRALS pattern. When unset, the new report-backing
+// branch never runs → byte-identical to today's precommit behavior.
+const REQUIRE_CONVERGENCE_REPORT = process.env.INSTAR_DEV_REQUIRE_CONVERGENCE_REPORT === '1';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -521,10 +530,34 @@ if (!specFmMatch) {
   );
 }
 const specFm = specFmMatch[1];
-const convergenceMatch = specFm.match(/^\s*review-convergence\s*:\s*["']?([^"'\n]+)/m);
-const approvedMatch = specFm.match(/^\s*approved\s*:\s*(true|"true"|'true')/m);
 
-if (!convergenceMatch) {
+// Convergence / approval / report recognition is factored into a pure,
+// dependency-free module (scripts/lib/convergence-recognition.mjs) that a unit
+// test cross-checks against the TS validator's `isConvergenceTagPresent` —
+// keeping the two gates in agreement (CONVERGING-AUDIT-DEFAULT.md, Part C). The
+// report-existence input depends on the spec's slug + the env flag, computed
+// just below; the recognizer does no I/O of its own.
+
+// Slug → report path, matching StageTransitionValidator's derivation exactly.
+const specSlugMatch = specFm.match(/^\s*slug\s*:\s*["']?([a-z0-9][a-z0-9-]{0,63})["']?\s*$/m);
+const specSlug = specSlugMatch ? specSlugMatch[1] : '';
+const convergenceReportRel = specSlug
+  ? path.join('docs/specs/reports', `${specSlug}-convergence.md`)
+  : '';
+// Only probe the filesystem when the report requirement is actually on. With
+// the flag unset, reportExists stays false but is never consulted (the
+// recognizer's reportBacked is vacuously true), so this branch is byte-inert.
+const convergenceReportExists =
+  REQUIRE_CONVERGENCE_REPORT && convergenceReportRel
+    ? fs.existsSync(path.resolve(ROOT, convergenceReportRel))
+    : false;
+
+const recognition = recognizeConvergence(specFm, {
+  requireReport: REQUIRE_CONVERGENCE_REPORT,
+  reportExists: convergenceReportExists,
+});
+
+if (!recognition.converged) {
   blockCommit(
     inScopeFiles,
     [
@@ -534,7 +567,7 @@ if (!convergenceMatch) {
   );
 }
 
-if (!approvedMatch) {
+if (!recognition.approved) {
   blockCommit(
     inScopeFiles,
     [
@@ -544,6 +577,35 @@ if (!approvedMatch) {
     ].join('\n'),
   );
 }
+
+// ── Report-backing (Part B — dark, env-gated) ──
+// When INSTAR_DEV_REQUIRE_CONVERGENCE_REPORT=1, a converged + approved spec must
+// ALSO have its converging-audit report on disk (proving the audit RAN, not just
+// that a tag was added). This brings the precommit UP to the formal validator's
+// strictness (which requires the report unconditionally). With the env unset,
+// recognition.reportBacked is always true and this branch never blocks.
+if (!recognition.reportBacked) {
+  blockCommit(
+    inScopeFiles,
+    [
+      `Spec ${spec} is tagged review-convergence + approved, but its converging-audit`,
+      `report is missing: ${convergenceReportRel || '(spec has no valid slug to locate a report)'}`,
+      '',
+      'INSTAR_DEV_REQUIRE_CONVERGENCE_REPORT is on (specReview.requireConvergenceReport:',
+      'true) — a convergence tag without its report can fake convergence. The report is',
+      'the audit\'s proof-of-work; run /spec-converge to produce it (Phase 5 writes',
+      `docs/specs/reports/<slug>-convergence.md), then commit. To turn this requirement`,
+      'off, set specReview.requireConvergenceReport: false in your instar config.',
+    ].join('\n'),
+  );
+}
+
+// ── Part D: surface cross-model-review depth (observe-only, never blocks) ──
+// The converging audit records how much external (cross-model) review actually
+// ran. Surfacing it here makes the audit's depth visible to the operator/agent
+// reading the gate output, without ever gating on it (Signal vs. Authority).
+const crossModelMatch = specFm.match(/^\s*cross-model-review\s*:\s*["']?([^"'\n]+)/m);
+const crossModelReview = crossModelMatch ? crossModelMatch[1].trim() : 'not-recorded';
 
 // ─── Step 7: ELI16 overview verification ─────────────────────────────────
 // Every approved spec must ship with a plain-English ELI16 overview. The
@@ -824,7 +886,9 @@ if (!promotionGateResult.ok) {
 assertFrameworkGenerality(inScopeFiles, validTrace.trace);
 
 console.error(
-  `[instar-dev-precommit] OK — trace ${path.basename(validTrace.entry.file)} covers ${inScopeFiles.length} in-scope file(s), artifact ${validTrace.trace.artifactPath} verified, spec ${spec} is converged + approved, ELI16 overview ${eli16Rel} present (${eli16Result.charCount} chars), promotion-gate: ${promotionGateResult.reason}.`,
+  `[instar-dev-precommit] OK — trace ${path.basename(validTrace.entry.file)} covers ${inScopeFiles.length} in-scope file(s), artifact ${validTrace.trace.artifactPath} verified, spec ${spec} is converged + approved` +
+    `${REQUIRE_CONVERGENCE_REPORT ? ` + report-backed (${convergenceReportRel})` : ''}` +
+    ` [cross-model: ${crossModelReview}], ELI16 overview ${eli16Rel} present (${eli16Result.charCount} chars), promotion-gate: ${promotionGateResult.reason}.`,
 );
 process.exit(0);
 

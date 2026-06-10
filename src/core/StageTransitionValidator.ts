@@ -74,6 +74,26 @@ export interface GhPrView {
 const SLUG_RE = /^[a-z0-9][a-z0-9-]{0,63}$/;
 
 /**
+ * The single definition of "the convergence tag is present" — used by the
+ * formal gate (here) AND mirrored by the precommit's recognizer
+ * (scripts/lib/convergence-recognition.mjs), cross-checked for agreement by
+ * tests/unit/convergence-gate-consistency.test.ts.
+ *
+ * The canonical converging-audit tooling
+ * (skills/spec-converge/scripts/write-convergence-tag.mjs) writes
+ * `review-convergence: "<ISO timestamp>"` — a NON-EMPTY STRING. The legacy /
+ * hand-added form is boolean `true`. Both count as present. Empty string,
+ * `false`, `undefined`, and any other type do NOT.
+ *
+ * Pure, dependency-free, no I/O — exported so it can be unit-tested directly.
+ */
+export function isConvergenceTagPresent(value: unknown): boolean {
+  if (value === true) return true;
+  if (typeof value === 'string' && value.trim().length > 0) return true;
+  return false;
+}
+
+/**
  * Validate a `from → to` transition under the given context.
  *
  * `from === undefined` is treated as "creation lands directly at `to`" and
@@ -152,10 +172,11 @@ export async function validateStageTransition(
     const fm = await loadFrontmatter(jailed.absPath, ctx.readSpecFrontmatter);
     if (!fm.ok) return { ok: false, reason: fm.error, code: 'SPEC_FRONTMATTER_INVALID' };
     const data = fm.data;
-    if (data['review-convergence'] !== true) {
+    if (!isConvergenceTagPresent(data['review-convergence'])) {
       return {
         ok: false,
-        reason: 'spec frontmatter must have `review-convergence: true`',
+        reason:
+          'spec frontmatter must have a `review-convergence` tag (the ISO timestamp the converging-audit tooling writes, or boolean `true`)',
         code: 'CONVERGENCE_TAG_MISSING',
       };
     }

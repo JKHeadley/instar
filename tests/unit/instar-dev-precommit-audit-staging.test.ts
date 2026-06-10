@@ -84,9 +84,12 @@ describe('instar-dev pre-commit — decision-audit line rides the commit (self-s
       path.join(sandbox, 'skills', 'instar-dev', 'scripts', 'verify-proposal-derived-runbook.mjs'),
       'export function verifyProposalDerivedRunbooks() { return { ok: true, reason: "ok" }; }\n',
     );
-    fs.copyFileSync(
-      path.join(path.dirname(HOOK_SCRIPT), 'lib', 'classify-tier.mjs'),
-      path.join(sandbox, 'scripts', 'lib', 'classify-tier.mjs'),
+    // Copy the whole scripts/lib dir so all of the hook's pure lib imports
+    // (classify-tier.mjs, convergence-recognition.mjs, …) resolve in the sandbox.
+    fs.cpSync(
+      path.join(path.dirname(HOOK_SCRIPT), 'lib'),
+      path.join(sandbox, 'scripts', 'lib'),
+      { recursive: true },
     );
     fs.copyFileSync(HOOK_SCRIPT, path.join(sandbox, 'scripts', 'instar-dev-precommit.js'));
   });
@@ -279,9 +282,12 @@ describe('instar-dev pre-commit — causalAutopsy (advisory slice)', () => {
       path.join(sandbox, 'skills', 'instar-dev', 'scripts', 'verify-proposal-derived-runbook.mjs'),
       'export function verifyProposalDerivedRunbooks() { return { ok: true, reason: "ok" }; }\n',
     );
-    fs.copyFileSync(
-      path.join(path.dirname(HOOK_SCRIPT), 'lib', 'classify-tier.mjs'),
-      path.join(sandbox, 'scripts', 'lib', 'classify-tier.mjs'),
+    // Copy the whole scripts/lib dir so all of the hook's pure lib imports
+    // (classify-tier.mjs, convergence-recognition.mjs, …) resolve in the sandbox.
+    fs.cpSync(
+      path.join(path.dirname(HOOK_SCRIPT), 'lib'),
+      path.join(sandbox, 'scripts', 'lib'),
+      { recursive: true },
     );
     fs.copyFileSync(HOOK_SCRIPT, path.join(sandbox, 'scripts', 'instar-dev-precommit.js'));
   });

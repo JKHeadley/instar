@@ -1,4 +1,14 @@
 npm run lint
+
+# Report-Backed Converging Audit (docs/specs/CONVERGING-AUDIT-DEFAULT.md, Part B).
+# The precommit script reads no config (it runs pre-compile), so we export the
+# specReview.requireConvergenceReport flag as an env var here. Fail-open: any read
+# error leaves the var unset → the precommit's report branch stays inert (today's
+# behavior). Reads .instar/config.json first, then instar.config.json.
+if node -e 'const fs=require("fs");for(const p of [".instar/config.json","instar.config.json"]){try{const c=JSON.parse(fs.readFileSync(p,"utf8"));if(c&&c.specReview&&c.specReview.requireConvergenceReport===true)process.exit(0)}catch{}}process.exit(1)' 2>/dev/null; then
+  export INSTAR_DEV_REQUIRE_CONVERGENCE_REPORT=1
+fi
+
 node scripts/instar-dev-precommit.js
 node scripts/check-rule3-coverage.cjs
 node scripts/protect-migration-guarantee.js

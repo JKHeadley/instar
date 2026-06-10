@@ -2410,6 +2410,16 @@ export interface InstarConfig {
     conformance?: {
       enabled?: boolean;
     };
+    /**
+     * Report-Backed Converging Audit (docs/specs/CONVERGING-AUDIT-DEFAULT.md).
+     * Default false (dark-safe). When true, the instar-dev precommit gate also
+     * requires the converging-audit report file
+     * (`docs/specs/reports/<slug>-convergence.md`) to exist for each in-scope
+     * spec. The precommit reads this via the env var
+     * `INSTAR_DEV_REQUIRE_CONVERGENCE_REPORT=1`, exported from this flag by the
+     * `.husky/pre-commit` hook (the script itself reads no config).
+     */
+    requireConvergenceReport?: boolean;
   };
   /**
    * Usher (rung 4) — the signal-only mid-task re-surface watcher. `enabled`
