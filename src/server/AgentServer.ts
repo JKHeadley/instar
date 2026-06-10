@@ -1256,6 +1256,9 @@ export class AgentServer {
           correctionLedger: this.correctionLedger,
           // evidenceCounter intentionally unwired in this slice → proof:'unknown'
           // (honest: a feature with no evidence source cannot be promotion-ready).
+          // R6 dev-gate conformance: feed the live config so the analyst can flag
+          // a registered dev-gated feature observed DARK on this dev agent.
+          liveConfig: options.config,
           onError: (where, err) => console.warn(`[GrowthMilestoneAnalyst] ${where}:`, err),
         });
       }
