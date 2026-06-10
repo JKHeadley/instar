@@ -8,7 +8,7 @@
  * (dev agents included), silently contradicting the standard. Caught only by
  * operator review — there was no structural guard. This is that guard.
  *
- * Two assertions over `src/`:
+ * Three assertions over `src/`:
  *
  *   A. FUNNEL — every dev-agent gate resolution must go through
  *      `resolveDevAgentGate` (src/core/devAgentGate.ts). A hand-rolled
@@ -25,6 +25,15 @@
  *      is NOT flagged — that is an allowed deliberate fleet-flip. Comment prose is
  *      skipped so the convention's own documentation never trips the check.
  *
+ *   C. NO UNCLASSIFIED DARK DEFAULT (DEV-AGENT-DARK-GATE-ENFORCEMENT B2) — every
+ *      literal `enabled: false` in src/config/ConfigDefaults.ts must be a DECLARED
+ *      choice: its brace-attributed config path is EITHER in DEV_GATED_FEATURES
+ *      (and then must NOT also hardcode false — a dev-gated feature OMITS enabled)
+ *      OR in DARK_GATE_EXCLUSIONS with a valid category + a ≥12-char reason. This
+ *      closes the hole assertion B left: a marker-less hardcoded `enabled: false`
+ *      (exactly the cartographer specs) shipped dark for everyone, invisibly.
+ *      LIMITATION: C matches the literal `enabled: false` spelling only.
+ *
  * Exit codes:
  *   0 — no violations.
  *   1 — at least one violation.
@@ -39,6 +48,12 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import {
+  codeOnly,
+  attributeEnabledFalsePaths,
+  extractRegistry,
+  VALID_CATEGORIES,
+} from './lib/dark-gate-attribution.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -68,16 +83,6 @@ const HARDCODED_ENABLED = /(["']?)enabled\1\s*:\s*false\b/;
 // block out of range, the bug that let a regressed growthAnalyst slip through).
 const BLOCK_OPEN_SEARCH = 15; // max non-code lines between marker and the block's `{`
 const BLOCK_MAX_LINES = 120; // safety bound on block-body scan
-
-/** Strip a `//` line comment; return null if the line is a pure comment line. */
-function codeOnly(line) {
-  const trimmed = line.trim();
-  if (trimmed.startsWith('*') || trimmed.startsWith('//') || trimmed.startsWith('/*')) {
-    return null; // comment line — no code
-  }
-  const idx = line.indexOf('//');
-  return idx >= 0 ? line.slice(0, idx) : line;
-}
 
 /** Is this line (trimmed) a comment line? */
 function isCommentLine(line) {
@@ -117,6 +122,47 @@ function resolveTargets() {
 }
 
 const violations = [];
+
+// Paths used by assertions B (skip-classified) and C (classification check).
+// Tests inject fixtures via env overrides (the C-assertion reads the registry +
+// ConfigDefaults directly, independent of the file args, so without an override a
+// test could not exercise C's failure modes). Absolute paths only; default to the
+// real repo files.
+const CONFIG_DEFAULTS_REL = 'src/config/ConfigDefaults.ts';
+const DEV_GATED_FEATURES_REL = 'src/core/devGatedFeatures.ts';
+const CONFIG_DEFAULTS_ABS = process.env.INSTAR_DARKGATE_CONFIG_DEFAULTS
+  ? path.resolve(process.env.INSTAR_DARKGATE_CONFIG_DEFAULTS)
+  : path.join(ROOT, CONFIG_DEFAULTS_REL);
+const REGISTRY_ABS = process.env.INSTAR_DARKGATE_REGISTRY
+  ? path.resolve(process.env.INSTAR_DARKGATE_REGISTRY)
+  : path.join(ROOT, DEV_GATED_FEATURES_REL);
+
+// Precompute the registry + path attribution so assertion B can SKIP a hardcoded
+// `enabled: false` whose attributed path is a DELIBERATE classification (a nested
+// DARK_GATE_EXCLUSIONS entry under a gate-marker comment, e.g. the cost-bearing
+// cartographer sweep). Without this, B false-flags a declared dark default that a
+// parent block's gate-marker comment happens to enclose. The full classification
+// check is assertion C below; B only needs the exclusion line-set to stay quiet on
+// already-classified lines.
+const _configDefaultsAbs = CONFIG_DEFAULTS_ABS;
+const _registryAbs = REGISTRY_ABS;
+let _exclusionClassifiedLines = new Set(); // 1-based ConfigDefaults.ts line numbers
+if (fs.existsSync(_configDefaultsAbs) && fs.existsSync(_registryAbs)) {
+  try {
+    const { exclusionPaths } = extractRegistry(_registryAbs);
+    const exclSet = new Set(exclusionPaths);
+    const { paths: attributed, error } = attributeEnabledFalsePaths(_configDefaultsAbs);
+    if (!error) {
+      for (const { line, dottedPath } of attributed) {
+        if (exclSet.has(dottedPath)) _exclusionClassifiedLines.add(line);
+      }
+    }
+  } catch {
+    // If precompute fails, B falls back to its original behavior (flag all);
+    // assertion C reports the real desync/error loudly.
+    _exclusionClassifiedLines = new Set();
+  }
+}
 
 for (const file of resolveTargets()) {
   if (!fs.existsSync(file)) continue;
@@ -163,7 +209,15 @@ for (const file of resolveTargets()) {
       for (let j = openIdx; j <= Math.min(openIdx + BLOCK_MAX_LINES, lines.length - 1); j++) {
         const codeJ = codeOnly(lines[j]);
         if (codeJ === null) continue;
-        if (HARDCODED_ENABLED.test(codeJ) && !reportedB.has(j)) {
+        // Skip a line that is a DELIBERATE DARK_GATE_EXCLUSIONS classification
+        // (a nested dark default that a parent block's gate-marker comment merely
+        // encloses — e.g. the cost-bearing cartographer sweep). Assertion C still
+        // requires it to be classified; B should not double-flag it.
+        if (
+          HARDCODED_ENABLED.test(codeJ) &&
+          !reportedB.has(j) &&
+          !(rel === CONFIG_DEFAULTS_REL && _exclusionClassifiedLines.has(j + 1))
+        ) {
           reportedB.add(j);
           violations.push({
             file: rel, line: j + 1, kind: 'B: hardcoded enabled under gate marker',
@@ -181,16 +235,107 @@ for (const file of resolveTargets()) {
   }
 }
 
+// ════════════════════════════════════════════════════════════════════════════
+// Assertion C — NO UNCLASSIFIED DARK DEFAULT (DEV-AGENT-DARK-GATE-ENFORCEMENT B2)
+//
+// Every literal `enabled: false` in src/config/ConfigDefaults.ts must be a
+// DECLARED choice: its attributed config path is EITHER registered in
+// DEV_GATED_FEATURES (→ but then it must NOT also hardcode `enabled: false`; a
+// dev-gated feature OMITS enabled) OR classified in DARK_GATE_EXCLUSIONS with a
+// category + reason. Neither → violation. This closes the cartographer hole:
+// assertion B only fires under a comment marker; a marker-less hardcoded
+// `enabled: false` (exactly the cartographer specs) was invisible.
+//
+// LIMITATION (P2 Signal-vs-Authority — do NOT claim full closure): assertion C
+// matches the LITERAL `enabled: false` spelling ONLY. A non-literal default
+// (`enabled: someFlag ?? false`) evades it — the same miss named in the prior
+// conformance spec's Layer-2 row. C closes the literal-false hole (cartographer +
+// #1001), not the non-literal-expression hole.
+//
+// Path attribution reuses codeOnly() for depth (shared with the golden-path test
+// via scripts/lib/dark-gate-attribution.js — ONE attributor implementation).
+// codeOnly() strips `//` comments but does NOT skip braces inside string/template
+// literals — so a loud-fail guard in attributeEnabledFalsePaths errors if any line
+// in the defaults-block region carries a `{`/`}` inside a string, rather than
+// silently desyncing.
+// ════════════════════════════════════════════════════════════════════════════
+
+// Run assertion C only on a full-tree / explicit run that includes ConfigDefaults
+// (the path attribution needs the whole file; a --staged run that doesn't touch
+// it is a no-op for C, which is fine — CI runs the full tree).
+(() => {
+  const configDefaultsAbs = CONFIG_DEFAULTS_ABS;
+  const registryAbs = REGISTRY_ABS;
+  if (!fs.existsSync(configDefaultsAbs) || !fs.existsSync(registryAbs)) return;
+
+  const { gatedPaths, exclusionPaths, exclusionEntries } = extractRegistry(registryAbs);
+  const gatedSet = new Set(gatedPaths);
+  const exclusionSet = new Set(exclusionPaths);
+
+  // Validate exclusion-entry quality (closed enum + reason length).
+  for (const e of exclusionEntries) {
+    if (!VALID_CATEGORIES.has(e.category)) {
+      violations.push({
+        file: DEV_GATED_FEATURES_REL, line: 0, kind: 'C: invalid exclusion category',
+        text: `${e.configPath} → category '${e.category}'`,
+        fix: `category must be one of: ${[...VALID_CATEGORIES].join(', ')}`,
+      });
+    }
+    const reasonLen = (e.reason || '').replace(/\s/g, '').length;
+    if (reasonLen < 12) {
+      violations.push({
+        file: DEV_GATED_FEATURES_REL, line: 0, kind: 'C: exclusion reason too short',
+        text: `${e.configPath} → reason '${e.reason}' (${reasonLen} non-ws chars)`,
+        fix: 'a DARK_GATE_EXCLUSIONS reason must be ≥12 non-whitespace chars (defeats placeholder reasons)',
+      });
+    }
+  }
+
+  const { paths: attributed, error } = attributeEnabledFalsePaths(configDefaultsAbs);
+  if (error) {
+    violations.push({
+      file: CONFIG_DEFAULTS_REL, line: 0, kind: 'C: path-attribution error',
+      text: error,
+      fix: 'resolve the desync condition before the lint can attribute dark defaults',
+    });
+    return;
+  }
+
+  for (const { line, dottedPath } of attributed) {
+    const inGated = gatedSet.has(dottedPath);
+    const inExcluded = exclusionSet.has(dottedPath);
+    if (inGated) {
+      // Registered as dev-gated but still hardcodes `enabled: false` — the #1001
+      // shape. A dev-gated feature OMITS enabled.
+      violations.push({
+        file: CONFIG_DEFAULTS_REL, line, kind: 'C: registered but hardcodes false',
+        text: `${dottedPath} is in DEV_GATED_FEATURES but still hardcodes \`enabled: false\``,
+        fix: 'OMIT `enabled` from the default so the gate decides (resolved as enabled ?? !!developmentAgent)',
+      });
+    } else if (!inExcluded) {
+      violations.push({
+        file: CONFIG_DEFAULTS_REL, line, kind: 'C: unclassified dark default',
+        text: `${dottedPath} has \`enabled: false\` but is in NEITHER DEV_GATED_FEATURES NOR DARK_GATE_EXCLUSIONS`,
+        fix: 'dev-gate it (omit `enabled` + register in DEV_GATED_FEATURES) OR add it to DARK_GATE_EXCLUSIONS with a category+reason',
+      });
+    }
+  }
+})();
+
 if (violations.length === 0) {
   console.log('lint-dev-agent-dark-gate: clean');
   process.exit(0);
 }
 
 console.error('\n❌ lint-dev-agent-dark-gate found violations of the developmentAgent dark-feature gate standard:\n');
+console.error('NOTE: assertion C matches the literal `enabled: false` spelling only — a non-literal');
+console.error('default (`enabled: someFlag ?? false`) evades it. C closes the literal-false hole');
+console.error('(cartographer + #1001), not the non-literal-expression hole.\n');
 for (const v of violations) {
-  console.error(`  ${v.file}:${v.line}  [${v.kind}]`);
+  const loc = v.line ? `${v.file}:${v.line}` : v.file;
+  console.error(`  ${loc}  [${v.kind}]`);
   console.error(`    ${v.text}`);
   console.error(`    fix: ${v.fix}\n`);
 }
-console.error('Standard: a dev-gated feature OMITS `enabled` and resolves it through resolveDevAgentGate so it runs LIVE on dev agents and DARK on the fleet. Spec: docs/specs/DEV-AGENT-DARK-GATE-CONFORMANCE-SPEC.md\n');
+console.error('Standard: a dev-gated feature OMITS `enabled` and resolves it through resolveDevAgentGate so it runs LIVE on dev agents and DARK on the fleet; every other `enabled: false` default must be classified in DARK_GATE_EXCLUSIONS. Spec: docs/specs/DEV-AGENT-DARK-GATE-ENFORCEMENT-SPEC.md\n');
 process.exit(1);

@@ -8412,8 +8412,10 @@ export async function startServer(options: StartOptions): Promise<void> {
     // Cartographer doc-tree — hierarchical semantic map with git-hash staleness
     // (cartographer-doc-tree-schema spec #1). Ships dark behind cartographer.enabled;
     // null → /cartographer/* routes return 503.
-    const cartographerEnabled =
-      (config as { cartographer?: { enabled?: boolean } }).cartographer?.enabled ?? false;
+    const cartographerEnabled = resolveDevAgentGate(
+      (config as { cartographer?: { enabled?: boolean } }).cartographer?.enabled,
+      config,
+    );
     const cartographer = cartographerEnabled
       ? new CartographerTree({ projectDir: config.projectDir, stateDir: config.stateDir })
       : null;
@@ -8421,18 +8423,21 @@ export async function startServer(options: StartOptions): Promise<void> {
 
     // Cartographer doc-freshness sweep (spec #2). In-process poller that authors
     // stale/never-authored node summaries on a LIGHT model routed OFF Claude.
-    // Ships dark behind freshnessSweep.enabled AND egressAcknowledged (off-Claude
-    // authoring transmits source content to a third-party framework — a separate
-    // consent gate). The off-Claude guarantee needs the IntelligenceRouter
-    // (router.for + defaultFramework); if routing is an unrouted provider the
-    // sweep refuses to start (it could not enforce off-Claude).
+    // Ships dark behind freshnessSweep.enabled ONLY — the redundant egressAcknowledged
+    // second gate was removed (DEV-AGENT-DARK-GATE-ENFORCEMENT Slice A3): one honest
+    // opt-in flag, not two. This is the one cost-bearing cartographer surface and stays
+    // an explicit opt-in EVEN on a dev agent (it bills a third-party account every pass),
+    // so it is in DARK_GATE_EXCLUSIONS (cost-bearing), NOT dev-gated. The off-Claude
+    // guarantee still needs the IntelligenceRouter (router.for + defaultFramework); if
+    // routing is an unrouted provider the sweep refuses to start (it could not enforce
+    // off-Claude) — that cost-protecting probe is UNCHANGED.
     let cartographerSweepPoller: import('../monitoring/CartographerSweepPoller.js').CartographerSweepPoller | null = null;
     if (cartographer) {
       const fsCfg = (config as {
         cartographer?: { freshnessSweep?: Record<string, unknown> & { enabled?: boolean; egressAcknowledged?: boolean } };
       }).cartographer?.freshnessSweep;
       const num = (v: unknown, d: number): number => (typeof v === 'number' && Number.isFinite(v) ? v : d);
-      if (fsCfg?.enabled && fsCfg?.egressAcknowledged && sharedLlmQueue) {
+      if (fsCfg?.enabled && sharedLlmQueue) {
         const routerLike =
           sharedIntelligence &&
           typeof (sharedIntelligence as { for?: unknown }).for === 'function' &&

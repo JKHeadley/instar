@@ -271,8 +271,98 @@ export class PostUpdateMigrator {
     this.migrateThreadlineAgentInfoIdentity(result);
     this.migrateWorktreeMisplacedFloodItems(result);
     this.migrateSubscriptionPoolInteractiveReady(result);
+    this.migrateCartographerDevGate(result);
 
     return result;
+  }
+
+  // ── Cartographer dev-gate (DEV-AGENT-DARK-GATE-ENFORCEMENT, Migration Parity) ──
+  //
+  // The zero-cost cartographer READ surfaces (doc-tree/navigate + the deterministic
+  // conformance-coverage audit) are now dev-gated: their config defaults OMIT
+  // `enabled`, so a dev agent resolves them LIVE via resolveDevAgentGate. But an
+  // EXISTING dev agent already has `cartographer.enabled: false` (and
+  // `conformanceAudit.enabled: false`) on disk from the old hardcoded default —
+  // applyDefaults add-missing leaves those stale `false`s in place, so the gate
+  // never gets to decide and Echo (the motivating case) stays DARK. This one-shot,
+  // dev-agent-only migration strips a DEFAULT-SHAPED `false` at exactly those two
+  // ZERO-COST paths so the gate resolves them live.
+  //
+  // Provenance discriminator (the run-once marker): value alone can't tell a
+  // deliberate operator `false` from the old default `false`. The `_instar_migrations`
+  // marker means we only ever touch the ORIGINAL default, ONCE — if the operator
+  // later re-adds `false`, this never re-strips it.
+  //
+  // NEVER touches `freshnessSweep.enabled` — the cost-bearing surface is never
+  // auto-armed by an update (P19 / "no surprise activation on update"). Idempotent,
+  // existence-checked, dev-agent-only.
+  private migrateCartographerDevGate(result: MigrationResult): void {
+    const configPath = path.join(this.config.stateDir, 'config.json');
+    if (!fs.existsSync(configPath)) {
+      result.skipped.push('cartographer-dev-gate: config.json not found');
+      return;
+    }
+
+    let config: Record<string, unknown>;
+    try {
+      config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+    } catch (err) {
+      result.errors.push(`cartographer-dev-gate: config.json read failed: ${err instanceof Error ? err.message : String(err)}`);
+      return;
+    }
+
+    const migrations = (config._instar_migrations ?? []) as string[];
+    const marker = 'cartographer-dev-gate-strip';
+    if (migrations.some(m => m.startsWith(marker))) {
+      result.skipped.push('cartographer-dev-gate: already migrated');
+      return;
+    }
+
+    // Dev-agent-only: a fleet agent's `false` is the correct dark default and is
+    // left untouched. (The marker is NOT set here, so if the agent is later
+    // promoted to developmentAgent the migration can still run once.)
+    if (config.developmentAgent !== true) {
+      result.skipped.push('cartographer-dev-gate: not a development agent');
+      return;
+    }
+
+    const cartographer = config.cartographer;
+    const stripped: string[] = [];
+    if (cartographer && typeof cartographer === 'object' && !Array.isArray(cartographer)) {
+      const cart = cartographer as Record<string, unknown>;
+      // Strip a DEFAULT-SHAPED (exactly `false`) cartographer.enabled.
+      if (cart.enabled === false) {
+        delete cart.enabled;
+        stripped.push('cartographer.enabled');
+      }
+      // Strip a DEFAULT-SHAPED conformanceAudit.enabled === false.
+      const ca = cart.conformanceAudit;
+      if (ca && typeof ca === 'object' && !Array.isArray(ca)) {
+        const caObj = ca as Record<string, unknown>;
+        if (caObj.enabled === false) {
+          delete caObj.enabled;
+          stripped.push('cartographer.conformanceAudit.enabled');
+        }
+      }
+    }
+
+    // Record the marker even when nothing was stripped, so it runs exactly once
+    // (the value-already-absent / operator-set-true cases are terminal too).
+    const now = new Date().toISOString();
+    migrations.push(`${marker}-${now}`);
+    config._instar_migrations = migrations;
+    try {
+      fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+    } catch (err) {
+      result.errors.push(`cartographer-dev-gate: config.json write failed: ${err instanceof Error ? err.message : String(err)}`);
+      return;
+    }
+
+    if (stripped.length > 0) {
+      result.upgraded.push(`cartographer-dev-gate: stripped default-shaped \`enabled: false\` at ${stripped.join(', ')} so the developmentAgent gate resolves them live`);
+    } else {
+      result.skipped.push('cartographer-dev-gate: no default-shaped false to strip (marker set)');
+    }
   }
 
   /**

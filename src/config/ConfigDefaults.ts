@@ -679,9 +679,13 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
     },
   },
   // Cartographer doc-tree — hierarchical semantic map with git-hash staleness
-  // (cartographer-doc-tree-schema spec #1). Ships dark; routes 503 when disabled.
+  // (cartographer-doc-tree-schema spec #1). `enabled` is deliberately OMITTED so
+  // the runtime resolves it through the standard developmentAgent dark-feature
+  // gate (`enabled ?? !!developmentAgent`, standard_development_agent_dark_feature_gate):
+  // LIVE on a dev agent (the zero-cost read surfaces dogfood there), DARK fleet-wide.
+  // Registered in DEV_GATED_FEATURES (src/core/devGatedFeatures.ts). The live-fleet
+  // flip is registering `enabled: true` here. Spec: DEV-AGENT-DARK-GATE-ENFORCEMENT.
   cartographer: {
-    enabled: false,
     maxDepth: 12,
     // Doc-freshness sweep (spec #2). A nested key under cartographer so the
     // deep-merge add-missing path backfills it to existing agents (no migrateConfig
@@ -713,13 +717,15 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
     },
     // Standards Enforcement-Coverage Audit (cartographer-conformance-audit spec #3).
     // A nested key under cartographer so the deep-merge add-missing path backfills
-    // it to existing agents (no migrateConfig block needed). Ships dark behind BOTH
-    // cartographer.enabled AND conformanceAudit.enabled. The deterministic core reads
-    // local files only (zero egress); the OPTIONAL llmEnrichment path is the only
-    // egress and ships OFF (it additionally requires egressAcknowledged:true). The
-    // value shipped today is the deterministic coverage map — the LLM path is dark.
+    // it to existing agents (no migrateConfig block needed). `enabled` is deliberately
+    // OMITTED so the runtime resolves it through the developmentAgent dark-feature gate
+    // (`enabled ?? !!developmentAgent`, standard_development_agent_dark_feature_gate):
+    // LIVE on a dev agent (zero-egress deterministic core dogfoods there), DARK fleet-wide.
+    // Registered in DEV_GATED_FEATURES. The deterministic core reads local files only
+    // (zero egress); the OPTIONAL llmEnrichment path is the only egress and ships OFF
+    // (an unwired structural stub — see DARK_GATE_EXCLUSIONS). The value shipped today
+    // is the deterministic coverage map — the LLM path is dark.
     conformanceAudit: {
-      enabled: false,
       llmEnrichment: {
         enabled: false,
         egressAcknowledged: false,

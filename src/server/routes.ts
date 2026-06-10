@@ -4300,7 +4300,7 @@ export function createRoutes(ctx: RouteContext): Router {
     if (!ctx.cartographer) { res.status(503).json({ error: 'Cartographer not enabled' }); return false; }
     const cfg = (ctx.config as { cartographer?: { conformanceAudit?: { enabled?: boolean } } })
       .cartographer?.conformanceAudit;
-    if (cfg?.enabled !== true) { res.status(503).json({ error: 'Conformance audit not enabled' }); return false; }
+    if (!resolveDevAgentGate(cfg?.enabled, ctx.config)) { res.status(503).json({ error: 'Conformance audit not enabled' }); return false; }
     if (req.headers['x-instar-request'] !== '1') {
       res.status(403).json({ error: 'GET /conformance/coverage requires the X-Instar-Request: 1 intent header' });
       return false;

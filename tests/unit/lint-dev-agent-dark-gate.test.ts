@@ -5,19 +5,78 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+// The SAME attributor the lint's assertion C uses — the golden-path test asserts
+// THIS resolver reproduces a hand-authored map (never the resolver's own output).
+import { attributeEnabledFalsePaths } from '../../scripts/lib/dark-gate-attribution.js';
+import { DEV_GATED_FEATURES, DARK_GATE_EXCLUSIONS } from '../../src/core/devGatedFeatures.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '../..');
 const LINT = path.join(ROOT, 'scripts', 'lint-dev-agent-dark-gate.js');
 
+/** Run the lint's real attributor over the REAL ConfigDefaults.ts → { line→path }. */
+function attributeRealConfigDefaults(): Record<string, string> {
+  const { paths, error } = attributeEnabledFalsePaths(
+    path.join(ROOT, 'src', 'config', 'ConfigDefaults.ts'),
+  );
+  if (error) throw new Error(`attribution error: ${error}`);
+  const out: Record<string, string> = {};
+  for (const { line, dottedPath } of paths) out[String(line)] = dottedPath;
+  return out;
+}
+
 /** Run the lint; return { code, out }. Never throws on non-zero exit. */
-function runLint(args: string[]): { code: number; out: string } {
+function runLint(args: string[], env?: Record<string, string>): { code: number; out: string } {
   try {
-    const out = execFileSync('node', [LINT, ...args], { cwd: ROOT, encoding: 'utf-8' });
+    const out = execFileSync('node', [LINT, ...args], {
+      cwd: ROOT,
+      encoding: 'utf-8',
+      env: { ...process.env, ...(env ?? {}) },
+    });
     return { code: 0, out };
   } catch (e: any) {
     return { code: e.status ?? 1, out: `${e.stdout ?? ''}${e.stderr ?? ''}` };
   }
+}
+
+/**
+ * Build a minimal-but-valid fixture pair (a ConfigDefaults.ts with a
+ * SHARED_DEFAULTS literal + a devGatedFeatures.ts registry) in a tmpdir, and
+ * return the env overrides that point the lint's assertion-C at them. The lint's
+ * C-assertion reads these two files directly (independent of the file args), so
+ * the overrides are the only way to exercise C's failure modes.
+ */
+function writeCFixture(opts: {
+  defaultsBody: string;       // contents INSIDE the SHARED_DEFAULTS `{ ... }`
+  gatedEntries?: string;      // contents INSIDE DEV_GATED_FEATURES `[ ... ]`
+  exclusionEntries?: string;  // contents INSIDE DARK_GATE_EXCLUSIONS `[ ... ]`
+}): { dir: string; env: Record<string, string> } {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'darkgate-C-'));
+  const configDefaults = `const SHARED_DEFAULTS = {\n${opts.defaultsBody}\n};\nexport { SHARED_DEFAULTS };\n`;
+  const registry = [
+    'export const DEV_GATED_FEATURES = [',
+    opts.gatedEntries ?? '',
+    '];',
+    'export const DARK_GATE_EXCLUSIONS = [',
+    opts.exclusionEntries ?? '',
+    '];',
+    '',
+  ].join('\n');
+  const cdPath = path.join(dir, 'ConfigDefaults.ts');
+  const regPath = path.join(dir, 'devGatedFeatures.ts');
+  fs.writeFileSync(cdPath, configDefaults);
+  fs.writeFileSync(regPath, registry);
+  return {
+    dir,
+    env: {
+      INSTAR_DARKGATE_CONFIG_DEFAULTS: cdPath,
+      INSTAR_DARKGATE_REGISTRY: regPath,
+    },
+  };
+}
+
+function cleanup(dir: string) {
+  SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/lint-dev-agent-dark-gate.test.ts' });
 }
 
 describe('lint-dev-agent-dark-gate', () => {
@@ -136,6 +195,163 @@ describe('lint-dev-agent-dark-gate', () => {
       expect(out).toContain('B: hardcoded enabled under gate marker');
     } finally {
       SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/lint-dev-agent-dark-gate.test.ts' });
+    }
+  });
+
+  // ── Assertion C — no unclassified dark default (DEV-AGENT-DARK-GATE-ENFORCEMENT) ──
+
+  it('Assertion C (a): an unclassified `enabled: false` FAILS', () => {
+    const { dir, env } = writeCFixture({
+      defaultsBody: '  myFeature: {\n    enabled: false,\n  },',
+      // registries empty — myFeature is in NEITHER → violation
+    });
+    try {
+      const { code, out } = runLint([path.join(dir, 'ConfigDefaults.ts')], env);
+      expect(code).toBe(1);
+      expect(out).toContain('C: unclassified dark default');
+      expect(out).toContain('myFeature.enabled');
+    } finally {
+      cleanup(dir);
+    }
+  });
+
+  it('Assertion C (b): the same path added to DARK_GATE_EXCLUSIONS PASSES', () => {
+    const { dir, env } = writeCFixture({
+      defaultsBody: '  myFeature: {\n    enabled: false,\n  },',
+      exclusionEntries:
+        "  { configPath: 'myFeature.enabled', category: 'destructive', reason: 'kills things; off for everyone by design' },",
+    });
+    try {
+      const { code } = runLint([path.join(dir, 'ConfigDefaults.ts')], env);
+      expect(code).toBe(0);
+    } finally {
+      cleanup(dir);
+    }
+  });
+
+  it('Assertion C (c): a path registered in DEV_GATED_FEATURES that STILL hardcodes `enabled: false` FAILS', () => {
+    const { dir, env } = writeCFixture({
+      defaultsBody: '  myFeature: {\n    enabled: false,\n  },',
+      gatedEntries:
+        "  { name: 'myFeature', configPath: 'myFeature.enabled', description: 'x', justification: 'read-only, no spend, safe on dev' },",
+    });
+    try {
+      const { code, out } = runLint([path.join(dir, 'ConfigDefaults.ts')], env);
+      expect(code).toBe(1);
+      expect(out).toContain('C: registered but hardcodes false');
+    } finally {
+      cleanup(dir);
+    }
+  });
+
+  it('Assertion C (d-category): an exclusion with an UNKNOWN category FAILS', () => {
+    const { dir, env } = writeCFixture({
+      defaultsBody: '  myFeature: {\n    enabled: false,\n  },',
+      exclusionEntries:
+        "  { configPath: 'myFeature.enabled', category: 'not-a-real-category', reason: 'this reason is plenty long enough' },",
+    });
+    try {
+      const { code, out } = runLint([path.join(dir, 'ConfigDefaults.ts')], env);
+      expect(code).toBe(1);
+      expect(out).toContain('C: invalid exclusion category');
+    } finally {
+      cleanup(dir);
+    }
+  });
+
+  it('Assertion C (d-reason): an exclusion with a <12-char reason FAILS', () => {
+    const { dir, env } = writeCFixture({
+      defaultsBody: '  myFeature: {\n    enabled: false,\n  },',
+      exclusionEntries:
+        "  { configPath: 'myFeature.enabled', category: 'destructive', reason: 'too short' },",
+    });
+    try {
+      const { code, out } = runLint([path.join(dir, 'ConfigDefaults.ts')], env);
+      expect(code).toBe(1);
+      expect(out).toContain('C: exclusion reason too short');
+    } finally {
+      cleanup(dir);
+    }
+  });
+
+  it('Assertion C (f-brace-in-string): a `{`-bearing string default in the block region makes the lint ERROR (loud-fail, not silent desync)', () => {
+    const { dir, env } = writeCFixture({
+      // A string value containing a brace — codeOnly() does not strip string
+      // contents, so the brace would desync depth attribution if not guarded.
+      defaultsBody: "  label: 'a value with a { brace inside a string',\n  myFeature: {\n    enabled: false,\n  },",
+      exclusionEntries:
+        "  { configPath: 'myFeature.enabled', category: 'destructive', reason: 'kills things; off for everyone by design' },",
+    });
+    try {
+      const { code, out } = runLint([path.join(dir, 'ConfigDefaults.ts')], env);
+      expect(code).toBe(1);
+      expect(out).toContain('brace-in-string in defaults block');
+    } finally {
+      cleanup(dir);
+    }
+  });
+
+  it('Assertion C (e) golden-path: the resolver reproduces the HAND-AUTHORED dotted-path map for EVERY current `enabled:` line in the real ConfigDefaults (regeneration FORBIDDEN — edit by hand)', () => {
+    // ────────────────────────────────────────────────────────────────────────
+    // DRIFT CANARY. This map is HAND-AUTHORED by reading src/config/ConfigDefaults.ts
+    // directly. It is NOT a vitest snapshot and MUST NEVER be regenerated from the
+    // resolver's own output (a snapshot regenerated from the resolver asserts
+    // output == output and would bless any misattribution). Updating it is a manual
+    // edit on a CODEOWNERS-reviewed path. If this fails, EITHER ConfigDefaults
+    // changed (update the map by hand after verifying the new paths) OR the
+    // attributor regressed (fix the attributor).
+    // ────────────────────────────────────────────────────────────────────────
+    const EXPECTED: Record<string, string> = {
+      '39': 'monitoring.bootHealthBeacon.enabled',
+      '58': 'monitoring.parallelWorkSentinel.enabled',
+      '129': 'monitoring.sessionReaper.enabled',
+      '177': 'monitoring.agentWorktreeReaper.enabled',
+      '191': 'monitoring.mcpProcessReaper.enabled',
+      '205': 'monitoring.agentSleep.enabled',
+      '228': 'monitoring.failureLearning.enabled',
+      '254': 'monitoring.correctionLearning.enabled',
+      '326': 'monitoring.apprenticeshipCycleSla.enabled',
+      '334': 'monitoring.geminiCapacityEscalation.enabled',
+      '342': 'monitoring.releaseReadiness.enabled',
+      '383': 'threadline.a2aCheckIn.enabled',
+      '427': 'mentor.enabled',
+      '438': 'mentor.autonomousFix.enabled',
+      '453': 'mentee.enabled',
+      '538': 'multiMachine.sessionPool.enabled',
+      '696': 'cartographer.freshnessSweep.enabled',
+      '730': 'cartographer.conformanceAudit.llmEnrichment.enabled',
+      '755': 'cartographer.subtreeNav.llmRerank.enabled',
+    };
+    const actual = attributeRealConfigDefaults();
+    expect(actual).toEqual(EXPECTED);
+  });
+
+  it('Assertion C (g) destructive-not-gated: the three reapers are in DARK_GATE_EXCLUSIONS and NOT in DEV_GATED_FEATURES', () => {
+    const gatedPaths = new Set(DEV_GATED_FEATURES.map((f) => f.configPath));
+    const excludedPaths = new Set(DARK_GATE_EXCLUSIONS.map((e) => e.configPath));
+    for (const p of [
+      'monitoring.mcpProcessReaper.enabled',
+      'monitoring.sessionReaper.enabled',
+      'monitoring.agentWorktreeReaper.enabled',
+    ]) {
+      expect(excludedPaths.has(p), `${p} must be in DARK_GATE_EXCLUSIONS`).toBe(true);
+      expect(gatedPaths.has(p), `${p} must NOT be in DEV_GATED_FEATURES (it is destructive)`).toBe(false);
+    }
+    // And each is classified `destructive`.
+    for (const p of [
+      'monitoring.mcpProcessReaper.enabled',
+      'monitoring.sessionReaper.enabled',
+      'monitoring.agentWorktreeReaper.enabled',
+    ]) {
+      const entry = DARK_GATE_EXCLUSIONS.find((e) => e.configPath === p)!;
+      expect(entry.category).toBe('destructive');
+    }
+  });
+
+  it('every DEV_GATED_FEATURES entry carries a non-trivial justification (the human-gate backstop)', () => {
+    for (const f of DEV_GATED_FEATURES) {
+      expect(typeof f.justification, `${f.name} justification`).toBe('string');
+      expect(f.justification.replace(/\s/g, '').length, `${f.name} justification length`).toBeGreaterThanOrEqual(12);
     }
   });
 });
