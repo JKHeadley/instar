@@ -249,6 +249,7 @@ export class PostUpdateMigrator {
     this.migrateTestAsSelfSkill(result);
     this.migrateInstarDevBuildLocationRegrounding(result);
     this.migrateInstarDevInternalOnlyReleaseNoteLane(result);
+    this.migrateSpecConvergeFoundationAudit(result);
     this.migrateAutonomousStopHookTopicKeyed(result);
     this.migrateSelfKnowledgeTree(result);
     this.migrateSoulMd(result);
@@ -1727,6 +1728,43 @@ export class PostUpdateMigrator {
       }
     } catch (err) {
       result.errors.push(`skills/instar-dev/SKILL.md migration: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  /**
+   * Update the deployed spec-converge skill so existing agents get the
+   * Lessons-aware reviewer's clause (d) FOUNDATION/SUBSYSTEM AUDIT — the review
+   * must reach one layer below the spec boundary and weigh the subsystem the
+   * spec tests/extends/builds-on against known standards, not just the spec's
+   * own surface. This is the structural fix for the gap that let a test-harness
+   * spec converge cleanly while the permission gate it proved still held brittle
+   * blocking authority in violation of Signal-vs-Authority (2026-06-09): the
+   * convergence audited only the harness and took the flawed foundation as given.
+   *
+   * Idempotent + conservative: re-copy the bundled SKILL.md only when the
+   * installed copy (a) lacks the clause-(d) marker AND (b) still matches the
+   * stock spec-converge fingerprint. A customized skill is left untouched.
+   */
+  private migrateSpecConvergeFoundationAudit(result: MigrationResult): void {
+    try {
+      const skillFile = path.join(this.config.projectDir, '.claude', 'skills', 'spec-converge', 'SKILL.md');
+      if (!fs.existsSync(skillFile)) return; // installBuiltinSkills handles fresh installs
+      const current = fs.readFileSync(skillFile, 'utf8');
+      const MARKER = 'FOUNDATION/SUBSYSTEM AUDIT';
+      if (current.includes(MARKER)) return; // already updated — idempotent
+      if (!current.includes('# /spec-converge') || !current.includes('**Internal reviewers (Claude subagents):**')) {
+        result.skipped.push('skills/spec-converge/SKILL.md: customized — left untouched (no foundation-audit update)');
+        return;
+      }
+      const bundled = path.join(__dirname, '..', '..', 'skills', 'spec-converge', 'SKILL.md');
+      if (!fs.existsSync(bundled)) return;
+      const next = fs.readFileSync(bundled, 'utf8');
+      if (next.includes(MARKER)) {
+        fs.writeFileSync(skillFile, next);
+        result.upgraded.push('skills/spec-converge/SKILL.md (Lessons-aware clause (d) foundation/subsystem audit)');
+      }
+    } catch (err) {
+      result.errors.push(`skills/spec-converge/SKILL.md migration: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
