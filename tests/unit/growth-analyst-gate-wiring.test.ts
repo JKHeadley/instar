@@ -77,9 +77,12 @@ describe('G3 — the dev-gate resolution: enabled ?? !!developmentAgent (both si
 });
 
 describe('G4 — AgentServer resolves the gate and feeds it into settings (source-level)', () => {
-  it('gates analyst construction on the developmentAgent standard (explicit ?? developmentAgent)', () => {
+  it('gates analyst construction on the developmentAgent standard (via the resolveDevAgentGate funnel)', () => {
+    // The dev-gate resolution now goes through the resolveDevAgentGate funnel
+    // (DEV-AGENT-DARK-GATE-CONFORMANCE-SPEC) rather than a hand-rolled
+    // `?? !!developmentAgent`, so lint-dev-agent-dark-gate can keep it that way.
     expect(AGENT_SERVER_SRC).toMatch(
-      /growthAnalyst\?\.enabled\s*\?\?\s*!!options\.config\.developmentAgent/,
+      /resolveDevAgentGate\(\s*options\.config\.monitoring\?\.growthAnalyst\?\.enabled,\s*options\.config\s*\)/,
     );
   });
 

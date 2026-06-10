@@ -14,6 +14,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import { ApprovalLedger } from '../core/ApprovalLedger.js';
+import { resolveDevAgentGate } from '../core/devAgentGate.js';
 import { TopicOperatorStore } from '../users/TopicOperatorStore.js';
 import { MandateStore } from '../coordination/MandateStore.js';
 import { MandateGate } from '../coordination/MandateGate.js';
@@ -265,6 +266,7 @@ export class AgentServer {
     subscriptionPool?: import('../core/SubscriptionPool.js').SubscriptionPool;
     quotaPoller?: import('../core/QuotaPoller.js').QuotaPoller;
     quotaAwareScheduler?: import('../core/QuotaAwareScheduler.js').QuotaAwareScheduler;
+    proactiveSwapMonitor?: import('../core/ProactiveSwapMonitor.js').ProactiveSwapMonitor;
     inUseAccountResolver?: import('../core/InUseAccountResolver.js').InUseAccountResolver;
     enrollmentWizard?: import('../core/EnrollmentWizard.js').EnrollmentWizard;
     semanticMemory?: import('../memory/SemanticMemory.js').SemanticMemory;
@@ -896,7 +898,7 @@ export class AgentServer {
         // OFF on the fleet, so this dogfoods on echo before fleet rollout. This
         // is read-only observability — the sampler only reads ps/process.* and
         // writes the ledger; it never gates, throttles, or mutates anything.
-        const samplingEnabled = rlCfg?.enabled ?? !!options.config.developmentAgent;
+        const samplingEnabled = resolveDevAgentGate(rlCfg?.enabled, options.config);
         if (samplingEnabled) {
           const sessionManager = options.sessionManager;
           this.resourceSampler = new ResourceSampler({
@@ -1236,7 +1238,7 @@ export class AgentServer {
     // (recurrence) — all read-only. Own try/catch so a failure here can never
     // cascade into other init.
     const growthAnalystEnabled =
-      options.config.monitoring?.growthAnalyst?.enabled ?? !!options.config.developmentAgent;
+      resolveDevAgentGate(options.config.monitoring?.growthAnalyst?.enabled, options.config);
     try {
       if (growthAnalystEnabled && options.config.stateDir && options.initiativeTracker) {
         this.growthMilestoneAnalyst = new GrowthMilestoneAnalyst({
@@ -1255,6 +1257,9 @@ export class AgentServer {
           correctionLedger: this.correctionLedger,
           // evidenceCounter intentionally unwired in this slice → proof:'unknown'
           // (honest: a feature with no evidence source cannot be promotion-ready).
+          // R6 dev-gate conformance: feed the live config so the analyst can flag
+          // a registered dev-gated feature observed DARK on this dev agent.
+          liveConfig: options.config,
           onError: (where, err) => console.warn(`[GrowthMilestoneAnalyst] ${where}:`, err),
         });
       }
@@ -1404,6 +1409,7 @@ export class AgentServer {
       subscriptionPool: options.subscriptionPool ?? null,
       quotaPoller: options.quotaPoller ?? null,
       quotaAwareScheduler: options.quotaAwareScheduler ?? null,
+      proactiveSwapMonitor: options.proactiveSwapMonitor,
       inUseAccountResolver: options.inUseAccountResolver,
       enrollmentWizard: options.enrollmentWizard ?? null,
       semanticMemory: options.semanticMemory ?? null,
