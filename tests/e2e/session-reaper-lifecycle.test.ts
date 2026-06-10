@@ -157,7 +157,8 @@ describe('SessionReaper E2E lifecycle', () => {
       now = 1_000_000; await reaper.tick();
       now = 1_120_000; await reaper.tick();
       now = 1_240_000; await reaper.tick();
-      expect(terminate).toHaveBeenCalledWith('s1', 'reaped-idle');
+      // 3rd arg is the active-process relaxation flag (false: no active process here).
+      expect(terminate).toHaveBeenCalledWith('s1', 'reaped-idle', { bypassActiveProcessKeep: false });
     });
 
     it('ABORTS the reap when the pane changes during the grace window', async () => {

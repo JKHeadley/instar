@@ -235,3 +235,52 @@ describe('cpuAwareActiveProcessKeep — cpuProgressFlat gating via tick() (both 
     expect(h.audits.some(a => a.event === 'cpu-keep-tightened')).toBe(false);
   });
 });
+
+// ────────────────────────────────────────────────────────────────────────────
+// Active-process relaxation PARITY (bypassActiveProcessKeep plumbed to terminate).
+// The reaper's evaluate() relaxes the active-process veto, but the terminate
+// AUTHORITY re-runs the un-relaxed shared ReapGuard — so without the reaper
+// carrying its relaxation through, the authority re-vetoes the very reap the
+// reaper authorized (observed live: 1,532× skipped:active-process). These assert
+// the reaper passes `bypassActiveProcessKeep` IFF its reap relaxed that veto.
+// Spec: docs/specs/reaper-active-process-relaxation-parity.md.
+// ────────────────────────────────────────────────────────────────────────────
+describe('active-process relaxation parity — reaper carries the bypass to terminate', () => {
+  it('reap via cpuFlat relaxation ⇒ terminate called with bypassActiveProcessKeep:true', async () => {
+    const h = harness();
+    h.setCpu(100); // constant ⇒ flat delta ⇒ active-process veto relaxed under pressure
+    h.setNow(1_000_000); await h.reaper.tick(); // seed sample
+    h.setNow(1_120_000); await h.reaper.tick(); // flat ⇒ candidate 1
+    h.setNow(1_240_000); await h.reaper.tick(); // flat ⇒ candidate 2 → reap-pending
+    h.setNow(1_360_000); await h.reaper.tick(); // grace elapsed → performReap
+    expect(h.terminate).toHaveBeenCalledTimes(1);
+    expect(h.terminate).toHaveBeenCalledWith('s1', 'reaped-idle', { bypassActiveProcessKeep: true });
+  });
+
+  it('reap via stale-idle relaxation (no CPU dep) ⇒ bypassActiveProcessKeep:true', async () => {
+    // cpuAware OFF; the 8h-stale-idle path relaxes the active-process veto for a
+    // session whose only blocker is its own idle children (e.g. the MCP stack).
+    // This is the path that fires in production.
+    const h = harness({
+      cfg: { cpuAwareActiveProcessKeep: false, reapStaleIdleWithActiveChildren: true, staleCommitmentWindowMinutes: 480 },
+      deps: { topicBinding: () => 42, recentUserMessage: () => false },
+    });
+    h.setNow(1_000_000); await h.reaper.tick(); // staleIdle relaxes ⇒ candidate 1
+    h.setNow(1_120_000); await h.reaper.tick(); // candidate 2 → reap-pending
+    h.setNow(1_240_000); await h.reaper.tick(); // grace elapsed → performReap
+    expect(h.terminate).toHaveBeenCalledTimes(1);
+    expect(h.terminate).toHaveBeenCalledWith('s1', 'reaped-idle', { bypassActiveProcessKeep: true });
+  });
+
+  it('reap of a session with NO active process ⇒ bypassActiveProcessKeep:false (no-op bypass)', async () => {
+    // No active-process veto ever fired, so nothing was relaxed — the flag must
+    // be false (the authority's active-process check is a no-op here anyway).
+    const h = harness({ deps: { hasActiveProcesses: () => false } });
+    h.setCpu(0);
+    h.setNow(1_000_000); await h.reaper.tick(); // candidate 1
+    h.setNow(1_120_000); await h.reaper.tick(); // candidate 2 → reap-pending
+    h.setNow(1_240_000); await h.reaper.tick(); // grace elapsed → performReap
+    expect(h.terminate).toHaveBeenCalledTimes(1);
+    expect(h.terminate).toHaveBeenCalledWith('s1', 'reaped-idle', { bypassActiveProcessKeep: false });
+  });
+});

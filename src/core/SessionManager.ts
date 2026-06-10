@@ -766,6 +766,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
       origin?: 'operator' | 'autonomous';
       knownDead?: boolean;
       bypassRecoveryFlag?: boolean;
+      bypassActiveProcessKeep?: boolean;
     },
   ): Promise<{ terminated: boolean; skipped?: string }> {
     const session = this.state.getSession(sessionId);
@@ -818,7 +819,27 @@ rm()  { "${shimRunner}" rm  "$@"; }
         // other KEEP-guards (active subagent, recent-user-message, etc.) still
         // apply, so a session mid-conversation isn't killed-to-respawn under
         // the cover of "recovery."
-        const bypassThis = !!(opts?.bypassRecoveryFlag && blocked?.reason === 'recovery-in-flight');
+        //
+        // `bypassActiveProcessKeep` (active-process relaxation parity): the
+        // SessionReaper's `evaluate()` ALREADY relaxes the `active-process`
+        // existence-veto for a session it has proven idle (cpuFlat under
+        // pressure, or 8h-stale-idle with only its own idle children e.g. the
+        // standing MCP stack), then layers the stateful transcript-flat +
+        // positive-idle + render-stasis-through-grace proofs on top. But this
+        // shared ReapGuard re-runs the UN-relaxed `active-process` check, so
+        // without this bypass the authority re-vetoes the very reap the reaper
+        // authorized — the session is flagged reap-eligible, attempted, and
+        // skipped:active-process every tick forever (observed live: 1,532×).
+        // The reaper sets this flag ONLY on a reap whose active-process veto it
+        // relaxed, so an arbitrary killer cannot use it; and like the recovery
+        // bypass it lifts ONLY the `active-process` reason — every other
+        // KEEP-guard (recent-user-message, open-commitment, active-subagent,
+        // main-process-active, …) is re-checked fresh and still vetoes. Spec:
+        // docs/specs/reaper-active-process-relaxation-parity.md.
+        const bypassThis = !!(
+          (opts?.bypassRecoveryFlag && blocked?.reason === 'recovery-in-flight') ||
+          (opts?.bypassActiveProcessKeep && blocked?.reason === 'active-process')
+        );
         if (blocked && !bypassThis) {
           this.emit('reapBlocked', { session, reason, skipped: blocked.reason, origin });
           return { terminated: false, skipped: blocked.reason };

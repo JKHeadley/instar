@@ -10564,7 +10564,10 @@ export async function startServer(options: StartOptions): Promise<void> {
             },
           );
         },
-        terminate: (id, reason) => sessionManager.terminateSession(id, reason),
+        terminate: (id, reason, opts) =>
+          sessionManager.terminateSession(id, reason, {
+            bypassActiveProcessKeep: opts?.bypassActiveProcessKeep,
+          }),
         markReaping: (id) => sessionManager.markReaping(id),
         clearReaping: (id) => sessionManager.clearReaping(id),
         // Backs cpuAwareActiveProcessKeep: lets the reaper tell a wedged/idle

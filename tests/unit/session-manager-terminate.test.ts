@@ -47,6 +47,7 @@ vi.mock('node:child_process', () => {
 
 import { SessionManager } from '../../src/core/SessionManager.js';
 import { StateManager } from '../../src/core/StateManager.js';
+import { ReapGuard, type ReapGuardDeps } from '../../src/core/ReapGuard.js';
 import type { SessionManagerConfig } from '../../src/core/types.js';
 
 describe('SessionManager.terminateSession (single-writer CAS)', () => {
@@ -177,5 +178,57 @@ describe('SessionManager.terminateSession (single-writer CAS)', () => {
     // (it does NOT early-return on terminal status — only the in-flight guard
     // protects against racing terminateSession).
     expect(manager.killSession(s.id)).toBe(true);
+  });
+
+  // ── bypassActiveProcessKeep (active-process relaxation parity) ──────────────
+  // The reaper relaxes the active-process veto in evaluate(), then carries that
+  // decision here via the flag; the authority must lift ONLY that veto and keep
+  // enforcing every other guard. Spec: reaper-active-process-relaxation-parity.
+  const guardWith = (over: Partial<ReapGuardDeps> = {}): ReapGuard =>
+    new ReapGuard(
+      {
+        protectedSessions: () => [],
+        isRecoveryActive: () => false,
+        hasPendingInjection: () => false,
+        isRelayLeaseActive: () => false,
+        topicBinding: () => null,
+        recentUserMessage: () => false,
+        activeCommitmentForTopic: () => false,
+        activeSubagentCount: () => 0,
+        buildOrAutonomousActive: () => false,
+        hasActiveProcesses: () => true, // the active-process veto is armed by default
+        ...over,
+      },
+      { minAgeMs: 0 }, // no spawn-grace so the active-process guard is what fires
+    );
+
+  it('without the flag, an active-process keep vetoes the reap (skipped:active-process)', async () => {
+    manager.setReapGuard(guardWith());
+    const s = await spawn('ap-1');
+    const r = await manager.terminateSession(s.id, 'reaped-idle');
+    expect(r).toEqual({ terminated: false, skipped: 'active-process' });
+    expect(state.getSession(s.id)!.status).toBe('running'); // still alive
+  });
+
+  it('bypassActiveProcessKeep:true lifts the active-process veto ⇒ terminates', async () => {
+    manager.setReapGuard(guardWith());
+    const s = await spawn('ap-2');
+    const r = await manager.terminateSession(s.id, 'reaped-idle', { bypassActiveProcessKeep: true });
+    expect(r.terminated).toBe(true);
+    expect(state.getSession(s.id)!.status).toBe('completed');
+  });
+
+  it('bypassActiveProcessKeep does NOT lift a DIFFERENT keep-reason (recent-user-message still vetoes)', async () => {
+    // No active process here; a recent user message is the live veto. The flag is
+    // scoped to active-process, so this session must still be KEPT.
+    manager.setReapGuard(guardWith({
+      hasActiveProcesses: () => false,
+      topicBinding: () => 1,
+      recentUserMessage: () => true,
+    }));
+    const s = await spawn('ap-3');
+    const r = await manager.terminateSession(s.id, 'reaped-idle', { bypassActiveProcessKeep: true });
+    expect(r).toEqual({ terminated: false, skipped: 'recent-user-message' });
+    expect(state.getSession(s.id)!.status).toBe('running');
   });
 });
