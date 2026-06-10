@@ -39,10 +39,11 @@ describe('SessionReaper wiring integrity', () => {
     // passed (else the tightening silently never engages — the dead-dep trap).
     expect(/descendantCpuSeconds:\s*\(s\)\s*=>\s*sessionManager\.descendantCpuSeconds\(s\)/.test(src)).toBe(true);
     // The flag is gated by developmentAgent (dark fleet-wide, live on dev agents);
-    // an explicit config value wins via ??.
-    expect(/cpuAwareActiveProcessKeep:\s*rcfg\.cpuAwareActiveProcessKeep\s*\?\?\s*!!config\.developmentAgent/.test(src)).toBe(true);
+    // an explicit config value wins. Resolved via the resolveDevAgentGate funnel
+    // (DEV-AGENT-DARK-GATE-CONFORMANCE-SPEC) rather than a hand-rolled `?? !!`.
+    expect(/cpuAwareActiveProcessKeep:\s*resolveDevAgentGate\(\s*rcfg\.cpuAwareActiveProcessKeep,\s*config\s*\)/.test(src)).toBe(true);
     // The observe-only busy-orphan detection rides the same dev-gate.
-    expect(/busyOrphanDetection:\s*rcfg\.busyOrphanDetection\s*\?\?\s*!!config\.developmentAgent/.test(src)).toBe(true);
+    expect(/busyOrphanDetection:\s*resolveDevAgentGate\(\s*rcfg\.busyOrphanDetection,\s*config\s*\)/.test(src)).toBe(true);
   });
 
   it('AgentServer threads options.sessionReaper into the route context', () => {
