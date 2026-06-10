@@ -97,6 +97,12 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     description: 'Standards enforcement-coverage audit (deterministic, zero egress).',
     justification: 'Deterministic local audit; no LLM, no egress, no spend.',
   },
+  {
+    name: 'blockerLedger',
+    configPath: 'monitoring.blockerLedger.enabled',
+    description: 'Blocker Ledger — resolution pipeline + memory for Principle 1 (/blockers/*).',
+    justification: 'Signal-only local recorder (never blocks a message); file-JSON state, no egress, no destructive action; the only LLM use is one bounded (<=200-token) fail-closed B17 settle check on the rare true-blocker settle.',
+  },
 ];
 
 /**
