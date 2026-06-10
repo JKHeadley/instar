@@ -40,6 +40,10 @@ for _arg in "$@"; do [[ "$_arg" == "--codex" ]] && IS_CODEX=1; done
 
 # hook-capability: codex-stdout-json-safe — see emit() below (migration marker; bumped so
 # existing #28 installs re-deploy this fixed hook even though they already have CODEX_LOOP_ENABLED).
+# hook-capability: REALCHECK_VERIFY — ACT-152 real-check gate (realcheck_gate runs an opt-in
+# verification_command on a met:true verdict and gates the exit on it; fail/timeout/breaker-open →
+# keep working, the safe direction). This sentinel is the PostUpdateMigrator marker that re-deploys
+# this hook to existing agents that carry COMPLETION_DISCIPLINE but not REALCHECK_VERIFY.
 # emit — human-facing approve/status text. In codex mode the Stop hook's STDOUT must be
 # ONLY valid decision-JSON (the `{"decision":"block",...}` case far below) or empty:
 # codex rejects ANY other stdout as "invalid stop hook JSON output" and reports the stop
@@ -187,6 +191,17 @@ fm_get() {
   local key="$1"
   printf '%s\n' "$FRONTMATTER" | grep "^${key}:" | head -1 | sed "s/^${key}: *//" | tr -d '"' || true
 }
+# Quote-PRESERVING field read — identical to fm_get but WITHOUT the `tr -d '"'`,
+# so a value containing literal quotes (e.g. a verification_command with quoted
+# args) survives intact. Strips ONLY a single pair of wrapping double-quotes (the
+# YAML frontmatter the setup script writes as `key: "value"`), never inner quotes.
+fm_get_raw() {
+  local key="$1" val
+  val=$(printf '%s\n' "$FRONTMATTER" | grep "^${key}:" | head -1 | sed "s/^${key}: *//" || true)
+  # Strip one leading + one trailing double-quote if both present (preserve inner).
+  if [[ "$val" == \"*\" ]]; then val="${val#\"}"; val="${val%\"}"; fi
+  printf '%s' "$val"
+}
 
 ACTIVE=$(fm_get active)
 if [[ "$ACTIVE" != "true" ]]; then
@@ -213,6 +228,13 @@ COMPLETION_PROMISE=$(fm_get completion_promise)
 COMPLETION_CONDITION=$(fm_get completion_condition)
 GOAL_MODE=$(fm_get goal_mode)   # "native" = the framework's own /goal loop drives completion
 RUN_GOAL=$(fm_get goal)
+# Real-check verification (ACT-152) — opt-in declared command + its build dir.
+# Read QUOTE-PRESERVING: a verification_command may contain literal quotes that
+# fm_get's `tr -d '"'` would mangle. Absent on older state files → empty → the
+# real-check gate self-disables for that run (byte-identical to today).
+VERIFICATION_COMMAND=$(fm_get_raw verification_command)
+VERIFICATION_CWD=$(fm_get_raw verification_cwd)
+WORK_DIR=$(fm_get_raw work_dir)
 # COMPLETION_DISCIPLINE — per-run nonce that authenticates a <hard-blocker> exit
 # marker (mirrors the completion_promise exact-match guard). Absent on older
 # state files → the marker branch self-disables for that run (no false exit).
@@ -244,25 +266,57 @@ try:
     bc = a.get('judgeFailCooldownMs', 600000)
     mc = a.get('markerFieldMaxChars', 500)
     rb = a.get('hardBlockerLogRotateBytes', 1048576)
-    print('%s %d %d %d %d %d %d' % (
+    # Real-check verification (ACT-152) — nested under completionDiscipline.
+    rc = a.get('realCheck') or {}
+    rce = rc.get('enabled', True)
+    rct = rc.get('timeoutMs', 120000)
+    try:
+        rct = int(rct)
+    except Exception:
+        rct = 120000
+    if rct < 5000:
+        rct = 5000
+    rcm = rc.get('maxChars', 2000)
+    rcc = rc.get('captureBytes', 65536)
+    rcbt = rc.get('failBreakerThreshold', 3)
+    rcbw = rc.get('failWindowMs', 600000)
+    rcbc = rc.get('failCooldownMs', 600000)
+    print('%s %d %d %d %d %d %d %s %d %d %d %d %d %d' % (
         '1' if en else '0', jt,
         int(bt) if str(bt).isdigit() else 3,
         int(bw) if str(bw).isdigit() else 600000,
         int(bc) if str(bc).isdigit() else 600000,
         int(mc) if str(mc).isdigit() else 500,
         int(rb) if str(rb).isdigit() else 1048576,
+        '1' if rce else '0', rct,
+        int(rcm) if str(rcm).isdigit() else 2000,
+        int(rcc) if str(rcc).isdigit() else 65536,
+        int(rcbt) if str(rcbt).isdigit() else 3,
+        int(rcbw) if str(rcbw).isdigit() else 600000,
+        int(rcbc) if str(rcbc).isdigit() else 600000,
     ))
 except Exception:
-    print('1 35000 3 600000 600000 500 1048576')
-" 2>/dev/null || echo "1 35000 3 600000 600000 500 1048576")
-read -r CD_ENABLED JUDGE_TIMEOUT_MS CD_BREAKER_THRESHOLD CD_BREAKER_WINDOW_MS CD_BREAKER_COOLDOWN_MS CD_MARKER_MAX_CHARS CD_LOG_ROTATE_BYTES <<< "$CD_CFG"
+    print('1 35000 3 600000 600000 500 1048576 1 120000 2000 65536 3 600000 600000')
+" 2>/dev/null || echo "1 35000 3 600000 600000 500 1048576 1 120000 2000 65536 3 600000 600000")
+read -r CD_ENABLED JUDGE_TIMEOUT_MS CD_BREAKER_THRESHOLD CD_BREAKER_WINDOW_MS CD_BREAKER_COOLDOWN_MS CD_MARKER_MAX_CHARS CD_LOG_ROTATE_BYTES RC_ENABLED RC_TIMEOUT_MS RC_MAX_CHARS RC_CAPTURE_BYTES RC_BREAKER_THRESHOLD RC_BREAKER_WINDOW_MS RC_BREAKER_COOLDOWN_MS <<< "$CD_CFG"
 [[ "$CD_ENABLED" =~ ^[01]$ ]] || CD_ENABLED=1
 [[ "$JUDGE_TIMEOUT_MS" =~ ^[0-9]+$ ]] || JUDGE_TIMEOUT_MS=35000
 # curl -m takes SECONDS; convert ms→s (ceil), floor 5s.
 JUDGE_TIMEOUT_S=$(( (JUDGE_TIMEOUT_MS + 999) / 1000 ))
 [[ $JUDGE_TIMEOUT_S -lt 5 ]] && JUDGE_TIMEOUT_S=5
+# ── Real-check verification dials (ACT-152) — validated + ms→s for the command timeout ──
+[[ "$RC_ENABLED" =~ ^[01]$ ]] || RC_ENABLED=1
+[[ "$RC_TIMEOUT_MS" =~ ^[0-9]+$ ]] || RC_TIMEOUT_MS=120000
+RC_TIMEOUT_S=$(( (RC_TIMEOUT_MS + 999) / 1000 ))
+[[ $RC_TIMEOUT_S -lt 5 ]] && RC_TIMEOUT_S=5
+[[ "$RC_MAX_CHARS" =~ ^[0-9]+$ ]] || RC_MAX_CHARS=2000
+[[ "$RC_CAPTURE_BYTES" =~ ^[0-9]+$ ]] || RC_CAPTURE_BYTES=65536
+[[ "$RC_BREAKER_THRESHOLD" =~ ^[0-9]+$ ]] || RC_BREAKER_THRESHOLD=3
+[[ "$RC_BREAKER_WINDOW_MS" =~ ^[0-9]+$ ]] || RC_BREAKER_WINDOW_MS=600000
+[[ "$RC_BREAKER_COOLDOWN_MS" =~ ^[0-9]+$ ]] || RC_BREAKER_COOLDOWN_MS=600000
 # logs/ resolves against the agent home we cd'd into above (CWD is the agent home).
 HARD_BLOCKER_LOG="logs/autonomous-hard-blocker.jsonl"
+REALCHECK_LOG="logs/autonomous-realcheck.jsonl"
 
 # ── Layer A: notify-on-stop (2026-05-27 silent-stalls postmortem, Task 2) ──────
 # When an autonomous run reaches a TERMINAL exit (completion / duration / emergency),
@@ -743,6 +797,329 @@ hb_leak_hit() {
   printf '%s' "$1" | grep -qiE 'sk-[a-zA-Z0-9]{16,}|xox[baprs]-[a-zA-Z0-9-]{8,}|gh[pousr]_[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{12,}|-----BEGIN [A-Z ]*PRIVATE KEY-----|AIza[0-9A-Za-z_-]{20,}|eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}' 2>/dev/null && echo 1 || echo 0
 }
 
+# ── REAL-CHECK VERIFICATION (ACT-152) — helpers ──────────────────────────────
+# A failing/flaky/mis-scoped verification_command would otherwise re-run on EVERY
+# met:true verdict for the whole duration — and because the judge fires first to
+# produce the met verdict, it also re-spends the LLM judge every iteration. The P19
+# brake (§4) reuses the CD_BACKOFF_STATE sidecar with SIBLING counters so a stuck
+# command is bounded to ~one judge+command cycle per cooldown window.
+
+# realcheck_breaker_open → echoes 1 if the real-check breaker is within its cooldown
+# window, else 0. MUST fail CLOSED (echo 0 = "run the check", the SAFE direction for
+# this feature) on ANY sidecar read/parse error — mirroring cd_breaker_open's
+# echo-0-on-failure default. (Fail-OPEN here would silently suppress the check and let
+# an unverified transcript-met exit through — the exact failure this feature prevents.)
+realcheck_breaker_open() {
+  [[ "$RC_ENABLED" != "1" ]] && { echo 0; return; }
+  local now fails winstart
+  now=$(date +%s)
+  fails=$(jq -r '.realCheckFailures // 0' "$CD_BACKOFF_STATE" 2>/dev/null || echo 0)
+  winstart=$(jq -r '.realCheckFailWindowStart // 0' "$CD_BACKOFF_STATE" 2>/dev/null || echo 0)
+  [[ "$fails" =~ ^[0-9]+$ ]] || fails=0
+  [[ "$winstart" =~ ^[0-9]+$ ]] || winstart=0
+  local cooldown_s=$(( RC_BREAKER_COOLDOWN_MS / 1000 ))
+  if [[ $fails -ge $RC_BREAKER_THRESHOLD ]] && [[ $winstart -gt 0 ]] && [[ $(( now - winstart )) -lt $cooldown_s ]]; then
+    echo 1; return
+  fi
+  echo 0
+}
+# Record a real-check failure into the sidecar (atomic .tmp.$$ + mv; preserves other keys).
+realcheck_record_failure() {
+  [[ "$RC_ENABLED" != "1" ]] && return 0
+  local now fails winstart
+  now=$(date +%s)
+  fails=$(jq -r '.realCheckFailures // 0' "$CD_BACKOFF_STATE" 2>/dev/null || echo 0)
+  winstart=$(jq -r '.realCheckFailWindowStart // 0' "$CD_BACKOFF_STATE" 2>/dev/null || echo 0)
+  [[ "$fails" =~ ^[0-9]+$ ]] || fails=0
+  [[ "$winstart" =~ ^[0-9]+$ ]] || winstart=0
+  local window_s=$(( RC_BREAKER_WINDOW_MS / 1000 ))
+  if [[ $winstart -le 0 ]] || [[ $(( now - winstart )) -ge $window_s ]]; then
+    winstart=$now; fails=1
+  else
+    fails=$(( fails + 1 ))
+  fi
+  if [[ -f "$CD_BACKOFF_STATE" ]]; then
+    jq --argjson f "$fails" --argjson w "$winstart" '.realCheckFailures=$f | .realCheckFailWindowStart=$w' "$CD_BACKOFF_STATE" \
+      > "${CD_BACKOFF_STATE}.tmp.$$" 2>/dev/null && mv "${CD_BACKOFF_STATE}.tmp.$$" "$CD_BACKOFF_STATE" || true
+  else
+    printf '{"realCheckFailures":%s,"realCheckFailWindowStart":%s}\n' "$fails" "$winstart" > "$CD_BACKOFF_STATE" 2>/dev/null || true
+  fi
+  # Cross the threshold → raise ONE deduped Attention item (Close the Loop / P19 cap).
+  if [[ $fails -ge $RC_BREAKER_THRESHOLD ]]; then
+    realcheck_raise_attention "$fails"
+  fi
+}
+# Reset the real-check breaker on a PASS (atomic .tmp.$$ + mv).
+realcheck_reset() {
+  [[ "$RC_ENABLED" != "1" ]] && return 0
+  [[ -f "$CD_BACKOFF_STATE" ]] || return 0
+  jq '.realCheckFailures=0 | .realCheckFailWindowStart=0' "$CD_BACKOFF_STATE" \
+    > "${CD_BACKOFF_STATE}.tmp.$$" 2>/dev/null && mv "${CD_BACKOFF_STATE}.tmp.$$" "$CD_BACKOFF_STATE" || true
+}
+# Raise ONE /ack-able Attention item when the real-check breaker crosses the threshold
+# (Close the Loop). Deduped per the Bounded Notification Surface: source-tagged
+# `autonomous-realcheck-stuck`, one per run via a started-at-keyed id. Best-effort.
+realcheck_raise_attention() {
+  [[ "$RC_ENABLED" != "1" ]] && return 0
+  local fails="$1"
+  if [[ -n "${INSTAR_HOOK_ATTENTION_RECORD:-}" ]]; then
+    printf '{"id":"autonomous-realcheck-stuck-%s-%s","title":"Autonomous real check failing repeatedly","fails":%s}\n' \
+      "${REPORT_TOPIC:-none}" "$(printf '%s' "${STARTED_AT:-}" | tr -cd '0-9')" "${fails:-0}" \
+      >> "$INSTAR_HOOK_ATTENTION_RECORD" 2>/dev/null || true
+    return 0
+  fi
+  local at_port at_auth at_id
+  at_port=$(python3 -c "import json;print(json.load(open('.instar/config.json')).get('port',4040))" 2>/dev/null || echo 4040)
+  at_auth=$(python3 -c "import json;print(json.load(open('.instar/config.json')).get('authToken',''))" 2>/dev/null || echo "")
+  at_id="autonomous-realcheck-stuck-${REPORT_TOPIC:-none}-$(printf '%s' "${STARTED_AT:-}" | tr -cd '0-9')"
+  jq -nc \
+    --arg id "$at_id" \
+    --arg title "Autonomous real check failing repeatedly — \"$(goal_snippet)\"" \
+    --arg summary "The declared real check (${VERIFICATION_COMMAND}) has failed ${fails} times — likely an authoring problem (wrong directory, stale, or testing the wrong thing). The run keeps working (bounded by the duration limit) until it passes or you fix it." \
+    '{id:$id, title:$title, summary:$summary, priority:"medium", source:"autonomous-realcheck-stuck", sourceContext:"autonomous-realcheck-stuck", category:"autonomous"}' \
+    | curl -s -m 8 -H "Authorization: Bearer $at_auth" -H 'Content-Type: application/json' \
+      --data-binary @- "http://localhost:${at_port}/attention" >/dev/null 2>&1 || true
+}
+
+# realcheck_audit_row — append ONE JSONL row to REALCHECK_LOG per run (same size-rotate
+# as the hard-blocker log). Args: outcome exitCode durationMs command cwd breakerOpen.
+realcheck_audit_row() {
+  local outcome="$1" excode="$2" durms="$3" cmd="$4" cwd="$5" bopen="$6"
+  mkdir -p logs 2>/dev/null || true
+  if [[ -f "$REALCHECK_LOG" ]]; then
+    local rc_sz; rc_sz=$(stat -c %s "$REALCHECK_LOG" 2>/dev/null || stat -f %z "$REALCHECK_LOG" 2>/dev/null || echo 0)
+    [[ "$rc_sz" =~ ^[0-9]+$ ]] || rc_sz=0
+    [[ $rc_sz -ge $CD_LOG_ROTATE_BYTES ]] && mv -f "$REALCHECK_LOG" "${REALCHECK_LOG}.1" 2>/dev/null || true
+  fi
+  local cmd_clamped; cmd_clamped=$(printf '%s' "$cmd" | cut -c1-"${RC_MAX_CHARS}")
+  jq -nc \
+    --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg topic "${REPORT_TOPIC:-}" \
+    --arg iter "${ITERATION:-}" --arg command "$cmd_clamped" --arg cwd "$cwd" \
+    --argjson exitCode "$([[ "$excode" =~ ^-?[0-9]+$ ]] && echo "$excode" || echo 'null')" \
+    --argjson durationMs "$([[ "$durms" =~ ^[0-9]+$ ]] && echo "$durms" || echo 0)" \
+    --arg outcome "$outcome" \
+    --argjson breakerOpen "$([[ "$bopen" == "1" ]] && echo true || echo false)" \
+    '{ts:$ts,topic:$topic,iteration:$iter,command:$command,cwd:$cwd,exitCode:$exitCode,durationMs:$durationMs,outcome:$outcome,breakerOpen:$breakerOpen}' \
+    >> "$REALCHECK_LOG" 2>/dev/null || true
+}
+
+# realcheck_destructive — echoes 1 if the raw command string matches a high-signal
+# destructive shape (L12 pre-block, §6.3). Literal-shape guard on the raw string only;
+# honestly bypassable by obfuscation (the §6.1/§6.2 honest-mistake posture). Catches a
+# fat-fingered/compacted-agent destructive "check", NOT an adversarial agent.
+realcheck_destructive() {
+  local cmd="$1"
+  # rm -rf | git reset --hard | git clean -f | git push --force(/-f) | truncate (`:>`) |
+  # redirect into /dev | mkfs | a write redirect into the instar source tree.
+  if printf '%s' "$cmd" | grep -qE 'rm[[:space:]]+-[a-zA-Z]*r[a-zA-Z]*f|rm[[:space:]]+-[a-zA-Z]*f[a-zA-Z]*r|git[[:space:]]+reset[[:space:]]+--hard|git[[:space:]]+clean[[:space:]]+-[a-zA-Z]*f|git[[:space:]]+push[[:space:]].*(--force|-f\b)|:[[:space:]]*>|>[[:space:]]*/dev|mkfs' 2>/dev/null; then
+    echo 1; return
+  fi
+  # Write redirect (`> path` / `>> path`) into the instar source tree (src/ at the repo root).
+  if printf '%s' "$cmd" | grep -qE '>>?[[:space:]]*(\./)?src/' 2>/dev/null; then
+    echo 1; return
+  fi
+  echo 0
+}
+
+# run_verification(cmd, cwd) — the core. Runs the declared command in a SUBSHELL with
+# the resolved CWD (so the hook's own anchored CWD is undisturbed), a scrubbed env, and
+# a portable, GUARANTEED timeout. Sets RC_OUTCOME (pass|fail|timeout|refused-destructive|
+# unavailable), RC_EXIT, RC_DUR_MS, and RC_SANITIZED_OUTPUT (sanitize→UTF-8-scrub→
+# leak-scrub→clamp). CARDINAL INVARIANT: ANY failure mode routes to keep-working — only
+# RC_OUTCOME==pass allows the exit; everything else (including a missing perl) is a
+# keep-working FAIL/unavailable. There is NO path here that CAUSES a premature exit.
+RC_OUTCOME=""
+RC_EXIT=""
+RC_DUR_MS=0
+RC_SANITIZED_OUTPUT=""
+run_verification() {
+  local cmd="$1" cwd="$2"
+  RC_OUTCOME=""; RC_EXIT=""; RC_DUR_MS=0; RC_SANITIZED_OUTPUT=""
+
+  # ── TEST SEAM: short-circuit the real command in CI (no real exec). ──
+  if [[ -n "${INSTAR_HOOK_VERIFY_OVERRIDE:-}" ]]; then
+    case "$INSTAR_HOOK_VERIFY_OVERRIDE" in
+      pass)        RC_OUTCOME="pass"; RC_EXIT=0 ;;
+      fail)        RC_OUTCOME="fail"; RC_EXIT=1; RC_SANITIZED_OUTPUT="simulated failure output" ;;
+      timeout)     RC_OUTCOME="timeout"; RC_EXIT=124; RC_SANITIZED_OUTPUT="simulated timeout" ;;
+      unavailable) RC_OUTCOME="unavailable"; RC_EXIT=127; RC_SANITIZED_OUTPUT="simulated unavailable (no timeout binary)" ;;
+      *)           RC_OUTCOME="fail"; RC_EXIT=1 ;;
+    esac
+    realcheck_audit_row "$RC_OUTCOME" "$RC_EXIT" "0" "$cmd" "$cwd" "0"
+    return 0
+  fi
+
+  # ── L12 destructive-pattern pre-block (refuse → unavailable → keep working). ──
+  if [[ "$(realcheck_destructive "$cmd")" == "1" ]]; then
+    RC_OUTCOME="refused-destructive"; RC_EXIT=126
+    RC_SANITIZED_OUTPUT="[real check refused: the declared command matched a high-signal destructive pattern and was NOT run]"
+    echo "[autonomous] real-check REFUSED (destructive pattern) — keeping working" >&2
+    realcheck_audit_row "refused-destructive" "126" "0" "$cmd" "$cwd" "0"
+    return 0
+  fi
+
+  # ── Scrubbed env: fixed PATH; strip authToken + npm_config_* + NODE_OPTIONS so a
+  # failing check that dumps `env` can't self-leak the agent's own bearer token. Build
+  # a proper `env -u VAR` arg array (each `-u` and VAR as SEPARATE args). ──
+  local rc_path="/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+  local -a rc_env_args=(-u authToken -u NODE_OPTIONS)
+  local _v
+  for _v in $(compgen -e 2>/dev/null); do
+    case "$_v" in
+      npm_config_*) rc_env_args+=(-u "$_v") ;;
+    esac
+  done
+
+  # ── Portable timeout LADDER (§5.1). Each rung bounds the command; NONE runs unbounded. ──
+  # Resolve the runner to its ABSOLUTE path during detection (with the hook's full PATH)
+  # and invoke it by absolute path inside the scrubbed-PATH subshell — otherwise a runner
+  # living outside the fixed PATH (e.g. Homebrew's /opt/homebrew/bin/timeout on macOS)
+  # would resolve here but be `command not found` under the scrubbed env. The fixed PATH
+  # still scrubs the USER command's env; only the runner binary is referenced absolutely.
+  # A test seam (INSTAR_HOOK_VERIFY_NO_TIMEOUT=1) forces the timeout/gtimeout rungs to be
+  # treated as absent so the perl path can be exercised even on a box that has GNU timeout.
+  local rc_start rc_end rc_raw rc_code rc_runner="" rc_runner_bin=""
+  rc_start=$(date +%s)
+  if [[ "${INSTAR_HOOK_VERIFY_NO_TIMEOUT:-0}" != "1" ]] && command -v timeout >/dev/null 2>&1; then
+    rc_runner="timeout"; rc_runner_bin="$(command -v timeout)"
+  elif [[ "${INSTAR_HOOK_VERIFY_NO_TIMEOUT:-0}" != "1" ]] && command -v gtimeout >/dev/null 2>&1; then
+    rc_runner="gtimeout"; rc_runner_bin="$(command -v gtimeout)"
+  elif command -v perl >/dev/null 2>&1; then
+    rc_runner="perl"; rc_runner_bin="$(command -v perl)"
+  else
+    # No bounded runner at all → UNAVAILABLE → keep working. NEVER run unbounded.
+    RC_OUTCOME="unavailable"; RC_EXIT=127
+    RC_SANITIZED_OUTPUT="[real check unavailable: no timeout/gtimeout/perl on PATH to bound the command — keeping working]"
+    echo "[autonomous] real-check UNAVAILABLE: no timeout/gtimeout/perl to bound the command — keeping working" >&2
+    realcheck_audit_row "unavailable" "127" "0" "$cmd" "$cwd" "0"
+    return 0
+  fi
+
+  # Run in a subshell so the resolved CWD + scrubbed env never disturb the hook itself.
+  # Combined stdout+stderr is byte-capped AT THE SOURCE (head -c) so a runaway log can
+  # never buffer whole. Exit code via ${PIPESTATUS[0]} (the command's, not head's).
+  if [[ "$rc_runner" == "perl" ]]; then
+    rc_raw=$(
+      env "${rc_env_args[@]}" PATH="$rc_path" \
+        bash -c '
+          cd "$1" 2>/dev/null || true
+          "$5" -e '\''my($t,@c)=@ARGV; my $p=fork; if($p==0){setpgrp(0,0); exec @c or exit 127} $SIG{ALRM}=sub{kill("-KILL",$p); exit 124}; alarm($t); waitpid($p,0); exit($?>>8)'\'' "$2" bash -c "$3" 2>&1 | head -c "$4"
+          exit "${PIPESTATUS[0]}"
+        ' _ "$cwd" "$RC_TIMEOUT_S" "$cmd" "$RC_CAPTURE_BYTES" "$rc_runner_bin"
+    )
+    rc_code=$?
+  else
+    rc_raw=$(
+      env "${rc_env_args[@]}" PATH="$rc_path" \
+        bash -c '
+          cd "$1" 2>/dev/null || true
+          "$2" -k 5 "$3" bash -c "$4" 2>&1 | head -c "$5"
+          exit "${PIPESTATUS[0]}"
+        ' _ "$cwd" "$rc_runner_bin" "$RC_TIMEOUT_S" "$cmd" "$RC_CAPTURE_BYTES"
+    )
+    rc_code=$?
+  fi
+  rc_end=$(date +%s)
+  RC_DUR_MS=$(( (rc_end - rc_start) * 1000 ))
+  RC_EXIT=$rc_code
+
+  # ── Output handling — PINNED ORDER: sanitize → UTF-8 scrub → leak-scrub → clamp. ──
+  local rc_san rc_utf8 rc_clamped
+  # 1a. sanitize: strip control chars, collapse whitespace (hb_sanitize clamps to
+  #     CD_MARKER_MAX_CHARS, so re-implement the strip WITHOUT that clamp here).
+  rc_san=$(printf '%s' "$rc_raw" | tr -d '\000-\010\013\014\016-\037' | tr '\n\r\t' '   ' | sed 's/  */ /g; s/^ *//; s/ *$//')
+  # 1b. UTF-8 scrub: a source head -c byte-cap can split a multibyte char, leaving a lone
+  #     continuation byte that would later break jq --arg. iconv -c drops invalid bytes;
+  #     fall back to an LC_ALL=C printable-only filter when iconv is absent.
+  if command -v iconv >/dev/null 2>&1; then
+    rc_utf8=$(printf '%s' "$rc_san" | iconv -c -f utf-8 -t utf-8 2>/dev/null || printf '%s' "$rc_san" | LC_ALL=C tr -cd '\11\12\15\40-\176')
+  else
+    rc_utf8=$(printf '%s' "$rc_san" | LC_ALL=C tr -cd '\11\12\15\40-\176')
+  fi
+  # 2. leak-scrub on the SANITIZED text, BEFORE clamp (a credential split across the
+  #    clamp boundary can't evade the regex). hb_leak_hit patterns + the agent's own
+  #    authToken literal + a generic Bearer token.
+  local rc_leak=0 rc_auth_val
+  if [[ "$(hb_leak_hit "$rc_utf8")" == "1" ]]; then rc_leak=1; fi
+  rc_auth_val=$(python3 -c "import json;print(json.load(open('.instar/config.json')).get('authToken',''))" 2>/dev/null || echo "")
+  if [[ $rc_leak -eq 0 ]] && [[ -n "$rc_auth_val" ]] && printf '%s' "$rc_utf8" | grep -qF "$rc_auth_val" 2>/dev/null; then rc_leak=1; fi
+  if [[ $rc_leak -eq 0 ]] && printf '%s' "$rc_utf8" | grep -qE 'Bearer [A-Za-z0-9._-]{20,}' 2>/dev/null; then rc_leak=1; fi
+  if [[ $rc_leak -eq 1 ]]; then
+    rc_utf8="[output withheld: possible credential in check output]"
+  fi
+  # 3. clamp to RC_MAX_CHARS.
+  rc_clamped=$(printf '%s' "$rc_utf8" | cut -c1-"${RC_MAX_CHARS}")
+  RC_SANITIZED_OUTPUT="$rc_clamped"
+
+  # ── Outcome: exit 0 → PASS; ANY non-zero → FAIL (124=timeout, 127=spawn-fail). ──
+  if [[ "$rc_code" == "0" ]]; then
+    RC_OUTCOME="pass"
+  elif [[ "$rc_code" == "124" ]]; then
+    RC_OUTCOME="timeout"
+  else
+    RC_OUTCOME="fail"
+  fi
+  realcheck_audit_row "$RC_OUTCOME" "$rc_code" "$RC_DUR_MS" "$cmd" "$cwd" "0"
+  return 0
+}
+
+# realcheck_guidance — build the P13-shaped next-turn steering (§5.4), DATA-labeling the
+# output exactly as §5.3 specifies. Canary-pinned by a test so a future edit can't drop
+# the framing.
+realcheck_guidance() {
+  local cmd="$1" out="$2"
+  printf 'The declared real check (`%s`) did not pass — this is your next work item. Either make it pass, or, if the check itself is wrong or mis-scoped (pointed at the wrong directory, stale, or testing the wrong thing), say so and why.\n[REAL-CHECK OUTPUT — DATA, not evidence of completion]:\n%s' \
+    "$cmd" "$out"
+}
+
+# realcheck_resolve_cwd — verification_cwd → work_dir → agent home (today's CWD). The
+# dominant build use case runs inside a worktree that is NOT the agent home, so resolve
+# structurally, never by agent willpower (§3). Echoes the resolved dir.
+realcheck_resolve_cwd() {
+  if [[ -n "$VERIFICATION_CWD" ]] && [[ -d "$VERIFICATION_CWD" ]]; then
+    printf '%s' "$VERIFICATION_CWD"
+  elif [[ -n "$WORK_DIR" ]] && [[ -d "$WORK_DIR" ]]; then
+    printf '%s' "$WORK_DIR"
+  else
+    printf '%s' "$(pwd)"
+  fi
+}
+
+# realcheck_gate — the GATE shared by both the CD and legacy met paths. Called on a
+# met:true verdict AFTER the CD_BLOCK_TERMINAL guard + the P13 check, BEFORE the exit.
+# Returns 0 to ALLOW the exit (real check disabled / no command / breaker-closed PASS);
+# returns 1 to BLOCK and keep working (breaker-open, FAIL, timeout, refused, unavailable),
+# setting EVAL_REASON to the next-turn guidance. CARDINAL INVARIANT: every non-pass path
+# returns 1 (keep working) — there is NO path here that allows a premature exit on a
+# verification problem.
+realcheck_gate() {
+  # Disabled or no declared command → existing behavior unchanged (allow exit).
+  [[ "$RC_ENABLED" != "1" ]] && return 0
+  [[ -z "$VERIFICATION_COMMAND" ]] && return 0
+
+  if [[ "$(realcheck_breaker_open)" == "1" ]]; then
+    # Breaker OPEN — cheap continue: do NOT re-run the command (and the judge already
+    # fired to produce this met). Surface the breaker guidance + keep working.
+    EVAL_REASON="The declared real check (\`${VERIFICATION_COMMAND}\`) has failed repeatedly — paused re-running it for a cooldown. This is likely an authoring problem (wrong directory, stale, or testing the wrong thing): fix the check or the work, then continue. I've queued it for the operator."
+    realcheck_audit_row "fail" "" "0" "$VERIFICATION_COMMAND" "$(realcheck_resolve_cwd)" "1"
+    echo "[autonomous] real-check breaker OPEN — keeping working (no command run, no judge re-fire)" >&2
+    return 1
+  fi
+
+  local rc_cwd; rc_cwd=$(realcheck_resolve_cwd)
+  run_verification "$VERIFICATION_COMMAND" "$rc_cwd"
+  if [[ "$RC_OUTCOME" == "pass" ]]; then
+    realcheck_reset
+    echo "[autonomous] real-check PASSED — exit allowed (judge MET + real check PASSED)" >&2
+    return 0
+  fi
+  # FAIL | timeout | refused-destructive | unavailable → record + keep working.
+  realcheck_record_failure
+  EVAL_REASON="$(realcheck_guidance "$VERIFICATION_COMMAND" "$RC_SANITIZED_OUTPUT")"
+  echo "[autonomous] real-check ${RC_OUTCOME} (exit=${RC_EXIT}) — keeping working" >&2
+  return 1
+}
+
 if [[ "$CD_ENABLED" == "1" ]] && [[ -n "$HARD_BLOCKER_NONCE" ]] && [[ "$HARD_BLOCKER_NONCE" != "null" ]] \
    && [[ -n "$CD_FINAL_TURN" ]] && [[ "$CD_FINAL_TURN" == *"<hard-blocker"* ]]; then
   HB_OK="false"
@@ -919,21 +1296,31 @@ if [[ "${CD_BLOCK_TERMINAL:-}" != "true" ]] && [[ -n "$COMPLETION_CONDITION" ]] 
       # the completion judge (the SINGLE critical-path call). A "met" verdict here is
       # the judge's all-things-considered decision → allow. No standalone P13 call on
       # the condition path (spec §2b.2 — folded once the canary verifies the block).
-      emit "✅ Autonomous mode: completion condition met (independent evaluator): ${EVAL_REASON}"
-      notify_terminal_stop "✅ My autonomous run on \"$(goal_snippet)\" finished — the goal was met."
-      rm -f "$STATE_FILE" "$CD_BACKOFF_STATE" 2>/dev/null || true
-      exit 0
+      # ── REAL-CHECK GATE (ACT-152): judge MET + a declared command → RUN it; the
+      # exit is allowed ONLY if the command ALSO passes. Any fail/timeout/refused/
+      # unavailable/breaker-open → keep working (realcheck_gate sets EVAL_REASON). ──
+      if realcheck_gate; then
+        emit "✅ Autonomous mode: completion condition met (independent evaluator): ${EVAL_REASON}"
+        notify_terminal_stop "✅ My autonomous run on \"$(goal_snippet)\" finished — the goal was met."
+        rm -f "$STATE_FILE" "$CD_BACKOFF_STATE" 2>/dev/null || true
+        exit 0
+      fi
+      # Real check did not pass → keep working; EVAL_REASON now carries the guidance.
+    elif p13_stop_allowed; then
+      # ── REAL-CHECK GATE (ACT-152) on the legacy (CD-disabled) condition path. ──
+      if realcheck_gate; then
+        emit "✅ Autonomous mode: completion condition met (independent evaluator): ${EVAL_REASON}"
+        notify_terminal_stop "✅ My autonomous run on \"$(goal_snippet)\" finished — the goal was met."
+        rm -f "$STATE_FILE"
+        exit 0
+      fi
+      # Real check did not pass → keep working; EVAL_REASON now carries the guidance.
+    else
+      # P13 "The Stop Reason Is the Work": the condition reads as met, but the stop
+      # rests on a judgment-call / needs-engineering deferral → keep working. The
+      # P13 steering becomes the next-turn guidance (surfaced via EVAL_REASON below).
+      EVAL_REASON="$P13_GUIDANCE"
     fi
-    if p13_stop_allowed; then
-      emit "✅ Autonomous mode: completion condition met (independent evaluator): ${EVAL_REASON}"
-      notify_terminal_stop "✅ My autonomous run on \"$(goal_snippet)\" finished — the goal was met."
-      rm -f "$STATE_FILE"
-      exit 0
-    fi
-    # P13 "The Stop Reason Is the Work": the condition reads as met, but the stop
-    # rests on a judgment-call / needs-engineering deferral → keep working. The
-    # P13 steering becomes the next-turn guidance (surfaced via EVAL_REASON below).
-    EVAL_REASON="$P13_GUIDANCE"
   fi
   # Not met / unreachable → keep working; EVAL_REASON (if any) becomes next-turn guidance.
 fi
@@ -949,11 +1336,19 @@ if [[ "${CD_BLOCK_TERMINAL:-}" != "true" ]] && [[ -n "$TRANSCRIPT_PATH" ]] && [[
       PROMISE_TEXT=$(printf '%s' "$LAST_OUTPUT" | perl -0777 -pe 's/.*?<promise>(.*?)<\/promise>.*/$1/s; s/^\s+|\s+$//g; s/\s+/ /g' 2>/dev/null || echo "")
       if [[ -n "$PROMISE_TEXT" ]] && [[ "$PROMISE_TEXT" = "$COMPLETION_PROMISE" ]]; then
         if p13_stop_allowed; then
-          emit "✅ Autonomous mode: Completion promise detected — <promise>$COMPLETION_PROMISE</promise>"
-          emit "   Session is free to exit. Good work!"
-          notify_terminal_stop "✅ My autonomous run on \"$(goal_snippet)\" finished — all the work is done."
-          rm -f "$STATE_FILE"
-          exit 0
+          # ── REAL-CHECK GATE (ACT-152) on the legacy-promise met path (§2.2). The
+          # gate is scoped to the completion-condition AND legacy-promise met paths;
+          # a declared command must ALSO pass before a self-declared promise exits.
+          if realcheck_gate; then
+            emit "✅ Autonomous mode: Completion promise detected — <promise>$COMPLETION_PROMISE</promise>"
+            emit "   Session is free to exit. Good work!"
+            notify_terminal_stop "✅ My autonomous run on \"$(goal_snippet)\" finished — all the work is done."
+            rm -f "$STATE_FILE"
+            exit 0
+          fi
+          # Real check did not pass → keep working; EVAL_REASON carries the guidance,
+          # surfaced via the promise-path system message below (P13_GUIDANCE path).
+          P13_GUIDANCE="$EVAL_REASON"
         fi
         # P13: a completion promise was emitted, but the stop rests on a
         # judgment-call / needs-engineering deferral → keep working. P13_GUIDANCE

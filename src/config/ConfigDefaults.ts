@@ -631,6 +631,31 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       judgeFailCooldownMs: 600000,
       // Per-field clamp on the <hard-blocker> marker fields before JSON-encoding.
       markerFieldMaxChars: 500,
+      // Real-check verification (ACT-152 / autonomous-completion-real-checks spec).
+      // When an autonomous job declares a `verification_command`, the stop-hook RUNS
+      // it on a met:true verdict and gates the exit on exit-0 (fail/timeout → keep
+      // working — the SAFE direction; never causes a premature exit). A NO-OP unless
+      // a job actually declares a command, so `enabled:true` costs nothing for jobs
+      // that don't use it. Read LIVE at the chokepoint (no restart to toggle), nested
+      // under completionDiscipline so applyDefaults backfills it per-leaf to existing
+      // agents (Migration Parity — no migrateConfig block needed).
+      realCheck: {
+        enabled: true,
+        // Bounded per-run command timeout (ms). Timeout → FAIL → keep working.
+        timeoutMs: 120000,
+        // Tail-clamp on the captured output surfaced as next-turn guidance.
+        maxChars: 2000,
+        // Source-bound: cap the captured stdout+stderr at read time (a runaway
+        // command can never buffer GB into the hook before the clamp).
+        captureBytes: 65536,
+        // P19 breaker: after K consecutive real-check failures in the window, the
+        // real-check breaker OPENS for the cooldown — cheap checkbox-only continue
+        // (no judge re-fire, no command run) so a stuck/flaky command can't spin the
+        // judge + command every iteration to duration.
+        failBreakerThreshold: 3,
+        failWindowMs: 600000,
+        failCooldownMs: 600000,
+      },
     },
   },
   // Cartographer doc-tree — hierarchical semantic map with git-hash staleness

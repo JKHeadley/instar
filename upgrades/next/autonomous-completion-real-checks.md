@@ -1,0 +1,48 @@
+## What Changed
+
+Autonomous jobs can now declare an optional `verification_command` (with an optional
+`verification_cwd`; setup also records `work_dir`). When the independent completion judge says a
+goal is met — which it decides by reading what the agent *surfaced in the transcript*, not by
+running anything — the autonomous Stop hook now RUNS that command and only lets the run stop if the
+command ALSO passes (exit 0). Any failure, timeout, missing-timeout-binary, refused-destructive
+command, or a tripped breaker → keep working with the command's output as next-turn guidance. It
+can never CAUSE a premature exit (the safe direction). The command runs under a portable bounded
+timeout (`timeout`/`gtimeout` with `-k`, else a perl process-group-kill, else "unavailable → keep
+working"), in a scrubbed env (fixed PATH, no auth token), with its output scrubbed for secrets and
+DATA-labeled so an echoed "all tests pass" can't launder into a later judge verdict, and a P19
+breaker stops a stuck/flaky check from spinning the judge + command to the duration limit. Every
+run appends one row to `logs/autonomous-realcheck.jsonl`. Off-switch:
+`autonomousSessions.completionDiscipline.realCheck.enabled` (read at the hook chokepoint — no
+restart). It is a NO-OP unless a job declares a `verification_command`.
+
+## What to Tell Your User
+
+When I'm running on my own toward a goal, a second, independent check decides "is it really done?".
+Until now that check only *read what I wrote* — so if I said the tests passed, it believed me, even
+if I'd misread them or run them in the wrong place. Now, when a goal is checkable by a command (a
+test suite, a build, a quick check), I can actually RUN that command before I'm allowed to stop — so
+"done" means the check really passed, not just that I claimed it. If the check fails, I don't stop;
+I keep working with the failure in front of me. It only ever makes me keep working longer, never
+stop early, and it's off unless a job specifically asks for it. You don't have to set anything up;
+it's there for the kinds of autonomous jobs that have a clear "run this to verify" command.
+
+## Summary of New Capabilities
+
+- Autonomous jobs gain an opt-in real-check: `instar`'s autonomous setup takes
+  `--verification-command "<cmd>"` and `--verification-cwd "<dir>"`; a met verdict runs the command
+  and the run stops only if it passes.
+- A new audit trail at `logs/autonomous-realcheck.jsonl` (command, cwd, exit, outcome per run).
+- Config: `autonomousSessions.completionDiscipline.realCheck` (`enabled`, `timeoutMs`, `maxChars`,
+  `captureBytes`, `failBreakerThreshold`, `failWindowMs`, `failCooldownMs`) — read live, no restart.
+
+## Evidence
+
+- Spec (converged, 3 review rounds, approved): `docs/specs/autonomous-completion-real-checks.md`;
+  convergence report `docs/specs/reports/autonomous-completion-real-checks-convergence.md`.
+- Tests, all green: 24 unit (`tests/unit/autonomous-stop-hook-realcheck.test.ts`), 4 integration
+  (`tests/integration/autonomous-realcheck-setup-roundtrip.test.ts`), 2 e2e
+  (`tests/e2e/autonomous-realcheck-verification-lifecycle.test.ts` — the "feature is alive" test
+  proving the gate is wired into the real production met-path). The cardinal invariant (no
+  verification problem can cause a premature exit) is independently second-pass reviewed and
+  traced path-by-path.
+- Side-effects review: `upgrades/side-effects/autonomous-completion-real-checks.md`.
