@@ -51,6 +51,8 @@ import {
   PR_GATE_SETUP_MD_SHA256,
 } from '../data/pr-gate-artifacts.js';
 import { SafeFsExecutor } from './SafeFsExecutor.js';
+import { SubscriptionPool } from './SubscriptionPool.js';
+import { ensureInteractiveReady } from './ensureInteractiveReady.js';
 import { installCodexHooks } from './installCodexHooks.js';
 import { armCodexHooks, makeTmuxTrustDriver } from './codexHookArm.js';
 import { detectCodexPath, detectTmuxPath } from './Config.js';
@@ -267,8 +269,65 @@ export class PostUpdateMigrator {
     this.migrateThreadlineConversationStore(result);
     this.migrateThreadlineAgentInfoIdentity(result);
     this.migrateWorktreeMisplacedFloodItems(result);
+    this.migrateSubscriptionPoolInteractiveReady(result);
 
     return result;
+  }
+
+  /**
+   * Seed the interactive first-launch onboarding flags into every EXISTING
+   * claude-code subscription-pool config home (2026-06-09 incident, topic
+   * 20905). Pool homes are enrolled via headless `claude auth login`, which
+   * stores OAuth tokens but never sets `hasCompletedOnboarding` /
+   * `bypassPermissionsModeAccepted` / `hasTrustDialogAccepted` — so the first
+   * interactive session pinned or quota-swapped onto such a home wedged on the
+   * first-launch onboarding screens (~8 live sessions at once). New
+   * enrollments are seeded by EnrollmentWizard.complete() and every pinned/
+   * swapped launch re-ensures defensively; this migration is the one-time
+   * sweep that makes homes enrolled BEFORE the fix safe.
+   *
+   * Idempotent (ensureInteractiveReady only writes missing flags) and
+   * fail-safe (the util never throws; per-home failures are reported, never
+   * abort the sweep). Only flags are ever written — oauthAccount/tokens are
+   * untouched by construction, and an unparseable `.claude.json` is refused,
+   * not rewritten. `requireExistingHome` keeps a stale registry entry from
+   * littering $HOME with empty credential-less homes.
+   */
+  private migrateSubscriptionPoolInteractiveReady(result: MigrationResult): void {
+    const poolPath = path.join(this.config.stateDir, 'subscription-pool.json');
+    if (!fs.existsSync(poolPath)) {
+      result.skipped.push('subscription-pool interactive-ready: no pool store');
+      return;
+    }
+    try {
+      const pool = new SubscriptionPool({ stateDir: this.config.stateDir });
+      const claudeAccounts = pool.list().filter((a) => a.framework === 'claude-code');
+      if (claudeAccounts.length === 0) {
+        result.skipped.push('subscription-pool interactive-ready: no claude-code accounts');
+        return;
+      }
+      for (const acct of claudeAccounts) {
+        const ready = ensureInteractiveReady(acct.configHome, { requireExistingHome: true });
+        if (ready.patched) {
+          result.upgraded.push(
+            `subscription-pool interactive-ready: ${acct.id} (${acct.configHome}) — ${ready.reason}`,
+          );
+        } else if (
+          ready.reason === 'already interactive-ready' ||
+          ready.reason.includes('does not exist')
+        ) {
+          result.skipped.push(`subscription-pool interactive-ready: ${acct.id} — ${ready.reason}`);
+        } else {
+          result.errors.push(
+            `subscription-pool interactive-ready: ${acct.id} (${acct.configHome}) — ${ready.reason}`,
+          );
+        }
+      }
+    } catch (err) {
+      result.errors.push(
+        `subscription-pool interactive-ready: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
   }
 
   /**

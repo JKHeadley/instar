@@ -236,6 +236,13 @@ export class ProactiveSwapMonitor {
     // sessions, so under the per-cycle cap it is rescued first.
     eligible.sort((a, b) => b.startedMs - a.startedMs);
 
+    // TODO(follow-up, 2026-06-09 incident): a proactive cycle moving MANY
+    // sessions at once is itself disruptive — every swap is a kill+respawn
+    // ("Session respawned" + interruption) even when it succeeds. Beyond the
+    // per-cycle cap + cooldown, consider gating on session ACTIVITY: only
+    // swap sessions that are actually burning quota (recent pane activity),
+    // and let idle sessions wall reactively instead of being preemptively
+    // interrupted in bulk.
     const toSwap = eligible.slice(0, this.maxSwapsPerCycle);
     const swapped: string[] = [];
     for (const c of toSwap) {

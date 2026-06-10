@@ -102,4 +102,48 @@ describe('subscription-pool session pinning (integration)', () => {
     expect(session.subscriptionAccountId).toBeUndefined();
     expect(newSessionArgs().some((a) => typeof a === 'string' && a.startsWith('CLAUDE_CONFIG_DIR='))).toBe(false);
   });
+
+  // ── Onboarding-safe pinning (2026-06-09 incident) ─────────────────
+  // Pool homes are enrolled via headless `claude auth login` — tokens present,
+  // interactive first-launch flags absent. A launch pinned/swapped onto such a
+  // home must seed the flags or the session wedges on the onboarding screens.
+
+  const readConfig = (home: string): Record<string, unknown> =>
+    JSON.parse(fs.readFileSync(path.join(home, '.claude.json'), 'utf-8'));
+
+  it('makes the pinned account\'s headless config home interactive-ready at spawn', async () => {
+    const home = path.join(dir, '.claude-headless');
+    fs.mkdirSync(home);
+    fs.writeFileSync(path.join(home, '.claude.json'), JSON.stringify({ oauthAccount: { accountUuid: 'u-1' } }));
+    pool.add({ id: 'headless-acct', nickname: 'headless', provider: 'anthropic', framework: 'claude-code', configHome: home });
+
+    wireResolver();
+    const session = await manager.spawnSession({ name: 'pin-ready', prompt: 'p' });
+
+    expect(session.subscriptionAccountId).toBe('headless-acct');
+    const cfg = readConfig(home);
+    expect(cfg.hasCompletedOnboarding).toBe(true);
+    expect(cfg.bypassPermissionsModeAccepted).toBe(true);
+    expect(cfg.hasTrustDialogAccepted).toBe(true);
+    expect(cfg.oauthAccount).toEqual({ accountUuid: 'u-1' }); // never touched
+  });
+
+  it('makes the account-swap target home interactive-ready on an interactive launch (configHome option)', async () => {
+    const home = path.join(dir, '.claude-swap-target');
+    fs.mkdirSync(home);
+    fs.writeFileSync(path.join(home, '.claude.json'), JSON.stringify({ oauthAccount: { accountUuid: 'u-2' } }));
+
+    // The swap respawn lane: respawnSessionForTopic → spawnInteractiveSession
+    // with the target account's configHome (no resolver involved).
+    await manager.spawnInteractiveSession(undefined, 'swap-ready', {
+      configHome: home,
+      subscriptionAccountId: 'swap-acct',
+    });
+
+    const cfg = readConfig(home);
+    expect(cfg.hasCompletedOnboarding).toBe(true);
+    expect(cfg.bypassPermissionsModeAccepted).toBe(true);
+    expect(cfg.hasTrustDialogAccepted).toBe(true);
+    expect(cfg.oauthAccount).toEqual({ accountUuid: 'u-2' });
+  });
 });
