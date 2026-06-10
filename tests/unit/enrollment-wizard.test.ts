@@ -121,4 +121,71 @@ describe('EnrollmentWizard', () => {
     expect(w.complete('codex-1')?.status).toBe('completed');
     expect(w.pending()).toEqual([]);
   });
+
+  // ── Onboarding-safe enrollment (2026-06-09 incident) ──────────────
+  // `claude auth login` is headless-only: it stores tokens but never sets the
+  // interactive first-launch flags, so a freshly-enrolled home wedges the
+  // first interactive session pinned/swapped onto it. complete() must seed
+  // the flags for claude-code enrollments with a config home.
+
+  function wizardWithReadySpy(artifacts: LoginArtifact[], ready?: (h: string) => { patched: boolean; reason: string }) {
+    const readyCalls: string[] = [];
+    const queue = [...artifacts];
+    const w = new EnrollmentWizard({
+      store,
+      driveLogin: async () => queue.shift() ?? { verificationUrl: 'https://u', ttlMs: 15 * 60_000 },
+      now: () => clock,
+      ensureReady: (h: string) => {
+        readyCalls.push(h);
+        return ready ? ready(h) : { patched: true, reason: 'seeded' };
+      },
+    });
+    return { w, readyCalls };
+  }
+
+  it('complete seeds interactive-readiness for a claude-code login with a configHome', async () => {
+    const { w, readyCalls } = wizardWithReadySpy([{ verificationUrl: 'https://claude.com/oauth', ttlMs: 15 * 60_000 }]);
+    await w.start({ id: 'sm-1', label: 'SageMind - Justin', provider: 'anthropic', framework: 'claude-code', configHome: '/Users/x/.claude-sm' });
+    expect(w.complete('sm-1')?.status).toBe('completed');
+    expect(readyCalls).toEqual(['/Users/x/.claude-sm']);
+  });
+
+  it('complete does NOT seed for a codex login or a login without a configHome', async () => {
+    const { w, readyCalls } = wizardWithReadySpy([
+      { verificationUrl: 'https://auth.openai.com/codex/device', userCode: 'AAAA-BBBB', ttlMs: 15 * 60_000 },
+      { verificationUrl: 'https://claude.com/oauth', ttlMs: 15 * 60_000 },
+    ]);
+    await w.start({ id: 'codex-1', label: 'codex', provider: 'openai', framework: 'codex-cli', configHome: '/Users/x/.codex-2' });
+    await w.start({ id: 'claude-default', label: 'claude', provider: 'anthropic', framework: 'claude-code' });
+    w.complete('codex-1');
+    w.complete('claude-default');
+    expect(readyCalls).toEqual([]);
+  });
+
+  it('a seeding failure never blocks completion (fail-safe — launch paths re-ensure)', async () => {
+    const { w } = wizardWithReadySpy(
+      [{ verificationUrl: 'https://claude.com/oauth', ttlMs: 15 * 60_000 }],
+      () => ({ patched: false, reason: 'unreadable' }),
+    );
+    await w.start({ id: 'sm-1', label: 'SageMind', provider: 'anthropic', framework: 'claude-code', configHome: '/Users/x/.claude-sm' });
+    expect(w.complete('sm-1')?.status).toBe('completed');
+  });
+
+  it('default ensureReady is the REAL util: complete() lands the flags on disk', async () => {
+    const configHome = path.join(dir, '.claude-enrolled');
+    fs.mkdirSync(configHome);
+    fs.writeFileSync(path.join(configHome, '.claude.json'), JSON.stringify({ oauthAccount: { accountUuid: 'u-1' } }));
+    const w = new EnrollmentWizard({
+      store,
+      driveLogin: async () => ({ verificationUrl: 'https://claude.com/oauth', ttlMs: 15 * 60_000 }),
+      now: () => clock,
+    });
+    await w.start({ id: 'sm-1', label: 'SageMind', provider: 'anthropic', framework: 'claude-code', configHome });
+    w.complete('sm-1');
+    const cfg = JSON.parse(fs.readFileSync(path.join(configHome, '.claude.json'), 'utf-8'));
+    expect(cfg.hasCompletedOnboarding).toBe(true);
+    expect(cfg.bypassPermissionsModeAccepted).toBe(true);
+    expect(cfg.hasTrustDialogAccepted).toBe(true);
+    expect(cfg.oauthAccount).toEqual({ accountUuid: 'u-1' }); // untouched
+  });
 });

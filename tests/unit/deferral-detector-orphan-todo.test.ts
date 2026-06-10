@@ -312,3 +312,94 @@ describe('deferral-detector — time/fatigue deferral patterns (2026-06-09 gravi
     expect(result.parsed?.decision).toBe('approve');
   });
 });
+
+describe('deferral-detector — merge-deferral patterns (2026-06-09: handing own PR merge to operator)', () => {
+  it('fires on the exact incident phrasing ("the merge call is yours")', () => {
+    const result = runHook(
+      "cat <<EOF | telegram-reply.sh 100\nCI is running now — it's core monitoring code, so the merge call is yours.\nEOF"
+    );
+    expect(result.exitCode).toBe(0);
+    expect(result.parsed?.additionalContext).toMatch(/MERGE-DEFERRAL DETECTED/);
+    expect(result.parsed?.additionalContext).toMatch(/merge_call_is_yours/);
+  });
+
+  it('fires on the bare "the merge is yours" (no explicit call/decision word)', () => {
+    const result = runHook(
+      'cat <<EOF | telegram-reply.sh 100\nGreen now. The merge is yours.\nEOF'
+    );
+    expect(result.exitCode).toBe(0);
+    expect(result.parsed?.additionalContext).toMatch(/MERGE-DEFERRAL DETECTED/);
+    expect(result.parsed?.additionalContext).toMatch(/merge_call_is_yours/);
+  });
+
+  it('fires on permission-seeking "want me to merge?"', () => {
+    const result = runHook(
+      'cat <<EOF | telegram-reply.sh 100\nAll checks passed. Want me to merge it?\nEOF'
+    );
+    expect(result.exitCode).toBe(0);
+    expect(result.parsed?.additionalContext).toMatch(/merge_permission_seeking/);
+  });
+
+  it('fires on "should I merge it" and "ready to merge"', () => {
+    const a = runHook(
+      'cat <<EOF | telegram-reply.sh 100\nThe PR is green — should I merge it now?\nEOF'
+    );
+    expect(a.parsed?.additionalContext).toMatch(/merge_permission_seeking/);
+    const b = runHook(
+      'cat <<EOF | telegram-reply.sh 100\nEverything passed; ready to merge whenever you say.\nEOF'
+    );
+    expect(b.parsed?.additionalContext).toMatch(/merge_permission_seeking/);
+  });
+
+  it('fires on "your call to merge"', () => {
+    const result = runHook(
+      'cat <<EOF | telegram-reply.sh 100\nIt is your call to merge this one.\nEOF'
+    );
+    expect(result.exitCode).toBe(0);
+    expect(result.parsed?.additionalContext).toMatch(/your_call_to_merge/);
+  });
+
+  it('THE KEY FIX: still fires even when the PR is "tracked" (infrastructure-backed does NOT launder handing the merge back)', () => {
+    const result = runHook(
+      "cat <<EOF | telegram-reply.sh 100\nI opened a tracked commitment and a follow-up PR for it — but the merge call is yours.\nEOF"
+    );
+    expect(result.exitCode).toBe(0);
+    expect(result.parsed?.additionalContext).toMatch(/MERGE-DEFERRAL DETECTED/);
+  });
+
+  it('the checklist tells the agent to merge it itself on green and that it is never the operator\'s blocker', () => {
+    const result = runHook(
+      'cat <<EOF | telegram-reply.sh 100\nThe merge call is yours.\nEOF'
+    );
+    expect(result.exitCode).toBe(0);
+    expect(result.parsed?.additionalContext).toMatch(/MERGE IT YOURSELF|green CI = mergeable|safe-merge\.mjs/);
+    expect(result.parsed?.additionalContext).toMatch(/never be a blocker|gh pr merge/);
+  });
+
+  it('does NOT fire when the agent is DOING the merge itself ("I merged it myself on green")', () => {
+    const result = runHook(
+      'cat <<EOF | telegram-reply.sh 100\nCI went green so I squash-merged #1040 myself — no hand-back. Commit c5c4194.\nEOF'
+    );
+    expect(result.exitCode).toBe(0);
+    expect(result.parsed).toBeNull();
+  });
+
+  it('does NOT fire on "I will merge on green" / "merging now"', () => {
+    const a = runHook(
+      "cat <<EOF | telegram-reply.sh 100\nCI is finishing; I'll merge it the moment it is green and confirm.\nEOF"
+    );
+    expect(a.parsed).toBeNull();
+    const b = runHook(
+      'cat <<EOF | telegram-reply.sh 100\nGreen across the board — merging now and will report when it lands.\nEOF'
+    );
+    expect(b.parsed).toBeNull();
+  });
+
+  it('never blocks — decision stays approve', () => {
+    const result = runHook(
+      'cat <<EOF | telegram-reply.sh 100\nThe merge call is yours on this one.\nEOF'
+    );
+    expect(result.exitCode).toBe(0);
+    expect(result.parsed?.decision).toBe('approve');
+  });
+});

@@ -103,7 +103,12 @@ describe('codex model-swap wiring — both spawn paths consume the helper', () =
   it('interactive spawn (buildInteractiveLaunch) launches with the resolved model', () => {
     const idx = src.indexOf('buildInteractiveLaunch(framework');
     expect(idx).toBeGreaterThan(0);
-    const before = src.slice(Math.max(0, idx - 400), idx);
+    // Same rationale as the headless case above: legitimate code can sit between
+    // resolution and the build — e.g. the subscription account-swap lane seeds a
+    // pool home's onboarding flags here (ensurePinnedHomeInteractiveReady) before
+    // launch. The invariant is "resolved before, passed as launchModel", not
+    // literal proximity, so use the same widened look-back window.
+    const before = src.slice(Math.max(0, idx - 2500), idx);
     expect(before).toContain('this.resolveCodexLaunchModel(framework');
     expect(src.slice(idx, idx + 250)).toContain('launchDefaultModel');
   });

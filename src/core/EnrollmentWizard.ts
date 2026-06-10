@@ -26,6 +26,10 @@ import {
   type LoginFlowKind,
   type LoginProvider,
 } from './PendingLoginStore.js';
+import {
+  ensureInteractiveReady,
+  type EnsureInteractiveReadyResult,
+} from './ensureInteractiveReady.js';
 
 /** The public artifact a framework login yields (no secret). */
 export interface LoginArtifact {
@@ -49,6 +53,14 @@ export interface EnrollmentWizardConfig {
   driveLogin: LoginDriver;
   now?: () => number;
   logger?: { log: (m: string) => void; warn: (m: string) => void };
+  /**
+   * Onboarding-readiness seeder run when a claude-code enrollment completes
+   * (2026-06-09 incident: `claude auth login` is headless-only — it stores
+   * tokens but never sets the interactive first-launch flags, so the new
+   * home wedges the first interactive session pinned/swapped onto it).
+   * Injectable for hermetic tests; production uses the real util.
+   */
+  ensureReady?: (configHome: string) => EnsureInteractiveReadyResult;
 }
 
 export interface StartEnrollmentInput {
@@ -66,11 +78,13 @@ export class EnrollmentWizard {
   private readonly store: PendingLoginStore;
   private readonly driveLogin: LoginDriver;
   private readonly logger: { log: (m: string) => void; warn: (m: string) => void };
+  private readonly ensureReady: (configHome: string) => EnsureInteractiveReadyResult;
 
   constructor(cfg: EnrollmentWizardConfig) {
     this.store = cfg.store;
     this.driveLogin = cfg.driveLogin;
     this.logger = cfg.logger ?? { log: () => {}, warn: () => {} };
+    this.ensureReady = cfg.ensureReady ?? ensureInteractiveReady;
   }
 
   /** Default flow kind per provider: Codex/OpenAI = device-code (its endorsed
@@ -164,9 +178,25 @@ export class EnrollmentWizard {
     return reissued;
   }
 
-  /** Mark a login completed once the operator approved + the account enrolled. */
+  /**
+   * Mark a login completed once the operator approved + the account enrolled.
+   * For a claude-code enrollment with a per-account config home, also seed the
+   * interactive onboarding flags — the login itself was headless, so without
+   * this the freshly-enrolled home wedges the first interactive session that
+   * pins/swaps onto it (2026-06-09 incident). Fail-safe: a seeding failure is
+   * logged, never blocks completion (the launch paths re-ensure defensively).
+   */
   complete(id: string): PendingLogin | null {
-    return this.store.complete(id);
+    const login = this.store.complete(id);
+    if (login && login.framework === 'claude-code' && login.configHome) {
+      const ready = this.ensureReady(login.configHome);
+      if (ready.patched) {
+        this.logger.log(`[EnrollmentWizard] made ${login.configHome} interactive-ready (${ready.reason})`);
+      } else if (ready.reason !== 'already interactive-ready') {
+        this.logger.warn(`[EnrollmentWizard] could not verify ${login.configHome} interactive-ready — ${ready.reason}`);
+      }
+    }
+    return login;
   }
 
   /** The phone surface: still-valid logins awaiting approval. */

@@ -19,6 +19,7 @@ import { resolveGhTokenFromVault } from './ghToken.js';
 import type { ReapGuard } from './ReapGuard.js';
 import { paneShowsClaudeWorking } from './claudeActivityIndicators.js';
 import { extractGeminiFinalAssistantBlock, meaningfulTail } from './paneText.js';
+import { ensureInteractiveReady } from './ensureInteractiveReady.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -541,6 +542,24 @@ rm()  { "${shimRunner}" rm  "$@"; }
    */
   setSpawnAccountResolver(resolver: () => { configHome: string; accountId: string } | null): void {
     this.spawnAccountResolver = resolver;
+  }
+
+  /**
+   * Defensive onboarding-readiness seed before any launch under a pool
+   * account's CLAUDE_CONFIG_DIR (2026-06-09 incident): a headless-enrolled
+   * home is missing the interactive first-launch flags, so an interactive
+   * relaunch into it wedges on the onboarding screens. Cheap + idempotent —
+   * safe to call on every pinned/swapped launch. Never throws (fail-safe by
+   * the util's contract); failures are logged, not fatal, because the worst
+   * case is the pre-fix behavior, not a dead spawn path.
+   */
+  private ensurePinnedHomeInteractiveReady(configHome: string, lane: string): void {
+    const ready = ensureInteractiveReady(configHome);
+    if (ready.patched) {
+      console.log(`[SessionManager] ${lane}: made ${configHome} interactive-ready (${ready.reason})`);
+    } else if (ready.reason !== 'already interactive-ready') {
+      console.warn(`[SessionManager] ${lane}: could not verify ${configHome} interactive-ready — ${ready.reason}`);
+    }
   }
 
   /**
@@ -1691,6 +1710,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
       : null;
     if (pinnedAccount) {
       headlessSpec.envOverrides.CLAUDE_CONFIG_DIR = pinnedAccount.configHome;
+      this.ensurePinnedHomeInteractiveReady(pinnedAccount.configHome, 'headless pin');
     }
     const frameworkEnvFlags: string[] = [];
     for (const [k, v] of Object.entries(headlessSpec.envOverrides)) {
@@ -1953,6 +1973,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
     const pinnedAccount = this.spawnAccountResolver?.() ?? null;
     if (pinnedAccount) {
       launchSpec.envOverrides.CLAUDE_CONFIG_DIR = pinnedAccount.configHome;
+      this.ensurePinnedHomeInteractiveReady(pinnedAccount.configHome, 'interactive-reroute pin');
     }
     const frameworkEnvFlags: string[] = [];
     for (const [k, v] of Object.entries(launchSpec.envOverrides)) {
@@ -3020,6 +3041,13 @@ rm()  { "${shimRunner}" rm  "$@"; }
     // Codex rate-limit model-swap (see resolveCodexLaunchModel) — applies to the
     // interactive (user-facing) codex session too, not just headless spawns.
     const launchDefaultModel = await this.resolveCodexLaunchModel(framework, defaultModel);
+    // Account-swap lane (Subscription & Auth P1.3): this interactive session is
+    // about to launch under a pool account's config home — seed the onboarding
+    // flags first or a headless-enrolled home wedges it on first-launch
+    // onboarding (2026-06-09 incident).
+    if (options?.configHome && framework === 'claude-code') {
+      this.ensurePinnedHomeInteractiveReady(options.configHome, 'interactive account-swap');
+    }
     const launchSpec = buildInteractiveLaunch(framework, {
       binaryPath,
       ...(options?.resumeSessionId ? { resumeSessionId: options.resumeSessionId } : {}),
