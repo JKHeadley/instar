@@ -14,8 +14,21 @@
  *   chatId, botToken, appToken, token (any credential), webhookUrl
  */
 
+import { DEFAULT_TIER_ESCALATION_CONFIG } from '../core/ModelTierEscalation.js';
+
 /** Fields shared across ALL agent types and contexts (init + migration) */
 const SHARED_DEFAULTS: Record<string, unknown> = {
+  // Model-Tier Escalation (FABLE-MODEL-ESCALATION-SPEC §9/§10). Ships DARK
+  // fleet-wide (enabled:false, dryRun:true); dev agents (Echo/Codey) are
+  // flipped by hand in the same ship, gated on the §5.3 pre-enable canary.
+  // The block is the §9 schema verbatim via the single source of truth in
+  // ModelTierEscalation.ts. applyDefaults is add-missing-only with deep
+  // recursion, so an operator's existing `enabled`/`dryRun` (or any other
+  // field) is NEVER overwritten on migration (round-1 Lessons-H2, the
+  // burn-alert clobber incident) — missing sub-fields are backfilled.
+  models: {
+    tierEscalation: DEFAULT_TIER_ESCALATION_CONFIG,
+  },
   monitoring: {
     memoryMonitoring: true,
     healthCheckIntervalMs: 30000,

@@ -10,6 +10,16 @@
             "timeout": 5000
           }
         ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .instar/hooks/instar/model-tier-reconciler.js",
+            "timeout": 5000
+          }
+        ]
       }
     ],
     "PreToolUse": [
@@ -117,6 +127,11 @@
           {
             "type": "command",
             "command": "bash .instar/hooks/instar/skill-usage-telemetry.sh",
+            "timeout": 3000
+          },
+          {
+            "type": "command",
+            "command": "bash .instar/hooks/instar/model-tier-skill-entry.sh",
             "timeout": 3000
           }
         ]

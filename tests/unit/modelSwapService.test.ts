@@ -94,6 +94,36 @@ describe('paneConfirmsModel — independent oracle', () => {
     expect(paneConfirmsModel('model is now totally swapped, trust me', 'claude-fable-5')).toBe(false);
     expect(paneConfirmsModel(null, 'claude-fable-5')).toBe(false);
   });
+
+  // Live-canary pins (2026-06-09): the REAL CLI acks with the DISPLAY NAME,
+  // not the id, and echoes our injected input with the ❯ prompt char.
+  it('confirms the REAL CLI display-name ack (live format pin)', () => {
+    const realAck = '❯ /model claude-fable-5\n  ⎿  Set model to Fable 5 and saved as your default for new sessions\n';
+    expect(paneConfirmsModel(realAck, 'claude-fable-5')).toBe(true);
+  });
+  it('confirms the multi-part-version display form (Opus 4.8)', () => {
+    const realAck = '  ⎿  Set model to Opus 4.8 and saved as your default for new sessions\n';
+    expect(paneConfirmsModel(realAck, 'claude-opus-4-8')).toBe(true);
+  });
+  it('display form does NOT cross-confirm a sibling version', () => {
+    const realAck = '  ⎿  Set model to Opus 4.6 and saved as your default for new sessions\n';
+    expect(paneConfirmsModel(realAck, 'claude-opus-4-8')).toBe(false);
+  });
+});
+
+describe('paneIdleWithEmptyInput — real CLI prompt char (live-canary pin)', () => {
+  it('accepts the REAL CLI ❯ prompt with placeholder hint', () => {
+    const realIdle = '────────────\n❯ Try "how do I log an error?"\n────────────\n  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents\n';
+    expect(paneIdleWithEmptyInput(realIdle)).toBe(true);
+  });
+  it('accepts the REAL CLI bare ❯ prompt', () => {
+    const realIdle = '────────────\n❯ \n────────────\n  ⏵⏵ bypass permissions on (shift+tab to cycle)\n';
+    expect(paneIdleWithEmptyInput(realIdle)).toBe(true);
+  });
+  it('still refuses a ❯ prompt with typed text pending', () => {
+    const typed = '────────────\n❯ deploy everything now\n────────────\n  ⏵⏵ bypass permissions on (shift+tab to cycle)\n';
+    expect(paneIdleWithEmptyInput(typed)).toBe(false);
+  });
 });
 
 describe('ModelSwapService.swap', () => {

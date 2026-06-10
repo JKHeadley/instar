@@ -4303,6 +4303,12 @@ fi
   // hook, yet settings.json references it — silent "No such file" on every
   // Stop event until they ran an upgrade.
   fs.writeFileSync(path.join(hooksDir, 'build-stop-hook.sh'), migrator.getHookContent('build-stop-hook'), { mode: 0o755 });
+
+  // Model-Tier Escalation §5.4 signal hooks (FABLE-MODEL-ESCALATION-SPEC §10).
+  // Shares the PostUpdateMigrator content so init and upgrade produce the same
+  // file (settings-template.json registers both for fresh agents).
+  fs.writeFileSync(path.join(hooksDir, 'model-tier-skill-entry.sh'), migrator.getHookContent('model-tier-skill-entry'), { mode: 0o755 });
+  fs.writeFileSync(path.join(hooksDir, 'model-tier-reconciler.js'), migrator.getHookContent('model-tier-reconciler'), { mode: 0o755 });
 }
 
 function getHookEventReporterScript(): string {

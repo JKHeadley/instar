@@ -2268,6 +2268,22 @@ export class PostUpdateMigrator {
       result.errors.push(`skill-usage-telemetry.sh: ${err instanceof Error ? err.message : String(err)}`);
     }
 
+    // Model-Tier Escalation §5.4 signal hooks (FABLE-MODEL-ESCALATION-SPEC
+    // §10) — built-in instar/ hooks, ALWAYS overwritten on migration so no
+    // agent can get stuck on a broken template.
+    try {
+      fs.writeFileSync(path.join(instarHooksDir, 'model-tier-skill-entry.sh'), this.getModelTierSkillEntryHook(), { mode: 0o755 });
+      result.upgraded.push('hooks/instar/model-tier-skill-entry.sh (model-tier trigger signal)');
+    } catch (err) {
+      result.errors.push(`model-tier-skill-entry.sh: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    try {
+      fs.writeFileSync(path.join(instarHooksDir, 'model-tier-reconciler.js'), this.getModelTierReconcilerHook(), { mode: 0o755 });
+      result.upgraded.push('hooks/instar/model-tier-reconciler.js (model-tier reconciler)');
+    } catch (err) {
+      result.errors.push(`model-tier-reconciler.js: ${err instanceof Error ? err.message : String(err)}`);
+    }
+
     // Build stop hook — structural enforcement for /build pipeline.
     // Previously only installed once by init.ts, so existing agents that initialized
     // before it was added never received the file, yet settings.json references it
@@ -3000,6 +3016,22 @@ Rule: I do not state that work landed inside another agent's state unless I have
       content += '\n' + tlConvSection;
       patched = true;
       result.upgraded.push('CLAUDE.md: added Threadline Conversation Coherence holder-view section');
+    }
+
+    // Model-Tier Escalation (FABLE-MODEL-ESCALATION-SPEC §10) — agent-facing
+    // awareness in the proactive-trigger form, tagged EXPERIMENTAL per
+    // maturity-honesty (dark on the fleet; never announced as a finished user
+    // capability). Content MUST stay byte-identical to the generateClaudeMd()
+    // section in src/scaffold/templates.ts — parity tests assert it.
+    if (!content.includes('Model-Tier Escalation (EXPERIMENTAL')) {
+      const modelTierSection = `
+**Model-Tier Escalation (EXPERIMENTAL — escalate the model for heavy work)** — A policy layer that can run my claude-code sessions on the ultra model (\`claude-fable-5\`) for the two heavy-work triggers — spec/project design (\`spec-converge\`) and implementation or long autonomous runs (\`build\`, \`autonomous\`, \`instar-dev\`) — and on the default tier (\`claude-opus-4-8\`) the rest of the time. EXPERIMENTAL and dark by default: \`models.tierEscalation\` in \`.instar/config.json\` ships \`enabled:false\` (and \`dryRun:true\`, which logs intended swaps without performing them). Frameworks with no escalated model configured (codex/gemini/pi) are never touched. Every escalation passes cost guards first (quota headroom, per-account concurrent-escalation cap, hourly budget, TTL + dwell hysteresis) and is audited.
+- Swap a session's tier (server-side authority — body carries a TIER ONLY, never a model id): \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/sessions/SESSION_NAME/model-swap -H 'Content-Type: application/json' -d '{"tier":"escalated"}'\` (\`"default"\` to de-escalate). Refuses protected/non-idle sessions; honors enabled/dryRun; 202 = swap sent but unconfirmed.
+- Proactive: user asks "what model are you running?" / "why are you on Fable/Opus?" → \`GET /sessions\` reports each session's live \`model\`; name the trigger that escalated it (or say escalation is disabled/dry-run on this agent). User says "stop using the expensive model" → set \`models.tierEscalation.enabled:false\` and restart sessions to apply.
+`;
+      content += '\n' + modelTierSection;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Model-Tier Escalation awareness section');
     }
 
     // MTP Protocol — the two EXO 3.0 tests (refusal + endorsement) on ORG-INTENT.
@@ -5001,6 +5033,12 @@ Create worktrees for collaborator repos with \`instar worktree create <branch>\`
       // never learns the holder view will claim a thread held elsewhere
       // "doesn't exist" — the exact dishonesty P3 kills.
       '**Threadline Conversation Coherence (which machine holds each agent-to-agent thread)**',
+      // Model-Tier Escalation (FABLE-MODEL-ESCALATION-SPEC §10): a Codex/
+      // Gemini agent spawns claude-code sessions through the same spawn/swap
+      // routes — without this awareness it would never escalate (or explain)
+      // a heavy-work session's model tier. Mid-session swap remains
+      // claude-code-only; other frameworks are honest no-ops.
+      '**Model-Tier Escalation (EXPERIMENTAL — escalate the model for heavy work)**',
       // Session Boot Self-Knowledge (spec session-boot-self-knowledge): vault
       // secret NAMES + operational facts at boot. A Codex/Gemini agent that
       // never learns the facts writer + secret-get retrieval will re-ask the
@@ -5595,6 +5633,52 @@ Create worktrees for collaborator repos with \`instar worktree create <branch>\`
         hooks.PostToolUse = postToolUse;
         patched = true;
         result.upgraded.push('.claude/settings.json: added PostToolUse skill-usage-telemetry hook');
+      }
+    }
+
+    // Model-Tier Escalation (FABLE-MODEL-ESCALATION-SPEC §10) — append-with-
+    // dedup registration for the two §5.4 signal hooks. Idempotent: appends
+    // only when missing, never reorders or removes.
+    {
+      const postToolUse = (hooks.PostToolUse || []) as Array<{ matcher?: string; hooks?: Array<{ command?: string; type?: string; timeout?: number }> }>;
+      const hasSkillEntry = postToolUse.some(e =>
+        e.matcher === 'Skill' && e.hooks?.some(h => h.command?.includes('model-tier-skill-entry'))
+      );
+      if (!hasSkillEntry) {
+        const skillEntry = postToolUse.find(e => e.matcher === 'Skill');
+        const hookDef = {
+          type: 'command' as never,
+          command: 'bash ${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/model-tier-skill-entry.sh',
+          timeout: 3000,
+        } as never;
+        if (skillEntry) {
+          skillEntry.hooks = skillEntry.hooks ?? [];
+          skillEntry.hooks.push(hookDef);
+        } else {
+          postToolUse.push({ matcher: 'Skill', hooks: [hookDef] });
+        }
+        hooks.PostToolUse = postToolUse;
+        patched = true;
+        result.upgraded.push('.claude/settings.json: added PostToolUse model-tier-skill-entry hook');
+      }
+    }
+    {
+      const userPromptSubmit = (hooks.UserPromptSubmit || []) as Array<{ matcher?: string; hooks?: Array<{ command?: string; type?: string; timeout?: number }> }>;
+      const hasReconciler = userPromptSubmit.some(e =>
+        e.hooks?.some(h => h.command?.includes('model-tier-reconciler'))
+      );
+      if (!hasReconciler) {
+        userPromptSubmit.push({
+          matcher: '',
+          hooks: [{
+            type: 'command' as never,
+            command: 'node ${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/model-tier-reconciler.js',
+            timeout: 5000,
+          } as never],
+        });
+        hooks.UserPromptSubmit = userPromptSubmit;
+        patched = true;
+        result.upgraded.push('.claude/settings.json: added UserPromptSubmit model-tier-reconciler hook');
       }
     }
 
@@ -6451,7 +6535,7 @@ Create worktrees for collaborator repos with \`instar worktree create <branch>\`
    * Get the content of a named hook template.
    * Used by init.ts to share canonical hook content without duplication.
    */
-  getHookContent(name: 'session-start' | 'mcp-health-autorefresh' | 'compaction-recovery' | 'external-operation-gate' | 'deferral-detector' | 'self-stop-guard' | 'slopcheck-guard' | 'post-action-reflection' | 'external-communication-guard' | 'scope-coherence-collector' | 'scope-coherence-checkpoint' | 'claim-intercept' | 'claim-intercept-response' | 'telegram-topic-context' | 'response-review' | 'stop-gate-router' | 'auto-approve-permissions' | 'skill-usage-telemetry' | 'build-stop-hook'): string {
+  getHookContent(name: 'session-start' | 'mcp-health-autorefresh' | 'compaction-recovery' | 'external-operation-gate' | 'deferral-detector' | 'self-stop-guard' | 'slopcheck-guard' | 'post-action-reflection' | 'external-communication-guard' | 'scope-coherence-collector' | 'scope-coherence-checkpoint' | 'claim-intercept' | 'claim-intercept-response' | 'telegram-topic-context' | 'response-review' | 'stop-gate-router' | 'auto-approve-permissions' | 'skill-usage-telemetry' | 'build-stop-hook' | 'model-tier-skill-entry' | 'model-tier-reconciler'): string {
     switch (name) {
       case 'session-start': return this.getSessionStartHook();
       case 'mcp-health-autorefresh': return this.getMcpHealthAutorefreshHook();
@@ -6472,6 +6556,8 @@ Create worktrees for collaborator repos with \`instar worktree create <branch>\`
       case 'auto-approve-permissions': return this.getAutoApprovePermissionsHook();
       case 'skill-usage-telemetry': return this.getSkillUsageTelemetryHook();
       case 'build-stop-hook': return this.getBuildStopHook();
+      case 'model-tier-skill-entry': return this.getModelTierSkillEntryHook();
+      case 'model-tier-reconciler': return this.getModelTierReconcilerHook();
     }
   }
 
@@ -10128,6 +10214,227 @@ echo "{\\"timestamp\\":\\"$TIMESTAMP\\",\\"skill\\":\\"$SKILL_NAME\\",\\"args\\"
 `;
   }
 
+
+  private getModelTierSkillEntryHook(): string {
+    // Canonical source: src/templates/hooks/model-tier-skill-entry.sh
+    // If you edit either, keep them byte-identical — tests assert equality.
+    return `#!/bin/bash
+# Model-Tier Skill Entry — PostToolUse hook for the Skill tool.
+#
+# FABLE-MODEL-ESCALATION-SPEC §5.4: records that a trigger skill STARTED by
+# writing the per-instance mode-state — ONLY on a tier transition (§6
+# write-on-transition; never on every PostToolUse). This is a SIGNAL writer:
+# it never swaps anything and never carries a model id; the reconciler +
+# server-side swap service (the single authority) decide what happens.
+#
+# Instance key: INSTAR_SESSION_ID — the spawn-generated session id. A
+# resume/respawn gets a fresh id, so a predecessor's mode-state can never be
+# inherited (§5.5). Fail-closed: any missing input exits 0 silently.
+
+INPUT=$(cat)
+
+TOOL_NAME=$(echo "$INPUT" | python3 -c "import json,sys; print(json.load(sys.stdin).get('tool_name',''))" 2>/dev/null)
+if [ "$TOOL_NAME" != "Skill" ]; then
+  exit 0
+fi
+
+if [ -z "\${INSTAR_SESSION_ID:-}" ]; then
+  exit 0
+fi
+
+INSTAR_DIR="\${CLAUDE_PROJECT_DIR:-.}/.instar"
+CONFIG_FILE="$INSTAR_DIR/config.json"
+if [ ! -f "$CONFIG_FILE" ]; then
+  exit 0
+fi
+
+SKILL_NAME=$(echo "$INPUT" | python3 -c "import json,sys; print(json.load(sys.stdin).get('tool_input',{}).get('skill',''))" 2>/dev/null)
+if [ -z "$SKILL_NAME" ]; then
+  exit 0
+fi
+
+MODE_FILE="$INSTAR_DIR/state/model-tier-escalation/mode-state-\${INSTAR_SESSION_ID}.json"
+
+python3 - "$CONFIG_FILE" "$SKILL_NAME" "$MODE_FILE" "\${INSTAR_SESSION_ID}" "\${INSTAR_SESSION_NAME:-}" <<'PYEOF' 2>/dev/null
+import json, os, sys, datetime
+config_file, skill, mode_file, instance_id, session_name = sys.argv[1:6]
+try:
+    cfg = json.load(open(config_file))
+except Exception:
+    sys.exit(0)
+te = ((cfg.get('models') or {}).get('tierEscalation') or {})
+if te.get('enabled') is not True:
+    sys.exit(0)
+triggers = ((te.get('triggers') or {}).get('skills')) or ['build', 'autonomous', 'instar-dev', 'spec-converge']
+if skill not in triggers:
+    sys.exit(0)
+# Write-on-transition only (spec section 6): an existing same-instance
+# escalated mode-state means no transition - never rewrite (no churn).
+try:
+    existing = json.load(open(mode_file))
+    if existing.get('instanceId') == instance_id and existing.get('tier') == 'escalated':
+        sys.exit(0)
+except Exception:
+    pass
+os.makedirs(os.path.dirname(mode_file), exist_ok=True)
+state = {
+    'tier': 'escalated',
+    'trigger': skill,
+    'since': datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
+    'instanceId': instance_id,
+    'sessionName': session_name,
+}
+tmp = mode_file + '.tmp'
+with open(tmp, 'w') as f:
+    json.dump(state, f)
+os.replace(tmp, mode_file)
+PYEOF
+exit 0
+`;
+  }
+
+  private getModelTierReconcilerHook(): string {
+    // Canonical source: src/templates/hooks/model-tier-reconciler.js
+    // If you edit either, keep them byte-identical — tests assert equality.
+    return `#!/usr/bin/env node
+// Model-Tier Reconciler — UserPromptSubmit hook.
+//
+// FABLE-MODEL-ESCALATION-SPEC sections 5.3(1)/5.4/5.5/6: computes the desired
+// tier from durable signals and, ONLY on a transition, asks the server-side
+// swap endpoint to act. It never performs a swap itself, never blocks the
+// turn, and emits no prompt context. The common path is PURE FILESYSTEM with
+// an early-exit no-op when desired == last-applied (no HTTP, no tmux).
+// Fail-closed: anything missing or unparseable exits 0 and the session stays
+// on its default model.
+//
+// NOTE: dynamic import('node:...') so this works under both CJS and ESM
+// hosts (the hook-event-reporter lesson).
+
+const sid = process.env.INSTAR_SESSION_ID || '';
+const sessionName = process.env.INSTAR_SESSION_NAME || '';
+const serverUrl = process.env.INSTAR_SERVER_URL || '';
+const authToken = process.env.INSTAR_AUTH_TOKEN || '';
+if (!sid || !sessionName || !serverUrl || !authToken) process.exit(0);
+
+(async () => {
+  const fs = await import('node:fs');
+  const path = await import('node:path');
+  const projectDir = process.env.CLAUDE_PROJECT_DIR || '.';
+  const instarDir = path.join(projectDir, '.instar');
+  const stateDir = path.join(instarDir, 'state', 'model-tier-escalation');
+  const modeFile = path.join(stateDir, 'mode-state-' + sid + '.json');
+  const markerFile = path.join(stateDir, 'last-applied-' + sid + '.json');
+
+  const readJson = (p) => {
+    try { return JSON.parse(fs.readFileSync(p, 'utf-8')); } catch { return null; }
+  };
+
+  const cfgAll = readJson(path.join(instarDir, 'config.json'));
+  const te = (cfgAll && cfgAll.models && cfgAll.models.tierEscalation) || null;
+  if (!te || te.enabled !== true) process.exit(0);
+  const guards = te.costGuards || {};
+  const ttlMs = typeof guards.maxEscalationTtlMs === 'number' ? guards.maxEscalationTtlMs : 21600000;
+  const dwellMs = typeof guards.minTierDwellMs === 'number' ? guards.minTierDwellMs : 300000;
+  const dwellTurns = typeof guards.minTierDwellTurns === 'number' ? guards.minTierDwellTurns : 1;
+
+  // Desired tier — re-derived LIVE each turn from the durable signal (never
+  // a persisted "escalated" flag that must be cleared). The mode-state is
+  // self-expiring on read (spec 5.5): past TTL it is QUARANTINED (renamed),
+  // so re-escalation needs a FRESH trigger, not a clock reset.
+  let desired = 'default';
+  const mode = readJson(modeFile);
+  if (mode && mode.instanceId === sid && mode.tier === 'escalated') {
+    const since = Date.parse(mode.since || '');
+    if (Number.isFinite(since) && Date.now() - since < ttlMs) {
+      desired = 'escalated';
+    } else {
+      try { fs.renameSync(modeFile, modeFile + '.expired'); } catch { /* already gone */ }
+      // One audit breadcrumb — a TTL firing means the primary path failed.
+      try {
+        fs.mkdirSync(stateDir, { recursive: true });
+        fs.appendFileSync(
+          path.join(stateDir, 'audit.jsonl'),
+          JSON.stringify({ ts: new Date().toISOString(), source: 'reconciler', type: 'ttl-expired', instanceId: sid }) + '\\n',
+        );
+      } catch { /* best-effort */ }
+    }
+  }
+
+  const marker = readJson(markerFile) || { tier: 'default', at: 0, turnsClear: 0 };
+
+  // FAST PATH (spec section 6): desired == last applied. Pure read, zero
+  // writes, no HTTP. (A stale turnsClear can survive an interrupted
+  // de-escalation streak; worst case is a de-escalation one turn early,
+  // still bounded by dwellMs here AND by the server-side dwell backstop.)
+  if (marker.tier === desired) process.exit(0);
+
+  const writeMarker = (m) => {
+    try {
+      fs.mkdirSync(stateDir, { recursive: true });
+      const tmp = markerFile + '.tmp';
+      fs.writeFileSync(tmp, JSON.stringify(m));
+      fs.renameSync(tmp, markerFile);
+    } catch { /* a lost marker only costs one redundant no-op POST */ }
+  };
+
+  // Asymmetric hysteresis (spec 5.5): escalate immediately; de-escalate only
+  // after the condition has been clear for dwellTurns consecutive turns AND
+  // dwellMs since the last swap. Suppressed flaps leave the marker counting.
+  if (desired === 'default') {
+    const turnsClear = (marker.turnsClear || 0) + 1;
+    if (turnsClear < dwellTurns || (marker.at && Date.now() - marker.at < dwellMs)) {
+      writeMarker({ ...marker, turnsClear });
+      process.exit(0);
+    }
+  }
+
+  // Stable-refusal cooldown: 'disabled' / 'launch-time-only-framework' can't
+  // change turn-to-turn — don't hammer the endpoint for 10 minutes.
+  if (
+    marker.refusedReason &&
+    marker.refusedDesired === desired &&
+    Date.now() - (marker.refusedAt || 0) < 600000
+  ) {
+    process.exit(0);
+  }
+
+  // TRANSITION: ask the server — the single swap authority. Bounded (4s);
+  // any failure leaves the marker untouched, so the next idle boundary
+  // retries. The reconciler reconciles against the OBSERVED outcome
+  // ('swapped' = canary-confirmed), never its own write-intent.
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 4000);
+    const res = await fetch(
+      serverUrl + '/sessions/' + encodeURIComponent(sessionName) + '/model-swap',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + authToken },
+        body: JSON.stringify({ tier: desired }),
+        signal: controller.signal,
+      },
+    );
+    clearTimeout(timer);
+    const body = await res.json().catch(() => ({}));
+    const status = body && body.status;
+    if (status === 'swapped' || status === 'dry-run' || status === 'noop') {
+      // 'swapped': independent oracle confirmed. 'dry-run'/'noop': nothing
+      // will change for this tier — marking prevents per-turn re-POSTs while
+      // keeping exactly one audit line per transition.
+      writeMarker({ tier: desired, at: Date.now(), turnsClear: 0 });
+    } else if (
+      status === 'refused' &&
+      (body.reason === 'disabled' || body.reason === 'launch-time-only-framework')
+    ) {
+      writeMarker({ ...marker, refusedReason: body.reason, refusedDesired: desired, refusedAt: Date.now() });
+    }
+    // 'unconfirmed' and transient refusals (not-idle / dwell / cost-guard):
+    // do NOT mark reconciled (spec 5.3) — behaviourally default; retry later.
+  } catch { /* never blocks the turn */ }
+  process.exit(0);
+})();
+`;
+  }
   private getBuildStopHook(): string {
     // Canonical source: src/templates/hooks/build-stop-hook.sh
     // If you edit either, keep them byte-identical — tests assert equality.

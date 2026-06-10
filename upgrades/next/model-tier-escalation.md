@@ -1,0 +1,71 @@
+# Model-Tier Escalation Policy (EXPERIMENTAL — dark on the fleet)
+
+Spec: `docs/specs/FABLE-MODEL-ESCALATION-SPEC.md` (converged r4, approved)
+Side-effects: `upgrades/side-effects/model-tier-escalation.md`
+
+## What Changed
+
+- **New policy layer** that runs claude-code sessions on the ultra model
+  (`claude-fable-5`) for the two heavy-work triggers — spec/project design
+  (`spec-converge`) and implementation/long autonomous runs (`build`,
+  `autonomous`, `instar-dev`) — and on the default tier (`claude-opus-4-8`)
+  otherwise. Launch-time escalation is the primary path; a narrow,
+  server-side, canary-verified mid-session swap (`POST
+  /sessions/:name/model-swap`, tier enum only, model id derived server-side)
+  covers in-flight transitions.
+- **Fail-closed everywhere:** closed per-framework model-id enums (pi
+  closed-empty), quota/budget/concurrency/dwell cost guards that refuse
+  toward "stay on the default model", an independent-oracle canary that
+  treats an unconfirmed swap as default-tier, and instance-keyed,
+  TTL-quarantined mode-state that a respawned session can never inherit.
+- **Ships DARK fleet-wide** (`models.tierEscalation.enabled:false`,
+  `dryRun:true`); enable-flips are on the GuardPostureTripwire surface.
+  Frameworks with no escalated model configured (codex/gemini/pi) are pure
+  no-ops — backwards-compat pinned by tests.
+- **Full §10 migration parity:** config defaults via the ConfigDefaults
+  registry (add-missing-only — an operator's `enabled`/`dryRun` is never
+  overwritten), §5.4 hooks installed on fresh init AND always-overwritten on
+  update, settings registrations append-with-dedup, CLAUDE.md awareness
+  section in both generateClaudeMd and migrateClaudeMd (byte-identical,
+  parity-tested).
+
+## What to Tell Your User
+
+This release teaches me to use a stronger model only when the work calls for
+it. It's experimental and OFF by default — nothing changes for you unless you
+or your operator turns it on. When enabled, I escalate to the top-tier model
+for heavy design/build work and come back down afterwards, with hard cost
+guards (hourly budget, per-account concurrency cap, quota headroom checks)
+deciding whether an escalation is allowed. You can always ask me "what model
+are you running and why?" and I'll answer from live session state.
+
+## Summary of New Capabilities
+
+- `POST /sessions/:name/model-swap` — Bearer-gated, tier-enum-only mid-session
+  model swap with independent read-back confirmation.
+- `/sessions/spawn` now accepts `claude-fable-5` (closed claude enum) so
+  escalated sessions can be spawned natively.
+- `models.tierEscalation` config block (§9 schema) with triggers, per-framework
+  default/escalated models, and cost guards.
+- Per-session model-tier audit trail under
+  `.instar/state/model-tier-escalation/audit.jsonl`.
+
+## Evidence
+
+- ~99 unit tests across resolver/governor/swap-service/route-wiring commits,
+  plus this commit's 15 migration-parity tests, 16 hook-behavior tests
+  (templates executed as real child processes), 13 route integration tests,
+  and 6 production-init-path E2E tests including the §5.3 canary against a
+  REAL tmux pane through the real hardened send-keys/capture primitives.
+- Full `pnpm run test:all` zero-failure run + clean `pnpm build` recorded in
+  the closing commit.
+- Live §5.3 pre-enable canary **PASSED** on the dev machine (real claude CLI
+  2.1.170 in real tmux: escalate to claude-fable-5 oracle-confirmed in 2
+  read-back attempts, de-escalate to claude-opus-4-8 confirmed in 1; full
+  audit trail). The canary caught and we fixed two live-format bugs the
+  synthetic tests could not see (real `❯` prompt char in idle detection;
+  display-name CLI ack in the confirm oracle) — both pinned in unit tests.
+  Echo + Codey live configs flipped `enabled:true, dryRun:true`; fleet dark.
+- Phase-5 adversarial review (2 rounds): round 1 caught a rollback-stranding
+  asymmetry (enabled:false also refused the swap-BACK), resolved with the
+  audited rescue de-escalation path; round 2 concurred.

@@ -38,6 +38,7 @@ import type { Session } from './types.js';
 import { IDLE_PROMPT_PATTERNS } from './SessionManager.js';
 import {
   SWAP_CAPABILITY,
+  escalatedModelIds,
   resolveTierModel,
   type EscalationFramework,
   type EscalationTier,
@@ -103,11 +104,15 @@ export function paneIdleWithEmptyInput(tail: string | null): boolean {
   if (!tail) return false;
   const idle = IDLE_PROMPT_PATTERNS.some(p => tail.includes(p));
   if (!idle) return false;
-  // Empty input line: a prompt row with nothing typed after `>` — bare, or
-  // showing only the CLI's own placeholder hint (`Try "…`).
+  // Empty input line: a prompt row with nothing typed after the prompt char —
+  // bare, or showing only the CLI's own placeholder hint (`Try "…`). The REAL
+  // CLI renders the prompt as `❯` (U+276F); synthetic/test panes and older
+  // renders use ASCII `>` — accept both (live-canary finding, 2026-06-09:
+  // the ASCII-only match made idle detection fail against every real
+  // session, refusing all swaps as not-idle).
   const lines = tail.split('\n');
   return lines.some(line => {
-    const stripped = line.replace(/[│|]/g, ' ').trim();
+    const stripped = line.replace(/[│|]/g, ' ').replace(/❯/g, '>').trim();
     if (stripped === '>') return true;
     if (/^>\s*Try "/.test(stripped)) return true;
     return false;
@@ -117,15 +122,28 @@ export function paneIdleWithEmptyInput(tail: string | null): boolean {
 /**
  * Independent-oracle parse (§5.3 canary): does the pane acknowledge that
  * the model is now `modelId`, on a line that is NOT the echo of our own
- * injected `/model …` input? The CLI prints an acknowledgment of the form
- * "Set model to <id> …" — we require the acknowledgment verb AND the exact
- * id on a non-echo line. Conservative by design: an unrecognized format
+ * injected `/model …` input? Conservative by design: an unrecognized format
  * reads as NOT confirmed (the spec's honest-degrade direction).
+ *
+ * The REAL CLI acks with the model's DISPLAY NAME, not the id (live-canary
+ * finding, 2026-06-09): `/model claude-fable-5` → "Set model to Fable 5 and
+ * saved as your default for new sessions". We accept the exact id OR the
+ * display form derived from the id (closed-enum ids only ever reach here,
+ * so the derivation is over a known, validated vocabulary): family token
+ * capitalized + up to two leading version components dot-joined —
+ * claude-fable-5 → "Fable 5", claude-opus-4-8 → "Opus 4.8".
  */
 export function paneConfirmsModel(tail: string | null, modelId: string): boolean {
   if (!tail) return false;
-  const escaped = modelId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const ack = new RegExp(`set model to[^\\n]*\\b${escaped}\\b`, 'i');
+  const escapeRe = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const alternatives = [escapeRe(modelId)];
+  const m = modelId.match(/^(?:claude-)?([a-z]+)((?:-[0-9]+)*)/i);
+  if (m) {
+    const family = m[1][0].toUpperCase() + m[1].slice(1).toLowerCase();
+    const version = m[2].split('-').filter(Boolean).slice(0, 2).join('.');
+    alternatives.push(escapeRe(version ? `${family} ${version}` : family));
+  }
+  const ack = new RegExp(`set model to[^\\n]*\\b(?:${alternatives.join('|')})\\b`, 'i');
   return tail.split('\n').some(line => {
     if (line.includes('/model')) return false; // echo of our injected input
     return ack.test(line);
@@ -188,7 +206,19 @@ export class ModelSwapService {
       return { status: 'noop', reason: 'already-on-tier', model: targetId, confirmed: true };
     }
 
-    if (!cfg.enabled) {
+    // RESCUE DE-ESCALATION (Phase-5 review finding): a `tier:'default'` swap
+    // for a session CURRENTLY on an escalated id bypasses the enabled/dryRun
+    // gates. Those flags are the rollback levers — if they also refused the
+    // swap-back, an escalated session would be stranded on the ultra model in
+    // exactly the state the operator is trying to leave (the one refusal
+    // whose failure direction is MORE spend, inverting §3.5). Strictly
+    // cost-reducing, mirrors the governor exemption below; idle/protected/
+    // dwell/canary gates all still apply. Fleet installs stay inert: their
+    // sessions are never on an escalated id, so disabled still refuses.
+    const isRescueDeescalation =
+      tier === 'default' && session.model != null && escalatedModelIds(cfg).has(session.model);
+
+    if (!cfg.enabled && !isRescueDeescalation) {
       return this.refuse(session.name, tier, 'disabled');
     }
 
@@ -223,7 +253,7 @@ export class ModelSwapService {
       }
     }
 
-    if (cfg.dryRun) {
+    if (cfg.dryRun && !isRescueDeescalation) {
       this.audit({
         type: 'dry-run-would-swap',
         session: session.name,
@@ -232,6 +262,11 @@ export class ModelSwapService {
         freeWindow: admit.freeWindow,
       });
       return { status: 'dry-run', model: targetId };
+    }
+    if (isRescueDeescalation && (!cfg.enabled || cfg.dryRun)) {
+      // Loud trail: a real swap performed while the feature is off/dry is
+      // exactly the event an operator auditing a rollback wants to see.
+      this.audit({ type: 'rescue-deescalation', session: session.name, model: targetId, enabled: cfg.enabled, dryRun: cfg.dryRun });
     }
 
     // Inject: literal text + separate Enter via the hardened primitive. The
