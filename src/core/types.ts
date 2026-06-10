@@ -567,6 +567,14 @@ export interface UserProfile {
   createdAt?: string;
   /** Telegram numeric user ID (canonical identifier for identity binding) */
   telegramUserId?: number;
+  /** Slack workspace user ID (U…) — canonical identifier for Slack identity binding (mirrors telegramUserId). */
+  slackUserId?: string;
+  /**
+   * Organizational role for the Slack permission system
+   * (guest | member | contributor | operator | admin | owner). Optional — when
+   * absent it is derived from `permissions`. See src/permissions/SlackPrincipalResolver.ts.
+   */
+  orgRole?: string;
 }
 
 export interface UserChannel {
@@ -2548,6 +2556,39 @@ export interface InstarConfig {
      *  pool-managed session auto-swaps it to another account. Opt-in (auto-
      *  swapping live sessions is real authority — tier-2). */
     autoSwapOnRateLimit?: boolean;
+    /** DARK by default: when true, new claude-code session spawns launch under
+     *  the optimal pool account's config home (scheduler-picked) and are tagged
+     *  with `subscriptionAccountId`. This is the prerequisite that makes
+     *  auto-swap functional (a session must carry which account it's on for the
+     *  swap engine to move it). Unset → spawns use the default config (no-op). */
+    pinSessionsToPool?: boolean;
+    /**
+     * DARK by default: the PRE-LIMIT swap. When enabled, the ProactiveSwapMonitor
+     * moves a session OFF an account that crosses `thresholdPct` on its binding
+     * window BEFORE it walls — vs. the reactive `autoSwapOnRateLimit`, which only
+     * fires AFTER the wall. Same authority as the reactive swap (it moves live
+     * sessions), earlier trigger → opt-in. Covers untagged sessions too by
+     * resolving the default-config login (so the primary interactive session is
+     * swap-visible instead of wedging at the wall).
+     */
+    proactiveSwap?: {
+      /** Master switch. Default false (dark). */
+      enabled?: boolean;
+      /** Measured binding-window utilization % that triggers a pre-emptive swap.
+       *  Default 80 — below the real wall to absorb poll-lag (measured trails
+       *  real ~5%), so the swap completes with margin. */
+      thresholdPct?: number;
+      /** Refresh the poll before deciding when an at-risk account is within this
+       *  many points of the threshold (catch a fast burn between baseline polls).
+       *  Default 15. */
+      watchMarginPct?: number;
+      /** Max sessions swapped per evaluation cycle (storm guard). Default 3. */
+      maxSwapsPerCycle?: number;
+      /** Per-session cooldown (ms) after a successful swap. Default 600000 (10m). */
+      cooldownMs?: number;
+      /** Monitor tick cadence (ms). Default 180000 (3m). */
+      tickMs?: number;
+    };
     /** P2.1 enrollment wizard knobs (all optional). */
     enrollment?: {
       /** Per-framework login command override (defaults: claude-code →
@@ -2648,6 +2689,31 @@ export interface InstarConfig {
       maxRetainedRuns?: number;
       /** Per-turn gemini spawn timeout in ms (default 180000). */
       turnTimeoutMs?: number;
+    };
+    /**
+     * Autonomous Completion Discipline (spec: AUTONOMOUS-COMPLETION-DISCIPLINE.md).
+     * The structural enforcement of "don't stop a pre-approved autonomous run early."
+     * Read in the stop-hook at the chokepoint (no restart needed to toggle `enabled`
+     * or `judgeTimeoutMs`). Defaults seeded in ConfigDefaults.SHARED_DEFAULTS, so
+     * applyDefaults backfills existing agents on update (Migration Parity). `enabled`
+     * defaults `true` (operator-mandated, not dark) — flip to `false` for instant
+     * rollback (reverts to the prior promise/condition + prior P13 path).
+     */
+    completionDiscipline?: {
+      /** Master off-switch. Read in the hook; false reverts to pre-spec behavior. */
+      enabled?: boolean;
+      /** curl -m budget (ms) for a single judge call (default 35000). Distinct from the hook timeout. */
+      judgeTimeoutMs?: number;
+      /** Coarse rotation threshold (bytes) for logs/autonomous-hard-blocker.jsonl (default 1048576). */
+      hardBlockerLogRotateBytes?: number;
+      /** Consecutive judge failures that trip the circuit-breaker (default 3). */
+      judgeFailBreakerThreshold?: number;
+      /** Window (ms) over which consecutive judge failures are counted (default 600000). */
+      judgeFailWindowMs?: number;
+      /** Cooldown (ms) the breaker stays open after tripping (default 600000). */
+      judgeFailCooldownMs?: number;
+      /** Per-field clamp (chars) on the <hard-blocker> marker fields (default 500). */
+      markerFieldMaxChars?: number;
     };
   };
   /** Notification preferences for autonomy events */
@@ -3429,6 +3495,18 @@ export interface MonitoringConfig {
      * throttled poll (~30-60s). Lower only for tests.
      */
     rateLimitSettleMs?: number;
+    /**
+     * Deterministic hard ceiling (seconds) for the stuck-command Ctrl+C when the
+     * LLM "stuck vs legitimate" judge is UNAVAILABLE (no provider) or ERRORS
+     * (rate-limited / circuit-open / timeout — common under load). In that case
+     * the watchdog fails CLOSED (does NOT interrupt) below this ceiling, and only
+     * sends Ctrl+C once a command has run past it — so a genuinely hung command
+     * (e.g. `crontab -` waiting on stdin) is still recovered deterministically,
+     * but legitimate long builds/tests are no longer killed just because the
+     * judge couldn't run. Default: 1800 (30 min). Set 0 to disable the ceiling
+     * (pure fail-closed — never interrupt without a positive LLM "stuck" verdict).
+     */
+    hardCeilingSec?: number;
   };
   /**
    * RateLimitSentinel — rides out Anthropic's server-side capacity throttle
@@ -4112,6 +4190,53 @@ export interface MonitoringConfig {
     enabled?: boolean;
     /** Minutes between periodic scans (default: 30). Clamped to >= 5. */
     scanIntervalMinutes?: number;
+  };
+  /**
+   * GrowthMilestoneAnalyst — the proactive growth & milestone analyst.
+   * Composes the existing tracking surfaces (InitiativeTracker rollout stages,
+   * ApprovalLedger approve-vs-change, CorrectionLedger recurrence) into one
+   * opinionated digest + window-expiry milestones, with explicit notify-rules.
+   *
+   * THE KEY LEVER: a TIGHT incubation window whose EXPIRY is itself the trigger,
+   * so a feature can never be silently "left behind" — it either proved itself
+   * (→ promote?) or it never did (→ extend/fix/kill?). Promotion requires REAL
+   * proof-of-life, never elapsed time alone (maturity honesty).
+   *
+   * Ships DARK (enabled defaults false) and rides the Graduated Feature Rollout
+   * track (rollout-flag-path: monitoring.growthAnalyst). This slice COMPUTES +
+   * exposes findings via read routes; it does not send to Telegram. See
+   * docs/specs/PROACTIVE-GROWTH-MILESTONE-ANALYST-SPEC.md.
+   */
+  growthAnalyst?: {
+    /** Master kill-switch (default: false → ships dark). Gates the routes too. */
+    enabled?: boolean;
+    /** Cron for the weekly digest (later slice; default '0 11 * * 1'). */
+    digestCron?: string;
+    /** Incubation windows in DAYS per risk tier (defaults 3 / 7 / 7). */
+    incubationWindows?: {
+      lowRisk?: number;
+      standard?: number;
+      highRisk?: number;
+    };
+    /** Min real activations before a feature counts as proven (default: 1). */
+    proofOfLifeMinActivations?: number;
+    /** Per-rule enable flags (all default true). */
+    rules?: {
+      promotionReady?: boolean;
+      incubationExpired?: boolean;
+      initiativeStalling?: boolean;
+      specPattern?: boolean;
+      correctionPattern?: boolean;
+    };
+    /** R4: min decisions in a class before a spec-pattern is surfaced (default 3). */
+    specPatternMinTotal?: number;
+    /** R4: fraction approved-with-change to flag the pattern (default 0.6). */
+    specPatternMinChangeRatio?: number;
+    /** R5: occurrences before a correction pattern is surfaced (default 3). */
+    correctionPatternMinOccurrences?: number;
+    /** Render the "all healthy" line even when calm so the operator knows the
+     *  analyst ran — the deliberate reversal of over-silence (default true). */
+    digestEvenWhenCalm?: boolean;
   };
 }
 

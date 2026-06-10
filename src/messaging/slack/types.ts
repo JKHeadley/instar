@@ -69,6 +69,63 @@ export interface SlackConfig {
     ownerId?: string;
     relayTimeoutSeconds?: number;
   };
+  /**
+   * Slack org permission gate (Slice 0). DARK by default — when unset, no gate is
+   * attached. `observeOnly: true` logs what the gate WOULD decide for every
+   * authorized message without blocking (for FP-rate measurement). `enforce: true`
+   * is reserved for a later phase (do not enable before the observed FP-rate is good).
+   * See docs/specs/SLACK-ORG-INTEGRATION-SPEC.md.
+   */
+  permissionGate?: {
+    observeOnly?: boolean;
+    enforce?: boolean;
+  };
+  /**
+   * Conservative ambient "should I speak?" gate (Slack considered/ambient mode,
+   * §5.2). DARK by default — when unset OR `enabledChannelIds` is empty, NO gate is
+   * attached and undirected messages are dropped exactly as today (mention-only).
+   * The gate runs ONLY for an explicitly-opted-in channel and can only ever make the
+   * agent quieter (fail-to-silence). See docs/specs/SLACK-ORG-INTEGRATION-SPEC.md §5.2.
+   */
+  ambientContribution?: {
+    /** Channel IDs (C…) explicitly opted into proactive contribution. Default: none. */
+    enabledChannelIds?: string[];
+    /** Hard cap on unsolicited messages per channel per window. Conservative default: 1. */
+    maxProactivePerChannel?: number;
+    /** Rolling rate-limit window in ms. Default: 1800000 (30 min). */
+    windowMs?: number;
+    /** Conservative confidence floor (0-1) for an LLM "speak" verdict. Default: 0.85. */
+    minConfidence?: number;
+  };
+  /**
+   * Threads-as-first-class-sessions (Slack org §5.3). A Slack thread is the real
+   * analog of a Telegram forum topic — a continuous, focused conversation. When a
+   * channel is opted in here, a message carrying a `thread_ts` routes to / resumes a
+   * session keyed on that thread (`<channelId>:<thread_ts>`), isolated from the
+   * channel's root session and from sibling threads — exactly mirroring Telegram's
+   * topic→session model.
+   *
+   * MIGRATION-SAFE / OPT-IN: when unset (the default) OR a channel is not listed,
+   * routing is byte-for-byte unchanged — every message (threaded or not) folds into
+   * the single channel-keyed session, exactly as today. A thread root message itself
+   * (no `thread_ts`) always routes to the channel session; only replies *inside* a
+   * thread get their own session.
+   * See docs/specs/SLACK-ORG-INTEGRATION-SPEC.md §5.3.
+   */
+  threadSessions?: {
+    /**
+     * Channel IDs (C…) where thread replies spin up their own isolated session.
+     * Default: none. A channel absent from this list keeps today's channel→session
+     * behavior for every message.
+     */
+    enabledChannelIds?: string[];
+    /**
+     * Escape hatch: enable thread→session routing for EVERY channel (ignores
+     * enabledChannelIds). Default false. Use with care — this changes routing for all
+     * existing channels at once.
+     */
+    allChannels?: boolean;
+  };
 }
 
 // ── Slack API Types ──

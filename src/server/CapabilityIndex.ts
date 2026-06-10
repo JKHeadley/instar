@@ -64,12 +64,13 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
   {
     key: 'subscriptionPool',
     prefixes: ['/subscription-pool'],
-    description: 'Subscription & Auth Standard — a multi-account subscription pool (N logins of the same provider) with live per-account quota (5h + weekly utilization + reset dates, measured burn), reset-date-optimal account selection, a hard session-continuity guarantee (a session that hits its account quota resumes on another account via --resume, never dies), and a mobile-first enrollment wizard (start a login, surface the public code/URL, auto-reissue an expired code). The registry stores login LOCATION (config home), never tokens. Backs the dashboard Subscriptions tab. Single-account pools are a no-op; auto-swap of live sessions is opt-in (subscriptionPool.autoSwapOnRateLimit).',
+    description: 'Subscription & Auth Standard — a multi-account subscription pool (N logins of the same provider) with live per-account quota (5h + weekly utilization + reset dates, measured burn), reset-date-optimal account selection, a hard session-continuity guarantee (a session that hits its account quota resumes on another account via --resume, never dies), proactive PRE-LIMIT swap (move a session off an account before it walls, at a lag-aware threshold — covers untagged sessions on the default login), and a mobile-first enrollment wizard (start a login, surface the public code/URL, auto-reissue an expired code). The registry stores login LOCATION (config home), never tokens. Backs the dashboard Subscriptions tab. Single-account pools are a no-op; auto-swap of live sessions is opt-in (subscriptionPool.autoSwapOnRateLimit reactive; subscriptionPool.proactiveSwap pre-limit).',
     build: ({ ctx }) => ({
       configured: !!ctx.subscriptionPool,
       accounts: ctx.subscriptionPool ? ctx.subscriptionPool.size() : 0,
       quotaPoller: !!ctx.quotaPoller,
       scheduler: !!ctx.quotaAwareScheduler,
+      proactiveSwap: !!ctx.proactiveSwapMonitor,
       enrollmentWizard: !!ctx.enrollmentWizard,
       endpoints: [
         'GET /subscription-pool',
@@ -80,6 +81,8 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
         'POST /subscription-pool/poll',
         'GET /subscription-pool/:id/quota',
         'POST /subscription-pool/swap',
+        'GET /subscription-pool/proactive-swap',
+        'POST /subscription-pool/proactive-swap/check',
         'POST /subscription-pool/enroll',
         'GET /subscription-pool/pending-logins',
         'POST /subscription-pool/enroll/:id/complete',
@@ -117,6 +120,20 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     build: ({ ctx }) => ({
       configured: !!ctx.parallelActivityIndex,
       endpoints: ['GET /parallel-work/activities'],
+    }),
+  },
+  {
+    key: 'growthAnalyst',
+    prefixes: ['/growth'],
+    description: 'Growth & Milestone Analyst — composes InitiativeTracker rollout stages + staleness, ApprovalLedger approve-vs-change, and CorrectionLedger recurrence into one digest with explicit notify-rules (R1 promotion-ready, R2 incubation-expired-unproven, R3 initiative-stalling, R4 spec-pattern, R5 correction-pattern). A TIGHT incubation window whose expiry is itself the trigger, so a feature is never silently left behind; promotion requires real proof-of-life, never elapsed time alone. Ships dark (monitoring.growthAnalyst.enabled) and is compute + read-only — no Telegram sending in this slice. Null/503 when disabled.',
+    build: ({ ctx }) => ({
+      configured: !!ctx.growthMilestoneAnalyst,
+      endpoints: [
+        'GET /growth/digest',
+        'GET /growth/findings',
+        'GET /growth/status',
+        'POST /growth/tick',
+      ],
     }),
   },
   {
@@ -650,6 +667,7 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
         'GET /mandate/audit?limit=N — the chained decision audit (chain.ok:false = tampering — surface it)',
         'POST /mandate/issue — PIN-GATED (operator only; agent Bearer token is refused)',
         'POST /mandate/:id/revoke — PIN-GATED (the operator kill switch)',
+        'POST /mandate/:id/grants — PIN-GATED: sign user→agent floor-action grant(s) into a mandate { grants:[{floorAction,grantedTo,authorizedBy,expiresAt}] } (expiresAt MUST be <= mandate.expiresAt); re-signs so authProof covers them',
       ],
     }),
   },
@@ -1020,6 +1038,7 @@ export const INTERNAL_PREFIXES: ReadonlyArray<{ prefix: string; reason: string }
   { prefix: 'episodes', reason: 'legacy episode log, replaced by topicMemory' },
   { prefix: 'reflection', reason: 'legacy reflection log, replaced by topicMemory' },
   { prefix: 'serendipity', reason: 'operator review surface, not agent-facing' },
+  { prefix: 'permissions', reason: 'Slack org permission gate (Slice 0) — dark/observe-only; registration/decision/scenario routes are operator/internal, not a user-surfaced capability until the enforce path ships' },
   { prefix: 'system-review', reason: 'legacy system review log, replaced by responseReview' },
   { prefix: 'system-reviews', reason: 'legacy system review log, replaced by responseReview' },
   { prefix: 'systems', reason: 'legacy systems registry, replaced by canonicalState.projects' },

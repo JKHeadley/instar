@@ -3,15 +3,33 @@
 #
 # Usage:
 #   slack-reply.sh CHANNEL_ID "message text"
+#   slack-reply.sh CHANNEL_ID THREAD_TS "message text"   # reply IN a thread
 #   echo "message" | slack-reply.sh CHANNEL_ID
+#   echo "message" | slack-reply.sh CHANNEL_ID THREAD_TS  # reply IN a thread
 #   cat <<'EOF' | slack-reply.sh CHANNEL_ID
 #   Multi-line message here
 #   EOF
+#
+# THREAD_TS (optional, 2nd positional): when this session belongs to a Slack
+# thread (threads-as-sessions, §5.3), pass the thread id so the reply lands in
+# that thread instead of the channel root. A thread id is a Slack timestamp like
+# 1699999999.000100 (digits + a single dot). Omit it for a channel-level reply
+# (today's default behavior, unchanged).
+# slack-reply-feature: thread-ts-arg
 
 set -euo pipefail
 
 CHANNEL_ID="$1"
 shift
+
+# Optional 2nd positional THREAD_TS — recognized only when it looks like a Slack
+# timestamp (digits.digits). This keeps the 1-arg form ("CHANNEL_ID message…")
+# backward-compatible: a normal message word is never mistaken for a thread id.
+THREAD_TS=""
+if [ $# -gt 0 ] && [[ "$1" =~ ^[0-9]+\.[0-9]+$ ]]; then
+  THREAD_TS="$1"
+  shift
+fi
 
 # Read message from args or stdin
 if [ $# -gt 0 ]; then
@@ -67,13 +85,20 @@ if [ -z "$ESCAPED" ]; then
   ESCAPED="\"$(echo "$MESSAGE" | sed 's/\\/\\\\/g; s/"/\\"/g')\""
 fi
 
+# Build JSON body — include thread_ts only when threading a reply.
+if [ -n "$THREAD_TS" ]; then
+  BODY_JSON="{\"text\": ${ESCAPED}, \"thread_ts\": \"${THREAD_TS}\"}"
+else
+  BODY_JSON="{\"text\": ${ESCAPED}}"
+fi
+
 # Send via Instar server
 RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
   "http://localhost:${PORT}/slack/reply/${CHANNEL_ID}" \
   -H "Content-Type: application/json" \
   ${AUTH:+-H "Authorization: Bearer $AUTH"} \
   ${AGENT_ID:+-H "X-Instar-AgentId: $AGENT_ID"} \
-  -d "{\"text\": ${ESCAPED}}")
+  -d "$BODY_JSON")
 
 HTTP_CODE=$(echo "$RESPONSE" | tail -1)
 BODY=$(echo "$RESPONSE" | sed '$d')

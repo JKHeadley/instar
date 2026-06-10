@@ -1,0 +1,15 @@
+{
+  "ts": "2026-06-09T23:52:20.980Z",
+  "slug": "url-pathname-path-encoding-fix",
+  "suggestedTier": 2,
+  "declaredTier": null,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 5,
+  "loc": 239,
+  "causalAutopsy": null,
+  "verdict": "blocked"
+}

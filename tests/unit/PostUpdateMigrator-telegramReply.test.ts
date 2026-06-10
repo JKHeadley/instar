@@ -246,6 +246,39 @@ describe('PostUpdateMigrator — slack-reply.sh 408 migration', () => {
     await migrator.migrate();
     expect(fs.existsSync(scriptPath)).toBe(false);
   });
+
+  it('refreshes a 408+auth-current slack-reply.sh that LACKS the thread_ts feature marker (§5.3 parity)', async () => {
+    // A script that already has 408 + auth-env handling but predates the thread_ts
+    // argument. Without the migration it would mis-parse `CHANNEL_ID THREAD_TS …`.
+    const CURRENT_BUT_NO_THREAD = `#!/usr/bin/env bash
+# slack-reply.sh — Send a message to a Slack channel via the instar server.
+CHANNEL_ID="$1"
+shift
+MESSAGE="$*"
+AUTH="\${INSTAR_AUTH_TOKEN:-}"
+RESPONSE=$(curl -s -w "\\n%{http_code}" -X POST "http://localhost:4042/slack/reply/\${CHANNEL_ID}" -d "{\\"text\\":\\"$MESSAGE\\"}")
+HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+if [ "$HTTP_CODE" = "200" ]; then echo "Sent"; elif [ "$HTTP_CODE" = "408" ]; then echo "AMBIGUOUS"; else echo "Failed" >&2; exit 1; fi
+`;
+    fs.writeFileSync(scriptPath, CURRENT_BUT_NO_THREAD, { mode: 0o755 });
+    const migrator = createMigrator(projectDir);
+    const result = await migrator.migrate();
+
+    const updated = fs.readFileSync(scriptPath, 'utf-8');
+    expect(updated).toContain('slack-reply-feature: thread-ts-arg');
+    expect(updated).toContain('THREAD_TS');
+    expect(result.upgraded.some(u => u.includes('slack-reply.sh') && /thread_ts/i.test(u))).toBe(true);
+  });
+
+  it('leaves a fully-current slack-reply.sh (with thread marker) alone', async () => {
+    // The shipped template already has 408 + auth + the thread marker → skip.
+    const template = fs.readFileSync('src/templates/scripts/slack-reply.sh', 'utf-8');
+    fs.writeFileSync(scriptPath, template, { mode: 0o755 });
+    const migrator = createMigrator(projectDir);
+    const result = await migrator.migrate();
+    expect(fs.readFileSync(scriptPath, 'utf-8')).toBe(template);
+    expect(result.skipped.some(s => s.includes('slack-reply.sh'))).toBe(true);
+  });
 });
 
 describe('PostUpdateMigrator — whatsapp-reply.sh 408 migration', () => {

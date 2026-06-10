@@ -9,10 +9,18 @@
 
 import { EventEmitter } from 'node:events';
 import type { AgentFingerprint, RelayClientConfig, MessageEnvelope } from '../relay/types.js';
+import { RELAY_ERROR_CODES } from '../relay/types.js';
 import { IdentityManager, type IdentityInfo } from './IdentityManager.js';
 import { MessageEncryptor, type PlaintextMessage } from './MessageEncryptor.js';
 import { RelayClient } from './RelayClient.js';
 import { DEFAULT_RELAY_URL } from '../constants.js';
+
+/**
+ * Cooldown for the offline-triggered re-discovery in resolveAgent (§C of
+ * docs/specs/threadline-duplicate-identity-resolution.md). Bounds how often a
+ * burst of sends to offline targets can re-query the rate-limited relay.
+ */
+const REDISCOVER_COOLDOWN_MS = 30_000;
 
 export interface ThreadlineClientConfig {
   name: string;
@@ -32,6 +40,14 @@ export interface KnownAgent {
   framework?: string;
   capabilities?: string[];
   lastSeen?: string;
+  /**
+   * Live presence as of the most recent discover_result, mapped from the relay's
+   * per-agent `status` (which the relay derives from live presence, not a stale DB
+   * column). Used by findAgentByName to prefer the live registration among same-name
+   * rows. `undefined` when liveness is unknown (e.g. a hand-registered keyed entry
+   * that never came through discovery).
+   */
+  online?: boolean;
 }
 
 export interface ReceivedMessage {
@@ -82,6 +98,11 @@ export class ThreadlineClient extends EventEmitter {
    * Process-local; never persisted.
    */
   private readonly lastThreadByPeer = new Map<AgentFingerprint, ClientAffinityEntry>();
+  /**
+   * Per-name cooldown for the offline-triggered re-discovery (§C). Keyed by
+   * lowercased name → last re-discovery timestamp. Process-local; never persisted.
+   */
+  private readonly lastRediscoverByName = new Map<string, number>();
   /** Test seam: override `Date.now()` for deterministic TTL tests. */
   private readonly nowFn: () => number;
 
@@ -181,11 +202,8 @@ export class ThreadlineClient extends EventEmitter {
       this.emit('error', err);
     });
 
-    this.relayClient.on('discover-result', (result: { agents: KnownAgent[] }) => {
-      // Update known agents
-      for (const agent of result.agents) {
-        this.knownAgents.set(agent.agentId, agent);
-      }
+    this.relayClient.on('discover-result', (result: { agents: Array<KnownAgent & { status?: 'online' | 'offline' }> }) => {
+      this.ingestDiscoveredAgents(result.agents);
       this.emit('discover-result', result);
     });
 
@@ -322,16 +340,39 @@ export class ThreadlineClient extends EventEmitter {
     if (!this.relayClient) throw new Error('Not connected');
 
     return new Promise((resolve) => {
-      const handler = (result: { agents: KnownAgent[] }) => {
-        this.relayClient!.removeListener('discover-result', handler);
+      let settled = false;
+      let timer: ReturnType<typeof setTimeout>;
+      const cleanup = () => {
+        this.relayClient?.removeListener('discover-result', onResult);
+        this.relayClient?.removeListener('error', onError);
+        clearTimeout(timer);
+      };
+      const onResult = (result: { agents: KnownAgent[] }) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
         resolve(result.agents);
       };
-      this.relayClient!.on('discover-result', handler);
+      // Early-resolve ONLY on a rate-limit error. The 'error' event is shared by all
+      // error frames (e.g. a concurrent send's RECIPIENT_OFFLINE), so we MUST filter on
+      // the code or discover() could spuriously resolve [] on an unrelated error and
+      // mask a real result. On rate-limit, fail fast instead of hanging to the timeout.
+      const onError = (frame: { code?: string }) => {
+        if (frame?.code !== RELAY_ERROR_CODES.RATE_LIMITED) return;
+        if (settled) return;
+        settled = true;
+        cleanup();
+        resolve([]);
+      };
+      this.relayClient!.on('discover-result', onResult);
+      this.relayClient!.on('error', onError);
       this.relayClient!.discover(filter);
 
       // Timeout after 10 seconds
-      setTimeout(() => {
-        this.relayClient?.removeListener('discover-result', handler);
+      timer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        cleanup();
         resolve([]);
       }, 10_000);
     });
@@ -354,9 +395,23 @@ export class ThreadlineClient extends EventEmitter {
 
     // 3. Name match in cache (case-insensitive)
     const byName = this.findAgentByName(name, fingerprintPrefix);
-    if (byName) return byName.agentId;
+    if (byName) {
+      // If the cache resolved to an OFFLINE agent, it may be a stale dead twin (the
+      // duplicate-identity case that silently drops). Re-discover once — cooldown-gated
+      // so a burst of offline-target sends can't exhaust the relay's discovery budget —
+      // so a live twin can supersede it, then re-resolve. A still-offline result is
+      // returned as-is (preserve offline-queue semantics — do NOT 404 a legitimately
+      // offline peer); a now-ambiguous (≥2 online) re-resolve propagates its throw.
+      if (byName.online === false && this.relayClient && this.canRediscover(name)) {
+        this.markRediscover(name);
+        await this.autoDiscover();
+        const fresh = this.findAgentByName(name, fingerprintPrefix);
+        if (fresh) return fresh.agentId;
+      }
+      return byName.agentId;
+    }
 
-    // 4. Re-discover and try again
+    // 4. Cache miss — re-discover and try again
     if (this.relayClient) {
       await this.autoDiscover();
       const byNameRetry = this.findAgentByName(name, fingerprintPrefix);
@@ -409,13 +464,19 @@ export class ThreadlineClient extends EventEmitter {
         // No match for the given prefix
         return undefined;
       }
+      // Online-preference: if EXACTLY one same-name row is live, resolve to it (the
+      // live-vs-dead twin case — the duplicate-identity silent-drop fix). Two live
+      // same-name rows (multi-machine two-keys, or an impostor staying online) stay
+      // ambiguous and surface below — we never silently pick among live registrations.
+      const onlinePick = this.pickSingleOnline(exactMatches);
+      if (onlinePick) return onlinePick;
       // Ambiguous — throw with helpful info
       const options = exactMatches.map(a =>
         `  ${a.name}:${a.agentId.substring(0, 8)} (${a.agentId})`
       ).join('\n');
       throw new Error(
         `Ambiguous agent name "${name}" — ${exactMatches.length} agents share this name. ` +
-        `Use "name:fingerprint" syntax to disambiguate:\n${options}`
+        `Use "name:fingerprint" syntax (or a saved nickname) to disambiguate:\n${options}`
       );
     }
 
@@ -433,16 +494,61 @@ export class ThreadlineClient extends EventEmitter {
         if (match) return match;
         return undefined;
       }
+      // Online-preference applies identically to the partial-match branch.
+      const onlinePick = this.pickSingleOnline(partialMatches);
+      if (onlinePick) return onlinePick;
       const options = partialMatches.map(a =>
         `  ${a.name}:${a.agentId.substring(0, 8)} (${a.agentId})`
       ).join('\n');
       throw new Error(
         `Ambiguous agent name "${name}" — ${partialMatches.length} agents match. ` +
-        `Use "name:fingerprint" syntax to disambiguate:\n${options}`
+        `Use "name:fingerprint" syntax (or a saved nickname) to disambiguate:\n${options}`
       );
     }
 
     return undefined;
+  }
+
+  /**
+   * Among same-name matches, return the single live one — or undefined if zero, or
+   * more than one, is online. Lets the resolver prefer the live registration over a
+   * dead twin while keeping a genuinely-ambiguous (≥2 live) resolution explicit.
+   */
+  private pickSingleOnline(matches: KnownAgent[]): KnownAgent | undefined {
+    const online = matches.filter(a => a.online === true);
+    return online.length === 1 ? online[0] : undefined;
+  }
+
+  /**
+   * Merge discovered agents into the knownAgents cache. MERGE, never replace:
+   * discover_result frames are keyless (no publicKey/x25519PublicKey — see
+   * relay/types.ts DiscoverResultFrame), so a plain set() would strip crypto keys from
+   * a previously-keyed entry and silently regress E2E send() for that peer to plaintext.
+   * Preserve existing keys when the frame omits them, and map the frame's live-presence
+   * `status` onto `online` so findAgentByName can prefer the live registration.
+   */
+  private ingestDiscoveredAgents(agents: Array<KnownAgent & { status?: 'online' | 'offline' }>): void {
+    for (const agent of agents) {
+      const existing = this.knownAgents.get(agent.agentId);
+      this.knownAgents.set(agent.agentId, {
+        ...existing,
+        ...agent,
+        publicKey: agent.publicKey ?? existing?.publicKey,
+        x25519PublicKey: agent.x25519PublicKey ?? existing?.x25519PublicKey,
+        online: agent.status === 'online',
+      } as KnownAgent);
+    }
+  }
+
+  /** True if the per-name re-discovery cooldown (§C) has elapsed. */
+  private canRediscover(name: string): boolean {
+    const last = this.lastRediscoverByName.get(name.toLowerCase());
+    return last === undefined || (this.nowFn() - last) >= REDISCOVER_COOLDOWN_MS;
+  }
+
+  /** Stamp the per-name re-discovery cooldown. */
+  private markRediscover(name: string): void {
+    this.lastRediscoverByName.set(name.toLowerCase(), this.nowFn());
   }
 
   /**

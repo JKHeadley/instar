@@ -18,6 +18,7 @@ import type { StateManager } from '../core/StateManager.js';
 import { describeTopicPlacement } from '../core/TopicPlacementDescription.js';
 import { buildRelocationNicknameSet } from '../core/RelocationNicknameSet.js';
 import { resolveSelfNickname } from '../core/SelfNicknameResolver.js';
+import { resolveDevAgentGate } from '../core/devAgentGate.js';
 import { planTransferByNickname } from '../core/TransferByNickname.js';
 import type { JobScheduler } from '../scheduler/JobScheduler.js';
 import type { InstarConfig, JobPriority } from '../core/types.js';
@@ -30,6 +31,8 @@ import { reviewWithinBudget } from './outboundGateBudget.js';
 import type { WriteOperation, WriteToken } from '../core/StateWriteAuthority.js';
 import { writeLifelineRestartSignal } from '../core/version-skew.js';
 import { readSessionClocks } from '../core/SessionClockReader.js';
+import { P13_PROTOCOL_VERSION } from '../core/CompletionEvaluator.js';
+import type { StopSignals } from '../core/CompletionEvaluator.js';
 import { CoherenceJournalReader, InvalidCursorError } from '../core/CoherenceJournalReader.js';
 import { creditUsherOnOutbound } from '../core/UsherActedCorrelator.js';
 import { validateWriteToken, canPerformOperation } from '../core/StateWriteAuthority.js';
@@ -217,6 +220,7 @@ import { createThreadlineRoutes } from '../threadline/ThreadlineEndpoints.js';
 import type { UnifiedTrustSystem } from '../threadline/UnifiedTrustWiring.js';
 import { DEFAULT_RELAY_URL } from '../threadline/constants.js';
 import { ThreadlineNicknames } from '../threadline/ThreadlineNicknames.js';
+import { resolvePeerFingerprint, resolvePeerFingerprintByName } from '../threadline/peerFingerprint.js';
 import { ScopeCoherenceTracker } from '../core/ScopeCoherenceTracker.js';
 import type { ScopeCoherenceState } from '../core/ScopeCoherenceTracker.js';
 import type { HookEventReceiver } from '../monitoring/HookEventReceiver.js';
@@ -591,6 +595,9 @@ export interface RouteContext {
   quotaPoller: import('../core/QuotaPoller.js').QuotaPoller | null;
   /** QuotaAwareScheduler (P1.3) — account selection + swap-and-resume guarantee. */
   quotaAwareScheduler: import('../core/QuotaAwareScheduler.js').QuotaAwareScheduler | null;
+  /** ProactiveSwapMonitor (P1.3, pre-limit half) — moves a session off an account
+   *  BEFORE it walls. Optional; the routes report enabled:false when absent. */
+  proactiveSwapMonitor?: import('../core/ProactiveSwapMonitor.js').ProactiveSwapMonitor;
   /** InUseAccountResolver — which pool account the agent is currently running on
    *  (for the dashboard "in use" badge). Optional; the route lazily constructs a
    *  default when absent so it never 503s. */
@@ -780,6 +787,11 @@ export interface RouteContext {
    *  records only). Null/absent when monitoring.correctionLearning.enabled is
    *  false (default) → /corrections 503s. */
   correctionLedger?: import('../monitoring/CorrectionLedger.js').CorrectionLedger | null;
+  /** GrowthMilestoneAnalyst — the proactive growth & milestone analyst. Null/absent
+   *  when monitoring.growthAnalyst.enabled is false (default, ships dark) →
+   *  /growth/* 503s. Powers GET /growth/digest, GET /growth/findings,
+   *  GET /growth/status, POST /growth/tick. */
+  growthMilestoneAnalyst?: import('../monitoring/GrowthMilestoneAnalyst.js').GrowthMilestoneAnalyst | null;
   /** Apprenticeship Program registry + lifecycle gates (Apprenticeship Step 1).
    *  Null when stateDir is unavailable → /apprenticeship/* 503s. Powers the
    *  instance-as-project registry, the retro-gate (pending→active) and the
@@ -3595,6 +3607,29 @@ export function createRoutes(ctx: RouteContext): Router {
     res.status(stopped ? 200 : 404).json({ ok: stopped, topic });
   });
 
+  // Parse the optional, backward-compatible `signals` (+ `stopKind`) object the
+  // completion-discipline stop-hook sends (AUTONOMOUS-COMPLETION-DISCIPLINE.md
+  // §2b.4 surface 2). Unknown/absent → undefined, so the evaluator omits the
+  // OBJECTIVE-SIGNALS block and an OLD hook gets the identical verdict.
+  const parseStopSignals = (body: unknown): StopSignals | undefined => {
+    if (!body || typeof body !== 'object') return undefined;
+    const raw = (body as Record<string, unknown>).signals;
+    if (!raw || typeof raw !== 'object') return undefined;
+    const s = raw as Record<string, unknown>;
+    const out: StopSignals = {};
+    if (typeof s.completionConditionMet === 'boolean') out.completionConditionMet = s.completionConditionMet;
+    if (typeof s.uncheckedTaskCount === 'number' && Number.isFinite(s.uncheckedTaskCount)) out.uncheckedTaskCount = s.uncheckedTaskCount;
+    if (s.taskStructure === 'has-tasks' || s.taskStructure === 'indeterminate') out.taskStructure = s.taskStructure;
+    if (typeof s.milestoneRationalizationDetected === 'boolean') out.milestoneRationalizationDetected = s.milestoneRationalizationDetected;
+    if (typeof s.injectionSuspected === 'boolean') out.injectionSuspected = s.injectionSuspected;
+    // stopKind may arrive either inside signals or as a sibling field of the body.
+    const stopKind = s.stopKind ?? (body as Record<string, unknown>).stopKind;
+    if (stopKind === 'hard-blocker') out.stopKind = 'hard-blocker';
+    // Only return an object when at least one field is set, so a `{signals:{}}`
+    // payload still behaves like no-signals (byte-identical prompt).
+    return Object.keys(out).length > 0 ? out : undefined;
+  };
+
   // Independent completion judge for the autonomous stop-hook (mirrors /goal):
   // given a verifiable condition + the recent transcript, decide met/not-met.
   // The hook treats 503/unreachable as "keep working" (fail-safe — never a false done).
@@ -3612,6 +3647,7 @@ export function createRoutes(ctx: RouteContext): Router {
       const verdict = await ctx.completionEvaluator.evaluate(
         condition,
         typeof transcriptTail === 'string' ? transcriptTail : '',
+        parseStopSignals(req.body),
       );
       res.json(verdict);
     } catch (err) {
@@ -3620,23 +3656,30 @@ export function createRoutes(ctx: RouteContext): Router {
   });
 
   // P13 "The Stop Reason Is the Work" guard for the autonomous stop-hook: given the
-  // recent transcript, decide whether a stop-attempt is EARNED or rests on a
-  // judgment-call / needs-real-engineering deferral. Fail-open: the hook treats
-  // 503/unreachable/error and stopAllowed:true as permit — a SECONDARY guard must
-  // never trap a genuine completion (the completion check is the primary authority).
+  // recent transcript (+ optional objective signals), decide whether a stop-attempt
+  // is EARNED or rests on a judgment-call / needs-real-engineering deferral, and —
+  // on a `stopKind:'hard-blocker'` request — classify the blocker external-vs-buildable.
+  // Fail-open: the hook treats 503/unreachable/error and stopAllowed:true as permit —
+  // a SECONDARY guard must never trap a genuine completion (the completion check is the
+  // primary authority).
+  //
+  // Every response (allow / block / error / 503) carries `p13ProtocolVersion` so a
+  // newer hook can tell a NEW server from a structurally-OLD one even when the verdict
+  // itself is missing (a timeout). Spec §2b.4 surface 5 + §5 version-skew detection.
   router.post('/autonomous/evaluate-stop', async (req, res) => {
     if (!ctx.completionEvaluator) {
-      res.status(503).json({ error: 'No completion evaluator (IntelligenceProvider not configured)' });
+      res.status(503).json({ error: 'No completion evaluator (IntelligenceProvider not configured)', p13ProtocolVersion: P13_PROTOCOL_VERSION });
       return;
     }
     const { transcriptTail } = req.body ?? {};
     try {
       const verdict = await ctx.completionEvaluator.evaluateStopRationale(
         typeof transcriptTail === 'string' ? transcriptTail : '',
+        parseStopSignals(req.body),
       );
-      res.json(verdict);
+      res.json({ ...verdict, p13ProtocolVersion: P13_PROTOCOL_VERSION });
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err), p13ProtocolVersion: P13_PROTOCOL_VERSION });
     }
   });
 
@@ -5207,6 +5250,61 @@ export function createRoutes(ctx: RouteContext): Router {
     res.json({ ...summary, features });
   });
 
+  // ── GrowthMilestoneAnalyst (the proactive growth & milestone analyst) ──────
+  // Read-only observability over the maturity/initiative/spec/correction
+  // surfaces. The analyst ships DARK (monitoring.growthAnalyst.enabled false) —
+  // when off, ctx.growthMilestoneAnalyst is null and every route 503s. POST
+  // /growth/tick only runs the OBSERVE + COMPUTE pass (updates the stage journal,
+  // returns the digest); it never sends to Telegram in this slice.
+  // Spec: docs/specs/PROACTIVE-GROWTH-MILESTONE-ANALYST-SPEC.md
+  router.get('/growth/digest', (_req, res) => {
+    if (!ctx.growthMilestoneAnalyst) {
+      res.status(503).json({ error: 'GrowthMilestoneAnalyst not initialized (monitoring.growthAnalyst.enabled is false)' });
+      return;
+    }
+    try {
+      res.json(ctx.growthMilestoneAnalyst.buildDigest());
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+  router.get('/growth/findings', (_req, res) => {
+    if (!ctx.growthMilestoneAnalyst) {
+      res.status(503).json({ error: 'GrowthMilestoneAnalyst not initialized (monitoring.growthAnalyst.enabled is false)' });
+      return;
+    }
+    try {
+      res.json({ findings: ctx.growthMilestoneAnalyst.computeFindings() });
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+  router.get('/growth/status', (_req, res) => {
+    if (!ctx.growthMilestoneAnalyst) {
+      res.status(503).json({ error: 'GrowthMilestoneAnalyst not initialized (monitoring.growthAnalyst.enabled is false)' });
+      return;
+    }
+    try {
+      res.json(ctx.growthMilestoneAnalyst.getStatus());
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+  router.post('/growth/tick', (_req, res) => {
+    if (!ctx.growthMilestoneAnalyst) {
+      res.status(503).json({ error: 'GrowthMilestoneAnalyst not initialized (monitoring.growthAnalyst.enabled is false)' });
+      return;
+    }
+    try {
+      res.json(ctx.growthMilestoneAnalyst.buildDigest());
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
   // Learning-velocity metric (EXO 3.0 — Salim Ismail, "Your KPI System Is
   // Training You to Miss the Future"): measure how fast the org is LEARNING
   // (adaptability, experimentation, capability creation) rather than backward-
@@ -5584,6 +5682,64 @@ export function createRoutes(ctx: RouteContext): Router {
       return;
     }
     res.json({ revoked: true, mandate: m });
+  });
+
+  // Add user→agent authority grant(s) to a mandate — PIN-GATED (the same human-
+  // authenticated surface as issuance; an agent's Bearer token cannot mint a grant).
+  // Re-signs the mandate so `authProof` covers the new grant(s); each grant decision
+  // (accepted or rejected) lands in the SAME hash-chained MandateAudit. The grant rides
+  // the signed, expiring, revocable mandate model — deny-by-default is inherited.
+  // Design: docs/specs/SLACK-ORG-INTEGRATION-SPEC.md (floor grants) + coordination-mandate.md.
+  router.post('/mandate/:id/grants', (req, res) => {
+    if (!ctx.coordination) {
+      res.status(503).json({ error: 'coordination mandate engine unavailable (no stateDir or init failed)' });
+      return;
+    }
+    if (!checkMandatePin(req, res)) return;
+    const b = req.body ?? {};
+    // Accept either a single grant or an array.
+    const rawGrants = Array.isArray(b.grants) ? b.grants : (b.grant ? [b.grant] : []);
+    if (!Array.isArray(rawGrants) || rawGrants.length === 0) {
+      res.status(400).json({ error: 'grants (array) or grant (object) is required' });
+      return;
+    }
+    // Shallow shape check at the boundary; MandateStore.addGrants is the authoritative
+    // validator (incl. the expiresAt <= mandate.expiresAt clamp).
+    const grants = rawGrants.map((g: any) => ({
+      floorAction: typeof g?.floorAction === 'string' ? g.floorAction : '',
+      grantedTo: typeof g?.grantedTo === 'string' ? g.grantedTo : '',
+      authorizedBy: typeof g?.authorizedBy === 'string' ? g.authorizedBy : '',
+      expiresAt: typeof g?.expiresAt === 'string' ? g.expiresAt : '',
+      ...(g?.bounds && typeof g.bounds === 'object' ? { bounds: g.bounds } : {}),
+    }));
+
+    const result = ctx.coordination.store.addGrants(req.params.id, grants);
+    if (!result.ok) {
+      // Audit the rejection so a refused grant is reconstructable too.
+      for (const g of grants) {
+        ctx.coordination.audit.record({
+          mandateId: req.params.id,
+          agentFp: g.grantedTo || 'unknown',
+          action: `grant-floor:${g.floorAction || 'unknown'}`,
+          decision: 'deny',
+          reason: `grant rejected: ${result.reason}`,
+        });
+      }
+      const status = result.reason === 'mandate not found' ? 404 : 400;
+      res.status(status).json({ error: result.reason });
+      return;
+    }
+    // Audit each accepted grant.
+    for (const g of grants) {
+      ctx.coordination.audit.record({
+        mandateId: req.params.id,
+        agentFp: g.grantedTo,
+        action: `grant-floor:${g.floorAction}`,
+        decision: 'allow',
+        reason: `grant signed by ${g.authorizedBy} until ${g.expiresAt}`,
+      });
+    }
+    res.status(201).json({ granted: true, mandate: { ...result.mandate, authorshipValid: ctx.coordination.store.verifyAuthorship(result.mandate) } });
   });
 
   // ── ReviewExchange — autonomous code-review protocol (coordination-mandate spec §7 G2.3) ──
@@ -7781,9 +7937,16 @@ export function createRoutes(ctx: RouteContext): Router {
         });
       }
 
-      // Track for promise detection (detect "give me a minute" patterns)
+      // Track for promise detection (detect "give me a minute" patterns).
+      // Thread→session (§5.3): when this reply targets a thread, the session is
+      // registered on the thread routing key — resolve it so promise tracking finds
+      // the right session. Falls back to the channel key (today's behavior).
       if (ctx.slack.trackPromise) {
-        const sessionName = ctx.slack.getSessionForChannel(channelId);
+        const routingKey = thread_ts
+          ? ctx.slack.resolveRoutingKey(channelId, thread_ts as string)
+          : channelId;
+        const sessionName = ctx.slack.getSessionForChannel(routingKey)
+          ?? ctx.slack.getSessionForChannel(channelId);
         if (sessionName) {
           ctx.slack.trackPromise(channelId, sessionName, text);
         }
@@ -13156,7 +13319,7 @@ export function createRoutes(ctx: RouteContext): Router {
       const configPath = path.join(ctx.config.projectDir, '.instar', 'config.json');
       const { BootSelfKnowledge, DEFAULT_MAX_BYTES } = await import('../core/BootSelfKnowledge.js');
       const freshFlags = readSelfKnowledgeFlags(configPath);
-      const enabled = freshFlags.enabled ?? Boolean(ctx.config.developmentAgent);
+      const enabled = resolveDevAgentGate(freshFlags.enabled, ctx.config);
       if (!enabled) {
         res.status(503).json({ error: 'self-knowledge session-context disabled' });
         return;
@@ -14493,6 +14656,184 @@ export function createRoutes(ctx: RouteContext): Router {
     res.json(ctx.adaptiveTrust.getProfile());
   });
 
+  // GET /permissions/decisions — observe-only Slack permission gate decision ledger.
+  // Read surface for measuring the gate's verdicts (and FP-rate) before enforcement.
+  // Design: docs/specs/SLACK-ORG-INTEGRATION-SPEC.md §6.10, §11.
+  router.get('/permissions/decisions', async (req, res) => {
+    try {
+      const limit = Math.min(Number(req.query.limit) || 100, 1000);
+      const { PermissionDecisionLedger } = await import('../permissions/index.js');
+      const ledger = new PermissionDecisionLedger(ctx.config.stateDir);
+      res.json({ decisions: ledger.readRecent(limit) });
+    } catch (e) {
+      res.status(500).json({ error: (e as Error).message });
+    }
+  });
+
+  // GET /permissions/ambient-stats — read-only snapshot of the ambient "should I
+  // speak?" gate's bounded in-memory observability aggregate (per-channel
+  // evaluated/spoke/silent/near-miss counts + a bounded ring of recent near-miss
+  // silences). This is what makes a WRONGFUL SILENCE measurable: the speak-path log
+  // alone only records when the agent SPOKE, so the ambient FP-rate (wrongful
+  // silences) was previously invisible during the observe-only live test. Signal-only:
+  // reading it never changes any speak/silence decision; it creates no Telegram/topic
+  // side-effect (so it can never flood). Returns { present: false } when no ambient
+  // gate is attached (the default — no channel opted in, gate stays dark).
+  // Design: docs/specs/SLACK-ORG-INTEGRATION-SPEC.md §5.2, §6.10, §11.
+  router.get('/permissions/ambient-stats', (req, res) => {
+    try {
+      const stats = ctx.slack?.getAmbientStats?.() ?? null;
+      if (!stats) {
+        return res.json({ present: false, reason: 'no-ambient-gate-attached' });
+      }
+      res.json({ present: true, stats });
+    } catch (e) {
+      res.status(500).json({ error: (e as Error).message });
+    }
+  });
+
+  // GET /permissions/baselines — read-only view of the Pillar 3 behavioral baselines.
+  // Returns per-principal SHAPE aggregates (action repertoire, tier/hour histograms,
+  // coarse length stats) — NEVER message content. Inspection surface for the
+  // relationship-aware anomaly second factor. Design: SLACK-ORG-INTEGRATION-SPEC.md §7.
+  router.get('/permissions/baselines', async (req, res) => {
+    try {
+      const { RelationshipBehaviorStore } = await import('../permissions/index.js');
+      const store = new RelationshipBehaviorStore(ctx.config.stateDir);
+      const slackUserId = typeof req.query.slackUserId === 'string' ? req.query.slackUserId : undefined;
+      if (slackUserId) {
+        const profile = store.profileFor(slackUserId);
+        return res.json({ baseline: profile ?? null });
+      }
+      res.json({ baselines: store.all() });
+    } catch (e) {
+      res.status(500).json({ error: (e as Error).message });
+    }
+  });
+
+  // ── Slack org permission registration (Phase 1) ──────────────────────
+  // Conversational registration's programmatic surface: admin-register, list
+  // pending self-registration requests, approve/deny. See SLACK-ORG-INTEGRATION-SPEC.md §6.3.
+  async function buildSlackRegistry() {
+    const { SlackUserRegistry } = await import('../permissions/index.js');
+    const { UserManager } = await import('../users/UserManager.js');
+    const um = new UserManager(ctx.config.stateDir, ctx.config.users);
+    // Wrap UserManager as the registry's minimal store; upsert via addUserInteractive
+    // so the created profile gets proper defaults (preferences, timestamps, etc.).
+    const store = {
+      resolveFromSlackUserId: (id: string) => um.resolveFromSlackUserId(id),
+      upsertUser: (p: { id: string; name: string }) => { um.addUserInteractive(p as never); },
+    };
+    return new SlackUserRegistry(store as never, ctx.config.stateDir);
+  }
+
+  router.get('/permissions/registrations/pending', async (_req, res) => {
+    try {
+      const reg = await buildSlackRegistry();
+      res.json({ pending: reg.listPending() });
+    } catch (e) {
+      res.status(500).json({ error: (e as Error).message });
+    }
+  });
+
+  router.post('/permissions/registrations/register', async (req, res) => {
+    try {
+      const { slackUserId, displayName, role } = req.body || {};
+      if (!slackUserId || !role) return res.status(400).json({ error: 'slackUserId and role are required' });
+      const reg = await buildSlackRegistry();
+      res.json({ registered: true, profile: reg.register(slackUserId, displayName || slackUserId, role) });
+    } catch (e) {
+      res.status(400).json({ error: (e as Error).message });
+    }
+  });
+
+  router.post('/permissions/registrations/approve', async (req, res) => {
+    try {
+      const { slackUserId, role } = req.body || {};
+      if (!slackUserId || !role) return res.status(400).json({ error: 'slackUserId and role are required' });
+      const reg = await buildSlackRegistry();
+      res.json({ approved: true, profile: reg.approve(slackUserId, role) });
+    } catch (e) {
+      res.status(400).json({ error: (e as Error).message });
+    }
+  });
+
+  router.post('/permissions/registrations/deny', async (req, res) => {
+    try {
+      const { slackUserId } = req.body || {};
+      if (!slackUserId) return res.status(400).json({ error: 'slackUserId is required' });
+      const reg = await buildSlackRegistry();
+      res.json({ denied: reg.deny(slackUserId) });
+    } catch (e) {
+      res.status(400).json({ error: (e as Error).message });
+    }
+  });
+
+  // GET /permissions/scenario-suite — run the deterministic permission demonstration
+  // (Pillar 4 Layer-A): the worked-example rows with expected vs actual verdict.
+  // This is the gate-direct (logic-only) view: it proves each row's DECISION.
+  router.get('/permissions/scenario-suite', async (req, res) => {
+    try {
+      const { runScenarioSuite } = await import('../permissions/testing/SlackScenarioHarness.js');
+      const results = await runScenarioSuite();
+      res.json({
+        summary: {
+          total: results.length,
+          passed: results.filter((r) => r.pass).length,
+          failed: results.filter((r) => !r.pass).length,
+        },
+        rows: results.map((r) => ({
+          id: r.scenario.id,
+          principal: r.scenario.principal.name,
+          role: r.scenario.principal.role,
+          request: r.scenario.text,
+          directed: r.scenario.directed,
+          expected: `${r.scenario.expectedDecision}/${r.scenario.expectedBasis}`,
+          got: `${r.verdict.decision}/${r.verdict.basis}`,
+          message: r.verdict.message || undefined,
+          pass: r.pass,
+          proves: r.scenario.proves,
+        })),
+      });
+    } catch (e) {
+      res.status(500).json({ error: (e as Error).message });
+    }
+  });
+
+  // POST /permissions/scenario-suite/run — the AUDIT-ASSERTING demonstration
+  // (Pillar 4 milestone 4, "verified, not narrated", §8.4). Drives every row through
+  // the SAME observer the live SlackAdapter._handleMessage calls (resolver → gate →
+  // decision ledger), then asserts BOTH the verdict AND that the matching audit/ledger
+  // entry actually landed. Read-only/dev: it writes only into a throwaway temp state
+  // dir (never ctx.config.stateDir) and mutates nothing in the running agent.
+  // A green run (failed:0) is the executable, self-verified proof.
+  router.post('/permissions/scenario-suite/run', async (_req, res) => {
+    try {
+      const { runAuditedScenarioSuite } = await import('../permissions/testing/SlackScenarioHarness.js');
+      const report = await runAuditedScenarioSuite();
+      res.json({
+        summary: report.summary,
+        ledgerPath: report.ledgerPath,
+        rows: report.rows.map((r) => ({
+          id: r.scenario.id,
+          principal: r.scenario.principal.name,
+          role: r.scenario.principal.role,
+          request: r.scenario.text,
+          directed: r.scenario.directed,
+          expected: `${r.scenario.expectedDecision}/${r.scenario.expectedBasis}`,
+          got: r.verdict ? `${r.verdict.decision}/${r.verdict.basis}` : 'null',
+          verdictOk: r.verdictOk,
+          auditOk: r.auditOk,
+          pass: r.pass,
+          mismatch: r.mismatch,
+          proves: r.scenario.proves,
+        })),
+      });
+    } catch (e) {
+      res.status(500).json({ error: (e as Error).message });
+    }
+  });
+
   // GET /trust/summary — compact trust summary
   router.get('/trust/summary', (req, res) => {
     if (!ctx.adaptiveTrust) {
@@ -15767,6 +16108,34 @@ export function createRoutes(ctx: RouteContext): Router {
     }
   });
 
+  // P1.3 (pre-limit half) — proactive swap status + on-demand check. The monitor
+  // moves a session OFF an account BEFORE it walls (vs. the reactive swap, which
+  // only fires after). Literal segments registered before GET /subscription-pool/:id.
+  // 200 { enabled:false } when the monitor is unwired (dark) — never 503.
+  router.get('/subscription-pool/proactive-swap', (_req, res) => {
+    if (!ctx.proactiveSwapMonitor) {
+      res.json({ enabled: false });
+      return;
+    }
+    res.json({ enabled: true, ...ctx.proactiveSwapMonitor.status() });
+  });
+
+  // Run ONE proactive-swap pass now (the deterministic "show me it works" lever):
+  // refresh the poll if near the wall, then pre-emptively swap at-pressure sessions.
+  // POST so it never collides with GET /subscription-pool/:id.
+  router.post('/subscription-pool/proactive-swap/check', async (_req, res) => {
+    if (!ctx.proactiveSwapMonitor) {
+      res.json({ enabled: false, swapped: [], considered: 0, refreshed: false });
+      return;
+    }
+    try {
+      const result = await ctx.proactiveSwapMonitor.tick();
+      res.json({ enabled: true, ...result });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : 'proactive check failed' });
+    }
+  });
+
   router.get('/subscription-pool/:id', (req, res) => {
     if (!ctx.subscriptionPool) {
       res.status(404).json({ error: 'SubscriptionPool not configured' });
@@ -16242,8 +16611,17 @@ export function createRoutes(ctx: RouteContext): Router {
           // handleInboundMessage is NOT dropped: it runs to completion in the
           // background; its outcome is logged (never surfaced to the closed
           // response), and a failure can't 500 a request that already returned.
+          // LOCAL co-located delivery carries the sender as a NAME in
+          // `from.agent` (the relay path carries a fingerprint). Resolve that
+          // name → the peer's canonical fingerprint via the SAME derivation the
+          // thread owner was recorded with, and pass it as a narrow hint so the
+          // anti-hijack guard compares fingerprint-to-fingerprint instead of
+          // isolating a legitimate reply. Unresolvable → undefined → name-based
+          // fallback (fail-safe). See threadline-local-delivery-fingerprint-attribution.
+          const inboundSenderFingerprint =
+            resolvePeerFingerprintByName(ctx.config.stateDir, envelope.message?.from?.agent) ?? undefined;
           void ctx.threadlineRouter
-            .handleInboundMessage(envelope)
+            .handleInboundMessage(envelope, undefined, { inboundSenderFingerprint })
             .then((threadlineResult) => {
               console.log(
                 `[relay-agent] async handleInboundMessage complete (thread ${envelope.message?.threadId ?? 'none'}): ${JSON.stringify(threadlineResult)}`,
@@ -17261,7 +17639,7 @@ export function createRoutes(ctx: RouteContext): Router {
                   // the anti-hijack guard instead of being false-isolated.
                   await captureOrigin(
                     effectiveThreadId,
-                    localTarget.fingerprint || localTarget.publicKey?.substring(0, 32) || localTarget.name,
+                    resolvePeerFingerprint(localTarget) || localTarget.name,
                     localTarget.name,
                   );
                   // Durable delivery record (A2A-DURABLE-DELIVERY-SPEC.md) —
@@ -17269,7 +17647,7 @@ export function createRoutes(ctx: RouteContext): Router {
                   try {
                     ctx.a2aDeliveryTracker?.recordSent({
                       messageId: msgId,
-                      peerFp: localTarget.fingerprint || localTarget.publicKey?.substring(0, 32) || localTarget.name,
+                      peerFp: resolvePeerFingerprint(localTarget) || localTarget.name,
                       peerName: localTarget.name,
                       threadId: effectiveThreadId,
                       transport: 'local',

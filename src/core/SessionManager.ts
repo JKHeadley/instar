@@ -258,6 +258,17 @@ export class SessionManager extends EventEmitter {
    *  `effectiveBoundIdleKillMinutes` since "idle at prompt" is the healthy waiting state. */
   private topicBindingChecker?: (tmuxSession: string) => string | number | null;
 
+  /**
+   * Subscription-pool pinning resolver (Subscription & Auth Standard). When set,
+   * a new claude-code spawn launches under the returned account's config home
+   * (`CLAUDE_CONFIG_DIR`) and the session is tagged with `subscriptionAccountId`
+   * — which is the linkage auto-swap needs to move a session when its account
+   * hits a quota wall. Null/unset → spawns use the default config exactly as
+   * before (the gate: this stays unset unless `subscriptionPool.pinSessionsToPool`
+   * is enabled, so it is a strict no-op by default). Returns null per-call when
+   * no eligible account exists. */
+  private spawnAccountResolver?: () => { configHome: string; accountId: string } | null;
+
   /** Prompt Gate InputDetector — monitors terminal output for interactive prompts */
   private promptDetector?: InputDetector;
 
@@ -519,6 +530,17 @@ rm()  { "${shimRunner}" rm  "$@"; }
    */
   setTopicBindingChecker(checker: (tmuxSession: string) => string | number | null): void {
     this.topicBindingChecker = checker;
+  }
+
+  /**
+   * Wire the subscription-pool pinning resolver (Subscription & Auth Standard).
+   * Called from server startup ONLY when `subscriptionPool.pinSessionsToPool` is
+   * enabled, so leaving it unwired keeps spawns on the default config (no-op).
+   * The resolver picks the optimal pool account (the scheduler's reset-date /
+   * headroom score) at spawn time and returns its configHome + id, or null.
+   */
+  setSpawnAccountResolver(resolver: () => { configHome: string; accountId: string } | null): void {
+    this.spawnAccountResolver = resolver;
   }
 
   /**
@@ -858,7 +880,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
    * Look up the topic binding for a tmux session from the topic-session registry.
    * Returns null if the session is not bound to any topic.
    */
-  private getTopicBinding(tmuxSession: string): TopicBinding | null {
+  private getTopicBinding(tmuxSession: string, preferTopicId?: number | null): TopicBinding | null {
     if (!this.registryPath) return null;
     try {
       if (!fs.existsSync(this.registryPath)) return null;
@@ -866,19 +888,33 @@ rm()  { "${shimRunner}" rm  "$@"; }
       const topicToSession = registry.topicToSession || {};
       const topicToName = registry.topicToName || {};
 
-      // Reverse lookup: find which topic maps to this session
+      // Reverse lookup: collect ALL topics mapping to this session. Two topics
+      // whose names slug to the same tmux session name COLLIDE here — e.g.
+      // "Initiatives and maturation check-ins" (#21487) and the case-variant
+      // "initiatives and maturation check-ins" (#21624) both produce
+      // `echo-initiatives-and-maturation-check-ins`. With a single-match reverse
+      // lookup that returned the FIRST entry, a legitimate message from the OTHER
+      // colliding topic was blocked by the InputGuard as cross-topic (incident
+      // 2026-06-09: topic 21624 silently unresponsive — every message dropped).
+      const matches: number[] = [];
       for (const [topicIdStr, sessionName] of Object.entries(topicToSession)) {
-        if (sessionName === tmuxSession) {
-          const topicId = parseInt(topicIdStr, 10);
-          return {
-            topicId,
-            topicName: (topicToName[topicIdStr] as string) || `Topic ${topicId}`,
-            channel: 'telegram', // Currently only Telegram uses the registry
-            sessionName: tmuxSession,
-          };
-        }
+        if (sessionName === tmuxSession) matches.push(parseInt(topicIdStr, 10));
       }
-      return null;
+      if (matches.length === 0) return null;
+
+      // Disambiguate on collision: if the incoming message names one of the
+      // colliding topics (preferTopicId, parsed from its [telegram:N] tag),
+      // bind to THAT topic so the provenance check passes. Otherwise fall back
+      // to the first match (single-topic case is unchanged).
+      const topicId = (preferTopicId != null && matches.includes(preferTopicId))
+        ? preferTopicId
+        : matches[0];
+      return {
+        topicId,
+        topicName: (topicToName[String(topicId)] as string) || `Topic ${topicId}`,
+        channel: 'telegram', // Currently only Telegram uses the registry
+        sessionName: tmuxSession,
+      };
     } catch {
       // Registry read failure — fail open (no binding = no check)
       return null;
@@ -1625,6 +1661,16 @@ rm()  { "${shimRunner}" rm  "$@"; }
     // for Codex, the env-allowlist enforcement happens inside Codex CLI's
     // process tree via Spec 12 Rule 1a, not via tmux -e flags (which
     // would be unscrubbed parent inheritance).
+    // Subscription-pool pinning (Subscription & Auth Standard): launch this
+    // claude-code session under a chosen pool account's config home and tag it,
+    // so auto-swap can move it when that account walls. No-op unless the resolver
+    // is wired (pinSessionsToPool enabled) and returns an account.
+    const pinnedAccount = headlessFramework === 'claude-code'
+      ? (this.spawnAccountResolver?.() ?? null)
+      : null;
+    if (pinnedAccount) {
+      headlessSpec.envOverrides.CLAUDE_CONFIG_DIR = pinnedAccount.configHome;
+    }
     const frameworkEnvFlags: string[] = [];
     for (const [k, v] of Object.entries(headlessSpec.envOverrides)) {
       frameworkEnvFlags.push('-e', `${k}=${v}`);
@@ -1699,6 +1745,9 @@ rm()  { "${shimRunner}" rm  "$@"; }
       framework: headlessFramework,
       prompt: options.prompt,
       maxDurationMinutes: options.maxDurationMinutes,
+      // Subscription-pool pinning: tag the session with the account it launched
+      // under, so auto-swap can move it when that account hits a quota wall.
+      ...(pinnedAccount ? { subscriptionAccountId: pinnedAccount.accountId } : {}),
       // Positive-lane observability (june15-headless-spawn-reroute O4): always
       // populated now, so the soak's "zero headless under force" criterion is
       // machine-checkable from GET /sessions. completionMode stays 'exit' (the
@@ -1877,6 +1926,13 @@ rm()  { "${shimRunner}" rm  "$@"; }
     const inheritedPath = process.env.PATH ?? '';
     const shimmedPath = shimDir ? `${shimDir}:${inheritedPath}` : inheritedPath;
 
+    // Subscription-pool pinning (Subscription & Auth Standard): this lane is
+    // always claude-code, so launch under the chosen pool account's config home
+    // and tag the session. No-op unless the resolver is wired + returns an account.
+    const pinnedAccount = this.spawnAccountResolver?.() ?? null;
+    if (pinnedAccount) {
+      launchSpec.envOverrides.CLAUDE_CONFIG_DIR = pinnedAccount.configHome;
+    }
     const frameworkEnvFlags: string[] = [];
     for (const [k, v] of Object.entries(launchSpec.envOverrides)) {
       frameworkEnvFlags.push('-e', `${k}=${v}`);
@@ -1943,6 +1999,9 @@ rm()  { "${shimRunner}" rm  "$@"; }
       framework: 'claude-code',
       prompt: options.prompt,
       maxDurationMinutes: options.maxDurationMinutes,
+      // Subscription-pool pinning: tag with the account this launched under, so
+      // auto-swap can move it when that account hits a quota wall.
+      ...(pinnedAccount ? { subscriptionAccountId: pinnedAccount.accountId } : {}),
       // The reroute's completion contract (spec O1 + O4):
       launchLane: 'rerouted-interactive',
       completionMode: 'pattern',
@@ -2844,7 +2903,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
    * Used for Telegram-driven conversational sessions.
    * Optionally sends an initial message after Claude is ready.
    */
-  async spawnInteractiveSession(initialMessage?: string, name?: string, options?: { telegramTopicId?: number; slackChannelId?: string; resumeSessionId?: string; framework?: IntelligenceFramework; codexLocalProvider?: 'ollama' | 'lmstudio'; defaultModel?: string;
+  async spawnInteractiveSession(initialMessage?: string, name?: string, options?: { telegramTopicId?: number; slackChannelId?: string; slackThreadTs?: string; resumeSessionId?: string; framework?: IntelligenceFramework; codexLocalProvider?: 'ollama' | 'lmstudio'; defaultModel?: string;
     /** Warm-session A2A (claude-code only): pin a deterministic --session-id so an
      *  eviction mid-thread can --resume losslessly (#746). Ignored when resuming. */
     sessionId?: string;
@@ -3009,6 +3068,13 @@ rm()  { "${shimRunner}" rm  "$@"; }
         tmuxArgs.push('-e', `INSTAR_SLACK_CHANNEL=${options.slackChannelId}`);
       }
 
+      // Thread→session (§5.3): when this session belongs to a Slack thread, carry the
+      // thread_ts so the session's reply path can thread its replies. Absent for
+      // channel-level sessions (today's behavior unchanged).
+      if (options?.slackThreadTs) {
+        tmuxArgs.push('-e', `INSTAR_SLACK_THREAD_TS=${options.slackThreadTs}`);
+      }
+
       tmuxArgs.push(...launchSpec.argv);
 
       if (options?.resumeSessionId) {
@@ -3102,7 +3168,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
     originalName: string | undefined,
     initialMessage: string,
     readyTimeout: number,
-    options?: { telegramTopicId?: number; slackChannelId?: string; resumeSessionId?: string },
+    options?: { telegramTopicId?: number; slackChannelId?: string; slackThreadTs?: string; resumeSessionId?: string },
   ): Promise<void> {
     const ready = await this.waitForClaudeReadyWithRetry(tmuxSession, readyTimeout);
     if (ready) {
@@ -3143,6 +3209,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
         resumeSessionId: options.resumeSessionId,
         telegramTopicId: options.telegramTopicId,
         slackChannelId: options.slackChannelId,
+        slackThreadTs: options.slackThreadTs,
       });
 
       // Best-effort tmux cleanup in case a zombie pane survived.
@@ -3160,6 +3227,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
         await this.spawnInteractiveSession(initialMessage, originalName, {
           telegramTopicId: options.telegramTopicId,
           slackChannelId: options.slackChannelId,
+          slackThreadTs: options.slackThreadTs,
         });
         // HONEST LOG (finding 8d300555): the recursive spawn returns BEFORE its
         // own readiness wait + inject complete — "succeeded" here only means
@@ -3618,7 +3686,14 @@ rm()  { "${shimRunner}" rm  "$@"; }
   injectMessage(tmuxSession: string, text: string): boolean {
     // ── Input Guard: Layer 1 + 1.5 (deterministic, synchronous) ──
     if (this.inputGuard) {
-      const binding = this.getTopicBinding(tmuxSession);
+      // Parse the message's own [telegram:N] tag so getTopicBinding can
+      // disambiguate when multiple topics collide onto one tmux session name
+      // (case-variant topic names). Without this, a colliding session binds to
+      // the first-registered topic and legitimate messages from the other topic
+      // are dropped as cross-topic.
+      const tagMatch = text.match(/^\[telegram:(\d+)/);
+      const preferTopicId = tagMatch ? parseInt(tagMatch[1], 10) : null;
+      const binding = this.getTopicBinding(tmuxSession, preferTopicId);
       if (binding) {
         const provenance = this.inputGuard.checkProvenance(text, binding);
 

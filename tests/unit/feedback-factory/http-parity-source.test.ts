@@ -276,16 +276,22 @@ describe('HttpParitySource — fetch timeouts (the 2026-06-05 hang fix)', () => 
 
   it('enforces the total budget between pages (504 before issuing the next page)', async () => {
     let calls = 0;
+    // Robust timing margins (deflake): page 0's fetch (300ms) far exceeds the
+    // 100ms total budget, so page 1 is always refused after it; and the 100ms
+    // budget comfortably exceeds any pre-page-0 setup jitter, so page 0 always
+    // issues (calls === 1). The previous 1ms budget vs 15ms fetch raced setup
+    // jitter on a loaded CI runner — when jitter exceeded 1ms, page 0 itself was
+    // refused and calls === 0.
     const fetchStub: FetchLike = vi.fn(async () => {
       calls++;
-      await new Promise((r) => setTimeout(r, 15));
+      await new Promise((r) => setTimeout(r, 300));
       // always a full page → wants to keep paginating
       return okResponse({
         data: { clusters: [sampleCluster(calls)], feedback: new Array(10).fill({}), dispatches: [] },
         meta: { returned_count: 10 },
       });
     });
-    const source = new HttpParitySource({ baseUrl: 'https://p', token: 't', pageSize: 10, fetchImpl: fetchStub, totalTimeoutMs: 1 });
+    const source = new HttpParitySource({ baseUrl: 'https://p', token: 't', pageSize: 10, fetchImpl: fetchStub, totalTimeoutMs: 100 });
     try {
       await source.prepare();
       throw new Error('expected throw');

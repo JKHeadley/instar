@@ -1,0 +1,15 @@
+{
+  "ts": "2026-06-10T02:01:37.859Z",
+  "slug": "dev-gate-conformance-r6",
+  "suggestedTier": 2,
+  "declaredTier": null,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 66,
+  "causalAutopsy": null,
+  "verdict": "pass"
+}

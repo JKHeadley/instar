@@ -18,6 +18,7 @@ import pc from 'picocolors';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 import { loadConfig, ensureStateDir, detectTmuxPath, detectGeminiPath } from '../core/Config.js';
 import { isNonFatalUncaught, shouldLogStackForUncaught } from '../core/uncaughtExceptionPolicy.js';
+import { resolveDevAgentGate } from '../core/devAgentGate.js';
 import { closeAllSqlite } from '../core/SqliteRegistry.js';
 import { SessionManager } from '../core/SessionManager.js';
 import { StateManager } from '../core/StateManager.js';
@@ -171,6 +172,40 @@ interface FixCommandDeps {
   config: InstarConfig;
   orphanReaper?: OrphanProcessReaper;
   coherenceMonitor?: CoherenceMonitor;
+}
+
+/**
+ * Pure: should the emergency "fix command" gate intercept this message?
+ *
+ * Fix commands ("fix auth", "restart sessions", "clean processes", …) are
+ * mechanical server-side operations that only make sense in the Agent Attention
+ * topic, where the agent posts actionable notifications the user taps to resolve.
+ * In ANY other topic, a message that merely starts with "restart" / "fix " /
+ * "clean " is ordinary conversation ("restart the build", "fix the login page",
+ * "clean up this function") and must route to the session — never be swallowed.
+ *
+ * The previous logic ran this verb test in every topic and, on a non-attention
+ * topic, bounced the message back with "I didn't recognize that command" while
+ * also swallowing it (the gate `return`s). That is exactly why a user trying to
+ * revive a stuck session by typing "restart sessions" in that session's own
+ * topic never reached the session: the gate ate the message and replied with a
+ * help list that even advertised "restart sessions" as valid. Scoping the gate
+ * to the attention topic closes that hole.
+ */
+export function shouldInterceptFixCommand(
+  text: string,
+  topicId: number,
+  attentionTopicId: number | null | undefined,
+): boolean {
+  if (!attentionTopicId || topicId !== attentionTopicId) return false;
+  const cmd = text.trim().toLowerCase();
+  return (
+    cmd.startsWith('fix ') ||
+    cmd.startsWith('clean ') ||
+    cmd.startsWith('restart') ||
+    cmd === 'fix' ||
+    cmd === 'clean'
+  );
 }
 
 /**
@@ -430,6 +465,9 @@ let _sessionRefresh: import('../core/SessionRefresh.js').SessionRefresh | null =
 // Subscription & Auth Standard P1.3 — quota-aware account-swap scheduler. Null
 // until wired (requires SessionRefresh + the subscription pool).
 let _quotaAwareScheduler: import('../core/QuotaAwareScheduler.js').QuotaAwareScheduler | null = null;
+// Subscription & Auth Standard P1.3 — pre-limit proactive swap monitor. Null
+// until wired (requires the scheduler; gated behind subscriptionPool.proactiveSwap).
+let _proactiveSwapMonitor: import('../core/ProactiveSwapMonitor.js').ProactiveSwapMonitor | null = null;
 
 async function spawnSessionForTopic(
   sessionManager: SessionManager,
@@ -1251,6 +1289,11 @@ export function wireTelegramRouting(
   // lose updates between the two in-memory caches). Know Your Principal #898,
   // increment 2e: the polling-path operator auto-bind.
   getTopicOperatorStore?: () => import('../users/TopicOperatorStore.js').TopicOperatorStore | null,
+  // Late-bound resolver for the Agent Attention topic id. The emergency
+  // fix-command gate (below) only fires in that topic; everywhere else a
+  // message starting with restart/fix/clean is normal conversation and must
+  // route to the session instead of being swallowed.
+  getAttentionTopicId?: () => number | null | undefined,
 ): void {
   // Guard: tracks which topic IDs have a spawn in progress.
   // Prevents duplicate concurrent spawns for the same topic when messages
@@ -1364,37 +1407,38 @@ export function wireTelegramRouting(
     // ── Fix commands from notification messages ──────────────────────
     // Handle "fix auth", "clean processes", "restart", etc. directly
     // in the server process — no need to spawn a Claude session for these.
-    if (fixCommandHandler) {
-      const cmdText = text.trim().toLowerCase();
-      const isFixCommand = cmdText.startsWith('fix ') || cmdText.startsWith('clean ') ||
-        cmdText.startsWith('restart') || cmdText === 'fix' || cmdText === 'clean';
-      if (isFixCommand) {
-        (async () => {
-          try {
-            const handled = await fixCommandHandler(topicId, text);
-            if (!handled) {
-              // Not a recognized fix command — fall through to session routing
-              // Re-trigger the normal routing by calling the topic message handler again
-              // Actually, since we can't re-trigger, just send a help message
-              await telegram.sendToTopic(topicId,
-                `I didn't recognize that command. Available fix commands:\n` +
-                `• "fix auth" — Generate an API security token\n` +
-                `• "fix lifeline" — Restart the crash-recovery system\n` +
-                `• "fix shadow" — Remove shadow installation\n` +
-                `• "clean processes" — Kill external Claude processes\n` +
-                `• "restart" — Restart the server\n` +
-                `• "restart sessions" — Restart stuck sessions`
-              );
-            }
-          } catch (err) {
-            console.error(`[telegram] Fix command error:`, err);
+    //
+    // These ONLY apply in the Agent Attention topic. Scoping the gate there
+    // (shouldInterceptFixCommand) is deliberate: previously the verb test ran
+    // in every topic, so a message starting with restart/fix/clean in a normal
+    // conversation was swallowed and bounced back with an "I didn't recognize
+    // that command" help list — which is exactly why typing "restart sessions"
+    // in a stuck session's own topic never reached the session. Outside the
+    // attention topic the message now falls through to session routing below.
+    if (fixCommandHandler && shouldInterceptFixCommand(text, topicId, getAttentionTopicId?.())) {
+      (async () => {
+        try {
+          const handled = await fixCommandHandler(topicId, text);
+          if (!handled) {
+            // In the attention topic, but not a recognized fix command — show help.
             await telegram.sendToTopic(topicId,
-              `Something went wrong while trying to fix that: ${err instanceof Error ? err.message : String(err)}`
-            ).catch(() => {});
+              `I didn't recognize that command. Available fix commands:\n` +
+              `• "fix auth" — Generate an API security token\n` +
+              `• "fix lifeline" — Restart the crash-recovery system\n` +
+              `• "fix shadow" — Remove shadow installation\n` +
+              `• "clean processes" — Kill external Claude processes\n` +
+              `• "restart" — Restart the server\n` +
+              `• "restart sessions" — Restart stuck sessions`
+            );
           }
-        })();
-        return;
-      }
+        } catch (err) {
+          console.error(`[telegram] Fix command error:`, err);
+          await telegram.sendToTopic(topicId,
+            `Something went wrong while trying to fix that: ${err instanceof Error ? err.message : String(err)}`
+          ).catch(() => {});
+        }
+      })();
+      return;
     }
 
     // ── Pipeline-typed routing ──────────────────────────────────────
@@ -2715,7 +2759,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       | undefined;
     {
       const cjCfg = config.multiMachine?.coherenceJournal;
-      const cjEnabled = cjCfg?.enabled ?? !!config.developmentAgent;
+      const cjEnabled = resolveDevAgentGate(cjCfg?.enabled, config);
       if (cjEnabled) {
         try {
           const cjMod = await import('../core/CoherenceJournal.js');
@@ -3170,7 +3214,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       ...(codexThreadlineMcp ? { codexThreadlineMcp } : {}),
       respawnBuildContext: {
         ...(config.sessions.respawnBuildContext ?? {}),
-        enabled: config.sessions.respawnBuildContext?.enabled ?? !!config.developmentAgent,
+        enabled: resolveDevAgentGate(config.sessions.respawnBuildContext?.enabled, config),
       },
       subscriptionPathMode: subscriptionPathCfg?.mode ?? 'off',
       ...(subscriptionPathCfg?.maxRerouted != null ? { subscriptionMaxRerouted: subscriptionPathCfg.maxRerouted } : {}),
@@ -4022,7 +4066,8 @@ export async function startServer(options: StartOptions): Promise<void> {
       wireTelegramRouting(telegram, sessionManager, quotaTracker, topicMemory, userManagerSendOnly,
         (topicId, text) => handleFixCommand(topicId, text, _fixDeps!),
         () => (collaborationSurfacer && conversationStore && telegram) ? { collaborationSurfacer, conversationStore, commitmentTracker, telegram, brief: briefDeps } : null,
-        () => _agentServerRef?.getTopicOperatorStore() ?? null);
+        () => _agentServerRef?.getTopicOperatorStore() ?? null,
+        () => state.get<number>('agent-attention-topic'));
       wireTelegramCallbacks(telegram, sessionManager, state, quotaTracker, undefined, config.sessions.claudePath, topicMemory);
       console.log(pc.green('  Telegram routing + command callbacks wired (send-only)'));
     }
@@ -4162,7 +4207,8 @@ export async function startServer(options: StartOptions): Promise<void> {
       wireTelegramRouting(telegram, sessionManager, quotaTracker, topicMemory, userManager,
         (topicId, text) => handleFixCommand(topicId, text, _fixDeps!),
         () => (collaborationSurfacer && conversationStore && telegram) ? { collaborationSurfacer, conversationStore, commitmentTracker, telegram, brief: briefDeps } : null,
-        () => _agentServerRef?.getTopicOperatorStore() ?? null);
+        () => _agentServerRef?.getTopicOperatorStore() ?? null,
+        () => state.get<number>('agent-attention-topic'));
       wireTelegramCallbacks(telegram, sessionManager, state, quotaTracker, accountSwitcher, config.sessions.claudePath, topicMemory);
 
       // Wire up unknown-user handling (Multi-User Setup Wizard Phase 4.5)
@@ -4579,11 +4625,241 @@ export async function startServer(options: StartOptions): Promise<void> {
         const { SlackAdapter } = await import('../messaging/slack/index.js');
         slackAdapter = new SlackAdapter(slackConfig.config as Record<string, unknown>, config.stateDir);
 
+        // ── Slack org permission gate (Slice 0) — DARK by default ──────────
+        // Attached only when `permissionGate.observeOnly` (or `.enforce`) is set in
+        // the Slack config. Observe-only logs what the gate WOULD decide for every
+        // authorized message and never blocks. See docs/specs/SLACK-ORG-INTEGRATION-SPEC.md.
+        try {
+          const slackCfg = slackConfig.config as Record<string, unknown>;
+          const pgCfg = slackCfg.permissionGate as {
+            observeOnly?: boolean;
+            enforce?: boolean;
+            /**
+             * Judgment-band intent classifier. 'heuristic' (default) keeps the
+             * deterministic keyword classifier; 'llm' uses LlmIntentClassifier above
+             * the deterministic floor (fail-closed to the heuristic on LLM failure).
+             */
+            classifier?: 'heuristic' | 'llm';
+            /**
+             * Relationship-aware anomaly second factor (Pillar 3). DARK by default.
+             * When `relationshipAnomaly.enabled` is true, a durable per-principal
+             * behavioral baseline (RelationshipBehaviorStore) is fed from observed
+             * traffic and the RelationshipAnomalyScorer scores out-of-character
+             * requests — which, on a would-be-allowed FLOOR action, RAISE the verdict
+             * to step-up (OBSERVE-ONLY: logged, never live-challenged yet, §7.6).
+             * `relationshipAnomaly.useLlmStyleCheck` (default false) adds a fail-closed
+             * LLM voice check on top of the deterministic signals.
+             */
+            relationshipAnomaly?: {
+              enabled?: boolean;
+              useLlmStyleCheck?: boolean;
+              stepUpThreshold?: number;
+              /**
+               * Baseline-poisoning resistance knobs (Phase-3 follow-ups #2/#3).
+               * All optional with conservative defaults baked into the store/scorer:
+               *   - minBaselineAgeDays (#3a, default 7): a baseline isn't "established"
+               *     until BOTH a calendar age AND interaction count are met — a burst
+               *     can't manufacture trust.
+               *   - maxObservationsPerWindow (#3b, default 50/day): per-principal cap
+               *     on observations recorded per rolling window — excess is dropped.
+               *   - decayHalfLifeWindows (#2, default 30): recency decay so a recent
+               *     attacker burst can't durably dominate the histogram.
+               *   - bucketMs (default 1 day): the rolling-window length both use.
+               */
+              poisoningResistance?: {
+                minBaselineAgeDays?: number;
+                maxObservationsPerWindow?: number;
+                decayHalfLifeWindows?: number;
+                bucketMs?: number;
+              };
+            };
+          } | undefined;
+          if (pgCfg && (pgCfg.observeOnly || pgCfg.enforce)) {
+            const {
+              SlackPermissionObserver,
+              SlackPrincipalResolver,
+              SlackPermissionGate,
+              PermissionDecisionLedger,
+              RolePolicy,
+              HeuristicIntentClassifier,
+              LlmIntentClassifier,
+              HeuristicAnomalyScorer,
+              RelationshipBehaviorStore,
+              RelationshipAnomalyScorer,
+              MandateBackedGrantStore,
+            } = await import('../permissions/index.js');
+            // Own UserManager instance for verified-principal resolution (the
+            // Telegram-block userManager is out of scope here). Reads users.json.
+            const slackUserManager = new UserManager(config.stateDir, config.users);
+            // ── Floor-action grants are read from the SIGNED Coordination Mandate ──
+            // A MandateStore reader over the SAME file + SAME HMAC sign/verify deps as
+            // the coordination engine in AgentServer (which is constructed later, so we
+            // can't share the instance) — a stateless reader, so a second instance over
+            // the same on-disk mandates is correct. With no stateDir, leave grants
+            // unset (deny-by-default: the gate then refuses every floor action).
+            let grantStore: import('../permissions/index.js').GrantStore | undefined;
+            if (config.stateDir) {
+              try {
+                const { MandateStore } = await import('../coordination/MandateStore.js');
+                const cryptoMod = await import('node:crypto');
+                const issuanceKey = config.authToken || 'mandate-issuance-unsigned-dev-key';
+                const mSign = (canonical: string) => cryptoMod.createHmac('sha256', issuanceKey).update(canonical).digest('hex');
+                const mVerify = (canonical: string, proof: string) => {
+                  const expected = mSign(canonical);
+                  try {
+                    return expected.length === proof.length
+                      && cryptoMod.timingSafeEqual(Buffer.from(expected), Buffer.from(proof));
+                  } catch { /* @silent-fallback-ok — a malformed proof must verify FALSE (deny-safe), never throw */ return false; }
+                };
+                const mandateStore = new MandateStore({
+                  filePath: path.join(config.stateDir, 'state', 'coordination-mandates.json'),
+                  sign: mSign,
+                  verifySig: mVerify,
+                });
+                grantStore = new MandateBackedGrantStore({ store: mandateStore });
+              } catch (ge) {
+                console.warn('[slack] mandate-backed grant store wiring skipped:', (ge as Error).message);
+              }
+            }
+            // ── Judgment-band classifier selection (opt-in, dark by default) ──
+            // Default stays the deterministic HeuristicIntentClassifier. When
+            // `permissionGate.classifier === 'llm'` AND an internal LLM provider is
+            // available, use LlmIntentClassifier for the judgment band ABOVE the
+            // deterministic floor — it fails CLOSED to the heuristic on any LLM
+            // failure (never a silent allow). With 'llm' selected but no provider,
+            // we stay on the heuristic and say so.
+            let intentClassifier: import('../permissions/index.js').IntentClassifier;
+            if (pgCfg.classifier === 'llm') {
+              if (sharedIntelligence) {
+                intentClassifier = new LlmIntentClassifier({ intelligence: sharedIntelligence });
+                console.log('[slack] permission gate using LLM judgment-band intent classifier (fail-closed to heuristic)');
+              } else {
+                intentClassifier = new HeuristicIntentClassifier();
+                console.warn('[slack] permissionGate.classifier=llm requested but no intelligence provider available — staying on heuristic classifier');
+              }
+            } else {
+              intentClassifier = new HeuristicIntentClassifier();
+            }
+            // ── Pillar 3 relationship-aware anomaly second factor (DARK by default) ──
+            // With `relationshipAnomaly.enabled`, wire the durable behavioral baseline
+            // store + the RelationshipAnomalyScorer. The baseline grows from observed
+            // traffic (recorded SHAPE only, never content) via the observer. With the
+            // flag OFF, we keep the placeholder HeuristicAnomalyScorer (urgency-only)
+            // exactly as before — nothing changes.
+            const raCfg = pgCfg.relationshipAnomaly;
+            let anomalyScorer: import('../permissions/index.js').AnomalyScorer = new HeuristicAnomalyScorer();
+            let behaviorStore: import('../permissions/index.js').RelationshipBehaviorStore | undefined;
+            if (raCfg?.enabled && config.stateDir) {
+              const pr = raCfg.poisoningResistance ?? {};
+              behaviorStore = new RelationshipBehaviorStore(
+                config.stateDir,
+                () => new Date().toISOString(),
+                {
+                  // #3b observation-rate cap + #2 decay bucket sizing. Undefined →
+                  // the store's conservative defaults (50/day, 1-day buckets).
+                  maxObservationsPerWindow: pr.maxObservationsPerWindow,
+                  bucketMs: pr.bucketMs,
+                  onCapDrop: (uid, windowStartMs, dropped) => {
+                    console.log(
+                      `[slack] behavior-baseline rate cap: dropped ${dropped} observation(s) for principal in window ${new Date(windowStartMs).toISOString()} (poisoning resistance #3b)`,
+                    );
+                  },
+                },
+              );
+              anomalyScorer = new RelationshipAnomalyScorer(behaviorStore, {
+                useLlmStyleCheck: raCfg.useLlmStyleCheck === true,
+                // Fail-closed LLM style check uses the shared internal provider when present.
+                intelligence: sharedIntelligence ?? undefined,
+                // #3a min-age + #2 decay half-life — undefined → scorer defaults (7d, 30 windows).
+                minBaselineAgeDays: pr.minBaselineAgeDays,
+                decayHalfLifeWindows: pr.decayHalfLifeWindows,
+                bucketMs: pr.bucketMs,
+              });
+              console.log(
+                `[slack] relationship-aware anomaly scorer attached (observe-only baseline; LLM style check ${raCfg.useLlmStyleCheck ? 'ON' : 'off'}; poisoning-resistance: min-age ${pr.minBaselineAgeDays ?? 7}d, rate-cap ${pr.maxObservationsPerWindow ?? 50}/window, decay ${pr.decayHalfLifeWindows ?? 30}w)`,
+              );
+            }
+            const observer = new SlackPermissionObserver({
+              resolver: new SlackPrincipalResolver({
+                resolveFromSlackUserId: (id: string) => slackUserManager.resolveFromSlackUserId(id),
+              }),
+              gate: new SlackPermissionGate({
+                rolePolicy: new RolePolicy(),
+                classifier: intentClassifier,
+                anomalyScorer,
+                grants: grantStore,
+                ...(raCfg?.stepUpThreshold !== undefined ? { stepUpThreshold: raCfg.stepUpThreshold } : {}),
+              }),
+              ledger: new PermissionDecisionLedger(config.stateDir),
+              enforce: pgCfg.enforce === true,
+              behaviorStore,
+            });
+            slackAdapter.setPermissionObserver(observer);
+            console.log(`[slack] permission gate attached (${pgCfg.enforce ? 'ENFORCE' : 'observe-only'})`);
+          }
+        } catch (e) {
+          console.warn('[slack] permission gate wiring skipped:', (e as Error).message);
+        }
+
+        // ── Ambient "should I speak?" gate (considered/ambient mode, §5.2) — DARK ──
+        // Attached ONLY when at least one channel is explicitly opted into proactive
+        // contribution (`ambientContribution.enabledChannelIds` non-empty). With no
+        // such config, no gate is attached and undirected messages drop exactly as
+        // today (mention-only). The gate can only ever make the agent quieter
+        // (fail-to-silence): no LLM provider / error / low confidence / rate-limit →
+        // stay silent.
+        try {
+          const slackCfg = slackConfig.config as Record<string, unknown>;
+          const amCfg = slackCfg.ambientContribution as {
+            enabledChannelIds?: string[];
+            maxProactivePerChannel?: number;
+            windowMs?: number;
+            minConfidence?: number;
+          } | undefined;
+          if (amCfg && Array.isArray(amCfg.enabledChannelIds) && amCfg.enabledChannelIds.length > 0) {
+            const { AmbientContributionGate } = await import('../permissions/index.js');
+            const ambientGate = new AmbientContributionGate({
+              config: {
+                enabledChannelIds: amCfg.enabledChannelIds,
+                maxProactivePerChannel: amCfg.maxProactivePerChannel,
+                windowMs: amCfg.windowMs,
+                minConfidence: amCfg.minConfidence,
+              },
+              // No provider ⇒ the gate stays silent for every message (fail-to-silence).
+              intelligence: sharedIntelligence ?? undefined,
+              onDecision: (decision, channelId) => {
+                if (decision.speak) {
+                  console.log(`[slack] ambient gate: SPEAK in ${channelId} (${decision.reason})`);
+                }
+              },
+            });
+            slackAdapter.setAmbientGate(ambientGate);
+            console.log(`[slack] ambient contribution gate attached for ${amCfg.enabledChannelIds.length} channel(s)${sharedIntelligence ? '' : ' (no LLM provider — gate stays silent)'}`);
+          }
+        } catch (e) {
+          console.warn('[slack] ambient gate wiring skipped:', (e as Error).message);
+        }
+
         // Wire message handler — inject Slack messages into sessions
         slackAdapter.onMessage(async (message) => {
           const channelId = message.channel.identifier;
           const isDM = message.metadata?.isDM as boolean;
           const senderName = message.metadata?.senderName as string || 'User';
+
+          // ── Thread → session routing (§5.3) ──────────────────────────────────
+          // The Slack channelId is ALWAYS the address we talk to the Slack API with
+          // (replies, reactions, history). The session REGISTRY + resume map are
+          // keyed on a routing key that, when thread routing is opted in for this
+          // channel and the message is a reply inside a thread, becomes
+          // `<channelId>:<thread_ts>` — giving that thread its own isolated session,
+          // mirroring Telegram topic→session. Default (no opt-in / no thread_ts):
+          // routingKey === channelId, byte-for-byte today's behavior.
+          const messageTs = message.metadata?.ts as string | undefined;
+          const threadTs = message.metadata?.threadTs as string | undefined;
+          const routingKey = slackAdapter!.resolveRoutingKey(channelId, threadTs, messageTs);
+          const isThreadSession = slackAdapter!.isThreadRoutingKey(routingKey);
+          // The thread_ts to thread replies under (only when this is a thread session).
+          const replyThreadTs = isThreadSession ? threadTs : undefined;
 
           // Sentinel intercept — classify message for emergency stop/pause
           if (sentinel) {
@@ -4598,7 +4874,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                 slackAdapter!.sendToChannel(channelId, '🛑 Emergency stop — all sessions killed.').catch(() => {});
                 return;
               } else if (classification.category === 'pause') {
-                const existingSession = slackAdapter!.getSessionForChannel(channelId);
+                const existingSession = slackAdapter!.getSessionForChannel(routingKey);
                 if (existingSession) {
                   sessionManager.sendKey(existingSession, 'Escape');
                   slackAdapter!.sendToChannel(channelId, '⏸️ Session paused.').catch(() => {});
@@ -4656,9 +4932,16 @@ export async function startServer(options: StartOptions): Promise<void> {
           contextLines.push('CRITICAL: You MUST relay your response back to Slack after responding.');
           contextLines.push('Use the relay script (write ONLY your reply text — do NOT pipe or cat this file into the script):');
           contextLines.push('');
-          contextLines.push(`cat <<'EOF' | .claude/scripts/slack-reply.sh ${channelId}`);
+          // Thread session: pass the thread_ts as the 2nd arg so the reply lands IN
+          // the thread (not the channel root). Channel session: channelId only.
+          const replyTarget = replyThreadTs ? `${channelId} ${replyThreadTs}` : `${channelId}`;
+          contextLines.push(`cat <<'EOF' | .claude/scripts/slack-reply.sh ${replyTarget}`);
           contextLines.push('Your response text here');
           contextLines.push('EOF');
+          if (replyThreadTs) {
+            contextLines.push('');
+            contextLines.push('(This is a THREAD conversation — keep your reply in this thread by passing the thread id shown above as the 2nd argument.)');
+          }
           contextLines.push('');
           contextLines.push('Strip the [slack:] prefix before interpreting the message.');
           contextLines.push('Only relay conversational text — not tool output, file contents, or internal reasoning.');
@@ -4705,8 +4988,8 @@ export async function startServer(options: StartOptions): Promise<void> {
             bootstrapMessage = fullMessage;
           }
 
-          // Check for existing session bound to this channel
-          const existingSession = slackAdapter!.getSessionForChannel(channelId);
+          // Check for existing session bound to this channel/thread (routing key)
+          const existingSession = slackAdapter!.getSessionForChannel(routingKey);
           if (existingSession) {
             // Try to inject into existing session via tmux
             const sessions = sessionManager.listRunningSessions();
@@ -4742,25 +5025,35 @@ export async function startServer(options: StartOptions): Promise<void> {
             console.log(`[slack→session] Session "${existingSession}" died, respawning...`);
           }
 
-          // Check resume map for session continuity
-          const resumeInfo = slackAdapter!.getChannelResume(channelId);
+          // Check resume map for session continuity (keyed on routing key, so a
+          // thread resumes its OWN session and not the channel-root one).
+          const resumeInfo = slackAdapter!.getChannelResume(routingKey);
           const resumeSessionId = resumeInfo?.uuid ?? undefined;
           if (resumeInfo) {
-            slackAdapter!.removeChannelResume(channelId);
+            slackAdapter!.removeChannelResume(routingKey);
           }
 
-          // Route: DMs go to lifeline session, channels spawn new sessions
-          const targetSession = isDM ? 'lifeline' : undefined;
+          // Route: DMs go to lifeline session, channels/threads spawn new sessions.
+          // A thread session NEVER folds into the DM lifeline — it is its own
+          // isolated work session (DMs don't carry thread_ts anyway).
+          const targetSession = (isDM && !isThreadSession) ? 'lifeline' : undefined;
           try {
             const newSessionName = await sessionManager.spawnInteractiveSession(
               bootstrapMessage,
               targetSession,
-              { resumeSessionId, slackChannelId: channelId },
+              { resumeSessionId, slackChannelId: channelId, slackThreadTs: replyThreadTs },
             );
             if (newSessionName) {
-              slackAdapter!.registerChannelSession(channelId, newSessionName);
+              // Register on the routing key (channelId for a channel session,
+              // `<channelId>:<thread_ts>` for a thread session). channelName carries
+              // a thread hint so the registry stays human-readable.
+              slackAdapter!.registerChannelSession(
+                routingKey,
+                newSessionName,
+                isThreadSession ? `${channelId} (thread ${replyThreadTs})` : undefined,
+              );
               slackAdapter!.trackMessageInjection(channelId, newSessionName, message.content);
-              console.log(`[slack→session] ${resumeSessionId ? 'Resumed' : 'Spawned'} "${newSessionName}" for channel ${channelId}`);
+              console.log(`[slack→session] ${resumeSessionId ? 'Resumed' : 'Spawned'} "${newSessionName}" for ${isThreadSession ? `thread ${routingKey}` : `channel ${channelId}`}`);
             }
           } catch (err) {
             console.error(`[slack] Session spawn failed: ${err instanceof Error ? err.message : err}`);
@@ -5803,11 +6096,19 @@ export async function startServer(options: StartOptions): Promise<void> {
             console.log(`[respawnSessionFresh] topicId=${topicId} slackChId=${slackChId || 'none'} slackAdapter=${!!_slackAdapter} session=${_sessionName} mapSize=${slackProxyChannelMap.size}`);
 
             if (slackChId && _slackAdapter) {
+              // Thread→session (§5.3): slackChId may be a routing key
+              // (`<channelId>:<thread_ts>`). The registry + resume map are keyed on
+              // the routing key (slackChId); the Slack API + reply instruction need
+              // the RAW channel id, and a thread reply needs the embedded thread_ts.
+              const parsedTarget = _slackAdapter.parseRoutingKey(slackChId);
+              const slackApiChannel = parsedTarget.channelId;
+              const slackReplyThread = parsedTarget.threadTs;
+
               // Kill existing session (already flagged in contextExhaustionKills via event listener)
               const session = sessionManager.listRunningSessions().find(s => s.tmuxSession === _sessionName);
               if (session) sessionManager.killSession(session.id);
 
-              // Clear the channel resume so the new session starts fresh
+              // Clear the channel/thread resume so the new session starts fresh
               _slackAdapter.removeChannelResume(slackChId);
 
               // Spawn a fresh session with recovery context
@@ -5815,7 +6116,7 @@ export async function startServer(options: StartOptions): Promise<void> {
 
               // Build a recovery bootstrap message with thread history (inline, matching Telegram pattern)
               // Use async fallback to fetch from Slack API if ring buffer is empty (race condition on restart)
-              const history = await _slackAdapter.getChannelMessagesWithFallback(slackChId, 30);
+              const history = await _slackAdapter.getChannelMessagesWithFallback(slackApiChannel, 30);
               const botUserId = _slackAdapter.getBotUserId?.() ?? null;
               const lines: string[] = [];
               lines.push(`CONTINUATION — You are resuming an EXISTING Slack conversation after context exhaustion. Read the context below and pick up where you left off. Do NOT ask what was being discussed.`);
@@ -5834,28 +6135,31 @@ export async function startServer(options: StartOptions): Promise<void> {
                 }
                 lines.push('--- End Thread History ---');
               } else {
-                console.warn(`[slack→recovery] WARNING: No history available for channel ${slackChId} — recovery context is empty. Ring buffer may not be populated yet.`);
+                console.warn(`[slack→recovery] WARNING: No history available for channel ${slackApiChannel} — recovery context is empty. Ring buffer may not be populated yet.`);
                 lines.push('[WARNING: Thread history unavailable — ring buffer may not be populated. Check Slack channel for recent messages before responding.]');
               }
               lines.push('');
               lines.push('CRITICAL: You MUST relay your response back to Slack.');
-              lines.push(`cat <<'EOF' | .claude/scripts/slack-reply.sh ${slackChId}`);
+              // Thread session: include the thread_ts so the recovered reply threads.
+              const recoveryReplyTarget = slackReplyThread ? `${slackApiChannel} ${slackReplyThread}` : `${slackApiChannel}`;
+              lines.push(`cat <<'EOF' | .claude/scripts/slack-reply.sh ${recoveryReplyTarget}`);
               lines.push('Your response text here');
               lines.push('EOF');
 
               const tmpDir = '/tmp/instar-slack';
               fs.mkdirSync(tmpDir, { recursive: true });
-              const ctxPath = path.join(tmpDir, `recovery-${slackChId}-${Date.now()}.txt`);
+              const ctxPath = path.join(tmpDir, `recovery-${slackApiChannel}-${Date.now()}.txt`);
               const contextData = lines.join('\n');
               fs.writeFileSync(ctxPath, contextData);
 
-              const bootstrapMessage = `[slack:${slackChId}] ${contextData}`;
+              const bootstrapMessage = `[slack:${slackApiChannel}] ${contextData}`;
 
               try {
-                const newSessionName = await sessionManager.spawnInteractiveSession(bootstrapMessage, undefined, { slackChannelId: slackChId });
+                // Spawn with the RAW channel (+ thread_ts) but register on the routing key.
+                const newSessionName = await sessionManager.spawnInteractiveSession(bootstrapMessage, undefined, { slackChannelId: slackApiChannel, slackThreadTs: slackReplyThread });
                 if (newSessionName) {
                   _slackAdapter.registerChannelSession(slackChId, newSessionName);
-                  console.log(`[slack→recovery] Fresh session "${newSessionName}" spawned for channel ${slackChId} (context exhaustion recovery)`);
+                  console.log(`[slack→recovery] Fresh session "${newSessionName}" spawned for ${slackReplyThread ? `thread ${slackChId}` : `channel ${slackApiChannel}`} (context exhaustion recovery)`);
                 }
               } catch (err) {
                 console.error(`[slack→recovery] Fresh session spawn failed for ${slackChId}: ${err instanceof Error ? err.message : err}`);
@@ -8595,7 +8899,7 @@ export async function startServer(options: StartOptions): Promise<void> {
     // LIVE on Echo, DARK on the fleet. The pool is null when disabled, so the
     // ThreadlineRouter falls back to the proven cold-spawn path byte-for-byte.
     const warmCfg = config.threadline?.warmSessionA2A;
-    const warmEnabled = warmCfg?.enabled ?? !!config.developmentAgent;
+    const warmEnabled = resolveDevAgentGate(warmCfg?.enabled, config);
     const warmSessionPool = warmEnabled
       ? new WarmSessionPool({
           globalCap: warmCfg?.globalCap ?? 3,
@@ -10048,6 +10352,67 @@ export async function startServer(options: StartOptions): Promise<void> {
           });
         });
       }
+
+      // Subscription-pool session PINNING (Subscription & Auth Standard): when
+      // enabled, new claude-code spawns launch on the scheduler-picked optimal
+      // account (reset-date / headroom score) and carry its id. This is the
+      // prerequisite that makes auto-swap functional — without a session→account
+      // tag, the swap engine has nothing to move. Default off → spawns use the
+      // default config exactly as before (the resolver stays unwired).
+      if (config.subscriptionPool?.pinSessionsToPool) {
+        const { selectAccount } = await import('../core/QuotaAwareScheduler.js');
+        sessionManager.setSpawnAccountResolver(() => {
+          const acct = selectAccount(subscriptionPool.list(), { nowMs: Date.now() });
+          return acct ? { configHome: acct.configHome, accountId: acct.id } : null;
+        });
+        console.log(pc.green('  Subscription-pool session pinning enabled'));
+      }
+
+      // ProactiveSwapMonitor (Subscription & Auth Standard P1.3 — the PRE-LIMIT
+      // half). Moves a session OFF an account BEFORE it walls, at a lag-aware
+      // measured threshold. Complements the reactive autoSwapOnRateLimit (which
+      // only fires AFTER the wall) and covers UNTAGGED sessions by resolving the
+      // default-config login — so the primary interactive session is swap-visible
+      // instead of wedging (the 2026-06-09 failure). DARK by default: only runs
+      // when subscriptionPool.proactiveSwap.enabled is true (moving live sessions
+      // is real authority).
+      const proactiveCfg = config.subscriptionPool?.proactiveSwap;
+      if (proactiveCfg?.enabled) {
+        const { ProactiveSwapMonitor } = await import('../core/ProactiveSwapMonitor.js');
+        _proactiveSwapMonitor = new ProactiveSwapMonitor({
+          listAccounts: () => subscriptionPool.list(),
+          listRunningSessions: () =>
+            state
+              .listSessions({ status: 'running' })
+              // Only claude-code sessions ride the claude-account pool (legacy
+              // records with no framework default to claude-code).
+              .filter((s) => s.framework === undefined || s.framework === 'claude-code')
+              .map((s) => ({
+                sessionName: s.tmuxSession,
+                accountId: s.subscriptionAccountId ?? null,
+                startedAt: s.startedAt,
+              })),
+          resolveDefaultAccountId: async () =>
+            (await inUseAccountResolver.resolve(subscriptionPool.list())).activeAccountId,
+          swap: (a) =>
+            _quotaAwareScheduler
+              ? _quotaAwareScheduler.onQuotaPressure(a)
+              : Promise.resolve({ swapped: false, toAccountId: null }),
+          triggerPoll: () => quotaPoller.pollAll(),
+          thresholdPct: proactiveCfg.thresholdPct,
+          watchMarginPct: proactiveCfg.watchMarginPct,
+          maxSwapsPerCycle: proactiveCfg.maxSwapsPerCycle,
+          cooldownMs: proactiveCfg.cooldownMs,
+          tickMs: proactiveCfg.tickMs,
+          logger: { log: (m) => console.log(m), warn: (m) => console.warn(m) },
+        });
+        _proactiveSwapMonitor.start();
+        console.log(
+          pc.green(
+            `  Subscription-pool proactive pre-limit swap enabled (threshold ${_proactiveSwapMonitor.status().thresholdPct}% measured)`,
+          ),
+        );
+      }
     }
 
     // ── SessionReaper (SESSION-REAPER-SPEC) ──────────────────────────────
@@ -10190,10 +10555,10 @@ export async function startServer(options: StartOptions): Promise<void> {
         if (!rcfg) return rcfg; // reaper config absent ⇒ reaper disabled ⇒ flag moot
         return {
           ...rcfg,
-          cpuAwareActiveProcessKeep: rcfg.cpuAwareActiveProcessKeep ?? !!config.developmentAgent,
+          cpuAwareActiveProcessKeep: resolveDevAgentGate(rcfg.cpuAwareActiveProcessKeep, config),
           // Observe-only busy-orphan detection rides the same dev-gate (dark fleet,
           // live on dev agents). Zero risk — it never changes a keep/kill verdict.
-          busyOrphanDetection: rcfg.busyOrphanDetection ?? !!config.developmentAgent,
+          busyOrphanDetection: resolveDevAgentGate(rcfg.busyOrphanDetection, config),
         };
       })(),
     );
@@ -10234,7 +10599,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       // developmentAgent gate: `enabled` defaults ON for dev agents (dark fleet-
       // wide); an explicit config value always wins. `dryRun` is untouched (stays
       // true by default) so a dev agent only observes — never kills.
-      return { ...(mcfg ?? {}), enabled: mcfg?.enabled ?? !!config.developmentAgent };
+      return { ...(mcfg ?? {}), enabled: resolveDevAgentGate(mcfg?.enabled, config) };
     })();
     const mcpProcessReaper = new McpProcessReaper(
       makeMcpProcessReaperDeps({
@@ -10263,7 +10628,7 @@ export async function startServer(options: StartOptions): Promise<void> {
     let geminiLoopRunner: import('../monitoring/GeminiLoopRunner.js').GeminiLoopRunner | null = null;
     {
       const gcfg = config.autonomousSessions?.geminiLoopDriver;
-      const enabled = gcfg?.enabled ?? !!config.developmentAgent; // dark fleet-wide; live on dev agents
+      const enabled = resolveDevAgentGate(gcfg?.enabled, config); // dark fleet-wide; live on dev agents
       if (enabled) {
         const { GeminiLoopRunner } = await import('../monitoring/GeminiLoopRunner.js');
         const { createGeminiLoopSpawn, createGeminiHandleCapture, createQuotaBudgetGate } =
@@ -10855,7 +11220,7 @@ export async function startServer(options: StartOptions): Promise<void> {
         // after the MeshRpcClient is constructed (below).
         const _secretSyncCfg =
           (config.multiMachine as { secretSync?: { enabled?: boolean; pushEnabled?: boolean } } | undefined)?.secretSync;
-        const _secretSyncEnabled = _secretSyncCfg?.enabled ?? !!config.developmentAgent;
+        const _secretSyncEnabled = resolveDevAgentGate(_secretSyncCfg?.enabled, config);
         // SAFETY: pushing is opt-in SEPARATELY from receiving and DEFAULTS OFF. A machine
         // whose local secret store is stale/divergent (e.g. recovered from a key drift) would
         // otherwise auto-push its stale set to peers on boot and CLOBBER their good secrets —
@@ -11973,7 +12338,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       console.log(pc.dim(`  [session-pool] rollout gate not wired: ${err instanceof Error ? err.message : String(err)}`));
     }
 
-    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, subscriptionPool, quotaPoller, quotaAwareScheduler: _quotaAwareScheduler ?? undefined, inUseAccountResolver, enrollmentWizard, semanticMemory, activitySentinel, rateLimitSentinel, releaseReadinessSentinel: releaseReadinessSentinel ?? undefined, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, localSigningKeyPem, leaseTransport, onLeasePullRequest: () => leaseCoordinatorRef?.currentLease() ?? null, liveTailReceiver, handoffWireTransport, onHandoffBegin, onHandoffInitiate: handoffInitiate, handoffInProgress: handoffSentinelInProgress, messageLedger, currentInboundByTopic, replyMarkerTransport, onReplyMarker: messageLedger ? (marker: unknown) => { const m = marker as { dedupeKey: string; platform: string; replyIdempotencyKey: string; epoch: number; topic?: string | null }; messageLedger!.applyRemoteReplyMarker(m.dedupeKey, { platform: m.platform, replyIdempotencyKey: m.replyIdempotencyKey, epoch: m.epoch, topic: m.topic ?? null }); } : undefined, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, warrantsReplyGate, collaborationSurfacer, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, a2aDeliveryTracker: a2aDeliveryTracker ?? undefined, responseReviewGate, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, machinePoolRegistry, meshRpcDispatcher, workingSetPullCoordinator, commitmentReplicaStore, forwardCommitmentMutate, sessionOwnershipRegistry, topicPinStore: _topicPinStore ?? undefined, streamTicketStore: _streamTicketStore ?? undefined, poolStreamAllowRemoteInput: (config as { dashboard?: { poolStream?: { allowRemoteInput?: boolean } } }).dashboard?.poolStream?.allowRemoteInput ?? false, poolStreamConnector: _poolStreamConnector ?? undefined, secretSync: _secretSyncHandle ?? undefined, meshSelfId: _meshSelfId ?? undefined, resolveRouterUrl: _resolveRouterUrl ?? undefined, resolvePeerUrls: _resolvePeerUrls ?? undefined, sessionPoolE2EResultStore, proxyCoordinator, topicIntentStore, topicIntentArcCheck, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, briefDeps, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, agentWorktreeReaper, mcpProcessReaper, geminiLoopRunner, sleepController, agentActivityState, reapLog, sleepWakeDetector, unjustifiedStopGate, stopGateDb, stopNotifier });
+    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, subscriptionPool, quotaPoller, quotaAwareScheduler: _quotaAwareScheduler ?? undefined, proactiveSwapMonitor: _proactiveSwapMonitor ?? undefined, inUseAccountResolver, enrollmentWizard, semanticMemory, activitySentinel, rateLimitSentinel, releaseReadinessSentinel: releaseReadinessSentinel ?? undefined, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, localSigningKeyPem, leaseTransport, onLeasePullRequest: () => leaseCoordinatorRef?.currentLease() ?? null, liveTailReceiver, handoffWireTransport, onHandoffBegin, onHandoffInitiate: handoffInitiate, handoffInProgress: handoffSentinelInProgress, messageLedger, currentInboundByTopic, replyMarkerTransport, onReplyMarker: messageLedger ? (marker: unknown) => { const m = marker as { dedupeKey: string; platform: string; replyIdempotencyKey: string; epoch: number; topic?: string | null }; messageLedger!.applyRemoteReplyMarker(m.dedupeKey, { platform: m.platform, replyIdempotencyKey: m.replyIdempotencyKey, epoch: m.epoch, topic: m.topic ?? null }); } : undefined, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, warrantsReplyGate, collaborationSurfacer, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, a2aDeliveryTracker: a2aDeliveryTracker ?? undefined, responseReviewGate, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, machinePoolRegistry, meshRpcDispatcher, workingSetPullCoordinator, commitmentReplicaStore, forwardCommitmentMutate, sessionOwnershipRegistry, topicPinStore: _topicPinStore ?? undefined, streamTicketStore: _streamTicketStore ?? undefined, poolStreamAllowRemoteInput: (config as { dashboard?: { poolStream?: { allowRemoteInput?: boolean } } }).dashboard?.poolStream?.allowRemoteInput ?? false, poolStreamConnector: _poolStreamConnector ?? undefined, secretSync: _secretSyncHandle ?? undefined, meshSelfId: _meshSelfId ?? undefined, resolveRouterUrl: _resolveRouterUrl ?? undefined, resolvePeerUrls: _resolvePeerUrls ?? undefined, sessionPoolE2EResultStore, proxyCoordinator, topicIntentStore, topicIntentArcCheck, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, briefDeps, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, agentWorktreeReaper, mcpProcessReaper, geminiLoopRunner, sleepController, agentActivityState, reapLog, sleepWakeDetector, unjustifiedStopGate, stopGateDb, stopNotifier });
     // Resolve the late-bound topic-operator getter (increment 2e): routing was
     // wired before the server existed; from here on inbound binds use the
     // server's own store instance.

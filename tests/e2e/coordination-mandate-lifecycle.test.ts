@@ -135,6 +135,46 @@ describe('Coordination Mandate E2E lifecycle — feature is alive + deny-by-defa
     expect(audit.body.chain).toEqual({ ok: true });
   });
 
+  it('user→agent grants: PIN-issue → PIN-grant alive (201) → grant signed in, authProof still verifies via the production signer', async () => {
+    // Issue a fresh mandate.
+    const issued = await request(app).post('/mandate/issue').set(auth()).send({
+      pin: PIN, scope: 'slack-floor', agents: [ECHO, DAWN],
+      authorities: [{ action: 'sign-code-review', bounds: {} }], expiresAt: FUTURE,
+    });
+    expect(issued.status).toBe(201);
+    const id = issued.body.mandate.id;
+
+    // SECURITY: Bearer alone cannot add a grant — the PIN is required on the prod path.
+    const noPin = await request(app).post(`/mandate/${id}/grants`).set(auth()).send({
+      grants: [{ floorAction: 'prod-deploy', grantedTo: 'U_AMIR', authorizedBy: 'justin', expiresAt: '2998-01-01T00:00:00Z' }],
+    });
+    expect(noPin.status).toBe(403);
+
+    // PIN-gated grant lands (201) and re-signs the mandate.
+    const granted = await request(app).post(`/mandate/${id}/grants`).set(auth()).send({
+      pin: PIN, grants: [{ floorAction: 'prod-deploy', grantedTo: 'U_AMIR', authorizedBy: 'justin', expiresAt: '2998-01-01T00:00:00Z' }],
+    });
+    expect(granted.status).toBe(201);
+    expect(granted.body.mandate.authorshipValid).toBe(true);
+    expect(granted.body.mandate.grants).toHaveLength(1);
+
+    // The persisted, grant-bearing mandate verifies against an INDEPENDENT production
+    // signer (HMAC over authToken) — the re-sign is real, not a no-op.
+    const file = path.join(stateDir, 'state', 'coordination-mandates.json');
+    const sign = (c: string) => createHmac('sha256', AUTH).update(c).digest('hex');
+    const verifySig = (c: string, p: string) => {
+      const e = sign(c);
+      try { return e.length === p.length && timingSafeEqual(Buffer.from(e), Buffer.from(p)); } catch { return false; }
+    };
+    const independent = new MandateStore({ filePath: file, sign, verifySig });
+    const m = independent.get(id)!;
+    expect(m.grants).toHaveLength(1);
+    expect(independent.verifyAuthorship(m)).toBe(true);
+    // Tampering the grant's grantee breaks the proof.
+    const tampered = { ...m, grants: [{ ...m.grants![0], grantedTo: 'U_ATTACKER' }] };
+    expect(independent.verifyAuthorship(tampered)).toBe(false);
+  });
+
   it('WIRING-INTEGRITY: the production issuance signer is real — the persisted authProof verifies, a widened mandate fails', async () => {
     const file = path.join(stateDir, 'state', 'coordination-mandates.json');
     const sign = (c: string) => createHmac('sha256', AUTH).update(c).digest('hex');

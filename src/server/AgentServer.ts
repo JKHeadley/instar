@@ -14,6 +14,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import { ApprovalLedger } from '../core/ApprovalLedger.js';
+import { resolveDevAgentGate } from '../core/devAgentGate.js';
 import { TopicOperatorStore } from '../users/TopicOperatorStore.js';
 import { MandateStore } from '../coordination/MandateStore.js';
 import { MandateGate } from '../coordination/MandateGate.js';
@@ -62,6 +63,7 @@ import { FailureAttributionEngine } from '../monitoring/FailureAttributionEngine
 import { CiFailurePoller } from '../monitoring/CiFailurePoller.js';
 import { RevertDetector } from '../monitoring/RevertDetector.js';
 import { CorrectionLedger } from '../monitoring/CorrectionLedger.js';
+import { GrowthMilestoneAnalyst, resolveGrowthSettings } from '../monitoring/GrowthMilestoneAnalyst.js';
 import { ApprenticeshipProgram } from '../core/ApprenticeshipProgram.js';
 import { ApprenticeshipCycleStore } from '../monitoring/ApprenticeshipCycleStore.js';
 import { ApprenticeshipCycleSlaMonitor } from '../monitoring/ApprenticeshipCycleSlaMonitor.js';
@@ -212,6 +214,7 @@ export class AgentServer {
   private ciFailurePoller: CiFailurePoller | null = null;
   private revertDetector: RevertDetector | null = null;
   private correctionLedger: CorrectionLedger | null = null;
+  private growthMilestoneAnalyst: GrowthMilestoneAnalyst | null = null;
   private apprenticeshipProgram: ApprenticeshipProgram | null = null;
   private apprenticeshipCycleStore: ApprenticeshipCycleStore | null = null;
   private apprenticeshipCycleSlaMonitor: ApprenticeshipCycleSlaMonitor | null = null;
@@ -263,6 +266,7 @@ export class AgentServer {
     subscriptionPool?: import('../core/SubscriptionPool.js').SubscriptionPool;
     quotaPoller?: import('../core/QuotaPoller.js').QuotaPoller;
     quotaAwareScheduler?: import('../core/QuotaAwareScheduler.js').QuotaAwareScheduler;
+    proactiveSwapMonitor?: import('../core/ProactiveSwapMonitor.js').ProactiveSwapMonitor;
     inUseAccountResolver?: import('../core/InUseAccountResolver.js').InUseAccountResolver;
     enrollmentWizard?: import('../core/EnrollmentWizard.js').EnrollmentWizard;
     semanticMemory?: import('../memory/SemanticMemory.js').SemanticMemory;
@@ -894,7 +898,7 @@ export class AgentServer {
         // OFF on the fleet, so this dogfoods on echo before fleet rollout. This
         // is read-only observability — the sampler only reads ps/process.* and
         // writes the ledger; it never gates, throttles, or mutates anything.
-        const samplingEnabled = rlCfg?.enabled ?? !!options.config.developmentAgent;
+        const samplingEnabled = resolveDevAgentGate(rlCfg?.enabled, options.config);
         if (samplingEnabled) {
           const sessionManager = options.sessionManager;
           this.resourceSampler = new ResourceSampler({
@@ -1271,6 +1275,48 @@ export class AgentServer {
       this.correctionLedger = null;
     }
 
+    // GrowthMilestoneAnalyst (docs/specs/PROACTIVE-GROWTH-MILESTONE-ANALYST-SPEC.md)
+    // — the proactive growth & milestone analyst. Resolved through the standard
+    // developmentAgent dark-feature gate (standard_development_agent_dark_feature_gate):
+    // `enabled ?? !!developmentAgent` → LIVE on the dev agent (the dogfooding
+    // ground), DARK fleet-wide. An explicit `enabled` in config always wins (set
+    // false to force-dark a dev agent, true for the live-fleet flip). When the
+    // gate resolves false the analyst stays null and /growth/* routes 503-stub
+    // (the "off → 503" contract). Composes the InitiativeTracker (rollout stages
+    // + staleness), ApprovalLedger (approve-vs-change), and CorrectionLedger
+    // (recurrence) — all read-only. Own try/catch so a failure here can never
+    // cascade into other init.
+    const growthAnalystEnabled =
+      resolveDevAgentGate(options.config.monitoring?.growthAnalyst?.enabled, options.config);
+    try {
+      if (growthAnalystEnabled && options.config.stateDir && options.initiativeTracker) {
+        this.growthMilestoneAnalyst = new GrowthMilestoneAnalyst({
+          stateDir: options.config.stateDir,
+          // Feed the gate-resolved enabled into settings so GET /growth/status
+          // honestly reports `enabled: true` on a dev agent (config omits the
+          // flag → resolveGrowthSettings would otherwise read false while the
+          // routes are live). Optional-chained: the gate can be true with no
+          // monitoring.growthAnalyst block present (dev agent, defaults only).
+          settings: resolveGrowthSettings({
+            ...(options.config.monitoring?.growthAnalyst ?? {}),
+            enabled: growthAnalystEnabled,
+          }),
+          tracker: options.initiativeTracker,
+          approvalLedger: this.approvalLedger,
+          correctionLedger: this.correctionLedger,
+          // evidenceCounter intentionally unwired in this slice → proof:'unknown'
+          // (honest: a feature with no evidence source cannot be promotion-ready).
+          // R6 dev-gate conformance: feed the live config so the analyst can flag
+          // a registered dev-gated feature observed DARK on this dev agent.
+          liveConfig: options.config,
+          onError: (where, err) => console.warn(`[GrowthMilestoneAnalyst] ${where}:`, err),
+        });
+      }
+    } catch (err) {
+      console.warn('[instar] growth-milestone-analyst init failed (non-fatal):', err);
+      this.growthMilestoneAnalyst = null;
+    }
+
     // Apprenticeship Program (Step 1) — the instance-as-project registry + the
     // retro-gate (pending→active) and doc-as-required-artifact gate
     // (active→complete). Ships ON (additive, passive registry; no config flag —
@@ -1412,6 +1458,7 @@ export class AgentServer {
       subscriptionPool: options.subscriptionPool ?? null,
       quotaPoller: options.quotaPoller ?? null,
       quotaAwareScheduler: options.quotaAwareScheduler ?? null,
+      proactiveSwapMonitor: options.proactiveSwapMonitor,
       inUseAccountResolver: options.inUseAccountResolver,
       enrollmentWizard: options.enrollmentWizard ?? null,
       semanticMemory: options.semanticMemory ?? null,
@@ -1487,6 +1534,7 @@ export class AgentServer {
       failureLedger: this.failureLedger,
       failureAttributionEngine: this.failureAttributionEngine,
       correctionLedger: this.correctionLedger,
+      growthMilestoneAnalyst: this.growthMilestoneAnalyst,
       apprenticeshipProgram: this.apprenticeshipProgram,
       apprenticeshipCycleStore: this.apprenticeshipCycleStore,
       apprenticeshipCycleSlaMonitor: this.apprenticeshipCycleSlaMonitor,

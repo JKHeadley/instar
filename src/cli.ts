@@ -2063,9 +2063,18 @@ program
   .option('--bot-token <dropId>', 'Secret Drop ID for a test bot token (enables the Telegram round-trip; NEVER a raw token)')
   .option('--keep', 'Skip teardown (leave the throwaway running for inspection)')
   .option('--no-roundtrip', 'Skip the Telegram round-trip (lease/log verification only)')
+  .option('--slack', 'Run the credential-free Slack permission demonstration (each (principal,request) → expected decision + audit entry) instead of the deploy harness')
   .option('--report-json <path>', 'Write the per-step JSON report to this path')
   .option('--timeout-s <secs>', 'Overall timeout in seconds (default 600)', (v) => parseInt(v, 10))
   .action(async (opts) => {
+    // --slack: the test-as-self-for-Slack demonstration (Pillar 4) — verifies the
+    // permission gate ENFORCES the right decision per (principal, request), with the
+    // matching audit entry. Credential-free, no throwaway deploy.
+    if (opts.slack) {
+      const { runTestAsSelfSlack } = await import('./commands/test-as-self.js');
+      const { exitCode } = await runTestAsSelfSlack({ reportJson: opts.reportJson });
+      process.exit(exitCode);
+    }
     const { runTestAsSelf } = await import('./commands/test-as-self.js');
     const { exitCode } = await runTestAsSelf({
       target: opts.target,
