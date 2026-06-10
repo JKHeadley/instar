@@ -1,0 +1,30 @@
+# Throwaway test-identity helper (disposable inboxes for live-integration tests)
+
+## What Changed
+
+Added a standalone test utility — `scripts/throwaway-identity.mjs` (+ `scripts/lib/`) — that
+mints genuinely-distinct, readable throwaway email inboxes via the mail.tm public
+disposable-mailbox API and extracts verification codes/links from them. It's the autonomous
+half of provisioning distinct test identities for the Live Integration Security-Test Harness
+(Slack today, any integration later): N distinct inboxes → N genuinely-distinct principals,
+zero real accounts. No runtime code, gate, or config is touched.
+
+## What to Tell Your User
+
+Nothing changes in how the agent runs. This is a developer/test tool. It lets the agent set
+up several genuinely-different throwaway test users (and read their email) on its own, so a
+live integration test can use real distinct identities without anyone hand-creating email
+accounts. The only step it intentionally leaves to a human is passing an anti-bot CAPTCHA at
+workspace creation.
+
+## Summary of New Capabilities
+
+- `scripts/throwaway-identity.mjs mint` — create a fresh readable throwaway inbox.
+- `scripts/throwaway-identity.mjs wait <token>` — await an email and extract its code/link.
+- `scripts/lib/throwaway-identity.mjs` — importable helper (HTTP injectable for hermetic tests).
+
+## Evidence
+
+- 15 hermetic unit tests (`tests/unit/throwaway-identity.test.ts`) — pure extractors + the
+  mint / poll-until-match / timeout flow, with fetch + clock injected (no network).
+- Live CLI smoke minted a real inbox + token. `tsc --noEmit` clean.
