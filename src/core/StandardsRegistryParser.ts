@@ -27,6 +27,13 @@ export interface StandardArticle {
   rule: string;
   /** The `**In practice.**` line, when present. */
   inPractice: string;
+  /**
+   * The `**Applied through.**` line, when present — names the structural guard(s)
+   * that enforce the article (a test, lint, gate marker, route, or spec). Additive
+   * field (cartographer-conformance-audit spec #3); the enforcement-coverage audit
+   * scans `inPractice` + `appliedThrough` for verifiable enforcement references.
+   */
+  appliedThrough?: string;
 }
 
 /**
@@ -89,6 +96,10 @@ export function parseStandardsRegistry(markdown: string): StandardArticle[] {
     if (rule !== null) { cur.rule = rule; continue; }
     const inPractice = fieldAfter(line, 'In practice');
     if (inPractice !== null) { cur.inPractice = inPractice; continue; }
+    // Additive (spec #3): capture the `**Applied through.**` line if present. Same
+    // `fieldAfter` extraction as Rule/In practice; absent on articles without one.
+    const appliedThrough = fieldAfter(line, 'Applied through');
+    if (appliedThrough !== null) { cur.appliedThrough = appliedThrough; continue; }
   }
   flush();
   return articles;

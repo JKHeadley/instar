@@ -800,7 +800,7 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
   },
   {
     key: 'cartographer',
-    prefixes: ['/cartographer'],
+    prefixes: ['/cartographer', '/conformance'],
     description: 'Cartographer doc-tree — semantic codebase map with git-hash staleness',
     build: ({ ctx }) => ({
       enabled: !!ctx.cartographer,
@@ -811,6 +811,8 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
             'GET /cartographer/stale — nodes whose summary has drifted from the code',
             'GET /cartographer/health — node count + staleness + freshness backlog (spec #2)',
             'POST /cartographer/node/refresh {path,summary} — inline-refresh one node\'s summary (spec #2; 503 unless freshnessSweep enabled)',
+            'GET /conformance/coverage — per-standard enforcement-coverage of docs/STANDARDS-REGISTRY.md (spec #3; filters ?family=/?kind=/?status=gap; X-Instar-Request:1; 503 unless conformanceAudit enabled)',
+            'GET /conformance/coverage/health — coverage summary: counts by enforcementKind, enforced ratio, gap + dangling-ref counts (spec #3)',
           ]
         : [],
     }),

@@ -19,6 +19,10 @@ import {
   neutralizeInstructionShapedContent,
   extractCodeSymbols,
 } from '../core/cartographerSummary.js';
+import {
+  computeCoverage as computeStandardsCoverage,
+  type CoverageReport as StandardsCoverageReport,
+} from '../core/StandardsEnforcementAuditor.js';
 import type { SessionRefresh } from '../core/SessionRefresh.js';
 import type { StateManager } from '../core/StateManager.js';
 import { describeTopicPlacement } from '../core/TopicPlacementDescription.js';
@@ -4146,6 +4150,68 @@ export function createRoutes(ctx: RouteContext): Router {
     });
     cartoRefreshLog.push(nowMs);
     res.json({ refreshed: true, path: p, status: ctx.cartographer.computeStaleness(p) });
+  });
+
+  // Standards Enforcement-Coverage Audit (cartographer-conformance-audit spec #3).
+  // For each constitutional standard in docs/STANDARDS-REGISTRY.md, verify whether
+  // the structural guard its prose NAMES actually exists on disk, classify each
+  // standard's enforcement strength, and surface the gaps + dangling refs.
+  // Deterministic, observe-only, NON-gating. Gated behind BOTH ctx.cartographer
+  // (cartographer.enabled) AND config.cartographer.conformanceAudit.enabled === true.
+  // Owner-Bearer (the auth middleware) + the X-Instar-Request:1 intent header (the
+  // honest control per the spec's security note — there is no PIN-scope primitive).
+  // Lazily computes over config.projectDir + the on-disk registry; caches by inputHash
+  // so an unchanged registry+repo short-circuits (the pass is deterministic + cheap).
+  const conformanceGate = (req: ExpressRequest, res: ExpressResponse): boolean => {
+    if (!ctx.cartographer) { res.status(503).json({ error: 'Cartographer not enabled' }); return false; }
+    const cfg = (ctx.config as { cartographer?: { conformanceAudit?: { enabled?: boolean } } })
+      .cartographer?.conformanceAudit;
+    if (cfg?.enabled !== true) { res.status(503).json({ error: 'Conformance audit not enabled' }); return false; }
+    if (req.headers['x-instar-request'] !== '1') {
+      res.status(403).json({ error: 'GET /conformance/coverage requires the X-Instar-Request: 1 intent header' });
+      return false;
+    }
+    return true;
+  };
+  let conformanceCache: StandardsCoverageReport | null = null;
+  const conformanceReport = (): StandardsCoverageReport => {
+    const registryPath = path.join(ctx.config.projectDir, 'docs', 'STANDARDS-REGISTRY.md');
+    const report = computeStandardsCoverage({ registryPath, projectDir: ctx.config.projectDir }, conformanceCache);
+    conformanceCache = report;
+    return report;
+  };
+
+  router.get('/conformance/coverage', (req, res) => {
+    if (!conformanceGate(req, res)) return;
+    let report: StandardsCoverageReport;
+    try { report = conformanceReport(); }
+    catch (err) { res.status(500).json({ error: 'coverage compute failed', detail: err instanceof Error ? err.message : String(err) }); return; }
+
+    let standards = report.standards;
+    const family = typeof req.query.family === 'string' ? req.query.family : '';
+    const kind = typeof req.query.kind === 'string' ? req.query.kind : '';
+    const status = typeof req.query.status === 'string' ? req.query.status : '';
+    if (family) standards = standards.filter((s) => s.family.toLowerCase() === family.toLowerCase());
+    if (kind) standards = standards.filter((s) => s.enforcementKind === kind);
+    if (status === 'gap') standards = standards.filter((s) => s.enforcementKind === 'documented-only');
+    if (status === 'dangling') standards = standards.filter((s) => s.danglingRefs.length > 0);
+
+    res.json({ generatedAt: report.generatedAt, summary: report.summary, count: standards.length, standards });
+  });
+
+  router.get('/conformance/coverage/health', (req, res) => {
+    if (!conformanceGate(req, res)) return;
+    let report: StandardsCoverageReport;
+    try { report = conformanceReport(); }
+    catch (err) { res.status(500).json({ error: 'coverage compute failed', detail: err instanceof Error ? err.message : String(err) }); return; }
+    res.json({
+      enabled: true,
+      generatedAt: report.generatedAt,
+      // The deterministic pass always converges — re-running on unchanged inputs is
+      // byte-identical, so `converged` is structurally true.
+      converged: true,
+      ...report.summary,
+    });
   });
 
   router.post('/project-map/refresh', (_req, res) => {
