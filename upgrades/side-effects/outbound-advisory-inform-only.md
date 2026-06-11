@@ -237,3 +237,12 @@ comment) was fixed in the same pass.
   `tests/unit/session-manager-behavioral.test.ts`.
 - `tests/e2e/outbound-advisory-alive.test.ts` (5) — production-init alive + auth + on-disk audit +
   live kill switch.
+
+---
+
+## Post-CI follow-up (same PR)
+
+The no-silent-fallbacks ratchet (CI shard 3) correctly demanded that every spec-mandated fail-open
+catch be a TRACKED decision: all are now annotated `@silent-fallback-ok` with the spec-section
+justification (fail-open is the §0 operator constraint, not an accident), plus one documented
+scanner-window false positive on a pre-existing 500-responder catch. No behavior change.

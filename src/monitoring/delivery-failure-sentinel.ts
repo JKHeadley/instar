@@ -745,6 +745,7 @@ async function defaultPostReply(
       try {
         metadata = JSON.parse(metadataJson);
       } catch {
+        /* @silent-fallback-ok — §2.5: a malformed stored metadata value is dropped rather than failing the redrive */
         metadata = undefined;
       }
     }

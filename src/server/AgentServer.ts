@@ -3165,6 +3165,7 @@ export class AgentServer {
         try {
           return store.findByDeliveryId(deliveryId) !== null;
         } catch {
+          /* @silent-fallback-ok — observe-only breadcrumb exemption: a store read failure means no exemption (false), never an error surface */
           return false;
         }
       };

@@ -1410,7 +1410,7 @@ export function createRoutes(ctx: RouteContext): Router {
           signals.filePath = { detected: true, match: fp.match };
         }
       } catch {
-        // Detector errors never override the authority — skip the signal.
+        // @silent-fallback-ok — detector errors never override the authority; skip the signal (outbound-jargon-filepath-gap §2.3).
       }
 
       // Recent conversation — used by both the authority and the dedup detector.
@@ -8088,7 +8088,7 @@ export function createRoutes(ctx: RouteContext): Router {
         }
       }
     } catch {
-      /* breadcrumbs are best-effort observability — never affect delivery */
+      /* @silent-fallback-ok — §2.1 breadcrumbs are observe-only; never affect delivery */
     }
 
     // ── Content-dedup (2026-06-06): suppress the agent re-sending the SAME
@@ -8218,11 +8218,15 @@ export function createRoutes(ctx: RouteContext): Router {
             advisories: advisoryCodes,
           });
         } catch {
-          /* audit failure never affects delivery */
+          /* @silent-fallback-ok — §2.4(5) acked-audit is observe-only; never affects delivery */
         }
       }
       res.json({ ok: true, topicId, messageId: sendResult?.messageId });
     } catch (err) {
+      // @silent-fallback-ok — NOT a silent fallback: this catch surfaces a 500 to the
+      // caller. The tag exists because the no-silent-fallbacks scanner's fixed 20-line
+      // window reaches past this route's end into the next route's `db = null`
+      // initializer (pattern-3 false positive after nearby line shifts).
       res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
     }
   });

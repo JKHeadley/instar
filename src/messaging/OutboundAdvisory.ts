@@ -98,7 +98,7 @@ export function composeAdvisories(text: string): Advisory[] {
       });
     }
   } catch {
-    /* fail-open — skip the signal */
+    /* @silent-fallback-ok — fail-open by spec contract (outbound-jargon-filepath-gap §2.3): a detector error skips the signal, never withholds a message */
   }
 
   try {
@@ -107,7 +107,7 @@ export function composeAdvisories(text: string): Advisory[] {
       advisories.push({ code: 'RAW_FILE_PATH', match: fp.match, guidance: GUIDANCE.RAW_FILE_PATH });
     }
   } catch {
-    /* fail-open — skip the signal */
+    /* @silent-fallback-ok — fail-open by spec contract (outbound-jargon-filepath-gap §2.3): a detector error skips the signal, never withholds a message */
   }
 
   try {
@@ -120,7 +120,7 @@ export function composeAdvisories(text: string): Advisory[] {
       });
     }
   } catch {
-    /* fail-open — skip the signal */
+    /* @silent-fallback-ok — fail-open by spec contract (outbound-jargon-filepath-gap §2.3): a detector error skips the signal, never withholds a message */
   }
 
   return advisories;
@@ -294,7 +294,7 @@ export class OutboundAdvisoryAudit {
         this.resolveNearIdentical(entry.jobSlug, entry.topicId, entry.text, textHash);
       }
     } catch {
-      /* escalation index errors never affect delivery */
+      /* @silent-fallback-ok — §2.4(5): audit/escalation is observe-only; an index error must never affect delivery */
     }
     return action;
   }
@@ -336,7 +336,7 @@ export class OutboundAdvisoryAudit {
         // the consumer-visible signal); resets nothing.
       }
     } catch {
-      /* never affects delivery */
+      /* @silent-fallback-ok — §2.4(5): observe-only audit; never affects delivery */
     }
   }
 
@@ -370,7 +370,7 @@ export class OutboundAdvisoryAudit {
           try {
             out.push(JSON.parse(line) as AdvisoryAuditEntry);
           } catch {
-            /* skip malformed line */
+            /* @silent-fallback-ok — bounded tail read skips a malformed JSONL line */
           }
         }
         return out;
@@ -378,6 +378,7 @@ export class OutboundAdvisoryAudit {
         fs.closeSync(fd);
       }
     } catch {
+      /* @silent-fallback-ok — read surface degrades to empty, never 500s */
       return [];
     }
   }
@@ -462,7 +463,7 @@ export class OutboundAdvisoryAudit {
           sourceContext: ADVISORY_ESCALATION_SOURCE,
         }),
       ).catch(() => {
-        /* operator-inform is best-effort */
+        /* @silent-fallback-ok — operator-inform is best-effort; never gates the sender */
       });
     }
 
@@ -491,7 +492,7 @@ export class OutboundAdvisoryAudit {
             sourceContext: ADVISORY_ESCALATION_SOURCE,
           }),
         ).catch(() => {
-          /* best-effort */
+          /* @silent-fallback-ok — operator-inform is best-effort */
         });
       }
     }
@@ -515,7 +516,7 @@ export class OutboundAdvisoryAudit {
           sourceContext: ADVISORY_ESCALATION_SOURCE,
         }),
       ).catch(() => {
-        /* best-effort */
+        /* @silent-fallback-ok — operator-inform is best-effort; never gates the sender */
       });
     }
   }
@@ -526,7 +527,7 @@ export class OutboundAdvisoryAudit {
       this.rotateIfNeeded();
       fs.appendFileSync(this.logPath, JSON.stringify(entry) + '\n');
     } catch {
-      /* audit failure never affects delivery */
+      /* @silent-fallback-ok — §2.4(5): single-writer audit is best-effort; a write failure never affects delivery */
     }
   }
 
@@ -537,7 +538,7 @@ export class OutboundAdvisoryAudit {
         fs.renameSync(this.logPath, `${this.logPath}.1`);
       }
     } catch {
-      /* missing file or rename failure — append proceeds */
+      /* @silent-fallback-ok — rotation is best-effort; append proceeds */
     }
   }
 }
@@ -546,6 +547,7 @@ function safeHash(text: string): string {
   try {
     return sha256Hex(text);
   } catch {
+    /* @silent-fallback-ok — observe-only audit hashing; an empty hash degrades the row, never delivery */
     return '';
   }
 }
