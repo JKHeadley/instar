@@ -1744,6 +1744,17 @@ rm()  { "${shimRunner}" rm  "$@"; }
         '-e', `INSTAR_SERVER_URL=http://localhost:${this.config.port}`,
         '-e', `INSTAR_AUTH_TOKEN=${this.config.authToken}`,
         '-e', `INSTAR_AGENT_ID=${this.config.projectName}`,
+        // Structural message-kind stamping (outbound-jargon-filepath-gap §2.1):
+        // a job-spawned session is marked 'automated' in its ENVIRONMENT, so
+        // telegram-reply.sh forwards the kind regardless of what the model
+        // does. Interactive (jobSlug-less) spawns get NONE of these → 'reply'.
+        ...(options.jobSlug
+          ? [
+              '-e', 'INSTAR_MESSAGE_KIND=automated',
+              '-e', `INSTAR_JOB_SLUG=${options.jobSlug}`,
+              '-e', 'INSTAR_SENDER_CLASS=llm-session',
+            ]
+          : []),
         ...this.ghTokenEnvFlags(), // P3b: per-agent vault GitHub token (empty when no vault token)
         ...(workTreeFencingToken ? ['-e', `INSTAR_FENCING_TOKEN=${workTreeFencingToken}`] : []),
         ...(workTreeFencingToken ? ['-e', `INSTAR_WORKTREE_PATH=${resolvedCwd}`] : []),
@@ -2007,6 +2018,17 @@ rm()  { "${shimRunner}" rm  "$@"; }
         '-e', `INSTAR_SERVER_URL=http://localhost:${this.config.port}`,
         '-e', `INSTAR_AUTH_TOKEN=${this.config.authToken}`,
         '-e', `INSTAR_AGENT_ID=${this.config.projectName}`,
+        // Structural message-kind stamping (outbound-jargon-filepath-gap §2.1).
+        // This rerouted-interactive lane is the path the June-15 subscription
+        // lever routes JOB spawns through — omitting it here would leave a
+        // structural hole for exactly those job sessions.
+        ...(options.jobSlug
+          ? [
+              '-e', 'INSTAR_MESSAGE_KIND=automated',
+              '-e', `INSTAR_JOB_SLUG=${options.jobSlug}`,
+              '-e', 'INSTAR_SENDER_CLASS=llm-session',
+            ]
+          : []),
         ...this.ghTokenEnvFlags(), // P3b: per-agent vault GitHub token (empty when no vault token)
         ...(workTreeFencingToken ? ['-e', `INSTAR_FENCING_TOKEN=${workTreeFencingToken}`] : []),
         ...(workTreeFencingToken ? ['-e', `INSTAR_WORKTREE_PATH=${resolvedCwd}`] : []),

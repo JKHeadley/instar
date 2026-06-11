@@ -93,6 +93,14 @@ export interface ToneReviewContextMessage {
  *
  * See docs/signal-vs-authority.md for the principle.
  */
+/**
+ * What kind of message is this? Single-sourced union — widened with
+ * 'automated' (background-job / scheduled-task sends, stamped structurally
+ * by the scheduler env, never declared by the model). Spec:
+ * docs/specs/outbound-jargon-filepath-gap.md §2.1.
+ */
+export type MessageKind = 'reply' | 'health-alert' | 'unknown' | 'automated';
+
 export interface ToneReviewSignals {
   /** Junk-payload detector: does the candidate look like a debug/sanity-check token? */
   junk?: {
@@ -179,6 +187,19 @@ export interface ToneReviewSignals {
     /** Number of attempts made (0 if attempted=false). */
     attempts: number;
   };
+  /**
+   * Raw-file-path detector signal (see src/core/raw-file-path.ts).
+   *
+   * SIGNAL ONLY. Anchors the existing B2_FILE_PATH judgment with the exact
+   * deterministic match — a legitimate "I edited src/foo.ts" stays the
+   * authority's call. No new rule, no floor. Spec:
+   * docs/specs/outbound-jargon-filepath-gap.md §2.3.
+   */
+  filePath?: {
+    detected: boolean;
+    /** First offending path, bounded to 120 chars by the detector. */
+    match?: string;
+  };
 }
 
 export interface ToneReviewContext {
@@ -198,9 +219,10 @@ export interface ToneReviewContext {
   /**
    * What kind of message is this? Health-alert-specific rules (B12, B13, B14)
    * only apply when this is 'health-alert'. Default is 'reply' — the
-   * standard agent-to-user reply path.
+   * standard agent-to-user reply path. 'automated' marks background-job /
+   * scheduled-task sends (stamped by the scheduler env, not the model).
    */
-  messageKind?: 'reply' | 'health-alert' | 'unknown';
+  messageKind?: MessageKind;
 }
 
 export class MessagingToneGate {
@@ -278,7 +300,7 @@ export class MessagingToneGate {
     recentMessages?: ToneReviewContextMessage[],
     signals?: ToneReviewSignals,
     targetStyle?: string,
-    messageKind?: 'reply' | 'health-alert' | 'unknown',
+    messageKind?: MessageKind,
   ): string {
     const boundary = `MSG_BOUNDARY_${crypto.randomBytes(8).toString('hex')}`;
 
@@ -455,13 +477,23 @@ ${JSON.stringify(text)}
 <<<${boundary}>>>`;
   }
 
-  private renderMessageKind(messageKind?: 'reply' | 'health-alert' | 'unknown'): string {
+  private renderMessageKind(messageKind?: MessageKind): string {
     const kind = messageKind ?? 'reply';
+    if (kind === 'automated') {
+      // Describe the kind to the authority — accurate context for the judgment
+      // power it ALREADY has. Deliberately no new rule and no health-alert rule
+      // re-scoping (B12 stays health-alert-only): the operator constraint for
+      // automated sends is inform-the-sender, never new blocking power.
+      return (
+        `\n=== MESSAGE KIND ===\nautomated\n` +
+        `(This message was composed by a background job / scheduled task, not by the agent in live conversation — the kind was stamped structurally by the scheduler, not declared by the model. The standard reply rules B1–B9 apply as usual. Health-alert rules B12–B14 do NOT apply. Jargon and raw-file-path signals, when present, are context for the rules you already have — not new rules.)\n`
+      );
+    }
     return `\n=== MESSAGE KIND ===\n${kind}\n`;
   }
 
   private renderSignals(signals?: ToneReviewSignals): string {
-    if (!signals || (!signals.junk && !signals.duplicate && !signals.paraphrase && !signals.jargon && !signals.selfHeal && !signals.arcCheck)) {
+    if (!signals || (!signals.junk && !signals.duplicate && !signals.paraphrase && !signals.jargon && !signals.selfHeal && !signals.arcCheck && !signals.filePath)) {
       return '\n=== UPSTREAM SIGNALS ===\n(no signals reported)\n';
     }
     const lines: string[] = ['', '=== UPSTREAM SIGNALS ==='];
@@ -492,6 +524,14 @@ ${JSON.stringify(text)}
     }
     if (signals.selfHeal) {
       lines.push(`- self-heal: attempted=${signals.selfHeal.attempted} succeeded=${signals.selfHeal.succeeded ?? 'n/a'} attempts=${signals.selfHeal.attempts}`);
+    }
+    if (signals.filePath) {
+      // Raw-file-path detector is SIGNAL ONLY — it anchors the existing
+      // B2_FILE_PATH judgment with the exact deterministic match. The match
+      // is rendered as an inert quoted token, never instruction-shaped prose.
+      lines.push(
+        `- raw-file-path detector (signal-only, anchors B2_FILE_PATH): detected=${signals.filePath.detected}${signals.filePath.match ? ` detected path: ${JSON.stringify(signals.filePath.match.slice(0, 120))}` : ''}`,
+      );
     }
     if (signals.arcCheck && signals.arcCheck.fire) {
       // ArcCheck is SIGNAL ONLY. The gate may fold the rewrite hint into its

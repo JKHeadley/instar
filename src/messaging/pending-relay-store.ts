@@ -62,6 +62,12 @@ export interface PendingRelayRow {
   claimed_by: string | null;
   status_history: string;
   truncated: 0 | 1;
+  /** Serialized kind metadata (messageKind/senderClass/jobSlug/advisoryAck/
+   *  advisoryCodes) — the redrive forwards it whole so a queued automated
+   *  send is never mis-kinded and an acked-then-queued send still lands its
+   *  'acked' audit row (spec outbound-jargon-filepath-gap §2.5). Null on
+   *  legacy rows (they ride the delivery-id breadcrumb exemption). */
+  message_metadata: string | null;
 }
 
 export interface EnqueueInput {
@@ -75,6 +81,7 @@ export interface EnqueueInput {
   attempted_port: number;
   attempted_at?: string;
   truncated?: boolean;
+  message_metadata?: string | null;
 }
 
 // ── Schema ────────────────────────────────────────────────────────────
@@ -95,7 +102,8 @@ const SCHEMA = [
      state          TEXT NOT NULL,
      claimed_by     TEXT,
      status_history TEXT NOT NULL DEFAULT '[]',
-     truncated      INTEGER NOT NULL DEFAULT 0
+     truncated      INTEGER NOT NULL DEFAULT 0,
+     message_metadata TEXT
    )`,
   `CREATE INDEX IF NOT EXISTS idx_state_next ON entries(state, next_attempt_at)`,
   `CREATE INDEX IF NOT EXISTS idx_text_hash_topic ON entries(text_hash, topic_id)`,
@@ -109,6 +117,10 @@ const COLUMN_ADDS: Array<{ name: string; ddl: string }> = [
   // the ALTER path exists so older databases (e.g. someone who hand-bootstrapped
   // an entries table from an earlier dev branch) still upgrade cleanly.
   { name: 'truncated', ddl: 'ALTER TABLE entries ADD COLUMN truncated INTEGER NOT NULL DEFAULT 0' },
+  // message_metadata (outbound-jargon-filepath-gap §2.5) — the table already
+  // exists on every deployed agent, so the column arrives ONLY via this
+  // idempotent ALTER (and its parallel in telegram-reply.sh's two writers).
+  { name: 'message_metadata', ddl: 'ALTER TABLE entries ADD COLUMN message_metadata TEXT' },
 ];
 
 // ── Path resolution ───────────────────────────────────────────────────
@@ -213,12 +225,12 @@ export class PendingRelayStore {
          delivery_id, topic_id, text_hash, text, format,
          http_code, error_body, attempted_port,
          attempted_at, attempts, next_attempt_at,
-         state, claimed_by, status_history, truncated
+         state, claimed_by, status_history, truncated, message_metadata
        ) VALUES (
          @delivery_id, @topic_id, @text_hash, @text, @format,
          @http_code, @error_body, @attempted_port,
          @attempted_at, 1, NULL,
-         'queued', NULL, @status_history, @truncated
+         'queued', NULL, @status_history, @truncated, @message_metadata
        )`,
     );
     const result = stmt.run({
@@ -233,6 +245,7 @@ export class PendingRelayStore {
       attempted_at: attemptedAt,
       status_history: initialHistory,
       truncated: input.truncated ? 1 : 0,
+      message_metadata: input.message_metadata ?? null,
     });
     return result.changes === 1;
   }

@@ -87,7 +87,10 @@ describe('thread→session: SessionManager carries the thread_ts', () => {
 
 describe('thread→session: reply route resolves the routing key for promise tracking', () => {
   const start = ROUTES_TS.indexOf("router.post('/slack/reply/:channelId'");
-  const block = ROUTES_TS.slice(start, start + 1600);
+  // 2400-char window: the route gained the messageKind threading block
+  // (outbound-jargon-filepath-gap §2.2 cross-channel single-sourcing), which
+  // pushed the resolveRoutingKey call past the previous 1600-char bound.
+  const block = ROUTES_TS.slice(start, start + 2400);
   it('the reply route resolves the routing key when a thread_ts is present', () => {
     expect(start).toBeGreaterThan(-1);
     expect(block).toContain('resolveRoutingKey(channelId, thread_ts');

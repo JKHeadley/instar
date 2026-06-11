@@ -168,7 +168,10 @@ export class AgentServer {
   private poolStreamAllowRemoteInput = false;
   private poolStreamConnector?: import('./WebSocketManager.js').PoolStreamConnector;
   private meshSelfId?: string;
-  private routeContext: { wsManager: import('./WebSocketManager.js').WebSocketManager | null } | null = null;
+  private routeContext: {
+    wsManager: import('./WebSocketManager.js').WebSocketManager | null;
+    pendingRelayLookup?: (deliveryId: string) => boolean;
+  } | null = null;
   private deliverySentinel: DeliveryFailureSentinel | null = null;
   private deliveryStore: PendingRelayStore | null = null;
   private toneGate: import('../core/MessagingToneGate.js').MessagingToneGate | null = null;
@@ -437,7 +440,7 @@ export class AgentServer {
     discoveryEvaluator?: import('../core/DiscoveryEvaluator.js').DiscoveryEvaluator;
     completionEvaluator?: import('../core/CompletionEvaluator.js').CompletionEvaluator;
     unifiedTrust?: import('../threadline/UnifiedTrustWiring.js').UnifiedTrustSystem;
-    liveConfig?: { set(path: string, value: unknown): void };
+    liveConfig?: { set(path: string, value: unknown): void; get?<T>(path: string, def: T): T };
     /** Shared proxy coordinator (PresenceProxy ↔ PromiseBeacon ↔ /build heartbeat). */
     proxyCoordinator?: import('../monitoring/ProxyCoordinator.js').ProxyCoordinator;
     /** Integrated-Being shared-state ledger (v1). Null/undefined when disabled. */
@@ -1705,6 +1708,14 @@ export class AgentServer {
       a2aDeliveryTracker: options.a2aDeliveryTracker ?? this.a2aDeliveryTracker,
       responseReviewGate: options.responseReviewGate ?? null,
       messagingToneGate: options.messagingToneGate ?? null,
+      // Live-config READ handle — routes that must honor config flips without
+      // a restart (outbound-advisory rollback contract, spec
+      // outbound-jargon-filepath-gap §5) read through this. Absent on older
+      // callers/tests → consumers fall back to code defaults (feature on).
+      liveConfig:
+        typeof options.liveConfig?.get === 'function'
+          ? { get: options.liveConfig.get.bind(options.liveConfig) }
+          : null,
       topicIntentArcCheck: options.topicIntentArcCheck ?? null,
       usherSignalStore: options.usherSignalStore ?? null,
       outboundDedupGate: options.outboundDedupGate ?? null,
@@ -3145,6 +3156,20 @@ export class AgentServer {
       return;
     }
     this.deliveryStore = store;
+    // §2.1 redrive exemption (outbound-jargon-filepath-gap): let the reply
+    // route validate an X-Instar-DeliveryId against an ACTUAL queue row so a
+    // legacy kindless redrive is exempt from the bypass breadcrumb while a
+    // fabricated header is not. Read-only, best-effort.
+    if (this.routeContext) {
+      this.routeContext.pendingRelayLookup = (deliveryId: string) => {
+        try {
+          return store.findByDeliveryId(deliveryId) !== null;
+        } catch {
+          /* @silent-fallback-ok — observe-only breadcrumb exemption: a store read failure means no exemption (false), never an error surface */
+          return false;
+        }
+      };
+    }
 
     const bootId = (await import('./boot-id.js')).getCurrentBootId();
     if (!bootId) {

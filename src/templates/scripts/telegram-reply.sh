@@ -18,6 +18,28 @@
 #   --stdin-base64    Decode stdin/argument text from base64 before sending.
 #                     Use this for content that may contain shell syntax or
 #                     heredoc delimiters such as a literal EOF line.
+#   --ack-advisory    Acknowledge a preflight advisory and send the message
+#                     unchanged. The preflight still runs (so the override is
+#                     audited) but never withholds. FLAG ONLY — there is
+#                     deliberately no env form (a standing env export would be
+#                     a blanket pre-ack that silently disables the inform
+#                     layer; spec outbound-jargon-filepath-gap §2.4(4)).
+#
+# Outbound advisory preflight (inform-only — spec outbound-jargon-filepath-gap §2.4):
+#   When this send comes from an automated LLM job session (the scheduler
+#   stamps INSTAR_MESSAGE_KIND=automated + INSTAR_SENDER_CLASS=llm-session
+#   into the session env — the model types nothing), the script first asks
+#   the server's deterministic detectors about the text. If they flag
+#   something (raw file path, dev jargon, localhost link), the message is
+#   NOT sent yet: the advisory prints to stdout (so the agent reads it in
+#   its transcript) and the script exits 0. The agent then either fixes the
+#   text and re-runs, or re-runs with --ack-advisory to send unchanged.
+#   The advisory layer NEVER blocks: the ack path always delivers past it,
+#   and every error path (server down, timeout, bad JSON) proceeds straight
+#   to the send as if the preflight returned nothing. Script-class senders
+#   (INSTAR_SENDER_CLASS=script) skip the preflight — there is no agent to
+#   inform. Conversational sessions have none of these env vars and are
+#   completely unaffected.
 #
 # Port resolution (in order):
 #   1. INSTAR_PORT environment variable (explicit operator override).
@@ -33,6 +55,7 @@
 
 FORMAT=""
 STDIN_BASE64=0
+ACK_ADVISORY=0
 
 # Parse leading flags before positional args.
 while [ $# -gt 0 ]; do
@@ -47,6 +70,10 @@ while [ $# -gt 0 ]; do
       ;;
     --stdin-base64|--base64-stdin)
       STDIN_BASE64=1
+      shift
+      ;;
+    --ack-advisory)
+      ACK_ADVISORY=1
       shift
       ;;
     --)
@@ -117,11 +144,14 @@ v = c.get('authToken', '')
 print(v if isinstance(v, str) else '')
 print(c.get('projectName', ''))
 print(c.get('port', ''))
+t = (((c.get('messaging') or {}).get('outboundAdvisory') or {}).get('timeoutMs', ''))
+print(t if isinstance(t, (int, float)) else '')
 " 2>/dev/null)
   CONFIG_AUTH=$(printf '%s\n' "$CONFIG_VALUES" | sed -n '1p')
   [ -z "$AUTH_TOKEN" ] && AUTH_TOKEN="$CONFIG_AUTH"
   AGENT_ID=$(printf '%s\n' "$CONFIG_VALUES" | sed -n '2p')
   CONFIG_PORT=$(printf '%s\n' "$CONFIG_VALUES" | sed -n '3p')
+  CONFIG_ADVISORY_TIMEOUT_MS=$(printf '%s\n' "$CONFIG_VALUES" | sed -n '4p')
 fi
 
 if [ -n "$INSTAR_PORT" ]; then
@@ -133,21 +163,162 @@ else
   echo "WARN: telegram-reply.sh — no INSTAR_PORT env and no port in .instar/config.json; falling back to 4040" >&2
 fi
 
-# Build JSON body (text + optional format).
-JSON_BODY=$(python3 -c '
+# ── Outbound advisory preflight (inform-only; spec outbound-jargon-filepath-gap §2.4) ──
+# Validate the scheduler-stamped env values against the literal enums BEFORE
+# use (an unexpected value forwards nothing — the server additionally coerces
+# unknowns server-side).
+MESSAGE_KIND=""
+case "${INSTAR_MESSAGE_KIND:-}" in
+  reply|health-alert|unknown|automated) MESSAGE_KIND="$INSTAR_MESSAGE_KIND" ;;
+esac
+SENDER_CLASS=""
+case "${INSTAR_SENDER_CLASS:-}" in
+  script|llm-session) SENDER_CLASS="$INSTAR_SENDER_CLASS" ;;
+esac
+# Job slug rides the metadata for server-side audit keying; charset-clamped
+# here so it can never carry quotes/injection into a JSON or SQL context.
+JOB_SLUG=$(printf '%s' "${INSTAR_JOB_SLUG:-}" | tr -c 'A-Za-z0-9._-' '_' | head -c 128)
+
+ADVISORY_CODES_CSV=""
+if [ "$MESSAGE_KIND" = "automated" ] && [ "$SENDER_CLASS" = "llm-session" ]; then
+  # Timeout: config messaging.outboundAdvisory.timeoutMs (default 2000ms),
+  # converted ms→SECONDS for curl --max-time with ceil division, clamped to
+  # [1, 10]. A raw `--max-time 2000` would be a ~33-minute fail-HANG and
+  # `$((MS/1000))` on values <1000 would yield 0 = no timeout — both invert
+  # the fail-open contract.
+  ADV_MS="${CONFIG_ADVISORY_TIMEOUT_MS:-2000}"
+  case "$ADV_MS" in (*[!0-9]*|'') ADV_MS=2000 ;; esac
+  ADV_SECS=$(( (ADV_MS + 999) / 1000 ))
+  [ "$ADV_SECS" -lt 1 ] && ADV_SECS=1
+  [ "$ADV_SECS" -gt 10 ] && ADV_SECS=10
+
+  # Preflight body via python3 (already a hard dependency of this script). If
+  # python3 is unavailable the preflight is skipped entirely — fail-open.
+  PREFLIGHT_BODY=$(PF_TOPIC="$TOPIC_ID" PF_SLUG="$JOB_SLUG" PF_KIND="$MESSAGE_KIND" python3 -c '
+import sys, json, os
+print(json.dumps({
+  "text": sys.stdin.read(),
+  "messageKind": os.environ.get("PF_KIND", "automated"),
+  "topicId": int(os.environ.get("PF_TOPIC") or 0),
+  "jobSlug": os.environ.get("PF_SLUG", ""),
+}))
+' <<<"$MSG" 2>/dev/null)
+
+  if [ -n "$PREFLIGHT_BODY" ]; then
+    PREFLIGHT_CURL=(-s -X POST "http://localhost:${PORT}/messaging/preflight"
+      -H 'Content-Type: application/json'
+      --max-time "$ADV_SECS"
+      -d "$PREFLIGHT_BODY")
+    if [ -n "$AUTH_TOKEN" ]; then
+      PREFLIGHT_CURL+=(-H "Authorization: Bearer ${AUTH_TOKEN}")
+    fi
+    if [ -n "$AGENT_ID" ]; then
+      PREFLIGHT_CURL+=(-H "X-Instar-AgentId: ${AGENT_ID}")
+    fi
+    PREFLIGHT_RESP=$(curl "${PREFLIGHT_CURL[@]}" 2>/dev/null)
+
+    # Parse advisories — every failure mode (empty/timeout/malformed/disabled)
+    # yields an empty result and the send proceeds (fail-OPEN end-to-end).
+    ADVISORY_RENDERED=$(printf '%s' "$PREFLIGHT_RESP" | python3 -c '
 import sys, json
+try:
+    resp = json.load(sys.stdin)
+    advisories = resp.get("advisories") or []
+except Exception:
+    advisories = []
+codes = ",".join(a.get("code", "") for a in advisories if isinstance(a, dict) and a.get("code"))
+print(codes)
+for a in advisories:
+    if not isinstance(a, dict):
+        continue
+    print("- " + str(a.get("code", "")))
+    m = a.get("match")
+    if m:
+        # Inert, delimited, quoted token under a fixed label — never spliced
+        # into instruction-shaped prose (injection-pinned rendering).
+        print("  detected: " + json.dumps(str(m)[:120]))
+    g = a.get("guidance")
+    if g:
+        print("  guidance: " + str(g))
+' 2>/dev/null)
+    ADVISORY_CODES_CSV=$(printf '%s\n' "$ADVISORY_RENDERED" | sed -n '1p')
+    ADVISORY_DETAIL=$(printf '%s\n' "$ADVISORY_RENDERED" | sed '1d')
+
+    if [ -n "$ADVISORY_CODES_CSV" ] && [ "$ACK_ADVISORY" != "1" ]; then
+      # Inform the sender BEFORE the user sees anything. The FIRST line is
+      # machine-unmissable and literal (the E2E asserts this exact string).
+      # Exit 0 is deliberate: non-zero means delivery failure and triggers
+      # queue/retry semantics in callers; an advisory is neither — the message
+      # was deliberately not yet sent and the next move belongs to the agent.
+      echo "NOT SENT — advisory (fix and re-run, or re-run with --ack-advisory to send unchanged)"
+      echo ""
+      echo "The outbound advisory flagged this automated message BEFORE delivery:"
+      printf '%s\n' "$ADVISORY_DETAIL"
+      echo ""
+      echo "Next move (yours — the advisory layer never blocks):"
+      echo "  1. FIX: revise the message and re-run this script (preferred)."
+      echo "  2. SEND AS-IS: re-run with --ack-advisory to deliver unchanged (the override is audited)."
+      exit 0
+    fi
+  fi
+fi
+
+# ── Serialized kind metadata — computed ONCE, shared by both body builders
+# AND both queue writers (a queued send must carry the metadata whole so the
+# sentinel redrive doesn't mis-kind it / drop an ack — spec §2.5). Every
+# component is enum-validated or charset-clamped above, so this fragment is
+# safe to interpolate into JSON and (parameterized) SQL contexts.
+METADATA_JSON=""
+if [ -n "$MESSAGE_KIND" ] || [ -n "$SENDER_CLASS" ] || [ -n "$JOB_SLUG" ]; then
+  META_PARTS=""
+  [ -n "$MESSAGE_KIND" ] && META_PARTS="\"messageKind\":\"${MESSAGE_KIND}\""
+  if [ -n "$SENDER_CLASS" ]; then
+    [ -n "$META_PARTS" ] && META_PARTS="${META_PARTS},"
+    META_PARTS="${META_PARTS}\"senderClass\":\"${SENDER_CLASS}\""
+  fi
+  if [ -n "$JOB_SLUG" ]; then
+    [ -n "$META_PARTS" ] && META_PARTS="${META_PARTS},"
+    META_PARTS="${META_PARTS}\"jobSlug\":\"${JOB_SLUG}\""
+  fi
+  if [ "$ACK_ADVISORY" = "1" ] && [ "$MESSAGE_KIND" = "automated" ] && [ "$SENDER_CLASS" = "llm-session" ]; then
+    # REQUIRED annotation (§2.4(4)) — how the server audits "acked" as the
+    # single writer. Carries the overridden codes, including [] for a
+    # preemptive ack on a clean message (itself a signal).
+    ACK_CODES_JSON=$(printf '%s' "$ADVISORY_CODES_CSV" | tr -cd 'A-Z_,' | awk -F',' '{out=""; for(i=1;i<=NF;i++){if($i!=""){out=out (out==""?"":",") "\""$i"\""}} print "["out"]"}')
+    [ -z "$ACK_CODES_JSON" ] && ACK_CODES_JSON="[]"
+    [ -n "$META_PARTS" ] && META_PARTS="${META_PARTS},"
+    META_PARTS="${META_PARTS}\"advisoryAck\":true,\"advisoryCodes\":${ACK_CODES_JSON}"
+  fi
+  METADATA_JSON="{${META_PARTS}}"
+fi
+
+# Build JSON body (text + optional format + optional kind metadata). A
+# conversational session (no kind env) produces the identical body it
+# always did.
+JSON_BODY=$(B_META="$METADATA_JSON" python3 -c '
+import sys, json, os
 msg = sys.argv[1]
 fmt = sys.argv[2]
 body = {"text": msg}
 if fmt:
     body["format"] = fmt
+meta_raw = os.environ.get("B_META", "")
+if meta_raw:
+    try:
+        body["metadata"] = json.loads(meta_raw)
+    except Exception:
+        pass
 print(json.dumps(body))
 ' "$MSG" "$FORMAT" 2>/dev/null)
 
 if [ -z "$JSON_BODY" ]; then
   # Fallback if python3 not available: basic escape, no format override.
+  # BOTH builders must carry the kind fields, or a python-degraded agent
+  # silently drops them and the incident class recurs (spec §2.1).
   ESCAPED=$(printf '%s' "$MSG" | sed 's/\\/\\\\/g; s/"/\\"/g; s/\n/\\n/g')
-  JSON_BODY="{\"text\":\"${ESCAPED}\"}"
+  META_FIELD=""
+  [ -n "$METADATA_JSON" ] && META_FIELD=",\"metadata\":${METADATA_JSON}"
+  JSON_BODY="{\"text\":\"${ESCAPED}\"${META_FIELD}}"
 fi
 
 # Assemble curl args. Always include X-Instar-AgentId when we can resolve it
@@ -293,6 +464,7 @@ except Exception:
       Q_PORT="$PORT" \
       Q_ATTEMPTED_AT="$ATTEMPTED_AT" \
       Q_TRUNCATED="$TRUNCATED" \
+      Q_METADATA="$METADATA_JSON" \
       Q_DB_PATH="$QUEUE_DB" \
       python3 -c '
 import os, sqlite3, sys, json, datetime
@@ -324,11 +496,19 @@ try:
       state TEXT NOT NULL,
       claimed_by TEXT,
       status_history TEXT NOT NULL DEFAULT "[]",
-      truncated INTEGER NOT NULL DEFAULT 0
+      truncated INTEGER NOT NULL DEFAULT 0,
+      message_metadata TEXT
     )""")
     # Idempotent column add for older schemas.
     try:
         conn.execute("ALTER TABLE entries ADD COLUMN truncated INTEGER NOT NULL DEFAULT 0")
+    except sqlite3.OperationalError as e:
+        if "duplicate column name" not in str(e):
+            raise
+    # message_metadata (kind/senderClass/advisoryAck) — the redrive must carry
+    # the metadata whole (spec outbound-jargon-filepath-gap §2.5). Idempotent.
+    try:
+        conn.execute("ALTER TABLE entries ADD COLUMN message_metadata TEXT")
     except sqlite3.OperationalError as e:
         if "duplicate column name" not in str(e):
             raise
@@ -355,8 +535,8 @@ try:
           delivery_id, topic_id, text_hash, text, format,
           http_code, error_body, attempted_port,
           attempted_at, attempts, next_attempt_at,
-          state, claimed_by, status_history, truncated
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, NULL, "queued", NULL, ?, ?)""",
+          state, claimed_by, status_history, truncated, message_metadata
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, NULL, "queued", NULL, ?, ?, ?)""",
         (
             os.environ["Q_DELIVERY_ID"],
             int(os.environ["Q_TOPIC_ID"]),
@@ -369,6 +549,7 @@ try:
             os.environ["Q_ATTEMPTED_AT"],
             initial_history,
             int(os.environ.get("Q_TRUNCATED", "0")),
+            os.environ.get("Q_METADATA") or None,
         ),
     )
     conn.commit()
@@ -386,6 +567,15 @@ except Exception as exc:
       # with IF NOT EXISTS so this is safe even if the Python path
       # partially ran.
       printf '%s' "$QUEUE_TEXT" > "${QUEUE_DB}.tmp.text"
+      # message_metadata rides via a temp file + readfile (same pattern as the
+      # text BLOB) so no shell value is ever interpolated into SQL — the
+      # metadata is enum-built, but the no-raw-interpolation rule holds anyway
+      # (spec outbound-jargon-filepath-gap §2.5).
+      META_SQL_VALUE="NULL"
+      if [ -n "$METADATA_JSON" ]; then
+        printf '%s' "$METADATA_JSON" > "${QUEUE_DB}.tmp.meta"
+        META_SQL_VALUE="CAST(readfile('${QUEUE_DB}.tmp.meta') AS TEXT)"
+      fi
       sqlite3 "$QUEUE_DB" >/dev/null 2>&1 <<SQL
 PRAGMA journal_mode=WAL;
 PRAGMA synchronous=NORMAL;
@@ -405,22 +595,24 @@ CREATE TABLE IF NOT EXISTS entries (
   state TEXT NOT NULL,
   claimed_by TEXT,
   status_history TEXT NOT NULL DEFAULT '[]',
-  truncated INTEGER NOT NULL DEFAULT 0
+  truncated INTEGER NOT NULL DEFAULT 0,
+  message_metadata TEXT
 );
+ALTER TABLE entries ADD COLUMN message_metadata TEXT;
 CREATE INDEX IF NOT EXISTS idx_state_next ON entries(state, next_attempt_at);
 CREATE INDEX IF NOT EXISTS idx_text_hash_topic ON entries(text_hash, topic_id);
 INSERT OR IGNORE INTO entries (
   delivery_id, topic_id, text_hash, text, format,
   http_code, error_body, attempted_port, attempted_at,
-  attempts, state, status_history, truncated
+  attempts, state, status_history, truncated, message_metadata
 ) VALUES (
   '$DELIVERY_ID', $TOPIC_ID, '$TEXT_HASH',
   CAST(readfile('${QUEUE_DB}.tmp.text') AS BLOB), $( [ -n "$FORMAT" ] && printf "'%s'" "$FORMAT" || echo "NULL"),
   $HTTP_CODE, NULL, $PORT, '$ATTEMPTED_AT',
-  1, 'queued', '[]', $TRUNCATED
+  1, 'queued', '[]', $TRUNCATED, $META_SQL_VALUE
 );
 SQL
-      rm -f "${QUEUE_DB}.tmp.text" 2>/dev/null
+      rm -f "${QUEUE_DB}.tmp.text" "${QUEUE_DB}.tmp.meta" 2>/dev/null
       chmod 600 "$QUEUE_DB" 2>/dev/null
     fi
 

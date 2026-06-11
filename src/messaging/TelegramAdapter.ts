@@ -539,7 +539,7 @@ export class TelegramAdapter implements MessagingAdapter {
    * invariant that avoids the 409-poller-conflict incident). Returns the sent
    * message's SendResult, or null if the relay could not deliver.
    */
-  public outboundRelay: ((topicId: number, text: string, options?: { silent?: boolean }) => Promise<SendResult | null>) | null = null;
+  public outboundRelay: ((topicId: number, text: string, options?: { silent?: boolean; kindMetadata?: Record<string, unknown> }) => Promise<SendResult | null>) | null = null;
 
   /**
    * True when a `sendToTopic` will RELAY through the lease holder rather than
@@ -1213,7 +1213,19 @@ export class TelegramAdapter implements MessagingAdapter {
    * Send a message to a specific forum topic.
    * Returns the Telegram message ID for delivery confirmation.
    */
-  async sendToTopic(topicId: number, text: string, options?: { silent?: boolean; skipStallClear?: boolean }): Promise<SendResult> {
+  async sendToTopic(
+    topicId: number,
+    text: string,
+    options?: {
+      silent?: boolean;
+      skipStallClear?: boolean;
+      /** Kind metadata (messageKind/senderClass/advisoryAck…) forwarded to
+       *  the holder on a RELAYED send so the kind survives the cross-machine
+       *  hop (spec outbound-jargon-filepath-gap §2.5). Direct sends ignore it
+       *  — the local route already consumed it. */
+      kindMetadata?: Record<string, unknown>;
+    },
+  ): Promise<SendResult> {
     const params: Record<string, unknown> = {
       chat_id: this.config.chatId,
       text,
@@ -1237,7 +1249,10 @@ export class TelegramAdapter implements MessagingAdapter {
       // Tokenless standby (bug #7): relay the send through the Telegram-owning router
       // instead of calling the API with no token. The rest of this method's bookkeeping
       // (log, stall-clear, promise-tracking) then runs identically on the relayed id.
-      const relayed = await this.outboundRelay(topicId, text, { silent: options?.silent });
+      const relayed = await this.outboundRelay(topicId, text, {
+        silent: options?.silent,
+        kindMetadata: options?.kindMetadata,
+      });
       if (!relayed) {
         throw new Error('telegram outbound relay failed (tokenless standby, router unreachable)');
       }

@@ -244,6 +244,13 @@ import type { MessagingToneGate } from '../core/MessagingToneGate.js';
 import { isJunkPayload } from '../core/junk-payload.js';
 import { detectLocalhostLink } from '../core/localhost-link.js';
 import { detectJargon } from '../core/JargonDetector.js';
+import { detectRawFilePath } from '../core/raw-file-path.js';
+import type { MessageKind } from '../core/MessagingToneGate.js';
+import {
+  OutboundAdvisoryAudit,
+  composeAdvisories,
+  PREFLIGHT_TEXT_CAP,
+} from '../messaging/OutboundAdvisory.js';
 import type { PasteManager } from '../paste/PasteManager.js';
 import type { WebSocketManager } from './WebSocketManager.js';
 import { TruncationDetector } from '../paste/TruncationDetector.js';
@@ -570,6 +577,16 @@ export function createDeliveryFailedHandler(opts: {
 
 export interface RouteContext {
   config: InstarConfig;
+  /** Live-config READ handle (mtime-staleness re-reader). Routes that must
+   *  honor config flips WITHOUT a restart (outbound-advisory rollback
+   *  contract — spec outbound-jargon-filepath-gap §5) read through this.
+   *  Null on older callers/tests → consumers fall back to code defaults. */
+  liveConfig?: { get<T>(path: string, def: T): T } | null;
+  /** Validates an X-Instar-DeliveryId against an ACTUAL PendingRelayStore
+   *  row — the §2.1 redrive exemption for the kindless-job-send breadcrumb
+   *  (a fabricated header must not buy the exemption). Wired by AgentServer
+   *  when the delivery sentinel's store opens; absent → no exemption. */
+  pendingRelayLookup?: (deliveryId: string) => boolean;
   sessionManager: SessionManager;
   state: StateManager;
   scheduler: JobScheduler | null;
@@ -1317,8 +1334,7 @@ export function createRoutes(ctx: RouteContext): Router {
       allowDebugText?: boolean;
       allowDuplicate?: boolean;
       allowLocalhostLink?: boolean;
-      messageKind?: 'reply' | 'health-alert' | 'unknown';
-      jargon?: boolean;
+      messageKind?: MessageKind;
     },
   ): Promise<OutboundEvaluation> {
     // ── Localhost-link guard (operator-mandated HARD rule, 2026-06-05) ──
@@ -1362,13 +1378,39 @@ export function createRoutes(ctx: RouteContext): Router {
         };
       }
 
-      if (options.jargon) {
+      // ── Jargon signal — single-sourced here for ALL channels, scoped to
+      // non-'reply' kinds (health-alert | automated). The gate's jargon rule
+      // (B12) is health-alert-scoped and conversational replies are explicitly
+      // jargon-legal ("prose discussion of internals is fine"), so feeding the
+      // signal on a 'reply' is dead weight that only adds over-block tail.
+      // The old `options.jargon` caller opt-in is dropped — the kind decides.
+      // Live-config kill switch: messaging.outboundFloor.jargonAlways
+      // (absence = on; read per request so a rollback needs no restart).
+      // Spec: outbound-jargon-filepath-gap §2.2.
+      const kindForSignals = options.messageKind ?? 'reply';
+      const jargonAlwaysOn =
+        ctx.liveConfig?.get<boolean>('messaging.outboundFloor.jargonAlways', true) ?? true;
+      if (jargonAlwaysOn && (kindForSignals === 'health-alert' || kindForSignals === 'automated')) {
         try {
           const j = detectJargon(text);
           signals.jargon = { detected: j.detected, terms: j.terms, score: j.score };
         } catch {
           // Detector errors never override the authority — skip the signal.
         }
+      }
+
+      // ── Raw-file-path signal — ALL kinds. Pure SIGNAL anchoring the
+      // existing B2_FILE_PATH judgment with the exact deterministic match;
+      // a legitimate "I edited src/foo.ts" stays the authority's call.
+      // Fail-OPEN: a detector throw skips the signal, never withholds.
+      // Spec: outbound-jargon-filepath-gap §2.3.
+      try {
+        const fp = detectRawFilePath(text);
+        if (fp.detected) {
+          signals.filePath = { detected: true, match: fp.match };
+        }
+      } catch {
+        // @silent-fallback-ok — detector errors never override the authority; skip the signal (outbound-jargon-filepath-gap §2.3).
       }
 
       // Recent conversation — used by both the authority and the dedup detector.
@@ -1505,8 +1547,7 @@ export function createRoutes(ctx: RouteContext): Router {
       allowDebugText?: boolean;
       allowDuplicate?: boolean;
       allowLocalhostLink?: boolean;
-      messageKind?: 'reply' | 'health-alert' | 'unknown';
-      jargon?: boolean;
+      messageKind?: MessageKind;
     },
   ): Promise<boolean> {
     // ── Self-Violation Signal (OBSERVE-ONLY) ──────────────────────────
@@ -1572,6 +1613,52 @@ export function createRoutes(ctx: RouteContext): Router {
   // AgentServer; this is the §3.3 single-funnel hookup, so the publisher can never
   // reach sendToTopic without passing through the identical evaluateOutbound.
   ctx.growthDigestPublisher?.attachSender((text: string) => postToUpdatesTopic(text));
+
+  // ── Outbound advisory (inform-only preflight for automated senders) ──
+  // Spec: docs/specs/outbound-jargon-filepath-gap.md §2.4. The SERVER is the
+  // single audit writer; escalation informs the OPERATOR via one deduped
+  // Attention item (fixed sourceContext so the per-source topic budget binds).
+  // Thresholds are live-config reads — tuning needs no restart.
+  const outboundAdvisoryAudit = new OutboundAdvisoryAudit({
+    logPath: path.join(ctx.config.stateDir, '..', 'logs', 'outbound-advisory.jsonl'),
+    getIgnoreThreshold: () =>
+      ctx.liveConfig?.get<number>('messaging.outboundAdvisory.ignoreEscalationThreshold', 3) ?? 3,
+    getSlugThreshold: () =>
+      ctx.liveConfig?.get<number>('messaging.outboundAdvisory.ignoreEscalationSlugThreshold', 5) ?? 5,
+    raiseAttention: (item) =>
+      ctx.telegram
+        ? ctx.telegram.createAttentionItem({
+            id: item.id,
+            title: item.title,
+            summary: item.summary,
+            category: item.category,
+            priority: item.priority,
+            description: item.description,
+            sourceContext: item.sourceContext,
+          })
+        : undefined,
+  });
+
+  /** Runtime enum coercion (TypeScript unions don't validate at runtime —
+   *  the value reaches the gate prompt, the audit, and the relay hop, so an
+   *  unrecognized kind is coerced to 'unknown' before threading anywhere). */
+  function coerceMessageKind(value: unknown): MessageKind | undefined {
+    if (value === undefined || value === null) return undefined;
+    return value === 'reply' || value === 'health-alert' || value === 'automated' || value === 'unknown'
+      ? value
+      : 'unknown';
+  }
+  function coerceSenderClass(value: unknown): 'script' | 'llm-session' | 'unknown' | undefined {
+    if (value === undefined || value === null) return undefined;
+    return value === 'script' || value === 'llm-session' ? value : 'unknown';
+  }
+  function coerceAdvisoryCodes(value: unknown): string[] {
+    if (!Array.isArray(value)) return [];
+    return value
+      .filter((v): v is string => typeof v === 'string')
+      .map((v) => v.slice(0, 32))
+      .slice(0, 8);
+  }
 
   /**
    * Self-Violation Signal — OBSERVE-ONLY (Correction & Preference Learning
@@ -7836,6 +7923,56 @@ export function createRoutes(ctx: RouteContext): Router {
     }
   });
 
+  // ── POST /messaging/preflight — the inform-only advisory preflight ──
+  // Deterministic detectors ONLY (no LLM call); 200 with advisories, never a
+  // content-4xx; fail-open contract: the calling script treats any non-200 /
+  // timeout / malformed response as an empty advisory list and proceeds to
+  // the send. Spec: outbound-jargon-filepath-gap §2.4(1).
+  router.post('/messaging/preflight', (req, res) => {
+    const { text, topicId, jobSlug } = (req.body ?? {}) as Record<string, unknown>;
+    if (!text || typeof text !== 'string') {
+      res.status(400).json({ error: '"text" field required' });
+      return;
+    }
+    const kind = coerceMessageKind((req.body ?? {}).messageKind) ?? 'reply';
+    const enabled = ctx.liveConfig?.get<boolean>('messaging.outboundAdvisory.enabled', true) ?? true;
+    if (!enabled) {
+      // Rollback lever (live config, no restart): behave exactly like a clean
+      // preflight so the script proceeds straight to the send.
+      res.json({ advisories: [], disabled: true });
+      return;
+    }
+    const topic = Number(topicId);
+    if (kind === 'automated' && (!Number.isFinite(topic) || typeof jobSlug !== 'string' || jobSlug.length === 0)) {
+      // Required for audit keying, escalation, and spoof correlation — a
+      // localhost POST carries no server-visible session identity to derive
+      // them from. (The shipped script always sends both; a 400 here fails
+      // open script-side anyway.)
+      res.status(400).json({ error: 'automated preflight requires numeric "topicId" and string "jobSlug"' });
+      return;
+    }
+    const capped = text.length > PREFLIGHT_TEXT_CAP ? text.slice(0, PREFLIGHT_TEXT_CAP) : text;
+    // Advisories are composed for automated sends only — the conversational
+    // path already has the full authority pipeline, and the operator's
+    // over-block concern argues against any new friction there (§4 Q2).
+    const advisories = kind === 'automated' ? composeAdvisories(capped) : [];
+    outboundAdvisoryAudit.recordPreflight({
+      topicId: Number.isFinite(topic) ? topic : 0,
+      jobSlug: typeof jobSlug === 'string' ? jobSlug : '',
+      kind,
+      text: capped,
+      advisories: advisories.map((a) => a.code),
+    });
+    res.json({ advisories });
+  });
+
+  // ── GET /messaging/advisory-log — bounded tail of the advisory audit ──
+  router.get('/messaging/advisory-log', (req, res) => {
+    const rawLimit = parseInt(String(req.query.limit ?? '50'), 10);
+    const limit = Number.isFinite(rawLimit) ? Math.min(Math.max(rawLimit, 1), 500) : 50;
+    res.json({ entries: outboundAdvisoryAudit.readTail(limit) });
+  });
+
   router.post('/telegram/reply/:topicId', async (req, res) => {
     if (!ctx.telegram) {
       res.status(503).json({ error: 'Telegram not configured' });
@@ -7893,6 +8030,67 @@ export function createRoutes(ctx: RouteContext): Router {
     const allowDuplicate = metadata?.allowDuplicate === true;
     const allowLocalhostLink = metadata?.allowLocalhostLink === true;
 
+    // ── Message kind (spec outbound-jargon-filepath-gap §2.1) ──
+    // Stamped structurally by the scheduler env → forwarded by
+    // telegram-reply.sh as metadata.messageKind. Absent → 'reply' (default
+    // behavior, unchanged). Unrecognized values coerce to 'unknown' before
+    // threading anywhere (runtime enum validation).
+    const messageKind = coerceMessageKind(metadata?.messageKind);
+    const senderClass = coerceSenderClass(metadata?.senderClass);
+    const advisoryAck = metadata?.advisoryAck === true;
+    const advisoryCodes = coerceAdvisoryCodes(metadata?.advisoryCodes);
+    const metadataJobSlug = typeof metadata?.jobSlug === 'string' ? metadata.jobSlug.slice(0, 128) : '';
+
+    // ── Observability breadcrumbs (§2.1 — visibility on the named dodge
+    // classes; sovereignty over the send is accepted, nothing is gated). ──
+    try {
+      const sessionName = resolveTopicSession(String(topicId));
+      const topicSession = sessionName
+        ? ctx.state.listSessions().find((s) => s.tmuxSession === sessionName)
+        : undefined;
+      const topicJobSlug = topicSession?.jobSlug;
+      if (topicJobSlug && messageKind === undefined) {
+        // A kindless send whose topic maps to a job session — possible
+        // hand-curl / env-unset bypass. EXEMPT: a sentinel redrive carrying
+        // X-Instar-DeliveryId that matches an ACTUAL queue row (legacy queued
+        // rows may lack a kind; a redrive is not a bypass — §2.5). A
+        // fabricated header must not buy the exemption.
+        const isValidRedrive =
+          typeof deliveryId === 'string' &&
+          /^[0-9a-f-]{16,64}$/i.test(deliveryId) &&
+          ctx.pendingRelayLookup?.(deliveryId) === true;
+        if (!isValidRedrive) {
+          console.log(
+            `[telegram/reply] breadcrumb: kindless send to topic ${topicId} mapping to job session (slug ${topicJobSlug}) — possible preflight bypass (observability only)`,
+          );
+        }
+      }
+      if (messageKind === 'automated' && topicJobSlug && !advisoryAck) {
+        // Automated send with no recent PREFLIGHT-written clean/advised row —
+        // possible class-spoof or modified script. Counts only preflight rows
+        // (a send's own acked row must not self-license it) and only on the
+        // ORIGINATING machine (the index is process-local by construction).
+        if (!outboundAdvisoryAudit.hasRecentPreflight(metadataJobSlug || topicJobSlug, topicId)) {
+          console.log(
+            `[telegram/reply] breadcrumb: automated send to topic ${topicId} (slug ${metadataJobSlug || topicJobSlug}) with no recent preflight row — possible class-spoof (observability only)`,
+          );
+        }
+      }
+      if (senderClass === 'script' && metadataJobSlug && ctx.scheduler) {
+        // A declared script class is validated against the job definition —
+        // the scheduler KNOWS whether this slug is script-mode. A spoofed
+        // 'script' on an LLM-session job is breadcrumbed, never trusted.
+        const jobDef = ctx.scheduler.getJobs().find((j) => j.slug === metadataJobSlug);
+        if (jobDef && jobDef.execute?.type !== 'script') {
+          console.log(
+            `[telegram/reply] breadcrumb: senderClass 'script' declared for non-script job "${metadataJobSlug}" — possible class spoof (observability only)`,
+          );
+        }
+      }
+    } catch {
+      /* @silent-fallback-ok — §2.1 breadcrumbs are observe-only; never affect delivery */
+    }
+
     // ── Content-dedup (2026-06-06): suppress the agent re-sending the SAME
     // text to the same topic within the window (an agent re-announcing its last
     // status after a restart/recovery, or a relay re-emitting identical content
@@ -7924,6 +8122,7 @@ export function createRoutes(ctx: RouteContext): Router {
         allowDebugText,
         allowDuplicate,
         allowLocalhostLink,
+        messageKind,
       }))
     )
       return;
@@ -7934,7 +8133,21 @@ export function createRoutes(ctx: RouteContext): Router {
       // whether the reply actually landed — without it the relay could only
       // ever return a placeholder 0 and so reported "ok" even when nothing was
       // delivered (the false-success-under-load class).
-      const sendResult = await ctx.telegram.sendToTopic(topicId, text, { skipStallClear: isProxy });
+      const sendResult = await ctx.telegram.sendToTopic(topicId, text, {
+        skipStallClear: isProxy,
+        // Relay-hop forwarding (§2.5): when this standby relays through the
+        // lease holder, the kind metadata must survive the hop so the
+        // HOLDER's gate/audit see accurate context. Direct sends ignore it.
+        kindMetadata:
+          messageKind || senderClass || advisoryAck
+            ? {
+                ...(messageKind ? { messageKind } : {}),
+                ...(senderClass ? { senderClass } : {}),
+                ...(metadataJobSlug ? { jobSlug: metadataJobSlug } : {}),
+                ...(advisoryAck ? { advisoryAck: true, advisoryCodes } : {}),
+              }
+            : undefined,
+      });
       // Record the content fingerprint AFTER a successful send so an identical
       // re-send within the window is suppressed — but a FAILED send (which
       // throws before here) is never recorded, so its legitimate retry isn't lost.
@@ -7991,8 +8204,29 @@ export function createRoutes(ctx: RouteContext): Router {
       if (deliveryId && typeof deliveryId === 'string' && /^[0-9a-f-]{16,64}$/i.test(deliveryId)) {
         deliveryLruRecord(deliveryId);
       }
+      // ── Acked advisory audit (§2.4(5) — the server is the single writer
+      // of 'acked'). Written on SUCCESSFUL delivery so an acked-then-queued
+      // send still lands its row after the sentinel redrive (the queue
+      // carries the metadata whole) instead of false-firing the escalation.
+      if (advisoryAck) {
+        try {
+          outboundAdvisoryAudit.recordAck({
+            topicId,
+            jobSlug: metadataJobSlug,
+            kind: messageKind ?? 'reply',
+            text,
+            advisories: advisoryCodes,
+          });
+        } catch {
+          /* @silent-fallback-ok — §2.4(5) acked-audit is observe-only; never affects delivery */
+        }
+      }
       res.json({ ok: true, topicId, messageId: sendResult?.messageId });
     } catch (err) {
+      // @silent-fallback-ok — NOT a silent fallback: this catch surfaces a 500 to the
+      // caller. The tag exists because the no-silent-fallbacks scanner's fixed 20-line
+      // window reaches past this route's end into the next route's `db = null`
+      // initializer (pattern-3 false positive after nearby line shifts).
       res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
     }
   });
@@ -8411,6 +8645,10 @@ export function createRoutes(ctx: RouteContext): Router {
       await checkOutboundMessage(text, 'slack', res, {
         allowDebugText: metadata?.allowDebugText === true,
         allowDuplicate: metadata?.allowDuplicate === true,
+        // Kind threading mirrors /telegram/reply — the jargon/filePath signal
+        // computation is single-sourced inside evaluateOutbound, so every
+        // channel gets it uniformly (spec outbound-jargon-filepath-gap §2.2).
+        messageKind: coerceMessageKind(metadata?.messageKind),
       })
     )
       return;
@@ -8597,7 +8835,8 @@ export function createRoutes(ctx: RouteContext): Router {
     if (!lane) {
       const blocked = await checkOutboundMessage(candidate, 'telegram', res, {
         messageKind: isHealthAlert ? 'health-alert' : 'reply',
-        jargon: isHealthAlert,
+        // jargon arg dropped — the kind decides: evaluateOutbound now computes
+        // the jargon signal itself for health-alert/automated kinds (§2.2).
         // No topicId — attention items create new topics; no prior thread context applies.
       });
       if (blocked) {

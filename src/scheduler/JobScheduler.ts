@@ -758,6 +758,14 @@ export class JobScheduler {
       ...process.env,
       ...(this.config.authToken ? { INSTAR_AUTH_TOKEN: this.config.authToken } : {}),
       ...(this.config.projectName ? { INSTAR_AGENT_ID: this.config.projectName } : {}),
+      // Structural message-kind stamping (outbound-jargon-filepath-gap §2.1):
+      // script-mode jobs are 'automated' senders, but SENDER_CLASS=script —
+      // a script cannot read or react to an advisory, so the preflight must
+      // never withhold its sends (telegram-reply.sh skips the preflight for
+      // script-class and the kind still rides the metadata for the gate).
+      INSTAR_MESSAGE_KIND: 'automated',
+      INSTAR_JOB_SLUG: job.slug,
+      INSTAR_SENDER_CLASS: 'script',
     };
 
     execFileAsync('/bin/sh', ['-c', script], {
