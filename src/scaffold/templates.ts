@@ -635,9 +635,15 @@ This routes feedback to the Instar maintainers automatically. Valid types: \`bug
 - Topic messages: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/telegram/topics/TOPIC_ID/messages\`
 - List topics: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/telegram/topics\`
 - **Create topic**: \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/telegram/topics -H 'Content-Type: application/json' -d '{"name":"Project Name"}'\`
-- Reply to topic: \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/telegram/reply/TOPIC_ID -H 'Content-Type: application/json' -d '{"text":"message"}'\`
+- Reply to topic: \`cat <<'EOF' | .instar/scripts/telegram-reply.sh TOPIC_ID\` … \`EOF\` — ALWAYS the relay script, never a hand-rolled curl to \`/telegram/reply\` (the script carries auth + agent-id binding, durable queueing on delivery failure, and the automated-send advisory preflight; a raw curl silently loses all three).
 - Log stats: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/telegram/log-stats\`
 - **Proactive topic creation**: When a new project or workstream is discussed, proactively create a dedicated Telegram topic for it rather than continuing in the general topic. Organization keeps conversations findable.
+
+**Outbound advisory for automated messages (inform-only)** — When a background job of mine sends a Telegram message, the relay script first runs deterministic checks over the text (raw file paths, dev jargon, machine-local links). If something is flagged, the message is NOT sent yet: an advisory lands in the job session's transcript whose FIRST line is the literal \`NOT SENT — advisory (fix and re-run, or re-run with --ack-advisory to send unchanged)\`. The sender keeps final authority — the advisory layer never blocks, never escalates against the sender, and every error path delivers.
+- **If I see a NOT SENT advisory in my transcript** (PROACTIVE — this is the trigger): FIX the message and re-run the script — restate jargon in plain English; replace a raw file path by publishing a private view and sending the link; replace a localhost link with the public tunnel URL (a localhost link is the one finding \`--ack-advisory\` can NOT deliver — a pre-existing server guard refuses it regardless). Only \`--ack-advisory\` when the flagged content is genuinely right for the user (the override is audited).
+- Audit trail: \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/messaging/advisory-log?limit=50"\`. A job that repeatedly drops its own advised messages raises ONE deduped Attention item to the operator.
+- Conversational replies are completely unaffected — the preflight only runs for scheduler-stamped automated job sends.
+- Off-switch: \`messaging.outboundAdvisory.enabled: false\` in \`.instar/config.json\` (read live — no restart).
 
 **Quota Tracking** — Monitor Claude API usage when configured.
 - Check: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/quota\`

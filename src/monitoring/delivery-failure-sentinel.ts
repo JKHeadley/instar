@@ -120,6 +120,11 @@ export interface SentinelDeps {
     text: string,
     deliveryId: string,
     isSystem?: boolean,
+    /** Serialized queue-row metadata (kind/senderClass/advisoryAck) — the
+     *  redrive forwards it whole so a queued automated send is never
+     *  mis-kinded (spec outbound-jargon-filepath-gap §2.5). Null on legacy
+     *  rows. */
+    metadataJson?: string | null,
   ) => Promise<{ status: number; body: string }>;
   /** Whoami cache — defaults to a fresh instance with default deps. */
   whoamiCache?: WhoamiCache;
@@ -448,6 +453,8 @@ export class DeliveryFailureSentinel extends EventEmitter {
         row.topic_id,
         text,
         row.delivery_id,
+        false,
+        row.message_metadata ?? null,
       );
     } catch (err) {
       return this.handlePolicyDecision(row, evaluatePolicy({
@@ -728,9 +735,20 @@ async function defaultPostReply(
   text: string,
   deliveryId: string,
   isSystem = false,
+  metadataJson: string | null = null,
 ): Promise<{ status: number; body: string }> {
   return new Promise((resolve, reject) => {
-    const payload = JSON.stringify({ text });
+    // Forward the queued row's kind metadata whole (§2.5) — a malformed
+    // stored value is dropped rather than failing the redrive.
+    let metadata: unknown;
+    if (metadataJson) {
+      try {
+        metadata = JSON.parse(metadataJson);
+      } catch {
+        metadata = undefined;
+      }
+    }
+    const payload = JSON.stringify(metadata ? { text, metadata } : { text });
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
       'Content-Length': String(Buffer.byteLength(payload, 'utf-8')),

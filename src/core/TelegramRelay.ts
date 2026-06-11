@@ -52,7 +52,7 @@ export interface RelayDeps {
 export async function relayOutbound(
   topicId: number,
   text: string,
-  opts: { silent?: boolean } | undefined,
+  opts: { silent?: boolean; kindMetadata?: Record<string, unknown> } | undefined,
   deps: RelayDeps,
 ): Promise<RelayResult | null> {
   const log = deps.log ?? (() => {});
@@ -73,7 +73,15 @@ export async function relayOutbound(
     const resp = await fetchImpl(`${url}/telegram/reply/${topicId}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${deps.authToken}` },
-      body: JSON.stringify({ text, ...(opts?.silent ? { silent: true } : {}) }),
+      // Forward the kind metadata so an automated send keeps its kind across
+      // the hop and the HOLDER's gate/audit see accurate context (spec
+      // outbound-jargon-filepath-gap §2.5). The preflight already ran on the
+      // ORIGINATING machine — it never re-runs here.
+      body: JSON.stringify({
+        text,
+        ...(opts?.silent ? { silent: true } : {}),
+        ...(opts?.kindMetadata ? { metadata: opts.kindMetadata } : {}),
+      }),
       signal: ac.signal,
     });
     if (!resp.ok) {

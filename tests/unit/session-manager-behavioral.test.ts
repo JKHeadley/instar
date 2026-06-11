@@ -181,6 +181,25 @@ describe('SessionManager behavioral tests', () => {
       expect(newSessionArgs().some((a) => typeof a === 'string' && a.startsWith('CLAUDE_CONFIG_DIR='))).toBe(false);
     });
 
+    // ── Structural message-kind stamping (outbound-jargon-filepath-gap §2.1) ──
+    it('a job spawn (jobSlug set) carries INSTAR_MESSAGE_KIND/JOB_SLUG/SENDER_CLASS env', async () => {
+      vi.mocked(execFileSync).mockClear();
+      await manager.spawnSession({ name: 'kind-job', prompt: 'p', jobSlug: 'evolution-overdue-check' });
+      const args = newSessionArgs();
+      expect(args).toContain('INSTAR_MESSAGE_KIND=automated');
+      expect(args).toContain('INSTAR_JOB_SLUG=evolution-overdue-check');
+      expect(args).toContain('INSTAR_SENDER_CLASS=llm-session');
+    });
+
+    it('an interactive (jobSlug-less) spawn carries NONE of the kind env vars', async () => {
+      vi.mocked(execFileSync).mockClear();
+      await manager.spawnSession({ name: 'kindless-job', prompt: 'p' });
+      const args = newSessionArgs();
+      expect(args.some((a) => typeof a === 'string' && a.startsWith('INSTAR_MESSAGE_KIND='))).toBe(false);
+      expect(args.some((a) => typeof a === 'string' && a.startsWith('INSTAR_JOB_SLUG='))).toBe(false);
+      expect(args.some((a) => typeof a === 'string' && a.startsWith('INSTAR_SENDER_CLASS='))).toBe(false);
+    });
+
     it('throws when max sessions reached', async () => {
       // Spawn 3 sessions (the max)
       await manager.spawnSession({ name: 'job-1', prompt: 'p1' });

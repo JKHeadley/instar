@@ -3173,6 +3173,16 @@ setTimeout(() => process.exit(0), 2000);
       result.upgraded.push('CLAUDE.md: added Real-Check Verification section');
     }
 
+    // Outbound advisory (outbound-jargon-filepath-gap §5) — the inform-only
+    // preflight for automated job sends. An agent that never learns what a
+    // "NOT SENT — advisory" transcript line means will treat it as an error
+    // and improvise; this section is the awareness (Agent Awareness Standard).
+    if (!content.includes('Outbound advisory for automated messages')) {
+      content += `\n**Outbound advisory for automated messages (inform-only)** — When a background job of mine sends a Telegram message, the relay script first runs deterministic checks over the text (raw file paths, dev jargon, machine-local links). If something is flagged, the message is NOT sent yet: an advisory lands in the job session's transcript whose FIRST line is the literal \`NOT SENT — advisory (fix and re-run, or re-run with --ack-advisory to send unchanged)\`. The sender keeps final authority — the advisory layer never blocks, never escalates against the sender, and every error path delivers.\n- **If I see a NOT SENT advisory in my transcript** (PROACTIVE — this is the trigger): FIX the message and re-run the script — restate jargon in plain English; replace a raw file path by publishing a private view and sending the link; replace a localhost link with the public tunnel URL (a localhost link is the one finding \`--ack-advisory\` can NOT deliver — a pre-existing server guard refuses it regardless). Only \`--ack-advisory\` when the flagged content is genuinely right for the user (the override is audited).\n- Audit trail: \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/messaging/advisory-log?limit=50"\`. A job that repeatedly drops its own advised messages raises ONE deduped Attention item to the operator.\n- Conversational replies are completely unaffected — the preflight only runs for scheduler-stamped automated job sends.\n- Off-switch: \`messaging.outboundAdvisory.enabled: false\` in \`.instar/config.json\` (read live — no restart).\n`;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Outbound advisory for automated messages section');
+    }
+
     // Cartographer doc-tree (cartographer-doc-tree-schema spec #1) — a hierarchical
     // semantic map with git-hash staleness. Ships dark; documented so agents that
     // enable it know the routes exist (Agent Awareness Standard).
@@ -5302,6 +5312,12 @@ Create worktrees for collaborator repos with \`instar worktree create <branch>\`
       // the enrollment wizard (never ask the user to paste a token). Mirrored to
       // the shadows like every agent-facing capability.
       '**Subscription Pool (multi-account quota + auto-swap + enrollment)**',
+      // Outbound advisory (outbound-jargon-filepath-gap §5): the inform-only
+      // preflight is framework-agnostic (the env + relay script do the work),
+      // so a Codex/Gemini job session also needs to know what a "NOT SENT —
+      // advisory" line means and that fix-then-re-run / --ack-advisory are
+      // the two moves. Mirrored like every agent-facing capability.
+      '**Outbound advisory for automated messages (inform-only)**',
       // Working-Set Handoff (WORKING-SET-HANDOFF-SPEC §3.7): the fetch reflex
       // (POST /coherence/fetch-working-set). A Codex/Gemini agent that never
       // learns it will tell the user the files "aren't on this machine"
@@ -9270,6 +9286,12 @@ process.stdin.on('end', async () => {
     // recoverable queue, neutral relay mirror; no --stdin-base64 mode).
     // Shipped through v1.3.266.
     '0f6d27a522b123551871e6081774f8c89d1ad0ce248597af7dd60d8522871069',
+    // --stdin-base64 version (pre-outbound-advisory). Shipped through
+    // v1.3.484. Required so the outbound-advisory preflight template
+    // (outbound-jargon-filepath-gap §5) reaches existing agents — without
+    // this entry a stock deployed script reads as "unknown" and only gets a
+    // `.new` candidate, and the preflight never activates in the field.
+    '3e30b2cd29e1745a3799eae98e4e10ded2ab713cbcd55ac17d21c5aab8ca0526',
   ]);
 
   /**
