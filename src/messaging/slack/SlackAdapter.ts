@@ -133,7 +133,7 @@ export class SlackAdapter implements MessagingAdapter {
   /** Called to classify why a session died */
   onClassifySessionDeath: ((sessionName: string) => Promise<{ cause: string; detail: string } | null>) | null = null;
   /** Intelligence provider for LLM-gated stall confirmation */
-  intelligence: { evaluate: (prompt: string, opts: { maxTokens: number; temperature: number }) => Promise<string> } | null = null;
+  intelligence: { evaluate: (prompt: string, opts: { maxTokens: number; temperature: number; attribution?: { component: string } }) => Promise<string> } | null = null;
 
   constructor(config: Record<string, unknown>, stateDir: string) {
     this.config = config as unknown as SlackConfig;
@@ -824,7 +824,14 @@ export class SlackAdapter implements MessagingAdapter {
     ].join('\n');
 
     try {
-      const response = await this.intelligence.evaluate(prompt, { maxTokens: 5, temperature: 0 });
+      // CONTRACT-EVIDENCE: EXEMPT — token-audit-completeness changed only the
+      // structural intelligence type + this attribution tag on an INTERNAL
+      // LLM call; no Slack API call/contract surface changed in that diff.
+      const response = await this.intelligence.evaluate(prompt, {
+        maxTokens: 5,
+        temperature: 0,
+        attribution: { component: 'SlackAdapter' },
+      });
       if (response.trim().toLowerCase() === 'no') {
         console.log(`[slack] LLM suppressed ${context.type} alert for "${context.sessionName}" (${context.minutesElapsed}m)`);
         return false;

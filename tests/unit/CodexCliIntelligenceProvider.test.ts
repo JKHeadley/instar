@@ -32,8 +32,16 @@ exit 0
 let tmpDir: string;
 let fakeCodexPath: string;
 let nonGitDir: string;
+let prevExecJson: string | undefined;
 
 beforeAll(() => {
+  // This file pins the PLAIN-mode (kill-switch) invocation contract — the
+  // fake codex echoes argv to stdout, which is only the result channel in
+  // plain mode. The default exec-json path's contracts (args, stdin prompt,
+  // file-only result, usage parse) are pinned by
+  // tests/unit/codex-cli-provider-execjson.test.ts.
+  prevExecJson = process.env.INSTAR_CODEX_EXEC_JSON;
+  process.env.INSTAR_CODEX_EXEC_JSON = '0';
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-provider-test-'));
   fakeCodexPath = path.join(tmpDir, 'fake-codex');
   fs.writeFileSync(fakeCodexPath, FAKE_CODEX_SCRIPT, { mode: 0o755 });
@@ -42,6 +50,8 @@ beforeAll(() => {
 });
 
 afterAll(() => {
+  if (prevExecJson === undefined) delete process.env.INSTAR_CODEX_EXEC_JSON;
+  else process.env.INSTAR_CODEX_EXEC_JSON = prevExecJson;
   SafeFsExecutor.safeRmSync(tmpDir, {
     recursive: true,
     force: true,

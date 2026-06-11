@@ -129,6 +129,7 @@ export class OverrideDetector {
         model: 'fast',
         maxTokens: this.maxTokens,
         temperature: 0,
+        attribution: { component: 'OverrideDetector' },
       });
     } catch {
       return NO_OVERRIDE;

@@ -3740,6 +3740,32 @@ Audit what each LLM-driven gate/sentinel actually does: WHICH provider + model r
       result.upgraded.push('CLAUDE.md: added Per-Feature LLM Metrics (/metrics/features) awareness (llm-feature-metrics + observable-intelligence)');
     }
 
+    // token-audit-completeness (Agent Awareness + Migration Parity): existing
+    // agents must learn the per-model token breakdown, usageCoverage, and the
+    // unlabeled-spend shares. Append-only addendum (house policy — the base
+    // Per-Feature section above is never edited in place). Content-sniff on
+    // the literal `unlabeledCallShare` — a REAL field name the addendum text
+    // emits AND the updated templates.ts base section emits, so a freshly-
+    // initialized agent self-matches and is never double-patched (an earlier
+    // candidate, `unlabeledShare`, is a substring of NEITHER actual field —
+    // an addendum written with the real names would never self-match and the
+    // migration would re-append on every update run, violating idempotency).
+    if (!content.includes('unlabeledCallShare')) {
+      const tokenAuditSection = `
+### Token-Audit Completeness — per-model token breakdown & usage coverage
+
+\`/metrics/features\` answers cost questions per feature AND per model (operator directive: an unmetered LLM call is an unaccountable one — see the Token-Audit Completeness standard in the constitution):
+- Each feature row carries \`byModel\` (feature×model×framework: calls, tokensIn/tokensOut/tokensCached); \`totals.byModel\` is the cross-feature aggregate. \`tokensCached\` is the cache-read SUBSET of \`tokensIn\` (fresh cost = tokensIn − tokensCached).
+- \`totals.usageCoverage\` reports, per framework, the share of successful calls that recorded REAL token usage. Codex-routed calls report per-call tokens (exec --json); 0 coverage on a non-exempt framework is the drift alarm, not noise. gemini-cli is the documented cannot-surface exemption. Failed calls still carry their already-burned tokens (error rows record cost).
+- \`totals.unlabeledTokenShare\` + \`totals.unlabeledCallShare\` track unattributed spend — the baseline is ZERO and a lint ratchet keeps every new LLM callsite tagged with \`attribution.component\`.
+- Rollback lever for codex exec-json mode: \`intelligence.codexExecJson: false\` in \`.instar/config.json\` (or env \`INSTAR_CODEX_EXEC_JSON=0\`) restores the plain invocation — codex calls then go token-blind and \`usageCoverage\` shows it honestly.
+- **When to use** (PROACTIVE): "how many tokens did feature X spend, on which model?" / "are we audit-blind anywhere?" / before enabling any cost-bearing background feature (e.g. the cartographer freshness sweep) → read \`byModel\` + \`usageCoverage\` instead of guessing. Spec: \`docs/specs/token-audit-completeness.md\`.
+`;
+      content += '\n' + tokenAuditSection;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Token-Audit Completeness (per-model breakdown + usageCoverage) awareness (token-audit-completeness)');
+    }
+
     // correction-capture-backlog (Agent Awareness + Migration Parity): existing
     // agents with the Correction & Preference Learning block need to learn that a
     // rate-limited capture is now backlogged + distilled later (not dropped), so
@@ -5364,6 +5390,21 @@ Create worktrees for collaborator repos with \`instar worktree create <branch>\`
       // KPI. A Codex/Gemini agent that never learns /metrics/learning-velocity
       // can't answer "are we actually learning?" with real numbers.
       '**Learning-Velocity Metric (EXO 3.0',
+      // Per-Feature LLM Metrics base section (token-audit-completeness): the
+      // shadow mirror never carried it. TWO tail-truncated, line-leading
+      // literals cover both deployed variants — templates' bold-block form and
+      // migrateClaudeMd's H3 form (each CLAUDE.md contains exactly one, so
+      // exactly one literal fires; the other no-ops). Tail-truncation is the
+      // list's sanctioned multi-variant trick (cf. the MTP marker); a
+      // HEAD-truncated bare phrase would anchor mid-heading and match the
+      // phrase inside OTHER sections' body prose, truncating their slices.
+      '**Per-Feature LLM Metrics',
+      '### Per-Feature LLM Metrics',
+      // Token-audit addendum (per-model breakdown + usageCoverage): a Codex/
+      // Gemini agent that never learns byModel/usageCoverage can't answer
+      // "how much did feature X spend on which model?" or spot audit-blind
+      // frameworks.
+      '### Token-Audit Completeness — per-model token breakdown & usage coverage',
     ];
 
     for (const shadowName of ['AGENTS.md', 'GEMINI.md']) {

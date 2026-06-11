@@ -158,6 +158,7 @@ ${messageText.slice(0, 2000)}
     const raw = await options.intelligence.evaluate(classifierPrompt, {
       model: 'fast',
       maxTokens: 8,
+      attribution: { component: 'PipeSessionSpawner' },
     });
     const result = raw.trim().toUpperCase();
     if (result.includes('TASK')) return 'interactive';
@@ -228,6 +229,7 @@ ${historyText.slice(0, 4000)}`;
     const result = await options.intelligence.evaluate(prompt, {
       model: 'fast',
       maxTokens: 400,
+      attribution: { component: 'PipeSessionSpawner' },
     });
     return result.trim();
   } catch {

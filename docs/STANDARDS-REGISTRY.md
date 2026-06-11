@@ -359,6 +359,14 @@ The Root says *enforce behavior in structure, not willpower.* This family is **w
 **Earned from.** "Simple" fixes that quietly broke neighboring behavior because no one looked past the immediate change.
 **Traces to the goal.** A self-evolving system changes itself constantly; uninspected change is how it fragments.
 
+### Token-Audit Completeness — An Unmetered LLM Call Is an Unaccountable One
+**Rule.** Every LLM-calling feature must carry `attribution.component`, and every IntelligenceProvider must surface per-call usage via `onUsage` or appear on the documented cannot-surface list (keyed per provider implementation) with a reason.
+**In practice.** Token cost is readable per feature and per model at `/metrics/features`; `usageCoverage` and `unlabeledCallShare` are the drift tripwires; the cartographer freshness sweep's enablement precondition references this standard. Error rows carry already-burned tokens — a flaky feature's true cost is never under-reported.
+**Earned from.** The codex token-blindness finding (2026-06-10): the exact provider route the cartographer freshness sweep uses recorded `tokensIn/tokensOut = null` on every call — the feature the operator asked to audit would have reported zero cost while spending real money.
+**Ratified by.** Operator directive — Justin, topic 22726, 2026-06-10: *"full insight and metrics into how many tokens are spent … a requirement for any feature … what features sorted by also what models."*
+**Traces to the goal.** A self-evolving agent that cannot account for what its own machinery spends cannot be trusted with a budget; observable cost is part of Observable Intelligence.
+**Applied through.** `scripts/lint-llm-attribution.js` (lint chain, empty-baseline allowlist), the provider usage-contract test (`tests/unit/intelligence-provider-usage-contract.test.ts`), and the allowlist ratchet test (`tests/unit/llm-attribution-ratchet.test.ts`).
+
 ---
 
 ## Interaction — the agent's surface to the user and the world

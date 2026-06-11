@@ -717,12 +717,90 @@ function auditLogPath(): string | null {
   return path.join(process.cwd(), '.instar', 'audit', 'destructive-ops.jsonl');
 }
 
+/**
+ * Size cap at which destructive-ops.jsonl rotates (token-audit-completeness
+ * spec). Per-call SafeFs deletions (codex out-dirs) make this a hot-path log
+ * (~1,550 appends/day on a codex-routed agent); without rotation it grows
+ * without bound AND drowns the rare wipe-class entries the audit exists to
+ * surface. Rotation keeps ONE predecessor segment (`.1`).
+ */
+const AUDIT_LOG_ROTATE_BYTES = 16 * 1024 * 1024;
+
+/**
+ * Rotate `file` → `file.1` when it has reached the size cap.
+ *
+ * Rename-based atomic rotation with a RE-STAT IMMEDIATELY BEFORE THE RENAME,
+ * skipping if below cap: two writer processes racing the threshold could
+ * otherwise double-rotate, and the second rename would clobber the FRESHEST
+ * just-rotated segment — the loss would land on the newest audit history,
+ * the worst direction for an audit log. The re-stat shrinks that window to
+ * effectively zero; the live log is never at risk either way.
+ *
+ * Returns the rotation-marker payload to write as the FIRST line of the fresh
+ * segment, or null when no rotation happened. Legitimate rotation must never
+ * be camouflage for audit-log loss (Observation Needs Structure): the marker
+ * records when the segment aged out, how many entries it held, and where the
+ * predecessor went, so "the audit log shrank" stays auditable.
+ */
+function maybeRotateAuditLog(
+  file: string,
+): { agedOutEntries: number; predecessor: string } | null {
+  let size: number;
+  try {
+    size = fs.statSync(file).size;
+  } catch {
+    // @silent-fallback-ok: no file yet — nothing to rotate; the append below creates it
+    return null;
+  }
+  if (size < AUDIT_LOG_ROTATE_BYTES) return null;
+
+  // Count the entries about to age out (informational; rotation is rare so a
+  // one-time full read is acceptable). Counted BEFORE the re-stat+rename so
+  // the rename stays immediately adjacent to its stat.
+  let agedOutEntries = 0;
+  try {
+    const content = fs.readFileSync(file, 'utf-8');
+    for (let i = 0; i < content.length; i++) {
+      if (content.charCodeAt(i) === 10) agedOutEntries++;
+    }
+  } catch {
+    // ignore — count stays 0, rotation still proceeds
+  }
+
+  const predecessor = `${file}.1`;
+  try {
+    // Re-stat immediately before the rename; skip if another writer already
+    // rotated (the file is now the fresh, below-cap segment).
+    const reStat = fs.statSync(file);
+    if (reStat.size < AUDIT_LOG_ROTATE_BYTES) return null;
+    fs.renameSync(file, predecessor);
+  } catch {
+    // @silent-fallback-ok: racing writer won, or rename failed — the audit
+    // APPEND must never be blocked by rotation housekeeping; an unrotated
+    // log just rotates on the next append
+    return null;
+  }
+  return { agedOutEntries, predecessor: path.basename(predecessor) };
+}
+
 export function appendAuditEntry(entry: AuditEntry): void {
   const file = auditLogPath();
   if (!file) return;
   try {
     fs.mkdirSync(path.dirname(file), { recursive: true });
-    fs.appendFileSync(file, JSON.stringify(entry) + '\n');
+    const rotation = maybeRotateAuditLog(file);
+    let payload = JSON.stringify(entry) + '\n';
+    if (rotation) {
+      // First entry of each fresh segment is the rotation marker.
+      payload =
+        JSON.stringify({
+          timestamp: new Date().toISOString(),
+          kind: 'rotation-marker',
+          agedOutEntries: rotation.agedOutEntries,
+          predecessor: rotation.predecessor,
+        }) + '\n' + payload;
+    }
+    fs.appendFileSync(file, payload);
   } catch (err) {
     // Fail-soft: writing audit must never block the operation.
     try {

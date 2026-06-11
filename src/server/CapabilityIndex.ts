@@ -638,7 +638,7 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     build: () => ({
       enabled: true,
       endpoints: [
-        'GET /metrics/features — per-feature rollup (calls, tokens, fired/no-op, fire-rate, p50/p95 latency, wait-stats); ?sinceHours= / ?feature= filters',
+        'GET /metrics/features — per-feature rollup (calls, tokens incl. tokensCached, fired/no-op, fire-rate, p50/p95 latency, wait-stats) + feature×model breakdown (byModel, totals.byModel), per-framework usageCoverage, unlabeled token/call shares; ?sinceHours= / ?feature= filters',
       ],
     }),
   },

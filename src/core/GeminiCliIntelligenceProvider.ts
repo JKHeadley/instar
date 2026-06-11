@@ -20,6 +20,14 @@
  * and the env allowlist + billing-var hard-delete live in
  * providers/adapters/gemini-cli/transport/geminiSpawn.ts, imported here so
  * the alive path and the registry adapter can never diverge on safety.
+ *
+ * CANNOT-SURFACE-USAGE (token-audit-completeness, documented exemption):
+ * this provider NEVER invokes options.onUsage — the gemini CLI's one-shot
+ * plain-text output carries no per-call token usage block, so there is
+ * nothing to parse. gemini-cli is therefore an `exempt: true` row in
+ * /metrics/features usageCoverage. If a future gemini CLI gains a usage
+ * surface, remove the exemption in FeatureMetricsLedger.USAGE_EXEMPT_FRAMEWORKS
+ * and wire the parse — the provider usage-contract test pins this contract.
  */
 
 import type { IntelligenceProvider, IntelligenceOptions } from './types.js';

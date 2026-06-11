@@ -1,0 +1,38 @@
+# Upgrade Guide — Token-Audit Completeness (per-call codex usage, feature×model breakdown, attribution ratchet)
+
+<!-- bump: minor -->
+
+## What Changed
+
+Implements `docs/specs/token-audit-completeness.md` (converged r6, operator-ratified: *"full token auditability — per feature AND per model — is a requirement for any feature"*). Closes the four holes in the existing `/metrics/features` funnel:
+
+- **Codex calls report real tokens.** `CodexCliIntelligenceProvider` now runs `codex exec --json` through a new streaming spawn helper (`spawnCodexExecJson` in `codexSpawn.ts`): per-call `tokensIn/tokensOut/tokensCached` are parsed line-wise from the event stream (top-level `JSON.parse` + shape validation — model content can never inject counts), while the ANSWER comes only from the `--output-last-message` file (events are signal, the file is authority). The prompt moves off argv to stdin (not `ps`-visible; no ARG_MAX ceiling). Kill-switch: `intelligence.codexExecJson: false` (30s TTL, no restart) or `INSTAR_CODEX_EXEC_JSON=0` restores the previous invocation byte-for-byte. (Note: the legacy path it restores passes the prompt on argv and embeds it in execFile error messages — a pre-existing disclosure channel the json path closes; flipping the switch re-opens it along with token-blindness.)
+- **Failed calls keep their burned cost.** The funnel's error path now records whatever usage the provider parsed before failing — including a timeout-killed call's final post-SIGTERM token count (settlement ordering pinned by tests). Flaky features can no longer look cheap.
+- **Per-model breakdown.** `/metrics/features` gains `byModel` per feature + `totals.byModel` (feature×model×framework, incl. `tokensCached` — the cache-read subset of `tokensIn`), `totals.usageCoverage` (per-framework share of successful calls with real usage; success-only denominator; gemini documented-exempt, interactive-pool excluded, pi/codex NOT exempt), and `totals.unlabeledTokenShare` + `totals.unlabeledCallShare` — all from ONE composite GROUP BY (net-zero extra window scans).
+- **Attribution is structure, not willpower.** All 8 previously-untagged funnel callsites are tagged + registered in `componentCategories.ts`; new lint `scripts/lint-llm-attribution.js` (in the `npm run lint` chain) fails CI on any untagged LLM callsite, with an EMPTY violations allowlist pinned by a ratchet test (3 lists pinned: allowlist, FUNNEL_FILES, wiring exclusions). Runtime backstop: a once-per-process `unlabeled-llm-call` degradation event.
+- **Drift tripwires.** A successful codex `--json` call recording zero usage emits `codex-usage-parse-drift` (fixed constant, once per process); a live integration canary runs ONE real codex call and FAILS on success-with-zero-usage (named-skip on environmental trouble only). `usageCoverage` is the durable surface.
+- **Audit-log rotation.** Per-call SafeFs deletions make `destructive-ops.jsonl` hot-path; `appendAuditEntry` now rotates at 16 MB (rename → `.1`, re-stat-before-rename race guard, rotation-marker first entry so a shrunken log is never mysterious).
+- **Constitution:** new Shipping standard *"Token-Audit Completeness — An Unmetered LLM Call Is an Unaccountable One"* (`docs/STANDARDS-REGISTRY.md`), ratified by operator directive (topic 22726, 2026-06-10). The cartographer freshness sweep's enablement precondition now exists; the sweep itself stays OFF (unchanged posture).
+
+## What to Tell Your User
+
+- "You can now see exactly how many tokens every one of my internal AI features spends — broken down by feature AND by model, including my codex-routed calls, which used to report zero. Ask me 'how much did X spend?' or check the LLM Activity tab."
+- "If token counting ever silently breaks (say a codex update changes its output), I'll know — there's a coverage number that drops and a tripwire that fires, instead of quiet blindness."
+- "Failed calls now count their cost too, so a flaky feature can't hide what it burns."
+
+## Summary of New Capabilities
+
+| Capability | How to Use |
+|-----------|-----------|
+| Per-call codex token usage | Automatic on every codex-routed internal call (`codex exec --json`) |
+| Feature×model token breakdown | `GET /metrics/features` → `features[].byModel`, `totals.byModel` |
+| Usage-coverage drift surface | `GET /metrics/features` → `totals.usageCoverage` (per framework) |
+| Unlabeled-spend shares | `totals.unlabeledTokenShare` / `totals.unlabeledCallShare` (baseline 0) |
+| Attribution lint + ratchet | Automatic in `npm run lint` / pre-commit; empty-baseline allowlist |
+| Codex exec-json kill-switch | `intelligence.codexExecJson: false` or `INSTAR_CODEX_EXEC_JSON=0` |
+
+## Evidence
+
+- 92 new unit tests across 8 files (parser, spawn mechanics incl. real-child EPIPE/stderr-drain/held-fd fixtures, out-dir lifecycle + sweep brakes, kill-switch resolution, funnel error rows end-to-end, byFeatureModel/coverage/shares, audit rotation, lint self-test + 3-list ratchet, provider usage-contract, drift once-per-process) — all green; full unit + integration + e2e suites green; `tsc` + full lint chain clean.
+- **Live canary validated against the real codex CLI on the dev machine:** one real `codex exec --json` call completed and recorded usage end-to-end through the new path.
+- Independent second-pass review of the side-effects artifact (`upgrades/side-effects/token-audit-completeness.md`) + security and spec-conformance review agents.
