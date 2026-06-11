@@ -246,3 +246,7 @@ The no-silent-fallbacks ratchet (CI shard 3) correctly demanded that every spec-
 catch be a TRACKED decision: all are now annotated `@silent-fallback-ok` with the spec-section
 justification (fail-open is the §0 operator constraint, not an accident), plus one documented
 scanner-window false positive on a pre-existing 500-responder catch. No behavior change.
+
+CI round 2: one source-inspection test (`slack-thread-session-wiring`) used a fixed 1600-char
+extraction window that the slack route's new messageKind threading overflowed — window widened to
+2400 with a comment naming the cause. No behavior change.
