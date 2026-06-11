@@ -48,6 +48,11 @@ export const COMPONENT_CATEGORY: Readonly<Record<string, ComponentCategory>> = {
   CompletionEvaluator: 'sentinel',
   SessionWatchdog: 'sentinel',
   TopicIntentArcCheck: 'sentinel',
+  // Canary-completion judge inside the anthropic-interactive-pool adapter
+  // (token-audit-completeness baseline-zero pass).
+  InteractivePoolCanaryJudge: 'sentinel',
+  // Slack stuck/quiet-session alert suppression judge (same pass).
+  SlackAdapter: 'sentinel',
 
   // ── Gates (pre-action allow/deny advisories) ──
   PromptGate: 'gate',
@@ -59,6 +64,11 @@ export const COMPONENT_CATEGORY: Readonly<Record<string, ComponentCategory>> = {
   CoherenceGate: 'gate',
   MessagingToneGate: 'gate',
   CoherenceReviewer: 'gate',
+  // Inbound-content sanitizer (token-audit-completeness baseline-zero pass).
+  LLMSanitizer: 'gate',
+  // uxConfirm pre-routing judgment calls (same pass).
+  OverrideDetector: 'gate',
+  TaskClassifier: 'gate',
 
   // ── Reflectors / reviewers (deeper after-the-fact analysis) ──
   JobReflector: 'reflector',

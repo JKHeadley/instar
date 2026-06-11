@@ -359,10 +359,14 @@ function resolveIntelligence(claudePath?: string): IntelligenceProvider | null {
   // Lazy require — keeps the unit-test surface focused.
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   const { buildIntelligenceProvider, frameworkFromEnv } = require('../core/intelligenceProviderFactory.js');
+  const { createCodexExecJsonConfigResolver } = require('../core/CodexCliIntelligenceProvider.js');
   const framework = frameworkFromEnv() ?? 'claude-code';
   const built = buildIntelligenceProvider({
     framework,
     binaryPath: framework === 'claude-code' ? claudePath : undefined,
+    // codex exec-json kill-switch — `instar reflect` runs in the project dir,
+    // so the resolver's default cwd-relative config path is correct here.
+    resolveExecJson: createCodexExecJsonConfigResolver(),
   });
   if (built) return built;
   // Subscription-path note (june15-headless-spawn-reroute, Class 8): this

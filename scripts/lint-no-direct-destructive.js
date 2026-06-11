@@ -84,6 +84,10 @@ const ALLOWLIST = new Set([
   // read-only `git diff --cached --name-only` for --staged. Cannot depend on
   // the TS funnel because TS is not compiled when the lint runs in pre-push.
   'scripts/lint-dev-agent-dark-gate.js',
+  // Same bootstrap-escape pattern (LLM-attribution lint, token-audit-
+  // completeness) — read-only `git diff --cached --name-only` for --staged.
+  // Cannot depend on the TS funnel because TS is not compiled at pre-push.
+  'scripts/lint-llm-attribution.js',
   // Postinstall bootstrap script — runs before TypeScript is compiled and
   // before SafeFsExecutor is available. CommonJS, can't use ESM imports.
   'scripts/fix-better-sqlite3.cjs',

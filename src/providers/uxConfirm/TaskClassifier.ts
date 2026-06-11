@@ -124,6 +124,7 @@ export class TaskClassifier {
         model: 'fast',
         maxTokens: this.maxTokens,
         temperature: 0,
+        attribution: { component: 'TaskClassifier' },
       });
     } catch {
       return { taskPattern: UNCLASSIFIED_PATTERN, source: 'fallback' };

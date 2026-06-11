@@ -106,6 +106,14 @@ export interface BuildIntelligenceProviderOptions {
    * Even when true, allowed calls are audit-logged with a cost warning.
    */
   piAllowAnthropicProviders?: boolean;
+  /**
+   * codex-cli only (token-audit-completeness): per-call kill-switch read for
+   * exec-json mode. Construction sites with config thread
+   * `createCodexExecJsonConfigResolver()`; absent, the provider falls back to
+   * env `INSTAR_CODEX_EXEC_JSON !== '0'` so config-less sites keep a working
+   * rollback lever.
+   */
+  resolveExecJson?: () => boolean;
 }
 
 /**
@@ -163,6 +171,7 @@ export function buildIntelligenceProvider(
         new CodexCliIntelligenceProvider({
           codexPath: path,
           ...(options.workingDirectory ? { workingDirectory: options.workingDirectory } : {}),
+          ...(options.resolveExecJson ? { resolveExecJson: options.resolveExecJson } : {}),
         }),
         options.breaker,
       );

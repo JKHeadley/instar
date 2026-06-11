@@ -244,6 +244,30 @@ try {
     const evidencePath = path.join(ROOT, '.contract-test-evidence.json');
     let evidenceValid = false;
 
+    // Marker escape (mirrors check-e2e-pairing.cjs's 'E2E-PAIRING: EXEMPT'):
+    // a changed adapter file may carry "CONTRACT-EVIDENCE: EXEMPT — <reason>"
+    // when the diff touches NO API-contract surface (type-only changes,
+    // attribution metadata on internal LLM calls, comments). The marker is
+    // in-diff and reviewable — a reviewer sees both the exemption and its
+    // reason next to the change it covers. Real API changes must still run
+    // `npm run test:contract` against the live API.
+    const exemptFiles = adapterChanges.filter((f) => {
+      try {
+        const content = fs.readFileSync(path.join(ROOT, f), 'utf-8');
+        return /CONTRACT-EVIDENCE:\s*EXEMPT\s*(—|--|-)/.test(content);
+      } catch {
+        return false;
+      }
+    });
+    if (exemptFiles.length === adapterChanges.length) {
+      evidenceValid = true;
+      console.log(
+        `  ⚠️  Contract-evidence gate: ALL ${adapterChanges.length} changed adapter file(s) carry ` +
+        `a CONTRACT-EVIDENCE: EXEMPT marker — accepting without live-API evidence. ` +
+        `(Remove the marker when the file's API surface next changes.)`
+      );
+    }
+
     if (fs.existsSync(evidencePath)) {
       try {
         const evidence = JSON.parse(fs.readFileSync(evidencePath, 'utf-8'));

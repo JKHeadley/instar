@@ -56,6 +56,11 @@ export interface FeatureMetricsRecorder {
     tokensIn?: number;
     tokensOut?: number;
     /**
+     * Cache-read input tokens — an informational SUBSET of tokensIn
+     * (token-audit-completeness). Fresh cost = tokensIn − tokensCached.
+     */
+    tokensCached?: number;
+    /**
      * Observable Intelligence: the resolved model + framework that actually
      * served this call, surfaced by the provider via IntelligenceOptions.onModel.
      * Recorded independently of token usage so codex/gemini/pi calls (which
@@ -78,6 +83,45 @@ export function setFeatureMetricsRecorder(recorder: FeatureMetricsRecorder | nul
 }
 export function getFeatureMetricsRecorder(): FeatureMetricsRecorder | null {
   return _featureMetricsRecorder;
+}
+
+// ── unlabeled-call runtime backstop (token-audit-completeness, Slice 3) ─────
+//
+// With the attribution baseline driven to zero (every funnel callsite tagged
+// + the lint ratchet), ANY unlabeled llm row is a real escape — conditional
+// attribution or helper-wrapper indirection the lexical lint can't see.
+// Emission is gated to ONCE PER PROCESS LIFETIME: the DegradationReporter
+// legacy path files an external feedback report per event with no
+// feedback-side cooldown, so per-call emission would be fleet-spam (P17).
+// The durable surfaces are unlabeledCallShare / unlabeledTokenShare in
+// /metrics/features. The feature string is a FIXED CONSTANT (the Telegram
+// dedup key — a fixed constant prevents the P17 unique-source dodge).
+const UNLABELED_LLM_CALL_FEATURE = 'unlabeled-llm-call';
+let emittedUnlabeledLlmCall = false;
+
+function emitUnlabeledLlmCallOnce(): void {
+  if (emittedUnlabeledLlmCall) return;
+  emittedUnlabeledLlmCall = true;
+  // Lazy import: core/ stays constructible without the monitoring layer.
+  void import('../monitoring/DegradationReporter.js')
+    .then(({ DegradationReporter }) => {
+      DegradationReporter.getInstance().report({
+        feature: UNLABELED_LLM_CALL_FEATURE,
+        primary: 'every funnel LLM call carries attribution.component (zero-baseline ratchet)',
+        fallback: 'an LLM call recorded under the "unlabeled" bucket',
+        reason: 'a funnel callsite reached evaluate() without attribution.component',
+        impact:
+          'token spend is unattributable for that caller; see unlabeledCallShare/unlabeledTokenShare in /metrics/features',
+      });
+    })
+    .catch(() => {
+      /* @silent-fallback-ok: the backstop is a signal, never a gate */
+    });
+}
+
+/** Test-only seam. */
+export function _resetUnlabeledEmissionForTest(): void {
+  emittedUnlabeledLlmCall = false;
 }
 
 export class CircuitBreakingIntelligenceProvider implements IntelligenceProvider {
@@ -106,11 +150,15 @@ export class CircuitBreakingIntelligenceProvider implements IntelligenceProvider
     extra?: {
       tokensIn?: number;
       tokensOut?: number;
+      tokensCached?: number;
       model?: string;
       framework?: string;
       verdictId?: string;
     },
   ): void {
+    // Runtime backstop: an unlabeled llm row is a real escape past the
+    // zero-baseline attribution ratchet. Signal-only, once per process.
+    if (feature === 'unlabeled') emitUnlabeledLlmCallOnce();
     const rec = _featureMetricsRecorder;
     if (!rec) return;
     try {
@@ -118,6 +166,7 @@ export class CircuitBreakingIntelligenceProvider implements IntelligenceProvider
         feature, kind: 'llm', outcome, latencyMs,
         waited, waitMs: waited ? waitMs : undefined,
         tokensIn: extra?.tokensIn, tokensOut: extra?.tokensOut,
+        tokensCached: extra?.tokensCached,
         model: extra?.model, framework: extra?.framework,
         verdictId: extra?.verdictId,
       });
@@ -154,7 +203,7 @@ export class CircuitBreakingIntelligenceProvider implements IntelligenceProvider
     // Capture token usage the underlying provider surfaces, composing with
     // any caller-supplied onUsage so we don't clobber it. This is the only
     // path token cost reaches the metrics ledger (Iris-audit item 1).
-    let usage: { inputTokens: number; outputTokens: number } | undefined;
+    let usage: { inputTokens: number; outputTokens: number; cachedTokens?: number } | undefined;
     // Observable Intelligence: capture the resolved provider/model the same
     // way, composing with any caller-supplied onModel. Recorded for EVERY
     // provider, including those that report no token usage. Declared outside the
@@ -195,6 +244,7 @@ export class CircuitBreakingIntelligenceProvider implements IntelligenceProvider
         {
           tokensIn: usage?.inputTokens,
           tokensOut: usage?.outputTokens,
+          tokensCached: usage?.cachedTokens,
           model: resolved?.model,
           framework: resolved?.framework,
           verdictId,
@@ -204,7 +254,15 @@ export class CircuitBreakingIntelligenceProvider implements IntelligenceProvider
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       const parsed = classifyRateLimit(message);
+      // Error rows carry already-burned cost (token-audit-completeness): a
+      // provider that parsed usage before failing (timeout-killed codex sweep,
+      // post-success extraction failure) invoked onUsage before rejecting, so
+      // the captured `usage` is in scope here. Dropping it would systematically
+      // under-report flaky features' true cost — the inversion of auditability.
       this.recordMetric(feature, 'error', Date.now() - startedAt, waited, options?.rateLimitWaitMs, {
+        tokensIn: usage?.inputTokens,
+        tokensOut: usage?.outputTokens,
+        tokensCached: usage?.cachedTokens,
         model: resolved?.model,
         framework: resolved?.framework,
       });

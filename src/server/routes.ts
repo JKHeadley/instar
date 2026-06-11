@@ -5635,7 +5635,18 @@ export function createRoutes(ctx: RouteContext): Router {
     const features = feature
       ? summary.features.filter((f) => f.feature === feature)
       : summary.features;
-    res.json({ ...summary, features });
+    // ?feature= composes with the per-model breakdown (token-audit-
+    // completeness): each FeatureRollup carries its own byModel slice, and
+    // totals.byModel narrows to the selected feature's partition.
+    const totals = feature
+      ? {
+          ...summary.totals,
+          byModel: features.flatMap((f) =>
+            (f.byModel ?? []).map(({ feature: _f, successRowsWithUsage: _s, errorRowsWithUsage: _e, ...m }) => m),
+          ),
+        }
+      : summary.totals;
+    res.json({ ...summary, totals, features });
   });
 
   // ── GrowthMilestoneAnalyst (the proactive growth & milestone analyst) ──────

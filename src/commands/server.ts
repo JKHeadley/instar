@@ -3278,6 +3278,10 @@ export async function startServer(options: StartOptions): Promise<void> {
       (config as unknown as { intelligenceProvider?: string }).intelligenceProvider === 'anthropic-api';
     let intelligenceSource = 'none';
     let resolvedFramework: import('../core/intelligenceProviderFactory.js').IntelligenceFramework = 'claude-code';
+    // codex exec-json kill-switch resolver — assigned where the factory is
+    // imported, shared by the main provider AND the IntelligenceRouter's
+    // per-framework builds (the path the cartographer sweep actually uses).
+    let resolveCodexExecJson: (() => boolean) | undefined;
 
     if (staleApiProvider) {
       console.log(pc.yellow(
@@ -3324,6 +3328,12 @@ export async function startServer(options: StartOptions): Promise<void> {
     // backwards-compat; INSTAR_FRAMEWORK=codex-cli routes through Codex.
     try {
       const { buildIntelligenceProvider, frameworkFromEnv } = await import('../core/intelligenceProviderFactory.js');
+      // codex exec-json kill-switch (token-audit-completeness): ONE resolver
+      // instance shared by the main provider and the IntelligenceRouter's
+      // per-framework builds — a per-call, TTL-cached read of
+      // .instar/config.json → intelligence.codexExecJson (env fallback inside).
+      const { createCodexExecJsonConfigResolver } = await import('../core/CodexCliIntelligenceProvider.js');
+      resolveCodexExecJson = createCodexExecJsonConfigResolver();
       // _defaultFramework is what the Telegram spawn path uses for any topic
       // without an explicit per-topic override (resolveTopicFramework returns
       // it). It MUST come from the agent's resolved runtime framework
@@ -3425,6 +3435,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       const built = buildIntelligenceProvider({
         framework,
         binaryPath: framework === 'claude-code' ? config.sessions.claudePath : undefined,
+        ...(resolveCodexExecJson ? { resolveExecJson: resolveCodexExecJson } : {}),
         ...(subscriptionPathOption ? { subscriptionPath: subscriptionPathOption } : {}),
         ...(framework === 'gemini-cli' && config.monitoring?.quotaTracking
           ? {
@@ -3485,6 +3496,9 @@ export async function startServer(options: StartOptions): Promise<void> {
           buildProvider: (fw) => buildIP({
             framework: fw,
             breaker: new LlmCircuitBreaker(),
+            // The per-component routing path is the one the cartographer
+            // sweep actually uses — the kill-switch must reach it too.
+            ...(fw === 'codex-cli' && resolveCodexExecJson ? { resolveExecJson: resolveCodexExecJson } : {}),
             ...(fw === 'claude-code' && subscriptionPathOption
               ? { subscriptionPath: subscriptionPathOption }
               : {}),

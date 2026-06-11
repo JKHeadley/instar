@@ -834,24 +834,31 @@ export interface IntelligenceOptions {
   };
   /**
    * Optional token-usage callback (Iris-audit item 1, spec
-   * iris-audit-session-observability.md). When the underlying provider can
-   * surface usage — e.g. ClaudeCliIntelligenceProvider parsing `claude -p
-   * --output-format json` — it invokes this exactly once per successful call
-   * with the token counts. ADDITIVE and OPTIONAL: evaluate() still returns
+   * iris-audit-session-observability.md; contract widened by
+   * token-audit-completeness). When the underlying provider can surface
+   * usage — e.g. ClaudeCliIntelligenceProvider parsing `claude -p
+   * --output-format json`, or CodexCliIntelligenceProvider parsing the
+   * `codex exec --json` event stream — it invokes this EXACTLY ONCE PER CALL
+   * WHENEVER USAGE WAS PARSED, INCLUDING CALLS THAT SUBSEQUENTLY REJECT
+   * (a timeout-killed call's already-burned tokens must still reach the
+   * ledger's error row — under-reporting failed-call cost is the inversion
+   * of auditability). `cachedTokens` is an informational SUBSET of
+   * `inputTokens` (cache-read tokens; fresh cost = inputTokens −
+   * cachedTokens). ADDITIVE and OPTIONAL: evaluate() still returns
    * Promise<string>, so every existing caller is byte-identical. The wrapper
    * CircuitBreakingIntelligenceProvider sets it to feed per-feature token
-   * counts into the metrics ledger (/metrics/features), which previously always
-   * reported 0 because no usage ever reached the tap.
+   * counts into the metrics ledger (/metrics/features).
    */
-  onUsage?: (usage: { inputTokens: number; outputTokens: number }) => void;
+  onUsage?: (usage: { inputTokens: number; outputTokens: number; cachedTokens?: number }) => void;
   /**
    * Observable Intelligence standard (docs/specs/observable-intelligence.md):
    * surface the resolved provider/model so the per-feature metrics funnel can
    * record WHICH provider + model actually ran on this call. Distinct from
    * onUsage on purpose — onUsage only fires when a provider can parse token
-   * counts (Claude can; codex/gemini/pi cannot), so tying model to it would
-   * leave the exact providers we most need to audit unlabeled. Every provider
-   * invokes onModel once per call regardless of whether it can report tokens.
+   * counts (claude, codex in exec-json mode, and pi can; gemini and the
+   * interactive pool cannot), so tying model to it would leave the providers
+   * we most need to audit unlabeled. Every provider invokes onModel once per
+   * call regardless of whether it can report tokens.
    * ADDITIVE + OPTIONAL: evaluate() still returns Promise<string>; existing
    * callers are byte-identical. The wrapper CircuitBreakingIntelligenceProvider
    * sets it to feed model/framework into the metrics ledger.

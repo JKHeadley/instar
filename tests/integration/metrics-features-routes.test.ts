@@ -96,3 +96,62 @@ describe('GET /metrics/features (integration)', () => {
     expect(res.body.totals.calls).toBe(2);
   });
 });
+
+describe('GET /metrics/features — token-audit-completeness enrichment', () => {
+  it('returns byModel per feature, totals.byModel, usageCoverage, and both unlabeled shares', async () => {
+    ledger = new FeatureMetricsLedger({ dbPath: ':memory:' });
+    ledger.record({ feature: 'GateA', outcome: 'noop', tokensIn: 100, tokensOut: 10, tokensCached: 40, model: 'haiku', framework: 'claude-code' });
+    ledger.record({ feature: 'GateA', outcome: 'fired', tokensIn: 50, tokensOut: 5, model: 'gpt-5.4-mini', framework: 'codex-cli' });
+    ledger.record({ feature: 'unlabeled', outcome: 'noop', tokensIn: 50, tokensOut: 5, model: 'haiku', framework: 'claude-code' });
+
+    const res = await request(appWith(ledger)).get('/metrics/features');
+
+    expect(res.status).toBe(200);
+    const a = res.body.features.find((f: any) => f.feature === 'GateA');
+    expect(a.byModel).toHaveLength(2);
+    expect(a.tokensCached).toBe(40);
+    const haikuRow = a.byModel.find((m: any) => m.model === 'haiku');
+    expect(haikuRow.framework).toBe('claude-code');
+    expect(haikuRow.tokensIn).toBe(100);
+    expect(haikuRow.tokensCached).toBe(40);
+
+    expect(res.body.totals.byModel.length).toBeGreaterThanOrEqual(2);
+    const haikuTotal = res.body.totals.byModel.find((m: any) => m.model === 'haiku');
+    expect(haikuTotal.tokensIn).toBe(150); // GateA + unlabeled
+
+    const cov = res.body.totals.usageCoverage;
+    expect(cov.find((c: any) => c.framework === 'claude-code').coverage).toBeCloseTo(1.0, 5);
+    expect(cov.find((c: any) => c.framework === 'codex-cli').coverage).toBeCloseTo(1.0, 5);
+
+    expect(res.body.totals.unlabeledTokenShare).toBeCloseTo(55 / 220, 5);
+    expect(res.body.totals.unlabeledCallShare).toBeCloseTo(1 / 3, 5);
+  });
+
+  it('?feature= composes with the per-model breakdown (totals.byModel narrows too)', async () => {
+    ledger = new FeatureMetricsLedger({ dbPath: ':memory:' });
+    ledger.record({ feature: 'A', outcome: 'noop', tokensIn: 10, tokensOut: 1, model: 'haiku', framework: 'claude-code' });
+    ledger.record({ feature: 'B', outcome: 'noop', tokensIn: 99, tokensOut: 9, model: 'gpt-5.4-mini', framework: 'codex-cli' });
+
+    const res = await request(appWith(ledger)).get('/metrics/features').query({ feature: 'A' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.features).toHaveLength(1);
+    expect(res.body.features[0].byModel).toHaveLength(1);
+    expect(res.body.features[0].byModel[0].model).toBe('haiku');
+    // totals.byModel narrows to the selected feature's partition.
+    expect(res.body.totals.byModel).toHaveLength(1);
+    expect(res.body.totals.byModel[0].model).toBe('haiku');
+  });
+
+  it('usageCoverage reports a zero-coverage codex framework honestly (the drift surface)', async () => {
+    ledger = new FeatureMetricsLedger({ dbPath: ':memory:' });
+    ledger.record({ feature: 'Sweep', outcome: 'noop', model: 'gpt-5.4-mini', framework: 'codex-cli' });
+    ledger.record({ feature: 'Sweep', outcome: 'noop', model: 'gpt-5.4-mini', framework: 'codex-cli' });
+
+    const res = await request(appWith(ledger)).get('/metrics/features');
+    const codex = res.body.totals.usageCoverage.find((c: any) => c.framework === 'codex-cli');
+    expect(codex.successRows).toBe(2);
+    expect(codex.coverage).toBe(0);
+    expect(codex.exempt).toBe(false); // codex is NOT exempt — 0 here is the alarm, not noise
+  });
+});

@@ -104,10 +104,14 @@ export class ClaudeCliIntelligenceProvider implements IntelligenceProvider {
  *    creation + cache read), since each is a real cost; tokensOut is
  *    output_tokens. Missing fields count as 0. onUsage fires only when at least
  *    one token count is present, and never throws into the caller.
+ *  - cachedTokens (token-audit-completeness) is cache_read_input_tokens ONLY —
+ *    a SUBSET of tokensIn (tokensIn's meaning unchanged). Cache CREATION costs
+ *    ~1.25× fresh and stays plain input; cache READS cost ~0.1× — collapsing
+ *    them would point the cost signal in two directions at once.
  */
 export function parseJsonResult(
   stdout: string,
-  onUsage?: (usage: { inputTokens: number; outputTokens: number }) => void,
+  onUsage?: (usage: { inputTokens: number; outputTokens: number; cachedTokens?: number }) => void,
 ): string {
   const trimmed = stdout.trim();
   let parsed: unknown;
@@ -125,8 +129,9 @@ export function parseJsonResult(
       const inputTokens =
         num(u.input_tokens) + num(u.cache_creation_input_tokens) + num(u.cache_read_input_tokens);
       const outputTokens = num(u.output_tokens);
+      const cachedTokens = num(u.cache_read_input_tokens);
       if (inputTokens > 0 || outputTokens > 0) {
-        onUsage({ inputTokens, outputTokens });
+        onUsage({ inputTokens, outputTokens, cachedTokens });
       }
     } catch {
       /* usage extraction must never break the result path */
