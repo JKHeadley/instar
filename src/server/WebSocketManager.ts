@@ -287,10 +287,20 @@ export class WebSocketManager {
     return !local;
   }
 
-  /** Get-or-create the one multiplexed upstream proxy for a peer machine. */
+  /** Get-or-create the one multiplexed upstream proxy for a peer machine.
+   *
+   *  A cached proxy that reached `closed` (idle-grace close after the last
+   *  viewer left, or machine-unreachable after the bounded reconnect failed)
+   *  is EVICTED and replaced: a closed PeerStreamProxy ignores every further
+   *  subscribe by design, so returning it made the peer permanently
+   *  unstreamable until a server restart — the 2026-06-08 live bug ("connects
+   *  but the terminal stays blank, and never recovers after a hiccup"). A
+   *  fresh user-initiated subscribe is a fresh episode with its own bounded
+   *  reconnect budget, so P19 (no reconnect storms) is preserved. */
   private peerProxyFor(machineId: string): PeerStreamProxy {
     let proxy = this.peerProxies.get(machineId);
-    if (proxy) return proxy;
+    if (proxy && proxy.currentState !== 'closed') return proxy;
+    if (proxy) this.peerProxies.delete(machineId);
     proxy = new PeerStreamProxy({
       peerMachineId: machineId,
       // The connector owns URL resolution; a non-null sentinel keeps the proxy's
@@ -435,13 +445,26 @@ export class WebSocketManager {
           this.send(client.ws, { type: 'error', message: 'Missing session name' });
           return;
         }
+        // §2.2: capture happens ONLY on the owning machine. A history request
+        // for a remote-subscribed session relays upstream like input/key —
+        // the peer's reply (a `history` frame carrying the session name) fans
+        // back through onUpstreamFrame. Capturing locally here returned null
+        // for every remote session (2026-06-08 live bug: the screen-text
+        // fetch "only ever looked on the local machine").
+        const histMachine = typeof msg.machineId === 'string' ? msg.machineId : undefined;
+        if (histMachine && client.remoteSubs?.has(`${histMachine}::${session}`)) {
+          this.peerProxies.get(histMachine)?.relayFrame({ type: 'history', session, lines });
+          break;
+        }
         const historyOutput = this.sessionManager.captureOutput(session, lines);
         if (historyOutput) {
           // Update the cache so streaming doesn't immediately overwrite with fewer lines
           this.sessionOutputCache.set(`${this.clientId(client)}:${session}`, historyOutput);
           this.send(client.ws, { type: 'history', session, data: historyOutput, lines });
         } else {
-          this.send(client.ws, { type: 'error', message: `No output for session "${session}"` });
+          // Carry session + code so the frame is relayable (a sessionless
+          // error is dropped by the peer fan-out) and renders honestly.
+          this.send(client.ws, { type: 'error', code: 'session-not-found', session, message: `No output for session "${session}"` });
         }
         break;
       }

@@ -4236,7 +4236,10 @@
       }
       historyLoading = true;
       showHistorySpinner();
-      wsSend({ type: 'history', session: activeSession, lines: nextBatch });
+      // Remote sessions carry their machineId so the server relays the
+      // scrollback fetch to the owning machine (§2.2) instead of capturing
+      // locally (which can only ever return empty for a remote session).
+      wsSend({ type: 'history', session: activeSession, lines: nextBatch, ...(activeMachineId ? { machineId: activeMachineId } : {}) });
     }
 
     function showHistorySpinner() {

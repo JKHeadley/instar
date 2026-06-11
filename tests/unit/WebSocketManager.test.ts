@@ -654,4 +654,88 @@ describe('WebSocketManager — remote session routing (requesting side)', () => 
     sendMessage(client, { type: 'unsubscribe', session: 'mini-sess', machineId: 'm_mini' });
     expect(client.remoteSubs.has('m_mini::mini-sess')).toBe(false);
   });
+
+  // ── 2026-06-08 live bug #2: no recovery after a hiccup ──────────────────
+  // A proxy that reached `closed` (failed bounded reconnect, or idle-grace
+  // close) was cached forever; every later subscribe was silently ignored
+  // while the server still answered `subscribed` — a permanent blank terminal
+  // until server restart. peerProxyFor must EVICT a closed proxy.
+  describe('closed-proxy eviction (recovery after a dead upstream)', () => {
+    it('after the bounded reconnect fails (two drops), a NEW subscribe opens a FRESH upstream and streams again', () => {
+      const { connector, state } = fakeConnector();
+      const { connectClient, sendMessage } = createTestManager({ poolStreamConnector: connector, selfMachineId: 'm_self' });
+      const { ws, client } = connectClient();
+
+      sendMessage(client, { type: 'subscribe', session: 'mini-sess', machineId: 'm_mini' });
+      state.handlers.onOpen();
+      state.handlers.onClose();                 // drop #1 → bounded reconnect (connect #2)
+      expect(state.connectCount).toBe(2);
+      state.handlers.onClose();                 // drop #2 → machine-unreachable → proxy closed
+      expect(ws.sentMessages.some(m => m.type === 'error' && m.code === 'machine-unreachable')).toBe(true);
+
+      // The user clicks the tile again — a fresh episode must open a fresh link.
+      sendMessage(client, { type: 'subscribe', session: 'mini-sess', machineId: 'm_mini' });
+      expect(state.connectCount).toBe(3);       // EVICTED + recreated, not the dead cached proxy
+      state.handlers.onOpen();
+      state.handlers.onFrame({ type: 'output', session: 'mini-sess', data: 'back alive' });
+      const out = ws.sentMessages.filter(m => m.type === 'output' && m.session === 'mini-sess');
+      expect(out.some(m => m.data === 'back alive')).toBe(true);
+    });
+
+    it('after a force-closed proxy (idle-grace path), a NEW subscribe recreates the proxy', () => {
+      const { connector, state } = fakeConnector();
+      const { manager, connectClient, sendMessage } = createTestManager({ poolStreamConnector: connector, selfMachineId: 'm_self' });
+      const { client } = connectClient();
+      sendMessage(client, { type: 'subscribe', session: 'mini-sess', machineId: 'm_mini' });
+      expect(state.connectCount).toBe(1);
+      (manager as any).peerProxies.get('m_mini').close();   // what the idle-grace timer does
+      sendMessage(client, { type: 'subscribe', session: 'mini-sess', machineId: 'm_mini' });
+      expect(state.connectCount).toBe(2);                   // fresh proxy, fresh upstream
+    });
+  });
+
+  // ── 2026-06-08 live bug #1: the screen-text fetch only looked locally ──
+  describe('cross-machine history relay (§2.2 capture only on the owning machine)', () => {
+    it('a history request for a remote-subscribed session relays upstream and never captures locally', () => {
+      const sm = createMockSessionManager();
+      const { connector, state } = fakeConnector();
+      const { connectClient, sendMessage } = createTestManager({ sessionManager: sm, poolStreamConnector: connector, selfMachineId: 'm_self' });
+      const { ws, client } = connectClient();
+      sendMessage(client, { type: 'subscribe', session: 'mini-sess', machineId: 'm_mini' });
+      state.handlers.onOpen();
+      sm.captureOutput.mockClear();
+
+      sendMessage(client, { type: 'history', session: 'mini-sess', machineId: 'm_mini', lines: 7000 });
+      expect(state.sent.some((f: any) => f.type === 'history' && f.session === 'mini-sess' && f.lines === 7000)).toBe(true);
+      expect(sm.captureOutput).not.toHaveBeenCalled();      // capture happens ONLY on the owning machine
+
+      // The owning machine replies — the history frame fans back, machine-tagged.
+      state.handlers.onFrame({ type: 'history', session: 'mini-sess', data: 'remote scrollback', lines: 7000 });
+      const hist = ws.sentMessages.find(m => m.type === 'history' && m.session === 'mini-sess');
+      expect(hist).toBeDefined();
+      expect(hist!.data).toBe('remote scrollback');
+      expect(hist!.machineId).toBe('m_mini');
+    });
+
+    it('a history request WITHOUT a machineId stays on the local capture path (regression)', () => {
+      const sm = createMockSessionManager({ captureOutput: vi.fn(() => 'local scrollback') });
+      const { connector, state } = fakeConnector();
+      const { connectClient, sendMessage } = createTestManager({ sessionManager: sm, poolStreamConnector: connector, selfMachineId: 'm_self' });
+      const { ws, client } = connectClient();
+      sendMessage(client, { type: 'history', session: 'local-sess', lines: 5000 });
+      expect(sm.captureOutput).toHaveBeenCalledWith('local-sess', 5000);
+      expect(ws.sentMessages.some(m => m.type === 'history' && m.data === 'local scrollback')).toBe(true);
+      expect(state.sent).toHaveLength(0);                   // nothing relayed upstream
+    });
+
+    it('a local history miss answers an honest, relayable error (session + code, never a sessionless frame)', () => {
+      const sm = createMockSessionManager({ captureOutput: vi.fn(() => null) });
+      const { connectClient, sendMessage } = createTestManager({ sessionManager: sm });
+      const { ws, client } = connectClient();
+      sendMessage(client, { type: 'history', session: 'gone-sess', lines: 5000 });
+      const err = ws.sentMessages.find(m => m.type === 'error' && m.session === 'gone-sess');
+      expect(err).toBeDefined();
+      expect(err!.code).toBe('session-not-found');
+    });
+  });
 });
