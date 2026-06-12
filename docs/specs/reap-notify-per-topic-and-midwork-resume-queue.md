@@ -145,7 +145,10 @@ quiet hours.)
   notice rows are simply reclaimed by the old purge; accepted. Prefix discipline is
   centralized: delivery ids are built and parsed by ONE typed helper, and the contract tests
   assert every store path (claim, purge, metrics, repair) preserves prefix semantics — no
-  caller hand-assembles the string. A dedicated, always-on
+  caller hand-assembles the string, and the prefix filter is written as an index-compatible
+  range predicate on the PK (`delivery_id >= 'reap-notify:' AND delivery_id < 'reap-notify;'`
+  or equivalent), never a bare `LIKE` SQLite can't serve from the PK index — the 30s
+  always-on drain must not be a latent table scan. A dedicated, always-on
   **ReapNoticeDrain** (ships with Part A, independent of the DFS flag; 30s tick; idle cost
   is one indexed claim query — ~zero on an empty store; per-pass send cap 15 to stay under
   Telegram's per-group rate, remainder picked up next tick) delivers via direct adapter send
@@ -206,8 +209,11 @@ quiet hours.)
   is taken at boot. Stale-lock recovery is automatic: a claimant finding an existing lock
   checks liveness (same host + `kill -0` on the pid + heartbeat younger than 5 min) — a dead
   or stale lock is safely reclaimed and logged; only a LIVE other process disables the queue
-  (loudly, surfaced on the aggregated attention item — multi-process servers sharing a state
-  dir are unsupported). A crash never requires manual lock cleanup.
+  (loudly, surfaced on the aggregated attention item). HARD INVARIANT: the state dir is
+  host-local — a lock whose recorded hostname differs from this host is NEVER liveness-probed
+  or reclaimed (pid checks are meaningless cross-host); it disables the queue loudly instead.
+  Multi-process or shared-volume deployments are unsupported. A same-host crash never
+  requires manual lock cleanup.
   Entries dedupe and the resurrection ledger key on **stable identity:
   `topicId ?? jobSlug ?? tmuxSession`** (tmux names regenerate per spawn — keying on them
   makes the cap dead code for jobs and fragile across topic renames). Bounded
@@ -270,7 +276,12 @@ quiet hours.)
   path → `invalidated`.
 - R2.9 Failure ladder + brakes: spawn verified alive after a grace period; failure →
   attempts++ with backoff; `maxAttempts` (3) → `gave-up:max-attempts`; `entryTtlHours` (24)
-  → `gave-up:ttl`. The resurrection LEDGER (keyed on stableKey, surviving dequeue as
+  → `gave-up:ttl`. TTL semantics, stated deliberately: an INCIDENT-AGE cap — wall clock
+  since reap, frozen only by operator pause, NOT by pressure. An entry that expires because
+  the gates never opened all day is the CORRECT outcome (a 20-hour-stale resume is more
+  likely wrong than right) and is surfaced, not silent: pressure-starved expiries carry a
+  `pressure-starved` marker in the aggregated attention item so a day-long overload reads
+  differently from ordinary staleness. The resurrection LEDGER (keyed on stableKey, surviving dequeue as
   tombstones, 24h reset window) increments on a re-reap after a successful resume;
   `maxResurrections` (2) → `gave-up:resurrection-cap`, explicitly surfaced (P14: the most
   diagnostic event this feature produces). DRAINER CIRCUIT BREAKER: `breakerThreshold` (3)
@@ -316,12 +327,15 @@ unjustified LLM gating is overhead, not safety):
   `supervision:'shed'`; a verdict deadline (5s) prevents tick serialization. Never a silent
   blocker; never a bypass of deterministic gates.
 - **The failure class only the LLM can read** (round-3 external review asked for it
-  concretely): semantic contradictions invisible to the gates — a `reason`/evidence pair
-  showing the user had said "stop working on this" in different words than the recorded stop
-  instruction, a continuation prompt about work the entry's own reason says already finished,
-  a resurrection history whose pattern reads as a crash loop rather than interrupted work.
-  The check is its own experiment lever (`resumeQueue.tier1Check`, code-default true; runs
-  only where the queue is live) so it can be switched off without touching the queue.
+  concretely), scoped to the fields the check actually receives (entry reason, evidence,
+  age, resurrection history — it gets NO conversation context): an internal contradiction
+  between reason and evidence (a "mid-work" entry whose own reason text describes completed
+  work), a resurrection history whose pattern reads as a crash loop rather than interrupted
+  work, a continuation prompt that contradicts the entry it was built from. Catching "the
+  user said stop in different words" is NOT claimed — that is the deterministic
+  operator-stop check's job (R2.6), which reads recorded stop instructions. The check is
+  its own experiment lever (`resumeQueue.tier1Check`, code-default true; runs only where
+  the queue is live) so it can be switched off without touching the queue.
 
 **ReapNoticeDrain: tier0**, declared — deterministic delivery of pre-authored template
 content, no LLM-authored text, same class as DFS's "deterministic state machine,
