@@ -5929,6 +5929,8 @@ export async function startServer(options: StartOptions): Promise<void> {
         reapNoticeStore = PendingRelayStore.open(config.projectName, config.stateDir);
       }
     } catch (err) {
+      // @silent-fallback-ok — not silent: warns with full context here, and the
+      // notifier's enqueue-failed path reports via DegradationReporter (R1.3).
       console.warn('[reap-notify] pending-relay store unavailable — notices fall back to direct send:', err);
       reapNoticeStore = null;
     }
@@ -5969,7 +5971,7 @@ export async function startServer(options: StartOptions): Promise<void> {
               reason,
               impact,
             });
-          } catch { /* best-effort */ }
+          } catch { /* @silent-fallback-ok — guard around the degradation REPORTER itself; the degradation it describes was already logged by the caller */ }
         },
       },
       {
@@ -6111,6 +6113,8 @@ export async function startServer(options: StartOptions): Promise<void> {
             const n = typeof t === 'number' ? t : Number(t);
             return Number.isFinite(n) ? n : null;
           } catch {
+            // @silent-fallback-ok — null = "unbound": the notifier then routes
+            // the session to the lifeline index line, never a dropped notice.
             return null;
           }
         };
@@ -6123,28 +6127,24 @@ export async function startServer(options: StartOptions): Promise<void> {
             sessionCountOk: () =>
               sessionManager.listRunningSessions().length <
               ((config as { maxSessions?: number }).maxSessions ?? 10),
-            migrationInFlight: () => {
-              try {
-                return quotaManager?.isMigrationInFlight() ?? false;
-              } catch {
-                return false;
-              }
-            },
+            // No catch: a throwing dep resolves to the SAFE side (blocked)
+            // inside the drainer's gate — wrapping it here would flip the
+            // failure to the lenient side.
+            migrationInFlight: () => quotaManager?.isMigrationInFlight() ?? false,
             liveSessionForTopic: (topicId) =>
               sessionManager
                 .listRunningSessions()
                 .some((s) => resolveTopicForTmux(s.tmuxSession) === topicId),
             currentResumeUuid: (topicId) => _topicResumeMap?.get(topicId) ?? null,
             topicOwnerElsewhere: (topicId) => {
-              try {
-                const reg = sessionOwnershipRegistry;
-                const self = _meshSelfId;
-                if (!reg || !self) return false;
-                const owner = reg.ownerOf(String(topicId));
-                return !!owner && owner !== self;
-              } catch {
-                return false; // pool not wired → single-machine → always local
-              }
+              // Pool not wired → single-machine → always local. No catch: a
+              // registry error propagates to the drainer's validateReality,
+              // which resolves a throwing dep to the SAFE side (invalidated).
+              const reg = sessionOwnershipRegistry;
+              const self = _meshSelfId;
+              if (!reg || !self) return false;
+              const owner = reg.ownerOf(String(topicId));
+              return !!owner && owner !== self;
             },
             topicBindingMatches: (topicId, cwd) => {
               const bindings = scopeVerifier?.loadTopicBindings?.() as

@@ -948,6 +948,9 @@ rm()  { "${shimRunner}" rm  "$@"; }
         skipForkChecks: this.pressureTier?.() === 'critical',
       });
     } catch {
+      // @silent-fallback-ok — evidence collection must never endanger the kill
+      // path (reap-notify R2.1); an error means "no evidence collected", which
+      // the chokepoint records honestly as the expected-empty fallback.
       return [];
     }
   }

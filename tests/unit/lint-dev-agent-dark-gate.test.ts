@@ -305,25 +305,30 @@ describe('lint-dev-agent-dark-gate', () => {
       '39': 'monitoring.bootHealthBeacon.enabled',
       '58': 'monitoring.parallelWorkSentinel.enabled',
       '129': 'monitoring.sessionReaper.enabled',
-      '177': 'monitoring.agentWorktreeReaper.enabled',
-      '191': 'monitoring.mcpProcessReaper.enabled',
-      '205': 'monitoring.agentSleep.enabled',
-      '228': 'monitoring.failureLearning.enabled',
-      '260': 'monitoring.correctionLearning.enabled',
-      '332': 'monitoring.apprenticeshipCycleSla.enabled',
-      '340': 'monitoring.geminiCapacityEscalation.enabled',
-      '348': 'monitoring.releaseReadiness.enabled',
-      '389': 'threadline.a2aCheckIn.enabled',
-      '433': 'mentor.enabled',
-      '444': 'mentor.autonomousFix.enabled',
-      '459': 'mentee.enabled',
-      '544': 'multiMachine.sessionPool.enabled',
-      '702': 'cartographer.freshnessSweep.enabled',
+      // reap-notify spec: the reapNotify block gained perTopic +
+      // maxImmediatePerFlush (and the CODE-defaulted-keys NOTE), shifting
+      // every entry below it by +10. Each verified by hand against
+      // ConfigDefaults.ts (resumeQueue.* keys are deliberately ABSENT from
+      // ConfigDefaults — CODE defaults so the later fleet flip works).
+      '187': 'monitoring.agentWorktreeReaper.enabled',
+      '201': 'monitoring.mcpProcessReaper.enabled',
+      '215': 'monitoring.agentSleep.enabled',
+      '238': 'monitoring.failureLearning.enabled',
+      '270': 'monitoring.correctionLearning.enabled',
+      '342': 'monitoring.apprenticeshipCycleSla.enabled',
+      '350': 'monitoring.geminiCapacityEscalation.enabled',
+      '358': 'monitoring.releaseReadiness.enabled',
+      '399': 'threadline.a2aCheckIn.enabled',
+      '443': 'mentor.enabled',
+      '454': 'mentor.autonomousFix.enabled',
+      '469': 'mentee.enabled',
+      '554': 'multiMachine.sessionPool.enabled',
+      '712': 'cartographer.freshnessSweep.enabled',
       // fix instar#1069: the freshnessSweep block gained the event-loop-safety
       // fields (detectInWorker…scaffoldChunkNodes), shifting the two later
       // cartographer entries by +11. Verified by hand against ConfigDefaults.ts.
-      '747': 'cartographer.conformanceAudit.llmEnrichment.enabled',
-      '772': 'cartographer.subtreeNav.llmRerank.enabled',
+      '757': 'cartographer.conformanceAudit.llmEnrichment.enabled',
+      '782': 'cartographer.subtreeNav.llmRerank.enabled',
     };
     const actual = attributeRealConfigDefaults();
     expect(actual).toEqual(EXPECTED);

@@ -234,6 +234,8 @@ export class ReapNotifier {
     try {
       return this.deps.resolveTopic(tmuxSession);
     } catch {
+      // @silent-fallback-ok — null = "unbound": the session is routed to the
+      // lifeline index line instead; a notice is never dropped on this path.
       return null;
     }
   }
@@ -242,6 +244,8 @@ export class ReapNotifier {
     try {
       return this.deps.resumeQueuedFor?.(tmuxSession) ?? false;
     } catch {
+      // @silent-fallback-ok — cosmetic: only omits the "a restart is queued"
+      // line from the notice text; queueing itself is not affected.
       return false;
     }
   }
@@ -344,6 +348,8 @@ export class ReapNotifier {
     try {
       quietEnd = this.deps.quietHoursEndAt?.(now) ?? null;
     } catch {
+      // @silent-fallback-ok — unreadable quiet-hours ⇒ no quiet hold: the
+      // notice releases SOONER, never later and never lost.
       quietEnd = null;
     }
     if (tier === 'IMMEDIATE') {
@@ -382,6 +388,9 @@ export class ReapNotifier {
         next_attempt_at: releaseAtIso,
       });
     } catch (err) {
+      // @silent-fallback-ok — not silent: the captured error drives the
+      // enqueue-failed fallback below (direct send + recordNotify outcome +
+      // DegradationReporter via reportDegradation).
       enqueued = false;
       enqueueError = err instanceof Error ? err.message : String(err);
     }

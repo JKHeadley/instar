@@ -3852,7 +3852,7 @@ export function createRoutes(ctx: RouteContext): Router {
       const topicNum = Number(topic);
       if (Number.isFinite(topicNum)) ctx.resumeQueue?.cancelByTopic(topicNum);
       ctx.operatorStopRecorder?.(Number.isFinite(topicNum) ? topicNum : null);
-    } catch { /* the stop must succeed regardless */ }
+    } catch { /* @silent-fallback-ok — an operator STOP must never fail because queue-cancel bookkeeping raised; an uncancelled entry is still recoverable via TTL + the cancel lever */ }
     res.status(stopped ? 200 : 404).json({ ok: stopped, topic });
   });
 

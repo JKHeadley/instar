@@ -441,13 +441,11 @@ export class QuotaManager extends EventEmitter {
    */
   /** True while a quota migration is mid-flight (reap-notify R2.4: the
    *  resume-queue drainer never spawns during a migration — stricter than
-   *  canSpawnSession, which permits spawns mid-migration absent pressure). */
+   *  canSpawnSession, which permits spawns mid-migration absent pressure).
+   *  Deliberately NO catch here: a probe error propagates to the drainer's
+   *  gate, which resolves a throwing dep to the SAFE side (blocked). */
   isMigrationInFlight(): boolean {
-    try {
-      return this.migrator?.isMigrating() ?? false;
-    } catch {
-      return false;
-    }
+    return this.migrator?.isMigrating() ?? false;
   }
 
   canSpawnSession(priority?: string): { allowed: boolean; reason: string } {

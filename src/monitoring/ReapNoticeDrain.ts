@@ -122,7 +122,9 @@ export class ReapNoticeDrain {
     if (this.timer) return;
     this.timer = setInterval(() => {
       void this.tick().catch(() => {
-        /* tick() already guards internally; this is the last-resort belt */
+        /* @silent-fallback-ok — last-resort belt: tick() already guards and
+           records every per-row failure durably (attempts/backoff/escalation);
+           a throw here would only kill the interval timer. */
       });
     }, this.opts.tickIntervalMs);
     if (typeof this.timer.unref === 'function') this.timer.unref();

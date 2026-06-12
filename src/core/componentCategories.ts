@@ -47,6 +47,9 @@ export const COMPONENT_CATEGORY: Readonly<Record<string, ComponentCategory>> = {
   TemporalCoherenceChecker: 'sentinel',
   CompletionEvaluator: 'sentinel',
   SessionWatchdog: 'sentinel',
+  // Tier-1 observe-only resume sanity check (reap-notify spec P7) — runs on
+  // the shared LlmQueue background lane before a queued mid-work resume.
+  ResumeQueueDrainer: 'sentinel',
   TopicIntentArcCheck: 'sentinel',
   // Canary-completion judge inside the anthropic-interactive-pool adapter
   // (token-audit-completeness baseline-zero pass).

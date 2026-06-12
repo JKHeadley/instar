@@ -197,7 +197,9 @@ export class ReapGuard {
       try {
         if (fn()) out.push(name);
       } catch {
-        // closure error ⇒ no evidence from this closure (never keep-true here)
+        // @silent-fallback-ok — closure error ⇒ no evidence from this closure
+        // (never keep-true here); the evidence snapshot must never throw into
+        // a killer's decision path (reap-notify R2.1).
       }
     };
 
@@ -208,6 +210,9 @@ export class ReapGuard {
     try {
       topicId = this.deps.topicBinding(session.tmuxSession);
     } catch {
+      // @silent-fallback-ok — unresolvable binding ⇒ the topic-scoped probes
+      // are skipped; the session-scoped probes still run (same never-throw
+      // contract as `probe` above).
       topicId = null;
     }
     if (topicId != null) {

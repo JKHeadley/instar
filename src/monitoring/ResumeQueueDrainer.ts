@@ -131,7 +131,7 @@ export class ResumeQueueDrainer {
   start(): void {
     if (this.timer) return;
     this.timer = setInterval(() => {
-      void this.tick().catch(() => { /* tick guards internally */ });
+      void this.tick().catch(() => { /* @silent-fallback-ok — last-resort belt: tick() guards internally and audits every decision; a throw here would only kill the interval timer */ });
     }, this.cfg.drainIntervalSec * 1000);
     if (typeof this.timer.unref === 'function') this.timer.unref();
   }
@@ -348,16 +348,20 @@ export class ResumeQueueDrainer {
     try {
       if (!this.deps.canSpawnSession()) return 'quota';
     } catch {
+      // @silent-fallback-ok — a throwing gate resolves to BLOCKED (the safe
+      // side, no spawn), and the block is audited as gates-blocked.
       return 'quota';
     }
     try {
       if (!this.deps.sessionCountOk()) return 'session-cap';
     } catch {
+      // @silent-fallback-ok — same strict-side resolution as the quota gate.
       return 'session-cap';
     }
     try {
       if (this.deps.migrationInFlight()) return 'migration-in-flight';
     } catch {
+      // @silent-fallback-ok — same strict-side resolution as the quota gate.
       return 'migration-in-flight';
     }
     return null;
@@ -403,6 +407,8 @@ export class ResumeQueueDrainer {
     try {
       return fn();
     } catch {
+      // @silent-fallback-ok — every callsite passes the fallback that DENIES
+      // the spawn (R2.6), and the resulting invalidation is audited + folded.
       return fallback;
     }
   }
@@ -411,6 +417,8 @@ export class ResumeQueueDrainer {
     try {
       return fn();
     } catch {
+      // @silent-fallback-ok — same SAFE-side contract as safeBool (the
+      // fallback marks the entry invalid/unreadable, never spawnable).
       return fallback;
     }
   }
@@ -419,6 +427,8 @@ export class ResumeQueueDrainer {
     try {
       return await this.deps.spawnAliveAfterGrace(tmuxSession);
     } catch {
+      // @silent-fallback-ok — unverifiable spawn = FAILED attempt: it enters
+      // the audited failure ladder (retry/backoff/gave-up), never a silent ok.
       return false;
     }
   }

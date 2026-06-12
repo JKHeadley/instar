@@ -248,7 +248,9 @@ export class ResumeQueue {
       const t = new Date(this.now());
       fs.utimesSync(this.lockPath, t, t);
     } catch {
-      /* best-effort; a missing lock is re-created on next start */
+      /* @silent-fallback-ok — heartbeat touch is best-effort; a missing lock
+         is re-created on next start, and a stale heartbeat only makes THIS
+         holder's lock reclaimable (the safe direction). */
     }
   }
 
@@ -261,6 +263,8 @@ export class ResumeQueue {
           process.kill(pid, 0);
           return true;
         } catch {
+          // @silent-fallback-ok — not a fallback: kill(pid, 0) throwing IS the
+          // "pid is dead" answer this probe exists to produce.
           return false;
         }
       });
@@ -271,6 +275,8 @@ export class ResumeQueue {
         try {
           lock = JSON.parse(fs.readFileSync(this.lockPath, 'utf-8'));
         } catch {
+          // @silent-fallback-ok — corrupt/unreadable lock ⇒ no pid/hostname ⇒
+          // the stale-reclaim path below runs and AUDITS the reclaim.
           lock = {};
         }
         if (lock.hostname && lock.hostname !== hostname) {
@@ -288,6 +294,8 @@ export class ResumeQueue {
           try {
             return fs.statSync(this.lockPath).mtimeMs;
           } catch {
+            // @silent-fallback-ok — unreadable mtime ⇒ heartbeat treated as
+            // stale ⇒ the audited reclaim path, never a silent hold.
             return 0;
           }
         })();
@@ -309,6 +317,9 @@ export class ResumeQueue {
       this.disabledReason = null;
       return true;
     } catch (err) {
+      // @silent-fallback-ok — not silent: the failure is stored as
+      // disabledReason, surfaced by isDisabled() and the /sessions/resume-queue
+      // route, and the queue refuses to start (safe side).
       this.disabledReason = `resume-queue disabled: lock acquisition raised: ${err instanceof Error ? err.message : String(err)}`;
       return false;
     }
@@ -391,7 +402,8 @@ export class ResumeQueue {
     try {
       this.deps.audit?.({ ts: new Date(this.now()).toISOString(), ...event });
     } catch {
-      /* the audit sink never endangers the queue */
+      /* @silent-fallback-ok — the audit sink never endangers the queue; the
+         decision the audit row describes still happened and is persisted. */
     }
   }
 
