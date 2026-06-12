@@ -69,3 +69,8 @@ detection actually fires on real overload kills.
 Read this and the convergence report, then approve the spec (`approved: true`) so the build
 can start — the design went through 7 review rounds with 5 internal reviewers plus GPT and
 Gemini until no material findings remained.
+
+> **Status update (2026-06-12):** Approved by Justin (topic 24662). The build is in
+> progress on branch `echo/reap-notify-resume-queue` under the constitutional parent
+> principle **Close the Loop** — interrupted work is durably registered and re-surfaced
+> until it reaches a deliberate close, and every notice's delivery outcome is recorded.

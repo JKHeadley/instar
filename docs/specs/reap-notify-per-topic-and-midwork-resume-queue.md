@@ -5,6 +5,7 @@ author: "echo"
 status: "approved"
 approved: true
 approved-by: "Justin (topic 24662, 2026-06-12 10:17 PDT)"
+parent-principle: "Close the Loop"
 supervision: "ResumeQueueDrainer: tier1 (observe-only during soak; promotion criterion stated in 'Supervision'). ReapNoticeDrain: tier0 (deterministic template delivery, declared bounds)."
 lessons-engaged:
   - "P2 Signal-vs-Authority — engaged: the drainer's deterministic gates are spawn *eligibility* checks (quota, cap, pressure), all pre-existing authorities; the Tier 1 LLM check is observe-only during soak and advisory-and-audited after promotion, never a silent blocker. Hard-invariant validators on dequeued entries use the documented brittle-blocker exemption. Reap notices are system-template sends via the adapter (not /telegram/reply), so the tone gate and whoami check are structurally not on this path — declared, not assumed."
@@ -343,10 +344,11 @@ unjustified LLM gating is overhead, not safety):
   LLM sanity check via `LlmQueue` ("given reason, evidence, age, resurrection history — is
   resuming sensible?"); the verdict is AUDITED but never defers. The prompt literal-delimits
   `reason` (same discipline as R2.8).
-- **Promotion criterion:** the check graduates to advisory-defer (negative verdict defers one
-  tick, recorded) only if the soak shows ≥1 true catch (a deferral that deterministic gates
-  missed and a human agrees was right). Otherwise it stays observe-only and the spec's
-  supervision claim is downgraded honestly to "tier1-observed".
+- **Promotion criterion:** the check graduates to advisory-defer (negative verdict holds the
+  entry one tick, recorded) only if the soak shows ≥1 true catch (a verdict-driven tick-hold
+  the deterministic gates would have let through and a human agrees was right). Otherwise it
+  stays observe-only and the spec's supervision claim is downgraded honestly to
+  "tier1-observed".
 - Shed/unavailable/deadline-exceeded → deterministic gates proceed, audited
   `supervision:'shed'`; a verdict deadline (5s) prevents tick serialization. Never a silent
   blocker; never a bypass of deterministic gates.
@@ -528,6 +530,7 @@ autonomously with the author's lean, reported after; amended through convergence
 - Reaper kill-decision changes (this spec observes and recovers).
 - Dashboard tab (API + notices suffice at ship).
 - `ReapLog.read()` full-file read cost at 100k+ entries (pre-existing; marginal added volume;
-  follow-up if `/sessions/reap-log` latency surfaces).
+  follow-up if `/sessions/reap-log` latency surfaces). <!-- tracked: topic-24662 -->
+
 - Flipping `deliveryFailureSentinel.enabled` fleet-wide (its own spec's canary criteria govern
   that; this PR only fixes the store-level purge bug it shares).
