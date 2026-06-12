@@ -6,7 +6,7 @@ status: "in-convergence"
 supervision: "ResumeQueueDrainer: tier1 (observe-only during soak; promotion criterion stated in 'Supervision'). ReapNoticeDrain: tier0 (deterministic template delivery, declared bounds)."
 lessons-engaged:
   - "P2 Signal-vs-Authority — engaged: the drainer's deterministic gates are spawn *eligibility* checks (quota, cap, pressure), all pre-existing authorities; the Tier 1 LLM check is observe-only during soak and advisory-and-audited after promotion, never a silent blocker. Hard-invariant validators on dequeued entries use the documented brittle-blocker exemption. Reap notices are system-template sends via the adapter (not /telegram/reply), so the tone gate and whoami check are structurally not on this path — declared, not assumed."
-  - "P3 Migration Parity — engaged: ConfigDefaults registration for reapNotify keys; resumeQueue keys deliberately code-defaulted (NOT in ConfigDefaults) so the later fleet flip of the shipped default actually takes effect; new marker-keyed CLAUDE.md block + framework-shadow markers list; NO pending-relay schema change (the hold reuses the existing next_attempt_at column precisely so rollback keeps honoring holds)."
+  - "P3 Migration Parity — engaged: ConfigDefaults registration for reapNotify.perTopic + maxImmediatePerFlush; drainEnabled and all resumeQueue keys deliberately code-defaulted (NOT in ConfigDefaults) so later flips of shipped defaults actually take effect; new marker-keyed CLAUDE.md block + framework-shadow markers list; NO pending-relay schema change (the hold reuses the existing next_attempt_at column and the origin tag rides the delivery_id PK prefix, precisely so rollback keeps honoring holds)."
   - "P4 Testing Integrity — engaged: all three tiers specified, including the feature-alive E2E, wiring-integrity tests, and the held-row-across-restart test."
   - "P7 LLM-Supervised Execution — engaged: ResumeQueueDrainer declared Tier 1 (observe-only during the dev soak, promoted to advisory-defer only on demonstrated true catches); ReapNoticeDrain declared Tier 0 with the explicit deterministic-template justification; see 'Supervision'."
   - "P14 Distrust Temporary Success — engaged: resurrection-cap exhaustion is surfaced as the most diagnostic event the feature produces, never a silent stop; the soak must assert a true-positive midWork stamp from a quota-shed kill; the restore-purge fix is tested across a restart."
@@ -142,7 +142,10 @@ quiet hours.)
   etiquette. The tag is a routing label inside the trusted local process boundary, not an
   auth boundary (anything that can write this store can already read the bot token).
   Rollback note: a rolled-back binary has no origin filter — with DFS default-OFF, orphaned
-  notice rows are simply reclaimed by the old purge; accepted. A dedicated, always-on
+  notice rows are simply reclaimed by the old purge; accepted. Prefix discipline is
+  centralized: delivery ids are built and parsed by ONE typed helper, and the contract tests
+  assert every store path (claim, purge, metrics, repair) preserves prefix semantics — no
+  caller hand-assembles the string. A dedicated, always-on
   **ReapNoticeDrain** (ships with Part A, independent of the DFS flag; 30s tick; idle cost
   is one indexed claim query — ~zero on an empty store; per-pass send cap 15 to stay under
   Telegram's per-group rate, remainder picked up next tick) delivers via direct adapter send
@@ -221,13 +224,20 @@ quiet hours.)
   of collision the R1.6 purge bug demonstrates; the queue is per-machine operational state
   deliberately excluded from backup/restore, human-inspectable in incident response, ≤50
   entries, single-owner. Revisit only if the lock/corruption surfaces ever fire in practice.)
-- R2.4 Entry lifecycle: `queued → starting → resumed | failed | invalidated | paused |
-  gave-up:<why>`. Boot reconciliation: `starting` found at load = failed attempt
-  (attempts++). The drainer tick (60s, re-entrancy-guarded) resumes AT MOST ONE entry per
-  tick, only when ALL deterministic gates pass: pressure tier `normal` (shared
-  `PressureGauge` extraction of SessionReaper's computation — one definition of "calm") for
-  `requiredCalmTicks` (3); `QuotaManager.canSpawnSession`; session count below cap; no quota
-  migration in flight. NEVER bypassable — the manual drain route may skip calm-ticks ONLY.
+- R2.4 Entry lifecycle: `queued → starting → respawned | failed | invalidated |
+  gave-up:<why>`. (`respawned`, not "resumed": the drainer can verify the spawn is alive,
+  but `--resume` attachment is not observable from outside the pane — the terminal state
+  must not claim more than the system can see; R2.11's wording matches.) Pause is a
+  QUEUE-GLOBAL flag, not an entry state — entries keep their states while the drainer is
+  halted. Boot reconciliation: `starting` found at load = failed attempt (attempts++). The
+  drainer tick (60s, re-entrancy-guarded) resumes AT MOST ONE entry per tick, only when ALL
+  deterministic gates pass: pressure tier `normal` (shared `PressureGauge` extraction of
+  SessionReaper's computation — one definition of "calm") for `requiredCalmTicks` (3);
+  `QuotaManager.canSpawnSession`; session count below cap; no quota migration in flight.
+  NEVER bypassable — the manual drain route may skip calm-ticks ONLY. Recovery-time
+  envelope, stated: a full queue (50 entries) drains in ≥50 calm minutes BY DESIGN — the
+  one-per-tick stagger is the operator's explicit "ordered queue so they don't all resume
+  at once" requirement; batch drain was considered and deliberately rejected.
 - R2.5 Ordering: `interactive` before `job` before `other`, then FIFO by reap time.
   `priorityClass` derived server-side ONLY (session record's topic binding / jobSlug at
   enqueue); nothing session-asserted.
@@ -243,12 +253,14 @@ quiet hours.)
   - for jobs: exists, not disabled, not CrashLoopPauser-paused, not run since `queuedAt`;
   - the entry's `cwd` (and `worktreePath`) still exists on disk.
 - R2.7 **Emergency stop reaches the queue:** the MessageSentinel emergency-stop and
-  `POST /autonomous/stop-all` pause the drainer and mark queued entries `paused` (audited);
-  an explicit per-topic stop cancels that topic's entries. A paused queue never spawns.
-  Pause FREEZES entry TTLs (an operator pause must not silently expire the queue), the
-  paused state is exposed in `GET /sessions/resume-queue` alongside `lastTickAt`/breaker,
-  and the unpause lever is explicit: `POST /sessions/resume-queue/resume` (Bearer, audited)
-  — a forgotten pause is visible, never a silent feature death.
+  `POST /autonomous/stop-all` set the queue-global pause flag (audited; entries and their
+  states untouched); an explicit per-topic stop cancels that topic's entries. A paused
+  queue never spawns, and mutation routes (requeue, manual drain) are refused 409 while
+  paused — a Bearer holder cannot work around an operator stop. Pause FREEZES entry TTLs
+  (an operator pause must not silently expire the queue), the paused flag is exposed in
+  `GET /sessions/resume-queue` alongside `lastTickAt`/breaker, and the unpause lever is
+  explicit: `POST /sessions/resume-queue/resume` (Bearer, audited) — a forgotten pause is
+  visible, never a silent feature death.
 - R2.8 Resume mechanics: the spawn path gains an explicit per-spawn `cwd`/`worktreePath`
   parameter (threaded through `spawnSessionForTopic`/SessionManager spawn — the seam does
   NOT exist today and is a named extension of this spec; L13). Topic-bound → respawn with
@@ -272,12 +284,14 @@ quiet hours.)
   paused + breaker state so a wedged drainer is detectable); `POST /sessions/resume-queue/:id/cancel`;
   `POST /sessions/resume-queue/:id/requeue`; `POST /sessions/resume-queue/resume` (unpause);
   `POST /sessions/resume-queue/drain` (single-step; skips calm-ticks ONLY). All Bearer-auth.
-  **Requeue clamps:** eligible from `gave-up:*` states ONLY — never `cancelled` (an operator
-  per-topic stop) and never `paused` (an emergency stop), so a Bearer holder cannot undo an
-  operator stop; resets `attempts` but PRESERVES the original `queuedAt` (the operator-stop
-  and job-ran-since checks in R2.6 key on it); the resurrection ledger keeps counting —
-  requeueing a `gave-up:resurrection-cap` entry grants exactly ONE additional resume as an
-  audited deliberate override, and the next re-reap re-caps.
+  **Requeue clamps:** eligible from `gave-up:*` states ONLY — never `cancelled` (an
+  operator per-topic stop) and refused 409 while the queue is paused (an emergency stop),
+  so a Bearer holder cannot undo an operator stop; resets `attempts` and RE-ANCHORS the TTL
+  clock (TTL keys on `max(queuedAt, requeuedAt)` — otherwise requeueing a `gave-up:ttl`
+  entry would re-expire immediately, a dead lever) while PRESERVING the original `queuedAt`
+  for the operator-stop and job-ran-since checks in R2.6; the resurrection ledger keeps
+  counting — requeueing a `gave-up:resurrection-cap` entry grants exactly ONE additional
+  resume as an audited deliberate override, and the next re-reap re-caps.
 - R2.11 On resume, the topic gets an honest notice — "restarted this session to pick the
   work back up" (never "resumed" as a transcript claim: `--resume` can fail in-pane and fall
   back to a fresh conversation; the wording must not promise what spawn-verification cannot
@@ -324,8 +338,9 @@ fixed-template escalation" precedent; its loop brakes are the store-backed backo
 2. On flush, group detail per topic; topics whose detail dropped get a count-only notice.
 3. Each affected topic gets ONE message: sessions (or count), plain-English reason(s),
    mid-work tag, queued-resume line only when live. Lifeline gets unbound + cross-topic index.
-4. Delivery rows (the contract, per R1.3): `{ origin:'reap-notify', dedupeKey: noticeId,
-   topicId, body, next_attempt_at: releaseAt, attempts }` in PendingRelayStore. Release:
+4. Delivery rows (the contract, per R1.3): `{ delivery_id: 'reap-notify:<noticeId>',
+   topicId, body, next_attempt_at: releaseAt, attempts }` in PendingRelayStore (the prefix
+   IS the origin tag and the PK gives dedupe). Release:
    SUMMARY → batcher-window/quiet-hours-end; IMMEDIATE → now, or quiet-hours end (never wakes
    the user; a queued resume means the system is already handling it). ReapNoticeDrain
    (always-on, ships with Part A): claims due `reap-notify` rows, direct adapter send,
@@ -359,9 +374,10 @@ Failing entry → `invalidated:corrupt-entry`, audited.
   "enabled": true,             // existing
   "coalesceWindowMs": 60000,   // existing
   "perTopic": true,            // NEW — v2 grouping; false = legacy single-buffer behavior
-  "maxImmediatePerFlush": 5,   // NEW
-  "drainEnabled": true         // NEW — surgical rollback for JUST the durable drain:
-                               // false reverts delivery to the legacy direct send
+  "maxImmediatePerFlush": 5,   // NEW — registered in ConfigDefaults
+  "drainEnabled": true         // NEW — CODE-defaulted (not in ConfigDefaults, same pattern
+                               // as resumeQueue.*): surgical rollback for JUST the durable
+                               // drain — false reverts delivery to the legacy direct send
                                // (grouping unaffected; R1's durability claim lapses, stated)
 },
 "resumeQueue": {
