@@ -2381,6 +2381,40 @@ export interface InstarConfig {
    */
   topicFrameworks?: Record<string, 'claude-code' | 'codex-cli' | 'gemini-cli' | 'pi-cli'>;
   /**
+   * Topic Profile — per-topic model / thinking-mode / framework pins
+   * (docs/specs/TOPIC-PROFILE-SPEC.md §12.5). The conversational surface
+   * ("use codex here", "pin this topic to Fable") writes durable per-topic
+   * profiles to `state/topic-profiles.json`; resolution is read-side and
+   * always on (the flag gates WRITES, never reads).
+   */
+  topicProfiles?: {
+    /**
+     * Master switch. Deliberately OPTIONAL (dev-gate convention, §12.5): when
+     * omitted, the runtime resolves it via resolveDevAgentGate — LIVE on a
+     * development agent, DARK on the fleet. Set explicitly to force either
+     * way (an operator override). Registered in DEV_GATED_FEATURES.
+     * migrateConfig NEVER writes a literal value here (round-13 lessons).
+     */
+    enabled?: boolean;
+    /** §14 shadow-field dry-run — log intended respawns, perform none (default true). */
+    dryRun?: boolean;
+    /** Same-framework trailing-edge respawn debounce window, ms (§8; default 7000). */
+    respawnDebounceMs?: number;
+    /** Heavier framework-switch debounce window, ms (§8; default 45000). */
+    frameworkSwitchDebounceMs?: number;
+    /** Global profile-respawn stagger cap K (§8; default 2). */
+    maxConcurrentProfileRespawns?: number;
+    /** §10.4 spawn-failure circuit-breaker threshold N (default 3). */
+    spawnFailureBreakerThreshold?: number;
+    /** §8 'switch now' confirmation validity window, ms (default 300000). */
+    switchNowConfirmTtlMs?: number;
+    /**
+     * Optional per-topic config-default profiles (§5.2); keys use the §10.5
+     * conversation-key scheme (numeric topic id, or `slack:<channel>[:<thread>]`).
+     */
+    defaults?: Record<string, { model?: string; thinkingMode?: string }>;
+  };
+  /**
    * Topic-intent auto-capture loop config (rung 0 of continuous-working-awareness).
    * `capture.enabled` (default true) is the kill-switch for the per-turn extraction
    * loop. See docs/specs/topic-intent-capture-loop.md.

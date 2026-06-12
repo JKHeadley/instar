@@ -243,6 +243,10 @@ export class AgentServer {
   // ultra-cap monitor (rides BurnDetector's tick — no own poller).
   private modelTierSwap: ModelSwapService | null = null;
   private ultraCapMonitor: UltraSessionCapMonitor | null = null;
+  // TOPIC-PROFILE-SPEC §8/§9 — retained so the orchestrator's escalation port
+  // (wired late in server.ts via getEscalationGovernor()) can release a
+  // profile-killed session's ultra lease. Nothing else reads it post-init.
+  private escalationGovernorRef: EscalationGovernor | null = null;
   // Stored from constructor options for use in start()'s listen callback.
   // The burn-detection system needs this to route alerts; no other
   // AgentServer code reads it (the route handlers go through routeCtx).
@@ -301,6 +305,21 @@ export class AgentServer {
     selfKnowledgeTree?: import('../knowledge/SelfKnowledgeTree.js').SelfKnowledgeTree;
     coverageAuditor?: import('../knowledge/CoverageAuditor.js').CoverageAuditor;
     topicResumeMap?: import('../core/TopicResumeMap.js').TopicResumeMap;
+    /** Topic Profile (TOPIC-PROFILE-SPEC) — store + resolver + write surface
+     *  + shared confirm slots, constructed in server.ts. Backs the §9
+     *  model-swap pin consult and the /topic-profile routes. */
+    topicProfile?: {
+      store: import('../core/TopicProfileStore.js').TopicProfileStore;
+      resolver: import('../core/TopicProfileResolver.js').TopicProfileResolver;
+      surface: import('../core/topicProfileWriteSurface.js').TopicProfileWriteSurface;
+      confirmSlots: import('../core/topicProfileIngress.js').ProfileConfirmSlots;
+      /** §8 orchestrator — model-swap route runExclusive wrap + ingress
+       *  confirm surfaces. Null until the server wiring constructs it. */
+      orchestrator?: import('../core/TopicProfileOrchestrator.js').TopicProfileOrchestrator | null;
+      /** §5.3 transfer carrier — pendingTransferPull staleness on the read
+       *  surface + the /pool/transfer acquire seam. Null on single-machine. */
+      carrier?: import('../core/TopicProfileTransferCarrier.js').TopicProfileTransferCarrier | null;
+    } | null;
     sessionRefresh?: import('../core/SessionRefresh.js').SessionRefresh;
     autonomyManager?: import('../core/AutonomyProfileManager.js').AutonomyProfileManager;
     trustElevationTracker?: import('../core/TrustElevationTracker.js').TrustElevationTracker;
@@ -1590,6 +1609,10 @@ export class AgentServer {
           }
         },
       });
+      // TOPIC-PROFILE-SPEC §9: expose the governor so the orchestrator's
+      // escalation port (server.ts wiring) can release a profile-killed
+      // session's lease BEFORE expected-live is computed.
+      this.escalationGovernorRef = escalationGovernor;
       // §7: release the lease on the SAME close event that retires the
       // session (the reap-log emit) — crash-safe alongside TTL + liveness.
       options.sessionManager.on(
@@ -1601,6 +1624,8 @@ export class AgentServer {
         },
       );
       const telegramForSwap = this.telegramAdapter;
+      // swap-unconfirmed routes to the maturation-track audit breadcrumb, not
+      // Attention (TOPIC-PROFILE-SPEC §11/§14 — maturing-feature-health-no-alerts).
       this.modelTierSwap = new ModelSwapService({
         stateDir: options.config.stateDir,
         sessions: options.sessionManager,
@@ -1608,9 +1633,27 @@ export class AgentServer {
         protectedSessions: () => options.sessionManager.getProtectedSessions(),
         getConfig: teConfig,
         governor: escalationGovernor,
-        attention: telegramForSwap
-          ? (item) => telegramForSwap.createAttentionItem(item)
-          : undefined,
+        // TOPIC-PROFILE-SPEC §9 — the server-side pin consult (in-memory,
+        // O(1)). NOT gated by topicProfiles.enabled: honor-on-read covers the
+        // escalation arm (§5.2(c) — disabling the feature must not silently
+        // flip a "never escalate this topic" into 2x-cost escalation).
+        topicProfileConsult: (session) => {
+          const tp = options.topicProfile;
+          const tg = telegramForSwap;
+          if (!tp || !tg) return null;
+          const topicId = tg.getTopicForSession(session.tmuxSession);
+          if (topicId == null) return null;
+          const resolved = tp.resolver.resolve(topicId);
+          // Only a PIN counts as the topic baseline (§9 round-4): a model
+          // sourced from config defaults is not operator intent — tier:
+          // 'default' then falls to FABLE's global default as today.
+          const pinned =
+            resolved.sources.model === 'profile-pin' || resolved.sources.model === 'profile-tier-pin';
+          return {
+            suppressEscalation: resolved.escalationOverride === 'suppress',
+            baselineModel: pinned ? resolved.model ?? null : null,
+          };
+        },
       });
       // §8 mid-run cap monitor — rides BurnDetector's tick (constructed in
       // setupTokenLedgerObservability; the field is read there).
@@ -1627,6 +1670,7 @@ export class AgentServer {
       console.warn('[instar] model-tier escalation init failed (non-fatal):', err);
       this.modelTierSwap = null;
       this.ultraCapMonitor = null;
+      this.escalationGovernorRef = null;
     }
 
     // Routes
@@ -1683,6 +1727,7 @@ export class AgentServer {
       selfKnowledgeTree: options.selfKnowledgeTree ?? null,
       coverageAuditor: options.coverageAuditor ?? null,
       topicResumeMap: options.topicResumeMap ?? null,
+      topicProfile: options.topicProfile ?? null,
       sessionRefresh: options.sessionRefresh ?? null,
       modelTierSwap: this.modelTierSwap,
       autonomyManager: options.autonomyManager ?? null,
@@ -3384,5 +3429,25 @@ export class AgentServer {
    */
   getTopicOperatorStore(): TopicOperatorStore | null {
     return this.topicOperatorStore;
+  }
+
+  /**
+   * TOPIC-PROFILE-SPEC §9 — the escalation governor, exposed for the
+   * orchestrator's escalation port (server.ts wiring late-binds through the
+   * AgentServer ref so a profile-triggered kill releases the topic's ultra
+   * lease). Null when model-tier escalation failed to initialize.
+   */
+  getEscalationGovernor(): EscalationGovernor | null {
+    return this.escalationGovernorRef;
+  }
+
+  /**
+   * TOPIC-PROFILE-SPEC §7 — the FABLE in-flight swap engine, exposed for the
+   * orchestrator's inFlightSwap port (the §7 in-flight row delegates to the
+   * SAME ModelSwapService the /sessions/:name/model-swap route uses, so the
+   * §10.2 closed-enum + cost-guard + idle disciplines apply identically).
+   */
+  getModelTierSwap(): ModelSwapService | null {
+    return this.modelTierSwap;
   }
 }

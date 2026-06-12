@@ -5257,6 +5257,29 @@ Create worktrees for collaborator repos with \`instar worktree create <branch>\`
       result.upgraded.push('CLAUDE.md: added import dry-run line to Cutover Readiness section');
     }
 
+    // Topic Profile (TOPIC-PROFILE-SPEC §12) — Agent Awareness backfill. The
+    // conversational triggers are the PRIMARY surface (B2/B36: the agent acts
+    // on intent, never instructs the operator to type /topic — the slash form
+    // is a power-user convenience only), and the READ direction ships in the
+    // same section as Registry-First entries (GET /topic-profile/:topicId +
+    // logs/topic-profile-changes.jsonl) so the agent reads instead of guessing.
+    // Body mirrors generateClaudeMd() (Agent Awareness Standard). Content-
+    // sniffed on the section header, distinctive + stable, so the migration is
+    // idempotent and skips template-generated CLAUDE.md files.
+    if (!content.includes('Topic Profile (per-topic model')) {
+      const section = `
+**Topic Profile (per-topic model, thinking, framework pins)** — Every conversation topic can carry a durable profile pinning its BASELINE model (an explicit id OR a tier — never both), thinking depth (\`off\`/\`low\`/\`medium\`/\`high\`/\`max\`), and framework (\`claude-code\`/\`codex-cli\`/…). Pins survive restarts and follow the topic. **The conversational surface is PRIMARY** (PROACTIVE — these are the triggers): when the user says "use codex here", "pin this topic to Fable", or "set high thinking on this topic", that IS the request — propose the change back in plain words, confirm, and the pin is durable from then on. NEVER instruct the user to type \`/topic\`; the \`/topic\` command exists only as a power-user convenience.
+- What is this topic pinned to? \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/topic-profile/TOPIC_ID\` — Registry First: read it, never guess (no entry = the topic runs on defaults).
+- Why/when did a pin change? Read \`logs/topic-profile-changes.jsonl\` — the per-change audit (who set what, when, old → new).
+- A pinned model/framework that is no longer available falls back to defaults with a once-per-transition notice — the session keeps working; a pin is never a block.
+- A baseline pin does NOT disable the heavy-work ultra escalation (\`escalationOverride: 'inherit'\` is the default); it steps aside only when the operator explicitly opts the topic out (\`'suppress'\`).
+- Config: \`.instar/config.json\` → \`topicProfiles\` (\`dryRun\`, debounce windows, stagger cap, breaker threshold; \`defaults\` = per-topic config-default model/thinking). Writes ship dark behind the dev-agent gate with \`dryRun: true\` (intended respawns are logged, not performed); resolution (reads) is always on.
+`;
+      content += '\n' + section;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Topic Profile awareness section');
+    }
+
     if (patched) {
       try {
         fs.writeFileSync(claudeMdPath, content);
@@ -5405,6 +5428,11 @@ Create worktrees for collaborator repos with \`instar worktree create <branch>\`
       // "how much did feature X spend on which model?" or spot audit-blind
       // frameworks.
       '### Token-Audit Completeness — per-model token breakdown & usage coverage',
+      // Topic Profile (TOPIC-PROFILE-SPEC §12): framework-agnostic — a Codex/
+      // Gemini agent's topics carry pins too, and an agent that never learns
+      // the conversational triggers + read surfaces will guess instead of
+      // reading GET /topic-profile/:topicId (the B2/B36 failure class).
+      '**Topic Profile (per-topic model, thinking, framework pins)**',
     ];
 
     for (const shadowName of ['AGENTS.md', 'GEMINI.md']) {
@@ -6493,6 +6521,22 @@ Create worktrees for collaborator repos with \`instar worktree create <branch>\`
    *   - .instar/state/pr-cost-ledger.jsonl     (daily cost accounting)
    *   - .instar/state/security.jsonl*          (auth + revocation events)
    *
+   * Topic Profile (TOPIC-PROFILE-SPEC §12, round-5/6): the profile store
+   * (`state/topic-profiles.json`) and the operator-binding store it
+   * authorizes against (`state/topic-operators.json`) join the same union —
+   * both are durable operator intent, exactly the identity/continuity class
+   * the backup protects (a restore must not produce pins whose bound
+   * operator is absent). The resume maps (topic-resume-map /
+   * codex-resume-map) are machine-local ephemera and deliberately EXCLUDED
+   * — they reference transcripts that don't travel.
+   *
+   * PATH SHAPE IS PINNED (round-6 integration): the topic-profile entries
+   * are stateDir-RELATIVE (`state/...`), NEVER `.instar/state/...` —
+   * BackupManager.createSnapshot() joins each entry onto a stateDir that
+   * already IS `<project>/.instar`, so an `.instar/`-prefixed entry
+   * silently never matches anything (a dead manifest entry that loses
+   * every operator pin on restore).
+   *
    * Set-union semantics preserve user-added entries. Idempotent on
    * re-run. Atomic write (temp → fsync → rename).
    *
@@ -6509,6 +6553,12 @@ Create worktrees for collaborator repos with \`instar worktree create <branch>\`
       '.instar/state/pr-debounce-archive.jsonl',
       '.instar/state/pr-cost-ledger.jsonl',
       '.instar/state/security.jsonl*',
+    ];
+    // stateDir-relative (see PATH SHAPE IS PINNED above) — these resolve in
+    // BackupManager.createSnapshot's `path.join(stateDir, entry)`.
+    const TOPIC_PROFILE_BACKUP_ENTRIES = [
+      'state/topic-profiles.json',
+      'state/topic-operators.json',
     ];
 
     const configPath = path.join(this.config.stateDir, 'config.json');
@@ -6530,7 +6580,11 @@ Create worktrees for collaborator repos with \`instar worktree create <branch>\`
       ? (backup.includeFiles as unknown[]).filter((e): e is string => typeof e === 'string')
       : [];
 
-    const merged = Array.from(new Set<string>([...existing, ...PR_GATE_BACKUP_ENTRIES]));
+    const merged = Array.from(new Set<string>([
+      ...existing,
+      ...PR_GATE_BACKUP_ENTRIES,
+      ...TOPIC_PROFILE_BACKUP_ENTRIES,
+    ]));
 
     for (const entry of merged) {
       if (path.normalize(entry).startsWith('.instar/secrets/')) {
@@ -6559,9 +6613,18 @@ Create worktrees for collaborator repos with \`instar worktree create <branch>\`
         fs.closeSync(fd);
       }
       fs.renameSync(tmpPath, configPath);
-      result.upgraded.push(
-        `config.backup.includeFiles: added ${added.length} pr-gate state path(s)`,
-      );
+      const prGateAdded = added.filter((e) => PR_GATE_BACKUP_ENTRIES.includes(e)).length;
+      const topicProfileAdded = added.filter((e) => TOPIC_PROFILE_BACKUP_ENTRIES.includes(e)).length;
+      if (prGateAdded > 0) {
+        result.upgraded.push(
+          `config.backup.includeFiles: added ${prGateAdded} pr-gate state path(s)`,
+        );
+      }
+      if (topicProfileAdded > 0) {
+        result.upgraded.push(
+          `config.backup.includeFiles: added ${topicProfileAdded} topic-profile state path(s)`,
+        );
+      }
     } catch (err) {
       result.errors.push(`migrateBackupManifest write: ${err instanceof Error ? err.message : String(err)}`);
     }

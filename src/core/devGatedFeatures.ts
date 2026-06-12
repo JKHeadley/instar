@@ -103,6 +103,12 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     description: 'Blocker Ledger — resolution pipeline + memory for Principle 1 (/blockers/*).',
     justification: 'Signal-only local recorder (never blocks a message); file-JSON state, no egress, no destructive action; the only LLM use is one bounded (<=200-token) fail-closed B17 settle check on the rare true-blocker settle.',
   },
+  {
+    name: 'topicProfiles',
+    configPath: 'topicProfiles.enabled',
+    description: 'Topic Profile — per-topic model/thinking/framework pins (TOPIC-PROFILE-SPEC).',
+    justification: 'Gate covers the WRITE path only (reads are always-on O(1) resolution) and ships dryRun:true (§14 shadow-field — logs intended respawns, performs none); no spend, no destructive action while the dry-run canary holds.',
+  },
 ];
 
 /**

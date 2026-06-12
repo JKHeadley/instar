@@ -15,6 +15,7 @@
 
 import type { IntelligenceFramework } from './intelligenceProviderFactory.js';
 import { codexSupportsHookTrustBypass } from './codexCapabilities.js';
+import type { ThinkingMode } from './topicProfileValidation.js';
 
 /**
  * Cross-framework generic model tiers. Higher-level code (UpgradeNotify,
@@ -175,6 +176,17 @@ export interface InteractiveLaunchOptions {
    * non-claude frameworks. NEVER a token — just the login location.
    */
   configHome?: string;
+  /**
+   * Topic Profile §6 — per-topic thinking mode. Mapped per framework:
+   *  - claude-code: `--effort <low|medium|high|max>` (the live CLI's verified
+   *    launch flag); `off` → MAX_THINKING_TOKENS=0 via envOverrides (the flag
+   *    has no off level).
+   *  - codex-cli: `-c model_reasoning_effort=<low|medium|high|xhigh>`;
+   *    `max` → xhigh; `off` → low (Codex reasoning models have no off — the
+   *    caller discloses the remap once, §4).
+   *  - gemini-cli / pi-cli: strict no-op (no reasoning knob shipped).
+   */
+  thinkingMode?: ThinkingMode;
 }
 
 export interface InteractiveLaunchSpec {
@@ -220,6 +232,15 @@ const claudeCodeBuilder: Builder = (options) => {
     // Prevent nested Claude Code detection when Echo runs inside Claude.
     CLAUDECODE: '',
   };
+  // Topic Profile §6 — thinking mode. The live CLI's `--effort` flag carries
+  // low/medium/high/max; `off` has no flag level, so it rides the
+  // MAX_THINKING_TOKENS=0 env channel (thinking disabled).
+  const claudeEffort = claudeEffortForThinkingMode(options.thinkingMode);
+  if (claudeEffort) {
+    argv.push('--effort', claudeEffort);
+  } else if (options.thinkingMode === 'off') {
+    envOverrides.MAX_THINKING_TOKENS = '0';
+  }
   // Subscription & Auth Standard P1.3: when a per-account config home is given,
   // launch this Claude session under THAT account's login (the swap mechanism).
   // The login location only — never a token.
@@ -305,6 +326,13 @@ const codexCliBuilder: Builder = (options) => {
     argv.push('--dangerously-bypass-hook-trust');
   }
   argv.push(...codexThreadlineMcpFlags(options.codexThreadlineMcp));
+  // Topic Profile §6 — thinking mode → codex reasoning effort. `max` → xhigh;
+  // `off` → low (codex reasoning models have no off level; the profile write
+  // path disclosed the remap once, §4).
+  const codexEffort = codexReasoningEffortForThinkingMode(options.thinkingMode);
+  if (codexEffort) {
+    argv.push('-c', `model_reasoning_effort=${JSON.stringify(codexEffort)}`);
+  }
   return {
     argv,
     envOverrides: {
@@ -677,6 +705,53 @@ export function buildHeadlessLaunch(
  * Returns `[]` for non-claude frameworks or when neither option is requested, so
  * the caller can splice unconditionally. Pure + order-stable for testing.
  */
+/**
+ * Topic Profile §6 — map the generic thinking-mode enum to the Claude CLI's
+ * `--effort` levels. `off` returns null (it rides the MAX_THINKING_TOKENS=0
+ * env channel instead — the flag has no off level). Exported for the L5
+ * canary + unit tests.
+ */
+export function claudeEffortForThinkingMode(
+  mode: ThinkingMode | undefined,
+): 'low' | 'medium' | 'high' | 'max' | null {
+  switch (mode) {
+    case 'low':
+      return 'low';
+    case 'medium':
+      return 'medium';
+    case 'high':
+      return 'high';
+    case 'max':
+      return 'max';
+    default:
+      return null; // off / unset — no flag emitted
+  }
+}
+
+/**
+ * Topic Profile §6 — map the generic thinking-mode enum to codex
+ * `model_reasoning_effort` levels. `max` → xhigh; `off` → low (codex has no
+ * off — the §4 write path discloses the remap once). Exported for the L5
+ * canary + unit tests.
+ */
+export function codexReasoningEffortForThinkingMode(
+  mode: ThinkingMode | undefined,
+): 'low' | 'medium' | 'high' | 'xhigh' | null {
+  switch (mode) {
+    case 'off':
+    case 'low':
+      return 'low';
+    case 'medium':
+      return 'medium';
+    case 'high':
+      return 'high';
+    case 'max':
+      return 'xhigh';
+    default:
+      return null; // unset — codex uses its configured default
+  }
+}
+
 export function claudeHeadlessExtraFlags(opts: {
   framework: IntelligenceFramework | string;
   allowedTools?: string[];

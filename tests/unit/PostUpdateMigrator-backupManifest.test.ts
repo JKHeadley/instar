@@ -30,6 +30,13 @@ const PR_GATE_ENTRIES = [
   '.instar/state/security.jsonl*',
 ];
 
+// Topic Profile stores (TOPIC-PROFILE-SPEC §12 round-5/6): deliberately
+// stateDir-RELATIVE — see topicProfileMigrations.test.ts for the shape tests.
+const TOPIC_PROFILE_ENTRIES = [
+  'state/topic-profiles.json',
+  'state/topic-operators.json',
+];
+
 function createTempDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'instar-backup-manifest-'));
 }
@@ -81,7 +88,9 @@ describe('PostUpdateMigrator.migrateBackupManifest', () => {
 
     const config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
     expect(config.backup).toBeDefined();
-    expect(config.backup.includeFiles).toEqual(PR_GATE_ENTRIES);
+    // Set-union now also carries the topic-profile entries (TOPIC-PROFILE-SPEC
+    // §12 — stateDir-relative; covered in topicProfileMigrations.test.ts).
+    expect(config.backup.includeFiles).toEqual([...PR_GATE_ENTRIES, ...TOPIC_PROFILE_ENTRIES]);
     expect(result.errors).toEqual([]);
     expect(result.upgraded.some((m) => m.includes('pr-gate state path'))).toBe(true);
   });
@@ -101,7 +110,9 @@ describe('PostUpdateMigrator.migrateBackupManifest', () => {
     const config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
     for (const e of userEntries) expect(config.backup.includeFiles).toContain(e);
     for (const e of PR_GATE_ENTRIES) expect(config.backup.includeFiles).toContain(e);
-    expect(config.backup.includeFiles).toHaveLength(userEntries.length + PR_GATE_ENTRIES.length);
+    expect(config.backup.includeFiles).toHaveLength(
+      userEntries.length + PR_GATE_ENTRIES.length + TOPIC_PROFILE_ENTRIES.length,
+    );
   });
 
   it('dedupes when pr-gate entries already exist (idempotent re-run)', () => {

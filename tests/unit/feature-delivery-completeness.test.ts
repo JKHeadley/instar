@@ -153,6 +153,7 @@ describe('Feature Delivery Completeness', () => {
       'Subscription Pool (multi-account quota', // Subscription & Auth Standard graduate: multi-account quota pool + continuity-guaranteed auto-swap + mobile enrollment, graduated from INTERNAL_PREFIXES to a surfaced capability (templates.ts generateClaudeMd + migrator migrateClaudeMd + shadow-marker parity).
       'Model-Tier Escalation (EXPERIMENTAL', // FABLE-MODEL-ESCALATION-SPEC §10: heavy-work model escalation awareness (POST /sessions/:name/model-swap, tier enum only; dark fleet default; templates.ts + migrator + shadow-marker parity — a Codex agent spawning claude-code sessions can use the swap surface too).
       'Outbound advisory for automated messages', // outbound-jargon-filepath-gap §5: the inform-only preflight for automated job sends — what a "NOT SENT — advisory" transcript line means + the fix-then-re-run / --ack-advisory moves (templates.ts + migrator + shadow-marker parity).
+      'Topic Profile (per-topic model', // TOPIC-PROFILE-SPEC §12: per-topic durable {model, thinkingMode, framework} pins resolved at spawn with gentlest-swap respawn — a user-invokable capability ("use codex here" / "pin this topic to Fable" / "set high thinking"). Full parity: templates.ts generateClaudeMd + migrator migrateClaudeMd + migrateFrameworkShadowCapabilities markers[] (framework-agnostic — a Codex agent can carry per-topic pins too).
     ];
 
     for (const section of featureSections) {

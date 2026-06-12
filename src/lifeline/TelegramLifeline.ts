@@ -1434,6 +1434,12 @@ export class TelegramLifeline {
     const senderBotId =
       senderChatId ?? (senderIsBot && rawFrom?.id !== undefined ? String(rawFrom.id) : undefined);
 
+    // TOPIC-PROFILE-SPEC §10.1 round-5: forwarded content never matches any
+    // profile-ingress recognition. Carry the platform forward metadata across
+    // the lifeline hop; an older server ignores the extra field.
+    const rawForward = rawMsg as unknown as Record<string, unknown>;
+    const isForwarded = Boolean(rawForward.forward_origin || rawForward.forward_from || rawForward.forward_date);
+
     const buildBody = (includeVersion: boolean): string =>
       JSON.stringify({
         topicId,
@@ -1444,6 +1450,7 @@ export class TelegramLifeline {
         messageId: rawMsg.message_id,
         timestamp: new Date(rawMsg.date * 1000).toISOString(),
         senderIsBot,
+        ...(isForwarded ? { forwarded: true } : {}),
         ...(senderChatId !== undefined ? { senderChatId } : {}),
         ...(senderBotId !== undefined ? { senderBotId } : {}),
         ...(includeVersion ? { lifelineVersion: this.lifelineVersion } : {}),
