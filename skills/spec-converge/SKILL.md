@@ -61,6 +61,29 @@ The skill adds `review-convergence`, `review-iterations`, `review-completed-at`,
 
 ### Phase 1 — Initial review round
 
+**Standards-Conformance Gate auto-invocation (MANDATORY, every round).** Before
+spawning the reviewers, the agent calls the constitution inspector against the spec
+and feeds its report into the round as a reviewer input:
+
+```bash
+AUTH=$(python3 -c "import json; print(json.load(open('.instar/config.json')).get('authToken',''))" 2>/dev/null)
+PORT=$(python3 -c "import json; print(json.load(open('.instar/config.json')).get('port',4040))" 2>/dev/null)
+curl -sS -m 90 -X POST -H "Authorization: Bearer ${AUTH:-$INSTAR_AUTH_TOKEN}" -H 'Content-Type: application/json' \
+  -d "{\"specPath\": \"$(realpath docs/specs/<slug>.md)\"}" \
+  "http://localhost:${PORT}/spec/conformance-check"
+```
+
+The report is SIGNAL-ONLY (it never blocks — Signal vs. Authority), but it is not
+optional to RUN: its per-standard flags are handed to the reviewers alongside the
+spec (the lessons-aware reviewer in particular must engage every flagged standard),
+and the convergence report's Iteration Summary records one line per round —
+`Standards-Conformance Gate: ran (N flags)` or, honestly, `unavailable: <reason>`
+(server down / route 503). An unavailable gate NEVER blocks convergence, but a
+SKIPPED-without-reason gate fails report validation. This closes the 2026-06-12
+finding (topic 13481): the gate shipped 2026-05-24 explicitly staged for this exact
+wiring, and the staging lived only in prose — zero runs in 19 days. Auto-invocation
+is now part of the round itself, not a remembered follow-up.
+
 The skill spawns reviewers in parallel:
 
 **Internal reviewers (Claude subagents):**
