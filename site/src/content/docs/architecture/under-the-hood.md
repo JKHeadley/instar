@@ -284,6 +284,9 @@ Sends the running session list to all connected clients every 5 seconds. Include
 ### OrphanProcessReaper
 Every 60 seconds, detects orphaned Claude processes that aren't tracked by the session manager. Classifies them (managed vs orphaned vs external IDE processes), auto-kills orphans after 1 hour, and reports external processes to you.
 
+### Reap notices & the mid-work resume queue
+When a session is autonomously killed, `ReapNotifier` posts a plain-English notice into the topic that lost it (durably delivered by the always-on `ReapNoticeDrain` over the pending-relay store), and the kill chokepoint stamps killer-supplied `WorkEvidence` onto the reap event and reap-log. Sessions killed mid-work enter the durable `ResumeQueue`; `ResumeQueueDrainer` revives at most one per tick once the machine is calm and quota allows, re-validating reality before any spawn. See [Reap notices & the mid-work resume queue](/features/reap-notify-resume-queue/).
+
 ### JSONL Rotation
 Lazy, size-based rotation built into all append-only log files. When a file exceeds 10MB, it keeps the newest 75% and atomically replaces the file. Non-fatal — rotation failure doesn't block writes.
 
