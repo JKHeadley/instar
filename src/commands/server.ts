@@ -431,6 +431,22 @@ let _topicResumeMap: import('../core/TopicResumeMap.js').TopicResumeMap | null =
 // is byte-identical to today's always-local dispatch. Set once in startServer().
 let _sessionRouter: import('../core/SessionRouter.js').SessionRouter | null = null;
 let _sessionPoolStage: () => string = () => 'dark';
+// ── Durable Inbound Message Queue (docs/specs/durable-inbound-message-queue.md) ──
+// The custody engine (null = feature dark / gate failed / invariants violated —
+// every consumer treats null as "refused → today's fall-through").
+let _inboundQueue: import('../core/QueueDrainLoop.js').QueueDrainLoop | null = null;
+// The store the unconditional boot sweep opened when the queue will run this
+// boot — adopted by the engine construction (one open handle, single-writer).
+let _sweptInboundStore: import('../core/PendingInboundStore.js').PendingInboundStore | null = null;
+// The drain's local-delivery tail (§3.1 via:'drain') — assigned inside
+// wireTelegramRouting where the session primitives live in scope.
+let _drainLocalDeliver:
+  | ((msg: import('../core/QueueDrainLoop.js').DrainMessage, handover: import('../core/QueueDrainLoop.js').DrainHandover) => Promise<import('../core/QueueDrainLoop.js').DrainDispatchResult>)
+  | null = null;
+// Emergency-stop integration (§3.6): marks a topic stopped for the drain's
+// pass/batch/chokepoint consults AND settles its custody (terminal
+// operator-stop + PIS cleanup + loss report). Set with the engine.
+let _inboundQueueStop: ((sessionKey: string) => void) | null = null;
 /** This machine's mesh id — lets the inbound dispatch tell a REMOTE placement
  *  (forward/spawn on another machine → must NOT also dispatch locally) from a
  *  self placement. Set once in startServer()'s mesh block. */
@@ -1908,17 +1924,41 @@ export function wireTelegramRouting(
       }
     }
     if (_sessionRouter && _sessionPoolStage() !== 'dark') {
+      // Ordering gate (Durable Inbound Message Queue §2.3): a live message for
+      // a session with queued custody enqueues BEHIND the existing entries —
+      // injecting it now would deliver out of order. Gated on a live engine.
+      if (_inboundQueue) {
+        try {
+          if (_inboundQueue.hasQueued(String(topicId))) {
+            const ord = _inboundQueue.enqueueLive({
+              sessionKey: String(topicId),
+              messageId: String(msg.id),
+              payload: text,
+              senderEnvelope: { userId: telegramUserId || undefined, firstName: pipeline.sender.firstName },
+              topicMetadata: _topicPinStore?.asTopicMetadata(String(topicId)),
+            }, 'ordering-behind-queued');
+            if (ord.result === 'queued' || ord.result === 'already-queued') {
+              console.log(`[inbound-queue] topic ${topicId} msg ${msg.id} queued behind existing entries (ordering)`);
+              return;
+            }
+            // refused → fall through to route() — delivery beats both loss and
+            // silence; the ordering violation is counted by the engine.
+          }
+        } catch { /* gate is best-effort; route() owns the message */ }
+      }
       try {
         const outcome = await _sessionRouter.route({
           sessionKey: String(topicId),
           messageId: String(msg.id),
           payload: text,
           topicMetadata: _topicPinStore?.asTopicMetadata(String(topicId)),
+          // §2.2: sender identity captured at ingress, persisted with custody.
+          senderEnvelope: { userId: telegramUserId || undefined, firstName: pipeline.sender.firstName },
         });
         // Routing-decision observability — the live transfer path is otherwise a black
         // box (the recognizer logs its pin, but route()'s actual placement/forward
         // decision was invisible; that hid the bug below from the first live test).
-        console.log(`[session-pool] route topic ${topicId} → action=${outcome.action} owner=${outcome.owner ?? '?'} self=${_meshSelfId ?? '?'}`);
+        console.log(`[session-pool] route topic ${topicId} → action=${outcome.action} owner=${outcome.owner ?? '?'} self=${_meshSelfId ?? '?'} acked=${outcome.acked}`);
         // Short-circuit local dispatch whenever the session ended up on ANOTHER machine
         // (forward/duplicate, OR a fresh remote 'spawned'/'owner-dead-replaced'). Before
         // this, only 'forwarded'/'duplicate' were caught, so a just-moved topic was
@@ -1928,9 +1968,28 @@ export function wireTelegramRouting(
           console.log(`[session-pool] topic ${topicId} handled by owner ${outcome.owner ?? '?'} (${outcome.action}) — not dispatching locally`);
           return;
         }
-        // 'handled-locally' / 'spawned'(self) / 'owner-dead-replaced'(self) / 'queued' /
-        // 'placement-blocked' → fall through to the existing local dispatch below.
+        // Custody-ack short-circuit (§2.2): a queued/placement-blocked verdict
+        // whose enqueue COMMITTED (acked) is the queue's message now — no local
+        // fall-through. Un-custodied (refused/off/dry-run) keeps today's
+        // fall-through. Wiring pins assert both directions.
+        if ((outcome.action === 'queued' || outcome.action === 'placement-blocked') && outcome.acked) {
+          console.log(`[inbound-queue] topic ${topicId} msg ${msg.id} in durable custody (${outcome.detail ?? outcome.action}) — drain will deliver`);
+          return;
+        }
+        // 'handled-locally' / 'spawned'(self) / 'owner-dead-replaced'(self) /
+        // un-acked 'queued'/'placement-blocked' → fall through to local dispatch.
       } catch (err) {
+        // Route-throw fail-open is CUSTODY-AWARE (§2.2): a per-MESSAGE point
+        // read against the store — a committed non-terminal row for THIS
+        // message means the queue owns it (skip local dispatch); no row (or
+        // engine dark) → today's fall-through. A point-read ERROR fails OPEN
+        // to fall-through — the bounded duplicate window, §5-enumerated.
+        try {
+          if (_inboundQueue?.hasCommittedRow(String(topicId), String(msg.id))) {
+            console.warn(`[session-pool] route error for topic ${topicId} but custody is committed — not dispatching locally: ${err instanceof Error ? err.message : String(err)}`);
+            return;
+          }
+        } catch { /* point-read error → fail open (fall through) */ }
         console.warn(`[session-pool] route error for topic ${topicId} — falling back to local dispatch: ${err instanceof Error ? err.message : String(err)}`);
       }
     }
@@ -2058,6 +2117,97 @@ export function wireTelegramRouting(
       }).finally(() => {
         spawningTopics.delete(topicId);
       });
+    }
+  };
+
+  // ── Durable Inbound Message Queue: the drain's local-delivery tail ──
+  // (§3.1 via:'drain'.) Built from the SAME primitives as the live tail above
+  // (injectTelegramMessage / respawnSessionForTopic / spawnSessionForTopic +
+  // the spawningTopics guard) with the drain contract's divergences, each
+  // enumerated in the spec: bypasses the intercept stack (a stored message is
+  // DATA — this function never re-interprets commands or re-binds operators),
+  // bypasses the ingress ledger (the receipt is the at-most-once authority),
+  // suppresses the per-message "✓ Delivered" confirmation, AWAITS the tail
+  // through the receipt write, injects with the STORED sender envelope, and
+  // paces same-session runs at 1s.
+  _drainLocalDeliver = async (dmsg, handover) => {
+    const topicId = Number(dmsg.sessionKey);
+    if (!Number.isFinite(topicId)) return { kind: 'failed', error: new Error(`non-numeric sessionKey ${dmsg.sessionKey}`) };
+    if (!_sessionRouter) return { kind: 'un-routable', reason: 'router-not-constructed' };
+
+    // Routing first — ownership may have moved while the entry waited.
+    const outcome = await _sessionRouter.route({
+      sessionKey: dmsg.sessionKey,
+      messageId: dmsg.messageId,
+      payload: dmsg.payload,
+      topicMetadata: (dmsg.topicMetadata as import('../core/PlacementExecutor.js').TopicPlacement | undefined)
+        ?? _topicPinStore?.asTopicMetadata(dmsg.sessionKey),
+      senderEnvelope: dmsg.senderEnvelope,
+    });
+    if (outcome.action === 'forwarded' && outcome.detail === 'sender-rejected') {
+      return { kind: 'sender-rejected' };
+    }
+    if (isRemotelyHandled(outcome, _meshSelfId)) {
+      return { kind: 'remote-delivered' };
+    }
+    if (outcome.action === 'queued' || outcome.action === 'placement-blocked') {
+      // The router re-queued our own entry ('already-queued' against the
+      // claimed row) — un-routable: release + backoff + attempts++ (§3.1).
+      return { kind: 'un-routable', reason: outcome.detail ?? outcome.action };
+    }
+
+    // Local delivery ('handled-locally' / self 'owner-dead-replaced').
+    const sender = dmsg.senderEnvelope ?? undefined;
+    const senderFirstName = sender?.firstName ?? 'User';
+    const senderUserId = typeof sender?.userId === 'number' ? sender.userId : Number(sender?.userId ?? 0) || 0;
+    const resolvedUser = senderUserId && userManager ? userManager.resolveFromTelegramUserId(senderUserId) : null;
+    const targetSession = telegram.getSessionForTopic(topicId);
+    const topicName = telegram.getTopicName(topicId) || `topic-${topicId}`;
+
+    if (targetSession && sessionManager.isSessionAlive(targetSession)) {
+      // Direct inject: receipt FIRST (the §3.4 handover point), stop re-check,
+      // then the inject. A caught inject error AFTER the receipt is
+      // local-delivered+injectError (never silent loss).
+      if (!handover.commitReceipt()) return { kind: 'handover-refused' };
+      if (handover.stopRecheck()) return { kind: 'stopped-before-inject' };
+      try {
+        sessionManager.injectTelegramMessage(
+          targetSession, topicId, dmsg.payload, topicName, senderFirstName, senderUserId,
+          Number(dmsg.messageId.replace(/^\D*/, '')) || undefined,
+        );
+        telegram.trackMessageInjection(topicId, targetSession, dmsg.payload);
+        // 1s inter-inject pacing for same-session runs (§3.1, pinned round-6).
+        await new Promise((r) => setTimeout(r, 1000));
+        return { kind: 'local-delivered' };
+      } catch (err) {
+        return { kind: 'local-delivered', injectError: err instanceof Error ? err.message : String(err) };
+      }
+    }
+
+    // Respawn / auto-spawn path. The spawn-in-progress guard maps to
+    // un-routable (§3.1) — never a silent skip.
+    if (spawningTopics.has(topicId)) {
+      return { kind: 'un-routable', reason: 'spawn-in-progress' };
+    }
+    if (!handover.commitReceipt()) return { kind: 'handover-refused' };
+    if (handover.stopRecheck()) return { kind: 'stopped-before-inject' };
+    spawningTopics.add(topicId);
+    try {
+      if (targetSession) {
+        // Dead session — respawn, AWAITED through the spawn+inject (the PIS
+        // record is written inside, AFTER our receipt — the round-7 order pin).
+        await respawnSessionForTopic(sessionManager, telegram, targetSession, topicId, dmsg.payload, topicMemory, resolvedUser ?? undefined);
+      } else {
+        const newSessionName = await spawnSessionForTopic(sessionManager, telegram, topicName, topicId, dmsg.payload, topicMemory, resolvedUser ?? undefined);
+        telegram.registerTopicSession(topicId, newSessionName, topicName);
+      }
+      return { kind: 'local-delivered' };
+    } catch (err) {
+      // Receipt already committed — the at-most-once authority forbids a
+      // re-inject; honest disposition: delivered-unconfirmed + report (§3.4).
+      return { kind: 'local-delivered', injectError: err instanceof Error ? err.message : String(err) };
+    } finally {
+      spawningTopics.delete(topicId);
     }
   };
 }
@@ -6391,6 +6541,109 @@ export async function startServer(options: StartOptions): Promise<void> {
 
     sessionManager.startMonitoring();
 
+    // ── Durable Inbound Message Queue: unconditional boot sweep (§5.3) ──
+    // MUST run BEFORE recoverPendingInjects (boot ordering, spec §3.4): the
+    // sweep consults injection receipts and vetoes PIS records for
+    // operator-stop rows — running PIS recovery first would replay an inject
+    // the operator stopped. Keyed on store-file existence; fail-open
+    // (quarantine) on a corrupt store; gate-expires all custody with a NAMED
+    // reason when the drain will not run this boot. The mesh-identity gate is
+    // resolved later (the mesh block) — when the wiring there finds no
+    // identity, it runs the same expire-all with reason no-mesh-identity
+    // before any drain could have started.
+    try {
+      const sweepMod = await import('../core/inboundQueueBootSweep.js');
+      const pisMod = await import('../core/PendingInjectStore.js');
+      const sweepPis = new pisMod.PendingInjectStore(path.join(config.stateDir, 'state'));
+      const pisRecordsForTopic = (sessionKey: string) =>
+        sweepPis.list().records.filter((r) => String(r.telegramTopicId ?? '') === sessionKey);
+      const qRaw = config.multiMachine?.sessionPool?.inboundQueue as { enabled?: boolean; dryRun?: boolean } | undefined;
+      const poolRaw = config.multiMachine?.sessionPool as { enabled?: boolean; stage?: string } | undefined;
+      const queueWillRun: import('../core/inboundQueueBootSweep.js').BootSweepDeps['queueWillRun'] =
+        qRaw?.enabled !== true ? { run: false, gateReason: 'feature-disabled' }
+        : qRaw?.dryRun !== false ? { run: false, gateReason: 'dry-run' }
+        : (poolRaw?.enabled !== true || (poolRaw?.stage ?? 'dark') === 'dark') ? { run: false, gateReason: 'pool-dark' }
+        : { run: true };
+      const sweepRes = sweepMod.runInboundQueueBootSweep({
+        stateDir: config.stateDir,
+        agentId: config.projectName ?? 'agent',
+        queueWillRun,
+        hasPisRecord: (sk) => pisRecordsForTopic(sk).length > 0,
+        clearPisRecord: (sk) => { for (const r of pisRecordsForTopic(sk)) sweepPis.clear(r.tmuxSession); },
+        reportLoss: (items, reason) => {
+          const topics = [...new Set(items.map((i) => i.sessionKey))].join(', ');
+          notify('SUMMARY', 'inbound-queue',
+            `I didn't get to ${items.length} queued message(s) (${reason}; topics: ${topics}) — resend anything still needed.`);
+        },
+        reportPossiblyNotInjected: (items) => {
+          const topics = [...new Set(items.map((i) => i.sessionKey))].join(', ');
+          notify('SUMMARY', 'inbound-queue',
+            `${items.length} message(s) may not have been injected before a crash (topics: ${topics}) — if a message went unanswered, resend it.`);
+        },
+        raiseAttention: (title, body) => notify('IMMEDIATE', 'inbound-queue', `${title}: ${body}`),
+        log: (line) => console.log(pc.dim(`  ${line}`)),
+        nowMs: () => Date.now(),
+      });
+      _sweptInboundStore = sweepRes.store;
+      if (sweepRes.storePresent) {
+        console.log(pc.dim(
+          `  [inbound-queue] boot sweep: gateExpired=${sweepRes.gateExpired} recovered=${sweepRes.recoveredToQueued} ` +
+          `delivered=${sweepRes.settledDelivered} pni=${sweepRes.possiblyNotInjected} pisVetoed=${sweepRes.pisVetoed} quarantined=${sweepRes.quarantined}`,
+        ));
+      }
+      // Engine-never-constructed backstop (second-pass concern 1 — the
+      // no-mesh-identity gate, made unreachable-proof): the sweep ran with
+      // run:true expecting the mesh block to construct the drain. If, 90s into
+      // boot, the swept store is still unadopted (no mesh identity, or the
+      // construction threw), expire its custody with the NAMED reason and
+      // close the handle — custody is NEVER silently stranded (§5.3), through
+      // ANY non-construction path. One-shot; a no-op when the engine is live.
+      if (sweepRes.store) {
+        const orphanTimer = setTimeout(() => {
+          if (!_sweptInboundStore || _inboundQueue) return;
+          try {
+            const store = _sweptInboundStore;
+            const nowIso = new Date().toISOString();
+            const rows = store.listNonTerminal();
+            const dropped: string[] = [];
+            for (const row of rows) {
+              if (store.transition(row.enqueue_seq, row.state as 'queued' | 'claimed', 'expired', { nowIso, terminalReason: 'gate:no-mesh-identity' })) {
+                dropped.push(row.session_key);
+              }
+            }
+            if (dropped.length > 0) {
+              notify('SUMMARY', 'inbound-queue',
+                `I didn't get to ${dropped.length} queued message(s) (the queue is enabled but this machine has no mesh identity, so the drain never started; topics: ${[...new Set(dropped)].join(', ')}) — resend anything still needed.`);
+            }
+            store.close();
+            _sweptInboundStore = null;
+            console.warn('[inbound-queue] swept store never adopted by an engine — custody gate-expired (no-mesh-identity) and store closed');
+          } catch (e) {
+            console.warn(`[inbound-queue] orphan-store backstop failed (next boot's sweep retries): ${e instanceof Error ? e.message : String(e)}`);
+          }
+        }, 90_000);
+        orphanTimer.unref?.();
+      }
+    } catch (err) {
+      // The sweep is a recovery backstop — its own failure must never block
+      // boot. The next boot retries; rows are durable.
+      console.error(`[server] inbound-queue boot sweep failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+    }
+
+    // Hold-for-stability effective-state getter (§4.2) — registered on the
+    // UNCONDITIONAL boot path (same path as the sweep above), as a closure
+    // over the effective-state computation: always-failover default ⇒
+    // enabled:false, so the orphaned-config case (hold on, queue off/dark)
+    // derives /guards off-runtime-divergent instead of on-unverified.
+    try {
+      guardRegistry.register('multiMachine.sessionPool.holdForStability.enabled', () => ({
+        enabled:
+          (config.multiMachine?.sessionPool?.holdForStability as { enabled?: boolean } | undefined)?.enabled === true &&
+          _inboundQueue !== null,
+        lastTickAt: Date.now(),
+      }));
+    } catch { /* posture observability never blocks boot */ }
+
     // Pending-inject recovery (finding 8d300555): re-deliver initial messages
     // orphaned by the previous server process dying in the spawn→ready→inject
     // window (the auto-updater restart race). Runs AFTER the purge so dead
@@ -9314,12 +9567,19 @@ export async function startServer(options: StartOptions): Promise<void> {
     if (scheduler) {
       scheduler.setCumulativeSleepProvider((a, b) => sleepWakeDetector.getCumulativeSleepMsBetween(a, b));
     }
-    sleepWakeDetector.on('wake', async (event: { sleepDurationSeconds: number; timestamp: string }) => {
+    sleepWakeDetector.on('wake', async (event: { sleepDurationSeconds: number; timestamp: string; lowConfidence?: boolean }) => {
       console.log(`[SleepWake] Wake detected after ~${event.sleepDurationSeconds}s sleep`);
 
       // Checkpoint SQLite WAL files to flush stale locks from pre-sleep connections
       try { topicMemory?.checkpoint(); } catch { /* non-critical */ }
       try { semanticMemory?.checkpoint(); } catch { /* non-critical */ }
+
+      // Durable Inbound Message Queue §6: sleep-shift backoff deadlines by the
+      // nap span + the nap clamp (stale rows expire reported). Low wake
+      // confidence → the conservative branch (clamp without shift).
+      try {
+        void _inboundQueue?.onWake(event.sleepDurationSeconds * 1000, event.lowConfidence ? 'low' : 'high');
+      } catch { /* the backstop tick covers a missed wake trigger */ }
 
       // Re-validate tmux sessions
       try {
@@ -9730,6 +9990,10 @@ export async function startServer(options: StartOptions): Promise<void> {
           };
         }
         return null; // Normal messages pass through
+      };
+      // Durable Inbound Message Queue §3.6: emergency stop reaches custody.
+      telegram.onSentinelStopCustody = (topicId: number) => {
+        try { _inboundQueueStop?.(String(topicId)); } catch { /* best-effort */ }
       };
       telegram.onSentinelKillSession = (sessionName: string) => {
         // Save resume UUID before killing so respawn can --resume
@@ -12367,6 +12631,24 @@ export async function startServer(options: StartOptions): Promise<void> {
                 loadAvg: osMod.loadavg()[0],
                 quotaState: selfQuotaState(),
                 guardPosture: selfGuardPosture(),
+                // Durable Inbound Message Queue §5.1: depth + oldest + tenure +
+                // bounded top-K — the survivor's loss-SUSPECTED item, capped
+                // re-placement arm, and supersede-dedupe key all read these.
+                // Absent while the queue is dark — depth honestly unknown.
+                ...(() => {
+                  try {
+                    if (!_inboundQueue) return {};
+                    const snap = _inboundQueue.snapshot();
+                    return {
+                      inboundQueue: {
+                        queueDepth: snap.counts.queued + snap.counts.claimed,
+                        oldestQueuedAt: snap.counts.oldestQueuedAt,
+                        tenure: snap.tenure,
+                        topK: _inboundQueue.topKSessionDepths(10),
+                      },
+                    };
+                  } catch { return {}; }
+                })(),
               });
               const hbApi = machineHeartbeat?.api;
               if (hbApi) {
@@ -12468,6 +12750,13 @@ export async function startServer(options: StartOptions): Promise<void> {
           reason: import('../core/CoherenceJournal.js').PlacementReason,
           prevOwner?: string,
         ): void => {
+          // Durable Inbound Message Queue §3.2 event trigger: an ownership
+          // transition for a session with queued entries makes its head due
+          // now (scoped reset + a drain pass). Fire-and-forget; the engine
+          // no-ops when the session has nothing queued.
+          try {
+            if (r?.ok) void _inboundQueue?.onOwnershipTransition(sessionKey);
+          } catch { /* trigger is best-effort; the backstop tick covers it */ }
           try {
             if (!coherenceJournal || !r?.ok) return;
             const rec = (r as { record?: { ownerMachineId?: string; ownershipEpoch?: number } }).record;
@@ -12504,10 +12793,27 @@ export async function startServer(options: StartOptions): Promise<void> {
         const deliverMessageHandler = deliverMod.createDeliverMessageHandler({
           ownerEpochOf: (s) => ownReg.read(s)?.ownershipEpoch ?? null,
           recordReceipt: (messageId, session) => {
+            // Durable Inbound Message Queue §3.4 remote path: the queue store's
+            // remote receipt (canonical-id keyed, carries the `injected` marker
+            // that makes peer-crash-between-receipt-and-inject boot-detectable —
+            // loss window 6). Recorded ALONGSIDE the existing ledger receipt;
+            // engine dark → the prior posture, named in the spec's skew note.
+            try { _inboundQueue?.recordRemoteReceipt(session, messageId); } catch { /* receipt best-effort; ledger is authoritative for dedupe */ }
             if (messageLedger) return messageLedger.record(messageId, { platform: 'mesh', topic: session }).firstSeen;
             if (deliverSeenFallback.has(messageId)) return false;
             deliverSeenFallback.add(messageId);
             return true;
+          },
+          // §3.4 sender re-validation (per-machine registries can diverge during
+          // a deauthorization): a carried envelope whose userId no longer
+          // resolves on THIS machine NACKs `sender-rejected`. Envelope absent
+          // (old peer / live local frame) → not consulted.
+          validateSender: (envelope) => {
+            const uid = Number(envelope.userId);
+            if (!Number.isFinite(uid) || uid === 0) return true;
+            // THIS machine's registry (file-backed; the telegram block's
+            // instance is scoped there — same files, same truth).
+            try { return new UserManager(config.stateDir, config.users).resolveFromTelegramUserId(uid) !== null; } catch { return true; }
           },
           // Owner-side bridge (§L4 handoff): a forwarded message landed → spawn/resume
           // the local session for the topic so the conversation continues on THIS machine.
@@ -12548,8 +12854,16 @@ export async function startServer(options: StartOptions): Promise<void> {
             if (existing && sessionManager.isSessionAlive(existing)) {
               if (text) {
                 console.log(pc.green(`  [session-pool] owner-side inject for forwarded topic ${topicId} → ${existing}`));
-                sessionManager.injectTelegramMessage(existing, topicId, text, tg.getTopicName?.(topicId) ?? undefined);
-                tg.trackMessageInjection(topicId, existing, text);
+                // Loss window 6 (Durable Inbound Message Queue §3.4 remote):
+                // flip the receipt's injected marker on success; a CAUGHT
+                // failure reports at error time — never silent.
+                try {
+                  sessionManager.injectTelegramMessage(existing, topicId, text, tg.getTopicName?.(topicId) ?? undefined);
+                  tg.trackMessageInjection(topicId, existing, text);
+                  _inboundQueue?.markRemoteInjected(cmd.session, cmd.messageId);
+                } catch (err) {
+                  _inboundQueue?.reportPeerInjectError(cmd.session, cmd.messageId, err instanceof Error ? err.message : String(err));
+                }
               }
               return;
             }
@@ -12582,8 +12896,13 @@ export async function startServer(options: StartOptions): Promise<void> {
               .then((name) => {
                 tg.registerTopicSession(topicId, name, spawnName);
                 console.log(pc.green(`  [session-pool] owner-side resume for forwarded topic ${topicId} → ${name}`));
+                // Loss window 6: the forwarded message reached a real session.
+                _inboundQueue?.markRemoteInjected(cmd.session, cmd.messageId);
               })
-              .catch((err) => console.warn(`  [session-pool] owner-side resume failed for topic ${topicId}: ${err instanceof Error ? err.message : String(err)}`));
+              .catch((err) => {
+                console.warn(`  [session-pool] owner-side resume failed for topic ${topicId}: ${err instanceof Error ? err.message : String(err)}`);
+                _inboundQueue?.reportPeerInjectError(cmd.session, cmd.messageId, err instanceof Error ? err.message : String(err));
+              });
           },
         });
         // ── Secret-sync inbound handler (cross-machine secret distribution, spec Phase 4) ──
@@ -13355,6 +13674,16 @@ export async function startServer(options: StartOptions): Promise<void> {
           // signal per episode.
           const ownerSuspectBreaker = new (await import('../core/OwnerSuspectBreaker.js')).OwnerSuspectBreaker({
             logger: (m) => console.log(pc.dim(m)),
+            // Durable Inbound Message Queue §3.2: breaker close delivers held
+            // rows instantly. Engine constructed later in this block — the
+            // closure reads at fire time.
+            onClose: () => { void _inboundQueue?.onBreakerClose(); },
+            flapThresholdPerHour: (config.multiMachine?.sessionPool?.holdForStability as { flapThresholdPerHour?: number } | undefined)?.flapThresholdPerHour ?? 6,
+            reportFlapEpisode: ({ machineId, episodesLastHour }) => {
+              const nickname = machinePoolRegistry?.getCapacity(machineId)?.nickname ?? machineId;
+              notify('SUMMARY', 'inbound-queue',
+                `"${nickname}" is flapping (${episodesLastHour} suspect episodes in the last hour) — holds are disabled for it until it calms; its conversations move on the usual failover path.`);
+            },
             reportSustained: ({ machineId, suspectForMs, marks }) => {
               DegradationReporter.getInstance().report({
                 feature: 'SessionPool.ownerDelivery',
@@ -13418,9 +13747,12 @@ export async function startServer(options: StartOptions): Promise<void> {
             deliverMessage: async (target, env) => {
               const url = peerUrl(target);
               if (!url) throw new Error(`no peer url for ${target}`);
-              const res = await meshClient.send({ machineId: target, url }, { type: 'deliverMessage', session: env.sessionKey, messageId: env.messageId, payload: env.payload, ownershipEpoch: env.ownershipEpoch }, env.ownershipEpoch);
+              // senderEnvelope (Durable Inbound Message Queue §2.2): a drained
+              // forward carries the STORED sender frame; an old peer ignores
+              // the extra field (version skew named in the spec).
+              const res = await meshClient.send({ machineId: target, url }, { type: 'deliverMessage', session: env.sessionKey, messageId: env.messageId, payload: env.payload, ownershipEpoch: env.ownershipEpoch, ...(env.senderEnvelope ? { senderEnvelope: env.senderEnvelope } : {}) } as import('../core/MeshRpc.js').MeshCommand, env.ownershipEpoch);
               if (res.ok && res.result && typeof res.result === 'object' && 'accepted' in (res.result as object)) {
-                return res.result as { messageId: string; accepted: 'queued' | 'duplicate' | 'stale-ownership' };
+                return res.result as { messageId: string; accepted: 'queued' | 'duplicate' | 'stale-ownership' | 'sender-rejected' };
               }
               throw new Error(`deliverMessage rejected: ${res.status} ${res.reason ?? ''}`);
             },
@@ -13430,11 +13762,184 @@ export async function startServer(options: StartOptions): Promise<void> {
               await meshClient.send({ machineId, url }, { type: 'deliverMessage', session: msg.sessionKey, messageId: msg.messageId, payload: msg.payload, ownershipEpoch: 0 }, 0);
             },
             handleLocally: async () => { /* inbound interception falls through to the existing local spawn */ },
-            queueMessage: () => { /* queued — left for the inbound path's redelivery/retry */ },
+            // Durable Inbound Message Queue §2.2: tri-state custody taking.
+            // Null engine (dark / gate failed / invariants violated) → 'refused'
+            // → the router leaves acked:false → today's fall-through. enqueueLive
+            // never throws (storage failure maps to 'refused' — fail-safe).
+            queueMessage: (msg, reason) => {
+              if (!_inboundQueue) return 'refused';
+              const out = _inboundQueue.enqueueLive({
+                sessionKey: msg.sessionKey,
+                messageId: msg.messageId,
+                payload: typeof msg.payload === 'string' ? msg.payload : JSON.stringify(msg.payload ?? ''),
+                senderEnvelope: msg.senderEnvelope ?? null,
+                topicMetadata: msg.topicMetadata,
+              }, reason);
+              return out.result;
+            },
             raiseAttention: (title, body) => console.log(pc.dim(`  [session-router] attention: ${title} — ${body}`)),
             sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
             log: (line) => console.log(pc.dim(`  [session-router] ${line}`)),
           });
+
+          // ── Durable Inbound Message Queue: engine construction (gated) ──
+          // Gate: pool active (this block) + mesh identity (this block) +
+          // inboundQueue.enabled + !dryRun + the six config-seam invariants.
+          // A violated invariant keeps the queue OFF for the boot — one loud
+          // config-error per violated inequality + one attention item, never a
+          // half-configured queue (spec §Config).
+          try {
+            const iqcMod = await import('../core/inboundQueueConfig.js');
+            const qcfg = { ...iqcMod.DEFAULT_INBOUND_QUEUE_CONFIG, ...(config.multiMachine?.sessionPool?.inboundQueue ?? {}) };
+            const hcfg = { ...iqcMod.DEFAULT_HOLD_FOR_STABILITY_CONFIG, ...(config.multiMachine?.sessionPool?.holdForStability ?? {}) };
+            // Dry-run constructs the engine too (second-pass concern 2): the
+            // §2.4 dry-run branch never takes custody, but its durable
+            // wouldEnqueue/wouldHold/wouldRefuse counters ARE the promotion
+            // evidence and /pool/queue must serve them. The boot sweep already
+            // gate-expired any live→dry-run residual rows.
+            if (qcfg.enabled && _sessionPoolStage() !== 'dark') {
+              const inv = iqcMod.validateInboundQueueInvariants(qcfg, hcfg);
+              if (!inv.ok) {
+                for (const v of inv.violations) {
+                  console.error(`[inbound-queue] CONFIG ERROR — invariant ${v.invariant} (${v.name}): ${v.message}`);
+                }
+                notify('IMMEDIATE', 'inbound-queue',
+                  `Inbound queue NOT started — ${inv.violations.length} config invariant(s) violated (${inv.violations.map((v) => v.name).join(', ')}). The queue stays OFF; messages use today's delivery path.`);
+                _sweptInboundStore?.close();
+                _sweptInboundStore = null;
+              } else {
+                const qdlMod = await import('../core/QueueDrainLoop.js');
+                const pisStoreMod = await import('../core/PendingInboundStore.js');
+                const pisMod2 = await import('../core/PendingInjectStore.js');
+                const queuePis = new pisMod2.PendingInjectStore(path.join(config.stateDir, 'state'));
+                const store = _sweptInboundStore ?? pisStoreMod.PendingInboundStore.open(config.projectName ?? 'agent', config.stateDir);
+                const bootSessionId = `${meshSelfId}:${Date.now()}`;
+                // §4.2 hold verdict — effective state honesty: always-'failover'
+                // when the policy is off or the queue is dry-run (unreachable
+                // here: dryRun gates construction) — config-coupled both ways.
+                const holdOn = hcfg.enabled === true;
+                const holdVerdict = (sessionKey: string): 'hold' | 'failover' | 'deliver' => {
+                  if (!holdOn) return 'failover';
+                  const own = ownReg.read(sessionKey);
+                  const owner = own ? ownReg.ownerOf(sessionKey) : null;
+                  if (!owner || owner === meshSelfId) return 'deliver';
+                  const cap = machinePoolRegistry?.getCapacity(owner);
+                  if (!cap?.online) return 'failover'; // heartbeat offline — dead is dead
+                  if (ownerSuspectBreaker.isFlapping(owner)) return 'failover'; // §4.4
+                  if (ownerSuspectBreaker.isSuspect(owner)) return 'hold'; // suspect + online
+                  return 'deliver'; // not suspect (exhaustion site) — enqueue-and-drain
+                };
+                const stoppedTopics = new Set<string>();
+                _inboundQueue = new qdlMod.QueueDrainLoop({
+                  store,
+                  qcfg,
+                  hcfg,
+                  selfMachineId: meshSelfId,
+                  // The real serving-lease signal (second-pass concern 3): when
+                  // a lease coordinator exists, custody is gated on actually
+                  // HOLDING the lease (§2.2 — custody only where it can be
+                  // drained); a single-machine install with no coordinator
+                  // defaults true (the single-router topology).
+                  holdsLease: () => (leaseCoordinatorRef ? leaseCoordinatorRef.holdsLease() : true),
+                  isStopped: (sk) => stoppedTopics.has(sk),
+                  dispatchInbound: async (msg, handover) => {
+                    if (!_drainLocalDeliver) return { kind: 'un-routable', reason: 'local-tail-not-wired' };
+                    return _drainLocalDeliver(msg, handover);
+                  },
+                  forceReplace: async (msg) => {
+                    if (!_sessionRouter) return false;
+                    return _sessionRouter.forceReplace({
+                      sessionKey: msg.sessionKey,
+                      messageId: msg.messageId,
+                      payload: msg.payload,
+                      senderEnvelope: msg.senderEnvelope,
+                      topicMetadata: msg.topicMetadata as import('../core/PlacementExecutor.js').TopicPlacement | undefined,
+                    });
+                  },
+                  holdVerdict,
+                  clearPisRecord: (sk) => {
+                    for (const r of queuePis.list().records.filter((x) => String(x.telegramTopicId ?? '') === sk)) {
+                      queuePis.clear(r.tmuxSession);
+                    }
+                  },
+                  reportLoss: (items, reason) => {
+                    const topics = [...new Set(items.map((i) => i.sessionKey))].join(', ');
+                    notify('SUMMARY', 'inbound-queue',
+                      `I didn't get to ${items.length} queued message(s) (${reason}; topics: ${topics}) — resend anything still needed.`);
+                  },
+                  reportPossiblyNotInjected: (items) => {
+                    const topics = [...new Set(items.map((i) => i.sessionKey))].join(', ');
+                    notify('SUMMARY', 'inbound-queue',
+                      `${items.length} message(s) may not have been injected (topics: ${topics}) — if a message went unanswered, resend it.`);
+                  },
+                  log: (line) => console.log(pc.dim(`  ${line}`)),
+                  reportDegradation: (reason) => {
+                    DegradationReporter.getInstance().report({
+                      feature: 'InboundQueue.drain',
+                      primary: 'Durable inbound custody drain',
+                      fallback: 'Rows remain durable; the Eternal-Sentinel tick keeps retrying',
+                      reason,
+                      impact: 'Queued inbound messages may deliver late until the tick recovers.',
+                    });
+                  },
+                  now: () => Date.now(),
+                  mono: () => performance.now(),
+                  bootSessionId,
+                });
+                _inboundQueue.onLeaseAcquired(null);
+                // Expose the stop hook for the emergency-stop integration and
+                // the engine for the /pool/queue route via module state.
+                _inboundQueueStop = (sk: string) => { stoppedTopics.add(sk); _inboundQueue?.onOperatorStop(sk); };
+                // Backstop tick (Eternal Sentinel — declared in QueueDrainLoop).
+                const tickHandle = setInterval(() => { void _inboundQueue?.tick(); }, qcfg.drainTickMs);
+                tickHandle.unref?.();
+                console.log(pc.dim(`  [inbound-queue] engine live — tick every ${qcfg.drainTickMs}ms, tenure ${_inboundQueue.currentTenure()}`));
+
+                // Survivor arm (spec §5.1, loss window 1): the machine that
+                // holds the routing role checks — once heartbeats have had a
+                // cycle to repopulate — for OFFLINE peers whose last capacity
+                // heartbeat reported nonzero queue depth. ONE loss-SUSPECTED
+                // item per (machine + tenure) episode, then capped synthetic
+                // re-placement for the top-K sessions THROUGH the router path
+                // (PlacementExecutor honors pins; CAS; spawn on the chosen
+                // machine) — SESSION RECOVERY WITHOUT MESSAGE REPLAY, framed
+                // exactly so in the copy. A mesh-less/old peer carries no
+                // depth field — honestly unknown, no item.
+                const survivorEpisodesSeen = new Set<string>();
+                const survivorCheck = (): void => {
+                  try {
+                    for (const cap of machinePoolRegistry?.getCapacities() ?? []) {
+                      const iq = cap.inboundQueue;
+                      if (cap.machineId === meshSelfId || cap.online || !iq || iq.queueDepth <= 0) continue;
+                      const episodeKey = `${cap.machineId}|${iq.tenure ?? 'unknown'}`;
+                      if (survivorEpisodesSeen.has(episodeKey)) continue;
+                      survivorEpisodesSeen.add(episodeKey);
+                      notify('IMMEDIATE', 'inbound-queue',
+                        `"${cap.nickname ?? cap.machineId}" went dark holding ~${iq.queueDepth} queued message(s) — SUSPECTED loss (it may have delivered some before going dark; last heartbeat ${cap.selfReportedLastSeen ?? 'unknown'}). I'm re-opening its top conversations on a healthy machine — session recovery WITHOUT message replay: the queued messages themselves are not recovered, so resend anything still needed.`);
+                      const respawnCap = Math.min(qcfg.maxFailoverRespawns, iq.topK.length);
+                      for (let i = 0; i < respawnCap; i++) {
+                        const sk = iq.topK[i].sessionKey;
+                        setTimeout(() => {
+                          void _sessionRouter?.forceReplace({ sessionKey: sk, messageId: `survivor-replace:${episodeKey}:${sk}`, payload: '', senderEnvelope: null })
+                            .catch(() => { /* re-place best-effort; lazy respawn-on-next-message is the fallback */ });
+                        }, 2000 * i).unref?.(); // staggered
+                      }
+                    }
+                  } catch { /* survivor check is best-effort observability+recovery */ }
+                };
+                const survivorTimer = setInterval(survivorCheck, 60_000);
+                survivorTimer.unref?.();
+              }
+            } else if (_sweptInboundStore) {
+              // Sweep opened the store expecting a live engine but the stage/
+              // dry-run gate says otherwise (mid-boot config nuance) — close it;
+              // the sweep already settled rows per its own gate verdict.
+              _sweptInboundStore.close();
+              _sweptInboundStore = null;
+            }
+          } catch (err) {
+            console.error(`[inbound-queue] engine construction failed (queue stays OFF): ${err instanceof Error ? err.message : String(err)}`);
+          }
 
           // ── B (HTTP presence transport): pull each peer's self-capacity over
           // the signed /mesh/rpc channel and record it into the pool registry.
@@ -13852,7 +14357,7 @@ export async function startServer(options: StartOptions): Promise<void> {
             carrier: _topicProfileCarrier,
           }
         : null;
-    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, cartographer: cartographer ?? undefined, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, subscriptionPool, quotaPoller, quotaAwareScheduler: _quotaAwareScheduler ?? undefined, proactiveSwapMonitor: _proactiveSwapMonitor ?? undefined, inUseAccountResolver, enrollmentWizard, semanticMemory, activitySentinel, rateLimitSentinel, releaseReadinessSentinel: releaseReadinessSentinel ?? undefined, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, topicProfile: _topicProfileCtx ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, localSigningKeyPem, leaseTransport, onLeasePullRequest: () => leaseCoordinatorRef?.currentLease() ?? null, liveTailReceiver, handoffWireTransport, onHandoffBegin, onHandoffInitiate: handoffInitiate, handoffInProgress: handoffSentinelInProgress, messageLedger, currentInboundByTopic, replyMarkerTransport, onReplyMarker: messageLedger ? (marker: unknown) => { const m = marker as { dedupeKey: string; platform: string; replyIdempotencyKey: string; epoch: number; topic?: string | null }; messageLedger!.applyRemoteReplyMarker(m.dedupeKey, { platform: m.platform, replyIdempotencyKey: m.replyIdempotencyKey, epoch: m.epoch, topic: m.topic ?? null }); } : undefined, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, warrantsReplyGate, collaborationSurfacer, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, a2aDeliveryTracker: a2aDeliveryTracker ?? undefined, responseReviewGate, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, machinePoolRegistry, meshRpcDispatcher, workingSetPullCoordinator, commitmentReplicaStore, forwardCommitmentMutate, sessionOwnershipRegistry, topicPinStore: _topicPinStore ?? undefined, streamTicketStore: _streamTicketStore ?? undefined, poolStreamAllowRemoteInput: (config as { dashboard?: { poolStream?: { allowRemoteInput?: boolean } } }).dashboard?.poolStream?.allowRemoteInput ?? false, poolStreamConnector: _poolStreamConnector ?? undefined, secretSync: _secretSyncHandle ?? undefined, meshSelfId: _meshSelfId ?? undefined, resolveRouterUrl: _resolveRouterUrl ?? undefined, resolvePeerUrls: _resolvePeerUrls ?? undefined, guardRegistry, listPoolMachines: _listPoolMachines ?? undefined, sessionPoolE2EResultStore, proxyCoordinator, topicIntentStore, topicIntentArcCheck, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, briefDeps, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, agentWorktreeReaper, mcpProcessReaper, geminiLoopRunner, sleepController, agentActivityState, reapLog, resumeQueue, resumeDrainer, operatorStopRecorder: recordOperatorStop, sleepWakeDetector, unjustifiedStopGate, stopGateDb, stopNotifier });
+    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, cartographer: cartographer ?? undefined, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, subscriptionPool, quotaPoller, quotaAwareScheduler: _quotaAwareScheduler ?? undefined, proactiveSwapMonitor: _proactiveSwapMonitor ?? undefined, inUseAccountResolver, enrollmentWizard, semanticMemory, activitySentinel, rateLimitSentinel, releaseReadinessSentinel: releaseReadinessSentinel ?? undefined, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, topicProfile: _topicProfileCtx ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, localSigningKeyPem, leaseTransport, onLeasePullRequest: () => leaseCoordinatorRef?.currentLease() ?? null, liveTailReceiver, handoffWireTransport, onHandoffBegin, onHandoffInitiate: handoffInitiate, handoffInProgress: handoffSentinelInProgress, messageLedger, currentInboundByTopic, replyMarkerTransport, onReplyMarker: messageLedger ? (marker: unknown) => { const m = marker as { dedupeKey: string; platform: string; replyIdempotencyKey: string; epoch: number; topic?: string | null }; messageLedger!.applyRemoteReplyMarker(m.dedupeKey, { platform: m.platform, replyIdempotencyKey: m.replyIdempotencyKey, epoch: m.epoch, topic: m.topic ?? null }); } : undefined, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, warrantsReplyGate, collaborationSurfacer, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, a2aDeliveryTracker: a2aDeliveryTracker ?? undefined, responseReviewGate, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, machinePoolRegistry, getInboundQueue: () => _inboundQueue, meshRpcDispatcher, workingSetPullCoordinator, commitmentReplicaStore, forwardCommitmentMutate, sessionOwnershipRegistry, topicPinStore: _topicPinStore ?? undefined, streamTicketStore: _streamTicketStore ?? undefined, poolStreamAllowRemoteInput: (config as { dashboard?: { poolStream?: { allowRemoteInput?: boolean } } }).dashboard?.poolStream?.allowRemoteInput ?? false, poolStreamConnector: _poolStreamConnector ?? undefined, secretSync: _secretSyncHandle ?? undefined, meshSelfId: _meshSelfId ?? undefined, resolveRouterUrl: _resolveRouterUrl ?? undefined, resolvePeerUrls: _resolvePeerUrls ?? undefined, guardRegistry, listPoolMachines: _listPoolMachines ?? undefined, sessionPoolE2EResultStore, proxyCoordinator, topicIntentStore, topicIntentArcCheck, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, briefDeps, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, agentWorktreeReaper, mcpProcessReaper, geminiLoopRunner, sleepController, agentActivityState, reapLog, resumeQueue, resumeDrainer, operatorStopRecorder: recordOperatorStop, sleepWakeDetector, unjustifiedStopGate, stopGateDb, stopNotifier });
     // Resolve the late-bound topic-operator getter (increment 2e): routing was
     // wired before the server existed; from here on inbound binds use the
     // server's own store instance.

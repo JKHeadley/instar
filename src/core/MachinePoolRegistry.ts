@@ -114,6 +114,9 @@ export interface HeartbeatObservation {
    *  field is the peer's self-reported DATA, never its identity. Absent =
    *  older peer / no posture (renders "unknown"). */
   guardPosture?: MachineCapacity['guardPosture'];
+  /** Durable Inbound Message Queue heartbeat fields (spec §5.1). Absent =
+   *  older peer / queue dark — depth honestly unknown. */
+  inboundQueue?: MachineCapacity['inboundQueue'];
 }
 
 export interface MachinePoolRegistryDeps {
@@ -259,6 +262,7 @@ export class MachinePoolRegistry {
       hardware: known.hardware,
       clockSkewStatus: live?.skew.status ?? 'ok',
       quotaState: live?.obs.quotaState,
+      inboundQueue: live?.obs.inboundQueue,
       // Guard posture: live observation first, durable last-known second —
       // a machine with no posture EVER received carries neither field
       // (renders "guards: unknown", never "0 on / 0 off").

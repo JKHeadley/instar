@@ -918,6 +918,10 @@ export interface RouteContext {
   /** Multi-Machine Session Pool registry (§L2) — live MachineCapacity view behind
    *  GET /pool + the Machines dashboard tab. Null/absent when not wired (ships dark). */
   machinePoolRegistry?: import('../core/MachinePoolRegistry.js').MachinePoolRegistry | null;
+  /** Durable Inbound Message Queue engine getter — late-bound (the engine is
+   *  constructed in the mesh block after the server). Null/absent or a null
+   *  return = the queue is dark/gated; GET /pool/queue answers 503. */
+  getInboundQueue?: (() => import('../core/QueueDrainLoop.js').QueueDrainLoop | null) | null;
   /** MeshRpc dispatcher (§L0) — the receive side behind POST /mesh/rpc (signed,
    *  recipient-bound, RBAC-gated m2m commands). Null/absent when not wired (dark). */
   meshRpcDispatcher?: import('../core/MeshRpc.js').MeshRpcDispatcher | null;
@@ -10432,6 +10436,32 @@ export function createRoutes(ctx: RouteContext): Router {
           }
         : null,
       machines,
+    });
+  });
+
+  // GET /pool/queue — Durable Inbound Message Queue observability (spec
+  // §Observability). Bearer-gated like every route; 503 while the queue is
+  // dark/gated (the spec's ships-dark contract). delivered24h EXCLUDES
+  // possibly-not-injected rows (success totals never overstate — they are
+  // summed separately as deliveredUnconfirmed24h).
+  router.get('/pool/queue', (_req, res) => {
+    const engine = ctx.getInboundQueue?.() ?? null;
+    if (!engine) {
+      res.status(503).json({ error: 'inbound queue not enabled on this agent (ships dark; multiMachine.sessionPool.inboundQueue)' });
+      return;
+    }
+    const snap = engine.snapshot();
+    res.json({
+      enabled: true,
+      paused: snap.paused,
+      tenure: snap.tenure,
+      counts: snap.counts,
+      counters: snap.counters,
+      held: snap.heldSeqs,
+      // §1 storage posture as a live field (round-8 external): this build
+      // detects nothing beyond "local filesystem present", reported honestly.
+      custodyDurability: 'unknown',
+      oldestQueuedAgeMs: snap.counts.oldestQueuedAt ? Math.max(0, Date.now() - Date.parse(snap.counts.oldestQueuedAt)) : null,
     });
   });
 
