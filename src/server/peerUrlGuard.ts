@@ -12,6 +12,13 @@
  *   - private-network/localhost hosts (http allowed for LAN peers).
  * A URL failing the check is refused VISIBLY (`url-rejected` failure row) —
  * never silently skipped, never sent the token.
+ *
+ * Redirect note: callers use plain fetch() WITHOUT `redirect: 'manual'` —
+ * that is safe by the Fetch spec, which strips the Authorization header on
+ * cross-origin redirects (a 301 from an allowlisted peer to a hostile host
+ * arrives token-less). Do not "fix" this by following redirects manually
+ * with the header preserved (the Slack FileHandler pattern is for a CDN
+ * that REQUIRES it — the opposite trade).
  */
 
 const DEFAULT_HOST_PATTERNS: readonly RegExp[] = [
@@ -22,7 +29,15 @@ const DEFAULT_HOST_PATTERNS: readonly RegExp[] = [
 
 function isPrivateOrLocalHost(host: string): boolean {
   const h = host.toLowerCase();
-  if (h === 'localhost' || h === '::1' || h === '[::1]') return true;
+  if (h === 'localhost') return true;
+  // IPv6 literals (URL.hostname keeps the brackets): loopback, unique-local
+  // (fc00::/7), and link-local (fe80::/10) get the same trust as RFC-1918 —
+  // an IPv6 LAN peer must not dead-end as url-rejected (security review
+  // 2026-06-12 finding T-05; previously these over-blocked).
+  const v6 = h.startsWith('[') && h.endsWith(']') ? h.slice(1, -1) : h;
+  if (v6 === '::1') return true;
+  if (/^f[cd][0-9a-f]{0,2}:/.test(v6)) return true; // fc00::/7 unique-local
+  if (/^fe[89ab][0-9a-f]:/.test(v6)) return true; // fe80::/10 link-local
   // RFC-1918 + loopback IPv4 literals.
   if (/^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(h)) return true;
   if (/^10\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(h)) return true;

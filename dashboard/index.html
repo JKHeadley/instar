@@ -4991,7 +4991,7 @@
       if (p.missing) problems.push(p.missing + ' missing');
       if (p.errored) problems.push(p.errored + ' erroring');
       if (p.divergedPendingRestart) problems.push(p.divergedPendingRestart + ' awaiting restart');
-      const okPart = 'guards: ' + (p.onConfirmed + p.onUnverified + p.onDryRun) + ' on' +
+      const okPart = 'guards: ' + ((p.onConfirmed ?? 0) + (p.onUnverified ?? 0) + (p.onDryRun ?? 0)) + ' on' +
         (p.onConfirmed ? ' (' + p.onConfirmed + ' confirmed)' : '');
       let age = '';
       if (m.guardPostureReceivedAt) {

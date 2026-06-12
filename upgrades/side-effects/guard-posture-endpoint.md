@@ -78,6 +78,14 @@ Initial verdict raised three concerns, all resolved before ship:
 
 Reviewer affirmation on the core questions: "No brittle logic holds blocking authority over message flow, session lifecycle, or dispatch — the only two rejection surfaces are exactly the exempt classes the artifact claims. All §3 shipping dependencies are genuinely implemented AND tested, not just claimed. Once the state-registry registration and the §6 wording fix land, I concur with shipping." Both landed; concurrence stands.
 
+## Verification phase (LARGE build, 5 independent reviewers)
+
+- **Spec-correctness**: all 8 acceptance criteria VERIFIED with code+test locations; precedence table matches §2.2 exactly. No findings.
+- **Security**: IPv6 private ranges were over-blocked (safe direction) — now granted LAN trust (loopback/ULA/link-local) with boundary tests; redirect-safety rationale documented (Fetch strips Authorization cross-origin — deliberate). All ten threat-model rows verified implemented+tested.
+- **Scalability**: REAL BUG fixed — store write-on-change compared `generatedAt` (always fresh → wrote every beat); now field-wise semantic comparison. Heartbeat posture compute now mtime-caches the resolved-config snapshot (was 2× structuredClone per 30s beat). 90-day TTL bounds the durable store; deep merge depth-capped at 64.
+- **Test-quality**: added getter-invocation wiring spy, route-level one-read pin, async-getter-structurally-unusable pin (the sync-enforcement mechanism behind <100ms), staleness boundary at exactly 5×, dryRun override precedence, snapshot-unavailable+runtime-divergent combination.
+- **Integration/regression**: no blockers; single-machine no-op verified; boot-order/TDZ verified safe. Fixes: first-failure logging for the heartbeat posture compute, explicit pool-not-wired return in deepReadPeer, defensive dashboard math on partial posture blocks.
+
 ## Evidence pointers
 
 - `.instar/state/build/must-haves.md` (truths T1–T18), `threats.md` (STRIDE T-01…T-10), `plan.md`

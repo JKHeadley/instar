@@ -49,4 +49,21 @@ describe('isPeerUrlAllowedForCredentials', () => {
   it('allows .local mDNS names over https', () => {
     expect(isPeerUrlAllowedForCredentials('https://mac-mini.local:4042').ok).toBe(true);
   });
+
+  it('IPv6: loopback, unique-local (fc00::/7) and link-local (fe80::/10) get LAN trust', () => {
+    expect(isPeerUrlAllowedForCredentials('http://[::1]:4042').ok).toBe(true);
+    expect(isPeerUrlAllowedForCredentials('http://[fd00::1]:4042').ok).toBe(true);
+    expect(isPeerUrlAllowedForCredentials('http://[fc12:3456::9]:4042').ok).toBe(true);
+    expect(isPeerUrlAllowedForCredentials('http://[fe80::abcd]:4042').ok).toBe(true);
+    expect(isPeerUrlAllowedForCredentials('https://[fd00::1]:4042').ok).toBe(true);
+  });
+
+  it('IPv6: GLOBAL addresses are refused like any public host', () => {
+    expect(isPeerUrlAllowedForCredentials('http://[2001:db8::1]:4042')).toEqual({ ok: false, reason: 'scheme-not-allowed' });
+    expect(isPeerUrlAllowedForCredentials('https://[2001:db8::1]:4042')).toEqual({ ok: false, reason: 'host-not-allowlisted' });
+    expect(isPeerUrlAllowedForCredentials('https://[2607:f8b0::1]:4042').ok).toBe(false);
+    // Prefix lookalikes outside the ranges:
+    expect(isPeerUrlAllowedForCredentials('https://[feff::1]:4042').ok).toBe(false);
+    expect(isPeerUrlAllowedForCredentials('https://[fb00::1]:4042').ok).toBe(false);
+  });
 });

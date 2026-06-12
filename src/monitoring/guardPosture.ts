@@ -147,14 +147,18 @@ export interface ResolvedGuardConfigSnapshot {
   readError?: string;
 }
 
-function deepMergeInto(target: Record<string, unknown>, source: Record<string, unknown>): void {
+function deepMergeInto(target: Record<string, unknown>, source: Record<string, unknown>, depth = 0): void {
   for (const key of Object.keys(source)) {
     if (
+      depth < 64 &&
       typeof target[key] === 'object' && target[key] !== null && !Array.isArray(target[key]) &&
       typeof source[key] === 'object' && source[key] !== null && !Array.isArray(source[key])
     ) {
-      deepMergeInto(target[key] as Record<string, unknown>, source[key] as Record<string, unknown>);
+      deepMergeInto(target[key] as Record<string, unknown>, source[key] as Record<string, unknown>, depth + 1);
     } else {
+      // Past the sanity depth a subtree is replaced wholesale — a config
+      // nested >64 levels is not a real agent config, and unbounded
+      // recursion on hostile input is a stack-overflow vector.
       target[key] = structuredClone(source[key]);
     }
   }

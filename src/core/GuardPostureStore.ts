@@ -30,6 +30,27 @@ interface StoreFileShape {
   machines: Record<string, StoredGuardPosture>;
 }
 
+
+/** Field-wise posture equality EXCLUDING generatedAt (which changes every
+ *  beat by construction and must not defeat write-on-change). */
+export function postureSemanticsEqual(a: GuardPostureSummary, b: GuardPostureSummary): boolean {
+  return (
+    a.onConfirmed === b.onConfirmed &&
+    a.onUnverified === b.onUnverified &&
+    a.onStale === b.onStale &&
+    a.onDryRun === b.onDryRun &&
+    a.offDeviant === b.offDeviant &&
+    a.offRuntimeDivergent === b.offRuntimeDivergent &&
+    a.divergedPendingRestart === b.divergedPendingRestart &&
+    a.errored === b.errored &&
+    a.missing === b.missing &&
+    a.offDeviantKeys.length === b.offDeviantKeys.length &&
+    a.offDeviantKeys.every((k, i) => k === b.offDeviantKeys[i]) &&
+    a.offRuntimeDivergentKeys.length === b.offRuntimeDivergentKeys.length &&
+    a.offRuntimeDivergentKeys.every((k, i) => k === b.offRuntimeDivergentKeys[i])
+  );
+}
+
 export class GuardPostureStore {
   private readonly filePath: string;
   private machines: Record<string, StoredGuardPosture> = {};
@@ -43,7 +64,13 @@ export class GuardPostureStore {
     try {
       const parsed = JSON.parse(fs.readFileSync(this.filePath, 'utf-8')) as StoreFileShape;
       if (parsed && typeof parsed === 'object' && parsed.machines && typeof parsed.machines === 'object') {
-        this.machines = parsed.machines;
+        // Retention bound: a peer dark beyond 90 days drops to "unknown"
+        // rather than rendering a quarter-year-old posture forever (and the
+        // file stays bounded across pool churn).
+        const cutoff = Date.now() - 90 * 24 * 60 * 60 * 1000;
+        this.machines = Object.fromEntries(
+          Object.entries(parsed.machines).filter(([, v]) => (v?.receivedAtMs ?? 0) >= cutoff),
+        );
       }
     } catch {
       // @silent-fallback-ok — absent/corrupt store starts empty; the next
@@ -53,12 +80,14 @@ export class GuardPostureStore {
     }
   }
 
-  /** Persist a machine's posture (write-on-change: an unchanged generatedAt
-   *  refreshes nothing on disk, so the 30s heartbeat loop doesn't churn fs). */
+  /** Persist a machine's posture (write-on-change: a SEMANTICALLY unchanged
+   *  posture refreshes nothing on disk, so the 30s heartbeat loop doesn't
+   *  churn fs — `generatedAt` is always fresh and deliberately excluded from
+   *  the comparison; perf review 2026-06-12 finding #2). */
   record(machineId: string, posture: GuardPostureSummary, receivedAtMs: number): void {
     const prev = this.machines[machineId];
     this.machines[machineId] = { posture, receivedAtMs };
-    if (prev && prev.posture.generatedAt === posture.generatedAt) return;
+    if (prev && postureSemanticsEqual(prev.posture, posture)) return;
     try {
       fs.mkdirSync(path.dirname(this.filePath), { recursive: true });
       const tmp = `${this.filePath}.tmp`;

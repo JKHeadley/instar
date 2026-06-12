@@ -7698,6 +7698,8 @@ export async function startServer(options: StartOptions): Promise<void> {
         guardRegistry.register('monitoring.contextWedgeSentinel.autoRecovery.enabled', () => ({
           enabled: autoRecovery.enabled === true,
           dryRun: autoRecovery.dryRun !== false,
+          // Deliberately no lastTickAt: the autoRecovery arm is config-derived
+          // (no tick loop of its own); the parent sentinel row carries liveness.
         }));
         wedgeRecoveryActive = (s: string) => wedgeSentinel.isRecoveryActive(s);
         const mode = autoRecovery.enabled ? (autoRecovery.dryRun ? 'auto-recover dry-run' : 'auto-recover LIVE') : 'detect-only';
@@ -9974,7 +9976,8 @@ export async function startServer(options: StartOptions): Promise<void> {
           // heartbeat posture block is missing/stale — a plain GET /guards
           // (never ?scope=pool), token attached only past the URL guard.
           deepReadPeer: async (machineId) => {
-            const m = _listPoolMachines?.().find((x) => x.machineId === machineId);
+            if (!_listPoolMachines) return null; // pool not wired on this host — explicit, not incidental
+            const m = _listPoolMachines().find((x) => x.machineId === machineId);
             if (!m?.lastKnownUrl) return null;
             const extra = (config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)?.peerUrlAllowlist;
             if (!isPeerUrlAllowedForCredentials(m.lastKnownUrl, extra).ok) return null;
@@ -11814,9 +11817,21 @@ export async function startServer(options: StartOptions): Promise<void> {
           // Self guard-posture block riding the capacity heartbeat (spec §2.3).
           // Computed per beat from the same one-read snapshot GET /guards uses;
           // a failed compute omits the block (older-peer semantics), never throws.
+          // The resolved-config snapshot is the expensive half (defaults clone
+          // + deep merge); cache it keyed on config.json mtime so the 30s
+          // beat pays one cheap fs.stat instead (perf review 2026-06-12 #1).
+          // The INVENTORY still rebuilds every beat — runtime states
+          // (lastTickAt staleness, self-reported enabled) must stay live.
+          let _postureComputeWarned = false;
+          let _postureSnapCache: { mtimeMs: number; snap: import('../monitoring/guardPosture.js').ResolvedGuardConfigSnapshot } | null = null;
           const selfGuardPosture = (): import('../core/types.js').GuardPostureSummary | undefined => {
             try {
-              const snap = resolveGuardConfigSnapshot(config.projectDir);
+              let mtimeMs = -1;
+              try { mtimeMs = fs.statSync(path.join(config.stateDir, 'config.json')).mtimeMs; } catch { /* absent file: -1 still caches */ }
+              if (!_postureSnapCache || _postureSnapCache.mtimeMs !== mtimeMs) {
+                _postureSnapCache = { mtimeMs, snap: resolveGuardConfigSnapshot(config.projectDir) };
+              }
+              const snap = _postureSnapCache.snap;
               if (snap.readError) return undefined;
               const inv = buildGuardInventory({
                 snapshot: snap,
@@ -11824,7 +11839,16 @@ export async function startServer(options: StartOptions): Promise<void> {
                 registry: guardRegistry,
               });
               return buildHeartbeatPostureBlock(inv, new Date().toISOString());
-            } catch { return undefined; /* posture is optional on a beat */ }
+            } catch (err) {
+              // Posture is optional on a beat (the pool renders "unknown"
+              // honestly) — but a PERSISTENT compute failure must not be
+              // invisible to the operator, so the first occurrence logs.
+              if (!_postureComputeWarned) {
+                _postureComputeWarned = true;
+                console.log(pc.yellow(`  [guards] heartbeat posture compute failed (beats will omit posture until it recovers): ${err instanceof Error ? err.message : String(err)}`));
+              }
+              return undefined;
+            }
           };
           const refreshPool = (): void => {
             try {

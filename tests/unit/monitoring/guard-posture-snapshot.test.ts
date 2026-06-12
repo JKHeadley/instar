@@ -127,4 +127,17 @@ describe('GuardRegistry', () => {
     registry.register('a', () => null as never);
     expect(registry.read('a').kind).toBe('error');
   });
+
+  it('SYNC enforcement: an async getter is structurally unusable (errored, never awaited)', () => {
+    // The runtime-enrichment contract (spec §2.2) requires synchronous
+    // in-memory getters. An async getter returns a Promise, which is not a
+    // status object — it reads as `errored` IMMEDIATELY (the read itself is
+    // sync), so nobody can convert a getter to async and have it silently
+    // work. This is the structural pin behind the <100ms criterion.
+    const registry = new GuardRegistry();
+    registry.register('a', (async () => ({ enabled: true })) as never);
+    const read = registry.read('a');
+    expect(read.kind).toBe('error');
+    expect(read).not.toBeInstanceOf(Promise);
+  });
 });

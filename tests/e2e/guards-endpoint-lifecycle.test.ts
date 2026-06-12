@@ -190,6 +190,9 @@ describe('GET /guards — WIRED source guards (boot registrations cannot silentl
     ['durable posture store', 'new GuardPostureStore(config.stateDir)'],
     ['probe registration', 'createGuardPostureProbes('],
     ['AgentServer threading', 'guardRegistry, listPoolMachines:'],
+    ['heartbeat snapshot mtime cache (perf-review pin)', '_postureSnapCache'],
+    ['probe deepReadPeer wired through the URL guard', 'deepReadPeer: async (machineId)'],
+    ['posture compute failure logs once (never silent forever)', '_postureComputeWarned'],
   ])('server.ts wires: %s', (_name, needle) => {
     expect(serverTs).toContain(needle);
   });

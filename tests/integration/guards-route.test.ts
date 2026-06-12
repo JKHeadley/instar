@@ -14,7 +14,7 @@
  * attached), single-machine degradation; heartbeat posture ingestion
  * (receiver-side age, carry-forward, durable store reload).
  */
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import express from 'express';
 import request from 'supertest';
 import fs from 'node:fs';
@@ -129,6 +129,39 @@ describe('GET /guards (integration)', () => {
     expect(res.status).toBe(500);
     expect(res.body.error).toMatch(/config read failed/);
     expect(res.body.guards).toBeUndefined();
+  });
+
+  it('WIRING integrity: the route actually invokes the registry getters (not cached, not skipped)', async () => {
+    let reaperReads = 0;
+    let schedulerReads = 0;
+    const registry = new GuardRegistry();
+    registry.register('monitoring.sessionReaper.enabled', () => {
+      reaperReads++;
+      return { enabled: true, dryRun: false, lastTickAt: Date.now() - 5_000 };
+    });
+    registry.register('scheduler.enabled', () => {
+      schedulerReads++;
+      return { enabled: true, jobCount: 2, pausedJobCount: 0 };
+    });
+    const app = appWith(ctxFor({ guardRegistry: registry as never }));
+    await request(app).get('/guards').set(auth());
+    expect(reaperReads).toBe(1);
+    expect(schedulerReads).toBe(1);
+    // A second request re-reads live state — never a cached snapshot.
+    await request(app).get('/guards').set(auth());
+    expect(reaperReads).toBe(2);
+    expect(schedulerReads).toBe(2);
+  });
+
+  it('ONE config.json disk read per request at the ROUTE level (never per guard)', async () => {
+    const { default: realFs } = await import('node:fs');
+    const spy = vi.spyOn(realFs, 'readFileSync');
+    await request(appWith(ctxFor())).get('/guards').set(auth());
+    const configReads = spy.mock.calls.filter(
+      ([p]) => typeof p === 'string' && p.endsWith(path.join('.instar', 'config.json')),
+    );
+    expect(configReads.length).toBe(1);
+    spy.mockRestore();
   });
 
   it('plain scope (no pool param) carries no pool block', async () => {

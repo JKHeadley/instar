@@ -71,6 +71,25 @@ describe('deriveGuardRow — the normative precedence table', () => {
     expect(row.runtime?.tickAgeMs).toBeGreaterThan(600_000);
   });
 
+  it('staleness boundary: EXACTLY 5x cadence is NOT stale; one ms past is', () => {
+    const atBoundary = derive({
+      runtime: { kind: 'ok', status: { enabled: true, lastTickAt: NOW - 120_000 * 5 } },
+    });
+    expect(atBoundary.effective).toBe('on-confirmed');
+    const pastBoundary = derive({
+      runtime: { kind: 'ok', status: { enabled: true, lastTickAt: NOW - 120_000 * 5 - 1 } },
+    });
+    expect(pastBoundary.effective).toBe('on-stale');
+  });
+
+  it('runtime dryRun OVERRIDES config dryRun (nullish-coalescing precedence)', () => {
+    const row = derive({
+      configDryRun: true,
+      runtime: { kind: 'ok', status: { enabled: true, dryRun: false, lastTickAt: NOW - 1_000 } },
+    });
+    expect(row.effective).toBe('on-confirmed'); // runtime says live; config dryRun loses
+  });
+
   it('staleness does NOT apply to guards with no declared cadence', () => {
     const noTick: GuardManifestEntry = { ...reaperManifest, expectedTickMs: undefined };
     const row = derive({ manifest: noTick, runtime: { kind: 'ok', status: { enabled: true } } });
@@ -175,6 +194,7 @@ describe('deriveGuardRow — the normative precedence table', () => {
       runtime: { kind: 'ok', status: { enabled: false } },
     });
     expect(row.effective).toBe('off-runtime-divergent');
+    expect(row.divergence).toBe('snapshot-unavailable'); // both facts visible at once
   });
 
   it('disk divergence outranks the runtime contradiction when BOTH present', () => {
