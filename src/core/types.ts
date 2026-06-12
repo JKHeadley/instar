@@ -78,6 +78,14 @@ export interface Session {
    *  (e.g. 'idle-zombie', 'reaped-idle', 'manual-kill'). Undefined on records
    *  ended before this field existed. */
   endedReason?: string;
+  /** Ghost-record supersession (one-running-record-per-tmux invariant): when a
+   *  NEW record registers as running for a tmux session name, any OTHER record
+   *  still marked running/starting for that same name is closed with this field
+   *  set to the new record's id. tmux names are unique among live sessions, so
+   *  two live records for one name are definitionally stale — the leak that
+   *  showed N "duplicate sessions" on the dashboard after crisis respawns
+   *  (2026-06-11 Mac Mini: 5 records × 1 tmux session). */
+  supersededBy?: string;
   /**
    * How this session signals task completion (june15-headless-spawn-reroute, PR2).
    * - undefined/'exit': today's behavior — a headless one-shot signals completion
