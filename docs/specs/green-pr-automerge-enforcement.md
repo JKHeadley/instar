@@ -10,7 +10,7 @@ lessons-engaged: [P1-structure-beats-willpower, P2-signal-vs-authority, P3-migra
 
 # Green-PR Auto-Merge Enforcement — Phase 7 becomes machinery, not memory
 
-**Status:** v2 (post round-1 review). Author: echo · Created: 2026-06-12 · Topic: 24662
+**Status:** v3 (post round-2 review). Author: echo · Created: 2026-06-12 · Topic: 24662
 **Companion (required):** `green-pr-automerge-enforcement.eli16.md`
 
 > Per the instar-dev gate, no code ships until convergence (`/spec-converge`) and Justin sets
@@ -41,6 +41,21 @@ Two enforcement gaps, two layers:
   compaction, or plain drift: the merge depends on an agent *remembering* Phase 7.)
 - **Gap 2 — nothing intercepts the hand-back at the chokepoint.** An agent ending its
   session with a green unmerged PR gets no structural pushback.
+
+## Key concepts (for readers outside this codebase)
+
+- **Attention item**: instar's durable to-do surface — one Telegram forum topic per item,
+  aggregated items collapse many events into ONE rolling entry.
+- **Lease / lease holder**: the multi-machine pool elects exactly one "awake" machine via
+  a fenced lease; background authority runs only on the holder.
+- **Dark gate / `DARK_GATE_EXCLUSIONS`**: instar's registry of which features ship
+  off-by-default fleet-wide and why; `deliberate-fleet-default` = off everywhere until a
+  deliberate config flip.
+- **Guard manifest / `GET /guards`**: the census of safety/monitoring components and
+  their live posture (on-confirmed / off / diverged…).
+- **Stop-gate hook**: a Claude Code Stop-event hook that can block a session from ending
+  with guidance; decisions are served by the agent's local server.
+- **safe-merge**: `scripts/safe-merge.mjs`, the repo's blessed merge wrapper (§3.1).
 
 ## What exists today (v1.3.500-era main, file:line grounded — corrected by round 1)
 
@@ -92,14 +107,15 @@ Two enforcement gaps, two layers:
   near-instantly BEHIND — the wait-for-update-and-full-re-run loop is the conflict-rot
   treadmill safe-merge's `--admin` path exists to avoid (PR #1084 went CONFLICTING within
   the hour); (3) it cannot express instar's hold semantics, identity checks, audit trail,
-  runtime kill-switch, or Attention integration. The watcher MAY additionally arm native
-  auto-merge as a free belt, but it is not the mechanism of record.
+  runtime kill-switch, or Attention integration.
 - **A GitHub Actions workflow** (event-driven merge on `check_suite` success): no custom
-  daemon, but it would hold admin-bypass merge authority in a repo-resident token visible
-  to every contributor, outside the agent's guard manifest / kill-switch / audit
-  infrastructure (Observable Intelligence), and it cannot read agent-side state (identity
-  bindings, stop-gate snapshot). Instar's standing pattern keeps autonomous authority
-  inside the agent's audited monitoring layer.
+  daemon, and token scoping can be done responsibly (environment-protected secrets / a
+  GitHub App) — the honest objections are policy and audit LOCALITY: the merge authority
+  would live outside the agent's guard manifest, runtime kill-switch, emergency-stop
+  reach, and Attention/audit surfaces (Observable Intelligence), and it cannot read
+  agent-side state (identity bindings, hold memory, the stop-gate snapshot). Instar's
+  standing pattern keeps autonomous authority inside the agent's audited monitoring
+  layer.
 - **Merge queue**: solves ordering, not the unattended-merge gap; same arming problem as
   native auto-merge and unavailable on this plan/repo configuration today.
 
@@ -115,33 +131,53 @@ Two enforcement gaps, two layers:
   `--delete-branch`). The watcher MUST NOT carry an independent merge path, and MUST NOT
   trust safe-merge's exit code as proof — `merged` is classified only after an independent
   `gh pr view --json state,mergedAt` confirms it (B10).
-- R3 — **Deliberate holds always win**: case-insensitive `[hold` title prefix, `hold` /
-  `do-not-merge` label, or draft status excludes a PR. Hold state is re-checked immediately
-  before the merge invocation, not just at selection. **Hold removal is debounced**: a PR
-  observed held resumes auto-merge eligibility only after the marker is absent for two
-  consecutive ticks, and the resume is audited (`hold-released`). A conversational hold
-  ("let's hold #N") is NOT visible to machinery — the agent's contract (CLAUDE.md awareness
-  section) is to apply the marker immediately when the operator expresses a hold; the
-  marker IS the hold.
+- R3 — **Deliberate holds always win**: case-insensitive `[hold` title prefix,
+  case-insensitive `hold` / `do-not-merge` label, or draft status excludes a PR. Hold state
+  is re-checked immediately before the merge invocation, not just at selection (a residual
+  seconds-wide window between that re-check and the merge is documented and accepted —
+  safe-merge's head pinning still bounds what can land in it). **Hold removal is
+  debounced**: a PR observed held resumes eligibility only after the marker is absent for
+  two consecutive ticks OF THE SAME LEASE HOLDER, and the resume is audited
+  (`hold-released`); the lease-acquire warm-up tick (R10) seeds hold memory so a lease move
+  can never zero the debounce. **Conversational holds get a structural assist**:
+  `POST /green-pr-automerge/hold {"pr": N, "reason": "…"}` applies the `[HOLD: …]` title
+  prefix via gh in one call — the agent's contract (CLAUDE.md awareness section) is to fire
+  it the moment the operator expresses a hold. The marker IS the hold; Decision 3 carries
+  the defended rationale for why this contract is acceptable where other prose was not.
 - R4 — **Authored-by-this-agent only, verified**: gh login is the operator's shared
   credential, so `--author "@me"` is necessary but NOT sufficient. A candidate must ALSO
-  have a head branch under this agent's namespace (`<agentName>/…`, the live fleet
-  convention). At watcher boot, `gh api user` is resolved and compared against
-  `expectedGhLogin` config; mismatch or resolution failure → every tick is inert-audited
-  (`skipped:identity-mismatch` / `identity-unresolved`), never breaker-fed.
+  have a head branch under this agent's namespace (`<agentName>/…`) — honestly a FILTER,
+  not provenance (anyone holding the credential can name a branch `echo/…`); the
+  provenance guarantee comes from §3.1's `requiredContextsFloor` (the gate-produced CI
+  contexts), and Decision 8 records the residual. `gh api user` is resolved ASYNC and
+  non-blocking (server boot never waits on gh), compared against `expectedGhLogin`
+  config, and RE-RESOLVED on a TTL (every `identityRecheckTicks`, default 6) so a mid-run
+  gh re-auth cannot ride a stale verification. Mismatch, resolution failure, or an
+  UNSET `expectedGhLogin` → every tick is inert-audited (`skipped:identity-mismatch` /
+  `identity-unresolved` / `identity-unconfigured`, the last surfaced via the `/guards`
+  posture so a flipped-on-but-unconfigured watcher is visible), never breaker-fed. The
+  dev-agent ship-time flip sets `enabled` AND `expectedGhLogin` together.
 - R5 — **Bounded + braked** (No Unbounded Loops): at most one merge attempt per tick;
-  single-flight (a tick that finds the previous one still running skips with
-  `tick-skipped-busy`); per-PR failure ladder with backoff; `gave-up` after `maxAttempts`,
-  re-armed by a new head SHA at most `maxRearmEpisodes` (default 3) times before requiring
-  manual action; a breaker after consecutive failures across PRs; every state TRANSITION
-  audited (not every tick — the SessionReaper precedent); failures fold into ONE aggregated
-  Attention item with a machine-stable id (Bounded Notification Surface).
-- R6 — **Stop-gate belt, server-side**: the green-PR check lives in the existing
-  `/internal/stop-gate/evaluate` route (where dev-gating, config, and timeouts already
-  live), reading the watcher's LAST-TICK SNAPSHOT — **zero gh calls on the stop path**. The
-  hook string is unchanged. Scope: the gate blocks ONCE only when the ending session's
-  worktree branch matches a green candidate's head ref (resolvable relationship); otherwise
-  silent. Fail-open on any error; an already-merged snapshot entry never blocks.
+  single-flight with a LIVENESS guarantee — the watcher hard-kills the spawned safe-merge
+  child at `mergeTimeoutMs + grace` and releases the single-flight flag in finally-block
+  semantics, so a wedged gh can never hold the flag forever; a tick that finds an attempt
+  in flight skips with `tick-skipped-busy`, and N consecutive busy-skips (default 3) feed
+  the breaker; **deadline-kills are NOT free**: they bypass the per-PR ladder (the PR is
+  healthy) but count toward the global breaker after `deadlineKillBreakerThreshold`
+  (default 3) consecutive occurrences — a persistently hanging gh opens the breaker
+  instead of burning a 25-minute child per tick forever; per-PR failure ladder with
+  backoff; `gave-up` after `maxAttempts`, re-armed by a new head SHA at most
+  `maxRearmEpisodes` (default 3) times before requiring manual action; every state
+  TRANSITION audited (not every tick — the SessionReaper precedent); failures fold into
+  ONE aggregated Attention item with a machine-stable id (Bounded Notification Surface).
+- R6 — **Stop-gate belt, server-side decision, mode-independent delivery**: the green-PR
+  check computes server-side from the watcher's LAST-TICK SNAPSHOT — **zero gh calls on
+  the stop path** — and is delivered through the hot-path response as a `greenPrBlock`
+  field the hook acts on MODE-INDEPENDENTLY (§3.3; the UnjustifiedStopGate's `mode` ships
+  `off`, so an evaluate-side check would be structurally inert — round-2 finding). Scope:
+  blocks ONCE only when the ending session's worktree branch matches a green candidate's
+  head ref; otherwise silent. A snapshot older than 2× `tickIntervalMs` never blocks
+  (staleness gate); an already-merged snapshot entry never blocks; fail-open on any error.
 - R7 — **Fleet posture**: classified `DARK_GATE_EXCLUSIONS: deliberate-fleet-default` (the
   releaseReadiness precedent — the dev-gate registry bars action-bearing features), with
   `monitoring.greenPrAutoMerge.enabled: false` in ConfigDefaults and the config flipped ON
@@ -150,18 +186,35 @@ Two enforcement gaps, two layers:
   rollout/maturation track, not author memory (Close the Loop).
 - R8 — **Observable Intelligence / audit**: every decision transition (candidate-found,
   skipped:<why>, waiting:<why>, hold-released, merge-attempted, merged, merged-by-other,
-  merge-failed:<class>, gave-up, breaker-open/closed, tick-skipped-busy,
-  identity-mismatch) is one JSONL line (0600, 5MB×2 rotation); a read-only status surface
-  reports last tick, snapshot, and breaker state.
-- R9 — **Runtime kill-switch + emergency-stop reach**: `POST /green-pr-automerge/rollback`
-  disables the watcher at runtime (loud: HIGH Attention + audit row; persisted in state,
-  checked at tick top), `POST /green-pr-automerge/enable` re-arms it; the MessageSentinel
-  emergency-stop ("stop everything") pauses the watcher exactly as it pauses the resume
-  queue. `dryRun` remains the config-level rollback lever.
+  closed-by-other, merge-failed:<class>, gave-up, breaker-open/closed, tick-skipped-busy,
+  tick-failed:<class>, identity-mismatch) is one JSONL line (0600, 5MB×2 rotation).
+  **Tick-level liveness canary** (L5(b)/P18 — the silent zero-candidate failure): a failed
+  or unparseable `gh pr list` call audits `tick-failed:<class>` and feeds the breaker
+  after N consecutive; the status surface reports `lastTickAt`, `lastSuccessfulListAt`,
+  in-flight attempt age, snapshot, and breaker state, so the guard-posture grade can
+  distinguish "running" from "able to see PRs".
+- R9 — **Runtime kill-switch + emergency-stop reach, POOL-VISIBLE**: two INDEPENDENT
+  latches — `POST /green-pr-automerge/rollback` (re-armed only by `/enable`) and the
+  MessageSentinel emergency-stop pause (cleared only by its own resume path) — and BOTH
+  must be open for a merge. Re-arm never clears an active emergency stop, and vice versa.
+  Because execution follows the lease, a machine-local latch would silently resurrect on
+  lease move (round-2 finding): the disable/pause state is written to the pool-replicated
+  surface (the coherence-journal lifecycle stream the lease infrastructure already
+  replicates), and the lease-acquire warm-up tick (R10) additionally checks peers'
+  persisted latches — if one exists, the watcher arrives DISABLED and raises one Attention
+  item ("watcher was disabled on <machine> — confirm before re-arming") instead of
+  resuming silently. Rollback is loud (HIGH Attention + audit); `dryRun` remains the
+  config-level lever. On a single-machine install all of this degrades to the local
+  check.
 - R10 — **One watcher across the pool**: ticks run only on the multi-machine lease holder
-  (single-machine installs hold the lease trivially). Belt: a `gh pr merge` failure whose
-  cause is "already merged/closed" is classified `merged-by-other` (success-noop), never a
-  ladder failure — so even a lease split cannot manufacture breaker noise.
+  (single-machine installs hold the lease trivially). **Lease-acquire warm-up**: the first
+  tick after acquiring the lease is OBSERVE-ONLY — it seeds hold memory (R3's debounce),
+  builds the snapshot, and checks peer latches (R9); merges begin on the second tick.
+  `POST /green-pr-automerge/tick` (the manual/test trigger) enforces the same lease +
+  single-flight + warm-up rules as interval ticks. Belt: a merge failure caused by
+  "already merged" is `merged-by-other` (success-noop, episode reaped); **"closed without
+  merge" is `closed-by-other`** — also never a ladder failure, but surfaced in the
+  aggregated Attention item (discarded work must not wear a success row).
 - R11 — **Event-loop safety**: all gh/safe-merge invocations are async spawns
   (`execFile`/`spawn`, never `*Sync`) — the instar#1069 lesson; a wiring-integrity test
   asserts the runner dep is async.
@@ -181,25 +234,55 @@ Two enforcement gaps, two layers:
 - **JSON parsing**: `gh pr checks --json name,state,bucket` replaces human-output regex
   parsing (kills the `/\bpending\b/`-matches-check-names bug); the e2e guard matches on
   the structured name field.
-- **Required-contexts cross-check**: fetches the branch-protection required status checks
-  list and refuses if any required context has no successful run (closes the
-  "required check never reported" + "e2e workflow deleted, stub added" holes that
-  `--admin` would otherwise waive past).
+- **Required-contexts cross-check, with a config-pinned floor**: fetches the repo's
+  required status checks (authoritative source: the union of classic branch protection
+  `required_status_checks` and branch rulesets for the default branch, via the gh API) and
+  refuses if any required context has no genuinely-successful run (skipped/neutral on a
+  REQUIRED context = refusal). Additionally refuses if the fetched list is missing any
+  entry of `requiredContextsFloor` (config; defaults to the CI suite + the
+  decision-audit-gate + eli16-pr-gate contexts) — so a trimmed branch protection makes the
+  watcher REFUSE rather than vacuously pass, and **gate provenance becomes a VERIFIED
+  property**: the floor contexts are produced only by the instar-dev process, which is
+  what licenses "pre-approved by construction" (round-2: branch prefix is a filter, not
+  provenance). **Fail direction**: any failure to fetch/parse the protection data is a
+  refusal (`refused:contexts-unverifiable`), never a silent degrade. Test fixtures must
+  cover: missing, skipped, renamed, app-scoped, and matrix-expanded required contexts.
+  **Required reviews**: this repo runs no required-review protection; if one is ever
+  added, `--admin` would bypass it un-re-imposed — the cross-check therefore ALSO refuses
+  when unsatisfied required-review protection exists (`refused:reviews-required`),
+  making the acceptance explicit instead of silent.
 - **Honest exit**: a null spawn status, signal kill, or merge-command failure exits
-  non-zero with a classified reason on stdout (`already-merged` distinguished from
-  `refused` from `error`).
+  non-zero with a classified reason on stdout (`already-merged` / `closed` distinguished
+  from `refused` from `error`).
 - `--delete-branch` pass-through; `--deadline-ms` so the caller's timeout and the internal
   wait can never invert (B24).
+- **Strict argv + contract probe** (round-2: stale-script drift reopens every hole
+  silently): the hardened script REJECTS unknown flags (the current script ignores them),
+  and gains `--capabilities` printing a contract version; the watcher probes it before its
+  first merge of each boot and refuses (`skipped:safe-merge-contract`) on
+  missing/mismatched contract — a checkout predating the hardening can never be driven
+  unpinned.
+- **Activation ordering**: enabling the watcher against a legacy safe-merge would be a
+  critical vulnerability — the contract probe makes that structurally impossible, and the
+  feature flag MUST stay off until the hardened script's unit fixtures pass in CI (they
+  ship in the same PR, so the ordering is automatic; stated here so a cherry-pick can't
+  violate it).
 
 ### 3.2 Layer 1 — `GreenPrAutoMerger` (src/monitoring/GreenPrAutoMerger.ts)
 
 - **Drive model**: a `setInterval` tick in the server (started at boot when enabled +
   repo-gated + lease-held), PLUS `POST /green-pr-automerge/tick` as the manual/test
-  trigger. Single-flight guard per R5.
+  trigger (same lease + single-flight + warm-up rules as interval ticks). Single-flight
+  guard per R5. Route surface: `GET /green-pr-automerge` (status), `POST …/tick`,
+  `POST …/rollback`, `POST …/enable`, `POST …/hold {pr, reason}` (applies the `[HOLD: …]`
+  title prefix via gh — the conversational-hold assist, R3).
 - **Tick**: ONE GraphQL list call —
-  `gh pr list --author "@me" --state open --base <default-branch> --json
+  `gh pr list --author "@me" --state open --base <default-branch> --limit 100 --json
   number,title,labels,isDraft,headRefName,headRefOid,mergeable,statusCheckRollup` — no
-  N+1 per-PR queries. Candidates: head branch under `<agentName>/`, not draft, not held
+  N+1 per-PR queries. Oldest-first selection runs over the FULL fetched set; a full page
+  audits `waiting:list-overflow` (honest-coverage signal — the shared login's open-PR
+  set spans the operator and sibling agents, so default pagination would hide exactly
+  the oldest-rotting PR this spec targets). Candidates: head branch under `<agentName>/`, not draft, not held
   (R3), `mergeable == MERGEABLE`, and **checks already settled green** (the watcher never
   invokes safe-merge into a pending wait — that keeps the per-attempt window seconds-long
   and makes timeout inversion structurally impossible). No quiet period beyond that:
@@ -222,12 +305,17 @@ Two enforcement gaps, two layers:
   | `GET /green-pr-automerge` | machine-local read | GitHub is the global truth for "merged"; a standby reports enabled + no recent ticks honestly |
   | Aggregated Attention item | machine-stable id (`green-pr-automerge:aggregate`) | lease gate makes dual-raise impossible in practice; stable id makes it harmless if it happens |
   | Episode hand-off on lease move | re-derived from GitHub | bounds are per-machine; documented consequence: a `gave-up` PR gets a fresh ladder on the new holder, capped by `maxRearmEpisodes` there too |
+  | Layer-2 snapshot on non-holder machines | absent BY DESIGN | sessions ending on a non-holder machine get no stop-gate belt; Layer 1 (on the holder) remains the guarantee |
+  | Rollback/emergency-pause latches | pool-replicated (R9) | a machine-local latch would silently resurrect the watcher on lease move |
 - **Config** (`monitoring.greenPrAutoMerge`): `enabled` (false in ConfigDefaults — fleet
   default; flipped on for the dev agent), `dryRun` (false), `tickIntervalMs` (600 000),
-  `maxAttempts` (3), `maxRearmEpisodes` (3), `breakerThreshold` (3), `breakerCooldownMin`
-  (60), `mergeTimeoutMs` (1 500 000 — above safe-merge's internal cap; passed down via
-  `--deadline-ms`), `expectedGhLogin` (string; identity contract R4), `holdReleaseTicks`
-  (2).
+  `maxAttempts` (3), `maxRearmEpisodes` (3), `breakerThreshold` (3),
+  `deadlineKillBreakerThreshold` (3), `busySkipBreakerThreshold` (3),
+  `breakerCooldownMin` (60), `mergeTimeoutMs` (1 500 000 — above safe-merge's internal
+  cap; passed down via `--deadline-ms`, with the watcher hard-killing at +grace),
+  `expectedGhLogin` (string; identity contract R4), `identityRecheckTicks` (6),
+  `holdReleaseTicks` (2), `staleHoldDays` (7), `requiredContextsFloor` (string[];
+  §3.1).
 - **Supervision**: Tier 0 — with the judgment point named: the ONLY discretionary
   classification the watcher makes is hold/candidate status, and its failure direction is
   fail-toward-skip (audited), never fail-toward-merge. Everything that decides "is this
@@ -237,29 +325,46 @@ Two enforcement gaps, two layers:
   interpolation; length-capped and marker-stripped before they enter audit rows, the
   status route, or stop-gate guidance text.
 
-### 3.3 Layer 2 — stop-gate green-PR check (server-side)
+### 3.3 Layer 2 — stop-gate green-PR check (server decision, mode-independent delivery)
 
-Implemented in the `/internal/stop-gate/evaluate` route handler (NOT in the hook string —
-the router stays a thin client): when the evaluate call arrives, the handler consults the
-watcher's last-tick snapshot (in-process; no gh call, no added latency beyond the existing
-1.5s budget) and, if the ending session's worktree branch resolves to a green candidate's
-`headRefName`, blocks ONCE with: *"PR #N (your branch) is green and unmerged. Run `node
-scripts/safe-merge.mjs N --squash --admin`, or mark it `[HOLD: <reason>]` — otherwise the
-auto-merger lands it within ~10 minutes."* Unrelated sessions are never blocked
-(round-1 N4); a snapshot entry the route can see is already merged → no block. Fail-open
-everywhere. On non-dev agents the watcher is off → no snapshot → structurally silent.
+Round-2 grounding correction: the deployed stop-gate hook exits open BEFORE calling
+`/internal/stop-gate/evaluate` when the UnjustifiedStopGate's `mode` is `off` (its
+shipped default), and acts on evaluate verdicts only in `enforce` mode — an
+evaluate-side check would be structurally inert. The green-PR check therefore rides the
+HOT-PATH response (the call the hook ALWAYS makes, 1.5s budget; the evaluate call's
+budget is 2.5s for reference): the server computes an optional `greenPrBlock {pr,
+message}` field from the watcher's last-tick snapshot, and the hook template gains a
+minimal MODE-INDEPENDENT one-shot block on that field — the exact pattern of the
+existing stated-continuation guard, which is mode-independent in the same template. The
+hook change ships via `migrateHooks()` (always-overwrite — free fleet-wide; on fleet
+agents the watcher is off, so the field is never present and the hook path is inert).
+
+Server-side matching: the hot-path handler resolves the ending session's cwd from the
+HookEventReceiver's per-session records (sessionId → cwd → `git branch` of that
+worktree, cached per session) and matches it against snapshot candidates' `headRefName`.
+No hook events for the session → no match → silent (fail-open). A snapshot older than
+2× `tickIntervalMs` never blocks (staleness gate — a frozen standby snapshot must not
+produce stale guidance); an already-merged snapshot entry never blocks.
+
+Block message (canonical hardened invocation; PR TITLES never appear in guidance —
+untrusted data stays out of prompt context): *"PR #N (your branch) is green and
+unmerged. Run `node scripts/safe-merge.mjs N --repo <resolved-repo> --squash
+--delete-branch --admin`, or hold it via `POST /green-pr-automerge/hold {\"pr\": N,
+\"reason\": \"…\"}` — otherwise the auto-merger lands it within ~10 minutes."*
 
 Layer 2's honest role (round-1 external challenge): Layer 1 is the guarantee; Layer 2 is
-immediacy + the teaching surface — it converts "the machinery will fix it in 10 minutes"
-into "the agent does it now and learns the norm." It costs nothing on the stop path
-(snapshot read), so the redundancy is cheap.
+immediacy + the teaching surface. It costs nothing on the stop path (snapshot read), so
+the redundancy is cheap. Sessions on non-holder pool machines have no snapshot and no
+belt — Layer 1 on the holder remains the guarantee (posture table).
 
 ### 3.4 Hold-age visibility (anti-gravity-well backstop)
 
-A PR sitting held or `gave-up` for more than `staleHoldDays` (default 7) is surfaced
-through the SAME aggregated Attention item (`waiting:held age=Nd`) — a lazy `[HOLD:
-stopping]` escape re-enters the operator's view instead of rotting (round-1 adversarial
-finding: "the gravity well returns wearing the hold label").
+A PR sitting held, `gave-up`, or in ANY `waiting:*` state (conflicting, list-overflow,
+red-checks…) for more than `staleHoldDays` (default 7) is surfaced through the SAME
+aggregated Attention item (`waiting:<class> age=Nd`) — a lazy `[HOLD: stopping]` escape
+OR a silently-rotting CONFLICTING PR (the June-12 incident shape) re-enters the
+operator's view instead of rotting (round-2: §3.4's earlier held/gave-up-only trigger
+would have missed PR #1084's own failure mode).
 
 ### Migration parity
 
@@ -281,16 +386,28 @@ finding: "the gravity well returns wearing the hold label").
 
 ### Testing (three tiers, per TESTING-INTEGRITY-SPEC)
 
-- **Unit**: candidate filter both sides (draft / `[hold` case-variants / labels /
-  non-agent branch prefix / non-default base / red / unsettled / not-mergeable vs clean);
-  identity contract (login mismatch + unresolved → inert-audited, never breaker);
-  hold re-check-before-merge + hold-release debounce; failure taxonomy (already-merged →
-  merged-by-other; deadline kill → waiting; refusal → attempt); ladder + gave-up +
-  re-arm cap; breaker; single-flight; transition-only auditing; episode reap/TTL;
-  dry-run inertness; lease-gating both sides; safe-merge hardening (repo param, head-pin
-  refusal on mismatch, JSON checks parsing, required-contexts refusal, honest exit
-  classification, delete-branch, deadline); stop-gate evaluate both sides (matching branch
-  blocks once / unrelated silent / merged-snapshot silent / fail-open).
+- **Unit**: candidate filter both sides (draft / `[hold` case-variants / label
+  case-variants / non-agent branch prefix / non-default base / red / unsettled /
+  not-mergeable vs clean); identity contract (login mismatch + unresolved + UNCONFIGURED
+  → inert-audited, never breaker; TTL re-resolution); hold re-check-before-merge +
+  hold-release debounce + warm-up seeding across a lease move; failure taxonomy
+  (already-merged → merged-by-other; closed → closed-by-other surfaced; deadline kill →
+  bounded by `deadlineKillBreakerThreshold`; refusal → attempt); P19 sustained-failure
+  drives BOTH the permanently-refusing AND the permanently-HANGING case (stuck
+  single-flight recovers via the hard-kill + finally-release; busy-skips feed the
+  breaker); tick-failed canary (list error / unparseable shape → breaker after N,
+  `lastSuccessfulListAt` honest); pagination overflow audited; ladder + gave-up +
+  re-arm cap; transition-only auditing; episode reap/TTL; dry-run inertness;
+  lease-gating both sides + warm-up observe-only tick; pool-replicated latches (rollback
+  survives lease move; enable does not clear emergency-stop and vice versa); safe-merge
+  hardening (repo param, head-pin refusal on mismatch, JSON checks parsing,
+  required-contexts refusal with fixtures for missing/skipped/renamed/app-scoped/
+  matrix-expanded contexts + floor-missing refusal + reviews-required refusal +
+  api-failure refusal, honest exit classification incl. null-status, strict argv
+  rejection of unknown flags, `--capabilities` contract probe, delete-branch, deadline);
+  hot-path greenPrBlock both sides (matching branch blocks once / unrelated silent /
+  merged-snapshot silent / stale-snapshot silent / no-hook-events silent / fail-open);
+  `/hold` route applies the marker.
 - **Integration**: `GET /green-pr-automerge` + rollback/enable routes through createRoutes
   (503 unwired); a fake-gh harness driving tick → safe-merge argv (asserted at the spawn
   boundary, incl. `--match-head-commit` and `--repo`) → post-merge verification →
@@ -311,10 +428,17 @@ finding: "the gravity well returns wearing the hold label").
    the approval gate, before any build runs.** Reversibility: runtime rollback route (R9) +
    `dryRun` + `enabled:false`; the fleet default is off regardless.
 2. **One candidate per tick, oldest first.** Reversibility: config/behavior-level, trivial.
-3. **Operator kills of the gravity-well class are in scope; deliberate waits are expressed
-   ONLY as draft / `[hold` title / `hold`+`do-not-merge` labels** — the marker IS the hold;
-   conversational holds obligate the agent to apply the marker immediately (CLAUDE.md
-   contract). Reversibility: trivial (markers are mutable).
+3. **The marker IS the hold** — deliberate waits are expressed ONLY as draft / `[hold`
+   title / `hold`+`do-not-merge` labels; conversational holds obligate the agent to fire
+   `POST /green-pr-automerge/hold` immediately (one call applies the marker). **Why this
+   one prose contract is acceptable where Phase 7's prose was not** (round-2 contest): a
+   conversational hold by construction has a LIVE session receiving it (no session-death
+   window — the failure mode that killed Phase 7); the obligation is ONE immediate action
+   with a structural assist, not a multi-step ceremony; the tick cadence provides a
+   ~10-minute natural grace window; and the operator retains two independent
+   instant levers (emergency stop; editing the title/label directly on GitHub).
+   `approved: true` ratifies this residual the same way it ratifies Decision 1.
+   Reversibility: trivial (markers are mutable; the assist route is additive).
 4. **Squash merge + delete branch via safe-merge's new pass-through.** Reversibility:
    trivial flag change.
 5. **No quiet/grace period for freshly-green PRs** beyond settled-checks: an author still
@@ -324,8 +448,16 @@ finding: "the gravity well returns wearing the hold label").
    are never blocked. Reversibility: scope widening is a config/code-level change.
 7. **Fleet classification is `DARK_GATE_EXCLUSIONS: deliberate-fleet-default`** (not
    DEV_GATED_FEATURES — that registry bars action-bearing features), `enabled: false`
-   fleet default, dev-agent flips on by config, fleet promotion rides the `ships-staged`
-   rollout track. Reversibility: the flip is config.
+   fleet default, dev-agent flips on by config (setting `expectedGhLogin` in the same
+   edit), fleet promotion rides the `ships-staged` rollout track. Reversibility: the
+   flip is config.
+8. **Accepted residual — branch namespace is a filter, not provenance.** Anyone holding
+   the shared gh credential can name a branch `echo/…`; what makes a candidate
+   "pre-approved by construction" is §3.1's `requiredContextsFloor` (the
+   gate-produced CI contexts must exist and pass — a junk PR cannot satisfy them without
+   actually clearing the dev process). Residual: an admin deliberately rewriting branch
+   protection AND the floor config is out of threat scope (that actor owns the repo).
+   Reversibility: the floor list is config; tightening it is one edit.
 
 ## Open questions
 
