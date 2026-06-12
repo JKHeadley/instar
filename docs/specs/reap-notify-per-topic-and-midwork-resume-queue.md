@@ -197,13 +197,21 @@ drainer autonomously spawns sessions (real authority).
 - **Burst invariant:** extend the notification-flood burst test — N reaps across M topics
   produce ≤ M topic messages + 1 lifeline message, zero new topics.
 
-## Open decisions (operator)
+## Decisions (resolved 2026-06-11 per operator standing directive — design forks resolved
+autonomously with the author's lean, reported after)
 
-1. **Burst tier:** mid-work-with-queued-resume notices proposed IMMEDIATE (prompt), all other
-   reap notices stay SUMMARY (batched ≤30 min). OK?
-2. **Part B fleet posture:** `dryRun:true` fleet-wide one release, live on echo immediately —
-   or straight to live fleet-wide?
-3. **Operator kills excluded from the resume queue** (you killed it on purpose). Confirm.
+1. **Burst tier — RESOLVED:** mid-work-with-queued-resume notices go IMMEDIATE (the user
+   should promptly know work was interrupted and a resume is queued); all other reap notices
+   stay SUMMARY (batched ≤30 min, quiet-hours aware). Rationale: interrupted work is
+   actionable; routine idle reaps are not.
+2. **Part B fleet posture — RESOLVED:** `dryRun:true` fleet-wide for one release, flipped
+   live on the dev agent (echo) immediately, fleet flip after a soak window. Rationale: the
+   drainer autonomously spawns sessions — real authority — so this follows the
+   graduated-rollout standard; straight-to-live fleet-wide would skip the soak a
+   spawn-authority feature requires.
+3. **Operator kills — RESOLVED:** excluded from both the resume queue and (as today) the
+   notifier. A deliberate kill is not a disappearance. The `resumeQueue.includeOperatorKills`
+   config lever exists if an operator ever wants the opposite.
 
 ## Out of scope
 
