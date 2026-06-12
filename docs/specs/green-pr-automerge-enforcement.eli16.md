@@ -49,7 +49,13 @@ PRs" is now verified two ways (the login AND my branch-name prefix `echo/…`), 
 watcher refuses to run at all if the identity doesn't match what's configured.
 
 Also: only one machine in my pool runs the watcher at a time (the same leadership lease
-the rest of multi-machine uses), so two machines can never race the same merge.
+the rest of multi-machine uses), so two machines can never race the same merge — and the
+kill switch follows the pool, not one machine, so disabling it anywhere disables it
+everywhere. Two more things the second review round added: "my PRs" is no longer just a
+naming convention — a candidate must also carry passing runs of the specific CI checks
+that only the real dev process produces, so junk on a lookalike branch can't ride; and if
+you say "hold #N" in chat, I have a one-call lever that stamps the hold marker on the PR
+immediately, so a conversational hold becomes a real hold the machinery respects.
 
 ## What it will NOT do
 
