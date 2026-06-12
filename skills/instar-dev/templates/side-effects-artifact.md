@@ -95,6 +95,7 @@
 - External systems (Telegram, Slack, GitHub, Cloudflare, etc.)?
 - Persistent state (databases, ledgers, memory files)?
 - Timing or runtime conditions we don't fully control?
+- **Operator surface (Mobile-Complete Operator Actions):** does every operator-facing action this change adds or touches have a phone-completable surface — a dashboard form or a link the agent can send? A PIN-gated or approval-class route with no human surface is an incomplete feature, not a finished API (the 2026-06-12 floor-grant lesson: the route was correct, signed, audited — and laptop-bound). "No operator-facing actions" is a valid answer; an API-only operator action is not.
 
 [Specific findings. "The response format for 422 changes — callers parsing the `issue` field will still see a non-empty string. Verified in telegram-reply.sh." "No external surface changes" is also valid if true.]
 
