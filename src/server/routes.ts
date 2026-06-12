@@ -10490,7 +10490,18 @@ export function createRoutes(ctx: RouteContext): Router {
       selfMachineId: ctx.meshSelfId ?? null,
       nicknameOf,
     });
-    res.json({ ...description, answeredBy: holderUrl ? 'local-fallback' : 'local' });
+    // WS1.3 (MULTI-MACHINE-SEAMLESSNESS-SPEC): a pin that disagrees with live
+    // ownership is a first-class PENDING state, surfaced honestly with its age —
+    // never a silent internal contradiction (the 2026-06-12 stuck-divergence
+    // incident). `since` is the conflicting pin's own set-time: the divergence
+    // cannot predate the pin that defines it.
+    const pendingReplacement = !!(pinnedTo && owner && owner !== pinnedTo);
+    res.json({
+      ...description,
+      pendingReplacement,
+      ...(pendingReplacement && pin ? { pendingSince: pin.updatedAt } : {}),
+      answeredBy: holderUrl ? 'local-fallback' : 'local',
+    });
   });
 
   // POST /pool/transfer — deterministic topic transfer that does NOT depend on

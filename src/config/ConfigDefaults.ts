@@ -557,6 +557,13 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
     seamlessness: {
       ws3OneVoice: false,
       ws3DwellMs: 60000,
+      // WS1.3 ownership reconcile: bounded pin/owner convergence (cooperative
+      // transfer→claim while the owner lives; force only with owner-death
+      // evidence + quorum). DARK + dry-run default — dryRun logs intended CAS
+      // actions without performing them.
+      ws13Reconcile: false,
+      ws13DryRun: true,
+      ws13TickMs: 30000,
     },
     sessionPool: {
       enabled: false,

@@ -41,7 +41,10 @@ export type JournalKind = 'topic-placement' | 'session-lifecycle' | 'autonomous-
 export const JOURNAL_KINDS: JournalKind[] = ['topic-placement', 'session-lifecycle', 'autonomous-run', 'threadline-conversation'];
 
 /** §3.2 enums. */
-export type PlacementReason = 'user-move' | 'placed' | 'failover' | 'released' | 'quota-block-move';
+export type PlacementReason = 'user-move' | 'placed' | 'failover' | 'released' | 'quota-block-move' | 'reconcile';
+// 'reconcile' added for WS1.3 (MULTI-MACHINE-SEAMLESSNESS-SPEC): the
+// OwnershipReconciler's bounded pin/owner convergence CAS chain. Additive —
+// readers ignore unknowns (the journal applier's forward-compat contract).
 // 'failed' added at wiring time: Session records carry a real terminal
 // 'failed' status the spec's §3.2 enum missed; recording it as 'completed'
 // or 'killed' would misstate history. Additive — readers ignore unknowns.
@@ -585,7 +588,11 @@ export class CoherenceJournal {
       const reason = raw.reason;
       if (typeof owner !== 'string' || !owner) return null;
       if (typeof epoch !== 'number' || !Number.isFinite(epoch)) return null;
-      const reasons: PlacementReason[] = ['user-move', 'placed', 'failover', 'released', 'quota-block-move'];
+      // KEEP IN SYNC with the PlacementReason union above — the type annotation
+      // does NOT enforce completeness (a subset is type-legal), so extending the
+      // union without this list silently schema-rejects the new reason at the
+      // source (caught by the WS1.3 second-pass review, 2026-06-12).
+      const reasons: PlacementReason[] = ['user-move', 'placed', 'failover', 'released', 'quota-block-move', 'reconcile'];
       if (typeof reason !== 'string' || !reasons.includes(reason as PlacementReason)) return null;
       out = { owner, epoch, reason };
       known = ['owner', 'epoch', 'reason', 'prevOwner'];

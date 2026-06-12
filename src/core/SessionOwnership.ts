@@ -38,7 +38,19 @@ export type OwnershipAction =
   | { type: 'place'; machineId: string } // router assigns a new session to machineId
   | { type: 'claim'; machineId: string } // target claims → active (new session, or transfer target)
   | { type: 'transfer'; to: string } // current owner → transferring(to)
-  | { type: 'release'; machineId: string }; // owner ends the session
+  | { type: 'release'; machineId: string } // owner ends the session
+  /**
+   * WS1.3 (MULTI-MACHINE-SEAMLESSNESS-SPEC): claim ownership of a record whose
+   * owner is PROVABLY DEAD — the convergence-deadline path for a pin/owner
+   * divergence that cannot reconcile cooperatively because the owner machine is
+   * gone. The FSM only enforces sequencing + the fenced epoch increment (the
+   * stale owner's later CAS attempts fail at the old epoch — clock-proof);
+   * DEATH EVIDENCE (offline past the bound, lease lapse, quorum membership) is
+   * validated by the caller (OwnershipReconciler) BEFORE issuing the action,
+   * never by wall-clock timers alone. A reachable-but-slow owner must get the
+   * cooperative transfer path, never a force-claim.
+   */
+  | { type: 'force-claim'; machineId: string };
 
 export type OwnershipReason =
   | 'ok'
@@ -48,6 +60,7 @@ export type OwnershipReason =
   | 'transfer-not-active'
   | 'release-not-owner'
   | 'release-requires-active'
+  | 'force-claim-self'
   | 'no-record';
 
 /**
@@ -102,6 +115,19 @@ export function applyOwnershipAction(
         ok: true,
         next: { ...base, ownerMachineId: current.ownerMachineId, ownershipEpoch: epoch + 1, status: 'transferring', transferTo: action.to },
       };
+    }
+    case 'force-claim': {
+      // WS1.3 dead-owner takeover. Legal on a live record (active/transferring/
+      // placing) precisely because the cooperative paths are closed when the
+      // owner is gone — and on a released/missing record the normal place→claim
+      // path applies instead (use that, not force). Claiming what you already
+      // own is a no-op worth rejecting loudly (it would burn an epoch for
+      // nothing and masks a reconciler bug).
+      if (!current) return { ok: false, reason: 'no-record' };
+      if (current.ownerMachineId === action.machineId && current.status === 'active') {
+        return { ok: false, reason: 'force-claim-self' };
+      }
+      return { ok: true, next: { ...base, ownerMachineId: action.machineId, ownershipEpoch: epoch + 1, status: 'active' } };
     }
     case 'release': {
       if (!current) return { ok: false, reason: 'no-record' };

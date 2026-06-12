@@ -154,6 +154,25 @@ describe('Pool placement + transfer routes (multi-machine robustness)', () => {
     expect(r.body.thisMachine).toBe(SELF);
   });
 
+  // ── WS1.3: pendingReplacement — pin/owner divergence is a first-class state ──
+  it('surfaces pendingReplacement + pendingSince when the pin disagrees with the owner (the 2026-06-12 stuck-divergence)', async () => {
+    own('13481', PEER);            // owner says PEER…
+    pinStore.set('13481', SELF);   // …but the pin says HERE — mid-reconcile
+    const r = await api('/pool/placement?topic=13481');
+    expect(r.status).toBe(200);
+    expect(r.body.pendingReplacement).toBe(true);
+    expect(typeof r.body.pendingSince).toBe('string');
+    expect(Number.isFinite(Date.parse(r.body.pendingSince))).toBe(true);
+  });
+
+  it('pendingReplacement is false when pin and owner agree (and pendingSince is absent)', async () => {
+    own('103', PEER);
+    pinStore.set('103', PEER, true);
+    const r = await api('/pool/placement?topic=103');
+    expect(r.body.pendingReplacement).toBe(false);
+    expect(r.body.pendingSince).toBeUndefined();
+  });
+
   // ── POST /pool/transfer ──────────────────────────────────────────────
   it('POST /pool/transfer requires topic and to (400)', async () => {
     const r = await api('/pool/transfer', { method: 'POST', body: JSON.stringify({ topic: 13481 }) });

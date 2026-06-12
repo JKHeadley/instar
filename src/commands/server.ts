@@ -11853,6 +11853,16 @@ export async function startServer(options: StartOptions): Promise<void> {
             return machinePoolRegistry?.getCapacity(owner)?.nickname ?? owner;
           } catch { return null; /* @silent-fallback-ok — pool not wired yet → rule inert */ }
         },
+        // WS1.3: pin-conflict do-not-act — a pin naming THIS machine while the
+        // owner is elsewhere means the reconciler is bringing the topic back;
+        // the closeout holds instead of attacking the session the pin wants here.
+        topicPinnedHere: (topicId) => {
+          try {
+            const self = _meshSelfId;
+            const pin = _topicPinStore?.get(String(topicId));
+            return !!self && !!pin && pin.pinned && pin.preferredMachine === self;
+          } catch { return false; /* @silent-fallback-ok — no pin signal → hold not applied, closeout behaves as before */ }
+        },
         audit: reaperAuditSink(config.stateDir),
       },
       // developmentAgent gate (standard_development_agent_dark_feature_gate):
@@ -12456,6 +12466,65 @@ export async function startServer(options: StartOptions): Promise<void> {
             } catch { return null; /* @silent-fallback-ok — unknown ownership falls to the election's lease-holder/tiebreak path, never silence */ }
           },
         };
+
+        // ── WS1.3 ownership reconciler (MULTI-MACHINE-SEAMLESSNESS-SPEC) ──
+        // Bounded pin/owner convergence on a tick, replacing "wait for an
+        // inbound message that delivery may never route" (the 2026-06-12 stuck
+        // transfer-back). Dark + dry-run defaults; strict single-machine no-op
+        // inside the module. Phase C: quorum logic is N-machine from day one.
+        if (_topicPinStore && _meshSelfId) {
+          const ws13Cfg = () => ((config as Record<string, any>).multiMachine?.seamlessness ?? {}) as { ws13Reconcile?: boolean; ws13DryRun?: boolean; ws13TickMs?: number };
+          const { OwnershipReconciler } = await import('../core/OwnershipReconciler.js');
+          const reconciler = new OwnershipReconciler({
+            enabled: () => ws13Cfg().ws13Reconcile === true,
+            dryRun: () => ws13Cfg().ws13DryRun !== false,
+            selfMachineId: _meshSelfId,
+            pinStore: _topicPinStore,
+            ownership: ownReg,
+            machines: () => {
+              try {
+                return (machinePoolRegistry?.getCapacities() ?? []).map((c) => ({
+                  machineId: c.machineId,
+                  online: !!c.online,
+                  lastSeenMs: c.selfReportedLastSeen ? Date.parse(c.selfReportedLastSeen) || 0 : 0,
+                }));
+              } catch { return []; /* @silent-fallback-ok — no pool view → module's single-machine strict no-op */ }
+            },
+            isTopicBusy: (sessionKey) => {
+              try {
+                // Conservative safe-point signal: an inbound for this topic is
+                // mid-processing. The bounded deadline in the module keeps a
+                // false-busy from deferring forever.
+                return currentInboundByTopic?.has(sessionKey) ?? false;
+              } catch { return false; /* @silent-fallback-ok — unknown busy state defers to the module's bounded deadline */ }
+            },
+            emitPlacement: (sessionKey, r, reason) => {
+              try {
+                const topicNum = Number(sessionKey);
+                if (Number.isFinite(topicNum)) {
+                  state.getCoherenceJournal()?.emitPlacement(topicNum, {
+                    owner: r.record.ownerMachineId ?? '',
+                    epoch: r.record.ownershipEpoch,
+                    reason: 'reconcile',
+                  });
+                }
+              } catch { /* §3.3 pairing is observability — never endangers the CAS */ }
+            },
+            logger: (m) => console.log(pc.dim(`  ${m}`)),
+          });
+          const tickMs = Math.max(5000, ws13Cfg().ws13TickMs ?? 30000);
+          const ws13Timer = setInterval(() => {
+            try {
+              const rep = reconciler.tick();
+              if (!rep.skipped && (rep.transfers || rep.claims || rep.forceClaims || rep.adoptions)) {
+                console.log(pc.dim(`  [OwnershipReconciler] tick: t=${rep.transfers} c=${rep.claims} f=${rep.forceClaims} a=${rep.adoptions}${rep.dryRun ? ' (dry-run)' : ''}`));
+              }
+            } catch (err) {
+              console.error('[OwnershipReconciler] tick failed:', err instanceof Error ? err.message : String(err));
+            }
+          }, tickMs);
+          ws13Timer.unref?.();
+        }
         // Coherence journal §3.3: the emit is a thin wrapper at every CAS call
         // site — `reason` is caller knowledge (cas() is a storage primitive and
         // cannot know WHY). A mesh-applied action records the coarse reason;

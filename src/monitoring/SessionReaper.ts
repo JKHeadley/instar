@@ -247,6 +247,11 @@ export interface SessionReaperDeps {
    *  is unowned / owned by this machine / the pool is dark. Absent ⇒ the
    *  topic-moved closeout rule is inert. */
   topicOwnerElsewhere?: (topicId: number) => string | null;
+  /** WS1.3: does the topic's placement PIN name THIS machine? A pin-conflict
+   *  (pin=here, owner=elsewhere) means the divergence is reconciling TOWARD us —
+   *  the closeout holds (do-not-act) instead of attacking the session the pin
+   *  wants here. Absent → behavior unchanged. */
+  topicPinnedHere?: (topicId: number) => boolean;
   recentUserMessage: (topicId: number, withinMs: number) => boolean;
   activeCommitmentForTopic: (topicId: number) => boolean;
   /** Count of active subagents for a session's claudeSessionId (0 when absent). */
@@ -613,11 +618,28 @@ export class SessionReaper extends EventEmitter {
         // churn mid-transfer.
         if (this.cfg.topicMovedCloseout && this.deps.topicOwnerElsewhere) {
           let otherOwner: string | null = null;
+          let pinnedHere = false;
           try {
             const topicId = this.deps.topicBinding(session.tmuxSession);
             otherOwner = topicId != null ? this.deps.topicOwnerElsewhere(topicId) : null;
+            // WS1.3 (MULTI-MACHINE-SEAMLESSNESS-SPEC): pin-conflict = do-not-act.
+            // When the topic's PIN names THIS machine while ownership still says
+            // another, the divergence is mid-reconcile TOWARD us — the
+            // OwnershipReconciler is bringing the record back, and closing the
+            // local session now would kill the exact session the pin wants here
+            // (the 2026-06-12 incident: the closeout attacked the working laptop
+            // session every 2 minutes for hours during a stuck transfer-back).
+            pinnedHere = topicId != null && (this.deps.topicPinnedHere?.(topicId) ?? false);
           } catch { otherOwner = null; /* signal failed → cannot reason → skip rule */ }
-          if (otherOwner) {
+          if (otherOwner && pinnedHere) {
+            // -1 is the held-and-audited sentinel: audit ONCE per conflict
+            // episode, hold (never act) for as long as the pin names us.
+            const prior = this.topicMovedStreak.get(session.id) ?? 0;
+            if (prior !== -1) {
+              this.audit('reap-skipped-topic-moved', session, { rule: 'topic-moved-away', otherOwner, skipped: 'pin-conflict-pending-reconcile' });
+              this.topicMovedStreak.set(session.id, -1);
+            }
+          } else if (otherOwner) {
             const streak = (this.topicMovedStreak.get(session.id) ?? 0) + 1;
             this.topicMovedStreak.set(session.id, streak);
             if (streak >= this.cfg.topicMovedConfirmTicks) {
@@ -642,7 +664,9 @@ export class SessionReaper extends EventEmitter {
                 }
               }
             }
-          } else if ((this.topicMovedStreak.get(session.id) ?? 0) > 0) {
+          } else if ((this.topicMovedStreak.get(session.id) ?? 0) !== 0) {
+            // Clears both a counting streak AND the -1 pin-conflict sentinel,
+            // so a FUTURE genuine move starts its dwell from a clean slate.
             this.topicMovedStreak.set(session.id, 0);
           }
         }
