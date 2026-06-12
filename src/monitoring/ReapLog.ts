@@ -27,6 +27,11 @@ export interface ReapLogEntry {
   /** What actually happened: terminal/recovery-bounce, or skipped:<authority-reason>. */
   disposition: 'terminal' | 'recovery-bounce' | `skipped:${string}`;
   origin?: 'operator' | 'autonomous';
+  /** UNTRUSTED caller-supplied provenance claim (REMOTE-SESSION-CLOSE-SPEC §2.3)
+   *  — e.g. 'remote-dashboard' from a relayed close. A label any token holder
+   *  could set; recorded as a signal for the audit trail, NEVER consulted in
+   *  authority decisions (those read `origin`, which is route-stamped). */
+  viaClaim?: string;
   /** For 'skipped': why the authority refused (protected / not-lease-holder / a KEEP / in-flight). */
   skipped?: string;
   machine?: string;
@@ -52,6 +57,7 @@ export class ReapLog {
     reason: string;
     disposition?: 'terminal' | 'recovery-bounce';
     origin?: 'operator' | 'autonomous';
+    viaClaim?: string;
     launchLane?: 'headless' | 'rerouted-interactive';
   }): void {
     this.append({
@@ -62,6 +68,7 @@ export class ReapLog {
       reason: e.reason,
       disposition: e.disposition ?? 'terminal',
       origin: e.origin,
+      ...(e.viaClaim ? { viaClaim: e.viaClaim } : {}),
       machine: this.machineId?.(),
       ...(e.launchLane ? { launchLane: e.launchLane } : {}),
     });

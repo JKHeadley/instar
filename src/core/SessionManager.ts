@@ -767,6 +767,10 @@ rm()  { "${shimRunner}" rm  "$@"; }
       finalStatus?: 'completed' | 'killed';
       disposition?: 'terminal' | 'recovery-bounce';
       origin?: 'operator' | 'autonomous';
+      /** UNTRUSTED caller-supplied provenance claim (REMOTE-SESSION-CLOSE-SPEC
+       *  §2.3) — recorded in the reap-log as `viaClaim`, NEVER consulted in any
+       *  authority/bypass decision (signal-vs-authority). */
+      via?: string;
       knownDead?: boolean;
       bypassRecoveryFlag?: boolean;
       bypassActiveProcessKeep?: boolean;
@@ -869,7 +873,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
       this.emit('sessionComplete', session);
       // The single reap-notification signal (§P3): terminal reaps may reach the
       // user; recovery-bounce reaps are silent. One emission, at the one chokepoint.
-      this.emit('sessionReaped', { session, reason, disposition, origin });
+      this.emit('sessionReaped', { session, reason, disposition, origin, ...(opts?.via ? { via: opts.via } : {}) });
       this.idlePromptSince.delete(session.id);
       this.reapingSessions.delete(session.id);
       return { terminated: true };

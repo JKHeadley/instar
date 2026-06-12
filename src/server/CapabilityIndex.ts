@@ -1119,7 +1119,7 @@ export const INTERNAL_PREFIXES: ReadonlyArray<{ prefix: string; reason: string }
   { prefix: 'self-knowledge', reason: 'surfaced inside `capability-map`' },
   { prefix: 'capability-map', reason: 'separate self-knowledge surface with its own discovery path' },
   { prefix: 'build', reason: 'operator-only build endpoint' },
-  { prefix: 'sessions', reason: 'operator/dashboard-only session listing (no agent-facing API)' },
+  { prefix: 'sessions', reason: 'operator/dashboard session surface (listing/streaming/refresh stay dashboard-facing). ONE agent-facing verb exists — POST /sessions/:name/remote-close, the relayed operator close (REMOTE-SESSION-CLOSE-SPEC §2.4) — surfaced via the CLAUDE.md template (Multi-Machine Session Pool section) rather than graduating the prefix: a deliberate pass, no new top-level prefix.' },
   { prefix: 'worktrees', reason: 'AgentWorktreeReaper read-only report (reclaimable stale worktrees) — operational observability the agent READS, like /sessions/reap-log; not a user-invokable capability' },
   { prefix: 'processes', reason: 'McpProcessReaper read-only report (reclaimable leaked MCP-server procs + per-proc keep/reap verdict) — operational observability the agent READS, like /worktrees/agent-reaper; not a user-invokable capability' },
   { prefix: 'sleep', reason: 'SleepController read-only verdict (agent hard-sleep decision + which guard holds it awake) — operational observability the agent READS; not a user-invokable capability' },
