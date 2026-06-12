@@ -272,8 +272,66 @@ export class PostUpdateMigrator {
     this.migrateWorktreeMisplacedFloodItems(result);
     this.migrateSubscriptionPoolInteractiveReady(result);
     this.migrateCartographerDevGate(result);
+    this.migrateMultiMachinePostureReviewDimension(result);
 
     return result;
+  }
+
+  // ── Multi-machine posture review dimension (Cross-Machine Coherence widening,
+  // 2026-06-12, topic 13481) ──
+  //
+  // The 2026-06-12 audit found ~20 features that shipped machine-blind because no
+  // review surface ever asked "what happens when this agent runs on two machines?".
+  // The fix adds the question structurally: side-effects template §7 (Multi-machine
+  // posture), the matching Phase-4 question in the instar-dev SKILL, and a mandatory
+  // posture check in spec-converge's integration reviewer. New agents get these via
+  // installBuiltinSkills/install; EXISTING agents only get them here (Migration
+  // Parity, "updating existing skill content").
+  //
+  // Pattern: migrateSpecConvergeFoundationAudit — per file, re-copy the bundled
+  // version only when the installed copy lacks the capability MARKER and still looks
+  // stock (fingerprint guard); a customized file is left untouched and reported.
+  // Idempotent: the marker check short-circuits on every later run.
+  private migrateMultiMachinePostureReviewDimension(result: MigrationResult): void {
+    const MARKER = 'Multi-machine posture';
+    const files: Array<{ rel: string[]; fingerprint: string; label: string }> = [
+      {
+        rel: ['skills', 'instar-dev', 'templates', 'side-effects-artifact.md'],
+        fingerprint: '## 6. External surfaces',
+        label: 'instar-dev side-effects template (§7 multi-machine posture)',
+      },
+      {
+        rel: ['skills', 'instar-dev', 'SKILL.md'],
+        fingerprint: '# /instar-dev',
+        label: 'instar-dev SKILL (Phase-4 multi-machine question)',
+      },
+      {
+        rel: ['skills', 'spec-converge', 'SKILL.md'],
+        fingerprint: '# /spec-converge',
+        label: 'spec-converge SKILL (integration reviewer posture check)',
+      },
+    ];
+    for (const f of files) {
+      try {
+        const installed = path.join(this.config.projectDir, '.claude', ...f.rel);
+        if (!fs.existsSync(installed)) continue; // fresh installs get the bundled copy
+        const current = fs.readFileSync(installed, 'utf8');
+        if (current.includes(MARKER)) continue; // already updated — idempotent
+        if (!current.includes(f.fingerprint)) {
+          result.skipped.push(`${f.label}: customized — left untouched`);
+          continue;
+        }
+        const bundled = path.join(__dirname, '..', '..', ...f.rel);
+        if (!fs.existsSync(bundled)) continue;
+        const next = fs.readFileSync(bundled, 'utf8');
+        if (next.includes(MARKER)) {
+          fs.writeFileSync(installed, next);
+          result.upgraded.push(f.label);
+        }
+      } catch (err) {
+        result.errors.push(`${f.label}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
   }
 
   // ── Cartographer dev-gate (DEV-AGENT-DARK-GATE-ENFORCEMENT, Migration Parity) ──

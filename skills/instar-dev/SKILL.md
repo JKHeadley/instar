@@ -97,7 +97,8 @@ The review must answer each of the following in writing. "No issue identified" i
 4. **Signal vs authority compliance** — does this hold blocking authority with brittle logic, or does it produce a signal that feeds a smart gate? (Required reference: `docs/signal-vs-authority.md`.)
 5. **Interactions** — does it shadow another check, get shadowed by one, double-fire, race with adjacent cleanup?
 6. **External surfaces** — does it change anything visible to other agents, other users, other systems? Does it depend on timing, conversation state, or runtime conditions we can't fully control?
-7. **Rollback cost** — if this turns out wrong in production, what's the back-out? Hot-fix release? Data migration? Agent state repair?
+7. **Multi-machine posture (Cross-Machine Coherence)** — when this agent runs on MORE than one machine, what is this feature's posture: replicated (name the replication path) / proxied-on-read (name the merged read) / machine-local BY DESIGN (with the reason)? A silent single-machine-only assumption is the defect this question exists to catch (~20 features shipped machine-blind before it was added — 2026-06-12 audit, topic 13481). Also: user-facing notices need one-voice gating; durable state must not strand on topic transfer; generated URLs must survive machine boundaries.
+8. **Rollback cost** — if this turns out wrong in production, what's the back-out? Hot-fix release? Data migration? Agent state repair?
 
 ### Phase 4.5 — No-deferrals check (enforced in pre-commit)
 
