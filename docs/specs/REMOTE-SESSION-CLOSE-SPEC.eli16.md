@@ -10,15 +10,20 @@ You asked it yourself: "Why can't I close out a mac mini session from the dashbo
 
 ## How it works, simply
 
-When you click × on a remote session, your laptop's server passes the request to the machine that owns the session — over the same secured, authenticated connection the machines already use to share session lists — and THAT machine decides. All the existing safety checks live on the owning machine and stay there: a protected session refuses to close, a busy one says why, and the answer (including any refusal reason) comes back to your screen. Your laptop is a courier, never a decider.
+When you click × on a remote session, your laptop's server passes the request to the machine that owns the session — over the same secured, authenticated connection the machines already use to share session lists — and THAT machine does the actual close, by the session's unique id (so it can never hit the wrong session that happens to share a name). Your laptop is a courier; the owning machine does the work.
+
+## An honest correction the review forced
+
+A first draft of this said the owning machine's safety guards would "refuse" to close a protected session. That was wrong, and the review caught it: a close YOU click (as the operator) deliberately overrides those guards — exactly like the local × already does. The guards exist to stop the system's own automatic cleanup from killing something important, not to stop you. So this design is honest about it: closing a protected session from another machine WILL close it, and the safeguard is that the dashboard tells you it's protected and which machine it's on, and asks you to confirm — informed consent at the click, not a refusal that doesn't actually exist.
 
 ## The safeguards, in plain terms
 
-- **No new powers.** The owning machine already has this close door, already locked correctly. This just lets your dashboard knock on it from afar. Every refusal rule that protects sessions today protects them identically.
-- **Always a human (or an explicit request) at the trigger.** The button lives behind your dashboard PIN; nothing closes anything on its own.
-- **A paper trail.** The owning machine's session log records every close with a note that it came from the remote dashboard — no session ever disappears without a trace.
-- **Honest failures.** If the other machine is offline you get "unreachable" within seconds; if it refuses, you see its reason — never a fake success, never a silent nothing.
-- **Completely separate from remote typing.** That stays off by default as you decided; closing a session shares none of its plumbing.
+- **Same power as the local button, just longer reach.** It doesn't invent a stronger kill — it's the same operator close you already have, now reaching another machine. Because the reach is wider, the design adds real containment around it (below).
+- **A wrong-machine kill is impossible by construction.** It targets the session's unique id and routes only through your machines' verified address book — never an address built from the request — and a stale or moved tile shows a calm "already closed, refreshing," never a kill aimed at the wrong place.
+- **Credentials never leak to a bad address.** Before your machines' shared key is attached to any cross-machine request, the address is checked against an allowlist — a recycled or tampered address is rejected, not trusted.
+- **Rate-limited and double-logged.** The feature can't be looped into a mass-kill; and BOTH ends keep a record — the owning machine logs the close, your machine logs the order — so nothing disappears without a trace at either end.
+- **Honest about uncertainty.** Offline machine → "unreachable" in seconds; a slow machine that might have closed it anyway → "outcome unknown, refreshing" (never a fake "nothing happened"); a session already gone → a calm note, not a scary error.
+- **Always a human (or your explicit agent) at the trigger, behind the PIN.** Nothing closes anything on its own. Completely separate from remote typing, which stays off by default.
 
 ## What you need to decide
 
