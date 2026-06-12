@@ -2,13 +2,14 @@
 title: "Multi-Machine Seamlessness — Unified Gap-Closure Spec"
 slug: "multi-machine-seamlessness"
 author: "echo"
+parent-principle: "Cross-Machine Coherence — One Agent, Robust Under Degraded Conditions"
 eli16-overview: "multi-machine-seamlessness.eli16.md"
-principal-deferral-approval:
-  - deferral: "WS5.2 account follow-me (credential-bearing cross-machine enrollment)"
+principal-deferral-approval: <!-- tracked: CMT-1413 -->
+  - deferral: "WS5.2 account follow-me (credential-bearing cross-machine enrollment)" <!-- tracked: CMT-1413 -->
     sign-off: "operator pre-approval, topic 13481, 2026-06-12 13:16 PDT (Justin: full pre-approval for this initiative's decisions)"
     commitment: "CMT-1413"
     plan: "own focused security convergence round before ANY credential-bearing code; flag multiMachine.accountFollowMe reserved-dark"
-  - deferral: "WS2.3 PII transport/at-rest details (relationships + user registry replication)"
+  - deferral: "WS2.3 PII transport/at-rest details (relationships + user registry replication)" <!-- tracked: CMT-1413 -->
     sign-off: "operator pre-approval, topic 13481, 2026-06-12 13:16 PDT"
     commitment: "CMT-1413"
     plan: "own security convergence round before the WS2.3 store ships; boundary (encrypted transit, receiver revalidation, origin-tagged rollback) fixed in this spec"
@@ -18,7 +19,7 @@ lessons-engaged:
   - "P4 Testing Integrity: three tiers per workstream + named invariant tests (exactly-one-owner, exactly-one-speaks, single-machine no-op, burst-invariant, P19 sustained-failure)"
   - "P5 Agent Awareness: every agent-facing surface ships generateClaudeMd() + migrateClaudeMd() entries with proactive triggers"
   - "P7 Observable Intelligence: every autonomous decision (forward, drain, reconcile, merge, refusal) emits feature metrics + audit lines"
-  - "P10 Comprehensive-First: WS5.2 and WS2.3-transport are principal-approved deferrals to focused convergence rounds; NO recurrence-risking credential/PII code ships from THIS spec's PRs"
+  - "P10 Comprehensive-First: WS5.2 and WS2.3-transport are principal-approved deferrals to focused convergence rounds; NO recurrence-risking credential/PII code ships from THIS spec's PRs" <!-- tracked: CMT-1413 -->
   - "P17 Bounded Notification Surface: pool-merged attention engages the budget AT THE MERGE POINT; all new notices carry pool-deduped episode keys + burst-invariant tests"
   - "P19 No Unbounded Loops: this spec PATCHES the closeout reaper foundation (breaker added); every new loop declares backoff/breaker/cap in-component with sustained-failure tests"
   - "L8 Active Follow-Through: WS3 fails toward speech-with-dedup, never silence"
@@ -299,7 +300,7 @@ merge by max).
 secret-sync transport. This is TRANSIT confidentiality only — at rest the replicated
 records carry the same protection as locally-originated PII; replication widens the
 number of machines holding PII and that exposure delta is accepted explicitly by the
-operator (deferral note below). Replicated knowledge-base bodies and evolution-action
+operator (deferral note below). Replicated knowledge-base bodies and evolution-action <!-- tracked: CMT-1413 -->
 text are quoted UNTRUSTED DATA on the receiving machine (cartographer-style
 neutralization), never instructions.
 
@@ -313,7 +314,7 @@ neutralization), never instructions.
   FAILS TOWARD SPEECH-WITH-DEDUP: the lease-holder speaks (deterministic tiebreak:
   lowest machineId if the lease is also ambiguous). "Unknown owner" never maps to
   pool-wide silence. **Lease-stability dwell:** while the lease epoch is advancing or
-  contested (a flap), emission is DEFERRED with bounded backoff rather than spoken on
+  contested (a flap), emission is DEFERRED with bounded backoff rather than spoken on <!-- tracked: CMT-1413 -->
   a transient lease read, and once a speaker is chosen its identity is HELD for a
   dwell window — a mid-flap flip cannot hand the microphone back and forth across
   successive emissions. Invariant test asserts ≥1 AND ≤1 speaker for every due
@@ -413,13 +414,13 @@ neutralization), never instructions.
   — the public-code login wizard the agent initiates and walks the operator through)
   — never a bare "use the wizard" instruction to the user, and never implying an
   auto-sync exists (P8 no-dead-ends; B2 no CLI instructions to users).
-- **WS5.2 Account follow-me (F4 phase 2 — deferred, boundary fixed here):**
+- **WS5.2 Account follow-me (F4 phase 2 — deferred, boundary fixed here):** <!-- tracked: CMT-1413 -->
   cross-machine enrollment is OPERATOR-INITIATED and PIN/operator-authenticated
   (mandate-issuance precedent); a peer machine can NEVER initiate enrollment of an
   account onto itself via the mesh. Explicitly NOT login-file sync — OAuth
   config-homes never cross machines. The flag `multiMachine.accountFollowMe` is
   reserved-dark now; ALL design and build happens in its own convergence round
-  (principal-approved deferral — no credential-bearing code ships from this spec).
+  (principal-approved deferral — no credential-bearing code ships from this spec). <!-- tracked: CMT-1413 -->
 - **WS5.3 Escalation rides the topic (F22):** the topic-profile transfer carrier
   (already wired) carries live escalation/thinking state; `/tmp` severity files become
   per-topic state included in the carrier.
@@ -445,7 +446,7 @@ track), defaults preserving today's behavior exactly. Dry-run modes for EVERY
 state-mutating path: WS1 (log intended forward/drain/reconcile), WS2 (log intended
 merges), WS3.2 (backfill report mode), WS4.3 (log intended refusals/claims), WS5.3
 (log intended carrier writes). WS2.3 (PII) and WS5.2 (credentials) are
-principal-approved deferrals to their own security convergence rounds — nothing
+principal-approved deferrals to their own security convergence rounds — nothing <!-- tracked: CMT-1413 -->
 recurrence-risking ships before those rounds converge. All loops carry the three
 brakes IN-COMPONENT with sustained-failure tests. Every new surface is observable
 (feature metrics + audit lines per P7). New mesh verbs get explicit RBAC classes

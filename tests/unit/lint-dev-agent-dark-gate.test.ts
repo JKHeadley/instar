@@ -307,9 +307,11 @@ describe('lint-dev-agent-dark-gate', () => {
       '129': 'monitoring.sessionReaper.enabled',
       // reap-notify spec: the reapNotify block gained perTopic +
       // maxImmediatePerFlush (and the CODE-defaulted-keys NOTE), shifting
-      // every entry below it by +10. Each verified by hand against
-      // ConfigDefaults.ts (resumeQueue.* keys are deliberately ABSENT from
-      // ConfigDefaults — CODE defaults so the later fleet flip works).
+      // every entry below it by +10 (resumeQueue.* keys are deliberately
+      // ABSENT from ConfigDefaults — CODE defaults so the later fleet flip
+      // works). Composed with the WS3 one-voice +8 shift (the multiMachine
+      // seamlessness sub-block) for sessionPool and later. Each verified by
+      // hand against the MERGED ConfigDefaults.ts.
       '187': 'monitoring.agentWorktreeReaper.enabled',
       '201': 'monitoring.mcpProcessReaper.enabled',
       '215': 'monitoring.agentSleep.enabled',
@@ -322,13 +324,13 @@ describe('lint-dev-agent-dark-gate', () => {
       '443': 'mentor.enabled',
       '454': 'mentor.autonomousFix.enabled',
       '469': 'mentee.enabled',
-      '554': 'multiMachine.sessionPool.enabled',
-      '712': 'cartographer.freshnessSweep.enabled',
+      '562': 'multiMachine.sessionPool.enabled',
+      '720': 'cartographer.freshnessSweep.enabled',
       // fix instar#1069: the freshnessSweep block gained the event-loop-safety
       // fields (detectInWorker…scaffoldChunkNodes), shifting the two later
       // cartographer entries by +11. Verified by hand against ConfigDefaults.ts.
-      '757': 'cartographer.conformanceAudit.llmEnrichment.enabled',
-      '782': 'cartographer.subtreeNav.llmRerank.enabled',
+      '765': 'cartographer.conformanceAudit.llmEnrichment.enabled',
+      '790': 'cartographer.subtreeNav.llmRerank.enabled',
     };
     const actual = attributeRealConfigDefaults();
     expect(actual).toEqual(EXPECTED);

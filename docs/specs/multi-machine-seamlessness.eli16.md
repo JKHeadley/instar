@@ -86,3 +86,12 @@ caps and compaction). The one-address link design concentrates traffic on the fr
 machine (streamed, capped, and it can be revisited). And the account-enrollment
 follow-me is deliberately deferred to its own security review — the convenience is not
 worth rushing credentials handling.
+
+## Shipped so far
+
+- **One pane of glass, first piece** (WS4.2, PR #1083): the dashboard now labels
+  every machine honestly — "online — no active sessions" vs "not reachable".
+- **One voice** (WS3.1/3.2, this change): exactly one machine speaks each
+  conversation's background notices — never two, and never zero (unknown ownership
+  falls back to a deterministic speaker rather than silence). Dark behind
+  `multiMachine.seamlessness.ws3OneVoice`; single-machine setups untouched.

@@ -67,6 +67,17 @@ export interface PresenceProxyConfig {
   releaseProxyMutex?: (topicId: number, holder: 'presence-proxy' | 'promise-beacon') => void;
 
   /**
+   * WS3 one-voice gate (MULTI-MACHINE-SEAMLESSNESS-SPEC, closes F18): when
+   * wired, the election decides whether THIS machine speaks the 🔭 standby
+   * voice for a topic — only the topic's owner machine answers; unknown
+   * ownership fails toward speech via lease-holder/tiebreak so the pool is
+   * never silent. PromiseBeacon already had this gate; PresenceProxy lacked
+   * one entirely (both machines could answer for the same topic). Absent →
+   * exactly today's behavior.
+   */
+  speakerElection?: import('./SpeakerElection.js').SpeakerElection;
+
+  /**
    * BUILD-STALL-VISIBILITY-SPEC Fix 2 "Routing" — when a /build heartbeat has
    * landed on this topic recently, PresenceProxy suppresses its generic
    * Tier 2/3 standby so the user hears one progress voice per channel.
@@ -1827,6 +1838,17 @@ IMPORTANT BIAS: Default to "working" or "waiting" unless there is STRONG evidenc
   }
 
   private async sendProxyMessage(topicId: number, text: string, tier: number): Promise<void> {
+    // WS3 one-voice election: only this topic's owner machine speaks the 🔭
+    // voice. Single chokepoint for every tier emission. Silent/defer verdicts
+    // simply skip this send — the proxy's own cadence re-evaluates later, and
+    // the owning machine's PresenceProxy carries the voice.
+    if (this.config.speakerElection) {
+      const verdict = this.config.speakerElection.decide(topicId);
+      if (!verdict.speak) {
+        console.log(`[PresenceProxy] one-voice gate: not this machine's topic (${verdict.reason}) — skipping tier ${tier} send for topic ${topicId}`);
+        return;
+      }
+    }
     // Spec A10: acquire shared per-topic proxy mutex if one is wired.
     // PromiseBeacon consumes the same coordinator; the acquire here guarantees
     // only one proxy-class emitter fires per topic at a time.
