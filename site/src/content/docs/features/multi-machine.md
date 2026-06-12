@@ -105,6 +105,12 @@ sent by both machines.
 - **`ReplyMarkerTransport`** -- propagates the `reply_committed` marker from
   the holder to standby peers so post-failover the new holder won't re-send
   a reply the old holder already committed.
+- **`PendingInboundStore` + `QueueDrainLoop`** -- durable custody for inbound
+  messages the router can't deliver right now (conversation mid-move, owner
+  briefly suspect), drained in order when the blockage clears, with the
+  hold-for-stability policy that stops blip-induced machine swaps. Inspect via
+  `GET /pool/queue`; see [Durable Inbound Message Queue](/features/durable-message-queue/)
+  for the full story. Ships dark.
 
 ### Update coordination — "don't fail over onto a different version"
 
