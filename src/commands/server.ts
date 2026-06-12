@@ -6568,7 +6568,7 @@ export async function startServer(options: StartOptions): Promise<void> {
               if (!tmux) return null;
               const pid = execFileSync(tmux, ['list-panes', '-t', `=${name}:`, '-F', '#{pane_pid}'], { encoding: 'utf-8', timeout: 5000 }).trim();
               return /^\d+$/.test(pid) ? parseInt(pid, 10) : null;
-            } catch { return null; }
+            } catch { return null; /* @silent-fallback-ok — unknown ownership falls to the election's lease-holder/tiebreak path, never silence */ }
           },
           // UNIFIED-SESSION-LIFECYCLE §P0 #8: route the kill-to-respawn through
           // the ReapAuthority with disposition:'recovery-bounce' (silent §P3
@@ -8136,6 +8136,39 @@ export async function startServer(options: StartOptions): Promise<void> {
     // sharedLlmQueue is wired into both PromiseBeacon (background lane) and
     // PresenceProxy (interactive lane) below.
 
+    // ── WS3 one-voice speaker election (MULTI-MACHINE-SEAMLESSNESS-SPEC) ──
+    // Constructed EARLY (both sentinels capture it at their construction below),
+    // with the pool deps LATE-BOUND via ws3PoolDeps — the machine-pool and
+    // session-ownership registries initialize later in boot. Until they bind,
+    // poolMachineIds() returns [] and every verdict is the single-machine
+    // no-op "speak" (exactly today's behavior). Dark flag:
+    // multiMachine.seamlessness.ws3OneVoice (default false → legacy verdicts).
+    let ws3PoolDeps: {
+      poolMachineIds: () => string[];
+      resolveTopicOwner: (topicId: number) => string | null;
+    } | undefined;
+    const { SpeakerElection } = await import('../monitoring/SpeakerElection.js');
+    const ws3Cfg = () => ((config as Record<string, any>).multiMachine?.seamlessness ?? {}) as { ws3OneVoice?: boolean; ws3DwellMs?: number };
+    const speakerElection = new SpeakerElection({
+      enabled: () => ws3Cfg().ws3OneVoice === true,
+      currentMachineId: (() => {
+        // @silent-fallback-ok — no machine identity = the election's legacy-no-machine-id
+        // verdict (always speak): the designed single-machine degradation, not a loss.
+        try { return coordinator.managers.identityManager.loadIdentity().machineId; } catch { return undefined; }
+      })(),
+      poolMachineIds: () => ws3PoolDeps?.poolMachineIds() ?? [],
+      resolveTopicOwner: (topicId) => ws3PoolDeps?.resolveTopicOwner(topicId) ?? null,
+      leaseHolderId: () => coordinator?.getSyncStatus().leaseHolder ?? null,
+      leaseStable: () => (coordinator?.getSyncStatus().splitBrainState ?? 'clear') === 'clear',
+      dwellMs: typeof ws3Cfg().ws3DwellMs === 'number' ? ws3Cfg().ws3DwellMs : undefined,
+      onVerdict: (topicId, v) => {
+        // P7 Observable Intelligence: every non-legacy verdict is auditable.
+        if (v.reason !== 'legacy-disabled' && v.reason !== 'legacy-no-machine-id' && v.reason !== 'single-machine') {
+          console.log(`[SpeakerElection] topic ${topicId}: speak=${v.speak} (${v.reason})`);
+        }
+      },
+    });
+
     let presenceProxy: import('../monitoring/PresenceProxy.js').PresenceProxy | undefined;
     if (sharedIntelligence && telegram) {
       try {
@@ -8186,6 +8219,8 @@ export async function startServer(options: StartOptions): Promise<void> {
         presenceProxy = new PresenceProxy({
           stateDir: config.stateDir,
           intelligence: sharedIntelligence,
+          // WS3 one-voice gate: only this topic's owner machine speaks 🔭.
+          speakerElection,
           agentName: config.projectName ?? 'the agent',
           // Resolved default framework so idle/stall detection uses the right
           // pane signals (Codex panes don't match Claude prompt patterns).
@@ -8678,6 +8713,9 @@ export async function startServer(options: StartOptions): Promise<void> {
             commitmentTracker,
             llmQueue: sharedLlmQueue,
             proxyCoordinator,
+            // WS3 one-voice gate: live owner re-resolution at speak time; the
+            // commitment's ownerMachineId stamp is only the fallback.
+            speakerElection,
             captureSessionOutput: (name, lines) => sessionManager.captureOutput(name, lines),
             getSessionForTopic: (topicId) => telegram!.getSessionForTopic(topicId),
             isSessionAlive: (name) => sessionManager.isSessionAlive(name),
@@ -10172,7 +10210,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                     return match?.name ?? null;
                   }
                   return null;
-                } catch { return null; }
+                } catch { return null; /* @silent-fallback-ok — unknown ownership falls to the election's lease-holder/tiebreak path, never silence */ }
               })();
               if (resolvedName) waiter = threadlineReplyWaiters.get(resolvedName);
             }
@@ -11985,6 +12023,27 @@ export async function startServer(options: StartOptions): Promise<void> {
           logger: (m: string) => console.log(pc.dim(`  ${m}`)),
         });
         const ownReg = sessionOwnershipRegistry;
+        // ── WS3 one-voice: bind the election's late pool deps ──
+        // From here on the SpeakerElection sees the real pool: online machine
+        // ids from the capacity registry and live topic ownership from the
+        // ownership registry. Before this point it returned the single-machine
+        // no-op verdict. (resolveTopicOwner reads ONLY local replicated state —
+        // never a mesh call — per the spec's hot-path rule.)
+        ws3PoolDeps = {
+          poolMachineIds: () => {
+            try {
+              return (machinePoolRegistry?.getCapacities() ?? [])
+                .filter((c) => c.online)
+                .map((c) => c.machineId);
+            } catch { return []; /* @silent-fallback-ok — empty pool = single-machine no-op verdict (speak), the fail-toward-speech design */ }
+          },
+          resolveTopicOwner: (topicId) => {
+            try {
+              const rec = ownReg.read(String(topicId));
+              return rec && rec.status === 'active' ? (rec.ownerMachineId ?? null) : null;
+            } catch { return null; /* @silent-fallback-ok — unknown ownership falls to the election's lease-holder/tiebreak path, never silence */ }
+          },
+        };
         // Coherence journal §3.3: the emit is a thin wrapper at every CAS call
         // site — `reason` is caller knowledge (cas() is a storage primitive and
         // cannot know WHY). A mesh-applied action records the coarse reason;

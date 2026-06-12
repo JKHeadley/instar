@@ -540,6 +540,14 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
   // Track H). This is the migration-parity path: every existing agent gets the dark
   // defaults on update. The `stage` field is StageAdvancer-write-only at runtime.
   multiMachine: {
+    // WS3 one-voice gate (MULTI-MACHINE-SEAMLESSNESS-SPEC). Ships DARK: with
+    // ws3OneVoice false the SpeakerElection returns "speak" unconditionally —
+    // byte-for-byte today's behavior. Single-machine pools are a strict no-op
+    // even when enabled (the election never engages below 2 online machines).
+    seamlessness: {
+      ws3OneVoice: false,
+      ws3DwellMs: 60000,
+    },
     sessionPool: {
       enabled: false,
       stage: 'dark',

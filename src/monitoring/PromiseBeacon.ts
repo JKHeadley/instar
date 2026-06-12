@@ -89,6 +89,14 @@ export interface PromiseBeaconConfig {
   quietHours?: { start: string; end: string; timezone?: string }; // "22:00-08:00" local
   /** Current machine id (ownership gate). */
   currentMachineId?: string;
+  /**
+   * WS3 one-voice gate (MULTI-MACHINE-SEAMLESSNESS-SPEC): when wired, the
+   * election decides whether THIS machine speaks for the commitment's topic —
+   * live placement first, the commitment's ownerMachineId stamp as fallback,
+   * failing toward speech via lease-holder/tiebreak so unknown ownership never
+   * silences the pool. Absent → the legacy static gate applies unchanged.
+   */
+  speakerElection?: import('./SpeakerElection.js').SpeakerElection;
   /** Floor for heartbeat cadence (ms). Default 60_000. */
   minCadenceMs?: number;
   /** Ceiling for heartbeat cadence (ms). Default 21_600_000 (6h). */
@@ -343,8 +351,18 @@ export class PromiseBeacon extends EventEmitter {
     if (!c.topicId) return;
 
     // ── Ownership gate ──
-    if (this.config.currentMachineId && c.ownerMachineId && c.ownerMachineId !== this.config.currentMachineId) {
-      // Not ours; skip silently + re-arm for liveness.
+    if (this.config.speakerElection && typeof c.topicId === 'number') {
+      // WS3 one-voice election: live owner re-resolution at speak time (the
+      // stamp is only the fallback, so a backfill racing a transfer cannot
+      // wedge the gate), failing toward speech-with-dedup — unknown ownership
+      // never silences the pool. Silent and defer verdicts both re-arm.
+      const verdict = this.config.speakerElection.decide(c.topicId, c.ownerMachineId ?? null);
+      if (!verdict.speak) {
+        this.schedule(c);
+        return;
+      }
+    } else if (this.config.currentMachineId && c.ownerMachineId && c.ownerMachineId !== this.config.currentMachineId) {
+      // Legacy static gate (no election wired): not ours; skip + re-arm.
       this.schedule(c);
       return;
     }
