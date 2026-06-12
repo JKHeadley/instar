@@ -70,3 +70,8 @@ documented exemption.]
 
 [IN-FLIGHT — completed at Phase 4 after build. Levers: reapNotify.perTopic=false,
 reapNotify.drainEnabled=false, resumeQueue.enabled=false / dryRun=true; no DDL.]
+
+## Build progress notes (per-step, folded into the final review)
+
+- Step 1 (relay-store foundation): R1.6 purge fix + origin scoping + CAS claim; DFS spec §3h updated.
+- Step 2 (ReapLog): notify record pairs + midWork/workEvidence through the normalizer; fixed pre-existing launchLane drop-on-read (Rule-1 deviation, noted for SUMMARY).
