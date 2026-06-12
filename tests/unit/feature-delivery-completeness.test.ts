@@ -133,6 +133,7 @@ describe('Feature Delivery Completeness', () => {
       'Playbook',
       'Worktree Convention',
       'Multi-Session Autonomy',    // per-topic concurrent autonomous jobs (templates.ts + migrator parity)
+      'Durable Inbound Message Queue', // custody queue + hold-for-stability (templates.ts + migrator parity, CMT-1118)
       'Process Health (Dashboard Tab)', // Failure-Learning Loop read surface (templates.ts + migrator + shadow-marker parity)
       "Preferences I've learned about you", // Correction & Preference Learning Sentinel Slice 1a read surface (templates.ts + migrator + shadow-marker parity)
       // Coordination-mandate family (coordination-mandate spec §7, G2.2–G2.4): framework-agnostic

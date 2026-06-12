@@ -29,6 +29,13 @@ const BLOCKED_FILES = new Set(['config.json', 'secrets', 'machine']);
 // skipped during snapshot creation regardless of config source.
 const BLOCKED_PATH_PREFIXES = new Set([
   '.instar/secrets/',
+  // Durable Inbound Message Queue (spec §5.5): the custody store + sidecars +
+  // quarantined copies are in-flight per-machine state — restoring them to a
+  // new machine would claim custody the new machine never took. Unconditional
+  // (NOT the remediation-gated F-7 list). stateDir-relative prefixes, matching
+  // how includeFiles entries resolve (sourcePath = path.join(stateDir, entry)).
+  'state/pending-inbound.',
+  'state/pending-inbound-quarantine/',
 ]);
 
 /**

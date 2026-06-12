@@ -111,7 +111,7 @@ describe('SessionRouter dispatch over MeshRpc (§L4)', () => {
       deliverMessage: makeDeliverDep(owner.url),
       handleLocally: async () => {},
       spawnOnMachine: async () => {},
-      queueMessage: () => {},
+      queueMessage: () => 'refused' as const,
       raiseAttention: () => {},
       sleep: async () => {},
     };
@@ -136,7 +136,7 @@ describe('SessionRouter dispatch over MeshRpc (§L4)', () => {
       deliverMessage: makeDeliverDep(owner.url),
       handleLocally: async () => {},
       spawnOnMachine: async () => {},
-      queueMessage: () => {},
+      queueMessage: () => 'refused' as const,
       raiseAttention: () => {},
       sleep: async () => {},
     };
@@ -177,7 +177,7 @@ describe('SessionRouter dispatch over MeshRpc (§L4)', () => {
         deliverMessage: makeDeliverDep(owner.url),
         handleLocally: async () => {},
         spawnOnMachine: async () => {},
-        queueMessage: () => {},
+        queueMessage: () => 'refused' as const,
         raiseAttention: () => {},
         sleep: async () => {},
       };

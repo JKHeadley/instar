@@ -92,6 +92,8 @@ const ADDITIONAL_CANDIDATES = [
   'GrowthMilestoneAnalyst',// monitoring.growthAnalyst.enabled (dev-gated)
   'BlockerLedger',         // monitoring.blockerLedger.enabled (dev-gated)
   'SecretSync',            // multiMachine.secretSync.enabled
+  'QueueDrainLoop',        // multiMachine.sessionPool.inboundQueue.enabled (ships dark; spec durable-inbound-message-queue)
+  'OwnerHoldVerdict',      // multiMachine.sessionPool.holdForStability.enabled (effective-state getter, §4.2)
   'CoherenceJournal',      // multiMachine.coherenceJournal.enabled
   'PromptGate',            // monitoring.promptGate.enabled
 ];

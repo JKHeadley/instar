@@ -45,6 +45,18 @@ export interface OwnerSuspectBreakerOpts {
   logger?: (msg: string) => void;
   /** One-per-episode sustained-suspicion sink (wired to DegradationReporter). */
   reportSustained?: (info: { machineId: string; suspectForMs: number; marks: number }) => void;
+  /**
+   * Breaker-close hook (Durable Inbound Message Queue §3.2 — NEW CODE, named):
+   * fires when `recordSuccess` closes an OPEN episode. The queue drain wires
+   * this to deliver held rows instantly when the owner recovers.
+   */
+  onClose?: (machineId: string) => void;
+  /** Flap-accounting threshold (§4.4): suspect-episodes-per-hour at/above which
+   *  a flap-episode opens. Default 6. */
+  flapThresholdPerHour?: number;
+  /** ONE attention item per flap-episode open (nickname resolution is the
+   *  caller's job — this passes the machine id). */
+  reportFlapEpisode?: (info: { machineId: string; episodesLastHour: number }) => void;
 }
 
 const DEFAULT_SUSPECT_TTL_MS = 30_000;
@@ -58,6 +70,15 @@ export class OwnerSuspectBreaker {
   private suspectUntil = new Map<string, number>();
   /** Per-peer episode accounting (created on first mark, deleted on success). */
   private episodes = new Map<string, FailureEpisodeLatch>();
+  /**
+   * Flap accounting (§4.4) — per-peer episode-OPEN timestamps within the last
+   * hour. Deliberately SURVIVES `recordSuccess` (the per-episode latch does
+   * not — that reset was exactly the round-2 hold-budget bug). In-memory:
+   * a restart resets it and it re-trips within an hour — stated in the spec.
+   */
+  private episodeOpens = new Map<string, number[]>();
+  /** Open flap-episodes (machineId → opened-at). Closes after 30 min calm. */
+  private flapOpenSince = new Map<string, number>();
 
   constructor(opts: OwnerSuspectBreakerOpts = {}) {
     this.opts = opts;
@@ -97,6 +118,7 @@ export class OwnerSuspectBreaker {
     const f = latch.recordFailure();
     if (f.firstOfEpisode) {
       this.log(`owner ${machineId} SUSPECT (delivery retries exhausted) — short-circuiting its sessions' dispatches for ${Math.round(this.ttlMs / 1000)}s windows until a delivery succeeds`);
+      this.recordEpisodeOpen(machineId);
     }
     if (f.shouldSignal) {
       this.log(`owner ${machineId} suspect for ${Math.round(f.failingForMs / 60_000)}min (${f.failures} marks) — signaling once; half-open re-probes continue`);
@@ -118,6 +140,56 @@ export class OwnerSuspectBreaker {
       const s = latch.recordSuccess();
       if (s.recovered) this.log(`owner ${machineId} recovered after ${s.failures} suspect mark(s)`);
       this.episodes.delete(machineId);
+      // §3.2 event trigger: an OPEN episode just closed — held rows deliver now.
+      this.opts.onClose?.(machineId);
     }
+  }
+
+  // ── Flap accounting (§4.4) ──────────────────────────────────────────
+
+  private recordEpisodeOpen(machineId: string): void {
+    const now = this.now();
+    const hourAgo = now - 3600_000;
+    const opens = (this.episodeOpens.get(machineId) ?? []).filter((t) => t > hourAgo);
+    opens.push(now);
+    this.episodeOpens.set(machineId, opens);
+    const threshold = this.opts.flapThresholdPerHour ?? 6;
+    if (opens.length >= threshold && !this.flapOpenSince.has(machineId)) {
+      this.flapOpenSince.set(machineId, now);
+      this.log(`owner ${machineId} FLAPPING (${opens.length} suspect episodes in the last hour) — holds disabled for it until calm`);
+      this.opts.reportFlapEpisode?.({ machineId, episodesLastHour: opens.length });
+    }
+  }
+
+  /**
+   * Is a flap-episode open for this machine (§4.4)? While true, the hold
+   * verdict forces `failover` — a chronically flapping machine gets no hold
+   * at all until it calms (rate below threshold for 30 min re-arms).
+   */
+  isFlapping(machineId: string): boolean {
+    const since = this.flapOpenSince.get(machineId);
+    if (since === undefined) return false;
+    const now = this.now();
+    const opens = (this.episodeOpens.get(machineId) ?? []).filter((t) => t > now - 3600_000);
+    const threshold = this.opts.flapThresholdPerHour ?? 6;
+    const lastOpen = opens.length > 0 ? Math.max(...opens) : 0;
+    // Close when the rate stays below threshold for 30 min.
+    if (opens.length < threshold && now - lastOpen > 30 * 60_000) {
+      this.flapOpenSince.delete(machineId);
+      return false;
+    }
+    return true;
+  }
+
+  /** Surfaced in /pool/queue (§4.4). */
+  flapState(): Array<{ machineId: string; episodesLastHour: number; flapping: boolean }> {
+    const now = this.now();
+    const out: Array<{ machineId: string; episodesLastHour: number; flapping: boolean }> = [];
+    for (const [machineId, opens] of this.episodeOpens) {
+      const recent = opens.filter((t) => t > now - 3600_000);
+      if (recent.length === 0 && !this.flapOpenSince.has(machineId)) continue;
+      out.push({ machineId, episodesLastHour: recent.length, flapping: this.isFlapping(machineId) });
+    }
+    return out;
   }
 }

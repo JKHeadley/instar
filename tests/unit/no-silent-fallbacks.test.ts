@@ -289,7 +289,21 @@ describe('No Silent Fallbacks', () => {
     // (show-plan) that REPORTS via DegradationReporter — still exempt, net zero.
     // ContentClassifier.classify also now reports its fail-closed degradation (it
     // was already not parser-counted). Both LLM-failure paths are now non-silent.
-    const BASELINE = 463;
+    // 463 -> 468 by durable-inbound-message-queue (CMT-1118): five
+    // parser-counted defensive catches in the custody machinery, each
+    // deliberate fail-safe-direction absorption with in-brace context — the
+    // ordering-gate consult (route() owns the message on a gate error), the
+    // route-throw point-read guard (a read error fails OPEN to fall-through —
+    // the §5-enumerated bounded duplicate, never a block), the emitPlacement
+    // drain trigger (best-effort; the backstop tick covers a missed trigger),
+    // the PIS-cleanup guard in onOperatorStop (the boot-sweep veto is the
+    // backstop layer), and the post-enqueue bookkeeping guard (second-pass
+    // concern 4: a bookkeeping throw must never convert a COMMITTED enqueue
+    // into 'refused' — the throw is logged, the custody outcome preserved).
+    // None is silent: each logs with context or has a named structural
+    // backstop; real degradations route to DegradationReporter
+    // (enqueue-storage-failure, tick episode latch).
+    const BASELINE = 468;
 
     if (silentFallbacks.length > 0) {
       const report = silentFallbacks.map(fb =>

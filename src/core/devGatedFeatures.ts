@@ -195,6 +195,16 @@ export const DARK_GATE_EXCLUSIONS: DarkGateExclusion[] = [
     category: 'optional-integration',
     reason: 'multi-machine pooling; opt-in per deployment',
   },
+  {
+    configPath: 'multiMachine.sessionPool.inboundQueue.enabled',
+    category: 'optional-integration',
+    reason: 'durable inbound custody queue; staged rollout per spec frontmatter (dark→dry-run→dev-live→fleet)',
+  },
+  {
+    configPath: 'multiMachine.sessionPool.holdForStability.enabled',
+    category: 'optional-integration',
+    reason: 'hold-for-stability policy; trails inboundQueue one rollout stage behind (operator discipline)',
+  },
   // ── deliberate-fleet-default — off for everyone by design (incl. dev) ──
   {
     configPath: 'monitoring.bootHealthBeacon.enabled',
