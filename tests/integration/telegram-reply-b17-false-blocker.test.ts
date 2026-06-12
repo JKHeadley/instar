@@ -19,6 +19,9 @@
 
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import express from 'express';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import type { AddressInfo } from 'node:net';
 import { createRoutes } from '../../src/server/routes.js';
 import { MessagingToneGate } from '../../src/core/MessagingToneGate.js';
@@ -48,7 +51,12 @@ function buildApp(opts: {
   const app = express();
   app.use(express.json());
   const ctx: any = {
-    config: { authToken: 'test', stateDir: '/tmp', port: 0, projectName: 'echo' },
+    // A FRESH stateDir per app: the reply route's durable content-dedup store
+    // (SqliteOutboundDedupStore) lives under stateDir/state — the shared
+    // '/tmp' leaked fingerprints across runs, so this test's byte-identical
+    // happy-path text read as a duplicate on any machine that had run it
+    // before (machine-local red, CI green).
+    config: { authToken: 'test', stateDir: fs.mkdtempSync(path.join(os.tmpdir(), 'b17-route-')), port: 0, projectName: 'echo' },
     messagingToneGate: opts.toneGate,
     telegram: {
       sendToTopic: async (topicId: number, text: string) => {
