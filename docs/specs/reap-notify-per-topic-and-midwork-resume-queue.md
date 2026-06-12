@@ -3,12 +3,12 @@ title: "Per-Topic Reap Notification + Mid-Work Resume Queue"
 slug: "reap-notify-per-topic-and-midwork-resume-queue"
 author: "echo"
 status: "in-convergence"
-supervision: "tier1 (observe-only during soak; promotion criterion stated in 'Supervision')"
+supervision: "ResumeQueueDrainer: tier1 (observe-only during soak; promotion criterion stated in 'Supervision'). ReapNoticeDrain: tier0 (deterministic template delivery, declared bounds)."
 lessons-engaged:
   - "P2 Signal-vs-Authority — engaged: the drainer's deterministic gates are spawn *eligibility* checks (quota, cap, pressure), all pre-existing authorities; the Tier 1 LLM check is observe-only during soak and advisory-and-audited after promotion, never a silent blocker. Hard-invariant validators on dequeued entries use the documented brittle-blocker exemption. Reap notices are system-template sends via the adapter (not /telegram/reply), so the tone gate and whoami check are structurally not on this path — declared, not assumed."
   - "P3 Migration Parity — engaged: ConfigDefaults registration for reapNotify keys; resumeQueue keys deliberately code-defaulted (NOT in ConfigDefaults) so the later fleet flip of the shipped default actually takes effect; new marker-keyed CLAUDE.md block + framework-shadow markers list; NO pending-relay schema change (the hold reuses the existing next_attempt_at column precisely so rollback keeps honoring holds)."
   - "P4 Testing Integrity — engaged: all three tiers specified, including the feature-alive E2E, wiring-integrity tests, and the held-row-across-restart test."
-  - "P7 LLM-Supervised Execution — engaged: ResumeQueueDrainer declared Tier 1, observe-only during the dev soak, promoted to advisory-defer only on demonstrated true catches; see 'Supervision'."
+  - "P7 LLM-Supervised Execution — engaged: ResumeQueueDrainer declared Tier 1 (observe-only during the dev soak, promoted to advisory-defer only on demonstrated true catches); ReapNoticeDrain declared Tier 0 with the explicit deterministic-template justification; see 'Supervision'."
   - "P14 Distrust Temporary Success — engaged: resurrection-cap exhaustion is surfaced as the most diagnostic event the feature produces, never a silent stop; the soak must assert a true-positive midWork stamp from a quota-shed kill; the restore-purge fix is tested across a restart."
   - "P17 Bounded Notification Surface — engaged: per-topic notices bounded by affected existing topics; ALL attention-item emissions aggregate into one rolling deduped item; burst-invariant test extended to the attention path; per-flush IMMEDIATE cap."
   - "P18 Observation Needs Structure — engaged: killer-supplied work evidence; notify outcomes cover EVERY terminal state of the actual delivery machine including enqueue failure; every drainer decision transition audited."
@@ -48,6 +48,7 @@ stayed dead until a user happened to message their topic.
 | **LlmQueue** | Existing rate-limited, spend-capped queue for background LLM calls. |
 | **Pressure tier** | SessionReaper's memory+CPU health gauge: `normal` / `moderate` / `critical`. |
 | **DEV_GATED_FEATURES / DARK_GATE_EXCLUSIONS** | The two registries the dark-feature lint accepts: dev-gated (auto-live on dev agents; admission bar: non-destructive, no-spend) vs. explicitly-classified exclusions with rationale. |
+| **Attention queue / attention item** | The durable "needs the operator's eyes" surface (`POST /attention`): each item gets one Telegram topic via a flood-guarded creator; items dedupe on a stable id and can be updated in place; "aggregated item" = one rolling item carrying a count + list, updated as the situation evolves. |
 | **P/L/B references** | Entries in `docs/INSTAR-DESIGN-PRINCIPLES-AND-LESSONS.md` (principles / architectural lessons / behavioral lessons). |
 
 ## What exists today (v1.3.487, file:line grounded — corrected by rounds 1–2)
@@ -115,9 +116,11 @@ killer supplied the values — unknown names are dropped, not stored.
 
 ## Requirements
 
-**R1 — A reaped session always produces a durably-enqueued, eventually-delivered notice in
-its corresponding topic/channel.** ("Always" = guaranteed durable enqueue + retried delivery
-+ recorded outcome — NOT bypassing quiet hours.)
+**R1 — Every non-silent reap produces a durable per-topic notice attempt; a delivery
+failure is loudly recorded, never silent.** (The guarantee boundary: durable enqueue +
+retried delivery + recorded outcome while the store is healthy; store unavailability
+degrades to one direct send attempt + a loud degradation record — see R1.3. Never bypasses
+quiet hours.)
 - R1.1 Per-topic delivery even in bursts: every topic that lost a session gets a notice in
   *that topic*; the lifeline gets unbound sessions + (when >1 topic affected) a one-line
   cross-topic index. Never creates new topics. In a storm larger than the detail buffer,
@@ -128,20 +131,31 @@ its corresponding topic/channel.** ("Always" = guaranteed durable enqueue + retr
   mid-work, and — only when the resume queue is LIVE (not dry-run) — that a resume is queued.
   No raw curl/API pointers in any user-facing body (notices AND attention items).
 - R1.3 Durable delivery contract (owned by this feature — see Part A): notices are rows in
-  `PendingRelayStore` stamped `origin:'reap-notify'`, with a release hold implemented via the
-  EXISTING `next_attempt_at` column (claim query already honors it; a rolled-back binary keeps
-  honoring holds; no schema change). A dedicated, always-on **ReapNoticeDrain** (ships with
-  Part A, independent of the DFS flag) claims ONLY `reap-notify` rows; where DFS is enabled it
-  excludes that origin (exactly one drain owner per row class — stated contract). Delivery is
-  a direct adapter send (`sendToTopic`) — NOT `/telegram/reply` — so the relay's tone gate,
-  whoami check, and duplicate-suppression are structurally off this path (notices carry
-  per-notice distinct content anyway). Outcome records: a `type:'notify'` reap-log record is
-  APPENDED at enqueue (`outcome:'enqueued'`) and a second record APPENDED at terminal state
-  (`sent` / `send-failed-escalated` / `no-topic` / `enqueue-failed`) — append-only JSONL,
-  latest record per noticeId wins on read; updates are event-driven from the drain owner, not
-  polled. Enqueue failure (store probe-failed/disabled) falls back to ONE direct immediate
-  send attempt, recorded `enqueue-failed` with the send result, and raises the aggregated
-  degradation surface — the guarantee degrades loudly, never silently.
+  `PendingRelayStore`, with a release hold implemented via the EXISTING `next_attempt_at`
+  column (claim query already honors it; a rolled-back binary keeps honoring holds; no
+  schema change). **Origin carrier:** the origin tag rides the `delivery_id` primary key as
+  a prefix (`reap-notify:<noticeId>`) — truly zero DDL, PK-dedupe for free. Both drains
+  scope their claim QUERIES on it (ReapNoticeDrain claims `delivery_id LIKE 'reap-notify:%'`;
+  DFS's `selectClaimable` gains the complementary `NOT LIKE` filter), and the claim itself is
+  a CAS UPDATE (`WHERE state='queued' OR claim-lease-expired`) so two drains can never
+  double-claim a row — the single-owner contract lives in the queries, not in drain
+  etiquette. The tag is a routing label inside the trusted local process boundary, not an
+  auth boundary (anything that can write this store can already read the bot token).
+  Rollback note: a rolled-back binary has no origin filter — with DFS default-OFF, orphaned
+  notice rows are simply reclaimed by the old purge; accepted. A dedicated, always-on
+  **ReapNoticeDrain** (ships with Part A, independent of the DFS flag; 30s tick; idle cost
+  is one indexed claim query — ~zero on an empty store; per-pass send cap 15 to stay under
+  Telegram's per-group rate, remainder picked up next tick) delivers via direct adapter send
+  (`sendToTopic`) — NOT `/telegram/reply` — so the relay's tone gate, whoami check, and
+  duplicate-suppression are structurally off this path (notices carry per-notice distinct
+  content anyway). Bounded retries: store-backed backoff, `maxAttempts` 8, then terminal
+  escalation into the aggregated attention surface. Outcome records: a `type:'notify'`
+  reap-log record is APPENDED at enqueue (`outcome:'enqueued'`) and a second record APPENDED
+  at terminal state (`sent` / `send-failed-escalated` / `no-topic` / `enqueue-failed`) —
+  append-only JSONL, latest record per noticeId wins on read; updates are event-driven from
+  the drain owner, not polled. Enqueue failure (store probe-failed/disabled) falls back to
+  ONE direct immediate send attempt, recorded `enqueue-failed` with the send result, and
+  raises the aggregated degradation surface — the guarantee degrades loudly, never silently.
 - R1.4 Intentional silences remain and are recorded as such: `recovery-bounce` and
   `origin:'operator'`. Everything else notifies.
 - R1.5 Flood bounds: messages per flush ≤ affected existing topics; at most
@@ -150,7 +164,9 @@ its corresponding topic/channel.** ("Always" = guaranteed durable enqueue + retr
 - R1.6 **In-scope store fix:** the restore-purge cutoff becomes
   `max(attempted_at, next_attempt_at)` (a row held for the future is not stale), with a
   held-row-across-restart unit test. This fixes the documented 2026-06-05 loss class for ALL
-  rows, not just reap notices.
+  rows, not just reap notices. Anomaly clamp: a `next_attempt_at` more than 7 days in the
+  future is treated as corrupt at restore-purge (purged + logged) — no legitimate writer
+  holds that long, and without the clamp a malformed row would now live forever.
 
 **R2 — Mid-work reaps are tagged, queued, and resumed in order once resources recover.**
 - R2.1 Work evidence is supplied by the KILLER at its decision point via `terminateSession`
@@ -173,14 +189,22 @@ its corresponding topic/channel.** ("Always" = guaranteed durable enqueue + retr
   entry (normalizer extended), and the session record (`endedMidWork`).
 - R2.2 Resume *eligibility* is stricter than midWork: terminal + autonomous + (≥1 **strong**
   signal, OR topic-bound with ≥2 distinct weak signals). Weak-alone never queues. Job entries
-  additionally require the job's `resumeOnReap !== false` (new optional JobDefinition field,
-  default true; a job whose single run must not repeat side effects opts out — note a
-  reap-resume is equivalent to the re-run risk such a job already carries on crash/retry).
-  Operator kills excluded by default (`includeOperatorKills:false`); recovery-bounces never.
+  require the job to OPT IN with `resumeOnReap: true` (new optional JobDefinition field,
+  **default false** — jobs already have cron recurrence as their recovery path, and instar
+  jobs carry no idempotency contract, so a reap-triggered early re-run must be a deliberate
+  per-job choice; older agents' job parsers ignore unknown fields, additive-safe). Sessions
+  with NEITHER a topic binding NOR a jobSlug are excluded at enqueue (they would have no
+  resume path at drain time anyway — saves queue slots and keeps the resurrection ledger's
+  key-space to stable identities). Operator kills excluded by default
+  (`includeOperatorKills:false`); recovery-bounces never.
 - R2.3 The queue is durable (`state/resume-queue.json`, atomic write-rename), in-memory
-  authoritative with synchronous persist. Single-writer is ENFORCED, not assumed: a pid
-  lockfile (`state/resume-queue.lock`) is taken at boot; a second claimant logs loudly and
-  runs with the queue DISABLED (multi-process servers sharing a state dir are unsupported).
+  authoritative with synchronous persist. Single-writer is ENFORCED, not assumed: a lockfile
+  (`state/resume-queue.lock` carrying pid + hostname + heartbeat mtime, refreshed each tick)
+  is taken at boot. Stale-lock recovery is automatic: a claimant finding an existing lock
+  checks liveness (same host + `kill -0` on the pid + heartbeat younger than 5 min) — a dead
+  or stale lock is safely reclaimed and logged; only a LIVE other process disables the queue
+  (loudly, surfaced on the aggregated attention item — multi-process servers sharing a state
+  dir are unsupported). A crash never requires manual lock cleanup.
   Entries dedupe and the resurrection ledger key on **stable identity:
   `topicId ?? jobSlug ?? tmuxSession`** (tmux names regenerate per spawn — keying on them
   makes the cap dead code for jobs and fragile across topic renames). Bounded
@@ -190,9 +214,13 @@ its corresponding topic/channel.** ("Always" = guaranteed durable enqueue + retr
   attempts, status }`. Corrupt file on load → sidecar-preserved
   (`resume-queue.corrupt-<ts>.json`), queue starts empty, aggregated attention raised —
   never a silent reset, never a crash; losing the tombstone ledger in this rare path is
-  accepted and surfaced. (Persistence rationale: flat JSON over SQLite — ≤50 entries,
-  single-writer enforced by lock, atomic-rename suffices, file-based state is the project
-  default; revisit only if the lock/corruption surfaces ever fire in practice.)
+  accepted and surfaced. (Persistence rationale — JSON file over a `PendingRelayStore`
+  table, considered and declined: the relay store's schema, claim machinery, and purge
+  lifecycle serve MESSAGE DELIVERY — a resume-queue entry is not a message, and coupling
+  session-resume state into that store entangles two lifecycles, which is exactly the class
+  of collision the R1.6 purge bug demonstrates; the queue is per-machine operational state
+  deliberately excluded from backup/restore, human-inspectable in incident response, ≤50
+  entries, single-owner. Revisit only if the lock/corruption surfaces ever fire in practice.)
 - R2.4 Entry lifecycle: `queued → starting → resumed | failed | invalidated | paused |
   gave-up:<why>`. Boot reconciliation: `starting` found at load = failed attempt
   (attempts++). The drainer tick (60s, re-entrancy-guarded) resumes AT MOST ONE entry per
@@ -215,9 +243,12 @@ its corresponding topic/channel.** ("Always" = guaranteed durable enqueue + retr
   - for jobs: exists, not disabled, not CrashLoopPauser-paused, not run since `queuedAt`;
   - the entry's `cwd` (and `worktreePath`) still exists on disk.
 - R2.7 **Emergency stop reaches the queue:** the MessageSentinel emergency-stop and
-  `POST /autonomous/stop-all` pause the drainer and mark queued entries `paused` (audited;
-  operator-resumable); an explicit per-topic stop cancels that topic's entries. A paused
-  queue never spawns.
+  `POST /autonomous/stop-all` pause the drainer and mark queued entries `paused` (audited);
+  an explicit per-topic stop cancels that topic's entries. A paused queue never spawns.
+  Pause FREEZES entry TTLs (an operator pause must not silently expire the queue), the
+  paused state is exposed in `GET /sessions/resume-queue` alongside `lastTickAt`/breaker,
+  and the unpause lever is explicit: `POST /sessions/resume-queue/resume` (Bearer, audited)
+  — a forgotten pause is visible, never a silent feature death.
 - R2.8 Resume mechanics: the spawn path gains an explicit per-spawn `cwd`/`worktreePath`
   parameter (threaded through `spawnSessionForTopic`/SessionManager spawn — the seam does
   NOT exist today and is a named extension of this spec; L13). Topic-bound → respawn with
@@ -237,10 +268,16 @@ its corresponding topic/channel.** ("Always" = guaranteed durable enqueue + retr
   attention item updated in place; per-entry HIGH items are forbidden (P17: HIGH bypasses
   the topic-guard coalescer, so the bound lives at the emitter).
 - R2.10 Audit + API: decision TRANSITIONS (not every tick) → `logs/resume-queue.jsonl`
-  (size-capped rotation 5MB×2); `GET /sessions/resume-queue` (Bearer; includes `lastTickAt`
-  + breaker state so a wedged drainer is detectable); `POST /sessions/resume-queue/:id/cancel`;
-  `POST /sessions/resume-queue/:id/requeue` (the working operator lever for a gave-up entry);
+  (size-capped rotation 5MB×2); `GET /sessions/resume-queue` (Bearer; includes `lastTickAt`,
+  paused + breaker state so a wedged drainer is detectable); `POST /sessions/resume-queue/:id/cancel`;
+  `POST /sessions/resume-queue/:id/requeue`; `POST /sessions/resume-queue/resume` (unpause);
   `POST /sessions/resume-queue/drain` (single-step; skips calm-ticks ONLY). All Bearer-auth.
+  **Requeue clamps:** eligible from `gave-up:*` states ONLY — never `cancelled` (an operator
+  per-topic stop) and never `paused` (an emergency stop), so a Bearer holder cannot undo an
+  operator stop; resets `attempts` but PRESERVES the original `queuedAt` (the operator-stop
+  and job-ran-since checks in R2.6 key on it); the resurrection ledger keeps counting —
+  requeueing a `gave-up:resurrection-cap` entry grants exactly ONE additional resume as an
+  audited deliberate override, and the next re-reap re-caps.
 - R2.11 On resume, the topic gets an honest notice — "restarted this session to pick the
   work back up" (never "resumed" as a transcript claim: `--resume` can fail in-pane and fall
   back to a fresh conversation; the wording must not promise what spawn-verification cannot
@@ -264,6 +301,18 @@ unjustified LLM gating is overhead, not safety):
 - Shed/unavailable/deadline-exceeded → deterministic gates proceed, audited
   `supervision:'shed'`; a verdict deadline (5s) prevents tick serialization. Never a silent
   blocker; never a bypass of deterministic gates.
+- **The failure class only the LLM can read** (round-3 external review asked for it
+  concretely): semantic contradictions invisible to the gates — a `reason`/evidence pair
+  showing the user had said "stop working on this" in different words than the recorded stop
+  instruction, a continuation prompt about work the entry's own reason says already finished,
+  a resurrection history whose pattern reads as a crash loop rather than interrupted work.
+  The check is its own experiment lever (`resumeQueue.tier1Check`, code-default true; runs
+  only where the queue is live) so it can be switched off without touching the queue.
+
+**ReapNoticeDrain: tier0**, declared — deterministic delivery of pre-authored template
+content, no LLM-authored text, same class as DFS's "deterministic state machine,
+fixed-template escalation" precedent; its loop brakes are the store-backed backoff,
+`maxAttempts` 8, the per-pass send cap, and terminal escalation (P19 bounds declared).
 
 ## Design
 
@@ -310,7 +359,10 @@ Failing entry → `invalidated:corrupt-entry`, audited.
   "enabled": true,             // existing
   "coalesceWindowMs": 60000,   // existing
   "perTopic": true,            // NEW — v2 grouping; false = legacy single-buffer behavior
-  "maxImmediatePerFlush": 5    // NEW
+  "maxImmediatePerFlush": 5,   // NEW
+  "drainEnabled": true         // NEW — surgical rollback for JUST the durable drain:
+                               // false reverts delivery to the legacy direct send
+                               // (grouping unaffected; R1's durability claim lapses, stated)
 },
 "resumeQueue": {
   // Classified in DARK_GATE_EXCLUSIONS (NOT DEV_GATED_FEATURES — that registry's admission
@@ -328,7 +380,8 @@ Failing entry → `invalidated:corrupt-entry`, audited.
   "maxQueueSize": 50,
   "breakerThreshold": 3,
   "breakerCooldownMin": 30,
-  "includeOperatorKills": false
+  "includeOperatorKills": false,
+  "tier1Check": true           // the observe-only LLM check's own experiment lever
 }
 ```
 
@@ -356,28 +409,37 @@ producing a `midWork:true` entry (P14 — otherwise the soak validates the blind
 - Observability is API-only at ship; notices are the user surface.
 - In-scope foundation fixes: SessionMigrator refusal recording (refusals ≠ halted — also
   fixes today's refused-but-alive double-respawn); pending-relay restore-purge hold exemption
-  (R1.6).
+  (R1.6) — which changes behavior the DFS spec documents, so the same PR updates the DFS
+  spec's §3h prose AND the `purgeStaleClaimable` doc-comment to the new
+  `max(attempted_at, next_attempt_at)` + 7-day-clamp semantics.
 - No hook/skill changes.
 
 ### Testing (three tiers, per TESTING-INTEGRITY-SPEC)
 
 - **Unit:** ReapNotifier v2 grouping (single, multi-topic burst, >buffer storm count-only,
   unbound, mixed; IMMEDIATE cap; outcome record pairs incl. `enqueue-failed` fallback;
-  legacy mode; reason map both sides incl. unknown slug); ReapNoticeDrain (hold release,
-  retries/backoff, terminal escalation, dedupeKey idempotent re-claim, DFS-origin-exclusion
-  contract); **held-row-across-restart purge test (R1.6)**; evidence threading
+  legacy mode + `drainEnabled:false` legacy-delivery mode; reason map both sides incl.
+  unknown slug); ReapNoticeDrain (hold release, retries/backoff incl. the maxAttempts-8
+  bound, per-pass send cap, terminal escalation, dedupeKey idempotent re-claim,
+  origin-scoped CAS claim — two drains racing claim disjoint row sets, asserted at the
+  query level); **held-row-across-restart purge test (R1.6) + far-future clamp both sides**;
+  evidence threading
   (killer-supplied wins, chokepoint enum clamp drops unknown names, fallback expected-empty
   for guard-cleared, knownDead skip, closure-error → no evidence, critical-tier marker not
   eligible, watchdog-kill never eligible); eligibility classifier both sides (strong vs
-  weak-alone vs topic-bound+2-weak; `resumeOnReap:false` job exclusion); ResumeQueue (enqueue
-  rules, stable-key dedupe + resurrection ledger ACROSS job re-trigger chains with fresh tmux
-  names AND across a topic rename, 24h reset, ordering, TTL, bounds, corrupt-file sidecar,
-  lockfile second-claimant refusal, dequeue validators both sides); Drainer (calm-ticks,
+  weak-alone vs topic-bound+2-weak; job opt-in default-false both sides; no-topic-no-job
+  enqueue exclusion); ResumeQueue (enqueue rules, stable-key dedupe + resurrection ledger
+  ACROSS job re-trigger chains with fresh tmux names AND across a topic rename, 24h reset,
+  ordering, TTL, bounds, corrupt-file sidecar, lockfile stale-reclaim [dead pid / old
+  heartbeat] vs live-claimant refusal, dequeue validators both sides, requeue clamps
+  [gave-up-only eligibility, queuedAt preserved, resurrection-cap single-override]); Drainer
+  (calm-ticks,
   one-per-tick, re-entrancy, state machine incl. boot reconciliation of `starting`, EACH
   drain-time validation both sides incl. binding-match and operator-stop, pause-on-emergency-
-  stop both sides, failure ladder, breaker open/close, dry-run inertness, Tier1 observe-only
-  + shed + deadline paths); PressureGauge extraction parity vs SessionReaper's computation +
-  oscillating-load stress (calm-ticks reset behavior).
+  stop both sides, pause-freezes-TTL + unpause route, failure ladder, breaker open/close,
+  dry-run inertness, Tier1 observe-only + shed + deadline paths + tier1Check off-lever);
+  PressureGauge extraction parity vs SessionReaper's computation + oscillating-load stress
+  (calm-ticks reset behavior).
 - **Integration:** resume-queue routes (cancel, requeue, manual-drain gate semantics); reap →
   durable notify record lifecycle (enqueued→sent and enqueued→send-failed-escalated via a
   failing adapter); full quota-shed simulation → migrator pre-grace evidence → per-topic
