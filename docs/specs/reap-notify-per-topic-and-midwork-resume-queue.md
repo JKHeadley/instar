@@ -2,7 +2,7 @@
 title: "Per-Topic Reap Notification + Mid-Work Resume Queue"
 slug: "reap-notify-per-topic-and-midwork-resume-queue"
 author: "echo"
-status: "in-convergence"
+status: "converged-awaiting-approval"
 supervision: "ResumeQueueDrainer: tier1 (observe-only during soak; promotion criterion stated in 'Supervision'). ReapNoticeDrain: tier0 (deterministic template delivery, declared bounds)."
 lessons-engaged:
   - "P2 Signal-vs-Authority — engaged: the drainer's deterministic gates are spawn *eligibility* checks (quota, cap, pressure), all pre-existing authorities; the Tier 1 LLM check is observe-only during soak and advisory-and-audited after promotion, never a silent blocker. Hard-invariant validators on dequeued entries use the documented brittle-blocker exemption. Reap notices are system-template sends via the adapter (not /telegram/reply), so the tone gate and whoami check are structurally not on this path — declared, not assumed."
@@ -19,7 +19,12 @@ lessons-engaged:
   - "dev-gate registry (author memory: dark-features-must-dogfood-on-echo) — engaged: resumeQueue is classified in DARK_GATE_EXCLUSIONS (the DEV_GATED_FEATURES registry's admission bar excludes cost-bearing features, and the drainer spawns sessions); posture is code-defaulted dryRun with a local dev-agent flip."
   - "L10 release notes in same PR — engaged: upgrades/next fragment in the ship checklist."
   - "P10 — no deferrals are requested; both foundation fixes surfaced by review (SessionMigrator refusal-blindness; pending-relay restore-purge hold-exemption) are pulled in-scope."
-eli16-overview: "docs/specs/reap-notify-per-topic-and-midwork-resume-queue.eli16.md"
+eli16-overview: "reap-notify-per-topic-and-midwork-resume-queue.eli16.md"
+review-convergence: "2026-06-12T05:25:51.182Z"
+review-iterations: 7
+review-completed-at: "2026-06-12T05:25:51.182Z"
+review-report: "docs/specs/reports/reap-notify-per-topic-and-midwork-resume-queue-convergence.md"
+cross-model-review: "codex-cli:gpt-5.5 + gemini-cli:gemini-2.5-pro (grok-tier unavailable, disclosed)"
 ---
 
 # Per-Topic Reap Notification + Mid-Work Resume Queue
