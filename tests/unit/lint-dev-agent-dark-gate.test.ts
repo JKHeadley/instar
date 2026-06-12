@@ -318,12 +318,15 @@ describe('lint-dev-agent-dark-gate', () => {
       '444': 'mentor.autonomousFix.enabled',
       '459': 'mentee.enabled',
       '544': 'multiMachine.sessionPool.enabled',
-      '702': 'cartographer.freshnessSweep.enabled',
-      // fix instar#1069: the freshnessSweep block gained the event-loop-safety
-      // fields (detectInWorker…scaffoldChunkNodes), shifting the two later
-      // cartographer entries by +11. Verified by hand against ConfigDefaults.ts.
-      '747': 'cartographer.conformanceAudit.llmEnrichment.enabled',
-      '772': 'cartographer.subtreeNav.llmRerank.enabled',
+      // durable-inbound-message-queue (CMT-1118): the sessionPool block gained
+      // the inboundQueue (line 569) + holdForStability (line 598) sub-blocks,
+      // shifting the cartographer entries by +41. Verified by hand against
+      // ConfigDefaults.ts.
+      '569': 'multiMachine.sessionPool.inboundQueue.enabled',
+      '598': 'multiMachine.sessionPool.holdForStability.enabled',
+      '743': 'cartographer.freshnessSweep.enabled',
+      '788': 'cartographer.conformanceAudit.llmEnrichment.enabled',
+      '813': 'cartographer.subtreeNav.llmRerank.enabled',
     };
     const actual = attributeRealConfigDefaults();
     expect(actual).toEqual(EXPECTED);

@@ -1876,6 +1876,17 @@ export interface MachineCapacity {
    *  unless every machine is blocked or the user hard-pinned here. Absent =
    *  unknown = treated as not blocked (heartbeats from older versions). */
   quotaState?: { blocked: boolean; blockedUntil?: string; reason?: string };
+  /** Durable Inbound Message Queue (spec §5.1): self-reported custody state —
+   *  consumed by the survivor's loss-SUSPECTED item + capped re-placement arm
+   *  and the supersede-dedupe episode key (machineId + tenure). Absent =
+   *  older peer or queue dark — "a mesh-less peer's depth is honestly
+   *  unknown and the item says so". topK is bounded (K=10). */
+  inboundQueue?: {
+    queueDepth: number;
+    oldestQueuedAt: string | null;
+    tenure: string | null;
+    topK: Array<{ sessionKey: string; depth: number }>;
+  };
   /** Compact guard-posture summary self-reported in the capacity heartbeat
    *  (GUARD-POSTURE-ENDPOINT-SPEC §2.3). Bound to the AUTHENTICATED sender at
    *  ingestion (a body-claimed machineId can never overwrite another machine's
@@ -2125,6 +2136,15 @@ export interface SessionPoolConfig {
    * nickname/hardware/history for fast re-placement.
    */
   machineRecordEvictionMs?: number;
+  /**
+   * Durable Inbound Message Queue (docs/specs/durable-inbound-message-queue.md
+   * §Config). Ships dark (enabled:false + dryRun:true). Canonical defaults +
+   * field semantics live in src/core/inboundQueueConfig.ts.
+   */
+  inboundQueue?: Partial<import('./inboundQueueConfig.js').InboundQueueConfig>;
+  /** Hold-for-stability policy (same spec §4) — trails inboundQueue one
+   *  rollout stage behind by operator discipline. */
+  holdForStability?: Partial<import('./inboundQueueConfig.js').HoldForStabilityConfig>;
   /**
    * MeshRpc (§L0) command timestamp tolerance (ms) — a signed command whose
    * timestamp is outside |now - ts| is rejected `stale-timestamp`. Default 30000.

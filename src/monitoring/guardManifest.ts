@@ -51,6 +51,33 @@ export interface GuardManifestEntry {
 }
 
 export const GUARD_MANIFEST: readonly GuardManifestEntry[] = [
+  // ── Durable Inbound Message Queue (spec §Observability; keys === configPath) ──
+  {
+    key: 'multiMachine.sessionPool.inboundQueue.enabled',
+    kind: 'config',
+    configPath: 'multiMachine.sessionPool.inboundQueue.enabled',
+    defaultEnabled: false,
+    dryRunConfigPath: 'multiMachine.sessionPool.inboundQueue.dryRun',
+    expectedTickMs: 15_000,
+    process: 'server',
+    expectRuntime: false,
+    component: 'QueueDrainLoop',
+    description: 'Durable custody for undeliverable inbound messages + the drain that delivers them (ships dark).',
+  },
+  {
+    key: 'multiMachine.sessionPool.holdForStability.enabled',
+    kind: 'config',
+    configPath: 'multiMachine.sessionPool.holdForStability.enabled',
+    defaultEnabled: false,
+    process: 'server',
+    // §4.2: the runtime getter reports the EFFECTIVE state (always-failover
+    // default ⇒ enabled:false) and registers on the UNCONDITIONAL boot path,
+    // so the orphaned-config case (hold on, queue off) derives
+    // off-runtime-divergent rather than on-unverified.
+    expectRuntime: true,
+    component: 'OwnerHoldVerdict',
+    description: 'Hold-for-stability: briefly-wobbly machines get up to holdMaxMs to recover before their conversations move (ships dark; trails inboundQueue one stage).',
+  },
   // ── Session lifecycle guards ──
   {
     key: 'monitoring.sessionReaper.enabled',

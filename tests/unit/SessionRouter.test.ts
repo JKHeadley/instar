@@ -29,7 +29,7 @@ function makeRouter(over: Partial<SessionRouterDeps> = {}, registry: MachineCapa
     deliverMessage: async () => ({ messageId: 'evt-1', accepted: 'queued' }) as DeliverAck,
     handleLocally: vi.fn(async () => {}),
     spawnOnMachine: vi.fn(async () => {}),
-    queueMessage: vi.fn(),
+    queueMessage: vi.fn(() => 'refused' as const),
     raiseAttention: vi.fn(),
     markOwnerSuspect: vi.fn(),
     sleep: vi.fn(async () => {}),

@@ -84,3 +84,5 @@ message I've accepted is a message that gets handled — or you get told. The ma
 tradeoff is honest: on a genuinely flaky machine, replies can arrive up to ~90 seconds
 later than today's instant-swap behavior. We chose "a bit slower during blips" over
 "constant house-moving," which is exactly the trade you asked for.
+
+*(Spec approved by Justin 2026-06-12; built the same day — see `upgrades/side-effects/durable-inbound-message-queue.md` for the build-time side-effects review.)*

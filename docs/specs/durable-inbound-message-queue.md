@@ -17,6 +17,9 @@ single-run-completable: true
 frontloaded-decisions: 6
 cheap-to-change-tags: 1
 contested-then-cleared: 1
+approved: true
+approved-by: "Justin (telegram uid 7812716706), topic 18423, 2026-06-12 13:16 PDT — 'approved'"
+parent-principle: "No Unbounded Loops — Every Repeating Behavior Carries Its Own Brakes"
 ---
 
 # Durable Inbound Message Queue + Hold-for-Stability Policy
@@ -1010,7 +1013,7 @@ from `entryTtlMs`.
    sub-paths that `--resume` a prior conversation) inherits REAL duplicate-acting
    exposure — a replayed kickoff lands in a conversation with live context —
    accepted for v1 because it is bounded to a process-crash instant; if live
-   counters show incidence, the named follow-up is routing resume-respawn injects
+   counters show incidence, the named follow-up <!-- tracked: CMT-1118 --> is routing resume-respawn injects
    through the direct-inject receipt-first discipline (loss-direction, matching
    §3.4's live-session posture) instead of PIS replay. The direct path into a
    LIVE session keeps loss-over-duplicate (§3.4) today. Renegotiating PIS's
@@ -1034,12 +1037,12 @@ bounds any skew abuse to `staleCustodyTtlMs`. On detected wake (SleepWakeDetecto
   queue activity (a cached `holdsLease` is stale at exactly this moment). A
   **failed/indeterminate pull is UNKNOWN, not moved** (round-3: the common wake has
   no network yet; classifying failure as moved would reboot-clamp perfectly
-  recoverable custody on a single-machine agent) — queue activity stays deferred and
+  recoverable custody on a single-machine agent) — queue activity stays idle and
   the pull retries within the settle grace; the moved/retained branches apply only
   on a successful pull. Lease moved during the nap → no probe; entries take the
   tenure clamp. Lease retained (the single-machine case, named) → bounded normal
   passes serve as the probe, with
-  per-entry expiry deferral: TTL/hold expiry applies to an entry only after ≥1
+  per-entry expiry postponement: TTL/hold expiry applies to an entry only after ≥1
   post-wake dispatch attempt (`lastProbeEpoch` stamp) — boundedness and
   no-mass-expiry compose (round-2: "ONE pass" could not cover 500 entries at batch
   25).
@@ -1197,7 +1200,7 @@ placement decision the router wouldn't. Signal-vs-authority clean.
   failure); hold (verdict at all sites incl. exhaustion; `first_held_at` across ≥2
   episodes → failover never expired; flap-forced failover; maxHeldTotal → failover);
   custody-aware route-throw catch; no-throw-after-commit; wake (lease-moved → no
-  probe; per-entry expiry deferral; grace suppresses markOwnerSuspect);
+  probe; per-entry expiry postponement; grace suppresses markOwnerSuspect);
   mirror (read-through-on-zero; reconciliation corrects an injected drift).
 - **Sustained-failure (P19 clause)**: wedged owner, fake clock, 1h — bounded
   attempts/log-lines/items, all entries terminally settled via the §3.3 ladder.

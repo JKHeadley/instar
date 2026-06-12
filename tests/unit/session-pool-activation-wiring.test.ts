@@ -25,7 +25,7 @@ describe('Session Pool activation wiring (§L4)', () => {
 
   it('the interception FAILS SAFE — any route error falls back to local dispatch', () => {
     const idx = src.indexOf("_sessionRouter && _sessionPoolStage() !== 'dark'");
-    const block = src.slice(idx, idx + 2200);
+    const block = src.slice(idx, idx + 5200);
     expect(block).toContain('try {');
     expect(block).toContain('await _sessionRouter.route(');
     expect(block).toContain('falling back to local dispatch');
@@ -73,7 +73,7 @@ describe('Session Pool activation wiring (§L4)', () => {
     expect(idx).toBeGreaterThan(0);
     // Window widened 4200→5000: the working-set move trigger (WORKING-SET-HANDOFF §3.3)
     // now prefixes the onAccepted body before the stage gate.
-    const block = src.slice(idx, idx + 5000);
+    const block = src.slice(idx, idx + 7500);
     // Gated on a non-dark stage + only with Telegram present.
     expect(block).toContain("_sessionPoolStage() === 'dark' || !telegram");
     // Bridges to the existing local spawn/resume path for the topic (now wrapped in an
@@ -90,7 +90,7 @@ describe('Session Pool activation wiring (§L4)', () => {
     expect(idx).toBeGreaterThan(0);
     // Window widened 4200→5000: the working-set move trigger (WORKING-SET-HANDOFF §3.3)
     // now prefixes the onAccepted body before the stage gate.
-    const block = src.slice(idx, idx + 5000);
+    const block = src.slice(idx, idx + 7500);
     // A live session for the topic short-circuits to injection BEFORE the spawn IIFE.
     const injectIdx = block.indexOf('sessionManager.isSessionAlive(existing)');
     const spawnIdx = block.indexOf('spawnSessionForTopic(sessionManager, tg, spawnName');

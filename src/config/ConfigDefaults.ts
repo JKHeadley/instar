@@ -559,6 +559,47 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       transferOutputCutoffMs: 1000,
       placementCooldownMs: 300000,
       topicPlacementUpdateMinIntervalMs: 10000,
+      // Durable Inbound Message Queue (docs/specs/durable-inbound-message-queue.md
+      // §Config). Ships DARK (enabled:false + dryRun:true) — registered in
+      // DEV_GATED_FEATURES per lint-dev-agent-dark-gate. Both flags boot-read;
+      // the six cross-knob invariants are validated at construction
+      // (validateInboundQueueInvariants) — a violation keeps the queue OFF for
+      // that boot, never half-configured.
+      inboundQueue: {
+        enabled: false,
+        dryRun: true,
+        maxPerSession: 50,
+        maxTotal: 500,
+        hardMaxTotal: 1000,
+        maxHeldTotal: 150,
+        maxPayloadBytes: 65536,
+        entryTtlMs: 1800000,
+        staleCustodyTtlMs: 120000,
+        maxNapDeliveryAgeMs: 600000,
+        deliveredRetentionMs: 86400000,
+        drainTickMs: 15000,
+        drainBatchSize: 25,
+        drainConcurrency: 3,
+        minInterPassMs: 500,
+        passDeadlineMs: 60000,
+        baseBackoffMs: 5000,
+        maxBackoffMs: 300000,
+        maxAttempts: 10,
+        claimStaleMs: 120000,
+        refusalNegativeCacheMs: 60000,
+        maxFailoverRespawns: 5,
+        maxFailoverReleasesPerTick: 5,
+        dispatchDeadlineMs: 60000,
+        pauseMaxMs: 14400000,
+      },
+      // Hold-for-stability (same spec §4). Trails inboundQueue one rollout
+      // stage behind by operator discipline (frontmatter rollout-criteria).
+      holdForStability: {
+        enabled: false,
+        holdMaxMs: 90000,
+        holdRecheckMs: 10000,
+        flapThresholdPerHour: 6,
+      },
     },
     // Coherence Journal (COHERENCE-JOURNAL-SPEC §3.7). DARK-SHIP: `enabled` is
     // deliberately OMITTED — the runtime resolves `enabled ?? !!developmentAgent`

@@ -30,7 +30,25 @@ export interface OwnershipView {
 
 export interface DeliverAck {
   messageId: string;
-  accepted: 'queued' | 'duplicate' | 'stale-ownership';
+  /**
+   * `sender-rejected` (Durable Inbound Message Queue §3.4 remote path): a
+   * typed, NON-retryable NACK — the receive side re-validated a carried
+   * senderEnvelope.userId against ITS OWN users registry and refused. It does
+   * NOT mark the owner suspect (the peer is healthy; it answered), is never
+   * retried or re-placed (a re-placed owner's registry would reject
+   * identically), and maps in the queue drain to terminal
+   * `sender-deauthorized`. Old peers never emit it (version skew named).
+   */
+  accepted: 'queued' | 'duplicate' | 'stale-ownership' | 'sender-rejected';
+}
+
+/** Sender identity captured at ingress (Durable Inbound Message Queue §2.2) —
+ *  persisted with queued custody so a later delivery still knows its real
+ *  sender; carried on the mesh envelope for drained forwards. */
+export interface InboundSenderEnvelope {
+  userId?: string | number;
+  username?: string;
+  firstName?: string;
 }
 
 export interface InboundMessage {
@@ -38,7 +56,13 @@ export interface InboundMessage {
   messageId: string;
   payload: unknown;
   topicMetadata?: TopicPlacement;
+  senderEnvelope?: InboundSenderEnvelope | null;
 }
+
+/** Tri-state custody outcome from the queueMessage dep (§2.2): the router
+ *  sets `acked` true ONLY for `queued`/`already-queued` — `refused` keeps
+ *  today's un-acked fall-through. */
+export type QueueMessageResult = 'queued' | 'already-queued' | 'refused';
 
 export type RouteAction =
   | 'handled-locally'
@@ -107,7 +131,7 @@ export interface SessionRouterDeps {
   /** SYNCHRONOUS per-session CAS-claim (the §L−1 single-ref fast-forward push). */
   casClaimOwnership: (sessionKey: string, machineId: string, expectedEpoch: number) => { ok: boolean; epoch: number };
   /** ONE deliverMessage attempt over MeshRpc; throws on transport error/timeout. */
-  deliverMessage: (target: string, env: { sessionKey: string; messageId: string; payload: unknown; ownershipEpoch: number }) => Promise<DeliverAck>;
+  deliverMessage: (target: string, env: { sessionKey: string; messageId: string; payload: unknown; ownershipEpoch: number; senderEnvelope?: InboundSenderEnvelope | null }) => Promise<DeliverAck>;
   /** Router == owner: process the message on this machine. */
   handleLocally: (msg: InboundMessage) => Promise<void>;
   /** Instruct the chosen machine to spawn/resume the session. */
@@ -122,7 +146,10 @@ export interface SessionRouterDeps {
    * the FSM only permits a claim whose machineId equals the placed owner.)
    */
   confirmClaim?: (sessionKey: string, machineId: string) => void;
-  queueMessage: (msg: InboundMessage, reason: string) => void;
+  /** Tri-state custody taking (Durable Inbound Message Queue §2.2). The
+   *  production dep is QueueDrainLoop.enqueueLive (never throws; a storage
+   *  failure maps to 'refused' → today's fall-through). */
+  queueMessage: (msg: InboundMessage, reason: string) => QueueMessageResult;
   raiseAttention: (title: string, body: string) => void;
   markOwnerSuspect?: (machineId: string) => void;
   /**
@@ -163,6 +190,25 @@ export class SessionRouter {
     return next;
   }
 
+  /**
+   * The queue drain's maxAttempts escape hatch (Durable Inbound Message Queue
+   * §3.3): ONE forced re-place that bypasses hold/deliver verdicts — a direct
+   * placeAndClaim('failover'), serialized on the session's chain like every
+   * dispatch. Returns true when the message ended up durably handled
+   * (acked outcome that isn't another queued/blocked verdict).
+   */
+  async forceReplace(msg: InboundMessage): Promise<boolean> {
+    const prior = this.chains.get(msg.sessionKey) ?? Promise.resolve();
+    const next = prior.catch(() => undefined).then(() => this.placeAndClaim(msg, 'failover', true));
+    const tail = next.then(() => undefined, () => undefined);
+    this.chains.set(msg.sessionKey, tail);
+    void tail.then(() => {
+      if (this.chains.get(msg.sessionKey) === tail) this.chains.delete(msg.sessionKey);
+    });
+    const outcome = await next;
+    return outcome.acked && outcome.action !== 'queued' && outcome.action !== 'placement-blocked';
+  }
+
   private backoff(attempt: number): number {
     return Math.min(this.cfg.deliverMessageRetryBackoffStartMs * 2 ** attempt, this.cfg.deliverMessageRetryBackoffMaxMs);
   }
@@ -184,8 +230,8 @@ export class SessionRouter {
     }
 
     if (own.status === 'placing' || own.status === 'transferring') {
-      this.deps.queueMessage(msg, 'ownership-contention');
-      return { action: 'queued', detail: own.status, acked: false };
+      const q = this.deps.queueMessage(msg, 'ownership-contention');
+      return { action: 'queued', detail: own.status, acked: q === 'queued' || q === 'already-queued' };
     }
 
     // Unowned → place + claim.
@@ -195,12 +241,18 @@ export class SessionRouter {
   private async forwardToOwner(msg: InboundMessage, owner: string, epoch: number, reResolveDepth: number): Promise<RouteOutcome> {
     for (let attempt = 0; attempt <= this.cfg.deliverMessageMaxRetries; attempt++) {
       try {
-        const ack = await this.deps.deliverMessage(owner, { sessionKey: msg.sessionKey, messageId: msg.messageId, payload: msg.payload, ownershipEpoch: epoch });
+        const ack = await this.deps.deliverMessage(owner, { sessionKey: msg.sessionKey, messageId: msg.messageId, payload: msg.payload, ownershipEpoch: epoch, senderEnvelope: msg.senderEnvelope ?? null });
         // ANY ack (queued/duplicate/stale) proves the peer answered — close its
         // suspect window before interpreting the ack.
         this.deps.onOwnerResponsive?.(owner);
         if (ack.accepted === 'duplicate') return { action: 'duplicate', owner, acked: true };
         if (ack.accepted === 'queued') return { action: 'forwarded', owner, acked: true };
+        // sender-rejected: typed authz NACK (§3.4 remote) — the peer answered
+        // (healthy, never suspect) and durably REFUSED the sender. Terminal for
+        // this message: acked so the offset advances; never retried/re-placed.
+        if (ack.accepted === 'sender-rejected') {
+          return { action: 'forwarded', owner, detail: 'sender-rejected', acked: true };
+        }
         // stale-ownership → re-resolve (bounded) and route to the current owner.
         if (reResolveDepth >= this.cfg.maxReResolveDepth) {
           return this.placeAndClaim(msg, 'failover', true);
@@ -245,13 +297,13 @@ export class SessionRouter {
 
     if (decision.outcome === 'placement-blocked') {
       this.deps.raiseAttention('Session placement blocked', `${msg.sessionKey}: ${decision.escalationReason ?? decision.reason}`);
-      this.deps.queueMessage(msg, `placement-blocked:${decision.escalationReason ?? decision.reason}`);
-      return { action: 'placement-blocked', detail: decision.escalationReason ?? decision.reason, acked: false };
+      const q = this.deps.queueMessage(msg, `placement-blocked:${decision.escalationReason ?? decision.reason}`);
+      return { action: 'placement-blocked', detail: decision.escalationReason ?? decision.reason, acked: q === 'queued' || q === 'already-queued' };
     }
     if (decision.outcome === 'queued' || !decision.chosenMachine) {
       this.deps.raiseAttention('No machine available for session', `${msg.sessionKey}: ${decision.escalationReason ?? decision.reason}`);
-      this.deps.queueMessage(msg, decision.escalationReason ?? 'no-capable-machine');
-      return { action: 'queued', detail: decision.escalationReason ?? decision.reason, acked: false };
+      const q = this.deps.queueMessage(msg, decision.escalationReason ?? 'no-capable-machine');
+      return { action: 'queued', detail: decision.escalationReason ?? decision.reason, acked: q === 'queued' || q === 'already-queued' };
     }
 
     // Synchronous CAS-claim (the dispatch BLOCKS on this — Invariant #2).
@@ -267,8 +319,8 @@ export class SessionRouter {
       if (own2.status === 'active' && own2.owner && this.deps.isMachineAlive(own2.owner)) {
         return this.forwardToOwner(msg, own2.owner, own2.epoch, 0);
       }
-      this.deps.queueMessage(msg, 'ownership-contention');
-      return { action: 'queued', detail: 'ownership-contention', acked: false };
+      const q = this.deps.queueMessage(msg, 'ownership-contention');
+      return { action: 'queued', detail: 'ownership-contention', acked: q === 'queued' || q === 'already-queued' };
     }
 
     // CAS won → spawn on the winner (or handle locally if that's us).

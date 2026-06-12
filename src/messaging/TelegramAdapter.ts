@@ -583,6 +583,10 @@ export class TelegramAdapter implements MessagingAdapter {
 
   // Session kill/pause callbacks — used by sentinel to take immediate action
   public onSentinelKillSession: ((sessionName: string) => boolean) | null = null;
+  /** Durable Inbound Message Queue §3.6: settle a stopped topic's queued
+   *  custody (terminal operator-stop + PIS cleanup + loss report). Wired by
+   *  the server when the queue engine is live; null = no queue, no-op. */
+  public onSentinelStopCustody: ((topicId: number) => void) | null = null;
   public onSentinelPauseSession: ((sessionName: string) => void) | null = null;
 
   // Attention queue callbacks
@@ -4513,6 +4517,11 @@ export class TelegramAdapter implements MessagingAdapter {
             if (this.onSentinelKillSession) {
               this.onSentinelKillSession(sessionName);
             }
+            // Durable Inbound Message Queue §3.6: the stop reaches custody —
+            // queued rows for this topic settle terminal (operator-stop),
+            // loss-reported, PIS records cleared. Without this the drain would
+            // re-inject pre-stop work after the operator said stop.
+            try { this.onSentinelStopCustody?.(numericTopicId); } catch { /* best-effort */ }
             // Also clear this topic's autonomous job so it doesn't zombie-resume
             // when a fresh session spawns. (Multi-session: per-topic state file.)
             try {

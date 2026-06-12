@@ -3183,6 +3183,16 @@ setTimeout(() => process.exit(0), 2000);
       result.upgraded.push('CLAUDE.md: added Outbound advisory for automated messages section');
     }
 
+    // Durable Inbound Message Queue (spec durable-inbound-message-queue, CMT-1118)
+    // — Agent Awareness Standard + Migration Parity item 3: existing agents
+    // learn the /pool/queue surface + the loss-notice semantics via this
+    // appended section. Content-sniff marker keeps it idempotent.
+    if (!content.includes('Durable Inbound Message Queue')) {
+      content += `\n**Durable Inbound Message Queue + Hold-for-Stability (no lost messages, fewer machine swaps)** — When a message can't be delivered right now (its conversation is mid-move between machines, or the owning machine is briefly wobbly), it goes into a small crash-proof on-disk queue instead of being injected into the wrong place or dropped — and a wobbly-but-alive machine gets up to ~90s to recover before its conversation is moved off it. Ships DARK behind \`multiMachine.sessionPool.inboundQueue\` (enabled:false + dryRun:true); hold policy trails one rollout stage behind.\n- **Queue state:** \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/pool/queue\` → counts (queued/claimed/held/frozen, delivered24h — which EXCLUDES possibly-not-injected), durable counters (incl. \`possiblyNotInjected\`, \`holdBypassedByAttemptsCap\`, dry-run \`wouldEnqueue\`/\`wouldHold\`), flap/hold state, tenure. 503 while dark.\n- **Loss is never silent:** every expired/dropped message produces ONE plain-English notice ("I didn't get to these N messages — resend anything still needed"). A "possibly not injected" notice means a crash hit the one known razor-thin window — resend that message if it went unanswered.\n- **When to use** (PROACTIVE): user says "my message disappeared" / "why was the reply late?" → \`GET /pool/queue\` (and the loss notices) BEFORE guessing; "why did the conversation wait ~90s before moving machines?" → that's the hold policy (the alternative was a pointless machine swap on a 5-second blip).\n- Spec: \`docs/specs/durable-inbound-message-queue.md\` (CMT-1118).\n`;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Durable Inbound Message Queue section');
+    }
+
     // Cartographer doc-tree (cartographer-doc-tree-schema spec #1) — a hierarchical
     // semantic map with git-hash staleness. Ships dark; documented so agents that
     // enable it know the routes exist (Agent Awareness Standard).
@@ -5400,6 +5410,10 @@ Create worktrees for collaborator repos with \`instar worktree create <branch>\`
       '## Threadline Network (Agent-to-Agent Communication)',
       '## Worktree Convention',
       '**Multi-Session Autonomy**',
+      // Durable Inbound Message Queue (CMT-1118): a Codex/Gemini agent that
+      // never learns /pool/queue + the loss-notice semantics will guess at
+      // "where did my message go" instead of reading the durable answer.
+      '**Durable Inbound Message Queue',
       '**Process Health (Dashboard Tab)**',
       "**Preferences I've learned about you**",
       // Coordination-mandate family (coordination-mandate spec §7, G2.2–G2.4):

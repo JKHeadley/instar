@@ -327,6 +327,8 @@ export class AgentServer {
     coordinator?: MultiMachineCoordinator;
     /** Multi-Machine Session Pool registry (§L2) — live MachineCapacity view behind GET /pool. */
     machinePoolRegistry?: import('../core/MachinePoolRegistry.js').MachinePoolRegistry;
+    /** Durable Inbound Message Queue engine getter (late-bound; null = dark). */
+    getInboundQueue?: () => import('../core/QueueDrainLoop.js').QueueDrainLoop | null;
     /** MeshRpc dispatcher (§L0) — receive side behind POST /mesh/rpc. */
     meshRpcDispatcher?: import('../core/MeshRpc.js').MeshRpcDispatcher;
     /** Working-set pull coordinator (WORKING-SET-HANDOFF §3.3) — behind
@@ -1823,6 +1825,7 @@ export class AgentServer {
       threadlineFlowBridge: options.threadlineFlowBridge ?? null,
       coordinator: options.coordinator ?? null,
       machinePoolRegistry: options.machinePoolRegistry ?? null,
+      getInboundQueue: options.getInboundQueue ?? null,
       meshRpcDispatcher: options.meshRpcDispatcher ?? null,
       workingSetPullCoordinator: options.workingSetPullCoordinator ?? null,
       commitmentReplicaStore: options.commitmentReplicaStore ?? null,
