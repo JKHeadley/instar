@@ -31,6 +31,7 @@ import { fileURLToPath } from 'node:url';
 import { TreeGenerator } from '../knowledge/TreeGenerator.js';
 import { HTTP_HOOK_TEMPLATES, buildHttpHookSettings } from '../data/http-hook-templates.js';
 import { getMigrationDefaults, applyDefaults } from '../config/ConfigDefaults.js';
+import { CANONICAL_FEEDBACK_URL, LEGACY_FEEDBACK_URLS } from './canonicalFeedback.js';
 import { installBuiltinSkills } from '../commands/init.js';
 import { crossesBreaking, writeLifelineRestartSignal } from './version-skew.js';
 import { IdentityManager } from '../threadline/client/IdentityManager.js';
@@ -6133,6 +6134,23 @@ Create worktrees for collaborator repos with \`instar worktree create <branch>\`
       result.upgraded.push(`config.json: generated dashboard PIN (${pin})`);
     } else if (config.dashboardPin) {
       result.skipped.push('config.json: dashboard PIN already set');
+    }
+
+    // Canonical feedback URL repoint (feedback-factory-migration §2.5 Phase 4 —
+    // Migration Parity). Deployed agents carry the OLD canonical URL written
+    // verbatim into config.json at init time, so flipping the in-code default
+    // alone only reaches NEW installs. This block rewrites a webhookUrl that
+    // EXACTLY equals a known prior canonical default to the current canonical
+    // URL. Idempotent (already-canonical matches nothing) and conservative: an
+    // operator's custom webhook URL is never in LEGACY_FEEDBACK_URLS, so it is
+    // never touched. Reversible by the same mechanism (re-migrate to the old
+    // URL) — spec Part-3 §5 rollback path.
+    const feedbackCfg = config.feedback as Record<string, unknown> | undefined;
+    if (feedbackCfg && typeof feedbackCfg.webhookUrl === 'string' && LEGACY_FEEDBACK_URLS.includes(feedbackCfg.webhookUrl)) {
+      const fromUrl = feedbackCfg.webhookUrl;
+      feedbackCfg.webhookUrl = CANONICAL_FEEDBACK_URL;
+      patched = true;
+      result.upgraded.push(`config.json: feedback.webhookUrl repointed to the canonical front (was ${fromUrl})`);
     }
 
     // Apply defaults from the canonical ConfigDefaults registry.

@@ -1083,7 +1083,7 @@ export interface FeedbackItem {
 export interface FeedbackConfig {
   /** Whether feedback is enabled */
   enabled: boolean;
-  /** Webhook URL to forward feedback to (default: https://dawn.bot-me.ai/api/instar/feedback) */
+  /** Webhook URL to forward feedback to (default: CANONICAL_FEEDBACK_URL in core/canonicalFeedback.ts) */
   webhookUrl: string;
   /** Local feedback storage file */
   feedbackFile: string;
