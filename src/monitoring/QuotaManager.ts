@@ -439,6 +439,17 @@ export class QuotaManager extends EventEmitter {
    * when quota is healthy. Migration is a quota-saving measure — if
    * quota is fine, migration concerns are irrelevant.
    */
+  /** True while a quota migration is mid-flight (reap-notify R2.4: the
+   *  resume-queue drainer never spawns during a migration — stricter than
+   *  canSpawnSession, which permits spawns mid-migration absent pressure). */
+  isMigrationInFlight(): boolean {
+    try {
+      return this.migrator?.isMigrating() ?? false;
+    } catch {
+      return false;
+    }
+  }
+
   canSpawnSession(priority?: string): { allowed: boolean; reason: string } {
     // Check quota thresholds first
     const trackerResult = this.tracker.shouldSpawnSession(priority as any);

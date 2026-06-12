@@ -522,6 +522,11 @@ export class AgentServer {
     /** ReapLog — durable audit of every reap + skipped-reap (UNIFIED-SESSION-LIFECYCLE
      *  §P4). Powers GET /sessions/reap-log. */
     reapLog?: import('../monitoring/ReapLog.js').ReapLog;
+    /** ResumeQueue + drainer (reap-notify spec R2.10) — /sessions/resume-queue*. */
+    resumeQueue?: import('../monitoring/ResumeQueue.js').ResumeQueue | null;
+    resumeDrainer?: import('../monitoring/ResumeQueueDrainer.js').ResumeQueueDrainer | null;
+    /** Records operator stop instructions for the drainer's R2.6 validation. */
+    operatorStopRecorder?: (topicId: number | null) => void;
     /** SleepWakeDetector — timer-drift sleep detection with CPU-starvation guard.
      *  Powers GET /monitoring/sleep-wake (wake + suppression telemetry). */
     sleepWakeDetector?: import('../core/SleepWakeDetector.js').SleepWakeDetector;
@@ -1814,6 +1819,9 @@ export class AgentServer {
       sleepController: options.sleepController ?? null,
       agentActivityState: options.agentActivityState ?? null,
       reapLog: options.reapLog ?? null,
+      resumeQueue: options.resumeQueue ?? null,
+      resumeDrainer: options.resumeDrainer ?? null,
+      operatorStopRecorder: options.operatorStopRecorder ?? null,
       sleepWakeDetector: options.sleepWakeDetector ?? null,
       telegramBridgeConfig: options.telegramBridgeConfig ?? null,
       telegramBridge: options.telegramBridge ?? null,

@@ -3314,6 +3314,9 @@ rm()  { "${shimRunner}" rm  "$@"; }
       ...(effectiveAccountId ? { subscriptionAccountId: effectiveAccountId } : {}),
       prompt: effectiveInitialMessage,
       maxDurationMinutes: this.effectiveMaxDurationMinutes,
+      // R2.8/L13: record the spawn cwd so a resume-queue entry can revive
+      // this session in ITS tree (worktree round-trip).
+      cwd: options?.cwd ?? this.config.projectDir,
     };
     this.state.saveSession(session);
 
