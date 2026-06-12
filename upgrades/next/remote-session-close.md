@@ -1,0 +1,38 @@
+# Upgrade Guide — Remote Session Close (the × works on every machine's sessions)
+
+<!-- bump: minor -->
+
+```yaml user_announcement
+- audience: user
+  maturity: stable
+  text: "The dashboard's close button now works on EVERY machine's sessions, not just the one you're connected to. Click × on any session tile — the confirm tells you which machine it's on, warns you if it's a protected session, and reports honestly: \"already closed\" stays calm, and if a machine doesn't answer in time you get \"outcome unknown — refreshing\" instead of a wrong answer. Every remote close is recorded on BOTH machines, so a session can never disappear without a trace naming where the order came from."
+```
+
+## What Changed
+
+Implements `docs/specs/REMOTE-SESSION-CLOSE-SPEC.md` (converged 3 iterations, operator-approved 2026-06-12, topic 13481 — "Why can't I close out a mac mini session from the dashboard like I can the laptop sessions?").
+
+- **`POST /sessions/:name/remote-close`** (Bearer, rate-limited): relays the operator's close to the owning machine. `machineId` is a registry LOOKUP KEY only (crafted/unknown ids → 404 with zero outbound traffic); the pool Bearer token only travels to a `lastKnownUrl` passing the shared `peerUrlGuard` https/allowlist; the relayed request is the peer's PLAIN UUID-targeted local DELETE (single-hop by construction — ghost-safe on peers carrying stale records); a NEW path so pre-feature servers 404 it cleanly (no mixed-version wrong-machine kill).
+- **Same authority as the local ×** (spec §2.0, stated honestly): an operator close bypasses the autonomous-cleanup guards by design — including protected sessions. The safety is INFORMED CONSENT: `GET /sessions` rows now carry an additive `protected: boolean`, and the dashboard confirm names the machine and flags protected sessions ("protection status unknown" for rows from pre-update machines). The local × gains the protected warning too.
+- **Delivery honesty**: peer-404 → calm "already closed — refreshing"; relay timeout → "outcome unknown" (the peer may be mid-kill), never "closed nothing"; non-JSON tunnel error pages (Cloudflare 502/530 HTML) normalized to a reasoned error.
+- **Dual-end trail**: the relayer appends every ORDER to `logs/remote-close-audit.jsonl` (new `RemoteCloseAudit`, state-coherence-registered); the owner's reap-log records `origin:'operator'` plus an additive UNTRUSTED `viaClaim:'remote-dashboard'` (a signal in the trail — a Tier-1 test pins that a forged claim cannot alter any authority decision).
+- **Agent awareness + migration parity**: CLAUDE.md template Multi-Machine bullet + content-sniffed `migrateClaudeMd()` migration; the stale `sessions` capability-classification reason refreshed.
+
+## What to Tell Your User
+
+- "You can now close any machine's session from the one dashboard — the confirm tells you which machine and warns about protected sessions, results are reported honestly, and every remote close is recorded on both machines."
+
+## Summary of New Capabilities
+
+| Capability | How to Use |
+|-----------|-----------|
+| Close a remote machine's session | Dashboard: × on any remote tile (confirm shows the machine) |
+| Agent API | `POST /sessions/<name>/remote-close` `{"machineId","sessionUuid"}` (Bearer) |
+| Order trail (relayer side) | `logs/remote-close-audit.jsonl` |
+| Kill trail (owner side) | reap-log rows now carry `viaClaim` for relayed closes |
+
+## Evidence
+
+- Tier-1+2: `tests/integration/remote-session-close.test.ts` (16 — zero-outbound machineId pins, no-token-on-url-rejected, single-hop assertion, forged-via pin, ghost-safe UUID targeting, calm/unknown outcome paths, protected flag).
+- Tier-3: `tests/e2e/remote-session-close-lifecycle.test.ts` (11 — feature-alive 404-not-503, full real-HTTP relay with both on-disk trails verified, wired source guards on the viaClaim plumb).
+- Side-effects artifact: `upgrades/side-effects/remote-session-close.md` (second-pass reviewed).

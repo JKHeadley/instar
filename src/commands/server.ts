@@ -5929,13 +5929,16 @@ export async function startServer(options: StartOptions): Promise<void> {
       },
     );
     sessionManager.setAwakeChecker(() => !coordinator.enabled || coordinator.isAwake);
-    sessionManager.on('sessionReaped', (e: { session: import('../core/types.js').Session; reason: string; disposition?: 'terminal' | 'recovery-bounce'; origin?: 'operator' | 'autonomous' }) => {
+    sessionManager.on('sessionReaped', (e: { session: import('../core/types.js').Session; reason: string; disposition?: 'terminal' | 'recovery-bounce'; origin?: 'operator' | 'autonomous'; via?: string }) => {
       reapLog.recordReaped({
         session: e.session.name,
         tmuxSession: e.session.tmuxSession,
         reason: e.reason,
         disposition: e.disposition,
         origin: e.origin,
+        // Untrusted provenance claim from a relayed close (spec §2.3) — a
+        // signal in the trail, never an authority input.
+        ...(e.via ? { viaClaim: e.via } : {}),
         // Positive-lane observability (june15-headless-spawn-reroute O4): record
         // which billing lane the reaped session ran on so the soak can confirm
         // rerouted sessions reach their completion from the reap-log too.

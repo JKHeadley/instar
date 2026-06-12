@@ -1043,6 +1043,18 @@
         "state/guard-posture-episodes.json"
       ],
       "grandfathered": false
+    },
+    {
+      "category": "remote-close-audit",
+      "description": "Relaying machine's append-only record of every relayed session-close ORDER (REMOTE-SESSION-CLOSE-SPEC §2.3) - target machine, sessionUuid, observed outcome. The owner's reap-log is the authoritative record of the kill; this is the order-end manifest so a relayed kill sweep cannot be traceless on the relayer. Machine-local audit history, never authority.",
+      "scope": "machine-local",
+      "freshness": "live",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "logs/remote-close-audit.jsonl"
+      ],
+      "grandfathered": false
     }
   ]
 }
