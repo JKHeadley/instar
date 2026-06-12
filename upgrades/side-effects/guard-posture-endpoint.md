@@ -95,3 +95,7 @@ Reviewer affirmation on the core questions: "No brittle logic holds blocking aut
 ## Addendum — agent-awareness migration collision fix
 
 The pool-sessions-visibility CLAUDE.md migration's idempotency sniff was the bare string `scope=pool`; the new Guards section (which mentions `/guards?scope=pool`) would have permanently satisfied it, silently blocking that migration for any agent carrying the Guards block. Tightened to the route-qualified `sessions?scope=pool` with its test updated — found by the awareness-block test pass.
+
+## Addendum — CI lint + ratchet compliance
+
+`scripts/lint-guard-manifest.js` (+ unit test) wired into the composite lint chain; complete NOT_A_GUARD backfill (33 entries; one real finding: WorktreeReaper has no importer — dormant code, tracked). PrincipalGuard's reason reworded to dodge an llm-attribution-ratchet scanner false positive; the four new guard-path catch blocks carry @silent-fallback-ok justifications (no-silent-fallbacks ratchet stays at baseline).

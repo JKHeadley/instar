@@ -543,7 +543,7 @@ export const NOT_A_GUARD: readonly NotAGuardEntry[] = [
   { component: 'OrphanProcessReaper', reason: 'Always-on untracked-CLI-process hygiene started unconditionally at boot with no config enabled switch; on/off posture is not expressible (CompactionSentinel class).' },
   { component: 'OverlapGuard', reason: 'Work-overlap detection wrapper around WorkLedger for the intelligent-sync feature; sync mechanics, not a boot-constructed posture guard.' },
   { component: 'PeerVisibilityGuard', reason: 'Pure hygiene-signal helpers over the machine registry (improper-revocation detection); stateless functions, no lifecycle or switch.' },
-  { component: 'PrincipalGuard', reason: 'Pure-logic cross-principal attribution detector consumed by the principal-coherence pipeline; library code, the observe-only wiring rides monitoring.principalCoherence.' },
+  { component: 'PrincipalGuard', reason: 'Pure-logic cross-principal crediting detector consumed by the principal-coherence pipeline; library code, the observe-only wiring rides monitoring.principalCoherence.' },
   { component: 'ProactiveSwapMonitor', reason: 'Pre-limit subscription-account swap engine (subscriptionPool.proactiveSwap); quota-continuity feature lever, not a failure-protecting guard.' },
   { component: 'PromptGuard', reason: 'Prompt-injection defense helpers (filtering/output validation) for LLM conflict resolution; pure library, no boot lifecycle.' },
   { component: 'QuotaExhaustionDetector', reason: 'Post-mortem classifier of why a dead session died (pattern-matching over tmux output); pure library, no lifecycle or switch.' },

@@ -9955,7 +9955,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                 bootSnapshot: readGuardPostureBootSnapshot(config.stateDir),
                 registry: guardRegistry,
               });
-            } catch { return null; }
+            } catch { return null; /* @silent-fallback-ok — probe degrades to no-local-posture for this tick; the route surfaces config errors loudly */ }
           },
           // Heartbeat-sourced (durable last-known for offline peers) — never a
           // doomed fan-out for a dark peer (spec §2.4 data-source rule).
@@ -9970,7 +9970,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                   posture: m.guardPosture ?? null,
                   postureAgeMs: m.guardPostureReceivedAt ? Date.now() - Date.parse(m.guardPostureReceivedAt) : null,
                 }));
-            } catch { return []; /* pool not wired yet (boot order) — peers: none */ }
+            } catch { return []; /* @silent-fallback-ok — pool not wired yet (boot order): peers none this tick, next tick reads the live registry */ }
           },
           // Spec §2.4 deep-read fallback: ONLY for an ONLINE peer whose
           // heartbeat posture block is missing/stale — a plain GET /guards
@@ -11827,7 +11827,7 @@ export async function startServer(options: StartOptions): Promise<void> {
           const selfGuardPosture = (): import('../core/types.js').GuardPostureSummary | undefined => {
             try {
               let mtimeMs = -1;
-              try { mtimeMs = fs.statSync(path.join(config.stateDir, 'config.json')).mtimeMs; } catch { /* absent file: -1 still caches */ }
+              try { mtimeMs = fs.statSync(path.join(config.stateDir, 'config.json')).mtimeMs; } catch { /* @silent-fallback-ok — absent config file: mtime -1 still caches the defaults-only snapshot */ }
               if (!_postureSnapCache || _postureSnapCache.mtimeMs !== mtimeMs) {
                 _postureSnapCache = { mtimeMs, snap: resolveGuardConfigSnapshot(config.projectDir) };
               }
@@ -11840,9 +11840,9 @@ export async function startServer(options: StartOptions): Promise<void> {
               });
               return buildHeartbeatPostureBlock(inv, new Date().toISOString());
             } catch (err) {
-              // Posture is optional on a beat (the pool renders "unknown"
-              // honestly) — but a PERSISTENT compute failure must not be
-              // invisible to the operator, so the first occurrence logs.
+              // @silent-fallback-ok — posture is optional on a beat (the pool
+              // renders "unknown" honestly), and a PERSISTENT compute failure
+              // is not invisible: the first occurrence logs below.
               if (!_postureComputeWarned) {
                 _postureComputeWarned = true;
                 console.log(pc.yellow(`  [guards] heartbeat posture compute failed (beats will omit posture until it recovers): ${err instanceof Error ? err.message : String(err)}`));
