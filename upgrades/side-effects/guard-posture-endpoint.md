@@ -91,3 +91,7 @@ Reviewer affirmation on the core questions: "No brittle logic holds blocking aut
 - `.instar/state/build/must-haves.md` (truths T1–T18), `threats.md` (STRIDE T-01…T-10), `plan.md`
 - Tier-1: `tests/unit/monitoring/guard-posture-view.test.ts`, `guard-posture-snapshot.test.ts` (48+10 green at step 2)
 - Spec: `docs/specs/GUARD-POSTURE-ENDPOINT-SPEC.md` (approved 2026-06-12, topic 13481)
+
+## Addendum — agent-awareness migration collision fix
+
+The pool-sessions-visibility CLAUDE.md migration's idempotency sniff was the bare string `scope=pool`; the new Guards section (which mentions `/guards?scope=pool`) would have permanently satisfied it, silently blocking that migration for any agent carrying the Guards block. Tightened to the route-qualified `sessions?scope=pool` with its test updated — found by the awareness-block test pass.

@@ -4064,8 +4064,11 @@ Beyond the one-awake-machine model: with the pool enabled I run conversations ac
     // section predate GET /sessions?scope=pool (every session, every machine, each
     // tagged with its machine — the dashboard cross-machine sessions list). Append
     // the line so deployed agents can answer "what's running across my machines?"
-    // from the API. Idempotent via the unique `scope=pool` marker.
-    if (content.includes('Multi-Machine Session Pool (active-active') && !content.includes('scope=pool')) {
+    // from the API. Idempotent via the unique `sessions?scope=pool` marker
+    // (route-qualified: other sections legitimately mention `?scope=pool` for
+    // their own routes — e.g. the Guard Posture section's /guards?scope=pool —
+    // so a bare `scope=pool` sniff would falsely block this append).
+    if (content.includes('Multi-Machine Session Pool (active-active') && !content.includes('sessions?scope=pool')) {
       const poolSessions = `
 - **Every session, every machine:** the dashboard sessions list shows ALL sessions across the pool, each tagged with the machine it runs on. API: \`GET /sessions?scope=pool\` → \`{ sessions: [...each with machineId/machineNickname...], pool: { peersOk, failed } }\`. An unreachable peer degrades to a \`failed\` entry — local sessions always answer.
 - **Post-transfer closeout (automatic):** when a topic moves to another machine, the OLD machine's session for it is closed automatically (immediately on an explicit "move", or within ~2 reaper ticks for any other path) — no duplicate sessions doing duplicate work. The close is recorded in the reap-log with reason "topic moved to <machine>"; protected sessions are never auto-closed.
@@ -4200,6 +4203,31 @@ At every server boot the guard posture (every \`monitoring.*\` enabled flag + \`
       result.upgraded.push('CLAUDE.md: added Guard-Posture Tripwire section');
     } else {
       result.skipped.push('CLAUDE.md: Guard-Posture Tripwire section already present');
+    }
+
+    // Guard Posture endpoint (GUARD-POSTURE-ENDPOINT-SPEC §4 Agent Awareness +
+    // §2.5 interim hazard containment). The tripwire section above only covers
+    // boot-time TRANSITIONS; this teaches the steady-state read surface
+    // (GET /guards, ?scope=pool) plus the PATCH /config one-level-deep-merge
+    // hazard (a partial block erases sibling tuning — lived 2026-06-11).
+    // Byte-identical to the generateClaudeMd block (Migration Parity).
+    // Idempotent via content-sniffing on the section heading.
+    if (!content.includes('Guard Posture — which safety systems are genuinely on')) {
+      const section = `
+### Guard Posture — which safety systems are genuinely on (\`GET /guards\`)
+
+Every guard (monitoring sentinels, reapers, the scheduler, …) is graded by what can be VERIFIED, never by what the config wishes: \`on-confirmed\` / \`on-unverified\` / \`on-stale\` / \`on-dry-run\` / \`off\` (\`dark-default\` = ships-dark, quiet vs \`diverged-from-default\` = default-on but currently off — the load-shed signature) / \`diverged-pending-restart\` / \`errored\` / \`missing\` / \`off-runtime-divergent\`. Only the "off that shouldn't be off" and runtime-contradiction classes alert — a ships-dark feature that is off is normal, never noise.
+- This machine: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/guards\`
+- Every machine (heartbeat-fresh, or last-known posture with its age for a dark peer): \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/guards?scope=pool"\`
+- **When to use** (PROACTIVE — this is the trigger): "are my guards on?" / "why didn't the watchdog/reaper fire on machine X?" / a post-incident sweep after ANY load-shed → read \`/guards?scope=pool\` and report the deviant rows instead of guessing from config memory. The Machines dashboard tab shows each machine's last-known posture with its age — even for a peer that is currently dark.
+- **HAZARD — re-enabling a guard via \`PATCH /config\`**: send the guard's FULL config block (the merge is one-level-deep and a partial block erases sibling tuning); read the current block from the source machine first (\`GET /guards\` shows posture; the config block itself comes from that machine's config).
+- Three complementary layers, one shared inventory: the Guard-Posture Tripwire covers enabled→disabled transitions at boot (\`logs/guard-posture.jsonl\`); \`/guards\` is the steady-state read; the GuardPostureProbe raises ONE aggregated Attention item when an anomaly persists across consecutive probes.
+`;
+      content += '\n' + section;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Guard Posture (/guards) capability section');
+    } else {
+      result.skipped.push('CLAUDE.md: Guard Posture (/guards) capability section already present');
     }
 
     // AgentWorktreeReaper report (RESPONSIBLE-RESOURCE-USAGE — OS resource hygiene).

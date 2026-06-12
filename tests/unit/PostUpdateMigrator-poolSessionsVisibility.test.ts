@@ -3,7 +3,9 @@
  * 2026-06-05): deployed agents that already carry the Multi-Machine Session
  * Pool section must LEARN the new "every session, every machine" line on
  * update — and a CLAUDE.md without the section gets it via the fresh inject
- * (which already includes the line). Idempotent on the `scope=pool` marker.
+ * (which already includes the line). Idempotent on the route-qualified
+ * `sessions?scope=pool` marker (a bare `scope=pool` would collide with other
+ * sections' pool-scoped routes, e.g. the Guard Posture /guards?scope=pool).
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
@@ -68,7 +70,7 @@ describe('PostUpdateMigrator — pool-wide session visibility line', () => {
     expect(result.upgraded.some(u => u.includes('pool-wide session visibility'))).toBe(true);
   });
 
-  it('is idempotent — the scope=pool marker blocks a second append', () => {
+  it('is idempotent — the sessions?scope=pool marker blocks a second append', () => {
     fs.writeFileSync(claudeMdPath, [
       '# CLAUDE.md — test',
       '',
@@ -83,7 +85,9 @@ describe('PostUpdateMigrator — pool-wide session visibility line', () => {
     expect(result.errors).toEqual([]);
 
     const after = fs.readFileSync(claudeMdPath, 'utf-8');
-    expect(after.split('scope=pool').length - 1).toBe(1);
+    // Count the route-qualified marker — other sections (e.g. Guard Posture's
+    // /guards?scope=pool) legitimately contain a bare `scope=pool`.
+    expect(after.split('sessions?scope=pool').length - 1).toBe(1);
     expect(result.upgraded.some(u => u.includes('pool-wide session visibility'))).toBe(false);
   });
 
@@ -157,7 +161,7 @@ describe('PostUpdateMigrator — post-transfer closeout line', () => {
     expect(result.upgraded.some(u => u.includes('post-transfer closeout'))).toBe(false);
   });
 
-  it('the scope=pool append now carries the closeout line in one shot (no double-append)', () => {
+  it('the sessions?scope=pool append now carries the closeout line in one shot (no double-append)', () => {
     fs.writeFileSync(claudeMdPath, [
       '# CLAUDE.md — test',
       '',
@@ -170,8 +174,8 @@ describe('PostUpdateMigrator — post-transfer closeout line', () => {
     const result = runMigrateClaudeMd(createMigrator(projectDir));
     expect(result.errors).toEqual([]);
     const after = fs.readFileSync(claudeMdPath, 'utf-8');
-    // Both lines present, each exactly once.
-    expect(after.split('scope=pool').length - 1).toBe(1);
+    // Both lines present, each exactly once (route-qualified count — see above).
+    expect(after.split('sessions?scope=pool').length - 1).toBe(1);
     expect(after.split('Post-transfer closeout').length - 1).toBe(1);
   });
 });
