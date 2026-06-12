@@ -1055,6 +1055,19 @@
         "logs/remote-close-audit.jsonl"
       ],
       "grandfathered": false
+    },
+    {
+      "category": "resume-queue",
+      "description": "Durable mid-work resume queue + single-writer lockfile + decision audit (reap-notify spec R2.3): entries for autonomously-reaped mid-work sessions awaiting ordered revival, plus the resurrection tombstone ledger. Machine-local BY DESIGN — entries reference local tmux sessions/worktrees; deliberately EXCLUDED from backup/restore and never replicated (a foreign-host lock disables the queue loudly).",
+      "scope": "machine-local",
+      "freshness": "live",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "state/resume-queue.json",
+        "state/resume-queue.lock"
+      ],
+      "grandfathered": false
     }
   ]
 }

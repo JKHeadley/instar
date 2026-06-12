@@ -117,7 +117,7 @@ import { MessageProcessingLedger } from '../messaging/MessageProcessingLedger.js
 import { recoverStuckMessages } from '../messaging/stuckMessageRecovery.js';
 import { ReplyMarkerTransport } from '../core/ReplyMarkerTransport.js';
 import { decryptFromSync, encryptForSync } from '../core/SecretStore.js';
-import { createPrivateKey, createPublicKey } from 'node:crypto';
+import { createPrivateKey, createPublicKey, createHash } from 'node:crypto';
 import { sign as signEd25519, verify as verifyEd25519 } from '../core/MachineIdentity.js';
 import { ProjectMapper } from '../core/ProjectMapper.js';
 import { CartographerTree } from '../core/CartographerTree.js';
@@ -605,6 +605,10 @@ async function spawnSessionForTopic(
    *  config home + record its id (the quota-aware account-swap mechanism).
    *  Omitted = unchanged behaviour. */
   accountSwap?: { configHome?: string; accountId?: string },
+  /** Reap-notify spec R2.8 / L13 — explicit per-spawn working directory (the
+   *  resume-queue drainer passes a queue entry's recorded cwd so interrupted
+   *  worktree work resumes in ITS tree). Omitted = module project dir. */
+  spawnOpts?: { cwd?: string },
 ): Promise<string> {
   const msg = latestMessage || 'Session started — send a message to continue.';
 
@@ -899,6 +903,8 @@ async function spawnSessionForTopic(
     // this account's config home + record its id. Unset = unchanged.
     ...(accountSwap?.configHome ? { configHome: accountSwap.configHome } : {}),
     ...(accountSwap?.accountId ? { subscriptionAccountId: accountSwap.accountId } : {}),
+    // R2.8/L13: per-spawn cwd from the resume-queue entry. Unset = projectDir.
+    ...(spawnOpts?.cwd ? { cwd: spawnOpts.cwd } : {}),
   });
 
   // Clear the resume entry after successful spawn to prevent stale reuse
@@ -6060,6 +6066,27 @@ export async function startServer(options: StartOptions): Promise<void> {
       config.stateDir,
       () => (coordinator.enabled ? coordinator.identity?.machineId : undefined),
     );
+    // ── Durable notice lane (reap-notify spec R1.3) ──
+    // The notifier enqueues notices as `reap-notify:<id>` rows in the shared
+    // PendingRelayStore; the ALWAYS-ON ReapNoticeDrain (started after the
+    // Telegram adapter exists, below) delivers them — independent of the
+    // default-OFF DeliveryFailureSentinel. A store open failure degrades the
+    // notifier to its loud direct-send fallback (R1.3 enqueue-failed path).
+    let reapNoticeStore: import('../messaging/pending-relay-store.js').PendingRelayStore | null = null;
+    try {
+      const { PendingRelayStore, assertSqliteAvailable } = await import('../messaging/pending-relay-store.js');
+      if (assertSqliteAvailable().ok) {
+        reapNoticeStore = PendingRelayStore.open(config.projectName, config.stateDir);
+      }
+    } catch (err) {
+      // @silent-fallback-ok — not silent: warns with full context here, and the
+      // notifier's enqueue-failed path reports via DegradationReporter (R1.3).
+      console.warn('[reap-notify] pending-relay store unavailable — notices fall back to direct send:', err);
+      reapNoticeStore = null;
+    }
+    // Wired by the resume-queue boot block (Part B) once the queue exists;
+    // stays false (no "restart queued" lines) until then or in dry-run.
+    let resumeQueuedForSession: (tmuxSession: string) => boolean = () => false;
     const reapNotifier = new ReapNotifier(
       {
         resolveTopic: (tmuxSession) => {
@@ -6069,17 +6096,368 @@ export async function startServer(options: StartOptions): Promise<void> {
           return Number.isFinite(n) ? n : null;
         },
         lifelineTopic: () => telegram?.getLifelineTopicId() ?? null,
-        // SUMMARY tier → through the formatter/tone-gate (HTML-escaped, quiet-hours
-        // aware). The notifier already coalesces, so a burst is one message.
+        // Legacy + fallback transport → through the formatter/tone-gate
+        // (HTML-escaped, quiet-hours aware). The notifier already coalesces.
         send: (topicId, text) => notify('SUMMARY', 'session-reap', text, topicId),
+        enqueueNotice: reapNoticeStore
+          ? (input) => reapNoticeStore!.enqueue({
+              delivery_id: input.delivery_id,
+              topic_id: input.topic_id,
+              text_hash: createHash('sha256').update(input.text).digest('hex'),
+              text: input.text,
+              next_attempt_at: input.next_attempt_at,
+            })
+          : undefined,
+        recordNotify: (e) => reapLog.recordNotify(e),
+        quietHoursEndAt: (now) => notificationBatcher.quietHoursEndAt(now),
+        summaryReleaseAt: (now) => notificationBatcher.nextSummaryReleaseAt(now),
+        resumeQueuedFor: (tmuxSession) => resumeQueuedForSession(tmuxSession),
+        reportDegradation: (reason, impact) => {
+          try {
+            DegradationReporter.getInstance().report({
+              feature: 'reap-notice-enqueue',
+              primary: 'durable reap-notice delivery via PendingRelayStore + ReapNoticeDrain',
+              fallback: 'one direct send attempt (fire-and-forget)',
+              reason,
+              impact,
+            });
+          } catch { /* @silent-fallback-ok — guard around the degradation REPORTER itself; the degradation it describes was already logged by the caller */ }
+        },
       },
       {
         enabled: config.monitoring?.reapNotify?.enabled ?? true,
         coalesceWindowMs: config.monitoring?.reapNotify?.coalesceWindowMs ?? 60_000,
+        perTopic: config.monitoring?.reapNotify?.perTopic ?? true,
+        maxImmediatePerFlush: config.monitoring?.reapNotify?.maxImmediatePerFlush ?? 5,
+        drainEnabled: config.monitoring?.reapNotify?.drainEnabled ?? true,
       },
     );
+    // ReapNoticeDrain — the always-on delivery loop over the reap-notify lane
+    // (R1.3; independent of the default-OFF DeliveryFailureSentinel). The
+    // telegram adapter is referenced lazily: it does not exist yet at this
+    // point in boot, and a tick with no adapter simply retries on backoff.
+    let reapNoticeDrain: import('../monitoring/ReapNoticeDrain.js').ReapNoticeDrain | null = null;
+    if (reapNoticeStore && (config.monitoring?.reapNotify?.drainEnabled ?? true)) {
+      const { ReapNoticeDrain } = await import('../monitoring/ReapNoticeDrain.js');
+      const { getCurrentBootId } = await import('../server/boot-id.js');
+      reapNoticeDrain = new ReapNoticeDrain({
+        store: reapNoticeStore,
+        sendToTopic: async (topicId, text) => {
+          if (!telegram) throw new Error('telegram adapter not available');
+          await telegram.sendToTopic(topicId, text);
+        },
+        recordNotify: (e) => reapLog.recordNotify(e),
+        emitAttention: async (item) => {
+          if (!telegram) return;
+          await telegram.createAttentionItem({
+            id: item.id,
+            title: item.title,
+            summary: item.summary ?? item.title,
+            description: item.description,
+            category: item.category ?? 'delivery',
+            priority: item.priority === 'high' ? 'HIGH' : item.priority === 'low' ? 'LOW' : 'NORMAL',
+            sourceContext: item.sourceContext,
+          });
+        },
+        bootId: getCurrentBootId() ?? `boot-${Date.now().toString(36)}`,
+      });
+      reapNoticeDrain.start();
+      console.log(pc.green('  ReapNoticeDrain started (always-on durable reap-notice delivery)'));
+    }
     sessionManager.setAwakeChecker(() => !coordinator.enabled || coordinator.isAwake);
-    sessionManager.on('sessionReaped', (e: { session: import('../core/types.js').Session; reason: string; disposition?: 'terminal' | 'recovery-bounce'; origin?: 'operator' | 'autonomous'; via?: string }) => {
+    // Pressure-tier provider for the evidence fallback (reap-notify R2.1):
+    // the SAME shared HostPressureSampler definition the reaper and the
+    // resume-queue drainer read — one definition of "pressure", never two.
+    const { sampleHostPressure: samplePressureShared } = await import('../monitoring/HostPressureSampler.js');
+    const reaperPressureCfg = config.monitoring?.sessionReaper;
+    const sharedPressureTier = (): 'normal' | 'moderate' | 'critical' => samplePressureShared({
+      cpuModerateLoadPerCore: reaperPressureCfg?.cpuModerateLoadPerCore ?? 1.0,
+      cpuCriticalLoadPerCore: reaperPressureCfg?.cpuCriticalLoadPerCore ?? 1.5,
+    }).tier;
+    sessionManager.setPressureTierProvider(sharedPressureTier);
+
+    // ── ResumeQueue + drainer (reap-notify spec Part B, R2.2–R2.11) ──
+    // Ships enabled + dryRun (observe-only) as CODE defaults — deliberately
+    // not in ConfigDefaults so the later fleet flip of the shipped default
+    // takes effect. Classified in DARK_GATE_EXCLUSIONS (cost-bearing).
+    const rqCfg = config.monitoring?.resumeQueue ?? {};
+    let resumeQueue: import('../monitoring/ResumeQueue.js').ResumeQueue | null = null;
+    let resumeDrainer: import('../monitoring/ResumeQueueDrainer.js').ResumeQueueDrainer | null = null;
+    // Operator-stop record for the drainer's R2.6 validation (in-memory map +
+    // the durable autonomous-emergency-stop flag file's mtime as global stop).
+    const operatorStopsByTopic = new Map<number, number>();
+    let globalOperatorStopAt = 0;
+    const recordOperatorStop = (topicId: number | null): void => {
+      if (topicId == null) globalOperatorStopAt = Date.now();
+      else operatorStopsByTopic.set(topicId, Date.now());
+    };
+    if (rqCfg.enabled ?? true) {
+      const { ResumeQueue } = await import('../monitoring/ResumeQueue.js');
+      const { ResumeQueueDrainer } = await import('../monitoring/ResumeQueueDrainer.js');
+
+      // Decision-transition audit sink: logs/resume-queue.jsonl, 5MB×2 rotation.
+      const resumeAuditPath = path.join(_projectDir, 'logs', 'resume-queue.jsonl');
+      const auditResumeQueue = (event: Record<string, unknown>): void => {
+        try {
+          fs.mkdirSync(path.dirname(resumeAuditPath), { recursive: true });
+          try {
+            const st = fs.statSync(resumeAuditPath);
+            if (st.size > 5 * 1024 * 1024) {
+              fs.renameSync(resumeAuditPath, `${resumeAuditPath}.1`); // 5MB×2: .1 replaced each rotation
+            }
+          } catch { /* no file yet */ }
+          fs.appendFileSync(resumeAuditPath, JSON.stringify(event) + '\n');
+        } catch { /* the audit sink never endangers the queue */ }
+      };
+
+      // ALL give-up classes fold into ONE rolling deduped attention item (P17).
+      const resumeAggregate = { counts: new Map<string, number>(), recent: [] as string[] };
+      const raiseResumeAggregated = (kind: string, detail: string): void => {
+        try {
+          resumeAggregate.counts.set(kind, (resumeAggregate.counts.get(kind) ?? 0) + 1);
+          resumeAggregate.recent.push(`[${kind}] ${detail}`);
+          if (resumeAggregate.recent.length > 8) resumeAggregate.recent.shift();
+          if (!telegram) return;
+          const total = [...resumeAggregate.counts.values()].reduce((a, b) => a + b, 0);
+          const breakdown = [...resumeAggregate.counts.entries()].map(([k, c]) => `${k}×${c}`).join(', ');
+          void telegram.createAttentionItem({
+            id: 'resume-queue:aggregate',
+            title: `Resume queue: ${total} notice${total === 1 ? '' : 's'} (${breakdown})`,
+            summary: detail,
+            description: resumeAggregate.recent.join('\n'),
+            category: 'sessions',
+            priority: 'NORMAL', // per-entry HIGH items are forbidden (P17)
+            sourceContext: 'resume-queue',
+          }).catch(() => { /* best-effort */ });
+        } catch { /* never endanger the caller */ }
+      };
+
+      resumeQueue = new ResumeQueue(
+        {
+          stateDir: path.join(_projectDir, '.instar'),
+          audit: auditResumeQueue,
+          raiseAggregated: raiseResumeAggregated,
+        },
+        {
+          enabled: rqCfg.enabled ?? true,
+          dryRun: rqCfg.dryRun ?? true, // shipped observe-only (decision 2)
+          maxAttempts: rqCfg.maxAttempts ?? 3,
+          maxResurrections: rqCfg.maxResurrections ?? 2,
+          entryTtlHours: rqCfg.entryTtlHours ?? 24,
+          maxQueueSize: rqCfg.maxQueueSize ?? 50,
+          includeOperatorKills: rqCfg.includeOperatorKills ?? false,
+        },
+      );
+      const queueStarted = resumeQueue.start();
+      if (!queueStarted) {
+        console.log(pc.yellow(`  ResumeQueue disabled: ${resumeQueue.isDisabled()}`));
+      } else {
+        // Feed the notifier's "restart is queued" line (live, non-dry-run only).
+        const rq = resumeQueue;
+        resumeQueuedForSession = (tmuxSession) => rq.hasLiveQueuedEntryFor(tmuxSession);
+
+        const resolveTopicForTmux = (tmuxSession: string): number | null => {
+          try {
+            const t = telegram?.getTopicForSession(tmuxSession);
+            if (t == null) return null;
+            const n = typeof t === 'number' ? t : Number(t);
+            return Number.isFinite(n) ? n : null;
+          } catch {
+            // @silent-fallback-ok — null = "unbound": the notifier then routes
+            // the session to the lifeline index line, never a dropped notice.
+            return null;
+          }
+        };
+
+        resumeDrainer = new ResumeQueueDrainer(
+          {
+            queue: rq,
+            pressureTier: sharedPressureTier,
+            canSpawnSession: () => (quotaManager ? quotaManager.canSpawnSession().allowed : true),
+            sessionCountOk: () =>
+              sessionManager.listRunningSessions().length <
+              ((config as { maxSessions?: number }).maxSessions ?? 10),
+            // No catch: a throwing dep resolves to the SAFE side (blocked)
+            // inside the drainer's gate — wrapping it here would flip the
+            // failure to the lenient side.
+            migrationInFlight: () => quotaManager?.isMigrationInFlight() ?? false,
+            liveSessionForTopic: (topicId) =>
+              sessionManager
+                .listRunningSessions()
+                .some((s) => resolveTopicForTmux(s.tmuxSession) === topicId),
+            currentResumeUuid: (topicId) => _topicResumeMap?.get(topicId) ?? null,
+            topicOwnerElsewhere: (topicId) => {
+              // Pool not wired → single-machine → always local. No catch: a
+              // registry error propagates to the drainer's validateReality,
+              // which resolves a throwing dep to the SAFE side (invalidated).
+              const reg = sessionOwnershipRegistry;
+              const self = _meshSelfId;
+              if (!reg || !self) return false;
+              const owner = reg.ownerOf(String(topicId));
+              return !!owner && owner !== self;
+            },
+            topicBindingMatches: (topicId, cwd) => {
+              const bindings = scopeVerifier?.loadTopicBindings?.() as
+                | Record<string, { projectDir?: string }>
+                | undefined;
+              const binding = bindings?.[String(topicId)];
+              if (!binding?.projectDir) return true; // unbound topic → default project
+              return path.resolve(cwd).startsWith(path.resolve(binding.projectDir));
+            },
+            operatorStopSince: (topicId, sinceIso) => {
+              const since = Date.parse(sinceIso);
+              const perTopic = operatorStopsByTopic.get(topicId) ?? 0;
+              let flagAt = 0;
+              try {
+                flagAt = fs.statSync(path.join(_projectDir, '.instar', 'autonomous-emergency-stop')).mtimeMs;
+              } catch { /* no flag */ }
+              return Math.max(perTopic, globalOperatorStopAt, flagAt) > since;
+            },
+            jobCheck: (slug, queuedAtIso) => {
+              if (!scheduler) return { ok: false, why: 'scheduler-unavailable' };
+              const job = scheduler.getJobs().find((j) => j.slug === slug);
+              if (!job) return { ok: false, why: 'job-missing' };
+              // 'disabled' also covers CrashLoopPauser-paused jobs — the
+              // pauser's mechanism IS setting enabled=false (+ provenance note).
+              if (!job.enabled) return { ok: false, why: 'job-disabled' };
+              const lastRun = state.getJobState(slug)?.lastRun;
+              if (lastRun && Date.parse(lastRun) > Date.parse(queuedAtIso)) {
+                return { ok: false, why: 'job-ran-since' };
+              }
+              return { ok: true };
+            },
+            pathExists: (p) => fs.existsSync(p),
+            respawnTopic: async (entry, continuationPrompt) => {
+              if (!telegram) throw new Error('telegram adapter not available');
+              return await spawnSessionForTopic(
+                sessionManager,
+                telegram,
+                entry.sessionName,
+                entry.topicId!,
+                continuationPrompt,
+                topicMemory,
+                undefined,
+                undefined,
+                undefined,
+                { cwd: entry.worktreePath ?? entry.cwd },
+              );
+            },
+            triggerJob: async (slug) => {
+              if (!scheduler) return 'skipped';
+              return await scheduler.triggerJob(slug, 'resume-queue');
+            },
+            spawnAliveAfterGrace: async (tmuxSession) => {
+              await new Promise((resolve) => {
+                const t = setTimeout(resolve, 15_000);
+                if (typeof t.unref === 'function') t.unref();
+              });
+              return sessionManager.isSessionAlive(tmuxSession);
+            },
+            notifyResumed: (entry) => {
+              // R2.11 — honest wording: "restarted", never a transcript-resume
+              // claim (--resume can fall back to a fresh conversation in-pane).
+              if (entry.topicId == null) return;
+              notify(
+                'SUMMARY',
+                'session-resume',
+                `🔁 I restarted this session to pick the work back up after it was shut down mid-work.`,
+                entry.topicId,
+              );
+            },
+            raiseAggregated: raiseResumeAggregated,
+            audit: auditResumeQueue,
+            tier1Check: async (entry) => {
+              // Observe-only Tier 1 sanity check via the shared LlmQueue
+              // (P7). Throws when the LLM substrate is unavailable — the
+              // drainer audits that as supervision:'shed'.
+              const q = sharedLlmQueue;
+              const intel = _sharedIntelligence;
+              if (!q || !intel) throw new Error('llm-unavailable');
+              const reasonLiteral = entry.reason.slice(0, 200).replace(/`/g, "'");
+              const prompt =
+                `A session was shut down mid-work and is queued for automatic restart. Given ONLY these ` +
+                `recorded fields, is restarting it sensible? Look for internal contradictions (a "mid-work" ` +
+                `entry whose reason describes completed work; a resurrection history that reads as a crash loop).\n` +
+                `Recorded reason (literal data): \`${reasonLiteral}\`\n` +
+                `Work signals: ${entry.workEvidence.join(', ') || '(none)'}\n` +
+                `Queued: ${entry.queuedAt}; attempts so far: ${entry.attempts}.\n` +
+                `Reply with JSON only: {"sensible": true|false, "reasoning": "<one sentence>"}`;
+              const raw = await q.enqueue('background', (signal) =>
+                intel.evaluate(prompt, {
+                  model: 'fast',
+                  maxTokens: 150,
+                  temperature: 0,
+                  signal,
+                  attribution: { component: 'ResumeQueueDrainer' }, // attribution for /metrics/features
+                } as never),
+              );
+              try {
+                const t = String(raw).trim();
+                const j = t.startsWith('```') ? t.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '') : t;
+                const parsed = JSON.parse(j) as { sensible?: boolean; reasoning?: string };
+                return { sensible: parsed.sensible !== false, reasoning: parsed.reasoning };
+              } catch {
+                return { sensible: true, reasoning: 'unparseable verdict — treated as no-concern (observe-only)' };
+              }
+            },
+          },
+          {
+            drainIntervalSec: rqCfg.drainIntervalSec ?? 60,
+            requiredCalmTicks: rqCfg.requiredCalmTicks ?? 3,
+            maxAttempts: rqCfg.maxAttempts ?? 3,
+            breakerThreshold: rqCfg.breakerThreshold ?? 3,
+            breakerCooldownMin: rqCfg.breakerCooldownMin ?? 30,
+            tier1Check: rqCfg.tier1Check ?? true,
+          },
+        );
+        resumeDrainer.start();
+        console.log(pc.green(`  ResumeQueue started (${rqCfg.dryRun ?? true ? 'dry-run observe-only' : 'LIVE'}; drainer ${rqCfg.drainIntervalSec ?? 60}s tick)`));
+
+        // Boot reconciliation half 2 (R2.4): re-enqueue recent mid-work reaps
+        // the queue lost to a crash window. Deferred 30s so the Telegram
+        // adapter (topic resolution) exists; topic-bound candidates only —
+        // job entries rely on cron recurrence and opt-in we cannot
+        // reconstruct from the reap-log.
+        const reconcileTimer = setTimeout(() => {
+          try {
+            const ttlMs = (rqCfg.entryTtlHours ?? 24) * 3600_000;
+            const cutoff = Date.now() - ttlMs;
+            const candidates = reapLog
+              .read(1000)
+              .filter(
+                (en) =>
+                  en.type === 'reaped' &&
+                  en.midWork === true &&
+                  en.disposition === 'terminal' &&
+                  en.origin === 'autonomous' &&
+                  Date.parse(en.ts) > cutoff,
+              )
+              .map((en) => {
+                const topicId = resolveTopicForTmux(en.tmuxSession);
+                return {
+                  sessionName: en.session,
+                  tmuxSession: en.tmuxSession,
+                  topicId,
+                  resumeUuid: topicId != null ? (_topicResumeMap?.get(topicId) ?? null) : null,
+                  cwd: _projectDir,
+                  reason: en.reason,
+                  disposition: 'terminal' as const,
+                  origin: 'autonomous' as const,
+                  workEvidence: en.workEvidence ?? [],
+                };
+              });
+            const enqueued = rq.reconcileFromReapLog(candidates);
+            if (enqueued > 0) {
+              console.log(`[resume-queue] boot reconciliation re-enqueued ${enqueued} lost mid-work reap(s) from the reap-log`);
+            }
+          } catch (err) {
+            console.warn('[resume-queue] boot reconciliation failed (non-fatal):', err);
+          }
+        }, 30_000);
+        if (typeof reconcileTimer.unref === 'function') reconcileTimer.unref();
+      }
+    }
+    sessionManager.on('sessionReaped', (e: { session: import('../core/types.js').Session; reason: string; disposition?: 'terminal' | 'recovery-bounce'; origin?: 'operator' | 'autonomous'; midWork?: boolean; workEvidence?: string[]; via?: string }) => {
       reapLog.recordReaped({
         session: e.session.name,
         tmuxSession: e.session.tmuxSession,
@@ -6093,8 +6471,42 @@ export async function startServer(options: StartOptions): Promise<void> {
         // which billing lane the reaped session ran on so the soak can confirm
         // rerouted sessions reach their completion from the reap-log too.
         ...(e.session.launchLane ? { launchLane: e.session.launchLane } : {}),
+        // Mid-work stamp (reap-notify spec R2.1) — evidence clamped at the
+        // chokepoint; the reap-log row is the boot-reconciliation source of truth.
+        ...(e.midWork !== undefined ? { midWork: e.midWork } : {}),
+        ...(e.workEvidence && e.workEvidence.length > 0 ? { workEvidence: e.workEvidence } : {}),
       });
-      reapNotifier.onReaped({ session: e.session, reason: e.reason, disposition: e.disposition, origin: e.origin });
+      // Enqueue hook (reap-notify R2.2): every terminal autonomous reap is
+      // OFFERED to the resume queue; eligibility (evidence classes, job
+      // opt-in, operator exclusion, resurrection cap) is decided inside.
+      // Runs BEFORE the notifier so the "restart is queued" line can see the
+      // fresh entry. Never endangers the kill path.
+      try {
+        if (resumeQueue && !resumeQueue.isDisabled()) {
+          const rawTopic = telegram?.getTopicForSession(e.session.tmuxSession);
+          const topicId =
+            rawTopic == null ? null : Number.isFinite(Number(rawTopic)) ? Number(rawTopic) : null;
+          const jobDef = e.session.jobSlug
+            ? scheduler?.getJobs().find((j) => j.slug === e.session.jobSlug)
+            : undefined;
+          resumeQueue.considerEnqueue({
+            sessionName: e.session.name,
+            tmuxSession: e.session.tmuxSession,
+            topicId,
+            jobSlug: e.session.jobSlug,
+            jobResumeOptIn: jobDef?.resumeOnReap === true,
+            resumeUuid: topicId != null ? (_topicResumeMap?.get(topicId) ?? null) : null,
+            cwd: e.session.cwd ?? _projectDir,
+            reason: e.reason,
+            disposition: e.disposition ?? 'terminal',
+            origin: e.origin ?? 'autonomous',
+            workEvidence: e.workEvidence ?? [],
+          });
+        }
+      } catch (err) {
+        console.warn('[resume-queue] enqueue hook raised (non-fatal):', err);
+      }
+      reapNotifier.onReaped({ session: e.session, reason: e.reason, disposition: e.disposition, origin: e.origin, midWork: e.midWork, workEvidence: e.workEvidence });
       // Coherence journal 'reaped' (§3.3): emitted HERE, alongside the
       // reap-log append it references — never derived in the saveSession
       // funnel (which records the plain killed/completed transition).
@@ -13945,7 +14357,7 @@ export async function startServer(options: StartOptions): Promise<void> {
             carrier: _topicProfileCarrier,
           }
         : null;
-    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, cartographer: cartographer ?? undefined, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, subscriptionPool, quotaPoller, quotaAwareScheduler: _quotaAwareScheduler ?? undefined, proactiveSwapMonitor: _proactiveSwapMonitor ?? undefined, inUseAccountResolver, enrollmentWizard, semanticMemory, activitySentinel, rateLimitSentinel, releaseReadinessSentinel: releaseReadinessSentinel ?? undefined, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, topicProfile: _topicProfileCtx ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, localSigningKeyPem, leaseTransport, onLeasePullRequest: () => leaseCoordinatorRef?.currentLease() ?? null, liveTailReceiver, handoffWireTransport, onHandoffBegin, onHandoffInitiate: handoffInitiate, handoffInProgress: handoffSentinelInProgress, messageLedger, currentInboundByTopic, replyMarkerTransport, onReplyMarker: messageLedger ? (marker: unknown) => { const m = marker as { dedupeKey: string; platform: string; replyIdempotencyKey: string; epoch: number; topic?: string | null }; messageLedger!.applyRemoteReplyMarker(m.dedupeKey, { platform: m.platform, replyIdempotencyKey: m.replyIdempotencyKey, epoch: m.epoch, topic: m.topic ?? null }); } : undefined, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, warrantsReplyGate, collaborationSurfacer, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, a2aDeliveryTracker: a2aDeliveryTracker ?? undefined, responseReviewGate, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, machinePoolRegistry, getInboundQueue: () => _inboundQueue, meshRpcDispatcher, workingSetPullCoordinator, commitmentReplicaStore, forwardCommitmentMutate, sessionOwnershipRegistry, topicPinStore: _topicPinStore ?? undefined, streamTicketStore: _streamTicketStore ?? undefined, poolStreamAllowRemoteInput: (config as { dashboard?: { poolStream?: { allowRemoteInput?: boolean } } }).dashboard?.poolStream?.allowRemoteInput ?? false, poolStreamConnector: _poolStreamConnector ?? undefined, secretSync: _secretSyncHandle ?? undefined, meshSelfId: _meshSelfId ?? undefined, resolveRouterUrl: _resolveRouterUrl ?? undefined, resolvePeerUrls: _resolvePeerUrls ?? undefined, guardRegistry, listPoolMachines: _listPoolMachines ?? undefined, sessionPoolE2EResultStore, proxyCoordinator, topicIntentStore, topicIntentArcCheck, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, briefDeps, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, agentWorktreeReaper, mcpProcessReaper, geminiLoopRunner, sleepController, agentActivityState, reapLog, sleepWakeDetector, unjustifiedStopGate, stopGateDb, stopNotifier });
+    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, cartographer: cartographer ?? undefined, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, subscriptionPool, quotaPoller, quotaAwareScheduler: _quotaAwareScheduler ?? undefined, proactiveSwapMonitor: _proactiveSwapMonitor ?? undefined, inUseAccountResolver, enrollmentWizard, semanticMemory, activitySentinel, rateLimitSentinel, releaseReadinessSentinel: releaseReadinessSentinel ?? undefined, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, topicProfile: _topicProfileCtx ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, localSigningKeyPem, leaseTransport, onLeasePullRequest: () => leaseCoordinatorRef?.currentLease() ?? null, liveTailReceiver, handoffWireTransport, onHandoffBegin, onHandoffInitiate: handoffInitiate, handoffInProgress: handoffSentinelInProgress, messageLedger, currentInboundByTopic, replyMarkerTransport, onReplyMarker: messageLedger ? (marker: unknown) => { const m = marker as { dedupeKey: string; platform: string; replyIdempotencyKey: string; epoch: number; topic?: string | null }; messageLedger!.applyRemoteReplyMarker(m.dedupeKey, { platform: m.platform, replyIdempotencyKey: m.replyIdempotencyKey, epoch: m.epoch, topic: m.topic ?? null }); } : undefined, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, warrantsReplyGate, collaborationSurfacer, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, a2aDeliveryTracker: a2aDeliveryTracker ?? undefined, responseReviewGate, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, machinePoolRegistry, getInboundQueue: () => _inboundQueue, meshRpcDispatcher, workingSetPullCoordinator, commitmentReplicaStore, forwardCommitmentMutate, sessionOwnershipRegistry, topicPinStore: _topicPinStore ?? undefined, streamTicketStore: _streamTicketStore ?? undefined, poolStreamAllowRemoteInput: (config as { dashboard?: { poolStream?: { allowRemoteInput?: boolean } } }).dashboard?.poolStream?.allowRemoteInput ?? false, poolStreamConnector: _poolStreamConnector ?? undefined, secretSync: _secretSyncHandle ?? undefined, meshSelfId: _meshSelfId ?? undefined, resolveRouterUrl: _resolveRouterUrl ?? undefined, resolvePeerUrls: _resolvePeerUrls ?? undefined, guardRegistry, listPoolMachines: _listPoolMachines ?? undefined, sessionPoolE2EResultStore, proxyCoordinator, topicIntentStore, topicIntentArcCheck, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, briefDeps, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, agentWorktreeReaper, mcpProcessReaper, geminiLoopRunner, sleepController, agentActivityState, reapLog, resumeQueue, resumeDrainer, operatorStopRecorder: recordOperatorStop, sleepWakeDetector, unjustifiedStopGate, stopGateDb, stopNotifier });
     // Resolve the late-bound topic-operator getter (increment 2e): routing was
     // wired before the server existed; from here on inbound binds use the
     // server's own store instance.

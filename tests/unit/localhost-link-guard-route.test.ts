@@ -11,19 +11,28 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import express from 'express';
 import type { AddressInfo } from 'node:net';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { createRoutes } from '../../src/server/routes.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 describe('localhost-link guard — /telegram/reply chokepoint', () => {
   let server: { url: string; close: () => Promise<void> };
   let sendToTopic: ReturnType<typeof vi.fn>;
+  let stateDir: string;
 
   beforeEach(async () => {
+    // HERMETIC stateDir: a literal '/tmp' here shares outbound-dedup.db
+    // across suite runs — a prior run's dedup record for these exact texts
+    // then suppresses this run's sends (200 with zero sendToTopic calls).
+    stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'localhost-guard-'));
     sendToTopic = vi.fn().mockResolvedValue({ messageId: 42, topicId: 12476 });
     const ctx: any = {
       telegram: { sendToTopic },
       sessionManager: { clearInjectionTracker: vi.fn() },
-      config: { authToken: 't', stateDir: '/tmp', port: 0 },
-      stateDir: '/tmp',
+      config: { authToken: 't', stateDir, port: 0 },
+      stateDir,
       // Deliberately NO messagingToneGate — the guard must hold without it.
     };
     const app = express();
@@ -41,6 +50,7 @@ describe('localhost-link guard — /telegram/reply chokepoint', () => {
 
   afterEach(async () => {
     await server.close();
+    SafeFsExecutor.safeRmSync(stateDir, { recursive: true, force: true, operation: 'tests/unit/localhost-link-guard-route.test.ts' });
   });
 
   async function reply(text: string, metadata?: Record<string, unknown>) {

@@ -16,16 +16,39 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
+/**
+ * Terminal + initial outcomes of a reap-notice delivery attempt
+ * (reap-notify spec R1.3). Records are APPENDED as pairs: one at enqueue
+ * (`enqueued`) and one at terminal state — append-only JSONL, latest record
+ * per noticeId wins on read.
+ */
+export type ReapNotifyOutcome =
+  | 'enqueued'
+  | 'sent'
+  | 'send-failed-escalated'
+  | 'no-topic'
+  | 'enqueue-failed';
+
+const NOTIFY_OUTCOMES: ReadonlySet<string> = new Set([
+  'enqueued',
+  'sent',
+  'send-failed-escalated',
+  'no-topic',
+  'enqueue-failed',
+]);
+
 export interface ReapLogEntry {
   ts: string;
-  /** 'reaped' = a kill happened; 'skipped' = a terminate was refused/no-op. */
-  type: 'reaped' | 'skipped';
+  /** 'reaped' = a kill happened; 'skipped' = a terminate was refused/no-op;
+   *  'notify' = a reap-notice delivery outcome record (reap-notify spec R1.3). */
+  type: 'reaped' | 'skipped' | 'notify';
   session: string;
   tmuxSession: string;
   /** The reason the killer requested (e.g. 'idle-zombie', 'age-limit'). */
   reason: string;
-  /** What actually happened: terminal/recovery-bounce, or skipped:<authority-reason>. */
-  disposition: 'terminal' | 'recovery-bounce' | `skipped:${string}`;
+  /** What actually happened: terminal/recovery-bounce, skipped:<authority-reason>,
+   *  or notify:<outcome>. */
+  disposition: 'terminal' | 'recovery-bounce' | `skipped:${string}` | `notify:${string}`;
   origin?: 'operator' | 'autonomous';
   /** UNTRUSTED caller-supplied provenance claim (REMOTE-SESSION-CLOSE-SPEC §2.3)
    *  — e.g. 'remote-dashboard' from a relayed close. A label any token holder
@@ -40,6 +63,17 @@ export interface ReapLogEntry {
    *  'headless' = the legacy `claude -p` SDK-pot lane. Absent on legacy records /
    *  non-claude spawns where the field was never stamped. */
   launchLane?: 'headless' | 'rerouted-interactive';
+  /** Reaped entries: true when the kill interrupted evidenced work
+   *  (reap-notify spec R2.1 — any non-marker work evidence). */
+  midWork?: boolean;
+  /** Reaped entries: the clamped work-evidence names that drove midWork. */
+  workEvidence?: string[];
+  /** Notify entries: the notice this outcome record belongs to. */
+  noticeId?: string;
+  /** Notify entries: the topic the notice targets (absent for lifeline-only). */
+  topicId?: number;
+  /** Notify entries: the outcome this record asserts. */
+  outcome?: ReapNotifyOutcome;
 }
 
 export class ReapLog {
@@ -59,6 +93,8 @@ export class ReapLog {
     origin?: 'operator' | 'autonomous';
     viaClaim?: string;
     launchLane?: 'headless' | 'rerouted-interactive';
+    midWork?: boolean;
+    workEvidence?: string[];
   }): void {
     this.append({
       ts: new Date().toISOString(),
@@ -71,6 +107,35 @@ export class ReapLog {
       ...(e.viaClaim ? { viaClaim: e.viaClaim } : {}),
       machine: this.machineId?.(),
       ...(e.launchLane ? { launchLane: e.launchLane } : {}),
+      ...(e.midWork !== undefined ? { midWork: e.midWork } : {}),
+      ...(e.workEvidence && e.workEvidence.length > 0 ? { workEvidence: e.workEvidence } : {}),
+    });
+  }
+
+  /**
+   * Append one reap-notice delivery outcome record (reap-notify spec R1.3).
+   * Written as PAIRS by the notify path: once at enqueue (`enqueued`) and
+   * once at terminal state. Append-only; consumers take the latest record
+   * per noticeId as the current state.
+   */
+  recordNotify(e: {
+    noticeId: string;
+    topicId: number | null;
+    outcome: ReapNotifyOutcome;
+    /** Plain detail for the audit trail (e.g. the send error class). */
+    detail?: string;
+  }): void {
+    this.append({
+      ts: new Date().toISOString(),
+      type: 'notify',
+      session: e.noticeId,
+      tmuxSession: '-',
+      reason: e.detail ?? e.outcome,
+      disposition: `notify:${e.outcome}`,
+      machine: this.machineId?.(),
+      noticeId: e.noticeId,
+      ...(e.topicId !== null && e.topicId !== undefined ? { topicId: e.topicId } : {}),
+      outcome: e.outcome,
     });
   }
 
@@ -127,14 +192,33 @@ export class ReapLog {
   }
 
   private normalizeEntry(entry: Partial<ReapLogEntry>): ReapLogEntry {
-    const type = entry.type === 'skipped' ? 'skipped' : 'reaped';
+    // Whitelist the type — unknown types coerce to 'reaped' (legacy behavior),
+    // but 'notify' and 'skipped' pass through (reap-notify spec R1.3: the new
+    // type MUST survive normalization or notify records vanish on read).
+    const type =
+      entry.type === 'skipped' ? 'skipped' : entry.type === 'notify' ? 'notify' : 'reaped';
     const skipped = typeof entry.skipped === 'string' ? entry.skipped : undefined;
+    const outcome =
+      typeof entry.outcome === 'string' && NOTIFY_OUTCOMES.has(entry.outcome)
+        ? (entry.outcome as ReapNotifyOutcome)
+        : undefined;
     let disposition = entry.disposition;
     if (!disposition) {
-      disposition = type === 'skipped'
-        ? `skipped:${skipped ?? 'unknown'}`
-        : 'terminal';
+      disposition =
+        type === 'skipped'
+          ? `skipped:${skipped ?? 'unknown'}`
+          : type === 'notify'
+            ? `notify:${outcome ?? 'unknown'}`
+            : 'terminal';
     }
+
+    const launchLane =
+      entry.launchLane === 'headless' || entry.launchLane === 'rerouted-interactive'
+        ? entry.launchLane
+        : undefined;
+    const workEvidence = Array.isArray(entry.workEvidence)
+      ? entry.workEvidence.filter((v): v is string => typeof v === 'string')
+      : undefined;
 
     return {
       ts: typeof entry.ts === 'string' ? entry.ts : new Date(0).toISOString(),
@@ -146,6 +230,12 @@ export class ReapLog {
       origin: entry.origin,
       skipped,
       machine: entry.machine,
+      ...(launchLane ? { launchLane } : {}),
+      ...(typeof entry.midWork === 'boolean' ? { midWork: entry.midWork } : {}),
+      ...(workEvidence && workEvidence.length > 0 ? { workEvidence } : {}),
+      ...(typeof entry.noticeId === 'string' ? { noticeId: entry.noticeId } : {}),
+      ...(typeof entry.topicId === 'number' ? { topicId: entry.topicId } : {}),
+      ...(outcome ? { outcome } : {}),
     };
   }
 }

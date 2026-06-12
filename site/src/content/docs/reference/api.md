@@ -754,6 +754,11 @@ changes-requested, terminal). Deny-by-default inherited: no mandate → 403.
 - `POST /sessions/cleanup-stale`
 - `POST /sessions/create`
 - `POST /sessions/refresh`
+- `GET /sessions/resume-queue`
+- `POST /sessions/resume-queue/:id/cancel`
+- `POST /sessions/resume-queue/:id/requeue`
+- `POST /sessions/resume-queue/drain`
+- `POST /sessions/resume-queue/resume`
 - `POST /sessions/spawn`
 
 ## /shared-state

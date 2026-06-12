@@ -880,6 +880,14 @@ export interface RouteContext {
    *  (older boot paths). Powers GET /sessions/reaper observability. */
   sessionReaper?: import('../monitoring/SessionReaper.js').SessionReaper | null;
   reapLog?: import('../monitoring/ReapLog.js').ReapLog | null;
+  /** ResumeQueue + drainer (reap-notify spec R2.10). Null when Part B is off
+   *  or the queue is lock-disabled. Powers /sessions/resume-queue*. */
+  resumeQueue?: import('../monitoring/ResumeQueue.js').ResumeQueue | null;
+  resumeDrainer?: import('../monitoring/ResumeQueueDrainer.js').ResumeQueueDrainer | null;
+  /** Records an operator stop instruction (per-topic, or null = global) so the
+   *  drainer's R2.6 operator-stop validation can see stops that post-date an
+   *  entry's enqueue. Wired by the boot block alongside the queue. */
+  operatorStopRecorder?: ((topicId: number | null) => void) | null;
   /** AgentWorktreeReaper — reclaims stale CLI worktrees. Null when not wired.
    *  Powers GET /worktrees/agent-reaper observability. */
   agentWorktreeReaper?: import('../monitoring/AgentWorktreeReaper.js').AgentWorktreeReaper | null;
@@ -3832,12 +3840,24 @@ export function createRoutes(ctx: RouteContext): Router {
 
   router.post('/autonomous/stop-all', (_req, res) => {
     const result = stopAllAutonomousJobs(ctx.config.stateDir, ctx.state.getCoherenceJournal());
+    // Emergency stop reaches the resume queue (reap-notify R2.7): the
+    // queue-global pause flag is set (entries + states untouched, TTLs
+    // frozen); the explicit unpause lever is POST /sessions/resume-queue/resume.
+    try {
+      ctx.resumeQueue?.pause('autonomous stop-all');
+    } catch { /* the stop must succeed regardless */ }
     res.json({ ok: true, ...result });
   });
 
   router.post('/autonomous/sessions/:topic/stop', (req, res) => {
     const topic = req.params.topic;
     const stopped = stopAutonomousTopic(ctx.config.stateDir, topic, ctx.state.getCoherenceJournal());
+    // An explicit per-topic stop cancels that topic's queued resumes (R2.7).
+    try {
+      const topicNum = Number(topic);
+      if (Number.isFinite(topicNum)) ctx.resumeQueue?.cancelByTopic(topicNum);
+      ctx.operatorStopRecorder?.(Number.isFinite(topicNum) ? topicNum : null);
+    } catch { /* @silent-fallback-ok — an operator STOP must never fail because queue-cancel bookkeeping raised; an uncancelled entry is still recoverable via TTL + the cancel lever */ }
     res.status(stopped ? 200 : 404).json({ ok: stopped, topic });
   });
 
@@ -5129,6 +5149,81 @@ export function createRoutes(ctx: RouteContext): Router {
     const rawLimit = Number(req.query.limit);
     const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(Math.floor(rawLimit), 1000) : 200;
     res.json({ entries: ctx.reapLog.read(limit) });
+  });
+
+  // ── Resume Queue (reap-notify spec R2.10) ───────────────────────────
+  // The durable queue of mid-work reaped sessions awaiting revival. All
+  // Bearer-auth (router-level middleware). A wedged drainer is detectable
+  // from lastTickAt + paused + breaker state in the GET.
+
+  router.get('/sessions/resume-queue', (_req, res) => {
+    if (!ctx.resumeQueue) {
+      res.status(503).json({ error: 'resume-queue not available on this agent' });
+      return;
+    }
+    const snapshot = ctx.resumeQueue.snapshot();
+    const drainer = ctx.resumeDrainer?.status() ?? null;
+    res.json({
+      ...snapshot,
+      lastTickAt: drainer?.lastTickAt ?? null,
+      breaker: drainer
+        ? { open: drainer.breakerOpen, openUntil: drainer.breakerOpenUntil, consecutiveFailures: drainer.consecutiveFailures }
+        : null,
+      calmTicks: drainer?.calmTicks ?? null,
+    });
+  });
+
+  router.post('/sessions/resume-queue/:id/cancel', (req, res) => {
+    if (!ctx.resumeQueue) {
+      res.status(503).json({ error: 'resume-queue not available on this agent' });
+      return;
+    }
+    const ok = ctx.resumeQueue.cancel(req.params.id);
+    res.status(ok ? 200 : 404).json({ ok, id: req.params.id });
+  });
+
+  // Requeue clamps (R2.10): gave-up:* ONLY (never cancelled — an operator
+  // stop), refused 409 while paused (a Bearer holder cannot undo an
+  // emergency stop). Resets attempts + re-anchors the TTL clock.
+  router.post('/sessions/resume-queue/:id/requeue', (req, res) => {
+    if (!ctx.resumeQueue) {
+      res.status(503).json({ error: 'resume-queue not available on this agent' });
+      return;
+    }
+    const result = ctx.resumeQueue.requeue(req.params.id);
+    if (result.ok) {
+      res.json({ ok: true, id: req.params.id });
+      return;
+    }
+    const status = result.why === 'queue-paused' ? 409 : result.why === 'not-found' ? 404 : 409;
+    res.status(status).json({ ok: false, id: req.params.id, error: result.why });
+  });
+
+  // The explicit unpause lever (R2.7) — a forgotten pause is visible in the
+  // GET and reversible here, never a silent feature death.
+  router.post('/sessions/resume-queue/resume', (_req, res) => {
+    if (!ctx.resumeQueue) {
+      res.status(503).json({ error: 'resume-queue not available on this agent' });
+      return;
+    }
+    const wasPaused = ctx.resumeQueue.isPaused();
+    ctx.resumeQueue.unpause();
+    res.json({ ok: true, wasPaused });
+  });
+
+  // Manual single-step drain (R2.10): skips the calm-ticks requirement ONLY —
+  // every other deterministic gate still applies. Refused while paused.
+  router.post('/sessions/resume-queue/drain', async (_req, res) => {
+    if (!ctx.resumeQueue || !ctx.resumeDrainer) {
+      res.status(503).json({ error: 'resume-queue not available on this agent' });
+      return;
+    }
+    if (ctx.resumeQueue.isPaused()) {
+      res.status(409).json({ ok: false, error: 'queue-paused' });
+      return;
+    }
+    const result = await ctx.resumeDrainer.tick({ skipCalmTicks: true });
+    res.json({ ok: true, ...result });
   });
 
   // ── Guard Posture (GUARD-POSTURE-ENDPOINT-SPEC) ─────────────────────
@@ -13119,6 +13214,15 @@ export function createRoutes(ctx: RouteContext): Router {
               try { stopAutonomousTopic(ctx.config.stateDir, String(topicId), ctx.state.getCoherenceJournal()); } catch { /* best-effort */ }
               console.log(`[telegram-forward] sentinel emergency-stop: killed session "${sessionName}" for topic ${topicId}`);
             }
+            // Emergency stop reaches the resume queue (reap-notify R2.7): the
+            // MessageSentinel stop pauses the queue globally + cancels this
+            // topic's queued resumes — the killed session must not be
+            // auto-resurrected out from under the user's explicit stop.
+            try {
+              ctx.resumeQueue?.pause('message-sentinel emergency stop');
+              ctx.resumeQueue?.cancelByTopic(Number(topicId));
+              ctx.operatorStopRecorder?.(Number(topicId));
+            } catch { /* the stop must succeed regardless */ }
             if (classification.reason) {
               console.log(`[telegram-forward] sentinel stop reason: ${classification.reason}`);
             }

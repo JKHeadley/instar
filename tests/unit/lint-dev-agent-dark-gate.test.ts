@@ -305,28 +305,38 @@ describe('lint-dev-agent-dark-gate', () => {
       '39': 'monitoring.bootHealthBeacon.enabled',
       '58': 'monitoring.parallelWorkSentinel.enabled',
       '129': 'monitoring.sessionReaper.enabled',
-      '177': 'monitoring.agentWorktreeReaper.enabled',
-      '191': 'monitoring.mcpProcessReaper.enabled',
-      '205': 'monitoring.agentSleep.enabled',
-      '228': 'monitoring.failureLearning.enabled',
-      '260': 'monitoring.correctionLearning.enabled',
-      '332': 'monitoring.apprenticeshipCycleSla.enabled',
-      '340': 'monitoring.geminiCapacityEscalation.enabled',
-      '348': 'monitoring.releaseReadiness.enabled',
-      '389': 'threadline.a2aCheckIn.enabled',
-      '433': 'mentor.enabled',
-      '444': 'mentor.autonomousFix.enabled',
-      '459': 'mentee.enabled',
-      // MERGED (ws3OneVoice +8 from main; durable-inbound-message-queue
-      // CMT-1118 +41 from this branch). Verified by hand against the merged
-      // ConfigDefaults.ts: sessionPool block at 551, inboundQueue at 576,
-      // holdForStability at 605; cartographer entries follow.
-      '552': 'multiMachine.sessionPool.enabled',
-      '577': 'multiMachine.sessionPool.inboundQueue.enabled',
-      '606': 'multiMachine.sessionPool.holdForStability.enabled',
-      '751': 'cartographer.freshnessSweep.enabled',
-      '796': 'cartographer.conformanceAudit.llmEnrichment.enabled',
-      '821': 'cartographer.subtreeNav.llmRerank.enabled',
+      // reap-notify spec: the reapNotify block gained perTopic +
+      // maxImmediatePerFlush (and the CODE-defaulted-keys NOTE), shifting
+      // every entry below it by +10 (resumeQueue.* keys are deliberately
+      // ABSENT from ConfigDefaults — CODE defaults so the later fleet flip
+      // works). Composed with the WS3 one-voice +8 shift (the multiMachine
+      // seamlessness sub-block) for sessionPool and later. Each verified by
+      // hand against the MERGED ConfigDefaults.ts.
+      '187': 'monitoring.agentWorktreeReaper.enabled',
+      '201': 'monitoring.mcpProcessReaper.enabled',
+      '215': 'monitoring.agentSleep.enabled',
+      '238': 'monitoring.failureLearning.enabled',
+      '270': 'monitoring.correctionLearning.enabled',
+      '342': 'monitoring.apprenticeshipCycleSla.enabled',
+      '350': 'monitoring.geminiCapacityEscalation.enabled',
+      '358': 'monitoring.releaseReadiness.enabled',
+      '399': 'threadline.a2aCheckIn.enabled',
+      '443': 'mentor.enabled',
+      '454': 'mentor.autonomousFix.enabled',
+      '469': 'mentee.enabled',
+      '562': 'multiMachine.sessionPool.enabled',
+      // durable-inbound-message-queue (CMT-1118): the sessionPool block gained
+      // the inboundQueue (587) + holdForStability (616) sub-blocks (+41),
+      // composed with main's reap-notify +10 and ws3OneVoice +8 shifts.
+      // Verified by hand against the MERGED ConfigDefaults.ts.
+      '587': 'multiMachine.sessionPool.inboundQueue.enabled',
+      '616': 'multiMachine.sessionPool.holdForStability.enabled',
+      '761': 'cartographer.freshnessSweep.enabled',
+      // fix instar#1069: the freshnessSweep block gained the event-loop-safety
+      // fields (detectInWorker…scaffoldChunkNodes), shifting the two later
+      // cartographer entries by +11. Verified by hand against ConfigDefaults.ts.
+      '806': 'cartographer.conformanceAudit.llmEnrichment.enabled',
+      '831': 'cartographer.subtreeNav.llmRerank.enabled',
     };
     const actual = attributeRealConfigDefaults();
     expect(actual).toEqual(EXPECTED);

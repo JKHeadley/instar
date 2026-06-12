@@ -236,7 +236,7 @@ On resume, the sentinel issues a single probe send (a sentinel-template "self-te
 
 - New migrator step adds `pending-relay.*.sqlite`, `pending-relay.*.sqlite-wal`, `pending-relay.*.sqlite-shm`, and `pending-relay.*.sqlite.lock` to `.instar/.gitignore` (the WAL/SHM patterns matter — WAL mode produces sidecar files that would otherwise auto-commit). Regression test asserts `git check-ignore` reports all four patterns as ignored.
 - `BackupManager.includeFiles` allowlist deliberately **excludes** these files. Snapshots do not capture in-flight queue state.
-- On restore: sentinel checks each entry's `attempted_at` against `now()`; entries older than `now() - 5m` at startup are auto-purged with a one-line restore log.
+- On restore: sentinel evaluates each entry's staleness as `max(attempted_at, next_attempt_at)` against the configured purge age — a row HELD for future release (its `next_attempt_at` still ahead of the cutoff) is NOT stale and survives the restart. (Semantics updated by the reap-notify spec R1.6: the original `attempted_at`-only cutoff was the mechanism behind the 2026-06-05 silent-deletion incident — a held quiet-hours notice crossing a routine restart was eaten at boot.) Anomaly clamp: a `next_attempt_at` more than 7 days in the future is treated as corrupt at restore-purge (purged + logged per-row) — no legitimate writer holds that long. Stale rows are auto-purged LOUDLY: per-row warn lines + a degradation report.
 - Multi-machine: because the file is gitignored AND restore-purged, machine A's queue can never replay on machine B.
 
 #### 3i. Telemetry

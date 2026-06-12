@@ -78,6 +78,17 @@ export interface Session {
    *  (e.g. 'idle-zombie', 'reaped-idle', 'manual-kill'). Undefined on records
    *  ended before this field existed. */
   endedReason?: string;
+  /** True when the kill interrupted evidenced work (reap-notify spec R2.1:
+   *  any non-marker work evidence at kill time). Stamped by terminateSession
+   *  alongside the sessionReaped emission. Undefined on legacy records. */
+  endedMidWork?: boolean;
+  /** The clamped work-evidence names behind endedMidWork (enum-clamped at the
+   *  chokepoint — see src/core/WorkEvidence.ts). */
+  endedWorkEvidence?: string[];
+  /** Working directory the session was spawned with (reap-notify R2.8/L13 —
+   *  recorded so a resume-queue entry can revive the session in ITS tree).
+   *  Absent on legacy records ⇒ the module project dir. */
+  cwd?: string;
   /** Ghost-record supersession (one-running-record-per-tmux invariant): when a
    *  NEW record registers as running for a tmux session name, any OTHER record
    *  still marked running/starting for that same name is closed with this field
@@ -322,6 +333,12 @@ export interface JobDefinition {
    *  Example: `curl -sf http://localhost:3000/updates | python3 -c "import sys,json; exit(0 if json.load(sys.stdin).get('updateAvailable') else 1)"`
    */
   gate?: string;
+  /** Reap-notify spec R2.2 — opt this job INTO the mid-work resume queue.
+   *  Default false: jobs already have cron recurrence as their recovery path,
+   *  and instar jobs carry no idempotency contract, so a reap-triggered early
+   *  re-run must be a deliberate per-job choice. Older agents' job parsers
+   *  ignore unknown fields (additive-safe). */
+  resumeOnReap?: boolean;
   /** Tags for filtering/grouping */
   tags?: string[];
   /** Telegram topic ID this job reports to (auto-created if not set) */
@@ -3954,6 +3971,39 @@ export interface MonitoringConfig {
   reapNotify?: {
     enabled?: boolean;
     coalesceWindowMs?: number;
+    /** v2 per-topic grouping (reap-notify spec R1.1). false = legacy
+     *  single-buffer behavior — the grouping rollback lever. */
+    perTopic?: boolean;
+    /** Max notices released IMMEDIATE in one flush (R1.5). */
+    maxImmediatePerFlush?: number;
+    /** Durable delivery via store + ReapNoticeDrain (R1.3). false reverts
+     *  delivery to the legacy direct send — the durability rollback lever
+     *  (grouping unaffected; R1's durability claim lapses, stated).
+     *  CODE-defaulted true; deliberately NOT in ConfigDefaults. */
+    drainEnabled?: boolean;
+  };
+  /**
+   * Mid-work resume queue (reap-notify spec Part B). Classified in
+   * DARK_GATE_EXCLUSIONS (cost-bearing: the drainer spawns sessions / makes
+   * LLM calls). ALL keys are CODE-defaulted — deliberately NOT registered in
+   * ConfigDefaults, so the later fleet flip of the shipped `dryRun` default
+   * actually takes effect. Shipped posture: enabled + dryRun (observe-only)
+   * fleet-wide; the dev agent flips dryRun locally for the soak.
+   */
+  resumeQueue?: {
+    enabled?: boolean;
+    dryRun?: boolean;
+    drainIntervalSec?: number;
+    requiredCalmTicks?: number;
+    maxAttempts?: number;
+    maxResurrections?: number;
+    entryTtlHours?: number;
+    maxQueueSize?: number;
+    breakerThreshold?: number;
+    breakerCooldownMin?: number;
+    includeOperatorKills?: boolean;
+    /** The observe-only Tier 1 LLM check's own experiment lever. */
+    tier1Check?: boolean;
   };
   /**
    * AgentWorktreeReaper (Responsible Resource Usage — OS resource hygiene).

@@ -254,7 +254,7 @@ describe('active-process relaxation parity — reaper carries the bypass to term
     h.setNow(1_240_000); await h.reaper.tick(); // flat ⇒ candidate 2 → reap-pending
     h.setNow(1_360_000); await h.reaper.tick(); // grace elapsed → performReap
     expect(h.terminate).toHaveBeenCalledTimes(1);
-    expect(h.terminate).toHaveBeenCalledWith('s1', 'reaped-idle', { bypassActiveProcessKeep: true });
+    expect(h.terminate).toHaveBeenCalledWith('s1', 'reaped-idle', { bypassActiveProcessKeep: true, workEvidence: [] });
   });
 
   it('reap via stale-idle relaxation (no CPU dep) ⇒ bypassActiveProcessKeep:true', async () => {
@@ -269,7 +269,7 @@ describe('active-process relaxation parity — reaper carries the bypass to term
     h.setNow(1_120_000); await h.reaper.tick(); // candidate 2 → reap-pending
     h.setNow(1_240_000); await h.reaper.tick(); // grace elapsed → performReap
     expect(h.terminate).toHaveBeenCalledTimes(1);
-    expect(h.terminate).toHaveBeenCalledWith('s1', 'reaped-idle', { bypassActiveProcessKeep: true });
+    expect(h.terminate).toHaveBeenCalledWith('s1', 'reaped-idle', { bypassActiveProcessKeep: true, workEvidence: [] });
   });
 
   it('reap of a session with NO active process ⇒ bypassActiveProcessKeep:false (no-op bypass)', async () => {
@@ -281,6 +281,6 @@ describe('active-process relaxation parity — reaper carries the bypass to term
     h.setNow(1_120_000); await h.reaper.tick(); // candidate 2 → reap-pending
     h.setNow(1_240_000); await h.reaper.tick(); // grace elapsed → performReap
     expect(h.terminate).toHaveBeenCalledTimes(1);
-    expect(h.terminate).toHaveBeenCalledWith('s1', 'reaped-idle', { bypassActiveProcessKeep: false });
+    expect(h.terminate).toHaveBeenCalledWith('s1', 'reaped-idle', { bypassActiveProcessKeep: false, workEvidence: [] });
   });
 });
