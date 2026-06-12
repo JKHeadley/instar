@@ -274,8 +274,43 @@ export class PostUpdateMigrator {
     this.migrateCartographerDevGate(result);
     this.migrateCommitmentOwnerBackfill(result);
     this.migrateMultiMachinePostureReviewDimension(result);
+    this.migrateConformanceGateAutoInvoke(result);
 
     return result;
+  }
+
+  // ── Standards-Conformance Gate auto-invocation (2026-06-12, topic 13481) ──
+  //
+  // The gate shipped 2026-05-24 (#373) staged for "wire it to fire during
+  // spec-review" — and that staging lived only as registry prose, so it sat
+  // callable-but-never-called for 19 days (operator finding). The wiring now
+  // lives in spec-converge Phase 1 as a mandatory step; this migration delivers
+  // the updated skill content to deployed agents (Migration Parity, "updating
+  // existing skill content"). Same pattern as migrateMultiMachinePostureReview-
+  // Dimension: marker-sniffed, fingerprint-guarded, customized files untouched,
+  // idempotent. Runs AFTER the posture migration so an agent that takes both in
+  // one update converges on the current bundled file either way.
+  private migrateConformanceGateAutoInvoke(result: MigrationResult): void {
+    const MARKER = 'Standards-Conformance Gate auto-invocation';
+    try {
+      const installed = path.join(this.config.projectDir, '.claude', 'skills', 'spec-converge', 'SKILL.md');
+      if (!fs.existsSync(installed)) return; // fresh installs get the bundled copy
+      const current = fs.readFileSync(installed, 'utf8');
+      if (current.includes(MARKER)) return; // already updated — idempotent
+      if (!current.includes('# /spec-converge')) {
+        result.skipped.push('spec-converge SKILL (conformance auto-invoke): customized — left untouched');
+        return;
+      }
+      const bundled = path.join(__dirname, '..', '..', 'skills', 'spec-converge', 'SKILL.md');
+      if (!fs.existsSync(bundled)) return;
+      const next = fs.readFileSync(bundled, 'utf8');
+      if (next.includes(MARKER)) {
+        fs.writeFileSync(installed, next);
+        result.upgraded.push('spec-converge SKILL (Phase-1 Standards-Conformance Gate auto-invocation)');
+      }
+    } catch (err) {
+      result.errors.push(`spec-converge SKILL (conformance auto-invoke): ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 
   // ── WS3.2 commitment owner backfill (MULTI-MACHINE-SEAMLESSNESS-SPEC, F19) ──
