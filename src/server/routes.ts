@@ -650,6 +650,23 @@ export interface RouteContext {
   selfKnowledgeTree: SelfKnowledgeTree | null;
   coverageAuditor: CoverageAuditor | null;
   topicResumeMap: TopicResumeMap | null;
+  /** Topic Profile (TOPIC-PROFILE-SPEC §10.1/§12) — store + resolver + write
+   *  surface + shared confirm slots behind GET/POST /topic-profile/:topicId.
+   *  Null when the profile store failed to initialize; the routes then report
+   *  unwired honestly (503). */
+  topicProfile?: {
+    store: import('../core/TopicProfileStore.js').TopicProfileStore;
+    resolver: import('../core/TopicProfileResolver.js').TopicProfileResolver;
+    surface: import('../core/topicProfileWriteSurface.js').TopicProfileWriteSurface;
+    confirmSlots: import('../core/topicProfileIngress.js').ProfileConfirmSlots;
+    /** §8 orchestrator — the model-swap route serializes its live-session
+     *  mutation through orchestrator.runExclusive (the §5.1/§9 per-topic
+     *  lock pass-through). Null until the server wiring constructs it. */
+    orchestrator?: import('../core/TopicProfileOrchestrator.js').TopicProfileOrchestrator | null;
+    /** §5.3 transfer carrier — read-surface staleness (`pendingTransferPull`)
+     *  + the /pool/transfer acquire seam. Null on single-machine installs. */
+    carrier?: import('../core/TopicProfileTransferCarrier.js').TopicProfileTransferCarrier | null;
+  } | null;
   /** Agent-initiated session respawn. Null when no Telegram adapter is
    *  wired (v1 requires a Telegram-bound session). */
   sessionRefresh: SessionRefresh | null;
@@ -5296,7 +5313,21 @@ export function createRoutes(ctx: RouteContext): Router {
       return;
     }
     try {
-      const result = await ctx.modelTierSwap.swap(req.params.name, tier);
+      // TOPIC-PROFILE-SPEC §9 — the in-flight swap is a live-session mutation:
+      // serialize it through the topic's single-writer lock (orchestrator
+      // runExclusive) so it can never interleave with a profile-triggered
+      // kill/respawn on the same topic. The escalation reconciler hook drives
+      // this same route, so one wrap covers both initiators. No orchestrator /
+      // no topic binding ⇒ today's unserialized behavior (single-machine boot
+      // window / non-topic sessions).
+      const performSwap = (): Promise<import('../core/ModelSwapService.js').SwapResult> =>
+        ctx.modelTierSwap!.swap(req.params.name, tier);
+      const orch = ctx.topicProfile?.orchestrator ?? null;
+      const swapTopicId = ctx.telegram?.getTopicForSession?.(req.params.name) ?? null;
+      const result =
+        orch && swapTopicId !== null
+          ? await orch.runExclusive(swapTopicId, performSwap)
+          : await performSwap();
       const httpStatus =
         result.status === 'refused'
           ? result.reason === 'unknown-session'
@@ -5313,6 +5344,237 @@ export function createRoutes(ctx: RouteContext): Router {
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
     }
+  });
+
+  // ── Topic Profile (TOPIC-PROFILE-SPEC §10.1 / §12) ────────────────────────
+  // GET: the read surface (Bearer — profile entries carry the operator's
+  // platform uid in updatedBy). POST: the TOKEN-TRUST write surface —
+  // authenticated by Bearer + X-Instar-Request like sibling mutating routes,
+  // recorded as `updatedBy:'api-token'`, NEVER operator-attributed; a
+  // body-supplied updatedBy is ignored by construction. The §12.5 key clamp:
+  // numeric Telegram topic id, or `slack:<channel>[:<thread>]`.
+  const TOPIC_PROFILE_KEY_RE = /^(?:\d{1,16}|slack:[A-Za-z0-9._-]{1,64}(?::[0-9.]{1,32})?)$/;
+
+  const topicProfileRefusalStatus = (reason: string | undefined): number => {
+    switch (reason) {
+      case 'validation':
+      case 'empty-patch':
+        return 400;
+      case 'no-bound-operator':
+      case 'not-bound-operator':
+        return 403;
+      case 'disabled':
+      case 'local-model-binding-active':
+      case 'lock-timeout':
+      case 'nothing-to-undo':
+      case 'nothing-parked':
+      case 'cooldown-confirm-required':
+        return 409;
+      case 'flush-failed':
+        return 500;
+      default:
+        return 400;
+    }
+  };
+
+  router.get('/topic-profile/:topicId', (req, res) => {
+    if (!TOPIC_PROFILE_KEY_RE.test(req.params.topicId)) {
+      res.status(400).json({ error: 'Invalid topic key — numeric topic id or slack:<channel>[:<thread>]' });
+      return;
+    }
+    if (!ctx.topicProfile) {
+      res.status(503).json({ error: 'Topic profiles not wired on this server' });
+      return;
+    }
+    const key = req.params.topicId;
+    const entry = ctx.topicProfile.store.get(key);
+    const resolved = ctx.topicProfile.resolver.resolve(key);
+    // §5.3 — reads name their staleness: while a transfer pull from the
+    // previous owner is pending, the local entry is served (a slightly-stale
+    // operator pin beats defaults) but flagged "possibly stale".
+    let pendingTransferPull = false;
+    try {
+      pendingTransferPull = ctx.topicProfile.carrier?.hasPendingPull(key) ?? false;
+    } catch {
+      /* @silent-fallback-ok: the staleness flag is read-surface annotation only — a carrier read error must never fail the profile read; the flag defaults to false (TOPIC-PROFILE-SPEC §5.3) */
+    }
+    res.json({
+      topicId: key,
+      resolved: {
+        framework: resolved.framework,
+        model: resolved.model ?? null,
+        modelTier: resolved.modelTier,
+        thinkingMode: resolved.thinkingMode ?? null,
+        escalationOverride: resolved.escalationOverride,
+        sources: resolved.sources,
+      },
+      // Once-per-transition fallback notices that fired on THIS resolution
+      // (the read consumed them — surfaced here rather than dropped).
+      notices: resolved.notices,
+      pin: entry?.current ?? null,
+      previous: entry?.previous ?? null,
+      parked: entry?.parked ?? null,
+      intendedProfile: entry?.intendedProfile ?? null,
+      breakerCount: entry?.breakerCount ?? 0,
+      // §5.3 staleness annotation: true while a pull from this topic's
+      // previous owner is pending — the entry above is "as of when this topic
+      // last lived here — possibly stale".
+      pendingTransferPull,
+      ...(pendingTransferPull && entry?.current
+        ? { staleness: 'pending-transfer-pull — entry is as of when this topic last lived on this machine (possibly stale)' }
+        : {}),
+    });
+  });
+
+  const requireTopicProfileWrite = (req: import('express').Request, res: import('express').Response):
+    | { key: string; surface: NonNullable<typeof ctx.topicProfile>['surface'] }
+    | null => {
+    if (req.headers['x-instar-request'] !== '1') {
+      res.status(403).json({ error: 'Topic-profile writes require the X-Instar-Request: 1 intent header' });
+      return null;
+    }
+    if (!TOPIC_PROFILE_KEY_RE.test(req.params.topicId)) {
+      res.status(400).json({ error: 'Invalid topic key — numeric topic id or slack:<channel>[:<thread>]' });
+      return null;
+    }
+    if (!ctx.topicProfile) {
+      res.status(503).json({ error: 'Topic profiles not wired on this server' });
+      return null;
+    }
+    return { key: req.params.topicId, surface: ctx.topicProfile.surface };
+  };
+
+  router.post('/topic-profile/:topicId', async (req, res) => {
+    const gate = requireTopicProfileWrite(req, res);
+    if (!gate) return;
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const patch: Record<string, string | null> = {};
+    for (const field of ['framework', 'model', 'modelTier', 'thinkingMode', 'escalationOverride'] as const) {
+      if (!(field in body)) continue;
+      const value = body[field];
+      if (value !== null && typeof value !== 'string') {
+        res.status(400).json({ error: `"${field}" must be a string or null` });
+        return;
+      }
+      patch[field] = value;
+    }
+    // §10.1: a body-supplied updatedBy is IGNORED — the principal is the
+    // shared token, stamped server-side as 'api-token'.
+    try {
+      const result = await gate.surface.applyWrite({
+        topicKey: gate.key,
+        patch,
+        principal: { kind: 'token' },
+        origin: 'http',
+      });
+      if (!result.ok) {
+        res.status(topicProfileRefusalStatus(result.refusal?.reason)).json({
+          ok: false,
+          reason: result.refusal?.reason,
+          ...(result.refusal?.validation
+            ? { validation: { field: result.refusal.validation.field, failure: result.refusal.validation.failure, reason: result.refusal.validation.reason } }
+            : {}),
+          message: result.reply,
+        });
+        return;
+      }
+      res.json({
+        ok: true,
+        appliedLive: result.appliedLive ?? [],
+        shadowed: result.shadowed ?? [],
+        refusedFields: result.refusedFields ?? [],
+        noop: result.noop ?? false,
+        supersededParked: result.supersededParked ?? false,
+        message: result.reply,
+        pin: ctx.topicProfile?.store.resolve(gate.key) ?? null,
+      });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  // §10.1 propose lane — registers an AGENT-COMPOSED structured delta in the
+  // server-side slot and sends the SERVER-rendered echo to the topic; the
+  // operator's first-party "yes" (recognized by the ingress parse) converts
+  // it to the operator-attributed write. Never writes the store itself.
+  router.post('/topic-profile/:topicId/propose', async (req, res) => {
+    const gate = requireTopicProfileWrite(req, res);
+    if (!gate) return;
+    if (!ctx.topicProfile || !ctx.telegram || !/^\d+$/.test(gate.key)) {
+      res.status(409).json({ error: 'Propose-confirm needs a platform-bound numeric topic on this server' });
+      return;
+    }
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const patch: Record<string, string | null> = {};
+    for (const field of ['framework', 'model', 'modelTier', 'thinkingMode', 'escalationOverride'] as const) {
+      if (!(field in body)) continue;
+      const value = body[field];
+      if (value !== null && typeof value !== 'string') {
+        res.status(400).json({ error: `"${field}" must be a string or null` });
+        return;
+      }
+      patch[field] = value;
+    }
+    const rendered = gate.surface.renderProposalEcho(gate.key, patch);
+    if (!rendered.ok) {
+      res.status(400).json({ ok: false, message: rendered.reply });
+      return;
+    }
+    const armed = ctx.topicProfile.confirmSlots.arm(gate.key, 'propose-confirm', rendered.patch, rendered.echo, 'agent-composed');
+    if (!armed.ok) {
+      res.status(429).json({ ok: false, reason: armed.reason, message: 'Proposal churn cooldown — re-state the intent later' });
+      return;
+    }
+    try {
+      const sent = await ctx.telegram.sendToTopic(Number(gate.key), rendered.echo);
+      ctx.topicProfile.confirmSlots.recordEchoMessageId(gate.key, sent.messageId);
+      res.json({ ok: true, echo: rendered.echo, superseded: armed.superseded });
+    } catch (err) {
+      // Echo undelivered — tear the slot down (an unseen echo must never be
+      // confirmable; matchConfirm would refuse on no-echo-id anyway).
+      ctx.topicProfile.confirmSlots.disarm(gate.key);
+      res.status(502).json({ ok: false, error: `Echo delivery failed: ${err instanceof Error ? err.message : String(err)}` });
+    }
+  });
+
+  // §10.3 / §5.2(b) recovery surfaces (token-trust like the main POST).
+  router.post('/topic-profile/:topicId/undo', async (req, res) => {
+    const gate = requireTopicProfileWrite(req, res);
+    if (!gate) return;
+    const result = await gate.surface.undo({ topicKey: gate.key, principal: { kind: 'token' }, origin: 'http' });
+    if (!result.ok) {
+      res.status(topicProfileRefusalStatus(result.refusal?.reason)).json({ ok: false, reason: result.refusal?.reason, message: result.reply });
+      return;
+    }
+    res.json({ ok: true, message: result.reply, pin: ctx.topicProfile?.store.resolve(gate.key) ?? null });
+  });
+
+  router.post('/topic-profile/:topicId/clear', async (req, res) => {
+    const gate = requireTopicProfileWrite(req, res);
+    if (!gate) return;
+    const result = await gate.surface.clear({ topicKey: gate.key, principal: { kind: 'token' }, origin: 'http' });
+    if (!result.ok) {
+      res.status(topicProfileRefusalStatus(result.refusal?.reason)).json({ ok: false, reason: result.refusal?.reason, message: result.reply });
+      return;
+    }
+    res.json({ ok: true, message: result.reply, pin: ctx.topicProfile?.store.resolve(gate.key) ?? null });
+  });
+
+  router.post('/topic-profile/:topicId/reapply', async (req, res) => {
+    const gate = requireTopicProfileWrite(req, res);
+    if (!gate) return;
+    const confirmed = (req.body ?? {}).confirm === true;
+    const result = await gate.surface.reapply({ topicKey: gate.key, principal: { kind: 'token' }, origin: 'http', confirmed });
+    if (!result.ok) {
+      res.status(topicProfileRefusalStatus(result.refusal?.reason)).json({
+        ok: false,
+        reason: result.refusal?.reason,
+        needsConfirm: result.needsConfirm ?? false,
+        message: result.reply,
+      });
+      return;
+    }
+    res.json({ ok: true, message: result.reply, pin: ctx.topicProfile?.store.resolve(gate.key) ?? null });
   });
 
   // Rate limit session spawning — each session is a real Claude Code process.
@@ -9947,6 +10209,20 @@ export function createRoutes(ctx: RouteContext): Router {
         };
         if (casAndJournal({ type: 'place', machineId: target }, 'tplace')) {
           placedOwnership = casAndJournal({ type: 'claim', machineId: target }, 'tclaim');
+          // TOPIC-PROFILE-SPEC §5.3 acquire seam (deterministic-transfer arm):
+          // when THIS machine is the transfer target, the landed tclaim is an
+          // ownership ACQUIRE — pull the topic's profile from its previous
+          // owner. (target !== self: the target machine fires its own acquire
+          // seam when the first forwarded message lands — deliverMessage
+          // onAccepted; firing here would stage a pull on a non-owner, which
+          // the carrier's apply-time ownership recheck would just discard.)
+          if (placedOwnership && target === self && prevOwner && prevOwner !== self) {
+            try {
+              ctx.topicProfile?.carrier?.onTopicAcquired(topicId, prevOwner);
+            } catch {
+              /* @silent-fallback-ok: the §5.3 pull is fire-and-forget enrichment of the transfer — a carrier failure must never fail the transfer itself; the durable retry ledger re-files on the next acquire/tick (TOPIC-PROFILE-SPEC §5.3) */
+            }
+          }
         } else {
           // A resting 'placing' record already naming the target (legacy pre-fix
           // state, or a raced earlier transfer) → confirm the claim (placing→active),
@@ -9954,6 +10230,14 @@ export function createRoutes(ctx: RouteContext): Router {
           const cur = ctx.sessionOwnershipRegistry.read(topicId);
           if (cur?.status === 'placing' && cur.ownerMachineId === target) {
             placedOwnership = casAndJournal({ type: 'claim', machineId: target }, 'tclaim');
+            // §5.3 acquire seam — same self-target arm as the place→claim path above.
+            if (placedOwnership && target === self && prevOwner && prevOwner !== self) {
+              try {
+                ctx.topicProfile?.carrier?.onTopicAcquired(topicId, prevOwner);
+              } catch {
+                /* @silent-fallback-ok: fire-and-forget §5.3 pull — never fails the transfer; the durable ledger re-files (TOPIC-PROFILE-SPEC §5.3) */
+              }
+            }
           }
         }
       }
@@ -12596,6 +12880,10 @@ export function createRoutes(ctx: RouteContext): Router {
           firstName: fromFirstName,
           messageThreadId: topicId,
           viaLifeline: true,
+          // TOPIC-PROFILE-SPEC §10.1 round-5: forwarded content never matches
+          // any profile-ingress recognition. An upgraded lifeline sets this;
+          // its absence (older lifeline) reads as not-forwarded.
+          ...(req.body.forwarded === true ? { forwarded: true } : {}),
         },
       };
 

@@ -19,6 +19,24 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 import { loadConfig, ensureStateDir, detectTmuxPath, detectGeminiPath } from '../core/Config.js';
 import { isNonFatalUncaught, shouldLogStackForUncaught } from '../core/uncaughtExceptionPolicy.js';
 import { resolveDevAgentGate } from '../core/devAgentGate.js';
+import { parseProfileTrigger, platformMessageIdFrom } from '../core/topicProfileIngress.js';
+import {
+  TopicProfileOrchestrator,
+  resolvedToApplied,
+  type OrchestratorConfig as TopicProfileOrchestratorConfig,
+  type ProfileSpawnFailureClass,
+  type TopicProfileOrchestratorDeps,
+} from '../core/TopicProfileOrchestrator.js';
+import { CodexResumeMap, type CodexSpawnFence } from '../core/CodexResumeMap.js';
+import { paneIdleWithEmptyInput } from '../core/ModelSwapService.js';
+import { escalatedModelIds, type TierEscalationConfig } from '../core/ModelTierEscalation.js';
+import { activeAutonomousJobs } from '../core/AutonomousSessions.js';
+import { TopicProfileTransferCarrier, createTopicProfilePullHandler } from '../core/TopicProfileTransferCarrier.js';
+import type { SendPullOutcome, TopicProfilePullResponse } from '../core/TopicProfileTransferCarrier.js';
+import type { ResolvedTopicProfile } from '../core/TopicProfileResolver.js';
+import type { TopicProfileStore } from '../core/TopicProfileStore.js';
+import type { TopicResumeMap } from '../core/TopicResumeMap.js';
+import type { IdleReading } from '../core/classifyProfileChange.js';
 import { closeAllSqlite } from '../core/SqliteRegistry.js';
 import { SessionManager } from '../core/SessionManager.js';
 import { StateManager } from '../core/StateManager.js';
@@ -442,10 +460,58 @@ let _topicFrameworks: Record<string, 'claude-code' | 'codex-cli'> = {};
  *  Initialized in startServer(); consulted by resolveTopicFramework on every spawn. */
 let _topicFrameworksStore: import('../core/TopicFrameworksStore.js').TopicFrameworksStore | null = null;
 let _topicLocalModelStore: import('../core/TopicLocalModelStore.js').TopicLocalModelStore | null = null;
+/** Topic Profile (§5.1): the sticky per-topic profile store. The framework
+ *  arm of resolution reads THIS (the legacy topic-frameworks file is a
+ *  one-directional seed + store-written mirror). Initialized in startServer(). */
+let _topicProfileStore: import('../core/TopicProfileStore.js').TopicProfileStore | null = null;
+/** Topic Profile (§5.2): the single resolution point feeding spawn launch
+ *  params. Initialized in startServer() alongside the store. */
+let _topicProfileResolver: import('../core/TopicProfileResolver.js').TopicProfileResolver | null = null;
+/** Topic Profile (§5.2/§10): the ONE write engine behind every write surface
+ *  (conversational / /topic / /route / HTTP / recovery writes). Initialized in
+ *  startServer() alongside the store + resolver. */
+let _topicProfileWriteSurface: import('../core/topicProfileWriteSurface.js').TopicProfileWriteSurface | null = null;
+/** Topic Profile (§10.1/§10.4): the shared armed-confirm slot manager —
+ *  propose-confirm / switch-now / re-apply-cooldown all share ONE slot per
+ *  topic. */
+let _topicProfileConfirmSlots: import('../core/topicProfileIngress.js').ProfileConfirmSlots | null = null;
+/** §5.2(d) legacy respawn hook — bound in wireTelegramCallbacks (it needs the
+ *  telegram adapter + session manager in scope). Today's exact /route
+ *  behavior: drop the resume UUID, kill, CONTINUATION respawn. */
+let _profileLegacyRespawn: ((topicKey: string) => Promise<{ respawned: boolean; error?: string }>) | null = null;
+/** §8 disclosure hook — bound in wireTelegramCallbacks (platform adapter send). */
+let _profileDisclose: ((topicKey: string, text: string) => Promise<void>) | null = null;
+/** Topic Profile §8 (TOPIC-PROFILE-SPEC): the orchestration core — debounce
+ *  slots, idle-gated kill/respawn, resume-writer gates, §10.4 breaker, §14
+ *  dry-run regime. Constructed in startServer() beside the write surface. */
+let _topicProfileOrchestrator: TopicProfileOrchestrator | null = null;
+/** Topic Profile §7: per-topic codex rollout-id capture-at-kill (the
+ *  CodexResumeMap prerequisite sub-task). Constructed beside the orchestrator. */
+let _codexResumeMap: CodexResumeMap | null = null;
+/** Topic Profile §7: the codex spawn fence recorded at launch (spawn
+ *  timestamp + pane cwd) — capture-at-kill validates candidates against it. */
+const _codexSpawnFences = new Map<string, CodexSpawnFence>();
+/** Topic Profile §5.3: the transfer-follow carrier (pull-at-acquire).
+ *  Constructed in the mesh block; null on single-machine installs. */
+let _topicProfileCarrier: import('../core/TopicProfileTransferCarrier.js').TopicProfileTransferCarrier | null = null;
+/** Topics whose CURRENT spawn attempt was initiated by the orchestrator's own
+ *  respawn phase — the spawn chokepoint must not double-report the failure to
+ *  the §10.4 breaker (the orchestrator records its own spawn outcome). */
+const _orchestratorSpawnInFlight = new Set<string>();
+/** §5.3 "possibly stale" read disclosure — once per (topic, process). */
+const _pendingPullStaleDisclosed = new Set<string>();
 /** Default framework for sessions when no per-topic override is set. */
 let _defaultFramework: 'claude-code' | 'codex-cli' = 'claude-code';
 
 function resolveTopicFramework(topicId: number | undefined): 'claude-code' | 'codex-cli' {
+  // Topic Profile §5.1 rewire: the profile store's framework field is the
+  // authoritative per-topic layer (it was seeded one-directionally from the
+  // legacy store at first load). The resolver adds the §5.2 launchability
+  // fallback. Legacy layers remain below for the not-yet-wired boot window.
+  if (topicId !== undefined && _topicProfileResolver) {
+    const fw = _topicProfileResolver.resolve(topicId).framework;
+    if (fw === 'claude-code' || fw === 'codex-cli') return fw;
+  }
   if (topicId !== undefined && _topicFrameworksStore) {
     const stored = _topicFrameworksStore.get(topicId);
     if (stored === 'claude-code' || stored === 'codex-cli') return stored;
@@ -455,6 +521,38 @@ function resolveTopicFramework(topicId: number | undefined): 'claude-code' | 'co
   }
   return _defaultFramework;
 }
+/**
+ * Topic Profile §10.3 — append one structured line to the profile audit
+ * trail (logs/topic-profile-changes.jsonl). Size-capped like sibling audit
+ * logs (simple head-truncation rotation at ~5MB). Never the triggering turn
+ * text or any message content — structured deltas + verified principals only.
+ */
+let _topicProfileAuditSeq = 0;
+function appendTopicProfileAudit(stateDir: string, event: Record<string, unknown>): string {
+  // The audit sequence stamp is included in rendered disclosures (§8 — so the
+  // relay's exact-duplicate window can never silently swallow a repeat notice).
+  const seq = `${Date.now().toString(36)}.${++_topicProfileAuditSeq}`;
+  try {
+    const logsDir = path.join(stateDir, '..', 'logs');
+    fs.mkdirSync(logsDir, { recursive: true });
+    const auditPath = path.join(logsDir, 'topic-profile-changes.jsonl');
+    try {
+      const stat = fs.statSync(auditPath);
+      if (stat.size > 5 * 1024 * 1024) {
+        // Keep the newest half on overflow — same pragmatic cap as siblings.
+        const lines = fs.readFileSync(auditPath, 'utf-8').split('\n');
+        fs.writeFileSync(auditPath, lines.slice(Math.floor(lines.length / 2)).join('\n'));
+      }
+    } catch { /* @silent-fallback-ok: no audit file yet — the trim is a best-effort size cap, the append below recreates it (TOPIC-PROFILE-SPEC §10.3) */ }
+    fs.appendFileSync(auditPath, `${JSON.stringify({ ts: new Date().toISOString(), seq, ...event })}\n`);
+  } catch {
+    // @silent-fallback-ok: the topic-profile change audit is best-effort —
+    // resolution/writes must NEVER fail on an audit-sink error (a full disk or
+    // a transient fs fault can't break profile resolution) (TOPIC-PROFILE-SPEC §10.3).
+  }
+  return seq;
+}
+
 let _projectDir: string = process.cwd();
 let _sharedIntelligence: import('../core/types.js').IntelligenceProvider | null = null;
 let _selfKnowledgeTree: SelfKnowledgeTree | null = null;
@@ -669,10 +767,24 @@ async function spawnSessionForTopic(
     }
   }
 
-  // Resolve framework EARLY — needed for the inline Telegram-relay block
-  // (the block is the same for both frameworks today, but the helper accepts
-  // framework so future divergence stays structural rather than ad-hoc).
-  const framework = resolveTopicFramework(topicId);
+  // Resolve the FULL topic profile EARLY (Topic Profile §5.2 — the single
+  // resolution point: framework + model + thinking mode, with the read-time
+  // clamp + launchability fallback already applied). resolveTopicFramework
+  // delegates to the same resolver, so both reads agree by construction.
+  const resolvedProfile = _topicProfileResolver?.resolve(topicId) ?? null;
+  const framework = (resolvedProfile?.framework === 'claude-code' || resolvedProfile?.framework === 'codex-cli'
+    || resolvedProfile?.framework === 'gemini-cli' || resolvedProfile?.framework === 'pi-cli')
+    ? resolvedProfile.framework
+    : resolveTopicFramework(topicId);
+  // §5.2 fallback notices are once-per-transition deduped by the resolver —
+  // surface any that fired on this resolution to the topic.
+  if (resolvedProfile && resolvedProfile.notices.length > 0) {
+    for (const notice of resolvedProfile.notices) {
+      try {
+        await telegram.sendToTopic(topicId, notice);
+      } catch { /* notice delivery is best-effort */ }
+    }
+  }
 
   // Large bootstrap messages (e.g. CONTINUATION context with full thread history)
   // can exceed tmux send-keys limits. Write to a temp file and inject a reference,
@@ -742,12 +854,24 @@ async function spawnSessionForTopic(
   const codexLocalProvider = framework === 'codex-cli' ? localEntry?.provider : undefined;
   const codexLocalModelOverride = framework === 'codex-cli' && localEntry?.model ? localEntry.model : undefined;
 
+  // Topic Profile §5.2 precedence on the model arm: an active local-model
+  // binding wins; otherwise the resolved profile model (pin > topicProfiles
+  // config default > frameworkDefaultModels — already clamped) flows through
+  // as the launch default. Undefined = account default, today's behavior.
+  const profileModel = !codexLocalModelOverride && resolvedProfile?.model
+    && resolvedProfile.sources.model !== 'local-model-binding'
+    ? resolvedProfile.model
+    : undefined;
+  const profileThinkingMode = resolvedProfile?.thinkingMode;
+
   const newSessionName = await sessionManager.spawnInteractiveSession(bootstrapMessage, sessionName, {
     telegramTopicId: topicId,
     resumeSessionId,
     framework,
     ...(codexLocalProvider ? { codexLocalProvider } : {}),
     ...(codexLocalModelOverride ? { defaultModel: codexLocalModelOverride } : {}),
+    ...(profileModel ? { defaultModel: profileModel } : {}),
+    ...(profileThinkingMode ? { thinkingMode: profileThinkingMode } : {}),
     // Subscription & Auth Standard P1.3 (additive): account-swap — launch under
     // this account's config home + record its id. Unset = unchanged.
     ...(accountSwap?.configHome ? { configHome: accountSwap.configHome } : {}),
@@ -757,6 +881,16 @@ async function spawnSessionForTopic(
   // Clear the resume entry after successful spawn to prevent stale reuse
   if (resumeSessionId) {
     _topicResumeMap?.remove(topicId);
+  }
+
+  // TOPIC-PROFILE-SPEC §10.4 — record the successful spawn so the §10.4 breaker
+  // resets + the codex same-cwd fence window opens. SKIPPED when the orchestrator
+  // initiated THIS respawn: it records its own spawn outcome (the spawn port),
+  // and double-recording would reset the breaker it is mid-evaluating.
+  if (_topicProfileOrchestrator && resolvedProfile && !_orchestratorSpawnInFlight.has(String(topicId))) {
+    try {
+      _topicProfileOrchestrator.recordSpawnSuccess(topicId, resolvedToApplied(resolvedProfile), { cwd: _projectDir });
+    } catch { /* @silent-fallback-ok: recordSpawnSuccess is breaker-reset bookkeeping — a failure leaves a slightly-stale breaker count that the next attributable failure/success corrects; never fails the spawn (TOPIC-PROFILE-SPEC §10.4) */ }
   }
 
   // Proactive UUID save — schedule discovery after spawn.
@@ -1109,14 +1243,46 @@ function wireTelegramCallbacks(
     }
   };
 
-  // /route — get or set the framework for this topic. Persists via
-  // TopicFrameworksStore (atomic write) and triggers a respawn so the
-  // new framework binding takes effect on the next session for this topic.
-  telegram.onRouteCommand = async (topicId: number, framework: string | null): Promise<{ ok: boolean; message: string }> => {
+  // Topic Profile §5.2(d) — the legacy respawn + disclosure hooks the write
+  // surface late-binds (the surface is constructed before the adapter exists).
+  // The respawn is BYTE-FOR-BYTE today's /route behavior: drop the stored
+  // resume UUID (created under the previous framework's session-id scheme —
+  // meaningless to the new one), then the immediate kill + CONTINUATION
+  // respawn via the existing respawn path.
+  _profileLegacyRespawn = async (topicKey: string): Promise<{ respawned: boolean; error?: string }> => {
+    if (!/^\d+$/.test(topicKey)) return { respawned: false };
+    const topicId = Number(topicKey);
+    _topicResumeMap?.remove(topicId);
+    const existingSession = telegram.getSessionForTopic(topicId);
+    if (!existingSession) return { respawned: false };
+    try {
+      await respawnSessionForTopic(
+        sessionManager, telegram, existingSession, topicId, undefined,
+        topicMemory, undefined, undefined, { silent: true },
+      );
+      return { respawned: true };
+    } catch (err) {
+      return { respawned: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  };
+  _profileDisclose = async (topicKey: string, text: string): Promise<void> => {
+    if (!/^\d+$/.test(topicKey)) return;
+    await telegram.sendToTopic(Number(topicKey), text);
+  };
+
+  // /route — get or set the framework for this topic. REWIRED into the Topic
+  // Profile store (§5.1 — the legacy topic-frameworks file is now a
+  // store-written mirror), with the §5.2(d) exemption honored INSIDE the
+  // write surface: a framework write lands LIVE regardless of the enabled /
+  // dryRun knobs and is served by the legacy immediate respawn wherever the
+  // new orchestration is not fully live. §10.1: the authenticated sender uid
+  // is forwarded and checked against the topic's bound operator.
+  telegram.onRouteCommand = async (topicId: number, framework: string | null, userId?: number): Promise<{ ok: boolean; message: string }> => {
     if (framework === null) {
-      // Status query — read current resolved framework
+      // Status query — conversational register (§12, B2: never instruct the
+      // operator to type a command; slash syntax is the power-user aside).
       const current = resolveTopicFramework(topicId);
-      return { ok: true, message: `This topic is using "${current}". Run /route claude-code or /route codex-cli to switch.` };
+      return { ok: true, message: `This topic is using "${current}". Just tell me to switch (e.g. "use codex here") — or /route codex-cli works too.` };
     }
 
     const valid = ['claude-code', 'codex-cli'];
@@ -1124,26 +1290,31 @@ function wireTelegramCallbacks(
       return { ok: false, message: `Unknown framework "${framework}". Supported: ${valid.join(', ')}.` };
     }
 
-    if (!_topicFrameworksStore) {
-      return { ok: false, message: 'Routing store not initialized — server boot was incomplete. Restart the server.' };
-    }
-
     const prev = resolveTopicFramework(topicId);
     if (prev === framework) {
       return { ok: true, message: `This topic is already on "${framework}". Nothing to change.` };
     }
 
+    if (_topicProfileWriteSurface && userId) {
+      const result = await _topicProfileWriteSurface.applyWrite({
+        topicKey: String(topicId),
+        patch: { framework },
+        principal: { kind: 'operator', platform: 'telegram', uid: String(userId) },
+        origin: 'slash-route',
+        // The command reply IS the disclosure-of-record for an exempted write
+        // (§8 round-12/13) — it carries the audit stamp.
+        discloseInReply: true,
+      });
+      return { ok: result.ok, message: result.reply };
+    }
+
+    // Fallback (surface unavailable / no authenticated uid forwarded by an
+    // older caller): the pre-profile legacy write path, unchanged.
+    if (!_topicFrameworksStore) {
+      return { ok: false, message: 'Routing store not initialized — server boot was incomplete. Restart the server.' };
+    }
     _topicFrameworksStore.set(topicId, framework as 'claude-code' | 'codex-cli');
-
-    // Drop any stored resume UUID — it was created under the previous
-    // framework's session-id scheme and is meaningless to the new one
-    // (Claude UUIDs ≠ Codex session ids). Without this, the new
-    // session's --resume flag gets a wrong-shape id, which at best
-    // emits a warning and at worst dies during startup.
     _topicResumeMap?.remove(topicId);
-
-    // Trigger a respawn so the new framework takes effect immediately.
-    // Re-use the existing respawn path which builds context from TopicMemory.
     const existingSession = telegram.getSessionForTopic(topicId);
     if (existingSession) {
       try {
@@ -1155,8 +1326,70 @@ function wireTelegramCallbacks(
         return { ok: false, message: `Persisted "${framework}", but respawn failed: ${err instanceof Error ? err.message : String(err)}. The new framework will take effect on the next session for this topic.` };
       }
     }
-
     return { ok: true, message: `Routed this topic to "${framework}". ${existingSession ? 'Session respawned.' : 'Will take effect when a session starts for this topic.'}` };
+  };
+
+  // /topic — the power-user surface for the full Topic Profile (§10.1; the
+  // conversational surface is PRIMARY). Forwards the authenticated sender uid
+  // down to the write — the store stamps updatedBy from it and refuses a
+  // non-bound-operator.
+  telegram.onTopicProfileCommand = async (topicId: number, argText: string, userId: number): Promise<{ ok: boolean; message: string }> => {
+    const surface = _topicProfileWriteSurface;
+    if (!surface) {
+      return { ok: false, message: 'Topic profiles aren\'t initialized on this server.' };
+    }
+    const arg = argText.trim();
+    if (arg === '' || arg.toLowerCase() === 'status') {
+      return { ok: true, message: surface.renderReadout(String(topicId)) };
+    }
+    const principal = { kind: 'operator' as const, platform: 'telegram', uid: String(userId) };
+    const topicKey = String(topicId);
+    const parts = arg.split(/\s+/);
+    const head = parts[0].toLowerCase();
+
+    if (head === 'clear') {
+      const result = await surface.clear({ topicKey, principal, origin: 'slash-topic', discloseInReply: true });
+      return { ok: result.ok, message: result.reply };
+    }
+    if (head === 'undo') {
+      const result = await surface.undo({ topicKey, principal, origin: 'slash-topic', discloseInReply: true });
+      return { ok: result.ok, message: result.reply };
+    }
+    if (head === 're-apply' || head === 'reapply') {
+      const result = await surface.reapply({ topicKey, principal, origin: 'slash-topic', discloseInReply: true });
+      if (result.needsConfirm && _topicProfileConfirmSlots) {
+        const armed = _topicProfileConfirmSlots.arm(topicKey, 'reapply-cooldown', {}, result.reply, 'ingress');
+        if (armed.ok) {
+          return { ok: false, message: `${result.reply} (reply "yes" to apply it anyway)` };
+        }
+      }
+      return { ok: result.ok, message: result.reply };
+    }
+
+    let patch: import('../core/topicProfileValidation.js').ProfilePatchInput | null = null;
+    if (['claude-code', 'codex-cli', 'gemini-cli', 'pi-cli'].includes(head) && parts.length === 1) {
+      patch = { framework: head };
+    } else if (head === 'framework' && parts.length === 2) {
+      patch = { framework: parts[1].toLowerCase() };
+    } else if (head === 'model' && parts.length === 2) {
+      patch = { model: parts[1], modelTier: null };
+    } else if (head === 'tier' && parts.length === 2) {
+      patch = { modelTier: parts[1].toLowerCase(), model: null };
+    } else if (head === 'thinking' && parts.length === 2) {
+      patch = { thinkingMode: parts[1].toLowerCase() };
+    } else if (head === 'escalation' && parts.length === 2) {
+      patch = { escalationOverride: parts[1].toLowerCase() };
+    }
+    if (!patch) {
+      return {
+        ok: false,
+        message: 'Usage: /topic [status] · /topic <framework> · /topic model <id> · /topic tier <default|escalated> · /topic thinking <off|low|medium|high|max> · /topic escalation <inherit|suppress> · /topic clear · /topic undo · /topic re-apply — or just tell me in plain words.',
+      };
+    }
+    const result = await surface.applyWrite({
+      topicKey, patch, principal, origin: 'slash-topic', discloseInReply: true,
+    });
+    return { ok: result.ok, message: result.reply };
   };
 
   // /local-model — conversational counterpart of editing config.json.
@@ -1176,11 +1409,11 @@ function wireTelegramCallbacks(
         return {
           ok: true,
           message: fw === 'codex-cli'
-            ? 'This topic is on Codex with the cloud model. Run /local-model ollama [model] to switch to a local model (Ollama / LM Studio supported).'
-            : `This topic is on "${fw}", which doesn't support the local-model path. Run /route codex-cli first, then /local-model ollama [model].`,
+            ? 'This topic is on Codex with the cloud model. Just tell me to use a local model (Ollama / LM Studio supported) — or /local-model ollama [model] works too.'
+            : `This topic is on "${fw}", which doesn't support the local-model path. Tell me to switch this topic to Codex first, then ask for the local model.`,
         };
       }
-      return { ok: true, message: `This topic is on Codex via local ${current.provider}${current.model ? ` (model: ${current.model})` : ''}. Run /local-model off to revert to cloud Codex.` };
+      return { ok: true, message: `This topic is on Codex via local ${current.provider}${current.model ? ` (model: ${current.model})` : ''}. Tell me to go back to the cloud model when you want — or /local-model off.` };
     }
 
     // Disable
@@ -1213,7 +1446,7 @@ function wireTelegramCallbacks(
     // Topic must be on codex-cli — local-model goes through Codex --oss.
     const fw = resolveTopicFramework(topicId);
     if (fw !== 'codex-cli') {
-      return { ok: false, message: `This topic is on "${fw}". Local models route through Codex CLI's --oss flag, so the topic must be on codex-cli first. Run /route codex-cli, then re-run this command.` };
+      return { ok: false, message: `This topic is on "${fw}". Local models route through Codex CLI's --oss flag, so the topic must be on Codex first — tell me to switch it over, then ask again.` };
     }
 
     // Pre-flight: provider reachability + model availability (best-effort).
@@ -1274,6 +1507,180 @@ function messageToPipeline(msg: Message, topicName?: string): PipelineMessage {
       : 'text',
     timestamp: msg.receivedAt,
   };
+}
+
+/**
+ * Topic Profile §10.1 — the SERVER-SIDE conversational ingress. The parse
+ * runs in the message-ingress pipeline where `telegramUserId` is first-party,
+ * so the authenticated sender uid reaches the store through code, never
+ * through a body the agent composed. Returns true when the message was a
+ * profile trigger/confirm and was fully handled (do NOT route it to the
+ * session); false otherwise (normal routing proceeds).
+ *
+ * Forwarded content never matches ANY ingress recognition (§10.1 round-5):
+ * a message carrying platform forward metadata falls through as normal
+ * conversation regardless of sender.
+ */
+async function handleTopicProfileIngress(
+  telegram: TelegramAdapter,
+  topicId: number,
+  text: string,
+  telegramUserId: number,
+  msg: Message,
+): Promise<boolean> {
+  const surface = _topicProfileWriteSurface;
+  const slots = _topicProfileConfirmSlots;
+  if (!surface || !telegramUserId) return false;
+  // The trust floor: only an authorized sender's turn can ever be a trigger
+  // (the bound-operator check inside the surface is the refusal tier).
+  let authorized = false;
+  try { authorized = telegram.isAuthorizedSender(telegramUserId); } catch { /* @silent-fallback-ok: a trust-floor read fault fails toward NOT-a-trigger (deny-by-default) — the conversational profile parse never runs for an unauthorized turn (TOPIC-PROFILE-SPEC §10.1) */ }
+  if (!authorized) return false;
+
+  const trigger = parseProfileTrigger(text);
+  if (!trigger) return false;
+  const forwarded = (msg.metadata?.forwarded as boolean | undefined) === true;
+  if (forwarded) return false;
+
+  const topicKey = String(topicId);
+  const principal = { kind: 'operator' as const, platform: 'telegram', uid: String(telegramUserId) };
+  const send = async (reply: string): Promise<void> => {
+    try { await telegram.sendToTopic(topicId, reply); } catch { /* @silent-fallback-ok: a profile-ingress disclosure send is best-effort — a transient Telegram send fault must not throw out of the ingress handler; the armed slot TTL / next turn re-surfaces it (TOPIC-PROFILE-SPEC §10.1) */ }
+  };
+
+  switch (trigger.kind) {
+    case 'write': {
+      const result = await surface.applyWrite({
+        topicKey, patch: trigger.patch, principal, origin: 'conversational', discloseInReply: true,
+      });
+      await send(result.reply);
+      return true;
+    }
+    case 'readout': {
+      await send(surface.renderReadout(topicKey));
+      return true;
+    }
+    case 'undo': {
+      const result = await surface.undo({ topicKey, principal, origin: 'conversational', discloseInReply: true });
+      await send(result.reply);
+      return true;
+    }
+    case 'clear': {
+      const result = await surface.clear({ topicKey, principal, origin: 'conversational', discloseInReply: true });
+      await send(result.reply);
+      return true;
+    }
+    case 'reapply': {
+      const result = await surface.reapply({ topicKey, principal, origin: 'conversational', discloseInReply: true });
+      if (result.needsConfirm && slots) {
+        // §10.4 cooldown confirm — rides the SAME shared armed slot as the
+        // other confirm surfaces, with the server-rendered consequence echo.
+        const armed = slots.arm(topicKey, 'reapply-cooldown', {}, result.reply, 'ingress');
+        if (armed.ok) {
+          try {
+            const sent = await telegram.sendToTopic(topicId, `${result.reply} Reply "yes" to apply it anyway.`);
+            slots.recordEchoMessageId(topicKey, sent.messageId);
+          } catch { /* echo undelivered — the confirm refuses toward re-echo */ }
+          return true;
+        }
+        await send('Too many back-to-back proposals here — give it a few minutes, then say it again fresh.');
+        return true;
+      }
+      await send(result.reply);
+      return true;
+    }
+    case 'switch-now': {
+      const armedSlot = slots?.peek(topicKey) ?? null;
+      if (!armedSlot) {
+        // No WRITE-SURFACE confirm armed. The orchestrator runs a SEPARATE §8
+        // confirm surface: on a busy framework switch it tells the operator
+        // "say 'switch now' to interrupt" and arms its OWN switch-now slot
+        // (orchestrator.armConfirm → executeSwitchNow). Bridge the operator's
+        // reply to it so that disclosed instruction is not a dead end. This is
+        // purely the empty-slot fallback — write-surface propose-confirm/reapply
+        // slots keep precedence (handled below), so no existing confirm flow
+        // changes behavior. (TOPIC-PROFILE-SPEC §8)
+        if (_topicProfileOrchestrator) {
+          const r = await _topicProfileOrchestrator.handleSwitchNow(topicKey);
+          if (r.fired) { await send(r.reply); return true; }
+        }
+        // §8: a "switch now" with no armed pending switch (either surface) is a
+        // no-op with a plain reply.
+        await send('Nothing is pending a switch right now.');
+        return true;
+      }
+      return handleProfileConfirm(telegram, surface, slots!, topicId, principal, msg);
+    }
+    case 'confirm': {
+      if (!slots || !slots.peek(topicKey)) return false; // normal conversation
+      return handleProfileConfirm(telegram, surface, slots, topicId, principal, msg);
+    }
+  }
+  return false;
+}
+
+/** Fire the topic's armed confirm (shared slot — §10.1/§8/§10.4). */
+async function handleProfileConfirm(
+  telegram: TelegramAdapter,
+  surface: import('../core/topicProfileWriteSurface.js').TopicProfileWriteSurface,
+  slots: import('../core/topicProfileIngress.js').ProfileConfirmSlots,
+  topicId: number,
+  principal: { kind: 'operator'; platform: string; uid: string },
+  msg: Message,
+): Promise<boolean> {
+  const topicKey = String(topicId);
+  const send = async (reply: string): Promise<void> => {
+    try { await telegram.sendToTopic(topicId, reply); } catch { /* @silent-fallback-ok: a profile-ingress disclosure send is best-effort — a transient Telegram send fault must not throw out of the ingress handler; the armed slot TTL / next turn re-surfaces it (TOPIC-PROFILE-SPEC §10.1) */ }
+  };
+  const match = slots.matchConfirm(topicKey, {
+    platformMessageId: platformMessageIdFrom(msg.id),
+    forwarded: (msg.metadata?.forwarded as boolean | undefined) === true,
+  });
+  if (!match.ok) {
+    if (match.reason === 'none-armed' || match.reason === 'forwarded') return false;
+    if (match.reason === 'expired') {
+      await send('That proposal has expired — say what you want again.');
+      return true;
+    }
+    // stale-order / no-echo-id: the confirm must answer the LATEST echo —
+    // re-issue it and record the fresh ordering anchor (§10.1(c)).
+    const slot = slots.peek(topicKey);
+    if (slot) {
+      try {
+        const sent = await telegram.sendToTopic(topicId, `Please confirm this version:\n${slot.echoText}`);
+        slots.recordEchoMessageId(topicKey, sent.messageId);
+      } catch { /* best-effort */ }
+    }
+    return true;
+  }
+  const armed = match.armed;
+  if (armed.kind === 'reapply-cooldown') {
+    const result = await surface.reapply({
+      topicKey, principal, origin: 'propose-confirm', confirmed: true, discloseInReply: true,
+    });
+    await send(result.reply);
+    return true;
+  }
+  if (armed.kind === 'propose-confirm') {
+    const result = await surface.applyWrite({
+      topicKey,
+      patch: armed.patch,
+      principal,
+      origin: 'propose-confirm',
+      agentComposedPayload: armed.origin === 'agent-composed',
+      discloseInReply: true,
+    });
+    await send(result.reply);
+    return true;
+  }
+  // 'switch-now' — the orchestrator's armed-confirm slot (orchestrator.armConfirm
+  // / handleSwitchNow) is a SEPARATE mechanism from this write-surface confirm
+  // slot; bridging the two ingress confirm systems is the remaining stage-3
+  // ingress hook (integrating session). Until then this branch replies honestly
+  // (the §8 switch-now path is exercised through the orchestrator's own confirm
+  // surface, not this write-surface ProfileConfirmSlots match).
+  await send('That switch is no longer pending.');
+  return true;
 }
 
 export function wireTelegramRouting(
@@ -1345,6 +1752,20 @@ export function wireTelegramRouting(
     if (text.startsWith('/')) {
       const handled = await telegram.handleCommand(text, topicId, telegramUserId);
       if (handled) return;
+    }
+
+    // ── Topic Profile §10.1: server-side conversational ingress ──────────
+    // The PRIMARY write surface: "use codex here", "set high thinking on this
+    // topic", undo/clear/re-apply, and the shared confirm ("yes" / "switch
+    // now"). Parsed HERE — where the authenticated sender uid is first-party —
+    // never by the agent. Non-triggers fall through to normal routing.
+    try {
+      if (await handleTopicProfileIngress(telegram, topicId, text, telegramUserId, msg)) {
+        return;
+      }
+    } catch (err) {
+      // Fail toward normal routing — the ingress must never eat a message.
+      console.error(`[telegram] topic-profile ingress error (routing normally): ${err instanceof Error ? err.message : err}`);
     }
 
     // /new — create a new topic thread. Does NOT spawn a session immediately.
@@ -3387,7 +3808,116 @@ export async function startServer(options: StartOptions): Promise<void> {
           configDefaults: mergedDefaults,
         });
       } catch (err) {
+        // @silent-fallback-ok: TopicLocalModelStore init is a per-topic /local-model
+        // override layer — a construction fault leaves it null and resolution falls
+        // through to the config/global model defaults (the override is additive, never
+        // the only model source) (TOPIC-PROFILE-SPEC §5.2).
         console.warn(`[server] TopicLocalModelStore failed to initialize: ${err}`);
+      }
+      // Topic Profile (§5.1/§5.2): the sticky per-topic profile store + the
+      // single resolution point. The store seeds one-directionally from the
+      // legacy topic-frameworks file and regenerates it as a mirror; the
+      // resolver layers profile pin > config default > global default with
+      // the read-time enum re-validation + launchability fallback. Reads
+      // HONOR existing pins regardless of the topicProfiles enabled flag
+      // (§5.2 disabled-flag semantics — the flag gates writes, not reads).
+      try {
+        const { TopicProfileStore } = await import('../core/TopicProfileStore.js');
+        const { TopicProfileResolver } = await import('../core/TopicProfileResolver.js');
+        const { normalizeTierEscalationConfig } = await import('../core/ModelTierEscalation.js');
+        const topicProfilesCfg = (config as {
+          topicProfiles?: {
+            enabled?: boolean;
+            dryRun?: boolean;
+            switchNowConfirmTtlMs?: number;
+            defaults?: Record<string, { model?: string; thinkingMode?: string }>;
+          };
+        }).topicProfiles;
+        _topicProfileStore = new TopicProfileStore({
+          stateFilePath: path.join(config.stateDir, 'state', 'topic-profiles.json'),
+          legacyFrameworksPath: path.join(config.stateDir, 'state', 'topic-frameworks.json'),
+          isDryRun: () => topicProfilesCfg?.dryRun !== false,
+        });
+        _topicProfileResolver = new TopicProfileResolver({
+          store: _topicProfileStore,
+          defaultFramework: () => _defaultFramework,
+          configTopicFrameworks: () => _topicFrameworks,
+          configProfileDefaults: () => topicProfilesCfg?.defaults ?? {},
+          frameworkDefaultModels: () => config.sessions?.frameworkDefaultModels ?? {},
+          tierEscalationConfig: () =>
+            normalizeTierEscalationConfig(
+              (config as { models?: { tierEscalation?: unknown } }).models?.tierEscalation,
+            ),
+          localModelBinding: (topicKey) => _topicLocalModelStore?.get(Number(topicKey)) ?? null,
+          // Mirrors SessionManager's spawn-path binary resolution exactly
+          // (frameworkBinaryPaths[fw] ?? claudePath, pi-cli → bare 'pi') so the
+          // launchability signal answers "would the REAL spawn find a binary",
+          // never a stricter question that false-fallbacks a valid pin.
+          frameworkBinaryPath: (fw) =>
+            config.sessions?.frameworkBinaryPaths?.[fw]
+            ?? (fw === 'pi-cli' ? 'pi' : (config.sessions?.claudePath ?? null)),
+          audit: (event) => {
+            appendTopicProfileAudit(config.stateDir, event);
+          },
+        });
+        // Topic Profile (§5.2/§10): the write surface + the shared confirm
+        // slots. Regime knobs resolve LIVE on every write: `enabled` rides the
+        // dev-agent dark gate (DEV_GATED_FEATURES — never a written literal);
+        // dryRun ships true (§14 shadow canary). §5.2(d): framework-arm writes
+        // bypass BOTH knobs inside the surface itself.
+        const { TopicProfileWriteSurface } = await import('../core/topicProfileWriteSurface.js');
+        const { ProfileConfirmSlots } = await import('../core/topicProfileIngress.js');
+        _topicProfileConfirmSlots = new ProfileConfirmSlots({
+          ttlMs: () => topicProfilesCfg?.switchNowConfirmTtlMs ?? 300_000,
+          audit: (event) => { appendTopicProfileAudit(config.stateDir, event); },
+        });
+        _topicProfileWriteSurface = new TopicProfileWriteSurface({
+          store: _topicProfileStore,
+          resolver: _topicProfileResolver,
+          regime: () => ({
+            enabled: resolveDevAgentGate(
+              topicProfilesCfg?.enabled,
+              config as { developmentAgent?: boolean },
+            ),
+            dryRun: topicProfilesCfg?.dryRun !== false,
+          }),
+          // Late-bound: the AgentServer's TopicOperatorStore is the SAME
+          // instance the routes' auto-bind writes (a second instance on the
+          // same file would lose updates between two in-memory caches).
+          boundOperator: (topicKey) => {
+            const op = _agentServerRef?.getTopicOperatorStore()?.getOperator(topicKey) ?? null;
+            return op ? { platform: op.platform, uid: op.uid } : null;
+          },
+          localModelBinding: (topicKey) =>
+            /^\d+$/.test(topicKey) ? (_topicLocalModelStore?.get(Number(topicKey)) ?? null) : null,
+          // Late-bound (wireTelegramCallbacks owns the adapter): §5.2(d)
+          // legacy immediate respawn + the §8 disclosure send.
+          legacyFrameworkRespawn: async (topicKey) =>
+            _profileLegacyRespawn
+              ? _profileLegacyRespawn(topicKey)
+              : { respawned: false },
+          // §8 orchestration seam — late-bound: the TopicProfileOrchestrator is
+          // constructed AFTER the AgentServer exists (it late-binds the
+          // EscalationGovernor + ModelSwapService off the server). This thin
+          // ProfileOrchestratorLike forwards the surface's post-write signal to
+          // the orchestrator's debounced, idle-gated respawn once it is wired;
+          // a no-op while null (the surface's keep-working fallback serves).
+          orchestrator: {
+            onProfileWrite: (topicKey, info) =>
+              _topicProfileOrchestrator?.onProfileWrite(topicKey, info),
+          },
+          // §5.3 transfer-carrier cancel marker — late-bound (the carrier is
+          // built in the mesh block, after this surface). Cancels a pending
+          // transfer-pull REPLACE for the topic the moment a local write lands.
+          onLocalWriteDurable: (topicKey, origin) =>
+            _topicProfileCarrier?.onLocalWriteDurable(topicKey, origin),
+          disclose: async (topicKey, text) => {
+            if (_profileDisclose) await _profileDisclose(topicKey, text);
+          },
+          audit: (event) => appendTopicProfileAudit(config.stateDir, event),
+        });
+      } catch (err) {
+        console.warn(`[server] TopicProfileStore/Resolver failed to initialize: ${err}`);
       }
       // June-15 subscription-path routing (spec 04 Rule 1). Built ONCE here;
       // reused by the main provider below AND the per-component
@@ -10419,14 +10949,57 @@ export async function startServer(options: StartOptions): Promise<void> {
     // adapter (v1 scope: Telegram-bound sessions only). The respawner closure
     // captures `topicMemory` by reference, so even if topicMemory is wired up
     // after this point it will be resolved at refresh-time.
-    if (telegram) {
+    // §10.5: SessionRefresh is available for a Slack-only server too (the
+    // Slack respawner sub-task). The construction is hoisted to (telegram ||
+    // slack); the Telegram respawner refuses honestly when telegram is null,
+    // and the Slack arm is served by the slackRespawner closure below.
+    if (telegram || _slackAdapter) {
       const { SessionRefresh } = await import('../core/SessionRefresh.js');
-      const telegramRef = telegram; // narrow for closure
+      const telegramRef = telegram ?? null; // may be null on a Slack-only server
+      const slackRef = _slackAdapter; // narrow for closures
       _sessionRefresh = new SessionRefresh({
         sessionManager,
         state,
         telegram: telegramRef,
         topicResumeMap: _topicResumeMap,
+        // §10.5 Slack binding — SlackAdapter satisfies SlackRefreshBinding
+        // structurally (getChannelForSession / removeChannelResume /
+        // resolveChannelForSessionFromDisk). Null ⇒ Telegram-only, unchanged.
+        slack: slackRef,
+        // §10.5 Slack respawner — mirrors the Slack message-handler spawn path
+        // (getChannelResume → removeChannelResume → spawnInteractiveSession with
+        // the parsed channel/thread → registerChannelSession). SessionRefresh
+        // kills first; for a fresh respawn it already removed the resume entry.
+        slackRespawner: slackRef
+          ? async (sessionName: string, routingKey: string, followUpPrompt: string | undefined, accountSwap?: { configHome?: string; accountId?: string }): Promise<string> => {
+              const resumeInfo = slackRef.getChannelResume(routingKey);
+              const resumeSessionId = resumeInfo?.uuid ?? undefined;
+              if (resumeInfo) slackRef.removeChannelResume(routingKey);
+              // routingKey = `<channelId>[:<thread_ts>]`.
+              const sep = routingKey.indexOf(':');
+              const slackChannelId = sep === -1 ? routingKey : routingKey.slice(0, sep);
+              const slackThreadTs = sep === -1 ? undefined : routingKey.slice(sep + 1);
+              const newSessionName = await sessionManager.spawnInteractiveSession(
+                followUpPrompt ?? 'Session refreshed — continue where you left off.',
+                undefined,
+                {
+                  resumeSessionId,
+                  slackChannelId,
+                  slackThreadTs,
+                  ...(accountSwap?.configHome ? { configHome: accountSwap.configHome } : {}),
+                  ...(accountSwap?.accountId ? { subscriptionAccountId: accountSwap.accountId } : {}),
+                },
+              );
+              if (newSessionName) {
+                slackRef.registerChannelSession(
+                  routingKey,
+                  newSessionName,
+                  slackThreadTs ? `${slackChannelId} (thread ${slackThreadTs})` : undefined,
+                );
+              }
+              return newSessionName || sessionName;
+            }
+          : null,
         respawner: async (sessionName: string, topicId: number, followUpPrompt: string | undefined, accountSwap?: { configHome?: string; accountId?: string }): Promise<string> => {
           // killSession (called inside SessionRefresh) has already fired
           // beforeSessionKill (UUID persisted) and destroyed the tmux
@@ -10435,13 +11008,23 @@ export async function startServer(options: StartOptions): Promise<void> {
           // P1.3: accountSwap (when present) re-launches the resume under a
           // different account's config home — the --resume uuid is account-
           // agnostic, so the conversation is preserved across the swap.
+          if (!telegramRef) {
+            // Telegram-only respawn path on a Slack-only server — never reached
+            // (a Slack-bound session routes through slackRespawner above), but
+            // the contract requires a value.
+            return sessionName;
+          }
           await respawnSessionForTopic(sessionManager, telegramRef, sessionName, topicId, followUpPrompt, topicMemory, undefined, undefined,
             accountSwap ? { configHome: accountSwap.configHome, accountId: accountSwap.accountId } : undefined);
           return telegramRef.getSessionForTopic(topicId) ?? sessionName;
         },
       });
+    }
 
-      // ── QuotaAwareScheduler (Subscription & Auth Standard P1.3) ──
+    // ── QuotaAwareScheduler (Subscription & Auth Standard P1.3) ──
+    // Telegram-specific (createAttentionItem + subscription-pool wiring).
+    if (telegram) {
+      const telegramRef = telegram; // narrow for closure
       // Selects the optimal account + enforces the continuity guarantee: on
       // quota pressure it resumes the session under another account (via the
       // SessionRefresh account-swap path), never letting it die. Auto-trigger
@@ -11290,6 +11873,11 @@ export async function startServer(options: StartOptions): Promise<void> {
             {
               const wsTopic = Number(cmd.session);
               if (Number.isFinite(wsTopic)) workingSetPullCoordinator?.onTopicAccepted(wsTopic);
+              // TOPIC-PROFILE-SPEC §5.3 acquire seam (1/3): this machine just
+              // accepted ownership of the topic. Fire-and-forget pull of the
+              // pin from the previous owner (resolved from the journal when not
+              // named here). Never blocks message delivery.
+              if (Number.isFinite(wsTopic)) _topicProfileCarrier?.onTopicAcquired(wsTopic);
             }
             if (_sessionPoolStage() === 'dark' || !telegram) return;
             const tg = telegram;
@@ -11482,6 +12070,18 @@ export async function startServer(options: StartOptions): Promise<void> {
                 cmd as import('../core/WorkingSetPull.js').WorkingSetPullCmd,
               );
             },
+            // TOPIC-PROFILE-SPEC §5.3 — the pull-at-acquire serve verb. The
+            // previous owner answers a follower's pull with the current +
+            // §14-shadow profile entries for the named topics (present:false
+            // for absent, 500-topic cap). Stateless read over the in-memory
+            // store; answers 'disabled' until the store is constructed. Joins
+            // the read/observe RBAC class beside working-set-pull (MeshRpc.ts).
+            'topic-profile-pull': (cmd) => {
+              if (!_topicProfileStore) return { ok: false, reason: 'topic-profile disabled' };
+              return createTopicProfilePullHandler({ store: _topicProfileStore })(
+                cmd as { type: 'topic-profile-pull'; topics: unknown },
+              );
+            },
             // COMMITMENTS-COHERENCE-SPEC §3.4 — owner-side apply for the
             // owner-routed mutation. opKey window first (replay returns the
             // recorded verdict, applies nothing); the UNCHANGED state machine
@@ -11647,6 +12247,88 @@ export async function startServer(options: StartOptions): Promise<void> {
           void convergeSelfNickname();
           const selfNickTimer = setInterval(() => { void convergeSelfNickname(); }, 60_000);
           if (typeof selfNickTimer.unref === 'function') selfNickTimer.unref();
+          // ── Topic-profile transfer carrier (TOPIC-PROFILE-SPEC §5.3) ──
+          // Pull-at-acquire follow: when THIS machine acquires a topic, pull
+          // its per-topic profile from the previous owner so the pin follows
+          // the conversation across machines. Constructed at the mesh level
+          // (after meshClient + peerUrl exist) — NOT gated by the working-set
+          // replication gate; it has its own durable retry ledger. Null on a
+          // single-machine install (no acquires from a peer ever fire).
+          if (_topicProfileStore) {
+            try {
+              const tpcReaderMod = await import('../core/CoherenceJournalReader.js');
+              const tpcReader = new tpcReaderMod.CoherenceJournalReader({ stateDir: config.stateDir });
+              _topicProfileCarrier = new TopicProfileTransferCarrier({
+                stateDir: config.stateDir,
+                selfMachineId: meshSelfId,
+                store: _topicProfileStore,
+                effectiveFramework: () => _defaultFramework,
+                ownerOf: (topicKey) => ({ owner: ownReg.ownerOf(topicKey) }),
+                // Previous-owner evidence from the journal's topic-placement
+                // history (the most-recent entry naming a prevOwner). Used only
+                // when an acquire seam could not name the previous owner.
+                prevOwnerOf: (topicKey) => {
+                  const topicNum = Number(topicKey);
+                  if (!Number.isFinite(topicNum)) return null;
+                  try {
+                    const entries = tpcReader.query({ kind: 'topic-placement', topic: topicNum, limit: 20 }).entries;
+                    for (const e of entries) {
+                      const data = e.data as { prevOwner?: string };
+                      if (typeof data.prevOwner === 'string' && data.prevOwner !== meshSelfId) return data.prevOwner;
+                    }
+                  } catch { /* @silent-fallback-ok: missing placement evidence means no previous owner to pull from — the local entry stays authoritative (TOPIC-PROFILE-SPEC §5.3) */ }
+                  return null;
+                },
+                sendPull: async (peerMachineId, topics): Promise<SendPullOutcome> => {
+                  const url = peerUrl(peerMachineId);
+                  if (!url) return { kind: 'unreachable', detail: 'no peer url' };
+                  const r = await meshClient.send(
+                    { machineId: peerMachineId, url },
+                    { type: 'topic-profile-pull', topics } as import('../core/MeshRpc.js').MeshCommand,
+                    0,
+                    { timeoutMs: 15_000 },
+                  );
+                  if (r.ok) {
+                    const res = r.result as TopicProfilePullResponse;
+                    if (res && res.ok) return { kind: 'ok', entries: res.entries };
+                    return { kind: 'unreachable', detail: res?.reason ?? 'serve-error' };
+                  }
+                  // A peer whose instar predates the verb answers no-handler (501) — PARK.
+                  if (r.status === 501 || r.reason === 'no-handler') return { kind: 'protocol-unsupported' };
+                  return { kind: 'unreachable', detail: r.reason ?? `status ${r.status}` };
+                },
+                // Rolling-update skew: the pool advertises each machine's verb
+                // capabilities. Undefined ⇒ unknown ⇒ attempt (no-handler parks).
+                peerSupportsPull: (peerMachineId) => {
+                  const caps = machinePoolRegistry?.getCapacity(peerMachineId)?.capabilities;
+                  if (!caps) return undefined;
+                  return caps.includes('topic-profile-pull');
+                },
+                audit: (event) => appendTopicProfileAudit(config.stateDir, event),
+                // §5.3 round-5: ONE aggregated reconciliation notice per (peer,
+                // landing). Routed to the system (lifeline) topic — it spans
+                // topics, so it is not a single conversation's disclosure.
+                notify: (text) => {
+                  const sysTopic = telegram?.getLifelineTopicId();
+                  if (sysTopic) void telegram!.sendToTopic(sysTopic, text).catch(() => {});
+                },
+                logger: (m) => console.log(pc.dim(`  [topic-profile-pull] ${m}`)),
+              });
+              // §5.3(e) drain: the slow retry tick (10 min) — retries pending
+              // pulls whose backoff is due and drops expired (7d) records.
+              const tpcTickTimer = setInterval(() => {
+                void _topicProfileCarrier?.tick().catch(() => {});
+              }, 600_000);
+              if (typeof tpcTickTimer.unref === 'function') tpcTickTimer.unref();
+              console.log(pc.dim('  [topic-profile-pull] transfer carrier wired'));
+            } catch (err) {
+              // @silent-fallback-ok: carrier construction failure leaves the
+              // pull-at-acquire follow disabled — pins simply do not follow a
+              // cross-machine move (the local entry stays authoritative); never
+              // a boot failure (TOPIC-PROFILE-SPEC §5.3).
+              console.warn(`[server] TopicProfileTransferCarrier failed to initialize: ${err instanceof Error ? err.message : err}`);
+            }
+          }
           // ── Working-set pull coordinator (WORKING-SET-HANDOFF §3.3/§3.4) ──
           // Constructed here (after meshClient + peerUrl exist) ONLY when the
           // serve side was constructed above — i.e. the same explicit
@@ -12057,6 +12739,13 @@ export async function startServer(options: StartOptions): Promise<void> {
               const prevOwner = ownReg.read(sk)?.ownerMachineId;
               const r = ownReg.cas({ type: 'place', machineId }, { sessionKey: sk, sender: meshSelfId, nonce: `${meshSelfId}:c:${++routerNonce}` });
               emitPlacement(sk, r, 'placed', prevOwner);
+              // TOPIC-PROFILE-SPEC §5.3 acquire seam (2/3): when the claim places
+              // THIS machine as owner (and there was a real previous owner), pull
+              // the topic's pin from that owner. Self-placement / no-prior-owner
+              // is a no-op inside the carrier.
+              if (r.ok && machineId === meshSelfId && prevOwner && prevOwner !== meshSelfId) {
+                _topicProfileCarrier?.onTopicAcquired(sk, prevOwner);
+              }
               return { ok: r.ok, epoch: ownReg.read(sk)?.ownershipEpoch ?? 0 };
             },
             // bug #11: confirm the remote owner (placing → active) after the spawn is
@@ -12170,6 +12859,9 @@ export async function startServer(options: StartOptions): Promise<void> {
           const onPeerBack = (machineId: string): void => {
             workingSetPullCoordinator?.onPeerRecorded(machineId);
             void _commitmentReFire?.(machineId).catch(() => {});
+            // §5.3(e): a returning peer drains any pending topic-profile pulls
+            // that were parked for-protocol or backed-off against it.
+            void _topicProfileCarrier?.onPeerOnline(machineId).catch(() => {});
           };
           const peerPresencePuller = new presenceMod.PeerPresencePuller({
             selfMachineId: meshSelfId,
@@ -12477,11 +13169,267 @@ export async function startServer(options: StartOptions): Promise<void> {
       console.log(pc.dim(`  [session-pool] rollout gate not wired: ${err instanceof Error ? err.message : String(err)}`));
     }
 
-    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, cartographer: cartographer ?? undefined, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, subscriptionPool, quotaPoller, quotaAwareScheduler: _quotaAwareScheduler ?? undefined, proactiveSwapMonitor: _proactiveSwapMonitor ?? undefined, inUseAccountResolver, enrollmentWizard, semanticMemory, activitySentinel, rateLimitSentinel, releaseReadinessSentinel: releaseReadinessSentinel ?? undefined, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, localSigningKeyPem, leaseTransport, onLeasePullRequest: () => leaseCoordinatorRef?.currentLease() ?? null, liveTailReceiver, handoffWireTransport, onHandoffBegin, onHandoffInitiate: handoffInitiate, handoffInProgress: handoffSentinelInProgress, messageLedger, currentInboundByTopic, replyMarkerTransport, onReplyMarker: messageLedger ? (marker: unknown) => { const m = marker as { dedupeKey: string; platform: string; replyIdempotencyKey: string; epoch: number; topic?: string | null }; messageLedger!.applyRemoteReplyMarker(m.dedupeKey, { platform: m.platform, replyIdempotencyKey: m.replyIdempotencyKey, epoch: m.epoch, topic: m.topic ?? null }); } : undefined, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, warrantsReplyGate, collaborationSurfacer, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, a2aDeliveryTracker: a2aDeliveryTracker ?? undefined, responseReviewGate, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, machinePoolRegistry, meshRpcDispatcher, workingSetPullCoordinator, commitmentReplicaStore, forwardCommitmentMutate, sessionOwnershipRegistry, topicPinStore: _topicPinStore ?? undefined, streamTicketStore: _streamTicketStore ?? undefined, poolStreamAllowRemoteInput: (config as { dashboard?: { poolStream?: { allowRemoteInput?: boolean } } }).dashboard?.poolStream?.allowRemoteInput ?? false, poolStreamConnector: _poolStreamConnector ?? undefined, secretSync: _secretSyncHandle ?? undefined, meshSelfId: _meshSelfId ?? undefined, resolveRouterUrl: _resolveRouterUrl ?? undefined, resolvePeerUrls: _resolvePeerUrls ?? undefined, sessionPoolE2EResultStore, proxyCoordinator, topicIntentStore, topicIntentArcCheck, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, briefDeps, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, agentWorktreeReaper, mcpProcessReaper, geminiLoopRunner, sleepController, agentActivityState, reapLog, sleepWakeDetector, unjustifiedStopGate, stopGateDb, stopNotifier });
+    // Topic Profile (§8/§5.3): the routes ctx object is shared BY REFERENCE
+    // into AgentServer → routes, so the orchestrator + carrier (which late-bind
+    // off the just-constructed AgentServer's governors / the mesh block) are
+    // attached to THIS object after construction and reach the routes live.
+    const _topicProfileCtx: {
+      store: import('../core/TopicProfileStore.js').TopicProfileStore;
+      resolver: import('../core/TopicProfileResolver.js').TopicProfileResolver;
+      surface: import('../core/topicProfileWriteSurface.js').TopicProfileWriteSurface;
+      confirmSlots: import('../core/topicProfileIngress.js').ProfileConfirmSlots;
+      orchestrator: TopicProfileOrchestrator | null;
+      carrier: import('../core/TopicProfileTransferCarrier.js').TopicProfileTransferCarrier | null;
+    } | null =
+      (_topicProfileStore && _topicProfileResolver && _topicProfileWriteSurface && _topicProfileConfirmSlots)
+        ? {
+            store: _topicProfileStore,
+            resolver: _topicProfileResolver,
+            surface: _topicProfileWriteSurface,
+            confirmSlots: _topicProfileConfirmSlots,
+            orchestrator: null,
+            carrier: _topicProfileCarrier,
+          }
+        : null;
+    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, cartographer: cartographer ?? undefined, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, subscriptionPool, quotaPoller, quotaAwareScheduler: _quotaAwareScheduler ?? undefined, proactiveSwapMonitor: _proactiveSwapMonitor ?? undefined, inUseAccountResolver, enrollmentWizard, semanticMemory, activitySentinel, rateLimitSentinel, releaseReadinessSentinel: releaseReadinessSentinel ?? undefined, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, topicProfile: _topicProfileCtx ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, localSigningKeyPem, leaseTransport, onLeasePullRequest: () => leaseCoordinatorRef?.currentLease() ?? null, liveTailReceiver, handoffWireTransport, onHandoffBegin, onHandoffInitiate: handoffInitiate, handoffInProgress: handoffSentinelInProgress, messageLedger, currentInboundByTopic, replyMarkerTransport, onReplyMarker: messageLedger ? (marker: unknown) => { const m = marker as { dedupeKey: string; platform: string; replyIdempotencyKey: string; epoch: number; topic?: string | null }; messageLedger!.applyRemoteReplyMarker(m.dedupeKey, { platform: m.platform, replyIdempotencyKey: m.replyIdempotencyKey, epoch: m.epoch, topic: m.topic ?? null }); } : undefined, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, warrantsReplyGate, collaborationSurfacer, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, a2aDeliveryTracker: a2aDeliveryTracker ?? undefined, responseReviewGate, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, machinePoolRegistry, meshRpcDispatcher, workingSetPullCoordinator, commitmentReplicaStore, forwardCommitmentMutate, sessionOwnershipRegistry, topicPinStore: _topicPinStore ?? undefined, streamTicketStore: _streamTicketStore ?? undefined, poolStreamAllowRemoteInput: (config as { dashboard?: { poolStream?: { allowRemoteInput?: boolean } } }).dashboard?.poolStream?.allowRemoteInput ?? false, poolStreamConnector: _poolStreamConnector ?? undefined, secretSync: _secretSyncHandle ?? undefined, meshSelfId: _meshSelfId ?? undefined, resolveRouterUrl: _resolveRouterUrl ?? undefined, resolvePeerUrls: _resolvePeerUrls ?? undefined, sessionPoolE2EResultStore, proxyCoordinator, topicIntentStore, topicIntentArcCheck, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, briefDeps, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, agentWorktreeReaper, mcpProcessReaper, geminiLoopRunner, sleepController, agentActivityState, reapLog, sleepWakeDetector, unjustifiedStopGate, stopGateDb, stopNotifier });
     // Resolve the late-bound topic-operator getter (increment 2e): routing was
     // wired before the server existed; from here on inbound binds use the
     // server's own store instance.
     _agentServerRef = server;
+
+    // ── Topic Profile §8 orchestrator (TOPIC-PROFILE-SPEC) ──
+    // Constructed HERE (after the AgentServer) because two of its ports late-bind
+    // off the server: the §9 EscalationGovernor (server.getEscalationGovernor())
+    // and the §7 in-flight ModelSwapService (server.getModelTierSwap()). The
+    // orchestrator owns the debounced, idle-gated kill/respawn, the resume-writer
+    // gates, the §10.4 breaker, and the §14 dry-run regime. Ships dark behind the
+    // dev-agent gate (the `enabled` knob is resolved LIVE per write — never a
+    // literal). Attached onto the shared _topicProfileCtx so the routes see it.
+    if (_topicProfileCtx && _topicProfileStore && _topicProfileResolver) {
+      try {
+        const tpStore = _topicProfileStore;
+        const tpResolver = _topicProfileResolver;
+        const tpProjectDir = config.projectDir;
+        // §7 codex resume map — the per-topic rollout-id capture-at-kill store.
+        if (!_codexResumeMap) {
+          _codexResumeMap = new CodexResumeMap(path.join(config.stateDir, 'state'));
+        }
+        const tpCodexResume = _codexResumeMap;
+        // The §9 marker reader needs the escalated-model-id set, derived from the
+        // live tier-escalation config (synchronously normalized at read time).
+        const { normalizeTierEscalationConfig: normTierEsc } = await import('../core/ModelTierEscalation.js');
+        const escIds = (): Set<string> => {
+          try {
+            return escalatedModelIds(
+              normTierEsc((config as { models?: { tierEscalation?: unknown } }).models?.tierEscalation),
+            );
+          } catch { /* @silent-fallback-ok: an unparseable tier-escalation config yields an empty escalated-id set — the §9 marker reader then reports "no escalation marker", the safe direction (a profile kill never inherits a phantom escalation) (TOPIC-PROFILE-SPEC §9) */ return new Set<string>(); }
+        };
+        // topic → live tmux session name (or null).
+        const sessionNameForTopic = (topicKey: string): string | null => {
+          const n = Number(topicKey);
+          if (!Number.isFinite(n)) return null;
+          return telegram?.getSessionForTopic(n) ?? null;
+        };
+
+        const orchDeps: TopicProfileOrchestratorDeps = {
+          store: tpStore,
+          resolveProfile: (topicKey) => tpResolver.resolve(topicKey),
+          sessions: {
+            getSessionForTopic: (topicKey) => {
+              const name = sessionNameForTopic(topicKey);
+              if (!name) return null;
+              return { sessionName: name, cwd: tpProjectDir };
+            },
+            listTopicSessions: () => {
+              // Every running session that is bound to a numeric (telegram) topic.
+              const out: Array<{ topicKey: string; sessionName: string }> = [];
+              for (const s of sessionManager.listRunningSessions()) {
+                const topic = telegram?.getTopicForSession?.(s.tmuxSession);
+                if (topic != null && Number.isFinite(Number(topic))) {
+                  out.push({ topicKey: String(topic), sessionName: s.tmuxSession });
+                }
+              }
+              return out;
+            },
+            readIdle: (sessionName) => {
+              // FABLE three-valued idle read off the live pane (the §8 kill-time
+              // re-confirm). null tail ⇒ unconfirmed; idle+empty-input ⇒
+              // confirmed-idle; any other live content ⇒ busy (fail toward busy).
+              const tail = sessionManager.captureMeaningfulTail(sessionName, 8);
+              if (tail === null) return 'unconfirmed';
+              return paneIdleWithEmptyInput(tail) ? 'confirmed-idle' : 'busy';
+            },
+            killForResume: async (sessionName) => sessionManager.killSession(sessionName),
+            killFresh: async (sessionName) => {
+              // Fresh respawn: clear the resume entry first so the next spawn does
+              // NOT --resume the (possibly cross-framework) transcript, then kill.
+              const topic = telegram?.getTopicForSession?.(sessionName);
+              if (topic != null && Number.isFinite(Number(topic))) _topicResumeMap?.remove(Number(topic));
+              return sessionManager.killSession(sessionName);
+            },
+            spawn: async (topicKey, _resolved, _directive) => {
+              // The orchestrator already killed; respawn re-resolves the (now
+              // updated) pin via spawnSessionForTopic and picks up the resume id
+              // from the resume map. We mark the spawn in-flight so the spawn-path
+              // chokepoint does not double-report a failure to the §10.4 breaker.
+              const n = Number(topicKey);
+              if (!Number.isFinite(n) || !telegram) return { ok: false, failureClass: 'unknown' };
+              const topicName = telegram.getTopicName(n) || `topic-${n}`;
+              _orchestratorSpawnInFlight.add(topicKey);
+              try {
+                await spawnSessionForTopic(sessionManager, telegram, topicName, n, undefined, topicMemory);
+                return { ok: true };
+              } catch (err) {
+                const msg = err instanceof Error ? err.message : String(err);
+                let cls: ProfileSpawnFailureClass = 'unknown';
+                if (/not found|ENOENT|command not found/i.test(msg)) cls = 'cli-not-found';
+                else if (/quota|rate.?limit|usage limit/i.test(msg)) cls = 'quota';
+                else if (/tmux/i.test(msg)) cls = 'tmux';
+                else if (/model|account|rejected/i.test(msg)) cls = 'model-rejected-by-account';
+                return { ok: false, failureClass: cls };
+              } finally {
+                _orchestratorSpawnInFlight.delete(topicKey);
+              }
+            },
+          },
+          claudeResume: {
+            // hook-provenance resume = none-loss readiness (§8 pre-kill predicate).
+            ready: (topicKey) => {
+              const n = Number(topicKey);
+              return Number.isFinite(n) ? _topicResumeMap?.getProvenance(n) === 'hook' : false;
+            },
+            resumeId: (topicKey) => {
+              const n = Number(topicKey);
+              return Number.isFinite(n) ? (_topicResumeMap?.get(n) ?? null) : null;
+            },
+            park: (topicKey, reason) => {
+              const n = Number(topicKey);
+              if (Number.isFinite(n)) _topicResumeMap?.park(n, reason);
+            },
+            unpark: (topicKey) => {
+              const n = Number(topicKey);
+              return Number.isFinite(n) ? (_topicResumeMap?.unpark(n) ?? false) : false;
+            },
+          },
+          codexResume: tpCodexResume,
+          escalation: {
+            // §9 FABLE marker = the live escalated model id on the topic's session.
+            activeMarker: (topicKey) => {
+              const name = sessionNameForTopic(topicKey);
+              if (!name) return null;
+              const s = sessionManager.listRunningSessions().find((x) => x.tmuxSession === name);
+              const model = s?.model;
+              if (model && escIds().has(String(model))) return { model: String(model) };
+              return null;
+            },
+            listMarkerTopics: () => {
+              const ids = escIds();
+              const out: string[] = [];
+              for (const s of sessionManager.listRunningSessions()) {
+                if (s.model && ids.has(String(s.model))) {
+                  const topic = telegram?.getTopicForSession?.(s.tmuxSession);
+                  if (topic != null) out.push(String(topic));
+                }
+              }
+              return out;
+            },
+            clearMarkerAndReleaseLease: (topicKey) => {
+              const name = sessionNameForTopic(topicKey);
+              if (!name) return;
+              const s = sessionManager.listRunningSessions().find((x) => x.tmuxSession === name);
+              if (s) server.getEscalationGovernor()?.releaseLease(s.id);
+            },
+          },
+          inFlightSwap: {
+            // §7 in-flight row — delegate to the SAME ModelSwapService the
+            // /sessions/:name/model-swap route uses (closed-enum + cost-guard +
+            // idle disciplines apply identically).
+            swap: async (sessionName, tier) => {
+              const svc = server.getModelTierSwap();
+              if (!svc) return { status: 'noop', reason: 'model-swap-unavailable' };
+              // ModelSwapService.swap does its own exact-match session lookup.
+              const r = await svc.swap(sessionName, tier);
+              return { status: r.status, reason: r.reason };
+            },
+          },
+          autonomousActive: (topicKey) => {
+            try {
+              return activeAutonomousJobs(config.stateDir).some((j) => String(j.topic) === String(topicKey));
+            } catch { /* @silent-fallback-ok: an unreadable autonomous-jobs dir reports "not autonomous" — the §8 idle re-confirm then proceeds on the live tmux idle reading (FABLE capture-pane), which is the stricter gate anyway; a busy autonomous session still reads busy and is left alone (TOPIC-PROFILE-SPEC §8) */ return false; }
+          },
+          isProtectedSession: (sessionName) => {
+            // FAIL-CLOSED: a protected-set read fault treats the session AS
+            // protected (true) — "protected is never profile-killed" is a hard
+            // §8 invariant, so the safe direction on an unreadable set is to
+            // refuse the kill, not risk killing a protected session.
+            try { return sessionManager.getProtectedSessions().includes(sessionName); }
+            catch { /* @silent-fallback-ok: fail-closed to protected — see comment above (TOPIC-PROFILE-SPEC §8) */ return true; }
+          },
+          codexFence: (topicKey) => _codexSpawnFences.get(String(topicKey)) ?? null,
+          verification: () => ({
+            inFlightSwapConfirmedRecently: false,
+            thinkingOffOnResumeVerified: false,
+            thinkingLevelResumeVerified: false,
+            crossModelResumeVerified: false,
+            claudeThinkingControlAvailable: false,
+          }),
+          getConfig: (): TopicProfileOrchestratorConfig => {
+            const cfg = (config as {
+              topicProfiles?: { enabled?: boolean; dryRun?: boolean; switchNowConfirmTtlMs?: number };
+            }).topicProfiles;
+            return {
+              enabled: resolveDevAgentGate(cfg?.enabled, config as { developmentAgent?: boolean }),
+              dryRun: cfg?.dryRun !== false,
+              respawnDebounceMs: 4_000,
+              frameworkSwitchDebounceMs: 8_000,
+              maxConcurrentProfileRespawns: 2,
+              spawnFailureBreakerThreshold: 3,
+              switchNowConfirmTtlMs: cfg?.switchNowConfirmTtlMs ?? 300_000,
+            };
+          },
+          disclose: (topicKey, text, meta) => {
+            // §8 disclosure-of-record. The orchestrator stamps each notice with
+            // an audit sequence ([#N]) so consecutive notices are never byte-
+            // identical; direct adapter sends bypass the /telegram/reply relay's
+            // exact-duplicate window anyway, so a delta-carrying notice can never
+            // be swallowed. meta.allowDuplicate is forwarded as kind metadata for
+            // any relayed (cross-machine) hop that DOES consult the window.
+            const n = Number(topicKey);
+            if (Number.isFinite(n) && telegram) {
+              void telegram
+                .sendToTopic(n, text, { kindMetadata: { allowDuplicate: meta.allowDuplicate } })
+                .catch(() => {});
+            }
+          },
+          audit: (event) => appendTopicProfileAudit(config.stateDir, event),
+          stateFilePath: path.join(config.stateDir, 'state', 'topic-profile-orchestrator.json'),
+        };
+
+        _topicProfileOrchestrator = new TopicProfileOrchestrator(orchDeps);
+        _topicProfileCtx.orchestrator = _topicProfileOrchestrator;
+        // §8(2): gate ALL claude resume-map writers at the single chokepoint.
+        _topicResumeMap?.setWriteGate((topicId) =>
+          _topicProfileOrchestrator!.claudeResumeWriteGate(topicId),
+        );
+        // §8(4): boot reconcile sweep (audits divergence; no kill in a gated regime).
+        try { _topicProfileOrchestrator.bootReconcileSweep(); } catch { /* @silent-fallback-ok: the boot sweep is observe-only divergence audit — a sweep fault never blocks boot; divergence resolves at the next natural spawn (TOPIC-PROFILE-SPEC §8) */ }
+        // §8(4): periodic tick — retries busy-aborted (deferred) respawns and
+        // re-checks the §14 dry-run flip lever. Piggybacks no per-topic poller;
+        // a single slow interval beside the reaper/watchdog cadence (~30s).
+        const tpOrchTickTimer = setInterval(() => {
+          try { _topicProfileOrchestrator?.tick(); } catch { /* @silent-fallback-ok: a tick fault is best-effort retry of deferred respawns — the next tick re-attempts; never throws from a timer (TOPIC-PROFILE-SPEC §8) */ }
+        }, 30_000);
+        if (typeof tpOrchTickTimer.unref === 'function') tpOrchTickTimer.unref();
+        console.log(pc.dim('  [topic-profile] §8 orchestrator wired'));
+      } catch (err) {
+        // @silent-fallback-ok: orchestrator construction failure leaves the §8
+        // machinery disabled — the write surface's keep-working fallback (legacy
+        // respawn / apply-at-next-spawn) still serves every write; never a boot
+        // failure (TOPIC-PROFILE-SPEC §8).
+        console.warn(`[server] TopicProfileOrchestrator failed to initialize: ${err instanceof Error ? err.message : err}`);
+      }
+    }
 
     // Boot-recovery (tunnel-failure-resilience spec Part 6): if the agent
     // died mid-relay-episode, the persisted tunnel.json carries
@@ -12906,6 +13854,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       notificationBatcher.stop();
       retryManager.stop();
       if (warmReapTimer) { clearInterval(warmReapTimer); warmReapTimer = null; } // Warm-Session A2A reap tick
+      try { _topicProfileOrchestrator?.dispose(); } catch { /* @silent-fallback-ok: orchestrator dispose clears timers/locks on shutdown — a dispose fault must not block the shutdown sequence (TOPIC-PROFILE-SPEC §8) */ } // §8 dispose
       spawnManager.dispose(); // §4.4: stop drain loop + clear DRR state
       summarySentinel.stop();
       memoryMonitor.stop();

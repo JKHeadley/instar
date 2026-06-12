@@ -765,6 +765,29 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       },
     },
   },
+  // Topic Profile (TOPIC-PROFILE-SPEC §12.5) — per-topic model/thinking/framework
+  // pins. `enabled` is deliberately OMITTED so the runtime resolves it through the
+  // standard developmentAgent dark-feature gate (`enabled ?? !!developmentAgent`,
+  // standard_development_agent_dark_feature_gate): LIVE on a dev agent (Echo, the
+  // dogfooding ground), DARK fleet-wide. Registered in DEV_GATED_FEATURES
+  // (src/core/devGatedFeatures.ts); the live-fleet flip is registering
+  // `enabled: true` here. A literal `enabled: false` would force-dark dev agents
+  // too — the exact PR #1001 failure the §12.5 lint refuses. An operator's
+  // EXPLICIT `enabled` in .instar/config.json remains the documented
+  // force-dark / fleet-flip override. dryRun:true is the §14 shadow-field canary
+  // (logs intended respawns, performs none). applyDefaults is add-missing-only
+  // deep-merge, so existing agents backfill these on update (Migration Parity)
+  // and an operator's existing values are NEVER overwritten; `defaults` is an
+  // operator-owned map and is left alone whenever present.
+  topicProfiles: {
+    dryRun: true,                         // §14 — shadow-field dry-run
+    respawnDebounceMs: 7000,              // same-framework trailing-edge window (§8)
+    frameworkSwitchDebounceMs: 45000,     // heavier framework-switch window (§8)
+    maxConcurrentProfileRespawns: 2,      // global stagger cap K (§8)
+    spawnFailureBreakerThreshold: 3,      // §10.4 N (attributable failures)
+    switchNowConfirmTtlMs: 300000,        // §8 'switch now' validity window
+    defaults: {},                         // per-topic config-default profiles (§5.2)
+  },
 };
 
 /**

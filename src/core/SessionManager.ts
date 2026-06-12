@@ -2987,6 +2987,10 @@ rm()  { "${shimRunner}" rm  "$@"; }
      *  explicit value wins; otherwise B1 fills it from the resolver-pinned account
      *  (kept in lockstep with configHome). */
     subscriptionAccountId?: string;
+    /** Topic Profile §6 — per-topic thinking mode, threaded to the launch
+     *  builder (claude `--effort` / codex `model_reasoning_effort`; no-op on
+     *  frameworks without a reasoning knob). */
+    thinkingMode?: import('./topicProfileValidation.js').ThinkingMode;
   }): Promise<string> {
     const sanitized = name
       ? name.toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '').slice(0, 40)
@@ -3123,6 +3127,9 @@ rm()  { "${shimRunner}" rm  "$@"; }
       ...(framework === 'pi-cli'
         ? { piSessionDir: path.join(this.config.projectDir, '.instar', 'state', 'pi-sessions') }
         : {}),
+      // Topic Profile §6: per-topic thinking mode (claude --effort / codex
+      // model_reasoning_effort; strict no-op on gemini/pi).
+      ...(options?.thinkingMode ? { thinkingMode: options.thinkingMode } : {}),
     });
 
     // Spawn the framework CLI in tmux — no bash -c shell intermediary.

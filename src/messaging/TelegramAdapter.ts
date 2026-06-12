@@ -503,7 +503,19 @@ export class TelegramAdapter implements MessagingAdapter {
    * topic, or null on failure.
    */
   public onRouteCommand: (
-    (topicId: number, framework: string | null) => Promise<{ ok: boolean; message: string }>
+    // TOPIC-PROFILE-SPEC §10.1: the authenticated sender uid is FORWARDED to
+    // the handler (the legacy dispatch dropped it) — the profile store stamps
+    // updatedBy from it and refuses a non-bound-operator.
+    (topicId: number, framework: string | null, userId?: number) => Promise<{ ok: boolean; message: string }>
+  ) | null = null;
+
+  /**
+   * Topic Profile command handler (TOPIC-PROFILE-SPEC §10.1 — the /topic
+   * power-user surface; the conversational surface is PRIMARY). Receives the
+   * raw argument text plus the AUTHENTICATED sender uid (`msg.from.id`).
+   */
+  public onTopicProfileCommand: (
+    (topicId: number, argText: string, userId: number) => Promise<{ ok: boolean; message: string }>
   ) | null = null;
 
   /**
@@ -3217,10 +3229,36 @@ export class TelegramAdapter implements MessagingAdapter {
       const arg = cmd === '/route' ? '' : text.trim().slice('/route '.length).trim().toLowerCase();
       const requested = arg === '' || arg === 'status' ? null : arg;
       try {
-        const result = await this.onRouteCommand(topicId, requested);
+        // §10.1: forward the authenticated sender uid down to the write.
+        const result = await this.onRouteCommand(topicId, requested, userId);
         await this.sendToTopic(topicId, result.message).catch(() => {});
       } catch (err) {
         await this.sendToTopic(topicId, `Routing failed: ${err instanceof Error ? err.message : String(err)}`).catch(() => {});
+      }
+      return true;
+    }
+
+    // /topic — get or set this topic's full execution profile (framework /
+    // model / thinking-mode / escalation), TOPIC-PROFILE-SPEC §10.1.
+    // Usage:
+    //   /topic                          → show the resolved profile
+    //   /topic <framework>              → pin the framework
+    //   /topic model <id>               → pin an explicit baseline model
+    //   /topic tier default|escalated   → pin the baseline tier
+    //   /topic thinking off|low|medium|high|max
+    //   /topic escalation inherit|suppress
+    //   /topic clear · /topic undo · /topic re-apply
+    if (cmd === '/topic' || cmd.startsWith('/topic ')) {
+      if (!this.onTopicProfileCommand) {
+        await this.sendToTopic(topicId, 'Topic profiles not available — server did not wire the /topic handler.').catch(() => {});
+        return true;
+      }
+      const argText = cmd === '/topic' ? '' : text.trim().slice('/topic '.length).trim();
+      try {
+        const result = await this.onTopicProfileCommand(topicId, argText, userId);
+        await this.sendToTopic(topicId, result.message).catch(() => {});
+      } catch (err) {
+        await this.sendToTopic(topicId, `Topic profile change failed: ${err instanceof Error ? err.message : String(err)}`).catch(() => {});
       }
       return true;
     }
@@ -4438,6 +4476,14 @@ export class TelegramAdapter implements MessagingAdapter {
         username: msg.from.username,
         firstName: msg.from.first_name,
         messageThreadId: numericTopicId,
+        // TOPIC-PROFILE-SPEC §10.1 round-5: forwarded content never matches
+        // ANY profile-ingress recognition — carry the platform forward
+        // metadata so the server-side parse can reject it deterministically.
+        ...(((msg as unknown as Record<string, unknown>).forward_origin
+          || (msg as unknown as Record<string, unknown>).forward_from
+          || (msg as unknown as Record<string, unknown>).forward_date)
+          ? { forwarded: true }
+          : {}),
       },
     };
 

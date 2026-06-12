@@ -1,0 +1,31 @@
+# Topic Profile — sticky per-topic framework / model / thinking-mode
+
+## What Changed
+
+Every conversation topic can now carry a durable **profile** that pins its baseline framework (`claude-code` / `codex-cli` / …), model (an explicit id OR a tier — never both), and thinking depth (`off` / `low` / `medium` / `high` / `max`). The pin survives restarts and follows the topic. When a pin changes, a new orchestrator picks the gentlest way to apply it: a within-framework Claude model-tier change on an idle session swaps in flight with zero loss; otherwise the session is restarted via `claude --resume` (no conversation lost) or, when no resume point is capturable, continued from recent history + memory — with the real cost disclosed honestly in each case. Protected and mid-task sessions are never interrupted (a busy session applies the switch when it goes idle, or immediately if the operator says "switch now").
+
+The conversational surface is primary: "use codex here", "pin this topic to Fable", "set high thinking on this topic" — the agent proposes the change back in plain words, confirms, and the pin is durable from then on. A `/topic-profile` HTTP route and a power-user `/topic` command exist for the dashboard, but the agent never instructs the user to type a command.
+
+Ships **dark** behind a dev-agent gate (dry-run by default); the fleet serves 503 until it graduates.
+
+## What to Tell Your User
+
+If you run more than one topic and want some of them on a different model, a different agent framework, or a different thinking depth — and you want that choice to STICK — you can now just say so in that topic ("use codex here", "pin this to Fable", "set high thinking"). I'll confirm it and remember it across restarts. If a topic is mid-task when you change it, I won't interrupt the work — I'll apply the change when it finishes, or right away if you tell me to "switch now". I'll always tell you honestly whether applying the change costs anything (most of the time it doesn't).
+
+## Summary of New Capabilities
+
+- Durable per-topic `{ framework, model, thinkingMode }` profile that survives restarts and follows the topic.
+- Conversational set/change/read of a topic's profile via the propose-confirm flow (verified-operator–gated).
+- Gentlest-swap orchestration: in-flight model-tier swap (idle Claude) → `claude --resume` restart → continuation, each with honest loss disclosure.
+- Protected/busy/autonomous sessions are never profile-killed; "switch now" overrides busy (never protection).
+- A `/topic-profile` operator/dashboard read-write route and a `/topic` power-user command.
+- Cross-machine: a topic's profile is pulled to whichever machine acquires the topic (mesh `topic-profile-pull` verb).
+
+## Evidence
+
+- `pnpm build` EXIT 0 (clean). no-silent-fallbacks ratchet 5/5 (baseline untouched).
+- Unit tier green; integration 278 files / 2592 passed; topic-profile e2e lifecycle 8/8.
+- Composition-root wiring locked by `tests/unit/topic-profile-server-wiring.test.ts` (20 assertions).
+- Swap-method decision covered both canary arms in `tests/unit/classifyProfileChange.test.ts`.
+- Side-effects review + required second-pass review (session lifecycle + gates): `upgrades/side-effects/topic-profile.md` (reviewer concurred — no ship-blocking concerns).
+- Spec: `docs/specs/TOPIC-PROFILE-SPEC.md` (converged round 16, approved).

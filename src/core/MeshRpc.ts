@@ -83,6 +83,19 @@ export type MeshCommand =
       };
     }
   | {
+      // Topic-profile transfer carrier (TOPIC-PROFILE-SPEC §5.3): the
+      // pull-at-ACQUIRE batched profile fetch. Read/observe class — serves
+      // this machine's OWN per-topic profile entries (current + dry-run
+      // shadow; provenance travels verbatim as PEER-ASSERTED) to a
+      // registered peer that just acquired the named topics. One batched
+      // command carries ALL topics acquired from this peer (§5.3 batch
+      // bound — never N per-topic requests). The RECEIVER revalidates every
+      // field through the §10.2 closed-enum clamp before the entry can
+      // persist or drive a launch — this verb adds reach, never authority.
+      type: 'topic-profile-pull';
+      topics: string[];
+    }
+  | {
       // Working-set handoff transport (WORKING-SET-HANDOFF-SPEC §3.2).
       // Read/observe class — the FRESH manifest computed per request is the
       // allowlist (own jailed working files only; no generic file-read
@@ -217,6 +230,7 @@ export function checkCommandRBAC(command: MeshCommand, sender: MachineId, deps: 
     case 'pool-stream-ticket':
     case 'journal-sync':
     case 'working-set-pull':
+    case 'topic-profile-pull':
     case 'commitments-sync':
     case 'secret-share':
       // Read/observe class (or e2e-encrypted) — any registered peer (already
@@ -228,6 +242,10 @@ export function checkCommandRBAC(command: MeshCommand, sender: MachineId, deps: 
       // files behind a fresh-manifest allowlist (disclosure accepted for
       // registered same-operator peers, §3.1 note); the handler itself stays
       // dark unless replication is explicitly enabled (§3.7 gate).
+      // topic-profile-pull joins it (TOPIC-PROFILE-SPEC §5.3): it serves OWN
+      // per-topic profile entries — disclosure-only for registered
+      // same-operator peers; the receiver revalidates every field (§10.2)
+      // before anything persists, so the verb carries reach, not authority.
       return { ok: true, reason: 'ok' };
     default:
       return { ok: false, reason: 'claim-unauthorized' };
