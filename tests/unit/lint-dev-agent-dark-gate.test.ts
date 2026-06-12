@@ -319,8 +319,11 @@ describe('lint-dev-agent-dark-gate', () => {
       '459': 'mentee.enabled',
       '544': 'multiMachine.sessionPool.enabled',
       '702': 'cartographer.freshnessSweep.enabled',
-      '736': 'cartographer.conformanceAudit.llmEnrichment.enabled',
-      '761': 'cartographer.subtreeNav.llmRerank.enabled',
+      // fix instar#1069: the freshnessSweep block gained the event-loop-safety
+      // fields (detectInWorker…scaffoldChunkNodes), shifting the two later
+      // cartographer entries by +11. Verified by hand against ConfigDefaults.ts.
+      '747': 'cartographer.conformanceAudit.llmEnrichment.enabled',
+      '772': 'cartographer.subtreeNav.llmRerank.enabled',
     };
     const actual = attributeRealConfigDefaults();
     expect(actual).toEqual(EXPECTED);

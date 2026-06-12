@@ -477,6 +477,9 @@ async function initFreshProject(projectName: string, options: InitOptions): Prom
 .instar/logs/
 .instar/config.json
 
+# Cartographer doc-tree + snapshot (per-machine; 67MB index on a real tree) — fix #1069
+.instar/cartographer/
+
 # Node
 node_modules/
 `;

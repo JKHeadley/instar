@@ -20,6 +20,9 @@ import crypto from 'node:crypto';
 import { SafeGitExecutor } from './SafeGitExecutor.js';
 import { SafeFsExecutor } from './SafeFsExecutor.js';
 import { DEFAULT_SKIP_DIRS } from './skipDirs.js';
+// Value import is runtime-cycle-free: cartographerDetect imports from this module
+// type-ONLY (erased at compile), so its runtime deps are git/fs/summary helpers only.
+import { readSnapshot as readDetectSnapshot } from './cartographerDetect.js';
 
 export type NodeKind = 'dir' | 'file';
 export type StalenessStatus = 'fresh' | 'stale' | 'never-authored' | 'path-gone' | 'dirty';
@@ -90,6 +93,21 @@ export interface CartographerIndexEntry {
   summaryUpdatedAt: string | null;
   codeHash: string | null;
   hasChildren: boolean;
+  // ── Spec #2 fields promoted onto the INDEX entry (fix instar#1069) ─────────
+  // These are accumulated history that cannot be recomputed from the index, so
+  // the off-event-loop detect (which reads ZERO node files) can only honor the
+  // zero-node-file-read invariant if they live HERE. ALL are OPTIONAL: a
+  // pre-existing on-disk index parses unchanged and every reader coalesces a
+  // missing value (`?? 0` / `?? false` / firstSeenAt→within-grace). The
+  // schemaVersion bump is a documentation/observability signal ONLY — loadIndex
+  // performs NO version check and MUST NOT gain one that triggers a rewrite; the
+  // optional-field coalesce IS the migration.
+  /** Anti-starvation defer counter (mirrors CartographerNode.staleSincePass). */
+  staleSincePass?: number;
+  /** Grace-clock anchor for the never-authored-past-grace freshness split. */
+  firstSeenAt?: string;
+  /** Quarantine flag (mirrors CartographerNode.authorFailed) for the freshness aggregate. */
+  authorFailed?: boolean;
 }
 
 export interface CartographerIndex {
@@ -118,7 +136,11 @@ export interface CartographerConfig {
   excludeSubstrings?: string[];
 }
 
-const SCHEMA_VERSION = 1;
+// v2 (fix instar#1069): index entries gained the optional staleSincePass /
+// firstSeenAt / authorFailed fields so the off-event-loop detect reads zero node
+// files. This bump is a DOCUMENTATION/observability signal only — loadIndex does
+// NOT version-gate (a v1 index parses and works unchanged via field coalesce).
+const SCHEMA_VERSION = 2;
 const DEFAULT_MAX_DEPTH = 12;
 const DEFAULT_LEAF_EXTENSIONS = ['.ts', '.js', '.mjs', '.cjs'];
 const DEFAULT_EXCLUDE_SUBSTRINGS = ['.test.', '.spec.', '.d.ts'];
@@ -226,6 +248,12 @@ export class CartographerTree {
    * never-authored (codeHash null). Honors skip-set, maxDepth, and a symlink-loop
    * guard (visited real paths).
    */
+  // ⚠ O(nodeCount) SYNCHRONOUS directory walk + per-node atomic writes — FORBIDDEN
+  // on the server hot path (fix instar#1069). On a real tree this is the ~2-minute
+  // freeze the incident observed. Run it OFF any request handler — the boot-path
+  // chunked scaffold (AgentServer.start) is the only sanctioned caller; routes must
+  // serve indexState:'not-built' instead. The Slice-5 lint forbids calling it from
+  // routes.ts and CartographerSweepEngine.ts.
   scaffold(): CartographerIndex {
     this.ensureDirs();
     const visitedReal = new Set<string>();
@@ -281,6 +309,143 @@ export class CartographerTree {
     // Prune stale node files (paths that disappeared) and write the surviving set.
     this.rewriteAll(nodes);
     return this.buildIndex(nodes);
+  }
+
+  /**
+   * fix instar#1069 — the BOOT-PATH chunked scaffold. Same result as scaffold()
+   * but the directory walk AND the per-node writes YIELD the event loop every
+   * `chunkNodes` operations (via the injected `onYield`, e.g. setImmediate), so a
+   * huge tree's structural build never freezes /health (the ~2-minute freeze the
+   * incident observed). The ONLY sanctioned caller is AgentServer/boot — never a
+   * request handler. P19: `shouldAbort` lets the caller bound total time; on abort
+   * the partial state is discarded by NOT writing the index (atomic; a half-built
+   * index is never read — routes serve indexState:'not-built' until a full run).
+   */
+  async scaffoldChunked(opts: {
+    chunkNodes: number;
+    onYield: () => Promise<void>;
+    shouldAbort?: () => boolean;
+  }): Promise<{ nodeCount: number }> {
+    this.ensureDirs();
+    const chunk = Math.max(1, opts.chunkNodes);
+    let ops = 0;
+    const tick = async (): Promise<void> => {
+      ops += 1;
+      if (ops % chunk === 0) {
+        await opts.onYield();
+        if (opts.shouldAbort?.()) throw new Error('cartographer-scaffold-aborted');
+      }
+    };
+    const relPosix = (abs: string): string =>
+      path.relative(this.projectDir, abs).split(path.sep).join('/');
+
+    // ── Pass 1: iterative pre-order walk collecting structure (yields per chunk). ──
+    const visitedReal = new Set<string>();
+    const childrenByDir = new Map<string, string[]>(); // dir relPath → child relPaths
+    const kindByPath = new Map<string, NodeKind>();
+    kindByPath.set('', 'dir');
+    childrenByDir.set('', []);
+    const stack: { abs: string; rel: string; depth: number }[] = [{ abs: this.projectDir, rel: '', depth: 0 }];
+    while (stack.length > 0) {
+      const { abs, rel, depth } = stack.pop()!;
+      let real: string;
+      try { real = fs.realpathSync(abs); } catch { continue; }
+      if (visitedReal.has(real)) continue;
+      visitedReal.add(real);
+      if (depth > this.maxDepth) continue;
+      let entries: fs.Dirent[];
+      try { entries = fs.readdirSync(abs, { withFileTypes: true }); } catch { continue; }
+      const kids: string[] = [];
+      for (const e of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+        if (e.isDirectory()) {
+          if (DEFAULT_SKIP_DIRS.has(e.name)) continue;
+          const childAbs = path.join(abs, e.name);
+          const childRel = relPosix(childAbs);
+          kindByPath.set(childRel, 'dir');
+          childrenByDir.set(childRel, []);
+          kids.push(childRel);
+          stack.push({ abs: childAbs, rel: childRel, depth: depth + 1 });
+        } else if (e.isFile() && this.isLeafFile(e.name)) {
+          const childRel = relPosix(path.join(abs, e.name));
+          kindByPath.set(childRel, 'file');
+          kids.push(childRel);
+        }
+        await tick();
+      }
+      childrenByDir.set(rel, kids);
+    }
+
+    // ── Pass 2: write each node file (preserving authored fields), yielding. ──
+    const nodes = new Map<string, CartographerNode>();
+    const keep = new Set<string>();
+    for (const [p, kind] of kindByPath) {
+      const existing = this.readNodeFile(p);
+      const node: CartographerNode = {
+        path: p, kind, summary: existing?.summary ?? '',
+        summaryUpdatedAt: existing?.summaryUpdatedAt ?? null,
+        codeHash: existing?.codeHash ?? null, codeRev: existing?.codeRev ?? null,
+        children: childrenByDir.get(p) ?? [],
+        builtinKind: 'cartographer-node', provenance: existing?.provenance, dirtyAtAuthor: existing?.dirtyAtAuthor,
+        firstSeenAt: existing?.firstSeenAt ?? this.nowIso(),
+        lastAuthoredBy: existing?.lastAuthoredBy, confidence: existing?.confidence,
+        childDigestHash: existing?.childDigestHash, staleSincePass: existing?.staleSincePass,
+        consecutiveAuthorFailures: existing?.consecutiveAuthorFailures, authorFailed: existing?.authorFailed,
+      };
+      nodes.set(p, node);
+      keep.add(`${this.slug(p)}.json`);
+      this.atomicWrite(this.nodeFilePath(p), JSON.stringify(node, null, 2));
+      await tick();
+    }
+    // Prune node files for paths that disappeared.
+    if (fs.existsSync(this.nodesDir)) {
+      for (const f of fs.readdirSync(this.nodesDir)) {
+        if (f.endsWith('.json') && !keep.has(f)) {
+          try { SafeFsExecutor.safeUnlinkSync(path.join(this.nodesDir, f), { operation: 'cartographer-prune-stale-node' }); }
+          catch { /* best-effort prune */ }
+        }
+        await tick();
+      }
+    }
+
+    // ── Pass 3: STREAM the index to a tmp file incrementally (bounded per-yield),
+    //    then atomic-rename. NOT a single 67MB JSON.stringify — that one synchronous
+    //    serialize would block the event loop on a real tree (the boot half of the
+    //    #1069 invariant). A partial write lives only in the tmp file and is never
+    //    renamed into place, so an aborted run leaves no readable index. ──
+    const tmp = `${this.indexPath}.${process.pid}.${crypto.randomBytes(6).toString('hex')}.tmp`;
+    const fd = fs.openSync(tmp, 'w');
+    try {
+      fs.writeSync(fd, `{\n  "schemaVersion": ${SCHEMA_VERSION},\n  "root": "",\n  "generatedAt": ${JSON.stringify(this.nowIso())},\n  "nodes": {`);
+      let first = true;
+      let buf = '';
+      let bufCount = 0;
+      for (const node of nodes.values()) {
+        const entry: CartographerIndexEntry = {
+          kind: node.kind,
+          summaryUpdatedAt: node.summaryUpdatedAt,
+          codeHash: node.codeHash,
+          hasChildren: node.children.length > 0,
+          ...(node.staleSincePass ? { staleSincePass: node.staleSincePass } : {}),
+          ...(node.firstSeenAt ? { firstSeenAt: node.firstSeenAt } : {}),
+          ...(node.authorFailed ? { authorFailed: true } : {}),
+        };
+        buf += `${first ? '\n' : ',\n'}    ${JSON.stringify(node.path)}: ${JSON.stringify(entry)}`;
+        first = false;
+        bufCount += 1;
+        if (bufCount >= chunk) {
+          fs.writeSync(fd, buf); buf = ''; bufCount = 0;
+          await opts.onYield();
+          if (opts.shouldAbort?.()) throw new Error('cartographer-scaffold-aborted');
+        }
+      }
+      if (buf) fs.writeSync(fd, buf);
+      fs.writeSync(fd, '\n  }\n}\n');
+      fs.fsyncSync(fd);
+    } finally {
+      fs.closeSync(fd);
+    }
+    fs.renameSync(tmp, this.indexPath);
+    return { nodeCount: nodes.size };
   }
 
   /** Merge structure into a node, preserving any existing authored fields. */
@@ -347,6 +512,12 @@ export class CartographerTree {
         summaryUpdatedAt: node.summaryUpdatedAt,
         codeHash: node.codeHash,
         hasChildren: node.children.length > 0,
+        // fix instar#1069: mirror the accumulated-history fields onto the index so
+        // the off-event-loop detect needs no node-file reads. Omit-when-absent so a
+        // never-deferred / never-failed node keeps the entry minimal.
+        ...(node.staleSincePass ? { staleSincePass: node.staleSincePass } : {}),
+        ...(node.firstSeenAt ? { firstSeenAt: node.firstSeenAt } : {}),
+        ...(node.authorFailed ? { authorFailed: true } : {}),
       };
     }
     this.atomicWrite(this.indexPath, JSON.stringify(index, null, 2));
@@ -372,6 +543,16 @@ export class CartographerTree {
     }
   }
 
+  /**
+   * Load + parse the whole index.
+   *
+   * ⚠ O(67MB) SYNCHRONOUS JSON.parse — FORBIDDEN on the server hot path (fix
+   * instar#1069). On a real tree this blocks the event loop for seconds. The
+   * off-event-loop detect parses the index inside a worker; routes serve the
+   * snapshot. The Slice-5 lint forbids calling it from routes.ts and
+   * CartographerSweepEngine.ts. NO version-gate here: a v1 index (without the
+   * staleSincePass/firstSeenAt/authorFailed entry fields) parses unchanged.
+   */
   loadIndex(): CartographerIndex | null {
     if (!fs.existsSync(this.indexPath)) return null;
     try {
@@ -385,6 +566,28 @@ export class CartographerTree {
 
   getNode(nodePath: string): CartographerNode | null {
     return this.readNodeFile(nodePath);
+  }
+
+  /**
+   * fix instar#1069 — the LINT-CLEAN, BYTE-BOUNDED index loader for the
+   * `/cartographer/tree` request path. It stats the file FIRST and refuses
+   * ('too-large') above `maxBytes` BEFORE attempting the parse, so a request can
+   * never trigger the 67MB sync parse/serialize that froze the event loop. Small
+   * trees parse + serve as before. (Distinct method name so the Slice-5 callsite
+   * lint — which bans the unbounded `.loadIndex(` — does not flag this.)
+   */
+  loadIndexBounded(maxBytes: number): { state: 'ok' | 'not-built' | 'too-large'; index?: CartographerIndex; nodeCount?: number } {
+    if (!fs.existsSync(this.indexPath)) return { state: 'not-built' };
+    try {
+      const size = fs.statSync(this.indexPath).size;
+      if (size > maxBytes) return { state: 'too-large' };
+      const index = JSON.parse(fs.readFileSync(this.indexPath, 'utf8')) as CartographerIndex;
+      return { state: 'ok', index, nodeCount: Object.keys(index.nodes).length };
+    } catch {
+      // @silent-fallback-ok — a corrupt/missing index reads as not-built; the route
+      // serves indexState:'not-built' and the boot scaffold rebuilds it.
+      return { state: 'not-built' };
+    }
   }
 
   getChildren(nodePath: string): CartographerNode[] {
@@ -413,6 +616,14 @@ export class CartographerTree {
         confidence?: CartographerConfidence;
         childDigestHash?: string | null;
       };
+      /**
+       * fix instar#1069 — index-write discipline. When true, write ONLY the small
+       * node file and skip the 67MB index parse+serialize; the caller (the sweep
+       * engine) batches all of a pass's index updates into ONE off-thread write.
+       * The returned node carries the delta the caller persists. Default false
+       * (the inline-refresh route + tests keep today's single-call behavior).
+       */
+      deferIndexWrite?: boolean;
     } = {},
   ): CartographerNode {
     this.ensureDirs();
@@ -439,11 +650,17 @@ export class CartographerTree {
       authorFailed: false,
     };
     this.atomicWrite(this.nodeFilePath(nodePath), JSON.stringify(node, null, 2));
+    // fix instar#1069: when deferred, the caller batches the index update off-thread.
+    if (opts.deferIndexWrite) return node;
     // Patch the index entry (node file already on disk).
     const index = this.loadIndex();
     if (index && index.nodes[nodePath]) {
       index.nodes[nodePath].summaryUpdatedAt = node.summaryUpdatedAt;
       index.nodes[nodePath].codeHash = node.codeHash;
+      // A successful author clears the defer/quarantine state on the index entry too.
+      index.nodes[nodePath].staleSincePass = 0;
+      index.nodes[nodePath].authorFailed = false;
+      if (node.firstSeenAt) index.nodes[nodePath].firstSeenAt = node.firstSeenAt;
       this.atomicWrite(this.indexPath, JSON.stringify(index, null, 2));
     }
     return node;
@@ -471,6 +688,8 @@ export class CartographerTree {
       authorFailed?: boolean;
       provenance?: CartographerNodeProvenance;
     },
+    /** fix instar#1069 — when true, write ONLY the node file; the caller batches the index delta off-thread. */
+    opts: { deferIndexWrite?: boolean } = {},
   ): CartographerNode | null {
     const existing = this.readNodeFile(nodePath);
     if (!existing) return null;
@@ -490,10 +709,17 @@ export class CartographerTree {
       provenance: partial.provenance ?? existing.provenance,
     };
     this.atomicWrite(this.nodeFilePath(nodePath), JSON.stringify(node, null, 2));
-    if (codeHashChanged) {
+    if (opts.deferIndexWrite) return node;
+    // The index entry now also mirrors staleSincePass/authorFailed, so a non-deferred
+    // patch that changes any index-mirrored field re-syncs the entry in one write.
+    const staleChanged = partial.staleSincePass !== undefined;
+    const failedChanged = partial.authorFailed !== undefined;
+    if (codeHashChanged || staleChanged || failedChanged) {
       const index = this.loadIndex();
       if (index && index.nodes[nodePath]) {
-        index.nodes[nodePath].codeHash = node.codeHash;
+        if (codeHashChanged) index.nodes[nodePath].codeHash = node.codeHash;
+        if (staleChanged) index.nodes[nodePath].staleSincePass = node.staleSincePass;
+        if (failedChanged) index.nodes[nodePath].authorFailed = node.authorFailed;
         this.atomicWrite(this.indexPath, JSON.stringify(index, null, 2));
       }
     }
@@ -542,7 +768,32 @@ export class CartographerTree {
     return this.currentOids();
   }
 
-  /** Derive staleness for the whole tree from ONE batched git read. */
+  // ---- fix instar#1069: off-event-loop detect accessors --------------------
+  // The sweep engine builds its worker/sync DetectInput from these instead of
+  // calling the O(67MB) methods below on the main thread.
+
+  /** Absolute path to index.json (the worker reads/writes it off-thread). */
+  indexFilePath(): string { return this.indexPath; }
+  /** The repo root the detect git plumbing runs against. */
+  projectDirPath(): string { return this.projectDir; }
+  /** Absolute path to the per-host snapshot every /cartographer/* read route serves from. */
+  snapshotPath(): string { return path.join(this.cartoDir, 'snapshot.json'); }
+  /** Read the per-host snapshot (null when absent/corrupt). Cheap — no index parse. */
+  readSnapshot(): import('./cartographerDetect.js').CartographerSnapshot | null {
+    return readDetectSnapshot(this.snapshotPath());
+  }
+
+  /**
+   * Derive staleness for the whole tree from ONE batched git read.
+   *
+   * ⚠ O(nodeCount)/67MB SYNCHRONOUS — FORBIDDEN on the server hot path (fix
+   * instar#1069). It loads the full 67MB index and a full git ls-tree on the
+   * calling thread; on a real tree that starves the event loop for tens of
+   * seconds. Use the off-event-loop detect (cartographerDetect.runDetect) on the
+   * sweep path and serve routes from the snapshot. Retained only for small trees,
+   * the pure module, and tests; the Slice-5 lint forbids calling it from
+   * routes.ts and CartographerSweepEngine.ts.
+   */
   staleNodes(): CartographerStaleEntry[] {
     const index = this.loadIndex();
     if (!index) return [];
@@ -613,6 +864,11 @@ export class CartographerTree {
    * never-authored "past grace" when it has no summary AND was first seen longer
    * ago than `graceMs`.
    */
+  // ⚠ O(nodeCount)/67MB SYNCHRONOUS — loads the full index AND reads one node file
+  // per authorable node — FORBIDDEN on the server hot path (fix instar#1069). The
+  // off-event-loop detect computes this aggregate from the index alone (zero node
+  // files) and the /health route serves it from the snapshot. The Slice-5 lint
+  // forbids calling it from routes.ts and CartographerSweepEngine.ts.
   freshnessHealth(opts: { graceMs: number; now?: number } = { graceMs: 0 }): {
     nodeCount: number;
     authorableCount: number;

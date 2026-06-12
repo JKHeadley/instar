@@ -3201,6 +3201,15 @@ setTimeout(() => process.exit(0), 2000);
       result.upgraded.push('CLAUDE.md: added Cartographer Doc-Freshness section');
     }
 
+    // Event-loop safety (fix instar#1069) — /health + /stale now serve a cached
+    // snapshot; freshnessSweep.framework is the supported off-Claude routing knob.
+    // Keyed on its OWN marker so it is idempotent and independent of the blocks above.
+    if (!content.includes('serves a cached snapshot')) {
+      content += `\n### Cartographer event-loop safety (fix instar#1069)\n\nThe cartographer never runs a whole-tree walk on the server's event loop: the freshness sweep's "what's stale?" detect runs in a worker thread, and every \`/cartographer/*\` read route **serves a cached snapshot** instead of recomputing live.\n- \`GET /cartographer/health\` + \`GET /cartographer/stale\` carry \`snapshot\` (\`present\`/\`absent\`/\`detect-failing\`), \`generatedAt\`, \`headSha\`, \`snapshotStale\`, and \`lastDetectStatus\`. \`absent\` just means no detect has run yet — not an error. \`/stale\` is a bounded sample with a \`total\` + \`truncated\` flag.\n- The off-Claude model is selected by \`cartographer.freshnessSweep.framework\` (default \`codex-cli\`) — a manual \`sessions.componentFrameworks\` override is no longer required. The boot log line \`Cartographer sweep routing: <fw> (source: …)\` shows what resolved.\n- Rollback knob: \`cartographer.freshnessSweep.detectInWorker: false\` runs the SAME bounded detect synchronously (still never the old full walk).\n`;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Cartographer event-loop-safety section');
+    }
+
     // Standards Enforcement Coverage (cartographer-conformance-audit spec #3) — the
     // registry-wide enforcement-coverage audit. Keyed on this spec's OWN marker
     // ('Standards Enforcement Coverage') so it is independent of specs #1/#2 and
@@ -6529,6 +6538,12 @@ Create worktrees for collaborator repos with \`instar worktree create <branch>\`
     // `git add .` path so contributors can't accidentally commit pr-gate
     // secrets from the project directory.
     this.addGitignoreEntry(projectGitignore, '.instar/secrets/pr-gate/', result, 'project .gitignore');
+
+    // fix instar#1069: the cartographer index (67MB on a real tree) + the per-host
+    // snapshot are per-machine runtime state, never committable. The header in
+    // cartographer-freshness.mjs historically (wrongly) claimed this was gitignored;
+    // this entry makes it true. Idempotent (addGitignoreEntry no-ops if present).
+    this.addGitignoreEntry(projectGitignore, '.instar/cartographer/', result, 'project .gitignore');
   }
 
   /**

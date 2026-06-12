@@ -19,6 +19,7 @@ import { execFileSync } from 'node:child_process';
 import { createRoutes, type RouteContext } from '../../src/server/routes.js';
 import { authMiddleware } from '../../src/server/middleware.js';
 import { CartographerTree } from '../../src/core/CartographerTree.js';
+import { runDetect, writeSnapshot } from '../../src/core/cartographerDetect.js';
 
 const AUTH = 'test-bearer-token';
 
@@ -62,26 +63,47 @@ function app(): express.Express {
 }
 const bearer = (r: request.Test) => r.set('Authorization', `Bearer ${AUTH}`);
 
+// fix instar#1069: /health + /stale serve the per-host SNAPSHOT (written by the
+// sweep's detect), never a lazy scaffold. This helper runs the SAME bounded detect
+// the engine runs and persists the snapshot the routes read — so this E2E exercises
+// the real snapshot-backed contract end-to-end.
+function refreshSnapshot(): void {
+  const r = runDetect({
+    indexPath: carto.indexFilePath(), projectDir: repo, maxIndexBytes: 256 * 1024 * 1024,
+    maxCandidates: 100, maxNodesPerPass: 25, maxDeferredPasses: 5, revalidateSamplePerPass: 0,
+    graceMs: 0, gitMaxBuffer: 64 * 1024 * 1024, snapshotSampleMax: 500, nowMs: Date.now(),
+  });
+  writeSnapshot(carto.snapshotPath(), {
+    generatedAt: new Date().toISOString(), headSha: r.counts.headSha, counts: r.counts,
+    freshness: r.freshness, staleSample: r.staleSample, staleTotal: r.staleTotal,
+    staleSampleTruncated: r.staleSample.length < r.staleTotal,
+    lastDetectStatus: 'ok', lastDetectAt: new Date().toISOString(), durationMs: r.durationMs,
+  });
+}
+
 describe('Cartographer doc-tree — feature is alive (Tier 3 E2E)', () => {
-  it('health route is wired and returns 200 with a real nodeCount (not 503)', async () => {
+  it('health route is wired and returns 200 with a real nodeCount from the snapshot (not 503)', async () => {
+    carto.scaffold();
+    refreshSnapshot();
     const res = await bearer(request(app()).get('/cartographer/health'));
     expect(res.status).toBe(200);
     expect(res.body.enabled).toBe(true);
+    expect(res.body.snapshot).toBe('present');
     expect(res.body.nodeCount).toBeGreaterThanOrEqual(1);
   });
 
   it('full lifecycle: author → fresh → mutate code → stale, observed through /cartographer/stale', async () => {
     const a = app();
-    // scaffold happens lazily on the first route hit; author a node in-process.
     carto.scaffold();
     carto.setSummary('src/index.ts', 'entry point exporting `a`');
+    refreshSnapshot();
 
-    // freshly authored → not in the stale list as 'stale'
+    // freshly authored → not in the stale snapshot sample as 'stale'
     let res = await bearer(request(a).get('/cartographer/stale'));
     expect(res.status).toBe(200);
     expect(res.body.nodes.filter((n: { status: string }) => n.status === 'stale')).toHaveLength(0);
 
-    // the node reads back with its summary
+    // the node reads back with its summary (single-node read — always live)
     res = await bearer(request(a).get('/cartographer/node?path=src/index.ts'));
     expect(res.body.summary).toBe('entry point exporting `a`');
 
@@ -90,8 +112,8 @@ describe('Cartographer doc-tree — feature is alive (Tier 3 E2E)', () => {
     git(repo, ['add', '-A']);
     git(repo, ['commit', '-q', '-m', 'change index']);
 
-    // now the authored node is observed as stale through the route — git-hash
-    // derivation is genuinely live, not a stub.
+    // re-run detect (the sweep's job) → the snapshot now reflects the stale node.
+    refreshSnapshot();
     res = await bearer(request(a).get('/cartographer/stale'));
     const stalePaths = res.body.nodes
       .filter((n: { status: string }) => n.status === 'stale')

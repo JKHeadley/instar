@@ -88,6 +88,10 @@ const ALLOWLIST = new Set([
   // completeness) — read-only `git diff --cached --name-only` for --staged.
   // Cannot depend on the TS funnel because TS is not compiled at pre-push.
   'scripts/lint-llm-attribution.js',
+  // Same bootstrap-escape pattern (cartographer main-thread-walk lint, fix
+  // instar#1069) — read-only `git diff --cached --name-only` for --staged.
+  // Cannot depend on the TS funnel because TS is not compiled at pre-push.
+  'scripts/lint-no-mainthread-cartographer-walk.js',
   // Postinstall bootstrap script — runs before TypeScript is compiled and
   // before SafeFsExecutor is available. CommonJS, can't use ESM imports.
   'scripts/fix-better-sqlite3.cjs',

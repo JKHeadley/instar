@@ -22,3 +22,7 @@ The rule is now: **nothing — not the background job, not any web endpoint — 
 ## What changes for you
 
 Nothing visible day-to-day, except the server stops dying when the sweep is on. The sweep stays **off** until this ships and I can re-enable it and finally give you the real cost-per-pass numbers you're owed. The trade-off: the health/stale endpoints now show last-known numbers with an age stamp rather than always-live numbers — a deliberate swap of "perfectly live" for "never freezes the server."
+
+## What the build-time review caught
+
+During the build, an independent second reviewer audited the finished code against the rule and caught a real leftover: the one-time **boot** step that builds the map still wrote the whole 67MB file in one unbroken go on the main thread. That write is now streamed in small pieces (with breathing room between pieces, like everything else), and a test was added that watches the server's responsiveness while the boot build runs on a large tree — so this last corner of the rule is enforced by a test, not by promises.

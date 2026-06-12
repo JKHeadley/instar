@@ -720,6 +720,17 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       maxDeferredPasses: 5,
       revalidateSamplePerPass: 2,
       minNodesUnderPressure: 3,
+      // ── Event-loop safety (fix instar#1069) — backfilled to existing agents by
+      // the applyDefaults deep-merge (server reads each via num(fsCfg.X, default)). ──
+      detectInWorker: true,           // detect/index-writes run off the main event loop (false = sync rollback)
+      detectTimeoutMs: 120000,        // worker await bound; on timeout → terminate + refuse
+      detectWorkerHeapMb: 1536,       // worker V8 heap cap, co-sized with maxIndexBytes (≈6× parse expansion + headroom)
+      maxIndexBytes: 209715200,       // 200MB pre-parse byte guard (200×6 ≈ 1200MB < heap; refuse above this)
+      snapshotSampleMax: 500,         // cap on the /stale snapshot sample
+      gitMaxBuffer: 67108864,         // 64MB explicit git ls-tree buffer (never the 10MB default that throws)
+      detectCandidateHeadroom: 4,     // maxCandidates = maxNodesPerPass × this
+      maxRequestNodes: 50000,         // /cartographer/tree (full) ceiling → too-large-for-request above
+      scaffoldChunkNodes: 500,        // boot-path chunked scaffold: node-ops per macrotask before yielding
     },
     // Standards Enforcement-Coverage Audit (cartographer-conformance-audit spec #3).
     // A nested key under cartographer so the deep-merge add-missing path backfills

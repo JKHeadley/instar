@@ -87,6 +87,10 @@ function sweepConfig(over: Partial<SweepEngineConfig> = {}): SweepEngineConfig {
     maxDeferredPasses: 5,
     revalidateSamplePerPass: 0,
     minNodesUnderPressure: 3,
+    // fix instar#1069: this E2E exercises the author lifecycle, not the worker — run
+    // the SAME bounded detect synchronously (the worker-from-dist path has its own
+    // dist-backed integration test). Tier-3 stays green without a build step here.
+    detectInWorker: false,
     ...over,
   };
 }

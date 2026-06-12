@@ -8992,6 +8992,31 @@ export async function startServer(options: StartOptions): Promise<void> {
       : null;
     if (cartographer) console.log(pc.green('  Cartographer doc-tree enabled'));
 
+    // fix instar#1069: build the structural index ONCE at boot, OFF the request path,
+    // in chunks that yield the event loop — replacing the per-request lazy scaffold()
+    // that froze /health. Fire-and-forget (boot is not blocked); P19 time ceiling so a
+    // pathological tree can't run forever (next boot retries; routes serve not-built
+    // meanwhile). Skipped when an index already exists.
+    if (cartographer && !fs.existsSync(cartographer.indexFilePath())) {
+      const scCfg = (config as { cartographer?: { freshnessSweep?: { scaffoldChunkNodes?: number } } }).cartographer?.freshnessSweep;
+      const chunkNodes = typeof scCfg?.scaffoldChunkNodes === 'number' ? scCfg.scaffoldChunkNodes : 500;
+      const scaffoldStartedAt = Date.now();
+      void cartographer.scaffoldChunked({
+        chunkNodes,
+        onYield: () => new Promise<void>((r) => setImmediate(r)),
+        shouldAbort: () => Date.now() - scaffoldStartedAt > 10 * 60_000, // P19: 10-min ceiling, retry next boot
+      }).then(() => {
+        console.log(pc.gray('  Cartographer index built (boot scaffold)'));
+      }).catch((err: unknown) => {
+        // @silent-fallback-ok — the boot scaffold is best-effort by design (fix
+        // instar#1069 P19): a partial run never produces a readable index (atomic
+        // tmp+rename), routes serve indexState:'not-built' honestly, and the next
+        // boot retries. The yellow log line is the operator surface; failing the
+        // boot over a map-build would invert the feature's priority.
+        console.log(pc.yellow(`  Cartographer boot scaffold incomplete (retries next boot): ${err instanceof Error ? err.message : String(err)}`));
+      });
+    }
+
     // Cartographer doc-freshness sweep (spec #2). In-process poller that authors
     // stale/never-authored node summaries on a LIGHT model routed OFF Claude.
     // Ships dark behind freshnessSweep.enabled ONLY — the redundant egressAcknowledged
@@ -9022,6 +9047,28 @@ export async function startServer(options: StartOptions): Promise<void> {
           const { CartographerSweepPoller } = await import('../monitoring/CartographerSweepPoller.js');
           const { sampleHostPressure: _sampleHostPressure } = await import('../monitoring/HostPressureSampler.js');
           const rcfg = config.monitoring?.sessionReaper;
+
+          // Slice 3 (fix instar#1069): honor cartographer.freshnessSweep.framework as
+          // the sweep's routing so BOTH the routing PROBE and the actual author call
+          // resolve consistently (the router reads config.sessions.componentFrameworks
+          // live). EXPLICIT-SET-ONLY: a pre-existing overrides.CartographerSweep OR an
+          // explicitly-configured categories.job is never overridden (migration safety);
+          // otherwise freshnessSweep.framework becomes the sweep's effective override.
+          {
+            type CF = { overrides?: Record<string, string>; categories?: Record<string, string> };
+            const { resolveSweepFrameworkRouting } = await import('../core/CartographerSweepEngine.js');
+            const cf: CF = (config as { sessions?: { componentFrameworks?: CF } }).sessions?.componentFrameworks ?? {};
+            const sweepFw = typeof fsCfg.framework === 'string' ? fsCfg.framework : undefined;
+            const routed = resolveSweepFrameworkRouting(cf, sweepFw);
+            if (routed.injectOverride && routed.framework) {
+              // Inject so BOTH probeRouting and evaluate resolve consistently (router
+              // reads config.sessions.componentFrameworks live). Explicit-set-only.
+              const s = ((config as { sessions?: { componentFrameworks?: CF } }).sessions ??= {} as { componentFrameworks?: CF });
+              const c = (s.componentFrameworks ??= {});
+              (c.overrides ??= {}).CartographerSweep = routed.framework;
+            }
+            console.log(pc.gray(`  Cartographer sweep routing: ${routed.framework ?? '(default)'} (source: ${routed.source})`));
+          }
           const engine = new CartographerSweepEngine({
             tree: cartographer,
             router: routerLike,
@@ -9044,6 +9091,15 @@ export async function startServer(options: StartOptions): Promise<void> {
               maxDeferredPasses: num(fsCfg.maxDeferredPasses, 5),
               revalidateSamplePerPass: num(fsCfg.revalidateSamplePerPass, 2),
               minNodesUnderPressure: num(fsCfg.minNodesUnderPressure, 3),
+              // fix instar#1069: off-event-loop detect knobs (worker by default).
+              detectInWorker: fsCfg.detectInWorker !== false,
+              detectTimeoutMs: num(fsCfg.detectTimeoutMs, 120000),
+              detectWorkerHeapMb: num(fsCfg.detectWorkerHeapMb, 1536),
+              maxIndexBytes: num(fsCfg.maxIndexBytes, 200 * 1024 * 1024),
+              snapshotSampleMax: num(fsCfg.snapshotSampleMax, 500),
+              gitMaxBuffer: num(fsCfg.gitMaxBuffer, 64 * 1024 * 1024),
+              detectCandidateHeadroom: num(fsCfg.detectCandidateHeadroom, 4),
+              detectGraceMs: num(fsCfg.cadenceMs, 600000) * 2,
             },
             stateDir: config.stateDir,
             log: (m) => console.log(pc.gray(m)),

@@ -4247,16 +4247,71 @@ export function createRoutes(ctx: RouteContext): Router {
   // Cartographer doc-tree — hierarchical, semantic map of the codebase with
   // git-hash staleness derivation (cartographer-doc-tree-schema spec #1). Ships
   // dark behind cartographer.enabled (503 when disabled). Read-only — authoring
-  // is in-process only. Routes lazy-scaffold the structural skeleton on first use.
+  // is in-process only.
+  //
+  // fix instar#1069: NO request path runs an O(nodeCount)/67MB synchronous op on
+  // the event loop. /health + /stale serve the per-host SNAPSHOT the sweep writes;
+  // /tree is byte-bounded (too-large-for-request above the ceiling); the lazy
+  // scaffold()/loadIndex() preamble is GONE (routes serve indexState:'not-built'
+  // when no index exists — the boot-path chunked scaffold builds it off-request).
+  // The Slice-5 callsite lint forbids loadIndex/staleNodes/freshnessHealth/scaffold
+  // here, so this regression cannot return by accident.
+
+  /** Snapshot-enum + provenance, computed cheaply (one `git rev-parse --short HEAD`). */
+  const cartoSnapshotMeta = (
+    snap: import('../core/cartographerDetect.js').CartographerSnapshot | null,
+  ): { snapshot: 'present' | 'absent' | 'detect-failing'; snapshotStale: boolean; ageMs: number | null; headMoved: boolean; lastDetectStatus: string | null; lastDetectAt: string | null; headSha: string | null } => {
+    if (!snap) {
+      return { snapshot: 'absent', snapshotStale: true, ageMs: null, headMoved: false, lastDetectStatus: null, lastDetectAt: null, headSha: null };
+    }
+    const currentHead = ctx.cartographer ? ctx.cartographer.currentHeadShort() : null;
+    const headMoved = snap.headSha != null && currentHead != null && snap.headSha !== currentHead;
+    const ageMs = snap.generatedAt ? Math.max(0, Date.now() - Date.parse(snap.generatedAt)) : null;
+    const failing = snap.lastDetectStatus !== 'ok';
+    return {
+      snapshot: failing ? 'detect-failing' : 'present',
+      snapshotStale: headMoved || failing,
+      ageMs,
+      headMoved,
+      lastDetectStatus: snap.lastDetectStatus,
+      lastDetectAt: snap.lastDetectAt,
+      headSha: snap.headSha,
+    };
+  };
+
   router.get('/cartographer/tree', (req, res) => {
     if (!ctx.cartographer) { res.status(503).json({ error: 'Cartographer not enabled' }); return; }
-    let index = ctx.cartographer.loadIndex();
-    if (!index) index = ctx.cartographer.scaffold();
+    const snap = ctx.cartographer.readSnapshot();
     if (req.query.format === 'compact') {
-      res.json({ root: index.root, generatedAt: index.generatedAt, nodeCount: Object.keys(index.nodes).length });
+      // Cheap: nodeCount + generatedAt from the snapshot (no index parse).
+      res.json({
+        root: '',
+        generatedAt: snap?.generatedAt ?? null,
+        nodeCount: snap?.counts.nodeCount ?? 0,
+        indexState: snap ? 'built' : 'not-built',
+        ...cartoSnapshotMeta(snap),
+      });
       return;
     }
-    res.json(index);
+    // Full index: byte-bounded so a huge tree never triggers the 67MB sync parse.
+    const fsCfg = (ctx.config as { cartographer?: { freshnessSweep?: { maxRequestNodes?: number } } }).cartographer?.freshnessSweep;
+    const maxRequestNodes = typeof fsCfg?.maxRequestNodes === 'number' ? fsCfg.maxRequestNodes : 50000;
+    const byteCeiling = maxRequestNodes * 512; // generous per-entry estimate
+    const loaded = ctx.cartographer.loadIndexBounded(byteCeiling);
+    if (loaded.state === 'not-built') {
+      res.json({ root: '', generatedAt: null, nodeCount: 0, indexState: 'not-built', ...cartoSnapshotMeta(snap) });
+      return;
+    }
+    if (loaded.state === 'too-large') {
+      res.json({
+        indexState: 'too-large-for-request',
+        nodeCount: snap?.counts.nodeCount ?? null,
+        guidance: 'index too large to serve whole; use GET /cartographer/navigate?query=... for a bounded subtree',
+        ...cartoSnapshotMeta(snap),
+      });
+      return;
+    }
+    res.json(loaded.index);
   });
 
   router.get('/cartographer/node', (req, res) => {
@@ -4267,33 +4322,64 @@ export function createRoutes(ctx: RouteContext): Router {
     if (p.startsWith('/') || p.split('/').includes('..')) {
       res.status(400).json({ error: 'invalid path' }); return;
     }
-    if (!ctx.cartographer.loadIndex()) ctx.cartographer.scaffold();
+    // getNode reads ONE node file (O(1)) — no index parse, no scaffold preamble.
     const node = ctx.cartographer.getNode(p);
-    if (!node) { res.status(404).json({ error: 'no such node' }); return; }
+    if (!node) { res.status(404).json({ error: 'no such node', indexState: ctx.cartographer.readSnapshot() ? 'built' : 'not-built' }); return; }
     res.json(node);
   });
 
   router.get('/cartographer/stale', (_req, res) => {
     if (!ctx.cartographer) { res.status(503).json({ error: 'Cartographer not enabled' }); return; }
-    if (!ctx.cartographer.loadIndex()) ctx.cartographer.scaffold();
-    const nodes = ctx.cartographer.staleNodes();
-    res.json({ count: nodes.length, nodes });
+    const snap = ctx.cartographer.readSnapshot();
+    const meta = cartoSnapshotMeta(snap);
+    if (!snap) {
+      res.json({ count: 0, nodes: [], total: 0, truncated: false, ...meta });
+      return;
+    }
+    // Serve the bounded, secret-filtered sample with the honest total + truncation.
+    const reasonFor = (s: string): string =>
+      s === 'never-authored' ? 'no summary authored yet'
+        : s === 'stale' ? 'code changed since the summary was authored'
+          : s === 'path-gone' ? 'covered path no longer in HEAD' : '';
+    const nodes = snap.staleSample.map((e) => ({ path: e.path, status: e.status, reason: reasonFor(e.status) }));
+    res.json({ count: nodes.length, nodes, total: snap.staleTotal, truncated: snap.staleSampleTruncated, ...meta });
   });
 
   router.get('/cartographer/health', (_req, res) => {
     if (!ctx.cartographer) { res.status(503).json({ error: 'Cartographer not enabled' }); return; }
-    if (!ctx.cartographer.loadIndex()) ctx.cartographer.scaffold();
     const sweepCfg = (ctx.config as { cartographer?: { freshnessSweep?: { enabled?: boolean; cadenceMs?: number } } })
       .cartographer?.freshnessSweep;
-    // Spec #2: surface the freshness ratio + the two ABSOLUTE backlog counts so a
-    // green ratio can't hide a growing un-authored/quarantined backlog. Grace =
-    // one cadence so a just-scaffolded node isn't counted as debt immediately.
-    const graceMs = (sweepCfg?.cadenceMs ?? 600000) * 2;
+    const snap = ctx.cartographer.readSnapshot();
+    const meta = cartoSnapshotMeta(snap);
+    // fix instar#1069: the entire freshness block is served from the SNAPSHOT — the
+    // route never calls health()/freshnessHealth() (the request-thread starvers).
+    // Legacy field names/semantics are preserved (additive contract); new fields
+    // carry snapshot provenance so a stale/failing detect is visible on the route.
+    if (!snap) {
+      res.json({
+        enabled: true,
+        nodeCount: 0, authoredCount: 0, neverAuthoredCount: 0, staleCount: 0, generatedAt: null,
+        freshness: {
+          nodeCount: 0, authorableCount: 0, freshCount: 0, staleCount: 0, neverAuthoredCount: 0,
+          neverAuthoredWithinGrace: 0, neverAuthoredPastGrace: 0, authorFailedCount: 0, freshRatio: 1, generatedAt: null,
+        },
+        sweepEnabled: sweepCfg?.enabled === true,
+        ...meta,
+      });
+      return;
+    }
     res.json({
       enabled: true,
-      ...ctx.cartographer.health(),
-      freshness: ctx.cartographer.freshnessHealth({ graceMs }),
+      // Legacy health() fields, sourced from the snapshot:
+      nodeCount: snap.counts.nodeCount,
+      authoredCount: snap.counts.authoredCount,
+      neverAuthoredCount: snap.counts.neverAuthored,
+      staleCount: snap.counts.stale,
+      generatedAt: snap.generatedAt,
+      // Legacy freshnessHealth() block, sourced from the snapshot:
+      freshness: snap.freshness,
       sweepEnabled: sweepCfg?.enabled === true,
+      ...meta,
     });
   });
 
@@ -4331,7 +4417,8 @@ export function createRoutes(ctx: RouteContext): Router {
     }
     if (!summaryRaw || summaryRaw.length > 4096) { res.status(400).json({ error: 'invalid summary' }); return; }
 
-    if (!ctx.cartographer.loadIndex()) ctx.cartographer.scaffold();
+    // fix instar#1069: no lazy scaffold()/loadIndex() preamble — getNode is a single
+    // node-file read. An un-scaffolded node 400s (the boot scaffold builds the index).
     const node = ctx.cartographer.getNode(p);
     if (!node) { res.status(400).json({ error: 'no such node — only an existing scaffolded node can be refreshed' }); return; }
 
@@ -4400,8 +4487,9 @@ export function createRoutes(ctx: RouteContext): Router {
     if (maxDepthOverride === null) { res.status(400).json({ error: 'maxDepth out of range (1..32)' }); return; }
     if (maxResultsOverride === null) { res.status(400).json({ error: 'maxResults out of range (1..500)' }); return; }
 
-    if (!ctx.cartographer.loadIndex()) ctx.cartographer.scaffold();
-
+    // fix instar#1069: no lazy scaffold()/loadIndex() preamble — the navigator is
+    // bounded (maxNodesVisited) and returns an empty manifest when the root node is
+    // absent (index not built yet); the boot-path scaffold builds it off-request.
     const manifest = cartographerNavigate(ctx.cartographer, query, {
       maxDepth: maxDepthOverride ?? navCfg.maxDepth,
       branchingFactor: navCfg.branchingFactor,
