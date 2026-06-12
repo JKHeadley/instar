@@ -17,6 +17,7 @@ import { fileURLToPath } from 'node:url';
 import { SessionLivenessOracle, type SessionLivenessOracleConfig } from './SessionLivenessOracle.js';
 import { resolveGhTokenFromVault } from './ghToken.js';
 import type { ReapGuard } from './ReapGuard.js';
+import { clampWorkEvidence, isMidWork } from './WorkEvidence.js';
 import { paneShowsClaudeWorking } from './claudeActivityIndicators.js';
 import { extractGeminiFinalAssistantBlock, meaningfulTail } from './paneText.js';
 import { ensureInteractiveReady } from './ensureInteractiveReady.js';
@@ -250,6 +251,9 @@ export class SessionManager extends EventEmitter {
   private activeRecoveryChecker?: (session: Session) => boolean;
   /** Shared stateless KEEP-guard consulted by terminateSession (§P2). */
   private reapGuard?: ReapGuard;
+
+  /** Pressure-tier provider for the work-evidence fallback (reap-notify R2.1). */
+  private pressureTier?: () => 'normal' | 'moderate' | 'critical';
   /** Sessions the §P5 backstop has flagged long-`indeterminate` — excluded from
    *  the ABSOLUTE spawn cap so unverifiable panes can't lock out spawning. */
   private longIndeterminateSessions = new Set<string>();
@@ -770,6 +774,15 @@ rm()  { "${shimRunner}" rm  "$@"; }
       knownDead?: boolean;
       bypassRecoveryFlag?: boolean;
       bypassActiveProcessKeep?: boolean;
+      /**
+       * Killer-supplied work evidence (reap-notify spec R2.1): computed at the
+       * KILLER's decision point — the only moment the work was observable (the
+       * quota-shed migrator computes it BEFORE its Ctrl+C grace round tears the
+       * work down; a chokepoint re-run is empty by construction for
+       * guard-cleared kills). Clamped to the WorkEvidence enum here regardless
+       * of which killer supplied it; unknown names are dropped, not stored.
+       */
+      workEvidence?: string[];
     },
   ): Promise<{ terminated: boolean; skipped?: string }> {
     const session = this.state.getSession(sessionId);
@@ -856,6 +869,27 @@ rm()  { "${shimRunner}" rm  "$@"; }
     }
     this.terminating.add(sessionId);
     try {
+      // ── Work-evidence stamp (reap-notify spec R2.1) ──
+      // Killer-supplied evidence wins (clamped to the enum); when the killer
+      // supplied nothing, fall back to the guard's observe-only collection
+      // (expected-empty for guard-cleared kills — documented). knownDead skips
+      // stamping entirely: a proven-dead session has no work to evidence.
+      let workEvidence: string[] = [];
+      if (!opts?.knownDead) {
+        if (opts?.workEvidence && opts.workEvidence.length > 0) {
+          workEvidence = clampWorkEvidence(opts.workEvidence);
+        } else if (this.reapGuard) {
+          try {
+            workEvidence = this.reapGuard.workEvidence(session, {
+              skipForkChecks: this.pressureTier?.() === 'critical',
+            });
+          } catch {
+            workEvidence = []; // never let evidence collection endanger the kill path
+          }
+        }
+      }
+      const midWork = isMidWork(workEvidence);
+
       // Emit BEFORE destroying tmux so listeners (TopicResumeMap, SlackAdapter)
       // can capture resume UUIDs while the session is still alive.
       this.emit('beforeSessionKill', session);
@@ -865,17 +899,31 @@ rm()  { "${shimRunner}" rm  "$@"; }
       session.status = opts?.finalStatus ?? 'completed';
       session.endedAt = new Date().toISOString();
       session.endedReason = reason;
+      if (!opts?.knownDead) {
+        session.endedMidWork = midWork;
+        if (workEvidence.length > 0) session.endedWorkEvidence = workEvidence;
+      }
       this.state.saveSession(session);
       this.emit('sessionComplete', session);
       // The single reap-notification signal (§P3): terminal reaps may reach the
       // user; recovery-bounce reaps are silent. One emission, at the one chokepoint.
-      this.emit('sessionReaped', { session, reason, disposition, origin });
+      this.emit('sessionReaped', { session, reason, disposition, origin, midWork, workEvidence });
       this.idlePromptSince.delete(session.id);
       this.reapingSessions.delete(session.id);
       return { terminated: true };
     } finally {
       this.terminating.delete(sessionId);
     }
+  }
+
+  /**
+   * Pressure-tier provider for the evidence fallback (reap-notify spec R2.1):
+   * at tier 'critical' the fork-based closures are skipped and the
+   * `unverified-under-pressure` marker is stamped instead. Wired at boot to
+   * the shared PressureGauge; absent ⇒ forks run normally.
+   */
+  setPressureTierProvider(provider: () => 'normal' | 'moderate' | 'critical'): void {
+    this.pressureTier = provider;
   }
 
   /**

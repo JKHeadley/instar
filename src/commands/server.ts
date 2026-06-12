@@ -5929,7 +5929,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       },
     );
     sessionManager.setAwakeChecker(() => !coordinator.enabled || coordinator.isAwake);
-    sessionManager.on('sessionReaped', (e: { session: import('../core/types.js').Session; reason: string; disposition?: 'terminal' | 'recovery-bounce'; origin?: 'operator' | 'autonomous' }) => {
+    sessionManager.on('sessionReaped', (e: { session: import('../core/types.js').Session; reason: string; disposition?: 'terminal' | 'recovery-bounce'; origin?: 'operator' | 'autonomous'; midWork?: boolean; workEvidence?: string[] }) => {
       reapLog.recordReaped({
         session: e.session.name,
         tmuxSession: e.session.tmuxSession,
@@ -5940,8 +5940,12 @@ export async function startServer(options: StartOptions): Promise<void> {
         // which billing lane the reaped session ran on so the soak can confirm
         // rerouted sessions reach their completion from the reap-log too.
         ...(e.session.launchLane ? { launchLane: e.session.launchLane } : {}),
+        // Mid-work stamp (reap-notify spec R2.1) — evidence clamped at the
+        // chokepoint; the reap-log row is the boot-reconciliation source of truth.
+        ...(e.midWork !== undefined ? { midWork: e.midWork } : {}),
+        ...(e.workEvidence && e.workEvidence.length > 0 ? { workEvidence: e.workEvidence } : {}),
       });
-      reapNotifier.onReaped({ session: e.session, reason: e.reason, disposition: e.disposition, origin: e.origin });
+      reapNotifier.onReaped({ session: e.session, reason: e.reason, disposition: e.disposition, origin: e.origin, midWork: e.midWork, workEvidence: e.workEvidence });
       // Coherence journal 'reaped' (§3.3): emitted HERE, alongside the
       // reap-log append it references — never derived in the saveSession
       // funnel (which records the plain killed/completed transition).

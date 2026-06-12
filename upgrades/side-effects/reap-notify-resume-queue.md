@@ -75,3 +75,4 @@ reapNotify.drainEnabled=false, resumeQueue.enabled=false / dryRun=true; no DDL.]
 
 - Step 1 (relay-store foundation): R1.6 purge fix + origin scoping + CAS claim; DFS spec §3h updated.
 - Step 2 (ReapLog): notify record pairs + midWork/workEvidence through the normalizer; fixed pre-existing launchLane drop-on-read (Rule-1 deviation, noted for SUMMARY).
+- Step 3 (evidence chokepoint): WorkEvidence vocabulary module + terminateSession opts.workEvidence with enum clamp + ReapGuard.workEvidence() observe-only fallback (closure-error → nothing; critical-tier marker) + midWork stamped on event/reap-log/session record.

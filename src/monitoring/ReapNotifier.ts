@@ -30,6 +30,10 @@ export interface ReapEvent {
   reason: string;
   disposition?: 'terminal' | 'recovery-bounce';
   origin?: 'operator' | 'autonomous';
+  /** Mid-work stamp from the kill chokepoint (reap-notify spec R2.1). */
+  midWork?: boolean;
+  /** Clamped work-evidence names behind midWork. */
+  workEvidence?: string[];
 }
 
 export interface ReapNotifierDeps {

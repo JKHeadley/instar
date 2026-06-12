@@ -78,6 +78,13 @@ export interface Session {
    *  (e.g. 'idle-zombie', 'reaped-idle', 'manual-kill'). Undefined on records
    *  ended before this field existed. */
   endedReason?: string;
+  /** True when the kill interrupted evidenced work (reap-notify spec R2.1:
+   *  any non-marker work evidence at kill time). Stamped by terminateSession
+   *  alongside the sessionReaped emission. Undefined on legacy records. */
+  endedMidWork?: boolean;
+  /** The clamped work-evidence names behind endedMidWork (enum-clamped at the
+   *  chokepoint — see src/core/WorkEvidence.ts). */
+  endedWorkEvidence?: string[];
   /** Ghost-record supersession (one-running-record-per-tmux invariant): when a
    *  NEW record registers as running for a tmux session name, any OTHER record
    *  still marked running/starting for that same name is closed with this field
