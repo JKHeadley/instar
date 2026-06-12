@@ -540,6 +540,27 @@ export class PendingRelayStore {
     return result.changes ?? 0;
   }
 
+  /**
+   * Bounded cleanup for the reap-notify lane (P19 — the always-on drain must
+   * not grow the store unboundedly when DFS's retention pass is off): deletes
+   * TERMINAL-state rows inside the reap-notify PK range older than `beforeIso`.
+   * Queued/claimed rows are never touched.
+   */
+  purgeTerminalReapNotices(beforeIso: string): number {
+    const stmt = this.db.prepare(
+      `DELETE FROM entries
+         WHERE delivery_id >= @prefixLower AND delivery_id < @prefixUpper
+           AND state NOT IN ('queued', 'claimed')
+           AND attempted_at < @before`,
+    );
+    const result = stmt.run({
+      before: beforeIso,
+      prefixLower: REAP_NOTIFY_DELIVERY_PREFIX,
+      prefixUpper: REAP_NOTIFY_DELIVERY_PREFIX_UPPER,
+    });
+    return result.changes ?? 0;
+  }
+
   pathOnDisk(): string {
     return this.path;
   }

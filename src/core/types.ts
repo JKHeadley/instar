@@ -3941,6 +3941,16 @@ export interface MonitoringConfig {
   reapNotify?: {
     enabled?: boolean;
     coalesceWindowMs?: number;
+    /** v2 per-topic grouping (reap-notify spec R1.1). false = legacy
+     *  single-buffer behavior — the grouping rollback lever. */
+    perTopic?: boolean;
+    /** Max notices released IMMEDIATE in one flush (R1.5). */
+    maxImmediatePerFlush?: number;
+    /** Durable delivery via store + ReapNoticeDrain (R1.3). false reverts
+     *  delivery to the legacy direct send — the durability rollback lever
+     *  (grouping unaffected; R1's durability claim lapses, stated).
+     *  CODE-defaulted true; deliberately NOT in ConfigDefaults. */
+    drainEnabled?: boolean;
   };
   /**
    * AgentWorktreeReaper (Responsible Resource Usage — OS resource hygiene).

@@ -117,7 +117,7 @@ import { MessageProcessingLedger } from '../messaging/MessageProcessingLedger.js
 import { recoverStuckMessages } from '../messaging/stuckMessageRecovery.js';
 import { ReplyMarkerTransport } from '../core/ReplyMarkerTransport.js';
 import { decryptFromSync, encryptForSync } from '../core/SecretStore.js';
-import { createPrivateKey, createPublicKey } from 'node:crypto';
+import { createPrivateKey, createPublicKey, createHash } from 'node:crypto';
 import { sign as signEd25519, verify as verifyEd25519 } from '../core/MachineIdentity.js';
 import { ProjectMapper } from '../core/ProjectMapper.js';
 import { CartographerTree } from '../core/CartographerTree.js';
@@ -5910,6 +5910,25 @@ export async function startServer(options: StartOptions): Promise<void> {
       config.stateDir,
       () => (coordinator.enabled ? coordinator.identity?.machineId : undefined),
     );
+    // ── Durable notice lane (reap-notify spec R1.3) ──
+    // The notifier enqueues notices as `reap-notify:<id>` rows in the shared
+    // PendingRelayStore; the ALWAYS-ON ReapNoticeDrain (started after the
+    // Telegram adapter exists, below) delivers them — independent of the
+    // default-OFF DeliveryFailureSentinel. A store open failure degrades the
+    // notifier to its loud direct-send fallback (R1.3 enqueue-failed path).
+    let reapNoticeStore: import('../messaging/pending-relay-store.js').PendingRelayStore | null = null;
+    try {
+      const { PendingRelayStore, assertSqliteAvailable } = await import('../messaging/pending-relay-store.js');
+      if (assertSqliteAvailable().ok) {
+        reapNoticeStore = PendingRelayStore.open(config.projectName, config.stateDir);
+      }
+    } catch (err) {
+      console.warn('[reap-notify] pending-relay store unavailable — notices fall back to direct send:', err);
+      reapNoticeStore = null;
+    }
+    // Wired by the resume-queue boot block (Part B) once the queue exists;
+    // stays false (no "restart queued" lines) until then or in dry-run.
+    let resumeQueuedForSession: (tmuxSession: string) => boolean = () => false;
     const reapNotifier = new ReapNotifier(
       {
         resolveTopic: (tmuxSession) => {
@@ -5919,15 +5938,74 @@ export async function startServer(options: StartOptions): Promise<void> {
           return Number.isFinite(n) ? n : null;
         },
         lifelineTopic: () => telegram?.getLifelineTopicId() ?? null,
-        // SUMMARY tier → through the formatter/tone-gate (HTML-escaped, quiet-hours
-        // aware). The notifier already coalesces, so a burst is one message.
+        // Legacy + fallback transport → through the formatter/tone-gate
+        // (HTML-escaped, quiet-hours aware). The notifier already coalesces.
         send: (topicId, text) => notify('SUMMARY', 'session-reap', text, topicId),
+        enqueueNotice: reapNoticeStore
+          ? (input) => reapNoticeStore!.enqueue({
+              delivery_id: input.delivery_id,
+              topic_id: input.topic_id,
+              text_hash: createHash('sha256').update(input.text).digest('hex'),
+              text: input.text,
+              next_attempt_at: input.next_attempt_at,
+            })
+          : undefined,
+        recordNotify: (e) => reapLog.recordNotify(e),
+        quietHoursEndAt: (now) => notificationBatcher.quietHoursEndAt(now),
+        summaryReleaseAt: (now) => notificationBatcher.nextSummaryReleaseAt(now),
+        resumeQueuedFor: (tmuxSession) => resumeQueuedForSession(tmuxSession),
+        reportDegradation: (reason, impact) => {
+          try {
+            DegradationReporter.getInstance().report({
+              feature: 'reap-notice-enqueue',
+              primary: 'durable reap-notice delivery via PendingRelayStore + ReapNoticeDrain',
+              fallback: 'one direct send attempt (fire-and-forget)',
+              reason,
+              impact,
+            });
+          } catch { /* best-effort */ }
+        },
       },
       {
         enabled: config.monitoring?.reapNotify?.enabled ?? true,
         coalesceWindowMs: config.monitoring?.reapNotify?.coalesceWindowMs ?? 60_000,
+        perTopic: config.monitoring?.reapNotify?.perTopic ?? true,
+        maxImmediatePerFlush: config.monitoring?.reapNotify?.maxImmediatePerFlush ?? 5,
+        drainEnabled: config.monitoring?.reapNotify?.drainEnabled ?? true,
       },
     );
+    // ReapNoticeDrain — the always-on delivery loop over the reap-notify lane
+    // (R1.3; independent of the default-OFF DeliveryFailureSentinel). The
+    // telegram adapter is referenced lazily: it does not exist yet at this
+    // point in boot, and a tick with no adapter simply retries on backoff.
+    let reapNoticeDrain: import('../monitoring/ReapNoticeDrain.js').ReapNoticeDrain | null = null;
+    if (reapNoticeStore && (config.monitoring?.reapNotify?.drainEnabled ?? true)) {
+      const { ReapNoticeDrain } = await import('../monitoring/ReapNoticeDrain.js');
+      const { getCurrentBootId } = await import('../server/boot-id.js');
+      reapNoticeDrain = new ReapNoticeDrain({
+        store: reapNoticeStore,
+        sendToTopic: async (topicId, text) => {
+          if (!telegram) throw new Error('telegram adapter not available');
+          await telegram.sendToTopic(topicId, text);
+        },
+        recordNotify: (e) => reapLog.recordNotify(e),
+        emitAttention: async (item) => {
+          if (!telegram) return;
+          await telegram.createAttentionItem({
+            id: item.id,
+            title: item.title,
+            summary: item.summary ?? item.title,
+            description: item.description,
+            category: item.category ?? 'delivery',
+            priority: item.priority === 'high' ? 'HIGH' : item.priority === 'low' ? 'LOW' : 'NORMAL',
+            sourceContext: item.sourceContext,
+          });
+        },
+        bootId: getCurrentBootId() ?? `boot-${Date.now().toString(36)}`,
+      });
+      reapNoticeDrain.start();
+      console.log(pc.green('  ReapNoticeDrain started (always-on durable reap-notice delivery)'));
+    }
     sessionManager.setAwakeChecker(() => !coordinator.enabled || coordinator.isAwake);
     sessionManager.on('sessionReaped', (e: { session: import('../core/types.js').Session; reason: string; disposition?: 'terminal' | 'recovery-bounce'; origin?: 'operator' | 'autonomous'; midWork?: boolean; workEvidence?: string[] }) => {
       reapLog.recordReaped({
