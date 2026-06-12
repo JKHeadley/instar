@@ -217,7 +217,9 @@ function quarantineStore(deps: BootSweepDeps, storePath: string, err: unknown): 
         `Messages it held could not be recovered — resend anything still needed. Reason: ${err instanceof Error ? err.message : String(err)}`,
     );
   } catch (qErr) {
-    // Quarantine itself failed (e.g. disk full) — log loudly; boot proceeds.
+    // @silent-fallback-ok — a failed quarantine (e.g. disk full) must never
+    // block boot; it logs loudly here and the unopenable store re-triggers
+    // this same path (with its attention item) on every subsequent boot.
     deps.log(`[inbound-queue] quarantine FAILED for ${storePath}: ${qErr instanceof Error ? qErr.message : String(qErr)}`);
   }
 }
@@ -229,7 +231,9 @@ function deleteExpiredQuarantines(deps: BootSweepDeps): number {
   try {
     entries = fs.readdirSync(qDir);
   } catch {
-    return 0; // no quarantine dir — the normal case
+    // @silent-fallback-ok — no quarantine dir is the NORMAL empty case
+    // (nothing was ever quarantined), not a degradation.
+    return 0;
   }
   for (const name of entries) {
     const full = path.join(qDir, name);

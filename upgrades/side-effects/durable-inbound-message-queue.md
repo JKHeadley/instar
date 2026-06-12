@@ -206,3 +206,8 @@ Disposition: the dark-ship contract, fail-open directions, custody/receipt core,
 2. dry-run visibility: the engine now constructs in dry-run too (`qcfg.enabled` alone gates construction); the §2.4 counters accumulate and `/pool/queue` serves them — the promotion evidence is live.
 3. lease gate: `holdsLease` wired to `leaseCoordinatorRef.holdsLease()` (single-machine no-coordinator defaults true); the remaining per-acquisition tenure-event wiring is the named tracked simplification above.
 4. MUST 2: the refusal-mapping try now covers ONLY the store commit; post-commit bookkeeping throws are logged and can no longer convert a committed enqueue into `refused`.
+
+**Post-merge addendum (same session):** marked the queue's three defensive
+catches with the in-brace `@silent-fallback-ok` convention (Eternal-Sentinel
+episode latch; loud-log quarantine failure; normal no-quarantine-dir case) —
+no behavior change; restores no-silent-fallbacks headroom after main moved.

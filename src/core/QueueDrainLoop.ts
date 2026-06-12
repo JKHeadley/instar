@@ -380,7 +380,9 @@ export class QueueDrainLoop {
         this.tickDegradationSent = false;
       }
     } catch (err) {
-      // Episode-latched: log once per episode, degrade once after 10 min.
+      // @silent-fallback-ok — NOT silent: episode-latched (one log per episode,
+      // one DegradationReporter signal via reportDegradation after 10 min
+      // sustained, recovery logged once) — the §3.2 Eternal-Sentinel contract.
       const mono = this.d.mono();
       if (this.tickFailureSinceMono === null) this.tickFailureSinceMono = mono;
       if (!this.tickFailureLogged) {
