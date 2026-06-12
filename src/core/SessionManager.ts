@@ -3065,6 +3065,13 @@ rm()  { "${shimRunner}" rm  "$@"; }
      *  builder (claude `--effort` / codex `model_reasoning_effort`; no-op on
      *  frameworks without a reasoning knob). */
     thinkingMode?: import('./topicProfileValidation.js').ThinkingMode;
+    /** Explicit per-spawn working directory (reap-notify spec R2.8 / L13 —
+     *  a NAMED extension: no spawn path accepted a per-spawn cwd before).
+     *  The resume-queue drainer threads a queue entry's recorded cwd /
+     *  worktreePath here so an interrupted worktree session resumes in ITS
+     *  tree, not the module-level project dir. Unset = projectDir (today's
+     *  behavior, byte-for-byte). */
+    cwd?: string;
   }): Promise<string> {
     const sanitized = name
       ? name.toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '').slice(0, 40)
@@ -3213,7 +3220,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
       const tmuxArgs = [
         'new-session', '-d',
         '-s', tmuxSession,
-        '-c', this.config.projectDir,
+        '-c', options?.cwd ?? this.config.projectDir,
         '-x', '200', '-y', '50',
         // Opt-in: raise Claude Code's own retry count so it rides out transient
         // throttle/overload longer before surfacing to the RateLimitSentinel.

@@ -589,6 +589,10 @@ async function spawnSessionForTopic(
    *  config home + record its id (the quota-aware account-swap mechanism).
    *  Omitted = unchanged behaviour. */
   accountSwap?: { configHome?: string; accountId?: string },
+  /** Reap-notify spec R2.8 / L13 — explicit per-spawn working directory (the
+   *  resume-queue drainer passes a queue entry's recorded cwd so interrupted
+   *  worktree work resumes in ITS tree). Omitted = module project dir. */
+  spawnOpts?: { cwd?: string },
 ): Promise<string> {
   const msg = latestMessage || 'Session started — send a message to continue.';
 
@@ -883,6 +887,8 @@ async function spawnSessionForTopic(
     // this account's config home + record its id. Unset = unchanged.
     ...(accountSwap?.configHome ? { configHome: accountSwap.configHome } : {}),
     ...(accountSwap?.accountId ? { subscriptionAccountId: accountSwap.accountId } : {}),
+    // R2.8/L13: per-spawn cwd from the resume-queue entry. Unset = projectDir.
+    ...(spawnOpts?.cwd ? { cwd: spawnOpts.cwd } : {}),
   });
 
   // Clear the resume entry after successful spawn to prevent stale reuse
