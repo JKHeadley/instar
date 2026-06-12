@@ -43,6 +43,12 @@ export class SocketModeClient {
   private ws: WebSocket | null = null;
   private started = false;
   private reconnecting = false;
+  // Bumped on every deliberate teardown (disconnect / reconnect / forced /
+  // Slack-requested). In-flight async work (an awaited apps.connections.open,
+  // a sleeping backoff, a delayed too_many_websockets retry) captures the
+  // epoch when it starts and aborts if it changed — a superseded path can
+  // never open a connection the client no longer tracks (#1076).
+  private epoch = 0;
   private consecutiveErrors = 0;
   private heartbeatTimer: ReturnType<typeof setTimeout> | null = null;
   private lastEventAt = 0;
@@ -59,35 +65,46 @@ export class SocketModeClient {
   }
 
   async connect(): Promise<void> {
+    // Defensive: connect() on an already-live client is a reconnect. Without
+    // this, a failing dial here would arm a backoff sleeper while the old
+    // socket + heartbeat stay live, and the heartbeat's _forceReconnect would
+    // then skip dialing (reconnecting=true) while the sleeper stands down on
+    // epoch mismatch — no path left to re-dial.
+    if (this.ws) this._teardownSocket(1000, 'superseded by connect()');
     this.started = true;
     await this._openConnection();
   }
 
   async disconnect(): Promise<void> {
     this.started = false;
-    this._clearHeartbeat();
-    if (this.ws) {
-      this.ws.close(1000, 'client disconnect');
-      this.ws = null;
-    }
+    this._teardownSocket(1000, 'client disconnect');
   }
 
   /** Force-reconnect: tear down existing connection and establish a new one. */
   async reconnect(): Promise<void> {
-    this._clearHeartbeat();
     this.reconnecting = false;
     this.consecutiveErrors = 0;
-    if (this.ws) {
-      // Temporarily clear started to prevent the close handler from
-      // triggering its own reconnect (we're already handling it).
-      const wasStarted = this.started;
-      this.started = false;
-      try { this.ws.close(1000, 'reconnect'); } catch { /* ok */ }
-      this.ws = null;
-      this.started = wasStarted;
-    }
+    this._teardownSocket(1000, 'reconnect');
     this.started = true;
     await this._openConnection();
+  }
+
+  /**
+   * Deliberately tear down the tracked socket. Bumps the epoch (so any
+   * in-flight open/backoff aborts) and nulls `this.ws` BEFORE closing — the
+   * socket's close event fires on a later tick, and the identity guard in the
+   * close handler (`this.ws !== sock`) is what keeps that stale event from
+   * touching whatever connection is current by then. A synchronous flag
+   * save/restore cannot do this (#1076).
+   */
+  private _teardownSocket(code?: number, reason?: string): void {
+    this.epoch++;
+    this._clearHeartbeat();
+    const sock = this.ws;
+    this.ws = null;
+    if (sock) {
+      try { sock.close(code, reason); } catch { /* already dead */ }
+    }
   }
 
   /** Queue an outbound message for sending (or send immediately if connected). */
@@ -103,6 +120,7 @@ export class SocketModeClient {
   }
 
   private async _openConnection(): Promise<void> {
+    const myEpoch = this.epoch;
     try {
       const response = await this.apiClient.call(
         'apps.connections.open',
@@ -110,11 +128,16 @@ export class SocketModeClient {
         { useAppToken: true },
       ) as unknown as SocketModeConnectionInfo;
 
+      if (myEpoch !== this.epoch) return; // superseded while awaiting the API
+
       if (!response.url) {
         throw new Error('No WebSocket URL in apps.connections.open response');
       }
 
       this.connectionTime = response.approximate_connection_time ?? null;
+      // Invariant: at most one tracked socket. If something is still here,
+      // tear it down before replacing it rather than silently orphaning it.
+      if (this.ws) this._teardownSocket(1000, 'superseded');
       this._connectWebSocket(response.url);
       this.consecutiveErrors = 0;
     } catch (err) {
@@ -124,38 +147,52 @@ export class SocketModeClient {
         return;
       }
       this.handlers.onError(err as Error, false);
-      if (this.started) {
+      if (this.started && myEpoch === this.epoch) {
         await this._backoffReconnect();
       }
     }
   }
 
   private _connectWebSocket(url: string): void {
-    this.ws = new WebSocket(url);
+    // Handlers are bound to THIS socket instance, not to `this.ws` — close
+    // (and open/message) events fire on a later tick, by which time the
+    // tracked socket may already be a replacement. Events from a socket that
+    // is no longer current are stale and must be ignored, otherwise a late
+    // close orphans the live replacement and double-reconnects (#1076).
+    const sock = new WebSocket(url);
+    this.ws = sock;
 
-    this.ws.addEventListener('open', () => {
+    sock.addEventListener('open', () => {
+      if (this.ws !== sock) return; // stale socket — replaced while connecting
       this.lastEventAt = Date.now();
       this._startHeartbeat();
       this._drainQueue();
       this.handlers.onConnected();
     });
 
-    this.ws.addEventListener('message', (event: MessageEvent) => {
+    sock.addEventListener('message', (event: MessageEvent) => {
+      if (this.ws !== sock) return; // stale socket — never ack/process on it
       this.lastEventAt = Date.now();
       this._handleRawMessage(typeof event.data === 'string' ? event.data : String(event.data));
     });
 
-    this.ws.addEventListener('close', (event: Event & { reason?: string; code?: number }) => {
+    sock.addEventListener('close', (event: Event & { reason?: string; code?: number }) => {
+      if (this.ws !== sock) return; // stale socket — its teardown already ran
+      // A natural close deliberately does NOT bump the epoch: if a backoff
+      // sleeper is already in flight, the call below returns early
+      // (reconnecting=true) and that sleeper must stay valid to perform the
+      // re-dial — bumping here would strand the only reconnect path.
       this._clearHeartbeat();
       this.ws = null;
       this.handlers.onDisconnected(event.reason || 'connection closed');
       if (this.started) {
+        const myEpoch = this.epoch;
         this._backoffReconnect().catch((err) => {
           console.error('[slack-socket] Reconnect failed:', (err as Error).message);
           // Schedule one more attempt after MAX_BACKOFF to avoid permanent death
           if (this.started) {
             setTimeout(() => {
-              if (this.started && !this.reconnecting) {
+              if (this.started && !this.reconnecting && this.epoch === myEpoch) {
                 this._backoffReconnect().catch(() => {});
               }
             }, MAX_BACKOFF_MS);
@@ -164,7 +201,7 @@ export class SocketModeClient {
       }
     });
 
-    this.ws.addEventListener('error', () => {
+    sock.addEventListener('error', () => {
       // Error event is always followed by close event — handle reconnection there
     });
   }
@@ -221,18 +258,13 @@ export class SocketModeClient {
   }
 
   private _handleDisconnect(reason: string): void {
-    this._clearHeartbeat();
-    // Prevent close event handler from triggering a second reconnect
-    const wasStarted = this.started;
-    this.started = false;
-    if (this.ws) {
-      this.ws.close();
-      this.ws = null;
-    }
-    this.started = wasStarted;
+    // Deliberate teardown — bumps the epoch, so the socket's late close event
+    // (identity-guarded) and any in-flight open/backoff are all superseded.
+    this._teardownSocket(1000, reason);
     this.handlers.onDisconnected(reason);
 
     if (!this.started) return;
+    const myEpoch = this.epoch;
 
     if (reason === 'refresh_requested') {
       // Slack container rotation — reconnect immediately
@@ -240,7 +272,7 @@ export class SocketModeClient {
     } else if (reason === 'too_many_websockets') {
       // Wait 30s before reconnecting
       setTimeout(() => {
-        if (this.started) this._openConnection();
+        if (this.started && this.epoch === myEpoch) this._openConnection();
       }, TOO_MANY_WS_DELAY_MS);
     } else {
       this._backoffReconnect();
@@ -249,6 +281,7 @@ export class SocketModeClient {
 
   private async _backoffReconnect(): Promise<void> {
     if (this.reconnecting || !this.started) return;
+    const myEpoch = this.epoch;
     this.reconnecting = true;
     this.consecutiveErrors++;
 
@@ -257,7 +290,9 @@ export class SocketModeClient {
     await new Promise(r => setTimeout(r, delay));
 
     this.reconnecting = false;
-    if (this.started) {
+    // An explicit reconnect()/disconnect() may have superseded this sleeper —
+    // opening here anyway would create a second, untracked connection (#1076).
+    if (this.started && this.epoch === myEpoch) {
       await this._openConnection();
     }
   }
@@ -296,17 +331,9 @@ export class SocketModeClient {
   }
 
   private _forceReconnect(): void {
-    this._clearHeartbeat();
-    if (this.ws) {
-      // Temporarily clear started to prevent the close handler from
-      // triggering its own reconnect (same pattern as reconnect()).
-      const wasStarted = this.started;
-      this.started = false;
-      try { this.ws.close(); } catch { /* ok */ }
-      this.ws = null;
-      this.started = wasStarted;
-    }
-    // Trigger reconnect directly instead of relying on close event
+    this._teardownSocket(1000, 'force reconnect');
+    // Trigger reconnect directly instead of relying on close event — the
+    // torn-down socket's close is identity-guarded and will be ignored.
     if (this.started && !this.reconnecting) {
       this._backoffReconnect().catch(() => {});
     }

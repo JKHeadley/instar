@@ -70,14 +70,14 @@ describe('_forceReconnect method', () => {
     expect(socketClientSource).toMatch(/_forceReconnect\(\)[\s\S]*?_clearHeartbeat\(\)/);
   });
 
-  it('temporarily clears started to prevent close handler race condition', () => {
-    // Same pattern as reconnect(): prevents the old ws close event from
-    // triggering a second reconnect that would clobber the new connection
-    expect(socketClientSource).toMatch(/_forceReconnect\(\)[\s\S]*?wasStarted = this\.started[\s\S]*?this\.started = false[\s\S]*?ws\.close\(\)/);
+  it('tears down via the epoch-bumping teardown (stale close events are identity-guarded)', () => {
+    // Same pattern as reconnect(): the old ws close event must not be able to
+    // orphan the new connection or trigger a second reconnect (#1076).
+    expect(socketClientSource).toMatch(/_forceReconnect\(\)[\s\S]*?this\._teardownSocket\(/);
   });
 
   it('closes the websocket', () => {
-    expect(socketClientSource).toMatch(/_forceReconnect\(\)[\s\S]*?this\.ws\.close\(\)/);
+    expect(socketClientSource).toMatch(/_teardownSocket\([\s\S]*?sock\.close\(/);
   });
 
   it('triggers _backoffReconnect if still started', () => {
