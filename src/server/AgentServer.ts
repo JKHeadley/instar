@@ -22,6 +22,9 @@ import { MandateAudit } from '../coordination/MandateAudit.js';
 import { ConditionsRegistry } from '../coordination/conditions.js';
 import { ReviewExchangeEngine } from '../coordination/ReviewExchange.js';
 import { CutoverReadiness } from '../feedback-factory/cutoverReadiness.js';
+import { InboxDrainer } from '../feedback-factory/inbox/InboxDrainer.js';
+import { BlobInboxClient } from '../feedback-factory/inbox/BlobInboxClient.js';
+import { JsonlFeedbackStore } from '../feedback-factory/store/JsonlFeedbackStore.js';
 import { DurableParityMonitor, JsonlPassPersistence } from '../feedback-factory/monitor/parityMonitorStore.js';
 import { HttpParitySource } from '../feedback-factory/dryrun/HttpParitySource.js';
 import { runDryRunCompare } from '../feedback-factory/dryrun/dryRunCompare.js';
@@ -193,6 +196,10 @@ export class AgentServer {
    *  store + hash-chained audit. Null when stateDir is unavailable. */
   private coordination: { store: MandateStore; gate: MandateGate; audit: MandateAudit; conditions: ConditionsRegistry; reviews: ReviewExchangeEngine } | null = null;
   private cutoverReadiness: CutoverReadiness | null = null;
+  /** Option-B receiving end (feedback-factory-migration Q2b): drains the cloud
+   *  Blob inbox into the durable canonical JsonlFeedbackStore. Null when dark
+   *  (feedbackFactory.receiverPersistence.enabled !== true) → route 503s. */
+  private inboxDrainer: InboxDrainer | null = null;
   private parallelActivityIndex: ParallelActivityIndex | null = null;
   private parallelWorkSentinel: ParallelWorkSentinel | null = null;
   private parallelWorkSentinelTimer: ReturnType<typeof setInterval> | null = null;
@@ -1160,6 +1167,39 @@ export class AgentServer {
       this.coordination = null;
     }
 
+    // Feedback-inbox drainer (feedback-factory-migration Q2b, Option-B receiving
+    // end): the cloud Blob inbox → durable canonical JsonlFeedbackStore mover.
+    // Ships DARK — constructed only when feedbackFactory.receiverPersistence is
+    // explicitly enabled AND the Blob token env var is set; otherwise the
+    // /feedback-inbox/status route 503s. Own try/catch: an init failure here can
+    // never block boot (deny-safe null → 503).
+    try {
+      const rp = options.config.feedbackFactory?.receiverPersistence;
+      if (rp?.enabled === true && options.config.stateDir) {
+        const tokenEnv = rp.blobTokenEnv ?? 'FEEDBACK_INBOX_BLOB_TOKEN';
+        const token = process.env[tokenEnv];
+        if (!token) {
+          console.warn(`[feedback-inbox] receiverPersistence enabled but env ${tokenEnv} is unset — drainer stays dark`);
+        } else {
+          const dataDir = rp.dataDir ?? path.join(options.config.stateDir, 'state', 'feedback-factory', 'store');
+          const store = new JsonlFeedbackStore(dataDir);
+          const client = new BlobInboxClient({ token, apiBase: rp.blobApiBase });
+          this.inboxDrainer = new InboxDrainer({
+            client,
+            store,
+            pollIntervalMs: rp.pollIntervalMs,
+            log: (msg) => console.log(msg),
+          });
+          this.inboxDrainer.start();
+          console.log(`[feedback-inbox] drainer started (store: ${dataDir})`);
+        }
+      }
+    } catch (err) {
+      // @silent-fallback-ok — reported via console.warn; init failure leaves the drainer null → route 503s (deny-safe), never blocks boot.
+      console.warn('[feedback-inbox] drainer init failed (non-fatal):', err);
+      this.inboxDrainer = null;
+    }
+
     // Failure-Learning Loop (docs/specs/FAILURE-LEARNING-LOOP-SPEC.md) — instar
     // self-hosting dev-process forensics. Ships OFF; constructed only when
     // enabled (else the inline /failures routes 503-stub via the null ledger).
@@ -1745,6 +1785,7 @@ export class AgentServer {
       topicOperatorStore: this.topicOperatorStore,
       coordination: this.coordination,
       cutoverReadiness: this.cutoverReadiness,
+      inboxDrainer: this.inboxDrainer,
       parallelActivityIndex: this.parallelActivityIndex,
       frameworkIssueLedger: this.frameworkIssueLedger,
       mentorRunner: this.mentorRunner,
@@ -3211,6 +3252,16 @@ export class AgentServer {
    * Closes keep-alive connections after a timeout to prevent hanging.
    */
   async stop(): Promise<void> {
+    // Stop the feedback-inbox drainer's poll loop (pure timer; store appends are
+    // synchronous so there is no in-flight write to wait on).
+    if (this.inboxDrainer) {
+      try {
+        this.inboxDrainer.stop();
+      } catch {
+        // best-effort
+      }
+      this.inboxDrainer = null;
+    }
     // Stop the mentor bot adapter first (it has its own poll loop + state files
     // under the subDir; clean shutdown avoids stranded background work).
     if (this.mentorBotAdapter) {

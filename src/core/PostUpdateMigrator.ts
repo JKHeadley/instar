@@ -3221,6 +3221,17 @@ setTimeout(() => process.exit(0), 2000);
       result.upgraded.push('CLAUDE.md: added Cartographer Subtree Navigation section');
     }
 
+    // Feedback-Inbox Receiving End (feedback-factory-migration Q2b, Option B) —
+    // the operated instance's durable receiving pipeline + its status route.
+    // Keyed on its OWN marker so it is independent of the other sections and
+    // idempotent (run twice → single block). Agent Awareness Standard: the
+    // feature ships dark, but an agent that enables it must know the route.
+    if (!content.includes('Feedback-Inbox Receiving End')) {
+      content += `\n**Feedback-Inbox Receiving End (operated feedback factory)** — When this install runs an operated feedback-factory instance, the receiving end is: the canonical front (Vercel) durably writes each ACCEPTED fleet report into a cloud Blob inbox, and the InboxDrainer on this machine ingests them into the durable canonical FeedbackStore — so no operated machine is ever in the intake critical path (a machine asleep/restarting only delays processing, never loses a report). Ships dark behind \`feedbackFactory.receiverPersistence.enabled\` + a Blob token env; the route 503s when dark.\n- Status (read-only counters): \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/feedback-inbox/status\` → \`{ running, drained, duplicates, quarantined, errors, ticks, lastTickAt, lastDrainAt, lastError }\`.\n- **When to use** (PROACTIVE): "are fleet feedback reports flowing / stuck?" → read this status. A growing \`errors\` + stale \`lastDrainAt\` means the inbox is backing up (reports are SAFE in the inbox — durability is cloud-side); \`quarantined > 0\` means malformed objects were preserved under \`quarantine/\` for inspection, never dropped.\n`;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Feedback-Inbox Receiving End section');
+    }
+
     // Cross-Agent Communication Discipline (anti-confabulation) — codex-instar
     // audit Item 11. Existing agents need this section even if they were
     // initialized before it existed. The check uses a content-sniffing marker
@@ -5332,6 +5343,11 @@ Create worktrees for collaborator repos with \`instar worktree create <branch>\`
       '**Coordination Mandate**',
       '**ReviewExchange (autonomous code review)**',
       '**Cutover Readiness**',
+      // Feedback-Inbox Receiving End (feedback-factory-migration Q2b): the
+      // operated instance's intake pipeline status. Framework-agnostic HTTP —
+      // a Codex/Gemini agent on the operated machine also needs to know where
+      // to read "are fleet reports flowing?" Mirrored like every capability.
+      '**Feedback-Inbox Receiving End (operated feedback factory)**',
       // Subscription Pool (Subscription & Auth Standard): a framework-agnostic
       // capability — a Codex/Gemini agent should also know it can manage a
       // multi-account subscription pool, swap to keep a session alive, and drive

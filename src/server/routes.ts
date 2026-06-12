@@ -803,6 +803,10 @@ export interface RouteContext {
    *  door). Read-only objective conditions from durable state; the flip itself is
    *  never autonomous. Null when stateDir is unavailable. */
   cutoverReadiness: import('../feedback-factory/cutoverReadiness.js').CutoverReadiness | null;
+  /** Option-B receiving end (feedback-factory-migration Q2b): the Blob-inbox →
+   *  durable canonical store drainer. Null when dark (config off / no token) →
+   *  GET /feedback-inbox/status 503s. */
+  inboxDrainer?: import('../feedback-factory/inbox/InboxDrainer.js').InboxDrainer | null;
   /** Cross-topic activity index (Parallel-Work Awareness Phase A). Backs GET /parallel-work/activities. */
   parallelActivityIndex?: import('../core/ParallelActivityIndex.js').ParallelActivityIndex | null;
   /** The shared intelligence provider (an IntelligenceRouter when per-component routing is wired). Backs GET /intelligence/routing. */
@@ -6442,6 +6446,17 @@ export function createRoutes(ctx: RouteContext): Router {
   // REAL durable state (persisted IntegrityReport + durable parity window). The
   // flip itself is the operator's manual click — there is NO fire-cutover route
   // here by design, and `door` says so machine-readably.
+
+  // ── Feedback-inbox drainer status (Option-B receiving end, Q2b) ──
+  // Read-only counters for the cloud-inbox → canonical-store mover. 503 when the
+  // feature is dark (config off / no Blob token) — the standard null-dep pattern.
+  router.get('/feedback-inbox/status', (_req, res) => {
+    if (!ctx.inboxDrainer) {
+      res.status(503).json({ error: 'feedback-inbox drainer unavailable (feedbackFactory.receiverPersistence disabled or no Blob token)' });
+      return;
+    }
+    res.json(ctx.inboxDrainer.status());
+  });
 
   // The readiness signal. Read-only.
   router.get('/cutover-readiness', (_req, res) => {
