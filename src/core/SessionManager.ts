@@ -876,13 +876,21 @@ rm()  { "${shimRunner}" rm  "$@"; }
       // stamping entirely: a proven-dead session has no work to evidence.
       let workEvidence: string[] = [];
       if (!opts?.knownDead) {
-        if (opts?.workEvidence && opts.workEvidence.length > 0) {
+        if (opts?.workEvidence !== undefined) {
+          // Killer-supplied is AUTHORITATIVE — including an explicit empty
+          // array (e.g. the idle-reaper proved the session idle; re-collecting
+          // here would re-stamp the very active-process signal it disproved).
           workEvidence = clampWorkEvidence(opts.workEvidence);
         } else if (this.reapGuard) {
           try {
             workEvidence = this.reapGuard.workEvidence(session, {
               skipForkChecks: this.pressureTier?.() === 'critical',
             });
+            // A bypassActiveProcessKeep kill means the killer PROVED the
+            // process tree idle — the fallback must not re-assert it (R2.1).
+            if (opts?.bypassActiveProcessKeep) {
+              workEvidence = workEvidence.filter((e) => e !== 'active-process');
+            }
           } catch {
             workEvidence = []; // never let evidence collection endanger the kill path
           }
@@ -924,6 +932,24 @@ rm()  { "${shimRunner}" rm  "$@"; }
    */
   setPressureTierProvider(provider: () => 'normal' | 'moderate' | 'critical'): void {
     this.pressureTier = provider;
+  }
+
+  /**
+   * Observe-only work-evidence snapshot for a LIVE session (reap-notify spec
+   * R2.1) — for killers that must capture evidence at their decision moment,
+   * before their own teardown destroys it (the quota-shed migrator's Ctrl+C
+   * grace round). Never throws; never blocks anything.
+   */
+  collectWorkEvidence(sessionId: string): string[] {
+    try {
+      const session = this.state.getSession(sessionId);
+      if (!session || !this.reapGuard) return [];
+      return this.reapGuard.workEvidence(session, {
+        skipForkChecks: this.pressureTier?.() === 'critical',
+      });
+    } catch {
+      return [];
+    }
   }
 
   /**

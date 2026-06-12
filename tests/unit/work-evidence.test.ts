@@ -241,23 +241,61 @@ describe('terminateSession — evidence threading (R2.1)', () => {
     expect(record.endedWorkEvidence).toEqual(['build-or-autonomous-active', 'active-process']);
   });
 
-  it('falls back to the guard observe-only collection when the killer supplied nothing (bypass path)', async () => {
+  it('falls back to the guard observe-only collection when the killer supplied nothing', async () => {
     const session = await manager.spawnSession({ name: 'busy', prompt: 'p' });
+    // Threading proof: a guard whose blockedReason clears the kill but whose
+    // observe-only collection still surfaces evidence (the race between the
+    // gate check and the stamp is real in production).
+    manager.setReapGuard({
+      blockedReason: () => null,
+      workEvidence: () => ['active-subagent'],
+    } as unknown as ReapGuard);
+    const reaped: Array<{ midWork?: boolean; workEvidence?: string[] }> = [];
+    manager.on('sessionReaped', (e) => reaped.push(e));
+
+    const result = await manager.terminateSession(session.id, 'age-limit', {
+      origin: 'autonomous',
+    });
+    expect(result.terminated).toBe(true);
+    expect(reaped[0].workEvidence).toEqual(['active-subagent']);
+    expect(reaped[0].midWork).toBe(true);
+  });
+
+  it('bypassActiveProcessKeep excludes active-process from the FALLBACK (the killer proved idle)', async () => {
+    const session = await manager.spawnSession({ name: 'proven-idle', prompt: 'p' });
     manager.setReapGuard(
       new ReapGuard(guardDeps({ hasActiveProcesses: () => true }), { minAgeMs: 0 }),
     );
     const reaped: Array<{ midWork?: boolean; workEvidence?: string[] }> = [];
     manager.on('sessionReaped', (e) => reaped.push(e));
 
-    // The reaper proved idleness and relaxed active-process; the fallback
-    // still records the (weak) signal for observability.
     const result = await manager.terminateSession(session.id, 'reaped-idle', {
       origin: 'autonomous',
       bypassActiveProcessKeep: true,
     });
     expect(result.terminated).toBe(true);
-    expect(reaped[0].workEvidence).toEqual(['active-process']);
-    expect(reaped[0].midWork).toBe(true);
+    expect(reaped[0].workEvidence).toEqual([]); // active-process NOT re-asserted
+    expect(reaped[0].midWork).toBe(false);
+  });
+
+  it('an explicit EMPTY killer-supplied array is authoritative (no fallback run)', async () => {
+    const session = await manager.spawnSession({ name: 'idle-proven', prompt: 'p' });
+    const fallbackSpy = vi.fn(() => ['active-process']);
+    manager.setReapGuard({
+      blockedReason: () => null,
+      workEvidence: fallbackSpy,
+    } as unknown as ReapGuard);
+    const reaped: Array<{ midWork?: boolean; workEvidence?: string[] }> = [];
+    manager.on('sessionReaped', (e) => reaped.push(e));
+
+    const result = await manager.terminateSession(session.id, 'reaped-idle', {
+      origin: 'autonomous',
+      workEvidence: [],
+    });
+    expect(result.terminated).toBe(true);
+    expect(fallbackSpy).not.toHaveBeenCalled();
+    expect(reaped[0].workEvidence).toEqual([]);
+    expect(reaped[0].midWork).toBe(false);
   });
 
   it('critical pressure tier: fallback stamps the marker, which is NOT midWork', async () => {

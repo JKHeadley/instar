@@ -770,3 +770,102 @@ describe('SessionMigrator', () => {
     });
   });
 });
+
+// ── Reap-notify spec R2.1 — killer-stamped evidence + refusal recording ──
+
+describe('SessionMigrator — pre-grace work evidence (R2.1)', () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = createTmpDir();
+  });
+
+  afterEach(() => {
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/session-migrator.test.ts' });
+  });
+
+  it('snapshots evidence BEFORE Ctrl+C and passes it killer-supplied to terminateSession', async () => {
+    const session = createHaltableSession({ jobSlug: 'working-job' });
+    const callOrder: string[] = [];
+    const terminateCalls: Array<{ opts?: { workEvidence?: string[] } }> = [];
+
+    const deps = createMockDeps({
+      listRunningSessions: vi.fn(() => [session]),
+      isSessionAlive: vi.fn(() => true), // survives Ctrl+C → force-kill path
+      collectWorkEvidence: vi.fn(() => {
+        callOrder.push('collect');
+        return ['open-commitment'];
+      }),
+      isBuildOrAutonomousActive: vi.fn(() => true),
+      // Usage at 100 keeps the soft check disabled (no extra grace round).
+      quotaUsagePercent: vi.fn(() => 100),
+      sendKey: vi.fn(() => {
+        callOrder.push('ctrl-c');
+        return true;
+      }),
+      terminateSession: vi.fn(async (_id: string, _reason: string, opts?: { workEvidence?: string[] }) => {
+        terminateCalls.push({ opts });
+        return { terminated: true };
+      }),
+      getAccountStatuses: vi.fn(() => [
+        createAccountSnapshot({ email: 'backup@test.io', weeklyPercent: 20 }),
+      ]),
+    });
+
+    const m = new SessionMigrator({
+      stateDir: path.join(tmpDir, 'evidence'),
+      thresholds: { gracePeriodMs: 10 },
+    });
+    m.setDeps(deps);
+    await m.checkAndMigrate({ percentUsed: 95, activeAccountEmail: 'active@test.io' });
+
+    // Evidence collected at the decision moment — BEFORE any Ctrl+C.
+    expect(callOrder[0]).toBe('collect');
+    expect(callOrder).toContain('ctrl-c');
+    expect(terminateCalls).toHaveLength(1);
+    expect(terminateCalls[0].opts?.workEvidence).toEqual([
+      'open-commitment',
+      'build-or-autonomous-active',
+    ]);
+  });
+
+  it('records a terminate REFUSAL as refused, not halted (no double-respawn)', async () => {
+    const refusedSession = createHaltableSession({ jobSlug: 'guarded-job' });
+    const killedSession = createHaltableSession({ jobSlug: 'idle-job' });
+
+    const refusals: Array<{ jobSlug?: string; skipped?: string }> = [];
+    const deps = createMockDeps({
+      listRunningSessions: vi.fn(() => [refusedSession, killedSession]),
+      isSessionAlive: vi.fn(() => true),
+      quotaUsagePercent: vi.fn(() => 100),
+      terminateSession: vi.fn(async (id: string) => {
+        if (id === refusedSession.id) return { terminated: false, skipped: 'active-subagent' };
+        return { terminated: true };
+      }),
+      getAccountStatuses: vi.fn(() => [
+        createAccountSnapshot({ email: 'backup@test.io', weeklyPercent: 20 }),
+      ]),
+    });
+
+    const m = new SessionMigrator({
+      stateDir: path.join(tmpDir, 'refusal'),
+      thresholds: { gracePeriodMs: 10 },
+    });
+    m.setDeps(deps);
+    m.on('halt-refused', (e: { jobSlug?: string; skipped?: string }) => refusals.push(e));
+
+    const events: MigrationEvent[] = [];
+    m.on('migration_complete', (e: MigrationEvent) => events.push(e));
+    await m.checkAndMigrate({ percentUsed: 95, activeAccountEmail: 'active@test.io' });
+
+    // The refused session is NOT counted halted and NOT respawned (the
+    // double-respawn class: its live session would have run alongside a copy).
+    expect(events).toHaveLength(1);
+    expect(events[0].sessionsHalted).toEqual(['idle-job']);
+    expect(deps.respawnJob).toHaveBeenCalledWith('idle-job');
+    expect(deps.respawnJob).not.toHaveBeenCalledWith('guarded-job');
+    expect(refusals).toHaveLength(1);
+    expect(refusals[0].jobSlug).toBe('guarded-job');
+    expect(refusals[0].skipped).toBe('active-subagent');
+  });
+});

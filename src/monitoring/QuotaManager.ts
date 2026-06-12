@@ -341,6 +341,9 @@ export class QuotaManager extends EventEmitter {
       // §P3 notifier fires + the reap-log records the `quota-shed` reason.
       terminateSession: (sessionId, reason, opts) =>
         sm.terminateSession(sessionId, reason, opts),
+      // Reap-notify R2.1 — pre-grace evidence snapshot: the migrator captures
+      // work evidence at ITS decision moment, before Ctrl+C tears it down.
+      collectWorkEvidence: (sessionId) => sm.collectWorkEvidence(sessionId),
       // §P0 #7 P2-style soft check (one extra Ctrl+C grace round on a working
       // session). Build/autonomous-active = the same "structural long work"
       // signal used by the SessionReaper KEEP-guard — a fresh build-state.json

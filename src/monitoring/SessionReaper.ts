@@ -262,7 +262,7 @@ export interface SessionReaperDeps {
   terminate: (
     sessionId: string,
     reason: string,
-    opts?: { bypassActiveProcessKeep?: boolean },
+    opts?: { bypassActiveProcessKeep?: boolean; workEvidence?: string[] },
   ) => Promise<{ terminated: boolean; skipped?: string }>;
   markReaping: (sessionId: string) => void;
   clearReaping: (sessionId: string) => void;
@@ -795,6 +795,11 @@ export class SessionReaper extends EventEmitter {
       // only; every other KEEP-guard is still enforced by terminateSession.
       const r = await this.deps.terminate(session.id, 'reaped-idle', {
         bypassActiveProcessKeep: relaxedActiveProcess,
+        // Pre-relaxation verdict as killer-supplied evidence (reap-notify R2.1):
+        // an idle-reap means this reaper PROVED no work — assert the empty set
+        // authoritatively so the chokepoint fallback can't re-stamp the
+        // active-process signal the relaxation just disproved.
+        workEvidence: [],
       });
       if (r.terminated) {
         this.reapTimestamps.push(this.now());

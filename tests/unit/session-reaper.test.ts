@@ -254,7 +254,7 @@ describe('SessionReaper — render stasis', () => {
     await driveToReap(h);
     expect(h.terminate).toHaveBeenCalledTimes(1);
     // 3rd arg is the active-process relaxation flag (false: no active process here).
-    expect(h.terminate).toHaveBeenCalledWith('s1', 'reaped-idle', { bypassActiveProcessKeep: false });
+    expect(h.terminate).toHaveBeenCalledWith('s1', 'reaped-idle', { bypassActiveProcessKeep: false, workEvidence: [] });
   });
 });
 
@@ -490,7 +490,7 @@ describe('SessionReaper — durable candidacy (A): idle clock survives restarts'
     const h = harness({ cfg: { idleThresholdCriticalMinutes: 30, confirmObservations: 2, finalGraceSec: 1 }, deps: { loadCandidacy: () => loaded } });
     h.setNow(now); await h.reaper.tick();            // frameStatic → candidateSince preserved (60min>30) + consecutive 6 → reap-pending
     h.setNow(now + 2000); await h.reaper.tick();      // grace (1s) elapsed → terminate
-    expect(h.terminate).toHaveBeenCalledWith('s1', expect.any(String), { bypassActiveProcessKeep: false });
+    expect(h.terminate).toHaveBeenCalledWith('s1', expect.any(String), { bypassActiveProcessKeep: false, workEvidence: [] });
   });
 
   it('a FRESH reaper (no restore) would NOT reap that session yet — proving the restore mattered', async () => {
