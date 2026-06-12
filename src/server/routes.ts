@@ -16119,6 +16119,31 @@ export function createRoutes(ctx: RouteContext): Router {
     }
   });
 
+  // Registered users that carry a Slack identity — read-only. Feeds the
+  // dashboard Mandates tab's grant form so the operator PICKS a person on a
+  // phone instead of typing a Slack id (Mobile-Complete Operator Actions,
+  // instar#1080). Never exposes channel identifiers beyond the Slack id the
+  // grant itself needs.
+  router.get('/permissions/users', async (_req, res) => {
+    try {
+      const { UserManager } = await import('../users/UserManager.js');
+      const um = new UserManager(ctx.config.stateDir, ctx.config.users);
+      const users = um.listUsers()
+        .map((u) => {
+          const rec = u as unknown as { slackUserId?: unknown; orgRole?: unknown; name: string };
+          return {
+            slackUserId: typeof rec.slackUserId === 'string' ? rec.slackUserId : '',
+            name: rec.name,
+            orgRole: typeof rec.orgRole === 'string' ? rec.orgRole : null,
+          };
+        })
+        .filter((u) => u.slackUserId);
+      res.json({ users });
+    } catch (e) {
+      res.status(500).json({ error: (e as Error).message });
+    }
+  });
+
   router.post('/permissions/registrations/register', async (req, res) => {
     try {
       const { slackUserId, displayName, role } = req.body || {};

@@ -20,6 +20,28 @@ const AUTHORITIES_TEMPLATE = JSON.stringify([
   { action: 'sign-code-review', bounds: { artifact: 'migration-port', mutual: true } },
 ], null, 2);
 
+// Mirrors FLOOR_ACTIONS in src/permissions/RolePolicy.ts — the enumerated
+// never-discretionary actions a user grant can lift. Kept in sync by the
+// dashboard-mandatesTab test, which compares this list against the source enum.
+const FLOOR_ACTIONS = [
+  'money-movement',
+  'prod-deploy',
+  'credential-access',
+  'destructive-data',
+  'external-send',
+  'grant-authority',
+];
+
+// Mobile-first: the operator picks a duration, never types a timestamp.
+// The submit handler clamps to the mandate's own expiry (a grant can never
+// outlive the mandate that carries it — the server enforces the same rule).
+const GRANT_DURATIONS = [
+  { label: '15 minutes', minutes: 15 },
+  { label: '1 hour', minutes: 60 },
+  { label: '4 hours', minutes: 240 },
+  { label: '24 hours', minutes: 1440 },
+];
+
 function esc(s) {
   return String(s ?? '').replace(/[&<>"']/g, (c) => ({
     '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
@@ -39,7 +61,57 @@ function fmtWhen(iso) {
   } catch { return String(iso); }
 }
 
-export function renderMandates(list) {
+function userLabel(slackUserId, slackUsers) {
+  const u = (slackUsers || []).find((x) => x.slackUserId === slackUserId);
+  return u ? `${u.name} (${slackUserId})` : slackUserId;
+}
+
+/** The grants a mandate already carries, in operator language. */
+export function renderGrants(m, slackUsers) {
+  const grants = Array.isArray(m.grants) ? m.grants : [];
+  if (grants.length === 0) return '';
+  const rows = grants.map((g) => {
+    const expired = Date.parse(g.expiresAt) < Date.now();
+    const badge = expired
+      ? '<span class="mnd-badge mnd-dead">expired</span>'
+      : '<span class="mnd-badge mnd-ok">active</span>';
+    return `<li>${badge} <strong>${esc(userLabel(g.grantedTo, slackUsers))}</strong> may <code>${esc(g.floorAction)}</code> until ${fmtWhen(g.expiresAt)} — authorized by ${esc(g.authorizedBy)}</li>`;
+  }).join('');
+  return `<div class="mnd-grants-head">User grants this mandate carries:</div><ul class="mnd-grants">${rows}</ul>`;
+}
+
+/**
+ * The add-grant form for an ACTIVE mandate. Mobile-first by design (the
+ * 2026-06-12 lesson, instar#1080): the operator PICKS a person and a duration —
+ * the only thing typed is the PIN. A free-text Slack-id input appears only
+ * when the user registry has nobody to offer.
+ */
+export function renderGrantForm(m, slackUsers) {
+  const users = (slackUsers || []).filter((u) => u.slackUserId);
+  const granteeField = users.length > 0
+    ? `<select class="mnd-grant-field" data-grant-user="${esc(m.id)}">${
+        users.map((u) => `<option value="${esc(u.slackUserId)}">${esc(u.name)}${u.orgRole ? ` — ${esc(u.orgRole)}` : ''}</option>`).join('')
+      }</select>`
+    : `<input type="text" class="mnd-grant-field" data-grant-user="${esc(m.id)}" placeholder="Slack user id (e.g. U0…)" />`;
+  const actionField = `<select class="mnd-grant-field" data-grant-action="${esc(m.id)}">${
+    FLOOR_ACTIONS.map((a) => `<option value="${a}"${a === 'prod-deploy' ? ' selected' : ''}>${a}</option>`).join('')
+  }</select>`;
+  const durationField = `<select class="mnd-grant-field" data-grant-duration="${esc(m.id)}">${
+    GRANT_DURATIONS.map((d) => `<option value="${d.minutes}"${d.minutes === 60 ? ' selected' : ''}>${d.label}</option>`).join('')
+  }</select>`;
+  return `<details class="mnd-grant-details"><summary class="mnd-grant-summary">Grant a user a floor action (PIN required)</summary>
+    <div class="mnd-grant-row">
+      ${granteeField}
+      ${actionField}
+      ${durationField}
+      <input type="password" class="mnd-pin" data-grant-pin="${esc(m.id)}" placeholder="PIN" autocomplete="off" />
+      <button class="mnd-btn" data-grant="${esc(m.id)}">Grant</button>
+    </div>
+    <span class="mnd-hint">Lifts the picked person to ONE floor action for the picked window. Signed into this mandate by your PIN — revoking the mandate voids it; it can never outlive the mandate.</span>
+  </details>`;
+}
+
+export function renderMandates(list, slackUsers = []) {
   if (!Array.isArray(list) || list.length === 0) {
     return '<div class="mnd-empty">No mandates issued. The gate is deny-by-default: every delegated agent action refuses until you issue one.</div>';
   }
@@ -60,6 +132,7 @@ export function renderMandates(list) {
            <button class="mnd-btn mnd-btn-danger" data-revoke="${esc(m.id)}">Revoke</button>
          </div>`
       : `<div class="mnd-dead-note">${m.revoked ? `revoked ${fmtWhen(m.revoked.at)} — ${esc(m.revoked.reason)}` : `expired ${fmtWhen(m.expiresAt)}`}</div>`;
+    const grantUi = state === 'active' ? renderGrantForm(m, slackUsers) : '';
     return `<div class="mnd-card">
       <div class="mnd-card-head">
         <span class="mnd-scope">${esc(m.scope)}</span>
@@ -68,6 +141,8 @@ export function renderMandates(list) {
       </div>
       <div class="mnd-meta">id <code>${esc(m.id)}</code> · agents <code>${esc(shortFp(m.agents?.[0]))}</code> + <code>${esc(shortFp(m.agents?.[1]))}</code> · by ${esc(m.author)} · expires ${fmtWhen(m.expiresAt)}</div>
       <ul class="mnd-authorities">${authorities}</ul>
+      ${renderGrants(m, slackUsers)}
+      ${grantUi}
       ${revokeUi}
     </div>`;
   }).join('');
@@ -129,12 +204,18 @@ export function createController({ doc, els, fetchImpl }) {
 
   let refreshErrorShown = false;
   let autoOpenedIssueForm = false;
+  // Last-fetched state the grant submit handler needs: the mandate list (for
+  // the expiry clamp) — kept here, never re-derived from the DOM.
+  let lastMandates = [];
 
   async function refresh() {
     try {
-      const [mand, audit] = await Promise.all([
+      const [mand, audit, users] = await Promise.all([
         fetchJson('/mandate'),
         fetchJson('/mandate/audit?limit=200'),
+        // Registered Slack users feed the grant form's person picker. A failure
+        // here must never take down the tab — the form degrades to a text input.
+        fetchJson('/permissions/users').catch(() => ({ status: 0, body: null })),
       ]);
       if (mand.status === 503) {
         els.list.innerHTML = '<div class="mnd-empty">Mandate engine unavailable on this server (older version or init failure).</div>';
@@ -143,7 +224,9 @@ export function createController({ doc, els, fetchImpl }) {
         return;
       }
       const mandates = mand.body?.mandates;
-      els.list.innerHTML = renderMandates(mandates);
+      lastMandates = Array.isArray(mandates) ? mandates : [];
+      const slackUsers = users.status === 200 && Array.isArray(users.body?.users) ? users.body.users : [];
+      els.list.innerHTML = renderMandates(mandates, slackUsers);
       els.audit.innerHTML = renderAudit(audit.body);
       if (els.stamp) els.stamp.textContent = 'updated ' + new Date().toLocaleTimeString();
       // Nothing issued yet → the issue form IS the page's call to action;
@@ -155,6 +238,7 @@ export function createController({ doc, els, fetchImpl }) {
       // A persistent refresh error from a server restart-gap heals itself.
       if (refreshErrorShown) { clearNote(); refreshErrorShown = false; }
       wireRevokeButtons();
+      wireGrantButtons();
     } catch (e) {
       refreshErrorShown = true;
       note('refresh failed: ' + (e?.message ?? e) + ' — retrying automatically.', 'error');
@@ -180,6 +264,66 @@ export function createController({ doc, els, fetchImpl }) {
           if (status === 200) { note(`✓ Mandate ${id} revoked — the gate now denies its actions.`, 'success'); await refresh(); }
           else note(`Not revoked — the server refused: ${body?.error ?? `HTTP ${status}`}`, 'error');
         } finally { btn.disabled = false; }
+      };
+    });
+  }
+
+  function wireGrantButtons() {
+    els.list.querySelectorAll('[data-grant]').forEach((btn) => {
+      btn.onclick = async () => {
+        const id = btn.getAttribute('data-grant');
+        const userEl = els.list.querySelector(`[data-grant-user="${id}"]`);
+        const actionEl = els.list.querySelector(`[data-grant-action="${id}"]`);
+        const durEl = els.list.querySelector(`[data-grant-duration="${id}"]`);
+        const pinEl = els.list.querySelector(`[data-grant-pin="${id}"]`);
+        const grantedTo = (userEl?.value ?? '').trim();
+        const floorAction = actionEl?.value ?? 'prod-deploy';
+        const pin = pinEl?.value ?? '';
+        const problems = [];
+        if (!grantedTo) problems.push('• Pick (or type) who the grant is for.');
+        if (!pin) problems.push('• Type your dashboard PIN — granting a floor action is a human action; agent credentials are refused.');
+        if (problems.length > 0) {
+          note('Not granted — fix the following first:\n' + problems.join('\n'), 'error');
+          return;
+        }
+        // A grant can never outlive its mandate — clamp client-side so the
+        // operator's pick always succeeds (the server enforces the same rule
+        // by rejection; rejection is a worse experience than a shorter window).
+        const minutes = Number(durEl?.value ?? 60) || 60;
+        const mandate = lastMandates.find((m) => m.id === id);
+        const mandateExpiryMs = mandate ? Date.parse(mandate.expiresAt) : NaN;
+        let expiryMs = Date.now() + minutes * 60_000;
+        let clamped = false;
+        if (!isNaN(mandateExpiryMs) && expiryMs > mandateExpiryMs) { expiryMs = mandateExpiryMs; clamped = true; }
+        btn.disabled = true;
+        try {
+          const { status, body } = await fetchJson(`/mandate/${encodeURIComponent(id)}/grants`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              pin,
+              grants: [{
+                floorAction,
+                grantedTo,
+                authorizedBy: 'operator (dashboard PIN)',
+                expiresAt: new Date(expiryMs).toISOString(),
+              }],
+            }),
+          });
+          if (status === 201) {
+            note(`✓ Grant signed — ${grantedTo} may ${floorAction} until ${fmtWhen(new Date(expiryMs).toISOString())}${clamped ? ' (shortened to the mandate’s own expiry — a grant can never outlive its mandate)' : ''}.`, 'success');
+            await refresh();
+          } else {
+            note(`Not granted — the server refused: ${body?.error ?? `HTTP ${status}`}`, 'error');
+          }
+        } catch (e) {
+          // A network failure must neither strand the typed PIN (cleared in
+          // finally) nor fail silently.
+          note(`Not granted — request failed: ${e?.message ?? e}. Nothing was signed; try again.`, 'error');
+        } finally {
+          if (pinEl) pinEl.value = ''; // never retain the PIN — on ANY path
+          btn.disabled = false;
+        }
       };
     });
   }

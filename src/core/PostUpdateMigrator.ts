@@ -5268,6 +5268,24 @@ Create worktrees for collaborator repos with \`instar worktree create <branch>\`
       result.upgraded.push('CLAUDE.md: added Coordination Mandate awareness section');
     }
 
+    // Phone-first floor grants (Mobile-Complete Operator Actions, instar#1080)
+    // — agents that already carry the Coordination Mandate section must learn
+    // to point operators at the Mandates-tab grant form, never at a terminal
+    // command. Content-sniffed on the bullet's distinctive lead; inserted
+    // inside the existing section when its anchor line is intact, appended
+    // otherwise so a hand-edited section still gains the guidance.
+    if (content.includes('/mandate/evaluate') && !content.includes('User floor-action grants are phone-first')) {
+      const grantBullet = `- **User floor-action grants are phone-first.** When the operator needs to grant a USER a floor action (e.g. "let Mia prod-deploy for an hour"), the Mandates tab carries a grant form on every active mandate: pick the person (from the registered-user list), pick the action and duration, type the PIN, tap Grant. Send them the dashboard link — NEVER a terminal command or a hand-built API call (Mobile-Complete Operator Actions). The grant is signed into the mandate, clamped to the mandate's expiry, and voided by revoking the mandate.`;
+      const grantAnchor = 'point them at the dashboard **Mandates tab** (issue/revoke forms + the decision audit live there).';
+      if (content.includes(grantAnchor)) {
+        content = content.replace(grantAnchor, grantAnchor + '\n' + grantBullet);
+      } else {
+        content += '\n' + grantBullet + '\n';
+      }
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added phone-first floor-grant guidance to the Coordination Mandate section');
+    }
+
     // ReviewExchange protocol (coordination-mandate spec §7 G2.3) — Agent
     // Awareness backfill. Content-sniffed on the distinctive route prefix.
     if (!content.includes('/review-exchange')) {
