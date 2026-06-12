@@ -4493,7 +4493,13 @@
           if (!r.ok) return;
           const j = await r.json();
           selfMachineNickname = (j.pool && j.pool.selfMachineNickname) || null;
-          remoteSessions = (j.sessions || []).filter(s => s.remote === true);
+          // LIVE remote sessions only: a peer's plain /sessions returns its FULL
+          // registry (completed/killed records included), while the local sidebar
+          // is built from listRunningSessions(). Without this status filter,
+          // long-dead peer sessions render as live "click to stream" tiles
+          // (2026-06-11: five closed Mac Mini sessions reappeared on the laptop
+          // dashboard hours after they were closed).
+          remoteSessions = (j.sessions || []).filter(s => s.remote === true && (s.status === 'running' || s.status === 'starting'));
           renderSessionList();
         } catch { /* best-effort — peers may be offline; next tick retries */ }
       };
