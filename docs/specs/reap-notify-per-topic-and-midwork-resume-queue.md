@@ -245,7 +245,11 @@ quiet hours.)
   but `--resume` attachment is not observable from outside the pane — the terminal state
   must not claim more than the system can see; R2.11's wording matches.) Pause is a
   QUEUE-GLOBAL flag, not an entry state — entries keep their states while the drainer is
-  halted. Boot reconciliation: `starting` found at load = failed attempt (attempts++). The
+  halted. Boot reconciliation: `starting` found at load = failed attempt (attempts++);
+  additionally, recent reap-log `midWork:true` terminal autonomous entries (within
+  `entryTtlHours`) with no corresponding queue entry or tombstone are re-enqueued — closing
+  the crash window where an enqueue's persist was lost and the session never gets re-reaped
+  (the reap-log, written at the kill chokepoint, is the recovery source of truth). The
   drainer tick (60s, re-entrancy-guarded) resumes AT MOST ONE entry per tick, only when ALL
   deterministic gates pass: pressure tier `normal` (shared `PressureGauge` extraction of
   SessionReaper's computation — one definition of "calm") for `requiredCalmTicks` (3);
