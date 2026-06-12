@@ -475,7 +475,13 @@ export class CommitmentTracker extends EventEmitter {
       softDeadlineAt: input.softDeadlineAt,
       hardDeadlineAt: autoHardDeadlineAt,
       sessionEpoch: input.sessionEpoch,
-      ownerMachineId: input.ownerMachineId,
+      // WS3.2 (MULTI-MACHINE-SEAMLESSNESS-SPEC, closes F19): ownerMachineId is
+      // recorded at creation — defaulting to the creating machine, which IS the
+      // machine serving the topic when the promise is made. Previously this was
+      // caller-supplied only and never populated, so PromiseBeacon's ownership
+      // gate compared against undefined and was silently inert. The stamp is a
+      // FALLBACK: the beacon re-resolves the live topic owner at speak time.
+      ownerMachineId: input.ownerMachineId ?? this.config.originMachineId,
       externalKey: input.externalKey,
       beaconCreatedBySource: input.beaconCreatedBySource,
       heartbeatCount: 0,

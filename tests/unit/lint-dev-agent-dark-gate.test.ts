@@ -317,16 +317,16 @@ describe('lint-dev-agent-dark-gate', () => {
       '433': 'mentor.enabled',
       '444': 'mentor.autonomousFix.enabled',
       '459': 'mentee.enabled',
-      '544': 'multiMachine.sessionPool.enabled',
-      // durable-inbound-message-queue (CMT-1118): the sessionPool block gained
-      // the inboundQueue (line 569) + holdForStability (line 598) sub-blocks,
-      // shifting the cartographer entries by +41. Verified by hand against
-      // ConfigDefaults.ts.
-      '569': 'multiMachine.sessionPool.inboundQueue.enabled',
-      '598': 'multiMachine.sessionPool.holdForStability.enabled',
-      '743': 'cartographer.freshnessSweep.enabled',
-      '788': 'cartographer.conformanceAudit.llmEnrichment.enabled',
-      '813': 'cartographer.subtreeNav.llmRerank.enabled',
+      // MERGED (ws3OneVoice +8 from main; durable-inbound-message-queue
+      // CMT-1118 +41 from this branch). Verified by hand against the merged
+      // ConfigDefaults.ts: sessionPool block at 551, inboundQueue at 576,
+      // holdForStability at 605; cartographer entries follow.
+      '552': 'multiMachine.sessionPool.enabled',
+      '577': 'multiMachine.sessionPool.inboundQueue.enabled',
+      '606': 'multiMachine.sessionPool.holdForStability.enabled',
+      '751': 'cartographer.freshnessSweep.enabled',
+      '796': 'cartographer.conformanceAudit.llmEnrichment.enabled',
+      '821': 'cartographer.subtreeNav.llmRerank.enabled',
     };
     const actual = attributeRealConfigDefaults();
     expect(actual).toEqual(EXPECTED);

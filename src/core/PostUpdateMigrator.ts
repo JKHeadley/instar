@@ -272,9 +272,96 @@ export class PostUpdateMigrator {
     this.migrateWorktreeMisplacedFloodItems(result);
     this.migrateSubscriptionPoolInteractiveReady(result);
     this.migrateCartographerDevGate(result);
+    this.migrateCommitmentOwnerBackfill(result);
     this.migrateMultiMachinePostureReviewDimension(result);
 
     return result;
+  }
+
+  // ── WS3.2 commitment owner backfill (MULTI-MACHINE-SEAMLESSNESS-SPEC, F19) ──
+  //
+  // PromiseBeacon's ownership gate compares c.ownerMachineId against the current
+  // machine — but ownerMachineId was caller-supplied only and never populated, so
+  // the gate was silently inert on every deployed agent. New commitments are now
+  // stamped at creation (CommitmentTracker.create defaults to originMachineId);
+  // this migration backfills EXISTING open commitments with this machine's id.
+  //
+  // Direction-of-error safety (round-2 lessons finding): a wrong stamp cannot
+  // silence a live commitment, because the beacon RE-RESOLVES the live topic
+  // owner at speak time and uses the stamp only as a fallback — and on a
+  // single-machine agent the gate is inert regardless (no SpeakerElection wired,
+  // no differing machine id). Stamping with the local machine id is exact for
+  // single-machine agents and a best-effort fallback for pools.
+  //
+  // Idempotent: marker in config._instar_migrations + only stamps records whose
+  // ownerMachineId is absent. Terminal-status commitments are left untouched.
+  private migrateCommitmentOwnerBackfill(result: MigrationResult): void {
+    const marker = 'ws3-commitment-owner-backfill-v1';
+    const configPath = path.join(this.config.stateDir, 'config.json');
+    if (!fs.existsSync(configPath)) {
+      result.skipped.push('commitment-owner-backfill: config.json not found');
+      return;
+    }
+    let config: Record<string, unknown>;
+    try {
+      config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+    } catch (err) {
+      result.errors.push(`commitment-owner-backfill: config.json read failed: ${err instanceof Error ? err.message : String(err)}`);
+      return;
+    }
+    const migrations = (config._instar_migrations ?? []) as string[];
+    if (migrations.includes(marker)) {
+      result.skipped.push('commitment-owner-backfill: already migrated');
+      return;
+    }
+
+    const identityPath = path.join(this.config.stateDir, 'machine', 'identity.json');
+    let machineId: string | undefined;
+    try {
+      if (fs.existsSync(identityPath)) {
+        machineId = (JSON.parse(fs.readFileSync(identityPath, 'utf-8')) as { machineId?: string }).machineId;
+      }
+    } catch { /* no identity → nothing safe to stamp */ }
+    if (!machineId) {
+      // No machine identity on disk (pre-multi-machine agent): the ownership
+      // gate is structurally inert without one, so there is nothing to backfill
+      // yet. Deliberately NOT marked migrated — the backfill runs once an
+      // identity exists on a later update.
+      result.skipped.push('commitment-owner-backfill: no machine identity yet (will retry on a later update)');
+      return;
+    }
+
+    const commitmentsPath = path.join(this.config.stateDir, 'state', 'commitments.json');
+    if (!fs.existsSync(commitmentsPath)) {
+      // Nothing to backfill; mark done so we don't rescan forever.
+      migrations.push(marker);
+      config._instar_migrations = migrations;
+      fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+      result.skipped.push('commitment-owner-backfill: no commitments store');
+      return;
+    }
+    try {
+      const raw = JSON.parse(fs.readFileSync(commitmentsPath, 'utf-8')) as
+        { commitments?: Array<Record<string, unknown>> } | Array<Record<string, unknown>>;
+      const list = Array.isArray(raw) ? raw : (raw.commitments ?? []);
+      let stamped = 0;
+      for (const c of list) {
+        if (c.status === 'pending' && !c.ownerMachineId) {
+          c.ownerMachineId = machineId;
+          stamped++;
+        }
+      }
+      if (stamped > 0) {
+        const out = Array.isArray(raw) ? list : { ...raw, commitments: list };
+        fs.writeFileSync(commitmentsPath, JSON.stringify(out, null, 2));
+      }
+      migrations.push(marker);
+      config._instar_migrations = migrations;
+      fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+      result.upgraded.push(`commitment-owner-backfill: stamped ${stamped} open commitment(s) with ${machineId}`);
+    } catch (err) {
+      result.errors.push(`commitment-owner-backfill: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 
   // ── Multi-machine posture review dimension (Cross-Machine Coherence widening,
