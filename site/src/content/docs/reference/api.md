@@ -750,6 +750,7 @@ changes-requested, terminal). Deny-by-default inherited: no mandate → 403.
 - `GET /sessions/:name/output`
 - `GET /sessions/tmux`
 - `POST /sessions/:name/input`
+- `POST /sessions/:name/remote-close`
 - `POST /sessions/cleanup-stale`
 - `POST /sessions/create`
 - `POST /sessions/refresh`

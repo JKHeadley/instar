@@ -47,13 +47,16 @@ describe('dashboard: sessions list — machine badges + pool-wide visibility', (
     expect(HTML).toMatch(/remote:\$\{s\.machineId \|\| '\?'\}:\$\{s\.tmuxSession\}/);
   });
 
-  it('remote rows are CLICKABLE → stream from the owning machine (Pool Dashboard Streaming §2.2); close button still gated off', () => {
+  it('remote rows are CLICKABLE → stream from the owning machine (Pool Dashboard Streaming §2.2); close button renders too', () => {
     // Phase 3: remote tiles now get an onclick → selectSession (the same handler
     // as local rows); the tooltip invites streaming instead of redirecting away.
     expect(HTML).toContain('el.onclick = () => selectSession(session.tmuxSession, session);');
     expect(HTML).toMatch(/session\.remote[\s\S]{0,200}click to stream it here/);
-    // The close (×) button remains gated off for remote sessions.
-    expect(HTML).toMatch(/\$\{session\.remote \? '' : `<button class="session-close-btn"/);
+    // REMOTE-SESSION-CLOSE-SPEC §2.2: the × is no longer gated off for remote
+    // sessions — it renders with the relay args (pinned in detail by
+    // dashboard-remoteClose.test.ts).
+    expect(HTML).not.toMatch(/\$\{session\.remote \? '' : `<button class="session-close-btn"/);
+    expect(HTML).toMatch(/<button class="session-close-btn"[^>]*data-tmux=/);
   });
 
   it('a remote subscribe carries the session machineId so the server relays it (§2.2)', () => {

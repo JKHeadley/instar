@@ -4047,6 +4047,7 @@ Beyond the one-awake-machine model: with the pool enabled I run conversations ac
 - **Machine nicknames** are the user-facing handle (auto-assigned, editable). Rename via \`PATCH /pool/machines/:machineId\` with \`{"nickname":"the mini"}\`, or inline on the Machines tab.
 - **Which machine + WHY (never guess):** \`GET /pool/placement?topic=N\` → the owning machine + nickname, the **reason** (\`pinned\` = a deliberate move vs \`placed\` = load-balanced vs \`unowned\`), and the lease-holder. Answerable from ANY machine (a standby proxies to the holder). Running ON a machine does NOT mean a topic was deliberately moved there — read this instead of inferring.
 - **Reliable transfer (phrasing-independent):** \`POST /pool/transfer\` with \`{"topic":N,"to":"<nickname|machineId>"}\` runs the same validated planner as "move this to <nickname>" but deterministically. 404 unknown · 409 rate-limited · 409 \`needsConfirmation\` for an offline target (re-send with \`"confirm":true\`). The lever to call directly when a natural-language move didn't catch.
+- **Remote close (any machine, from here):** close a session on ANY machine in the pool from this one — \`POST /sessions/<name>/remote-close\` with \`{"machineId":"<id>","sessionUuid":"<uuid>"}\` (Bearer). Same operator authority as the local close: it WILL close a protected session (the dashboard's confirm dialog is the safety, not a server-side refusal). Outcomes are honest — already-closed comes back calm, and a relay timeout reports outcome-UNKNOWN, never "closed" or "nothing happened". The order is audited on BOTH machines: the relayer appends to \`logs/remote-close-audit.jsonl\`; the owning machine's reap-log entry carries \`viaClaim\`.
 - **Proactive triggers:** when the user says "run this on <nickname>" / "move this to <nickname>" → placement/transfer-by-nickname (the session moves to the named machine, resuming like a session restart). "where is this running / why?" → \`GET /pool/placement?topic=N\`. "move it reliably / it didn't move" → \`POST /pool/transfer\`. Deep mechanics: the Machines tab + \`docs/specs/MULTI-MACHINE-SESSION-POOL-SPEC.md\`.
 `;
       content += '\n' + section;
@@ -4108,6 +4109,23 @@ Beyond the one-awake-machine model: with the pool enabled I run conversations ac
       content += '\n' + quotaLine + '\n';
       patched = true;
       result.upgraded.push('CLAUDE.md: added quota-aware placement line');
+    }
+
+    // Remote session close (REMOTE-SESSION-CLOSE-SPEC §2.4, 2026-06-12): agents
+    // that ALREADY carry the pool section predate the relayed close — the one
+    // agent-facing /sessions/* verb (§2.0 names "the operator's authenticated
+    // agent" as a caller). Without it an agent asked "close the stale Mini
+    // session from here" hand-issues curl against the peer's tunnel URL
+    // (lived 2026-06-11) instead of the audited, allowlisted relay. Byte-
+    // identical to the generateClaudeMd bullet (pinned by
+    // PostUpdateMigrator-remoteCloseAwareness.test.ts). Idempotent via the
+    // unique 'remote-close' marker.
+    if (content.includes('Multi-Machine Session Pool (active-active') && !content.includes('remote-close')) {
+      const remoteClose = `
+- **Remote close (any machine, from here):** close a session on ANY machine in the pool from this one — \`POST /sessions/<name>/remote-close\` with \`{"machineId":"<id>","sessionUuid":"<uuid>"}\` (Bearer). Same operator authority as the local close: it WILL close a protected session (the dashboard's confirm dialog is the safety, not a server-side refusal). Outcomes are honest — already-closed comes back calm, and a relay timeout reports outcome-UNKNOWN, never "closed" or "nothing happened". The order is audited on BOTH machines: the relayer appends to \`logs/remote-close-audit.jsonl\`; the owning machine's reap-log entry carries \`viaClaim\`.`;
+      content += '\n' + remoteClose + '\n';
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added pool remote session close line');
     }
 
     // Cross-Machine Secret Sync (spec Phase 4, 2026-06-04): deployed agents don't know
@@ -5274,6 +5292,24 @@ Create worktrees for collaborator repos with \`instar worktree create <branch>\`
       content += '\n' + section;
       patched = true;
       result.upgraded.push('CLAUDE.md: added Coordination Mandate awareness section');
+    }
+
+    // Phone-first floor grants (Mobile-Complete Operator Actions, instar#1080)
+    // — agents that already carry the Coordination Mandate section must learn
+    // to point operators at the Mandates-tab grant form, never at a terminal
+    // command. Content-sniffed on the bullet's distinctive lead; inserted
+    // inside the existing section when its anchor line is intact, appended
+    // otherwise so a hand-edited section still gains the guidance.
+    if (content.includes('/mandate/evaluate') && !content.includes('User floor-action grants are phone-first')) {
+      const grantBullet = `- **User floor-action grants are phone-first.** When the operator needs to grant a USER a floor action (e.g. "let Mia prod-deploy for an hour"), the Mandates tab carries a grant form on every active mandate: pick the person (from the registered-user list), pick the action and duration, type the PIN, tap Grant. Send them the dashboard link — NEVER a terminal command or a hand-built API call (Mobile-Complete Operator Actions). The grant is signed into the mandate, clamped to the mandate's expiry, and voided by revoking the mandate.`;
+      const grantAnchor = 'point them at the dashboard **Mandates tab** (issue/revoke forms + the decision audit live there).';
+      if (content.includes(grantAnchor)) {
+        content = content.replace(grantAnchor, grantAnchor + '\n' + grantBullet);
+      } else {
+        content += '\n' + grantBullet + '\n';
+      }
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added phone-first floor-grant guidance to the Coordination Mandate section');
     }
 
     // ReviewExchange protocol (coordination-mandate spec §7 G2.3) — Agent

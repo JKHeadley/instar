@@ -55,6 +55,7 @@ import {
 import { buildGuardInventory } from '../monitoring/guardPostureView.js';
 import { GuardRegistry } from '../monitoring/GuardRegistry.js';
 import { isPeerUrlAllowedForCredentials } from './peerUrlGuard.js';
+import { RemoteCloseAudit } from '../core/RemoteCloseAudit.js';
 import { FailureLedger } from '../monitoring/FailureLedger.js';
 import { FailureAttributionEngine } from '../monitoring/FailureAttributionEngine.js';
 import { FailureAnalyzer } from '../monitoring/FailureAnalyzer.js';
@@ -5465,6 +5466,12 @@ export function createRoutes(ctx: RouteContext): Router {
         if (selfMachineNickname) result.machineNickname = selfMachineNickname;
       }
 
+      // Informed-consent input for the dashboard close confirm (REMOTE-SESSION-
+      // CLOSE-SPEC §2.2): protected status was previously a config-side
+      // membership test evaluated only inside terminateSession on the owner —
+      // invisible to any UI. Additive; flows through the pool fan-out unchanged.
+      result.protected = (ctx.config.sessions?.protectedSessions ?? []).includes(s.tmuxSession);
+
       // Add hook event telemetry
       if (req.query.enrich !== 'false' && ctx.hookEventReceiver) {
         const summary = ctx.hookEventReceiver.getSessionSummary(s.tmuxSession);
@@ -6145,9 +6152,16 @@ export function createRoutes(ctx: RouteContext): Router {
         res.status(404).json({ error: `Session "${req.params.id}" not found` });
         return;
       }
+      // UNTRUSTED provenance claim (REMOTE-SESSION-CLOSE-SPEC §2.3): any token
+      // holder could set this header. Recorded in the reap-log as `viaClaim`
+      // (a signal in the audit trail); NEVER consulted in authority decisions —
+      // those read the route-stamped `origin` below. Sanitized + bounded.
+      const viaHeader = req.headers['x-instar-close-via'];
+      const via = typeof viaHeader === 'string' && /^[a-z0-9-]{1,40}$/.test(viaHeader) ? viaHeader : undefined;
       const result = await ctx.sessionManager.terminateSession(target.id, 'operator-kill', {
         origin: 'operator',
         finalStatus: 'killed',
+        ...(via ? { via } : {}),
       });
       if (!result.terminated) {
         res.status(404).json({ error: `Session "${req.params.id}" not found`, skipped: result.skipped });
@@ -6156,6 +6170,104 @@ export function createRoutes(ctx: RouteContext): Router {
       res.json({ ok: true, killed: req.params.id });
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  // ── Remote Session Close (REMOTE-SESSION-CLOSE-SPEC) ────────────────
+  // Relay an OPERATOR-origin close to the machine that owns the session —
+  // the same kill the dashboard already produces locally, executed on the
+  // owner (§2.0: no new authority class; reach expands, which is why the
+  // rate limit + URL allowlist + relay-side audit below are load-bearing).
+  // A NEW path by design: a pre-feature server 404s it cleanly, so a
+  // mixed-version pool can never misroute this into a LOCAL same-named kill
+  // (§2.1 — the wrong-machine-kill shape the query-param design had).
+  const remoteCloseLimiter = rateLimiter(60_000, 10);
+  const remoteCloseAudit = new RemoteCloseAudit(ctx.config.stateDir);
+  router.post('/sessions/:name/remote-close', remoteCloseLimiter, async (req, res) => {
+    const { machineId, sessionUuid } = (req.body ?? {}) as { machineId?: unknown; sessionUuid?: unknown };
+    // machineId is a registry LOOKUP KEY ONLY — charset-clamped, never used
+    // to construct a URL (§2.1; closes the SSRF-with-credentials shape).
+    if (typeof machineId !== 'string' || !/^[A-Za-z0-9_-]{1,64}$/.test(machineId)) {
+      res.status(404).json({ error: 'unknown machine' });
+      return;
+    }
+    if (typeof sessionUuid !== 'string' || !/^[A-Za-z0-9-]{1,64}$/.test(sessionUuid)) {
+      res.status(400).json({ error: 'sessionUuid required' });
+      return;
+    }
+    const sessionName = SESSION_NAME_RE.test(req.params.name) ? req.params.name : undefined;
+    const machine = (ctx.listPoolMachines?.() ?? []).find((m) => m.machineId === machineId);
+    if (!machine || !machine.lastKnownUrl) {
+      // Unknown or unresolvable machine: 404 with ZERO outbound request.
+      res.status(404).json({ error: 'unknown machine', machineId });
+      return;
+    }
+    const nickname = ctx.machinePoolRegistry?.getCapacity(machineId)?.nickname ?? machine.nickname;
+    const extraAllowlist = (ctx.config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)
+      ?.peerUrlAllowlist;
+    if (!isPeerUrlAllowedForCredentials(machine.lastKnownUrl, extraAllowlist).ok) {
+      // The pool Bearer token NEVER travels to a non-allowlisted URL —
+      // stronger here than on the read fan-out because this verb is
+      // destructive (§2.1 shipping dependency).
+      remoteCloseAudit.record({ targetMachineId: machineId, targetNickname: nickname, sessionUuid, sessionName, outcome: 'url-rejected' });
+      res.status(502).json({ error: 'url-rejected', machineId });
+      return;
+    }
+    try {
+      // The peer's PLAIN local close — no relay params forwarded (single-hop
+      // by construction, §2.1); UUID-targeted (the peer's existing route is
+      // UUID-first, so on a ghost-bearing peer this closes exactly the tile
+      // the operator saw). The via header is the UNTRUSTED §2.3 claim the
+      // peer records as viaClaim.
+      const r = await fetch(`${machine.lastKnownUrl}/sessions/${encodeURIComponent(sessionUuid)}`, {
+        method: 'DELETE',
+        headers: {
+          Authorization: `Bearer ${ctx.config.authToken}`,
+          'X-Instar-Close-Via': 'remote-dashboard',
+        },
+        signal: AbortSignal.timeout(5000),
+      });
+      let peerBody: Record<string, unknown> | null = null;
+      try {
+        peerBody = (await r.json()) as Record<string, unknown>;
+      } catch {
+        // @silent-fallback-ok — a non-JSON body (Cloudflare 502/530 HTML
+        // error page) is normalized below so the dashboard's resp.json()
+        // never throws into a reasonless "Network error" (§2.2).
+        peerBody = null;
+      }
+      if (r.ok) {
+        remoteCloseAudit.record({ targetMachineId: machineId, targetNickname: nickname, sessionUuid, sessionName, outcome: 'closed', peerStatus: r.status });
+        res.json({ ok: true, killed: sessionUuid, machineId, nickname });
+        return;
+      }
+      if (r.status === 404) {
+        // Idempotent skip / already gone / just won by another viewer —
+        // a CALM already-closed outcome, not a scary error (§2.3).
+        remoteCloseAudit.record({ targetMachineId: machineId, targetNickname: nickname, sessionUuid, sessionName, outcome: 'already-closed', peerStatus: 404 });
+        res.json({ ok: true, alreadyClosed: true, machineId, nickname });
+        return;
+      }
+      if (r.status === 401 || r.status === 403) {
+        remoteCloseAudit.record({ targetMachineId: machineId, targetNickname: nickname, sessionUuid, sessionName, outcome: 'unauthorized', peerStatus: r.status });
+        res.status(502).json({ error: `unauthorized by ${nickname ?? machineId}` });
+        return;
+      }
+      remoteCloseAudit.record({ targetMachineId: machineId, targetNickname: nickname, sessionUuid, sessionName, outcome: 'peer-error', peerStatus: r.status });
+      res.status(502).json({
+        error: typeof peerBody?.error === 'string' ? peerBody.error : `${r.status} from ${nickname ?? machineId}`,
+      });
+    } catch (err) {
+      const name = err instanceof Error ? err.name : '';
+      if (name === 'TimeoutError' || name === 'AbortError') {
+        // Delivery honesty (§2.3): the peer may be mid-kill under the same
+        // load that made the tile stale. UNKNOWN, never "closed nothing".
+        remoteCloseAudit.record({ targetMachineId: machineId, targetNickname: nickname, sessionUuid, sessionName, outcome: 'unknown' });
+        res.status(504).json({ error: 'outcome unknown — peer did not answer in time', outcomeUnknown: true, machineId, nickname });
+        return;
+      }
+      remoteCloseAudit.record({ targetMachineId: machineId, targetNickname: nickname, sessionUuid, sessionName, outcome: 'unreachable' });
+      res.status(502).json({ error: `unreachable: ${nickname ?? machineId}` });
     }
   });
 
@@ -16106,6 +16218,31 @@ export function createRoutes(ctx: RouteContext): Router {
     try {
       const reg = await buildSlackRegistry();
       res.json({ pending: reg.listPending() });
+    } catch (e) {
+      res.status(500).json({ error: (e as Error).message });
+    }
+  });
+
+  // Registered users that carry a Slack identity — read-only. Feeds the
+  // dashboard Mandates tab's grant form so the operator PICKS a person on a
+  // phone instead of typing a Slack id (Mobile-Complete Operator Actions,
+  // instar#1080). Never exposes channel identifiers beyond the Slack id the
+  // grant itself needs.
+  router.get('/permissions/users', async (_req, res) => {
+    try {
+      const { UserManager } = await import('../users/UserManager.js');
+      const um = new UserManager(ctx.config.stateDir, ctx.config.users);
+      const users = um.listUsers()
+        .map((u) => {
+          const rec = u as unknown as { slackUserId?: unknown; orgRole?: unknown; name: string };
+          return {
+            slackUserId: typeof rec.slackUserId === 'string' ? rec.slackUserId : '',
+            name: rec.name,
+            orgRole: typeof rec.orgRole === 'string' ? rec.orgRole : null,
+          };
+        })
+        .filter((u) => u.slackUserId);
+      res.json({ users });
     } catch (e) {
       res.status(500).json({ error: (e as Error).message });
     }

@@ -217,6 +217,20 @@
        already names the machine, so a slightly dimmed row is enough hint. */
     .session-item.remote { opacity: 0.9; cursor: pointer; }
     .session-item.remote:hover { opacity: 1; }
+    /* WS4.2: explicit per-machine state when a pool machine has no session
+       tiles — an idle machine must never look identical to a broken one.
+       Plain flex row; inherits the sidebar width (mobile-safe). */
+    .machine-status-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 12px;
+      font-size: 11px;
+      color: var(--text-dim, #8b8fa3);
+      border-top: 1px dashed rgba(139, 143, 163, 0.25);
+    }
+    .machine-status-row.offline .machine-status-text { color: #f87171; }
+    .machine-status-row.online .machine-status-text { opacity: 0.85; }
 
     .type-badge {
       padding: 1px 6px;
@@ -809,6 +823,12 @@
     .mnd-btn { padding: 6px 14px; cursor: pointer; }
     .mnd-btn-danger { color: #f85149; }
     .mnd-dead-note { font-size: 13px; color: var(--text-dim); font-style: italic; }
+    .mnd-grants-head { font-size: 13px; color: var(--text-dim); }
+    .mnd-grants { margin: 0; padding-left: 18px; font-size: 13px; line-height: 1.7; }
+    .mnd-grant-details { font-size: 13px; }
+    .mnd-grant-summary { cursor: pointer; color: var(--text-dim); }
+    .mnd-grant-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 8px 0 4px; }
+    .mnd-grant-field { min-width: 130px; max-width: 100%; padding: 6px 8px; }
     .mnd-notice { min-height: 20px; font-size: 14px; color: #3fb950; }
     .mnd-issue-form { display: flex; flex-direction: column; gap: 14px; max-width: 640px; padding: 12px 0; }
     .mnd-issue-form label { display: flex; flex-direction: column; gap: 4px; font-size: 15px; color: var(--text-bright); }
@@ -1381,6 +1401,7 @@
     .toast.success { background: #166534; border: 1px solid #22c55e; }
     .toast.error { background: #7f1d1d; border: 1px solid #ef4444; }
     .toast.warning { background: #713f12; border: 1px solid #eab308; }
+    .toast.info { background: #1e3a8a; border: 1px solid #60a5fa; }
 
     @keyframes toastIn {
       from { opacity: 0; transform: translateY(8px); }
@@ -1581,6 +1602,15 @@
     .session-close-btn:hover {
       color: var(--red);
       background: rgba(239, 68, 68, 0.1);
+    }
+
+    /* In-flight close (REMOTE-SESSION-CLOSE-SPEC §2.2): a relayed close can
+       take up to ~5s against a dead peer — show pending, not an inert button
+       the user double-clicks into parallel relays. !important outranks the
+       hover/active opacity rules above. */
+    .session-close-btn:disabled {
+      opacity: 0.35 !important;
+      cursor: wait;
     }
 
     .session-name-row {
@@ -3687,6 +3717,10 @@
     // Kept separate from `sessions` because the WebSocket replaces that array
     // with LOCAL sessions on every broadcast — merging would be wiped each tick.
     let remoteSessions = [];
+    // WS4.2 (multi-machine-seamlessness spec, F7): pool machine inventory for the
+    // per-machine empty-state strip. Populated only when the pool is enabled with
+    // 2+ machines — single-machine agents never see the strip (strict no-op).
+    let poolMachinesView = [];
     let selfMachineNickname = null;
     let activeSession = null;
     let activeMachineId = null; // non-null when the active session streams from a peer (§2.2)
@@ -3948,6 +3982,9 @@
         empty.style.display = 'flex';
         // Clear any existing session items
         list.querySelectorAll('.session-item').forEach(el => el.remove());
+        // WS4.2: even with zero sessions anywhere, each pool machine still gets
+        // an explicit state row — an idle machine must never look broken.
+        renderMachineStatusStrip(list, all);
         return;
       }
 
@@ -4023,7 +4060,7 @@
         el.innerHTML = `
           <div class="session-name-row">
             <div class="session-name">${escapeHtml(session.platformName || session.name)}</div>
-            ${session.remote ? '' : `<button class="session-close-btn" data-tmux="${escapeHtml(session.tmuxSession)}" data-name="${escapeHtml(session.name)}" onclick="event.stopPropagation();closeSession(this.dataset.tmux,this.dataset.name)" title="Close session">&times;</button>`}
+            <button class="session-close-btn" data-tmux="${escapeHtml(session.tmuxSession)}" data-name="${escapeHtml(session.name)}"${session.remote ? ` data-remote="1" data-uuid="${escapeHtml(session.id || '')}" data-machine-id="${escapeHtml(session.machineId || '')}" data-machine-nickname="${escapeHtml(session.machineNickname || '')}"` : ''} data-protected="${session.protected === true ? '1' : session.protected === false ? '0' : ''}"${closesInFlight.has(closeKey(session.remote ? session.machineId : null, session.tmuxSession)) ? ' disabled' : ''} onclick="event.stopPropagation();closeSessionFromBtn(this)" title="Close session">&times;</button>
           </div>
           <div class="session-meta">
             <span class="type-badge ${sType}">${sType}</span>
@@ -4034,6 +4071,37 @@
           </div>
           ${telemetryHtml}
         `;
+      }
+
+      // WS4.2: per-machine state strip after the tiles.
+      renderMachineStatusStrip(list, all);
+    }
+
+    // WS4.2 (multi-machine-seamlessness spec, F7 — 2026-06-12 live incident):
+    // a machine with zero running sessions used to render as NOTHING, identical
+    // to a broken or unreachable machine. Render an explicit state row per pool
+    // machine that has no session tiles: "online — no active sessions" when its
+    // heartbeat is live, "not reachable — last seen <t>" when it is not. Pool
+    // disabled or single-machine → poolMachinesView is empty → zero rows, zero
+    // behavior change (single-machine strict no-op, spec invariant 6).
+    function machineStatusInfo(m) {
+      if (m.online) return { cls: 'online', text: 'online — no active sessions' };
+      const seen = m.selfReportedLastSeen ? new Date(m.selfReportedLastSeen).getTime() : null;
+      const rel = seen ? fmtRelTime(seen) : 'unknown';
+      return { cls: 'offline', text: `not reachable — last seen ${rel}` };
+    }
+    function renderMachineStatusStrip(list, allSessions) {
+      list.querySelectorAll('.machine-status-row').forEach(el => el.remove());
+      if (!poolMachinesView.length) return;
+      const busy = new Set(allSessions.map(s => s.machineNickname || s.machineId).filter(Boolean));
+      for (const m of poolMachinesView) {
+        const label = m.nickname || m.machineId || 'unnamed machine';
+        if (busy.has(m.nickname) || busy.has(m.machineId)) continue; // has tiles — badge already names it
+        const info = machineStatusInfo(m);
+        const row = document.createElement('div');
+        row.className = `machine-status-row ${info.cls}`;
+        row.innerHTML = `<span class="machine-badge">${escapeHtml(label)}</span><span class="machine-status-text">${escapeHtml(info.text)}</span>`;
+        list.appendChild(row);
       }
     }
 
@@ -4421,15 +4489,100 @@
     }
 
     // ── Close Session ─────────────────────────────────────────
-    async function closeSession(tmuxSession, sessionName) {
-      if (!confirm(`Close session "${sessionName}"?`)) return;
+    // Remote-session close (REMOTE-SESSION-CLOSE-SPEC §2.2): remote tiles
+    // render the same × as local tiles, relayed via
+    // POST /sessions/:name/remote-close. The confirm is the informed-consent
+    // surface — it names the machine and flags a PROTECTED session (close
+    // still proceeds on confirm; operator-origin semantics, there is no
+    // server-side refusal). A flag-less remote row (pre-feature peer) says
+    // "protection status unknown" rather than silently implying unprotected.
+    const closesInFlight = new Set(); // tile keys with a close pending — survives re-renders
+
+    function closeKey(machineId, tmuxSession) {
+      return (machineId || 'local') + ':' + tmuxSession;
+    }
+
+    function closeSessionFromBtn(btn) {
+      const d = btn.dataset;
+      closeSession(d.tmux, d.name, {
+        remote: d.remote === '1',
+        sessionUuid: d.uuid || undefined,
+        machineId: d.machineId || undefined,
+        machineNickname: d.machineNickname || undefined,
+        protected: d.protected === '1' ? true : d.protected === '0' ? false : undefined,
+        button: btn,
+      });
+    }
+
+    async function closeSession(tmuxSession, sessionName, opts) {
+      opts = opts || {}; // backward-compatible: local callers may pass (tmux, name) only
+      const nickname = opts.machineNickname || opts.machineId || 'another machine';
+
+      let prompt;
+      if (opts.protected === true) {
+        // Informed consent (spec §2.0/§2.2): protected sessions ARE closeable —
+        // the safety is that the operator closes them knowingly. The local ×
+        // gains this warning too (deliberate UX improvement, spec AC#6).
+        prompt = opts.remote
+          ? `"${sessionName}" is a PROTECTED session on ${nickname} — close it anyway?`
+          : `"${sessionName}" is a PROTECTED session — close it anyway?`;
+      } else {
+        prompt = opts.remote
+          ? `Close session "${sessionName}" on ${nickname}?`
+          : `Close session "${sessionName}"?`;
+      }
+      if (opts.remote && opts.protected === undefined) {
+        // Version skew: a pre-feature peer's records omit the additive
+        // `protected` flag — say so rather than implying unprotected.
+        prompt += ' (protection status unknown — machine needs update)';
+      }
+      if (!confirm(prompt)) return;
+
+      const key = closeKey(opts.remote ? opts.machineId : null, tmuxSession);
+      if (closesInFlight.has(key)) return; // a close for this tile is already in flight
+      closesInFlight.add(key);
+      if (opts.button) opts.button.disabled = true; // pending — no double-click into parallel relays
 
       try {
-        const resp = await fetch(`/sessions/${encodeURIComponent(tmuxSession)}`, {
-          method: 'DELETE',
-          headers: { 'Authorization': `Bearer ${token}` },
-        });
+        let resp;
+        if (opts.remote) {
+          resp = await fetch(`/sessions/${encodeURIComponent(sessionName)}/remote-close`, {
+            method: 'POST',
+            headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ machineId: opts.machineId, sessionUuid: opts.sessionUuid }),
+          });
+        } else {
+          resp = await fetch(`/sessions/${encodeURIComponent(tmuxSession)}`, {
+            method: 'DELETE',
+            headers: { 'Authorization': `Bearer ${token}` },
+          });
+        }
         const data = await resp.json();
+
+        if (opts.remote) {
+          if (resp.ok && data.alreadyClosed) {
+            // Calm path (spec §2.3): a stale tile whose session already ended
+            // is a close that just won, not an error — simultaneous dashboard
+            // viewers are normal.
+            showToast(`Session "${sessionName}" already closed — refreshing`, 'success');
+          } else if (resp.ok) {
+            showToast(`Session "${sessionName}" closed on ${nickname}`, 'success');
+          } else if (data.outcomeUnknown) {
+            // Delivery honesty (spec §2.3): the peer may be mid-kill — report
+            // OBSERVED state via a refresh, never "closed nothing".
+            showToast(`Session "${sessionName}" — outcome unknown — refreshing`, 'info');
+            refreshPoolSessions();
+            return;
+          } else {
+            showToast(data.error || 'Failed to close remote session', 'error');
+            return;
+          }
+          refreshPoolSessions();
+          if (activeSession === tmuxSession && activeMachineId === (opts.machineId || null)) {
+            goBack();
+          }
+          return;
+        }
 
         if (!resp.ok) {
           showToast(data.error || 'Failed to close session', 'error');
@@ -4444,6 +4597,9 @@
         }
       } catch (err) {
         showToast('Network error: ' + (err.message || 'Cannot reach server'), 'error');
+      } finally {
+        closesInFlight.delete(key);
+        if (opts.button && opts.button.isConnected) opts.button.disabled = false;
       }
     }
 
@@ -4451,7 +4607,7 @@
       if (!activeSession) return;
       const session = sessions.find(s => s.tmuxSession === activeSession);
       const name = session ? session.name : activeSession;
-      closeSession(activeSession, name);
+      closeSession(activeSession, name, session ? { protected: session.protected } : undefined);
     }
 
     // ── Helpers ───────────────────────────────────────────────
@@ -4485,26 +4641,37 @@
     // multi-machine pool, poll the aggregated view so every session — on every
     // machine — shows in the list, each tagged with the machine it runs on.
     let poolPollTimer = null;
+    // Callable outside the poll loop too: a remote close triggers an immediate
+    // refresh so the list shows OBSERVED state (REMOTE-SESSION-CLOSE-SPEC §2.2).
+    async function refreshPoolSessions() {
+      try {
+        const r = await fetch('/sessions?scope=pool', { headers: { 'Authorization': `Bearer ${token}` } });
+        if (!r.ok) return;
+        const j = await r.json();
+        selfMachineNickname = (j.pool && j.pool.selfMachineNickname) || null;
+        // LIVE remote sessions only: a peer's plain /sessions returns its FULL
+        // registry (completed/killed records included), while the local sidebar
+        // is built from listRunningSessions(). Without this status filter,
+        // long-dead peer sessions render as live "click to stream" tiles
+        // (2026-06-11: five closed Mac Mini sessions reappeared on the laptop
+        // dashboard hours after they were closed).
+        remoteSessions = (j.sessions || []).filter(s => s.remote === true && (s.status === 'running' || s.status === 'starting'));
+        renderSessionList();
+      } catch { /* best-effort — peers may be offline; next tick retries */ }
+      // WS4.2: refresh the machine inventory on the same cadence so the sessions
+      // view can say "online — no active sessions" vs "not reachable" per machine.
+      try {
+        const pool = await apiFetch('/pool');
+        poolMachinesView = (pool && pool.enabled && Array.isArray(pool.machines) && pool.machines.length >= 2)
+          ? pool.machines
+          : [];
+        renderSessionList();
+      } catch { /* best-effort — strip simply stays absent until the next tick */ }
+    }
     function startPoolSessionsPolling() {
       if (poolPollTimer) return;
-      const poll = async () => {
-        try {
-          const r = await fetch('/sessions?scope=pool', { headers: { 'Authorization': `Bearer ${token}` } });
-          if (!r.ok) return;
-          const j = await r.json();
-          selfMachineNickname = (j.pool && j.pool.selfMachineNickname) || null;
-          // LIVE remote sessions only: a peer's plain /sessions returns its FULL
-          // registry (completed/killed records included), while the local sidebar
-          // is built from listRunningSessions(). Without this status filter,
-          // long-dead peer sessions render as live "click to stream" tiles
-          // (2026-06-11: five closed Mac Mini sessions reappeared on the laptop
-          // dashboard hours after they were closed).
-          remoteSessions = (j.sessions || []).filter(s => s.remote === true && (s.status === 'running' || s.status === 'starting'));
-          renderSessionList();
-        } catch { /* best-effort — peers may be offline; next tick retries */ }
-      };
-      poll();
-      poolPollTimer = setInterval(poll, 15000);
+      refreshPoolSessions();
+      poolPollTimer = setInterval(refreshPoolSessions, 15000);
     }
 
     function startWaPolling() {

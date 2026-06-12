@@ -94,6 +94,11 @@ describe('Session Pool API — GET /pool + PATCH /pool/machines/:id (§L2)', () 
     expect(byId.m_a.clockSkewStatus).toBe('ok');
     expect(byId.m_b.nickname).toBe('Laptop');
     expect(byId.m_b.online).toBe(false); // never sent a heartbeat
+    // WS4.2 contract: the dashboard's per-machine empty-state strip consumes
+    // nickname + online + selfReportedLastSeen — lock the last-seen field for
+    // a machine that HAS heartbeated, so "not reachable — last seen <t>" can
+    // always be rendered honestly.
+    expect(typeof byId.m_a.selfReportedLastSeen).toBe('string');
   });
 
   it('PATCH /pool/machines/:id renames a machine; GET reflects it', async () => {

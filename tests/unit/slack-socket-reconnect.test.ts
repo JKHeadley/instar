@@ -55,11 +55,15 @@ describe('SocketModeClient reconnection', () => {
     expect(socketClientSource).toMatch(/reconnect\(\)[\s\S]*?this\.started = true[\s\S]*?this\._openConnection/);
   });
 
-  it('reconnect() temporarily clears started to prevent double-reconnect from close handler', () => {
-    // The reconnect method should set started=false before closing the old ws,
-    // then restore it — preventing the close event handler from triggering
-    // its own _backoffReconnect() simultaneously.
-    expect(socketClientSource).toMatch(/reconnect\(\)[\s\S]*?this\.started = false[\s\S]*?this\.ws\.close/);
+  it('reconnect() tears down via the epoch-bumping teardown (stale close events are identity-guarded)', () => {
+    // The old "temporarily clear started" save/restore was synchronous, but
+    // close events fire on a later tick — it never actually suppressed the
+    // stale handler and leaked one live websocket per reconnect (#1076).
+    // The teardown must bump the epoch and null this.ws BEFORE closing, and
+    // the close handler must ignore sockets that are no longer current.
+    expect(socketClientSource).toMatch(/reconnect\(\)[\s\S]*?this\._teardownSocket\(/);
+    expect(socketClientSource).toMatch(/_teardownSocket\([\s\S]*?this\.epoch\+\+/);
+    expect(socketClientSource).toMatch(/addEventListener\('close'[\s\S]*?if \(this\.ws !== sock\) return/);
   });
 });
 
