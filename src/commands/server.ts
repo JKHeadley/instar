@@ -6007,6 +6007,17 @@ export async function startServer(options: StartOptions): Promise<void> {
       console.log(pc.green('  ReapNoticeDrain started (always-on durable reap-notice delivery)'));
     }
     sessionManager.setAwakeChecker(() => !coordinator.enabled || coordinator.isAwake);
+    // Pressure-tier provider for the evidence fallback (reap-notify R2.1):
+    // the SAME shared HostPressureSampler definition the reaper and the
+    // resume-queue drainer read — one definition of "pressure", never two.
+    {
+      const { sampleHostPressure } = await import('../monitoring/HostPressureSampler.js');
+      const rcfg = config.monitoring?.sessionReaper;
+      sessionManager.setPressureTierProvider(() => sampleHostPressure({
+        cpuModerateLoadPerCore: rcfg?.cpuModerateLoadPerCore ?? 1.0,
+        cpuCriticalLoadPerCore: rcfg?.cpuCriticalLoadPerCore ?? 1.5,
+      }).tier);
+    }
     sessionManager.on('sessionReaped', (e: { session: import('../core/types.js').Session; reason: string; disposition?: 'terminal' | 'recovery-bounce'; origin?: 'operator' | 'autonomous'; midWork?: boolean; workEvidence?: string[] }) => {
       reapLog.recordReaped({
         session: e.session.name,
