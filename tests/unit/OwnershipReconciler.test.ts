@@ -170,10 +170,13 @@ describe('OwnershipReconciler — cooperative convergence', () => {
   });
 
   it('bounded safe point: a busy session defers, but never past the deadline', () => {
-    let t = Date.now(); // real base — the pin store stamps updatedAt with the real clock
     const sim = makeSim(TWO);
     seedActive(sim.registry, 'T', 'm_b');
     sim.pinStoreFor('m_b').set('T', 'm_a');
+    // Clock base AFTER the pin is stamped (+50ms) so pinAge is deterministically
+    // non-negative — the earlier Date.now()-before-set ordering made the debounce
+    // branch race the busy branch by a few milliseconds.
+    let t = Date.now() + 50;
     const rec = sim.reconcilerFor('m_b', { busy: true, now: () => t });
     // First tick observes the conflict; busy → defer.
     expect(rec.tick().deferredBusy).toBe(1);
