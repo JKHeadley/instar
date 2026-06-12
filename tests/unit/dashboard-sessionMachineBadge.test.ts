@@ -26,7 +26,9 @@ describe('dashboard: sessions list — machine badges + pool-wide visibility', (
 
   it('keeps remote sessions separate from the WebSocket-replaced local array', () => {
     expect(HTML).toContain('let remoteSessions = []');
-    expect(HTML).toMatch(/remoteSessions = \(j\.sessions \|\| \[\]\)\.filter\(s => s\.remote === true\)/);
+    // The remote merge also status-filters to LIVE sessions (running/starting) —
+    // see dashboard-poolTileStatusFilter.test.ts for the dedicated assertions.
+    expect(HTML).toMatch(/remoteSessions = \(j\.sessions \|\| \[\]\)\.filter\(s => s\.remote === true && /);
   });
 
   it('renders a machine badge stating where the session runs (XSS-escaped)', () => {
