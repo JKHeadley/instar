@@ -2,7 +2,9 @@
 title: "Per-Topic Reap Notification + Mid-Work Resume Queue"
 slug: "reap-notify-per-topic-and-midwork-resume-queue"
 author: "echo"
-status: "converged-awaiting-approval"
+status: "approved"
+approved: true
+approved-by: "Justin (topic 24662, 2026-06-12 10:17 PDT)"
 supervision: "ResumeQueueDrainer: tier1 (observe-only during soak; promotion criterion stated in 'Supervision'). ReapNoticeDrain: tier0 (deterministic template delivery, declared bounds)."
 lessons-engaged:
   - "P2 Signal-vs-Authority — engaged: the drainer's deterministic gates are spawn *eligibility* checks (quota, cap, pressure), all pre-existing authorities; the Tier 1 LLM check is observe-only during soak and advisory-and-audited after promotion, never a silent blocker. Hard-invariant validators on dequeued entries use the documented brittle-blocker exemption. Reap notices are system-template sends via the adapter (not /telegram/reply), so the tone gate and whoami check are structurally not on this path — declared, not assumed."
