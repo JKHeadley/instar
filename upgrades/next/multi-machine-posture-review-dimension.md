@@ -1,0 +1,48 @@
+# Upgrade Guide — Every change must now answer the multi-machine question
+
+## What Changed
+
+Root-cause fix for "how did ~20 features ship incompatible with the seamless
+multi-machine goal?" (operator question, 2026-06-12 topic 13481): no review surface
+ever asked. Now three do —
+
+1. The instar-dev side-effects template gains mandatory **§7 Multi-machine posture**:
+   every change declares replicated (named path) / proxied-on-read (named read) /
+   machine-local BY DESIGN (with the reason). A silent single-machine assumption is a
+   finding, not a posture. (Rollback cost renumbered §7→§8.)
+2. spec-converge's integration/deployment reviewer charter makes the same check
+   mandatory at spec time — a machine-blind spec is a MATERIAL finding that blocks
+   convergence.
+3. The Cross-Machine Coherence constitution article's "Applied through" is widened to
+   name these gates (per-feature posture rule), giving the Standards Enforcement
+   Coverage audit a verifiable surface.
+
+Deployed agents receive the updated skill content via a new PostUpdateMigrator
+migration (`migrateMultiMachinePostureReviewDimension`) — marker-sniffed,
+fingerprint-guarded (operator-customized files left untouched + reported), idempotent,
+following the migrateSpecConvergeFoundationAudit pattern.
+
+## What to Tell Your User
+
+- "The development process that builds my features now has a mandatory checkpoint: every new feature must declare, in writing, how it behaves when I run on more than one machine — it travels with me, it's readable from any machine, or it deliberately belongs to one machine for a stated reason. This is the structural fix for the batch of features that previously assumed a single machine."
+
+## Summary of New Capabilities
+
+| Capability | How to Use |
+|-----------|-----------|
+| Multi-machine posture is a mandatory review dimension | Automatic — enforced in the side-effects template + spec-converge reviews; deployed agents receive the updated review docs on their next update |
+
+## What Changed for the Review Process
+
+This change's own side-effects artifact answers the new question about itself
+(machine-local by design: per-machine installed skill content kept current by each
+machine's update cycle) — the gate is dogfooded on the PR that introduces it.
+
+## Evidence
+
+- `tests/unit/PostUpdateMigrator-mmPostureReviewDimension.test.ts` — 4 tests: bundled
+  sources really carry the marker; stock installed copies upgraded + idempotent;
+  customized copies untouched + reported; missing files skipped silently.
+- `tsc --noEmit` clean; affected suites green.
+- Side-effects artifact: `upgrades/side-effects/multi-machine-posture-review-dimension.md`.
+- Plain-English overview: `docs/eli16/multi-machine-posture-review-dimension.md`.

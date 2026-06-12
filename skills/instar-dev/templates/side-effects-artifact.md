@@ -101,7 +101,36 @@
 
 ---
 
-## 7. Rollback cost
+## 7. Multi-machine posture (Cross-Machine Coherence)
+
+**When this agent runs on MORE THAN ONE machine, what is this feature's posture?**
+Declare exactly one, with the reason. "I didn't think about multi-machine" is the
+defect this section exists to catch — ~20 features shipped machine-blind before this
+question was added (2026-06-12 audit, topic 13481; the converged
+MULTI-MACHINE-SEAMLESSNESS-SPEC is the cleanup bill).
+
+- **replicated** — the state/behavior follows the agent across machines (name the
+  replication path: coherence-journal kind, secret-sync, heartbeat field, …).
+- **proxied-on-read** — machine-local state served pool-wide via a merged/scoped read
+  (name the read: `?scope=pool`, mesh relay, …).
+- **machine-local BY DESIGN** — give the reason it SHOULD differ per machine
+  (machine-specific truths, security boundary, pure per-machine observability).
+  "By design" without a reason is not an answer.
+- **single-machine-only assumption** — NOT a valid posture for new features. If the
+  feature breaks or duplicates when a second machine exists (double notices, stranded
+  state, dashboard blindness, broken links), that is a finding to resolve before
+  shipping, not a posture to declare.
+
+Also answer explicitly: does it emit user-facing notices (one-voice gating needed?),
+hold durable state (does it strand on topic transfer?), or generate URLs (do they
+survive machine boundaries?).
+
+[Specific. "Machine-local by design: the reap-log is a per-machine audit trail; the
+pool-wide question is answered by a proxied-on-read merged view." Not abstractions.]
+
+---
+
+## 8. Rollback cost
 
 **If this turns out wrong in production, what's the back-out?**
 
