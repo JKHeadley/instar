@@ -257,3 +257,48 @@ describe('isRemotelyHandled (inbound dispatch short-circuit — bug #8)', () => 
     expect(isRemotelyHandled(oc('spawned', null), null)).toBe(false);
   });
 });
+
+// ── WS1.1 (MULTI-MACHINE-SEAMLESSNESS-SPEC invariant 5): the version-skew gate ──
+// A LIVE owner that does not advertise the ws11DeliverReceive capability must
+// never be forwarded to: the forward would 501 → retry → failover-STEAL from a
+// live machine. The message waits in OUR durable queue instead.
+describe('SessionRouter — ownerSupportsForward skew gate (WS1.1)', () => {
+  const remoteOwned = () => ({ owner: 'm_remote', epoch: 7, status: 'active' }) as OwnershipView;
+
+  it('owner advertises support (true) → forwards normally', async () => {
+    const deliver = vi.fn(async () => ({ messageId: 'evt-1', accepted: 'queued' }) as DeliverAck);
+    const { router } = makeRouter({ resolveOwnership: remoteOwned, deliverMessage: deliver, ownerSupportsForward: () => true });
+    const out = await router.route(msg());
+    expect(out).toMatchObject({ action: 'forwarded', acked: true });
+    expect(deliver).toHaveBeenCalled();
+  });
+
+  it('owner does NOT advertise support (false) → message queues durably, NO forward, NO ownership steal', async () => {
+    const deliver = vi.fn(async () => ({ messageId: 'evt-1', accepted: 'queued' }) as DeliverAck);
+    const queue = vi.fn(() => 'queued' as const);
+    const cas = vi.fn((_s: string, _m: string, e: number) => ({ ok: true, epoch: e + 1 }));
+    const { router } = makeRouter({
+      resolveOwnership: remoteOwned, deliverMessage: deliver,
+      ownerSupportsForward: () => false, queueMessage: queue, casClaimOwnership: cas,
+    });
+    const out = await router.route(msg());
+    expect(out).toMatchObject({ action: 'queued', detail: 'owner-lacks-ws11-receive', acked: true });
+    expect(deliver).not.toHaveBeenCalled(); // never a doomed forward
+    expect(cas).not.toHaveBeenCalled();     // never a steal from a live owner
+  });
+
+  it('capability unknown (null) → proceeds to forward (back-compat)', async () => {
+    const deliver = vi.fn(async () => ({ messageId: 'evt-1', accepted: 'queued' }) as DeliverAck);
+    const { router } = makeRouter({ resolveOwnership: remoteOwned, deliverMessage: deliver, ownerSupportsForward: () => null });
+    const out = await router.route(msg());
+    expect(out).toMatchObject({ action: 'forwarded' });
+    expect(deliver).toHaveBeenCalled();
+  });
+
+  it('dep absent → exactly today\'s behavior (forwards)', async () => {
+    const deliver = vi.fn(async () => ({ messageId: 'evt-1', accepted: 'queued' }) as DeliverAck);
+    const { router } = makeRouter({ resolveOwnership: remoteOwned, deliverMessage: deliver });
+    const out = await router.route(msg());
+    expect(out).toMatchObject({ action: 'forwarded' });
+  });
+});

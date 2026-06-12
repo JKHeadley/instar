@@ -109,6 +109,10 @@ export interface HeartbeatObservation {
   /** The machine's self-reported LLM-account quota state (quota-aware placement,
    *  2026-06-05). Absent = unknown (older heartbeats) = treated as not blocked. */
   quotaState?: MachineCapacity['quotaState'];
+  /** WS1.1 (MULTI-MACHINE-SEAMLESSNESS-SPEC invariant 5): the machine's
+   *  self-advertised seamlessness capabilities. Absent = pre-spec peer or
+   *  feature dark = non-participant (the conservative side). */
+  seamlessnessFlags?: MachineCapacity['seamlessnessFlags'];
   /** Compact guard-posture summary (GUARD-POSTURE-ENDPOINT-SPEC §2.3). The
    *  caller keys the observation on the REGISTRY's machine identity — this
    *  field is the peer's self-reported DATA, never its identity. Absent =
@@ -263,6 +267,10 @@ export class MachinePoolRegistry {
       clockSkewStatus: live?.skew.status ?? 'ok',
       quotaState: live?.obs.quotaState,
       inboundQueue: live?.obs.inboundQueue,
+      // WS1.1: capability advertisement passthrough. LIVE observation only —
+      // a peer that goes dark stops advertising (no durable fallback), which
+      // is the safe direction: senders queue instead of forwarding blind.
+      seamlessnessFlags: live?.obs.seamlessnessFlags,
       // Guard posture: live observation first, durable last-known second —
       // a machine with no posture EVER received carries neither field
       // (renders "guards: unknown", never "0 on / 0 off").

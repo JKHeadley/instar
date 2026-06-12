@@ -451,6 +451,9 @@ let _inboundQueueStop: ((sessionKey: string) => void) | null = null;
  *  (forward/spawn on another machine → must NOT also dispatch locally) from a
  *  self placement. Set once in startServer()'s mesh block. */
 let _meshSelfId: string | null = null;
+/** WS1.1: read-only ownership lookup for the drain's spawn-boundary re-check
+ *  (the registry is constructed later in startServer's pool block). */
+let _ownershipReadForDrain: ((sessionKey: string) => import('../core/SessionOwnership.js').SessionOwnershipRecord | null) | null = null;
 /** Resolve the current router (Telegram-owning lease holder)'s base URL, or null if
  *  this machine IS the router / none is known. Used by the owner-side resume to fetch
  *  a moved topic's prior history from the router (bug #2). Set in the mesh block where
@@ -2184,6 +2187,22 @@ export function wireTelegramRouting(
       }
     }
 
+    // WS1.1 (MULTI-MACHINE-SEAMLESSNESS-SPEC): ownership re-check at the SPAWN
+    // boundary. route() consulted ownership above, but ownership can move in
+    // the window between that verdict and this spawn (entry queued under owner
+    // A, transferred to B mid-queue, drained on A) — a non-owner spawn is the
+    // double-session bug (audit F20). Bounce to un-routable: the entry
+    // re-queues and the next drain pass re-routes against FRESH ownership
+    // (forward to the real owner / queue). Direct-inject into an EXISTING
+    // local session above is not gated — a live local session for the topic is
+    // itself the strongest local-serving signal, and the reconciler/closeout
+    // own its lifecycle.
+    if (_ownershipReadForDrain && _meshSelfId) {
+      const ownRec = _ownershipReadForDrain(dmsg.sessionKey);
+      if (ownRec && ownRec.status === 'active' && ownRec.ownerMachineId !== _meshSelfId) {
+        return { kind: 'un-routable', reason: 'ownership-moved-before-spawn' };
+      }
+    }
     // Respawn / auto-spawn path. The spawn-in-progress guard maps to
     // un-routable (§3.1) — never a silent skip.
     if (spawningTopics.has(topicId)) {
@@ -12631,6 +12650,10 @@ export async function startServer(options: StartOptions): Promise<void> {
                 loadAvg: osMod.loadavg()[0],
                 quotaState: selfQuotaState(),
                 guardPosture: selfGuardPosture(),
+                // WS1.1 capability advertisement (spec invariant 5): a bounded
+                // fixed-size summary, never an inventory. Reported live each
+                // heartbeat so a queue going dark withdraws the capability.
+                seamlessnessFlags: { ws11DeliverReceive: !!_inboundQueue },
                 // Durable Inbound Message Queue §5.1: depth + oldest + tenure +
                 // bounded top-K — the survivor's loss-SUSPECTED item, capped
                 // re-placement arm, and supersede-dedupe key all read these.
@@ -12717,6 +12740,10 @@ export async function startServer(options: StartOptions): Promise<void> {
           logger: (m: string) => console.log(pc.dim(`  ${m}`)),
         });
         const ownReg = sessionOwnershipRegistry;
+        // WS1.1: expose a read-only ownership lookup to the drain's
+        // spawn-boundary re-check (module-scope; the drain closure is defined
+        // before this block runs).
+        _ownershipReadForDrain = (sk) => ownReg.read(sk);
         // ── WS3 one-voice: bind the election's late pool deps ──
         // From here on the SpeakerElection sees the real pool: online machine
         // ids from the capacity registry and live topic ownership from the
@@ -13719,6 +13746,16 @@ export async function startServer(options: StartOptions): Promise<void> {
             // sending its sessions down the existing failover re-place path
             // without each message re-paying the retry tax.
             isMachineAlive: (m) => m === meshSelfId || ((machinePoolRegistry?.getCapacity(m)?.online ?? false) && !ownerSuspectBreaker.isSuspect(m)),
+            // WS1.1 skew gate: read the owner's advertised receive capability
+            // from its last heartbeat. A peer with NO flags field is an older
+            // version → false (the conservative side: queue, don't forward into
+            // a 501→failover steal). A peer the registry doesn't know → null
+            // (unknown; the alive-check upstream already filters those).
+            ownerSupportsForward: (m) => {
+              const cap = machinePoolRegistry?.getCapacity(m);
+              if (!cap) return null;
+              return cap.seamlessnessFlags?.ws11DeliverReceive === true;
+            },
             markOwnerSuspect: (m) => ownerSuspectBreaker.markSuspect(m),
             onOwnerResponsive: (m) => ownerSuspectBreaker.recordSuccess(m),
             casClaimOwnership: (sk, machineId) => {

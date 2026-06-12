@@ -128,6 +128,17 @@ export interface SessionRouterDeps {
   machineRegistry: () => MachineCapacity[];
   resolveOwnership: (sessionKey: string) => OwnershipView;
   isMachineAlive: (machineId: string) => boolean;
+  /** WS1.1 (MULTI-MACHINE-SEAMLESSNESS-SPEC invariant 5): does the owner peer
+   *  advertise the ws11DeliverReceive capability in its heartbeat?
+   *  true  → forward normally.
+   *  false → the peer is ALIVE but cannot durably receive (older version or
+   *          its queue is dark): forwarding would 501→retry→failover-STEAL
+   *          from a live owner — instead the message waits in OUR durable
+   *          queue (the conservative side; bounded by the queue's own shelf
+   *          life + the owner's flags flipping true on upgrade/next heartbeat).
+   *  null  → unknown (no flags signal wired) — proceed as before (back-compat).
+   *  Absent dep → proceed as before. */
+  ownerSupportsForward?: (machineId: string) => boolean | null;
   /** SYNCHRONOUS per-session CAS-claim (the §L−1 single-ref fast-forward push). */
   casClaimOwnership: (sessionKey: string, machineId: string, expectedEpoch: number) => { ok: boolean; epoch: number };
   /** ONE deliverMessage attempt over MeshRpc; throws on transport error/timeout. */
@@ -222,6 +233,16 @@ export class SessionRouter {
         return { action: 'handled-locally', owner: own.owner, acked: true };
       }
       if (this.deps.isMachineAlive(own.owner)) {
+        // WS1.1 skew gate: a live owner that does NOT advertise the durable
+        // receive capability must not be forwarded to (501→retry→failover
+        // would STEAL from a live machine). The message waits in OUR durable
+        // queue until the owner's flags flip (upgrade / queue re-enabled) or
+        // ownership genuinely moves. Unknown (null) proceeds — back-compat.
+        const supports = this.deps.ownerSupportsForward?.(own.owner) ?? null;
+        if (supports === false) {
+          const q = this.deps.queueMessage(msg, 'owner-lacks-ws11-receive');
+          return { action: 'queued', detail: 'owner-lacks-ws11-receive', acked: q === 'queued' || q === 'already-queued' };
+        }
         return this.forwardToOwner(msg, own.owner, own.epoch, 0);
       }
       // Owner is not alive → owner-dead re-placement (§L4 fallback).

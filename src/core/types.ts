@@ -1904,6 +1904,19 @@ export interface MachineCapacity {
     tenure: string | null;
     topK: Array<{ sessionKey: string; depth: number }>;
   };
+  /** WS1.1 (MULTI-MACHINE-SEAMLESSNESS-SPEC invariant 5): bounded summary of
+   *  this machine's seamlessness capabilities, advertised in the capacity
+   *  heartbeat (rides the same authenticated envelope as the rest of the
+   *  report). ABSENT = the peer predates this spec OR the feature is dark =
+   *  non-participant for every gated workstream (the conservative side —
+   *  senders never forward to a peer that cannot durably receive; the journal
+   *  applier's silently-drop-unknown-kinds behavior is the named skew-failure
+   *  mode this gate prevents). Fixed-size booleans only — never an inventory. */
+  seamlessnessFlags?: {
+    /** This machine can durably RECEIVE forwarded inbound messages (the
+     *  'deliverMessage' receiver handler + live durable queue). */
+    ws11DeliverReceive?: boolean;
+  };
   /** Compact guard-posture summary self-reported in the capacity heartbeat
    *  (GUARD-POSTURE-ENDPOINT-SPEC §2.3). Bound to the AUTHENTICATED sender at
    *  ingestion (a body-claimed machineId can never overwrite another machine's
