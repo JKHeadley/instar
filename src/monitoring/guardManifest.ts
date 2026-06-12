@@ -1,0 +1,547 @@
+/**
+ * guardManifest — the STATIC DECLARED MANIFEST of every guard this codebase
+ * ships (GUARD-POSTURE-ENDPOINT-SPEC §2.1).
+ *
+ * The authoritative discovery boundary for the /guards inventory: the shared
+ * extractor (guardPosture.ts) covers config-shaped guards generically; this
+ * manifest declares the rest — guards with no config key at all (default-ON
+ * in code), guards living outside `monitoring.*`, sub-guards that must not
+ * hide inside an on-confirmed parent, and out-of-process (lifeline) guards —
+ * plus per-guard metadata the honest-state derivation needs (expected tick
+ * cadence for staleness, liveConfig divergence suppression, dry-run paths).
+ *
+ * The companion `NOT_A_GUARD` list classifies every other boot-constructed
+ * component that LOOKS guard-shaped but deliberately is not in the inventory,
+ * with a reason. scripts/lint-guard-manifest.js enforces that every candidate
+ * component appears in exactly one of the two lists — a future guard cannot
+ * be forgotten (Structure > Willpower; the lint follows the
+ * lint-dev-agent-dark-gate.js + exclusions-list precedent).
+ */
+
+export type GuardKind = 'config' | 'code-default';
+export type GuardProcess = 'server' | 'lifeline';
+
+export interface GuardManifestEntry {
+  /** Canonical inventory key (matches the shared extractor's key where both cover a guard). */
+  key: string;
+  kind: GuardKind;
+  /** kind 'config': dotted path to the enabled boolean in the agent config. */
+  configPath?: string;
+  /** kind 'code-default': the shipped in-code value. Also the fallback default
+   *  for kind 'config' guards whose default is deliberately OMITTED from
+   *  ConfigDefaults (runtime-fallback pattern, e.g. contextWedge autoRecovery). */
+  defaultEnabled: boolean;
+  /** Dotted path to a dry-run flag, when the guard has one. */
+  dryRunConfigPath?: string;
+  /** Self-declared tick cadence; staleness threshold = 5 × this (spec §2.2). */
+  expectedTickMs?: number;
+  /** Component re-reads config per use → `diverged-pending-restart` is
+   *  SUPPRESSED (the change is already live; the state would lie). */
+  liveConfig?: boolean;
+  process: GuardProcess;
+  /** True only where the component ACTUALLY self-registers a runtime getter
+   *  into the GuardRegistry at boot. An enabled guard with expectRuntime that
+   *  registered nothing reports `missing` (reconciliation, spec §2.1). Keep
+   *  this exactly in sync with the registration callsites — an aspirational
+   *  `true` here manufactures phantom `missing` rows. */
+  expectRuntime: boolean;
+  /** Implementing component (class/module name) — the lint's join key. */
+  component?: string;
+  description: string;
+}
+
+export const GUARD_MANIFEST: readonly GuardManifestEntry[] = [
+  // ── Session lifecycle guards ──
+  {
+    key: 'monitoring.sessionReaper.enabled',
+    kind: 'config',
+    configPath: 'monitoring.sessionReaper.enabled',
+    defaultEnabled: false,
+    dryRunConfigPath: 'monitoring.sessionReaper.dryRun',
+    expectedTickMs: 120_000,
+    process: 'server',
+    expectRuntime: true,
+    component: 'SessionReaper',
+    description: 'Pressure-aware reaper of idle-but-alive sessions (the guard the Mini ran without for a week).',
+  },
+  {
+    key: 'monitoring.reapNotify.enabled',
+    kind: 'config',
+    configPath: 'monitoring.reapNotify.enabled',
+    defaultEnabled: true,
+    process: 'server',
+    expectRuntime: false,
+    component: 'ReapNotify',
+    description: 'User-facing notice when a session is autonomously shut down.',
+  },
+  {
+    key: 'monitoring.watchdog.enabled',
+    kind: 'config',
+    configPath: 'monitoring.watchdog.enabled',
+    defaultEnabled: true,
+    expectedTickMs: 30_000,
+    liveConfig: true,
+    process: 'server',
+    expectRuntime: true,
+    component: 'SessionWatchdog',
+    description: 'Stuck-process detection + escalating kill sequence.',
+  },
+  {
+    key: 'monitoring.socketDisconnectSentinel.enabled',
+    kind: 'config',
+    configPath: 'monitoring.socketDisconnectSentinel.enabled',
+    defaultEnabled: true,
+    expectedTickMs: 15_000,
+    process: 'server',
+    expectRuntime: true,
+    component: 'SocketDisconnectSentinel',
+    description: 'Detects sessions that silently dropped their socket.',
+  },
+  {
+    key: 'monitoring.activeWorkSilenceSentinel.enabled',
+    kind: 'config',
+    configPath: 'monitoring.activeWorkSilenceSentinel.enabled',
+    defaultEnabled: true,
+    expectedTickMs: 60_000,
+    process: 'server',
+    expectRuntime: true,
+    component: 'ActiveWorkSilenceSentinel',
+    description: 'Detects sessions frozen mid-task (active work gone silent).',
+  },
+  {
+    key: 'monitoring.contextWedgeSentinel.enabled',
+    kind: 'config',
+    configPath: 'monitoring.contextWedgeSentinel.enabled',
+    defaultEnabled: true,
+    expectedTickMs: 20_000,
+    process: 'server',
+    expectRuntime: true,
+    component: 'ContextWedgeSentinel',
+    description: 'Detects the thinking-block/AUP wedge that permanently kills a session.',
+  },
+  {
+    // Sub-guard (spec §2.1): the destructive fresh-respawn arm inside the
+    // wedge sentinel. Its own inventory row so "autoRecovery silently off
+    // inside an on-confirmed sentinel" cannot hide. Default is the runtime
+    // fallback in server.ts (deliberately OMITTED from ConfigDefaults).
+    key: 'monitoring.contextWedgeSentinel.autoRecovery.enabled',
+    kind: 'config',
+    configPath: 'monitoring.contextWedgeSentinel.autoRecovery.enabled',
+    defaultEnabled: false,
+    dryRunConfigPath: 'monitoring.contextWedgeSentinel.autoRecovery.dryRun',
+    process: 'server',
+    expectRuntime: true,
+    component: 'ContextWedgeSentinel',
+    description: 'Auto-recovery (kill + fresh respawn) arm of the context-wedge sentinel.',
+  },
+  {
+    key: 'monitoring.agentWorktreeReaper.enabled',
+    kind: 'config',
+    configPath: 'monitoring.agentWorktreeReaper.enabled',
+    defaultEnabled: false,
+    dryRunConfigPath: 'monitoring.agentWorktreeReaper.dryRun',
+    expectedTickMs: 86_400_000,
+    process: 'server',
+    expectRuntime: false,
+    component: 'AgentWorktreeReaper',
+    description: 'Reclaims merged+clean+unused agent worktrees.',
+  },
+  {
+    key: 'monitoring.mcpProcessReaper.enabled',
+    kind: 'config',
+    configPath: 'monitoring.mcpProcessReaper.enabled',
+    defaultEnabled: false,
+    expectedTickMs: 1_800_000,
+    process: 'server',
+    expectRuntime: false,
+    component: 'McpProcessReaper',
+    description: 'Reaps orphaned MCP server processes.',
+  },
+  {
+    key: 'monitoring.staleBackstop.enabled',
+    kind: 'config',
+    configPath: 'monitoring.staleBackstop.enabled',
+    defaultEnabled: true,
+    process: 'server',
+    expectRuntime: false,
+    component: 'StaleBackstop',
+    description: 'Backstop cleanup for stale session state.',
+  },
+  {
+    key: 'monitoring.agentSleep.enabled',
+    kind: 'config',
+    configPath: 'monitoring.agentSleep.enabled',
+    defaultEnabled: false,
+    process: 'server',
+    expectRuntime: false,
+    component: 'AgentSleep',
+    description: 'Agent sleep/idle power management.',
+  },
+  // ── Liveness / health guards ──
+  {
+    key: 'monitoring.bootHealthBeacon.enabled',
+    kind: 'config',
+    configPath: 'monitoring.bootHealthBeacon.enabled',
+    defaultEnabled: false,
+    process: 'server',
+    expectRuntime: false,
+    component: 'BootHealthBeacon',
+    description: 'Boot-time health beacon endpoint.',
+  },
+  {
+    key: 'monitoring.rateLimitSentinel.enabled',
+    kind: 'config',
+    configPath: 'monitoring.rateLimitSentinel.enabled',
+    defaultEnabled: true,
+    process: 'server',
+    expectRuntime: false,
+    component: 'RateLimitSentinel',
+    description: 'Detects provider rate-limit walls and schedules recovery.',
+  },
+  {
+    key: 'monitoring.parallelWorkSentinel.enabled',
+    kind: 'config',
+    configPath: 'monitoring.parallelWorkSentinel.enabled',
+    defaultEnabled: false,
+    process: 'server',
+    expectRuntime: false,
+    component: 'ParallelWorkSentinel',
+    description: 'Cross-topic overlap councilor (ships dark, Phase B).',
+  },
+  {
+    key: 'monitoring.resourceLedger.enabled',
+    kind: 'config',
+    configPath: 'monitoring.resourceLedger.enabled',
+    defaultEnabled: true,
+    process: 'server',
+    expectRuntime: false,
+    component: 'ResourceLedger',
+    description: 'CPU/memory sampling + rate-limit-event ledger (read-only observability).',
+  },
+  {
+    key: 'monitoring.memoryMonitoring',
+    kind: 'config',
+    configPath: 'monitoring.memoryMonitoring',
+    defaultEnabled: true,
+    process: 'server',
+    expectRuntime: false,
+    component: 'MemoryPressureMonitor',
+    description: 'Memory-pressure sampling that feeds load-shed decisions.',
+  },
+  {
+    key: 'monitoring.quotaTracking',
+    kind: 'config',
+    configPath: 'monitoring.quotaTracking',
+    defaultEnabled: true,
+    process: 'server',
+    expectRuntime: false,
+    component: 'QuotaTracker',
+    description: 'Threshold-based LLM quota tracking + load shedding.',
+  },
+  {
+    key: 'monitoring.telemetry.enabled',
+    kind: 'config',
+    configPath: 'monitoring.telemetry.enabled',
+    defaultEnabled: true,
+    process: 'server',
+    expectRuntime: false,
+    component: 'TelemetryCollector',
+    description: 'Job/session telemetry collection.',
+  },
+  {
+    key: 'monitoring.burnDetection.enabled',
+    kind: 'config',
+    configPath: 'monitoring.burnDetection.enabled',
+    // Defaults deliberately OMITTED from ConfigDefaults (shipped defaults live
+    // in AgentServer); absence preserves default-ON.
+    defaultEnabled: true,
+    process: 'server',
+    expectRuntime: false,
+    component: 'BurnDetector',
+    description: 'Per-component token-burn share/rate alerts.',
+  },
+  {
+    key: 'monitoring.sentinelTelegramEscalation',
+    kind: 'config',
+    configPath: 'monitoring.sentinelTelegramEscalation',
+    defaultEnabled: false,
+    process: 'server',
+    expectRuntime: false,
+    component: 'SentinelEscalationFlag',
+    description: 'Opt-in Telegram delivery of coalesced sentinel escalations.',
+  },
+  // ── Triage / learning guards ──
+  {
+    key: 'monitoring.triage.enabled',
+    kind: 'config',
+    configPath: 'monitoring.triage.enabled',
+    defaultEnabled: true,
+    process: 'server',
+    expectRuntime: false,
+    component: 'StallTriageNurse',
+    description: 'Stall triage nurse (classification of stuck sessions).',
+  },
+  {
+    key: 'monitoring.triageOrchestrator.enabled',
+    kind: 'config',
+    configPath: 'monitoring.triageOrchestrator.enabled',
+    defaultEnabled: true,
+    process: 'server',
+    expectRuntime: false,
+    component: 'TriageOrchestrator',
+    description: 'Orchestrates triage outcomes into recovery actions.',
+  },
+  {
+    key: 'monitoring.failureLearning.enabled',
+    kind: 'config',
+    configPath: 'monitoring.failureLearning.enabled',
+    defaultEnabled: false,
+    process: 'server',
+    expectRuntime: false,
+    component: 'FailureLearningLoop',
+    description: 'Failure-Learning Loop capture + pattern surfacing.',
+  },
+  {
+    key: 'monitoring.correctionLearning.enabled',
+    kind: 'config',
+    configPath: 'monitoring.correctionLearning.enabled',
+    defaultEnabled: false,
+    process: 'server',
+    expectRuntime: false,
+    component: 'CorrectionLearningLoop',
+    description: 'Correction & preference learning sentinel.',
+  },
+  {
+    // Sub-guard: plain-boolean flag INSIDE the correctionLearning block (not
+    // `.enabled`-shaped, so the generic extractor cannot see it).
+    key: 'monitoring.correctionLearning.selfViolationSignal',
+    kind: 'config',
+    configPath: 'monitoring.correctionLearning.selfViolationSignal',
+    defaultEnabled: false,
+    process: 'server',
+    expectRuntime: false,
+    component: 'CorrectionLearningLoop',
+    description: 'Self-violation observe-only signal inside correction learning.',
+  },
+  {
+    key: 'monitoring.apprenticeshipCycleSla.enabled',
+    kind: 'config',
+    configPath: 'monitoring.apprenticeshipCycleSla.enabled',
+    defaultEnabled: false,
+    process: 'server',
+    expectRuntime: false,
+    component: 'ApprenticeshipCycleSlaMonitor',
+    description: 'Observe-only overdue-apprenticeship-cycle signal.',
+  },
+  {
+    key: 'monitoring.geminiCapacityEscalation.enabled',
+    kind: 'config',
+    configPath: 'monitoring.geminiCapacityEscalation.enabled',
+    defaultEnabled: false,
+    process: 'server',
+    expectRuntime: false,
+    component: 'GeminiCapacityEscalation',
+    description: 'Gemini capacity escalation monitor.',
+  },
+  {
+    key: 'monitoring.releaseReadiness.enabled',
+    kind: 'config',
+    configPath: 'monitoring.releaseReadiness.enabled',
+    defaultEnabled: false,
+    expectedTickMs: 21_600_000,
+    process: 'server',
+    expectRuntime: false,
+    component: 'ReleaseReadinessSentinel',
+    description: 'Stalled-release watchdog (maintainer environments).',
+  },
+  {
+    key: 'monitoring.promptGate.enabled',
+    kind: 'config',
+    configPath: 'monitoring.promptGate.enabled',
+    defaultEnabled: true,
+    process: 'server',
+    expectRuntime: false,
+    component: 'PromptGate',
+    description: 'Prompt-quality gate on outbound LLM calls.',
+  },
+  // ── Dev-gated observability guards (enabled omitted; gate-resolved) ──
+  {
+    key: 'monitoring.growthAnalyst.enabled',
+    kind: 'config',
+    configPath: 'monitoring.growthAnalyst.enabled',
+    defaultEnabled: false,
+    process: 'server',
+    expectRuntime: false,
+    component: 'GrowthMilestoneAnalyst',
+    description: 'Proactive growth & milestone analyst (dev-gated).',
+  },
+  {
+    key: 'monitoring.blockerLedger.enabled',
+    kind: 'config',
+    configPath: 'monitoring.blockerLedger.enabled',
+    defaultEnabled: false,
+    process: 'server',
+    expectRuntime: false,
+    component: 'BlockerLedger',
+    description: 'Blocker ledger resolution pipeline (dev-gated).',
+  },
+  // ── Non-monitoring roots ──
+  {
+    key: 'scheduler.enabled',
+    kind: 'config',
+    configPath: 'scheduler.enabled',
+    defaultEnabled: true,
+    process: 'server',
+    expectRuntime: true,
+    component: 'JobScheduler',
+    description: 'Cron job scheduler (registration is not life: runtime carries lastTickAt/jobCount/pausedJobCount).',
+  },
+  {
+    key: 'models.tierEscalation.enabled',
+    kind: 'config',
+    configPath: 'models.tierEscalation.enabled',
+    defaultEnabled: false,
+    dryRunConfigPath: 'models.tierEscalation.dryRun',
+    process: 'server',
+    expectRuntime: false,
+    component: 'ModelTierEscalation',
+    description: 'Model-tier escalation policy (COST-INCREASING enable).',
+  },
+  {
+    // Out-of-process guard (spec §2.1): config-derived states ONLY
+    // (`on-unverified` at best) — the sync in-memory getter contract cannot
+    // cross processes, so this entry must never carry expectRuntime.
+    key: 'lifeline.driftPromoter.enabled',
+    kind: 'config',
+    configPath: 'lifeline.driftPromoter.enabled',
+    defaultEnabled: true,
+    process: 'lifeline',
+    expectRuntime: false,
+    component: 'LifelineDriftPromoter',
+    description: 'Lifeline version-drift self-restart promoter (runs in the lifeline process).',
+  },
+  {
+    key: 'multiMachine.secretSync.enabled',
+    kind: 'config',
+    configPath: 'multiMachine.secretSync.enabled',
+    defaultEnabled: false,
+    process: 'server',
+    expectRuntime: false,
+    component: 'SecretSync',
+    description: 'Cross-machine secret sync, receive side (dev-gated).',
+  },
+  {
+    key: 'multiMachine.sessionPool.enabled',
+    kind: 'config',
+    configPath: 'multiMachine.sessionPool.enabled',
+    defaultEnabled: false,
+    process: 'server',
+    expectRuntime: false,
+    component: 'SessionPool',
+    description: 'Multi-machine session pool (ships dark behind stage).',
+  },
+  {
+    key: 'multiMachine.coherenceJournal.enabled',
+    kind: 'config',
+    configPath: 'multiMachine.coherenceJournal.enabled',
+    defaultEnabled: false,
+    process: 'server',
+    expectRuntime: false,
+    component: 'CoherenceJournal',
+    description: 'Cross-machine coherence journal (dev-gated).',
+  },
+  // ── Code-default guards (no config key; default-ON in code) ──
+  {
+    key: 'messaging.attentionTopicGuard',
+    kind: 'code-default',
+    defaultEnabled: true,
+    process: 'server',
+    expectRuntime: false,
+    component: 'AttentionTopicGuard',
+    description: 'Topic-Flood Guard — per-source attention-topic circuit breaker (default-ON in code; tunable via messaging[].config.attentionTopicGuard).',
+  },
+  {
+    key: 'messaging.topicCreationBudget',
+    kind: 'code-default',
+    defaultEnabled: true,
+    process: 'server',
+    expectRuntime: false,
+    component: 'TopicCreationBudget',
+    description: 'Bounded Notification Surface — last-resort budget on every auto-created topic (default-ON in code).',
+  },
+] as const;
+
+/**
+ * Boot-constructed components that match the guard shape (enabled-style
+ * switch or tick loop in src/monitoring, src/messaging, src/lifeline,
+ * src/core) but are DELIBERATELY not inventory guards. The lint requires
+ * every candidate to appear here or in GUARD_MANIFEST — with a real reason
+ * (≥12 non-whitespace chars, same bar as DARK_GATE_EXCLUSIONS).
+ */
+export interface NotAGuardEntry {
+  component: string;
+  reason: string;
+}
+
+export const NOT_A_GUARD: readonly NotAGuardEntry[] = [
+  { component: 'GuardPostureTripwire', reason: 'The boot-transition detector OVER the guard inventory — meta-layer, not a guard itself; always-on, no enabled flag.' },
+  { component: 'GuardRegistry', reason: 'Infrastructure of this feature: the runtime-getter registry the inventory reads; not a guard.' },
+  { component: 'GuardPostureProbe', reason: 'Consumer of the inventory (probe family); its cadence rides SystemReviewer, not an own enabled switch.' },
+  { component: 'SystemReviewer', reason: 'Probe scheduler/aggregator — operational reviewer, not a behavior-protecting guard; covered indirectly by its probes.' },
+  { component: 'CompactionSentinel', reason: 'Always-on internal recovery lifecycle with no config enabled switch; recovery engine, not an operator-flippable guard.' },
+  { component: 'SessionMonitor', reason: 'Event-driven session bookkeeping with no enabled switch; pure observability plumbing.' },
+  { component: 'WorktreeMonitor', reason: 'Always-active worktree scan plumbing, no enabled switch, takes no protective action.' },
+  { component: 'CoherenceMonitor', reason: 'Multi-machine coherence bookkeeping rides multiMachine gating; no own guard switch.' },
+  { component: 'CommitmentSentinel', reason: 'Rides the commitments feature lifecycle; commitment bookkeeping, not a safety guard with an operator switch.' },
+  { component: 'SleepWakeDetector', reason: 'Always-on OS sleep/wake event detector; pure signal source with no enabled switch.' },
+  { component: 'PresenceProxy', reason: 'Standby heartbeat messenger; messaging-liveness feature, tuned not toggled — no guard semantics.' },
+  { component: 'PromiseBeacon', reason: 'Commitment follow-through heartbeats; user-facing feature behavior, not a protective guard.' },
+  { component: 'CommitmentTracker', reason: 'Commitment lifecycle store; data layer, no guard semantics.' },
+  { component: 'LlmQueue', reason: 'Rate-limited LLM call queue; shared infrastructure, not an operator-flippable guard.' },
+  { component: 'HelperWatchdog', reason: 'Signal-only subagent stall detector wired into SubagentTracker; no config enabled switch, consumers own actions.' },
+  { component: 'DeliveryFailureSentinel', reason: 'Telegram relay recovery engine; delivery-robustness layer, always-on with the relay, no guard switch.' },
+  { component: 'TemplatesDriftVerifier', reason: 'Deployed-script drift lint; CI-style verifier, not a runtime guard.' },
+  { component: 'TokenLedger', reason: 'Read-only token observability (never gates); the spec class-precedent for always-on read-only features.' },
+  { component: 'TokenLedgerPoller', reason: 'Background scanner feeding TokenLedger; observability plumbing.' },
+  { component: 'CrashLoopPauser', reason: 'Auto-pause of runaway jobs is scheduler-internal mechanics; surfaced via scheduler.enabled + job state, not its own guard.' },
+  { component: 'QuotaTrackerPoller', reason: 'Polling arm of QuotaTracker; covered by monitoring.quotaTracking.' },
+  { component: 'StuckSignatureClassifier', reason: 'Pure classifier (standby honesty); signal-only, no enabled switch, no action.' },
+  { component: 'MessageSentinel', reason: 'Emergency-stop message classifier; inbound-dispatch mechanics inseparable from messaging, no operator switch.' },
+  { component: 'TelegramAdapter', reason: 'Platform transport adapter; messaging infrastructure, not a guard.' },
+  { component: 'SlackAdapter', reason: 'Platform transport adapter; messaging infrastructure, not a guard.' },
+  { component: 'WhatsAppAdapter', reason: 'Platform transport adapter; messaging infrastructure, not a guard.' },
+  { component: 'IMessageAdapter', reason: 'Platform transport adapter; messaging infrastructure, not a guard.' },
+  { component: 'MessageRouter', reason: 'Topic→adapter routing; messaging infrastructure, not a guard.' },
+  { component: 'DeliveryRetryManager', reason: 'Delivery retry mechanics; messaging infrastructure, not a guard.' },
+  { component: 'PendingRelayStore', reason: 'Durable relay queue; storage layer, not a guard.' },
+  { component: 'MessageStore', reason: 'Message persistence; storage layer, not a guard.' },
+  { component: 'SpawnRequestManager', reason: 'Cross-session spawn coordination; session mechanics, not a guard.' },
+  { component: 'SessionManager', reason: 'Core session lifecycle engine; the thing guards act ON, not a guard.' },
+  { component: 'StateManager', reason: 'Core state persistence; storage layer.' },
+  { component: 'SourceTreeGuard', reason: 'Hard invariant on destructive ops against the source tree — always-on by design with NO off switch, so posture (on/off) is meaningless for it.' },
+  { component: 'SafeGitExecutor', reason: 'Single-funnel for destructive git ops; hard invariant, no off switch, posture meaningless.' },
+  { component: 'SafeFsExecutor', reason: 'Single-funnel for destructive fs ops; hard invariant, no off switch, posture meaningless.' },
+  { component: 'UpdateChecker', reason: 'Auto-update polling; lifecycle infrastructure, not a protective guard.' },
+  { component: 'SleepWakeCoordinator', reason: 'Multi-machine awake/standby lease mechanics; coordination layer, not an operator-flippable guard.' },
+  { component: 'MachinePoolRegistry', reason: 'In-memory pool state from heartbeats; data layer this feature reads, not a guard.' },
+  { component: 'PendingInjectStore', reason: 'Durable inject ledger; storage layer.' },
+  { component: 'LifelineProbe', reason: 'Server→lifeline health probe in the probe family; rides SystemReviewer cadence.' },
+  { component: 'LifelineDriftMonitor', reason: 'Version-handshake observer feeding the driftPromoter (which IS the guard, declared in the manifest).' },
+] as const;
+
+/** Lookup helpers (used by the lint's unit test and the registry reconciliation). */
+export function manifestByKey(): Map<string, GuardManifestEntry> {
+  const map = new Map<string, GuardManifestEntry>();
+  for (const entry of GUARD_MANIFEST) map.set(entry.key, entry);
+  return map;
+}
+
+export function manifestComponents(): Set<string> {
+  const set = new Set<string>();
+  for (const entry of GUARD_MANIFEST) if (entry.component) set.add(entry.component);
+  return set;
+}
+
+export function notAGuardComponents(): Set<string> {
+  return new Set(NOT_A_GUARD.map(e => e.component));
+}

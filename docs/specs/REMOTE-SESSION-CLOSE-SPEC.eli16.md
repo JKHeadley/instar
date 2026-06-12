@@ -1,5 +1,7 @@
 # The close button for other machines' sessions — the plan, in plain English
 
+> **Status:** Approved by Justin (topic 13481) on 2026-06-12 — queued to build after the guard-posture endpoint ships.
+
 ## What this is
 
 The missing half of your "one dashboard" ask. You can already click any machine's session and stream its terminal to wherever you are; this adds the close button (×) to those remote sessions too, so closing a Mac Mini session from your laptop works exactly like closing a laptop one.

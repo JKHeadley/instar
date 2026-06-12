@@ -1,5 +1,7 @@
 # Seeing every machine's safety systems from anywhere — the plan, in plain English
 
+> **Status:** Approved by Justin (topic 13481) on 2026-06-12 — build in progress.
+
 ## What this is
 
 A way to see, from anywhere, which of your machines' safety systems are genuinely working — not just switched on in the settings, but actually alive and doing their job. Your dashboard's Machines tab gets a line per machine like "Guards: 4 confirmed on · 1 needs attention," and one API call can sweep the whole fleet. A background check reads it automatically on a schedule, so a problem raises one alert even if nobody happens to be looking.
