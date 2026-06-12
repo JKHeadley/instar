@@ -166,7 +166,10 @@ quiet hours.)
   `origin:'operator'`. Everything else notifies.
 - R1.5 Flood bounds: messages per flush ≤ affected existing topics; at most
   `maxImmediatePerFlush` (default 5) notices get an immediate release in one flush — the rest
-  fall back to SUMMARY-window release (still durable, still per-topic).
+  fall back to SUMMARY-window release (still durable, still per-topic). The drain's per-pass
+  send cap (15 per 30s tick, ~30/min) is the GLOBAL release throttle: a worst-case 500-topic
+  storm enqueues 500 durable rows but sends them over ~17 minutes, under Telegram's rate
+  limits, while the store holds the backlog — durable AND rate-acceptable.
 - R1.6 **In-scope store fix:** the restore-purge cutoff becomes
   `max(attempted_at, next_attempt_at)` (a row held for the future is not stale), with a
   held-row-across-restart unit test. This fixes the documented 2026-06-05 loss class for ALL
@@ -203,7 +206,10 @@ quiet hours.)
   resume path at drain time anyway — saves queue slots and keeps the resurrection ledger's
   key-space to stable identities). Operator kills excluded by default
   (`includeOperatorKills:false`); recovery-bounces never.
-- R2.3 The queue is durable (`state/resume-queue.json`, atomic write-rename), in-memory
+- R2.3 The queue is durable (`state/resume-queue.json`; persist discipline: write temp →
+  fsync temp → rename → fsync parent dir — rename alone is not crash-durable; a crash can
+  lose at most the latest mutation, which boot reconciliation absorbs: a lost enqueue is
+  re-created by the next re-reap, a lost transition replays as a failed attempt), in-memory
   authoritative with synchronous persist. Single-writer is ENFORCED, not assumed: a lockfile
   (`state/resume-queue.lock` carrying pid + hostname + heartbeat mtime, refreshed each tick)
   is taken at boot. Stale-lock recovery is automatic: a claimant finding an existing lock
@@ -213,7 +219,11 @@ quiet hours.)
   host-local — a lock whose recorded hostname differs from this host is NEVER liveness-probed
   or reclaimed (pid checks are meaningless cross-host); it disables the queue loudly instead.
   Multi-process or shared-volume deployments are unsupported. A same-host crash never
-  requires manual lock cleanup.
+  requires manual lock cleanup. The foreign-lock recovery path is operational and documented
+  in the disable message itself: after verifying nothing else uses the state dir (host
+  renamed, restored from backup), delete `state/resume-queue.lock` and restart — no
+  privileged endpoint is added for this (keeping the API surface small; the condition is
+  rare and already requires host-level access to create).
   Entries dedupe and the resurrection ledger key on **stable identity:
   `topicId ?? jobSlug ?? tmuxSession`** (tmux names regenerate per spawn — keying on them
   makes the cap dead code for jobs and fragile across topic renames). Bounded
@@ -284,7 +294,10 @@ quiet hours.)
   differently from ordinary staleness. The resurrection LEDGER (keyed on stableKey, surviving dequeue as
   tombstones, 24h reset window) increments on a re-reap after a successful resume;
   `maxResurrections` (2) → `gave-up:resurrection-cap`, explicitly surfaced (P14: the most
-  diagnostic event this feature produces). DRAINER CIRCUIT BREAKER: `breakerThreshold` (3)
+  diagnostic event this feature produces). The cap is deliberately per STABLE IDENTITY —
+  it measures the operational health of the topic/job, not of one work item — so distinct
+  interruptions of the same topic within the 24h window share the cap by design (a topic
+  reaped-and-resumed twice in a day is unhealthy regardless of which task was interrupted). DRAINER CIRCUIT BREAKER: `breakerThreshold` (3)
   consecutive failed attempts across entries → draining pauses `breakerCooldownMin` (30),
   ONE aggregated degradation notice. ALL give-up classes (overflow, TTL, max-attempts,
   resurrection-cap, breaker, corruption, enqueue-failure) fold into ONE rolling deduped
