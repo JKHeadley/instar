@@ -217,6 +217,20 @@
        already names the machine, so a slightly dimmed row is enough hint. */
     .session-item.remote { opacity: 0.9; cursor: pointer; }
     .session-item.remote:hover { opacity: 1; }
+    /* WS4.2: explicit per-machine state when a pool machine has no session
+       tiles — an idle machine must never look identical to a broken one.
+       Plain flex row; inherits the sidebar width (mobile-safe). */
+    .machine-status-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 12px;
+      font-size: 11px;
+      color: var(--text-dim, #8b8fa3);
+      border-top: 1px dashed rgba(139, 143, 163, 0.25);
+    }
+    .machine-status-row.offline .machine-status-text { color: #f87171; }
+    .machine-status-row.online .machine-status-text { opacity: 0.85; }
 
     .type-badge {
       padding: 1px 6px;
@@ -809,6 +823,12 @@
     .mnd-btn { padding: 6px 14px; cursor: pointer; }
     .mnd-btn-danger { color: #f85149; }
     .mnd-dead-note { font-size: 13px; color: var(--text-dim); font-style: italic; }
+    .mnd-grants-head { font-size: 13px; color: var(--text-dim); }
+    .mnd-grants { margin: 0; padding-left: 18px; font-size: 13px; line-height: 1.7; }
+    .mnd-grant-details { font-size: 13px; }
+    .mnd-grant-summary { cursor: pointer; color: var(--text-dim); }
+    .mnd-grant-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 8px 0 4px; }
+    .mnd-grant-field { min-width: 130px; max-width: 100%; padding: 6px 8px; }
     .mnd-notice { min-height: 20px; font-size: 14px; color: #3fb950; }
     .mnd-issue-form { display: flex; flex-direction: column; gap: 14px; max-width: 640px; padding: 12px 0; }
     .mnd-issue-form label { display: flex; flex-direction: column; gap: 4px; font-size: 15px; color: var(--text-bright); }
@@ -3697,6 +3717,10 @@
     // Kept separate from `sessions` because the WebSocket replaces that array
     // with LOCAL sessions on every broadcast — merging would be wiped each tick.
     let remoteSessions = [];
+    // WS4.2 (multi-machine-seamlessness spec, F7): pool machine inventory for the
+    // per-machine empty-state strip. Populated only when the pool is enabled with
+    // 2+ machines — single-machine agents never see the strip (strict no-op).
+    let poolMachinesView = [];
     let selfMachineNickname = null;
     let activeSession = null;
     let activeMachineId = null; // non-null when the active session streams from a peer (§2.2)
@@ -3958,6 +3982,9 @@
         empty.style.display = 'flex';
         // Clear any existing session items
         list.querySelectorAll('.session-item').forEach(el => el.remove());
+        // WS4.2: even with zero sessions anywhere, each pool machine still gets
+        // an explicit state row — an idle machine must never look broken.
+        renderMachineStatusStrip(list, all);
         return;
       }
 
@@ -4044,6 +4071,37 @@
           </div>
           ${telemetryHtml}
         `;
+      }
+
+      // WS4.2: per-machine state strip after the tiles.
+      renderMachineStatusStrip(list, all);
+    }
+
+    // WS4.2 (multi-machine-seamlessness spec, F7 — 2026-06-12 live incident):
+    // a machine with zero running sessions used to render as NOTHING, identical
+    // to a broken or unreachable machine. Render an explicit state row per pool
+    // machine that has no session tiles: "online — no active sessions" when its
+    // heartbeat is live, "not reachable — last seen <t>" when it is not. Pool
+    // disabled or single-machine → poolMachinesView is empty → zero rows, zero
+    // behavior change (single-machine strict no-op, spec invariant 6).
+    function machineStatusInfo(m) {
+      if (m.online) return { cls: 'online', text: 'online — no active sessions' };
+      const seen = m.selfReportedLastSeen ? new Date(m.selfReportedLastSeen).getTime() : null;
+      const rel = seen ? fmtRelTime(seen) : 'unknown';
+      return { cls: 'offline', text: `not reachable — last seen ${rel}` };
+    }
+    function renderMachineStatusStrip(list, allSessions) {
+      list.querySelectorAll('.machine-status-row').forEach(el => el.remove());
+      if (!poolMachinesView.length) return;
+      const busy = new Set(allSessions.map(s => s.machineNickname || s.machineId).filter(Boolean));
+      for (const m of poolMachinesView) {
+        const label = m.nickname || m.machineId || 'unnamed machine';
+        if (busy.has(m.nickname) || busy.has(m.machineId)) continue; // has tiles — badge already names it
+        const info = machineStatusInfo(m);
+        const row = document.createElement('div');
+        row.className = `machine-status-row ${info.cls}`;
+        row.innerHTML = `<span class="machine-badge">${escapeHtml(label)}</span><span class="machine-status-text">${escapeHtml(info.text)}</span>`;
+        list.appendChild(row);
       }
     }
 
@@ -4600,6 +4658,15 @@
         remoteSessions = (j.sessions || []).filter(s => s.remote === true && (s.status === 'running' || s.status === 'starting'));
         renderSessionList();
       } catch { /* best-effort — peers may be offline; next tick retries */ }
+      // WS4.2: refresh the machine inventory on the same cadence so the sessions
+      // view can say "online — no active sessions" vs "not reachable" per machine.
+      try {
+        const pool = await apiFetch('/pool');
+        poolMachinesView = (pool && pool.enabled && Array.isArray(pool.machines) && pool.machines.length >= 2)
+          ? pool.machines
+          : [];
+        renderSessionList();
+      } catch { /* best-effort — strip simply stays absent until the next tick */ }
     }
     function startPoolSessionsPolling() {
       if (poolPollTimer) return;

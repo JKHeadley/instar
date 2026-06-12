@@ -191,3 +191,87 @@ describe('Coordination Mandate E2E lifecycle — feature is alive + deny-by-defa
     expect(independent.verifyAuthorship(widened)).toBe(false);
   });
 });
+
+describe('Phone-first floor-grant path E2E — the dashboard form\'s exact flow is alive (instar#1080)', () => {
+  let tmpDir: string;
+  let stateDir: string;
+  let server: AgentServer;
+  let app: express.Express;
+
+  beforeAll(async () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'grant-form-e2e-'));
+    stateDir = path.join(tmpDir, '.instar');
+    fs.mkdirSync(path.join(stateDir, 'state', 'sessions'), { recursive: true });
+    fs.mkdirSync(path.join(stateDir, 'logs'), { recursive: true });
+    fs.writeFileSync(path.join(stateDir, 'config.json'), JSON.stringify({ port: 0, projectName: 'e2e', agentName: 'E2E' }));
+    // The cast the person picker offers — production users.json shape.
+    fs.writeFileSync(path.join(stateDir, 'users.json'), JSON.stringify([
+      { id: 'slack-U_MIA', name: 'Mia Member', channels: [{ type: 'slack', identifier: 'U_MIA' }], permissions: ['member'], preferences: {}, slackUserId: 'U_MIA', orgRole: 'member', createdAt: 'x' },
+    ]));
+    const config = {
+      projectName: 'e2e', projectDir: tmpDir, stateDir, port: 0, authToken: AUTH,
+      dashboardPin: PIN,
+      requestTimeoutMs: 10000, version: '0.0.0',
+      sessions: { claudePath: '/usr/bin/echo', maxSessions: 3, defaultMaxDurationMinutes: 30, protectedSessions: [], monitorIntervalMs: 5000 },
+      scheduler: { enabled: false, jobsFile: '', maxParallelJobs: 1 },
+      messaging: [], monitoring: {}, updates: {},
+    } as InstarConfig;
+    server = new AgentServer({ config, sessionManager: createMockSessionManager() as any, state: new StateManager(stateDir) });
+    await server.start();
+    app = server.getApp();
+  });
+
+  afterAll(async () => {
+    await server.stop();
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/e2e/coordination-mandate-lifecycle.test.ts' });
+  });
+
+  const auth = () => ({ Authorization: `Bearer ${AUTH}` });
+
+  it('GET /permissions/users is alive (200, not 503/404), Bearer-gated, and serves the picker', async () => {
+    expect((await request(app).get('/permissions/users')).status).toBe(401);
+    const res = await request(app).get('/permissions/users').set(auth());
+    expect(res.status).toBe(200);
+    expect(res.body.users).toEqual([{ slackUserId: 'U_MIA', name: 'Mia Member', orgRole: 'member' }]);
+  });
+
+  it('the form\'s exact payload signs a grant: PIN-issue mandate → PIN-grant → grant persisted and authorship-valid', async () => {
+    const issued = await request(app).post('/mandate/issue').set(auth()).send({
+      pin: PIN, scope: 'slack-live-test', agents: [ECHO, DAWN],
+      authorities: [{ action: 'sign-code-review', bounds: {} }],
+      expiresAt: FUTURE,
+    });
+    expect(issued.status).toBe(201);
+    const id = issued.body.mandate.id;
+
+    // EXACTLY what dashboard/mandates.js wireGrantButtons() POSTs.
+    const expiresAt = new Date(Date.now() + 60 * 60_000).toISOString();
+    const granted = await request(app).post(`/mandate/${id}/grants`).set(auth()).send({
+      pin: PIN,
+      grants: [{ floorAction: 'prod-deploy', grantedTo: 'U_MIA', authorizedBy: 'operator (dashboard PIN)', expiresAt }],
+    });
+    expect(granted.status).toBe(201);
+    expect(granted.body.granted).toBe(true);
+    expect(granted.body.mandate.authorshipValid).toBe(true);
+
+    // The grant is durably carried and re-served (what the tab re-renders).
+    const listed = await request(app).get('/mandate').set(auth());
+    const m = listed.body.mandates.find((x: any) => x.id === id);
+    expect(m.grants).toHaveLength(1);
+    expect(m.grants[0].grantedTo).toBe('U_MIA');
+    expect(m.grants[0].floorAction).toBe('prod-deploy');
+  });
+
+  it('Bearer alone cannot grant — the PIN is structurally required (requester ≠ authorizer)', async () => {
+    const issued = await request(app).post('/mandate/issue').set(auth()).send({
+      pin: PIN, scope: 'no-pin-grant', agents: [ECHO, DAWN],
+      authorities: [{ action: 'sign-code-review', bounds: {} }],
+      expiresAt: FUTURE,
+    });
+    const res = await request(app).post(`/mandate/${issued.body.mandate.id}/grants`).set(auth()).send({
+      grants: [{ floorAction: 'prod-deploy', grantedTo: 'U_MIA', authorizedBy: 'agent', expiresAt: FUTURE }],
+    });
+    expect(res.status).toBe(403);
+    expect(res.body.error).toMatch(/PIN/i);
+  });
+});
