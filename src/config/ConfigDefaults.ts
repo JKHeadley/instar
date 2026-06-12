@@ -168,6 +168,16 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
     reapNotify: {
       enabled: true,
       coalesceWindowMs: 60_000,
+      // v2 per-topic grouping (reap-notify spec R1.1) — every affected topic
+      // gets its own notice; false = legacy single-buffer rollback lever.
+      perTopic: true,
+      // Max notices released IMMEDIATE in one flush (R1.5).
+      maxImmediatePerFlush: 5,
+      // NOTE deliberately ABSENT: reapNotify.drainEnabled and ALL
+      // monitoring.resumeQueue.* keys are CODE-defaulted (reap-notify spec
+      // §Config) — writing them here would freeze today's defaults into
+      // every agent's config and break the later fleet flip of the shipped
+      // dryRun default.
     },
     // AgentWorktreeReaper (Responsible Resource Usage — OS resource hygiene).
     // Reclaims stale CLI-created worktrees under .worktrees/ that are merged +

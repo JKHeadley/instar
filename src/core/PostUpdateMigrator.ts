@@ -4192,6 +4192,32 @@ Every session shutoff — and every REFUSED shutoff (protected, not-lease-holder
       result.skipped.push('CLAUDE.md: Reap-Log section already present');
     }
 
+    // Mid-Work Resume Queue + per-topic reap notices (reap-notify spec).
+    // Existing agents only learn the new surfaces through this block — an
+    // agent that doesn't know /sessions/resume-queue exists will tell the
+    // user their interrupted work is simply gone (Agent Awareness standard).
+    // Idempotent via content-sniffing on the route path.
+    if (!content.includes('/sessions/resume-queue')) {
+      const section = `
+## Mid-Work Resume Queue & Per-Topic Reap Notices
+
+When sessions are shut down autonomously (resource pressure, quota, age limits), two guarantees now apply:
+
+1. **Every affected conversation is told, durably.** Each topic that lost a session gets ONE plain-English notice in THAT topic (bursts coalesce per topic; unbound sessions + a cross-topic index go to the lifeline). Delivery is durable — notices queue in a store and an always-on drain retries with backoff; every outcome lands in the reap-log as \`type:'notify'\` records, so "did the user get told?" is auditable.
+2. **Work interrupted mid-flight is queued for revival.** A session killed with strong work evidence (an active build/autonomous run, an open commitment, a live subagent) is tagged \`midWork:true\` and queued in a durable per-machine resume queue. Once the machine has been calm for several minutes AND quota allows, sessions are revived ONE AT A TIME in order (interactive before jobs, then first-in-first-out). Ships observe-only (dry-run) by default; jobs only participate when their definition sets \`resumeOnReap: true\`.
+
+- Queue state: \`curl -H "Authorization: Bearer $AUTH" "http://localhost:4040/sessions/resume-queue"\` → entries + paused/breaker/lastTickAt (a wedged drainer is visible here).
+- Levers: \`POST /sessions/resume-queue/:id/cancel\` · \`/:id/requeue\` (gave-up entries only; refused while paused) · \`/resume\` (unpause after an emergency stop) · \`/drain\` (one manual step; still gated on quota).
+- Emergency stops PAUSE the queue (entries intact, TTLs frozen); an explicit per-topic stop cancels that topic's entries. A topic that keeps getting reaped-and-revived hits a resurrection cap and gives up LOUDLY (one aggregated attention item — never a silent stop).
+- Proactive: user asks "did my interrupted work come back?" / "is a restart queued?" / "why did my session restart by itself?" → GET /sessions/resume-queue and the reap-log, then explain in plain words. Spec: \`docs/specs/reap-notify-per-topic-and-midwork-resume-queue.md\`.
+`;
+      content += '\n' + section;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Mid-Work Resume Queue section');
+    } else {
+      result.skipped.push('CLAUDE.md: Mid-Work Resume Queue section already present');
+    }
+
     // GuardPostureTripwire — a disabled guard is itself an incident. Tells the
     // agent the "did a monitor get switched off?" surface exists. Without it,
     // an agent asked "why didn't the watchdog catch this?" can't ground the
@@ -5414,6 +5440,11 @@ Create worktrees for collaborator repos with \`instar worktree create <branch>\`
       // never learns the holder view will claim a thread held elsewhere
       // "doesn't exist" — the exact dishonesty P3 kills.
       '**Threadline Conversation Coherence (which machine holds each agent-to-agent thread)**',
+      // Mid-Work Resume Queue (reap-notify spec): framework-agnostic HTTP
+      // surface — a Codex/Gemini agent asked "did my interrupted work come
+      // back?" must know /sessions/resume-queue exists or it will claim the
+      // work is gone. Mirrored like every agent-facing capability.
+      '## Mid-Work Resume Queue & Per-Topic Reap Notices',
       // Model-Tier Escalation (FABLE-MODEL-ESCALATION-SPEC §10): a Codex/
       // Gemini agent spawns claude-code sessions through the same spawn/swap
       // routes — without this awareness it would never escalate (or explain)

@@ -164,6 +164,11 @@ export const DARK_GATE_EXCLUSIONS: DarkGateExclusion[] = [
     reason: 'spawns full-tool Opus fix sessions; ongoing spend',
   },
   {
+    configPath: 'monitoring.resumeQueue.enabled',
+    category: 'cost-bearing',
+    reason: 'drainer spawns sessions + makes LLM calls; ships enabled+dryRun code-default, dev agent flips dryRun locally (reap-notify spec)',
+  },
+  {
     configPath: 'cartographer.freshnessSweep.enabled',
     category: 'cost-bearing',
     reason: 'authors summaries via off-Claude codex; ongoing third-party spend; explicit opt-in even on dev',
