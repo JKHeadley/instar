@@ -48,6 +48,13 @@ import { CoherenceJournalReader, InvalidCursorError } from '../core/CoherenceJou
 import { creditUsherOnOutbound } from '../core/UsherActedCorrelator.js';
 import { validateWriteToken, canPerformOperation } from '../core/StateWriteAuthority.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
+import {
+  readGuardPostureBootSnapshot,
+  resolveGuardConfigSnapshot,
+} from '../monitoring/guardPosture.js';
+import { buildGuardInventory } from '../monitoring/guardPostureView.js';
+import { GuardRegistry } from '../monitoring/GuardRegistry.js';
+import { isPeerUrlAllowedForCredentials } from './peerUrlGuard.js';
 import { FailureLedger } from '../monitoring/FailureLedger.js';
 import { FailureAttributionEngine } from '../monitoring/FailureAttributionEngine.js';
 import { FailureAnalyzer } from '../monitoring/FailureAnalyzer.js';
@@ -939,6 +946,16 @@ export interface RouteContext {
   /** Every OTHER registered, non-revoked machine with a known URL — for pool-wide
    *  aggregation (GET /sessions?scope=pool). Null/absent (single-machine/dark). */
   resolvePeerUrls?: (() => Array<{ machineId: string; url: string }>) | null;
+  /** Guard runtime registry (GUARD-POSTURE-ENDPOINT-SPEC §2.1) — boot-time
+   *  self-registered sync getters behind GET /guards. Null/absent → the route
+   *  still serves the config-derived inventory (every guard on-unverified at
+   *  best), never a 503: visibility must not have an off-switch. */
+  guardRegistry?: import('../monitoring/GuardRegistry.js').GuardRegistry | null;
+  /** EVERY registered, non-revoked machine (with or without a known URL) —
+   *  the /guards?scope=pool accounting boundary (a machine with no URL emits
+   *  a named failure row, never a silent omission — spec §2.3). Null/absent
+   *  (single-machine/dark). */
+  listPoolMachines?: (() => Array<{ machineId: string; nickname?: string; lastKnownUrl?: string | null }>) | null;
   /** Signed, append-only rollout-stage E2E results (§Rollout) — backs GET
    *  /session-pool/e2e-results so the gate state is observable. Null/absent (dark). */
   sessionPoolE2EResultStore?: import('../core/SessionPoolE2EResultStore.js').SessionPoolE2EResultStore | null;
@@ -5019,6 +5036,140 @@ export function createRoutes(ctx: RouteContext): Router {
     const rawLimit = Number(req.query.limit);
     const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(Math.floor(rawLimit), 1000) : 200;
     res.json({ entries: ctx.reapLog.read(limit) });
+  });
+
+  // ── Guard Posture (GUARD-POSTURE-ENDPOINT-SPEC) ─────────────────────
+  // Read-only, Bearer-auth (router-level middleware — NEVER added to any auth
+  // exemption list: posture is an attack-timing oracle, spec §3). Reports
+  // every shipped guard's HONEST effective state: config-on is not working
+  // (the Mini's reaper lesson). Local inventory is fully synchronous (one
+  // disk-read config snapshot + sync in-memory runtime getters, <100ms);
+  // ?scope=pool fans out to peers with classified per-peer failures, never a
+  // 500. Deliberately NO `guards.enabled` config gate — an off-switch on the
+  // guard-visibility surface would itself be an invisible disabled guard
+  // (always-on read-only observability; reap-log/TokenLedger precedent).
+  const guardsPoolLimiter = rateLimiter(60_000, 6);
+  router.get('/guards', async (req, res) => {
+    const stateDir = ctx.config.stateDir;
+    const projectDir = path.dirname(stateDir);
+    const snapshot = resolveGuardConfigSnapshot(projectDir);
+    if (snapshot.readError) {
+      // Config-read failure is a top-level error — never a truthful-looking
+      // empty inventory (spec §2.2).
+      res.status(500).json({ error: `guard inventory unavailable: config read failed (${snapshot.readError})` });
+      return;
+    }
+    const inventory = buildGuardInventory({
+      snapshot,
+      bootSnapshot: readGuardPostureBootSnapshot(stateDir),
+      registry: ctx.guardRegistry ?? new GuardRegistry(),
+    });
+    const selfMachineId = ctx.meshSelfId ?? null;
+    const body: Record<string, unknown> = {
+      machineId: selfMachineId,
+      nickname: selfMachineId
+        ? (ctx.machinePoolRegistry?.getCapacity(selfMachineId)?.nickname ?? null)
+        : null,
+      version: ProcessIntegrity.getInstance()?.runningVersion || ctx.config.version || '0.0.0',
+      generatedAt: new Date().toISOString(),
+      guards: inventory.guards,
+      summary: inventory.summary,
+    };
+
+    if (req.query.scope !== 'pool') {
+      res.json(body);
+      return;
+    }
+
+    // scope=pool — every registered machine accounted for: a posture row or a
+    // NAMED, classified failure row; silent omission re-creates the blind spot
+    // at the pool level (spec §2.3). Non-recursive (peers get plain /guards),
+    // rate-limited (anti-amplification, spec §3(d)).
+    guardsPoolLimiter(req, res, async () => {
+      const known = (ctx.listPoolMachines?.() ?? []).filter((m) => m.machineId !== selfMachineId);
+      if (known.length === 0) {
+        res.json({ ...body, pool: { enabled: false, peersQueried: 0, knownMachines: 0, machines: [], failed: [] } });
+        return;
+      }
+      const extraAllowlist = (ctx.config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)
+        ?.peerUrlAllowlist;
+      const machines: Record<string, unknown>[] = [];
+      const failed: Array<{ machineId: string; reason: string; version?: string }> = [];
+      let peersQueried = 0;
+      await Promise.all(known.map(async (m) => {
+        const capacity = ctx.machinePoolRegistry?.getCapacity(m.machineId) ?? null;
+        const peerVersion = capacity?.hardware?.instarVersion;
+        if (!m.lastKnownUrl) {
+          failed.push({ machineId: m.machineId, reason: 'no-known-url' });
+          return;
+        }
+        if (capacity && capacity.online === false) {
+          // The heartbeat piggyback (durable last-known posture on the pool
+          // view) covers dark peers — a doomed fetch buys nothing but timeout.
+          failed.push({ machineId: m.machineId, reason: 'offline' });
+          return;
+        }
+        const verdict = isPeerUrlAllowedForCredentials(m.lastKnownUrl, extraAllowlist);
+        if (!verdict.ok) {
+          // The Bearer token was NEVER attached (spec §3(c)) — visible, named.
+          failed.push({ machineId: m.machineId, reason: 'url-rejected' });
+          return;
+        }
+        peersQueried++;
+        try {
+          const r = await fetch(`${m.lastKnownUrl}/guards`, {
+            headers: { Authorization: `Bearer ${ctx.config.authToken}` },
+            signal: AbortSignal.timeout(5000),
+          });
+          if (r.status === 404) {
+            // Pre-/guards peer version: "needs update to report", not a
+            // phantom outage (rollout-skew honesty, spec §2.3).
+            failed.push({ machineId: m.machineId, reason: 'route-missing', ...(peerVersion ? { version: peerVersion } : {}) });
+            return;
+          }
+          if (r.status === 401 || r.status === 403) {
+            failed.push({ machineId: m.machineId, reason: 'unauthorized' });
+            return;
+          }
+          if (!r.ok) {
+            failed.push({ machineId: m.machineId, reason: 'error' });
+            return;
+          }
+          const peerBody = (await r.json()) as Record<string, unknown>;
+          machines.push({
+            // Merge identity: the row is keyed on the REGISTRY's machine
+            // identity; the body's self-reported machineId is data and a
+            // mismatch is FLAGGED, never allowed to shadow another row.
+            machineId: m.machineId,
+            nickname: capacity?.nickname ?? m.nickname,
+            ...(typeof peerBody.machineId === 'string' && peerBody.machineId !== m.machineId
+              ? { identityMismatch: true, claimedMachineId: peerBody.machineId }
+              : {}),
+            version: peerBody.version,
+            generatedAt: peerBody.generatedAt,
+            guards: peerBody.guards,
+            summary: peerBody.summary,
+          });
+        } catch (err) {
+          // Normalized enum only — raw err.message leaks URL/TLS internals.
+          const name = err instanceof Error ? err.name : '';
+          failed.push({
+            machineId: m.machineId,
+            reason: name === 'TimeoutError' || name === 'AbortError' ? 'timeout' : 'unreachable',
+          });
+        }
+      }));
+      res.json({
+        ...body,
+        pool: {
+          enabled: !!ctx.machinePoolRegistry,
+          knownMachines: known.length,
+          peersQueried,
+          machines,
+          failed,
+        },
+      });
+    });
   });
 
   // Coherence Journal merged read API (COHERENCE-JOURNAL-SPEC §3.5). The

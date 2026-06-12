@@ -109,6 +109,11 @@ export interface HeartbeatObservation {
   /** The machine's self-reported LLM-account quota state (quota-aware placement,
    *  2026-06-05). Absent = unknown (older heartbeats) = treated as not blocked. */
   quotaState?: MachineCapacity['quotaState'];
+  /** Compact guard-posture summary (GUARD-POSTURE-ENDPOINT-SPEC §2.3). The
+   *  caller keys the observation on the REGISTRY's machine identity — this
+   *  field is the peer's self-reported DATA, never its identity. Absent =
+   *  older peer / no posture (renders "unknown"). */
+  guardPosture?: MachineCapacity['guardPosture'];
 }
 
 export interface MachinePoolRegistryDeps {
@@ -130,6 +135,14 @@ export interface MachinePoolRegistryDeps {
   /** Fired when a machine is removed from placement for clock skew (Attention item). */
   onClockQuarantine?: (machineId: string, reason: string) => void;
   logger?: (msg: string) => void;
+  /** Durable last-known guard posture (GUARD-POSTURE-ENDPOINT-SPEC §2.3(c)).
+   *  When wired, every posture-carrying heartbeat persists, and `assemble`
+   *  falls back to the stored copy (with its REAL receipt age) for a machine
+   *  with no live observation — dark-peer honesty across local restarts. */
+  postureStore?: {
+    record: (machineId: string, posture: NonNullable<MachineCapacity['guardPosture']>, receivedAtMs: number) => void;
+    get: (machineId: string) => { posture: NonNullable<MachineCapacity['guardPosture']>; receivedAtMs: number } | null;
+  } | null;
 }
 
 /**
@@ -141,7 +154,15 @@ export class MachinePoolRegistry {
   private readonly d: MachinePoolRegistryDeps;
   private readonly observed = new Map<
     string,
-    { routerReceivedAtMs: number; obs: HeartbeatObservation; skew: ClockSkewFsmState }
+    {
+      routerReceivedAtMs: number;
+      obs: HeartbeatObservation;
+      skew: ClockSkewFsmState;
+      /** Posture receipt is tracked SEPARATELY from heartbeat receipt: a
+       *  posture-less beat carries the old block forward without refreshing
+       *  its age (the age must reflect when the POSTURE was received). */
+      posture?: { block: NonNullable<MachineCapacity['guardPosture']>; receivedAtMs: number };
+    }
   >();
 
   constructor(deps: MachinePoolRegistryDeps) {
@@ -164,7 +185,17 @@ export class MachinePoolRegistry {
       }
     }
     const { next, sideEffect } = clockSkewTransition(prev?.skew ?? INITIAL_CLOCK_SKEW_STATE, divergent);
-    this.observed.set(obs.machineId, { routerReceivedAtMs: nowMs, obs, skew: next });
+    // Posture handling (GUARD-POSTURE-ENDPOINT-SPEC §2.3): a beat WITH a block
+    // stamps a fresh receiver-side receipt time and persists durably; a beat
+    // WITHOUT one (older peer / lighter beat) carries the previous block
+    // forward UNCHANGED — including its original receipt time, so the
+    // rendered age stays honest.
+    let posture = prev?.posture;
+    if (obs.guardPosture) {
+      posture = { block: obs.guardPosture, receivedAtMs: nowMs };
+      this.d.postureStore?.record(obs.machineId, obs.guardPosture, nowMs);
+    }
+    this.observed.set(obs.machineId, { routerReceivedAtMs: nowMs, obs, skew: next, posture });
     if (sideEffect === 'removed') {
       this.d.onClockQuarantine?.(
         obs.machineId,
@@ -228,6 +259,18 @@ export class MachinePoolRegistry {
       hardware: known.hardware,
       clockSkewStatus: live?.skew.status ?? 'ok',
       quotaState: live?.obs.quotaState,
+      // Guard posture: live observation first, durable last-known second —
+      // a machine with no posture EVER received carries neither field
+      // (renders "guards: unknown", never "0 on / 0 off").
+      ...(() => {
+        const p = live?.posture ?? this.d.postureStore?.get(known.machineId) ?? null;
+        if (!p) return {};
+        const block = 'block' in p ? p.block : p.posture;
+        return {
+          guardPosture: block,
+          guardPostureReceivedAt: new Date(p.receivedAtMs).toISOString(),
+        };
+      })(),
     };
   }
 }

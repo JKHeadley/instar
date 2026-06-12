@@ -361,6 +361,10 @@ export class AgentServer {
     resolveRouterUrl?: () => string | null;
     /** Every other active machine with a known URL — backs GET /sessions?scope=pool. */
     resolvePeerUrls?: () => Array<{ machineId: string; url: string }>;
+    /** Guard runtime registry (GUARD-POSTURE-ENDPOINT-SPEC §2.1) — behind GET /guards. */
+    guardRegistry?: import('../monitoring/GuardRegistry.js').GuardRegistry;
+    /** EVERY registered, non-revoked machine (URL or not) — the /guards?scope=pool accounting boundary. */
+    listPoolMachines?: () => Array<{ machineId: string; nickname?: string; lastKnownUrl?: string | null }>;
     /** Signed rollout-stage E2E result store (§Rollout). */
     sessionPoolE2EResultStore?: import('../core/SessionPoolE2EResultStore.js').SessionPoolE2EResultStore;
     localSigningKeyPem?: string;
@@ -1829,6 +1833,8 @@ export class AgentServer {
       meshSelfId: options.meshSelfId ?? null,
       resolveRouterUrl: options.resolveRouterUrl ?? null,
       resolvePeerUrls: options.resolvePeerUrls ?? null,
+      guardRegistry: options.guardRegistry ?? null,
+      listPoolMachines: options.listPoolMachines ?? null,
       sessionPoolE2EResultStore: options.sessionPoolE2EResultStore ?? null,
       messageLedger: options.messageLedger ?? null,
       currentInboundByTopic: options.currentInboundByTopic ?? null,

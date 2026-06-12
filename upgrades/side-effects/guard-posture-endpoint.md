@@ -52,9 +52,9 @@ The two block-shaped pieces fall in the doc's exempt classes: the rate limit is 
 
 ## 6. External surfaces
 
-- New authenticated API surface (`GET /guards`) — operationally sensitive (attack-timing oracle); contained per spec §3: Bearer-only, never on exemption lists, never on /health//ping/signed-URL surfaces; pool fan-out forwards the token ONLY to https/allowlisted peer URLs.
-- Heartbeat payload grows by a few hundred bytes (bounded by manifest size); replicated to operator-paired machines only — accepted, contained exposure (spec §3(f)).
-- Durable machine record gains `guardPosture`/`guardPostureReceivedAt` fields (additive JSON; older readers ignore).
+- New authenticated API surface (`GET /guards`) — operationally sensitive (attack-timing oracle); contained per spec §3: Bearer-only, never on exemption lists, never on /health//ping/signed-URL surfaces; pool fan-out forwards the token ONLY to https/allowlisted peer URLs. The `scope=pool` rate limit answers 429 when exceeded (transport mechanics); per-guard getter errors surface in-process messages only (never peer/TLS internals — those are enum-normalized in failure rows).
+- Heartbeat payload grows by a few hundred bytes (bounded by manifest size); replicated to operator-paired machines only — accepted, contained exposure (spec §3(f)). The sender computes the block per 30s beat (one disk config read + in-memory inventory build, try/caught; a failed compute omits the block for that beat).
+- TWO new durable machine-local state files (both registered in the State-Coherence Registry + annotated at their write sites, per second-pass review): `state/guard-posture-peers.json` (GuardPostureStore — durable last-known peer posture with receiver-side receipt time) and `state/guard-posture-episodes.json` (GuardPostureProbe episode state). The pre-existing tripwire snapshot `state/guard-posture.json` was registered alongside. The `guardPosture`/`guardPostureReceivedAt` fields are additive on the in-memory/API `MachineCapacity` view only — older readers ignore them.
 - CLAUDE.md template grows a Guards block; existing agents receive it via content-sniffed `migrateClaudeMd()` (Migration Parity); includes the PATCH /config full-block warning (interim hazard containment for the de-scoped write lever).
 - Dashboard Machines tab shows posture summary + age.
 
@@ -68,7 +68,15 @@ The build implements a read-only observability surface whose design center is ho
 
 ## Second-pass review (if required)
 
-**Reviewer:** pending — appended before ship.
+**Reviewer:** independent reviewer subagent (adversarial audit, 2026-06-12)
+**Independent read of the artifact: concern raised → resolved → concur**
+
+Initial verdict raised three concerns, all resolved before ship:
+- *Unregistered durable state files* — `state/guard-posture-peers.json` and `state/guard-posture-episodes.json` were not in the State-Coherence Registry (the lint's documented variable-path blind spot). RESOLVED: both registered + inline `/* state-registry: ... */` annotations at the write sites; the pre-existing tripwire snapshot registered alongside.
+- *§6 wording misdescribed durability* (claimed durable-machine-record fields; actually a separate store file). RESOLVED: §6 corrected to name both files and the in-memory-only capacity fields.
+- *`deepReadPeer` implemented but unwired* (a silent scope reduction). RESOLVED: wired in server.ts — plain `GET /guards` against the peer, token only past the peerUrlGuard, online-peers-with-stale/missing-posture only.
+
+Reviewer affirmation on the core questions: "No brittle logic holds blocking authority over message flow, session lifecycle, or dispatch — the only two rejection surfaces are exactly the exempt classes the artifact claims. All §3 shipping dependencies are genuinely implemented AND tested, not just claimed. Once the state-registry registration and the §6 wording fix land, I concur with shipping." Both landed; concurrence stands.
 
 ## Evidence pointers
 

@@ -58,6 +58,14 @@ export interface PeerCapacity {
    * failure). Absent from old peers = treated as not blocked (fail-open).
    */
   quotaState?: { blocked: boolean; blockedUntil?: string; reason?: string };
+  /**
+   * The peer's compact guard-posture summary (GUARD-POSTURE-ENDPOINT-SPEC
+   * §2.3). Carried in the peer's session-status response (its
+   * getCapacity(self) includes it); the A2 lesson above applies verbatim —
+   * narrowing it away on receive would blind the pool view to every peer's
+   * posture. Absent from old peers = no posture ("guards: unknown").
+   */
+  guardPosture?: import('./types.js').GuardPostureSummary;
 }
 
 /** One stream slice of a journal-sync delta (mirrors MeshRpc's `journal-sync.batch`). */
@@ -80,7 +88,7 @@ export interface PeerPresencePullerDeps {
    */
   fetchPeerCapacity: (machineId: string, url: string) => Promise<PeerCapacity | null>;
   /** Record an observed peer heartbeat into the pool registry (marks it online for the failover window). */
-  recordHeartbeat: (obs: { machineId: string; selfReportedLastSeen: string; loadAvg?: number; quotaState?: { blocked: boolean; blockedUntil?: string; reason?: string } }) => void;
+  recordHeartbeat: (obs: { machineId: string; selfReportedLastSeen: string; loadAvg?: number; quotaState?: { blocked: boolean; blockedUntil?: string; reason?: string }; guardPosture?: import('./types.js').GuardPostureSummary }) => void;
   /** Wall clock — injectable for tests. Defaults to `Date`. */
   now?: () => Date;
   /** Optional structured log line per pass (e.g. for the boot log). */
@@ -151,7 +159,7 @@ export class PeerPresencePuller {
         }
         if (!cap) return null;
         const seen = cap.selfReportedLastSeen ?? (this.d.now?.() ?? new Date()).toISOString();
-        this.d.recordHeartbeat({ machineId: m.machineId, selfReportedLastSeen: seen, loadAvg: cap.loadAvg, ...(cap.quotaState ? { quotaState: cap.quotaState } : {}) });
+        this.d.recordHeartbeat({ machineId: m.machineId, selfReportedLastSeen: seen, loadAvg: cap.loadAvg, ...(cap.quotaState ? { quotaState: cap.quotaState } : {}), ...(cap.guardPosture ? { guardPosture: cap.guardPosture } : {}) });
         // REPLICATION-GATED journal-delta drive — only when the server wired the
         // delta deps (i.e. replication.enabled === true). Otherwise a complete
         // no-op (engine/transport stay dark). Never throws into the puller.

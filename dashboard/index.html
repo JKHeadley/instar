@@ -4976,6 +4976,35 @@
       if (m.loadAvg < 4) return 'working';
       return 'busy';
     }
+    function machineGuardsLine(m) {
+      // Guard posture (GUARD-POSTURE-ENDPOINT-SPEC §2.3): last-known summary
+      // with RECEIVER-side age. No posture ever received → honest "unknown",
+      // never "0 on / 0 off". Only problem classes get named; dark-default
+      // offs stay quiet (alarm-fatigue is how the next Mini stays off while
+      // displayed).
+      const p = m.guardPosture;
+      if (!p) return 'guards: unknown';
+      const problems = [];
+      if (p.offDeviant) problems.push(p.offDeviant + ' off that should be on');
+      if (p.offRuntimeDivergent) problems.push(p.offRuntimeDivergent + ' off despite settings');
+      if (p.onStale) problems.push(p.onStale + ' frozen');
+      if (p.missing) problems.push(p.missing + ' missing');
+      if (p.errored) problems.push(p.errored + ' erroring');
+      if (p.divergedPendingRestart) problems.push(p.divergedPendingRestart + ' awaiting restart');
+      const okPart = 'guards: ' + (p.onConfirmed + p.onUnverified + p.onDryRun) + ' on' +
+        (p.onConfirmed ? ' (' + p.onConfirmed + ' confirmed)' : '');
+      let age = '';
+      if (m.guardPostureReceivedAt) {
+        const ms = Date.now() - Date.parse(m.guardPostureReceivedAt);
+        if (isFinite(ms) && ms >= 0) {
+          const mins = Math.round(ms / 60000);
+          age = mins < 2 ? 'just now' : mins < 90 ? 'as of ' + mins + 'm ago'
+            : mins < 2880 ? 'as of ' + Math.round(mins / 60) + 'h ago'
+            : 'as of ' + Math.round(mins / 1440) + 'd ago';
+        }
+      }
+      return [okPart, problems.length ? '⚠ ' + problems.join(', ') : '', age].filter(Boolean).join(' · ');
+    }
     function renderMachineCard(m, routerHolder) {
       const online = !!m.online;
       const dot = !online ? 'off' : (m.clockSkewStatus === 'suspect-clock-removed' ? 'warn' : 'ok');
@@ -4994,6 +5023,7 @@
         '</div>' +
         '<div class="machine-meta">' + escapeHtml(machineSpecLine(m.hardware)) + '</div>' +
         '<div class="machine-meta">' + tail + '</div>' +
+        '<div class="machine-meta">' + escapeHtml(machineGuardsLine(m)) + '</div>' +
       '</div>';
     }
     async function saveMachineNickname(input) {

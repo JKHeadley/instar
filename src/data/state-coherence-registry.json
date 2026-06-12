@@ -1,5 +1,5 @@
 {
-  "$schema-note": "Machine form of docs/specs/STATE-COHERENCE-REGISTRY.md (the approved census, census-date 2026-06-05). AUTHORED, NOT build-generated (committed-generated-manifest conflict-loop lesson, COHERENCE-JOURNAL-SPEC \u00a73.6). One entry per durable state category the census enumerates. Consumed by scripts/lint-state-registry.js: every direct durable-write site targeting a state dir / .instar/ must match an entry's `paths` (or carry an inline `/* state-registry: <category> */` annotation). Fields: category (kebab-case id) | description | scope (machine-local | must-be-coherent | derived-cache | coherent-on-demand) | freshness (real-time | eventual | session-boundary | n/a) | conflictShape (single-writer | append-only | lww | n/a) | transport (git | peer-http | none | deferred) | paths (glob-ish hints) | grandfathered (census marked uncertainty, \u00a74e). New state declares its class here at birth.",
+  "$schema-note": "Machine form of docs/specs/STATE-COHERENCE-REGISTRY.md (the approved census, census-date 2026-06-05). AUTHORED, NOT build-generated (committed-generated-manifest conflict-loop lesson, COHERENCE-JOURNAL-SPEC §3.6). One entry per durable state category the census enumerates. Consumed by scripts/lint-state-registry.js: every direct durable-write site targeting a state dir / .instar/ must match an entry's `paths` (or carry an inline `/* state-registry: <category> */` annotation). Fields: category (kebab-case id) | description | scope (machine-local | must-be-coherent | derived-cache | coherent-on-demand) | freshness (real-time | eventual | session-boundary | n/a) | conflictShape (single-writer | append-only | lww | n/a) | transport (git | peer-http | none | deferred) | paths (glob-ish hints) | grandfathered (census marked uncertainty, §4e). New state declares its class here at birth.",
   "version": 1,
   "censusDate": "2026-06-05",
   "sourceDoc": "docs/specs/STATE-COHERENCE-REGISTRY.md",
@@ -18,7 +18,7 @@
     },
     {
       "category": "pending-pulls",
-      "description": "Durable working-set pending-pull ledger - outstanding fetches whose producer was offline/unreachable/revoked/mid-run; re-fired on reappearance/run-stopped (WORKING-SET-HANDOFF-SPEC P2 \u00a73.4). Machine-local: records describe THIS machine's outstanding fetches; single-writer serialized mutate() funnel.",
+      "description": "Durable working-set pending-pull ledger - outstanding fetches whose producer was offline/unreachable/revoked/mid-run; re-fired on reappearance/run-stopped (WORKING-SET-HANDOFF-SPEC P2 §3.4). Machine-local: records describe THIS machine's outstanding fetches; single-writer serialized mutate() funnel.",
       "scope": "machine-local",
       "freshness": "live",
       "conflictShape": "single-writer",
@@ -30,7 +30,7 @@
     },
     {
       "category": "pull-opkeys",
-      "description": "Durable (topic,epoch) operation-key window for working-set pull dedupe - restart-proof at-most-once scheduling per move (WORKING-SET-HANDOFF-SPEC P2 \u00a73.3). Machine-local, bounded window (200 keys), single-writer (the coordinator).",
+      "description": "Durable (topic,epoch) operation-key window for working-set pull dedupe - restart-proof at-most-once scheduling per move (WORKING-SET-HANDOFF-SPEC P2 §3.3). Machine-local, bounded window (200 keys), single-writer (the coordinator).",
       "scope": "machine-local",
       "freshness": "live",
       "conflictShape": "single-writer",
@@ -42,7 +42,7 @@
     },
     {
       "category": "visibility-guard",
-      "description": "Peer-visibility guard dedupe state - which improper revocations were already surfaced (keyed on revokedAt, cross-boot) + per-machine disappearance episodes for flap bounding (WORKING-SET-HANDOFF-SPEC P2 \u00a73.6). Machine-local notice hygiene, never authority.",
+      "description": "Peer-visibility guard dedupe state - which improper revocations were already surfaced (keyed on revokedAt, cross-boot) + per-machine disappearance episodes for flap bounding (WORKING-SET-HANDOFF-SPEC P2 §3.6). Machine-local notice hygiene, never authority.",
       "scope": "machine-local",
       "freshness": "live",
       "conflictShape": "single-writer",
@@ -66,7 +66,7 @@
     },
     {
       "category": "commitment-replicas",
-      "description": "Per-peer read-only replicas of other machines' commitment stores (COMMITMENTS-COHERENCE-SPEC P1.5 \u00a73.2). Derived cache - rebuilt by a full re-pull; written ONLY by the commitments-sync receive path; first-hop sender-bound; incarnation-fenced.",
+      "description": "Per-peer read-only replicas of other machines' commitment stores (COMMITMENTS-COHERENCE-SPEC P1.5 §3.2). Derived cache - rebuilt by a full re-pull; written ONLY by the commitments-sync receive path; first-hop sender-bound; incarnation-fenced.",
       "scope": "derived-cache",
       "freshness": "eventual",
       "conflictShape": "single-writer",
@@ -78,7 +78,7 @@
     },
     {
       "category": "commitment-pending-mutations",
-      "description": "Durable owner-routed mutation intents awaiting an offline owner (COMMITMENTS-COHERENCE-SPEC P1.5 \u00a73.4). Stores INTENT only - a FRESH signed envelope is re-issued at fire time; single-writer serialized funnel; per-(origin,id) and per-owner enqueue bounds; TTL 7d with one honest expiry notice.",
+      "description": "Durable owner-routed mutation intents awaiting an offline owner (COMMITMENTS-COHERENCE-SPEC P1.5 §3.4). Stores INTENT only - a FRESH signed envelope is re-issued at fire time; single-writer serialized funnel; per-(origin,id) and per-owner enqueue bounds; TTL 7d with one honest expiry notice.",
       "scope": "machine-local",
       "freshness": "live",
       "conflictShape": "single-writer",
@@ -90,7 +90,7 @@
     },
     {
       "category": "commitment-opkeys",
-      "description": "Owner-side durable opKey replay window for commitment-mutate (COMMITMENTS-COHERENCE-SPEC P1.5 \u00a73.4) - the replay control beyond the 60s envelope nonce window; records verdicts, survives restarts, TTL >= pending-mutation TTL.",
+      "description": "Owner-side durable opKey replay window for commitment-mutate (COMMITMENTS-COHERENCE-SPEC P1.5 §3.4) - the replay control beyond the 60s envelope nonce window; records verdicts, survives restarts, TTL >= pending-mutation TTL.",
       "scope": "machine-local",
       "freshness": "live",
       "conflictShape": "single-writer",
@@ -246,7 +246,7 @@
     },
     {
       "category": "job-definitions",
-      "description": "Declarative job definitions (cron / prompt / supervision). The coherent half of jobs.json plus markdown job specs; run state is machine-local (see job-run-state). Field split required before whole-file sync (census \u00a75).",
+      "description": "Declarative job definitions (cron / prompt / supervision). The coherent half of jobs.json plus markdown job specs; run state is machine-local (see job-run-state). Field split required before whole-file sync (census §5).",
       "scope": "must-be-coherent",
       "freshness": "eventual",
       "conflictShape": "lww",
@@ -344,7 +344,7 @@
     },
     {
       "category": "fleet-config",
-      "description": "Fleet-wide config: feature flags, messaging[] config, monitoring tunables, multiMachine policy. SHARES config.json with machine-local fields (port, paths) -- split-required before whole-file sync (census \u00a75).",
+      "description": "Fleet-wide config: feature flags, messaging[] config, monitoring tunables, multiMachine policy. SHARES config.json with machine-local fields (port, paths) -- split-required before whole-file sync (census §5).",
       "scope": "must-be-coherent",
       "freshness": "eventual",
       "conflictShape": "lww",
@@ -561,7 +561,7 @@
     },
     {
       "category": "audit-destructive-ops",
-      "description": "Destructive-ops audit stream (411M live -- needs rotation, census \u00a77). Append-only per-machine.",
+      "description": "Destructive-ops audit stream (411M live -- needs rotation, census §7). Append-only per-machine.",
       "scope": "machine-local",
       "freshness": "n/a",
       "conflictShape": "append-only",
@@ -806,7 +806,7 @@
     },
     {
       "category": "derived-semantic-memory",
-      "description": "semantic.db / memory.db / episodes -- rebuildable from evidence. (Live-disk: stale since Jun 1 -- investigate separately, census \u00a71.6/\u00a77.)",
+      "description": "semantic.db / memory.db / episodes -- rebuildable from evidence. (Live-disk: stale since Jun 1 -- investigate separately, census §1.6/§7.)",
       "scope": "derived-cache",
       "freshness": "eventual",
       "conflictShape": "n/a",
@@ -909,7 +909,7 @@
     },
     {
       "category": "uncertain-instructions-tracking",
-      "description": "state/instructions-tracking/ (59M, 15,180 UUID-keyed JSONL files). Census did not map an owner; volume says it matters. Owner + rotation + class needed (census \u00a74e).",
+      "description": "state/instructions-tracking/ (59M, 15,180 UUID-keyed JSONL files). Census did not map an owner; volume says it matters. Owner + rotation + class needed (census §4e).",
       "scope": "machine-local",
       "freshness": "eventual",
       "conflictShape": "append-only",
@@ -921,7 +921,7 @@
     },
     {
       "category": "uncertain-topic-intent-store",
-      "description": "TopicIntentStore. Code references it; on-disk location unverified (census \u00a74e).",
+      "description": "TopicIntentStore. Code references it; on-disk location unverified (census §4e).",
       "scope": "derived-cache",
       "freshness": "eventual",
       "conflictShape": "n/a",
@@ -934,7 +934,7 @@
     },
     {
       "category": "uncertain-shared-state-ledger",
-      "description": "shared-state.jsonl (SharedStateLedger). Nominally the git-synced cross-machine ledger -- is anything consuming it on real machines? May be the vestigial ancestor of the P1 journal (census \u00a74e).",
+      "description": "shared-state.jsonl (SharedStateLedger). Nominally the git-synced cross-machine ledger -- is anything consuming it on real machines? May be the vestigial ancestor of the P1 journal (census §4e).",
       "scope": "must-be-coherent",
       "freshness": "eventual",
       "conflictShape": "append-only",
@@ -947,7 +947,7 @@
     },
     {
       "category": "uncertain-correction-capture-backlog",
-      "description": "correction-capture-backlog.db vs correction-ledger.db: two stores, one sentinel -- which is canonical? (census \u00a74e).",
+      "description": "correction-capture-backlog.db vs correction-ledger.db: two stores, one sentinel -- which is canonical? (census §4e).",
       "scope": "machine-local",
       "freshness": "eventual",
       "conflictShape": "append-only",
@@ -959,7 +959,7 @@
     },
     {
       "category": "uncertain-project-round-worktrees",
-      "description": "ProjectRoundWorktrees / TaskFlow stores. Routes-managed; durable form unverified (census \u00a74e).",
+      "description": "ProjectRoundWorktrees / TaskFlow stores. Routes-managed; durable form unverified (census §4e).",
       "scope": "machine-local",
       "freshness": "eventual",
       "conflictShape": "single-writer",
@@ -972,7 +972,7 @@
     },
     {
       "category": "legacy-singletons",
-      "description": "Stale legacy singletons (anti-patterns.json, quick-facts.json, project-registry.json, May 20 vintage, no live writers found). Retire per census \u00a77.",
+      "description": "Stale legacy singletons (anti-patterns.json, quick-facts.json, project-registry.json, May 20 vintage, no live writers found). Retire per census §7.",
       "scope": "machine-local",
       "freshness": "n/a",
       "conflictShape": "single-writer",
@@ -998,13 +998,49 @@
     },
     {
       "category": "stream-tickets",
-      "description": "Pool Dashboard Streaming single-use bearer tickets (POOL-DASHBOARD-STREAM-SPEC \u00a72.3). Minted by the pool-stream-ticket mesh verb, consumed once on the /pool-stream WS upgrade. Persisted so a captured ticket cannot replay across a serving-machine restart (consumed-set survives). Machine-local; single-writer (the store's own funnel); TTL-bounded + GC'd.",
+      "description": "Pool Dashboard Streaming single-use bearer tickets (POOL-DASHBOARD-STREAM-SPEC §2.3). Minted by the pool-stream-ticket mesh verb, consumed once on the /pool-stream WS upgrade. Persisted so a captured ticket cannot replay across a serving-machine restart (consumed-set survives). Machine-local; single-writer (the store's own funnel); TTL-bounded + GC'd.",
       "scope": "machine-local",
       "freshness": "live",
       "conflictShape": "single-writer",
       "transport": "none",
       "paths": [
         "state/stream-tickets.json"
+      ],
+      "grandfathered": false
+    },
+    {
+      "category": "guard-posture-snapshot",
+      "description": "Boot-time guard posture snapshot written by the GuardPostureTripwire at every server boot; read by GET /guards for diverged-pending-restart derivation (GUARD-POSTURE-ENDPOINT-SPEC §2.2). Machine-local observability, never authority.",
+      "scope": "machine-local",
+      "freshness": "boot",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "state/guard-posture.json"
+      ],
+      "grandfathered": false
+    },
+    {
+      "category": "guard-posture-peers",
+      "description": "Durable last-known guard posture per peer machine with RECEIVER-side receipt time (GUARD-POSTURE-ENDPOINT-SPEC §2.3(c)) - survives local restarts so a dark peer's posture renders with its honest age. Written only at the heartbeat-ingestion chokepoint (registry-keyed identity). Machine-local observability, never authority.",
+      "scope": "machine-local",
+      "freshness": "live",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "state/guard-posture-peers.json"
+      ],
+      "grandfathered": false
+    },
+    {
+      "category": "guard-posture-episodes",
+      "description": "GuardPostureProbe episode state - per-anomaly first/last-seen for the persist-across-ticks rule, flap windows, and the open-episode marker that keeps alerts to ONE aggregated Attention item per episode (GUARD-POSTURE-ENDPOINT-SPEC §2.4). Machine-local notice hygiene, never authority.",
+      "scope": "machine-local",
+      "freshness": "live",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "state/guard-posture-episodes.json"
       ],
       "grandfathered": false
     }

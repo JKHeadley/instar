@@ -877,6 +877,16 @@ export class SessionReaper extends EventEmitter {
       sessions,
     };
   }
+
+  /** Sync in-memory runtime read for the GuardRegistry (GET /guards).
+   *  Cheap property read ONLY — snapshot() is the heavy surface. */
+  guardStatus(): { enabled: boolean; dryRun: boolean; lastTickAt: number } {
+    return {
+      enabled: this.cfg.enabled,
+      dryRun: this.cfg.dryRun || this.autoDisabled,
+      lastTickAt: this.lastTickAt,
+    };
+  }
 }
 
 function safeCapture(deps: SessionReaperDeps, tmuxSession: string, lines: number): string {

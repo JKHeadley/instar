@@ -127,6 +127,7 @@ export async function runGuardPostureTripwire(
     // Persist the new snapshot FIRST so even an emit failure below leaves the
     // baseline current (no repeat alarms for the same transition next boot).
     fs.mkdirSync(path.dirname(snapPath), { recursive: true });
+    /* state-registry: guard-posture-snapshot */
     fs.writeFileSync(snapPath, JSON.stringify({ ts: now.toISOString(), posture } satisfies Snapshot, null, 2));
 
     if (!prev) {

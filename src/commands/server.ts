@@ -80,6 +80,12 @@ import { QuotaNotifier } from '../monitoring/QuotaNotifier.js';
 import { QuotaManager } from '../monitoring/QuotaManager.js';
 import { classifySessionDeath, detectContextExhaustion } from '../monitoring/QuotaExhaustionDetector.js';
 import { SessionWatchdog } from '../monitoring/SessionWatchdog.js';
+import { GuardRegistry } from '../monitoring/GuardRegistry.js';
+import { resolveGuardConfigSnapshot, readGuardPostureBootSnapshot } from '../monitoring/guardPosture.js';
+import { buildGuardInventory, buildHeartbeatPostureBlock } from '../monitoring/guardPostureView.js';
+import { createGuardPostureProbes } from '../monitoring/probes/GuardPostureProbe.js';
+import { GuardPostureStore } from '../core/GuardPostureStore.js';
+import { isPeerUrlAllowedForCredentials } from '../server/peerUrlGuard.js';
 import { formatWatchdogUserMessage } from '../monitoring/watchdog-notifications.js';
 import { StallTriageNurse } from '../monitoring/StallTriageNurse.js';
 import { TriageOrchestrator } from '../monitoring/TriageOrchestrator.js';
@@ -437,6 +443,7 @@ let _resolveRouterUrl: (() => string | null) | null = null;
 /** Every OTHER active machine with a known URL — backs GET /sessions?scope=pool
  *  (pool-wide session aggregation for the dashboard). Set in the same mesh block. */
 let _resolvePeerUrls: (() => Array<{ machineId: string; url: string }>) | null = null;
+let _listPoolMachines: (() => Array<{ machineId: string; nickname?: string; lastKnownUrl?: string | null }>) | null = null;
 /** Multi-Machine Session Pool §L4: per-topic placement pin store ("move this to <nickname>"). */
 let _topicPinStore: import('../core/TopicPlacementPinStore.js').TopicPlacementPinStore | null = null;
 /** Cross-machine secret-sync (spec Phase 4): route-facing handle (push lever + read-only status). */
@@ -4341,9 +4348,16 @@ export async function startServer(options: StartOptions): Promise<void> {
       console.log(pc.green(`  Prompt Gate: enabled (mode: ${mode})`));
     }
 
+    // ── GuardRegistry (GUARD-POSTURE-ENDPOINT-SPEC §2.1) ──────────────
+    // Constructed guard components self-register SYNC runtime getters at
+    // their construction sites below; GET /guards reconciles registrations
+    // against the declared manifest (missing = a state, never an omission).
+    const guardRegistry = new GuardRegistry();
+
     let scheduler: JobScheduler | undefined;
     if (config.scheduler.enabled && coordinator.isAwake) {
       scheduler = new JobScheduler(config.scheduler, sessionManager, state, config.stateDir);
+      guardRegistry.register('scheduler.enabled', () => scheduler!.guardStatus());
       // Wire machine identity for machine-scoped job filtering
       if (coordinator.identity) {
         scheduler.setMachineIdentity(coordinator.identity.machineId, coordinator.identity.name);
@@ -6309,6 +6323,7 @@ export async function startServer(options: StartOptions): Promise<void> {
     if (config.monitoring.watchdog?.enabled) {
       watchdog = new SessionWatchdog(config, sessionManager, state);
       watchdog.intelligence = sharedIntelligence ?? null;
+      guardRegistry.register('monitoring.watchdog.enabled', () => watchdog!.guardStatus());
 
       watchdog.on('intervention', (event: any) => {
         // Routine recovery (Ctrl+C, SIGTERM) stays as console diagnostics only.
@@ -7563,6 +7578,7 @@ export async function startServer(options: StartOptions): Promise<void> {
         socketSentinel.on('recovery-error', (e: { sessionName: string; err: unknown }) =>
           notifier.record('recovery-error', 'socket-disconnect', e.sessionName, e.err instanceof Error ? e.err.message : String(e.err)));
         socketSentinel.start();
+        guardRegistry.register('monitoring.socketDisconnectSentinel.enabled', () => socketSentinel.guardStatus());
         socketRecoveryActive = (s: string) => socketSentinel.isRecoveryActive(s);
         console.log(pc.green('  SocketDisconnectSentinel enabled (connection-drop recovery)'));
       }
@@ -7622,6 +7638,7 @@ export async function startServer(options: StartOptions): Promise<void> {
         silenceSentinel.on('nudge-error', (e: { sessionName: string; err: unknown }) =>
           notifier.record('nudge-error', 'active-silence', e.sessionName, e.err instanceof Error ? e.err.message : String(e.err)));
         silenceSentinel.start();
+        guardRegistry.register('monitoring.activeWorkSilenceSentinel.enabled', () => silenceSentinel.guardStatus());
         silenceRecoveryActive = (s: string) => silenceSentinel.isRecoveryActive(s);
         const silenceMode = silenceAutoRecover ? ' — auto-heal LIVE' : '';
         console.log(pc.green(
@@ -7674,6 +7691,14 @@ export async function startServer(options: StartOptions): Promise<void> {
         wedgeSentinel.on('recovery-error', (e: { sessionName: string; err: unknown }) =>
           notifier.record('recovery-error', 'context-wedge', e.sessionName, e.err instanceof Error ? e.err.message : String(e.err)));
         wedgeSentinel.start();
+        guardRegistry.register('monitoring.contextWedgeSentinel.enabled', () => wedgeSentinel.guardStatus());
+        // Sub-guard row (spec §2.1): the destructive auto-recovery arm reports
+        // its OWN posture so 'autoRecovery silently off inside an on-confirmed
+        // sentinel' cannot hide.
+        guardRegistry.register('monitoring.contextWedgeSentinel.autoRecovery.enabled', () => ({
+          enabled: autoRecovery.enabled === true,
+          dryRun: autoRecovery.dryRun !== false,
+        }));
         wedgeRecoveryActive = (s: string) => wedgeSentinel.isRecoveryActive(s);
         const mode = autoRecovery.enabled ? (autoRecovery.dryRun ? 'auto-recover dry-run' : 'auto-recover LIVE') : 'detect-only';
         console.log(pc.green(`  ContextWedgeSentinel enabled (thinking-block-400 + aup-rejection wedges — ${mode})`));
@@ -9917,6 +9942,55 @@ export async function startServer(options: StartOptions): Promise<void> {
           lockFilePath: path.join(config.stateDir, 'lifeline.lock'),
           isEnabled: () => fs.existsSync(path.join(config.stateDir, 'lifeline.lock')),
         }),
+        ...createGuardPostureProbes({
+          // Same one-read inventory GET /guards serves; null on read failure.
+          getLocalPosture: () => {
+            try {
+              const snap = resolveGuardConfigSnapshot(config.projectDir);
+              if (snap.readError) return null;
+              return buildGuardInventory({
+                snapshot: snap,
+                bootSnapshot: readGuardPostureBootSnapshot(config.stateDir),
+                registry: guardRegistry,
+              });
+            } catch { return null; }
+          },
+          // Heartbeat-sourced (durable last-known for offline peers) — never a
+          // doomed fan-out for a dark peer (spec §2.4 data-source rule).
+          getPeerPostures: () => {
+            try {
+              return (machinePoolRegistry?.getCapacities() ?? [])
+                .filter((m) => m.machineId !== (_meshSelfId ?? ''))
+                .map((m) => ({
+                  machineId: m.machineId,
+                  nickname: m.nickname,
+                  online: m.online,
+                  posture: m.guardPosture ?? null,
+                  postureAgeMs: m.guardPostureReceivedAt ? Date.now() - Date.parse(m.guardPostureReceivedAt) : null,
+                }));
+            } catch { return []; /* pool not wired yet (boot order) — peers: none */ }
+          },
+          // Spec §2.4 deep-read fallback: ONLY for an ONLINE peer whose
+          // heartbeat posture block is missing/stale — a plain GET /guards
+          // (never ?scope=pool), token attached only past the URL guard.
+          deepReadPeer: async (machineId) => {
+            const m = _listPoolMachines?.().find((x) => x.machineId === machineId);
+            if (!m?.lastKnownUrl) return null;
+            const extra = (config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)?.peerUrlAllowlist;
+            if (!isPeerUrlAllowedForCredentials(m.lastKnownUrl, extra).ok) return null;
+            const r = await fetch(`${m.lastKnownUrl}/guards`, {
+              headers: { Authorization: `Bearer ${config.authToken}` },
+              signal: AbortSignal.timeout(5000),
+            });
+            if (!r.ok) return null;
+            return r.json();
+          },
+          emitAttention: async (item) => {
+            if (!telegram) return;
+            await telegram.createAttentionItem(item);
+          },
+          stateDir: config.stateDir,
+        }),
         ...createPlatformProbes({
           tmuxPath,
         }),
@@ -11509,6 +11583,7 @@ export async function startServer(options: StartOptions): Promise<void> {
         console.log(pc.green('  Unkillability backstop enabled (§P5 — signal-only, never auto-kills)'));
       }
     }
+    guardRegistry.register('monitoring.sessionReaper.enabled', () => sessionReaper.guardStatus());
     if (config.monitoring?.sessionReaper?.enabled) {
       console.log(pc.green(
         config.monitoring.sessionReaper.dryRun === false
@@ -11695,6 +11770,9 @@ export async function startServer(options: StartOptions): Promise<void> {
         const clockSkewToleranceMs =
           (config.multiMachine?.sessionPool as { clockSkewToleranceMs?: number } | undefined)?.clockSkewToleranceMs ?? 300_000;
         machinePoolRegistry = new poolMod.MachinePoolRegistry({
+          // Durable last-known posture (GUARD-POSTURE-ENDPOINT-SPEC §2.3(c)) —
+          // survives local restarts so a dark peer renders with its real age.
+          postureStore: new GuardPostureStore(config.stateDir),
           listMachines: () =>
             poolIdMgr.getActiveMachines().map(({ machineId, entry }) => ({
               machineId,
@@ -11733,6 +11811,21 @@ export async function startServer(options: StartOptions): Promise<void> {
               };
             } catch { return undefined; /* unknown ≠ blocked */ }
           };
+          // Self guard-posture block riding the capacity heartbeat (spec §2.3).
+          // Computed per beat from the same one-read snapshot GET /guards uses;
+          // a failed compute omits the block (older-peer semantics), never throws.
+          const selfGuardPosture = (): import('../core/types.js').GuardPostureSummary | undefined => {
+            try {
+              const snap = resolveGuardConfigSnapshot(config.projectDir);
+              if (snap.readError) return undefined;
+              const inv = buildGuardInventory({
+                snapshot: snap,
+                bootSnapshot: readGuardPostureBootSnapshot(config.stateDir),
+                registry: guardRegistry,
+              });
+              return buildHeartbeatPostureBlock(inv, new Date().toISOString());
+            } catch { return undefined; /* posture is optional on a beat */ }
+          };
           const refreshPool = (): void => {
             try {
               machinePoolRegistry!.recordHeartbeat({
@@ -11740,6 +11833,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                 selfReportedLastSeen: new Date().toISOString(),
                 loadAvg: osMod.loadavg()[0],
                 quotaState: selfQuotaState(),
+                guardPosture: selfGuardPosture(),
               });
               const hbApi = machineHeartbeat?.api;
               if (hbApi) {
@@ -12159,6 +12253,15 @@ export async function startServer(options: StartOptions): Promise<void> {
               .getActiveMachines()
               .filter((m) => m.machineId !== meshSelfId && !!m.entry.lastKnownUrl)
               .map((m) => ({ machineId: m.machineId, url: m.entry.lastKnownUrl as string }));
+          // EVERY registered non-revoked machine — URL or not — so the /guards
+          // pool view can account for each by name (no-known-url is a NAMED row,
+          // never a silent omission — GUARD-POSTURE-ENDPOINT-SPEC §2.3).
+          _listPoolMachines = () =>
+            meshIdMgr.getActiveMachines().map((m) => ({
+              machineId: m.machineId,
+              nickname: m.entry.nickname,
+              lastKnownUrl: m.entry.lastKnownUrl ?? null,
+            }));
           // Pool Dashboard Streaming requesting side (§2.2): build the connector
           // the WebSocketManager uses to open an upstream /pool-stream to a peer.
           // connect() is synchronous (PeerStreamProxy contract) but the mint +
@@ -12882,6 +12985,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                   journalAdvert?: Record<string, Record<string, { incarnation: string; lastSeq: number }>>;
                   commitmentsAdvert?: { incarnation: string; replicationSeq: number };
                   quotaState?: { blocked: boolean; blockedUntil?: string; reason?: string };
+                  guardPosture?: import('../core/types.js').GuardPostureSummary;
                 };
                 const journalAdvert = _unwrapPeerJournalAdvert(machineId, cap.journalAdvert);
                 // #930 sibling (live, v1.3.369): the commitments advert was
@@ -12899,6 +13003,9 @@ export async function startServer(options: StartOptions): Promise<void> {
                   journalAdvert,
                   ...(cap.commitmentsAdvert ? { commitmentsAdvert: cap.commitmentsAdvert } : {}),
                   ...(cap.quotaState ? { quotaState: cap.quotaState } : {}),
+                  // Guard posture rides the same pass-through (the A2 narrowing
+                  // lesson): dropping it here would blind the pool to peers' posture.
+                  ...(cap.guardPosture ? { guardPosture: cap.guardPosture } : {}),
                 };
               }
               return null;
@@ -13191,7 +13298,7 @@ export async function startServer(options: StartOptions): Promise<void> {
             carrier: _topicProfileCarrier,
           }
         : null;
-    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, cartographer: cartographer ?? undefined, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, subscriptionPool, quotaPoller, quotaAwareScheduler: _quotaAwareScheduler ?? undefined, proactiveSwapMonitor: _proactiveSwapMonitor ?? undefined, inUseAccountResolver, enrollmentWizard, semanticMemory, activitySentinel, rateLimitSentinel, releaseReadinessSentinel: releaseReadinessSentinel ?? undefined, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, topicProfile: _topicProfileCtx ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, localSigningKeyPem, leaseTransport, onLeasePullRequest: () => leaseCoordinatorRef?.currentLease() ?? null, liveTailReceiver, handoffWireTransport, onHandoffBegin, onHandoffInitiate: handoffInitiate, handoffInProgress: handoffSentinelInProgress, messageLedger, currentInboundByTopic, replyMarkerTransport, onReplyMarker: messageLedger ? (marker: unknown) => { const m = marker as { dedupeKey: string; platform: string; replyIdempotencyKey: string; epoch: number; topic?: string | null }; messageLedger!.applyRemoteReplyMarker(m.dedupeKey, { platform: m.platform, replyIdempotencyKey: m.replyIdempotencyKey, epoch: m.epoch, topic: m.topic ?? null }); } : undefined, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, warrantsReplyGate, collaborationSurfacer, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, a2aDeliveryTracker: a2aDeliveryTracker ?? undefined, responseReviewGate, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, machinePoolRegistry, meshRpcDispatcher, workingSetPullCoordinator, commitmentReplicaStore, forwardCommitmentMutate, sessionOwnershipRegistry, topicPinStore: _topicPinStore ?? undefined, streamTicketStore: _streamTicketStore ?? undefined, poolStreamAllowRemoteInput: (config as { dashboard?: { poolStream?: { allowRemoteInput?: boolean } } }).dashboard?.poolStream?.allowRemoteInput ?? false, poolStreamConnector: _poolStreamConnector ?? undefined, secretSync: _secretSyncHandle ?? undefined, meshSelfId: _meshSelfId ?? undefined, resolveRouterUrl: _resolveRouterUrl ?? undefined, resolvePeerUrls: _resolvePeerUrls ?? undefined, sessionPoolE2EResultStore, proxyCoordinator, topicIntentStore, topicIntentArcCheck, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, briefDeps, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, agentWorktreeReaper, mcpProcessReaper, geminiLoopRunner, sleepController, agentActivityState, reapLog, sleepWakeDetector, unjustifiedStopGate, stopGateDb, stopNotifier });
+    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, cartographer: cartographer ?? undefined, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, subscriptionPool, quotaPoller, quotaAwareScheduler: _quotaAwareScheduler ?? undefined, proactiveSwapMonitor: _proactiveSwapMonitor ?? undefined, inUseAccountResolver, enrollmentWizard, semanticMemory, activitySentinel, rateLimitSentinel, releaseReadinessSentinel: releaseReadinessSentinel ?? undefined, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, topicProfile: _topicProfileCtx ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, localSigningKeyPem, leaseTransport, onLeasePullRequest: () => leaseCoordinatorRef?.currentLease() ?? null, liveTailReceiver, handoffWireTransport, onHandoffBegin, onHandoffInitiate: handoffInitiate, handoffInProgress: handoffSentinelInProgress, messageLedger, currentInboundByTopic, replyMarkerTransport, onReplyMarker: messageLedger ? (marker: unknown) => { const m = marker as { dedupeKey: string; platform: string; replyIdempotencyKey: string; epoch: number; topic?: string | null }; messageLedger!.applyRemoteReplyMarker(m.dedupeKey, { platform: m.platform, replyIdempotencyKey: m.replyIdempotencyKey, epoch: m.epoch, topic: m.topic ?? null }); } : undefined, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, warrantsReplyGate, collaborationSurfacer, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, a2aDeliveryTracker: a2aDeliveryTracker ?? undefined, responseReviewGate, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, machinePoolRegistry, meshRpcDispatcher, workingSetPullCoordinator, commitmentReplicaStore, forwardCommitmentMutate, sessionOwnershipRegistry, topicPinStore: _topicPinStore ?? undefined, streamTicketStore: _streamTicketStore ?? undefined, poolStreamAllowRemoteInput: (config as { dashboard?: { poolStream?: { allowRemoteInput?: boolean } } }).dashboard?.poolStream?.allowRemoteInput ?? false, poolStreamConnector: _poolStreamConnector ?? undefined, secretSync: _secretSyncHandle ?? undefined, meshSelfId: _meshSelfId ?? undefined, resolveRouterUrl: _resolveRouterUrl ?? undefined, resolvePeerUrls: _resolvePeerUrls ?? undefined, guardRegistry, listPoolMachines: _listPoolMachines ?? undefined, sessionPoolE2EResultStore, proxyCoordinator, topicIntentStore, topicIntentArcCheck, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, briefDeps, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, agentWorktreeReaper, mcpProcessReaper, geminiLoopRunner, sleepController, agentActivityState, reapLog, sleepWakeDetector, unjustifiedStopGate, stopGateDb, stopNotifier });
     // Resolve the late-bound topic-operator getter (increment 2e): routing was
     // wired before the server existed; from here on inbound binds use the
     // server's own store instance.

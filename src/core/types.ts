@@ -1876,6 +1876,36 @@ export interface MachineCapacity {
    *  unless every machine is blocked or the user hard-pinned here. Absent =
    *  unknown = treated as not blocked (heartbeats from older versions). */
   quotaState?: { blocked: boolean; blockedUntil?: string; reason?: string };
+  /** Compact guard-posture summary self-reported in the capacity heartbeat
+   *  (GUARD-POSTURE-ENDPOINT-SPEC §2.3). Bound to the AUTHENTICATED sender at
+   *  ingestion (a body-claimed machineId can never overwrite another machine's
+   *  row); displayed age derives from `guardPostureReceivedAt` (receiver-side
+   *  clock), never the block's own `generatedAt`. Absent = the machine has
+   *  never reported posture ("guards: unknown", never "0 on / 0 off"). */
+  guardPosture?: GuardPostureSummary;
+  /** RECEIVER-side receipt time (ISO) of the posture block — survives local
+   *  restarts via the durable last-known store, so a dark peer renders with
+   *  its honest age. */
+  guardPostureReceivedAt?: string;
+}
+
+/** The compact posture block that rides the capacity heartbeat
+ *  (GUARD-POSTURE-ENDPOINT-SPEC §2.3). Counts plus per-key detail for ONLY
+ *  the two sharpest signals (offDeviantKeys, offRuntimeDivergentKeys) —
+ *  bounded by the manifest size. */
+export interface GuardPostureSummary {
+  onConfirmed: number;
+  onUnverified: number;
+  onStale: number;
+  onDryRun: number;
+  offDeviant: number;
+  offDeviantKeys: string[];
+  offRuntimeDivergent: number;
+  offRuntimeDivergentKeys: string[];
+  divergedPendingRestart: number;
+  errored: number;
+  missing: number;
+  generatedAt: string;
 }
 
 export interface MultiMachineConfig {

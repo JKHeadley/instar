@@ -91,6 +91,17 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     }),
   },
   {
+    key: 'guardPosture',
+    prefixes: ['/guards'],
+    description: 'Guard Posture (GUARD-POSTURE-ENDPOINT-SPEC) — read every machine\'s safety-guard flags with HONEST verification-graded states: on-confirmed (live runtime confirms) / on-unverified (config-on only, grey not green) / on-stale (dead tick loop) / on-dry-run (watching but toothless) / off classified dark-default vs diverged-from-default (the load-shed signature — the only off that alerts) / diverged-pending-restart (disk edit not yet live) / errored / missing (expected runtime never registered) / off-runtime-divergent (runtime contradicts an on-config — the in-memory load-shed class). ?scope=pool accounts for EVERY registered machine by name (classified failure rows, never silent omission); the Machines tab shows last-known posture with age even for a dark peer (heartbeat piggyback + durable store). Read-only, always-on (deliberately no enabled gate — an off-switch on the guard-visibility surface would itself be an invisible disabled guard). When asked "are my guards on?" / "why didn\'t the watchdog fire on machine X?" / after any incident load-shed → read this, never guess. To re-enable a guard via PATCH /config, send the guard\'s FULL config block (one-level-deep merge erases sibling tuning).',
+    build: ({ ctx }) => ({
+      configured: true,
+      runtimeEnriched: !!ctx.guardRegistry,
+      pool: !!ctx.listPoolMachines,
+      endpoints: ['GET /guards', 'GET /guards?scope=pool'],
+    }),
+  },
+  {
     key: 'multiMachinePool',
     prefixes: ['/pool'],
     description: 'Multi-Machine Session Pool status — which machine holds the router + every machine\'s nickname, hardware, online status, load, and clock-skew. Backs the Machines dashboard tab and "where is this running?" / "move this to <nickname>". Single-machine until >1 paired.',

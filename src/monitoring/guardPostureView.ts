@@ -341,23 +341,11 @@ export function buildGuardInventory(opts: {
   return { guards, summary };
 }
 
-/** Compact posture block that rides the capacity heartbeat (spec §2.3) —
- *  bounded by the manifest size; per-key detail ONLY for the two sharpest
- *  signals (offDeviantKeys, offRuntimeDivergentKeys). */
-export interface HeartbeatGuardPosture {
-  onConfirmed: number;
-  onUnverified: number;
-  onStale: number;
-  onDryRun: number;
-  offDeviant: number;
-  offDeviantKeys: string[];
-  offRuntimeDivergent: number;
-  offRuntimeDivergentKeys: string[];
-  divergedPendingRestart: number;
-  errored: number;
-  missing: number;
-  generatedAt: string;
-}
+/** Compact posture block that rides the capacity heartbeat (spec §2.3).
+ *  The wire shape lives in core/types.ts (GuardPostureSummary) so the
+ *  heartbeat/pool layers don't import from monitoring; this alias keeps the
+ *  spec's name for monitoring-side consumers. */
+export type HeartbeatGuardPosture = import('../core/types.js').GuardPostureSummary;
 
 export function buildHeartbeatPostureBlock(
   inventory: GuardInventoryResult,

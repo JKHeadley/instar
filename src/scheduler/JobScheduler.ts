@@ -2021,6 +2021,19 @@ export class JobScheduler {
       }
     }
   }
+
+  /** Sync in-memory runtime read for the GuardRegistry (GET /guards).
+   *  Registration is not life: a load-shed pause reads enabled:false
+   *  (off-runtime-divergent against an on-config), never healthy. Cheap
+   *  property reads ONLY — getStatus() lists sessions and must not be
+   *  called from the guards route. */
+  guardStatus(): { enabled: boolean; jobCount: number; pausedJobCount: number } {
+    return {
+      enabled: this.running && !this.paused,
+      jobCount: this.jobs.length,
+      pausedJobCount: this.jobs.filter((j) => !j.enabled).length,
+    };
+  }
 }
 
 /** Result of {@link JobScheduler.resolveAllowlist}. Pure-data; no state. */
