@@ -308,12 +308,47 @@ WITHOUT changing existing kinds:
   filters by kind, so a kind that is never emitted is simply absent — no special-
   casing. This is what lets each store ship dark INDEPENDENTLY.
 - **Flag-coherence gating (master spec §5, line 92).** A replicated kind is
-  emitted to a peer ONLY when that peer's `seamlessnessFlags` advertises the
+  exchanged with a peer ONLY when that peer's `seamlessnessFlags` advertises the
   matching `stateSync.<store>` capability. The journal applier "silently drops
-  unknown kinds" (forward-compat) — emitting a new kind to an old peer would be
-  silently dropped, the NAMED skew-failure mode. The emission gate consults the
-  peer advert (§10) before forwarding a replicated kind. A boot-time pool-flag-
-  coherence check surfaces (once) any mixed state.
+  unknown kinds" (forward-compat). A boot-time pool-flag-coherence check surfaces
+  (once) any mixed state.
+
+  > **TRANSPORT IS PULL (not push) — how the named silent-drop mode actually
+  > manifests, and the gate's role on a pull transport.** The real journal-sync
+  > transport is RECEIVER-DRIVEN PULL: `PeerPresencePuller.driveJournalDelta`
+  > iterates the SENDER's `journalAdvert` (from `CoherenceJournal.getOwnAdvert()`,
+  > which enumerates the static `JOURNAL_KINDS` const) and pulls each kind the
+  > receiver is behind on; the serve side (`JournalSyncApplier.buildServeBatch`)
+  > AND the apply side both gate on `JOURNAL_KINDS`. There is NO push-forward step
+  > that the emission gate sits in front of. So on the transport that exists today
+  > the named "emit a new kind to an OLD peer → silently dropped" mode manifests
+  > as: **an old peer (whose `JOURNAL_KINDS` lacks the new kind) simply NEVER
+  > PULLS it** — the kind never appears in a delta request, so nothing is dropped
+  > on apply because nothing is ever requested. The flag-coherence gate's role on
+  > a PULL transport is therefore NOT a push-forward filter; it is **(i)** the
+  > boot-time pool-flag-coherence surface (`checkPoolFlagCoherence`, wired in
+  > `server.ts`) that detects the mixed-flag pool ONCE and **(ii)** — when WS2.1
+  > lands a concrete kind — the gate the SERVE/PULL decision consults so a serving
+  > machine declines to serve (and a puller declines to request) a store's kind to
+  > a peer that does not advertise the matching `stateSync.<store>` receive flag.
+  > `shouldEmitToPeer` is the pure per-peer decision the WS2.1 PR will consult AT
+  > THAT serve/pull chokepoint (it is intentionally UNWIRED in Step 2 — the
+  > substrate has no concrete kind to serve yet; it is dead code by design until
+  > the first store registers, NOT an unintegrated push gate).
+  >
+  > **A replicated kind MUST be registered in BOTH kind registries.** There are
+  > two parallel registries: the new `ReplicatedKindRegistry` (which the
+  > flag-coherence gate + the `stateSyncReceive` advert self-report read) AND the
+  > static `JOURNAL_KINDS` const in `CoherenceJournal.ts` (which gates BOTH
+  > `buildServeBatch` serve and the applier's apply, and which `getOwnAdvert`
+  > enumerates). A WS2.1 PR that registers a kind into `ReplicatedKindRegistry`
+  > but FORGETS to add it to `JOURNAL_KINDS` produces a store that advertises
+  > `stateSyncReceive=true` yet serves/applies/pulls nothing — a SILENT
+  > no-replication. Every replicated kind MUST be added to BOTH. The wiring-
+  > integrity test `tests/unit/ReplicatedRecordEnvelope.test.ts` asserts that
+  > every kind registered into a `ReplicatedKindRegistry` is also present in
+  > `JOURNAL_KINDS` (run against a registry seeded with the eventual concrete
+  > kinds), making the coupling a CI ratchet rather than a memory item.
 
 ## 5. Component 3 — Quarantine ring (`src/core/ReplicationQuarantine.ts`)
 

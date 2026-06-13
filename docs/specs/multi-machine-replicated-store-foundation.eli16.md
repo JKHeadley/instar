@@ -101,5 +101,20 @@ pipe.
    focused security round, on top of this foundation — you already pre-approved the
    boundary, this just builds the floor it stands on.
 
+## One implementation note for the next builder (Step 2 substrate)
+
+The way machines actually exchange journal entries is **pull, not push**: a machine
+that's behind asks a peer for the kinds of records it knows about and is missing —
+nobody force-pushes. That matters for how a new memory store gets turned on safely.
+A new store has to be registered in **two** places — the new replicated-kind
+registry (which the "does this peer speak this store?" check and the capability
+advert read) *and* the older static list of journal kinds the pull transport
+actually serves and applies. Register it in only the first and you'd get a store
+that advertises "yes, sync me" but quietly syncs nothing. To make that impossible
+to forget, a test asserts every replicated kind appears in both lists — so it's a
+build-time guarantee, not a thing someone has to remember. (Step 2 ships the
+machinery with **zero** concrete stores registered, so all of this is dormant until
+the first store, preferences, lands.)
+
 Nothing here changes a single-machine setup. It only wakes up when you run me on
 more than one machine and switch a memory store on.

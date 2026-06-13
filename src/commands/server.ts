@@ -101,6 +101,8 @@ import { GitSyncManager } from '../core/GitSync.js';
 import { RegistrySyncDebouncer } from '../core/RegistrySyncDebouncer.js';
 import { wireRegistrySync } from '../core/wireRegistrySync.js';
 import { assertSeamlessnessInvariants } from '../core/seamlessnessConfig.js';
+import { assertStateSyncInvariants } from '../core/stateSyncConfig.js';
+import { ReplicatedKindRegistry, checkPoolFlagCoherence, type PeerStateSyncAdvert } from '../core/ReplicatedRecordEnvelope.js';
 import { FencedLease, type LeaseCrypto } from '../core/FencedLease.js';
 import { GitLeaseStore } from '../core/GitLeaseStore.js';
 import { LocalLeaseStore } from '../core/LocalLeaseStore.js';
@@ -3536,6 +3538,39 @@ export async function startServer(options: StartOptions): Promise<void> {
     // that breaks the RPO bound) is REJECTED here with a clear message rather
     // than degrading silently. Default/absent config resolves to valid values.
     const seamlessness = assertSeamlessnessInvariants(config.multiMachine);
+
+    // Replicated-store foundation (multi-machine-replicated-store-foundation §10.2)
+    // — resolve + validate the FOUNDATION-LEVEL stateSync knobs at startup. An
+    // out-of-range value (e.g. a maxDriftMs below the 60s floor that would start
+    // quarantining ordinary NTP jitter, or a non-positive journal budget) is
+    // REJECTED here with a clear message rather than silently coerced (§10.2:
+    // "a bad config is REJECTED, not silently degraded"). Default/absent config
+    // resolves to valid values. The per-store on-switches are dark by default and
+    // not range-validated; with none on, the foundation is inert.
+    const stateSync = assertStateSyncInvariants(config.multiMachine);
+    void stateSync; // foundation knobs are consumed by the store PRs (WS2.1+)
+
+    // The replicated-kind registry (Component 2). Ships EMPTY in this step — the
+    // first concrete store (WS2.1) registers its kind onto it. Constructed here so
+    // the substrate is wired and the per-store stateSyncReceive advert can be
+    // self-reported from the set of registered+enabled stores (machinery presence,
+    // never a hardcoded true). A machine advertises a store's receive capability
+    // ONLY when that store's kind is registered here AND emission is enabled in
+    // config — i.e. it can both validate AND apply that kind. With an empty
+    // registry the advert is `{}` (non-participant for every store): the correct
+    // single-machine / no-store-yet behavior (a strict no-op).
+    const replicatedKindRegistry = new ReplicatedKindRegistry();
+    const selfStateSyncReceive = (): Record<string, boolean> => {
+      const out: Record<string, boolean> = {};
+      const stores = (config.multiMachine as unknown as { stateSync?: Record<string, { enabled?: boolean }> } | undefined)?.stateSync;
+      for (const store of replicatedKindRegistry.stores()) {
+        // Advertise the receive capability iff the machinery exists (kind
+        // registered) AND the store is enabled here — so a peer never forwards a
+        // kind we'd silently drop (the named skew-failure mode).
+        if (stores?.[store]?.enabled === true) out[store] = true;
+      }
+      return out;
+    };
 
     // Read local signing key for machine route authentication
     let localSigningKeyPem = '';
@@ -12909,7 +12944,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                 // WS1.1 capability advertisement (spec invariant 5): a bounded
                 // fixed-size summary, never an inventory. Reported live each
                 // heartbeat so a queue going dark withdraws the capability.
-                seamlessnessFlags: { ws11DeliverReceive: !!_inboundQueue, ws12DrainReceive: !!_drainRunner, ws44PoolLinks: !!_poolLink },
+                seamlessnessFlags: { ws11DeliverReceive: !!_inboundQueue, ws12DrainReceive: !!_drainRunner, ws44PoolLinks: !!_poolLink, stateSyncReceive: selfStateSyncReceive() },
                 // Durable Inbound Message Queue §5.1: depth + oldest + tenure +
                 // bounded top-K — the survivor's loss-SUSPECTED item, capped
                 // re-placement arm, and supersede-dedupe key all read these.
@@ -12942,6 +12977,43 @@ export async function startServer(options: StartOptions): Promise<void> {
           refreshPool();
           const poolTimer = setInterval(refreshPool, 30_000);
           if (typeof poolTimer.unref === 'function') poolTimer.unref();
+
+          // Boot-time pool-flag-coherence check (multi-machine-replicated-store-
+          // foundation §4). For each LOCALLY-ENABLED replicated store, surface
+          // ONCE (coalesced — never per-peer-per-tick) any peer that does NOT
+          // advertise the matching stateSyncReceive capability: that peer would
+          // SILENTLY DROP our kind (the journal applier drops unknown kinds), the
+          // NAMED data-loss skew mode. Correct for N peers — checkPoolFlagCoherence
+          // iterates ALL advertising peers. With an EMPTY registry (the Step-2
+          // substrate-only state) this is a strict no-op (no registered stores →
+          // empty verdict → nothing surfaced). The first concrete store (WS2.1)
+          // registers its kind and this check starts doing real work automatically.
+          let stateSyncCoherenceSurfaced = false;
+          const checkStateSyncCoherence = (): void => {
+            if (stateSyncCoherenceSurfaced) return;
+            if (replicatedKindRegistry.size === 0) return; // no concrete store yet
+            const peers: PeerStateSyncAdvert[] = machinePoolRegistry!
+              .getCapacities()
+              .filter((c) => c.machineId !== poolSelfId)
+              .map((c) => ({
+                machineId: c.machineId,
+                online: c.online,
+                stateSyncReceive: c.seamlessnessFlags?.stateSyncReceive,
+              }));
+            const stores = (config.multiMachine as unknown as { stateSync?: import('../core/ReplicatedRecordEnvelope.js').StateSyncStores } | undefined)?.stateSync;
+            const verdict = checkPoolFlagCoherence(replicatedKindRegistry, stores, peers);
+            if (verdict.mixedStores.length > 0) {
+              // Surface ONCE (coalesced): one log line listing every mixed store.
+              // A richer surface (one Attention item) is the store PR's to add;
+              // the substrate guarantees the single, deduped detection here.
+              stateSyncCoherenceSurfaced = true;
+              console.log(pc.yellow(`  [stateSync] pool-flag-coherence — mixed flag state across ${verdict.mixedStores.length} store(s):`));
+              for (const line of verdict.summary) console.log(pc.yellow(`    • ${line}`));
+            }
+          };
+          checkStateSyncCoherence();
+          const coherenceTimer = setInterval(checkStateSyncCoherence, 60_000);
+          if (typeof coherenceTimer.unref === 'function') coherenceTimer.unref();
         }
       }
     } catch (err) {

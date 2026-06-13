@@ -1927,6 +1927,17 @@ export interface MachineCapacity {
      *  → a fronting peer never proxies a /view to it (it stays local-only there).
      *  Advertised only when the dark ws44PoolLinks flag resolved on. */
     ws44PoolLinks?: boolean;
+    /** WS2 replicated-store foundation (§10.2 capability advert). Per-store
+     *  receive capability: `stateSyncReceive[store] === true` means this machine
+     *  can durably RECEIVE + apply that store's replicated journal kind. ABSENT
+     *  (older peer, or the store dark here) = non-participant for that store (the
+     *  conservative side — a sender NEVER forwards a store's kind to a peer that
+     *  does not advertise it, since the journal applier silently drops an unknown
+     *  kind: the NAMED data-loss skew mode this advert prevents). Keyed by the
+     *  same `store` key the stateSync config + registry use, so a store added
+     *  later needs no change here. Self-reported from machinery presence in the
+     *  capacity heartbeat (the ws11DeliverReceive/ws44PoolLinks pattern). */
+    stateSyncReceive?: Record<string, boolean>;
   };
   /** Compact guard-posture summary self-reported in the capacity heartbeat
    *  (GUARD-POSTURE-ENDPOINT-SPEC §2.3). Bound to the AUTHENTICATED sender at
@@ -2077,6 +2088,20 @@ export interface MultiMachineConfig {
    */
   coherenceJournal?: CoherenceJournalUserConfig;
   /**
+   * Replicated-store foundation (multi-machine-replicated-store-foundation.md
+   * §10). The substrate that lets independent stores (preferences, relationships,
+   * learnings, …) replicate via flag-gated, flag-coherence-gated journal-kind
+   * emission. Ships DARK per store: each `stateSync.<store>.enabled` defaults
+   * false, so the default preserves today's behavior exactly (no replicated
+   * kinds emitted). The per-store flags ARE the foundation's on-switch, store by
+   * store — there is no foundation-level master enable. The foundation-level
+   * knobs (the journal budget, the HLC drift ceiling, the snapshot-cache bounds)
+   * are validated at startup by validateStateSyncInvariants() — a bad value is
+   * REJECTED, not silently coerced. A single-machine install is a strict no-op
+   * (emission is gated on a peer advertising the matching capability).
+   */
+  stateSync?: StateSyncConfig;
+  /**
    * Cross-Machine Seamlessness graduated-rollout flags (MULTI-MACHINE-
    * SEAMLESSNESS-SPEC). Each workstream's dark flag lives here. All optional;
    * ABSENT = today's behavior preserved exactly. Resolved through the
@@ -2115,6 +2140,42 @@ export interface MultiMachineConfig {
      */
     ws44LoadShedLoadPerCore?: number;
   };
+}
+
+/**
+ * Per-store stateSync flags (multi-machine-replicated-store-foundation §10.2).
+ * Each replicated store carries its OWN on-switch + dry-run, so stores ship dark
+ * INDEPENDENTLY. `enabled` (default false) is the §4 flag-gated-emission switch:
+ * when false the store NEVER emits its kind (strict no-op). `dryRun` (default
+ * true on first enable) logs intended merges/applies WITHOUT mutating store
+ * state — the `dark → dryRun → live` rollout ladder (§10.1).
+ */
+export interface StoreStateSyncConfig {
+  enabled?: boolean;
+  dryRun?: boolean;
+}
+
+/**
+ * The `multiMachine.stateSync` block (multi-machine-replicated-store-foundation
+ * §10). FOUNDATION-LEVEL knobs (shared by every replicated store) are named
+ * fields; PER-STORE flag blocks live as additional keys (e.g. `pref`,
+ * `relationship`) and are typed via the index signature, so a store added later
+ * (WS2.1+) needs no change to this interface. ALL optional — ABSENT preserves
+ * today's behavior exactly. The foundation knobs are validated at startup by
+ * validateStateSyncInvariants(); a per-store `enabled` is the dark-by-default
+ * on-switch and is NOT range-validated.
+ */
+export interface StateSyncConfig {
+  /** Aggregate journal byte budget across all replicated kinds (§10.2). Default 64 MiB. */
+  aggregateJournalBudgetBytes?: number;
+  /** The HLC bounded-drift ceiling (§3.4 / §10.2). Must be within [60s, 15min]. Default 5min. */
+  maxDriftMs?: number;
+  /** Snapshot-cache count ceiling (§8.2). Default 16. */
+  maxCachedSnapshots?: number;
+  /** Snapshot-cache byte ceiling (§8.2). Default 32 MiB. */
+  maxCacheBytes?: number;
+  /** Per-store on-switches (e.g. `pref`, `relationship`, …) — added by the store PRs. */
+  [store: string]: StoreStateSyncConfig | number | undefined;
 }
 
 /**
