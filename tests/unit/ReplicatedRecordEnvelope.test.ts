@@ -717,12 +717,13 @@ describe('wiring-integrity: every replicated kind must also be in JOURNAL_KINDS 
     const reg = new ReplicatedKindRegistry();
     // Use a SYNTHETIC future kind that is NOT (yet) in JOURNAL_KINDS — this is
     // exactly the trap a future store PR must avoid: registering here without
-    // extending JOURNAL_KINDS. (Post-WS2.1, the REAL 'pref-record' kind IS in
-    // JOURNAL_KINDS — see the coupling assertion below — so it can no longer stand
-    // in for the uncoupled case.)
-    reg.register({ kind: 'relationship-record', store: 'relationships', schema: valueSchema() });
+    // extending JOURNAL_KINDS. (Post-WS2.1/WS2.3, the REAL 'pref-record' and
+    // 'relationship-record' kinds ARE in JOURNAL_KINDS — see the coupling assertions
+    // below — so they can no longer stand in for the uncoupled case; use a
+    // deliberately-fictional future kind here.)
+    reg.register({ kind: 'future-store-record', store: 'future-store', schema: valueSchema() });
     const missing = reg.kinds().filter((k) => !(JOURNAL_KINDS as string[]).includes(k));
-    expect(missing).toEqual(['relationship-record']); // the ratchet SEES the gap
+    expect(missing).toEqual(['future-store-record']); // the ratchet SEES the gap
   });
 
   it('the WS2.1 pref-record kind IS coupled in BOTH registries (the post-WS2.1 ratchet)', async () => {

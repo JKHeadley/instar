@@ -353,9 +353,17 @@ describe('lint-dev-agent-dark-gate', () => {
       // entry below it by +13 (the new sub-block's line count). RECOMPUTED via the
       // attributor against the MERGED ConfigDefaults.ts.
       '851': 'multiMachine.stateSync.preferences.enabled',
-      '959': 'cartographer.freshnessSweep.enabled',
-      '1004': 'cartographer.conformanceAudit.llmEnrichment.enabled',
-      '1029': 'cartographer.subtreeNav.llmRerank.enabled',
+      // WS2.3 (ws23-relationships-userregistry-security): the stateSync block gained
+      // a `relationships: { enabled:false, dryRun:true }` per-store sub-block — the
+      // SECOND replicated-store consumer + the FIRST PII kind. It ADDS this literal
+      // `enabled:false` path (865, classified in DARK_GATE_EXCLUSIONS as
+      // optional-integration) right after the preferences sub-block and shifts every
+      // cartographer + credentialRepointing entry below it by +14 (the new sub-block's
+      // line count). RECOMPUTED via the attributor against the MERGED ConfigDefaults.ts.
+      '865': 'multiMachine.stateSync.relationships.enabled',
+      '973': 'cartographer.freshnessSweep.enabled',
+      '1018': 'cartographer.conformanceAudit.llmEnrichment.enabled',
+      '1043': 'cartographer.subtreeNav.llmRerank.enabled',
       // Threadline Robustness Phase 2 (CMT-1362): the threadline.canonicalHistory
       // block (no `enabled` literal — conversationDiscipline is dev-gated) is inserted
       // AFTER the threadline section; entries at/after mentor.enabled shift again.
@@ -369,7 +377,7 @@ describe('lint-dev-agent-dark-gate', () => {
       // cartographer block but above credentialRepointing → this END entry shifted
       // +15 (1015 → 1030); cartographer/sessionPool entries unchanged. RECOMPUTED via
       // the attributor against the MERGED ConfigDefaults.ts.
-      '1066': 'subscriptionPool.credentialRepointing.enabled',
+      '1080': 'subscriptionPool.credentialRepointing.enabled',
     };
     const actual = attributeRealConfigDefaults();
     expect(actual).toEqual(EXPECTED);

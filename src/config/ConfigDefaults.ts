@@ -851,6 +851,20 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
         enabled: false,
         dryRun: true,
       },
+      // WS2.3 (ws23-relationships-userregistry-security) — the SECOND replicated-
+      // store consumer and the FIRST PII kind: `relationship-record` on the HLC
+      // foundation. Per-store on-switch ships the graduated-rollout ladder dark:
+      // `enabled:false` (the foundation primitives stay inert, NO PII ever crosses
+      // a machine boundary) + `dryRun:true` (on first enable, log intended merges
+      // WITHOUT mutating store state). A literal `enabled:false` (NOT dev-gate-omit)
+      // per the spec ladder dark→dryRun→live — classified in DARK_GATE_EXCLUSIONS
+      // (optional-integration, staged rollout), mirroring the preferences sibling.
+      // user-registry + topic-operator (the spec's other two PII kinds) are a
+      // tracked follow-up (CMT-1416) on the proven relationship-record machinery.
+      relationships: {
+        enabled: false,
+        dryRun: true,
+      },
     },
   },
   // Session Boot Self-Knowledge (spec: session-boot-self-knowledge.md) — the
