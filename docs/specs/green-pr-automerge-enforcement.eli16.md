@@ -57,6 +57,28 @@ that only the real dev process produces, so junk on a lookalike branch can't rid
 you say "hold #N" in chat, I have a one-call lever that stamps the hold marker on the PR
 immediately, so a conversational hold becomes a real hold the machinery respects.
 
+The final review round (round 5) closed four more: a PR that touches the merge machinery
+itself (CI workflows, the verifier script, the watcher's own code) was already excluded
+from auto-merge — "those need human eyes" — but the session-exit nudge would have handed
+the agent an exact ready-to-run merge command for them, quietly defeating the human-eyes
+rule; now those PRs route to you instead, never to a command the agent can run. The
+watcher's safety timer now survives the server restarting mid-merge (which its own merges
+routinely cause). The "is our pinned list of required checks stale?" self-check got a
+real reference point (the newest commit that actually ran CI — the tip of main usually
+hasn't). And both outside models (GPT-5.5 and Gemini) agreed on one condition we've made
+binding: before this ever expands beyond me to other agents, the credential must move
+from your admin token to a narrowly-scoped GitHub App.
+
+## One honest limitation you're also ratifying
+
+Skipping the "branch must be up to date" rule is the whole point (it's what kills the
+stale-PR treadmill), but it has a flip side: my PR's tests ran against main *as it was
+then*, so a logically conflicting change that lands on main minutes before my merge
+isn't re-tested against it. Today's manual merges have exactly the same gap, textual
+conflicts still always block, and main re-runs the full test suite after every merge —
+so a rare bad interaction is caught minutes later and the audit names exactly which
+merge did it. If you'd rather pay the treadmill cost for re-testing, there's a knob.
+
 ## What it will NOT do
 
 - Never merges anyone else's PR — only ones verifiably mine.
