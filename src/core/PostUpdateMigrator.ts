@@ -4949,6 +4949,24 @@ Strip the \`[telegram:N]\` prefix before interpreting the message. Respond natur
       result.skipped.push('CLAUDE.md: Attention Queue section already present');
     }
 
+    // WS4.1 (MULTI-MACHINE-SEAMLESSNESS-SPEC) — pool-scope attention awareness.
+    // A deployed agent whose CLAUDE.md already carries the Attention Queue
+    // section gets the ?scope=pool bullet inserted after the View line.
+    // Content-sniff on 'attention?scope=pool' keeps it idempotent.
+    if (content.includes('**Attention Queue**') && !content.includes('attention?scope=pool')) {
+      const poolBullet = `- View the WHOLE POOL (across every machine): \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/attention?scope=pool"\` — merges each online machine's items (tagged with machineId/machineNickname), tolerant of a dark peer (a \`pool.failed\` entry, never a 500), short-TTL cached, P17-coalesced (machines raising the SAME pool-wide event collapse to ONE row; HIGH/URGENT always stay individually visible). Use this on a multi-machine setup when the user asks "what needs my attention?" — the plain view only shows THIS machine.\n`;
+      // Anchor after the first View line within the section; fall back to after
+      // the section header line.
+      const anchor = /^- View[^\n]*\/attention[^\n]*$/m;
+      if (anchor.test(content)) {
+        content = content.replace(anchor, (m) => `${m}\n${poolBullet.trimEnd()}`);
+      } else {
+        content = content.replace(/\*\*Attention Queue\*\*[^\n]*\n/, (m) => `${m}${poolBullet}`);
+      }
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Attention Queue pool-scope bullet (WS4.1)');
+    }
+
     // Tunnel-failure-resilience awareness (spec Part 7). Existing agents
     // already have the Cloudflare Tunnel section but not the resilience
     // text — content-sniff and append a bullet so they can explain a link

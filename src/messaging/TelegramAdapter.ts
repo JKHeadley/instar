@@ -286,6 +286,13 @@ export interface AttentionItem {
    * reposted. Falls back to `sourceContext`, then `id`, when unset.
    */
   healthKey?: string;
+  /** WS4.1 (MULTI-MACHINE-SEAMLESSNESS-SPEC §WS4.1): the machine this item
+   *  belongs to. Stamped at read time in GET /attention (the store stays
+   *  machine-agnostic); absent on a single-machine install. */
+  machineId?: string;
+  /** Display nickname of `machineId`, resolved from the pool registry at read
+   *  time. */
+  machineNickname?: string;
 }
 
 /**
