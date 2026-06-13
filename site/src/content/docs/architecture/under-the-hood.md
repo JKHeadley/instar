@@ -706,3 +706,14 @@ accounts). Drives the automatable round-trips (identity-verified exchange-then-r
 always restoring) and surfaces the inherently-manual items (refresher correctness, the §0.c at-expiry
 residual via a disposable grant, liveness) without ever auto-passing them. An `armed` guard performs
 zero swaps unless explicitly armed, so importing or unit-testing the module can never move a credential.
+
+### POST /credentials/livetest (the promotion gate)
+
+`POST /credentials/livetest` is the reachable entrypoint for the §5 livetest battery (the
+`CredentialRepointingLivetest` harness) — the dry-run→live PROMOTION gate. It wires the harness to
+the real swap executor + identity oracle and runs the automatable round-trips. Two independent
+gates protect it: the harness performs ZERO swaps unless `armed:true` is in the request body (the
+operator explicitly arms the battery), and even armed the executor's own `dryRun` keeps writes off
+until a deliberate `dryRun:false`. Dark → 503; every named slot is validated against the enumerated
+ledger set (→ 400) before the harness runs. The report is scrubbed and carries no token material.
+

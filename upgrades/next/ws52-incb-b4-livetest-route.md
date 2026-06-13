@@ -1,0 +1,31 @@
+# WS5.2 Increment B / B4 — the livetest battery entrypoint (promotion gate)
+
+<!-- bump: patch -->
+
+<!--
+  NOTE: adds POST /credentials/livetest — the reachable entrypoint for the §5 livetest battery
+  (the Step-10 CredentialRepointingLivetest harness), the dry-run→live promotion gate. A
+  credential-action route, but double-gated: ZERO swaps unless armed:true (harness), and even
+  armed ZERO writes unless dryRun:false (executor). Dark → 503; slots validated → 400. Second-pass
+  reviewed (CONCUR). Running it live is the operator's enablement moment (CMT-1494).
+-->
+
+## What Changed
+
+Completes Increment B's tooling with the promotion gate made reachable: `POST /credentials/livetest` runs the §5 livetest battery (the harness built in Step 10) against the real swap executor + identity oracle.
+
+- **Double-gated credential-action route.** A real credential move needs BOTH `armed:true` in the request body (the harness performs zero swaps otherwise) AND a deliberate `dryRun:false` (the executor writes nothing otherwise). Either gate alone keeps every credential untouched.
+- **Defence-in-depth.** Dark → 503 (the lever guard); every named slot is validated against the enumerated ledger set → 400 before the harness runs (a `../`/`~`/absolute path can't reach a write); the report is scrubbed and carries no token material.
+- **The report.** Surfaces the automatable round-trip verdicts (identity-verified exchange-then-restore, always restoring) and the inherently-manual items (refresher correctness, the §0.c residual via a disposable grant, liveness) — `promotable` stays false while any manual item remains.
+
+## What to Tell Your User
+
+The "is this safe to turn on?" check is now a button you can press when you're ready. It runs the real safety battery — a live account-swap and swap-back, verified with the trustworthy identity check, always restoring — and tells you whether the automatic moves landed correctly. Two separate safety catches protect it: it does nothing unless you explicitly arm it, and even armed it won't move a real credential until you've also flipped off dry-run. Two parts of the full battery are hands-on (waiting out a token refresh, stressing a throwaway login), which it lists for you. This is the last rung before the go/no-go: when you want to actually turn on real credential moves, you run this first, watch it pass, then decide.
+
+## Summary of New Capabilities
+
+`POST /credentials/livetest` — the reachable promotion gate for live credential re-pointing. Runs the §5 livetest battery against the real executor + oracle; double-gated (armed:true AND dryRun:false both required to move a real credential), dark → 503, slots validated → 400, report scrubbed. The operator-run last rung before the dry-run→live go/no-go.
+
+## Evidence
+
+- `tests/integration/credential-routes.test.ts` (+4 = 13) — DARK → 503; ENABLED + NOT armed → refused report with zero swaps + the manual items surfaced; ENABLED + armed → the battery runs (armed report, both round-trip steps present, promotable false); unknown slot → 400 (no harness run). tsc + full lint clean; docs-coverage route floor preserved. Independent second-pass review CONCUR (two independent gates intact — armed AND dryRun:false; dark 503s before construction; path-traversal slots rejected; report scrubbed; harness always-restores).

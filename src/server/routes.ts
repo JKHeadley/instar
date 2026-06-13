@@ -19434,6 +19434,53 @@ export function createRoutes(ctx: RouteContext): Router {
     });
   });
 
+  // POST /credentials/livetest {armed, enrolledPair?, defaultSlotPair?} — B4: the §5 livetest
+  // battery as a REACHABLE entrypoint (the dry-run→live PROMOTION gate). Wires the
+  // CredentialRepointingLivetest harness to the REAL executor + identity oracle and runs the
+  // automatable round-trips. SAFETY: the harness performs ZERO swaps unless `armed:true` is in
+  // the body (the operator explicitly arms the battery), and even armed, the executor's own
+  // dryRun keeps writes off until a deliberate dryRun:false — so this is meaningful ONLY at the
+  // operator's enablement moment (it exchanges REAL credentials between REAL accounts). Dark →
+  // 503 (credLeverGuard); levers disabled → 403.
+  router.post('/credentials/livetest', async (req, res) => {
+    const cr = credLeverGuard(res);
+    if (!cr) return;
+    const body = (req.body ?? {}) as {
+      armed?: boolean;
+      enrolledPair?: { slotA: string; slotB: string };
+      defaultSlotPair?: { defaultSlot: string; enrolledSlot: string };
+    };
+    const { CredentialRepointingLivetest } = await import('../core/CredentialRepointingLivetest.js');
+    const members = new Set(cr.ledger.getAssignments().map((a) => a.slot));
+    const DEFAULT_SLOT = '~/.claude';
+    const enrolled = [...members].filter((s) => s !== DEFAULT_SLOT);
+    const enrolledPair = body.enrolledPair ?? { slotA: enrolled[0], slotB: enrolled[1] };
+    const defaultSlotPair = body.defaultSlotPair ?? { defaultSlot: DEFAULT_SLOT, enrolledSlot: enrolled[0] };
+    // Validate every named slot is a known ledger member (a value not in the enumerated set never
+    // reaches a keychain/path write — defence-in-depth; the executor also re-checks).
+    const named = [enrolledPair.slotA, enrolledPair.slotB, defaultSlotPair.defaultSlot, defaultSlotPair.enrolledSlot];
+    if (named.some((s) => typeof s !== 'string' || !members.has(s))) {
+      credSend(res, 400, { error: 'enrolledPair/defaultSlotPair must name known ledger slots', knownSlots: [...members] });
+      return;
+    }
+    const harness = new CredentialRepointingLivetest(
+      {
+        swap: async (a, b) => {
+          const r = await cr.swapExecutor.swap(a, b);
+          return { ok: r.outcome === 'swapped' || r.outcome === 'dry-run', detail: r.reason };
+        },
+        resolveIdentity: async (slot) => {
+          const probe = await cr.resolveIdentity(slot);
+          return { accountId: 'accountId' in probe ? probe.accountId : null };
+        },
+      },
+      { armed: body.armed === true },
+    );
+    cr.audit.audit({ event: 'credential-livetest-invoked', armed: body.armed === true });
+    const report = await harness.run(enrolledPair, defaultSlotPair);
+    credSend(res, 200, report);
+  });
+
   // ── Episodic Memory (Activity Sentinel) ──────────────────────────
 
   router.get('/episodes/stats', (req, res) => {

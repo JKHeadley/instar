@@ -240,4 +240,50 @@ describe('/credentials/* routes (integration)', () => {
     expect(await noauth('/credentials/restore-enrollment', { method: 'POST', body: '{}' })).toBe(401);
     expect(await noauth('/credentials/locations')).toBe(401);
   });
+
+  // ── B4 — the §5 livetest battery entrypoint (the dry-run→live promotion gate) ──
+  it('B4 livetest: DARK → POST /credentials/livetest 503 (no-op)', async () => {
+    const built = makeApp({ enabled: false }); stateDir = built.stateDir; cleanup.push(stateDir);
+    server = await listen(built.app);
+    expect((await api('/credentials/livetest', { method: 'POST', body: '{}' })).status).toBe(503);
+  });
+
+  it('B4 livetest: ENABLED + NOT armed → refused report, ZERO swaps', async () => {
+    const built = makeApp({ enabled: true }); stateDir = built.stateDir; cleanup.push(stateDir);
+    server = await listen(built.app);
+    const r = await api('/credentials/livetest', {
+      method: 'POST',
+      body: JSON.stringify({ enrolledPair: { slotA: SLOT_A, slotB: SLOT_B }, defaultSlotPair: { defaultSlot: SLOT_A, enrolledSlot: SLOT_B } }),
+    });
+    expect(r.status).toBe(200);
+    expect(r.body.armed).toBe(false);
+    expect(r.body.refusedReason).toMatch(/PROMOTION gate/);
+    expect(r.body.steps).toEqual([]);
+    expect(Array.isArray(r.body.manualSteps)).toBe(true);
+    expect(r.body.manualSteps.length).toBeGreaterThan(0);
+  });
+
+  it('B4 livetest: ENABLED + armed → runs the battery (armed report, steps present)', async () => {
+    const built = makeApp({ enabled: true }); stateDir = built.stateDir; cleanup.push(stateDir);
+    server = await listen(built.app);
+    const r = await api('/credentials/livetest', {
+      method: 'POST',
+      body: JSON.stringify({ armed: true, enrolledPair: { slotA: SLOT_A, slotB: SLOT_B }, defaultSlotPair: { defaultSlot: SLOT_A, enrolledSlot: SLOT_B } }),
+    });
+    expect(r.status).toBe(200);
+    expect(r.body.armed).toBe(true);
+    expect(Array.isArray(r.body.steps)).toBe(true);
+    expect(r.body.steps.length).toBe(2); // (a) enrolled + (b) default round-trips
+    expect(r.body.promotable).toBe(false); // manual items remain outstanding
+  });
+
+  it('B4 livetest: unknown slot → 400 (no harness run)', async () => {
+    const built = makeApp({ enabled: true }); stateDir = built.stateDir; cleanup.push(stateDir);
+    server = await listen(built.app);
+    const r = await api('/credentials/livetest', {
+      method: 'POST',
+      body: JSON.stringify({ enrolledPair: { slotA: '~/.does-not-exist', slotB: SLOT_B }, defaultSlotPair: { defaultSlot: SLOT_A, enrolledSlot: SLOT_B } }),
+    });
+    expect(r.status).toBe(400);
+  });
 });
