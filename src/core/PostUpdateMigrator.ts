@@ -3641,10 +3641,29 @@ Rule: I do not state that work landed inside another agent's state unless I have
 **Model-Tier Escalation (EXPERIMENTAL — escalate the model for heavy work)** — A policy layer that can run my claude-code sessions on the ultra model (\`claude-fable-5\`) for the two heavy-work triggers — spec/project design (\`spec-converge\`) and implementation or long autonomous runs (\`build\`, \`autonomous\`, \`instar-dev\`) — and on the default tier (\`claude-opus-4-8\`) the rest of the time. EXPERIMENTAL and dark by default: \`models.tierEscalation\` in \`.instar/config.json\` ships \`enabled:false\` (and \`dryRun:true\`, which logs intended swaps without performing them). Frameworks with no escalated model configured (codex/gemini/pi) are never touched. Every escalation passes cost guards first (quota headroom, per-account concurrent-escalation cap, hourly budget, TTL + dwell hysteresis) and is audited.
 - Swap a session's tier (server-side authority — body carries a TIER ONLY, never a model id): \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/sessions/SESSION_NAME/model-swap -H 'Content-Type: application/json' -d '{"tier":"escalated"}'\` (\`"default"\` to de-escalate). Refuses protected/non-idle sessions; honors enabled/dryRun; 202 = swap sent but unconfirmed.
 - Proactive: user asks "what model are you running?" / "why are you on Fable/Opus?" → \`GET /sessions\` reports each session's live \`model\`; name the trigger that escalated it (or say escalation is disabled/dry-run on this agent). User says "stop using the expensive model" → set \`models.tierEscalation.enabled:false\` and restart sessions to apply.
+- **Escalation rides a moved topic (WS5.3 — multi-machine).** When a topic running on the escalated tier is moved between my machines via \`POST /pool/transfer\`, the live escalation no longer silently drops on the resumed session. The source carries the topic's escalation TRIGGER as an ephemeral hint and the DESTINATION re-admits the resumed session through ITS OWN \`EscalationGovernor\` cost guards (quota/budget/dwell/TTL) — a trigger carry, NEVER a free tier grant. If the destination's guards refuse (at its concurrent-escalation cap, no quota headroom) or the topic is pinned \`escalationOverride:'suppress'\`, the session runs default tier — the move degrades safely, never smuggles escalation across or strands a wall. Ships dark behind \`models.tierEscalation.ridesTopic\` (default false) under \`tierEscalation.enabled\`; single-machine installs are a no-op. Proactive: user asks "did my heavy-work session keep its bigger model after the move?" → it re-evaluates under the destination's guards; if it dropped to default, name the guard that refused (cap/quota/suppress).
 `;
       content += '\n' + modelTierSection;
       patched = true;
       result.upgraded.push('CLAUDE.md: added Model-Tier Escalation awareness section');
+    }
+
+    // WS5.3 (escalation-rides-topic): existing agents that ALREADY carry the
+    // Model-Tier Escalation section need the new rides-topic bullet too. Idempotent,
+    // content-sniffed on the distinctive WS5.3 marker, appended right after the
+    // section's existing "stop using the expensive model" proactive line.
+    if (
+      content.includes('Model-Tier Escalation (EXPERIMENTAL') &&
+      !content.includes('Escalation rides a moved topic (WS5.3')
+    ) {
+      const anchor = '- Proactive: user asks "what model are you running?" / "why are you on Fable/Opus?" → `GET /sessions` reports each session\'s live `model`; name the trigger that escalated it (or say escalation is disabled/dry-run on this agent). User says "stop using the expensive model" → set `models.tierEscalation.enabled:false` and restart sessions to apply.';
+      const ridesBullet =
+        '\n- **Escalation rides a moved topic (WS5.3 — multi-machine).** When a topic running on the escalated tier is moved between my machines via `POST /pool/transfer`, the live escalation no longer silently drops on the resumed session. The source carries the topic\'s escalation TRIGGER as an ephemeral hint and the DESTINATION re-admits the resumed session through ITS OWN `EscalationGovernor` cost guards (quota/budget/dwell/TTL) — a trigger carry, NEVER a free tier grant. If the destination\'s guards refuse (at its concurrent-escalation cap, no quota headroom) or the topic is pinned `escalationOverride:\'suppress\'`, the session runs default tier — the move degrades safely, never smuggles escalation across or strands a wall. Ships dark behind `models.tierEscalation.ridesTopic` (default false) under `tierEscalation.enabled`; single-machine installs are a no-op. Proactive: user asks "did my heavy-work session keep its bigger model after the move?" → it re-evaluates under the destination\'s guards; if it dropped to default, name the guard that refused (cap/quota/suppress).';
+      if (content.includes(anchor)) {
+        content = content.replace(anchor, anchor + ridesBullet);
+        patched = true;
+        result.upgraded.push('CLAUDE.md: added WS5.3 escalation-rides-topic bullet to Model-Tier Escalation section');
+      }
     }
 
     // MTP Protocol — the two EXO 3.0 tests (refusal + endorsement) on ORG-INTENT.

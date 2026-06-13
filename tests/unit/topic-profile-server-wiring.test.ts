@@ -189,7 +189,12 @@ describe('server-boot wiring: Topic Profile orchestrator + carrier (TOPIC-PROFIL
 
     it('registers the topic-profile-pull mesh RPC verb backed by the real pull handler', () => {
       expect(src).toContain("'topic-profile-pull': (cmd) => {");
-      expect(src).toContain('createTopicProfilePullHandler({ store: _topicProfileStore })');
+      // WS5.3 widened this call to a multi-line form (adds the gated, undefined-safe
+      // escalationHintPeek); the verb is still backed by the real handler over the
+      // real store. Assert the call + the real-store binding rather than the old
+      // single-line exact string.
+      expect(src).toContain('createTopicProfilePullHandler({');
+      expect(src).toContain('store: _topicProfileStore,');
     });
 
     it('gates the pull on the peer advertising the topic-profile-pull capability', () => {
