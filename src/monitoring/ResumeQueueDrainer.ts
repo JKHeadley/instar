@@ -316,7 +316,7 @@ export class ResumeQueueDrainer {
         // (the hook is wired only then) and the evidence is present.
         if (candidate.workEvidence.includes('uncommitted-worktree-work')) {
           try { this.deps.onWorktreeRevival?.(candidate); }
-          catch { /* the obligation registration never endangers the resume */ }
+          catch { /* @silent-fallback-ok: the obligation registration is best-effort and NEVER endangers the resume — a successful respawn must stand even if the commitment row fails to open. */ }
         }
         this.deps.audit({ event: 'respawned', id: candidate.id, stableKey: candidate.stableKey, tmux: spawnedTmux });
         return { resumed: true };

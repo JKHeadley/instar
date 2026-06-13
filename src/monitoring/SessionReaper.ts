@@ -885,7 +885,7 @@ export class SessionReaper extends EventEmitter {
       const workEvidence: string[] = [];
       if (this.deps.dirtyCheck && session.cwd) {
         try { if (this.deps.dirtyCheck(session.cwd)) workEvidence.push('uncommitted-worktree-work'); }
-        catch { /* fail-open: a dirty-check failure never endangers the kill path */ }
+        catch { /* @silent-fallback-ok: SPEC-MANDATED fail-open — evidence collection NEVER endangers the kill path; a dirty-check failure just omits the signal (the kill proceeds with the evidence gathered so far). */ }
       }
       const r = await this.deps.terminate(session.id, 'reaped-idle', {
         bypassActiveProcessKeep: relaxedActiveProcess,

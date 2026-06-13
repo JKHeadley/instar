@@ -6715,7 +6715,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                       userRequest: 'Session revived because its worktree held uncommitted work (ACT-839 yield-safety).',
                       agentResponse: 'Commit the uncommitted worktree changes with a real, descriptive commit, or deliberately preserve/discard them, before yielding again.',
                     });
-                  } catch { /* obligation registration never endangers the resume */ }
+                  } catch { /* @silent-fallback-ok: best-effort obligation registration; a CommitmentTracker failure must never endanger the revival. */ }
                 }
               : undefined,
             raiseAggregated: raiseResumeAggregated,

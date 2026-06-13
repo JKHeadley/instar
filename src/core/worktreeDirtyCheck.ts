@@ -114,6 +114,9 @@ export function makeWorktreeDirtyCheck(deps: WorktreeDirtyCheckDeps): (worktreeP
     try {
       resolved = resolve(worktreePath);
     } catch {
+      // @silent-fallback-ok: SPEC-MANDATED fail-open — a realpath failure (ELOOP /
+      // missing / not a dir) MUST yield "no dirty signal", never a wedge or a
+      // spurious revive. The absence of the signal is the safe, intended outcome.
       return false;
     }
     if (!resolved || resolved.startsWith('-')) return false;
@@ -127,9 +130,10 @@ export function makeWorktreeDirtyCheck(deps: WorktreeDirtyCheckDeps): (worktreeP
       const porcelain = deps.readGit(['-C', resolved, 'status', '--porcelain'], resolved);
       dirty = classifyPorcelain(porcelain, cfg.residueDenylist);
     } catch {
-      // git error / timeout / non-git path → fail-open (signal absent). Do NOT
-      // cache the failure as authoritative-clean for long; cache briefly so a
-      // burst doesn't re-spawn, but it self-heals on the next window.
+      // @silent-fallback-ok: SPEC-MANDATED fail-open — a git error / timeout /
+      // non-git path MUST yield "no dirty signal" (never wedge the killer loop,
+      // never spuriously revive). Cached briefly so a shed burst doesn't re-spawn;
+      // self-heals on the next window. This is the safe direction by design.
       dirty = false;
     }
     cache.set(resolved, { dirty, at: t });
