@@ -1,0 +1,67 @@
+# Multi-machine seamlessness — idle vs broken machine empty-state (WS4.2)
+
+## What Changed
+
+- **`GET /sessions?scope=pool` now carries an explicit per-machine state.** Alongside the
+  merged `sessions[]` and the back-compat `pool.failed[]`, the response gains
+  `pool.machines[]` — one entry per registered machine (self + every peer) with its
+  `sessionCount` and, when it has ZERO sessions, an `emptyState` distinguishing the three
+  cases the operator previously could not tell apart:
+  - `online — no active sessions` — heartbeat-fresh, just idle;
+  - `offline since <t>` — the registry knows the machine is offline (last-seen `<t>`);
+  - `unreachable (last seen <t>)` — the registry thought it was online but the live
+    fan-out fetch failed (timeout / refused / error / auth) — was online, now silent.
+- **Honest derivation, never a fabricated state.** The classifier reads ONLY real inputs:
+  the registry `online` flag, the last-seen timestamp, and whether the live HTTP fan-out
+  to that peer actually succeeded. A machine that can't be classified as provably
+  idle-or-offline surfaces as `unreachable` (the conservative direction — broken, not
+  silently "fine"); a 0-session machine with no server state reads "state unknown" on the
+  dashboard rather than defaulting to a reassuring "online".
+- **The dashboard sessions view renders it.** A machine with no session tiles now shows an
+  explicit status row instead of rendering as NOTHING (the 2026-06-12 incident where an
+  idle Mac Mini looked identical to a broken one). A machine WITH sessions gets no
+  empty-state — its tiles already name it. Mobile-responsive, reusing the existing
+  `.machine-status-row` styles. The strip sources its data from the pooled-sessions
+  response (one poll), not a second `/pool` round-trip.
+- **Single-machine = strict no-op.** With no peers, `pool.machines[]` is just the lone
+  self row (idle → "online — no active sessions"), and the dashboard strip only renders
+  for pools of 2+ machines. Flag-off / single-machine behavior is unchanged.
+- CLAUDE.md awareness (template + idempotent migration) included as a sub-line of the
+  existing Multi-Machine Session Pool section.
+
+## Evidence
+
+- `tests/unit/poolEmptyState.test.ts` (14): the pure classifier — both sides of every
+  boundary (online-idle vs offline-known vs unreachable-surprise), the registry-offline
+  case that must NOT misread as online, the no-last-seen "unknown" (never fabricated), and
+  the relative-time formatter (seconds/minutes/hours/days + future-clamp).
+- `tests/integration/sessions-pool-scope.test.ts` (9, +4 new): real second-server peers —
+  an ONLINE peer with zero sessions → `online — no active sessions`; an OFFLINE peer →
+  `offline since`; an UNREACHABLE peer (registry online, dead port) → `unreachable (last
+  seen)` AND still a named `pool.failed` entry (never a 500); the busy local machine gets
+  NO empty-state; the idle self machine reads online.
+- `tests/unit/dashboard-machineEmptyState.test.ts` (8): the dashboard sources
+  `pool.machines` from the sessions response, renders all three server-side states, styles
+  online calmly + offline/unreachable as red, renders the strip in the zero-sessions
+  branch, skips machines with `sessionCount > 0`, escapes machine-provided strings, and
+  never fabricates "online".
+- `tests/unit/PostUpdateMigrator-poolSessionsVisibility.test.ts` (9, +3 new): the
+  empty-state sub-line appends to an existing pool section, is idempotent on the
+  `pool.machines[].emptyState` marker, and a fresh inject carries it exactly once.
+- `tests/unit/feature-delivery-completeness.test.ts` + `tests/unit/no-silent-fallbacks.test.ts`
+  green; `tsc --noEmit` clean.
+
+## What to Tell Your User
+
+On a multi-machine setup, the dashboard sessions view now tells you the difference between
+a machine that's simply idle and one that's actually down. An idle machine reads "online —
+no active sessions" instead of vanishing from the list; a machine that's off reads
+"offline since …", and one that stopped answering reads "unreachable (last seen …)". No
+more guessing whether a blank machine is healthy-but-idle or broken.
+
+## Summary of New Capabilities
+
+- `GET /sessions?scope=pool` → `pool.machines[]` with per-machine `sessionCount` and an
+  explicit `emptyState` (online / offline / unreachable) for idle machines, honestly
+  derived from registry + live fan-out. The dashboard renders it per-machine,
+  mobile-responsive. Single-machine installs are a strict no-op.

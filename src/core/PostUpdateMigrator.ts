@@ -4305,6 +4305,7 @@ Beyond the one-awake-machine model: with the pool enabled I run conversations ac
 
 - **See the pool:** the **Machines tab** in the dashboard, or \`GET /pool\` (Bearer-auth) → which machine is the router ("dispatcher") + every machine's nickname, hardware, online status, load, and clock-skew status.
 - **Every session, every machine:** the dashboard sessions list shows ALL sessions across the pool, each tagged with the machine it runs on. API: \`GET /sessions?scope=pool\` → \`{ sessions: [...each with machineId/machineNickname...], pool: { peersOk, failed } }\`. An unreachable peer degrades to a \`failed\` entry — local sessions always answer.
+- **Idle vs broken machine (WS4.2):** the same \`pool.machines[]\` carries an explicit per-machine state so an idle machine never reads as broken. A machine with ZERO sessions gets \`pool.machines[].emptyState\` = \`online — no active sessions\` (heartbeat-fresh, just idle) / \`offline since <t>\` (known offline) / \`unreachable (last seen <t>)\` (was online, now not answering — the \`failed\` case). Honest derivation from the registry online flag + last-seen + the live fan-out — never a fabricated "looks fine". The dashboard sessions view renders these per-machine; a machine WITH sessions gets no empty-state (its tiles already name it). Single-machine install = just the lone self row.
 - **Post-transfer closeout (automatic):** when a topic moves to another machine, the OLD machine's session for it is closed automatically (immediately on an explicit "move", or within ~2 reaper ticks for any other path) — no duplicate sessions doing duplicate work. The close is recorded in the reap-log with reason "topic moved to <machine>"; protected sessions are never auto-closed.
 - **Quota-aware placement (automatic):** capacity heartbeats carry each machine's LLM-account quota state, and placement avoids machines whose account is currently rate-limited/blocked (no more topics placed onto a silent machine). A hard pin still wins (flagged \`pinned-machine-quota-blocked\`); if EVERY machine is blocked, placement proceeds least-loaded with \`all-machines-quota-blocked\` flagged. \`GET /pool\` shows each machine's \`quotaState\`.
 - **Machine nicknames** are the user-facing handle (auto-assigned, editable). Rename via \`PATCH /pool/machines/:machineId\` with \`{"nickname":"the mini"}\`, or inline on the Machines tab.
@@ -4363,6 +4364,21 @@ Beyond the one-awake-machine model: with the pool enabled I run conversations ac
       content += '\n' + poolSessions + '\n';
       patched = true;
       result.upgraded.push('CLAUDE.md: added pool-wide session visibility line');
+    }
+
+    // WS4.2 (MULTI-MACHINE-SEAMLESSNESS-SPEC §WS4.2, F7): agents that already
+    // carry the pool section predate the per-machine empty-state — without it
+    // they will read an idle peer's blank row as a broken/missing machine (the
+    // 2026-06-12 incident). Append the sub-line so they explain "online — no
+    // active sessions" vs "offline since" vs "unreachable" correctly from the
+    // pooled sessions response. Idempotent via the unique `pool.machines[].emptyState`
+    // content-sniff (a sub-line of the already-tracked pool section).
+    if (content.includes('Multi-Machine Session Pool (active-active') && !content.includes('pool.machines[].emptyState')) {
+      const ws42line = `
+- **Idle vs broken machine (WS4.2):** the same \`pool.machines[]\` carries an explicit per-machine state so an idle machine never reads as broken. A machine with ZERO sessions gets \`pool.machines[].emptyState\` = \`online — no active sessions\` (heartbeat-fresh, just idle) / \`offline since <t>\` (known offline) / \`unreachable (last seen <t>)\` (was online, now not answering — the \`failed\` case). Honest derivation from the registry online flag + last-seen + the live fan-out — never a fabricated "looks fine". The dashboard sessions view renders these per-machine; a machine WITH sessions gets no empty-state (its tiles already name it). Single-machine install = just the lone self row.`;
+      content += '\n' + ws42line + '\n';
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added WS4.2 per-machine empty-state line');
     }
 
     // Post-transfer closeout awareness (2026-06-05): agents that already carry

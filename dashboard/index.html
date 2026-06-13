@@ -4080,23 +4080,31 @@
     // WS4.2 (multi-machine-seamlessness spec, F7 — 2026-06-12 live incident):
     // a machine with zero running sessions used to render as NOTHING, identical
     // to a broken or unreachable machine. Render an explicit state row per pool
-    // machine that has no session tiles: "online — no active sessions" when its
-    // heartbeat is live, "not reachable — last seen <t>" when it is not. Pool
-    // disabled or single-machine → poolMachinesView is empty → zero rows, zero
-    // behavior change (single-machine strict no-op, spec invariant 6).
+    // machine that has no session tiles. The three states are computed SERVER-
+    // SIDE in pool.machines[].emptyState (honest derivation from the registry +
+    // the live fan-out) — the dashboard just styles + prints them:
+    //   - online      → "online — no active sessions" (idle but healthy)
+    //   - offline     → "offline since <t>"            (known absence)
+    //   - unreachable → "unreachable (last seen <t>)"  (was online, now silent)
+    // Pool disabled or single-machine → poolMachinesView is empty → zero rows,
+    // zero behavior change (single-machine strict no-op, spec invariant 6).
     function machineStatusInfo(m) {
-      if (m.online) return { cls: 'online', text: 'online — no active sessions' };
-      const seen = m.selfReportedLastSeen ? new Date(m.selfReportedLastSeen).getTime() : null;
-      const rel = seen ? fmtRelTime(seen) : 'unknown';
-      return { cls: 'offline', text: `not reachable — last seen ${rel}` };
+      const es = m && m.emptyState;
+      if (es && es.kind && es.text) {
+        // 'online' is calm; 'offline'/'unreachable' both read as offline styling.
+        return { cls: es.kind === 'online' ? 'online' : 'offline', text: es.text };
+      }
+      // No server-computed empty-state present (shouldn't happen for a 0-session
+      // machine, but never fabricate "online" — surface the honest unknown).
+      return { cls: 'offline', text: 'state unknown' };
     }
     function renderMachineStatusStrip(list, allSessions) {
       list.querySelectorAll('.machine-status-row').forEach(el => el.remove());
       if (!poolMachinesView.length) return;
-      const busy = new Set(allSessions.map(s => s.machineNickname || s.machineId).filter(Boolean));
       for (const m of poolMachinesView) {
+        // A machine WITH sessions already names itself via its tiles' badges.
+        if (m.sessionCount > 0) continue;
         const label = m.nickname || m.machineId || 'unnamed machine';
-        if (busy.has(m.nickname) || busy.has(m.machineId)) continue; // has tiles — badge already names it
         const info = machineStatusInfo(m);
         const row = document.createElement('div');
         row.className = `machine-status-row ${info.cls}`;
@@ -4656,17 +4664,18 @@
         // (2026-06-11: five closed Mac Mini sessions reappeared on the laptop
         // dashboard hours after they were closed).
         remoteSessions = (j.sessions || []).filter(s => s.remote === true && (s.status === 'running' || s.status === 'starting'));
-        renderSessionList();
-      } catch { /* best-effort — peers may be offline; next tick retries */ }
-      // WS4.2: refresh the machine inventory on the same cadence so the sessions
-      // view can say "online — no active sessions" vs "not reachable" per machine.
-      try {
-        const pool = await apiFetch('/pool');
-        poolMachinesView = (pool && pool.enabled && Array.isArray(pool.machines) && pool.machines.length >= 2)
-          ? pool.machines
+        // WS4.2 (F7): the pooled sessions response now carries pool.machines —
+        // every registered machine with its session count and, when idle, an
+        // explicit SERVER-COMPUTED empty-state (online / offline / unreachable),
+        // honestly derived from the registry + the live fan-out. Render it so an
+        // idle machine reads "online — no active sessions" and a dark machine
+        // reads "offline since"/"unreachable" — never an indistinguishable blank.
+        // >=2 machines is the multi-machine case; single-machine stays empty (no-op).
+        poolMachinesView = (j.pool && j.pool.enabled && Array.isArray(j.pool.machines) && j.pool.machines.length >= 2)
+          ? j.pool.machines
           : [];
         renderSessionList();
-      } catch { /* best-effort — strip simply stays absent until the next tick */ }
+      } catch { /* best-effort — peers may be offline; next tick retries */ }
     }
     function startPoolSessionsPolling() {
       if (poolPollTimer) return;
