@@ -49,6 +49,21 @@ Enrollment is operator-initiated and PIN/mandate-authenticated — a peer can ne
 enroll an account onto itself over the mesh. Phase-C clean: headless enrollment on
 cloud VMs, no LAN/2-peer assumption, bounded per-account budget.
 
+Two convergence holes the security round closed in this revision:
+- **Who counts the shared budget?** When several VMs share one account's quota, the
+  "how much is left" accountant is now pinned to the **fenced who-is-awake lease
+  holder** (single-writer by construction, with safe failover — a budget slice is
+  void once the lease moves on), instead of an unnamed machine that could be offline.
+  Each VM gets a slice it can't exceed, so even during a network split the total can
+  never blow past the operator's ceiling, and a VM that runs out of slice quietly
+  falls back to its own login.
+- **Can a hacked machine undo its own revocation?** The "make old credentials
+  un-decryptable on de-pair" mechanism (rotate the machine's encryption key) is now
+  anchored in the **OS keychain / encrypted store**, never a plain file — so a local
+  attacker can't roll the anchor back to resurrect a captured credential. (The
+  framework's own plaintext login file is honestly out of scope for this — that
+  needs the active wipe + short expiry + provider-side rotation, stated plainly.)
+
 ## What you actually need to decide
 
 When ready: approve this spec (discharges the CMT-1413 WS5.2 deferral) or send it
