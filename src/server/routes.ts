@@ -243,6 +243,10 @@ import type { HandshakeManager } from '../threadline/HandshakeManager.js';
 import { createThreadlineRoutes } from '../threadline/ThreadlineEndpoints.js';
 import { evaluateSendGate, negotiatorLogDir } from '../threadline/NegotiatorGate.js';
 import { recordInboundAck } from '../threadline/recordInboundAck.js';
+import { recordThreadMessage } from '../threadline/recordThreadMessage.js';
+import { THREAD_ID_RE } from '../threadline/ThreadLog.js';
+import { readThreadHistoryUnion, type CanonicalReadDeps, type AggregateMessage } from '../threadline/canonicalHistoryRead.js';
+import { computeSymmetryState, localThreadSync, honorPeerThreadSync, type SymmetryState } from '../threadline/threadSymmetry.js';
 import { resolveSingleNegotiatorConfig, readNegotiatorCounts } from '../threadline/NegotiatorLease.js';
 import { detectCommitmentClass, commitmentNudge } from '../threadline/ContentClassifier.js';
 import type { UnifiedTrustSystem } from '../threadline/UnifiedTrustWiring.js';
@@ -714,6 +718,13 @@ export interface RouteContext {
    *  path (/messages/relay-agent) gates identically to the relay funnel. Without
    *  this, same-machine agents bypass the loop gate (caught in test-as-self). */
   conversationStore?: import('../threadline/ConversationStore.js').ConversationStore;
+  /** Robustness Phase 2 (D-A) — the canonical, append-only, hash-chained
+   *  per-thread log. The authoritative read source for `threadline_history` and
+   *  the structural F3 fix. Optional; absent when threadline is disabled. */
+  threadLog?: import('../threadline/ThreadLog.js').ThreadLog;
+  /** Robustness Phase 2 (D-B/D-E) — the single append funnel + conversation
+   *  -discipline resolver. Every message-persisting route appends through this. */
+  threadMessageRecorder?: import('../threadline/recordThreadMessage.js').ThreadMessageRecorder;
   warrantsReplyGate?: import('../threadline/WarrantsReplyGate.js').WarrantsReplyGate;
   /** CMT-509: surface parentless Threadline conversations to a dedicated topic. */
   collaborationSurfacer?: import('../threadline/CollaborationSurfacer.js').CollaborationSurfacer;
@@ -9718,7 +9729,28 @@ export function createRoutes(ctx: RouteContext): Router {
     }
     const detail = ctx.threadlineObservability.getThread(req.params.threadId);
     if (!detail) { res.status(404).json({ error: 'Thread not found' }); return; }
-    res.json(detail);
+    // Robustness Phase 2 (E6): surface the CANONICAL log head + advisory symmetry
+    // state onto the dashboard thread view, so corrected history + divergence are
+    // visible to the human (the canonical log is the authoritative count, not the
+    // lossy aggregate). Additive — absent when threadline/canonical-history is off.
+    let canonicalHistory: unknown;
+    try {
+      const tid = req.params.threadId;
+      if (ctx.threadLog && THREAD_ID_RE.test(tid) && ctx.threadLog.isPathConfined(tid)) {
+        const head = ctx.threadLog.head(tid);
+        const verify = ctx.threadLog.verify(tid);
+        const conv = ctx.conversationStore?.get(tid);
+        canonicalHistory = {
+          count: head.count,
+          headHash: head.headHash,
+          setAccum: head.setAccum,
+          chainOk: verify.ok,
+          symmetryState: conv?.symmetryState ?? 'unknown',
+          collisionCount: conv?.collisionCount ?? 0,
+        };
+      }
+    } catch { /* @silent-fallback-ok: observability augmentation is best-effort; the base detail still returns */ }
+    res.json(canonicalHistory ? { ...detail, canonicalHistory } : detail);
   });
 
   // ── A2A peer-health (A2A-DURABLE-DELIVERY-SPEC.md) ──────────────────────
@@ -19033,6 +19065,39 @@ export function createRoutes(ctx: RouteContext): Router {
           },
         );
 
+        // Robustness Phase 2 (D-B): append THIS inbound leg to the canonical log
+        // through the single funnel (Structure > Willpower — the wiring-integrity
+        // test asserts every message-persisting route goes through it). createdAt is
+        // hashed AS RECEIVED, so the digest matches the sender's on the co-located
+        // path. The peer fingerprint is the thread owner (NOT the asserted name).
+        if (ctx.threadMessageRecorder && envelope.message?.threadId && envelope.message?.id) {
+          const rtmBody = typeof envelope.message?.body === 'string'
+            ? envelope.message.body
+            : String((envelope.message?.body as Record<string, unknown> | undefined)?.content ?? (envelope.message?.body as Record<string, unknown> | undefined)?.text ?? '');
+          const ownerFp = ctx.threadResumeMap?.get(envelope.message.threadId)?.remoteAgent;
+          recordThreadMessage(ctx.threadMessageRecorder, {
+            threadId: envelope.message.threadId,
+            messageId: envelope.message.id,
+            direction: 'inbound',
+            body: rtmBody,
+            createdAt: typeof envelope.message?.createdAt === 'string' ? envelope.message.createdAt : new Date().toISOString(),
+            peerFingerprint: ownerFp || (senderAgent ?? undefined),
+            author: { agentFingerprint: ownerFp || (senderAgent ?? undefined) },
+            subject: typeof envelope.message?.subject === 'string' ? envelope.message.subject : undefined,
+          });
+          // Honor a piggybacked peer threadSync on the co-located path (D-D). The
+          // verified participant key is the thread OWNER fingerprint (captured by
+          // captureOrigin), never the asserted sender name. Advisory-only.
+          if (ownerFp && (envelope as { threadSync?: unknown }).threadSync && ctx.threadLog && ctx.conversationStore) {
+            void honorPeerThreadSync(
+              { threadLog: ctx.threadLog, conversationStore: ctx.conversationStore, attention: ctx.telegram ?? null },
+              envelope.message.threadId,
+              ownerFp,
+              (envelope as { threadSync: import('../threadline/threadDigest.js').ThreadSync }).threadSync,
+            ).catch(() => { /* advisory only */ });
+          }
+        }
+
         // Check if this message resolves a pending waitForReply request.
         // Local delivery bypasses the relay client's gate-passed event, so we
         // must check reply waiters here directly.
@@ -19252,15 +19317,73 @@ export function createRoutes(ctx: RouteContext): Router {
     }
   });
 
+  // Robustness Phase 2 (D-C): build the UNION read deps (canonical log ∪ bounded
+  // memoized backfill). The outbox supplies outbound legs (tail-bounded); the
+  // derived aggregate supplies inbound legs (O(thread), never a full-store scan).
+  const buildCanonicalReadDeps = (): CanonicalReadDeps | null => {
+    if (!ctx.threadLog || !ctx.threadMessageRecorder) return null;
+    return {
+      threadLog: ctx.threadLog,
+      threadMessageRecorder: ctx.threadMessageRecorder,
+      conversationStore: ctx.conversationStore,
+      outboxPath: ctx.listenerManager?.canonicalOutboxPath
+        ?? path.join(ctx.config.stateDir, 'threadline', 'outbox.jsonl.active'),
+      selfName: ctx.config.projectName,
+      backfillOutboxTailLines: (ctx.config as { threadline?: { canonicalHistory?: { backfillOutboxTailLines?: number } } }).threadline?.canonicalHistory?.backfillOutboxTailLines,
+      getAggregateMessages: async (tid): Promise<AggregateMessage[]> => {
+        const agg = await ctx.messageRouter?.getThread(tid);
+        if (!agg) return [];
+        return agg.messages.map((env) => ({
+          id: env.message.id,
+          body: typeof env.message.body === 'string' ? env.message.body : String((env.message.body as Record<string, unknown> | undefined)?.content ?? (env.message.body as Record<string, unknown> | undefined)?.text ?? ''),
+          createdAt: env.message.createdAt,
+          fromAgent: env.message.from?.agent,
+        }));
+      },
+    };
+  };
+
   router.get('/messages/thread/:threadId', async (req, res) => {
-    if (!ctx.messageRouter) {
-      res.status(503).json({ error: 'Messaging not available' });
-      return;
-    }
     try {
       const { threadId } = req.params;
-      if (!MSG_ID_RE.test(threadId)) {
+      // Tight anchored allowlist for the REAL minted shapes (FD-7) — not UUID-only,
+      // so a `msg-…`/`thread-…` id no longer 400s (a second F3 surface).
+      if (!THREAD_ID_RE.test(threadId)) {
         res.status(400).json({ error: 'Invalid thread ID format' });
+        return;
+      }
+      // Robustness Phase 2 (D-C): read the CANONICAL log as the authoritative source
+      // (UNION with a one-time bounded backfill), replacing the lossy derived
+      // aggregate. History can only gain, never regress.
+      const canonDeps = buildCanonicalReadDeps();
+      if (canonDeps) {
+        const entries = await readThreadHistoryUnion(canonDeps, threadId);
+        const messages = entries.map((e) => ({
+          message: {
+            id: e.messageId,
+            from: { agent: e.direction === 'outbound' ? ctx.config.projectName : (e.peerFingerprint ?? e.author?.agentFingerprint ?? 'peer') },
+            body: e.textRef.kind === 'inline' ? e.textRef.text : '',
+            createdAt: e.createdAt,
+            threadId,
+          },
+        }));
+        const last = entries.length ? entries[entries.length - 1] : null;
+        res.json({
+          thread: {
+            id: threadId,
+            messageIds: entries.map((e) => e.messageId),
+            messageCount: entries.length,
+            lastMessageAt: last?.createdAt ?? new Date(0).toISOString(),
+            status: 'active',
+            source: 'canonical-log',
+          },
+          messages,
+        });
+        return;
+      }
+      // Fallback (threadline disabled): the legacy derived aggregate.
+      if (!ctx.messageRouter) {
+        res.status(503).json({ error: 'Messaging not available' });
         return;
       }
       const result = await ctx.messageRouter.getThread(threadId);
@@ -19272,6 +19395,97 @@ export function createRoutes(ctx: RouteContext): Router {
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : 'Thread query failed' });
     }
+  });
+
+  // ── Robustness Phase 2 (D-C/D-D): canonical-log read + symmetry health ────────
+  // Bearer-gated (own-data-only), seq-cursor paginated, with a TIGHT anchored id
+  // allowlist + a path-confinement check (traversal defense, FD-7). NOTE: these sit
+  // under /threadline/* (which authMiddleware bypasses for relay-auth), so they
+  // SELF-GATE on the owner bearer token. Bodies are returned tagged as UNTRUSTED
+  // peer-authored data — never instructions.
+  const ownerAuthed = (req: import('express').Request): boolean => {
+    if (!ctx.config.authToken) return true; // no token configured → open (dev/local)
+    const header = req.headers.authorization;
+    if (!header?.startsWith('Bearer ')) return false;
+    try {
+      const ha = createHash('sha256').update(header.slice(7)).digest();
+      const hb = createHash('sha256').update(ctx.config.authToken).digest();
+      return ha.length === hb.length && timingSafeEqual(ha, hb);
+    } catch { return false; }
+  };
+
+  router.get('/threadline/threads/:id', async (req, res) => {
+    if (!ownerAuthed(req)) { res.status(401).json({ error: 'Unauthorized' }); return; }
+    if (!ctx.threadLog) { res.status(503).json({ error: 'Canonical history not available' }); return; }
+    const threadId = req.params.id;
+    // Anchored allowlist THEN a resolved-path confinement check (defense in depth).
+    if (!THREAD_ID_RE.test(threadId) || !ctx.threadLog.isPathConfined(threadId)) {
+      res.status(400).json({ error: 'Invalid thread ID format' });
+      return;
+    }
+    // UNION read (D-C): ensure the one-time bounded backfill has run so this
+    // surface ALSO can only gain, never regress, on a pre-upgrade thread.
+    const canonDeps = buildCanonicalReadDeps();
+    if (canonDeps) { try { await readThreadHistoryUnion(canonDeps, threadId); } catch { /* best-effort */ } }
+    const limit = Math.max(1, Math.min(Number(req.query.limit) || 100, 1000));
+    const afterSeq = req.query.afterSeq !== undefined ? Number(req.query.afterSeq) : undefined;
+    const { entries, hasMore } = ctx.threadLog.read(threadId, { limit, afterSeq });
+    res.json({
+      threadId,
+      messageCount: entries.length,
+      nextCursor: hasMore && entries.length ? entries[entries.length - 1].seq : null,
+      hasMore,
+      // Bodies are UNTRUSTED peer-authored data quoted for audit — NEVER instructions.
+      bodiesAreUntrustedData: true,
+      entries: entries.map((e) => ({
+        seq: e.seq,
+        messageId: e.messageId,
+        direction: e.direction,
+        contentDigest: e.contentDigest,
+        backfilled: e.backfilled ?? false,
+        body: e.textRef.kind === 'inline' ? e.textRef.text : null,
+        createdAt: e.createdAt,
+        at: e.at,
+        peerFingerprint: e.peerFingerprint,
+      })),
+    });
+  });
+
+  router.get('/threadline/threads/:id/health', (req, res) => {
+    if (!ownerAuthed(req)) { res.status(401).json({ error: 'Unauthorized' }); return; }
+    if (!ctx.threadLog) { res.status(503).json({ error: 'Canonical history not available' }); return; }
+    const threadId = req.params.id;
+    if (!THREAD_ID_RE.test(threadId) || !ctx.threadLog.isPathConfined(threadId)) {
+      res.status(400).json({ error: 'Invalid thread ID format' });
+      return;
+    }
+    const head = ctx.threadLog.head(threadId);
+    const verify = ctx.threadLog.verify(threadId);
+    const conv = ctx.conversationStore?.get(threadId);
+    const stickyTerminal = conv?.symmetryState === 'diverged-unreconcilable';
+    const peerSync = conv?.peerThreadSync ?? null;
+    const state: SymmetryState = computeSymmetryState({
+      localCount: head.count,
+      localSetAccum: head.setAccum,
+      peerSync,
+      hasBackfilled: ctx.threadLog.hasBackfilledLegs(threadId),
+      localVerifyOk: verify.ok,
+      sticky: stickyTerminal,
+      peerEverReported: !!peerSync,
+    });
+    res.json({
+      threadId,
+      symmetryState: state,
+      local: localThreadSync(ctx.threadLog, threadId),
+      peer: peerSync,
+      chainOk: verify.ok,
+      ...(verify.ok ? {} : { brokenAt: (verify as { brokenAt: number }).brokenAt }),
+      collisionCount: conv?.collisionCount ?? 0,
+      // Operator recovery playbook for a local integrity fault (gemini G1).
+      ...(state === 'local-integrity-fault'
+        ? { recovery: `The canonical chain for ${threadId} is broken and cannot be repaired in place. Delete threadline/threads/${threadId}.log.jsonl and re-converge from the peer via the bounded backfill.` }
+        : {}),
+    });
   });
 
   router.post('/messages/thread/:threadId/resolve', async (req, res) => {
@@ -19580,6 +19794,16 @@ export function createRoutes(ctx: RouteContext): Router {
       {
         a2aDeliveryTracker: ctx.a2aDeliveryTracker,
         threadResumeMap: ctx.threadResumeMap ?? null,
+      },
+      // Robustness Phase 2 (D-B/D-D): the canonical-history funnel + symmetry surfaces
+      // for the verified E2E relay inbound path + participant-authorized backfill.
+      {
+        threadMessageRecorder: ctx.threadMessageRecorder,
+        threadLog: ctx.threadLog,
+        conversationStore: ctx.conversationStore,
+        attention: ctx.telegram ?? null,
+        backfillMaxDigestsPerRequest: (ctx.config as { threadline?: { canonicalHistory?: { backfillMaxDigestsPerRequest?: number } } }).threadline?.canonicalHistory?.backfillMaxDigestsPerRequest,
+        backfillMaxRecordsPerResponse: (ctx.config as { threadline?: { canonicalHistory?: { backfillMaxRecordsPerResponse?: number } } }).threadline?.canonicalHistory?.backfillMaxRecordsPerResponse,
       },
     );
     router.use(threadlineRoutes);
@@ -19971,7 +20195,38 @@ export function createRoutes(ctx: RouteContext): Router {
     // Mint a stable UUID threadId when caller didn't provide one so
     // first-contact messages aren't dropped on the recipient side. Both
     // sender and recipient will agree on this id going forward.
-    const effectiveThreadId = threadId ?? randomUUID();
+    let effectiveThreadId = threadId ?? randomUUID();
+
+    // ── Robustness Phase 2 (D-E): conversation-discipline resolver ──────────
+    // Default-join the canonical thread for a verified (peer, workstream) instead
+    // of minting a fork (closes F5). DEV-GATED + DRY-RUN-FIRST: `enabled` rides the
+    // developmentAgent gate (live on dev, dark on the fleet) and `dryRun` (default
+    // true) only LOGS the would-join decision — the threadId is unchanged until an
+    // operator flips dryRun off after telemetry proves the join/fork rate. The
+    // resolver is recoverable routing, NEVER an authority: it never blocks a send.
+    if (ctx.threadMessageRecorder) {
+      const cdCfg = (ctx.config as { threadline?: { canonicalHistory?: { conversationDiscipline?: { enabled?: boolean; dryRun?: boolean }; workstreamKeyMode?: 'subject-slug' | 'peer-only' | 'off' } } }).threadline?.canonicalHistory;
+      const resolverEnabled = resolveDevAgentGate(cdCfg?.conversationDiscipline?.enabled, ctx.config as { developmentAgent?: boolean });
+      const resolverDryRun = cdCfg?.conversationDiscipline?.dryRun ?? true;
+      const forkRequested = req.body?.fork === true || req.body?.newThread === true;
+      // Best-effort VERIFIED principal available locally (never a name the peer
+      // asserts): a fingerprint-shaped target or a curated nickname mapping.
+      const resolverPrincipal = looksLikeFingerprint ? targetAgent : (nicknameResolvedFp ?? undefined);
+      try {
+        const decided = await ctx.threadMessageRecorder.resolveOutboundThread({
+          explicitThreadId: threadId,
+          mintedThreadId: effectiveThreadId,
+          peerPrincipal: resolverPrincipal,
+          subject: typeof purpose === 'string' ? purpose : undefined,
+          fork: forkRequested,
+          enabled: resolverEnabled,
+          dryRun: resolverDryRun,
+          workstreamKeyMode: cdCfg?.workstreamKeyMode ?? 'subject-slug',
+          isHolder: true, // single-holder: this server is the holder for local conversations
+        });
+        effectiveThreadId = decided.threadId;
+      } catch { /* @silent-fallback-ok: the resolver is recoverable routing; on any error keep the minted threadId */ }
+    }
 
     // ── Negotiator lease/voice gate (Robustness Phase 1, D-B) ───────
     // Enforce single-voice: only the session that owns this conversation's lease
@@ -20161,6 +20416,23 @@ export function createRoutes(ctx: RouteContext): Router {
                 })();
 
                 const now = new Date().toISOString();
+                // Robustness Phase 2 (D-B): log THIS outbound leg to the canonical
+                // log BEFORE building the envelope, so the piggybacked `threadSync`
+                // reflects the post-leg head (no transient off-by-one `diverged`).
+                // `now` is the same createdAt stamped on the wire below ⇒ this end's
+                // content digest matches the peer's byte-for-byte (the symmetric path).
+                if (ctx.threadMessageRecorder) {
+                  recordThreadMessage(ctx.threadMessageRecorder, {
+                    threadId: effectiveThreadId,
+                    messageId: msgId,
+                    direction: 'outbound',
+                    body: message,
+                    createdAt: now,
+                    peerFingerprint: resolvePeerFingerprint(localTarget) || undefined,
+                    author: { machineId: ctx.meshSelfId ?? undefined, sessionName: typeof originSessionName === 'string' ? originSessionName : undefined },
+                    subject: typeof purpose === 'string' ? purpose : undefined,
+                  });
+                }
                 const envelope = {
                   schemaVersion: 1,
                   message: {
@@ -20174,6 +20446,9 @@ export function createRoutes(ctx: RouteContext): Router {
                     threadId: effectiveThreadId,
                     createdAt: now,
                   },
+                  // Robustness Phase 2 (D-D): piggyback this end's threadSync so the
+                  // peer can cross-verify symmetry (additive; a legacy peer ignores it).
+                  ...(ctx.threadLog ? { threadSync: localThreadSync(ctx.threadLog, effectiveThreadId) } : {}),
                   transport: {
                     relayChain: ['local'],
                     originServer: `http://localhost:${ctx.config.port ?? 4042}`,
@@ -20251,6 +20526,9 @@ export function createRoutes(ctx: RouteContext): Router {
                       console.warn(`[relay-send] Canonical outbox append failed (non-fatal): ${err instanceof Error ? err.message : err}`);
                     }
                   }
+                  // (The canonical-log append for this outbound leg already ran
+                  // BEFORE the envelope was built — see above — so its threadSync is
+                  // post-leg. The funnel is idempotent, so no double-append here.)
                   // Mirror outbound into Telegram bridge (relay-only — best effort).
                   if (ctx.telegramBridge) {
                     ctx.telegramBridge.mirrorOutbound({
@@ -20385,6 +20663,23 @@ export function createRoutes(ctx: RouteContext): Router {
         } catch (err) {
           console.warn(`[relay-send] Canonical outbox append failed (non-fatal): ${err instanceof Error ? err.message : err}`);
         }
+      }
+      // Robustness Phase 2 (D-B): append the relay-delivered outbound leg to the
+      // canonical log through the funnel. The wire createdAt is stamped inside the
+      // relay client, so this end's createdAt is best-effort (symmetry on the relay
+      // path degrades to unverified, advisory-only); F3 holds unconditionally — the
+      // sender's own message is now auditable per-thread regardless of symmetry.
+      if (ctx.threadMessageRecorder) {
+        recordThreadMessage(ctx.threadMessageRecorder, {
+          threadId: effectiveRelayThreadId,
+          messageId: relayMsgId,
+          direction: 'outbound',
+          body: message,
+          createdAt: new Date().toISOString(),
+          peerFingerprint: resolvedId ?? undefined,
+          author: { machineId: ctx.meshSelfId ?? undefined, sessionName: typeof originSessionName === 'string' ? originSessionName : undefined },
+          subject: typeof purpose === 'string' ? purpose : undefined,
+        });
       }
 
       // Mirror outbound into Telegram bridge (relay-only — best effort).

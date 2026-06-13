@@ -116,6 +116,14 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     justification: 'Fronting machine is a dumb relay (holder authorizes); the proxied request carries a short-lived, audience-bound, single-use, mesh-signed user-auth assertion — never the raw PIN; private bodies never cached; single-machine = no-op. No destructive action, no third-party spend.',
   },
   {
+    name: 'canonicalHistoryConversationDiscipline',
+    configPath: 'threadline.canonicalHistory.conversationDiscipline.enabled',
+    description:
+      'Conversation-discipline resolver JOIN — outbound replies join the canonical (peer, workstream) thread instead of forking (Threadline Robustness Phase 2, D-E; closes F5).',
+    justification:
+      'Ships dryRun:true (logs the would-join decision, performs NO reroute) so live-on-dev only emits telemetry; recoverable routing that never blocks a send, never gates an irreversible action, no destructive action, no third-party spend.',
+  },
+  {
     name: 'outboundAdvisoryTimeClaim',
     configPath: 'messaging.outboundAdvisory.timeClaim.enabled',
     description:

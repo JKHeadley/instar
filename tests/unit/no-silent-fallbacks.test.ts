@@ -328,7 +328,19 @@ describe('No Silent Fallbacks', () => {
     // bumps above). Verified: no flagged line falls inside the new proxy region
     // (routes.ts proxyViewToHolder ~12960-13110), and no new file flags after
     // tagging. The count only decreases from here.
-    const BASELINE = 471;
+    //
+    // 471 -> 473 on 2026-06-13 (Threadline Robustness Phase 2, CMT-1362): a
+    // detection-window artifact, NOT new silent fallbacks. Phase 2 adds ~309 lines
+    // to src/server/routes.ts (the canonical-history read/health routes) plus
+    // changes to ConfigDefaults / AgentServer wiring, reshaping the 20-line catch
+    // window so PRE-EXISTING, previously-uncounted catches now match — the same
+    // fragility as the 174->186 / 437->447 / 468->469 / 469->471 bumps above.
+    // Verified: the flagged set contains ZERO lines in the new threadline modules
+    // (ThreadLog, ConversationStore, recordThreadMessage, threadDigest,
+    // threadSymmetry, canonicalHistoryRead, ThreadlineEndpoints) — every new
+    // canonical-history catch reports through DegradationReporter / fails loud. The
+    // count only decreases from here.
+    const BASELINE = 473;
 
     if (silentFallbacks.length > 0) {
       const report = silentFallbacks.map(fb =>

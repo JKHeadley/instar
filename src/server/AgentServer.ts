@@ -453,6 +453,9 @@ export class AgentServer {
     /** Threadline Phase 1 keystone — Conversation store + warrants-a-reply gate,
      *  so the local co-located inbound path gates like the relay funnel. */
     conversationStore?: import('../threadline/ConversationStore.js').ConversationStore;
+    /** Robustness Phase 2 (D-A/D-B) — the canonical per-thread log + append funnel. */
+    threadLog?: import('../threadline/ThreadLog.js').ThreadLog;
+    threadMessageRecorder?: import('../threadline/recordThreadMessage.js').ThreadMessageRecorder;
     warrantsReplyGate?: import('../threadline/WarrantsReplyGate.js').WarrantsReplyGate;
     collaborationSurfacer?: import('../threadline/CollaborationSurfacer.js').CollaborationSurfacer; // CMT-509
     /** ThreadResumeMap — for topic-linkage outbound capture on /threadline/relay-send.
@@ -1767,6 +1770,8 @@ export class AgentServer {
       instructionsVerifier: options.instructionsVerifier ?? null,
       threadlineRouter: options.threadlineRouter ?? null,
       conversationStore: options.conversationStore,
+      threadLog: options.threadLog,
+      threadMessageRecorder: options.threadMessageRecorder,
       warrantsReplyGate: options.warrantsReplyGate,
       collaborationSurfacer: options.collaborationSurfacer,
       threadResumeMap: options.threadResumeMap ?? null,

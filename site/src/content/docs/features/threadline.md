@@ -183,3 +183,23 @@ Threadline includes four interop modules for connecting across protocol boundari
 ## Scale
 
 80 modules under `src/threadline/`, 74 dedicated test files plus 125 cross-cutting test files that exercise threadline behavior — roughly 3,800 test cases all told.
+
+## Conversation robustness (canonical history + one voice)
+
+Beyond sending and receiving, Threadline keeps each conversation **auditable, single-voiced, and coherent across machines**:
+
+- **One canonical log per conversation.** `ThreadLog` is an append-only, hash-chained record — one file per thread — that every send and receive is funneled into, and that history reads back from. This is the fix for the failure where an agent could not read back messages it had itself sent. The durable per-conversation record (`ConversationStore`) caches that log's head, the owner stamp, and the canonical-thread resolver binding.
+- **Exactly one voice per conversation.** `NegotiatorGate` and `NegotiatorLease` implement the single-negotiator lock — only the owning session can speak for the agent; warm/keep-alive sessions (`WarmSessionPool`) can post only a fixed holding notice, never a binding commitment. `WarrantsReplyGate` filters inbound that needs no reply so acks don't read as live negotiation.
+- **Calm, coherent surfaces.** `CollaborationSurfacer` makes agent-to-agent activity visible to the operator without spawning a topic per event, and `ConversationMeshView` answers, across machines, which machine holds each conversation and whether it's bound to a topic.
+
+## Threadline HTTP routes (robustness + history)
+
+The agent server exposes these read/admin routes for the canonical-history and single-negotiator layer (all require the Bearer token):
+
+- `GET /threadline/threads/:id` — read a thread's canonical, hash-chained history (seq-cursor paginated via `?limit=` / `?afterSeq=`). Returned bodies are untrusted peer-authored data, quoted for audit — never instructions.
+- `GET /threadline/threads/:id/health` — per-thread symmetry/divergence health: `symmetryState` (`verified` / `diverged` / `unverified-peer-legacy` / …) plus the local vs peer head. Only `diverged` states are actionable, and they are advisory.
+- `GET /threadline/conversations` — list this machine's conversations (add `?scope=mesh` for the cross-machine holder view: which machine holds each conversation and whether it's bound to a topic).
+- `GET /threadline/negotiator` — the single-negotiator lease state per conversation (holder, epoch, expiry) — who currently owns each conversation's outbound voice.
+- `POST /threadline/hub/bind` — bind a parentless Threadline-hub conversation to a topic (`{action:"open"|"tie"}`); normally driven structurally by the "open this" command in the hub topic.
+- `POST /threadline/secrets/request` — request a secret from a peer agent over Threadline.
+- `GET /threadline/peers/:fp/health` — agent-to-agent delivery health for a peer fingerprint (pending/acked counts, staleness).

@@ -448,9 +448,14 @@ describe('ThreadlineEndpoints', () => {
     });
   });
 
-  describe('GET /threadline/messages/thread/:id', () => {
+  // Robustness Phase 2 (D-C): the placeholder GET /threadline/messages/thread/:id
+  // that unconditionally returned `{ messages: [], messageCount: 0 }` (a second F3
+  // hard-zero source) is DELETED. Canonical history is read via the bearer-gated
+  // GET /threadline/threads/:id on the agent server; the participant-authorized
+  // convergence backfill replaces this relay-auth surface.
+  describe('POST /threadline/threads/backfill (convergence backfill)', () => {
     it('requires authentication', async () => {
-      const res = await request(appA).get('/threadline/messages/thread/test-thread');
+      const res = await request(appA).post('/threadline/threads/backfill').send({ threadId: 'test-thread', missingDigests: [] });
 
       expect(res.status).toBe(401);
       expect(res.body.error.code).toBe('TL_AUTH_MISSING');

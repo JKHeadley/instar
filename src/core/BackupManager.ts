@@ -77,6 +77,10 @@ const DEFAULT_CONFIG: BackupConfig = {
     // time — see resolveIncludedFiles()). Glob matches the active ledger and
     // any rotated .jsonl.<epoch> archives.
     'shared-state.jsonl*',
+    // Threadline Robustness Phase 2 (FD-9): the canonical-history HEAD ANCHOR.
+    // The bulky per-thread `threadline/threads/*.log.jsonl` are EXCLUDED by design
+    // (large, reconstructable via backfill; the symmetry surface flags any gap).
+    'threadline/conversations.json',
   ],
 };
 
