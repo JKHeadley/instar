@@ -52,3 +52,4 @@ Not a bug fix — a new dark, dev-gated feature. Verified by the spec's 3-tier +
 - 2026-06-13: shared `worktreeDirtyCheck` helper (foundation) landed + 19 unit tests.
 - 2026-06-13: R1 — `uncommitted-worktree-work` evidence value, `monitoring.yieldSafety` config (enabled OMITTED, dev-gated), `DEV_GATED_FEATURES` registration; dark-gate golden line-map recomputed.
 - 2026-06-13: R1 killer-wiring — SessionReaper collects the pre-kill dirty-check (session.cwd) and carries uncommitted-worktree-work; server.ts injects the bounded dirtyCheck only when the dev-gate is live; 5 reaper tests both sides + fail-open + no-cwd + feature-dark.
+- 2026-06-13: R2 directive — ResumeQueueDrainer.continuationPrompt prepends the verbatim commit-first directive when uncommitted-worktree-work present (+ build-active 2nd sentence); 4 tests.
