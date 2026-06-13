@@ -4260,6 +4260,20 @@ Beyond the one-awake-machine model: with the pool enabled I run conversations ac
       result.upgraded.push('CLAUDE.md: added pool placement/transfer robustness lines');
     }
 
+    // WS1.4 autonomous-run consent gate (MULTI-MACHINE-SEAMLESSNESS-SPEC,
+    // 2026-06-12): agents that ALREADY have the pool section predate the
+    // transfer-time veto for in-flight autonomous runs. Append the line so
+    // deployed agents know a 409 needsConfirmation can also mean "autonomous
+    // run in flight" and what a confirmed move does to the run. Idempotent
+    // via the unique `autonomousRunSuspended` marker.
+    if (content.includes('Multi-Machine Session Pool (active-active') && !content.includes('autonomousRunSuspended')) {
+      const ws14line = `
+- **Moving a topic with an autonomous run in flight (consent gate):** a transfer answers 409 \`needsConfirmation\` when the topic has a LIVE autonomous run on this machine — moving suspends real work, so it always asks first. A confirmed move (\`"confirm":true\`) suspends the run at its next turn boundary (the state file survives with \`moved_to\` markers and rides the working-set carrier to the new machine — never deleted, never shipped mid-write); the response reports \`autonomousRunSuspended\`.`;
+      content += '\n' + ws14line + '\n';
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added WS1.4 autonomous-run transfer consent line');
+    }
+
     // Pool-wide session visibility (2026-06-05): agents that ALREADY have the pool
     // section predate GET /sessions?scope=pool (every session, every machine, each
     // tagged with its machine — the dashboard cross-machine sessions list). Append

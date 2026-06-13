@@ -169,6 +169,80 @@ function emitStopped(journal: AutonomousJournalSeam | undefined, stateDir: strin
   }
 }
 
+/**
+ * WS1.4 (MULTI-MACHINE-SEAMLESSNESS-SPEC): suspend a topic's autonomous run
+ * for a CONFIRMED topic move — distinct from stop in exactly one way: the
+ * state file SURVIVES so it can ride the working-set carrier to the new
+ * owner. Setting `active: false` makes the stop hook release the session at
+ * its next turn boundary (the spec's "stops at a turn boundary"); the
+ * `moved_to` + `move_suspended_at` markers are the honest breadcrumb for
+ * whoever resumes it. The rewrite is ATOMIC (temp + fsync + rename) so the
+ * carrier can never ship a half-rewritten file, and the journal `stopped`
+ * emit is what re-fires the receiving machine's working-set pull
+ * (WorkingSetManifest §3.4 liveSource re-fire).
+ *
+ * Idempotent: re-suspending an already-suspended file refreshes the markers
+ * and returns true; a missing file returns false.
+ */
+export function suspendAutonomousTopicForMove(
+  stateDir: string,
+  topic: string,
+  targetMachine: string,
+  journal?: AutonomousJournalSeam,
+): { suspended: boolean; file?: string } {
+  const f = path.join(autonomousDir(stateDir), `${topic}.local.md`);
+  let content: string;
+  try {
+    content = fs.readFileSync(f, 'utf8');
+  } catch {
+    return { suspended: false };
+  }
+  // Same tolerance as readField (quoted forms included) — the reader and the
+  // flip MUST agree on what counts as a live run, or a run the veto saw as
+  // live could survive the flip and be reported suspended (second-pass
+  // finding, 2026-06-13: silent false success).
+  const wasActive = readField(content, 'active') === 'true';
+  const alreadyMoveSuspended = /^moved_to:/m.test(content);
+  if (!wasActive && !alreadyMoveSuspended) {
+    // Nothing to suspend (not live, not a prior move-suspend to refresh) —
+    // honest no-op, never a claimed success.
+    return { suspended: false };
+  }
+  const stamp = new Date().toISOString();
+  let next = wasActive ? content.replace(/^active:\s*"?true"?\s*$/m, 'active: false') : content;
+  if (readField(next, 'active') === 'true') {
+    // The flip did not land (an active-line shape the reader accepts but the
+    // rewrite does not) — report failure rather than a torn half-suspend.
+    return { suspended: false };
+  }
+  // Refresh-or-insert the move markers (idempotent across re-suspends),
+  // anchored to the (now false) active line.
+  for (const [key, val] of [
+    ['move_suspended_at', `"${stamp}"`],
+    ['moved_to', `"${targetMachine}"`],
+  ] as const) {
+    const line = `${key}: ${val}`;
+    next = new RegExp(`^${key}:`, 'm').test(next)
+      ? next.replace(new RegExp(`^${key}:.*$`, 'm'), line)
+      : next.replace(/^active:.*$/m, (m) => `${m}\n${line}`);
+  }
+  // Journal the stop ONLY for a genuinely-live run being suspended (a marker
+  // refresh re-emits nothing; the scanner's op-key dedupe would collapse it
+  // anyway). Before the rewrite, so listAutonomousJobs reads the live file.
+  if (wasActive) emitStopped(journal, stateDir, topic, f);
+  // Atomic snapshot: temp file in the SAME directory, fsync'd, renamed over.
+  const tmp = `${f}.tmp-move`;
+  const fd = fs.openSync(tmp, 'w');
+  try {
+    fs.writeSync(fd, next, null, 'utf8');
+    fs.fsyncSync(fd);
+  } finally {
+    fs.closeSync(fd);
+  }
+  fs.renameSync(tmp, f);
+  return { suspended: true, file: f };
+}
+
 export function stopAutonomousTopic(stateDir: string, topic: string, journal?: AutonomousJournalSeam): boolean {
   const f = path.join(autonomousDir(stateDir), `${topic}.local.md`);
   if (fs.existsSync(f)) {

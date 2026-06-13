@@ -1,0 +1,54 @@
+# Multi-machine seamlessness — closeout breaker + autonomous-run move guard (WS1.2/WS1.4)
+
+## What Changed
+
+- **Post-transfer closeout P19 breaker (SessionReaper):** the closeout's veto-retry
+  loop is now bounded — after `monitoring.sessionReaper.topicMovedVetoBreakerAttempts`
+  (default 5) consecutive vetoed close attempts on the same session, retries stop for
+  the episode, a `closeout-breaker-open` row lands in sentinel-events.jsonl, and ONE
+  deduped attention item surfaces. The session still closes via the normal idle path
+  when its work finishes. Episode resets on success / topic-home / pin-conflict hold.
+- **Autonomous-run transfer consent gate (WS1.4):** `POST /pool/transfer` and the
+  natural-language "move this to <nickname>" now answer `needsConfirmation` when the
+  topic has a LIVE autonomous run on this machine — evaluated first among the consent
+  gates. A confirmed move (`"confirm":true`) suspends the run at its next turn
+  boundary via the new `suspendAutonomousTopicForMove`: `active: false` +
+  `moved_to`/`move_suspended_at` markers, ATOMIC rewrite (temp + fsync + rename), the
+  state file SURVIVES to ride the working-set carrier, and the journal `stopped` emit
+  re-fires the receiver's pull. Response reports `autonomousRunSuspended`.
+- CLAUDE.md template + PostUpdateMigrator migration so new AND deployed agents learn
+  the consent gate (Agent Awareness + Migration Parity).
+
+## Evidence
+
+- `tests/unit/session-reaper-topic-moved.test.ts` +5 (14 total): the spec's required
+  sustained-failure test (permanently-vetoing session → exactly N attempts + ONE
+  escalation with stable dedupe id), episode reset on topic-home, success-clears-
+  counter, pin-conflict clears counter, absent-dep audit-only.
+- `tests/unit/TransferByNickname.test.ts` +4 (17 total): veto prompt content,
+  precedence over offline/mid-reply, idempotency-noop stays ahead, backward compat.
+- `tests/unit/AutonomousSessions.test.ts` +4 (17 total): file survives with markers,
+  idempotent re-suspend, no-run no-op, journal stopped emit with artifact path.
+- PostUpdateMigrator suite 416 green; `tsc --noEmit` clean; build green.
+- Independent second-pass review (reaper kill loop + transfer dispatch surface) —
+  verdict appended to `upgrades/side-effects/multi-machine-seamlessness-ws12-ws14.md`.
+
+## What to Tell Your User
+
+Two multi-machine rough edges are gone. First: when a conversation moves between
+your machines, the old machine's cleanup can no longer get stuck hammering a session
+that's still finishing real work — it now backs off after a few refused attempts and
+sends you one clear notice instead of retrying silently for hours. Second: moving a
+topic that has an autonomous job running now asks you first ("there's a run in
+flight, ~N minutes remaining — move anyway?"), and if you say yes, the job is paused
+at a clean stopping point and its progress travels with the conversation to the new
+machine — nothing is lost mid-thought.
+
+## Summary of New Capabilities
+
+- The post-transfer closeout is bounded by a circuit breaker with one honest
+  operator notice per episode (tunable via
+  `monitoring.sessionReaper.topicMovedVetoBreakerAttempts`).
+- Topic transfers are autonomous-run-aware: consent before interrupting a run, clean
+  turn-boundary suspend on confirmation, and the run's state rides the working-set
+  carrier with atomic-write + hash-verified transport.

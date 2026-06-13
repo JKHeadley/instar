@@ -12146,6 +12146,25 @@ export async function startServer(options: StartOptions): Promise<void> {
             return !!self && !!pin && pin.pinned && pin.preferredMachine === self;
           } catch { return false; /* @silent-fallback-ok — no pin signal → hold not applied, closeout behaves as before */ }
         },
+        // WS1.2 P19 breaker escalation: ONE deduped attention item when the
+        // post-transfer closeout gives up on a permanently-vetoing session.
+        // The attention store dedupes on id, so a re-opening breaker within
+        // the same episode never floods (P17). Best-effort — the audit row in
+        // sentinel-events.jsonl is the durable record either way.
+        raiseAttention: (item) => {
+          try {
+            if (!telegram) return;
+            void telegram.createAttentionItem({
+              id: item.id,
+              title: item.title,
+              summary: item.summary,
+              description: item.description,
+              category: 'sessions',
+              priority: 'NORMAL',
+              sourceContext: 'session-reaper:closeout-breaker',
+            }).catch(() => { /* @silent-fallback-ok — escalation is best-effort; the breaker-open audit row is the durable record */ });
+          } catch { /* @silent-fallback-ok — telegram not wired yet (TDZ window) → audit-only */ }
+        },
         audit: reaperAuditSink(config.stateDir),
       },
       // developmentAgent gate (standard_development_agent_dark_feature_gate):
@@ -14260,6 +14279,7 @@ export async function startServer(options: StartOptions): Promise<void> {
           // Inert unless the rollout stage is past 'dark' (gated at the call site).
           const nickMod = await import('../core/NicknameCommand.js');
           const transferMod = await import('../core/TransferByNickname.js');
+          const autonomousSessionsModule = await import('../core/AutonomousSessions.js');
           const pinMod = await import('../core/TopicPlacementPinStore.js');
           const relocSetMod = await import('../core/RelocationNicknameSet.js');
           const nickAssignMod = await import('../core/NicknameAssigner.js');
@@ -14321,6 +14341,25 @@ export async function startServer(options: StartOptions): Promise<void> {
                 currentPinOf: (sk) => _topicPinStore?.get(sk)?.preferredMachine ?? null,
                 lastPlacementUpdateAt: (sk) => _topicPinStore?.lastUpdatedAtMs(sk) ?? null,
                 now: () => Date.now(),
+                // WS1.4 consent gate: a LIVE local autonomous run on this topic
+                // requires explicit confirmation before a move. The confirmed
+                // move goes through POST /pool/transfer with confirm:true
+                // (which performs the turn-boundary suspend); this NL arm only
+                // ever needs to ASK. Local-registry evidence only — a run on a
+                // remote owner is covered when the WS1.2 drain verb lands.
+                autonomousRunActive: (sk) => {
+                  try {
+                    const autoMod = autonomousSessionsModule;
+                    const job = autoMod?.listAutonomousJobs(config.stateDir).find((j) => j.topic === sk && j.active && !j.paused);
+                    if (!job) return null;
+                    let remainingMinutes: number | null = null;
+                    if (job.startedAt && job.durationSeconds != null) {
+                      const endMs = Date.parse(job.startedAt) + job.durationSeconds * 1000;
+                      if (Number.isFinite(endMs)) remainingMinutes = Math.max(0, Math.round((endMs - Date.now()) / 60_000));
+                    }
+                    return { goal: job.goal, remainingMinutes };
+                  } catch { return null; /* @silent-fallback-ok — unreadable run registry → veto not applied; the NL move behaves as before WS1.4 */ }
+                },
               },
               sessionKey,
             );
