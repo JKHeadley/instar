@@ -28,6 +28,31 @@ export interface KnowledgeSource {
   wordCount: number;
 }
 
+/**
+ * WS2.4 (multi-machine-replicated-store-foundation) — the knowledge-record replication
+ * emitter seam. server.ts injects a journal-backed emitter (built from the
+ * CoherenceJournal clock + the `knowledge-record` kind) ONLY when
+ * `multiMachine.stateSync.knowledge.enabled` is true (default false ⇒ NOT injected ⇒ a
+ * strict no-op, byte-identical single-machine behavior). The emitter NEVER throws out of
+ * a knowledge write — a replication failure must never break a local write (the emitter
+ * swallows + counts internally), so the manager calls it best-effort.
+ *
+ * CRITICAL: emitDelete MUST fire for every source REMOVED (the remove() path) — else a
+ * peer re-replicates the locally-removed source forever (resurrection). The emitter keys
+ * the tombstone on the SAME content-fingerprint recordKey the put used, so the delete
+ * reaches the same source on every machine even though the local ids differ.
+ *
+ * fork #2: emitPut carries the catalog METADATA only — never the markdown file body and
+ * never the local `id`/`filePath` (the projection in KnowledgeReplicatedStore strips them).
+ */
+export interface KnowledgeReplicationEmitter {
+  /** Emit a `put` for an ingested knowledge source (called from the ingest funnel). */
+  emitPut(record: KnowledgeSource): void;
+  /** Emit a `delete` tombstone for a removed source, keyed on its content fingerprint
+   *  (title/url/type). */
+  emitDelete(title: string, url: string | null, type: 'article' | 'transcript' | 'doc', deletedAt: string): void;
+}
+
 export interface KnowledgeCatalog {
   sources: KnowledgeSource[];
 }
@@ -52,10 +77,27 @@ export class KnowledgeManager {
   private readonly knowledgeDir: string;
   private readonly catalogPath: string;
 
+  /**
+   * WS2.4 knowledge-record replication emitter (injected, dark by default). Absent ⇒
+   * strict no-op (single-machine, byte-identical). server.ts late-binds a journal-backed
+   * emitter ONLY when `multiMachine.stateSync.knowledge.enabled` is true.
+   */
+  private knowledgeReplication: KnowledgeReplicationEmitter | null = null;
+
   constructor(stateDir: string) {
     this.knowledgeDir = path.join(stateDir, 'knowledge');
     this.catalogPath = path.join(this.knowledgeDir, 'catalog.json');
     this.ensureDirectories();
+  }
+
+  /**
+   * Late-bind the WS2.4 knowledge-record replication emitter (server.ts constructs the
+   * journal/clock AFTER the manager). Idempotent; passing undefined/null detaches (back
+   * to single-machine no-op). The emit funnel checks `this.knowledgeReplication` per
+   * write, so attaching mid-life takes effect on the next ingest/remove.
+   */
+  setKnowledgeReplicationEmitter(emitter: KnowledgeReplicationEmitter | null | undefined): void {
+    this.knowledgeReplication = emitter ?? null;
   }
 
   /**
@@ -114,6 +156,21 @@ export class KnowledgeManager {
     catalog.sources.push(source);
     this.saveCatalog(catalog);
 
+    // WS2.4 — best-effort replication emission (dark by default; the emitter is only
+    // injected when multiMachine.stateSync.knowledge.enabled is true). The emitter
+    // swallows its own errors, but we wrap defensively so a replication fault can NEVER
+    // break a local knowledge write. The catalog metadata (NOT the file body) is emitted.
+    if (this.knowledgeReplication) {
+      try {
+        this.knowledgeReplication.emitPut(source);
+      } catch {
+        // @silent-fallback-ok: a replication emit fault must never break or roll back a
+        // local knowledge write — the durable on-disk catalog + file are already
+        // persisted above. The emitter counts its own failures internally; this guard
+        // only ensures a throw from the seam cannot propagate into the local write path.
+      }
+    }
+
     return { sourceId: id, filePath: relPath, wordCount };
   }
 
@@ -137,6 +194,21 @@ export class KnowledgeManager {
     // Remove from catalog
     catalog.sources.splice(index, 1);
     this.saveCatalog(catalog);
+
+    // WS2.4 — best-effort tombstone emission (dark by default). CRITICAL (resurrection
+    // guard): a removed source MUST emit an op:delete tombstone keyed on its content
+    // fingerprint, else a peer re-replicates the locally-removed source forever. The
+    // tombstone is built from the REMOVED source's stable identity (title/url/type).
+    if (this.knowledgeReplication) {
+      try {
+        this.knowledgeReplication.emitDelete(source.title, source.url, source.type, new Date().toISOString());
+      } catch {
+        // @silent-fallback-ok: a replication emit fault must never break a local
+        // knowledge removal — the durable on-disk catalog is already persisted above.
+        // The emitter counts its own failures internally; this guard only ensures a
+        // throw from the seam cannot propagate into the local remove path.
+      }
+    }
 
     return true;
   }

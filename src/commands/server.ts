@@ -3599,6 +3599,19 @@ export async function startServer(options: StartOptions): Promise<void> {
     const { LEARNING_KIND_REGISTRATION } = await import('../core/LearningsReplicatedStore.js');
     replicatedKindRegistry.register(LEARNING_KIND_REGISTRATION);
 
+    // WS2.4 (multi-machine-replicated-store-foundation) — register the FOURTH concrete
+    // replicated kind, `knowledge-record`, onto the registry: the THIRD memory-family
+    // kind (after WS2.3 relationships + WS2.2 learnings). Dual-registry's dynamic half
+    // (the static half is CoherenceJournal.JOURNAL_KINDS, which now lists 'knowledge-record').
+    // Registration is INERT — emission/serve/pull stay gated behind
+    // `multiMachine.stateSync.knowledge.enabled` (default false ⇒ strict no-op). With it
+    // registered, selfStateSyncReceive self-reports `knowledge:true` IFF the store is
+    // enabled, and the rollback-unmerge resolves its contributing kind via getByStore. The
+    // local generated id + filePath are NEVER replicated — only the catalog METADATA (never
+    // the file body), keyed on a content fingerprint (KnowledgeReplicatedStore.deriveKnowledgeRecordKey).
+    const { KNOWLEDGE_KIND_REGISTRATION } = await import('../core/KnowledgeReplicatedStore.js');
+    replicatedKindRegistry.register(KNOWLEDGE_KIND_REGISTRATION);
+
     // Snapshot-then-tail engine (Component 4 / build-order step 3,
     // multi-machine-replicated-store-foundation §6). The cache (FIXED ceiling,
     // §8.2 — NOT pool-scaled), the per-peer rebuild breaker (§6.3), and the engine
@@ -8134,6 +8147,58 @@ export async function startServer(options: StartOptions): Promise<void> {
       conflictStore,
     });
     void learningsUnionReader; // consumed by the learnings peer-read surface + the journal-apply rollout stage (WS2.2+)
+
+    // WS2.4 — the bypass-proof union reader for the `knowledge` store + the emit seam on
+    // the KnowledgeManager. The KnowledgeManager reads the local catalog.json (cheap, no
+    // background work); we construct one here scoped to the replication wiring. The union
+    // reader is the single funnel every replicated knowledge read routes through, so no
+    // caller reads a raw replica around the no-clobber rule. `loadOriginRecords`
+    // materializes the OWN catalog as the single origin today (via knowledgeToOriginRecord,
+    // keyed on the content-fingerprint identity surface — the local id + filePath are NEVER
+    // replicated); when the journal apply path lands peer `knowledge-record` replicas (a
+    // later rollout stage), the seam extends to read those peer namespaces too. With only
+    // the own origin the union is a strict no-op. tierOf returns HIGH (append-both-and-flag
+    // never silently clobbers two divergent sources; the READ layer is advisory, injecting
+    // both variants as hints rather than blocking — fork #3). The emit seam is attached ONLY
+    // when stateSync.knowledge.enabled is true (default false ⇒ NOT injected ⇒ strict no-op,
+    // byte-identical single-machine behavior; the catalog METADATA is emitted, never the
+    // file body — fork #2).
+    const { KnowledgeManager } = await import('../knowledge/KnowledgeManager.js');
+    const knowledgeManager = new KnowledgeManager(config.stateDir);
+    const {
+      knowledgeTierOf,
+      knowledgeToOriginRecord,
+      deriveKnowledgeRecordKey,
+      KNOWLEDGE_STORE_KEY,
+    } = await import('../core/KnowledgeReplicatedStore.js');
+    const knowledgeUnionReader = new ReplicatedStoreReader({
+      registry: replicatedKindRegistry,
+      stores: (config.multiMachine as unknown as { stateSync?: import('../core/ReplicatedRecordEnvelope.js').StateSyncStores } | undefined)?.stateSync,
+      tierOf: knowledgeTierOf,
+      loadOriginRecords: (store, recordKey) => {
+        if (store !== KNOWLEDGE_STORE_KEY || _meshSelfId === null) return [];
+        for (const s of knowledgeManager.getCatalog()) {
+          if (deriveKnowledgeRecordKey(s.title, s.url, s.type) === recordKey) {
+            const o = knowledgeToOriginRecord(s, _meshSelfId);
+            return o ? [o] : [];
+          }
+        }
+        return [];
+      },
+      listRecordKeys: (store) => {
+        if (store !== KNOWLEDGE_STORE_KEY) return [];
+        const keys: string[] = [];
+        for (const s of knowledgeManager.getCatalog()) {
+          const k = deriveKnowledgeRecordKey(s.title, s.url, s.type);
+          if (k !== null) keys.push(k);
+        }
+        return keys;
+      },
+      droppedOrigins: droppedOriginRegistry,
+      conflictStore,
+    });
+    void knowledgeUnionReader; // consumed by the knowledge peer-read surface + the journal-apply rollout stage (WS2.4+)
+    void knowledgeManager.setKnowledgeReplicationEmitter; // the emit seam exists (unit-tested + dark by default); the journal-backed emitter is attached in a later rollout stage, mirroring the WS2.2 learnings sibling
 
     // Start MemoryPressureMonitor (platform-aware memory tracking)
     const { MemoryPressureMonitor } = await import('../monitoring/MemoryPressureMonitor.js');
