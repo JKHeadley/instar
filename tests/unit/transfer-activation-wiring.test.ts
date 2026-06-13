@@ -30,7 +30,10 @@ describe('server-boot wiring: transfer-by-nickname activation (§L4)', () => {
 
   it('applies a transfer plan: sets the pin AND releases local ownership so it re-places', () => {
     const idx = src.indexOf('transferMod.planTransferByNickname(');
-    const block = src.slice(idx, idx + 1600);
+    // Window 3600 (was 1600): the WS1.4 autonomousRunActive consent dep
+    // (MULTI-MACHINE-SEAMLESSNESS-SPEC) grew the planner-state construction,
+    // pushing the pin-set (~2520) and release (~2890) further in.
+    const block = src.slice(idx, idx + 3600);
     expect(block).toContain('_topicPinStore!.set(sessionKey, target');
     expect(block).toContain("type: 'release'"); // release local ownership so route() re-places to the pin
   });
