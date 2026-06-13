@@ -9653,7 +9653,7 @@ export function createRoutes(ctx: RouteContext): Router {
     }
     try {
       const rawCfg = (ctx.config as { threadline?: { singleNegotiator?: unknown } }).threadline?.singleNegotiator;
-      const cfg = resolveSingleNegotiatorConfig(rawCfg);
+      const cfg = resolveSingleNegotiatorConfig(rawCfg, ctx.config as { developmentAgent?: boolean });
       // Paginate by threadId (stable order). Default 100, `after` cursor.
       const limitRaw = typeof req.query.limit === 'string' ? parseInt(req.query.limit, 10) : 100;
       const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(limitRaw, 500) : 100;
@@ -19631,6 +19631,7 @@ export function createRoutes(ctx: RouteContext): Router {
       const negVerdict = await evaluateSendGate(effectiveThreadId, {
         conversationStore: ctx.conversationStore ?? null,
         rawConfig: (ctx.config as { threadline?: { singleNegotiator?: unknown } }).threadline?.singleNegotiator,
+        developmentAgent: (ctx.config as { developmentAgent?: boolean }).developmentAgent,
         machineId: ctx.meshSelfId ?? (ctx.config as { machineId?: string }).machineId ?? 'local',
         agentName: ctx.config.projectName,
         ownerSessionName: typeof originSessionName === 'string' ? originSessionName : undefined,

@@ -58,6 +58,12 @@ export interface SendGateDeps {
   conversationStore?: ConversationStore | null;
   /** Raw `threadline.singleNegotiator` config block (resolved defensively). */
   rawConfig: unknown;
+  /**
+   * Whether this agent is a development agent. The lease's `enabled` flag rides
+   * the developmentAgent dark-feature gate — LIVE (in dry-run) on a dev agent,
+   * DARK on the fleet — unless the config sets `enabled` explicitly.
+   */
+  developmentAgent?: boolean;
   /** This machine's id. */
   machineId: string;
   /** This agent's display name (interpolated into the fixed holding-notice template). */
@@ -80,7 +86,9 @@ export interface SendGateDeps {
  * internally; never throws into the send path (a store error fails open).
  */
 export async function evaluateSendGate(threadId: string, deps: SendGateDeps): Promise<SendGateVerdict> {
-  const cfg: SingleNegotiatorConfig = resolveSingleNegotiatorConfig(deps.rawConfig);
+  const cfg: SingleNegotiatorConfig = resolveSingleNegotiatorConfig(deps.rawConfig, {
+    developmentAgent: deps.developmentAgent,
+  });
 
   // Dark ship: pure pass-through, zero overhead.
   if (!cfg.enabled) return { decision: 'allow', reason: 'disabled' };

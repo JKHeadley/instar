@@ -326,25 +326,28 @@ describe('lint-dev-agent-dark-gate', () => {
       '358': 'monitoring.releaseReadiness.enabled',
       // green-pr-automerge-enforcement: the greenPrAutoMerge block (a NEW
       // deliberate-fleet-default `enabled: false`) was inserted after
-      // releaseReadiness (373), composed in the merge with main's new
-      // threadline.singleNegotiator block (450). Every entry below shifted
-      // accordingly. Verified by hand against the MERGED ConfigDefaults.ts.
+      // releaseReadiness (373). threadline-single-negotiator dev-gate fix (CMT-1362):
+      // `threadline.singleNegotiator` now OMITS its `enabled:` line (it rides the
+      // developmentAgent gate, not a written literal), so it no longer appears in
+      // this attributor map; its expanded explanatory comment net-grows the block
+      // by +3, shifting every entry at or after mentor.enabled by +3 vs the prior
+      // merged layout. Verified by hand against the MERGED ConfigDefaults.ts.
       '373': 'monitoring.greenPrAutoMerge.enabled',
       '423': 'threadline.a2aCheckIn.enabled',
-      '450': 'threadline.singleNegotiator.enabled',
-      '483': 'mentor.enabled',
-      '494': 'mentor.autonomousFix.enabled',
-      '509': 'mentee.enabled',
-      // WS2.1 preferences pool: multiMachine.seamlessness gained ws21PreferencesPool
-      // (+8 lines) → sessionPool family +8; coherenceJournal gained the `preferences`
-      // sub-block (+10) → cartographer entries +18 total. Composed on #1098's map.
-      // Verified by hand (attributor) against ConfigDefaults.ts after the WS2.1 additions.
-      '617': 'multiMachine.sessionPool.enabled',
-      '642': 'multiMachine.sessionPool.inboundQueue.enabled',
-      '671': 'multiMachine.sessionPool.holdForStability.enabled',
-      '826': 'cartographer.freshnessSweep.enabled',
-      '871': 'cartographer.conformanceAudit.llmEnrichment.enabled',
-      '896': 'cartographer.subtreeNav.llmRerank.enabled',
+      // threadline.singleNegotiator no longer appears here: the dev-gate fix
+      // (CMT-1362) removed its `enabled:` literal so it rides the developmentAgent
+      // gate. Line numbers below are RECOMPUTED against the merged ConfigDefaults.ts
+      // (upstream WS2.1 preferences-pool layout MINUS the singleNegotiator enabled
+      // line). Verified by the attributor against the MERGED ConfigDefaults.ts.
+      '486': 'mentor.enabled',
+      '497': 'mentor.autonomousFix.enabled',
+      '512': 'mentee.enabled',
+      '620': 'multiMachine.sessionPool.enabled',
+      '645': 'multiMachine.sessionPool.inboundQueue.enabled',
+      '674': 'multiMachine.sessionPool.holdForStability.enabled',
+      '829': 'cartographer.freshnessSweep.enabled',
+      '874': 'cartographer.conformanceAudit.llmEnrichment.enabled',
+      '899': 'cartographer.subtreeNav.llmRerank.enabled',
     };
     const actual = attributeRealConfigDefaults();
     expect(actual).toEqual(EXPECTED);
