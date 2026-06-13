@@ -55,6 +55,7 @@ import {
 import { buildGuardInventory } from '../monitoring/guardPostureView.js';
 import { GuardRegistry } from '../monitoring/GuardRegistry.js';
 import { isPeerUrlAllowedForCredentials } from './peerUrlGuard.js';
+import { classifyMachineEmptyState } from './poolEmptyState.js';
 import { RemoteCloseAudit } from '../core/RemoteCloseAudit.js';
 import { FailureLedger } from '../monitoring/FailureLedger.js';
 import { FailureAttributionEngine } from '../monitoring/FailureAttributionEngine.js';
@@ -5614,14 +5615,24 @@ export function createRoutes(ctx: RouteContext): Router {
       const peers = ctx.resolvePeerUrls?.() ?? [];
       const failed: Array<{ machineId: string; error: string }> = [];
       const remote: Record<string, unknown>[] = [];
+      // WS4.2: per-machine classified fetch verdict — null = fetch succeeded,
+      // a normalized reason = the live attempt failed (feeds the empty-state
+      // classifier so an idle peer reads "online — no active sessions" but a
+      // dark peer reads "unreachable", never a fabricated state).
+      const peerFetchReason = new Map<string, string | null>();
       await Promise.all(peers.map(async (p) => {
         try {
           const r = await fetch(`${p.url}/sessions`, {
             headers: { Authorization: `Bearer ${ctx.config.authToken}` },
             signal: AbortSignal.timeout(5000),
           });
-          if (!r.ok) throw new Error(`HTTP ${r.status}`);
+          if (!r.ok) {
+            failed.push({ machineId: p.machineId, error: `HTTP ${r.status}` });
+            peerFetchReason.set(p.machineId, r.status === 401 || r.status === 403 ? 'unauthorized' : 'error');
+            return;
+          }
           const list = (await r.json()) as Record<string, unknown>[];
+          peerFetchReason.set(p.machineId, null);
           const nickname = ctx.machinePoolRegistry?.getCapacity(p.machineId)?.nickname ?? null;
           for (const s of list) {
             remote.push({
@@ -5632,11 +5643,73 @@ export function createRoutes(ctx: RouteContext): Router {
             });
           }
         } catch (err) {
+          // @silent-fallback-ok — a peer being down/slow is the DESIGNED tolerant
+          // path (spec: degrade to a named failed entry, never a 500); the failure
+          // is reported up-stack in pool.failed + the per-machine empty-state, not
+          // swallowed. Normalized reason (never raw err.message → no URL/TLS leak).
+          const name = err instanceof Error ? err.name : '';
           failed.push({ machineId: p.machineId, error: err instanceof Error ? err.message : String(err) });
+          peerFetchReason.set(p.machineId, name === 'TimeoutError' || name === 'AbortError' ? 'timeout' : 'unreachable');
         }
       }));
+
+      // WS4.2 (F7): explicit per-machine empty-state. Account for EVERY
+      // registered machine (self + every peer from listPoolMachines), not just
+      // the online peers that resolvePeerUrls yielded — a machine that is
+      // offline or unreachable is exactly the case the operator could not tell
+      // apart from idle before this. A machine WITH sessions gets no empty-state
+      // (its tiles already name it). Each empty-state is derived honestly from
+      // the registry's online flag + last-seen + the live fan-out verdict.
+      const allSessionsMerged = [...enriched, ...remote];
+      const sessionCountByMachine = new Map<string, number>();
+      for (const s of allSessionsMerged) {
+        const mid = typeof s.machineId === 'string' ? s.machineId : (selfMachineId ?? '__local__');
+        sessionCountByMachine.set(mid, (sessionCountByMachine.get(mid) ?? 0) + 1);
+      }
+      const nowMs = Date.now();
+      const machines: Array<{
+        machineId: string;
+        nickname: string | null;
+        isSelf: boolean;
+        sessionCount: number;
+        emptyState?: { kind: string; text: string; lastSeen: string | null };
+      }> = [];
+      // Registry-wide roster: self + every known machine. listPoolMachines is
+      // the /guards?scope=pool accounting boundary (every registered machine,
+      // online or not). Absent (single-machine/dark) → roster is just self.
+      const knownMachines = ctx.listPoolMachines?.() ?? [];
+      const rosterIds = new Set<string>();
+      if (selfMachineId) rosterIds.add(selfMachineId);
+      for (const m of knownMachines) rosterIds.add(m.machineId);
+      for (const machineId of rosterIds) {
+        const isSelf = machineId === selfMachineId;
+        const capacity = ctx.machinePoolRegistry?.getCapacity(machineId) ?? null;
+        const nickname = capacity?.nickname
+          ?? knownMachines.find((m) => m.machineId === machineId)?.nickname
+          ?? (isSelf ? selfMachineNickname : null)
+          ?? null;
+        const sessionCount = sessionCountByMachine.get(machineId)
+          ?? (isSelf ? (sessionCountByMachine.get('__local__') ?? 0) : 0);
+        const entry: (typeof machines)[number] = { machineId, nickname, isSelf, sessionCount };
+        if (sessionCount === 0) {
+          // Self is always "online" when it answered this request — it is the
+          // machine serving the response. Peers derive from registry + fan-out.
+          const state = classifyMachineEmptyState(
+            {
+              online: isSelf ? true : (capacity?.online ?? false),
+              failedReason: isSelf ? null : (peerFetchReason.get(machineId) ?? (capacity?.online ? null : 'offline')),
+              routerReceivedAt: capacity?.routerReceivedAt,
+              selfReportedLastSeen: capacity?.selfReportedLastSeen,
+            },
+            nowMs,
+          );
+          entry.emptyState = { kind: state.kind, text: state.text, lastSeen: state.lastSeen };
+        }
+        machines.push(entry);
+      }
+
       res.json({
-        sessions: [...enriched, ...remote],
+        sessions: allSessionsMerged,
         pool: {
           enabled: !!ctx.machinePoolRegistry,
           selfMachineId,
@@ -5644,6 +5717,11 @@ export function createRoutes(ctx: RouteContext): Router {
           peersQueried: peers.length,
           peersOk: peers.length - failed.length,
           failed,
+          // WS4.2: every registered machine with its session count and, when
+          // idle, an explicit classified empty-state. >=2 machines is the
+          // multi-machine case the dashboard renders; single-machine installs
+          // still get the (lone) self row, harmlessly.
+          machines,
         },
       });
       return;

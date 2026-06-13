@@ -179,3 +179,75 @@ describe('PostUpdateMigrator — post-transfer closeout line', () => {
     expect(after.split('Post-transfer closeout').length - 1).toBe(1);
   });
 });
+
+describe('PostUpdateMigrator — WS4.2 per-machine empty-state line', () => {
+  let projectDir: string;
+  let claudeMdPath: string;
+
+  beforeEach(() => {
+    projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-ws42-emptystate-'));
+    fs.mkdirSync(path.join(projectDir, '.instar'), { recursive: true });
+    claudeMdPath = path.join(projectDir, 'CLAUDE.md');
+  });
+
+  afterEach(() => {
+    SafeFsExecutor.safeRmSync(projectDir, {
+      recursive: true,
+      force: true,
+      operation: 'tests/unit/PostUpdateMigrator-poolSessionsVisibility.test.ts',
+    });
+  });
+
+  it('appends the empty-state line to a pool section that predates it', () => {
+    fs.writeFileSync(claudeMdPath, [
+      '# CLAUDE.md — test',
+      '',
+      '## Multi-Machine Session Pool (active-active — spread conversations across machines)',
+      '',
+      '- **Every session, every machine:** API: `GET /sessions?scope=pool`.',
+      '- **Post-transfer closeout (automatic):** old sessions close on move.',
+      '',
+    ].join('\n'));
+
+    const result = runMigrateClaudeMd(createMigrator(projectDir));
+    expect(result.errors).toEqual([]);
+
+    const after = fs.readFileSync(claudeMdPath, 'utf-8');
+    expect(after).toContain('pool.machines[].emptyState');
+    expect(after).toContain('online — no active sessions');
+    expect(after).toContain('offline since <t>');
+    expect(after).toContain('unreachable (last seen <t>)');
+    expect(result.upgraded.some(u => u.includes('WS4.2 per-machine empty-state'))).toBe(true);
+  });
+
+  it('is idempotent — the emptyState marker blocks a second append', () => {
+    fs.writeFileSync(claudeMdPath, [
+      '# CLAUDE.md — test',
+      '',
+      '## Multi-Machine Session Pool (active-active — spread conversations across machines)',
+      '',
+      '- **Every session, every machine:** API: `GET /sessions?scope=pool`.',
+      '- **Idle vs broken machine (WS4.2):** `pool.machines[].emptyState` distinguishes idle from broken.',
+      '',
+    ].join('\n'));
+
+    const result = runMigrateClaudeMd(createMigrator(projectDir));
+    expect(result.errors).toEqual([]);
+    const after = fs.readFileSync(claudeMdPath, 'utf-8');
+    expect(after.split('pool.machines[].emptyState').length - 1).toBe(1);
+    expect(result.upgraded.some(u => u.includes('WS4.2 per-machine empty-state'))).toBe(false);
+  });
+
+  it('a fresh pool-section inject already carries the empty-state line exactly once', () => {
+    fs.writeFileSync(claudeMdPath, '# CLAUDE.md — test\n');
+
+    const result = runMigrateClaudeMd(createMigrator(projectDir));
+    expect(result.errors).toEqual([]);
+
+    const after = fs.readFileSync(claudeMdPath, 'utf-8');
+    expect(after).toContain('Multi-Machine Session Pool (active-active');
+    expect(after).toContain('pool.machines[].emptyState');
+    // The inject carries it — the append migration must NOT also fire on the same pass.
+    expect(after.split('pool.machines[].emptyState').length - 1).toBe(1);
+  });
+});
