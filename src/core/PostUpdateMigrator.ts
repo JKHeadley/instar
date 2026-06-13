@@ -6129,6 +6129,19 @@ Create worktrees for collaborator repos with \`instar worktree create <branch>\`
       result.upgraded.push('CLAUDE.md: added Honest progress messaging section');
     }
 
+    // Live Credential Re-pointing (WS5.2, CMT-1372) — existing agents learn the
+    // /credentials/* manual levers + the zero-touch default-flip proactive trigger
+    // ("flip my default account" → set-default; "which account is this slot on?"
+    // → GET /credentials/locations). Body mirrors generateClaudeMd() (Agent
+    // Awareness Standard). Content-sniffed on the distinctive section header so the
+    // migration is idempotent and skips template-generated CLAUDE.md files. Harmless
+    // on agents where the feature is dark (every lever 503s).
+    if (!content.includes('Live Credential Re-pointing (move a pool account')) {
+      content += `\n**Live Credential Re-pointing (move a pool account's login between config-home "slots" without restarting — WS5.2)** — Beyond the subscription pool's session-MOVING, this MOVES the credential itself: it exchanges which pool account's OAuth login sits in which config-home "slot" via a staged keychain swap, so the sessions already reading that slot pick up the new account on their NEXT API call — no restart, no re-login, nothing on your screen. The unit shuffled is the CREDENTIAL (always a clean SWAP between two slots, never a copy — one home per credential), verified by identity after every move (quarantine-never-repair when the identity oracle can't confirm). **Ships DARK** behind \`subscriptionPool.credentialRepointing.enabled\` — every lever 503s/no-ops while disabled (byte-for-byte today's behavior); going live needs a deliberate \`enabled:true\` + \`dryRun:false\` flip, and that ON decision is yours, separate from any build.\n- **Which account is in which slot?** (Registry First — read it, never guess) \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/credentials/locations\` → the ledger census (slot ↔ account, since, lastVerifiedAt, quarantine state, journal tail, mode).\n- **Flip your default account (zero-touch)** — \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/credentials/set-default -H 'Content-Type: application/json' -d '{"toAccountId":"<account>"}'\` swaps which account \`~/.claude\` serves, with no restart of the session you're talking to.\n- **Swap two slots' credentials live** — \`POST /credentials/swap\` \`{"slotA":"<home>","slotB":"<home>"}\` (the staged §2.3 exchange). **Restore the enrollment layout** — \`POST /credentials/restore-enrollment\` (parks any identity-incoherent blob one-directionally; never exchanges it into a healthy slot). All levers are DETECTIVE controls — operator-notified + audited + param-validated + per-pair cooldown + a force budget on \`force:true\`. No token material ever exits any \`/credentials/*\` surface (the single CredentialAuditEmit scrub chokepoint).\n- **The autonomous balancer surface** — \`GET /credentials/rebalancer\` (the use-it-or-lose-it drainer is Increment B; this surfaces the env-token applicability gate's verdict + WHY re-pointing would refuse, when enabled).\n- **When to use** (PROACTIVE — these are the triggers): "flip my default account to X" / "make X my default" → \`POST /credentials/set-default\`; "which account is this session/slot on?" / "where does ~/.claude point?" → \`GET /credentials/locations\` (read it, don't infer from \`claude auth status\` — that reads a metadata file, not the live credential). Single-account agents are a no-op. (Spec: \`docs/specs/live-credential-repointing-rebalancer.md\`.)\n`;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Live Credential Re-pointing awareness section');
+    }
+
     if (patched) {
       try {
         fs.writeFileSync(claudeMdPath, content);
