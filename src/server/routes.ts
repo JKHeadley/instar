@@ -18755,7 +18755,79 @@ export function createRoutes(ctx: RouteContext): Router {
   // GET routes return { enabled: false } when the pool is not configured so
   // they answer 200 (not 503) on every install.
 
-  router.get('/subscription-pool', (_req, res) => {
+  router.get('/subscription-pool', async (req, res) => {
+    // WS5.1 — pool-scope read: "how much quota is left across ALL my machines /
+    // accounts?" in ONE view. Mirrors GET /sessions?scope=pool exactly: fan out
+    // to every ONLINE-registered peer's PLAIN /subscription-pool (NEVER
+    // ?scope=pool — no recursion), tag each remote account with the machine that
+    // holds it, and merge into one dark-peer-tolerant object. Tolerant by design:
+    // a down/slow/401 peer contributes a classified `pool.failed` row (normalized
+    // reason — never a peer URL/token/raw TLS error, never a 500). Per-machine
+    // seat is meaningful, so the SAME account on two machines is kept
+    // individually visible — never P17-coalesced (differs from attention notices).
+    // Single-machine / no resolvePeerUrls → the plain self-only view tagged
+    // scope:'pool' with an empty pool.failed (a strict no-op superset).
+    if (req.query.scope === 'pool') {
+      const selfMachineId = ctx.meshSelfId ?? null;
+      const selfMachineNickname = selfMachineId
+        ? (ctx.machinePoolRegistry?.getCapacity(selfMachineId)?.nickname ?? null)
+        : null;
+      const selfAccounts = (ctx.subscriptionPool?.list() ?? []).map((a) => ({
+        ...a,
+        machineId: selfMachineId,
+        machineNickname: selfMachineNickname ?? undefined,
+        remote: false,
+      }));
+
+      const peers = ctx.resolvePeerUrls?.() ?? [];
+      const failed: Array<{ machineId: string; error: string }> = [];
+      const remote: Record<string, unknown>[] = [];
+      await Promise.all(peers.map(async (p) => {
+        try {
+          const r = await fetch(`${p.url}/subscription-pool`, {
+            headers: { Authorization: `Bearer ${ctx.config.authToken}` },
+            signal: AbortSignal.timeout(5000),
+          });
+          if (!r.ok) {
+            // Normalized reason — NEVER the peer URL or a raw body (no leak).
+            failed.push({ machineId: p.machineId, error: r.status === 401 || r.status === 403 ? 'unauthorized' : 'error' });
+            return;
+          }
+          const body = (await r.json()) as { accounts?: Record<string, unknown>[] };
+          const nickname = ctx.machinePoolRegistry?.getCapacity(p.machineId)?.nickname ?? null;
+          for (const a of body.accounts ?? []) {
+            remote.push({
+              ...a,
+              machineId: a.machineId ?? p.machineId,
+              machineNickname: a.machineNickname ?? nickname ?? undefined,
+              remote: true,
+            });
+          }
+        } catch (err) {
+          // @silent-fallback-ok — a peer being down/slow/unauth is the DESIGNED
+          // tolerant path (spec: degrade to a named failed row, never a 500); the
+          // failure is reported up-stack in pool.failed, not swallowed. Normalized
+          // reason only (never raw err.message → no URL/TLS/token leak).
+          const name = err instanceof Error ? err.name : '';
+          failed.push({ machineId: p.machineId, error: name === 'TimeoutError' || name === 'AbortError' ? 'timeout' : 'unreachable' });
+        }
+      }));
+
+      res.json({
+        enabled: !!ctx.subscriptionPool,
+        accounts: [...selfAccounts, ...remote],
+        pool: {
+          selfMachineId,
+          selfMachineNickname,
+          peersQueried: peers.length,
+          peersOk: peers.length - failed.length,
+          failed,
+        },
+        scope: 'pool',
+      });
+      return;
+    }
+
     if (!ctx.subscriptionPool) {
       res.json({ enabled: false, accounts: [] });
       return;
