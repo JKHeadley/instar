@@ -4149,6 +4149,23 @@ export interface MonitoringConfig {
     maxReapsPerPass?: number;
   };
   /**
+   * OrphanedWorkSentinel — the silent-uncommitted-death backstop (2026-06-12,
+   * topic 22367). Detects agent worktrees with uncommitted work whose owning
+   * session is DEAD and that have SETTLED, records them durably, and raises ONE
+   * deduped attention item; needs nothing registered (it reads the stranded work
+   * off disk — the case the PromiseBeacon escalation ladder can't see). Signal-
+   * only; the optional `preserveWork` writes a non-destructive preservation patch.
+   * `enabled` is OMITTED from the default so the developmentAgent dark-feature
+   * gate decides (LIVE on a dev agent, DARK on the fleet). GET /orphaned-work.
+   */
+  orphanedWorkSentinel?: {
+    enabled?: boolean;
+    scanIntervalMs?: number;
+    settleMs?: number;
+    preserveWork?: boolean;
+    maxFlagsPerPass?: number;
+  };
+  /**
    * McpProcessReaper (RESPONSIBLE-RESOURCE-USAGE — MCP-leak fix, Option B).
    * Reaps leaked MCP-server children (playwright-mcp / mcp-remote / instar
    * stdio) whose owning session is dead/stale or fully orphaned. Killing a

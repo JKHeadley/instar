@@ -186,6 +186,20 @@ export const GUARD_MANIFEST: readonly GuardManifestEntry[] = [
     description: 'Reclaims merged+clean+unused agent worktrees.',
   },
   {
+    // `enabled` is deliberately OMITTED from ConfigDefaults — the runtime resolves
+    // it through the developmentAgent dark-feature gate (dark on the fleet, live on
+    // a dev agent). defaultEnabled:false reflects the fleet default.
+    key: 'monitoring.orphanedWorkSentinel.enabled',
+    kind: 'config',
+    configPath: 'monitoring.orphanedWorkSentinel.enabled',
+    defaultEnabled: false,
+    expectedTickMs: 600_000,
+    process: 'server',
+    expectRuntime: false,
+    component: 'OrphanedWorkSentinel',
+    description: 'Detects agent worktrees with uncommitted work whose owning session died + settled.',
+  },
+  {
     key: 'monitoring.mcpProcessReaper.enabled',
     kind: 'config',
     configPath: 'monitoring.mcpProcessReaper.enabled',

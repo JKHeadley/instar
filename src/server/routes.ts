@@ -916,6 +916,9 @@ export interface RouteContext {
   /** AgentWorktreeReaper — reclaims stale CLI worktrees. Null when not wired.
    *  Powers GET /worktrees/agent-reaper observability. */
   agentWorktreeReaper?: import('../monitoring/AgentWorktreeReaper.js').AgentWorktreeReaper | null;
+  /** OrphanedWorkSentinel — the silent-uncommitted-death backstop. Null when not
+   *  wired / dark. Powers GET /orphaned-work observability. */
+  orphanedWorkSentinel?: import('../monitoring/OrphanedWorkSentinel.js').OrphanedWorkSentinel | null;
   /** McpProcessReaper — reclaims leaked MCP-server children. Null when not wired.
    *  Powers GET /processes/mcp-reaper observability. */
   mcpProcessReaper?: import('../monitoring/McpProcessReaper.js').McpProcessReaper | null;
@@ -5156,6 +5159,18 @@ export function createRoutes(ctx: RouteContext): Router {
       return;
     }
     res.json(ctx.agentWorktreeReaper.snapshot());
+  });
+
+  // OrphanedWorkSentinel — the silent-uncommitted-death backstop. Read-only
+  // snapshot: one classifier pass over the agent's worktrees (skip / orphaned +
+  // reason) + the orphaned count + whether the sentinel is armed + whether the
+  // optional preservation patch is on. 503 when dark (not wired). Bearer-auth.
+  router.get('/orphaned-work', (_req, res) => {
+    if (!ctx.orphanedWorkSentinel) {
+      res.status(503).json({ error: 'orphaned-work sentinel unavailable (dark)' });
+      return;
+    }
+    res.json(ctx.orphanedWorkSentinel.snapshot());
   });
 
   // McpProcessReaper (RESPONSIBLE-RESOURCE-USAGE — MCP-leak fix, Option B). The

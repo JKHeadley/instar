@@ -310,35 +310,44 @@ describe('lint-dev-agent-dark-gate', () => {
       '58': 'monitoring.parallelWorkSentinel.enabled',
       '129': 'monitoring.sessionReaper.enabled',
       '187': 'monitoring.agentWorktreeReaper.enabled',
-      '201': 'monitoring.mcpProcessReaper.enabled',
-      '215': 'monitoring.agentSleep.enabled',
-      '238': 'monitoring.failureLearning.enabled',
-      '270': 'monitoring.correctionLearning.enabled',
+      // ORPHANED-WORK-SENTINEL: the monitoring.orphanedWorkSentinel default block
+      // (15 lines incl. comment, `enabled` deliberately OMITTED so it is dev-gated
+      // — hence NO new entry here) was inserted right after the agentWorktreeReaper
+      // block, shifting EVERY entry below by +15. Verified by hand (attributor)
+      // against ConfigDefaults.ts.
+      '216': 'monitoring.mcpProcessReaper.enabled',
+      '230': 'monitoring.agentSleep.enabled',
+      '253': 'monitoring.failureLearning.enabled',
+      '285': 'monitoring.correctionLearning.enabled',
       // PROMISE-BEACON-ESCALATION-SPEC: the monitoring.promiseBeacon.escalation
       // default block (22 lines, `enabled` deliberately OMITTED so it is dev-
       // gated — hence NO new entry here) was inserted right after the
       // correctionLearning block, shifting EVERY entry below by +22. Verified by
       // hand (attributor) against the MERGED ConfigDefaults.ts.
-      '364': 'monitoring.apprenticeshipCycleSla.enabled',
-      '372': 'monitoring.geminiCapacityEscalation.enabled',
-      '380': 'monitoring.releaseReadiness.enabled',
-      '395': 'monitoring.greenPrAutoMerge.enabled',
-      '445': 'threadline.a2aCheckIn.enabled',
-      '537': 'mentor.enabled',
-      '548': 'mentor.autonomousFix.enabled',
-      '563': 'mentee.enabled',
-      '682': 'multiMachine.sessionPool.enabled',
-      '707': 'multiMachine.sessionPool.inboundQueue.enabled',
-      '736': 'multiMachine.sessionPool.holdForStability.enabled',
+      // OrphanedWorkSentinel (THIS PR): adds a dev-gated monitoring.orphanedWorkSentinel
+      // config block (no attributed path — dev-gated) after correctionLearning, shifting
+      // every entry from apprenticeshipCycleSla onward +15. Recomputed via the attributor
+      // against the rebased ConfigDefaults.ts.
+      '379': 'monitoring.apprenticeshipCycleSla.enabled',
+      '387': 'monitoring.geminiCapacityEscalation.enabled',
+      '395': 'monitoring.releaseReadiness.enabled',
+      '410': 'monitoring.greenPrAutoMerge.enabled',
+      '460': 'threadline.a2aCheckIn.enabled',
+      '552': 'mentor.enabled',
+      '563': 'mentor.autonomousFix.enabled',
+      '578': 'mentee.enabled',
+      '697': 'multiMachine.sessionPool.enabled',
+      '722': 'multiMachine.sessionPool.inboundQueue.enabled',
+      '751': 'multiMachine.sessionPool.holdForStability.enabled',
       // multi-machine-replicated-store-foundation Step 2: the multiMachine block
       // gained a `stateSync` sub-block (foundation knobs only; NO `enabled` key →
       // NO new attributed path) after coherenceJournal (which sits after sessionPool
       // but before cartographer). sessionPool entries unshifted; every cartographer
       // entry shifted +17 (the stateSync block's line count). Verified by hand
       // (attributor) against the MERGED ConfigDefaults.ts.
-      '908': 'cartographer.freshnessSweep.enabled',
-      '953': 'cartographer.conformanceAudit.llmEnrichment.enabled',
-      '978': 'cartographer.subtreeNav.llmRerank.enabled',
+      '923': 'cartographer.freshnessSweep.enabled',
+      '968': 'cartographer.conformanceAudit.llmEnrichment.enabled',
+      '993': 'cartographer.subtreeNav.llmRerank.enabled',
       // Threadline Robustness Phase 2 (CMT-1362): the threadline.canonicalHistory
       // block (no `enabled` literal — conversationDiscipline is dev-gated) is inserted
       // AFTER the threadline section; entries at/after mentor.enabled shift again.

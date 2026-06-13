@@ -189,6 +189,21 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       reapIntervalMs: 86_400_000,
       maxReapsPerPass: 20,
     },
+    // OrphanedWorkSentinel — the silent-uncommitted-death backstop (2026-06-12,
+    // topic 22367): detects an agent worktree with uncommitted work whose owning
+    // session is DEAD and that has SETTLED, records it, and raises ONE deduped
+    // attention item. Needs nothing registered — it reads the stranded work off
+    // disk (the case the PromiseBeacon escalation ladder can't see). Signal-only;
+    // `preserveWork` (off) writes a non-destructive preservation patch. `enabled`
+    // is OMITTED so the runtime resolves it through the standard developmentAgent
+    // dark-feature gate (resolveDevAgentGate): LIVE on a dev agent, DARK on the
+    // fleet. Registered in DEV_GATED_FEATURES; review GET /orphaned-work.
+    orphanedWorkSentinel: {
+      scanIntervalMs: 600_000,
+      settleMs: 480_000,
+      preserveWork: false,
+      maxFlagsPerPass: 10,
+    },
     // McpProcessReaper (Responsible Resource Usage — MCP-leak fix, Option B).
     // Reaps leaked MCP-server children (playwright-mcp / mcp-remote / instar
     // stdio) whose owning session is dead/stale or fully orphaned — killing a

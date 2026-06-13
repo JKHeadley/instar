@@ -139,6 +139,14 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     justification:
       'Lives live on a dev agent ONLY in dry-run (dryRun defaults true) — it engages the lease logic and logs every would-hold verdict for the FD-7 false-positive telemetry but withholds NOTHING (a real send is only blocked by an explicit dryRun:false). No egress, no spend, no destructive action; this is exactly the dogfooding posture FD-7 requires before the lease can ever enforce. (Was mis-classified deliberate-fleet-default at ship, which starved the telemetry — corrected here.)',
   },
+  {
+    name: 'orphanedWorkSentinel',
+    configPath: 'monitoring.orphanedWorkSentinel.enabled',
+    description:
+      'Silent-uncommitted-death backstop — flags agent worktrees with uncommitted work whose owning session died (/orphaned-work).',
+    justification:
+      'Signal-only local recorder + ONE deduped attention item; reads git status/diff + lsof read-only; no egress, no spend, no destructive action. The optional preservation is a NON-destructive patch write (git diff → a state-dir file) behind an off-by-default preserveWork sub-flag — it never mutates the worktree, its index, or any ref.',
+  },
 ];
 
 /**

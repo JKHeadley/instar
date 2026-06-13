@@ -22,6 +22,7 @@ The Instar server exposes a REST API on `localhost:4040` (configurable). All end
 | POST | `/sessions/:name/input` | Send text to a session |
 | POST | `/sessions/spawn` | Spawn a new session (rate limited). Body: `name`, `prompt`, `model?`, `jobSlug?` |
 | DELETE | `/sessions/:id` | Kill a session |
+| GET | `/orphaned-work` | Worktrees holding uncommitted work whose owning session died (the `OrphanedWorkSentinel` findings). 503 when the feature is dark, 200 when live |
 
 ## Jobs
 
