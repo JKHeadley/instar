@@ -144,6 +144,7 @@ describe('lint-no-unfunneled-credential-write (Step 4b)', () => {
     expect(entries.sort()).toEqual(
       [
         'scripts/lint-no-unfunneled-credential-write.js',
+        'src/core/CredentialKeychainIO.ts',
         'src/core/CredentialWriteFunnel.ts',
         'src/core/OAuthRefresher.ts',
         'src/monitoring/CredentialProvider.ts',

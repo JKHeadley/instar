@@ -234,17 +234,29 @@ drain (CMT-1335 full) is Increment B.
   flagged, real tree clean, closed allowlist). tsc clean, full `npm run lint` clean, 208/208 unit green.
 - Second-pass review: CONCUR (independent reviewer subagent) — see the side-effects artifact.
 
+### 2026-06-13 — Step 5a (swap I/O + journal foundation) — BUILT + GREEN
+- `src/core/CredentialKeychainIO.ts`: async 10s-bounded `security` read/write/delete (the sync store can wedge
+  the loop); blob written via `security -i` stdin/hex (never in argv); staging namespace
+  `instar-credential-swap-staging-<swapId>` + `assertStagingDisjoint` pinning the §2.3.2 disjoint invariant.
+- `src/core/CredentialSwapJournal.ts`: the durable in-flight swap record (swapId, both slots, both pre-swap
+  account ids, stagingRef) — DISTINCT from the ledger journal. Phases begin→exchanged→committed→done(+aborted);
+  a non-terminal phase keeps staging alive (§2.3.2 sweep predicate). Atomic tmp+rename; rotated jsonl history.
+- Allowlisted CredentialKeychainIO.ts in lint-no-unfunneled-credential-write.js (primitive owner) + updated the
+  closed-allowlist self-test. Tests: credential-swap-journal (8) + credential-keychain-io (7). tsc + lint clean.
+- PRIMITIVES ONLY: no swap logic, no consumer, no live write path → second-pass not required (4a precedent);
+  the executor (5b) carries the full second-pass.
+
 ### NEXT (resume here)
-- Step 5: `CredentialSwapExecutor` (spec §2.3) — the staged exchange that actually MOVES a credential between
-  two slots: preconditions (exact ledger membership BEFORE path expansion; reject `../`/`~`/abs) → §2.3.1a
-  source-slot CAS re-read before each destructive write (adopt newer same-tenant blob) → staging escrow (COPY,
-  disjoint `instar-credential-swap-staging-*` namespace, journal `begin`) → exchange (keychain first, config
-  second; DEFAULT slot config = `~/.claude.json` home-root) → verify on ACCOUNT IDENTITY (oracle); unavailable →
-  quarantine-never-repair → commit (staging RETAINED) → delayed re-verify ~90s → delete staging, journal `done`.
-  All `security` calls async `execFile` + 10s timeout. Boot recovery acquires the single-mover mutex; balancer
-  first pass gated on a recovery-complete barrier WITH a hang-timeout. It uses `credentialWriteFunnel`'s
-  `withSlotLocks` + `withSingleMover`. Crash-at-every-boundary + clobber-race + permutation-property +
-  identity-verify/adopt/repair/quarantine tests. Second-pass review.
+- Step 5b: `CredentialSwapExecutor.swap(slotA, slotB)` (spec §2.3) using the 5a primitives + the funnel's
+  `withSlotLocks`/`withSingleMover`: step 1 preconditions (exact ledger membership BEFORE path expansion; reject
+  `../`/`~`/abs → 400; neither tenant quarantined) → 1a source-slot CAS re-read (adopt newer same-tenant blob) →
+  2 staging escrow COPY of blob A + journal `begin` → 3 exchange (keychain B→A then A→B from staging; config
+  `oauthAccount` blocks keychain-first; DEFAULT slot config = `~/.claude.json` home-root) + journal `exchanged` →
+  4 verify on ACCOUNT IDENTITY (oracle); UNAVAILABLE≠mismatch → quarantine-never-repair; mismatch → CAS repair
+  from staging → re-verify → still-wrong → quarantine → 5 commit (ledger.recordAssignment both slots; journal
+  `committed`; staging RETAINED) → 6 delayed re-verify ~90s → on clean, delete staging + journal `done`. Second-pass.
+- Step 5c: boot-recovery sweep — resolve in-flight journal rows (adopt-on-newer, never blind staging overwrite),
+  orphan-staging cleanup by the disjoint prefix; recovery WRITES take the single-mover + per-slot locks. Second-pass.
 - Then steps 6–9 (census re-routing, routes + audit scrub, provenance gate, migration) + Step 10 livetest.
 - Step 5: `CredentialSwapExecutor` (staged exchange, §2.3.1a source-slot CAS, identity-verify,
   quarantine-never-repair, crash-boundary journal). Second-pass review.

@@ -52,6 +52,10 @@ const ALLOWLIST = new Set([
   // Owns `KeychainCredentialProvider.writeCredentials` (the raw `security -i` write) +
   // the sanctioned `writeCredentialsSerialized` funnel chokepoint that wraps it.
   'src/monitoring/CredentialProvider.ts',
+  // The swap-executor async keychain primitive (Step 5): the raw `security` read/write/delete
+  // for both the slot service AND the disjoint staging namespace. The writes are driven only by
+  // CredentialSwapExecutor inside `withSlotLocks`/`withSingleMover`.
+  'src/core/CredentialKeychainIO.ts',
   // This lint file names the patterns it greps for.
   'scripts/lint-no-unfunneled-credential-write.js',
 ]);
