@@ -11,6 +11,9 @@ lessons-engaged:
   - "Bounded Notification Surface — holding-notice has a global min-interval floor, not just per-epoch"
   - "P10 Comprehensive-First — no recurrence-risking deferral: G2 (prose inertness) + G3 (acks) ship in CORE, ungated"
   - "Structure > Willpower — one voice and prose-inertness are structural, not rules a session must remember"
+approved: true
+approved-by: "Justin (operator, telegram topic 12476)"
+approved-at: "2026-06-12T18:01:00-07:00"
 review-convergence: "2026-06-12T09:06:17.579Z"
 review-iterations: 4
 review-completed-at: "2026-06-12T09:06:17.579Z"
