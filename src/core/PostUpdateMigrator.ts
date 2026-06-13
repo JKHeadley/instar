@@ -3829,6 +3829,32 @@ Rule: I do not state that work landed inside another agent's state unless I have
       }
     }
 
+    // Live Credential Re-Pointing (spec: live-credential-repointing-rebalancer.md §4).
+    // WS5.2 Step 9 migration parity: existing agents need awareness of the census
+    // read + the default-flip lever + that the whole feature ships DARK (operator
+    // enables subscriptionPool.credentialRepointing to use it). The config block
+    // itself reaches existing agents via the generic ConfigDefaults applyDefaults
+    // path in migrateConfig (the block lives in SHARED_DEFAULTS, so add-missing
+    // installs enabled:false+dryRun:true idempotently) — this awareness section is
+    // the doc half of the parity. Content-sniffed on a stable unique marker; the
+    // template emits the **-bold form, the migrator the ### H3 form (both carry the
+    // 'Live Credential Re-Pointing' phrase the shadow-markers[] + featureSections
+    // track).
+    if (!content.includes('Live Credential Re-Pointing')) {
+      const credentialRepointingSection = `
+### Live Credential Re-Pointing (move which account a slot serves — DARK)
+
+Beyond swapping a SESSION between accounts, I can move which OAuth credential a config-home "slot" serves — including flipping which account my default \`~/.claude\` login points at — WITHOUT restarting the sessions reading it. The slot↔account map is a durable machine-local ledger (the census), and every lever is a Bearer-authed DETECTIVE control: operator-notified, audited, param-validated, per-pair cooldowned. No token material ever exits any \`/credentials/*\` response (a single secret-scrub audit chokepoint guarantees it).
+- Read the census (which account is in which slot, since when, last verified, quarantine, mode): \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/credentials/locations\`.
+- Flip the default account: \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/credentials/set-default -H 'Content-Type: application/json' -d '{"accountId":"<id>"}'\` (CMT-1337 zero-touch default flip). Exchange two slots live: \`POST /credentials/swap\`. Autonomous-balancer surface: \`GET /credentials/rebalancer\`.
+- **Ships DARK.** Every lever 503s/no-ops until the operator enables \`subscriptionPool.credentialRepointing\` in \`.instar/config.json\` (it WRITES OAuth credentials between config homes, so it ships \`enabled:false\`+\`dryRun:true\` — review a dry-run pass before the live flip). The legacy \`/switch-account\` + \`autoMigrate\` paths refuse-with-named-reason while this feature is enabled — the census-aware levers are the supported path.
+- **When to use** (PROACTIVE — these are the triggers): "flip my default account" / "make this account the default" → \`POST /credentials/set-default\`; "which account is this session/slot on?" / "where is this credential?" → \`GET /credentials/locations\`. If the feature is disabled, say so and offer the config flip — never improvise a hand-edit of a config home.
+`;
+      content += '\n' + credentialRepointingSection;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Live Credential Re-Pointing section');
+    }
+
     // Session Boot Self-Knowledge (spec: session-boot-self-knowledge.md).
     // Existing agents need the rule ("a secret named in your boot block is in
     // the vault — retrieve, don't re-ask") + the facts writer + the retrieval
@@ -6214,6 +6240,17 @@ Create worktrees for collaborator repos with \`instar worktree create <branch>\`
       // the enrollment wizard (never ask the user to paste a token). Mirrored to
       // the shadows like every agent-facing capability.
       '**Subscription Pool (multi-account quota + auto-swap + enrollment)**',
+      // Live Credential Re-Pointing (live-credential-repointing-rebalancer §4):
+      // framework-agnostic — a Codex/Gemini agent fronting a multi-account pool
+      // can also flip the default account / read the slot↔account census, so it
+      // answers "flip my default account" / "which account is this slot on?"
+      // instead of improvising a config-home hand-edit. Ships DARK
+      // (subscriptionPool.credentialRepointing). Two tail-truncated line-leading
+      // variants cover both deployed forms (templates' **-bold block +
+      // migrateClaudeMd's ### H3), per the Per-Feature LLM Metrics precedent; each
+      // CLAUDE.md contains exactly one, so the other no-ops.
+      '**Live Credential Re-Pointing',
+      '### Live Credential Re-Pointing',
       // Outbound advisory (outbound-jargon-filepath-gap §5): the inform-only
       // preflight is framework-agnostic (the env + relay script do the work),
       // so a Codex/Gemini job session also needs to know what a "NOT SENT —
