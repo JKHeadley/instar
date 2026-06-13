@@ -82,6 +82,10 @@ export interface SlotState {
   drainInProgress: boolean;
   /** Recent activity score (higher = busier); drain targets the busiest slot. */
   busyness: number;
+  /** The most-recently-previously-verified account for this slot (the correlated-outage
+   *  floor's "last known good"); used only to keep the DEFAULT slot non-empty when the
+   *  oracle is down for every slot. Optional — absent on a never-verified slot. */
+  lastKnownGoodAccountId?: string | null;
 }
 
 export interface CooldownState {
@@ -103,6 +107,11 @@ export interface RebalancePassInput {
   config: RebalancerPolicyConfig;
   /** A slot's identity verify counts as "recent" if within this window (the audit cadence). */
   auditCadenceMs: number;
+  /** The account that SHOULD serve `~/.claude` (so manual `claude` is predictable). When the
+   *  default slot's tenant dies/quarantines, a healthy verified tenant is dealt in; when the
+   *  desired default is itself dead, any healthy verified tenant keeps the slot alive. Null =
+   *  no default preference configured (the default-eviction objective is then inert). */
+  desiredDefaultAccountId?: string | null;
 }
 
 export interface SwapDecision {
@@ -110,9 +119,9 @@ export interface SwapDecision {
   targetSlot: string;
   /** The slot whose tenant is exchanged in. */
   sourceSlot: string;
-  objective: 'wall' | 'drain' | 'default';
-  /** Set when this is a cooldown/cap-bypassing wall-override. */
-  forced: 'wall-override' | null;
+  objective: 'wall' | 'drain' | 'default' | 'default-eviction';
+  /** Set when this is a cooldown/cap-bypassing wall-override or a default-slot rescue. */
+  forced: 'wall-override' | 'default-eviction' | null;
   reason: string;
 }
 
@@ -170,6 +179,67 @@ export function decidePass(input: RebalancePassInput): PassResult {
   // A slot is a valid swap-in TARGET only if its quota is fresh (stale headroom may mask a
   // wall — the anti-conservative direction → SOURCE-only) AND its identity verify is recent.
   const isFreshQuota = (acc: AccountState): boolean => now - acc.measuredAt <= config.staleQuotaMs;
+
+  // ── Objective 0: dead/quarantined-default eviction (the slot that must never be empty) ──
+  // Keep `~/.claude` serving a HEALTHY VERIFIED tenant so manual `claude` keeps working
+  // (goal 3 beats slot symmetry + the quarantine-exclusion rule, but ONLY for the default
+  // slot). Runs FIRST: a frozen default freezes the operator's manual invocations.
+  if (input.desiredDefaultAccountId) {
+    const defaultSlot = slots.find((s) => s.isDefault);
+    if (defaultSlot) {
+      const defTenant = defaultSlot.tenantAccountId ? accById.get(defaultSlot.tenantAccountId) : undefined;
+      const defaultDead =
+        defaultSlot.quarantined ||
+        !defTenant ||
+        defTenant.status === 'needs-reauth' ||
+        defTenant.status === 'disabled';
+      if (defaultDead) {
+        // A healthy VERIFIED tenant to deal in (identity-verified THIS pass before the move —
+        // a "healthy per stale ledger" target that is actually dead would re-quarantine the
+        // default; the recency gate is that pre-check in the pure policy).
+        const healthy = slots
+          .filter((s) => s.slot !== defaultSlot.slot && !s.quarantined && s.tenantAccountId !== null)
+          .filter((s) => {
+            const a = accById.get(s.tenantAccountId!);
+            return a?.status === 'ok' && targetVerifiedRecent(s, now, auditCadenceMs);
+          })
+          .sort((a, b) => maxUtil(accById.get(a.tenantAccountId!)!) - maxUtil(accById.get(b.tenantAccountId!)!))[0];
+        if (healthy) {
+          return {
+            decisions: [{
+              targetSlot: defaultSlot.slot,
+              sourceSlot: healthy.slot,
+              objective: 'default-eviction',
+              forced: 'default-eviction',
+              reason: `default slot ${defaultSlot.slot} is ${defaultSlot.quarantined ? 'quarantined' : 'dead (' + (defTenant?.status ?? 'no-tenant') + ')'}; dealing healthy verified ${healthy.tenantAccountId} in to keep manual claude working`,
+            }],
+            degraded: [],
+            attention: [`default slot ${defaultSlot.slot} was ${defaultSlot.quarantined ? 'quarantined' : 'dead'} — rescued with ${healthy.tenantAccountId}; the displaced credential is parked and needs re-auth/re-probe`],
+          };
+        }
+        // Correlated-oracle-outage floor: NO slot is currently oracle-verifiable (an
+        // identity-oracle endpoint storm quarantines every probe at once). Do NOT empty/churn the
+        // default — preserve its last-known-good assignment + surface; honest bound: this is
+        // "preserve last KNOWN-GOOD + flag", NOT "manual claude is certified working".
+        const anyVerifiable = slots.some((s) => targetVerifiedRecent(s, now, auditCadenceMs));
+        if (!anyVerifiable) {
+          return {
+            decisions: [],
+            degraded: ['no slot is oracle-verifiable — default-slot eviction suspended (correlated-outage floor)'],
+            attention: [`oracle unavailable for every slot; ${defaultSlot.slot} preserved at its last-known-good${defaultSlot.lastKnownGoodAccountId ? ' (' + defaultSlot.lastKnownGoodAccountId + ')' : ''} — NOT certified live; no eviction until the oracle returns`],
+            noActuationReason: 'correlated oracle outage — default preserved at last-known-good, no eviction',
+          };
+        }
+        // Verifiable slots exist but none is an eligible healthy tenant: surface, do not act.
+        return {
+          decisions: [],
+          degraded: [],
+          attention: [`default slot ${defaultSlot.slot} is dead/quarantined and no healthy verified tenant is available to rescue it`],
+          noActuationReason: 'default slot dead but no eligible healthy tenant to deal in',
+        };
+      }
+    }
+  }
 
   // ── Objective 1: wall avoidance ───────────────────────────────────────────────
   // Slots whose tenant exceeds the high-water mark, worst-first.

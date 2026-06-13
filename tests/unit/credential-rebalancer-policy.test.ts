@@ -280,6 +280,91 @@ describe('decidePass — objective 2 drain', () => {
   });
 });
 
+describe('decidePass — objective 0: dead/quarantined-default eviction', () => {
+  it('deals a healthy verified tenant into ~/.claude when the default tenant is needs-reauth', () => {
+    const r = decidePass(pass({
+      desiredDefaultAccountId: 'D',
+      slots: [
+        slot({ slot: '~/.claude', tenantAccountId: 'D', isDefault: true }),
+        slot({ slot: 's2', tenantAccountId: 'B' }),
+      ],
+      accounts: [acc({ accountId: 'D', status: 'needs-reauth' }), acc({ accountId: 'B', fiveHrPct: 10 })],
+    }));
+    expect(r.decisions).toHaveLength(1);
+    expect(r.decisions[0].objective).toBe('default-eviction');
+    expect(r.decisions[0].targetSlot).toBe('~/.claude');
+    expect(r.decisions[0].sourceSlot).toBe('s2');
+    expect(r.attention.some((a) => /parked|needs re-auth/.test(a))).toBe(true);
+  });
+
+  it('rescues a QUARANTINED default slot too (not just needs-reauth)', () => {
+    const r = decidePass(pass({
+      desiredDefaultAccountId: 'D',
+      slots: [
+        slot({ slot: '~/.claude', tenantAccountId: 'D', isDefault: true, quarantined: true }),
+        slot({ slot: 's2', tenantAccountId: 'B' }),
+      ],
+      accounts: [acc({ accountId: 'D' }), acc({ accountId: 'B' })],
+    }));
+    expect(r.decisions).toHaveLength(1);
+    expect(r.decisions[0].objective).toBe('default-eviction');
+  });
+
+  it('correlated-outage floor: NO slot verifiable → preserve last-known-good, do NOT evict', () => {
+    const r = decidePass(pass({
+      desiredDefaultAccountId: 'D',
+      slots: [
+        slot({ slot: '~/.claude', tenantAccountId: 'D', isDefault: true, quarantined: true, lastKnownGoodAccountId: 'D' }),
+        slot({ slot: 's2', tenantAccountId: 'B', lastVerifiedAt: NOW - 100 * HOUR }), // stale → not verifiable
+      ],
+      accounts: [acc({ accountId: 'D' }), acc({ accountId: 'B' })],
+    }));
+    expect(r.decisions).toEqual([]);
+    expect(r.degraded.some((d) => /correlated-outage floor/.test(d))).toBe(true);
+    expect(r.attention.some((a) => /last-known-good|NOT certified live/.test(a))).toBe(true);
+  });
+
+  it('dead default but no healthy tenant available → surface, no action', () => {
+    const r = decidePass(pass({
+      desiredDefaultAccountId: 'D',
+      slots: [
+        slot({ slot: '~/.claude', tenantAccountId: 'D', isDefault: true }),
+        slot({ slot: 's2', tenantAccountId: 'B' }), // verified but B is needs-reauth below
+      ],
+      accounts: [acc({ accountId: 'D', status: 'disabled' }), acc({ accountId: 'B', status: 'needs-reauth' })],
+    }));
+    expect(r.decisions).toEqual([]);
+    expect(r.attention.some((a) => /no healthy verified tenant/.test(a))).toBe(true);
+  });
+
+  it('does nothing special when the default slot is healthy (normal objectives run)', () => {
+    const r = decidePass(pass({
+      desiredDefaultAccountId: 'D',
+      slots: [
+        slot({ slot: '~/.claude', tenantAccountId: 'D', isDefault: true }),
+        slot({ slot: 's2', tenantAccountId: 'B' }),
+      ],
+      accounts: [acc({ accountId: 'D', fiveHrPct: 20 }), acc({ accountId: 'B', fiveHrPct: 10 })],
+    }));
+    expect(r.decisions).toEqual([]); // healthy + balanced → no eviction, no wall, no drain
+    expect(r.noActuationReason).toMatch(/balanced|zero actuation/);
+  });
+
+  it('is inert when no default account is configured', () => {
+    const r = decidePass(pass({
+      // desiredDefaultAccountId omitted
+      slots: [
+        slot({ slot: '~/.claude', tenantAccountId: 'D', isDefault: true, quarantined: true }),
+        slot({ slot: 's2', tenantAccountId: 'B' }),
+      ],
+      accounts: [acc({ accountId: 'D' }), acc({ accountId: 'B' })],
+    }));
+    // No default-eviction objective fires; the quarantined default slot is just excluded from
+    // participating, and nothing else acts.
+    expect(r.decisions.every((d) => d.objective !== 'default-eviction')).toBe(true);
+  });
+});
+
 describe('decidePass — zero actuation', () => {
   it('returns no decisions + a reason when nothing walls and nothing drains', () => {
     const r = decidePass(pass({
