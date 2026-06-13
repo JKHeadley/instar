@@ -661,3 +661,48 @@ Spec: `docs/specs/MENTOR-LIVE-READINESS-SPEC.md` §Fix 2a.
   a single-machine install is a strict no-op. The `EvolutionActionsReplicatedStore` projection strips
   the local ACT id by construction. Spec:
   `docs/specs/multi-machine-replicated-store-foundation.md` §4 / §7.
+
+## Live Credential Re-pointing (Subscription & Auth Standard)
+
+The machinery that can move a pool account's OAuth credential between config-home "slots" without
+restarting the sessions reading them — the "stock-trader" rebalancer. Ships dark/dry-run-first (live on
+a development agent in dry-run, dark on the fleet); a real credential write needs a deliberate
+`dryRun:false`. Spec: `docs/specs/live-credential-repointing-rebalancer.md`.
+
+### CredentialRebalancerPolicy
+
+The pure §2.4 decision core: `decidePass(snapshot)` computes the zero-or-more credential swaps for one
+balancer pass from a read-only snapshot (per-account quota + reset proximity, per-slot tenancy/verify/
+activity, cooldown state, resolved config). Objective-0 dead/quarantined-default eviction + the
+correlated-oracle-outage floor; objective-1 wall avoidance + the bounded wall-override (fresh-data gate,
+`maxForcedSwapsPerPass`, per-window override budget, recency gate); objective-2 use-it-or-lose-it drain
+(weekly-only, headroom floor, per-slot drain-in-progress hold); eligibility + hysteresis (per-pair +
+per-tenant cooldowns on the account basis, urgency-clamped min-improvement floor, 1 swap/pass). No IO,
+no authority — it decides; the actuator routes an accepted decision through the gated executor.
+
+### CredentialRebalancer
+
+The stateful orchestrator that wraps `decidePass()` in a pass loop: on each `tick()` it builds the
+read-only snapshot from injected providers, asks the policy for the swaps, and actuates each through the
+injected `CredentialSwapExecutor` wrapper — but ONLY under the feature's dark/dry-run gate (dark = a
+strict no-op; dry-run actuates the decision but the executor writes nothing). Carries the cross-pass
+hysteresis the pure policy cannot (cooldown timestamps) and the §2.4 P19 breaker (N consecutive LIVE
+failed swaps opens it; a success resets it; it self-heals by re-probing).
+
+### CredentialRebalancerSnapshot
+
+The pure mappers translating the live system state into the policy's snapshot: `mapAccount` (a
+SubscriptionPool account → `AccountState`; a missing quota reading maps to an epoch `measuredAt` so the
+account is treated as stale/source-only; `rate-limited` stays eligible so wall-avoidance can rescue its
+slot), `mapSlot` (a CredentialLocationLedger assignment → `SlotState`), and `resolveRebalancerConfig`
+(clamp the configured knobs + derive the cooldowns from the poll interval). Kept pure so a units/sign
+bug that would mis-steer the balancer is unit-testable.
+
+### CredentialRepointingLivetest
+
+The §5 livetest battery as testable orchestration — the dry-run→live PROMOTION gate (NOT part of merge
+CI; runs only when the operator arms it at enablement, since it exchanges REAL credentials between REAL
+accounts). Drives the automatable round-trips (identity-verified exchange-then-restore via the oracle,
+always restoring) and surfaces the inherently-manual items (refresher correctness, the §0.c at-expiry
+residual via a disposable grant, liveness) without ever auto-passing them. An `armed` guard performs
+zero swaps unless explicitly armed, so importing or unit-testing the module can never move a credential.

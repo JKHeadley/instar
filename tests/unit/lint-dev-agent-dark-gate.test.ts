@@ -342,7 +342,9 @@ describe('lint-dev-agent-dark-gate', () => {
       '1037': 'cartographer.freshnessSweep.enabled',
       '1082': 'cartographer.conformanceAudit.llmEnrichment.enabled',
       '1107': 'cartographer.subtreeNav.llmRerank.enabled',
-      '1144': 'subscriptionPool.credentialRepointing.enabled',
+      // subscriptionPool.credentialRepointing.enabled was re-gated to DEV_GATED_FEATURES
+      // (2026-06-13 operator directive) and now OMITS enabled in ConfigDefaults; the new
+      // monitoring.authorizationRequests OMITS enabled too — so neither appears here.
     };
     const actual = attributeRealConfigDefaults();
     expect(actual).toEqual(EXPECTED);

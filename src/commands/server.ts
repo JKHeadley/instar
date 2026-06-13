@@ -9223,7 +9223,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       // attributing it would mis-credit usage to a slot tenant). Dark-default: when the feature flag
       // is off this short-circuits before evaluating the gate, so it's byte-for-byte today's behavior.
       isEnabled: () =>
-        config.subscriptionPool?.credentialRepointing?.enabled === true &&
+        resolveDevAgentGate(config.subscriptionPool?.credentialRepointing?.enabled, config) &&
         !credentialEnvTokenGate.evaluate().refused,
       ledger: credentialLocationLedger,
       emitAttention: credentialGateEmitAttention,
@@ -9236,7 +9236,7 @@ export async function startServer(options: StartOptions): Promise<void> {
     const { credentialSlotKey: canonicalizeSlot } = await import('../core/OAuthRefresher.js');
     setCredentialWriteRefusalGate({
       shouldRefuse: (canonicalSlot: string) => {
-        if (config.subscriptionPool?.credentialRepointing?.enabled !== true) return false;
+        if (!resolveDevAgentGate(config.subscriptionPool?.credentialRepointing?.enabled, config)) return false;
         // The funnel passes a canonicalized slot key, but the ledger stores raw enrollment-home
         // spellings (`~/.claude`, an enrollment path). Compare canonical-to-canonical so a
         // repointing-owned slot is recognized regardless of spelling.
@@ -9282,7 +9282,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       resolveIdentity: credResolveIdentity,
       // The executor reads the SAME dark gate the routes do — strict no-op while disabled.
       config: {
-        enabled: config.subscriptionPool?.credentialRepointing?.enabled === true,
+        enabled: resolveDevAgentGate(config.subscriptionPool?.credentialRepointing?.enabled, config),
         dryRun: config.subscriptionPool?.credentialRepointing?.dryRun !== false,
       },
       emitAudit: (rec) => credentialAuditEmit.audit({ event: 'swap-step', ...rec }),

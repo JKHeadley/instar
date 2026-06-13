@@ -156,7 +156,7 @@ describe('PostUpdateMigrator — Live Credential Re-pointing config defaults (da
     });
   });
 
-  it('installs the DARK credentialRepointing block on an existing config that lacks it', () => {
+  it('installs the credentialRepointing block (enabled OMITTED — dev-gate-resolved) on a config that lacks it', () => {
     // A pre-feature config: has an authToken (so dashboardPin generation runs)
     // but no subscriptionPool block at all.
     fs.writeFileSync(configPath, JSON.stringify({ authToken: 'tok', agentType: 'standalone' }, null, 2));
@@ -166,10 +166,31 @@ describe('PostUpdateMigrator — Live Credential Re-pointing config defaults (da
 
     const after = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
     expect(after.subscriptionPool?.credentialRepointing).toBeDefined();
-    // Ships dark + dry-run for EVERYONE — writes OAuth credentials, so the
-    // default must never resolve live (DARK_GATE_EXCLUSIONS destructive).
-    expect(after.subscriptionPool.credentialRepointing.enabled).toBe(false);
+    // Re-gated 2026-06-13: `enabled` is OMITTED so the developmentAgent gate resolves it
+    // (live-on-dev, dark fleet) — a baked-in false would dark dev agents too.
+    expect(after.subscriptionPool.credentialRepointing).not.toHaveProperty('enabled');
+    // dryRun (the write-safety canary) + manual-levers default stay present.
     expect(after.subscriptionPool.credentialRepointing.dryRun).toBe(true);
+    expect(after.subscriptionPool.credentialRepointing.manualLeversEnabled).toBe(true);
+  });
+
+  it('STRIPS a default-shaped enabled:false from an existing config (so the dev-gate resolves live)', () => {
+    // An agent that ran the OLD ConfigDefaults carries an explicit enabled:false; the
+    // re-gate migration strips it so resolveDevAgentGate decides (live-on-dev, dark fleet).
+    fs.writeFileSync(
+      configPath,
+      JSON.stringify({
+        authToken: 'tok', agentType: 'standalone',
+        subscriptionPool: { credentialRepointing: { enabled: false, dryRun: true, manualLeversEnabled: true } },
+      }, null, 2),
+    );
+
+    const result = runConfigMigration(newMigrator(projectDir));
+    expect(result.errors).toEqual([]);
+
+    const after = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+    expect(after.subscriptionPool.credentialRepointing).not.toHaveProperty('enabled'); // stripped
+    expect(after.subscriptionPool.credentialRepointing.dryRun).toBe(true); // canary preserved
     expect(after.subscriptionPool.credentialRepointing.manualLeversEnabled).toBe(true);
   });
 
