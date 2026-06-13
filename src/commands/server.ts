@@ -6694,6 +6694,30 @@ export async function startServer(options: StartOptions): Promise<void> {
                 entry.topicId,
               );
             },
+            // Build-Session Yield Safety (ACT-839) R2.2: present ONLY when the
+            // dev-gated feature is live (its presence is the gate). Registers a
+            // durable, beacon-enabled obligation so a STALLED revived session is
+            // re-surfaced by PromiseBeacon; deduped per stableKey so a re-revival
+            // refreshes rather than floods. The die-again case is covered by the
+            // dev-live OrphanedWorkSentinel (#1113) — no duplicate scanner here.
+            onWorktreeRevival: resolveDevAgentGate(config.monitoring?.yieldSafety?.enabled, config)
+              ? (entry) => {
+                  if (!commitmentTracker || entry.topicId == null) return;
+                  const externalKey = `yield-safety:${entry.stableKey}`;
+                  try {
+                    if (commitmentTracker.getActive().some((c) => c.externalKey === externalKey)) return; // dedup
+                    commitmentTracker.record({
+                      type: 'one-time-action',
+                      topicId: entry.topicId,
+                      source: 'sentinel',
+                      beaconEnabled: true,
+                      externalKey,
+                      userRequest: 'Session revived because its worktree held uncommitted work (ACT-839 yield-safety).',
+                      agentResponse: 'Commit the uncommitted worktree changes with a real, descriptive commit, or deliberately preserve/discard them, before yielding again.',
+                    });
+                  } catch { /* obligation registration never endangers the resume */ }
+                }
+              : undefined,
             raiseAggregated: raiseResumeAggregated,
             audit: auditResumeQueue,
             tier1Check: async (entry) => {

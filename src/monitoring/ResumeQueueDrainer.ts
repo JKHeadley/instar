@@ -75,6 +75,12 @@ export interface ResumeQueueDrainerDeps {
   spawnAliveAfterGrace: (tmuxSession: string) => Promise<boolean>;
   /** R2.11 honest resume notice to the topic ("restarted", never "resumed"). */
   notifyResumed?: (entry: ResumeQueueEntry) => void;
+  /** Build-Session Yield Safety (ACT-839) R2.2: fired after a successful respawn
+   *  when the revived entry carried `uncommitted-worktree-work`. The wiring
+   *  (server.ts) registers a durable, beacon-enabled CommitmentTracker obligation
+   *  so a STALLED revived session is re-surfaced. Present ONLY when the dev-gated
+   *  yieldSafety feature is live — its presence is the gate. */
+  onWorktreeRevival?: (entry: ResumeQueueEntry) => void;
   /** ONE rolling aggregated attention surface (caller dedupes on kind). */
   raiseAggregated: (kind: string, detail: string) => void;
   /** Decision-transition audit sink (logs/resume-queue.jsonl). */
@@ -300,6 +306,18 @@ export class ResumeQueueDrainer {
         try {
           this.deps.notifyResumed?.(candidate);
         } catch { /* the notice never endangers the resume */ }
+        // Build-Session Yield Safety (ACT-839) R2.2: a session revived because its
+        // worktree was dirty gets a durable, beacon-tracked obligation to commit /
+        // deliberately preserve that work — so the loop is re-surfaced (PromiseBeacon)
+        // even if the revived session STALLS rather than dies. The die-again case is
+        // already caught by the dev-live OrphanedWorkSentinel (#1113), which detects +
+        // preserves stranded worktree work; this hook adds only the stall-covering
+        // obligation, never a duplicate scanner. Fires only when the feature is live
+        // (the hook is wired only then) and the evidence is present.
+        if (candidate.workEvidence.includes('uncommitted-worktree-work')) {
+          try { this.deps.onWorktreeRevival?.(candidate); }
+          catch { /* the obligation registration never endangers the resume */ }
+        }
         this.deps.audit({ event: 'respawned', id: candidate.id, stableKey: candidate.stableKey, tmux: spawnedTmux });
         return { resumed: true };
       }

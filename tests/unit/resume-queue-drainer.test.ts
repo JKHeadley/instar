@@ -418,3 +418,30 @@ describe('ResumeQueueDrainer — dry-run inertness + Tier1 paths (R2.4 / P7)', (
     expect(prompt.startsWith('Your previous session was shut down')).toBe(true);
   });
 });
+
+describe('ResumeQueueDrainer — ACT-839 R2.2 worktree-revival obligation hook', () => {
+  it('fires onWorktreeRevival after a successful resume of an uncommitted-worktree entry', async () => {
+    const fired: string[] = [];
+    const h = harness({ deps: { onWorktreeRevival: (e) => fired.push(e.id) } });
+    const d = h.queue.considerEnqueue(candidate({ workEvidence: ['uncommitted-worktree-work'] }));
+    await warmCalm(h, 2);
+    await h.drainer.tick();
+    expect(fired).toEqual([d.entry!.id]);
+  });
+  it('does NOT fire for an entry without uncommitted-worktree-work', async () => {
+    const fired: string[] = [];
+    const h = harness({ deps: { onWorktreeRevival: (e) => fired.push(e.id) } });
+    h.queue.considerEnqueue(candidate({ workEvidence: ['open-commitment'] }));
+    await warmCalm(h, 2);
+    await h.drainer.tick();
+    expect(fired).toEqual([]);
+  });
+  it('a throw in onWorktreeRevival never fails the resume', async () => {
+    const h = harness({ deps: { onWorktreeRevival: () => { throw new Error('commitment boom'); } } });
+    const d = h.queue.considerEnqueue(candidate({ workEvidence: ['uncommitted-worktree-work'] }));
+    await warmCalm(h, 2);
+    const r = await h.drainer.tick();
+    expect(r.resumed).toBe(true);
+    expect(h.queue.get(d.entry!.id)?.status).toBe('respawned');
+  });
+});
