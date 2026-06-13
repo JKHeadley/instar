@@ -9736,13 +9736,18 @@ process.stdin.on('end', async () => {
       if (!authToken && typeof cfg.authToken === 'string') authToken = cfg.authToken;
     } catch { /* use defaults */ }
 
-    // Call the gate API using global fetch (Node 18+)
+    // Call the gate API using global fetch (Node 18+). sessionName lets the
+    // server enforce the revivalMode side-effect gate (PROMISE-BEACON-ESCALATION-
+    // SPEC I13): a session revived to follow through on a dead promise is held
+    // status-only until it revalidates. INSTAR_SESSION_NAME is injected into
+    // every spawned session via tmux -e; absent for non-session callers (no gate).
     const postData = JSON.stringify({
       service,
       mutability,
       reversibility,
       description,
       itemCount,
+      sessionName: process.env.INSTAR_SESSION_NAME || '',
     });
 
     const controller = new AbortController();

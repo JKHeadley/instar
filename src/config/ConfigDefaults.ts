@@ -302,6 +302,28 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       captureBacklogDrainPerTick: 5,
       captureBacklogMaxRetries: 3,
     },
+    // Promise-Beacon Escalation (PROMISE-BEACON-ESCALATION-SPEC §5). When a
+    // beacon-enabled commitment's owning session dies, escalate (revive → honest
+    // status → loud give-up) instead of silently terminalizing it. Ships DARK:
+    // `enabled` is deliberately OMITTED so the runtime resolves it via the
+    // developmentAgent gate (LIVE on the dev agent, DARK fleet-wide), and
+    // `dryRun: true` holds it to audit-only "would escalate" logging until the
+    // evidence-gated promotion. Backfilled to existing agents via applyDefaults.
+    promiseBeacon: {
+      escalation: {
+        dryRun: true,
+        maxEscalationAttempts: 3,
+        minEscalationIntervalMs: 120000,
+        maxConcurrentEscalations: 2,
+        maxEscalationSpawnsPerTick: 1,
+        reviveSettleMs: 30000,
+        escalationGraceMs: 10000,
+        rung2MaxNotifications: 4,
+        rung2MinIntervalMs: 1800000,
+        rung2DigestWindowMs: 600000,
+        revalidationTtlMs: 1800000,
+      },
+    },
     // GrowthMilestoneAnalyst — the proactive growth & milestone analyst.
     // `enabled` is deliberately OMITTED so the runtime resolves it through the
     // standard developmentAgent dark-feature gate (`enabled ?? !!developmentAgent`,

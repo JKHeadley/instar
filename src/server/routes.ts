@@ -16982,11 +16982,44 @@ export function createRoutes(ctx: RouteContext): Router {
     if (!ctx.operationGate) {
       return res.status(404).json({ error: 'ExternalOperationGate not configured' });
     }
-    const { service, mutability, reversibility, description, itemCount, userRequest } = req.body;
+    const { service, mutability, reversibility, description, itemCount, userRequest, sessionName } = req.body;
     if (!service || !mutability || !reversibility || !description) {
       return res.status(400).json({ error: 'service, mutability, reversibility, and description are required' });
     }
     try {
+      // ── I13: revivalMode side-effect gate (PROMISE-BEACON-ESCALATION-SPEC §3.0) ──
+      // A session revived to follow through on a dead promise carries no new
+      // authority: every non-read external operation is BLOCKED until the
+      // commitment records a server-side revalidation (a deliberate re-think
+      // checkpoint). Resolution is session→topic→commitment; the cost is a
+      // single negative lookup for normal sessions (which carry no revivalMode
+      // commitment), and reads fast-path out in the hook before reaching here.
+      if (sessionName && mutability !== 'read' && ctx.telegram && ctx.commitmentTracker) {
+        const topicId = ctx.telegram.getTopicForSession?.(String(sessionName));
+        if (topicId != null) {
+          const tId = typeof topicId === 'number' ? topicId : Number(topicId);
+          const escCfg = (ctx.config as { monitoring?: { promiseBeacon?: { escalation?: { revalidationTtlMs?: number } } } })
+            .monitoring?.promiseBeacon?.escalation;
+          const ttlMs = escCfg?.revalidationTtlMs ?? 1_800_000;
+          const blocking = ctx.commitmentTracker.getActive().find(c =>
+            c.topicId === tId && c.revivalMode === 'status-only-until-revalidated');
+          if (blocking) {
+            const revalAt = blocking.revalidatedAt ? Date.parse(blocking.revalidatedAt) : 0;
+            const fresh = revalAt > 0 && (Date.now() - revalAt) <= ttlMs
+              && blocking.revalidatedBy === String(sessionName);
+            if (!fresh) {
+              return res.json({
+                action: 'block',
+                reason: `This session was revived to follow through on an open promise (${blocking.id}) and is in status-only mode. Revalidate first: POST /commitments/${blocking.id}/revalidate with a restated current-intent summary, then retry.`,
+                classification: { riskLevel: 'high', mutability, reversibility },
+                llmEvaluated: false,
+                revivalModeBlocked: true,
+                evaluatedAt: new Date().toISOString(),
+              });
+            }
+          }
+        }
+      }
       const decision = await ctx.operationGate.evaluate({
         service,
         mutability: mutability as OperationMutability,
@@ -18122,6 +18155,88 @@ export function createRoutes(ctx: RouteContext): Router {
       snippet = `<active_commitments>\n${body}${more > 0 ? `\n+ ${more} more` : ''}\n</active_commitments>`;
     }
     res.json({ enabled: true, snippet, total: all.length, shown: shown.length });
+  });
+
+  /**
+   * GET /commitments/escalation-metrics
+   * Operator-facing aggregate escalation counters (PROMISE-BEACON-ESCALATION-
+   * SPEC §6). Aggregate ONLY — no excerpts, no user identifiers; the double-spawn
+   * counter is the rollout hard-stop signal. MUST be registered before
+   * `/commitments/:id` or Express routes the literal here to the :id handler.
+   */
+  router.get('/commitments/escalation-metrics', (_req, res) => {
+    if (!ctx.commitmentTracker) {
+      res.json({ enabled: false });
+      return;
+    }
+    const beacon = (globalThis as Record<string, unknown>).__instarPromiseBeacon as
+      | { escalationMetrics?: () => { enabled: boolean; dryRun: boolean; inFlight: number; doubleSpawnCount: number } }
+      | undefined;
+    const m = beacon?.escalationMetrics?.() ?? { enabled: false, dryRun: true, inFlight: 0, doubleSpawnCount: 0 };
+    // Durable aggregates from the commitment store (survive restart — I1).
+    let totalAttempts = 0, atRung1 = 0, atRung2 = 0, rung3Terminals = 0, rung2Sent = 0, inRevivalMode = 0;
+    const refusalsByReason: Record<string, number> = {};
+    for (const c of ctx.commitmentTracker.getAll()) {
+      totalAttempts += c.escalationAttempts ?? 0;
+      if (c.currentRung === '1') atRung1 += 1;
+      if (c.currentRung === '2') atRung2 += 1;
+      if (c.resolution === 'session-lost-unrecovered') rung3Terminals += 1;
+      rung2Sent += c.rung2NotificationCount ?? 0;
+      if (c.revivalMode === 'status-only-until-revalidated' && !c.revalidatedAt) inRevivalMode += 1;
+      if (c.refusalReason) refusalsByReason[c.refusalReason] = (refusalsByReason[c.refusalReason] ?? 0) + 1;
+    }
+    res.json({
+      enabled: m.enabled, dryRun: m.dryRun, inFlight: m.inFlight, doubleSpawnCount: m.doubleSpawnCount,
+      totalAttempts, atRung1, atRung2, rung3Terminals, rung2Sent, inRevivalMode, refusalsByReason,
+    });
+  });
+
+  /**
+   * POST /commitments/:id/revalidate
+   * The revived session's deliberate re-think checkpoint (PROMISE-BEACON-
+   * ESCALATION-SPEC §3.0). Records revalidatedAt + revalidatedBy SERVER-SIDE so
+   * the external-operation-gate (I13) unblocks side-effects. The session cannot
+   * set these fields directly (I11) — this endpoint is the only path. Evidence:
+   * a non-empty restated current-intent summary + the spawn-time escalationAttemptId.
+   */
+  router.post('/commitments/:id/revalidate', async (req, res) => {
+    if (!ctx.commitmentTracker) {
+      res.status(404).json({ error: 'CommitmentTracker not configured' });
+      return;
+    }
+    const c = ctx.commitmentTracker.get(req.params.id);
+    if (!c) {
+      res.status(404).json({ error: `Commitment ${req.params.id} not found` });
+      return;
+    }
+    const { summary, escalationAttemptId, sessionName } = (req.body ?? {}) as
+      { summary?: string; escalationAttemptId?: string; sessionName?: string };
+    if (!summary || typeof summary !== 'string' || summary.trim().length < 1) {
+      res.status(400).json({ error: 'summary (a non-empty restated current-intent) is required' });
+      return;
+    }
+    if (c.revivalMode !== 'status-only-until-revalidated') {
+      res.status(409).json({ error: 'commitment is not in revivalMode — nothing to revalidate' });
+      return;
+    }
+    if (!escalationAttemptId || typeof escalationAttemptId !== 'string') {
+      res.status(400).json({ error: 'escalationAttemptId is required' });
+      return;
+    }
+    // Lenient match: if the commitment still carries an in-flight attemptId it
+    // must equal the caller's; once the revive confirmed (attemptId cleared), a
+    // non-empty caller-supplied token is accepted (it proves a real injection).
+    if (c.escalationAttemptId && c.escalationAttemptId !== escalationAttemptId) {
+      res.status(409).json({ error: 'escalationAttemptId does not match the in-flight escalation' });
+      return;
+    }
+    const who = (typeof sessionName === 'string' && sessionName.trim()) ? sessionName.trim() : 'unknown-session';
+    const updated = await ctx.commitmentTracker.mutate(req.params.id, prev => ({
+      ...prev,
+      revalidatedAt: new Date().toISOString(),
+      revalidatedBy: who,
+    }));
+    res.json({ ok: true, commitmentId: updated.id, revalidatedAt: updated.revalidatedAt, revalidatedBy: updated.revalidatedBy });
   });
 
   /**
