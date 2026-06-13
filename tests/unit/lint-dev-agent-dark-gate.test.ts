@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 // The SAME attributor the lint's assertion C uses — the golden-path test asserts
 // THIS resolver reproduces a hand-authored map (never the resolver's own output).
-import { attributeEnabledFalsePaths } from '../../scripts/lib/dark-gate-attribution.js';
+import { attributeEnabledFalsePaths, VALID_CATEGORIES } from '../../scripts/lib/dark-gate-attribution.js';
 import { DEV_GATED_FEATURES, DARK_GATE_EXCLUSIONS } from '../../src/core/devGatedFeatures.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -305,110 +305,44 @@ describe('lint-dev-agent-dark-gate', () => {
     // ws13Reconcile/ws13DryRun/ws13TickMs sub-block, shifting every entry at or
     // after multiMachine.sessionPool by +7. Verified by hand against
     // ConfigDefaults.ts after the post-#1079 merge.
+    // CMT-1438 (DEV-AGENT-DARK-GATE-TEETH): 4 paths LEFT this map because their
+    // `enabled: false` literal was REMOVED from ConfigDefaults so the dev-gate
+    // resolves them live (they moved to DEV_GATED_FEATURES): bootHealthBeacon,
+    // parallelWorkSentinel, failureLearning, releaseReadiness — they have NO
+    // attributed path now (dev-gated). The 3 D4-held additions
+    // (correctionLearning=cost-bearing, apprenticeshipCycleSla/geminiCapacityEscalation
+    // =action-bearing) KEEP their `enabled: false` and stay in this map.
+    // REBASE onto upstream/main @ v1.3.538 (credential-repointing Step 5/6 #1128/#1130
+    // + build-session-yield-safety #1129): those PRs added ConfigDefaults blocks above
+    // mcpProcessReaper (yieldSafety is dev-gated → NO new attributed path), shifting
+    // every entry from mcpProcessReaper down by +13; sessionReaper/agentWorktreeReaper
+    // unchanged. Every line below RE-VERIFIED by hand via the attributor against the
+    // MERGED ConfigDefaults.ts (each maps to a real `enabled: false,` line).
     const EXPECTED: Record<string, string> = {
-      '39': 'monitoring.bootHealthBeacon.enabled',
-      '58': 'monitoring.parallelWorkSentinel.enabled',
       '138': 'monitoring.sessionReaper.enabled',
       '196': 'monitoring.agentWorktreeReaper.enabled',
-      // ORPHANED-WORK-SENTINEL: the monitoring.orphanedWorkSentinel default block
-      // (15 lines incl. comment, `enabled` deliberately OMITTED so it is dev-gated
-      // — hence NO new entry here) was inserted right after the agentWorktreeReaper
-      // block, shifting EVERY entry below by +15. Verified by hand (attributor)
-      // against ConfigDefaults.ts.
-      // BUILD-SESSION-YIELD-SAFETY (ACT-839, THIS PR): a dev-gated
-      // monitoring.yieldSafety default block (13 lines incl. comment, `enabled`
-      // deliberately OMITTED so it is dev-gated — hence NO new entry here) was
-      // inserted right after the orphanedWorkSentinel block, shifting EVERY entry
-      // from mcpProcessReaper onward by +13. Verified by hand (attributor) against
-      // ConfigDefaults.ts — all paths unchanged, only line numbers shifted.
       '238': 'monitoring.mcpProcessReaper.enabled',
       '252': 'monitoring.agentSleep.enabled',
-      '275': 'monitoring.failureLearning.enabled',
-      '307': 'monitoring.correctionLearning.enabled',
-      // PROMISE-BEACON-ESCALATION-SPEC: the monitoring.promiseBeacon.escalation
-      // default block (22 lines, `enabled` deliberately OMITTED so it is dev-
-      // gated — hence NO new entry here) was inserted right after the
-      // correctionLearning block, shifting EVERY entry below by +22. Verified by
-      // hand (attributor) against the MERGED ConfigDefaults.ts.
-      // OrphanedWorkSentinel (THIS PR): adds a dev-gated monitoring.orphanedWorkSentinel
-      // config block (no attributed path — dev-gated) after correctionLearning, shifting
-      // every entry from apprenticeshipCycleSla onward +15. Recomputed via the attributor
-      // against the rebased ConfigDefaults.ts.
-      '401': 'monitoring.apprenticeshipCycleSla.enabled',
-      '409': 'monitoring.geminiCapacityEscalation.enabled',
-      '417': 'monitoring.releaseReadiness.enabled',
-      '432': 'monitoring.greenPrAutoMerge.enabled',
-      '482': 'threadline.a2aCheckIn.enabled',
-      '574': 'mentor.enabled',
-      '585': 'mentor.autonomousFix.enabled',
-      '600': 'mentee.enabled',
-      '719': 'multiMachine.sessionPool.enabled',
-      '744': 'multiMachine.sessionPool.inboundQueue.enabled',
-      '773': 'multiMachine.sessionPool.holdForStability.enabled',
-      // multi-machine-replicated-store-foundation Step 2: the multiMachine block
-      // gained a `stateSync` sub-block (foundation knobs only; NO `enabled` key →
-      // NO new attributed path) after coherenceJournal (which sits after sessionPool
-      // but before cartographer). sessionPool entries unshifted; every cartographer
-      // entry shifted +17 (the stateSync block's line count). Verified by hand
-      // (attributor) against the MERGED ConfigDefaults.ts.
-      // WS2.1 (multi-machine-replicated-store-foundation §4): the stateSync block
-      // gained a `preferences: { enabled:false, dryRun:true }` per-store sub-block —
-      // the FIRST concrete replicated-store consumer. It ADDS this literal
-      // `enabled:false` path (842, classified in DARK_GATE_EXCLUSIONS as
-      // optional-integration) and shifts every cartographer + credentialRepointing
-      // entry below it by +13 (the new sub-block's line count). RECOMPUTED via the
-      // attributor against the MERGED ConfigDefaults.ts.
-      '864': 'multiMachine.stateSync.preferences.enabled',
-      // WS2.3 (ws23-relationships-userregistry-security): the stateSync block gained
-      // a `relationships: { enabled:false, dryRun:true }` per-store sub-block — the
-      // SECOND replicated-store consumer + the FIRST PII kind. It ADDS this literal
-      // `enabled:false` path (865, classified in DARK_GATE_EXCLUSIONS as
-      // optional-integration) right after the preferences sub-block and shifts every
-      // cartographer + credentialRepointing entry below it by +14 (the new sub-block's
-      // line count). RECOMPUTED via the attributor against the MERGED ConfigDefaults.ts.
-      '878': 'multiMachine.stateSync.relationships.enabled',
-      // WS2.2 (multi-machine-replicated-store-foundation): the stateSync block gained a
-      // `learnings: { enabled:false, dryRun:true }` per-store sub-block — the THIRD
-      // replicated-store consumer + the SECOND memory-family kind. It ADDS this literal
-      // `enabled:false` path (879, classified in DARK_GATE_EXCLUSIONS as
-      // optional-integration) right after the relationships sub-block and shifts every
-      // cartographer + credentialRepointing entry below it by +14 (the new sub-block's
-      // line count). RECOMPUTED via the attributor against the MERGED ConfigDefaults.ts.
-      '892': 'multiMachine.stateSync.learnings.enabled',
-      // WS2.4 (multi-machine-replicated-store-foundation): the stateSync block gained a
-      // `knowledge: { enabled:false, dryRun:true }` per-store sub-block — the FOURTH
-      // replicated-store consumer + the THIRD memory-family kind. It ADDS this literal
-      // `enabled:false` path (894, classified in DARK_GATE_EXCLUSIONS as
-      // optional-integration) right after the learnings sub-block and shifts every
-      // cartographer + credentialRepointing entry below it by +15 (the new sub-block's
-      // line count incl. its 12-line comment). RECOMPUTED via the attributor against the
-      // MERGED ConfigDefaults.ts.
-      '907': 'multiMachine.stateSync.knowledge.enabled',
-      // WS2.5 (multi-machine-replicated-store-foundation): the stateSync block gained an
-      // `evolutionActions: { enabled:false, dryRun:true }` per-store sub-block — the FIFTH
-      // replicated-store consumer + the FOURTH memory-family kind. It ADDS this literal
-      // `enabled:false` path (908, classified in DARK_GATE_EXCLUSIONS as optional-integration)
-      // right after the knowledge sub-block and shifts every cartographer + credentialRepointing
-      // entry below it by +14 (the new sub-block's line count incl. its comment). RECOMPUTED via
-      // the attributor against the MERGED ConfigDefaults.ts.
-      '921': 'multiMachine.stateSync.evolutionActions.enabled',
-      '1029': 'cartographer.freshnessSweep.enabled',
-      '1074': 'cartographer.conformanceAudit.llmEnrichment.enabled',
-      '1099': 'cartographer.subtreeNav.llmRerank.enabled',
-      // Threadline Robustness Phase 2 (CMT-1362): the threadline.canonicalHistory
-      // block (no `enabled` literal — conversationDiscipline is dev-gated) is inserted
-      // AFTER the threadline section; entries at/after mentor.enabled shift again.
-      // RECOMPUTED via the attributor against the MERGED ConfigDefaults.ts.
-      // live-credential-repointing Increment A: subscriptionPool.credentialRepointing
-      // is appended at the END of SHARED_DEFAULTS (after topicProfiles), so it shifts
-      // no prior entry — it only ADDS this literal `enabled: false` path. category
-      // 'destructive' in DARK_GATE_EXCLUSIONS (writes OAuth credentials).
-      // multi-machine-replicated-store-foundation Step 3 (snapshot-then-tail, #1115)
-      // added stateSync cache config (NO new attributed `enabled` path) below the
-      // cartographer block but above credentialRepointing → this END entry shifted
-      // +15 (1015 → 1030); cartographer/sessionPool entries unchanged. RECOMPUTED via
-      // the attributor against the MERGED ConfigDefaults.ts.
-      '1136': 'subscriptionPool.credentialRepointing.enabled',
+      '308': 'monitoring.correctionLearning.enabled',
+      '402': 'monitoring.apprenticeshipCycleSla.enabled',
+      '410': 'monitoring.geminiCapacityEscalation.enabled',
+      '434': 'monitoring.greenPrAutoMerge.enabled',
+      '484': 'threadline.a2aCheckIn.enabled',
+      '576': 'mentor.enabled',
+      '587': 'mentor.autonomousFix.enabled',
+      '602': 'mentee.enabled',
+      '721': 'multiMachine.sessionPool.enabled',
+      '746': 'multiMachine.sessionPool.inboundQueue.enabled',
+      '775': 'multiMachine.sessionPool.holdForStability.enabled',
+      '866': 'multiMachine.stateSync.preferences.enabled',
+      '880': 'multiMachine.stateSync.relationships.enabled',
+      '894': 'multiMachine.stateSync.learnings.enabled',
+      '909': 'multiMachine.stateSync.knowledge.enabled',
+      '923': 'multiMachine.stateSync.evolutionActions.enabled',
+      '1031': 'cartographer.freshnessSweep.enabled',
+      '1076': 'cartographer.conformanceAudit.llmEnrichment.enabled',
+      '1101': 'cartographer.subtreeNav.llmRerank.enabled',
+      '1138': 'subscriptionPool.credentialRepointing.enabled',
     };
     const actual = attributeRealConfigDefaults();
     expect(actual).toEqual(EXPECTED);
@@ -440,6 +374,119 @@ describe('lint-dev-agent-dark-gate', () => {
     for (const f of DEV_GATED_FEATURES) {
       expect(typeof f.justification, `${f.name} justification`).toBe('string');
       expect(f.justification.replace(/\s/g, '').length, `${f.name} justification length`).toBeGreaterThanOrEqual(12);
+    }
+  });
+
+  // ── CMT-1438 (DEV-AGENT-DARK-GATE-TEETH): the retired catch-all + new category ──
+
+  it('VALID_CATEGORIES retires `deliberate-fleet-default` and adds `action-bearing` (the closed concrete-reason set)', () => {
+    expect(VALID_CATEGORIES.has('deliberate-fleet-default')).toBe(false);
+    expect(VALID_CATEGORIES.has('action-bearing')).toBe(true);
+    // The full valid set is exactly the 5 concrete reasons.
+    expect([...VALID_CATEGORIES].sort()).toEqual(
+      ['action-bearing', 'cost-bearing', 'destructive', 'optional-integration', 'structural-stub'],
+    );
+  });
+
+  it('Assertion C: the retired `deliberate-fleet-default` category now FAILS, and the fix points to DEV_GATED_FEATURES', () => {
+    const { dir, env } = writeCFixture({
+      defaultsBody: '  myFeature: {\n    enabled: false,\n  },',
+      exclusionEntries:
+        "  { configPath: 'myFeature.enabled', category: 'deliberate-fleet-default', reason: 'off because we said so, no concrete reason' },",
+    });
+    try {
+      const { code, out } = runLint([path.join(dir, 'ConfigDefaults.ts')], env);
+      expect(code).toBe(1);
+      expect(out).toContain('C: invalid exclusion category');
+      // The fix message names the concrete categories AND points safe-on-dev
+      // features to DEV_GATED_FEATURES (spec D2).
+      expect(out).toContain('DEV_GATED_FEATURES');
+      expect(out).toContain('action-bearing');
+    } finally {
+      cleanup(dir);
+    }
+  });
+
+  it('Assertion C: the new `action-bearing` category is ACCEPTED', () => {
+    const { dir, env } = writeCFixture({
+      defaultsBody: '  myFeature: {\n    enabled: false,\n  },',
+      exclusionEntries:
+        "  { configPath: 'myFeature.enabled', category: 'action-bearing', reason: 'auto-sends a user-facing Telegram escalation when live' },",
+    });
+    try {
+      const { code } = runLint([path.join(dir, 'ConfigDefaults.ts')], env);
+      expect(code).toBe(0);
+    } finally {
+      cleanup(dir);
+    }
+  });
+
+  it('Assertion C count-match guard: a backtick/template-literal reason TRIPS the escaped-validation assertion (fail-loud, not silent skip)', () => {
+    // The exact silent-skip hole the guard closes: the path regex parses the
+    // configPath (so the entry is COUNTED), but the entry regex requires a
+    // quote-delimited reason, so a backtick reason is invisible to category+reason
+    // validation. Without the guard, a bogus category here would pass CI unseen.
+    const { dir, env } = writeCFixture({
+      defaultsBody: '  myFeature: {\n    enabled: false,\n  },',
+      exclusionEntries:
+        '  { configPath: \'myFeature.enabled\', category: \'not-a-real-category\', reason: `a backtick reason that the entry regex cannot parse` },',
+    });
+    try {
+      const { code, out } = runLint([path.join(dir, 'ConfigDefaults.ts')], env);
+      expect(code).toBe(1);
+      expect(out).toContain('C: exclusion entry escaped validation');
+    } finally {
+      cleanup(dir);
+    }
+  });
+
+  it('Assertion C count-match guard: a well-formed (quote-delimited) exclusion does NOT trip the guard', () => {
+    const { dir, env } = writeCFixture({
+      defaultsBody: '  myFeature: {\n    enabled: false,\n  },',
+      exclusionEntries:
+        "  { configPath: 'myFeature.enabled', category: 'action-bearing', reason: 'auto-sends a user-facing escalation when live' },",
+    });
+    try {
+      const { code, out } = runLint([path.join(dir, 'ConfigDefaults.ts')], env);
+      expect(code).toBe(0);
+      expect(out).not.toContain('escaped validation');
+    } finally {
+      cleanup(dir);
+    }
+  });
+
+  it('the 3 D4-held features are EXCLUSIONS with concrete categories (cost-bearing / action-bearing), NOT dev-gated', () => {
+    const gatedPaths = new Set(DEV_GATED_FEATURES.map((f) => f.configPath));
+    const excl = new Map(DARK_GATE_EXCLUSIONS.map((e) => [e.configPath, e.category]));
+    expect(excl.get('monitoring.correctionLearning.enabled')).toBe('cost-bearing');
+    expect(excl.get('monitoring.apprenticeshipCycleSla.enabled')).toBe('action-bearing');
+    expect(excl.get('monitoring.geminiCapacityEscalation.enabled')).toBe('action-bearing');
+    for (const p of [
+      'monitoring.correctionLearning.enabled',
+      'monitoring.apprenticeshipCycleSla.enabled',
+      'monitoring.geminiCapacityEscalation.enabled',
+    ]) {
+      expect(gatedPaths.has(p), `${p} must NOT be dev-gated`).toBe(false);
+    }
+  });
+
+  it('the 4 audited-safe migrants ARE in DEV_GATED_FEATURES and NOT in DARK_GATE_EXCLUSIONS', () => {
+    const gatedPaths = new Set(DEV_GATED_FEATURES.map((f) => f.configPath));
+    const excludedPaths = new Set(DARK_GATE_EXCLUSIONS.map((e) => e.configPath));
+    for (const p of [
+      'monitoring.parallelWorkSentinel.enabled',
+      'monitoring.failureLearning.enabled',
+      'monitoring.releaseReadiness.enabled',
+      'monitoring.bootHealthBeacon.enabled',
+    ]) {
+      expect(gatedPaths.has(p), `${p} must be dev-gated`).toBe(true);
+      expect(excludedPaths.has(p), `${p} must NOT be an exclusion`).toBe(false);
+    }
+  });
+
+  it('no DARK_GATE_EXCLUSIONS entry uses the retired `deliberate-fleet-default` category', () => {
+    for (const e of DARK_GATE_EXCLUSIONS) {
+      expect(e.category, `${e.configPath}`).not.toBe('deliberate-fleet-default');
     }
   });
 });

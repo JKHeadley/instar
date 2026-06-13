@@ -851,12 +851,13 @@ export class AgentServer {
     }
 
     // Parallel-Work Awareness, Phase B — the proactive overlap councilor sentinel.
-    // Ships DARK (monitoring.parallelWorkSentinel.enabled defaults false). When on, it
-    // ticks on a cadence over the index, detects cross-topic overlap, and emits ONE
-    // deduped nudge. Signal-only. Own try/catch (cascade isolation). Every transition is
-    // audited to logs/sentinel-events.jsonl (house pattern); a nudge additionally surfaces
-    // to the user via the post-update channel if Telegram is wired.
-    const pwsEnabled = options.config.monitoring?.parallelWorkSentinel?.enabled === true;
+    // DEV-GATED (CMT-1438): `enabled` is OMITTED from the ConfigDefaults block so the
+    // developmentAgent gate decides — LIVE on a dev agent (the dogfooding ground),
+    // DARK on the fleet. When on, it ticks on a cadence over the index, detects
+    // cross-topic overlap, and emits ONE in-process nudge event (no listener wired).
+    // Signal-only. Own try/catch (cascade isolation). Every transition is audited to
+    // logs/sentinel-events.jsonl (house pattern). D4-verified observe-only.
+    const pwsEnabled = resolveDevAgentGate(options.config.monitoring?.parallelWorkSentinel?.enabled, options.config);
     if (pwsEnabled && this.parallelActivityIndex && options.config.stateDir) {
       try {
         const index = this.parallelActivityIndex;
@@ -1227,12 +1228,15 @@ export class AgentServer {
     }
 
     // Failure-Learning Loop (docs/specs/FAILURE-LEARNING-LOOP-SPEC.md) — instar
-    // self-hosting dev-process forensics. Ships OFF; constructed only when
-    // enabled (else the inline /failures routes 503-stub via the null ledger).
-    // Toolchain attribution is instar-repo-local (§3 scope). Own try/catch so a
-    // failure here can never cascade into the other ledgers' init.
+    // self-hosting dev-process forensics. DEV-GATED (CMT-1438): `enabled` is OMITTED
+    // from the ConfigDefaults block so the developmentAgent gate decides — LIVE on a
+    // dev agent, DARK on the fleet (the inline /failures routes 503-stub via the null
+    // ledger when off). D4-verified observe-only at default sub-flags: append-only
+    // ledger, ingestion sources all off by default, no auto-send. Toolchain
+    // attribution is instar-repo-local (§3 scope). Own try/catch so a failure here
+    // can never cascade into the other ledgers' init.
     try {
-      if (options.config.monitoring?.failureLearning?.enabled === true && options.config.stateDir) {
+      if (resolveDevAgentGate(options.config.monitoring?.failureLearning?.enabled, options.config) && options.config.stateDir) {
         this.failureLedger = new FailureLedger({
           dbPath: path.join(options.config.stateDir, 'failure-ledger.db'),
         });

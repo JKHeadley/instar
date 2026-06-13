@@ -304,6 +304,7 @@ export class PostUpdateMigrator {
     this.migrateWorktreeMisplacedFloodItems(result);
     this.migrateSubscriptionPoolInteractiveReady(result);
     this.migrateCartographerDevGate(result);
+    this.migrateDevGateTeethStrip(result);
     this.migrateCommitmentOwnerBackfill(result);
     this.migrateMultiMachinePostureReviewDimension(result);
     this.migrateConformanceGateAutoInvoke(result);
@@ -575,6 +576,92 @@ export class PostUpdateMigrator {
       result.upgraded.push(`cartographer-dev-gate: stripped default-shaped \`enabled: false\` at ${stripped.join(', ')} so the developmentAgent gate resolves them live`);
     } else {
       result.skipped.push('cartographer-dev-gate: no default-shaped false to strip (marker set)');
+    }
+  }
+
+  // ── DEV-AGENT-DARK-GATE-TEETH (CMT-1438): strip stale persisted `enabled: false`
+  // for the 4 features moved out of the retired `deliberate-fleet-default` bucket
+  // into DEV_GATED_FEATURES. Same mechanism + rationale as migrateCartographerDevGate:
+  // removing the ConfigDefaults literal only lets the gate decide when `enabled` is
+  // ABSENT, but applyDefaults is add-missing-only — so an agent (e.g. Echo) that
+  // already persisted the old default `false` keeps it and the feature stays DARK on
+  // the very dev agent meant to dogfood it. This one-shot, dev-agent-only strip frees
+  // a DEFAULT-SHAPED `false` at exactly the 4 allowlisted, D4-code-grounded-safe paths.
+  //
+  // Lossy-but-precedented (D5): the `false` value alone can't distinguish a stale
+  // default from a deliberate pre-migration operator choice; the run-once marker means
+  // each path's `false` is touched at most ONCE — a LATER operator-set `false` is never
+  // re-stripped (re-add it to deliberately keep a flag off). Same accepted tradeoff as
+  // the cartographer strip. Allowlist is HARDCODED (never "the dev-gated ones"
+  // dynamically) and deliberately EXCLUDES the 3 D4-held exclusions
+  // (correctionLearning / apprenticeshipCycleSla / geminiCapacityEscalation), which
+  // keep their persisted `false`. Idempotent, existence-checked, dev-agent-only.
+  private migrateDevGateTeethStrip(result: MigrationResult): void {
+    const configPath = path.join(this.config.stateDir, 'config.json');
+    if (!fs.existsSync(configPath)) {
+      result.skipped.push('dev-gate-teeth: config.json not found');
+      return;
+    }
+
+    let config: Record<string, unknown>;
+    try {
+      config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+    } catch (err) {
+      result.errors.push(`dev-gate-teeth: config.json read failed: ${err instanceof Error ? err.message : String(err)}`);
+      return;
+    }
+
+    const migrations = (config._instar_migrations ?? []) as string[];
+    const marker = 'dev-gate-teeth-strip';
+    if (migrations.some(m => m.startsWith(marker))) {
+      result.skipped.push('dev-gate-teeth: already migrated');
+      return;
+    }
+
+    // Dev-agent-only: a fleet agent's `false` is the correct dark default and is left
+    // untouched (marker NOT set here, so a later promotion can still run once).
+    if (config.developmentAgent !== true) {
+      result.skipped.push('dev-gate-teeth: not a development agent');
+      return;
+    }
+
+    // The 4 newly-DEV_GATED leaf flags, all under config.monitoring. HARDCODED — the
+    // 3 D4-held exclusion paths are deliberately NOT in this list.
+    const monitoring = config.monitoring;
+    const stripped: string[] = [];
+    if (monitoring && typeof monitoring === 'object' && !Array.isArray(monitoring)) {
+      const mon = monitoring as Record<string, unknown>;
+      const allowlist = ['parallelWorkSentinel', 'failureLearning', 'releaseReadiness', 'bootHealthBeacon'] as const;
+      for (const key of allowlist) {
+        const sub = mon[key];
+        if (sub && typeof sub === 'object' && !Array.isArray(sub)) {
+          const subObj = sub as Record<string, unknown>;
+          if (subObj.enabled === false) {
+            delete subObj.enabled;
+            stripped.push(`monitoring.${key}.enabled`);
+          }
+        }
+      }
+    }
+
+    // Record the marker even when nothing was stripped, so it runs exactly once
+    // (value-already-absent / operator-set-true cases are terminal too).
+    const now = new Date().toISOString();
+    migrations.push(`${marker}-${now}`);
+    config._instar_migrations = migrations;
+    try {
+      fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+    } catch (err) {
+      result.errors.push(`dev-gate-teeth: config.json write failed: ${err instanceof Error ? err.message : String(err)}`);
+      return;
+    }
+
+    if (stripped.length > 0) {
+      // Report each stripped path (CMT-1438 round-3 finding): a non-Echo dev operator
+      // sees exactly which flags were freed and can deliberately re-disable any.
+      result.upgraded.push(`dev-gate-teeth: stripped default-shaped \`enabled: false\` at ${stripped.join(', ')} so the developmentAgent gate resolves them live (CMT-1438; re-add \`enabled: false\` to deliberately keep one off — it will not be re-stripped)`);
+    } else {
+      result.skipped.push('dev-gate-teeth: no default-shaped false to strip (marker set)');
     }
   }
 

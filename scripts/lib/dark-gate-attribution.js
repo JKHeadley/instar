@@ -103,12 +103,17 @@ export function attributeEnabledFalsePaths(absPath) {
   return { paths: results, error: null };
 }
 
+// CMT-1438 (DEV-AGENT-DARK-GATE-TEETH): the catch-all `deliberate-fleet-default`
+// was RETIRED. Every off-even-on-dev category now names a CONCRETE reason dev-live
+// is wrong — unsafe (destructive/cost-bearing/action-bearing) or not-runnable
+// (optional-integration/structural-stub). Keep this set in lockstep with the
+// `DarkGateCategory` TS union in src/core/devGatedFeatures.ts.
 const VALID_CATEGORIES = new Set([
   'destructive',
-  'optional-integration',
   'cost-bearing',
+  'action-bearing',
+  'optional-integration',
   'structural-stub',
-  'deliberate-fleet-default',
 ]);
 
 export { VALID_CATEGORIES };

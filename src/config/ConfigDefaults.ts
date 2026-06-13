@@ -32,12 +32,12 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
   monitoring: {
     memoryMonitoring: true,
     healthCheckIntervalMs: 30000,
-    // Boot health beacon — ships OFF (dark). When enabled, a minimal /health
-    // responder answers from the start of boot so the supervisor can't mistake a
-    // slow boot for a dead process (topic 21816 root cause #1). Absent ⇒ off.
-    bootHealthBeacon: {
-      enabled: false,
-    },
+    // Boot health beacon — a minimal /health responder that answers from the start
+    // of boot so the supervisor can't mistake a slow boot for a dead process (topic
+    // 21816 root cause #1). DEV-GATED (CMT-1438): `enabled` is deliberately OMITTED
+    // so resolveDevAgentGate decides — LIVE on a developmentAgent, DARK on the
+    // fleet. NEVER hardcode `enabled: false` here (it would dark dev agents too).
+    bootHealthBeacon: {},
     // Default-on so SessionWatchdog runs everywhere — required for the
     // compaction-idle polling fallback to actually fire.
     watchdog: {
@@ -50,13 +50,13 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       enabled: true,
     },
     // Parallel-Work Awareness sentinel (Phase B) — the proactive overlap councilor.
-    // Ships DARK (enabled:false): a false-positive nudge is worse than silence, so it
-    // graduates only after it's proven quiet. When enabled it ticks on a cadence
-    // (lease-holder only), detects cross-topic work overlap, and emits ONE deduped
-    // councilor nudge. Signal-only; never gates. docs/specs/parallel-activity-coherence.md.
-    parallelWorkSentinel: {
-      enabled: false,
-    },
+    // DEV-GATED (CMT-1438): `enabled` is OMITTED so resolveDevAgentGate decides —
+    // LIVE on a developmentAgent (dogfood), DARK on the fleet. A false-positive nudge
+    // is worse than silence on the fleet, so it graduates there only after the dev
+    // dogfooding proves it quiet. When live it ticks on a cadence (lease-holder only),
+    // detects cross-topic work overlap, and emits ONE deduped in-process councilor
+    // nudge (signal-only; never gates). docs/specs/parallel-activity-coherence.md.
+    parallelWorkSentinel: {},
     // ResourceLedger — default-on so every agent durably records its rate-limit
     // events (breaker trips + sentinel detections) instead of losing them on
     // restart. Read-only observability; never gates. Event-driven, negligible
@@ -268,11 +268,12 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       indeterminateEscalateCount: 15,
       progressFloorBytes: 512,
     },
-    // Failure-Learning Loop (docs/specs/FAILURE-LEARNING-LOOP-SPEC.md). Ships
-    // OFF — when disabled, the /failures routes 503-stub (surface still exists
-    // for capability probing). Registers itself on the rollout board.
+    // Failure-Learning Loop (docs/specs/FAILURE-LEARNING-LOOP-SPEC.md). DEV-GATED
+    // (CMT-1438): `enabled` is OMITTED so resolveDevAgentGate decides — LIVE on a
+    // developmentAgent, DARK on the fleet (when off, /failures routes 503-stub; the
+    // surface still exists for capability probing). The ingestion sources below
+    // default off, so live-on-dev is observe-only. Registers on the rollout board.
     failureLearning: {
-      enabled: false,
       minSupport: 4,
       minDistinctSessions: 3,
       minDistinctCauseCommits: 3,
@@ -410,11 +411,12 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       escalateAfterMinutes: 60,
     },
     // ReleaseReadinessSentinel (docs/specs/RELEASE-READINESS-VISIBILITY-SPEC.md
-    // §4.2). Ships OFF — Echo dogfoods first. Repo-gated: inert unless the
-    // install has an analyzable instar git repo. Thresholds default to
-    // silent <2d, LOW ≥2d, MEDIUM ≥4d, HIGH ≥7d.
+    // §4.2). DEV-GATED (CMT-1438): `enabled` is OMITTED so resolveDevAgentGate
+    // decides — LIVE on a developmentAgent, DARK on the fleet. Repo-gated: inert
+    // unless the install has an analyzable instar git repo. Inert-on-enable for
+    // SENDS: ticks are driven by the SEPARATE off-by-default release-readiness-check
+    // job (two-switch). Thresholds default silent <2d, LOW ≥2d, MEDIUM ≥4d, HIGH ≥7d.
     releaseReadiness: {
-      enabled: false,
       tickIntervalMs: 21_600_000,
       backlogAgeDaysSilent: 2,
       backlogAgeDaysLow: 2,

@@ -3032,11 +3032,13 @@ export async function startServer(options: StartOptions): Promise<void> {
     // runs BEFORE AgentServer binds its port, so for minutes nothing answers
     // /health and the supervisor can mistake a slow boot for a dead process →
     // the restart loop. This minimal beacon answers /health from the very start
-    // of boot; it is closed at the handoff just before server.start(). Dark by
-    // default (monitoring.bootHealthBeacon.enabled); the grace bump (#979) covers
-    // the window until this is enabled. Belt-and-suspenders, not a boot reorder.
+    // of boot; it is closed at the handoff just before server.start().
+    // DEV-GATED (CMT-1438): `enabled` OMITTED from defaults so the developmentAgent
+    // gate decides — LIVE on a dev agent, DARK on the fleet; the grace bump (#979)
+    // covers the window on the fleet. D4-verified read-only (localhost-only inbound
+    // socket, zero outbound). Belt-and-suspenders, not a boot reorder.
     let bootBeacon: BootHealthBeacon | undefined;
-    if (config.monitoring?.bootHealthBeacon?.enabled) {
+    if (resolveDevAgentGate(config.monitoring?.bootHealthBeacon?.enabled, config)) {
       try {
         bootBeacon = new BootHealthBeacon(config.port);
         await bootBeacon.start();
@@ -13416,7 +13418,13 @@ export async function startServer(options: StartOptions): Promise<void> {
     {
       const rrCfg = config.monitoring?.releaseReadiness;
       const repoPath = rrCfg?.repoPath ?? process.cwd();
-      if (rrCfg?.enabled) {
+      // DEV-GATED (CMT-1438): `enabled` OMITTED from defaults so the developmentAgent
+      // gate decides — LIVE on a dev agent, DARK on the fleet. D4-verified
+      // inert-on-enable: this only constructs the READ surface; ticks/sends require
+      // the SEPARATE off-by-default release-readiness-check job (two-switch). The
+      // `rrCfg &&` guard preserves the original "block must exist" semantics
+      // (applyDefaults always injects it) and narrows the type for the field reads.
+      if (rrCfg && resolveDevAgentGate(rrCfg.enabled, config)) {
         const { isAnalyzableRepo, buildReleaseReadinessDeps } = await import('../monitoring/releaseReadinessWiring.js');
         if (isAnalyzableRepo(repoPath)) {
           const { ReleaseReadinessSentinel } = await import('../monitoring/ReleaseReadinessSentinel.js');
