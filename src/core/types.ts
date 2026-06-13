@@ -2868,6 +2868,41 @@ export interface InstarConfig {
       /** Auto-reissue sweep cadence in ms (default 300000 = 5 min). */
       reissueSweepMs?: number;
     };
+    /**
+     * DARK + dry-run by default (DARK_GATE_EXCLUSIONS, category 'destructive' —
+     * it WRITES OAuth credentials between config homes). Live credential
+     * re-pointing: rebalance which account's credential sits in a config home a
+     * session already reads — restartless, picked up on the next API call (no
+     * session restart). Spec: docs/specs/live-credential-repointing-rebalancer.md.
+     * Increment A ships the swap-primitive + ledger + identity-oracle + manual
+     * levers; the autonomous drain balancer is Increment B. Going live requires a
+     * deliberate `enabled:true` AND `dryRun:false` flip (the two-flag gate).
+     */
+    credentialRepointing?: {
+      /** Master switch. Default false (dark, for EVERYONE incl. dev). */
+      enabled?: boolean;
+      /** When true, the balancer/levers run the full decision loop and AUDIT what
+       *  they WOULD do, but perform zero keychain/config writes. Default true. */
+      dryRun?: boolean;
+      /** When false, the manual levers (POST /credentials/swap|set-default|
+       *  restore-enrollment) refuse with a named reason. Default true (the levers
+       *  are still gated by `enabled`/`dryRun` above). */
+      manualLeversEnabled?: boolean;
+      /** Balancer knobs (Increment B); all clamped at read-time. Present here so
+       *  the config shape is stable from Increment A. */
+      balancer?: {
+        /** Pass cadence ms; clamp [60000, 3600000]. Default 300000 (5 min). */
+        passIntervalMs?: number;
+        /** High-water utilization % for wall-avoidance; clamp [50,99]. Default 85. */
+        highWaterPct?: number;
+        /** Critical mark % for the wall-override; clamp [85,99]. Default 95. */
+        criticalPct?: number;
+        /** Max forced (wall-override) swaps per pass; clamp [1, N-slots]. Default 1. */
+        maxForcedSwapsPerPass?: number;
+        /** Min score delta to justify a non-forced move; clamp [0,1000]. Default 10. */
+        minScoreDelta?: number;
+      };
+    };
   };
   /** Secret handling config */
   secrets?: {

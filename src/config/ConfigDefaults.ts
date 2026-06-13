@@ -1020,6 +1020,18 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
     switchNowConfirmTtlMs: 300000,        // §8 'switch now' validity window
     defaults: {},                         // per-topic config-default profiles (§5.2)
   },
+  // Live credential re-pointing (spec: live-credential-repointing-rebalancer.md).
+  // DARK + dry-run for EVERYONE incl. dev — it WRITES OAuth credentials between
+  // config homes (category 'destructive' in DARK_GATE_EXCLUSIONS, NOT dev-gated:
+  // a dev-gated omit-enabled would resolve LIVE-with-writes on Echo). Live needs a
+  // deliberate enabled:true AND dryRun:false flip. Review a dry-run pass first.
+  subscriptionPool: {
+    credentialRepointing: {
+      enabled: false,
+      dryRun: true,
+      manualLeversEnabled: true,
+    },
+  },
 };
 
 /**
