@@ -676,6 +676,9 @@ export interface RouteContext {
     /** §2.10 env-token gate (Step 8) — refuses the feature (config field OR live env-token fleet)
      *  with a named reason surfaced on GET /credentials/rebalancer. */
     envTokenGate: import('../core/CredentialEnvTokenGate.js').CredentialEnvTokenGate;
+    /** B3b — the autonomous balancer (Increment B). Its `status()` is surfaced on
+     *  GET /credentials/rebalancer (last pass + breaker). Optional so tests can omit it. */
+    rebalancer?: import('../core/CredentialRebalancer.js').CredentialRebalancer;
     /** Raw-blob reader for a slot (restore-enrollment coherence probe). Injectable for tests. */
     readBlob?: (slot: string) => Promise<{ raw: string; oauth: import('../core/OAuthRefresher.js').ClaudeOauth | null } | null>;
   } | null;
@@ -19253,8 +19256,9 @@ export function createRoutes(ctx: RouteContext): Router {
     const verdict = cr.envTokenGate.evaluate();
     credSend(res, 200, {
       enabled: true,
-      // The balancer loop itself is Increment B — never running in Increment A regardless of the gate.
-      balancerWired: false,
+      // B3b: the balancer is now WIRED — surface its last-pass + breaker status.
+      balancerWired: !!cr.rebalancer,
+      rebalancer: cr.rebalancer ? cr.rebalancer.status() : null,
       envTokenGate: {
         refused: verdict.refused,
         // A named CATEGORY, not a credential; scrubbed regardless by credSend → audit.response.

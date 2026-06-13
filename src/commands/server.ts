@@ -9293,6 +9293,50 @@ export async function startServer(options: StartOptions): Promise<void> {
       maxForcedPerWindow: config.subscriptionPool?.credentialRepointing?.maxForcedManualSwapsPerWindow,
       forcedWindowMs: config.subscriptionPool?.credentialRepointing?.forcedManualSwapWindowMs,
     });
+    // B3b — the autonomous balancer (Increment B). Wraps the pure §2.4 decision core in a pass
+    // loop and actuates via the SAME gated swap executor. isEnabled mirrors the location gate
+    // (dev-gate-resolved AND the §2.10 env-token gate), and the executor's own dryRun keeps it a
+    // dry-run dogfood on a dev agent (full decision loop + audit, ZERO writes) until dryRun:false.
+    const { CredentialRebalancer } = await import('../core/CredentialRebalancer.js');
+    const { mapSlots: credMapSlots, mapAccounts: credMapAccounts, resolveRebalancerConfig: credResolveBalancerConfig } =
+      await import('../core/CredentialRebalancerSnapshot.js');
+    const CRED_DEFAULT_SLOT = '~/.claude';
+    const credentialRebalancer = new CredentialRebalancer({
+      // Same gate as the location gate: dev-gate-resolved AND not env-token-refused.
+      isEnabled: () =>
+        resolveDevAgentGate(config.subscriptionPool?.credentialRepointing?.enabled, config) &&
+        !credentialEnvTokenGate.evaluate().refused,
+      isDryRun: () => config.subscriptionPool?.credentialRepointing?.dryRun !== false,
+      listSlots: () => credMapSlots(credentialLocationLedger.getAssignments(), { defaultSlot: CRED_DEFAULT_SLOT }),
+      listAccounts: () => credMapAccounts(subscriptionPool.list(), Date.now()),
+      resolveConfig: () =>
+        credResolveBalancerConfig({
+          ...(config.subscriptionPool?.credentialRepointing?.balancer ?? {}),
+          slotCount: credentialLocationLedger.getAssignments().length,
+          // Dry-run dogfood defaults: keep the account currently in ~/.claude as the desired
+          // default (objective-0 keeps it alive). An explicit operator default-account config +
+          // tmux-activity busyness for the drain target are refinements <!-- tracked: 20905 -->.
+          desiredDefaultAccountId: credentialLocationLedger.tenantOf(CRED_DEFAULT_SLOT) ?? null,
+        }),
+      swap: async (a, b) => {
+        const r = await credentialSwapExecutor.swap(a, b);
+        return { ok: r.outcome === 'swapped' || r.outcome === 'dry-run', detail: r.reason };
+      },
+      emitDegraded: (m) => {
+        try {
+          DegradationReporter.getInstance().report({
+            feature: 'CredentialRebalancer', primary: 'autonomous balancer pass',
+            fallback: 'pass suspended (breaker / floor)', reason: m, impact: 'credential rebalancing degraded',
+          });
+        } catch { /* @silent-fallback-ok: degradation report is best-effort observability; a throwing reporter must never break the dark/dry-run pass */ }
+      },
+      emitAttention: (m) => {
+        void credentialAuditEmit.attention({
+          id: `credential-rebalancer-${credentialLocationLedger.version}`,
+          title: 'Credential rebalancer', summary: m, category: 'credential-repointing', priority: 'NORMAL',
+        });
+      },
+    });
     const credentialRepointing = {
       ledger: credentialLocationLedger,
       swapExecutor: credentialSwapExecutor,
@@ -9300,6 +9344,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       audit: credentialAuditEmit,
       levers: credentialManualLevers,
       envTokenGate: credentialEnvTokenGate,
+      rebalancer: credentialRebalancer,
       readBlob: async (slot: string) => {
         const raw = await defaultKeychainExec.readService(credSwapService(slot));
         if (!raw) return null;
@@ -9312,6 +9357,25 @@ export async function startServer(options: StartOptions): Promise<void> {
         }
       },
     };
+
+    // B3b — the periodic balancer pass. tick() is a strict no-op while the feature resolves dark
+    // (so the timer can always run; the gate lives INSIDE tick()), and on a dev agent it runs the
+    // full decision loop in dry-run (zero writes). REENTRANCY-GUARDED: a slow tick never overlaps
+    // its successor. unref()'d so it never holds the process open. Interval clamped [1min, 60min].
+    let credRebalancerTickInFlight = false;
+    const credRebalancerPassMs = Math.min(
+      3_600_000,
+      Math.max(60_000, config.subscriptionPool?.credentialRepointing?.balancer?.passIntervalMs ?? 300_000),
+    );
+    const credRebalancerTimer = setInterval(() => {
+      if (credRebalancerTickInFlight) return; // reentrancy guard — skip if the prior tick is still running
+      credRebalancerTickInFlight = true;
+      void credentialRebalancer
+        .tick()
+        .catch((e) => console.warn(`[CredentialRebalancer] tick error: ${e instanceof Error ? e.message : String(e)}`))
+        .finally(() => { credRebalancerTickInFlight = false; });
+    }, credRebalancerPassMs);
+    credRebalancerTimer.unref?.();
 
     // QuotaPoller — per-account live quota reader (P1.2 of the Subscription &
     // Auth Standard). Reads each account's 5h/weekly utilization + reset dates
