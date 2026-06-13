@@ -25,6 +25,7 @@ import {
 } from '../../src/core/CredentialSwapExecutor.js';
 import { CredentialAuditEmit } from '../../src/core/CredentialAuditEmit.js';
 import { CredentialManualLevers } from '../../src/core/CredentialManualLevers.js';
+import { CredentialEnvTokenGate, type EnvTokenFleetSession } from '../../src/core/CredentialEnvTokenGate.js';
 import { claudeCredentialService } from '../../src/core/OAuthRefresher.js';
 import { CredentialWriteFunnel } from '../../src/core/CredentialWriteFunnel.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
@@ -71,7 +72,12 @@ function buildLedger(stateDir: string): CredentialLocationLedger {
 /** Identity resolver mapping the in-memory blob's token → its account (commit-side ALLOW). */
 const resolveAllow: ResolveSlotIdentity = async (slot) => ({ accountId: slot === SLOT_A ? ACC_B : ACC_A });
 
-function makeApp(opts: { enabled: boolean; manualLeversEnabled?: boolean }): { app: express.Express; stateDir: string; auditLines: string[] } {
+function makeApp(opts: {
+  enabled: boolean;
+  manualLeversEnabled?: boolean;
+  anthropicApiKey?: string;
+  fleet?: EnvTokenFleetSession[];
+}): { app: express.Express; stateDir: string; auditLines: string[] } {
   const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cred-routes-'));
   fs.mkdirSync(path.join(stateDir, 'logs'), { recursive: true });
   const ledger = buildLedger(stateDir);
@@ -92,6 +98,10 @@ function makeApp(opts: { enabled: boolean; manualLeversEnabled?: boolean }): { a
     resolveIdentity: resolveAllow,
     audit,
     levers: new CredentialManualLevers(),
+    envTokenGate: new CredentialEnvTokenGate({
+      getAnthropicApiKey: () => opts.anthropicApiKey ?? '',
+      listSessions: () => opts.fleet ?? [],
+    }),
     readBlob: async (slot: string) => {
       const raw = km.map.get(claudeCredentialService(slot)) ?? null;
       if (!raw) return null;
@@ -134,6 +144,53 @@ describe('/credentials/* routes (integration)', () => {
     const loc = await api('/credentials/locations');
     expect(loc.status).toBe(200);
     expect(loc.body.enabled).toBe(false);
+  });
+
+  it('Step 8 §2.10: rebalancer surfaces the env-token gate refusal (config field set), scrubbed', async () => {
+    const built = makeApp({ enabled: true, anthropicApiKey: 'sk-ant-oat01-LeAkMe1234567890_secret' });
+    stateDir = built.stateDir; cleanup.push(stateDir);
+    server = await listen(built.app);
+    const r = await api('/credentials/rebalancer');
+    expect(r.status).toBe(200);
+    expect(r.body.enabled).toBe(true);
+    expect(r.body.envTokenGate.refused).toBe(true);
+    expect(r.body.envTokenGate.reason).toBe('config-anthropic-api-key-set');
+    // The reason is a CATEGORY, not a credential — and the response routes through the scrub
+    // chokepoint regardless, so no token byte leaks even though the config key carries one.
+    expect(JSON.stringify(r.body)).not.toContain('LeAkMe1234567890');
+  });
+
+  it('Step 8 §2.10: rebalancer surfaces the live-fleet refusal (mid-life flip), config empty', async () => {
+    const built = makeApp({
+      enabled: true,
+      anthropicApiKey: '',
+      fleet: [
+        { framework: 'claude-code', status: 'running', credentialSource: 'store' },
+        { framework: 'claude-code', status: 'running', credentialSource: 'env' },
+      ],
+    });
+    stateDir = built.stateDir; cleanup.push(stateDir);
+    server = await listen(built.app);
+    const r = await api('/credentials/rebalancer');
+    expect(r.status).toBe(200);
+    expect(r.body.envTokenGate.refused).toBe(true);
+    expect(r.body.envTokenGate.reason).toBe('env-token-session-in-fleet');
+    expect(r.body.envTokenGate.envSessionCount).toBe(1);
+  });
+
+  it('Step 8 §2.10: rebalancer PERMITS (refused:false) when config empty + all-store fleet', async () => {
+    const built = makeApp({
+      enabled: true,
+      anthropicApiKey: '',
+      fleet: [{ framework: 'claude-code', status: 'running', credentialSource: 'store' }],
+    });
+    stateDir = built.stateDir; cleanup.push(stateDir);
+    server = await listen(built.app);
+    const r = await api('/credentials/rebalancer');
+    expect(r.status).toBe(200);
+    expect(r.body.enabled).toBe(true);
+    expect(r.body.balancerWired).toBe(false);
+    expect(r.body.envTokenGate.refused).toBe(false);
   });
 
   it('LIVE (flag on): POST /credentials/swap executes the executor; response carries NO token', async () => {

@@ -9200,9 +9200,31 @@ export async function startServer(options: StartOptions): Promise<void> {
       oracle: new CredentialIdentityOracle(),
       emitAttention: credentialGateEmitAttention,
     });
+    // The §2.10 env-token gate (Step 8): the §0.b applicability precondition, enforced. Evaluates
+    // BOTH `config.anthropicApiKey` (read LIVE per call — restartless) AND the live running fleet's
+    // durable per-session `credentialSource` flag, so a mid-run flip to an env token cannot silently
+    // un-steer the fleet. Pure evaluator (no IO). Constructed BEFORE the location gate so the
+    // location gate can AND-in its refusal — a §2.10 refusal suppresses ALL re-pointing attribution
+    // (requirement 3: an env-token session's usage is never mis-attributed to a slot tenant).
+    const { CredentialEnvTokenGate } = await import('../core/CredentialEnvTokenGate.js');
+    const credentialEnvTokenGate = new CredentialEnvTokenGate({
+      // SINGLE SOURCE OF TRUTH: the SessionManager spawn site reads `this.config.anthropicApiKey`,
+      // and `sessionManagerConfig` is `{ ...config.sessions }`, so the IDENTICAL value the env-block
+      // predicate sees is `config.sessions.anthropicApiKey`. Read it (not the legacy top-level field)
+      // so the gate's config predicate can never diverge from what actually launched the sessions.
+      getAnthropicApiKey: () => config.sessions?.anthropicApiKey,
+      listSessions: () => state.listSessions(),
+    });
     const credentialLocationGate = new CredentialLocationGate({
-      // Live flag read — a restartless config flip is honored on the next read.
-      isEnabled: () => config.subscriptionPool?.credentialRepointing?.enabled === true,
+      // Live flag read — a restartless config flip is honored on the next read. AND-ed with the
+      // §2.10 env-token gate: when the feature would refuse (config field set OR a live env-token
+      // session in the fleet), re-pointing attribution is suppressed wholesale, so the QuotaPoller
+      // stops routing reads/attribution through moved slots (an env fleet isn't store-steered, and
+      // attributing it would mis-credit usage to a slot tenant). Dark-default: when the feature flag
+      // is off this short-circuits before evaluating the gate, so it's byte-for-byte today's behavior.
+      isEnabled: () =>
+        config.subscriptionPool?.credentialRepointing?.enabled === true &&
+        !credentialEnvTokenGate.evaluate().refused,
       ledger: credentialLocationLedger,
       emitAttention: credentialGateEmitAttention,
     });
@@ -9277,6 +9299,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       resolveIdentity: credResolveIdentity,
       audit: credentialAuditEmit,
       levers: credentialManualLevers,
+      envTokenGate: credentialEnvTokenGate,
       readBlob: async (slot: string) => {
         const raw = await defaultKeychainExec.readService(credSwapService(slot));
         if (!raw) return null;

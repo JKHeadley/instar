@@ -106,9 +106,11 @@ describe('codex model-swap wiring — both spawn paths consume the helper', () =
     // Same rationale as the headless case above: legitimate code can sit between
     // resolution and the build — e.g. the subscription account-swap lane seeds a
     // pool home's onboarding flags here (ensurePinnedHomeInteractiveReady) before
-    // launch. The invariant is "resolved before, passed as launchModel", not
-    // literal proximity, so use the same widened look-back window.
-    const before = src.slice(Math.max(0, idx - 2500), idx);
+    // launch, and (WS5.2 Step 8) the §2.10 credentialSource provenance derivation
+    // sits between effectiveAccountId and the build. The invariant is "resolved
+    // before, passed as launchModel", not literal proximity, so use a widened
+    // look-back window (3000 chars — bumped from 2500 for the Step 8 derivation).
+    const before = src.slice(Math.max(0, idx - 3000), idx);
     expect(before).toContain('this.resolveCodexLaunchModel(framework');
     expect(src.slice(idx, idx + 250)).toContain('launchDefaultModel');
   });
