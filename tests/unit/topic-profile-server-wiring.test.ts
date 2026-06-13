@@ -143,6 +143,20 @@ describe('server-boot wiring: Topic Profile orchestrator + carrier (TOPIC-PROFIL
       expect(src).toContain('_topicProfileOrchestrator?.onProfileWrite(topicKey, info)');
     });
 
+    it('resolves the per-topic effort from the profile and threads it into the spawn options (data-flow)', () => {
+      // The resolved profile's `effort` must reach spawnInteractiveSession as
+      // options.effort — otherwise the pin resolves but never becomes a
+      // `--effort` launch arg (the "resolved but inert" failure). Pin both the
+      // resolve read and the conditional spawn-option spread.
+      expect(src).toContain('const profileEffort = resolvedProfile?.effort;');
+      expect(src).toContain('...(profileEffort ? { effort: profileEffort } : {}),');
+      // The spawn-option spread must live inside the spawnInteractiveSession call.
+      const spawnIdx = src.indexOf('sessionManager.spawnInteractiveSession(bootstrapMessage, sessionName, {');
+      expect(spawnIdx).toBeGreaterThan(0);
+      const block = src.slice(spawnIdx, spawnIdx + 1200);
+      expect(block).toContain('...(profileEffort ? { effort: profileEffort } : {}),');
+    });
+
     it('§8 ingress "switch now" bridges to the orchestrator confirm surface (the disclosed instruction is not a dead end)', () => {
       // The orchestrator discloses "say 'switch now' to interrupt" and arms its
       // OWN switch-now slot; the ingress must route the operator's reply to

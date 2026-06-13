@@ -36,6 +36,8 @@ import type { IntelligenceFramework } from './intelligenceProviderFactory.js';
 import type { TopicProfileStore, TopicProfile } from './TopicProfileStore.js';
 import {
   validateModelId,
+  EFFORT_LEVELS,
+  type EffortLevel,
   type EscalationOverride,
   type ProfileModelTier,
   type ThinkingMode,
@@ -53,10 +55,16 @@ export interface ResolvedTopicProfile {
   /** The baseline tier pin, when the pin is tier-shaped (§7 in-flight row eligibility). */
   modelTier: ProfileModelTier | null;
   thinkingMode: ThinkingMode | undefined;
+  /**
+   * The Claude Code `--effort` level to pass at spawn, or undefined for none.
+   * An invalid stored value FAILS OPEN to undefined (no `--effort` passed) —
+   * resolution never throws and never hands the CLI a bad value.
+   */
+  effort: EffortLevel | undefined;
   /** §9 — default 'inherit' (the heavy-work ultra mandate stays in force). */
   escalationOverride: EscalationOverride;
   /** Which layer supplied each arm (audit/readout). */
-  sources: { framework: string; model: string; thinkingMode: string };
+  sources: { framework: string; model: string; thinkingMode: string; effort: string };
   /**
    * Once-per-transition fallback notices to surface (empty in the common
    * case). Already deduped — the caller may send them verbatim.
@@ -71,7 +79,7 @@ export interface TopicProfileResolverOptions {
   /** Legacy config-level framework defaults (`config.topicFrameworks`). */
   configTopicFrameworks: () => Record<string, string>;
   /** `topicProfiles.defaults` — per-topic config-default profiles (§12.5). */
-  configProfileDefaults: () => Record<string, { model?: string; thinkingMode?: string }>;
+  configProfileDefaults: () => Record<string, { model?: string; thinkingMode?: string; effort?: string }>;
   /** `frameworkDefaultModels` config layer. */
   frameworkDefaultModels: () => Partial<Record<IntelligenceFramework, string>>;
   /** Live tier-escalation config — resolves a modelTier pin to a concrete id. */
@@ -226,15 +234,55 @@ export class TopicProfileResolver {
       }
     }
 
+    // ── effort arm (claude `--effort` direct pin) ────────────────────────
+    // FAIL-OPEN: any stored/config value not in the closed enum resolves to
+    // undefined (no `--effort` passed). Resolution never throws and never
+    // hands the CLI a value it would reject (e.g. a legacy 'ultracode' pin).
+    let effort: EffortLevel | undefined;
+    let effortSource = 'unset';
+    if (pin?.effort != null) {
+      if ((EFFORT_LEVELS as readonly string[]).includes(pin.effort)) {
+        effort = pin.effort;
+        effortSource = 'profile-pin';
+        this.clearTransition(key, 'effort-pin-invalid');
+      } else {
+        const notice = this.onceNotice(
+          key,
+          'effort-pin-invalid',
+          `this topic's pinned effort level is no longer valid — ignoring it`,
+        );
+        if (notice) notices.push(notice);
+        this.opts.audit?.({ type: 'fallback', reason: 'effort-pin-invalid', topic: key });
+      }
+    } else {
+      const configDefaults = this.opts.configProfileDefaults()[key];
+      const configEffort = configDefaults?.effort;
+      if (configEffort) {
+        if ((EFFORT_LEVELS as readonly string[]).includes(configEffort)) {
+          effort = configEffort as EffortLevel;
+          effortSource = 'topicProfiles-config-default';
+        } else {
+          const notice = this.onceNotice(
+            key,
+            'config-effort-invalid',
+            `the configured default effort level for this topic isn't valid — ignoring it`,
+          );
+          if (notice) notices.push(notice);
+          this.opts.audit?.({ type: 'fallback', reason: 'config-effort-invalid', topic: key });
+        }
+      }
+    }
+
     return {
       framework,
       model,
       modelTier,
       thinkingMode,
+      effort,
       // §9 — honor-on-read covers the escalation arm even when the feature
       // flag is off; absent = 'inherit' (the mandate stays in force).
       escalationOverride: pin?.escalationOverride ?? 'inherit',
-      sources: { framework: frameworkSource, model: modelSource, thinkingMode: thinkingSource },
+      sources: { framework: frameworkSource, model: modelSource, thinkingMode: thinkingSource, effort: effortSource },
       notices,
     };
   }

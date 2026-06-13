@@ -3072,6 +3072,10 @@ rm()  { "${shimRunner}" rm  "$@"; }
      *  builder (claude `--effort` / codex `model_reasoning_effort`; no-op on
      *  frameworks without a reasoning knob). */
     thinkingMode?: import('./topicProfileValidation.js').ThinkingMode;
+    /** Topic Profile — per-topic Claude Code `--effort` level pin, threaded to
+     *  the launch builder as `--effort <level>` (claude-code only; strict no-op
+     *  on other frameworks). A DIRECT CLI-flag pin, distinct from thinkingMode. */
+    effort?: import('./topicProfileValidation.js').EffortLevel;
     /** Explicit per-spawn working directory (reap-notify spec R2.8 / L13 —
      *  a NAMED extension: no spawn path accepted a per-spawn cwd before).
      *  The resume-queue drainer threads a queue entry's recorded cwd /
@@ -3218,6 +3222,9 @@ rm()  { "${shimRunner}" rm  "$@"; }
       // Topic Profile §6: per-topic thinking mode (claude --effort / codex
       // model_reasoning_effort; strict no-op on gemini/pi).
       ...(options?.thinkingMode ? { thinkingMode: options.thinkingMode } : {}),
+      // Topic Profile: direct per-topic Claude `--effort` pin (claude-code
+      // only; the builder validates the enum + drops an unknown value).
+      ...(options?.effort ? { effort: options.effort } : {}),
     });
 
     // Spawn the framework CLI in tmux — no bash -c shell intermediary.

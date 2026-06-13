@@ -20,6 +20,17 @@ import { SUPPORTED_FRAMEWORKS } from './TopicFrameworksStore.js';
 export const THINKING_MODES = ['off', 'low', 'medium', 'high', 'max'] as const;
 export type ThinkingMode = (typeof THINKING_MODES)[number];
 
+/**
+ * Claude Code's `--effort` launch flag levels (the live CLI's verified set).
+ * A DIRECT pin of the CLI flag value — distinct from `thinkingMode` (which is
+ * a cross-framework reasoning-budget abstraction the launch builders MAP onto
+ * `--effort`/`model_reasoning_effort`). `effort` passes through verbatim as
+ * `--effort <level>` on claude-code spawns and is a strict no-op elsewhere.
+ * NOTE: 'ultracode' / 'ultra' are NOT CLI values and are deliberately absent.
+ */
+export const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
+export type EffortLevel = (typeof EFFORT_LEVELS)[number];
+
 export const ESCALATION_OVERRIDES = ['inherit', 'suppress'] as const;
 export type EscalationOverride = (typeof ESCALATION_OVERRIDES)[number];
 
@@ -104,6 +115,7 @@ export interface ProfilePatchInput {
   modelTier?: string | null;
   escalationOverride?: string | null;
   thinkingMode?: string | null;
+  effort?: string | null;
 }
 
 export interface ValidatedProfilePatch {
@@ -112,6 +124,7 @@ export interface ValidatedProfilePatch {
   modelTier?: ProfileModelTier | null;
   escalationOverride?: EscalationOverride | null;
   thinkingMode?: ThinkingMode | null;
+  effort?: EffortLevel | null;
 }
 
 /** §10.3 — a rejected value is arbitrary text; store only a clamped prefix. */
@@ -202,6 +215,26 @@ export function validateProfileFields(
           field: 'thinkingMode',
           failure: 'off-enum',
           reason: `thinkingMode must be one of: ${THINKING_MODES.join(', ')}`,
+          rejectedPrefix: prefix,
+          rejectedLength: length,
+        },
+      };
+    }
+  }
+
+  if (patch.effort !== undefined) {
+    if (patch.effort === null) {
+      out.effort = null;
+    } else if ((EFFORT_LEVELS as readonly string[]).includes(patch.effort)) {
+      out.effort = patch.effort as EffortLevel;
+    } else {
+      const { prefix, length } = clampRejectedValue(patch.effort);
+      return {
+        ok: false,
+        error: {
+          field: 'effort',
+          failure: 'off-enum',
+          reason: `effort must be one of: ${EFFORT_LEVELS.join(', ')}`,
           rejectedPrefix: prefix,
           rejectedLength: length,
         },

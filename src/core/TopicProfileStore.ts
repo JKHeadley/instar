@@ -44,6 +44,7 @@ import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 import {
   modelTierMutualExclusionError,
   validateProfileFields,
+  type EffortLevel,
   type EscalationOverride,
   type ProfileModelTier,
   type ProfileValidationError,
@@ -60,6 +61,13 @@ export interface TopicProfile {
   /** §9 — does the heavy-work ultra mandate still apply? Default 'inherit'. */
   escalationOverride?: EscalationOverride | null;
   thinkingMode?: ThinkingMode | null;
+  /**
+   * Claude Code `--effort` launch level (low|medium|high|xhigh|max), passed
+   * verbatim as `--effort <level>` at spawn — a DIRECT CLI-flag pin, distinct
+   * from the cross-framework `thinkingMode` abstraction. No-op on non-claude
+   * frameworks.
+   */
+  effort?: EffortLevel | null;
   /** ISO timestamp, stamped server-side. */
   updatedAt: string;
   /** VERIFIED operator principal (or 'api-token' / 'system:*'), stamped server-side. */
@@ -194,7 +202,7 @@ export interface TopicProfileStoreOptions {
 
 const WRITE_LOCK_TIMEOUT_MS = 5_000;
 
-const PROFILE_FIELDS = ['framework', 'model', 'modelTier', 'escalationOverride', 'thinkingMode'] as const;
+const PROFILE_FIELDS = ['framework', 'model', 'modelTier', 'escalationOverride', 'thinkingMode', 'effort'] as const;
 type ProfileField = (typeof PROFILE_FIELDS)[number];
 
 export class TopicProfileStore {
@@ -937,7 +945,7 @@ function clampArrivingFields(
     }
   }
 
-  for (const field of ['model', 'modelTier', 'thinkingMode', 'escalationOverride'] as const) {
+  for (const field of ['model', 'modelTier', 'thinkingMode', 'effort', 'escalationOverride'] as const) {
     const raw = source[field];
     if (raw == null) continue;
     const v = validateProfileFields({ [field]: String(raw) }, effectiveFramework);

@@ -83,7 +83,7 @@ export interface ProfileChangeClassification {
   changedFields: string[];
 }
 
-const AXES = ['framework', 'model', 'modelTier', 'thinkingMode', 'escalationOverride'] as const;
+const AXES = ['framework', 'model', 'modelTier', 'thinkingMode', 'effort', 'escalationOverride'] as const;
 
 function isOffOnToggle(a: TopicProfile | null, b: TopicProfile | null): boolean {
   const oldMode = a?.thinkingMode ?? null;
@@ -190,6 +190,7 @@ export function classifyProfileChange(
   const modelChanged = changedFields.includes('model');
   const tierChanged = changedFields.includes('modelTier');
   const thinkingChanged = changedFields.includes('thinkingMode');
+  const effortChanged = changedFields.includes('effort');
 
   if (newFramework === 'codex-cli') {
     // §7 Codex rows: none-loss IFF the fence-validated rollout-id is
@@ -323,6 +324,37 @@ export function classifyProfileChange(
       swapMethod: 'resume',
       expectedLoss: 'none',
       reason: 'model change — kill + claude --resume (full transcript)',
+      refuseOrConfirm: false,
+      freshRespawn: false,
+    });
+  }
+
+  // effort-only change (claude). --effort is a pure LAUNCH-TIME flag: it does
+  // not touch the thinking-block transcript shape, so a kill + claude --resume
+  // is benign (none-loss when a resume UUID was hook-captured; else a disclosed
+  // fresh spawn with recent-only history). Its OWN row — without this, an
+  // effort-only change falls through to the thinkingMode block and reports a
+  // wrong reason gated on the wrong (thinking) verification flag (second-pass
+  // review finding, 2026-06-12). Combined effort+model/tier/thinking changes are
+  // already handled by those rows above (their respawn carries the new --effort).
+  if (effortChanged && !modelChanged && !tierChanged && !thinkingChanged) {
+    if (!session.claudeResumeReady) {
+      return killGuards({
+        ...base,
+        requiresRespawn: true,
+        swapMethod: 'continuation',
+        expectedLoss: 'recent-only',
+        reason: 'effort change with no hook-captured resume UUID — fresh spawn, recent history only (disclosed)',
+        refuseOrConfirm: false,
+        freshRespawn: true,
+      });
+    }
+    return killGuards({
+      ...base,
+      requiresRespawn: true,
+      swapMethod: 'resume',
+      expectedLoss: 'none',
+      reason: 'effort change — kill + claude --resume (--effort is a launch-time flag; benign across resume)',
       refuseOrConfirm: false,
       freshRespawn: false,
     });

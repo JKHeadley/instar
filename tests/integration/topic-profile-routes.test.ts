@@ -315,3 +315,54 @@ describe('recovery surfaces (§10.3 / §5.2(b))', () => {
     expect(bundle.store.parkedFor(23)).toBeNull();
   });
 });
+
+// ── effort pin: full POST→store→GET data-flow over the HTTP pipeline ─────────
+// Wiring/data-flow coverage that the resolved `effort` makes it all the way
+// from a write, through the store + resolver, back out the GET read surface
+// (the same `resolved.effort` the spawn path threads into the launch builder).
+describe('effort pin (POST→store→GET data-flow)', () => {
+  it('lands a valid effort LIVE under the fully-live regime and reads it back', async () => {
+    const bundle = buildBundle({ enabled: true, dryRun: false });
+    const app = buildApp(bundle);
+    const write = await request(app)
+      .post('/topic-profile/13481')
+      .set('X-Instar-Request', '1')
+      .send({ effort: 'max' });
+    expect(write.status).toBe(200);
+    expect(write.body.appliedLive).toContain('effort');
+    expect(bundle.store.resolve(13481)?.effort).toBe('max');
+
+    // The resolver surfaces it on the GET read — the same value the spawn path
+    // threads into the launch builder as `--effort`.
+    const read = await request(app).get('/topic-profile/13481');
+    expect(read.status).toBe(200);
+    expect(read.body.resolved.effort).toBe('max');
+    expect(read.body.resolved.sources.effort).toBe('profile-pin');
+
+    // Persistence survives a store reload (a second instance reads the pin).
+    const reloaded = new TopicProfileStore({
+      stateFilePath: path.join(stateDir, 'state', 'topic-profiles.json'),
+    });
+    expect(reloaded.resolve(13481)?.effort).toBe('max');
+  });
+
+  it('rejects an off-enum effort (400, profile unchanged) — ultracode is not a CLI value', async () => {
+    const bundle = buildBundle({ enabled: true, dryRun: false });
+    const app = buildApp(bundle);
+    const res = await request(app)
+      .post('/topic-profile/13481')
+      .set('X-Instar-Request', '1')
+      .send({ effort: 'ultracode' });
+    expect(res.status).toBe(400);
+    expect(res.body.validation.field).toBe('effort');
+    expect(res.body.validation.failure).toBe('off-enum');
+    expect(bundle.store.resolve(13481)).toBeNull();
+  });
+
+  it('GET exposes resolved.effort:null when no pin is set', async () => {
+    const app = buildApp(buildBundle(FLEET_REGIME));
+    const res = await request(app).get('/topic-profile/55');
+    expect(res.status).toBe(200);
+    expect(res.body.resolved.effort).toBeNull();
+  });
+});

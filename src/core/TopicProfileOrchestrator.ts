@@ -97,6 +97,7 @@ import {
 } from './TopicProfileStore.js';
 import type { ResolvedTopicProfile } from './TopicProfileResolver.js';
 import type {
+  EffortLevel,
   ProfileModelTier,
   ThinkingMode,
   ValidatedProfilePatch,
@@ -147,6 +148,8 @@ export interface AppliedProfile {
   /** Tier shape of the pin that produced the model, when tier-shaped. */
   modelTier: ProfileModelTier | null;
   thinkingMode: ThinkingMode | null;
+  /** Claude `--effort` level applied at spawn, or null. */
+  effort: EffortLevel | null;
 }
 
 export interface OrchTopicSession {
@@ -350,7 +353,7 @@ const REAPPLY_COOLDOWN_MS = 10 * 60_000;
 const CONFIRM_ARM_RATE_CAP = 5;
 const CONFIRM_ARM_RATE_WINDOW_MS = 60_000;
 
-const PROFILE_AXES = ['framework', 'model', 'modelTier', 'escalationOverride', 'thinkingMode'] as const;
+const PROFILE_AXES = ['framework', 'model', 'modelTier', 'escalationOverride', 'thinkingMode', 'effort'] as const;
 
 export class TopicProfileOrchestrator {
   private readonly deps: TopicProfileOrchestratorDeps;
@@ -513,7 +516,7 @@ export class TopicProfileOrchestrator {
     if (action === 'clear') {
       const live = await this.applyLiveWrite(
         key,
-        { framework: null, model: null, modelTier: null, thinkingMode: null, escalationOverride: null },
+        { framework: null, model: null, modelTier: null, thinkingMode: null, effort: null, escalationOverride: null },
         attribution,
         { recovery: true },
       );
@@ -550,6 +553,7 @@ export class TopicProfileOrchestrator {
       model: parked.profile.model ?? null,
       modelTier: parked.profile.modelTier ?? null,
       thinkingMode: parked.profile.thinkingMode ?? null,
+      effort: parked.profile.effort ?? null,
       escalationOverride: parked.profile.escalationOverride ?? null,
     };
     const live = await this.applyLiveWrite(key, patch, attribution, {
@@ -1779,6 +1783,7 @@ function appliedToPseudo(applied: AppliedProfile | null): TopicProfile | null {
     model: applied.modelTier ? null : applied.model,
     modelTier: applied.modelTier,
     thinkingMode: applied.thinkingMode,
+    effort: applied.effort,
     updatedAt: '',
     updatedBy: '',
   };
@@ -1790,6 +1795,7 @@ function resolvedToPseudo(resolved: ResolvedTopicProfile): TopicProfile {
     model: resolved.modelTier ? null : (resolved.model ?? null),
     modelTier: resolved.modelTier ?? null,
     thinkingMode: resolved.thinkingMode ?? null,
+    effort: resolved.effort ?? null,
     updatedAt: '',
     updatedBy: '',
   };
@@ -1802,6 +1808,7 @@ export function resolvedToApplied(resolved: ResolvedTopicProfile): AppliedProfil
     model: resolved.modelTier ? null : (resolved.model ?? null),
     modelTier: resolved.modelTier ?? null,
     thinkingMode: resolved.thinkingMode ?? null,
+    effort: resolved.effort ?? null,
   };
 }
 
@@ -1810,7 +1817,8 @@ function appliedEquals(a: AppliedProfile, b: AppliedProfile): boolean {
     a.framework === b.framework &&
     (a.model ?? null) === (b.model ?? null) &&
     (a.modelTier ?? null) === (b.modelTier ?? null) &&
-    (a.thinkingMode ?? null) === (b.thinkingMode ?? null)
+    (a.thinkingMode ?? null) === (b.thinkingMode ?? null) &&
+    (a.effort ?? null) === (b.effort ?? null)
   );
 }
 

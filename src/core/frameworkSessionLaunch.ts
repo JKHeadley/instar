@@ -15,7 +15,7 @@
 
 import type { IntelligenceFramework } from './intelligenceProviderFactory.js';
 import { codexSupportsHookTrustBypass } from './codexCapabilities.js';
-import type { ThinkingMode } from './topicProfileValidation.js';
+import { EFFORT_LEVELS, type EffortLevel, type ThinkingMode } from './topicProfileValidation.js';
 
 /**
  * Cross-framework generic model tiers. Higher-level code (UpgradeNotify,
@@ -187,6 +187,16 @@ export interface InteractiveLaunchOptions {
    *  - gemini-cli / pi-cli: strict no-op (no reasoning knob shipped).
    */
   thinkingMode?: ThinkingMode;
+  /**
+   * Topic Profile — per-topic Claude Code `--effort` level pin (a DIRECT pin
+   * of the CLI flag value: low|medium|high|xhigh|max). When set, the
+   * claude-code builder pushes `--effort <level>` at spawn. Validated against
+   * the closed enum INSIDE the builder (defense in depth) — an unknown value
+   * is dropped, never passed to the CLI. Strict no-op on non-claude
+   * frameworks. Distinct from `thinkingMode` (which the builders MAP onto the
+   * reasoning knob); `effort` is the launch flag verbatim.
+   */
+  effort?: EffortLevel;
 }
 
 export interface InteractiveLaunchSpec {
@@ -204,6 +214,16 @@ type Builder = (options: InteractiveLaunchOptions) => InteractiveLaunchSpec;
 
 const claudeCodeBuilder: Builder = (options) => {
   const argv: string[] = [options.binaryPath, '--dangerously-skip-permissions'];
+  // Topic Profile — direct `--effort` pin, emitted right after
+  // --dangerously-skip-permissions. Validated against the closed enum INSIDE
+  // the builder (defense in depth): an unknown value is dropped, never passed
+  // to the CLI. A direct pin WINS over the thinkingMode→effort mapping below
+  // (the thinkingMode branch is skipped when a direct effort is present so
+  // `--effort` is never emitted twice).
+  const directEffort = validateEffortLevel(options.effort);
+  if (directEffort) {
+    argv.push('--effort', directEffort);
+  }
   if (options.resumeSessionId) {
     argv.push('--resume', options.resumeSessionId);
   } else if (options.sessionId) {
@@ -234,11 +254,12 @@ const claudeCodeBuilder: Builder = (options) => {
   };
   // Topic Profile §6 — thinking mode. The live CLI's `--effort` flag carries
   // low/medium/high/max; `off` has no flag level, so it rides the
-  // MAX_THINKING_TOKENS=0 env channel (thinking disabled).
-  const claudeEffort = claudeEffortForThinkingMode(options.thinkingMode);
+  // MAX_THINKING_TOKENS=0 env channel (thinking disabled). Skipped when a
+  // direct effort pin already emitted `--effort` (the pin wins; no duplicate).
+  const claudeEffort = directEffort ? null : claudeEffortForThinkingMode(options.thinkingMode);
   if (claudeEffort) {
     argv.push('--effort', claudeEffort);
-  } else if (options.thinkingMode === 'off') {
+  } else if (!directEffort && options.thinkingMode === 'off') {
     envOverrides.MAX_THINKING_TOKENS = '0';
   }
   // Subscription & Auth Standard P1.3: when a per-account config home is given,
@@ -507,6 +528,15 @@ export interface HeadlessLaunchOptions {
    * don't use MCP). No effect on non-codex frameworks.
    */
   codexAllowMcpTools?: boolean;
+  /**
+   * Topic Profile — per-topic Claude Code `--effort` level pin (a DIRECT pin
+   * of the CLI flag value: low|medium|high|xhigh|max). When set, the
+   * claude-code headless builder pushes `--effort <level>` right after the
+   * `--model` block and before the `-p` prompt. Validated against the closed
+   * enum INSIDE the builder — an unknown value is dropped. No-op on non-claude
+   * frameworks.
+   */
+  effort?: EffortLevel;
 }
 
 export interface HeadlessLaunchSpec {
@@ -527,6 +557,13 @@ const claudeCodeHeadlessBuilder: HeadlessBuilder = (options) => {
   const resolved = resolveModelForFramework('claude-code', options.model);
   if (resolved) {
     argv.push('--model', resolved);
+  }
+  // Topic Profile — direct `--effort` pin, emitted right after the --model
+  // block and before the `-p` prompt positional. Validated against the closed
+  // enum INSIDE the builder (defense in depth): an unknown value is dropped.
+  const headlessEffort = validateEffortLevel(options.effort);
+  if (headlessEffort) {
+    argv.push('--effort', headlessEffort);
   }
   argv.push('-p', options.prompt);
   return {
@@ -705,6 +742,20 @@ export function buildHeadlessLaunch(
  * Returns `[]` for non-claude frameworks or when neither option is requested, so
  * the caller can splice unconditionally. Pure + order-stable for testing.
  */
+/**
+ * Defense-in-depth clamp for the direct `--effort` pin: returns the value
+ * verbatim when it is a member of the closed enum, else null (the builder
+ * drops it). The resolver already fails-open, but the builder is a second
+ * untrusted entry point — an unknown value must never reach the CLI. Exported
+ * for unit tests.
+ */
+export function validateEffortLevel(value: string | undefined | null): EffortLevel | null {
+  if (value != null && (EFFORT_LEVELS as readonly string[]).includes(value)) {
+    return value as EffortLevel;
+  }
+  return null;
+}
+
 /**
  * Topic Profile §6 — map the generic thinking-mode enum to the Claude CLI's
  * `--effort` levels. `off` returns null (it rides the MAX_THINKING_TOKENS=0

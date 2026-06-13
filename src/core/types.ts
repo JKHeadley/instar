@@ -2505,7 +2505,7 @@ export interface InstarConfig {
      * Optional per-topic config-default profiles (§5.2); keys use the §10.5
      * conversation-key scheme (numeric topic id, or `slack:<channel>[:<thread>]`).
      */
-    defaults?: Record<string, { model?: string; thinkingMode?: string }>;
+    defaults?: Record<string, { model?: string; thinkingMode?: string; effort?: string }>;
   };
   /**
    * Topic-intent auto-capture loop config (rung 0 of continuous-working-awareness).

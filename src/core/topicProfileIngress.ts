@@ -30,7 +30,7 @@
  *        metadata never matches ANY ingress recognition, round-5).
  */
 
-import type { ProfilePatchInput, ThinkingMode } from './topicProfileValidation.js';
+import type { EffortLevel, ProfilePatchInput, ThinkingMode } from './topicProfileValidation.js';
 
 // ── trigger grammar ─────────────────────────────────────────────────────────
 
@@ -55,6 +55,7 @@ const FRAMEWORK_WORDS: Record<string, string> = {
 };
 
 const THINKING_WORDS = ['off', 'low', 'medium', 'high', 'max'];
+const EFFORT_WORDS = ['low', 'medium', 'high', 'xhigh', 'max'];
 
 /**
  * Parse a first-party operator turn against the closed trigger set.
@@ -95,6 +96,18 @@ export function parseProfileTrigger(text: string): ProfileTrigger | null {
   if (!m) m = t.match(/^use (off|low|medium|high|max) thinking (?:here|on this topic)$/);
   if (m && THINKING_WORDS.includes(m[1])) {
     return { kind: 'write', patch: { thinkingMode: m[1] as ThinkingMode } };
+  }
+
+  // effort level: "set high effort on this topic" / "set effort to xhigh on
+  // this topic" / "use max effort here". A DIRECT Claude `--effort` pin (the
+  // CLI's launch flag), distinct from thinking mode. Closed-enum only —
+  // 'ultracode'/'ultra' and any other non-CLI word are out-of-grammar and ride
+  // the propose-confirm lane rather than mis-firing a write.
+  m = t.match(/^set (low|medium|high|xhigh|max) effort (?:on this topic|here)$/);
+  if (!m) m = t.match(/^set effort to (low|medium|high|xhigh|max)(?: on this topic| here)?$/);
+  if (!m) m = t.match(/^use (low|medium|high|xhigh|max) effort (?:here|on this topic)$/);
+  if (m && EFFORT_WORDS.includes(m[1])) {
+    return { kind: 'write', patch: { effort: m[1] as EffortLevel } };
   }
 
   // escalation override — `suppress` requires an UNAMBIGUOUS explicit

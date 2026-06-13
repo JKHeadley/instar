@@ -156,7 +156,7 @@ export interface TopicProfileWriteSurfaceDeps {
   now?: () => number;
 }
 
-const NEW_AXES = ['model', 'modelTier', 'thinkingMode', 'escalationOverride'] as const;
+const NEW_AXES = ['model', 'modelTier', 'thinkingMode', 'effort', 'escalationOverride'] as const;
 const ALL_FIELDS = ['framework', ...NEW_AXES] as const;
 const DEFAULT_REAPPLY_COOLDOWN_MS = 600_000;
 
@@ -499,7 +499,7 @@ export class TopicProfileWriteSurface {
     try {
       const result = await this.deps.store.mutate(
         topicKey,
-        { framework: null, model: null, modelTier: null, thinkingMode: null, escalationOverride: null, updatedBy },
+        { framework: null, model: null, modelTier: null, thinkingMode: null, effort: null, escalationOverride: null, updatedBy },
         { shiftPrevious: true },
       );
       changed = result.changed;
@@ -669,6 +669,7 @@ export class TopicProfileWriteSurface {
       `This topic runs on ${resolved.framework}`
       + (resolved.model ? ` with model ${resolved.model}` : ' with the account-default model')
       + (resolved.thinkingMode ? ` and ${resolved.thinkingMode} thinking` : '')
+      + (resolved.effort ? ` at ${resolved.effort} effort` : '')
       + ` (framework: ${resolved.sources.framework}, model: ${resolved.sources.model}).`,
     );
     // §9 framework-aware escalation disclosure.

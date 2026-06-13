@@ -906,6 +906,9 @@ async function spawnSessionForTopic(
     ? resolvedProfile.model
     : undefined;
   const profileThinkingMode = resolvedProfile?.thinkingMode;
+  // Topic Profile — per-topic Claude `--effort` pin (already enum-clamped /
+  // fail-open in the resolver; undefined = no --effort, today's behavior).
+  const profileEffort = resolvedProfile?.effort;
 
   const newSessionName = await sessionManager.spawnInteractiveSession(bootstrapMessage, sessionName, {
     telegramTopicId: topicId,
@@ -915,6 +918,7 @@ async function spawnSessionForTopic(
     ...(codexLocalModelOverride ? { defaultModel: codexLocalModelOverride } : {}),
     ...(profileModel ? { defaultModel: profileModel } : {}),
     ...(profileThinkingMode ? { thinkingMode: profileThinkingMode } : {}),
+    ...(profileEffort ? { effort: profileEffort } : {}),
     // Subscription & Auth Standard P1.3 (additive): account-swap — launch under
     // this account's config home + record its id. Unset = unchanged.
     ...(accountSwap?.configHome ? { configHome: accountSwap.configHome } : {}),
@@ -1422,13 +1426,15 @@ function wireTelegramCallbacks(
       patch = { modelTier: parts[1].toLowerCase(), model: null };
     } else if (head === 'thinking' && parts.length === 2) {
       patch = { thinkingMode: parts[1].toLowerCase() };
+    } else if (head === 'effort' && parts.length === 2) {
+      patch = { effort: parts[1].toLowerCase() };
     } else if (head === 'escalation' && parts.length === 2) {
       patch = { escalationOverride: parts[1].toLowerCase() };
     }
     if (!patch) {
       return {
         ok: false,
-        message: 'Usage: /topic [status] · /topic <framework> · /topic model <id> · /topic tier <default|escalated> · /topic thinking <off|low|medium|high|max> · /topic escalation <inherit|suppress> · /topic clear · /topic undo · /topic re-apply — or just tell me in plain words.',
+        message: 'Usage: /topic [status] · /topic <framework> · /topic model <id> · /topic tier <default|escalated> · /topic thinking <off|low|medium|high|max> · /topic effort <low|medium|high|xhigh|max> · /topic escalation <inherit|suppress> · /topic clear · /topic undo · /topic re-apply — or just tell me in plain words.',
       };
     }
     const result = await surface.applyWrite({
@@ -4025,7 +4031,7 @@ export async function startServer(options: StartOptions): Promise<void> {
             enabled?: boolean;
             dryRun?: boolean;
             switchNowConfirmTtlMs?: number;
-            defaults?: Record<string, { model?: string; thinkingMode?: string }>;
+            defaults?: Record<string, { model?: string; thinkingMode?: string; effort?: string }>;
           };
         }).topicProfiles;
         _topicProfileStore = new TopicProfileStore({

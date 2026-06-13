@@ -179,6 +179,44 @@ describe('classifyProfileChange — Claude thinking rows', () => {
   });
 });
 
+describe('classifyProfileChange — Claude effort rows', () => {
+  it('effort-only change, resume-ready → resume, none-loss, effort-specific reason (NOT thinking)', () => {
+    const c = classifyProfileChange(p({ effort: 'high' }), p({ effort: 'max' }), idleSession());
+    expect(c.swapMethod).toBe('resume');
+    expect(c.expectedLoss).toBe('none');
+    expect(c.requiresRespawn).toBe(true);
+    expect(c.reason).toContain('effort change');
+    expect(c.reason).not.toContain('thinking');
+  });
+
+  it('effort-only change, no resume UUID → fresh, recent-only', () => {
+    const c = classifyProfileChange(
+      p({ effort: 'low' }),
+      p({ effort: 'max' }),
+      idleSession({ claudeResumeReady: false }),
+    );
+    expect(c.swapMethod).toBe('continuation');
+    expect(c.expectedLoss).toBe('recent-only');
+    expect(c.reason).toContain('effort change');
+  });
+
+  it('effort-only change is NOT gated on the thinking verification flags (the bug this row fixes)', () => {
+    const c = classifyProfileChange(
+      p({ effort: 'high' }),
+      p({ effort: 'max' }),
+      idleSession({ thinkingLevelResumeVerified: false, thinkingOffOnResumeVerified: false }),
+    );
+    expect(c.swapMethod).toBe('resume');
+    expect(c.expectedLoss).toBe('none');
+  });
+
+  it('setting effort from unset → resume (none-loss), effort reason', () => {
+    const c = classifyProfileChange(p(), p({ effort: 'max' }), idleSession());
+    expect(c.requiresRespawn).toBe(true);
+    expect(c.reason).toContain('effort change');
+  });
+});
+
 describe('classifyProfileChange — Codex rows', () => {
   it('codex change with fence-captured rollout-id → resume, none-loss', () => {
     const c = classifyProfileChange(

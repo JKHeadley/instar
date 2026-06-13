@@ -5761,6 +5761,7 @@ export function createRoutes(ctx: RouteContext): Router {
         model: resolved.model ?? null,
         modelTier: resolved.modelTier,
         thinkingMode: resolved.thinkingMode ?? null,
+        effort: resolved.effort ?? null,
         escalationOverride: resolved.escalationOverride,
         sources: resolved.sources,
       },
@@ -5805,7 +5806,7 @@ export function createRoutes(ctx: RouteContext): Router {
     if (!gate) return;
     const body = (req.body ?? {}) as Record<string, unknown>;
     const patch: Record<string, string | null> = {};
-    for (const field of ['framework', 'model', 'modelTier', 'thinkingMode', 'escalationOverride'] as const) {
+    for (const field of ['framework', 'model', 'modelTier', 'thinkingMode', 'effort', 'escalationOverride'] as const) {
       if (!(field in body)) continue;
       const value = body[field];
       if (value !== null && typeof value !== 'string') {
@@ -5862,7 +5863,7 @@ export function createRoutes(ctx: RouteContext): Router {
     }
     const body = (req.body ?? {}) as Record<string, unknown>;
     const patch: Record<string, string | null> = {};
-    for (const field of ['framework', 'model', 'modelTier', 'thinkingMode', 'escalationOverride'] as const) {
+    for (const field of ['framework', 'model', 'modelTier', 'thinkingMode', 'effort', 'escalationOverride'] as const) {
       if (!(field in body)) continue;
       const value = body[field];
       if (value !== null && typeof value !== 'string') {
