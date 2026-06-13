@@ -61,12 +61,72 @@ function fmtWhen(iso) {
   } catch { return String(iso); }
 }
 
-function userLabel(slackUserId, slackUsers) {
+/** The registry name for a Slack id, or the id itself when we don't know them. */
+function userName(slackUserId, slackUsers) {
   const u = (slackUsers || []).find((x) => x.slackUserId === slackUserId);
-  return u ? `${u.name} (${slackUserId})` : slackUserId;
+  return u ? u.name : slackUserId;
 }
 
-/** The grants a mandate already carries, in operator language. */
+// Operator-Surface Quality (constitution): the card speaks plain language, never
+// the slugs/JSON the data model stores. These maps turn the stored enum/bounds
+// into the sentence a non-engineer would say. Unknown values fall back to a
+// de-slugified phrase — never a raw token dumped at the operator.
+
+// Both the coordination-mandate authority actions AND the RolePolicy floor
+// actions, in plain language. Returns the RAW human string; callers esc() it.
+const ACTION_PHRASES = {
+  'exchange-read-credential': 'exchange a read-only credential',
+  'sign-code-review': 'co-sign a code review',
+  'money-movement': 'move money',
+  'prod-deploy': 'deploy to production',
+  'credential-access': 'use a credential',
+  'destructive-data': 'run a destructive data operation',
+  'external-send': 'send something externally',
+  'grant-authority': 'grant authority to others',
+};
+function humanAction(slug) {
+  const s = String(slug ?? '');
+  return ACTION_PHRASES[s] || s.replace(/-/g, ' ');
+}
+
+/** "you" when the authorizer is the operator-via-PIN; otherwise the raw name. */
+function humanAuthorizer(authorizedBy) {
+  const s = String(authorizedBy ?? '');
+  return /operator|dashboard pin/i.test(s) ? 'you' : s;
+}
+
+/** A short title from the operator's scope name (de-slugified, not the raw slug). */
+function humanScope(scope) {
+  const s = String(scope ?? '').trim();
+  if (!s) return 'Permission slip';
+  const words = s.replace(/[-_]+/g, ' ');
+  return words.charAt(0).toUpperCase() + words.slice(1);
+}
+
+/** Join phrases the way a person speaks them: "a, b and c". */
+function joinHuman(parts) {
+  if (parts.length === 0) return '';
+  if (parts.length === 1) return parts[0];
+  return parts.slice(0, -1).join(', ') + ' and ' + parts[parts.length - 1];
+}
+
+/**
+ * One plain sentence describing what the mandate authorizes + when it ends —
+ * the card's primary, human-language headline (no slugs, no JSON, no
+ * fingerprints). Each interpolated action is escaped at the call site.
+ */
+function humanSummary(m) {
+  const acts = (m.authorities || []).map((a) => esc(humanAction(a.action)));
+  const agents = (m.agents || []).filter(Boolean);
+  const who = agents.length >= 2 ? 'two agents' : 'an agent';
+  const when = fmtWhen(m.expiresAt);
+  if (acts.length === 0) {
+    return `A permission slip for ${who} that delegates no actions yet. Expires ${when}.`;
+  }
+  return `Lets ${who} ${joinHuman(acts)}. Expires ${when}.`;
+}
+
+/** The grants a mandate already carries, in plain operator language. */
 export function renderGrants(m, slackUsers) {
   const grants = Array.isArray(m.grants) ? m.grants : [];
   if (grants.length === 0) return '';
@@ -75,16 +135,22 @@ export function renderGrants(m, slackUsers) {
     const badge = expired
       ? '<span class="mnd-badge mnd-dead">expired</span>'
       : '<span class="mnd-badge mnd-ok">active</span>';
-    return `<li>${badge} <strong>${esc(userLabel(g.grantedTo, slackUsers))}</strong> may <code>${esc(g.floorAction)}</code> until ${fmtWhen(g.expiresAt)} — authorized by ${esc(g.authorizedBy)}</li>`;
+    const name = userName(g.grantedTo, slackUsers);
+    // The Slack id is support metadata, never the headline — shown muted only
+    // when it differs from the name we render (an unknown id IS the name).
+    const idDetail = name !== g.grantedTo ? ` <span class="mnd-grant-id">(${esc(g.grantedTo)})</span>` : '';
+    return `<li>${badge} <strong>${esc(name)}</strong>${idDetail} can ${esc(humanAction(g.floorAction))} until ${fmtWhen(g.expiresAt)} — authorized by ${esc(humanAuthorizer(g.authorizedBy))}</li>`;
   }).join('');
-  return `<div class="mnd-grants-head">User grants this mandate carries:</div><ul class="mnd-grants">${rows}</ul>`;
+  return `<div class="mnd-grants-head">Who this slip already lets act:</div><ul class="mnd-grants">${rows}</ul>`;
 }
 
 /**
- * The add-grant form for an ACTIVE mandate. Mobile-first by design (the
- * 2026-06-12 lesson, instar#1080): the operator PICKS a person and a duration —
- * the only thing typed is the PIN. A free-text Slack-id input appears only
- * when the user registry has nobody to offer.
+ * The add-grant form for an ACTIVE mandate — the card's PRIMARY action, always
+ * visible (Operator-Surface Quality: lead with the primary action, never behind
+ * a toggle). Mobile-first (the 2026-06-12 lesson, instar#1080): the operator
+ * PICKS a person and a duration — the only thing typed is the PIN. A free-text
+ * Slack-id input appears only when the user registry has nobody to offer. Action
+ * labels read in plain language; the slug is the option VALUE the server needs.
  */
 export function renderGrantForm(m, slackUsers) {
   const users = (slackUsers || []).filter((u) => u.slackUserId);
@@ -94,21 +160,23 @@ export function renderGrantForm(m, slackUsers) {
       }</select>`
     : `<input type="text" class="mnd-grant-field" data-grant-user="${esc(m.id)}" placeholder="Slack user id (e.g. U0…)" />`;
   const actionField = `<select class="mnd-grant-field" data-grant-action="${esc(m.id)}">${
-    FLOOR_ACTIONS.map((a) => `<option value="${a}"${a === 'prod-deploy' ? ' selected' : ''}>${a}</option>`).join('')
+    FLOOR_ACTIONS.map((a) => `<option value="${a}"${a === 'prod-deploy' ? ' selected' : ''}>${esc(humanAction(a))}</option>`).join('')
   }</select>`;
   const durationField = `<select class="mnd-grant-field" data-grant-duration="${esc(m.id)}">${
     GRANT_DURATIONS.map((d) => `<option value="${d.minutes}"${d.minutes === 60 ? ' selected' : ''}>${d.label}</option>`).join('')
   }</select>`;
-  return `<details class="mnd-grant-details"><summary class="mnd-grant-summary">Grant a user a floor action (PIN required)</summary>
+  return `<div class="mnd-grant-block">
+    <div class="mnd-grant-title">Grant a person an action</div>
     <div class="mnd-grant-row">
       ${granteeField}
       ${actionField}
+      <span class="mnd-grant-sep">for</span>
       ${durationField}
-      <input type="password" class="mnd-pin" data-grant-pin="${esc(m.id)}" placeholder="PIN" autocomplete="off" />
-      <button class="mnd-btn" data-grant="${esc(m.id)}">Grant</button>
+      <input type="password" class="mnd-pin" data-grant-pin="${esc(m.id)}" placeholder="Your PIN" autocomplete="off" />
+      <button class="mnd-btn mnd-btn-primary" data-grant="${esc(m.id)}">Grant</button>
     </div>
-    <span class="mnd-hint">Lifts the picked person to ONE floor action for the picked window. Signed into this mandate by your PIN — revoking the mandate voids it; it can never outlive the mandate.</span>
-  </details>`;
+    <span class="mnd-hint">Lets the person you pick take that one action for the window you choose. Confirmed with your PIN — never stored. A grant can never outlive this slip, and revoking the slip ends it.</span>
+  </div>`;
 }
 
 export function renderMandates(list, slackUsers = []) {
@@ -119,30 +187,39 @@ export function renderMandates(list, slackUsers = []) {
     const expired = Date.parse(m.expiresAt) < Date.now();
     const state = m.revoked ? 'revoked' : expired ? 'expired' : 'active';
     const stateCls = state === 'active' ? 'mnd-ok' : 'mnd-dead';
+    const stateLabel = state === 'active' ? 'active' : state === 'revoked' ? 'revoked' : 'expired';
     const authBadge = m.authorshipValid
       ? '<span class="mnd-badge mnd-ok">authorship verified</span>'
       : '<span class="mnd-badge mnd-bad">AUTHORSHIP INVALID</span>';
-    const authorities = (m.authorities || []).map((a) =>
-      `<li><code>${esc(a.action)}</code> — bounds <code>${esc(JSON.stringify(a.bounds))}</code>${a.requiresCondition ? ` — requires <code>${esc(a.requiresCondition)}</code>` : ''}</li>`,
-    ).join('');
-    const revokeUi = state === 'active'
-      ? `<div class="mnd-revoke-row">
-           <input type="password" class="mnd-pin" data-revoke-pin="${esc(m.id)}" placeholder="PIN" autocomplete="off" />
-           <input type="text" class="mnd-reason" data-revoke-reason="${esc(m.id)}" placeholder="reason" />
-           <button class="mnd-btn mnd-btn-danger" data-revoke="${esc(m.id)}">Revoke</button>
-         </div>`
-      : `<div class="mnd-dead-note">${m.revoked ? `revoked ${fmtWhen(m.revoked.at)} — ${esc(m.revoked.reason)}` : `expired ${fmtWhen(m.expiresAt)}`}</div>`;
+    // Internals (id, agent fingerprints, scope slug, raw action names, bounds)
+    // are SUPPORT metadata, never the headline — kept on one muted line so the
+    // operator can quote an id when asking for help, but never has to read JSON.
+    const actionSlugs = (m.authorities || []).map((a) => esc(a.action)).filter(Boolean).join(', ') || 'none';
+    const referenceLine = `<div class="mnd-meta">For support: id <code>${esc(m.id)}</code> · agents <code>${esc(shortFp(m.agents?.[0]))}</code> + <code>${esc(shortFp(m.agents?.[1]))}</code> · scope <code>${esc(m.scope)}</code> · authorizes ${actionSlugs} · issued by ${esc(m.author)}</div>`;
+    // The grant form is the PRIMARY action and renders ABOVE revoke. Revoke is
+    // destructive, so it is demoted to a quiet collapsed control, never featured.
     const grantUi = state === 'active' ? renderGrantForm(m, slackUsers) : '';
+    const revokeUi = state === 'active'
+      ? `<details class="mnd-revoke-details">
+           <summary class="mnd-revoke-summary">Revoke this permission slip</summary>
+           <div class="mnd-revoke-row">
+             <input type="password" class="mnd-pin" data-revoke-pin="${esc(m.id)}" placeholder="Your PIN" autocomplete="off" />
+             <input type="text" class="mnd-reason" data-revoke-reason="${esc(m.id)}" placeholder="reason (optional)" />
+             <button class="mnd-btn mnd-btn-danger" data-revoke="${esc(m.id)}">Revoke</button>
+           </div>
+           <span class="mnd-hint">Ends the slip and everything it authorized, right away. This cannot be undone.</span>
+         </details>`
+      : `<div class="mnd-dead-note">${m.revoked ? `Revoked ${fmtWhen(m.revoked.at)} — ${esc(m.revoked.reason)}` : `Expired ${fmtWhen(m.expiresAt)}`}</div>`;
     return `<div class="mnd-card">
       <div class="mnd-card-head">
-        <span class="mnd-scope">${esc(m.scope)}</span>
-        <span class="mnd-badge ${stateCls}">${state}</span>
+        <span class="mnd-scope">${esc(humanScope(m.scope))}</span>
+        <span class="mnd-badge ${stateCls}">${stateLabel}</span>
         ${authBadge}
       </div>
-      <div class="mnd-meta">id <code>${esc(m.id)}</code> · agents <code>${esc(shortFp(m.agents?.[0]))}</code> + <code>${esc(shortFp(m.agents?.[1]))}</code> · by ${esc(m.author)} · expires ${fmtWhen(m.expiresAt)}</div>
-      <ul class="mnd-authorities">${authorities}</ul>
+      <p class="mnd-summary">${humanSummary(m)}</p>
       ${renderGrants(m, slackUsers)}
       ${grantUi}
+      ${referenceLine}
       ${revokeUi}
     </div>`;
   }).join('');
@@ -157,13 +234,17 @@ export function renderAudit(payload) {
   if (entries.length === 0) {
     return `<div class="mnd-audit-head">${chainBadge}</div><div class="mnd-empty">No decisions recorded yet.</div>`;
   }
+  // Mobile-first (Operator-Surface Quality item 5): each cell carries a
+  // data-label so the table can stack into labelled rows at phone width (the
+  // CSS media query in index.html), instead of cramming five columns and
+  // truncating the most useful one — the reason — into an unreadable sliver.
   const rows = entries.slice(-25).reverse().map((e) =>
     `<tr>
-      <td>${fmtWhen(e.ts)}</td>
-      <td><span class="mnd-badge ${e.decision === 'allow' ? 'mnd-ok' : 'mnd-deny'}">${esc(e.decision)}</span></td>
-      <td><code>${esc(e.action)}</code></td>
-      <td><code>${esc(shortFp(e.agentFp))}</code></td>
-      <td class="mnd-reason-cell">${esc(e.reason)}</td>
+      <td data-label="When">${fmtWhen(e.ts)}</td>
+      <td data-label="Decision"><span class="mnd-badge ${e.decision === 'allow' ? 'mnd-ok' : 'mnd-deny'}">${esc(e.decision)}</span></td>
+      <td data-label="Action"><code>${esc(e.action)}</code></td>
+      <td data-label="Agent"><code>${esc(shortFp(e.agentFp))}</code></td>
+      <td data-label="Reason" class="mnd-reason-cell">${esc(e.reason)}</td>
     </tr>`,
   ).join('');
   return `<div class="mnd-audit-head">${chainBadge}<span class="mnd-dim">${entries.length} total decisions · newest first</span></div>

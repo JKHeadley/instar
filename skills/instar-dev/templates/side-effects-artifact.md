@@ -101,6 +101,21 @@
 
 ---
 
+## 6b. Operator-surface quality (Operator-Surface Quality standard)
+
+**REQUIRED whenever this change touches an operator surface** — a dashboard renderer/markup file (`dashboard/*.js`, `dashboard/*.html`), an approval page, or a grant/revoke/secret-drop form. The pre-commit gate (`scripts/instar-dev-precommit.js`) refuses the commit if this section is missing when an operator-surface file is staged. Reachable-but-bad still fails the operator (the 2026-06-12 "abysmal" Mandates-grant-form lesson, CMT-1434): Mobile-Complete asks *can they do it from a phone?*; this asks *is it good when they do?*
+
+Answer each in writing (a "no" or unjustified "n/a" blocks the commit):
+
+1. **Leads with the primary action?** The thing the operator came to do is visible and actionable on arrival — never collapsed behind a toggle, below the fold, or after explanatory prose.
+2. **Zero raw internals as primary content?** No JSON blobs, fingerprints, UUIDs, hashes, or enum/slug values shown as headline content — only human language; identifiers de-emphasized as support metadata when genuinely needed.
+3. **Destructive actions de-emphasized?** Revoke/delete/stop is visually quieter than the constructive primary action and never appears above it.
+4. **Plain language + phone width?** Labels/states read the way a non-engineer would say them; verified at phone width — real tap targets, readable type, no horizontal scroll, no truncated table hiding the answer.
+
+[Specific findings per criterion. "Grant form renders open as the card's primary block (mnd-grant-block); Revoke demoted to a collapsed mnd-revoke-details below it; bounds/fingerprints humanized, raw ids kept only on the muted 'For support' line; audit table stacks at ≤640px." If this change touches NO operator surface, state: "No operator surface — not applicable."]
+
+---
+
 ## 7. Multi-machine posture (Cross-Machine Coherence)
 
 **When this agent runs on MORE THAN ONE machine, what is this feature's posture?**

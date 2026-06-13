@@ -186,4 +186,16 @@ describe('StandardsEnforcementAuditor — real-registry canary', () => {
     // A clean checkout has zero dangling refs (the registry cites only real guards).
     expect(report.summary.danglingCount).toBe(0);
   });
+
+  it('classifies "Operator-Surface Quality" as a GATE (its named precommit guard resolves), not documented-only', () => {
+    // CMT-1434: the standard must land as an ENFORCED gate, not prose. It names
+    // scripts/instar-dev-precommit.js (the side-effects review gate) — a guard
+    // that resolves on disk and classifies as gate-strength.
+    const report = computeCoverage({ registryPath: REAL_REGISTRY, projectDir: process.cwd() });
+    const osq = report.standards.find((s) => s.standard === 'Operator-Surface Quality');
+    expect(osq, 'Operator-Surface Quality article').toBeTruthy();
+    expect(osq!.enforcementKind).toBe('gate');
+    expect(osq!.danglingRefs).toEqual([]); // every named guard resolves
+    expect(osq!.guards.some((g) => g.ref === 'scripts/instar-dev-precommit.js' && g.verified)).toBe(true);
+  });
 });
