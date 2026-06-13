@@ -213,6 +213,19 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       preserveWork: false,
       maxFlagsPerPass: 10,
     },
+    // Build-Session Yield Safety (ACT-839): a reaped session with uncommitted
+    // worktree work becomes resume-eligible + gets a tracked commit-or-preserve
+    // obligation. `enabled` is OMITTED so the developmentAgent dark-feature gate
+    // resolves it (LIVE on dev, DARK on fleet) per the Maturation Path standard;
+    // registered in DEV_GATED_FEATURES. Only the tuning knobs are defaulted here.
+    yieldSafety: {
+      dirtyCheckTimeoutMs: 5_000,
+      dirtyCheckCacheTtlMs: 30_000,
+      resurrectionCap: 2,
+      residueDenylist: ['dist/', 'build/', 'out/', '.next/', '.nuxt/', '.turbo/', 'node_modules/', 'coverage/', '.cache/', '*.log', '*.tsbuildinfo'],
+      preservationMaxFileBytes: 52_428_800,
+      preservationMaxTotalBytes: 104_857_600,
+    },
     // McpProcessReaper (Responsible Resource Usage — MCP-leak fix, Option B).
     // Reaps leaked MCP-server children (playwright-mcp / mcp-remote / instar
     // stdio) whose owning session is dead/stale or fully orphaned — killing a

@@ -147,6 +147,14 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     justification:
       'Signal-only local recorder + ONE deduped attention item; reads git status/diff + lsof read-only; no egress, no spend, no destructive action. The optional preservation is a NON-destructive patch write (git diff → a state-dir file) behind an off-by-default preserveWork sub-flag — it never mutates the worktree, its index, or any ref.',
   },
+  {
+    name: 'yieldSafety',
+    configPath: 'monitoring.yieldSafety.enabled',
+    description:
+      'Build-Session Yield Safety (ACT-839) — a reaped session with uncommitted worktree work becomes resume-eligible and gets a tracked commit-or-preserve obligation.',
+    justification:
+      'Dev-enabled per the Maturation Path standard (the dev agent is the controlled blast radius where a lifecycle-touching feature matures before fleet). Loss-reducing only: R1 is a read-only pre-kill dirty-check (no egress, no spend); R2 is a SIGNAL + a tracked beacon (never a blocking gate) plus a NON-destructive preservation patch (git diff → a state-dir file, secret-scrubbed, size-capped; never mutates index/ref/history). The operator origin-veto is preserved — an explicit operator/user/emergency kill is never auto-revived. Fail-open everywhere.',
+  },
 ];
 
 /**

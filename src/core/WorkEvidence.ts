@@ -26,6 +26,13 @@ export const STRONG_WORK_EVIDENCE = [
   'pending-injection',
   'open-commitment',
   'structural-long-work',
+  // Build-Session Yield Safety (ACT-839): a reaped session whose worktree holds
+  // uncommitted work. Collected PRE-kill by the killer via the shared
+  // worktreeDirtyCheck helper (never on the chokepoint). STRONG so it alone
+  // makes an autonomous/pressure reap resume-eligible — but it never overrides
+  // the operator origin veto (an explicit operator/user/emergency kill is never
+  // auto-revived on a dirty worktree alone). Ships dev-gated (ON dev / OFF fleet).
+  'uncommitted-worktree-work',
 ] as const;
 
 export const WEAK_WORK_EVIDENCE = [
