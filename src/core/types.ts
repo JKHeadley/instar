@@ -2888,6 +2888,13 @@ export interface InstarConfig {
        *  restore-enrollment) refuse with a named reason. Default true (the levers
        *  are still gated by `enabled`/`dryRun` above). */
       manualLeversEnabled?: boolean;
+      /** §0.g force budget: max FORCED (`force:true`) manual swaps per rolling
+       *  window. The `force:true` bypass of the per-pair cooldown carries its OWN
+       *  bounded budget so it is not the one uncapped bypass left in the spec.
+       *  Default 10 (generous under single-operator autonomy). */
+      maxForcedManualSwapsPerWindow?: number;
+      /** §0.g force-budget rolling window length ms. Default 3600000 (1h). */
+      forcedManualSwapWindowMs?: number;
       /** Balancer knobs (Increment B); all clamped at read-time. Present here so
        *  the config shape is stable from Increment A. */
       balancer?: {

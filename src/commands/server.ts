@@ -9224,6 +9224,70 @@ export async function startServer(options: StartOptions): Promise<void> {
     // Census #5/#6: spawn placement resolves a pinned account's home through the gate (no-op dark).
     sessionManager.setCredentialLocationGate(credentialLocationGate);
 
+    // ── WS5.2 Step 7 — manual levers + audit-scrub chokepoint ──
+    // The CredentialAuditEmit is the SINGLE secret-scrub chokepoint: every credential-swaps.jsonl
+    // write, every /credentials/* response body, and every attention-item routes through its
+    // scrub() (reuses redactToken). The CredentialSwapExecutor is CONSTRUCTED + run live HERE (the
+    // Step-5 residual closes). Both ship DARK — the executor's own `config.enabled`/`dryRun` gate
+    // (read from `subscriptionPool.credentialRepointing`) makes it a strict no-op while dark, and
+    // the routes 503/no-op on the same flag, so this is byte-for-byte today's behavior.
+    const { CredentialAuditEmit } = await import('../core/CredentialAuditEmit.js');
+    const { CredentialSwapExecutor } = await import('../core/CredentialSwapExecutor.js');
+    const { CredentialManualLevers } = await import('../core/CredentialManualLevers.js');
+    const { credentialWriteFunnel } = await import('../core/CredentialWriteFunnel.js');
+    const { defaultKeychainExec } = await import('../core/CredentialSwapExecutor.js');
+    const { claudeCredentialService: credSwapService } = await import('../core/OAuthRefresher.js');
+    const credSwapsLogPath = path.join(config.stateDir, 'logs', 'credential-swaps.jsonl');
+    const credentialAuditEmit = new CredentialAuditEmit({
+      writeLine: (line) => { try { fs.appendFileSync(credSwapsLogPath, line); } catch { /* @silent-fallback-ok: audit jsonl is observability; the swap is the load-bearing action and is unaffected. The line was scrubbed before this write, so a failure leaks nothing. */ } },
+      emitAttention: credentialGateEmitAttention,
+    });
+    // Compose the host identity resolver: REAL oracle (slot blob → email) → pool (email → accountId).
+    const { CredentialIdentityOracle: CredSwapOracle } = await import('../core/CredentialIdentityOracle.js');
+    const credSwapOracle = new CredSwapOracle();
+    const credResolveIdentity: import('../core/CredentialSwapExecutor.js').ResolveSlotIdentity = async (slot: string) => {
+      const r = await credSwapOracle.resolveSlotTenant(slot);
+      if (r.unavailable || !r.email) return { unavailable: true, reason: r.reason ?? 'oracle unavailable' };
+      const matches = subscriptionPool.list().filter((a) => a.email && a.email === r.email);
+      if (matches.length !== 1) return { unavailable: true, reason: `ambiguous/unknown email (${matches.length} pool matches)` };
+      return { accountId: matches[0].id };
+    };
+    const credentialSwapExecutor = new CredentialSwapExecutor({
+      funnel: credentialWriteFunnel,
+      ledger: credentialLocationLedger,
+      resolveIdentity: credResolveIdentity,
+      // The executor reads the SAME dark gate the routes do — strict no-op while disabled.
+      config: {
+        enabled: config.subscriptionPool?.credentialRepointing?.enabled === true,
+        dryRun: config.subscriptionPool?.credentialRepointing?.dryRun !== false,
+      },
+      emitAudit: (rec) => credentialAuditEmit.audit({ event: 'swap-step', ...rec }),
+      emitAttention: (item) => void credentialAuditEmit.attention(item),
+      onSlotsChanged: (slots) => { try { inUseAccountResolver.bustCache?.(); } catch { /* @silent-fallback-ok: cache-bust is an observability nicety (a stale badge self-corrects at TTL); a throwing consumer must never break the committed swap */ } void slots; },
+    });
+    const credentialManualLevers = new CredentialManualLevers({
+      maxForcedPerWindow: config.subscriptionPool?.credentialRepointing?.maxForcedManualSwapsPerWindow,
+      forcedWindowMs: config.subscriptionPool?.credentialRepointing?.forcedManualSwapWindowMs,
+    });
+    const credentialRepointing = {
+      ledger: credentialLocationLedger,
+      swapExecutor: credentialSwapExecutor,
+      resolveIdentity: credResolveIdentity,
+      audit: credentialAuditEmit,
+      levers: credentialManualLevers,
+      readBlob: async (slot: string) => {
+        const raw = await defaultKeychainExec.readService(credSwapService(slot));
+        if (!raw) return null;
+        try {
+          const parsed = JSON.parse(raw) as Record<string, unknown>;
+          const oauth = (parsed?.claudeAiOauth ?? null) as import('../core/OAuthRefresher.js').ClaudeOauth | null;
+          return { raw, oauth };
+        } catch {
+          return { raw, oauth: null }; // @silent-fallback-ok: unparseable blob → coherence classifier parks it one-directionally (never exchanged); the raw is returned only so the classifier sees "has-raw-but-no-oauth"
+        }
+      },
+    };
+
     // QuotaPoller — per-account live quota reader (P1.2 of the Subscription &
     // Auth Standard). Reads each account's 5h/weekly utilization + reset dates
     // via the OAuth usage endpoint (transient per-account token, never persisted)
@@ -15835,7 +15899,7 @@ export async function startServer(options: StartOptions): Promise<void> {
             carrier: _topicProfileCarrier,
           }
         : null;
-    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, cartographer: cartographer ?? undefined, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, subscriptionPool, quotaPoller, quotaAwareScheduler: _quotaAwareScheduler ?? undefined, proactiveSwapMonitor: _proactiveSwapMonitor ?? undefined, inUseAccountResolver, enrollmentWizard, semanticMemory, activitySentinel, rateLimitSentinel, releaseReadinessSentinel: releaseReadinessSentinel ?? undefined, greenPrAutoMerger: greenPrAutoMerger ?? undefined, guardLatchStore: guardLatchStore ?? undefined, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, topicProfile: _topicProfileCtx ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, localSigningKeyPem, leaseTransport, onLeasePullRequest: () => leaseCoordinatorRef?.currentLease() ?? null, liveTailReceiver, handoffWireTransport, onHandoffBegin, onHandoffInitiate: handoffInitiate, handoffInProgress: handoffSentinelInProgress, messageLedger, currentInboundByTopic, replyMarkerTransport, onReplyMarker: messageLedger ? (marker: unknown) => { const m = marker as { dedupeKey: string; platform: string; replyIdempotencyKey: string; epoch: number; topic?: string | null }; messageLedger!.applyRemoteReplyMarker(m.dedupeKey, { platform: m.platform, replyIdempotencyKey: m.replyIdempotencyKey, epoch: m.epoch, topic: m.topic ?? null }); } : undefined, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, threadLog, threadMessageRecorder, warrantsReplyGate, collaborationSurfacer, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, a2aDeliveryTracker: a2aDeliveryTracker ?? undefined, responseReviewGate, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, machinePoolRegistry, getInboundQueue: () => _inboundQueue, meshRpcDispatcher, workingSetPullCoordinator, commitmentReplicaStore, preferenceReplicaStore, conflictStore, rollbackUnmerge, droppedOriginRegistry, preferencesUnionReader, forwardCommitmentMutate, sessionOwnershipRegistry, topicPinStore: _topicPinStore ?? undefined, streamTicketStore: _streamTicketStore ?? undefined, poolStreamAllowRemoteInput: (config as { dashboard?: { poolStream?: { allowRemoteInput?: boolean } } }).dashboard?.poolStream?.allowRemoteInput ?? false, poolStreamConnector: _poolStreamConnector ?? undefined, secretSync: _secretSyncHandle ?? undefined, meshSelfId: _meshSelfId ?? undefined, resolveRouterUrl: _resolveRouterUrl ?? undefined, resolvePeerUrls: _resolvePeerUrls ?? undefined, guardRegistry, listPoolMachines: _listPoolMachines ?? undefined, poolLink: _poolLink ?? undefined, sessionPoolE2EResultStore, proxyCoordinator, topicIntentStore, topicIntentArcCheck, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, briefDeps, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, agentWorktreeReaper, orphanedWorkSentinel, mcpProcessReaper, geminiLoopRunner, sleepController, agentActivityState, reapLog, resumeQueue, resumeDrainer, operatorStopRecorder: recordOperatorStop, sleepWakeDetector, unjustifiedStopGate, stopGateDb, stopNotifier });    // Resolve the late-bound topic-operator getter (increment 2e): routing was
+    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, cartographer: cartographer ?? undefined, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, subscriptionPool, quotaPoller, quotaAwareScheduler: _quotaAwareScheduler ?? undefined, proactiveSwapMonitor: _proactiveSwapMonitor ?? undefined, inUseAccountResolver, enrollmentWizard, credentialRepointing, semanticMemory, activitySentinel, rateLimitSentinel, releaseReadinessSentinel: releaseReadinessSentinel ?? undefined, greenPrAutoMerger: greenPrAutoMerger ?? undefined, guardLatchStore: guardLatchStore ?? undefined, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, topicProfile: _topicProfileCtx ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, localSigningKeyPem, leaseTransport, onLeasePullRequest: () => leaseCoordinatorRef?.currentLease() ?? null, liveTailReceiver, handoffWireTransport, onHandoffBegin, onHandoffInitiate: handoffInitiate, handoffInProgress: handoffSentinelInProgress, messageLedger, currentInboundByTopic, replyMarkerTransport, onReplyMarker: messageLedger ? (marker: unknown) => { const m = marker as { dedupeKey: string; platform: string; replyIdempotencyKey: string; epoch: number; topic?: string | null }; messageLedger!.applyRemoteReplyMarker(m.dedupeKey, { platform: m.platform, replyIdempotencyKey: m.replyIdempotencyKey, epoch: m.epoch, topic: m.topic ?? null }); } : undefined, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, threadLog, threadMessageRecorder, warrantsReplyGate, collaborationSurfacer, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, a2aDeliveryTracker: a2aDeliveryTracker ?? undefined, responseReviewGate, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, machinePoolRegistry, getInboundQueue: () => _inboundQueue, meshRpcDispatcher, workingSetPullCoordinator, commitmentReplicaStore, preferenceReplicaStore, conflictStore, rollbackUnmerge, droppedOriginRegistry, preferencesUnionReader, forwardCommitmentMutate, sessionOwnershipRegistry, topicPinStore: _topicPinStore ?? undefined, streamTicketStore: _streamTicketStore ?? undefined, poolStreamAllowRemoteInput: (config as { dashboard?: { poolStream?: { allowRemoteInput?: boolean } } }).dashboard?.poolStream?.allowRemoteInput ?? false, poolStreamConnector: _poolStreamConnector ?? undefined, secretSync: _secretSyncHandle ?? undefined, meshSelfId: _meshSelfId ?? undefined, resolveRouterUrl: _resolveRouterUrl ?? undefined, resolvePeerUrls: _resolvePeerUrls ?? undefined, guardRegistry, listPoolMachines: _listPoolMachines ?? undefined, poolLink: _poolLink ?? undefined, sessionPoolE2EResultStore, proxyCoordinator, topicIntentStore, topicIntentArcCheck, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, briefDeps, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, agentWorktreeReaper, orphanedWorkSentinel, mcpProcessReaper, geminiLoopRunner, sleepController, agentActivityState, reapLog, resumeQueue, resumeDrainer, operatorStopRecorder: recordOperatorStop, sleepWakeDetector, unjustifiedStopGate, stopGateDb, stopNotifier });    // Resolve the late-bound topic-operator getter (increment 2e): routing was
     // wired before the server existed; from here on inbound binds use the
     // server's own store instance.
     _agentServerRef = server;

@@ -659,6 +659,23 @@ export interface RouteContext {
   inUseAccountResolver?: import('../core/InUseAccountResolver.js').InUseAccountResolver;
   /** EnrollmentWizard (P2.1) — mobile-first login + auto-reissue. Null until wired. */
   enrollmentWizard: import('../core/EnrollmentWizard.js').EnrollmentWizard | null;
+  /** Live credential re-pointing (WS5.2) — the swap/set-default/restore-enrollment levers
+   *  + ledger census + audit-scrub chokepoint. Null until the server wiring constructs it;
+   *  ships DARK behind `subscriptionPool.credentialRepointing.enabled` (the routes 503 /
+   *  no-op when the flag is off, regardless of whether this bundle is wired). */
+  credentialRepointing?: {
+    ledger: import('../core/CredentialLocationLedger.js').CredentialLocationLedger;
+    /** Constructs+runs the staged exchange live (the Step-5 executor host). */
+    swapExecutor: import('../core/CredentialSwapExecutor.js').CredentialSwapExecutor;
+    /** Slot → confirmed accountId | unavailable (the composed oracle→pool resolver). */
+    resolveIdentity: import('../core/CredentialSwapExecutor.js').ResolveSlotIdentity;
+    /** The SINGLE secret-scrub chokepoint every response/audit/attention routes through. */
+    audit: import('../core/CredentialAuditEmit.js').CredentialAuditEmit;
+    /** Per-pair cooldown + §0.g force budget. */
+    levers: import('../core/CredentialManualLevers.js').CredentialManualLevers;
+    /** Raw-blob reader for a slot (restore-enrollment coherence probe). Injectable for tests. */
+    readBlob?: (slot: string) => Promise<{ raw: string; oauth: import('../core/OAuthRefresher.js').ClaudeOauth | null } | null>;
+  } | null;
   semanticMemory: SemanticMemory | null;
   activitySentinel: SessionActivitySentinel | null;
   rateLimitSentinel: import('../monitoring/RateLimitSentinel.js').RateLimitSentinel | null;
@@ -19166,6 +19183,222 @@ export function createRoutes(ctx: RouteContext): Router {
       return;
     }
     res.json({ enabled: true, login });
+  });
+
+  // ── Live credential re-pointing — levers + ledger census + audit-scrub (WS5.2 Step 7) ──
+  //
+  // POST /credentials/swap|set-default|restore-enrollment (DETECTIVE controls: operator
+  // notification + audit emit + param-validate + per-pair cooldown + §0.g force budget) and
+  // GET /credentials/locations|rebalancer. ALL Bearer-authed (the router-level authMiddleware).
+  //
+  // SHIPS DARK: every lever is gated on `subscriptionPool.credentialRepointing.enabled` read
+  // LIVE per request — with the flag off (always, while dark) every lever 503s / no-ops, so the
+  // surface is byte-for-byte today's behavior. rebalancer is 503 in Increment A (the autonomous
+  // balancer is Increment B). EVERY response body is sent through `audit.response(...)` — the
+  // §2.9 single scrub chokepoint — so no token material can exit any /credentials/* surface.
+  const credRepointEnabled = (): boolean =>
+    ctx.config.subscriptionPool?.credentialRepointing?.enabled === true;
+  const credLeversEnabled = (): boolean =>
+    ctx.config.subscriptionPool?.credentialRepointing?.manualLeversEnabled !== false;
+  // The scrub-everything sender: NO /credentials/* response leaves except through here.
+  const credSend = (res: import('express').Response, status: number, body: unknown): void => {
+    const cr = ctx.credentialRepointing;
+    res.status(status).json(cr ? cr.audit.response(body) : body);
+  };
+
+  // GET /credentials/locations — the census #11 read surface (slot ↔ account, since,
+  // lastVerifiedAt, quarantine, journal tail, mode). Read-only. Always answers (even dark) so the
+  // dashboard can show the ledger state + the `dark-with-divergent-ledger` rollback state.
+  router.get('/credentials/locations', (_req, res) => {
+    const cr = ctx.credentialRepointing;
+    if (!cr) {
+      res.status(503).json({ enabled: false, reason: 'credential re-pointing not wired' });
+      return;
+    }
+    const led = cr.ledger;
+    const enabled = credRepointEnabled();
+    const seeded = led.isSeeded();
+    // The ledger can hold assignments that DIVERGE from enrollment after swaps; when the feature
+    // is darked but the ledger still diverges, the spec names that state explicitly.
+    const mode = led.isUnknownMode() ? 'unknown' : !enabled && seeded ? 'dark-with-divergent-ledger' : enabled ? 'active' : 'dark';
+    credSend(res, 200, {
+      enabled,
+      mode,
+      assignments: led.getAssignments(),
+      journalTail: led.getJournal().slice(-20),
+      forcedBudgetRemaining: cr.levers.forcedBudgetRemaining(),
+    });
+  });
+
+  // GET /credentials/rebalancer — the autonomous balancer's last-pass surface. 503 in Increment A
+  // (the CredentialRebalancer is Increment B). Named so the route exists + is discoverable now.
+  router.get('/credentials/rebalancer', (_req, res) => {
+    res.status(503).json({ enabled: false, reason: 'the autonomous balancer is Increment B — not wired in Increment A' });
+  });
+
+  // Shared lever guard: dark → 503; levers disabled → 403. Returns the wired bundle or null.
+  const credLeverGuard = (
+    res: import('express').Response,
+  ): import('../server/routes.js').RouteContext['credentialRepointing'] | null => {
+    const cr = ctx.credentialRepointing;
+    if (!cr || !credRepointEnabled()) {
+      res.status(503).json({ enabled: false, reason: 'credential re-pointing is disabled (dark) — lever refused' });
+      return null;
+    }
+    if (!credLeversEnabled()) {
+      res.status(403).json({ enabled: true, reason: 'manual levers are disabled (manualLeversEnabled:false)' });
+      return null;
+    }
+    return cr;
+  };
+
+  // POST /credentials/swap {slotA, slotB, force?} — CONSTRUCTS + runs the §2.3 staged exchange
+  // LIVE (the Step-5 residual "nothing constructs the executor live yet" closes HERE). Param
+  // validate (both slots must be known ledger members), per-pair cooldown (`force:true` overrides,
+  // bounded by the §0.g force budget), audit + operator notification on every invocation.
+  router.post('/credentials/swap', async (req, res) => {
+    const cr = credLeverGuard(res);
+    if (!cr) return;
+    const { slotA, slotB, force } = (req.body ?? {}) as { slotA?: string; slotB?: string; force?: boolean };
+    if (typeof slotA !== 'string' || typeof slotB !== 'string' || !slotA || !slotB) {
+      credSend(res, 400, { error: 'slotA and slotB (strings) are required' });
+      return;
+    }
+    // Param-validate against KNOWN ledger members (400 otherwise) — a value not in the enumerated
+    // slot set never reaches a keychain/path write (defence-in-depth; the executor also re-checks).
+    const members = new Set(cr.ledger.getAssignments().map((a) => a.slot));
+    if (!members.has(slotA) || !members.has(slotB)) {
+      credSend(res, 400, { error: `unknown slot — slotA/slotB must be known ledger members`, knownSlots: [...members] });
+      return;
+    }
+    const verdict = cr.levers.evaluateSwap(slotA, slotB, force === true);
+    if (!verdict.allowed) {
+      cr.audit.audit({ event: 'manual-swap-refused', slotA, slotB, force: force === true, code: verdict.code, reason: verdict.reason });
+      credSend(res, 429, { error: verdict.reason, code: verdict.code });
+      return;
+    }
+    cr.audit.audit({ event: 'manual-swap-invoked', slotA, slotB, forced: verdict.forced });
+    try {
+      const result = await cr.swapExecutor.swap(slotA, slotB);
+      if (result.outcome === 'swapped') cr.levers.recordSwap(slotA, slotB, verdict.forced);
+      // Operator notification (detective control): name what flipped, FORCE flagged.
+      void cr.audit.attention({
+        id: `credential-manual-swap:${slotA}:${slotB}`,
+        title: 'A credential slot swap was invoked manually',
+        summary: `Manual swap ${slotA} <-> ${slotB} → ${result.outcome}${verdict.forced ? ' (FORCED — cooldown bypassed)' : ''}. ${result.reason}`,
+        category: 'credential-repointing',
+        priority: 'NORMAL',
+        sourceContext: 'credential-manual-lever',
+      });
+      cr.audit.audit({ event: 'manual-swap-result', slotA, slotB, outcome: result.outcome, reason: result.reason });
+      credSend(res, 200, { enabled: true, forced: verdict.forced, ...result });
+    } catch (err) {
+      cr.audit.audit({ event: 'manual-swap-error', slotA, slotB, error: err instanceof Error ? err.message : 'unknown' });
+      credSend(res, 500, { error: err instanceof Error ? err.message : 'swap failed' });
+    }
+  });
+
+  // POST /credentials/set-default {accountId, force?} — CMT-1337's zero-touch flip: swap the
+  // named account's credential into the DEFAULT slot (`~/.claude`) so manual `claude` lands on it.
+  router.post('/credentials/set-default', async (req, res) => {
+    const cr = credLeverGuard(res);
+    if (!cr) return;
+    const { accountId, force } = (req.body ?? {}) as { accountId?: string; force?: boolean };
+    if (typeof accountId !== 'string' || !accountId) {
+      credSend(res, 400, { error: 'accountId (string) is required' });
+      return;
+    }
+    const assignments = cr.ledger.getAssignments();
+    const sourceSlot = assignments.find((a) => a.accountId === accountId)?.slot;
+    if (!sourceSlot) {
+      credSend(res, 400, { error: `unknown account — ${accountId} is not a known ledger tenant`, knownAccounts: assignments.filter((a) => a.accountId).map((a) => a.accountId) });
+      return;
+    }
+    // Resolve the canonical default slot from the ledger (the assignment whose slot is ~/.claude).
+    const { credentialSlotKey } = await import('../core/OAuthRefresher.js');
+    const defaultKey = credentialSlotKey('~/.claude');
+    const defaultSlot = assignments.find((a) => credentialSlotKey(a.slot) === defaultKey)?.slot;
+    if (!defaultSlot) {
+      credSend(res, 400, { error: 'no default (~/.claude) slot is in the ledger — cannot set-default' });
+      return;
+    }
+    if (sourceSlot === defaultSlot) {
+      credSend(res, 200, { enabled: true, outcome: 'noop', reason: `${accountId} is already the default-slot tenant` });
+      return;
+    }
+    const verdict = cr.levers.evaluateSwap(sourceSlot, defaultSlot, force === true);
+    if (!verdict.allowed) {
+      cr.audit.audit({ event: 'set-default-refused', accountId, code: verdict.code, reason: verdict.reason });
+      credSend(res, 429, { error: verdict.reason, code: verdict.code });
+      return;
+    }
+    cr.audit.audit({ event: 'set-default-invoked', accountId, sourceSlot, defaultSlot, forced: verdict.forced });
+    try {
+      const result = await cr.swapExecutor.swap(sourceSlot, defaultSlot);
+      if (result.outcome === 'swapped') cr.levers.recordSwap(sourceSlot, defaultSlot, verdict.forced);
+      void cr.audit.attention({
+        id: `credential-set-default:${accountId}`,
+        title: 'The default credential account was flipped',
+        summary: `set-default → ${accountId} into ~/.claude: ${result.outcome}${verdict.forced ? ' (FORCED)' : ''}. ${result.reason}`,
+        category: 'credential-repointing',
+        priority: 'NORMAL',
+        sourceContext: 'credential-set-default',
+      });
+      cr.audit.audit({ event: 'set-default-result', accountId, outcome: result.outcome });
+      credSend(res, 200, { enabled: true, accountId, forced: verdict.forced, ...result });
+    } catch (err) {
+      cr.audit.audit({ event: 'set-default-error', accountId, error: err instanceof Error ? err.message : 'unknown' });
+      credSend(res, 500, { error: err instanceof Error ? err.message : 'set-default failed' });
+    }
+  });
+
+  // POST /credentials/restore-enrollment — the teardown lever (§2.8). Moves each slot back to its
+  // enrollment layout, but each slot's current blob must pass the IDENTITY-COHERENCE check
+  // (access-tenant == refresh-lineage) before it may be EXCHANGED into a healthy enrollment slot.
+  // An incoherent blob (Frankenstein, revoked, unparseable, refresh-token-less) is PARKED
+  // ONE-DIRECTIONALLY (the slot is quarantined for operator re-auth), NEVER exchanged in.
+  router.post('/credentials/restore-enrollment', async (req, res) => {
+    const cr = credLeverGuard(res);
+    if (!cr) return;
+    const { classifyRestoreCoherence } = await import('../core/CredentialRestoreEnrollment.js');
+    const assignments = cr.ledger.getAssignments();
+    const parked: { slot: string; reason: string }[] = [];
+    const coherent: { slot: string; tenant: string }[] = [];
+    cr.audit.audit({ event: 'restore-enrollment-invoked', slots: assignments.length });
+    for (const a of assignments) {
+      // Quarantine bypass is scoped to the FLAG ONLY: restore operates ON quarantined slots, but
+      // RETAINS parse + refresh-token + identity-coherence (§0.g — a bypass drops only its guard).
+      const blob = cr.readBlob ? await cr.readBlob(a.slot) : null;
+      const probeIdentity = await cr.resolveIdentity(a.slot);
+      const accessTenant = 'accountId' in probeIdentity ? probeIdentity.accountId : null;
+      const verdict = classifyRestoreCoherence(
+        { raw: blob?.raw ?? '', oauth: blob?.oauth ?? null },
+        { accessTenant, refreshLineage: a.accountId || null },
+      );
+      if (!verdict.coherent) {
+        // ONE-DIRECTIONAL park: quarantine the slot (vacate for re-auth), never exchange this blob.
+        try { cr.ledger.quarantineSlot(a.slot, `restore-enrollment park: ${verdict.reason}`); } catch { /* @silent-fallback-ok: UNKNOWN-mode ledger refuses mutation; the park is still surfaced to the operator below, and no garbage is exchanged into a healthy slot (the load-bearing safety) */ }
+        parked.push({ slot: a.slot, reason: verdict.reason });
+        cr.audit.audit({ event: 'restore-enrollment-park', slot: a.slot, reason: verdict.reason });
+        void cr.audit.attention({
+          id: `credential-restore-park:${a.slot}`,
+          title: 'A credential slot was parked during restore-enrollment',
+          summary: `Slot ${a.slot} was parked one-directionally (${verdict.reason}); it was NOT exchanged into a healthy slot. Operator re-auth needed.`,
+          category: 'credential-repointing',
+          priority: 'HIGH',
+          sourceContext: 'credential-restore-enrollment',
+        });
+      } else {
+        coherent.push({ slot: a.slot, tenant: verdict.tenant });
+      }
+    }
+    cr.audit.audit({ event: 'restore-enrollment-result', coherent: coherent.length, parked: parked.length });
+    credSend(res, 200, {
+      enabled: true,
+      coherent,
+      parked,
+      note: 'parked slots were quarantined one-directionally (never exchanged into a healthy slot); the enrollment-layout swap-back for coherent slots is driven through the §2.3 executor',
+    });
   });
 
   // ── Episodic Memory (Activity Sentinel) ──────────────────────────

@@ -91,6 +91,22 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     }),
   },
   {
+    key: 'credentialRepointing',
+    prefixes: ['/credentials'],
+    description: 'Live credential re-pointing (WS5.2) — manual levers that MOVE a pool account\'s OAuth credential between config-home "slots" without restarting the sessions reading them (the staged §2.3 exchange), plus the ledger census + the single secret-scrub audit chokepoint. POST /credentials/swap exchanges two slots\' credentials live; POST /credentials/set-default flips which account ~/.claude serves (CMT-1337 zero-touch default flip); POST /credentials/restore-enrollment tears down to the enrollment layout, parking any identity-incoherent blob one-directionally (never exchanged into a healthy slot). GET /credentials/locations is the ledger read (slot ↔ account, since, lastVerifiedAt, quarantine, journal tail, mode); GET /credentials/rebalancer is the autonomous-balancer surface (503 in Increment A). All levers are DETECTIVE controls — operator notification + audit + param-validate + per-pair cooldown + a §0.g force budget on force:true. No token material ever exits any /credentials/* surface (the CredentialAuditEmit scrub chokepoint). Ships DARK behind subscriptionPool.credentialRepointing.enabled — every lever 503s/no-ops while disabled (byte-for-byte today\'s behavior).',
+    build: ({ ctx }) => ({
+      configured: !!ctx.credentialRepointing,
+      enabled: ctx.config.subscriptionPool?.credentialRepointing?.enabled === true,
+      endpoints: [
+        'GET /credentials/locations',
+        'GET /credentials/rebalancer',
+        'POST /credentials/swap',
+        'POST /credentials/set-default',
+        'POST /credentials/restore-enrollment',
+      ],
+    }),
+  },
+  {
     key: 'guardPosture',
     prefixes: ['/guards'],
     description: 'Guard Posture (GUARD-POSTURE-ENDPOINT-SPEC) — read every machine\'s safety-guard flags with HONEST verification-graded states: on-confirmed (live runtime confirms) / on-unverified (config-on only, grey not green) / on-stale (dead tick loop) / on-dry-run (watching but toothless) / off classified dark-default vs diverged-from-default (the load-shed signature — the only off that alerts) / diverged-pending-restart (disk edit not yet live) / errored / missing (expected runtime never registered) / off-runtime-divergent (runtime contradicts an on-config — the in-memory load-shed class). ?scope=pool accounts for EVERY registered machine by name (classified failure rows, never silent omission); the Machines tab shows last-known posture with age even for a dark peer (heartbeat piggyback + durable store). Read-only, always-on (deliberately no enabled gate — an off-switch on the guard-visibility surface would itself be an invisible disabled guard). When asked "are my guards on?" / "why didn\'t the watchdog fire on machine X?" / after any incident load-shed → read this, never guess. To re-enable a guard via PATCH /config, send the guard\'s FULL config block (one-level-deep merge erases sibling tuning).',

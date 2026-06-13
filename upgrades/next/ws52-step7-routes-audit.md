@@ -1,0 +1,40 @@
+# WS5.2 Step 7 — credential re-pointing routes + the single secret-scrub audit chokepoint
+
+<!-- bump: patch -->
+
+<!--
+  NOTE: dark/additive + internal. Three new exported classes (CredentialAuditEmit,
+  CredentialManualLevers, CredentialRestoreEnrollment) + five /credentials/* HTTP routes,
+  ALL gated by the EXISTING subscriptionPool.credentialRepointing flag (enabled:false +
+  dryRun:true, already a DARK_GATE_EXCLUSIONS destructive entry) — NO new config flag, so
+  the dark-gate line-map is UNCHANGED (no recompute; lint clean, dark-gate test green
+  as-is). Two new config knobs (maxForcedManualSwapsPerWindow, forcedManualSwapWindowMs)
+  are NUMBER knobs, not enabled:false literals, so they do not touch the line-map.
+  No new unfunneled credential write path (the executor was Step 5); the routes only
+  CONSTRUCT + run it. CLAUDE.md awareness + migrateConfig are Step 9 (Migration parity).
+-->
+
+## What Changed
+
+Makes the staged credential-swap executor (Step 5) reachable as live operator levers, and adds the single place every credential-feature surface passes through so a token can never leak into a log, an HTTP response, or a notification.
+
+- **The secret-scrub chokepoint** — a new `CredentialAuditEmit` (src/core/CredentialAuditEmit.ts) with one `scrub(record)` funnel. Every credential-swaps.jsonl audit write, every /credentials/* response body, and every attention-item routes through it; it deep-walks the record and redacts any token-shaped run (reusing the existing `redactToken`). The no-token-material invariant is structural, not "remember to scrub at each callsite".
+- **Manual levers (Bearer-authed, detective controls)** — `POST /credentials/swap` constructs and runs the live staged exchange (the Step-5 residual "nothing constructs the executor live yet" closes here); `POST /credentials/set-default` flips which account ~/.claude serves (the zero-touch default flip); `POST /credentials/restore-enrollment` tears down to the enrollment layout. Each lever param-validates against known ledger slots (400 otherwise), respects a per-pair cooldown (force:true overrides it, bounded by its own per-window budget), emits an operator notification + audit on every invocation.
+- **restore-enrollment never poisons a healthy slot** — `CredentialRestoreEnrollment.classifyRestoreCoherence` (src/core/CredentialRestoreEnrollment.ts) checks identity-coherence (the blob's access-token account must equal its refresh-token lineage). An incoherent blob — a "Frankenstein" graft of one account's access token onto another's refresh token, an unparseable blob, a refresh-token-less blob, or one the oracle can't confirm — is parked one-directionally (the slot is vacated for re-auth) and is NEVER exchanged into a healthy slot.
+- **Read surfaces** — `GET /credentials/locations` is the ledger census read (slot to account, since, lastVerifiedAt, quarantine, journal tail, mode); `GET /credentials/rebalancer` is the autonomous-balancer surface and returns 503 in Increment A (the balancer is Increment B).
+- **Dark** — gated by the existing `subscriptionPool.credentialRepointing` flag (enabled:false). With the feature off (the fleet + dev default) every lever returns 503/no-op and the executor is a strict no-op — byte-for-byte today's behavior.
+
+## What to Tell Your User
+
+This is internal plumbing that ships turned off, so nothing changes for you day to day. What it builds toward: when I hold more than one of your subscription accounts, I will be able to move a credential between them under the hood without restarting your sessions, flip which account your plain terminal lands on, or tear the whole arrangement back down to the original layout — all as deliberate, audited actions. The most important part is a safety guarantee: there is now one place every one of those actions passes through that strips out any secret before it could reach a log, a status page, or a notification, so a token can never leak out that way. And the teardown is hardened so a corrupted or mismatched credential is set aside for you to re-authenticate rather than being shuffled into a healthy account. It is off by default and does nothing until it is deliberately turned on after a review window.
+
+## Summary of New Capabilities
+
+Three new exported classes — `CredentialAuditEmit` (the single secret-scrub chokepoint), `CredentialManualLevers` (per-pair cooldown + the force-swap budget), and `CredentialRestoreEnrollment` (the identity-coherence one-directional-park decision) — plus five /credentials/* HTTP routes (swap, set-default, restore-enrollment, locations, rebalancer), all gated by the existing `subscriptionPool.credentialRepointing` flag. No new gate flag, no new unfunneled credential write path. Registered in CapabilityIndex; CredentialAuditEmit documented under-the-hood.
+
+## Evidence
+
+- `tests/unit/credential-audit-emit.test.ts` (12) — scrub redacts on all three surfaces (jsonl/response/attention) with a real-shaped sk-ant token, deep-scrubs nested objects/arrays, leaves ids/paths/timestamps intact, never throws on a failing sink/delivery; manual levers (per-pair cooldown, force:true override, §0.g force-budget exhaustion + non-forced exemption + window roll); restore coherence (coherent exchange, Frankenstein park, unparseable park, refresh-token-less park, oracle-down park).
+- `tests/integration/credential-routes.test.ts` (6) — dark=503 on every lever + rebalancer 503; live POST /credentials/swap executes the executor with NO token in the response or audit; param-validate unknown slot → 400; manualLeversEnabled:false → 403; restore-enrollment parks an incoherent slot; Bearer-401 on every lever.
+- `tests/e2e/credential-repointing-routes-alive.test.ts` (4) — feature-alive on the real AgentServer factory: ENABLED swap executes (dry-run) + locations reports active; DARK strict no-op (503 on every lever, rebalancer 503, locations reports dark); every lever requires Bearer; rebalancer 503 even when enabled (Increment A).
+- tsc clean; full `npm run lint` clean (dark-gate unchanged — no ConfigDefaults touched); docs-coverage green; repo-invariants hold.

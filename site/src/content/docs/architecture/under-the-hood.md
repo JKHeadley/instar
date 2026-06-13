@@ -164,6 +164,9 @@ When running without a supervisor, watches for restart signals (written by AutoU
 ### CredentialSwapExecutor
 Ships **dark** (off + dry-run for everyone). The staged-exchange primitive of live credential re-pointing: it MOVES an account's OAuth credential between two config-home "slots" without restarting the sessions reading them (the `claude` client re-reads its store on the next API call). The `CredentialSwapExecutor` exchanges (never copies) the two slots' credentials through a crash-proof sequence — stage an escrow copy and journal `begin`, exchange keychain-first then config-second, verify each slot on its **account identity** via the profile-endpoint oracle, commit with the escrow retained, then re-verify ~90s later before deleting the escrow. It writes only what an oracle can identity-confirm: an unverifiable slot is quarantined, never repaired blindly. Going live requires a deliberate two-flag flip (`enabled:true` AND `dryRun:false`); see `docs/specs/live-credential-repointing-rebalancer.md` §2.3.
 
+### CredentialAuditEmit
+The single secret-scrub chokepoint for live credential re-pointing (spec §2.9). Every `logs/credential-swaps.jsonl` audit write, every `/credentials/*` HTTP response body, and every attention-item this feature constructs routes through one `CredentialAuditEmit.scrub(record)` funnel that deep-walks the record and redacts any token-shaped run (reusing `CredentialProvider.redactToken`). The no-token-material invariant is enforced **structurally**, not by "remember to scrub at each callsite": the real leak vector is developer-authored interpolation (a `${raw}`-bearing log line, a `security`/keychain stderr that carries a token fragment in free text), exactly what a single chokepoint neutralizes. The `/credentials/swap`, `/credentials/set-default`, and `/credentials/restore-enrollment` levers all send their responses through `CredentialAuditEmit` so no token byte can exit any surface.
+
 </details>
 
 ---
