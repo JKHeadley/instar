@@ -45,6 +45,35 @@ ring, per-store budget, deferred-erasure queue, tombstone GC) is a fixed ceiling
 independent of how many machines you run — so it holds for N cloud VMs, not just
 two Macs.
 
+This revision closed seven more holes the convergence round found in real code:
+
+- **Who's messaging me is decided locally — never from another machine's copy.**
+  When a message arrives, I figure out *who you are* only from this machine's own
+  records. A synced copy from another machine can never make a stranger look like a
+  known (or admin) user. The other machines' knowledge is still readable, but only
+  as a clearly-labeled "here's what my other machine thinks" — never as the answer
+  to "who is this."
+- **A machine that just *claims* a capability can't bend the rules.** Machines
+  advertise what they can do, but that advertisement is unverified, so no security
+  decision trusts it. A machine can't dodge an erasure by claiming it's "not
+  participating," and can't pull your contacts by claiming it is — admission is the
+  operator-authenticated pairing list, full stop.
+- **One machine can't delete the records another machine actually owns.** A delete
+  that doesn't carry your authenticated erasure request can only make a machine drop
+  *the copy that very peer sent it* — it can never reach in and destroy a record that
+  machine created itself. Real destructive deletes require your erasure mandate, and a
+  single delete can't target a whole crowd of people at once (its scope is capped).
+- **A second, independent lock on every sealed record.** Each replicated record is now
+  cryptographically bound to *its intended recipient and its kind*, so a sealed blob
+  can't be replayed to the wrong machine or pasted in as the wrong type of record.
+- **The "still need to confirm erasure" list can't grow without limit.** Even if a
+  machine goes permanently dark and never confirms a deletion, the tracking list has a
+  fixed ceiling and tells you loudly (not silently) if it ever fills up — so a dead
+  machine can't quietly bloat your disk.
+- **The disk-space ceiling is real and self-contained.** The cap on how much replicated
+  PII lands on disk is a concrete 64 MiB owned by this feature, not a number borrowed
+  from a setting that doesn't exist yet.
+
 ## What you actually need to decide
 
 Two things, when you're ready: (1) approve this spec (it discharges the CMT-1413

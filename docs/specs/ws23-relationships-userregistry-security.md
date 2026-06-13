@@ -4,7 +4,12 @@ slug: "ws23-relationships-userregistry-security"
 author: "echo"
 parent-principle: "Cross-Machine Coherence — One Agent, Robust Under Degraded Conditions"
 eli16-overview: "ws23-relationships-userregistry-security.eli16.md"
-status: "draft-for-convergence"
+status: "converged"
+review-convergence: "2026-06-13T06:18:57.000Z"
+review-iterations: 2
+review-completed-at: "2026-06-13T06:18:57.000Z"
+approved: true
+approved-by: "operator pre-approval — Justin, topic 13481, 2026-06-12: full session pre-approval for this initiative's decisions (exercised by Echo in the pre-approved autonomous run; operator may revoke)"
 parent-spec: "docs/specs/MULTI-MACHINE-SEAMLESSNESS-SPEC.md (WS2.3)"
 principal-deferral-approval: <!-- tracked: CMT-1413 -->
   discharges: "WS2.3 PII transport/at-rest details (relationships + user registry replication)" <!-- tracked: CMT-1413 -->
@@ -13,7 +18,7 @@ principal-deferral-approval: <!-- tracked: CMT-1413 -->
   parent-plan: "own security convergence round before the WS2.3 store ships; boundary (encrypted transit, receiver revalidation, origin-tagged rollback) fixed in the parent spec"
   this-round: "THIS document is that convergence round. It DISCHARGES the WS2.3-transport deferral: no WS2.3 store code may ship until this spec converges. The operator-accepted residual risk (replication widens the set of machines holding PII at plaintext-rest) is named without euphemism in §3 and the operator note."
 lessons-engaged:
-  - "L15 Authorization: reach ≠ authority — receiver revalidates every identity-bearing field; replicated records carry first-hop provenance binding (entry.machine === senderMachineId)"
+  - "L15 Authorization: reach ≠ authority — receiver revalidates every identity-bearing field; replicated records carry first-hop provenance binding (entry.machine === senderMachineId); identity-RESOLUTION of an inbound principal is local-only (REQ-M14), a mandate-less peer tombstone cannot destroy a locally-authored record (REQ-D18/D21), and a self-reported capability flag is never a security gate (REQ-M5b)"
   - "P4 Testing Integrity: three tiers + named invariant/attack tests (forged-record, replay, injection-neutralization, exfiltration, erasure-propagation, clock-skew-win)"
   - "P7 Observable Intelligence: every receive-side decision (forged/duplicate/invalid/quarantined/tombstoned/suspect) emits a feature metric + audit line"
   - "P17 Bounded Notification Surface: every attention surface coalesces by (peer, failure-class) or per-erasure-episode — never per record/peer"
@@ -143,13 +148,24 @@ it. Every test must hold at `N ≥ 5` distinct `senderMachineId`s, not just two.
   binding, WS2.3 adds receiver revalidation of identity-bearing fields: a synced
   `permissions`/`slackUserId`/`telegramUserId`/`channels[]` is **data, never an
   instruction to rebind identity** — it is stored in the foreign namespace but NEVER
-  made locally authoritative (§5).
+  made locally authoritative (§5). **And — the identity-resolution-bleed half of this
+  scenario (REQ-M14, gap #14):** beyond not WRITING a synced binding as authoritative,
+  the receiver MUST NEVER READ a foreign-namespace binding when RESOLVING an inbound
+  principal. `resolveFromChannel`/`resolveFromTelegramUserId`/`resolveFromSlackUserId`/
+  `getOperator` are local-only authority decisions (L15); a synced attacker-authored
+  `telegramUserId`/channel-uid can never make a stranger resolve as a known (or admin)
+  user. This closes the gap a permission-path-only defense would leave open for every
+  non-permission consumer (attribution, greeting, "who messaged me", operator-inference).
 - **Test that proves it.** `forged-entry-rejected`: feed a batch where
   `entry.machine !== senderMachineId`; assert `applied === 0`, `forgedEntries === 1`,
   batch stopped, replica file unwritten. `synced-authority-not-adopted`: a
   well-formed-but-authority-bearing `user-registry` record from a peer that does not
   legitimately hold the principal — assert `permissions`/`slackUserId` are NOT adopted
   into the union view (dropped + counted) while a benign `notes` field IS merged.
+  **`foreign-record-never-resolves-inbound-principal`** (gap #14, REQ-M14): a foreign
+  `user-registry` replica binding `telegramUserId=T`/a channel-uid to an attacker profile
+  P; an inbound message from T resolves to the LOCAL answer (or null), NEVER P; P appears
+  only via the explicit non-authoritative peer-read API, tagged with its origin machine.
   Phase-C: same test with `N=5` distinct senders, assert no cross-attribution.
 
 ### 2.2 — Replay of an old record (re-inject stale-but-valid to roll state back)
@@ -308,8 +324,12 @@ it. Every test must hold at `N ≥ 5` distinct `senderMachineId`s, not just two.
   (b) a LOCALLY-AUTHORED record for the same person (the receiver talked to them too, so the
   record is the machine's own plaintext file) — this MUST invoke the real destructive local
   delete (`RelationshipManager.delete()` → `unlinkSync`; `UserManager.removeUser()` →
-  rewrite `users.json`). This is the single, mandate-authorized EXCEPTION to the
-  "sync never writes local files" invariant (REQ-M7/M10). Because the tombstone carries the
+  rewrite `users.json`) — **but ONLY when the tombstone carries an authenticated
+  operator-erasure mandate (REQ-D9/D18, finding #7); a mandate-LESS peer tombstone may drop
+  only the emitting peer's OWN foreign replica, never the receiver's locally-authored plaintext
+  file.** This (mandate-carrying) destructive delete is the single, mandate-authorized
+  EXCEPTION to the "sync never writes local files" invariant (REQ-M7/M10). Because the
+  tombstone carries the
   *latest* HLC (REQ-M13), a later replay of the pre-deletion record is HLC-below it and
   discarded — resurrection is structurally impossible **while the tombstone is live** (the
   decommission/GC interaction that can defeat this is closed by REQ-D7/D19). `GdprCommands`
@@ -323,9 +343,15 @@ it. Every test must hold at `N ≥ 5` distinct `senderMachineId`s, not just two.
   independently `findOrCreate` the SAME person (different UUIDs, overlapping channel-uid);
   erase on VM-A; assert VM-B's INDEPENDENTLY-authored record is suppressed too (identity-
   surface match, not UUID equality). **`erasure-removes-locally-authored-copy-on-receiver`**
-  (gap #6): VM-B holds a locally-authored record for the erased person; apply the tombstone
-  on VM-B; assert the real destructive local delete fired (the local plaintext file is gone,
-  not merely the foreign replica). `anti-resurrection`: after the tombstone, replay the
+  (gap #6): VM-B holds a locally-authored record for the erased person; apply a
+  MANDATE-CARRYING tombstone on VM-B; assert the real destructive local delete fired (the
+  local plaintext file is gone, not merely the foreign replica).
+  **`peer-tombstone-cannot-destroy-locally-authored-record-without-mandate`** (finding #7,
+  REQ-D6/D18): VM-B holds a locally-authored record; a PEER-authored tombstone with NO operator
+  mandate arrives; assert VM-B's local plaintext file SURVIVES and only the emitting peer's own
+  foreign replica is dropped. **`over-broad-tombstone-rejected`** (finding #7, REQ-D21): a
+  tombstone whose channel-uid key-set exceeds `maxTombstoneKeySet` is QUARANTINED, never
+  applied. `anti-resurrection`: after the tombstone, replay the
   pre-deletion batch, assert the record stays deleted. `erasure-coverage`: `eraseUserData`
   now reports `relationship` + `user-registry` deletions, not silent `profileRemoved:false`.
   Phase-C: erase on VM-A with one of N peers offline; tombstone queued, online `N-2` erase
@@ -455,16 +481,31 @@ it. Every test must hold at `N ≥ 5` distinct `senderMachineId`s, not just two.
   authenticity check: a forged-but-correctly-sealed payload decrypts fine, and the seal
   binds NOTHING about sender, recipient, or `JournalKind` (this also means nothing
   cryptographically binds a sealed blob to its declared PII kind — REQ-M1's allowlist is the
-  only kind-binding). **Required fix:** WS2.3 seals each batch with
-  `setAAD(recipientMachineFingerprint || journalKind || senderMachineId)` so a payload
-  CANNOT be replayed cross-recipient or cross-kind and the crypto layer provides a genuine
-  second, independent binding check. If reusing `encryptForSync` unchanged is mandated (no
-  new crypto), then this requirement is RE-SCOPED honestly: the seal provides
-  **confidentiality only**, ALL authenticity/binding rests on the SINGLE Ed25519 envelope
-  layer (no crypto-layer defense-in-depth), and that single-point-of-failure is flagged in
-  Open Question #7 — the spec does NOT claim a "second independent" authenticity check the
-  primitive does not provide. **Lean:** add AAD binding (it is a one-line change to the seal
-  callsite, not new crypto), so the "belt and suspenders" framing is true.
+  only kind-binding). **DECISION (fork resolved in-spec per the standing "design-fork decisions
+  are mine" operator directive, finding #6): ADOPT AAD binding — it is UNCONDITIONALLY
+  REQUIRED, not an open question.** WS2.3 seals each batch with
+  `setAAD(recipientMachineFingerprint || journalKind || senderMachineId)` so a payload CANNOT
+  be replayed cross-recipient or cross-kind and the crypto layer provides a genuine second,
+  independent binding check. The "confidentiality-only, accept the single Ed25519
+  single-point-of-failure" alternative is REJECTED — a PII-bearing feature must not leave its
+  only cross-recipient/cross-kind replay defense unbuilt. OQ#7 is demoted to a resolved
+  decision note.
+  - **HONEST COST (verified against `SecretStore.ts:499`/`:554`, finding #6 — NOT the
+    "one-line change" earlier claimed).** AES-256-GCM's `setAAD` is a standard method on the
+    Node `cipher`/`decipher` objects already in use, so this is NOT a primitive/algorithm
+    rewrite and adds NO new crypto. BUT it is not a single callsite edit either: it requires
+    threading a NEW `aad: Buffer` parameter through BOTH functions and their callers —
+    `encryptForSync(secrets, recipientPublicKeyBase64, aad?)` adds `cipher.setAAD(aad)` before
+    `cipher.update` (line ~533); `decryptFromSync(payload, ownPrivateKey, aad?)` adds
+    `decipher.setAAD(aad)` before `setAuthTag`/`final` (line ~581, where a mismatched AAD makes
+    `decipher.final()` throw — exactly the cross-recipient/cross-kind rejection we want); and
+    the WS2.3 send/receive wrappers (`SecretSync.buildSecretShareCommand` / the
+    `SecretShareHandler` receive path) must compute the SAME AAD on both ends from the
+    authenticated envelope's `(recipientMachineFingerprint, journalKind, senderMachineId)`. The
+    `aad` param is OPTIONAL so existing non-WS2.3 secret-sync callers are unaffected (absent
+    AAD = current behavior, no migration of in-flight secret payloads). So the real cost is a
+    small, contained, backward-compatible change spanning two crypto functions + the two WS2.3
+    wrapper sites — modest and well-scoped, but the spec does NOT pretend it is one line.
 
 ### 3.2 Composition with the journal (transport is an envelope, not a fork)
 
@@ -479,10 +520,12 @@ it. Every test must hold at `N ≥ 5` distinct `senderMachineId`s, not just two.
   (`topic-placement`, `session-lifecycle`, …) continue to ride the plain mesh batch; the
   per-recipient seal is applied ONLY to kinds in a static `PII_JOURNAL_KINDS` allowlist
   **co-located with the `JournalKind` union**, so a new PII kind cannot be added without
-  choosing its transport. **Kind-binding note (gap #3):** the `PII_JOURNAL_KINDS` allowlist
-  is the ONLY thing binding a sealed blob to its declared kind UNLESS the GCM AAD carries the
-  `journalKind` (REQ-T3) — with AAD, the crypto layer also rejects a payload replayed under
-  the wrong kind; without it, the allowlist is the sole kind-binding and the spec says so.
+  choosing its transport. **Kind-binding note (finding #6 — AAD now ADOPTED, REQ-T3):** the
+  `PII_JOURNAL_KINDS` allowlist is the application-layer kind discriminator, AND — because
+  REQ-T3 now unconditionally binds `journalKind` into the GCM AAD — the CRYPTO layer ALSO
+  rejects a payload replayed under the wrong kind (`decipher.final()` throws on the AAD
+  mismatch). The two layers are belt-and-suspenders for kind-binding; the spec no longer
+  leaves the allowlist as the sole defense.
 - **REQ-M2 — First-hop provenance binding reused verbatim.** `JournalSyncApplier.
   validateEntry` rule 1 (`entry.machine !== senderMachineId → 'forged'`,
   `JournalSyncApplier.ts:486`) binds every WS2.3 record to its author; the replica file
@@ -576,6 +619,36 @@ it. Every test must hold at `N ≥ 5` distinct `senderMachineId`s, not just two.
   **dropped, not re-routed**; the replacement peer (if any) is re-sealed-to fresh from
   the authoring machine's current store.
 
+### 3.5 Enrollment — who becomes a replication recipient (deny-by-default)
+
+- **REQ-E1 — A VM becomes a WS2.3 replication recipient ONLY via the operator-authenticated
+  registry/pairing path; deny-by-default; self-advertising never admits (gap #15 — the
+  enrollment gate's normative home; §2.4).** This REQ was cited (§2.4 PII-exfiltration
+  mitigation) but previously had no definition — it is defined here.
+  - **Admission is operator-authenticated.** A machine is eligible to RECEIVE replicated PII
+    only if it is a registered peer admitted through `MachineIdentityManager.registerMachine`
+    — the same operator-authenticated pairing/PIN-issuance precedent the parent spec cites for
+    WS5.2. There is NO LAN-trust path (there is no LAN in Phase C) and NO
+    "it announced itself on the mesh" path.
+  - **Deny-by-default.** The sender's fan-out target set is derived from the durable
+    operator-authenticated registry, NOT from who is currently advertising on the mesh. A
+    machine NOT in that registry is sent NOTHING — there is no implicit admission from a peer
+    merely being reachable or heartbeating.
+  - **Self-advertising is inert.** A peer that signals participation (e.g. via
+    `seamlessnessFlags`, REQ-M5) but is NOT operator-admitted in the registry is still sent
+    nothing — flag presence is a LIVENESS/forward-compat hint and NEVER an admission control
+    (REQ-M5b / finding #2). Admission rests on registry membership; the flag only narrows an
+    ALREADY-admitted peer to "and it can apply this kind."
+  - **Receive-side gate (defense in depth).** A receiver that gets a WS2.3 batch from a sender
+    it has not operator-admitted refuses it at the mesh acceptance layer (the
+    `SecretShareHandler` registered-peer gate, REQ-T3) — admission is enforced on BOTH ends,
+    not just by the sender's target-list discipline.
+  - This is the §2.4 (rogue-enrollment) and §6 PC-3 (headless enrollment) requirement given a
+    normative home. Proven by **`unadmitted-peer-gets-nothing`** (§2.4): a peer NOT in the
+    operator-authenticated registry — regardless of advertised flags or a forged envelope —
+    receives zero replicated PII (sender's registry-derived target set excludes it AND the
+    receiver gate denies).
+
 ---
 
 ## 4. Data Lifecycle (retention, deletion propagation, erasure)
@@ -596,15 +669,23 @@ and pool-size-independent bounds.
   WS2.3-enabled machines," leaving that legacy peer with the erased user's profile and NO
   propagation path. (`UserPropagator.propagateUser`/`propagateUpdate` skip on missing
   consent — `:84,107` — but `propagateRemoval` at `:129` broadcasts UNCONDITIONALLY, which
-  is exactly the legacy reach being lost.) **Required:** while ANY pool member is flag-dark
-  for the store, an erasure MUST continue to fire the legacy `propagateRemoval` broadcast
-  IN ADDITION to the WS2.3 tombstone (belt-and-suspenders). **Decommissioning
-  `propagateRemoval` is gated on POOL-WIDE WS2.3 flag coherence** — the same gate REQ-M5 /
-  invariant-5 already define for emission — NOT merely on the local machine being
-  WS2.3-enabled. `/pool/erasure-status` (REQ-D12) MUST surface a flag-dark member as a
-  distinct **`legacy-best-effort`** confirmation class — never `confirmed` (the legacy
-  broadcast has no ack) and never silently `pending` or silently dropped. Proven by
-  `erasure-reaches-legacy-peer-during-cutover`.
+  is exactly the legacy reach being lost.) **Required:** while ANY registered pool member is
+  not yet durably migrated to WS2.3 for the store, an erasure MUST continue to fire the
+  legacy `propagateRemoval` broadcast IN ADDITION to the WS2.3 tombstone
+  (belt-and-suspenders). **Decommissioning `propagateRemoval` is gated on a DURABLE PER-MEMBER
+  MIGRATION ACK, NOT on a toggleable flag snapshot (finding #2).** The earlier "gated on
+  pool-wide WS2.3 *flag coherence*" wording is corrected: because `seamlessnessFlags` is
+  self-reported and toggleable (REQ-M5b), a one-shot read of "is every peer currently
+  advertising the flag?" can be defeated by a peer that flips its flag present long enough to
+  retire the legacy path and then dark. Instead, the legacy broadcast is retired ONLY when the
+  DURABLE operator-authenticated registry records a per-member migration ack from EVERY
+  registered member (a sticky `migratedToStateSync` durable fact per member, set on a real
+  applied-an-erasure-tombstone confirmation), and it is RE-ARMED if a member is later added or
+  re-enrolled un-migrated. `/pool/erasure-status` (REQ-D12) MUST surface a not-yet-migrated
+  member as a distinct **`legacy-best-effort`** confirmation class — never `confirmed` (the
+  legacy broadcast has no ack) and never silently `pending` or silently dropped. Proven by
+  `erasure-reaches-legacy-peer-during-cutover` and **`flag-toggle-cannot-evade-erasure`**
+  (a peer cannot toggle its advertised flag to retire the legacy path while still un-migrated).
 
 ### 4.1 Retention bounded independently of pool size (Phase C)
 
@@ -622,13 +703,29 @@ and pool-size-independent bounds.
   pool-independent is compaction (REQ-D3/M13) plus a real cross-stream ceiling. The
   per-kind `DEFAULT_RETENTION.maxFileBytes` in `CoherenceJournal.ts` is PER-KIND, NOT an
   aggregate — so this aggregate ceiling is a NEW mechanism and MUST carry a concrete value,
-  not prose. **Pinned numbers:**
+  not prose. **Pinned number — WS2.3's OWN standalone ceiling, NOT a phantom sub-allocation
+  (finding #3):**
   - New config key `multiMachine.stateSync.aggregateReplicatedPiiBytes`, default
     **64 MiB** — the cross-(peer,kind) ceiling for ALL WS2.3 PII replica files combined.
-  - This is WS2.3's **explicitly allocated share** of the parent spec's overall
-    `multiMachine.aggregateReplicatedJournalBytes` (default **256 MiB**, which now also
-    covers WS1.3/1.4/4.1/4.3). WS2.3's 64 MiB is a stated sub-allocation, NOT "folded"
-    into an unnumbered total.
+    **This key is OWNED BY THIS SPEC and added via `migrateConfig()` here** (RO-1, P3),
+    with an existence check. It is a **standalone, pool-independent ceiling that does NOT
+    depend on any parent constant** — WS2.3 enforces 64 MiB regardless of whether a parent
+    aggregate exists.
+  - **Correction of an earlier phantom anchor (finding #3, VERIFIED 2026-06-12).** Earlier
+    text framed 64 MiB as a "sub-allocation" of a parent
+    `multiMachine.aggregateReplicatedJournalBytes` = **256 MiB**. That framing is RETRACTED:
+    grep returns ZERO hits for `aggregateReplicatedJournalBytes` in `src/` AND in the parent
+    `MULTI-MACHINE-SEAMLESSNESS-SPEC.md` — the parent declares only "ONE aggregate
+    replicated-journal budget (config-declared ceiling)" (`:269-270`) with **NO number and NO
+    key name**. The 256 MiB number and the parent key were invented by this child spec; WS2.3
+    does NOT anchor to a constant that does not exist.
+  - **Parent-aggregate coupling, if and when it lands (belt-and-suspenders).** IF the parent
+    later defines a real `aggregateReplicatedJournalBytes` (with a number + a key on disk),
+    THEN WS2.3's 64 MiB becomes a stated sub-allocation of it, and a CI assertion
+    (**`pii-budget-under-aggregate`**, §7.4) enforces `aggregateReplicatedPiiBytes <=
+    aggregateReplicatedJournalBytes` so the sub-allocation can never over-commit silently.
+    Until that parent key exists on disk the assertion is a no-op (it asserts only when BOTH
+    keys are present) and WS2.3's standalone 64 MiB ceiling stands on its own.
 
   Enforced by `budget-burst-invariant` driving `N ≥ 5` (and `N=8`) machines with max-size
   records and asserting total on-disk replicated-PII bytes < 64 MiB. When the ceiling is
@@ -678,17 +775,35 @@ and pool-size-independent bounds.
   `resolveByChannel` / `resolveFromChannel` / `findDuplicates`, the exact collision logic
   the managers already run locally. A UUID equality test is explicitly forbidden as the
   match predicate. Proven by `erasure-matches-independently-authored-record`.
-- **REQ-D18 — A receiver has TWO deletion targets; the locally-authored copy gets the real
-  destructive delete (gap #6).** When a tombstone lands on a receiver, it acts on both: (a)
-  **foreign-namespace replica** — dropped via the namespace mechanism (§5, no local file
-  touched); (b) **locally-authored record** matching the tombstone's identity surface — MUST
-  invoke the REAL destructive local delete (`RelationshipManager.delete()`,
-  `UserManager.removeUser()`). This is the SINGLE, mandate-authorized (REQ-D9) EXCEPTION to
-  the "sync never writes local files" invariant (REQ-M7/M10): for VALUE sync that invariant
-  holds absolutely; for an authenticated ERASURE it does not, because leaving the
-  locally-authored plaintext file in place on a machine that talked to the person is exactly
-  the un-erased GDPR residue on the machines holding the RICHEST PII. Proven by
-  `erasure-removes-locally-authored-copy-on-receiver`.
+- **REQ-D18 — A receiver has TWO deletion targets, gated by DISTINCT authority (gaps #6, #7).**
+  When a tombstone lands on a receiver, the action it is permitted to take depends on its
+  authority basis (REQ-D6):
+  - (a) **foreign-namespace replica** — dropped via the namespace mechanism (§5, no local file
+    touched). A mandate-LESS peer tombstone may drop ONLY the EMITTING peer's own replica
+    (REQ-D6/D21); a mandate-carrying tombstone may drop any matching foreign replica.
+  - (b) **locally-authored record** matching the tombstone's identity surface — invoking the
+    REAL destructive local delete (`RelationshipManager.delete()`, `UserManager.removeUser()`)
+    requires an **authenticated operator-erasure mandate (REQ-D9)**, NEVER the weaker
+    "legitimately holds" basis. A mandate-less peer tombstone NEVER reaches a locally-authored
+    record (finding #7) — that would let a Byzantine peer destroy a receiver's own plaintext
+    file by manufacturing the identity surface via `findOrCreate`.
+  The destructive local delete (b) is the SINGLE, mandate-authorized (REQ-D9) EXCEPTION to the
+  "sync never writes local files" invariant (REQ-M7/M10): for VALUE sync that invariant holds
+  absolutely; for a MANDATE-CARRYING ERASURE it does not, because leaving the locally-authored
+  plaintext file in place on a machine that talked to the person is exactly the un-erased GDPR
+  residue on the machines holding the RICHEST PII. Proven by
+  `erasure-removes-locally-authored-copy-on-receiver` (mandate present ⇒ local file gone) AND
+  `peer-tombstone-cannot-destroy-locally-authored-record-without-mandate` (finding #7: mandate
+  absent ⇒ local file SURVIVES, only the emitter's own foreign replica is dropped).
+- **REQ-D21 — Tombstone key-set cardinality is bounded; an over-broad tombstone is rejected
+  (finding #7).** A tombstone's `recordKey` key-SET (REQ-D17: the channel-uids ∪ normalized-name
+  it scopes suppression to) is capped at a small FIXED cardinality
+  (`multiMachine.erasure.maxTombstoneKeySet`, default **8**, OWNED here via `migrateConfig()`).
+  A legitimate erasure targets ONE human (a handful of channel-uids + one name); a tombstone
+  whose key-set exceeds the bound is a multi-victim suppression attempt in one shot and is
+  QUARANTINED via the bounded ring (coalesced by `(peer, failure-class)`), never applied. This
+  bounds the blast radius of a single malicious tombstone the same way the per-entry size cap
+  (REQ-M3) bounds a single record. Proven by `over-broad-tombstone-rejected`.
 - **REQ-D5 — Tombstones win over any concurrent edit (delete-wins merge).** At merge a
   `delete` tombstone for `recordKey` suppresses every value-version of that key regardless
   of HLC ordering vs. a concurrent update — erasure must not be defeated by a racing
@@ -714,13 +829,27 @@ and pool-size-independent bounds.
   (e.g. `relationship-tombstone`, `user-registry-tombstone`) with its own allowlist +
   retention. Decision: **(a) discriminated union on `op`** (keeps a tombstone HLC-ordered in
   the same key-space as its value-versions, which REQ-D5 delete-wins needs). The delete
-  branch's exact field set is named above. WS2.3 also adds the receiver-side authority rule
-  (L15): a machine MAY emit a delete tombstone ONLY for a record whose identity surface it
-  legitimately holds (§4.4), OR a delete carrying an authenticated operator-erasure mandate
-  (§4.3). A tombstone lacking either basis is QUARANTINED via the bounded ring (coalesced
-  by `(peer, failure-class)`), never applied. The `delete-wins-vs-append-both` test MUST
-  exercise the tombstone entry PASSING `validateData` (op:'delete' branch), not merely the
-  merge outcome.
+  branch's exact field set is named above. **WS2.3 adds the receiver-side authority rule (L15)
+  — and it is SPLIT BY ACTION, because reach is not authority (finding #7, the same
+  reach-becomes-authority defect as finding #14):**
+  - A tombstone carrying an **authenticated operator-erasure mandate** (REQ-D9, bound to the
+    verified operator principal) authorizes BOTH receiver actions: dropping the foreign
+    replica AND the REQ-D18 destructive local delete of a locally-authored record. This is the
+    full erasure.
+  - A **PEER-authored tombstone with NO operator mandate** (the "legitimately holds" basis)
+    authorizes ONLY the SUPPRESSION OF THE EMITTING PEER'S OWN FOREIGN-NAMESPACE REPLICA on
+    the receiver — "drop the copy I sent you." It MUST NOT trigger the REQ-D18 destructive
+    local delete of the receiver's LOCALLY-AUTHORED record. **The earlier rule — "a machine MAY
+    emit a delete for any record whose identity surface it legitimately holds, OR with a
+    mandate" — collapsed these two actions and is RETRACTED:** a Byzantine peer can
+    `findOrCreate` the victim's record to manufacture the "legitimately holds" basis, then its
+    mandate-less tombstone would have destroyed the receiver's own plaintext file. That cross-
+    machine deletion weapon is closed by scoping the mandate-less basis to the emitter's own
+    replica only (REQ-D21).
+  A tombstone lacking BOTH bases (no mandate AND not even the emitter's own replica to drop)
+  is QUARANTINED via the bounded ring (coalesced by `(peer, failure-class)`), never applied.
+  The `delete-wins-vs-append-both` test MUST exercise the tombstone entry PASSING
+  `validateData` (op:'delete' branch), not merely the merge outcome.
 - **REQ-D7 — Tombstones are themselves retention-bounded; GC requires every member ACKED
   OR REVOKED-AND-FENCED (gap #9).** A tombstone is retained until **every registered pool
   member is in a terminal state for it — either `acked` (§4.3) OR `revoked-and-fenced`
@@ -761,14 +890,44 @@ and pool-size-independent bounds.
   an authenticated operator/data-subject request bound to the verified operator principal
   (Operator-Binding standard — never a name read from content); the request mints a delete
   tombstone (REQ-D4) carrying the erasure mandate.
-- **REQ-D10 — A durable, bounded deferred-erasure queue replaces fire-and-forget
-  broadcast.** Every erasure records, durably on the originating machine, the set of pool
-  members that must confirm: `{ recordKey, requestedAt, mandateRef, pending:[machineId…],
-  confirmed:[machineId…] }` — the structural fix for `propagateRemoval`'s
-  `bus.send({to:'*'})`. The queue is bounded: ENTRY COUNT is `O(outstanding erasures)`
-  (which drains to zero), NOT `O(pool × erasures)`; the `pending`/`confirmed` sets are
-  machine-id lists whose size is `O(pool)` but there is no per-pool-size multiplier on
-  durable rows.
+- **REQ-D10 — A durable deferred-erasure queue with a FIXED ceiling independent of N, an
+  explicit over-ceiling policy, and peer-count-capped id lists (finding #4).** Every erasure
+  records, durably on the originating machine, the set of pool members that must confirm:
+  `{ recordKey, requestedAt, mandateRef, pending:[machineId…], confirmed:[machineId…] }` — the
+  structural fix for `propagateRemoval`'s `bus.send({to:'*'})`. **The earlier "bounded:
+  O(outstanding erasures) which drains to zero" claim was FALSE as written and is corrected
+  (finding #4):** a single chronically-offline VM never acks, so its `machineId` sits in
+  EVERY outstanding erasure's `pending` set forever — the queue does NOT drain to zero, and
+  durable bytes grow with the rate of new erasures × the retention duration, NOT toward zero.
+  This contradicted INV-ii/P19 ("a fixed ceiling independent of N, with a sustained-failure
+  test"). **Required FIXED ceiling (the queue must be a P19 bounded structure, mirroring the
+  quarantine ring REQ-M11):**
+  - `multiMachine.erasure.maxOutstandingErasures` (default **10_000**) — the FIXED maximum
+    number of outstanding (not-yet-fully-confirmed) erasure rows, independent of pool size.
+  - `multiMachine.erasure.maxQueueBytes` (default **16 MiB**) — a FIXED durable byte cap for
+    the whole deferred-erasure queue, independent of pool size. (Both keys OWNED here, added
+    via `migrateConfig()`, RO-1/P3.)
+  - **Per-row id-list cap.** A row's `pending`/`confirmed` machine-id lists are capped at the
+    REGISTERED-PEER COUNT — a row can never list more machine-ids than there are registered
+    peers (REQ-D11 seeds from the registry, REQ-M5b), so a forged/duplicate peer-id cannot
+    inflate a row. A row whose lists exceed the registered-peer count is rejected/clamped.
+  - **Over-ceiling policy — escalate + shed-oldest + loss counter (NEVER silent, mirrors the
+    quarantine ring).** When `maxOutstandingErasures` or `maxQueueBytes` is hit, the queue
+    SHEDS the OLDEST-by-`requestedAt` row, increments a durable loss counter, and raises ONE
+    deduped HIGH Attention item ("erasure-queue at ceiling — N erasures shed, completion can no
+    longer be tracked for them; the data subject's RIGHT-TO-ERASURE may be incomplete on
+    peers that never acked"). Shedding an erasure-tracking row is a LOUD compliance event, not
+    a silent drop — it does NOT un-erase the data subject's own machine (REQ-D14 already erased
+    locally and unconditionally), it only loses the ABILITY TO TRACK pool-wide completion for
+    the shed row, which the operator MUST be told. The real remedy is the operator
+    decommissioning the chronically-dead peer (REQ-D13/D19), which drops it from every
+    `pending` set and lets those rows complete and GC.
+  Proven by **`bounded-erasure-queue`** (the sustained-failure test, §7.1): drive **E** erasures
+  across **N=8** peers where **≥2 peers never ack**; assert (a) durable queue bytes stay
+  STRICTLY UNDER `maxQueueBytes` and row count under `maxOutstandingErasures` no matter how
+  large E grows, (b) over-ceiling SHEDS oldest-first and the loss counter + ONE HIGH Attention
+  item fire (loudly, never silent), and (c) no `pending`/`confirmed` list ever exceeds the
+  registered-peer count.
 - **REQ-D11 — Offline peers handled by deferred delivery keyed on the membership
   registry, NOT liveness at request time.** `pending` is seeded from the durable
   pool-membership registry (the registered-peer set the mesh gates on), so a peer OFFLINE
@@ -778,11 +937,20 @@ and pool-size-independent bounds.
   re-enrolling cloud VM participates with no manual step — it is in the registry, so it is
   in `pending`, so it gets the tombstone on first sync.
 - **REQ-D12 — Erasure completeness is advertised, not assumed (capability-heartbeat
-  pattern).** Each machine advertises, via the `seamlessnessFlags`/`HeartbeatObservation`
-  passthrough in `MachinePoolRegistry`, the highest erasure-request HLC it has durably
-  applied — a **single fixed-size watermark, NOT a per-record list** (does not grow with
-  PII volume or pool size). The originating machine marks `confirmed` when a peer's
-  advertised watermark ≥ the erasure's HLC. `GET /pool/erasure-status` (read-only)
+  pattern) — but the OBLIGATION set is flag-INDEPENDENT (finding #2).** **Seeding of
+  `pending` is from the DURABLE operator-authenticated registry for EVERY registered pool
+  member (REQ-D11, REQ-M5b), regardless of any peer's advertised `seamlessnessFlags`** — a
+  flag-dark claim NEVER removes a registered peer from owing a confirmation. The advertised
+  watermark is only how a peer SIGNALS progress against that already-owed obligation: each
+  machine advertises, via the `seamlessnessFlags`/`HeartbeatObservation` passthrough in
+  `MachinePoolRegistry`, the highest erasure-request HLC it has durably applied — a
+  **single fixed-size watermark, NOT a per-record list** (does not grow with PII volume or
+  pool size). The originating machine marks a registered peer `confirmed` when that peer's
+  advertised watermark ≥ the erasure's HLC. Because the watermark is self-reported (REQ-M5b),
+  it is a LIVENESS hint that can only ever ADVANCE a peer toward `confirmed`; it can NEVER
+  drop a peer OUT of `pending` (only a real ack or an operator decommission does that), so a
+  Byzantine peer cannot forge its way out of an erasure obligation. `GET /pool/erasure-status`
+  (read-only)
   surfaces per outstanding erasure, PER MEMBER, one of THREE confirmation classes (gap #7):
   `confirmed` (WS2.3-flag peer acked the tombstone), `pending` (WS2.3-flag peer not yet
   acked), or **`legacy-best-effort`** (a flag-dark peer reached ONLY via the legacy
@@ -950,6 +1118,40 @@ each merge seam and the Phase-C invariants.
   per-store-per-peer matrix) — absent = non-participant; a never-reporting cloud VM is
   simply not a sync target. Mixed pools degrade conservatively — sync to advertisers,
   local-only for the rest, never a partial PII leak to a peer that can't apply it.
+  **SCOPE OF THE FLAG (REQ-M5b, finding #2):** the flag's ONLY role here is the
+  forward-compat liveness narrowing of an ALREADY-ADMITTED peer ("don't ship a kind to a
+  peer that can't apply it"). It is NEVER an admission control and NEVER a security gate —
+  see REQ-M5b.
+- **REQ-M5b — `seamlessnessFlags` is self-reported, non-authenticated capability metadata —
+  a liveness/forward-compat hint, NOT a security control; every security-critical gate is
+  flag-INDEPENDENT (finding #2).** Verified against code: the type
+  (`src/core/types.ts:1915`) carries only `ws11DeliverReceive?: boolean`, and its content
+  flows **self-reported from the live heartbeat** — `server.ts:12685` sets it from
+  `!!_inboundQueue` on the advertising machine, and `MachinePoolRegistry.ts:273` passes
+  `live?.obs.seamlessnessFlags` through verbatim with no authentication of the claim. A
+  Byzantine peer can therefore advertise the flag dark (to dodge an obligation) or present
+  (to attract data) AT WILL. **Consequently, NO security decision may rest on a peer's
+  advertised flag.** Concretely:
+  - **Erasure-completeness (REQ-D12) is flag-INDEPENDENT.** `pending` is seeded from the
+    DURABLE operator-authenticated registry for EVERY registered pool member, regardless of
+    its advertised flag. A flag-dark claim NEVER exempts a registered peer from owing an
+    erasure-ack (WS2.3 peer) or a `legacy-best-effort` confirmation (pre-WS2.3 peer). A peer
+    cannot toggle its flag dark to make itself "not owe" an erasure.
+  - **Decommissioning the legacy `propagateRemoval` (REQ-D20) gates on durable per-member
+    ACK of migration, NEVER on a toggleable flag snapshot.** "Pool is WS2.3-coherent" is
+    decided from durable per-member migration acks in the registry, not from a one-shot read
+    of who is currently advertising the flag.
+  - **Admission to RECEIVE PII (REQ-E1) rests on operator-authenticated registry membership
+    PLUS the receiver's OWN locally-configured store flag — NEVER on the sender trusting the
+    recipient's advertised flag.** The sender's target set is the registry (REQ-E1); the
+    receiver's own `multiMachine.stateSync.<store>` config (read on the receiver) decides
+    whether IT applies the kind. The sender never grants admission on the strength of a
+    recipient's self-advertisement.
+  Proven by **`erasure-tracks-flag-dark-registered-peer`** (a registered peer advertising the
+  flag dark is STILL seeded into `pending` and still owes a confirmation) and
+  **`flag-toggle-cannot-evade-erasure`** (a peer that flips its flag dark after an erasure is
+  emitted cannot drop out of `pending`; the obligation persists until a real ack or an
+  operator decommission).
 - **REQ-M6 — HLC logical ordering (the NEW primitive, REQ-M13), NEVER wall-clock; merge
   skew gate is a SEPARATE tight bound (gaps #1, #2, #11).** Merges order by the HLC
   **logical counter** (REQ-M13 — built in §5.0, does NOT exist today), not `Date.now()` and
@@ -973,13 +1175,23 @@ each merge seam and the Phase-C invariants.
   config constants independent of pool size; a peer in `suspect-clock-removed` is additionally
   not a trusted merge source (FSM floor). Proven by `sub-liveness-future-cannot-win` (§2.6).
 - **REQ-M7 — Union-reader discipline at the lowest store primitive; foreign records are
-  READ-ONLY + neutralized.** The local+replicated UNION is implemented inside
-  `RelationshipManager` / `UserManager` / `TopicOperatorStore` at their lowest read
-  primitives (`resolveByChannel`, `resolveByName`, `getAll`, `get`; `resolveFromChannel`,
-  `resolveFromTelegramUserId`, `listUsers`; `getOperator`, `all`), so EVERY existing
-  caller sees the union without modification and no direct-file reader bypasses it — a
-  per-store audit confirms every read callsite routes through the union layer, locked by a
-  wiring-integrity test. **The union is read-only over foreign records:** a replicated
+  READ-ONLY + neutralized — BUT identity-RESOLUTION of an inbound principal is NEVER a
+  union read (gap #14, see REQ-M14).** The local+replicated UNION is implemented inside
+  `RelationshipManager` / `UserManager` / `TopicOperatorStore` at their NON-resolution
+  read primitives (relationship: `resolveByName`/`getAll`/`get` for the "do I know this
+  person" surface; user-registry: `listUsers`/`getUser`; topic-operator: a `peerOperators`
+  read), so existing context/attribution callers see the union without modification and no
+  direct-file reader bypasses it — a per-store audit confirms every read callsite routes
+  through the correct layer, locked by a wiring-integrity test. **The
+  IDENTITY-RESOLUTION-OF-AN-INBOUND-PRINCIPAL primitives are EXPLICITLY EXCLUDED from the
+  union and resolve against the LOCAL authoritative store ONLY** (REQ-M14):
+  `UserManager.resolveFromChannel`/`resolveFromTelegramUserId`/`resolveFromSlackUserId`/
+  `resolveFromMessage`, `RelationshipManager.resolveByChannel` when used to decide "who
+  is messaging me", and `TopicOperatorStore.getOperator`/`sessionContextBlock` are
+  authority decisions (L15) and MUST NOT consult the foreign namespace. The earlier
+  framing — which folded `resolveFromChannel`/`resolveFromTelegramUserId` and `getOperator`
+  into the union read set — is RETRACTED: that is the identity-resolution-bleed hole
+  (finding #14 / §2.1). **The union is read-only over foreign records:** a replicated
   record from peer B is READABLE (the agent knows the person exists on the other machine)
   but is NEVER written back into local `relationships/*.json` / `users.json`, never
   re-indexed into the local `channelIndex`/`nameIndex` as authoritative. **Every rendered
@@ -1010,6 +1222,41 @@ each merge seam and the Phase-C invariants.
   property of WS2.3** and it falls out of first-hop binding + the read-only union for
   free; the new code is the revalidation gate refusing to let a synced field become
   locally authoritative.
+- **REQ-M14 — Identity-resolution of an inbound principal is LOCAL-ONLY; a foreign-namespace
+  record is NEVER a resolution source for "who is this" (gap #14, the identity-resolution
+  bleed — §2.1).** REQ-M8 closes the PERMISSION path (`hasPermission` reads the local store),
+  but resolution-of-an-inbound-principal is a SEPARATE, broader authority decision (L15) and
+  has many MORE consumers than permission checks: attribution, greeting, "who messaged me",
+  operator-inference, relationship-context selection, and audit attribution. **All of these
+  resolve through the SAME primitives** — `UserManager.resolveFromChannel` (`UserManager.ts:35`),
+  `resolveFromTelegramUserId` (`:50`), `resolveFromSlackUserId` (`:66`), `resolveFromMessage`
+  (`:28`), and `TopicOperatorStore.getOperator`/`sessionContextBlock` — and TODAY they all read
+  ONLY the local `channelIndex`/`users` map / local operator file. **WS2.3's union-reader
+  discipline (REQ-M7) MUST NOT wire these into the union.** A synced, attacker-authored
+  `telegramUserId`/`slackUserId`/channel-uid in a foreign-namespace `user-registry` replica
+  MUST NEVER cause an inbound message to resolve to that foreign profile — that is the exact
+  Caroline identity-bleed class ("Know Your Principal"). Concretely:
+  - The five resolution primitives above resolve against the **local authoritative store
+    ONLY**. The foreign namespace is invisible to them — identical to how
+    `TopicOperatorStore.sessionContextBlock` (`TopicOperatorStore.ts:127`) is already scoped
+    to the LOCAL operator and never a synced one (REQ-M7).
+  - Foreign records remain visible ONLY via an explicit, clearly-named, NON-AUTHORITATIVE
+    "does any peer know this person" read API (e.g. `UserManager.peerKnowsPrincipal(channel)
+    → {machineId, name}[]`, `RelationshipManager.peerContextForPerson(...)`) — a separate
+    method that returns peer claims tagged with `originMachineId`, NEVER the resolution
+    method an inbound-message handler calls to decide identity. A caller that wants "who is
+    this inbound sender" gets the local answer; a caller that wants "what do my other
+    machines know about this person" calls the peer-read API and treats the result as a
+    peer's claim to re-ground against.
+  - The receiver revalidation in REQ-M8 (a synced identity-bearing field is never locally
+    authoritative) is the WRITE-side guard; REQ-M14 is the READ-side guard ensuring the
+    resolution path never even *reads* a foreign binding as the answer to "who is this".
+  Proven by **`foreign-record-never-resolves-inbound-principal`**: seed a foreign-namespace
+  `user-registry` replica binding `telegramUserId=T` (and a channel-uid) to an
+  attacker-authored profile P with `permissions:['admin']`; deliver an inbound message from
+  Telegram user T; assert `resolveFromTelegramUserId(T)`/`resolveFromChannel(...)` return the
+  LOCAL answer (null if no local profile, the local profile otherwise) and NEVER P, and that
+  the peer-read API surfaces P only as a tagged, non-authoritative peer claim.
 - **REQ-M9 — Conflict resolution for VALUE edits: append-both, mark conflict, ONE deduped
   attention (parent §WS2 line 251).** Relationships and the user registry are high-impact
   stores, so concurrent VALUE edits to the same record at partition-heal are
@@ -1097,17 +1344,23 @@ so a reviewer can check it in one place:
   (REQ-M6/M11). No rule reads "the other machine." **The merge-acceptance skew bound is a
   FIXED 30s config constant (REQ-M6), NOT a "pool-measured" value (gap #2 corrected); the
   5-min liveness tolerance never gates merge acceptance.**
-- **PC-3 Headless enrollment.** A new VM becomes a recipient via the operator-authenticated
-  registry/pairing flow that already works headless (`MachineIdentityManager.registerMachine`),
-  re-enrolls into pending erasures automatically (REQ-D11), and exposes de-pair/revoke as
-  an authenticated API + dashboard action (REQ-K3) — never a terminal-only or
-  console-required step.
+- **PC-3 Headless enrollment, deny-by-default (REQ-E1).** A new VM becomes a recipient ONLY
+  via the operator-authenticated registry/pairing flow that already works headless
+  (`MachineIdentityManager.registerMachine`, REQ-E1) — deny-by-default, self-advertising never
+  admits (REQ-E1/M5b, finding #2); it re-enrolls into pending erasures automatically
+  (REQ-D11), and exposes de-pair/revoke as an authenticated API + dashboard action (REQ-K3) —
+  never a terminal-only or console-required step.
 - **PC-4 Bounded per-store budget independent of pool size — WITH PINNED NUMBERS (gap #12).**
-  Fixed aggregate replicated-PII ceiling **`multiMachine.stateSync.aggregateReplicatedPiiBytes`
-  = 64 MiB**, an explicit sub-allocation of the parent
-  **`multiMachine.aggregateReplicatedJournalBytes` = 256 MiB** (REQ-D2/M12); fixed-size
-  erasure watermark, not a per-record list (REQ-D12); deferred-erasure queue ENTRY COUNT is
-  `O(outstanding erasures)`, not `O(pool × erasures)` (REQ-D10); quarantine ring
+  Standalone aggregate replicated-PII ceiling **`multiMachine.stateSync.aggregateReplicatedPiiBytes`
+  = 64 MiB**, OWNED by this spec and pool-independent — NOT anchored to a parent constant (the
+  earlier "sub-allocation of a 256 MiB parent" framing is retracted, finding #3; the parent
+  key does not exist on disk). IF a parent `aggregateReplicatedJournalBytes` later lands, a CI
+  assertion (`pii-budget-under-aggregate`) keeps 64 MiB ≤ it (REQ-D2/M12); fixed-size
+  erasure watermark, not a per-record list (REQ-D12); deferred-erasure queue carries a FIXED
+  ceiling (`maxOutstandingErasures` + `maxQueueBytes`) independent of N with an
+  escalate-and-shed-oldest over-ceiling policy + loss counter (REQ-D10, finding #4 — the
+  earlier "drains to zero" claim is corrected: a chronically-offline peer would otherwise
+  hold every row open forever); quarantine ring
   per-peer-bounded with breaker (REQ-M11). `budget-burst-invariant` asserts total on-disk
   replicated-PII bytes < 64 MiB at `N=2` AND `N=8` with max-size records; ceiling-pressure
   eviction preserves in-window tombstones (`ceiling-pressure-preserves-tombstones`).
@@ -1158,10 +1411,12 @@ involves the pool.
   **freetext-clamped** (§2.3).
 - **non-recipient-cannot-decrypt** + **disclosure-minimization** (§2.4) —
   `decryptFromSync` throws for a third keypair; no off-schema field in an outbound batch.
-- **aad-binds-recipient-and-kind** (gap #3, REQ-T3) — a payload sealed for recipient R /
-  kind K fails to decrypt-and-accept when replayed to a different recipient or under a
-  different kind (only if AAD binding is adopted; if not, this test is replaced by an
-  Open-Question-7 note that authenticity rests solely on the Ed25519 layer).
+- **aad-binds-recipient-and-kind** (finding #6, REQ-T3 — UNCONDITIONAL Tier-1 test now the
+  fork is resolved to ADOPT AAD) — a payload sealed for recipient R / kind K
+  (`setAAD(recipientFingerprint || journalKind || senderMachineId)`) fails to
+  decrypt-and-accept when replayed to a different recipient OR under a different kind
+  (`decipher.final()` throws on the AAD mismatch). No longer conditional on a deferred
+  decision — AAD binding is required by REQ-T3.
 - **erasure-tombstone-emitted** + **tombstone-removes-foreign** +
   **erasure-matches-independently-authored-record** (gap #5) +
   **erasure-removes-locally-authored-copy-on-receiver** (gap #6) + **anti-resurrection** +
@@ -1178,6 +1433,27 @@ involves the pool.
   record still applies.
 - **union-read-only-foreign** (REQ-M7) — a foreign record is readable but never written
   into a local file / local index (VALUE sync); erasure is the named exception.
+- **foreign-record-never-resolves-inbound-principal** (finding #14, REQ-M14, §2.1) — a
+  foreign-namespace `user-registry` replica binding `telegramUserId=T`/a channel-uid to an
+  attacker profile P (`permissions:['admin']`); an inbound message from T resolves to the
+  LOCAL answer (or null), NEVER P; P appears only via the explicit non-authoritative
+  peer-read API, tagged with its origin machine. The identity-resolution-bleed guard.
+- **erasure-tracks-flag-dark-registered-peer** (finding #2, REQ-D12/M5b) — a registered peer
+  advertising `seamlessnessFlags` DARK is STILL seeded into `pending` from the durable
+  registry and still owes an erasure confirmation; the flag-dark claim does not exempt it.
+- **flag-toggle-cannot-evade-erasure** (finding #2, REQ-D12/D20/M5b) — a peer that flips its
+  advertised flag dark AFTER an erasure is emitted cannot drop out of `pending`, and cannot
+  toggle the flag to retire the legacy `propagateRemoval` path while still un-migrated; the
+  obligation persists until a real ack or an operator decommission.
+- **peer-tombstone-cannot-destroy-locally-authored-record-without-mandate** (finding #7,
+  REQ-D6/D18/D21) — a PEER-authored delete tombstone with NO operator-erasure mandate may
+  suppress ONLY the EMITTING peer's own foreign-namespace replica on the receiver; assert it
+  does NOT fire the REQ-D18 destructive local delete of the receiver's LOCALLY-AUTHORED
+  record (the local plaintext file SURVIVES); only a mandate-carrying tombstone (REQ-D9)
+  destroys a locally-authored copy.
+- **over-broad-tombstone-rejected** (finding #7, REQ-D21) — a tombstone whose channel-uid
+  key-set cardinality exceeds the fixed bound is QUARANTINED (not applied), preventing
+  multi-victim suppression in one shot.
 - **decommissioned-peer-return-does-not-resurrect** (gap #9, REQ-D7/D19) — sustained
   scenario: erase, decommission-and-revoke a long-offline peer, GC the tombstone, the peer
   returns; assert its stale local replica is REFUSED (revoked, not a sync source) and the
@@ -1188,8 +1464,13 @@ involves the pool.
 - **single-machine-no-op** (INV-iii) — per store, a 1-VM agent's
   `RelationshipManager`/`UserManager`/`TopicOperatorStore` behavior is byte-for-byte
   unchanged (zero delta).
-- **bounded-quarantine-ring** + **bounded-erasure-queue** (P19) — sustained-failure tests
-  proving fixed ceilings.
+- **bounded-quarantine-ring** (P19) — sustained-failure test proving the fixed quarantine
+  ceiling (oldest-eviction + loss counter).
+- **bounded-erasure-queue** (P19, finding #4, REQ-D10) — the SUSTAINED-FAILURE test: drive
+  **E** erasures × **N=8** peers where **≥2 peers never ack**; assert durable queue bytes stay
+  STRICTLY UNDER `maxQueueBytes` and rows under `maxOutstandingErasures` no matter how large E
+  grows, over-ceiling SHEDS oldest-first with a loss counter + ONE HIGH Attention item
+  (loudly), and no `pending`/`confirmed` list exceeds the registered-peer count.
 
 ### 7.2 Tier 2 — Integration (full HTTP pipeline)
 
@@ -1243,6 +1524,11 @@ involves the pool.
 - **pii-kind-allowlist-lint** — a new `JournalKind` cannot be marked PII-bearing without a
   matching `PII_JOURNAL_KINDS` entry choosing its transport (REQ-M1), and every new
   replicated kind ships its `KindRetention` in the same PR (REQ-D1).
+- **pii-budget-under-aggregate** (finding #3, REQ-D2) — IF a parent
+  `multiMachine.aggregateReplicatedJournalBytes` exists on disk, assert
+  `aggregateReplicatedPiiBytes <= aggregateReplicatedJournalBytes` so WS2.3's standalone
+  64 MiB ceiling can never over-commit a parent aggregate; a no-op (passes) while the parent
+  key is absent (it does not exist today — the 256 MiB anchor was phantom).
 - **observable-decision-audit** — every receive-side decision class
   (forged/duplicate/invalid/quarantined/tombstoned/suspect) emits a feature metric + audit
   line (INV-i / P7).
@@ -1255,7 +1541,14 @@ involves the pool.
   `multiMachine.stateSync.relationships`, `.userRegistry`, and `.topicOperators` (each
   added via `migrateConfig()` with existence checks, P3 Migration Parity). Absent flag =
   the store runs local-only exactly as today; a single-machine agent is a strict no-op
-  (the guard is pool membership, not just the flag — `single-machine-no-op` test).
+  (the guard is pool membership, not just the flag — `single-machine-no-op` test). **The
+  config keys OWNED by this spec, all added via `migrateConfig()` with existence checks
+  (P3):** `multiMachine.stateSync.relationships`/`.userRegistry`/`.topicOperators` (dark
+  flags), `multiMachine.stateSync.aggregateReplicatedPiiBytes` (=64 MiB standalone ceiling,
+  finding #3), `multiMachine.stateSync.mergeSkewToleranceMs` (=30s), `.sealConcurrency`
+  (=4), `multiMachine.erasure.maxOutstandingErasures` (=10_000) / `.maxQueueBytes` (=16 MiB,
+  finding #4) / `.maxTombstoneKeySet` (=8, finding #7) / `.graceWindowDays` (=30) /
+  `.completionDeadlineHours` (=24).
 - **RO-2 Dry-run first (graduated rollout track).** Every store's merge path has a dry-run
   mode that logs intended merges/deletes without writing the replica namespace. First
   deployment runs dry-run to observe intended relationship/user/operator merges before any
@@ -1328,15 +1621,19 @@ involves the pool.
    identity surface (not a UUID) and erasure also destructively deletes a locally-authored
    copy, the receiver case where VM-B authored its OWN record for the same human is now
    covered; the genuinely-foreign-only case (VM-B has ONLY a replica) remains the OQ.
-7. **GCM AAD binding vs. single Ed25519 authenticity layer (gap #3, REQ-T3).** The X25519
-   seal carries NO AAD today, so it provides confidentiality only — ALL authenticity/binding
-   rests on the SINGLE Ed25519 envelope layer (no crypto-layer defense-in-depth, and nothing
-   cryptographically binds a sealed blob to its recipient or declared kind). Adopt
-   `setAAD(recipientFingerprint || journalKind || senderMachineId)` (a one-line change to the
-   seal callsite — not new crypto) to make the "second independent check" real, OR accept the
-   single-point-of-failure and document it. **Lean:** ADD the AAD binding — it is cheap, it
-   closes a cross-recipient/cross-kind replay path, and it makes REQ-T3's "belt and
-   suspenders" framing honest. Confirm with reviewer/operator.
+7. **GCM AAD binding — RESOLVED, no longer open (finding #6, REQ-T3).** **Decision: ADOPT
+   AAD binding, unconditionally required.** This was previously posed as an open fork; per
+   the standing "design-fork decisions are mine" operator directive it is resolved IN-SPEC:
+   REQ-T3 now requires `setAAD(recipientMachineFingerprint || journalKind || senderMachineId)`
+   on every WS2.3 seal, `aad-binds-recipient-and-kind` is an unconditional Tier-1 test, and a
+   PII feature does NOT leave its only cross-recipient/cross-kind replay defense unbuilt. The
+   "confidentiality-only, single Ed25519 SPOF" alternative is REJECTED. **Cost correction:**
+   it is NOT the "one-line change" earlier claimed — verified against `SecretStore.ts:499`/
+   `:554`, it threads an OPTIONAL `aad` param through both `encryptForSync`/`decryptFromSync`
+   (a `setAAD()` call in each; `decipher.final()` throws on mismatch = the rejection we want)
+   plus the two WS2.3 wrapper sites computing the same AAD from the authenticated envelope. No
+   new crypto, backward-compatible (absent AAD = current behavior), small and contained — but
+   spanning two functions + two callsites, stated honestly. See REQ-T3.
 8. **HLC + snapshot-then-tail provenance (gaps #1, #11 — the dependency-gate).** These
    primitives are NOT in the codebase and are NOT in any cited converged spec; the spec's
    ordering/anti-replay/anti-skew/Phase-C-bound guarantees all depend on them (REQ-M13). Is
