@@ -2,6 +2,7 @@
 title: "Promise-Beacon Escalation — a promise survives its owning session's death"
 slug: "promise-beacon-escalation"
 author: "echo"
+parent-principle: "Close the Loop"
 eli16-overview: "promise-beacon-escalation.eli16.md"
 review-convergence: "2026-06-13T03:46:46.401Z"
 review-iterations: 5
@@ -103,7 +104,7 @@ Only after Rung-1 escalation has **failed `maxEscalationAttempts` times** (defau
 - **I6 — Idempotent spawn.** Durable `escalationAttemptId` persisted before spawn; epoch re-stamp is verified post-spawn; a partial failure cannot double-deliver (security#8, adversarial#1).
 - **I7 — Quiet-hours + spend respected.** Rung 2/3 messaging re-checks quiet hours; any LLM use routes through the existing `LlmQueue` daily cap.
 - **I8 — Untrusted commitment text (honest scope).** Injected promise text is fenced literal data, **treated as untrusted** — fencing *reduces* instruction-confusion but is not an absolute injection-proof barrier (LLM behavior can't be claimed perfectly contained). The structural side-effect gate (I13) is what *limits the impact*: even if injected text influences the revived session's reasoning/prose, no external mutation occurs before server-recorded revalidation. The guarantee is "impact-contained," not "influence-impossible."
-- **I9 — GLOBAL escalation budget (thundering-herd brake).** Beyond per-commitment/per-topic limits, a **global semaphore** caps concurrent in-flight revives at `maxConcurrentEscalations` (default 2) and at most `maxEscalationSpawnsPerTick` (default 1) new spawns per beacon tick. Excess escalations defer to Rung 2 / next tick. Under measured machine load/quota pressure (reuse the existing pressure signal the SessionReaper uses), Rung 1 is globally suppressed and only Rung 2 runs. This is the direct guard against the mass-reap thundering herd (scalability#1/#4) — the exact failure shape of the June-5 meltdown.
+- **I9 — GLOBAL escalation budget (thundering-herd brake).** Beyond per-commitment/per-topic limits, a **global semaphore** caps concurrent in-flight revives at `maxConcurrentEscalations` (default 2) and at most `maxEscalationSpawnsPerTick` (default 1) new spawns per beacon tick. Excess escalations fall back to Rung 2 / next tick. Under measured machine load/quota pressure (reuse the existing pressure signal the SessionReaper uses), Rung 1 is globally suppressed and only Rung 2 runs. This is the direct guard against the mass-reap thundering herd (scalability#1/#4) — the exact failure shape of the June-5 meltdown.
 - **I10 — Secret-safe excerpts.** Rung 2/3 user text redacts secret-shaped content.
 - **I11 — Field-level integrity.** `escalationAttempts`/`lastEscalationAt`/`currentRung`/`escalationAttemptId`/`escalationInFlight`/`revivalMode`/`revalidatedAt`/`revalidatedBy` are **server-written only** — never accepted on `POST`/`PATCH /commitments` (a caller cannot pre-set `escalationAttempts: 999` to disable the cap, nor PATCH `revalidatedAt` to self-clear the side-effect gate).
 - **I12 — Rung-2 messaging is globally budgeted (no honest-spam flood).** Rung-2 sends after a mass reap are aggregated to one per-topic digest per `rung2DigestWindowMs` (§3.2). The honest-status path can never become its own flood — the symmetric messaging-side guard to I9.
@@ -137,9 +138,9 @@ Ships **dark**, config-gated under `monitoring.promiseBeacon.escalation`:
 
 The spec extends two existing subsystems and depends on three foundation capabilities — named explicitly so the build phase can verify/add them rather than discovering a gap mid-implementation (round 3 foundation audit):
 - **`CommitmentTracker.mutate()` CAS** — already the surface all commitment state uses; escalation fields ride it. No new primitive.
-- **`SpawnRequestManager` idempotency key** — the spawn surface must accept `escalationAttemptId` and treat a duplicate request with the same key (within a window, default 1h) as a no-op (I14). If the current surface lacks this, adding it is an in-scope prerequisite of this build, NOT a separate deferral.
+- **`SpawnRequestManager` idempotency key** — the spawn surface must accept `escalationAttemptId` and treat a duplicate request with the same key (within a window, default 1h) as a no-op (I14). If the current surface lacks this, adding it is an in-scope prerequisite of this build, built here rather than split out.
 - **Lease/owner store CAS for spawn authority** (§9) — escalation spawns gate on the topic's fenced lease epoch; this is the existing multi-machine lease, reused.
-- **external-operation-gate** — the existing `mcp__*` PreToolUse gate (`/operations/evaluate`) must read the session's `revivalMode` and the commitment's `revalidatedAt` to enforce I13. The gate exists today; this build adds the `revivalMode`-aware branch to it (in-scope, not a deferral).
+- **external-operation-gate** — the existing `mcp__*` PreToolUse gate (`/operations/evaluate`) must read the session's `revivalMode` and the commitment's `revalidatedAt` to enforce I13. The gate exists today; this build adds the `revivalMode`-aware branch to it (in-scope, built here).
 
 ## 8. Migration parity
 
@@ -160,7 +161,7 @@ The spec extends two existing subsystems and depends on three foundation capabil
 
 ## 10. Frontloaded Decisions
 
-- **FD-1 — Authority model (NON-cheap; frontloaded, not deferred).** v1 escalation confers no new authority; Rung 1 revives a normal gated session with a conservative status-first prompt; no separate per-commitment auto-execute gate in v1 (relies on existing operation/coherence gates + dark/dry-run). See §3.0. Re-eval trigger: if a class of actionful promises proves to need pre-execution confirmation in practice, add an `actionClass` field + gate in v2.
+- **FD-1 — Authority model (NON-cheap; frontloaded, not punted).** v1 escalation confers no new authority; Rung 1 revives a normal gated session with a conservative status-first prompt; no separate per-commitment auto-execute gate in v1 (relies on existing operation/coherence gates + dark/dry-run). See §3.0. Re-eval trigger: if a class of actionful promises proves to need pre-execution confirmation in practice, add an `actionClass` field + gate in v2.
 - **FD-2 — Defaults.** `maxEscalationAttempts=3`, `minEscalationIntervalMs=120000` (hard floor), `maxConcurrentEscalations=2`, `maxEscalationSpawnsPerTick=1`, `reviveSettleMs=30000`, `rung2MinIntervalMs=1800000`. Cheap-to-change-after (config knobs, no external/identity surface; ships dark) — contested and cleared.
 - **FD-3 — Attempt-counter semantics.** Only Rung-1 spawn attempts consume `maxEscalationAttempts`; Rung-2 messaging is separately rate-limited and never consumes the cap. See §3.2/§4 I1.
 - **FD-4 — Phase-1 owner-gone behavior.** Status-notice only (no cross-machine resurrection). Re-eval trigger: a distributed spawn lock / session-pool transfer lands.

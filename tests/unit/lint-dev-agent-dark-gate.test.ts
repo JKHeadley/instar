@@ -309,41 +309,30 @@ describe('lint-dev-agent-dark-gate', () => {
       '39': 'monitoring.bootHealthBeacon.enabled',
       '58': 'monitoring.parallelWorkSentinel.enabled',
       '129': 'monitoring.sessionReaper.enabled',
-      // reap-notify spec: the reapNotify block gained perTopic +
-      // maxImmediatePerFlush (and the CODE-defaulted-keys NOTE), shifting
-      // every entry below it by +10 (resumeQueue.* keys are deliberately
-      // ABSENT from ConfigDefaults — CODE defaults so the later fleet flip
-      // works). Composed with the WS3 one-voice +8 shift (the multiMachine
-      // seamlessness sub-block) for sessionPool and later. Each verified by
-      // hand against the MERGED ConfigDefaults.ts.
       '187': 'monitoring.agentWorktreeReaper.enabled',
       '201': 'monitoring.mcpProcessReaper.enabled',
       '215': 'monitoring.agentSleep.enabled',
       '238': 'monitoring.failureLearning.enabled',
       '270': 'monitoring.correctionLearning.enabled',
-      '342': 'monitoring.apprenticeshipCycleSla.enabled',
-      '350': 'monitoring.geminiCapacityEscalation.enabled',
-      '358': 'monitoring.releaseReadiness.enabled',
-      // green-pr-automerge-enforcement: the greenPrAutoMerge block (a NEW
-      // deliberate-fleet-default `enabled: false`) was inserted after
-      // releaseReadiness (373), composed in the merge with main's new
-      // threadline.singleNegotiator block (450). Every entry below shifted
-      // accordingly. Verified by hand against the MERGED ConfigDefaults.ts.
-      '373': 'monitoring.greenPrAutoMerge.enabled',
-      '423': 'threadline.a2aCheckIn.enabled',
-      '486': 'mentor.enabled',
-      '497': 'mentor.autonomousFix.enabled',
-      '512': 'mentee.enabled',
-      // WS2.1 preferences pool: multiMachine.seamlessness gained ws21PreferencesPool
-      // (+8 lines) → sessionPool family +8; coherenceJournal gained the `preferences`
-      // sub-block (+10) → cartographer entries +18 total. Composed on #1098's map.
-      // Verified by hand (attributor) against ConfigDefaults.ts after the WS2.1 additions.
-      '631': 'multiMachine.sessionPool.enabled',
-      '656': 'multiMachine.sessionPool.inboundQueue.enabled',
-      '685': 'multiMachine.sessionPool.holdForStability.enabled',
-      '840': 'cartographer.freshnessSweep.enabled',
-      '885': 'cartographer.conformanceAudit.llmEnrichment.enabled',
-      '910': 'cartographer.subtreeNav.llmRerank.enabled',
+      // PROMISE-BEACON-ESCALATION-SPEC: the monitoring.promiseBeacon.escalation
+      // default block (22 lines, `enabled` deliberately OMITTED so it is dev-
+      // gated — hence NO new entry here) was inserted right after the
+      // correctionLearning block, shifting EVERY entry below by +22. Verified by
+      // hand (attributor) against the MERGED ConfigDefaults.ts.
+      '364': 'monitoring.apprenticeshipCycleSla.enabled',
+      '372': 'monitoring.geminiCapacityEscalation.enabled',
+      '380': 'monitoring.releaseReadiness.enabled',
+      '395': 'monitoring.greenPrAutoMerge.enabled',
+      '445': 'threadline.a2aCheckIn.enabled',
+      '508': 'mentor.enabled',
+      '519': 'mentor.autonomousFix.enabled',
+      '534': 'mentee.enabled',
+      '653': 'multiMachine.sessionPool.enabled',
+      '678': 'multiMachine.sessionPool.inboundQueue.enabled',
+      '707': 'multiMachine.sessionPool.holdForStability.enabled',
+      '862': 'cartographer.freshnessSweep.enabled',
+      '907': 'cartographer.conformanceAudit.llmEnrichment.enabled',
+      '932': 'cartographer.subtreeNav.llmRerank.enabled',
     };
     const actual = attributeRealConfigDefaults();
     expect(actual).toEqual(EXPECTED);

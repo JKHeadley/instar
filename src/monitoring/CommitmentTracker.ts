@@ -214,6 +214,35 @@ export interface Commitment {
    * commitments-sync a seq-windowed DELTA instead of a whole-store blob.
    */
   lastMutatedSeq?: number;
+
+  // ── Promise-Beacon Escalation (PROMISE-BEACON-ESCALATION-SPEC §4) ──
+  // ALL server-written-only (I11): never accepted on POST/PATCH /commitments.
+  // Durable cold-state so a restart cannot reset the cap (I1).
+  /** Count of Rung-1 revive attempts. Incremented BEFORE the spawn (I1). */
+  escalationAttempts?: number;
+  /** ISO of the most recent escalation attempt (backoff floor anchor). */
+  lastEscalationAt?: string;
+  /** Which rung the escalation is currently on. */
+  currentRung?: '1' | '2' | '3' | null;
+  /** Idempotency key for the in-flight Rung-1 spawn (I6/I14). */
+  escalationAttemptId?: string;
+  /** True while a Rung-1 revive is in flight (resolved by the timeout contract, §3.1). */
+  escalationInFlight?: boolean;
+  /**
+   * Spawn-time marker on a revived session. Read by the external-operation-gate
+   * to block side-effecting tools until server-recorded revalidation (I13).
+   */
+  revivalMode?: 'status-only-until-revalidated';
+  /** Server-recorded revalidation time (ISO). Unblocks side-effects in the gate (I13). */
+  revalidatedAt?: string;
+  /** The authenticated session id that revalidated (I13). */
+  revalidatedBy?: string;
+  /** Count of Rung-2 honest-status notifications sent (bounded, §3.2). */
+  rung2NotificationCount?: number;
+  /** ISO of the most recent Rung-2 send (per-commitment floor). */
+  lastRung2At?: string;
+  /** Most recent escalation refusal reason for observability (§6). */
+  refusalReason?: string;
 }
 
 export interface CommitmentStore {

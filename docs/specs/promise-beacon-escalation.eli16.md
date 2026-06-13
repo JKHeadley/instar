@@ -23,3 +23,7 @@ The whole reason sessions were dying in the first place (the June 5 meltdown) wa
 ## What changes for you
 
 Mostly invisible when things work — promises just quietly get kept even if a session dies in the middle. When they *can't* be kept, you get an honest heads-up instead of silence. It ships turned off, then in a watch-only "here's what I would have done" mode first, and only goes live after that evidence looks clean — so it can't misbehave on the way in.
+
+## The principle it serves
+
+This change serves the constitutional standard **Close the Loop** — "every loop the agent opens (a promise to a user) must be durably registered and re-surfaced on a cadence until it reaches a *deliberate* close." Today a promise whose owning session dies is silently closed as "broken"; this adds the missing rung that re-surfaces it *into action*, not just into a postmortem record.
