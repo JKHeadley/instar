@@ -378,9 +378,17 @@ describe('lint-dev-agent-dark-gate', () => {
       // line count incl. its 12-line comment). RECOMPUTED via the attributor against the
       // MERGED ConfigDefaults.ts.
       '894': 'multiMachine.stateSync.knowledge.enabled',
-      '1002': 'cartographer.freshnessSweep.enabled',
-      '1047': 'cartographer.conformanceAudit.llmEnrichment.enabled',
-      '1072': 'cartographer.subtreeNav.llmRerank.enabled',
+      // WS2.5 (multi-machine-replicated-store-foundation): the stateSync block gained an
+      // `evolutionActions: { enabled:false, dryRun:true }` per-store sub-block — the FIFTH
+      // replicated-store consumer + the FOURTH memory-family kind. It ADDS this literal
+      // `enabled:false` path (908, classified in DARK_GATE_EXCLUSIONS as optional-integration)
+      // right after the knowledge sub-block and shifts every cartographer + credentialRepointing
+      // entry below it by +14 (the new sub-block's line count incl. its comment). RECOMPUTED via
+      // the attributor against the MERGED ConfigDefaults.ts.
+      '908': 'multiMachine.stateSync.evolutionActions.enabled',
+      '1016': 'cartographer.freshnessSweep.enabled',
+      '1061': 'cartographer.conformanceAudit.llmEnrichment.enabled',
+      '1086': 'cartographer.subtreeNav.llmRerank.enabled',
       // Threadline Robustness Phase 2 (CMT-1362): the threadline.canonicalHistory
       // block (no `enabled` literal — conversationDiscipline is dev-gated) is inserted
       // AFTER the threadline section; entries at/after mentor.enabled shift again.
@@ -394,7 +402,7 @@ describe('lint-dev-agent-dark-gate', () => {
       // cartographer block but above credentialRepointing → this END entry shifted
       // +15 (1015 → 1030); cartographer/sessionPool entries unchanged. RECOMPUTED via
       // the attributor against the MERGED ConfigDefaults.ts.
-      '1109': 'subscriptionPool.credentialRepointing.enabled',
+      '1123': 'subscriptionPool.credentialRepointing.enabled',
     };
     const actual = attributeRealConfigDefaults();
     expect(actual).toEqual(EXPECTED);

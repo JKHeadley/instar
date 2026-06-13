@@ -36,9 +36,21 @@ import path from 'node:path';
 
 import { SafeFsExecutor } from './SafeFsExecutor.js';
 
-export type JournalKind = 'topic-placement' | 'session-lifecycle' | 'autonomous-run' | 'threadline-conversation' | 'guard-latch' | 'pref-record' | 'relationship-record' | 'learning-record' | 'knowledge-record';
+export type JournalKind = 'topic-placement' | 'session-lifecycle' | 'autonomous-run' | 'threadline-conversation' | 'guard-latch' | 'pref-record' | 'relationship-record' | 'learning-record' | 'knowledge-record' | 'evolution-action-record';
 
-export const JOURNAL_KINDS: JournalKind[] = ['topic-placement', 'session-lifecycle', 'autonomous-run', 'threadline-conversation', 'guard-latch', 'pref-record', 'relationship-record', 'learning-record', 'knowledge-record'];
+export const JOURNAL_KINDS: JournalKind[] = ['topic-placement', 'session-lifecycle', 'autonomous-run', 'threadline-conversation', 'guard-latch', 'pref-record', 'relationship-record', 'learning-record', 'knowledge-record', 'evolution-action-record'];
+// 'evolution-action-record' added for WS2.5 (multi-machine-replicated-store-foundation): the
+// FIFTH replicated-store consumer and the FOURTH memory-family kind, riding the same HLC
+// foundation. Like 'knowledge-record' it is the STATIC half of the DUAL REGISTRY — a kind in
+// ReplicatedKindRegistry but NOT here would advertise stateSyncReceive=true yet
+// serve/apply/pull NOTHING (a silent no-replication). Its concrete schema (a discriminated
+// union on `op` for value + tombstone), disclosure-minimized projection (the local ACT-NNN id
+// NEVER replicated), content-fingerprint recordKey identity surface (normalize(title) +
+// normalize(commitTo) + createdAt), 64KB per-entry cap, and bounds live in
+// EvolutionActionsReplicatedStore.ts (the consumer); here it is just the kind tag the
+// serve/apply/getOwnAdvert path enumerates. Additive — readers ignore unknown kinds. The
+// load-bearing cross-machine field is `status`: a peer must SEE an action was already
+// completed/in_progress elsewhere so it does not redo it.
 // 'knowledge-record' added for WS2.4 (multi-machine-replicated-store-foundation): the
 // FOURTH replicated-store consumer and the THIRD memory-family kind, riding the same HLC
 // foundation. Like 'learning-record' it is the STATIC half of the DUAL REGISTRY — a kind
@@ -205,6 +217,15 @@ export const DEFAULT_RETENTION: Record<JournalKind, KindRetention> = {
   // path (KNOWLEDGE_MAX_ENTRY_BYTES) so a fat summary replicates (the file BODY is never
   // replicated — only the catalog metadata).
   'knowledge-record': { maxFileBytes: 4 * 1024 * 1024, rotateKeep: 4 },
+  // evolution-action-record (WS2.5): a memory-family store — NEVER rotateKeep:0 (rotate-but-
+  // never-delete would be a compliance defect). Actions are FEW + bounded (the
+  // EvolutionManager prunes to maxActions=300), so a small window with a few archives mirrors
+  // the learning-record sibling. The churny add/updateAction loop is coalesced by the store's
+  // rate cap (EvolutionActionsReplicatedStore.EVOLUTION_ACTION_RECORD_BOUNDS); this is the
+  // journal-level fallback. The per-entry size cap is RAISED to 64KB on the
+  // evolution-action-record applier path (EVOLUTION_ACTION_MAX_ENTRY_BYTES) so a fat action
+  // description replicates.
+  'evolution-action-record': { maxFileBytes: 4 * 1024 * 1024, rotateKeep: 4 },
 };
 
 export const DEFAULT_FLUSH_INTERVAL_MS = 250;
@@ -378,7 +399,7 @@ export class CoherenceJournal {
   private state: WriterState = 'closed';
   private incarnation = '';
   /** Next seq to assign at enqueue, per kind (in-memory counter seeded at open). */
-  private nextSeq: Record<JournalKind, number> = { 'topic-placement': 1, 'session-lifecycle': 1, 'autonomous-run': 1, 'threadline-conversation': 1, 'guard-latch': 1, 'pref-record': 1, 'relationship-record': 1, 'learning-record': 1, 'knowledge-record': 1 };
+  private nextSeq: Record<JournalKind, number> = { 'topic-placement': 1, 'session-lifecycle': 1, 'autonomous-run': 1, 'threadline-conversation': 1, 'guard-latch': 1, 'pref-record': 1, 'relationship-record': 1, 'learning-record': 1, 'knowledge-record': 1, 'evolution-action-record': 1 };
   /** Durable highWaterSeq per kind (advanced after data fdatasync). */
   private highWaterSeq: Record<JournalKind, number> = {
     'topic-placement': 0,
@@ -390,6 +411,7 @@ export class CoherenceJournal {
     'relationship-record': 0,
     'learning-record': 0,
     'knowledge-record': 0,
+    'evolution-action-record': 0,
   };
   /** In-memory enqueue order; drained by the flusher in seq order per kind. */
   private queue: QueuedEntry[] = [];
@@ -404,6 +426,7 @@ export class CoherenceJournal {
     'relationship-record': new Set(),
     'learning-record': new Set(),
     'knowledge-record': new Set(),
+    'evolution-action-record': new Set(),
   };
   private rateBuckets: Record<JournalKind, RateBucket>;
   private timer: ReturnType<typeof setInterval> | null = null;
@@ -448,6 +471,7 @@ export class CoherenceJournal {
       'relationship-record': config.retention?.['relationship-record'] ?? DEFAULT_RETENTION['relationship-record'],
       'learning-record': config.retention?.['learning-record'] ?? DEFAULT_RETENTION['learning-record'],
       'knowledge-record': config.retention?.['knowledge-record'] ?? DEFAULT_RETENTION['knowledge-record'],
+      'evolution-action-record': config.retention?.['evolution-action-record'] ?? DEFAULT_RETENTION['evolution-action-record'],
     };
     this.rateCapCfg = config.rateCap ?? DEFAULT_RATE_CAP;
     this.artifactRoots = (config.artifactRoots ?? [path.join(this.stateDir, 'autonomous'), this.stateDir]).map((r) => {
@@ -475,6 +499,7 @@ export class CoherenceJournal {
       'relationship-record': { tokens: this.rateCapCfg.capacity, lastRefillMs: initMs },
       'learning-record': { tokens: this.rateCapCfg.capacity, lastRefillMs: initMs },
       'knowledge-record': { tokens: this.rateCapCfg.capacity, lastRefillMs: initMs },
+      'evolution-action-record': { tokens: this.rateCapCfg.capacity, lastRefillMs: initMs },
     };
   }
 

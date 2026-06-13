@@ -625,3 +625,33 @@ Spec: `docs/specs/MENTOR-LIVE-READINESS-SPEC.md` §Fix 2a.
   a single-machine install is a strict no-op. The `KnowledgeReplicatedStore` projection strips the
   local id + filePath by construction. Spec:
   `docs/specs/multi-machine-replicated-store-foundation.md` §4 / §7.
+- **`EvolutionActionsReplicatedStore`** (`src/core/EvolutionActionsReplicatedStore.ts`) — the FIFTH
+  concrete consumer of the replicated-store foundation and the FOURTH **memory-family kind**:
+  `evolution-action-record`. `EvolutionActionsReplicatedStore` layers the kind onto the generic
+  envelope so a self-improvement ACTION the agent raised on machine A (the EvolutionManager action
+  queue — `ActionItem`) is known on machine B — ONE action queue, not one-per-machine. It REUSES the
+  WS2.4/WS2.2 machinery rather than downgrading it: a discriminated union on `op` (an `op:'put'` VALUE
+  schema and an `op:'delete'` TOMBSTONE schema), a strict **type-clamp on receive**
+  (`createdAt`/`dueBy`/`completedAt` validate as ISO-8601-or-absent, `priority` against the
+  {critical, high, medium, low} enum, `status` against the {pending, in_progress, completed, cancelled}
+  enum, `tags[]`/free text length-clamped, a path-shaped `source` sub-field jailed out) so a foreign,
+  attacker-controlled record can never smuggle markup through a render slot. The replicated projection
+  is **disclosure-minimized**: the local `ACT-NNN` id is NEVER replicated. The cross-machine `recordKey`
+  is a **content fingerprint** — `sha256(normalize(title) + normalize(commitTo) + createdAt)` — so the
+  SAME committed action on two machines collapses to ONE record instead of duplicating (the ACT id is
+  the cross-machine-unstable id, exactly the relationship-UUID / LRN-id trap solved with a stable
+  identity surface). **`status` is the load-bearing cross-machine field**: a status change RE-EMITS a
+  put so a peer SEES that an action was already completed/in_progress elsewhere and does not redo the
+  work; `status`/`priority`/`completedAt` are mutable (last-writer-witness wins; a concurrent
+  divergence — one machine completed, another in_progress — rides the SAME append-both-and-flag path,
+  no CRDT special-case). A `completed`/`cancelled` action is a TERMINAL state whose record is RETAINED
+  (history), NOT tombstoned — only an actual queue-REMOVAL (the prune-over-maxActions path) emits a
+  fingerprint-keyed tombstone (the resurrection guard); a foreign record renders inside a
+  `<replicated-untrusted-data origin="…">` envelope — quoted advisory work-item, never an instruction.
+  Per-entry cap raised to 64KB so a fat action description replicates; HIGH-impact at the
+  **replication** layer (append-both-and-flag) but **advisory** at the **read** layer (both variants of
+  an open conflict surface as guidance hints — an action is a work item to surface, not authority — the
+  read never blocks). Pure mechanism, dark by default behind `multiMachine.stateSync.evolutionActions`;
+  a single-machine install is a strict no-op. The `EvolutionActionsReplicatedStore` projection strips
+  the local ACT id by construction. Spec:
+  `docs/specs/multi-machine-replicated-store-foundation.md` §4 / §7.

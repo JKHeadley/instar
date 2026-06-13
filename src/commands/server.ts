@@ -3612,6 +3612,20 @@ export async function startServer(options: StartOptions): Promise<void> {
     const { KNOWLEDGE_KIND_REGISTRATION } = await import('../core/KnowledgeReplicatedStore.js');
     replicatedKindRegistry.register(KNOWLEDGE_KIND_REGISTRATION);
 
+    // WS2.5 (multi-machine-replicated-store-foundation) — register the FIFTH concrete
+    // replicated kind, `evolution-action-record`, onto the registry: the FOURTH memory-family
+    // kind (after WS2.4 knowledge + WS2.2 learnings + WS2.3 relationships). Dual-registry's
+    // dynamic half (the static half is CoherenceJournal.JOURNAL_KINDS, which now lists
+    // 'evolution-action-record'). Registration is INERT — emission/serve/pull stay gated
+    // behind `multiMachine.stateSync.evolutionActions.enabled` (default false ⇒ strict no-op).
+    // With it registered, selfStateSyncReceive self-reports `evolutionActions:true` IFF the
+    // store is enabled, and the rollback-unmerge resolves its contributing kind via getByStore.
+    // The local ACT-NNN id is NEVER replicated — keyed on a content fingerprint
+    // (EvolutionActionsReplicatedStore.deriveEvolutionActionRecordKey). The load-bearing field
+    // is `status`: a peer must SEE an action was already completed/in_progress elsewhere.
+    const { EVOLUTION_ACTION_KIND_REGISTRATION } = await import('../core/EvolutionActionsReplicatedStore.js');
+    replicatedKindRegistry.register(EVOLUTION_ACTION_KIND_REGISTRATION);
+
     // Snapshot-then-tail engine (Component 4 / build-order step 3,
     // multi-machine-replicated-store-foundation §6). The cache (FIXED ceiling,
     // §8.2 — NOT pool-scaled), the per-peer rebuild breaker (§6.3), and the engine
@@ -8199,6 +8213,55 @@ export async function startServer(options: StartOptions): Promise<void> {
     });
     void knowledgeUnionReader; // consumed by the knowledge peer-read surface + the journal-apply rollout stage (WS2.4+)
     void knowledgeManager.setKnowledgeReplicationEmitter; // the emit seam exists (unit-tested + dark by default); the journal-backed emitter is attached in a later rollout stage, mirroring the WS2.2 learnings sibling
+
+    // WS2.5 — the bypass-proof union reader for the `evolutionActions` store. The single
+    // funnel every replicated action read routes through, so no caller reads a raw replica
+    // around the no-clobber rule. `loadOriginRecords` materializes the OWN action queue (the
+    // same EvolutionManager that owns learnings) as the single origin today (via
+    // evolutionActionToOriginRecord, keyed on the content-fingerprint identity surface — the
+    // local ACT-NNN id is NEVER replicated); when the journal apply path lands peer
+    // `evolution-action-record` replicas (a later rollout stage), the seam extends to read
+    // those peer namespaces too. With only the own origin the union is a strict no-op. tierOf
+    // returns HIGH (append-both-and-flag never silently clobbers two divergent action states —
+    // e.g. one machine's completed vs another's in_progress; the READ layer is advisory,
+    // injecting both variants as hints rather than blocking — fork #3). The emit seam is
+    // attached ONLY when stateSync.evolutionActions.enabled is true (default false ⇒ NOT
+    // injected ⇒ strict no-op, byte-identical single-machine behavior; the ACT id never crosses
+    // the wire — fork #1).
+    const {
+      evolutionActionTierOf,
+      evolutionActionToOriginRecord,
+      deriveEvolutionActionRecordKey,
+      EVOLUTION_ACTION_STORE_KEY,
+    } = await import('../core/EvolutionActionsReplicatedStore.js');
+    const evolutionActionsUnionReader = new ReplicatedStoreReader({
+      registry: replicatedKindRegistry,
+      stores: (config.multiMachine as unknown as { stateSync?: import('../core/ReplicatedRecordEnvelope.js').StateSyncStores } | undefined)?.stateSync,
+      tierOf: evolutionActionTierOf,
+      loadOriginRecords: (store, recordKey) => {
+        if (store !== EVOLUTION_ACTION_STORE_KEY || _meshSelfId === null) return [];
+        for (const a of evolution.listActions()) {
+          if (deriveEvolutionActionRecordKey(a.title, a.commitTo, a.createdAt) === recordKey) {
+            const o = evolutionActionToOriginRecord(a, _meshSelfId);
+            return o ? [o] : [];
+          }
+        }
+        return [];
+      },
+      listRecordKeys: (store) => {
+        if (store !== EVOLUTION_ACTION_STORE_KEY) return [];
+        const keys: string[] = [];
+        for (const a of evolution.listActions()) {
+          const k = deriveEvolutionActionRecordKey(a.title, a.commitTo, a.createdAt);
+          if (k !== null) keys.push(k);
+        }
+        return keys;
+      },
+      droppedOrigins: droppedOriginRegistry,
+      conflictStore,
+    });
+    void evolutionActionsUnionReader; // consumed by the evolution-actions peer-read surface + the journal-apply rollout stage (WS2.5+)
+    void evolution.setEvolutionActionReplicationEmitter; // the emit seam exists (unit-tested + dark by default); the journal-backed emitter is attached in a later rollout stage, mirroring the WS2.2 learnings sibling
 
     // Start MemoryPressureMonitor (platform-aware memory tracking)
     const { MemoryPressureMonitor } = await import('../monitoring/MemoryPressureMonitor.js');

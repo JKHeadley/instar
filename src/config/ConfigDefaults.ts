@@ -894,6 +894,20 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
         enabled: false,
         dryRun: true,
       },
+      // WS2.5 (multi-machine-replicated-store-foundation) — the FIFTH replicated-store
+      // consumer and the FOURTH memory-family kind: `evolution-action-record` on the HLC
+      // foundation (the agent's self-improvement action queue). Per-store on-switch ships the
+      // graduated-rollout ladder dark: `enabled:false` (the foundation primitives stay inert,
+      // NO action ever crosses a machine boundary; the local ACT-NNN id is NEVER replicated) +
+      // `dryRun:true` (on first enable, log intended merges WITHOUT mutating store state). A
+      // literal `enabled:false` (NOT dev-gate-omit) per the spec ladder dark→dryRun→live —
+      // classified in DARK_GATE_EXCLUSIONS (optional-integration, staged rollout), mirroring
+      // the knowledge sibling. The load-bearing cross-machine field is `status` — a peer must
+      // SEE an action was already completed/in_progress elsewhere so it does not redo it.
+      evolutionActions: {
+        enabled: false,
+        dryRun: true,
+      },
     },
   },
   // Session Boot Self-Knowledge (spec: session-boot-self-knowledge.md) — the

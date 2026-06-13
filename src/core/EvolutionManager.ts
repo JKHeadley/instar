@@ -62,6 +62,36 @@ export interface LearningReplicationEmitter {
 }
 
 /**
+ * WS2.5 (multi-machine-replicated-store-foundation) — the evolution-action-record
+ * replication emitter seam. server.ts injects a journal-backed emitter (built from the
+ * CoherenceJournal clock + the `evolution-action-record` kind) ONLY when
+ * `multiMachine.stateSync.evolutionActions.enabled` is true (default false ⇒ NOT injected ⇒
+ * a strict no-op, byte-identical single-machine behavior). The emitter NEVER throws out of an
+ * action write — a replication failure must never break a local write (the emitter swallows +
+ * counts internally), so the manager calls it best-effort.
+ *
+ * CRITICAL: emitPut MUST re-fire on a STATUS CHANGE (the whole point — a peer must SEE an
+ * action was already completed/in_progress elsewhere so it does not redo it). The save funnel
+ * re-emits every surviving action on every saveActions, so addAction AND updateAction both
+ * re-emit.
+ *
+ * CRITICAL: emitDelete MUST fire for every action actually REMOVED from the queue (the
+ * prune-over-maxActions path) — else a peer re-replicates the locally-removed action forever
+ * (resurrection). A `completed`/`cancelled` action is a TERMINAL state, NOT a delete — its
+ * record is retained (history); only an actual queue-removal tombstones. The emitter keys the
+ * tombstone on the SAME content-fingerprint recordKey the put used, so the delete reaches the
+ * same action on every machine even though the local ACT-NNN ids differ.
+ */
+export interface EvolutionActionReplicationEmitter {
+  /** Emit a `put` for a persisted action (called from the save funnel; re-fires on every
+   *  status change). */
+  emitPut(record: ActionItem): void;
+  /** Emit a `delete` tombstone for an action removed from the queue, keyed on its content
+   *  fingerprint (title/commitTo/createdAt). */
+  emitDelete(title: string, commitTo: string | null | undefined, createdAt: string, deletedAt: string): void;
+}
+
+/**
  * TaskFlow controller identity for EvolutionManager (Phase 3a dual-write).
  * Every proposal's flow is owned by this controllerId; the registry uses it
  * for OCC scope checks. Single-instance per server process.
@@ -212,6 +242,13 @@ export class EvolutionManager {
    */
   private learningReplication: LearningReplicationEmitter | null = null;
 
+  /**
+   * WS2.5 evolution-action-record replication emitter (injected, dark by default). Absent ⇒
+   * strict no-op (single-machine, byte-identical). server.ts late-binds a journal-backed
+   * emitter ONLY when `multiMachine.stateSync.evolutionActions.enabled` is true.
+   */
+  private actionReplication: EvolutionActionReplicationEmitter | null = null;
+
   constructor(config: EvolutionManagerConfig) {
     this.config = config;
     this.stateDir = config.stateDir;
@@ -225,6 +262,16 @@ export class EvolutionManager {
    */
   setLearningReplicationEmitter(emitter: LearningReplicationEmitter | null | undefined): void {
     this.learningReplication = emitter ?? null;
+  }
+
+  /**
+   * Late-bind the WS2.5 evolution-action-record replication emitter (server.ts constructs the
+   * journal/clock AFTER the manager). Idempotent; passing undefined/null detaches (back to
+   * single-machine no-op). The emit funnel checks `this.actionReplication` per write, so
+   * attaching mid-life takes effect on the next save (add/updateAction).
+   */
+  setEvolutionActionReplicationEmitter(emitter: EvolutionActionReplicationEmitter | null | undefined): void {
+    this.actionReplication = emitter ?? null;
   }
 
   // ── TaskFlow wiring ─────────────────────────────────────────────
@@ -1143,6 +1190,7 @@ export class EvolutionManager {
     };
 
     const max = this.config.maxActions || 300;
+    const beforePrune = state.actions;
     if (state.actions.length > max) {
       const active = state.actions.filter(a => !['completed', 'cancelled'].includes(a.status));
       const done = state.actions.filter(a => ['completed', 'cancelled'].includes(a.status));
@@ -1151,6 +1199,40 @@ export class EvolutionManager {
     }
 
     this.writeFile('action-queue', state);
+
+    // WS2.5 — best-effort replication emission (dark by default; the emitter is only
+    // injected when multiMachine.stateSync.evolutionActions.enabled is true). The emitter
+    // swallows its own errors, but we wrap defensively so a replication fault can NEVER
+    // break a local action write. CRITICAL (fork #2): a STATUS CHANGE must re-emit — both
+    // addAction and updateAction route through saveActions, so re-emitting every survivor on
+    // every save makes a peer SEE an action's latest status (completed/in_progress) so it does
+    // not redo it. CRITICAL (resurrection guard): an action that was actually REMOVED from the
+    // queue (prune-over-maxActions) emits an op:delete tombstone — a terminal completed/
+    // cancelled action that is RETAINED is NOT tombstoned, only an actual queue-removal is.
+    const emitter = this.actionReplication;
+    if (emitter) {
+      const survivors = new Set(state.actions.map(a => a.id));
+      const deletedAt = this.now();
+      for (const pruned of beforePrune) {
+        if (survivors.has(pruned.id)) continue;
+        try {
+          emitter.emitDelete(pruned.title, pruned.commitTo, pruned.createdAt, deletedAt);
+        } catch {
+          // @silent-fallback-ok: a replication emit fault must never break or roll back a
+          // local action write — the durable on-disk state is already persisted above. The
+          // emitter counts its own failures internally; this guard only ensures a throw from
+          // the seam cannot propagate into the local write path.
+        }
+      }
+      for (const a of state.actions) {
+        try {
+          emitter.emitPut(a);
+        } catch {
+          // @silent-fallback-ok: see the emitDelete guard above — replication is best-effort
+          // and must never break the local write.
+        }
+      }
+    }
   }
 
   private nextActionId(state: ActionState): string {
