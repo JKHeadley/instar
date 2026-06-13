@@ -4201,6 +4201,33 @@ export interface MonitoringConfig {
     maxFlagsPerPass?: number;
   };
   /**
+   * Build-Session Yield Safety (ACT-839; spec BUILD-SESSION-YIELD-SAFETY-SPEC).
+   * A reaped session whose worktree holds uncommitted work becomes resume-
+   * eligible (a new `uncommitted-worktree-work` WorkEvidence value, collected
+   * pre-kill via the shared worktreeDirtyCheck), and the revived session gets a
+   * durably-tracked obligation to commit/preserve it. `enabled` is OMITTED so
+   * the developmentAgent dark-feature gate decides (LIVE on dev, DARK on fleet,
+   * per the Maturation Path standard). Registered in DEV_GATED_FEATURES.
+   * (Config-path note: top-level `monitoring.yieldSafety` rather than the spec's
+   * `monitoring.resumeQueue.yieldSafety` — `resumeQueue.*` keys are deliberately
+   * code-defaulted and absent from ConfigDefaults, so a sibling top-level block
+   * matching orphanedWorkSentinel is the clean home.)
+   */
+  yieldSafety?: {
+    enabled?: boolean;
+    /** Hard timeout for the pre-kill dirty-check git subprocess (ms). */
+    dirtyCheckTimeoutMs?: number;
+    /** Per-resolved-worktree-path dirty-check cache TTL (ms). */
+    dirtyCheckCacheTtlMs?: number;
+    /** Revives before the give-up path preserves instead of reviving again. */
+    resurrectionCap?: number;
+    /** Build-residue path prefixes/globs that don't count as "real work". */
+    residueDenylist?: string[];
+    /** Per-file / total caps for the preservation patch (bytes). */
+    preservationMaxFileBytes?: number;
+    preservationMaxTotalBytes?: number;
+  };
+  /**
    * McpProcessReaper (RESPONSIBLE-RESOURCE-USAGE — MCP-leak fix, Option B).
    * Reaps leaked MCP-server children (playwright-mcp / mcp-remote / instar
    * stdio) whose owning session is dead/stale or fully orphaned. Killing a

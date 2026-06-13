@@ -315,10 +315,16 @@ describe('lint-dev-agent-dark-gate', () => {
       // — hence NO new entry here) was inserted right after the agentWorktreeReaper
       // block, shifting EVERY entry below by +15. Verified by hand (attributor)
       // against ConfigDefaults.ts.
-      '225': 'monitoring.mcpProcessReaper.enabled',
-      '239': 'monitoring.agentSleep.enabled',
-      '262': 'monitoring.failureLearning.enabled',
-      '294': 'monitoring.correctionLearning.enabled',
+      // BUILD-SESSION-YIELD-SAFETY (ACT-839, THIS PR): a dev-gated
+      // monitoring.yieldSafety default block (13 lines incl. comment, `enabled`
+      // deliberately OMITTED so it is dev-gated — hence NO new entry here) was
+      // inserted right after the orphanedWorkSentinel block, shifting EVERY entry
+      // from mcpProcessReaper onward by +13. Verified by hand (attributor) against
+      // ConfigDefaults.ts — all paths unchanged, only line numbers shifted.
+      '238': 'monitoring.mcpProcessReaper.enabled',
+      '252': 'monitoring.agentSleep.enabled',
+      '275': 'monitoring.failureLearning.enabled',
+      '307': 'monitoring.correctionLearning.enabled',
       // PROMISE-BEACON-ESCALATION-SPEC: the monitoring.promiseBeacon.escalation
       // default block (22 lines, `enabled` deliberately OMITTED so it is dev-
       // gated — hence NO new entry here) was inserted right after the
@@ -328,17 +334,17 @@ describe('lint-dev-agent-dark-gate', () => {
       // config block (no attributed path — dev-gated) after correctionLearning, shifting
       // every entry from apprenticeshipCycleSla onward +15. Recomputed via the attributor
       // against the rebased ConfigDefaults.ts.
-      '388': 'monitoring.apprenticeshipCycleSla.enabled',
-      '396': 'monitoring.geminiCapacityEscalation.enabled',
-      '404': 'monitoring.releaseReadiness.enabled',
-      '419': 'monitoring.greenPrAutoMerge.enabled',
-      '469': 'threadline.a2aCheckIn.enabled',
-      '561': 'mentor.enabled',
-      '572': 'mentor.autonomousFix.enabled',
-      '587': 'mentee.enabled',
-      '706': 'multiMachine.sessionPool.enabled',
-      '731': 'multiMachine.sessionPool.inboundQueue.enabled',
-      '760': 'multiMachine.sessionPool.holdForStability.enabled',
+      '401': 'monitoring.apprenticeshipCycleSla.enabled',
+      '409': 'monitoring.geminiCapacityEscalation.enabled',
+      '417': 'monitoring.releaseReadiness.enabled',
+      '432': 'monitoring.greenPrAutoMerge.enabled',
+      '482': 'threadline.a2aCheckIn.enabled',
+      '574': 'mentor.enabled',
+      '585': 'mentor.autonomousFix.enabled',
+      '600': 'mentee.enabled',
+      '719': 'multiMachine.sessionPool.enabled',
+      '744': 'multiMachine.sessionPool.inboundQueue.enabled',
+      '773': 'multiMachine.sessionPool.holdForStability.enabled',
       // multi-machine-replicated-store-foundation Step 2: the multiMachine block
       // gained a `stateSync` sub-block (foundation knobs only; NO `enabled` key →
       // NO new attributed path) after coherenceJournal (which sits after sessionPool
@@ -352,7 +358,7 @@ describe('lint-dev-agent-dark-gate', () => {
       // optional-integration) and shifts every cartographer + credentialRepointing
       // entry below it by +13 (the new sub-block's line count). RECOMPUTED via the
       // attributor against the MERGED ConfigDefaults.ts.
-      '851': 'multiMachine.stateSync.preferences.enabled',
+      '864': 'multiMachine.stateSync.preferences.enabled',
       // WS2.3 (ws23-relationships-userregistry-security): the stateSync block gained
       // a `relationships: { enabled:false, dryRun:true }` per-store sub-block — the
       // SECOND replicated-store consumer + the FIRST PII kind. It ADDS this literal
@@ -360,7 +366,7 @@ describe('lint-dev-agent-dark-gate', () => {
       // optional-integration) right after the preferences sub-block and shifts every
       // cartographer + credentialRepointing entry below it by +14 (the new sub-block's
       // line count). RECOMPUTED via the attributor against the MERGED ConfigDefaults.ts.
-      '865': 'multiMachine.stateSync.relationships.enabled',
+      '878': 'multiMachine.stateSync.relationships.enabled',
       // WS2.2 (multi-machine-replicated-store-foundation): the stateSync block gained a
       // `learnings: { enabled:false, dryRun:true }` per-store sub-block — the THIRD
       // replicated-store consumer + the SECOND memory-family kind. It ADDS this literal
@@ -368,7 +374,7 @@ describe('lint-dev-agent-dark-gate', () => {
       // optional-integration) right after the relationships sub-block and shifts every
       // cartographer + credentialRepointing entry below it by +14 (the new sub-block's
       // line count). RECOMPUTED via the attributor against the MERGED ConfigDefaults.ts.
-      '879': 'multiMachine.stateSync.learnings.enabled',
+      '892': 'multiMachine.stateSync.learnings.enabled',
       // WS2.4 (multi-machine-replicated-store-foundation): the stateSync block gained a
       // `knowledge: { enabled:false, dryRun:true }` per-store sub-block — the FOURTH
       // replicated-store consumer + the THIRD memory-family kind. It ADDS this literal
@@ -377,7 +383,7 @@ describe('lint-dev-agent-dark-gate', () => {
       // cartographer + credentialRepointing entry below it by +15 (the new sub-block's
       // line count incl. its 12-line comment). RECOMPUTED via the attributor against the
       // MERGED ConfigDefaults.ts.
-      '894': 'multiMachine.stateSync.knowledge.enabled',
+      '907': 'multiMachine.stateSync.knowledge.enabled',
       // WS2.5 (multi-machine-replicated-store-foundation): the stateSync block gained an
       // `evolutionActions: { enabled:false, dryRun:true }` per-store sub-block — the FIFTH
       // replicated-store consumer + the FOURTH memory-family kind. It ADDS this literal
@@ -385,10 +391,10 @@ describe('lint-dev-agent-dark-gate', () => {
       // right after the knowledge sub-block and shifts every cartographer + credentialRepointing
       // entry below it by +14 (the new sub-block's line count incl. its comment). RECOMPUTED via
       // the attributor against the MERGED ConfigDefaults.ts.
-      '908': 'multiMachine.stateSync.evolutionActions.enabled',
-      '1016': 'cartographer.freshnessSweep.enabled',
-      '1061': 'cartographer.conformanceAudit.llmEnrichment.enabled',
-      '1086': 'cartographer.subtreeNav.llmRerank.enabled',
+      '921': 'multiMachine.stateSync.evolutionActions.enabled',
+      '1029': 'cartographer.freshnessSweep.enabled',
+      '1074': 'cartographer.conformanceAudit.llmEnrichment.enabled',
+      '1099': 'cartographer.subtreeNav.llmRerank.enabled',
       // Threadline Robustness Phase 2 (CMT-1362): the threadline.canonicalHistory
       // block (no `enabled` literal — conversationDiscipline is dev-gated) is inserted
       // AFTER the threadline section; entries at/after mentor.enabled shift again.
@@ -402,7 +408,7 @@ describe('lint-dev-agent-dark-gate', () => {
       // cartographer block but above credentialRepointing → this END entry shifted
       // +15 (1015 → 1030); cartographer/sessionPool entries unchanged. RECOMPUTED via
       // the attributor against the MERGED ConfigDefaults.ts.
-      '1123': 'subscriptionPool.credentialRepointing.enabled',
+      '1136': 'subscriptionPool.credentialRepointing.enabled',
     };
     const actual = attributeRealConfigDefaults();
     expect(actual).toEqual(EXPECTED);

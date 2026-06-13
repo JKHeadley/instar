@@ -510,3 +510,33 @@ describe('SessionReaper — durable candidacy (A): idle clock survives restarts'
     expect(h.terminate).not.toHaveBeenCalled(); // stale pending was dropped → fresh two-phase, grace not yet elapsed
   });
 });
+
+describe('SessionReaper — Build-Session Yield Safety (ACT-839): pre-kill dirty-check evidence', () => {
+  it('a reaped idle session with a DIRTY worktree carries uncommitted-worktree-work evidence', async () => {
+    const h = harness({ sessions: [mkSession({ cwd: '/wt' })], deps: { dirtyCheck: () => true } });
+    await driveToReap(h);
+    expect(h.terminate).toHaveBeenCalledWith('s1', 'reaped-idle', { bypassActiveProcessKeep: false, workEvidence: ['uncommitted-worktree-work'] });
+  });
+  it('a CLEAN worktree → empty evidence (no spurious revive)', async () => {
+    const h = harness({ sessions: [mkSession({ cwd: '/wt' })], deps: { dirtyCheck: () => false } });
+    await driveToReap(h);
+    expect(h.terminate).toHaveBeenCalledWith('s1', 'reaped-idle', { bypassActiveProcessKeep: false, workEvidence: [] });
+  });
+  it('feature dark (no dirtyCheck dep) → empty evidence (unchanged behavior)', async () => {
+    const h = harness({ sessions: [mkSession({ cwd: '/wt' })] });
+    await driveToReap(h);
+    expect(h.terminate).toHaveBeenCalledWith('s1', 'reaped-idle', { bypassActiveProcessKeep: false, workEvidence: [] });
+  });
+  it('dirtyCheck throws → fail-open (empty evidence, kill still proceeds)', async () => {
+    const h = harness({ sessions: [mkSession({ cwd: '/wt' })], deps: { dirtyCheck: () => { throw new Error('git boom'); } } });
+    await driveToReap(h);
+    expect(h.terminate).toHaveBeenCalledWith('s1', 'reaped-idle', { bypassActiveProcessKeep: false, workEvidence: [] });
+  });
+  it('session with NO cwd → dirtyCheck is never consulted → empty evidence', async () => {
+    const dc = vi.fn(() => true);
+    const h = harness({ sessions: [mkSession({ cwd: undefined })], deps: { dirtyCheck: dc } });
+    await driveToReap(h);
+    expect(dc).not.toHaveBeenCalled();
+    expect(h.terminate).toHaveBeenCalledWith('s1', 'reaped-idle', { bypassActiveProcessKeep: false, workEvidence: [] });
+  });
+});
