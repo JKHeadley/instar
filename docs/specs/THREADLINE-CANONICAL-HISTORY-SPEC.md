@@ -13,6 +13,9 @@ lessons-engaged:
   - "Structure > Willpower — every message is appended to the one canonical log through a single funnel, enumerated by a wiring-integrity test; idempotency is a persisted seen-set (not a best-effort tail scan); no session has to 'remember' to log, and there is exactly one read source."
   - "guard-bypass-carries-its-own-cap — the read-source swap is a UNION (canonical log ∪ bounded best-effort backfill) so post-upgrade history can only gain, never regress; the backfill is bounded + logged; a persistently-failing append is LOUD (a deduped Attention item), matching Phase 1's fail-open bar, not a silent JSONL line."
   - "Bounded Notification Surface — divergence and append-failure both raise at most ONE deduped, aggregated Attention item per (thread, episode), never per message; a peer oscillating its claimed digest collapses to one episode."
+approved: true
+approved-by: "Justin (operator, telegram topic 12476)"
+approved-at: "2026-06-12T22:00:00-07:00"
 review-convergence: "2026-06-13T04:55:34.690Z"
 review-iterations: 4
 review-completed-at: "2026-06-13T04:55:34.690Z"
