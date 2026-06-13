@@ -3370,6 +3370,19 @@ export async function startServer(options: StartOptions): Promise<void> {
     // same explicit replication gate; undefined = dark (verb answers
     // 'disabled', merge layer returns own rows only).
     let commitmentReplicaStore: import('../core/CommitmentsSync.js').CommitmentReplicaStore | undefined;
+    // Preferences-pool receive side (MULTI-MACHINE-SEAMLESSNESS-SPEC §WS2.1) —
+    // gated on multiMachine.seamlessness.ws21PreferencesPool; undefined = dark
+    // (the verb answers 'disabled', the union read returns own-only rows).
+    let preferenceReplicaStore: import('../core/PreferencesSync.js').PreferenceReplicaStore | undefined;
+    // WS2.1 serve-side own store — the PreferencesManager whose advert + records
+    // the `preferences-sync` verb serves. Constructed alongside the replica store
+    // under the same gate; undefined = dark.
+    let _preferencesManagerForSync: import('../core/PreferencesManager.js').PreferencesManager | undefined;
+    // WS2.1 dark gate — read LIVE (mirrors the ws3OneVoice/ws13Reconcile sibling
+    // pattern: a plain seamlessness boolean read off config, NOT resolveDevAgentGate).
+    // Single-machine agents are a strict no-op regardless (no peer ever pages).
+    const ws21PrefsPoolEnabled = (): boolean =>
+      ((config as Record<string, any>).multiMachine?.seamlessness ?? {}).ws21PreferencesPool === true;
     // P1.5b owner-routed mutation (§3.4): the owner-side replay window, the
     // forwarder-side durable intent queue, and the route-facing forward fn.
     // All undefined while dark.
@@ -13245,7 +13258,13 @@ export async function startServer(options: StartOptions): Promise<void> {
               const commitmentsAdvert = commitmentReplicaStore
                 ? commitmentTracker.getReplicationAdvert() ?? undefined
                 : undefined;
-              return { ...base, journalAdvert, ...(commitmentsAdvert ? { commitmentsAdvert } : {}) };
+              // MULTI-MACHINE-SEAMLESSNESS-SPEC §WS2.1 — the preferences advert,
+              // answered from disk (the store is tiny; not a hot path). Omitted
+              // while the layer is dark; old peers ignore the extra field.
+              const preferencesAdvert = (preferenceReplicaStore && _preferencesManagerForSync)
+                ? _preferencesManagerForSync.getReplicationAdvert()
+                : undefined;
+              return { ...base, journalAdvert, ...(commitmentsAdvert ? { commitmentsAdvert } : {}), ...(preferencesAdvert ? { preferencesAdvert } : {}) };
             },
             // Pool Dashboard Streaming (§2.3): mint a single-use bearer ticket
             // for the authenticated peer so it may open a /pool-stream WS to
@@ -13347,6 +13366,25 @@ export async function startServer(options: StartOptions): Promise<void> {
                 records: commitmentTracker.getAll(),
                 advert,
                 syncPageBytes: wsCfgC?.syncPageBytes,
+              });
+            },
+            // MULTI-MACHINE-SEAMLESSNESS-SPEC §WS2.1 — serve OWN learned-
+            // preference records as seq-windowed delta pages (lastMutatedSeq >
+            // sinceSeq), incarnation-fenced, `learning`-field credential-redacted.
+            // Registered always (lockstep with the union+RBAC edits); answers
+            // 'disabled' until the replication gate constructs the layer.
+            'preferences-sync': async (cmd) => {
+              const c = cmd as import('../core/MeshRpc.js').MeshCommand & { type: 'preferences-sync' };
+              if (!preferenceReplicaStore || !_preferencesManagerForSync) return { ok: false, reason: 'preferences-sync disabled' };
+              const syncMod = await import('../core/PreferencesSync.js');
+              // WS2.1 reads its OWN preferences config section, not commitments
+              // (review WS2.1 findings #4/#7). Absent → engine default page size.
+              const wsCfgP = config.multiMachine?.coherenceJournal?.preferences;
+              return syncMod.buildPreferencesSyncPage(c.request, {
+                ownMachineId: cjOwnMachineId ?? meshSelfId,
+                records: _preferencesManagerForSync.getAllForSync(),
+                advert: _preferencesManagerForSync.getReplicationAdvert(),
+                syncPageBytes: wsCfgP?.syncPageBytes,
               });
             },
             place: ownAction,
@@ -13902,6 +13940,29 @@ export async function startServer(options: StartOptions): Promise<void> {
                 commitmentReplicaStore = undefined;
                 console.log(pc.dim(`  [commitments-sync] not constructed: ${e instanceof Error ? e.message : String(e)}`));
               }
+              // ── Preferences-pool receive side (MULTI-MACHINE-SEAMLESSNESS-SPEC
+              // §WS2.1) ── Gated on its OWN flag (ws21PreferencesPool), independent
+              // of the working-set/commitments gates. Read-replication only: a
+              // replica store + the own PreferencesManager whose advert/records the
+              // serve verb pages. The drive below pulls delta pages when a peer's
+              // advert is ahead of our cursor. Dark (flag off) → nothing constructed,
+              // the verb answers 'disabled', the union read returns own-only rows.
+              if (ws21PrefsPoolEnabled()) {
+                try {
+                  const psMod = await import('../core/PreferencesSync.js');
+                  const pmMod = await import('../core/PreferencesManager.js');
+                  preferenceReplicaStore = new psMod.PreferenceReplicaStore({
+                    stateDir: config.stateDir,
+                    logger: (m) => console.log(pc.dim(`  [preferences-sync] ${m}`)),
+                  });
+                  _preferencesManagerForSync = new pmMod.PreferencesManager(config.stateDir);
+                  console.log(pc.dim('  [preferences-sync] replica store wired (serve + receive + advert)'));
+                } catch (e) { /* @silent-fallback-ok: preferences-sync construction failure degrades to local-only preferences — never blocks boot (MULTI-MACHINE-SEAMLESSNESS-SPEC §WS2.1) */
+                  preferenceReplicaStore = undefined;
+                  _preferencesManagerForSync = undefined;
+                  console.log(pc.dim(`  [preferences-sync] not constructed: ${e instanceof Error ? e.message : String(e)}`));
+                }
+              }
             } catch (e) { /* @silent-fallback-ok: working-set pull wiring failure degrades to serve-only (the verb still answers); never blocks server boot (WORKING-SET-HANDOFF-SPEC §4) */
               workingSetPullCoordinator = undefined;
               console.log(pc.dim(`  [working-set] coordinator not constructed: ${e instanceof Error ? e.message : String(e)}`));
@@ -14378,6 +14439,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                   loadAvg?: number;
                   journalAdvert?: Record<string, Record<string, { incarnation: string; lastSeq: number }>>;
                   commitmentsAdvert?: { incarnation: string; replicationSeq: number };
+                  preferencesAdvert?: { incarnation: string; replicationSeq: number };
                   quotaState?: { blocked: boolean; blockedUntil?: string; reason?: string };
                   guardPosture?: import('../core/types.js').GuardPostureSummary;
                 };
@@ -14396,6 +14458,10 @@ export async function startServer(options: StartOptions): Promise<void> {
                   loadAvg: cap.loadAvg,
                   journalAdvert,
                   ...(cap.commitmentsAdvert ? { commitmentsAdvert: cap.commitmentsAdvert } : {}),
+                  // §WS2.1 sibling pass-through (the #930/A2 narrowing lesson): the
+                  // peer's preferences advert is served but would be dropped here
+                  // without this, so drivePreferencesSync would never fire.
+                  ...(cap.preferencesAdvert ? { preferencesAdvert: cap.preferencesAdvert } : {}),
                   ...(cap.quotaState ? { quotaState: cap.quotaState } : {}),
                   // Guard posture rides the same pass-through (the A2 narrowing
                   // lesson): dropping it here would blind the pool to peers' posture.
@@ -14429,6 +14495,40 @@ export async function startServer(options: StartOptions): Promise<void> {
                 const page = res.result as import('../core/CommitmentsSync.js').CommitmentsSyncPage;
                 if (!page.incarnation) return; // 'disabled' answer shape
                 commitmentReplicaStore.applyPage(machineId, page);
+                if (page.incarnationChanged) {
+                  inc = page.incarnation;
+                  since = 0;
+                  continue;
+                }
+                since = page.nextSinceSeq;
+                inc = page.incarnation;
+                if (page.done) return;
+              }
+            },
+            // MULTI-MACHINE-SEAMLESSNESS-SPEC §WS2.1 — pull preference delta pages
+            // when the peer's advert is ahead of our replica cursor; bounded pages
+            // per tick (the remainder rides the next pass). No-op while dark.
+            drivePreferencesSync: async (machineId, url, advert) => {
+              if (!preferenceReplicaStore) return;
+              const cursor = preferenceReplicaStore.cursorFor(machineId);
+              const upToDate =
+                cursor.incarnation === advert.incarnation && cursor.sinceSeq >= advert.replicationSeq;
+              if (upToDate) return;
+              // WS2.1 reads its OWN preferences config section (review #5/#7).
+              const psCfg = config.multiMachine?.coherenceJournal?.preferences;
+              const maxPages = psCfg?.maxSyncPagesPerTick ?? 4;
+              let since = cursor.incarnation === advert.incarnation ? cursor.sinceSeq : 0;
+              let inc = cursor.incarnation;
+              for (let i = 0; i < maxPages; i++) {
+                const res = await meshClient.send(
+                  { machineId, url },
+                  { type: 'preferences-sync', request: { sinceSeq: since, ...(inc ? { incarnation: inc } : {}) } },
+                  0,
+                );
+                if (!res.ok || !res.result || typeof res.result !== 'object') return;
+                const page = res.result as import('../core/PreferencesSync.js').PreferencesSyncPage;
+                if (!page.incarnation) return; // 'disabled' answer shape
+                preferenceReplicaStore.applyPage(machineId, page);
                 if (page.incarnationChanged) {
                   inc = page.incarnation;
                   since = 0;
@@ -14712,7 +14812,7 @@ export async function startServer(options: StartOptions): Promise<void> {
             carrier: _topicProfileCarrier,
           }
         : null;
-    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, cartographer: cartographer ?? undefined, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, subscriptionPool, quotaPoller, quotaAwareScheduler: _quotaAwareScheduler ?? undefined, proactiveSwapMonitor: _proactiveSwapMonitor ?? undefined, inUseAccountResolver, enrollmentWizard, semanticMemory, activitySentinel, rateLimitSentinel, releaseReadinessSentinel: releaseReadinessSentinel ?? undefined, greenPrAutoMerger: greenPrAutoMerger ?? undefined, guardLatchStore: guardLatchStore ?? undefined, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, topicProfile: _topicProfileCtx ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, localSigningKeyPem, leaseTransport, onLeasePullRequest: () => leaseCoordinatorRef?.currentLease() ?? null, liveTailReceiver, handoffWireTransport, onHandoffBegin, onHandoffInitiate: handoffInitiate, handoffInProgress: handoffSentinelInProgress, messageLedger, currentInboundByTopic, replyMarkerTransport, onReplyMarker: messageLedger ? (marker: unknown) => { const m = marker as { dedupeKey: string; platform: string; replyIdempotencyKey: string; epoch: number; topic?: string | null }; messageLedger!.applyRemoteReplyMarker(m.dedupeKey, { platform: m.platform, replyIdempotencyKey: m.replyIdempotencyKey, epoch: m.epoch, topic: m.topic ?? null }); } : undefined, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, warrantsReplyGate, collaborationSurfacer, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, a2aDeliveryTracker: a2aDeliveryTracker ?? undefined, responseReviewGate, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, machinePoolRegistry, getInboundQueue: () => _inboundQueue, meshRpcDispatcher, workingSetPullCoordinator, commitmentReplicaStore, forwardCommitmentMutate, sessionOwnershipRegistry, topicPinStore: _topicPinStore ?? undefined, streamTicketStore: _streamTicketStore ?? undefined, poolStreamAllowRemoteInput: (config as { dashboard?: { poolStream?: { allowRemoteInput?: boolean } } }).dashboard?.poolStream?.allowRemoteInput ?? false, poolStreamConnector: _poolStreamConnector ?? undefined, secretSync: _secretSyncHandle ?? undefined, meshSelfId: _meshSelfId ?? undefined, resolveRouterUrl: _resolveRouterUrl ?? undefined, resolvePeerUrls: _resolvePeerUrls ?? undefined, guardRegistry, listPoolMachines: _listPoolMachines ?? undefined, sessionPoolE2EResultStore, proxyCoordinator, topicIntentStore, topicIntentArcCheck, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, briefDeps, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, agentWorktreeReaper, mcpProcessReaper, geminiLoopRunner, sleepController, agentActivityState, reapLog, resumeQueue, resumeDrainer, operatorStopRecorder: recordOperatorStop, sleepWakeDetector, unjustifiedStopGate, stopGateDb, stopNotifier });
+    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, cartographer: cartographer ?? undefined, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, subscriptionPool, quotaPoller, quotaAwareScheduler: _quotaAwareScheduler ?? undefined, proactiveSwapMonitor: _proactiveSwapMonitor ?? undefined, inUseAccountResolver, enrollmentWizard, semanticMemory, activitySentinel, rateLimitSentinel, releaseReadinessSentinel: releaseReadinessSentinel ?? undefined, greenPrAutoMerger: greenPrAutoMerger ?? undefined, guardLatchStore: guardLatchStore ?? undefined, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, topicProfile: _topicProfileCtx ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, localSigningKeyPem, leaseTransport, onLeasePullRequest: () => leaseCoordinatorRef?.currentLease() ?? null, liveTailReceiver, handoffWireTransport, onHandoffBegin, onHandoffInitiate: handoffInitiate, handoffInProgress: handoffSentinelInProgress, messageLedger, currentInboundByTopic, replyMarkerTransport, onReplyMarker: messageLedger ? (marker: unknown) => { const m = marker as { dedupeKey: string; platform: string; replyIdempotencyKey: string; epoch: number; topic?: string | null }; messageLedger!.applyRemoteReplyMarker(m.dedupeKey, { platform: m.platform, replyIdempotencyKey: m.replyIdempotencyKey, epoch: m.epoch, topic: m.topic ?? null }); } : undefined, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, warrantsReplyGate, collaborationSurfacer, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, a2aDeliveryTracker: a2aDeliveryTracker ?? undefined, responseReviewGate, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, machinePoolRegistry, getInboundQueue: () => _inboundQueue, meshRpcDispatcher, workingSetPullCoordinator, commitmentReplicaStore, preferenceReplicaStore, forwardCommitmentMutate, sessionOwnershipRegistry, topicPinStore: _topicPinStore ?? undefined, streamTicketStore: _streamTicketStore ?? undefined, poolStreamAllowRemoteInput: (config as { dashboard?: { poolStream?: { allowRemoteInput?: boolean } } }).dashboard?.poolStream?.allowRemoteInput ?? false, poolStreamConnector: _poolStreamConnector ?? undefined, secretSync: _secretSyncHandle ?? undefined, meshSelfId: _meshSelfId ?? undefined, resolveRouterUrl: _resolveRouterUrl ?? undefined, resolvePeerUrls: _resolvePeerUrls ?? undefined, guardRegistry, listPoolMachines: _listPoolMachines ?? undefined, sessionPoolE2EResultStore, proxyCoordinator, topicIntentStore, topicIntentArcCheck, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, briefDeps, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, agentWorktreeReaper, mcpProcessReaper, geminiLoopRunner, sleepController, agentActivityState, reapLog, resumeQueue, resumeDrainer, operatorStopRecorder: recordOperatorStop, sleepWakeDetector, unjustifiedStopGate, stopGateDb, stopNotifier });
     // Resolve the late-bound topic-operator getter (increment 2e): routing was
     // wired before the server existed; from here on inbound binds use the
     // server's own store instance.

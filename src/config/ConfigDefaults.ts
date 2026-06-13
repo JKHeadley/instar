@@ -604,6 +604,14 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       ws13Reconcile: false,
       ws13DryRun: true,
       ws13TickMs: 30000,
+      // WS2.1 preferences pool: cross-machine read-replication of the
+      // correction-learning preference store so a preference learned on machine A
+      // is honored on machine B. DARK default; single-machine agents are a strict
+      // no-op even when on. Plain seamlessness boolean (read live at the serve/
+      // receive/union sites), mirroring the ws3OneVoice/ws13Reconcile siblings —
+      // NOT named `enabled`, so it is outside the dev-agent dark-gate lint (which
+      // matches the literal `enabled: false` spelling only).
+      ws21PreferencesPool: false,
     },
     sessionPool: {
       enabled: false,
@@ -705,6 +713,16 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
         maxPendingOpsPerCommitment: 4,
         maxPendingOpsPerOwner: 64,
         opKeyTtlDays: 7,
+      },
+      // WS2.1 preferences pool (MULTI-MACHINE-SEAMLESSNESS-SPEC §WS2.1). Rides
+      // multiMachine.seamlessness.ws21PreferencesPool (NOT replication.enabled).
+      // Independent page-sizing so preferences tune separately from commitments
+      // (review WS2.1 finding #7). No `enabled` field — pure bounded-behavior dials.
+      preferences: {
+        syncPageBytes: 262144,
+        maxSyncPagesPerTick: 4,
+        replicaStaleWarnMs: 600000,
+        maxReplicatedPreferences: 500,
       },
       retention: {
         'topic-placement': { maxFileBytes: 8388608, rotateKeep: 0 },

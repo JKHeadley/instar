@@ -115,8 +115,16 @@ export function buildPreferencesSyncPage(
   let nextSinceSeq = sinceSeq;
   for (const { r, seq } of eligible) {
     const scan = redactForLiveTail(r.learning);
+    // `violationPattern` is a LOCAL-ONLY signal (the user's self-violation
+    // detection regex/keywords — e.g. `regex:api_key|secret|token`). It is
+    // never injected into the session block and reveals the operator's security
+    // posture, so it MUST NOT replicate to peers (review WS2.1 finding #1).
+    // Strip it explicitly rather than spreading the whole record.
+    const { violationPattern: _localOnly, lastMutatedSeq: _seq, ...replicable } = r;
+    void _localOnly;
+    void _seq;
     const row: ReplicatedPreference = {
-      ...r,
+      ...replicable,
       learning: scan.redactedCount > 0 ? scan.text : r.learning,
       originMachineId: deps.ownMachineId,
       lastMutatedSeq: seq,
@@ -307,17 +315,43 @@ export interface MergeDeps {
   ownMachineId: string;
   own: PreferenceEntry[];
   replicas: { ownerMachineId: string; receivedAt: string; records: ReplicatedPreference[] }[];
+  /** Injectable clock for the skew cap (default `new Date()`). Tests pass a fixed now. */
+  now?: () => Date;
 }
 
-/** HLC-light ordering: (recordedAt-ms, originMachineId) lexicographic. Newer wins. */
+/**
+ * Clock-skew tolerance for merge ordering. A peer's `recordedAt` is capped at
+ * `now + this` before it can win a dedupeKey collision — so a machine with a
+ * fast/hostile clock (e.g. set a year ahead) cannot silently dominate EVERY
+ * preference across the pool (review WS2.1 finding #2; the spec's clock-skew
+ * requirement). Real-world cross-machine clock drift is seconds-to-minutes; a
+ * full day is a generous ceiling that never penalizes honest machines.
+ * NOTE: this is the shipped mitigation; full HLC (logical counters) is a tracked
+ * follow-up. <!-- tracked: WS2.1 HLC counters -->
+ */
+export const CLOCK_SKEW_TOLERANCE_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * HLC-light ordering: (effective recordedAt-ms, originMachineId) lexicographic,
+ * newer wins. `capMs` bounds a future-skewed timestamp so it cannot win on a
+ * fabricated/drifted clock.
+ */
 function isNewer(
   aRecordedAt: string,
   aOrigin: string,
   bRecordedAt: string,
   bOrigin: string,
+  capMs: number,
 ): boolean {
-  const at = Date.parse(aRecordedAt) || 0;
-  const bt = Date.parse(bRecordedAt) || 0;
+  // A timestamp beyond `now + tolerance` is not merely clamped to ~now (that
+  // would still let it beat a genuine recent write); it is UNTRUSTWORTHY — a
+  // fabricated/grossly-skewed clock — so it is treated as the OLDEST (0) and
+  // loses every collision to any real timestamp. Within tolerance, normal
+  // recency applies (review WS2.1 finding #2).
+  const pa = Date.parse(aRecordedAt) || 0;
+  const pb = Date.parse(bRecordedAt) || 0;
+  const at = pa > capMs ? 0 : pa;
+  const bt = pb > capMs ? 0 : pb;
   if (at !== bt) return at > bt;
   return aOrigin > bOrigin; // deterministic tiebreak
 }
@@ -337,6 +371,7 @@ export function mergePreferenceViews(deps: MergeDeps): MergedPreference[] {
     redacted: boolean;
   }
   const byKey = new Map<string, Acc>();
+  const capMs = (deps.now?.() ?? new Date()).getTime() + CLOCK_SKEW_TOLERANCE_MS;
 
   const ingest = (entry: PreferenceEntry, origin: string, redacted: boolean): void => {
     const key = entry.dedupeKey;
@@ -356,7 +391,7 @@ export function mergePreferenceViews(deps: MergeDeps): MergedPreference[] {
     // last write from the same origin replaces its count rather than summing.
     existing.countByOrigin.set(origin, count);
     existing.redacted = existing.redacted || redacted;
-    if (isNewer(entry.recordedAt, origin, existing.winnerRecordedAt, existing.winnerOrigin)) {
+    if (isNewer(entry.recordedAt, origin, existing.winnerRecordedAt, existing.winnerOrigin, capMs)) {
       existing.winner = entry;
       existing.winnerOrigin = origin;
       existing.winnerRecordedAt = entry.recordedAt;

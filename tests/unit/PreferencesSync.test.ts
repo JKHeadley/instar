@@ -218,3 +218,52 @@ describe('mergePreferenceViews — collapse by dedupeKey', () => {
     expect(merged[0].textRedacted).toBe(true);
   });
 });
+
+describe('WS2.1 security-review fixes', () => {
+  const advert = { incarnation: 'inc-1', replicationSeq: 5 };
+
+  it('finding #1: violationPattern (local-only) is NEVER replicated to peers', () => {
+    const withPattern = pref({
+      dedupeKey: 'vp',
+      lastMutatedSeq: 1,
+      violationPattern: 'regex:api_key|secret|token',
+    });
+    const page = buildPreferencesSyncPage({ sinceSeq: 0 }, { ownMachineId: 'm_a', records: [withPattern], advert });
+    expect(page.records).toHaveLength(1);
+    expect('violationPattern' in page.records[0]).toBe(false);
+    expect(JSON.stringify(page.records[0])).not.toContain('api_key');
+  });
+
+  it('finding #2: a future-clock-skewed peer does NOT win a dedupeKey collision over a genuine recent write', () => {
+    const NOW = new Date('2026-06-13T00:00:00.000Z');
+    // Own machine wrote it 1 minute ago (genuine, recent).
+    const own: PreferenceEntry[] = [pref({ dedupeKey: 'k', recordedAt: '2026-06-12T23:59:00.000Z', learning: 'real' })];
+    // Hostile/skewed peer claims a YEAR in the future.
+    const replicas = [
+      {
+        ownerMachineId: 'm_evil',
+        receivedAt: NOW.toISOString(),
+        records: [{ ...pref({ dedupeKey: 'k', recordedAt: '2027-06-13T00:00:00.000Z', learning: 'hijack' }), originMachineId: 'm_evil', lastMutatedSeq: 1 } as ReplicatedPreference],
+      },
+    ];
+    const merged = mergePreferenceViews({ ownMachineId: 'm_a', own, replicas, now: () => NOW });
+    expect(merged).toHaveLength(1);
+    // The future timestamp is capped to ~now, so it cannot beat the genuine recent own write.
+    expect(merged[0].learning).toBe('real');
+    expect(merged[0].winningMachineId).toBe('m_a');
+  });
+
+  it('finding #2: a legitimately-newer peer (within skew tolerance) still wins', () => {
+    const NOW = new Date('2026-06-13T00:00:00.000Z');
+    const own: PreferenceEntry[] = [pref({ dedupeKey: 'k', recordedAt: '2026-06-12T10:00:00.000Z', learning: 'old' })];
+    const replicas = [
+      {
+        ownerMachineId: 'm_b',
+        receivedAt: NOW.toISOString(),
+        records: [{ ...pref({ dedupeKey: 'k', recordedAt: '2026-06-12T20:00:00.000Z', learning: 'newer' }), originMachineId: 'm_b', lastMutatedSeq: 1 } as ReplicatedPreference],
+      },
+    ];
+    const merged = mergePreferenceViews({ ownMachineId: 'm_a', own, replicas, now: () => NOW });
+    expect(merged[0].learning).toBe('newer'); // genuine recency still respected
+  });
+});

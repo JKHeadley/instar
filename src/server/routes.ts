@@ -947,6 +947,11 @@ export interface RouteContext {
    *  the merged GET /commitments view folds these replicas in. Null/absent
    *  while dark (the routes return own rows only, byte-identical to before). */
   commitmentReplicaStore?: import('../core/CommitmentsSync.js').CommitmentReplicaStore | null;
+  /** Preferences-pool replica store (MULTI-MACHINE-SEAMLESSNESS-SPEC §WS2.1) —
+   *  the merged GET /preferences/session-context folds these replicas in (flag-
+   *  gated). Null/absent while dark (the route returns own rows only, byte-
+   *  identical to before). */
+  preferenceReplicaStore?: import('../core/PreferencesSync.js').PreferenceReplicaStore | null;
   /** P1.5b owner-routed mutation (§3.4): forward a mutate intent to the
    *  owning machine (verdict back, or durably queued). Null/absent = dark
    *  (replica-targeted mutations answer 409 explaining the layer is off). */
@@ -15407,6 +15412,35 @@ export function createRoutes(ctx: RouteContext): Router {
       const maxBytes = typeof cfg.maxInjectedPreferencesBytes === 'number' && cfg.maxInjectedPreferencesBytes > 0
         ? cfg.maxInjectedPreferencesBytes
         : 4000;
+      // MULTI-MACHINE-SEAMLESSNESS-SPEC §WS2.1 — when the pool flag is ON and we
+      // hold replicas from peers, inject the MERGED (collapse-by-dedupeKey) view
+      // so a preference learned on another machine is honored here. Flag OFF or
+      // no replicas → byte-identical own-only behavior (the merge of own + [] is
+      // own, but we keep the original code path untouched to guarantee that).
+      const ws21Enabled =
+        (ctx.config.multiMachine as { seamlessness?: { ws21PreferencesPool?: boolean } } | undefined)
+          ?.seamlessness?.ws21PreferencesPool === true;
+      // The merge's own-echo filter keys on the REAL mesh self id; a 'local'
+      // fallback would mismatch a peer's named originMachineId and corrupt the
+      // dedupeCount/contributingMachines metadata (review WS2.1 finding #3). With
+      // no resolvable self id we cannot safely merge — fall through to own-only.
+      const selfId = typeof ctx.meshSelfId === 'string' && ctx.meshSelfId.length > 0 ? ctx.meshSelfId : null;
+      const replicas = ws21Enabled && selfId ? (ctx.preferenceReplicaStore?.allReplicas() ?? []) : [];
+      if (ws21Enabled && selfId && replicas.length > 0) {
+        const syncMod = await import('../core/PreferencesSync.js');
+        const { formatPreferencesForSessionStart, PREFERENCES_SCHEMA_VERSION } = await import('../core/PreferencesManager.js');
+        const merged = syncMod.mergePreferenceViews({
+          ownMachineId: selfId,
+          own: manager.getAllForSync(),
+          replicas,
+        });
+        const block = formatPreferencesForSessionStart(
+          { schemaVersion: PREFERENCES_SCHEMA_VERSION, preferences: merged },
+          maxBytes,
+        );
+        res.json({ present: block.length > 0, block, count: merged.length, scope: 'mesh' });
+        return;
+      }
       const result = manager.sessionContext(maxBytes);
       res.json(result);
     } catch (err) {

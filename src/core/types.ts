@@ -2123,6 +2123,13 @@ export interface CoherenceJournalUserConfig {
     maxPendingOpsPerOwner?: number;
     opKeyTtlDays?: number;
   };
+  /** WS2.1 preferences pool — independent page-sizing dials (MULTI-MACHINE-SEAMLESSNESS-SPEC §WS2.1). */
+  preferences?: {
+    syncPageBytes?: number;
+    maxSyncPagesPerTick?: number;
+    replicaStaleWarnMs?: number;
+    maxReplicatedPreferences?: number;
+  };
   /**
    * Per-kind retention. rotateKeep N>0 = rotate at maxFileBytes, keep N
    * archives, delete older; 0 = rotate at maxFileBytes but NEVER delete

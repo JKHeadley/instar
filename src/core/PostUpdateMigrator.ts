@@ -4732,6 +4732,20 @@ That envelope is deliberate: learned preferences are **signals, not authoritativ
       result.upgraded.push('CLAUDE.md: added Self-Violation Signal awareness (Correction & Preference Learning extension)');
     }
 
+    // WS2.1 pooled-preferences backfill — existing agents that already have the
+    // Correction & Preference Learning section must learn that, on a multi-machine
+    // agent with the pool flag on, a preference learned on one machine replicates
+    // to the others (read-only, advisory). Content-sniffed on a distinctive marker
+    // for idempotency; only appended when the parent section exists.
+    if (content.includes('Correction & Preference Learning Sentinel') && !content.includes('ws21PreferencesPool')) {
+      const pooledPrefsLine = `
+- **Pooled preferences across machines** (MULTI-MACHINE-SEAMLESSNESS-SPEC §WS2.1; ships DARK behind \`multiMachine.seamlessness.ws21PreferencesPool\`): when ON and I run on more than one machine, a preference learned on machine A replicates to machine B (read-only, advisory — never authority), so \`GET /preferences/session-context\` injects the MERGED view (collapsed by dedupeKey; \`dedupeCount\` sums the cross-machine observation count). Replication is incarnation-fenced, the \`learning\` text is credential-redacted at serve time, and a forged-origin row is rejected. Flag OFF or single-machine → byte-identical own-only behavior; the merged read reports \`scope: "mesh"\`.
+`;
+      content += '\n' + pooledPrefsLine;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added pooled-preferences (WS2.1) awareness (Correction & Preference Learning multi-machine extension)');
+    }
+
     const authenticatedCapabilitiesCurl = `curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/capabilities`;
 
     // Self-Discovery section

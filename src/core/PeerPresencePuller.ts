@@ -50,6 +50,12 @@ export interface PeerCapacity {
    */
   commitmentsAdvert?: { incarnation: string; replicationSeq: number };
   /**
+   * The peer's OWN preferences-store advert (MULTI-MACHINE-SEAMLESSNESS-SPEC
+   * §WS2.1). Present only when the peer runs the preferences-sync layer; old
+   * peers omit it and the drive is a no-op.
+   */
+  preferencesAdvert?: { incarnation: string; replicationSeq: number };
+  /**
    * The peer's self-reported LLM-account quota state (live-matrix finding A2,
    * 2026-06-06). It IS carried in the peer's session-status response (its
    * getCapacity(self) already includes it) but was being PARSED AWAY on the
@@ -137,6 +143,17 @@ export interface PeerPresencePullerDeps {
     url: string,
     advert: { incarnation: string; replicationSeq: number },
   ) => Promise<void>;
+  /**
+   * REPLICATION-GATED preferences-sync drive (MULTI-MACHINE-SEAMLESSNESS-SPEC
+   * §WS2.1): called with the peer's preferences advert when present; the
+   * consumer compares against its replica cursor and pulls delta pages
+   * (bounded per tick). MUST NOT throw into the puller.
+   */
+  drivePreferencesSync?: (
+    machineId: string,
+    url: string,
+    advert: { incarnation: string; replicationSeq: number },
+  ) => Promise<void>;
 }
 
 export class PeerPresencePuller {
@@ -168,6 +185,12 @@ export class PeerPresencePuller {
           try {
             await this.d.driveCommitmentsSync(m.machineId, m.url as string, cap.commitmentsAdvert);
           } catch { /* @silent-fallback-ok: the puller's contract is NEVER to throw — a failed commitments pull retries on the next presence pass (COMMITMENTS-COHERENCE-SPEC §3.2) */
+          }
+        }
+        if (cap.preferencesAdvert && this.d.drivePreferencesSync) {
+          try {
+            await this.d.drivePreferencesSync(m.machineId, m.url as string, cap.preferencesAdvert);
+          } catch { /* @silent-fallback-ok: the puller's contract is NEVER to throw — a failed preferences pull retries on the next presence pass (MULTI-MACHINE-SEAMLESSNESS-SPEC §WS2.1) */
           }
         }
         try {
