@@ -213,16 +213,39 @@ drain (CMT-1335 full) is Increment B.
   refuse+recover, ordered multi-slot no-interleave. tsc clean, all green.
 - PRIMITIVE ONLY: no consumers, no lint yet (Step 4b).
 
+### 2026-06-13 — Step 4b (route writers through the funnel + forbidding lint) — BUILT + GREEN
+- Routed every in-process `Claude Code-credentials` write through `CredentialWriteFunnel`:
+  `refreshClaudeToken`'s `store.write` now runs inside `withSlotLock(credentialSlotKey(configHome), …)`
+  with a NEW `write-skipped` reason on lock-timeout; `QuotaPoller.pollAccount` maps `write-skipped` →
+  no-snapshot/retry, explicitly NOT `markNeedsReauth` (a busy lock never cries wolf). Added
+  `writeCredentialsSerialized` (the sanctioned provider-write chokepoint) in CredentialProvider.ts and
+  routed `AccountSwitcher.switchAccount` through it (busy lock → "store busy, try again", non-destructive).
+  Primitives do NOT self-lock (callers lock once) → no double-lock. Funnel singleton `credentialWriteFunnel`.
+- Added `scripts/lint-no-unfunneled-credential-write.js` (wired into `npm run lint`; allowlisted in
+  `lint-no-direct-destructive.js` for its `--staged` git bootstrap). Forbids `defaultCredentialStore.write`,
+  qualified `.writeCredentials(`, and raw `add-generic-password` in a file targeting the `Claude Code-credentials`
+  service (file-scoped → the four sibling vaults never false-positive). Comment-skipping; closed allowlist =
+  funnel + the 2 primitive owners + the lint. Real tree is lint-clean.
+- Added `credentialSlotKey = path.resolve(expandHome(home))` so refresh + switch + (Step 5) swap share ONE
+  lock per home regardless of spelling (second-pass review hardening — the only concern raised, fixed inline).
+- Tests: `credential-write-routing.test.ts` (7 — funnel routing, write-skipped→no-reauth + the exchange-failed
+  CONTRAST, per-slot isolation, serialized provider write + busy-skip) + `lint-no-unfunneled-credential-write.test.ts`
+  (8 — both primitives + the `security -i` stdin form caught, distinct-service + comment + chokepoint-name NOT
+  flagged, real tree clean, closed allowlist). tsc clean, full `npm run lint` clean, 208/208 unit green.
+- Second-pass review: CONCUR (independent reviewer subagent) — see the side-effects artifact.
+
 ### NEXT (resume here)
-- Step 4b (ATOMIC — lint can't land before routing): route the 4 in-process keychain writers through
-  `withSlotLock` — (1) CredentialSwapExecutor (Step 5, not yet), (2) QuotaPoller 401-refresh closure
-  (QuotaPoller.ts:218; a lock-timeout skip there returns NO-SNAPSHOT, NEVER markNeedsReauth),
-  (3) OAuthRefresher re-auth / EnrollmentWizard writes, (4) KeychainCredentialProvider.writeCredentials
-  (CredentialProvider.ts:137) — THEN add `scripts/lint-no-unfunneled-credential-write.js` forbidding,
-  outside the funnel: `defaultCredentialStore.write`, `KeychainCredentialProvider.writeCredentials`,
-  and a string-literal `add-generic-password` SCOPED to the `Claude Code-credentials` service (so it
-  does NOT false-positive on WorktreeKeyVault/SecretStore/GlobalSecretStore/RemediationKeyVault). Lint
-  test asserts both primitives + the `security -i` stdin form are caught. This step gets a second-pass review.
+- Step 5: `CredentialSwapExecutor` (spec §2.3) — the staged exchange that actually MOVES a credential between
+  two slots: preconditions (exact ledger membership BEFORE path expansion; reject `../`/`~`/abs) → §2.3.1a
+  source-slot CAS re-read before each destructive write (adopt newer same-tenant blob) → staging escrow (COPY,
+  disjoint `instar-credential-swap-staging-*` namespace, journal `begin`) → exchange (keychain first, config
+  second; DEFAULT slot config = `~/.claude.json` home-root) → verify on ACCOUNT IDENTITY (oracle); unavailable →
+  quarantine-never-repair → commit (staging RETAINED) → delayed re-verify ~90s → delete staging, journal `done`.
+  All `security` calls async `execFile` + 10s timeout. Boot recovery acquires the single-mover mutex; balancer
+  first pass gated on a recovery-complete barrier WITH a hang-timeout. It uses `credentialWriteFunnel`'s
+  `withSlotLocks` + `withSingleMover`. Crash-at-every-boundary + clobber-race + permutation-property +
+  identity-verify/adopt/repair/quarantine tests. Second-pass review.
+- Then steps 6–9 (census re-routing, routes + audit scrub, provenance gate, migration) + Step 10 livetest.
 - Step 5: `CredentialSwapExecutor` (staged exchange, §2.3.1a source-slot CAS, identity-verify,
   quarantine-never-repair, crash-boundary journal). Second-pass review.
 - Then steps 6–9 per the plan. Commit-gate notes: when committing, pass `--spec docs/specs/live-credential-repointing-rebalancer.md` (now `approved:true`); the no-deferrals pre-commit scan will flag the spec's legit Increment-B scoping language ("deferred", "follow-up") — add `<!-- tracked: 20905 -->` (or a CMT id) markers within 200 chars of each, or move the deferral into Increment B's own section, before the first commit.

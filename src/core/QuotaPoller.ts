@@ -291,6 +291,15 @@ export class QuotaPoller {
     if (read.authFailed) {
       const refreshed = await this.refresher(account);
       if (!refreshed.ok) {
+        if (refreshed.reason === 'write-skipped') {
+          // The refresh exchange SUCCEEDED but the per-slot credential funnel lock was busy
+          // (a swap or a concurrent refresh holds it). Transient — no snapshot this cycle,
+          // retry next tick. NEVER needs-reauth: the login is fully intact (Step 4b).
+          this.logger.warn(
+            `[QuotaPoller] account ${account.id} refresh-write skipped (slot busy) — no snapshot this cycle`,
+          );
+          return null;
+        }
         // No refresh token, or the exchange was rejected — genuine re-auth.
         this.markNeedsReauth(account, refreshed.reason);
         return null;

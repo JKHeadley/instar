@@ -156,3 +156,24 @@ export class CredentialWriteFunnel {
     return this.slotTails.size;
   }
 }
+
+/**
+ * Process-wide shared funnel singleton (Step 4b). Every in-process credential writer — the
+ * QuotaPoller refresh path (via `refreshClaudeToken`), the AccountSwitcher write (via
+ * `writeCredentialsSerialized`), and the swap executor (Step 5) — routes through THIS instance so
+ * a refresh write and a swap on the same slot share one per-slot lock and can never interleave.
+ * In-memory ⇒ a process restart clears any crash-stale hold. Tests inject their own instance.
+ */
+export const credentialWriteFunnel = new CredentialWriteFunnel();
+
+/**
+ * Thrown by a void-returning serialized writer when the per-slot lock could not be acquired in
+ * time (the funnel SKIPPED the write rather than wedging). It is a transient "busy, retry" signal
+ * — NEVER a credential failure: callers must not treat it as a dead login / needs-reauth.
+ */
+export class CredentialWriteSkippedError extends Error {
+  constructor(reason: string) {
+    super(reason);
+    this.name = 'CredentialWriteSkippedError';
+  }
+}
