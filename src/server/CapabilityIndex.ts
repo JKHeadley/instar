@@ -27,6 +27,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { SafeGitExecutor } from '../core/SafeGitExecutor.js';
+import { resolveDevAgentGate } from '../core/devAgentGate.js';
 import { activeAutonomousJobs, DEFAULT_MAX_CONCURRENT_AUTONOMOUS } from '../core/AutonomousSessions.js';
 import type { SecretDrop } from './SecretDrop.js';
 import type { RouteContext } from './routes.js';
@@ -806,7 +807,9 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     prefixes: ['/failures'],
     description: 'Failure-Learning Loop — instar dev-process failure forensics (which spec/tool produced a failure; what process gaps recur)',
     build: ({ ctx }) => ({
-      enabled: ctx.config.monitoring?.failureLearning?.enabled === true,
+      // DEV-GATED (CMT-1438): resolve through the funnel so the capability report
+      // matches the construction gate — LIVE on a dev agent, DARK on the fleet.
+      enabled: resolveDevAgentGate(ctx.config.monitoring?.failureLearning?.enabled, ctx.config),
       endpoints: [
         'GET /failures — list failure records (filter by source/category/initiative/attribution)',
         'GET /failures/:id — one record',

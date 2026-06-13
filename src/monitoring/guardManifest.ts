@@ -239,7 +239,7 @@ export const GUARD_MANIFEST: readonly GuardManifestEntry[] = [
     process: 'server',
     expectRuntime: false,
     component: 'BootHealthBeacon',
-    description: 'Boot-time health beacon endpoint.',
+    description: 'Boot-time health beacon endpoint (dev-gated, CMT-1438).',
   },
   {
     key: 'monitoring.rateLimitSentinel.enabled',
@@ -259,7 +259,7 @@ export const GUARD_MANIFEST: readonly GuardManifestEntry[] = [
     process: 'server',
     expectRuntime: false,
     component: 'ParallelWorkSentinel',
-    description: 'Cross-topic overlap councilor (ships dark, Phase B).',
+    description: 'Cross-topic overlap councilor (dev-gated, Phase B).',
   },
   {
     key: 'monitoring.resourceLedger.enabled',
@@ -352,7 +352,7 @@ export const GUARD_MANIFEST: readonly GuardManifestEntry[] = [
     process: 'server',
     expectRuntime: false,
     component: 'FailureLearningLoop',
-    description: 'Failure-Learning Loop capture + pattern surfacing.',
+    description: 'Failure-Learning Loop capture + pattern surfacing (dev-gated, CMT-1438).',
   },
   {
     key: 'monitoring.correctionLearning.enabled',
@@ -405,7 +405,7 @@ export const GUARD_MANIFEST: readonly GuardManifestEntry[] = [
     process: 'server',
     expectRuntime: false,
     component: 'ReleaseReadinessSentinel',
-    description: 'Stalled-release watchdog (maintainer environments).',
+    description: 'Stalled-release watchdog (dev-gated; maintainer environments).',
   },
   {
     key: 'monitoring.promptGate.enabled',

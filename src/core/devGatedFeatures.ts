@@ -155,6 +155,34 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     justification:
       'Dev-enabled per the Maturation Path standard (the dev agent is the controlled blast radius where a lifecycle-touching feature matures before fleet). Loss-reducing only: R1 is a read-only pre-kill dirty-check (no egress, no spend); R2 is a SIGNAL + a tracked beacon (never a blocking gate) plus a NON-destructive preservation patch (git diff → a state-dir file, secret-scrubbed, size-capped; never mutates index/ref/history). The operator origin-veto is preserved — an explicit operator/user/emergency kill is never auto-revived. Fail-open everywhere.',
   },
+  // ── CMT-1438 (DEV-AGENT-DARK-GATE-TEETH): the 4 audited-safe migrants from the
+  //    retired deliberate-fleet-default bucket. Each was code-grounded (D4) before
+  //    the move; 3 candidates (correctionLearning, apprenticeshipCycleSla,
+  //    geminiCapacityEscalation) FAILED grounding and stayed exclusions below. ──
+  {
+    name: 'parallelWorkSentinel',
+    configPath: 'monitoring.parallelWorkSentinel.enabled',
+    description: 'Proactive cross-topic work-overlap councilor (parallel-activity-coherence Phase B).',
+    justification: 'D4-verified observe-only: ticks on a cadence, emits an in-process `overlap` event with NO listener wired, and appends to a local sentinel-events.jsonl audit. No fetch/Telegram/relay, no LLM, no destructive or external action.',
+  },
+  {
+    name: 'failureLearning',
+    configPath: 'monitoring.failureLearning.enabled',
+    description: 'Failure-Learning Loop — append-only failure ledger + pattern surface (/failures).',
+    justification: 'D4-verified observe-only at default sub-flags: append-only ledger; the Telegram insight-push path is unimplemented (insightTelegramEscalation only flips a reported stage string); all ingestion sources (ci/revert/regression/degradation) default off; the loop creates only draft items needing human approval — never auto-implements. No egress/spend on enable.',
+  },
+  {
+    name: 'releaseReadiness',
+    configPath: 'monitoring.releaseReadiness.enabled',
+    description: 'Release-Readiness Sentinel — release-hygiene read surface (repo-gated).',
+    justification: 'D4-verified inert-on-enable: server constructs the sentinel but does NOT start it — ticks are driven by the SEPARATE `release-readiness-check` cron job which ships (and is) enabled:false. So dev-gating makes only the READ surface live (routes stop 503-ing); the send capability is reachable only if the operator ALSO enables that dark job (a P17-budgeted createForumTopic), a separate explicit decision pinned by a drift-guard test. No egress/spend on enable.',
+  },
+  {
+    name: 'bootHealthBeacon',
+    configPath: 'monitoring.bootHealthBeacon.enabled',
+    description: 'Boot health beacon — a minimal /health responder during the heavy boot phase.',
+    justification: 'D4-verified read-only: binds a localhost-only inbound /health socket during boot and cleanly releases it before the real server binds; zero outbound (no fetch/Telegram), no spend, no destructive action.',
+  },
 ];
 
 /**
@@ -169,13 +197,24 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
  * prevention. It is a CODEOWNERS-reviewed path; the human gate is the real
  * backstop. The lint REJECTS an entry with an unknown category or a reason
  * shorter than 12 non-whitespace chars.
+ *
+ * CMT-1438 (DEV-AGENT-DARK-GATE-TEETH): the catch-all `deliberate-fleet-default`
+ * category was RETIRED. Every off-even-on-dev category now names a CONCRETE reason
+ * dev-live is the wrong place to run the feature — either *unsafe*
+ * (`destructive` / `cost-bearing` / `action-bearing`) or *not-runnable*
+ * (`optional-integration` / `structural-stub`). There is no "off by policy" home;
+ * a feature that is safe AND runnable on a dev agent belongs in DEV_GATED_FEATURES.
+ * Honest scope (Signal vs. Authority): the lint adjudicates category spelling +
+ * reason length, never category *honesty* — the backstops against mis-parking a
+ * safe feature are D4 code-grounding (build-time, per spec) and the
+ * GrowthMilestoneAnalyst R6 runtime cross-check.
  */
 export type DarkGateCategory =
   | 'destructive'
-  | 'optional-integration'
   | 'cost-bearing'
-  | 'structural-stub'
-  | 'deliberate-fleet-default';
+  | 'action-bearing'
+  | 'optional-integration'
+  | 'structural-stub';
 
 export interface DarkGateExclusion {
   /** Dotted path to the feature's `enabled` flag in the agent config. */
@@ -281,61 +320,47 @@ export const DARK_GATE_EXCLUSIONS: DarkGateExclusion[] = [
     category: 'optional-integration',
     reason: 'WS2.5 cross-machine evolution-action-queue replication — the FOURTH memory-family kind on the HLC foundation; graduated rollout dark→dryRun→live per multi-machine-replicated-store-foundation, opt-in per deployment (no action crosses a machine boundary while dark; the local ACT-NNN id is never replicated; the load-bearing field is status so a peer sees an action was already completed elsewhere; mirrors the knowledge sibling)',
   },
-  // ── deliberate-fleet-default — off for everyone by design (incl. dev) ──
+  // ── action-bearing — when merely enabled, automatically produces an outbound
+  //    side-effect that reaches an external system or the operator (a send, a PR
+  //    merge, a remote mutation). De-dup/rate-limiting reduces severity but an
+  //    auto-send is an auto-send. Held off-on-dev; opt-in per agent. (CMT-1438) ──
   {
     configPath: 'monitoring.greenPrAutoMerge.enabled',
-    category: 'deliberate-fleet-default',
-    reason: 'green-PR auto-merge watcher — action-bearing (merges PRs), so NOT dev-gated (the dev-gate registry bars action-bearing features, devGatedFeatures.ts contract). Off fleet-wide; flipped on per dev agent with expectedGhLogin. safe-merge re-verifies + lease-gated + runtime rollback + breaker; GitHub App is a binding precondition before any fleet promotion.',
-  },
-  {
-    configPath: 'monitoring.bootHealthBeacon.enabled',
-    category: 'deliberate-fleet-default',
-    reason: 'minimal boot /health responder; deliberate fleet default, off until a supervisor needs it',
-  },
-  {
-    configPath: 'monitoring.parallelWorkSentinel.enabled',
-    category: 'deliberate-fleet-default',
-    reason: 'observe-only overlap councilor; candidate for dev-gating in a follow-up audit',
-  },
-  {
-    configPath: 'monitoring.failureLearning.enabled',
-    category: 'deliberate-fleet-default',
-    reason: 'observe-only failure-learning loop; candidate for dev-gating in a follow-up audit',
-  },
-  {
-    configPath: 'monitoring.correctionLearning.enabled',
-    category: 'deliberate-fleet-default',
-    reason: 'observe-only correction/preference sentinel; candidate for dev-gating in a follow-up audit',
-  },
-  {
-    configPath: 'monitoring.apprenticeshipCycleSla.enabled',
-    category: 'deliberate-fleet-default',
-    reason: 'observe-only overdue-cycle signal; candidate for dev-gating in a follow-up audit',
-  },
-  {
-    configPath: 'monitoring.geminiCapacityEscalation.enabled',
-    category: 'deliberate-fleet-default',
-    reason: 'observe-only capacity-block escalation; candidate for dev-gating in a follow-up audit',
-  },
-  {
-    configPath: 'monitoring.releaseReadiness.enabled',
-    category: 'deliberate-fleet-default',
-    reason: 'observe-only release-readiness sentinel; repo-gated; candidate for dev-gating in a follow-up audit',
+    category: 'action-bearing',
+    reason: 'green-PR auto-merge watcher — merges PRs (an irreversible external mutation) when live. Off fleet-wide; flipped on per dev agent with expectedGhLogin. safe-merge re-verifies + lease-gated + runtime rollback + breaker; GitHub App is a binding precondition before any fleet promotion.',
   },
   {
     configPath: 'threadline.a2aCheckIn.enabled',
-    category: 'deliberate-fleet-default',
-    reason: 'A2A check-in summarizer; deliberate fleet default, opt-in to keep the operator un-flooded',
+    category: 'action-bearing',
+    reason: 'A2A check-in summarizer — sends UNBOUNDED user-facing Telegram summaries on a heartbeat while a conversation is active; live-on-dev would flood the operator. Opt-in to keep the operator un-flooded.',
   },
   {
+    configPath: 'monitoring.apprenticeshipCycleSla.enabled',
+    category: 'action-bearing',
+    reason: 'D4-grounded action-bearing: auto-ticks on the always-running TokenLedgerPoller cadence and, on each overdue cycle, calls telegram.createAttentionItem → createForumTopic + sendMessage (a user-facing Telegram escalation, flood-guard/dedup bounded). Read-only on the cycle store, but the auto-send contradicts the observe-only claim — held off-on-dev, opt-in per agent.',
+  },
+  {
+    configPath: 'monitoring.geminiCapacityEscalation.enabled',
+    category: 'action-bearing',
+    reason: 'D4-grounded action-bearing: same pattern as apprenticeshipCycleSla — auto-ticks the TokenLedgerPoller cadence and, on a capacity-block deferral episode (>escalateAfterMinutes), auto-posts a user-facing Telegram attention topic (dedup-bounded per episode). The auto-send contradicts the observe-only claim — held off-on-dev, opt-in per agent.',
+  },
+  // ── cost-bearing addition (CMT-1438 D4 grounding) ──
+  {
+    configPath: 'monitoring.correctionLearning.enabled',
+    category: 'cost-bearing',
+    reason: 'D4-grounded cost-bearing: enabling the capture loop runs a per-message Tier-1 LLM distill (sharedIntelligence.evaluate model:fast via a dedicated LlmQueue, <=25c/day cap) on every preference/frustration-classified inbound message — ongoing LLM spend gated by the base loop, not a sub-flag. The earlier no-spend reason-string was disproved; held off-on-dev, opt-in per agent.',
+  },
+  // ── optional-integration — inert until per-deployment config/credential exists
+  //    (must name the gating config); not unsafe, just nothing to dogfood. (CMT-1438) ──
+  {
     configPath: 'mentor.enabled',
-    category: 'deliberate-fleet-default',
-    reason: 'framework-onboarding mentor system; deliberate fleet default, off until the human advances rollout',
+    category: 'optional-integration',
+    reason: 'framework-onboarding mentor system — inert until the operator advances the graduated rollout (mode off→dry-run→live) and configures menteeFramework; nothing to dogfood live-on-dev until that per-deployment config exists.',
   },
   {
     configPath: 'mentee.enabled',
-    category: 'deliberate-fleet-default',
-    reason: 'mentee receiver wiring; deliberate fleet default, off until an allowlisted mentor is configured',
+    category: 'optional-integration',
+    reason: 'mentee receiver wiring — inert until localAgentName + knownMentors (an allowlisted mentor) + replyChatId/replyTopicId are configured; any missing piece logs a skip and stays dark, so there is nothing to dogfood until that per-deployment allowlist exists.',
   },
 ];
 
