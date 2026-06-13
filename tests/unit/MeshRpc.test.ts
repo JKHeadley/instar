@@ -137,6 +137,15 @@ describe('MeshRpc — per-command RBAC (§L0)', () => {
       expect(checkCommandRBAC(cmd, 'ANY_PEER', rbac()).ok).toBe(true);
     }
   });
+
+  it('state-snapshot is read/observe class — any registered peer → ok (no router/owner role)', () => {
+    // The single-origin snapshot pull is self-binding (origin === serving machine);
+    // RBAC adds NO authorization beyond verifyEnvelope, exactly like the other
+    // read-replication verbs (journal-sync/preferences-sync). (multi-machine-
+    // replicated-store-foundation §6.1/§6.3.)
+    const cmd: MeshCommand = { type: 'state-snapshot', request: { store: 'pref' } };
+    expect(checkCommandRBAC(cmd, 'ANY_PEER', rbac()).ok).toBe(true);
+  });
 });
 
 describe('MeshRpc — acceptEnvelope (verify THEN rbac)', () => {

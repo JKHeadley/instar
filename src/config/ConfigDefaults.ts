@@ -828,7 +828,7 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       aggregateJournalBudgetBytes: 67108864, // 64 MiB (§10.2)
       maxDriftMs: 300000, // 5 min — the §3.4 default, within the [60s,15min] clamp
       maxCachedSnapshots: 16, // §8.2 snapshot-cache count ceiling
-      maxCacheBytes: 33554432, // 32 MiB — §8.2 snapshot-cache byte ceiling
+      maxCacheBytes: 67108864, // 64 MiB — §8.2 snapshot-cache byte ceiling (reconciled to spec §8.2 from the 32 MiB Step-2 literal)
     },
   },
   // Session Boot Self-Knowledge (spec: session-boot-self-knowledge.md) — the

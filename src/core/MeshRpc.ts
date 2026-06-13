@@ -79,6 +79,23 @@ export type MeshCommand =
       request: { sinceSeq: number; incarnation?: string };
     }
   | {
+      // Single-origin store-snapshot pull (multi-machine-replicated-store-
+      // foundation §6.1/§6.3). Read/observe class — the HOLDER serves a
+      // single-origin snapshot of (store) it AUTHORED (origin === the serving
+      // machine; §6.1 anti-forgery holds end-to-end exactly as first-hop binding
+      // does on the tail path). The recovering machine requests its OWN-namespace
+      // recovery of one origin at a time; the receiver re-validates that every
+      // record's origin === the authenticated sender (validateWireSnapshot) before
+      // landing anything — a cross-origin record rejects the WHOLE snapshot
+      // (quarantined as untrusted-origin), never landed. The build runs OFF the
+      // event loop in a worker (instar#1069); a flapping peer is served a cached
+      // snapshot (breaker-gated, §6.3). The HANDLER stays dark unless the store is
+      // enabled — an old peer / a dark store 501s (no-handler) and the caller
+      // falls back to a from-genesis tail (the legacy behavior).
+      type: 'state-snapshot';
+      request: { store: string };
+    }
+  | {
       // Preferences-pool read replication (MULTI-MACHINE-SEAMLESSNESS-SPEC
       // §WS2.1). Read/observe class — serves OWN learned-preference records as
       // seq-windowed delta pages (lastMutatedSeq > sinceSeq), incarnation-
@@ -290,6 +307,7 @@ export function checkCommandRBAC(command: MeshCommand, sender: MachineId, deps: 
     case 'topic-profile-pull':
     case 'commitments-sync':
     case 'preferences-sync':
+    case 'state-snapshot':
     case 'pool-view-fetch':
     case 'secret-share':
       // Read/observe class (or e2e-encrypted) — any registered peer (already
@@ -312,6 +330,13 @@ export function checkCommandRBAC(command: MeshCommand, sender: MachineId, deps: 
       // method, single-use, signed by the authenticated sender) AND the
       // holder's own per-view authorization passes. The probeOnly shape
       // discloses only existence (not the body) to a registered peer.
+      // state-snapshot joins it (multi-machine-replicated-store-foundation
+      // §6.1/§6.3): the HOLDER serves a SINGLE-ORIGIN snapshot of a store it
+      // authored to a registered same-operator peer. It is self-binding —
+      // origin === the authenticated sender end-to-end, and the recovering
+      // machine re-validates every record's origin before landing (a
+      // cross-origin record rejects the whole snapshot), so no router/owner role
+      // is required; the handler itself stays dark unless the store is enabled.
       return { ok: true, reason: 'ok' };
     default:
       return { ok: false, reason: 'claim-unauthorized' };

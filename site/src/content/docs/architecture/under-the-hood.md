@@ -534,3 +534,21 @@ Spec: `docs/specs/MENTOR-LIVE-READINESS-SPEC.md` §Fix 2a.
   pool-flag-coherence check surfaces a mixed-flag pool once, coalesced across all peers.
   Pure mechanism, dark by default; a single-machine install is a strict no-op. Spec:
   `docs/specs/multi-machine-replicated-store-foundation.md` §4 / §10.
+- **`StoreSnapshot`** (`src/core/StoreSnapshot.ts`) — the **snapshot-then-tail** join/recover
+  path so a returning / compacted / long-dark machine never replays a peer's journal from
+  genesis. `materializeSnapshot()` builds a **single-origin** snapshot — a peer serves ONLY
+  the records it authored (`origin === serving machine`, the first-hop anti-forgery invariant
+  enforced at materialization: a cross-origin entry is dropped, never landed). The snapshot
+  carries a per-`(origin, kind)` seq-watermark **vector** (not a scalar), computed from which
+  entries actually materialized so it cannot lie; `applySnapshotCutover()` seeds
+  `PeerMeta.lastHeldSeq = snapshotSeq` and then tails via the UNCHANGED `buildServeBatch` seq
+  transport, so the no-gap / no-double-apply guarantee is inherited from the existing
+  seq-contiguity (HLC is demoted to a secondary dedup hint). A deleted-keys high-water seed
+  blocks delete-resurrection across tombstone GC. `StoreSnapshotEngine` runs the build **off
+  the event loop** in `storeSnapshotBuild.worker.ts` (the instar#1069 worker discipline,
+  mirroring `CartographerSweepEngine`); `SnapshotCache` is a fixed-ceiling LRU ring
+  (`maxCachedSnapshots` + `maxCacheBytes`, NOT pool-scaled) with a `cacheLossCounter`, and
+  `SnapshotRebuildBreaker` bounds rebuild storms from a flapping peer. The pull rides the
+  authenticated mesh RPC as a `state-snapshot` read/observe verb (Phase-C: no LAN broadcast).
+  Pure mechanism, dark by default; a single-machine install is a strict no-op. Spec:
+  `docs/specs/multi-machine-replicated-store-foundation.md` §6 / §8.2.
