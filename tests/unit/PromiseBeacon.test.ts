@@ -38,7 +38,7 @@ describe('PromiseBeacon', () => {
   beforeEach(() => { ({ dir, cleanup } = tmpState()); });
   afterEach(() => cleanup());
 
-  it('emits a templated heartbeat (no LLM call) when the tmux snapshot is unchanged', async () => {
+  it('B1: suppresses the heartbeat entirely when the tmux snapshot is unchanged (default)', async () => {
     const tracker = baseTracker(dir);
     const sent: Array<{ topicId: number; text: string }> = [];
     const queue = new LlmQueue({ maxDailyCents: 100 });
@@ -54,6 +54,7 @@ describe('PromiseBeacon', () => {
       isSessionAlive: () => true,
       sendMessage: async (topicId, text) => { sent.push({ topicId, text }); },
       generateStatusLine: spy,
+      // suppressUnchangedHeartbeats defaults to true — no explicit config.
     });
     beacon.start();
 
@@ -62,13 +63,46 @@ describe('PromiseBeacon', () => {
       topicId: 42, beaconEnabled: true, cadenceMs: 60_000, nextUpdateDueAt: '2099-01-01T00:00:00Z',
     });
 
-    // Fire twice — second fire hits the hash-gate because output is identical.
+    // Fire twice — first fire is genuine new output (no prior hash) → real LLM
+    // line; second fire's snapshot is identical → unchanged → SUPPRESSED (B1).
+    await beacon.fire(c.id);
+    await beacon.fire(c.id);
+
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(sent.length).toBe(1); // only the first, genuine-output heartbeat
+    expect(sent[0].text).toContain('LLM-RESULT');
+    beacon.stop();
+  });
+
+  it('B1 rollback: suppressUnchangedHeartbeats:false restores the legacy templated heartbeat', async () => {
+    const tracker = baseTracker(dir);
+    const sent: Array<{ topicId: number; text: string }> = [];
+    const queue = new LlmQueue({ maxDailyCents: 100 });
+    const spy = vi.fn(async () => 'LLM-RESULT');
+
+    const beacon = new PromiseBeacon({
+      stateDir: dir,
+      commitmentTracker: tracker,
+      llmQueue: queue,
+      proxyCoordinator: new ProxyCoordinator(),
+      captureSessionOutput: () => 'static output\nline two',
+      getSessionForTopic: () => 'sess-1',
+      isSessionAlive: () => true,
+      sendMessage: async (topicId, text) => { sent.push({ topicId, text }); },
+      generateStatusLine: spy,
+      suppressUnchangedHeartbeats: false,
+    });
+    beacon.start();
+
+    const c = tracker.record({
+      type: 'one-time-action', userRequest: 'ship x', agentResponse: 'will ship',
+      topicId: 42, beaconEnabled: true, cadenceMs: 60_000, nextUpdateDueAt: '2099-01-01T00:00:00Z',
+    });
+
     await beacon.fire(c.id);
     await beacon.fire(c.id);
 
     expect(sent.length).toBe(2);
-    // First emission calls the LLM (no prior hash to compare against).
-    // Second emission uses the templated path because the hash is unchanged.
     expect(spy).toHaveBeenCalledTimes(1);
     expect(sent[1].text).toMatch(/still (on it|working)|no (new|fresh) output|terminal quiet|snapshot unchanged|no visible change/i);
     beacon.stop();

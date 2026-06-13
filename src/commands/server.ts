@@ -8331,6 +8331,14 @@ export async function startServer(options: StartOptions): Promise<void> {
     // consolidated message to the existing system topic. No new-topic-per-event.
     // Spec: docs/specs/silently-stopped-trio.md.
     //
+    // Subagent Tracker — monitors subagent lifecycle via hook events. Constructed
+    // BEFORE the silently-stopped trio block so ActiveWorkSilenceSentinel's
+    // corroboration (HONEST-PROGRESS-MESSAGING A2 — "is a sub-agent live?") can be
+    // wired into it (it was previously built after the trio block).
+    const { SubagentTracker } = await import('../monitoring/SubagentTracker.js');
+    const subagentTracker = new SubagentTracker({ stateDir: config.stateDir });
+    console.log(pc.green('  Subagent tracker enabled'));
+
     // Captured out of the trio block so the SessionReaper's recovery veto can
     // compose socket + silence in too (SESSION-REAPER-SPEC §4 "compose, don't
     // replace"). undefined when the corresponding sentinel is disabled.
@@ -8453,6 +8461,28 @@ export async function startServer(options: StartOptions): Promise<void> {
                   return result.ok;
                 }
               : undefined,
+            // HONEST-PROGRESS-MESSAGING A1/A2 — corroborate before claiming a
+            // session is stuck: re-capture the live frame, check it isn't still
+            // generating, and check no sub-agent is live. The whole path fails
+            // closed inside the sentinel (FD-6).
+            captureFrame: (name: string) => sessionSurface.captureOutput(name, 60),
+            frameworkForSession: (name: string) => sessionManager.frameworkForSession(name),
+            hasActiveSubagents: (name: string) => {
+              const csid = sessionManager
+                .listRunningSessions()
+                .find((s) => s.tmuxSession === name)?.claudeSessionId;
+              return csid ? subagentTracker.hasActiveSubagents(csid) : false;
+            },
+            // Observability (E) — funnel events to the sentinel-events.jsonl audit
+            // trail via the notifier, mapped onto its kind enum.
+            recordEvent: (event, name, detail) => {
+              const kind = event.startsWith('suppressed')
+                ? 'escalation-suppressed'
+                : event.startsWith('escalated')
+                  ? 'escalation-sent'
+                  : 'detected';
+              notifier.record(kind, 'active-silence', name, detail ? `${event}: ${detail}` : event);
+            },
           }),
           silenceCfg,
         );
@@ -8605,10 +8635,6 @@ export async function startServer(options: StartOptions): Promise<void> {
       return Promise.resolve(true);
     };
 
-    // Subagent Tracker — monitors subagent lifecycle via hook events
-    const { SubagentTracker } = await import('../monitoring/SubagentTracker.js');
-    const subagentTracker = new SubagentTracker({ stateDir: config.stateDir });
-    console.log(pc.green('  Subagent tracker enabled'));
 
     // Helper Watchdog — detects subagent stalls and rate-limit failures,
     // surfacing them back into the parent session's stdin so the agent
@@ -8952,6 +8978,10 @@ export async function startServer(options: StartOptions): Promise<void> {
       sentinelAutoEnable?: boolean;
       quietHours?: { start: string; end: string; timezone?: string };
       maxActiveBeacons?: number;
+      // HONEST-PROGRESS-MESSAGING B1/B1b/B2 (operator opt-out / tuning).
+      suppressUnchangedHeartbeats?: boolean;
+      beaconLivenessIntervalMs?: number;
+      turnFinishedCloseoutChecks?: number;
     };
     const sharedLlmQueue = new SharedLlmQueueCls({
       maxConcurrent: 3,
@@ -9533,6 +9563,9 @@ export async function startServer(options: StartOptions): Promise<void> {
         // Spec: docs/specs/PROMISE-BEACON-SPEC.md
         try {
           const { PromiseBeacon } = await import('../monitoring/PromiseBeacon.js');
+          // HONEST-PROGRESS-MESSAGING B2 — strict "generating now" detector for
+          // the beacon's turn-finished close-out (live spinner / esc-to-interrupt).
+          const { looksGeneratingNow: _beaconLooksGeneratingNow } = await import('../monitoring/sentinelWiring.js');
 
           // ── Escalation deps (PROMISE-BEACON-ESCALATION-SPEC §3–§5) ────────
           // Dark-ship: enabled resolves via the developmentAgent gate; dryRun
@@ -9545,7 +9578,6 @@ export async function startServer(options: StartOptions): Promise<void> {
           // loss or a crash between persist and spawn cannot double-spawn.
           const escRecentAttempts = new Map<string, number>();
           const escIdemWindowMs = 3_600_000; // 1h (spec §7a)
-
           const promiseBeacon = new PromiseBeacon({
             stateDir: config.stateDir,
             commitmentTracker,
@@ -9665,6 +9697,15 @@ export async function startServer(options: StartOptions): Promise<void> {
             sentinelAutoEnable: promiseBeaconCfg.sentinelAutoEnable ?? false,
             quietHours: promiseBeaconCfg.quietHours ?? { start: '22:00', end: '08:00' },
             maxActiveBeacons: promiseBeaconCfg.maxActiveBeacons ?? 20,
+            // HONEST-PROGRESS-MESSAGING B1/B1b/B2 — silent-unless-true defaults.
+            // Each reads from config (operator opt-out / tuning); undefined leaves
+            // the beacon's own defaults (suppress on, 60m liveness, N=3 close-out).
+            suppressUnchangedHeartbeats: promiseBeaconCfg.suppressUnchangedHeartbeats,
+            beaconLivenessIntervalMs: promiseBeaconCfg.beaconLivenessIntervalMs,
+            turnFinishedCloseoutChecks: promiseBeaconCfg.turnFinishedCloseoutChecks,
+            // B2 turn-finished detection — "is the session still generating now?"
+            looksActivelyWorking: (frame: string, name: string) =>
+              _beaconLooksGeneratingNow(frame, sessionManager.frameworkForSession(name)),
           });
           promiseBeacon.start();
           (globalThis as Record<string, unknown>).__instarPromiseBeacon = promiseBeacon;
