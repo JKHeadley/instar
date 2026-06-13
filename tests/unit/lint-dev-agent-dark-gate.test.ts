@@ -335,12 +335,16 @@ describe('lint-dev-agent-dark-gate', () => {
       '483': 'mentor.enabled',
       '494': 'mentor.autonomousFix.enabled',
       '509': 'mentee.enabled',
-      '609': 'multiMachine.sessionPool.enabled',
-      '634': 'multiMachine.sessionPool.inboundQueue.enabled',
-      '663': 'multiMachine.sessionPool.holdForStability.enabled',
-      '808': 'cartographer.freshnessSweep.enabled',
-      '853': 'cartographer.conformanceAudit.llmEnrichment.enabled',
-      '878': 'cartographer.subtreeNav.llmRerank.enabled',
+      // WS2.1 preferences pool: multiMachine.seamlessness gained ws21PreferencesPool
+      // (+8 lines) → sessionPool family +8; coherenceJournal gained the `preferences`
+      // sub-block (+10) → cartographer entries +18 total. Composed on #1098's map.
+      // Verified by hand (attributor) against ConfigDefaults.ts after the WS2.1 additions.
+      '617': 'multiMachine.sessionPool.enabled',
+      '642': 'multiMachine.sessionPool.inboundQueue.enabled',
+      '671': 'multiMachine.sessionPool.holdForStability.enabled',
+      '826': 'cartographer.freshnessSweep.enabled',
+      '871': 'cartographer.conformanceAudit.llmEnrichment.enabled',
+      '896': 'cartographer.subtreeNav.llmRerank.enabled',
     };
     const actual = attributeRealConfigDefaults();
     expect(actual).toEqual(EXPECTED);
