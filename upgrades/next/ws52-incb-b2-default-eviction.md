@@ -19,7 +19,7 @@ Adds the highest-priority objective to the balancer decision core: keep `~/.clau
 
 ## What to Tell Your User
 
-Still nothing changes — off-by-default internal logic. This teaches the (not-yet-active) account-balancer to protect the one login that must always work: the default `claude` account. If that account ever needs a re-login or gets quarantined, the balancer's plan is to slide a known-good account into its place so your plain `claude` command keeps working, and flag the broken one for you. And if the check it relies on (Anthropic's identity endpoint) is down for everything at once, it deliberately does nothing rather than risk making the default worse — preserving the last-known-good and telling you honestly that it can't currently certify it's live. It only decides; nothing acts yet.
+Still nothing changes — off-by-default internal logic. This teaches the (not-yet-active) account-balancer to protect the one login that must always work: your default Claude account. If that account ever needs a re-login or gets quarantined, the balancer's plan is to slide a known-good account into its place so your plain claude command keeps working, and flag the broken one for you. And if the check it relies on (Anthropic's identity endpoint) is down for everything at once, it deliberately does nothing rather than risk making the default worse — preserving the last-known-good and telling you honestly that it can't currently certify it's live. It only decides; nothing acts yet.
 
 ## Summary of New Capabilities
 
