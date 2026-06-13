@@ -20,3 +20,5 @@ Nothing yet — this is an experimental, dark-by-default capability. On a develo
 ## Evidence
 
 The operator reported (2026-06-13, topic 22367) that the Mandates grant flow still showed raw JSON and forced him to "create a mandate" — reproducible by opening the Mandates tab and attempting a grant with no active mandate (the grant form never appears; only the raw-JSON issue form does). Fixed: the new "Approvals waiting for you" card is the primary surface; the raw-JSON form is demoted behind "Advanced". A naive version of the fix would have reopened a deceptive-display hole (agent-authored card text diverging from the executed grant); that is closed by server-authoring the headline from the structured proposal + the registry name, and is asserted at all three test tiers (a malicious agent `reason` never becomes the headline). 67 tests green (unit/integration/e2e + gate + dark-gate golden map).
+
+<!-- ci: re-trigger workflow dispatch after force-push (capability-index fix) -->
