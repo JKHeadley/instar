@@ -101,6 +101,15 @@ export interface SessionReaperConfig {
    *  closeout fires — absorbs transfer races and brief ownership churn.
    *  Default 2 (~4 min at the default 120s tick). */
   topicMovedConfirmTicks: number;
+  /** P19 breaker (WS1.2, MULTI-MACHINE-SEAMLESSNESS-SPEC): after this many
+   *  CONSECUTIVE vetoed closeout attempts on the same session, the closeout
+   *  stops retrying and ONE degradation notice surfaces — the 2026-06-12
+   *  incident was this exact loop attacking a working session every 2 minutes
+   *  for hours. The session is NOT stranded: the normal idle pipeline still
+   *  evaluates it every tick and reaps it when it actually finishes. The
+   *  breaker resets when the topic returns home / a pin-conflict hold engages /
+   *  the session ends. Default 5 (~10 min of vetoes at the default 120s tick). */
+  topicMovedVetoBreakerAttempts: number;
 }
 
 export const DEFAULT_SESSION_REAPER_CONFIG: SessionReaperConfig = {
@@ -129,6 +138,7 @@ export const DEFAULT_SESSION_REAPER_CONFIG: SessionReaperConfig = {
   busyOrphanConfirmTicks: 5,
   topicMovedCloseout: true,
   topicMovedConfirmTicks: 2,
+  topicMovedVetoBreakerAttempts: 5,
 };
 
 /** Memory-pressure thresholds (freePct). Kept as constants — the existing
@@ -274,6 +284,13 @@ export interface SessionReaperDeps {
   now?: () => number;
   /** Structured audit sink (sentinel-events.jsonl). */
   audit?: (event: Record<string, unknown>) => void;
+  /** WS1.2 P19 breaker escalation: ONE deduped degradation notice when the
+   *  post-transfer closeout gives up on a permanently-vetoing session ("topic
+   *  moved to X but the old session won't close — still finishing Y"). The
+   *  attention queue dedupes on `id`, so a breaker that re-opens within the
+   *  same episode never floods. Absent ⇒ audit-only (the transition is still
+   *  in sentinel-events.jsonl). */
+  raiseAttention?: (item: { id: string; title: string; summary: string; description?: string }) => void;
   /** Durable candidacy (A): load the persisted per-session idle-candidacy map on
    *  start so the multi-minute idle clock (candidateSince) survives a server restart.
    *  Without this the in-memory clock resets every restart — and on a box that
@@ -312,6 +329,12 @@ export class SessionReaper extends EventEmitter {
   /** Consecutive busy-orphan-suspect ticks per session (observe-only dwell for
    *  `busyOrphanDetection`). Resets to 0 on any non-suspect tick. GC'd with obs. */
   private busyOrphanStreak = new Map<string, number>();
+  /** Consecutive VETOED closeout terminate attempts per session (the WS1.2
+   *  P19 breaker counter). Distinct from the dwell streak: this counts only
+   *  real terminate() calls that came back vetoed. At
+   *  `topicMovedVetoBreakerAttempts` the closeout stops retrying for the
+   *  episode. Reset on success / topic-home / pin-conflict hold. GC'd with obs. */
+  private topicMovedVetoes = new Map<string, number>();
   /** Consecutive owned-elsewhere ticks per session (the topicMovedCloseout
    *  dwell). Resets when the topic returns to this machine / unowned. GC'd with obs. */
   private topicMovedStreak = new Map<string, number>();
@@ -604,6 +627,7 @@ export class SessionReaper extends EventEmitter {
       for (const id of [...this.cpuSamples.keys()]) if (!live.has(id)) this.cpuSamples.delete(id);
       for (const id of [...this.busyOrphanStreak.keys()]) if (!live.has(id)) this.busyOrphanStreak.delete(id);
       for (const id of [...this.topicMovedStreak.keys()]) if (!live.has(id)) this.topicMovedStreak.delete(id);
+      for (const id of [...this.topicMovedVetoes.keys()]) if (!live.has(id)) this.topicMovedVetoes.delete(id);
 
       let reapedThisTick = 0;
       for (const session of sessions) {
@@ -639,12 +663,23 @@ export class SessionReaper extends EventEmitter {
               this.audit('reap-skipped-topic-moved', session, { rule: 'topic-moved-away', otherOwner, skipped: 'pin-conflict-pending-reconcile' });
               this.topicMovedStreak.set(session.id, -1);
             }
+            // The closeout intent is withdrawn while the pin holds — a fresh
+            // episode after reconcile starts with a clean breaker.
+            this.topicMovedVetoes.delete(session.id);
           } else if (otherOwner) {
             const streak = (this.topicMovedStreak.get(session.id) ?? 0) + 1;
             this.topicMovedStreak.set(session.id, streak);
             if (streak >= this.cfg.topicMovedConfirmTicks) {
               const reason = `topic moved to ${otherOwner} — closing the leftover session on this machine (post-transfer closeout)`;
-              if (!this.killsEnabled) {
+              const vetoes = this.topicMovedVetoes.get(session.id) ?? 0;
+              if (vetoes >= this.cfg.topicMovedVetoBreakerAttempts) {
+                // P19 breaker OPEN (WS1.2): this session vetoed the closeout
+                // `topicMovedVetoBreakerAttempts` times in a row — stop
+                // retrying for the episode. NOT a stranded session: it falls
+                // through to the idle pipeline below every tick, so it is
+                // still reaped normally when its work actually finishes. The
+                // open transition was audited + escalated exactly once.
+              } else if (!this.killsEnabled) {
                 if (streak === this.cfg.topicMovedConfirmTicks) {
                   this.audit('would-reap', session, { rule: 'topic-moved-away', otherOwner, dryRun: true });
                 }
@@ -655,12 +690,28 @@ export class SessionReaper extends EventEmitter {
                   this.reapTimestamps.push(this.now());
                   this.audit('reaped', session, { rule: 'topic-moved-away', otherOwner });
                   this.topicMovedStreak.delete(session.id);
+                  this.topicMovedVetoes.delete(session.id);
                   continue; // session is gone — skip the idle pipeline
                 }
                 // Guard veto / already-terminal — audit once per streak crossing,
-                // keep the streak so next tick retries.
+                // keep the streak so next tick retries (bounded by the breaker).
+                const v = vetoes + 1;
+                this.topicMovedVetoes.set(session.id, v);
                 if (streak === this.cfg.topicMovedConfirmTicks) {
                   this.audit('reap-skipped-topic-moved', session, { rule: 'topic-moved-away', otherOwner, skipped: res.skipped });
+                }
+                if (v === this.cfg.topicMovedVetoBreakerAttempts) {
+                  // Breaker opens NOW: one audit row + one deduped escalation.
+                  this.audit('closeout-breaker-open', session, {
+                    rule: 'topic-moved-away', otherOwner, vetoedAttempts: v, lastSkipped: res.skipped ?? 'keep-guard',
+                  });
+                  const topicId = this.deps.topicBinding(session.tmuxSession);
+                  this.deps.raiseAttention?.({
+                    id: `closeout-breaker:${session.id}`,
+                    title: `Topic ${topicId ?? '?'} moved to ${otherOwner}, but the old session won't close`,
+                    summary: `Post-transfer closeout gave up after ${v} vetoed attempts (held by: ${res.skipped ?? 'keep-guard'}).`,
+                    description: `The conversation for topic ${topicId ?? '?'} now lives on ${otherOwner}, but the leftover session on this machine (${session.tmuxSession}) refused to close ${v} times in a row — a KEEP-guard reports it is still working (${res.skipped ?? 'keep-guard'}). Closeout retries have stopped (P19 breaker); the session will close via the normal idle path when it finishes, or you can close it from the dashboard.`,
+                  });
                 }
               }
             }
@@ -668,6 +719,7 @@ export class SessionReaper extends EventEmitter {
             // Clears both a counting streak AND the -1 pin-conflict sentinel,
             // so a FUTURE genuine move starts its dwell from a clean slate.
             this.topicMovedStreak.set(session.id, 0);
+            this.topicMovedVetoes.delete(session.id);
           }
         }
         // CPU-progress probe for the active-process keep-tightening. Sampled here

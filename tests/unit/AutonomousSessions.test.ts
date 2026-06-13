@@ -8,6 +8,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {
+  suspendAutonomousTopicForMove,
   listAutonomousJobs,
   activeAutonomousJobs,
   canStartAutonomousJob,
@@ -147,5 +148,76 @@ describe('pause', () => {
     expect(pauseAutonomousTopic(stateDir, 'a')).toBe(true);
     expect(activeAutonomousJobs(stateDir).length).toBe(0); // paused → not active
     expect(listAutonomousJobs(stateDir).length).toBe(1);   // still present
+  });
+});
+
+describe('WS1.4 — suspendAutonomousTopicForMove (MULTI-MACHINE-SEAMLESSNESS-SPEC)', () => {
+  it('suspends the run (active:false) but the state file SURVIVES with the move markers', () => {
+    writeJob('13481');
+    const r = suspendAutonomousTopicForMove(stateDir, '13481', 'm_mini');
+    expect(r.suspended).toBe(true);
+    const f = path.join(stateDir, 'autonomous', '13481.local.md');
+    expect(fs.existsSync(f)).toBe(true); // NOT deleted — it rides the working-set carrier
+    const content = fs.readFileSync(f, 'utf8');
+    expect(content).toMatch(/^active: false$/m);
+    expect(content).toMatch(/^moved_to: "m_mini"$/m);
+    expect(content).toMatch(/^move_suspended_at: "/m);
+    // The body (tasks) is preserved verbatim.
+    expect(content).toContain('task');
+    // No torn temp file left behind (atomic rename).
+    expect(fs.existsSync(`${f}.tmp-move`)).toBe(false);
+    // The job drops out of the active set — the stop hook releases the session.
+    expect(activeAutonomousJobs(stateDir).find((j) => j.topic === '13481')).toBeUndefined();
+  });
+
+  it('is idempotent — a re-suspend refreshes the markers without duplicating lines', () => {
+    writeJob('7');
+    expect(suspendAutonomousTopicForMove(stateDir, '7', 'm_mini').suspended).toBe(true);
+    expect(suspendAutonomousTopicForMove(stateDir, '7', 'm_ws').suspended).toBe(true);
+    const content = fs.readFileSync(path.join(stateDir, 'autonomous', '7.local.md'), 'utf8');
+    expect(content.match(/^moved_to:/gm)).toHaveLength(1);
+    expect(content.match(/^move_suspended_at:/gm)).toHaveLength(1);
+    expect(content).toMatch(/^moved_to: "m_ws"$/m); // latest target wins
+  });
+
+  it('returns suspended:false for a topic with no run (never creates a file)', () => {
+    const r = suspendAutonomousTopicForMove(stateDir, '999', 'm_mini');
+    expect(r.suspended).toBe(false);
+    expect(fs.existsSync(path.join(stateDir, 'autonomous', '999.local.md'))).toBe(false);
+  });
+
+  it('flips a QUOTED active: "true" line too (reader/rewrite tolerance agree — second-pass fix)', () => {
+    fs.mkdirSync(path.join(stateDir, 'autonomous'), { recursive: true });
+    const f = path.join(stateDir, 'autonomous', '88.local.md');
+    fs.writeFileSync(f, '---\nactive: "true"\niteration: 1\nreport_topic: "88"\nstarted_at: "2026-06-13T00:00:00Z"\n---\n\ntask\n');
+    expect(suspendAutonomousTopicForMove(stateDir, '88', 'm_mini').suspended).toBe(true);
+    const content = fs.readFileSync(f, 'utf8');
+    expect(content).toMatch(/^active: false$/m);
+    expect(content).toMatch(/^moved_to: "m_mini"$/m);
+    expect(activeAutonomousJobs(stateDir).find((j) => j.topic === '88')).toBeUndefined();
+  });
+
+  it('NEVER reports false success: an inactive file with no move markers is an honest no-op', () => {
+    writeJob('77', { active: false });
+    const before = fs.readFileSync(path.join(stateDir, 'autonomous', '77.local.md'), 'utf8');
+    const emitted: unknown[] = [];
+    const r = suspendAutonomousTopicForMove(stateDir, '77', 'm_mini', {
+      emitAutonomousRun: (...args) => emitted.push(args),
+    });
+    expect(r.suspended).toBe(false);
+    expect(emitted).toHaveLength(0); // no stopped emit for a run that was not live
+    expect(fs.readFileSync(path.join(stateDir, 'autonomous', '77.local.md'), 'utf8')).toBe(before); // untouched
+  });
+
+  it('emits the journal stopped event (the carrier re-fire trigger) with the run artifact path', () => {
+    writeJob('42');
+    const emitted: Array<{ topic: number; data: Record<string, unknown> }> = [];
+    suspendAutonomousTopicForMove(stateDir, '42', 'm_mini', {
+      emitAutonomousRun: (topic, data) => emitted.push({ topic, data: data as unknown as Record<string, unknown> }),
+    });
+    expect(emitted).toHaveLength(1);
+    expect(emitted[0].topic).toBe(42);
+    expect(emitted[0].data.action).toBe('stopped');
+    expect(String((emitted[0].data.artifactPaths as string[])[0])).toContain('42.local.md');
   });
 });

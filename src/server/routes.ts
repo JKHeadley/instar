@@ -208,6 +208,7 @@ import {
   canStartAutonomousJob,
   stopAutonomousTopic,
   stopAllAutonomousJobs,
+  suspendAutonomousTopicForMove,
   DEFAULT_MAX_CONCURRENT_AUTONOMOUS,
 } from '../core/AutonomousSessions.js';
 import type { MemoryPressureMonitor } from '../monitoring/MemoryPressureMonitor.js';
@@ -10591,6 +10592,20 @@ export function createRoutes(ctx: RouteContext): Router {
       if (self && n === self) return self;
       return null;
     };
+    // WS1.4: a LIVE autonomous run on this topic (this machine's stateDir is
+    // the run registry — the run lives where its state file lives).
+    const liveAutonomousRun = (sk: string): { goal: string | null; remainingMinutes: number | null } | null => {
+      try {
+        const job = listAutonomousJobs(ctx.config.stateDir).find((j) => j.topic === sk && j.active && !j.paused);
+        if (!job) return null;
+        let remainingMinutes: number | null = null;
+        if (job.startedAt && job.durationSeconds != null) {
+          const endMs = Date.parse(job.startedAt) + job.durationSeconds * 1000;
+          if (Number.isFinite(endMs)) remainingMinutes = Math.max(0, Math.round((endMs - Date.now()) / 60_000));
+        }
+        return { goal: job.goal, remainingMinutes };
+      } catch { return null; /* @silent-fallback-ok — unreadable run registry → veto not applied; the transfer behaves as before WS1.4 */ }
+    };
     const plan = planTransferByNickname(
       { intent: 'transfer', nickname: to, matchedVerb: 'transfer' },
       {
@@ -10601,6 +10616,12 @@ export function createRoutes(ctx: RouteContext): Router {
         isMidReply: () => false,
         lastPlacementUpdateAt: (sk) => ctx.topicPinStore!.lastUpdatedAtMs(sk) ?? null,
         now: () => Date.now(),
+        // WS1.4 consent gate. NOT suppressed on confirm:true — the planner
+        // stacks every live condition into ONE prompt + '+'-joined detail, so
+        // the confirmed call re-evaluates the full chain and a confirm can
+        // never silently consent to a condition the caller was not shown
+        // (second-pass finding, 2026-06-13).
+        autonomousRunActive: liveAutonomousRun,
       },
       topicId,
     );
@@ -10615,11 +10636,34 @@ export function createRoutes(ctx: RouteContext): Router {
       return;
     }
     if (plan.action === 'confirm-required' && body.confirm !== true) {
-      res.status(409).json({ needsConfirmation: true, prompt: plan.confirmationPrompt, targetMachine: plan.targetMachine });
+      // `detail` names every condition the confirm would consent to
+      // ('+'-joined) — callers relay the prompt, which already states all of them.
+      res.status(409).json({ needsConfirmation: true, prompt: plan.confirmationPrompt, targetMachine: plan.targetMachine, detail: plan.detail });
       return;
     }
     // transfer | noop | confirmed → set the pin and release local ownership if we hold it.
     const target = plan.targetMachine!;
+    // WS1.4 confirmed move: suspend the in-flight autonomous run AT ITS NEXT
+    // TURN BOUNDARY (active:false releases the stop hook) while the state file
+    // SURVIVES to ride the working-set carrier — the atomic fsync'd rewrite +
+    // the journal `stopped` emit (which re-fires the receiver's working-set
+    // pull) happen inside the suspend. Runs before the pin/release so the
+    // re-fired pull sees the final, consistent file. Only fires for a real
+    // move (noop/already-there never suspends).
+    let autonomousRunSuspended = false;
+    if (plan.action !== 'noop' && liveAutonomousRun(topicId)) {
+      try {
+        autonomousRunSuspended = suspendAutonomousTopicForMove(
+          ctx.config.stateDir, topicId, target, ctx.state.getCoherenceJournal() ?? undefined,
+        ).suspended;
+      } catch (err) {
+        // NOT silent: a failed suspend is reported in the response below
+        // (autonomousRunSuspended:false) — the transfer still proceeds (the
+        // pin is the user's explicit, confirmed intent), and the run's own
+        // stop hook keeps it honest on the old machine.
+        console.warn(`[pool/transfer] autonomous-run suspend failed for topic ${topicId}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
     ctx.topicPinStore.set(topicId, target, plan.setPin ?? true);
     let releasedLocalOwnership = false;
     try {
@@ -10743,6 +10787,7 @@ export function createRoutes(ctx: RouteContext): Router {
       pinned: plan.setPin ?? true,
       releasedLocalOwnership,
       placedOwnership,
+      autonomousRunSuspended,
     });
   });
 
