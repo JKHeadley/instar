@@ -12,7 +12,12 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { CredentialProvider } from './CredentialProvider.js';
-import { createDefaultProvider, redactToken } from './CredentialProvider.js';
+import {
+  createDefaultProvider,
+  redactToken,
+  writeCredentialsSerialized,
+  DEFAULT_CREDENTIAL_SLOT,
+} from './CredentialProvider.js';
 
 interface AccountEntry {
   email: string;
@@ -139,11 +144,22 @@ export class AccountSwitcher {
     const previousAccount = registry.activeAccountEmail;
 
     try {
-      await this.provider.writeCredentials({
+      // Serialized through the credential funnel (Step 4b) so a switch can never interleave
+      // with a refresh/swap on the same slot. A busy lock is a transient "try again", not a
+      // failed write that corrupts the active login.
+      const writeOutcome = await writeCredentialsSerialized(this.provider, DEFAULT_CREDENTIAL_SLOT, {
         accessToken: account.cachedOAuth.accessToken,
         expiresAt: account.cachedOAuth.expiresAt,
         email: resolvedEmail,
       });
+      if (!writeOutcome.ran) {
+        return {
+          success: false,
+          message: `Credential store is busy (another credential write is in progress) — try the switch again in a moment.`,
+          previousAccount,
+          newAccount: null,
+        };
+      }
     } catch (err) {
       return {
         success: false,

@@ -193,6 +193,62 @@ describe('ReapGuard.workEvidence — observe-only collection (R2.1)', () => {
   });
 });
 
+// ── open-commitment staleness gate: workEvidence MUST agree with evaluate ──
+// Regression for the 2026-06-13 kill→revive loop. evaluate() (the KEEP guard)
+// only protects a session on an open commitment while a user message is within
+// staleCommitmentWindowMs; past that the commitment is "abandoned" and the
+// session is reaped. Before this fix workEvidence() emitted 'open-commitment'
+// for ANY active commitment (no staleness gate) — so an idle session was killed
+// (stale ⇒ reap) AND tagged resume-eligible (open-commitment ⇒ revive), looping
+// forever. Both methods must now read a STALE commitment the same way: not a
+// keep, not work evidence.
+describe('ReapGuard — open-commitment evidence honors the staleness gate (2026-06-13 loop fix)', () => {
+  // A commitment that is open but whose topic has had NO user message within ANY
+  // window — i.e. exactly the state of the 13 looped sessions.
+  const staleCommitmentDeps = (over: Partial<ReapGuardDeps> = {}): ReapGuardDeps =>
+    guardDeps({
+      topicBinding: () => 18423,
+      activeCommitmentForTopic: () => true,
+      recentUserMessage: () => false, // no message in any window ⇒ stale
+      ...over,
+    });
+
+  it('does NOT emit open-commitment evidence for a STALE commitment', () => {
+    const guard = new ReapGuard(staleCommitmentDeps(), { minAgeMs: 0 });
+    const evidence = guard.workEvidence(fakeSession());
+    expect(evidence).not.toContain('open-commitment');
+    expect(isMidWork(evidence)).toBe(false); // ⇒ not resume-eligible ⇒ no revive loop
+  });
+
+  it('STILL emits open-commitment evidence for a FRESH commitment (message within stale window)', () => {
+    const guard = new ReapGuard(
+      staleCommitmentDeps({
+        // active within the 8h stale window but not the 30min recent-user window
+        recentUserMessage: (_t, withinMs) => withinMs > 60 * 60_000,
+      }),
+      { minAgeMs: 0 },
+    );
+    expect(guard.workEvidence(fakeSession())).toContain('open-commitment');
+  });
+
+  it('consistency: evaluate() and workEvidence() agree on the same stale commitment', () => {
+    const guard = new ReapGuard(staleCommitmentDeps(), { minAgeMs: 0 });
+    const session = fakeSession();
+    // evaluate(): stale commitment does NOT keep (the session is reapable)…
+    expect(guard.blockedReason(session)).toBeNull();
+    // …and workEvidence() agrees it is not in-flight work (so it is not revived).
+    expect(guard.workEvidence(session)).not.toContain('open-commitment');
+  });
+
+  it('respects protectOpenCommitments:false — no open-commitment evidence even if fresh', () => {
+    const guard = new ReapGuard(
+      staleCommitmentDeps({ recentUserMessage: () => true }),
+      { minAgeMs: 0, protectOpenCommitments: false },
+    );
+    expect(guard.workEvidence(fakeSession())).not.toContain('open-commitment');
+  });
+});
+
 // ── terminateSession threading (the chokepoint) ───────────────────────
 
 describe('terminateSession — evidence threading (R2.1)', () => {

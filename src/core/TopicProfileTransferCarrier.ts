@@ -74,6 +74,7 @@ import type {
   TopicProfileEntry,
   TopicProfileStore,
 } from './TopicProfileStore.js';
+import type { EscalationHint } from './EscalationHintStore.js';
 
 // ── wire shapes (the `topic-profile-pull` verb payloads) ────────────────────
 
@@ -84,6 +85,15 @@ export interface TopicProfilePullEntry {
   current: TopicProfile | null;
   /** The §14 dry-run shadow travels verbatim (revalidated on receipt). */
   intendedProfile: IntendedProfileShadow | null;
+  /**
+   * WS5.3 (escalation-rides-topic) — an OPTIONAL ephemeral escalation hint the
+   * source filed when this topic was moved while running on the escalated
+   * tier. It rides the SAME authenticated acquire pull (so it crosses N
+   * machines without a new verb) but is NOT part of the durable profile: the
+   * receiver consumes it to RE-ADMIT through its OWN governor, never to write a
+   * pin. Absent unless WS5.3 is enabled on the source AND the topic was
+   * escalated. A trigger carry, NEVER a tier grant. */
+  escalationHint?: EscalationHint | null;
 }
 
 export type TopicProfilePullResponse =
@@ -102,6 +112,14 @@ export const MAX_TOPICS_PER_PULL = 500;
 export function createTopicProfilePullHandler(deps: {
   store: Pick<TopicProfileStore, 'get'>;
   maxTopicsPerPull?: number;
+  /**
+   * WS5.3 — optional peek of the source's ephemeral escalation hint for a
+   * topic (the EscalationHintStore.peek surface). Undefined ⇒ WS5.3 not wired
+   * on this machine ⇒ the entry carries no hint (back-compat). The peek does
+   * NOT consume — a pull may be retried; the source hint expires by its own
+   * TTL, and the destination re-admit is governor-gated so a duplicate is a
+   * harmless idempotent admit. */
+  escalationHintPeek?: (topicKey: string) => EscalationHint | null;
 }): (cmd: { type: 'topic-profile-pull'; topics: unknown }) => TopicProfilePullResponse {
   const cap = deps.maxTopicsPerPull ?? MAX_TOPICS_PER_PULL;
   return (cmd) => {
@@ -112,15 +130,19 @@ export function createTopicProfilePullHandler(deps: {
       return { ok: false, reason: 'too-many-topics' };
     }
     const entries: TopicProfilePullEntry[] = (cmd.topics as string[]).map((topicKey) => {
+      // The hint can exist even when the topic has NO durable profile entry —
+      // peek it independently so a no-profile escalated topic still carries.
+      const hint = deps.escalationHintPeek?.(topicKey) ?? null;
       const entry: TopicProfileEntry | null = deps.store.get(topicKey);
       if (!entry || (entry.current === null && entry.intendedProfile === null)) {
-        return { topicKey, present: false, current: null, intendedProfile: null };
+        return { topicKey, present: false, current: null, intendedProfile: null, escalationHint: hint };
       }
       return {
         topicKey,
         present: true,
         current: entry.current ? { ...entry.current } : null,
         intendedProfile: entry.intendedProfile ? { ...entry.intendedProfile } : null,
+        escalationHint: hint,
       };
     });
     return { ok: true, entries };
@@ -186,6 +208,15 @@ export interface TopicProfileTransferCarrierDeps {
    * (peer, landing) — never per topic (§5.3 round-5).
    */
   notify?: (text: string) => void;
+  /**
+   * WS5.3 — a pull landing carried an escalation hint for a topic THIS machine
+   * now owns. Fire-and-forget: the wiring re-admits the resumed session
+   * through the LOCAL EscalationGovernor (a trigger carry, NEVER a tier grant —
+   * the governor re-decides under every local cost guard). Only invoked after
+   * the ownership recheck confirms this machine owns the topic, so a hint can
+   * never drive a re-admit on a non-owner. Undefined ⇒ WS5.3 not wired
+   * (back-compat — the hint is simply ignored). */
+  onEscalationHintLanded?: (topicKey: string, hint: EscalationHint) => void;
   now?: () => Date;
   /** Acquire-coalescing window (ms). Default 250. */
   batchWindowMs?: number;
@@ -534,6 +565,25 @@ export class TopicProfileTransferCarrier {
         this.d.audit?.({ kind: 'pull-skipped-not-owner', topic: key, episodeId, owner });
         liveTopics.delete(key); // resolved — deliberately skipped, never retried
         continue;
+      }
+
+      // WS5.3 — the ephemeral escalation hint rides this landing. Fire the
+      // re-admit (fire-and-forget) NOW, after the ownership recheck confirmed
+      // this machine owns the topic, and INDEPENDENTLY of the durable-profile
+      // present/absent branch below (an escalated topic with no pin still
+      // carries a hint). The hint is a TRIGGER carry — the wiring re-decides
+      // through the LOCAL governor; this never grants a tier.
+      if (entry.escalationHint) {
+        try {
+          this.d.onEscalationHintLanded?.(key, entry.escalationHint);
+          this.d.audit?.({ kind: 'escalation-hint-landed', topic: key, episodeId, peer, trigger: entry.escalationHint.trigger });
+        } catch (e) {
+          // @silent-fallback-ok: the re-admit is fire-and-forget enrichment of
+          // the transfer; a driver error must never fail the profile landing or
+          // the transfer. Worst case the resumed session stays default-tier
+          // (the safe direction), exactly as if WS5.3 were off. Audited.
+          this.d.audit?.({ kind: 'escalation-hint-drive-failed', topic: key, episodeId, error: e instanceof Error ? e.message : String(e) });
+        }
       }
 
       if (!entry.present) {

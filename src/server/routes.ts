@@ -13,7 +13,11 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import type { SessionManager } from '../core/SessionManager.js';
-import { KNOWN_CLAUDE_MODEL_IDS } from '../core/ModelTierEscalation.js';
+import {
+  KNOWN_CLAUDE_MODEL_IDS,
+  escalatedModelIds,
+  normalizeTierEscalationConfig,
+} from '../core/ModelTierEscalation.js';
 import {
   validateSummaryDeterministic,
   neutralizeInstructionShapedContent,
@@ -701,6 +705,12 @@ export interface RouteContext {
    *  model-swap. Null only when no SessionManager exists; the route then
    *  reports unwired honestly (503). */
   modelTierSwap?: import('../core/ModelSwapService.js').ModelSwapService | null;
+  /** WS5.3 (escalation-rides-topic) — the ephemeral per-topic escalation-hint
+   *  carrier. The `/pool/transfer` SOURCE leg files a hint when the moving
+   *  topic has a live escalated session; the destination resume/acquire pull
+   *  consumes it to RE-ADMIT through its own governor. Null on single-machine
+   *  installs or when WS5.3 is unwired (the path is then a strict no-op). */
+  escalationHints?: import('../core/EscalationHintStore.js').EscalationHintStore | null;
   autonomyManager: AutonomyProfileManager | null;
   trustElevationTracker: TrustElevationTracker | null;
   autonomousEvolution: AutonomousEvolution | null;
@@ -11461,6 +11471,55 @@ export function createRoutes(ctx: RouteContext): Router {
         console.warn(`[pool/transfer] autonomous-run suspend failed for topic ${topicId}: ${err instanceof Error ? err.message : String(err)}`);
       }
     }
+    // ── WS5.3 (escalation-rides-topic) SOURCE capture ───────────────────────
+    // When the moving topic has a LIVE session running on the escalated tier,
+    // file an EPHEMERAL escalation hint keyed by topic. The destination's
+    // acquire pull serves it and RE-ADMITS through its OWN governor — a trigger
+    // carry, NEVER a tier grant. Gated under tierEscalation.enabled && ridesTopic
+    // (default false ⇒ strict no-op). Honors escalationOverride:'suppress' (a
+    // suppressed topic files NO hint — it must never be re-escalated on arrival).
+    // Only a REAL move files (noop/already-there never does).
+    let escalationHintFiled = false;
+    if (plan.action !== 'noop' && ctx.escalationHints) {
+      try {
+        const teCfg = normalizeTierEscalationConfig(
+          (ctx.config as { models?: { tierEscalation?: unknown } }).models?.tierEscalation,
+        );
+        if (teCfg.enabled && teCfg.ridesTopic) {
+          // The topic's live session on THIS machine (the source in the
+          // live-swap topology owner==holder==self; a remote-owner move
+          // degrades safely — no local session, no hint, default tier).
+          const topicNum = Number(topicId);
+          const srcSessionName = Number.isFinite(topicNum)
+            ? ctx.telegram?.getSessionForTopic?.(topicNum) ?? null
+            : null;
+          const srcSession = srcSessionName
+            ? ctx.sessionManager.listRunningSessions().find(
+                (s) => s.name === srcSessionName || s.tmuxSession === srcSessionName,
+              ) ?? null
+            : null;
+          const escalatedIds = escalatedModelIds(teCfg);
+          const isEscalated = srcSession?.model != null && escalatedIds.has(srcSession.model);
+          // suppress consult: a 'suppress'-pinned topic files no hint.
+          const suppressed =
+            ctx.topicProfile?.resolver?.resolve(topicNum)?.escalationOverride === 'suppress';
+          if (isEscalated && !suppressed) {
+            ctx.escalationHints.file(topicId, {
+              trigger: 'transfer', // audit label only — the destination governor re-decides from real state
+              sourceTier: 'escalated',
+              ...(self ? { sourceMachineId: self } : {}),
+            });
+            escalationHintFiled = true;
+          }
+        }
+      } catch {
+        // @silent-fallback-ok — filing the hint is fire-and-forget enrichment of
+        // the transfer: a capture error must never fail the move. Worst case the
+        // resumed session re-evaluates escalation only when its heavy-work trigger
+        // fires again on the destination (default tier in the meantime — the safe
+        // direction, identical to WS5.3 being off).
+      }
+    }
     ctx.topicPinStore.set(topicId, target, plan.setPin ?? true);
     let releasedLocalOwnership = false;
     try {
@@ -11586,6 +11645,7 @@ export function createRoutes(ctx: RouteContext): Router {
       placedOwnership,
       autonomousRunSuspended: autonomousRunSuspended || drainRunSuspended,
       ...(drainLeg.attempted ? { drain: drainLeg } : {}),
+      ...(escalationHintFiled ? { escalationHintFiled: true } : {}),
     });
   });
 

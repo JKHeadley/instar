@@ -29,7 +29,7 @@ import {
 } from '../core/TopicProfileOrchestrator.js';
 import { CodexResumeMap, type CodexSpawnFence } from '../core/CodexResumeMap.js';
 import { paneIdleWithEmptyInput } from '../core/ModelSwapService.js';
-import { escalatedModelIds, type TierEscalationConfig } from '../core/ModelTierEscalation.js';
+import { escalatedModelIds, normalizeTierEscalationConfig, type TierEscalationConfig } from '../core/ModelTierEscalation.js';
 import { activeAutonomousJobs } from '../core/AutonomousSessions.js';
 import { TopicProfileTransferCarrier, createTopicProfilePullHandler } from '../core/TopicProfileTransferCarrier.js';
 import type { SendPullOutcome, TopicProfilePullResponse } from '../core/TopicProfileTransferCarrier.js';
@@ -532,6 +532,17 @@ let _topicProfileConfirmSlots: import('../core/topicProfileIngress.js').ProfileC
 let _profileLegacyRespawn: ((topicKey: string) => Promise<{ respawned: boolean; error?: string }>) | null = null;
 /** §8 disclosure hook — bound in wireTelegramCallbacks (platform adapter send). */
 let _profileDisclose: ((topicKey: string, text: string) => Promise<void>) | null = null;
+/**
+ * WS5.3 (escalation-rides-topic) — the destination re-admit driver. Given a
+ * topic key whose resumed session just spawned, RE-ADMIT through the LOCAL
+ * EscalationGovernor (via ModelSwapService.swap → admit, the SAME chokepoint a
+ * fresh escalation uses). A trigger carry, NEVER a tier grant: the governor
+ * re-decides under every cost guard, and a refusal leaves the session default.
+ * Gated on tierEscalation.enabled && ridesTopic (read live). Bound in
+ * startServer(); null ⇒ WS5.3 unwired ⇒ a no-op. Fire-and-forget. */
+let _driveEscalationReadmit:
+  | ((topicKey: string | number, hint: import('../core/EscalationHintStore.js').EscalationHint) => void)
+  | null = null;
 /** Topic Profile §8 (TOPIC-PROFILE-SPEC): the orchestration core — debounce
  *  slots, idle-gated kill/respawn, resume-writer gates, §10.4 breaker, §14
  *  dry-run regime. Constructed in startServer() beside the write surface. */
@@ -952,6 +963,27 @@ async function spawnSessionForTopic(
     try {
       _topicProfileOrchestrator.recordSpawnSuccess(topicId, resolvedToApplied(resolvedProfile), { cwd: _projectDir });
     } catch { /* @silent-fallback-ok: recordSpawnSuccess is breaker-reset bookkeeping — a failure leaves a slightly-stale breaker count that the next attributable failure/success corrects; never fails the spawn (TOPIC-PROFILE-SPEC §10.4) */ }
+  }
+
+  // WS5.3 (escalation-rides-topic) — LOCAL hint consume. When the topic was
+  // transferred TO this machine via the live-swap topology (the hint was filed
+  // on THIS machine's hint store by the /pool/transfer source leg, target==self),
+  // no cross-machine pull fires — so consume the local hint here, right after the
+  // resumed session spawned, and re-admit through the LOCAL governor. consume()
+  // is consume-once + TTL-bounded; a no-hint topic is a strict no-op. The cross-
+  // machine arm is handled by the topic-profile pull's onEscalationHintLanded.
+  // A trigger carry, NEVER a tier grant — _driveEscalationReadmit re-decides via
+  // the governor admit() chain (and itself gates on enabled && ridesTopic).
+  try {
+    const localHint = _agentServerRef?.getEscalationHintStore()?.consume(String(topicId)) ?? null;
+    if (localHint && _driveEscalationReadmit) {
+      _driveEscalationReadmit(topicId, localHint);
+    }
+  } catch (err) {
+    // @silent-fallback-ok — the local re-admit is fire-and-forget enrichment of
+    // a resumed transferred session; a consume/driver error must never fail the
+    // spawn. Worst case the session stays default-tier (the safe direction).
+    console.warn(`[spawnSessionForTopic] WS5.3 local escalation re-admit failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
   }
 
   // Proactive UUID save — schedule discovery after spawn.
@@ -14152,9 +14184,27 @@ export async function startServer(options: StartOptions): Promise<void> {
             // the read/observe RBAC class beside working-set-pull (MeshRpc.ts).
             'topic-profile-pull': (cmd) => {
               if (!_topicProfileStore) return { ok: false, reason: 'topic-profile disabled' };
-              return createTopicProfilePullHandler({ store: _topicProfileStore })(
-                cmd as { type: 'topic-profile-pull'; topics: unknown },
-              );
+              return createTopicProfilePullHandler({
+                store: _topicProfileStore,
+                // WS5.3 — peek (not consume) the source's ephemeral escalation
+                // hint so it rides the SAME authenticated acquire pull. Gated
+                // on the live config; undefined-safe ⇒ no hint when unwired.
+                escalationHintPeek: (topicKey) => {
+                  try {
+                    const teCfg = normalizeTierEscalationConfig(
+                      (config as { models?: { tierEscalation?: unknown } }).models?.tierEscalation,
+                    );
+                    if (!teCfg.enabled || !teCfg.ridesTopic) return null;
+                    return _agentServerRef?.getEscalationHintStore()?.peek(topicKey) ?? null;
+                  } catch {
+                    // @silent-fallback-ok — a peek error ⇒ no hint served ⇒ the
+                    // destination re-evaluates escalation only on a fresh trigger
+                    // (default tier meantime — the safe direction). Never fails
+                    // the profile pull serve.
+                    return null;
+                  }
+                },
+              })(cmd as { type: 'topic-profile-pull'; topics: unknown });
             },
             // COMMITMENTS-COHERENCE-SPEC §3.4 — owner-side apply for the
             // owner-routed mutation. opKey window first (replay returns the
@@ -14558,6 +14608,12 @@ export async function startServer(options: StartOptions): Promise<void> {
                 notify: (text) => {
                   const sysTopic = telegram?.getLifelineTopicId();
                   if (sysTopic) void telegram!.sendToTopic(sysTopic, text).catch(() => {});
+                },
+                // WS5.3 — a pull landing carried an escalation hint for a topic
+                // this machine now owns. Drive the re-admit through the LOCAL
+                // governor (a trigger carry, never a tier grant). Fire-and-forget.
+                onEscalationHintLanded: (topicKey, hint) => {
+                  _driveEscalationReadmit?.(topicKey, hint);
                 },
                 logger: (m) => console.log(pc.dim(`  [topic-profile-pull] ${m}`)),
               });
@@ -15724,6 +15780,46 @@ export async function startServer(options: StartOptions): Promise<void> {
     // wired before the server existed; from here on inbound binds use the
     // server's own store instance.
     _agentServerRef = server;
+
+    // ── WS5.3 (escalation-rides-topic) destination re-admit driver ──
+    // Bound here (after the AgentServer exists) so it can reach the SAME
+    // ModelSwapService the /sessions/:name/model-swap route uses. Re-admission
+    // is `swap(name, 'escalated')` — which runs the FULL governor admit() chain
+    // (every cost guard, dwell/TTL, suppress consult). The hint never grants a
+    // tier: it only decides whether to ASK. A refusal (any guard) leaves the
+    // session on its default tier — exactly as a fresh escalation would be
+    // refused. Gated LIVE on tierEscalation.enabled && ridesTopic; null-safe.
+    _driveEscalationReadmit = (topicKey, hint) => {
+      try {
+        const teCfg = normalizeTierEscalationConfig(
+          (config as { models?: { tierEscalation?: unknown } }).models?.tierEscalation,
+        );
+        if (!teCfg.enabled || !teCfg.ridesTopic) return; // dark ⇒ strict no-op
+        const swap = server.getModelTierSwap();
+        if (!swap) return;
+        const topicNum = Number(topicKey);
+        if (!Number.isFinite(topicNum)) return;
+        const sessionName = telegram?.getSessionForTopic?.(topicNum) ?? null;
+        if (!sessionName) return; // no resumed session yet ⇒ nothing to re-admit
+        // Serialize through the topic's single-writer lock (same as the
+        // model-swap route) so the re-admit can never interleave with a
+        // profile-triggered kill/respawn on the same topic.
+        const orch = _topicProfileOrchestrator;
+        const perform = (): Promise<unknown> => swap.swap(sessionName, 'escalated');
+        const run = orch ? orch.runExclusive(topicNum, perform) : perform();
+        void Promise.resolve(run).catch((err) => {
+          console.warn(
+            `[ws5.3 re-admit] topic ${topicNum} (trigger=${hint.trigger}) re-admit failed: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        });
+      } catch (err) {
+        // @silent-fallback-ok — the re-admit is fire-and-forget enrichment of a
+        // resumed transferred session; a driver error must never fail the spawn
+        // or transfer. Worst case the session stays default-tier (the safe
+        // direction). Logged, never thrown.
+        console.warn(`[ws5.3 re-admit] driver error: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    };
 
     // ── Topic Profile §8 orchestrator (TOPIC-PROFILE-SPEC) ──
     // Constructed HERE (after the AgentServer) because two of its ports late-bind
