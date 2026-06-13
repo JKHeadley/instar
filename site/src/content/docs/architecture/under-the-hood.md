@@ -598,3 +598,30 @@ Spec: `docs/specs/MENTOR-LIVE-READINESS-SPEC.md` §Fix 2a.
   `multiMachine.stateSync.learnings`; a single-machine install is a strict no-op. The
   `LearningsReplicatedStore` projection strips the local id by construction. Spec:
   `docs/specs/multi-machine-replicated-store-foundation.md` §4 / §7.
+- **`KnowledgeReplicatedStore`** (`src/core/KnowledgeReplicatedStore.ts`) — the FOURTH
+  concrete consumer of the replicated-store foundation and the THIRD **memory-family kind**:
+  `knowledge-record`. `KnowledgeReplicatedStore` layers the kind onto the generic envelope so a
+  knowledge SOURCE the agent ingested on machine A is known on machine B — ONE knowledge catalog,
+  not one-per-machine. It REUSES the WS2.2/WS2.3 PII machinery rather than downgrading it: a
+  discriminated union on `op` (an `op:'put'` VALUE schema and an `op:'delete'` TOMBSTONE schema),
+  a strict **type-clamp on receive** (`ingestedAt` validates as ISO-8601-only, `type` against the
+  {article, transcript, doc} enum, `wordCount` as a finite number, `tags[]`/`summary` length-clamped,
+  a path-shaped `url` jailed out) so a foreign, attacker-controlled record can never smuggle markup
+  through a render slot. The replicated projection is **disclosure-minimized + metadata-only**: only
+  the catalog metadata (title, url, type, tags, summary, word count) crosses the wire — NEVER the
+  markdown file BODY (the `filePath` file can be a huge transcript; full-content sync is a tracked
+  follow-up), NEVER the local generated `id`, and NEVER the local `filePath`. The cross-machine
+  `recordKey` is a **content fingerprint** — `sha256(normalize(url || title) + normalize(type))` —
+  so the SAME article ingested on two machines collapses to ONE record instead of duplicating (the
+  generated id is the cross-machine-unstable id, exactly the relationship-UUID / LRN-id trap solved
+  with a stable identity surface). A removal propagates as a fingerprint-keyed tombstone (CRITICAL:
+  the `KnowledgeManager.remove()` path emits a tombstone per removed source, else a peer
+  re-replicates it forever — resurrection), and a foreign record renders inside a
+  `<replicated-untrusted-data origin="…">` envelope — quoted advisory reference, never an
+  instruction. Per-entry cap raised to 64KB so a fat summary replicates; HIGH-impact at the
+  **replication** layer (append-both-and-flag) but **advisory** at the **read** layer (both variants
+  of an open conflict surface as guidance hints — a knowledge source is reference, not authority —
+  the read never blocks). Pure mechanism, dark by default behind `multiMachine.stateSync.knowledge`;
+  a single-machine install is a strict no-op. The `KnowledgeReplicatedStore` projection strips the
+  local id + filePath by construction. Spec:
+  `docs/specs/multi-machine-replicated-store-foundation.md` §4 / §7.

@@ -879,6 +879,21 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
         enabled: false,
         dryRun: true,
       },
+      // WS2.4 (multi-machine-replicated-store-foundation) — the FOURTH replicated-store
+      // consumer and the THIRD memory-family kind: `knowledge-record` on the HLC
+      // foundation. Per-store on-switch ships the graduated-rollout ladder dark:
+      // `enabled:false` (the foundation primitives stay inert, NO knowledge source ever
+      // crosses a machine boundary; the local generated id + filePath are NEVER replicated
+      // — only the catalog metadata, never the file body) + `dryRun:true` (on first enable,
+      // log intended merges WITHOUT mutating store state). A literal `enabled:false` (NOT
+      // dev-gate-omit) per the spec ladder dark→dryRun→live — classified in
+      // DARK_GATE_EXCLUSIONS (optional-integration, staged rollout), mirroring the
+      // learnings sibling. Full-content-body sync (beyond catalog metadata) is a tracked
+      // follow-up (CMT-1416).
+      knowledge: {
+        enabled: false,
+        dryRun: true,
+      },
     },
   },
   // Session Boot Self-Knowledge (spec: session-boot-self-knowledge.md) — the
