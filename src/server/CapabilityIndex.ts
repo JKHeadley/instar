@@ -732,6 +732,22 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     }),
   },
   {
+    key: 'authorizationRequest',
+    prefixes: ['/authorization-requests'],
+    description: 'Operator Authorization Request — agent proposes → operator approves one-tap. Instead of making the operator hand-build a mandate, the agent PRE-FILLS a structured grant request and the operator approves it with their PIN on a dead-simple "Approvals waiting for you" card. requester ≠ authorizer is preserved (a pending request confers ZERO authority; only the PIN issues the grant, via the existing signed MandateStore path; the agent can never approve its own request). The operator-facing card is SERVER-authored from the structured proposal + the registered user\'s real name — never agent free-text. Ships dev-enabled / fleet-dark.',
+    build: ({ ctx }) => ({
+      enabled: !!(ctx.authorizationRequests && ctx.authorizationRequests.enabled),
+      endpoints: [
+        'POST /authorization-requests — propose a grant (Bearer; confers no authority) { createdByAgent, proposal:{floorAction,grantedToSlackUserId,durationMs}, reason? }. Allowed floorActions: prod-deploy, money-movement, credential-access, destructive-data, external-send (grant-authority excluded). durationMs ∈ [60000, 86400000]',
+        'GET /authorization-requests?status=pending — list (each row carries the server-rendered headline + createdOnMachine)',
+        'GET /authorization-requests/:id — one request with its server-rendered display',
+        'POST /authorization-requests/:id/approve — PIN-GATED (operator only): issues the grant via the signed MandateStore path; point operators at the dashboard Mandates tab "Approvals waiting for you" card, never a terminal',
+        'POST /authorization-requests/:id/deny — PIN-GATED (operator only); denyReason required',
+        'POST /authorization-requests/:id/withdraw — the proposing agent withdraws its own pending request',
+      ],
+    }),
+  },
+  {
     key: 'reviewExchange',
     prefixes: ['/review-exchange'],
     description: 'ReviewExchange — the autonomous code-review protocol (coordination-mandate spec §7 G2.3). One mutual, mandate-gated sign-off of a review artifact between the two agents named in a mandate: owner delivers the package over Threadline, peer returns an authenticated verdict, and BOTH sign-offs are evaluated through the mandate gate (sign-code-review authority) before acceptance. Linear states: proposed → delivered → verdict-recorded → complete (or changes-requested). Deny-by-default inherited: no mandate → every sign-off refuses.',

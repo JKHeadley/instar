@@ -845,6 +845,11 @@
     .mnd-about p { margin: 8px 0 0; line-height: 1.55; }
     .mnd-grant-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 8px 0 4px; }
     .mnd-grant-field { min-width: 130px; max-width: 100%; padding: 6px 8px; }
+    .mnd-approval-card { border: 1px solid var(--accent, #2f81f7); border-radius: 12px; padding: 16px 18px; margin-bottom: 12px; background: rgba(47,129,247,0.06); display: flex; flex-direction: column; gap: 10px; }
+    .mnd-approval-ask { font-size: 13px; opacity: 0.75; }
+    .mnd-approval-headline { font-size: 18px; font-weight: 600; line-height: 1.4; }
+    .mnd-approval-reason { font-size: 13px; opacity: 0.7; border-left: 3px solid var(--border); padding-left: 10px; }
+    .mnd-btn-quiet { opacity: 0.7; font-weight: 400; }
     .mnd-notice { min-height: 20px; font-size: 14px; color: #3fb950; }
     .mnd-issue-form { display: flex; flex-direction: column; gap: 14px; max-width: 640px; padding: 12px 0; }
     .mnd-issue-form label { display: flex; flex-direction: column; gap: 4px; font-size: 15px; color: var(--text-bright); }
@@ -3416,12 +3421,16 @@
         <p>These are your permission slips for autonomous agent-to-agent work — each one authorizes a specific, bounded task. The slip — never the agent — is the authorizer. Issuing and revoking require <strong>your dashboard PIN</strong>; an agent's own credentials are refused by design. With no slip issued, every delegated action is denied.</p>
       </details>
       <div id="mndNotice" class="mnd-notice" aria-live="polite"></div>
+      <section class="ph-section" id="mndApprovalsSection" style="display:none">
+        <h3 class="ph-h">Approvals waiting for you</h3>
+        <div id="mndApprovals"></div>
+      </section>
       <section class="ph-section">
         <h3 class="ph-h">Issued mandates</h3>
         <div id="mndList"></div>
       </section>
       <details class="ph-detail" id="mndIssueDetails">
-        <summary class="ph-detail-summary">Issue a new mandate (PIN required)</summary>
+        <summary class="ph-detail-summary">Advanced — author a mandate by hand (PIN required)</summary>
         <div class="mnd-issue-form">
           <label>What is this permission slip for?
             <span class="mnd-hint">A short name for the project the two agents may work on together, e.g. feedback-migration.</span>
@@ -9161,6 +9170,8 @@
       if (!__mndController) {
         const els = {
           list: document.getElementById('mndList'),
+          approvals: document.getElementById('mndApprovals'),
+          approvalsSection: document.getElementById('mndApprovalsSection'),
           audit: document.getElementById('mndAudit'),
           notice: document.getElementById('mndNotice'),
           stamp: document.getElementById('mndStamp'),

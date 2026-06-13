@@ -225,6 +225,42 @@ export function renderMandates(list, slackUsers = []) {
   }).join('');
 }
 
+/**
+ * "Approvals waiting for you" — the agent-proposes/operator-approves surface. The card
+ * text is the SERVER-authored `headline` (built from the structured proposal + the
+ * registered-user's real name) — we only esc() it, never compose authority from
+ * agent-supplied fields. The optional `reason` is rendered as a clearly-secondary,
+ * escaped note, never the headline (display-integrity standard). A request held on a
+ * different machine shows where to approve instead of a dead button.
+ */
+export function renderApprovals(requests) {
+  const list = (Array.isArray(requests) ? requests : []).filter((r) => r && r.status === 'pending');
+  if (list.length === 0) return '';
+  return list.map((r) => {
+    const headline = esc(r.headline || 'An approval is requested.');
+    const reason = r.reason
+      ? `<div class="mnd-approval-reason">Echo's reason: ${esc(r.reason)}</div>` : '';
+    if (r.heldOnThisMachine === false) {
+      return `<div class="mnd-approval-card">
+        <div class="mnd-approval-ask">Echo is asking for your approval</div>
+        <div class="mnd-approval-headline">${headline}</div>
+        ${reason}
+        <div class="mnd-dead-note">Asked on <strong>${esc(r.createdOnMachine || 'another machine')}</strong> — open that machine's dashboard to approve.</div>
+      </div>`;
+    }
+    return `<div class="mnd-approval-card">
+      <div class="mnd-approval-ask">Echo is asking for your approval</div>
+      <div class="mnd-approval-headline">${headline}</div>
+      ${reason}
+      <div class="mnd-grant-row">
+        <input type="password" class="mnd-pin" data-approve-pin="${esc(r.id)}" placeholder="Your PIN" autocomplete="off" />
+        <button class="mnd-btn mnd-btn-primary" data-approve="${esc(r.id)}">Approve</button>
+        <button class="mnd-btn mnd-btn-quiet" data-deny="${esc(r.id)}">Decline</button>
+      </div>
+    </div>`;
+  }).join('');
+}
+
 export function renderAudit(payload) {
   const entries = payload?.entries ?? [];
   const chainOk = payload?.chain?.ok;
@@ -309,6 +345,16 @@ export function createController({ doc, els, fetchImpl }) {
       const slackUsers = users.status === 200 && Array.isArray(users.body?.users) ? users.body.users : [];
       els.list.innerHTML = renderMandates(mandates, slackUsers);
       els.audit.innerHTML = renderAudit(audit.body);
+      // Pending authorization-requests — the "Approvals waiting for you" surface (the
+      // agent-proposes/operator-approves path). 503/absent → the section stays hidden.
+      if (els.approvals) {
+        const approvals = await fetchJson('/authorization-requests?status=pending').catch(() => ({ status: 0, body: null }));
+        const reqs = approvals.status === 200 && Array.isArray(approvals.body?.requests) ? approvals.body.requests : [];
+        const html = renderApprovals(reqs);
+        els.approvals.innerHTML = html;
+        if (els.approvalsSection) els.approvalsSection.style.display = html ? '' : 'none';
+        wireApprovalButtons();
+      }
       if (els.stamp) els.stamp.textContent = 'updated ' + new Date().toLocaleTimeString();
       // Nothing issued yet → the issue form IS the page's call to action;
       // open it once rather than hiding it behind a collapsed <details>.
@@ -405,6 +451,48 @@ export function createController({ doc, els, fetchImpl }) {
           if (pinEl) pinEl.value = ''; // never retain the PIN — on ANY path
           btn.disabled = false;
         }
+      };
+    });
+  }
+
+  // Approve / Decline a pending authorization-request — PIN-gated. The operator never
+  // authors anything here; they approve a server-authored card. The PIN is never retained.
+  function wireApprovalButtons() {
+    if (!els.approvals) return;
+    els.approvals.querySelectorAll('[data-approve]').forEach((btn) => {
+      btn.onclick = async () => {
+        const id = btn.getAttribute('data-approve');
+        const pinEl = els.approvals.querySelector(`[data-approve-pin="${id}"]`);
+        const pin = pinEl?.value ?? '';
+        if (!pin) { note('Type your dashboard PIN to approve — approving a grant is a human action.', true); return; }
+        btn.disabled = true;
+        try {
+          const { status, body } = await fetchJson(`/authorization-requests/${encodeURIComponent(id)}/approve`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pin }),
+          });
+          if (pinEl) pinEl.value = '';
+          if (status === 200 || status === 201) { note('✓ Approved — the grant is now active.', 'success'); await refresh(); }
+          else note(`Not approved — the server refused: ${body?.error ?? `HTTP ${status}`}`, 'error');
+        } finally { btn.disabled = false; }
+      };
+    });
+    els.approvals.querySelectorAll('[data-deny]').forEach((btn) => {
+      btn.onclick = async () => {
+        const id = btn.getAttribute('data-deny');
+        const pinEl = els.approvals.querySelector(`[data-approve-pin="${id}"]`);
+        const pin = pinEl?.value ?? '';
+        if (!pin) { note('Type your dashboard PIN to decline — declining is a human action.', true); return; }
+        const denyReason = (typeof window !== 'undefined' && window.prompt) ? window.prompt('Why are you declining? (a short reason is required)') : 'declined';
+        if (!denyReason || !denyReason.trim()) { note('A short reason is required to decline.', true); return; }
+        btn.disabled = true;
+        try {
+          const { status, body } = await fetchJson(`/authorization-requests/${encodeURIComponent(id)}/deny`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pin, denyReason: denyReason.trim() }),
+          });
+          if (pinEl) pinEl.value = '';
+          if (status === 200) { note('Declined.', 'success'); await refresh(); }
+          else note(`Not declined — the server refused: ${body?.error ?? `HTTP ${status}`}`, 'error');
+        } finally { btn.disabled = false; }
       };
     });
   }

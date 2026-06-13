@@ -32,7 +32,7 @@ import { checkEli16Overview, MIN_ELI16_CHARS } from './eli16-overview-check.mjs'
 import { verifyProposalDerivedRunbooks } from '../skills/instar-dev/scripts/verify-proposal-derived-runbook.mjs';
 import { classifyTier, decideRequirementSet } from './lib/classify-tier.mjs';
 import { recognizeConvergence } from './lib/convergence-recognition.mjs';
-import { isOperatorSurfaceFile, artifactAddressesOperatorSurfaceQuality } from './lib/operator-surface.mjs';
+import { isOperatorSurfaceFile, artifactAddressesOperatorSurfaceQuality, isAuthorizationSurfaceFile, artifactAddressesAgentProposesApproves } from './lib/operator-surface.mjs';
 
 // Report-Backed Converging Audit (docs/specs/CONVERGING-AUDIT-DEFAULT.md, Part B).
 // The precommit reads NO config file and runs pre-compile, so it cannot import
@@ -970,6 +970,29 @@ function assertOperatorSurfaceQuality(stagedFiles, trace) {
         '  (4) read in plain language at phone width? (Standard:',
         '  docs/STANDARDS-REGISTRY.md → "Operator-Surface Quality". Template:',
         '  skills/instar-dev/templates/side-effects-artifact.md §6b.)',
+      ].join('\n'),
+    );
+  }
+  // "Agent Proposes, Operator Approves" — the authorization-surface subset additionally
+  // requires the artifact to confirm the operator is APPROVING (not authoring) and that
+  // the authority text is SERVER-authored (not agent free-text — the display-integrity
+  // corollary). Same structural-presence strength.
+  const authTouched = (stagedFiles || []).filter(isAuthorizationSurfaceFile);
+  if (authTouched.length > 0 && !artifactAddressesAgentProposesApproves(content)) {
+    blockCommit(
+      authTouched,
+      [
+        'Agent-Proposes-Operator-Approves review gate:',
+        `  ${authTouched.join(', ')} change an AUTHORIZATION/APPROVAL surface,`,
+        '  but the side-effects artifact never answers the agent-proposes/operator-approves',
+        '  question. The operator must be APPROVING a server-authored request, never',
+        '  AUTHORING authority from raw fields (the 2026-06-13 raw-JSON mandate-form lesson),',
+        '  and the authority text they approve must be server-authored, never agent free-text.',
+        '',
+        '  Confirm in writing in the side-effects artifact: does the operator (1) approve a',
+        '  pre-filled request rather than construct one, and (2) read an authority statement',
+        '  authored by the SERVER from structured data, not agent-supplied free-text?',
+        '  (Standard: docs/STANDARDS-REGISTRY.md → "Agent Proposes, Operator Approves".)',
       ].join('\n'),
     );
   }

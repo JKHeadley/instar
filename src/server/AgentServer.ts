@@ -17,6 +17,8 @@ import { ApprovalLedger } from '../core/ApprovalLedger.js';
 import { resolveDevAgentGate } from '../core/devAgentGate.js';
 import { TopicOperatorStore } from '../users/TopicOperatorStore.js';
 import { MandateStore } from '../coordination/MandateStore.js';
+import { AuthorizationRequestStore } from '../core/AuthorizationRequestStore.js';
+import { UserManager } from '../users/UserManager.js';
 import { MandateGate } from '../coordination/MandateGate.js';
 import { MandateAudit } from '../coordination/MandateAudit.js';
 import { ConditionsRegistry } from '../coordination/conditions.js';
@@ -194,6 +196,16 @@ export class AgentServer {
   /** Coordination Mandate enforcement (spec §4): deny-by-default gate + signed
    *  store + hash-chained audit. Null when stateDir is unavailable. */
   private coordination: { store: MandateStore; gate: MandateGate; audit: MandateAudit; conditions: ConditionsRegistry; reviews: ReviewExchangeEngine } | null = null;
+  /** Operator Authorization Request (agent proposes → operator approves one-tap). Null
+   *  when coordination/stateDir is unavailable. `enabled` is the resolved dev-gate. */
+  private authorizationRequests: {
+    store: import('../core/AuthorizationRequestStore.js').AuthorizationRequestStore;
+    enabled: boolean;
+    machineId: string;
+    ownerDisplay: string;
+    carrierSelfFp: string;
+    resolvePrincipal: (slackUserId: string) => { name: string; registered: boolean } | null;
+  } | null = null;
   private cutoverReadiness: CutoverReadiness | null = null;
   private parallelActivityIndex: ParallelActivityIndex | null = null;
   private parallelWorkSentinel: ParallelWorkSentinel | null = null;
@@ -1220,6 +1232,34 @@ export class AgentServer {
           gate,
         });
         this.coordination = { store, gate, audit, conditions, reviews };
+
+        // Operator Authorization Request — agent proposes → operator approves one-tap.
+        // Built on the SAME stateDir; the approve route issues grants via `store` above
+        // (the existing signed MandateStore), so no new authority path is introduced.
+        // `enabled` is dev-gated (enabled-on-dev / dark-on-fleet); routes 503 when off.
+        try {
+          const arUsers = new UserManager(options.config.stateDir, options.config.users);
+          const arStore = new AuthorizationRequestStore({
+            filePath: path.join(options.config.stateDir, 'state', 'authorization-requests.json'),
+            pendingCapPerAgent: options.config.monitoring?.authorizationRequests?.pendingCapPerAgent,
+          });
+          const arMachineId = os.hostname();
+          this.authorizationRequests = {
+            store: arStore,
+            enabled: resolveDevAgentGate(options.config.monitoring?.authorizationRequests?.enabled, options.config),
+            machineId: arMachineId,
+            ownerDisplay: 'operator',
+            carrierSelfFp: arMachineId,
+            resolvePrincipal: (slackUserId: string) => {
+              const u = arUsers.resolveFromSlackUserId(slackUserId);
+              return u ? { name: u.name || slackUserId, registered: true } : null;
+            },
+          };
+        } catch (arErr) {
+          // @silent-fallback-ok — non-fatal; null leaves the routes 503 (feature-off), never blocks boot.
+          console.warn('[instar] authorization-request init failed (non-fatal):', arErr);
+          this.authorizationRequests = null;
+        }
       }
     } catch (err) {
       // @silent-fallback-ok — reported via console.warn; init failure leaves the engine null → routes 503 (deny-safe), never blocks boot.
@@ -1854,6 +1894,7 @@ export class AgentServer {
       approvalLedger: this.approvalLedger,
       topicOperatorStore: this.topicOperatorStore,
       coordination: this.coordination,
+      authorizationRequests: this.authorizationRequests,
       cutoverReadiness: this.cutoverReadiness,
       parallelActivityIndex: this.parallelActivityIndex,
       frameworkIssueLedger: this.frameworkIssueLedger,

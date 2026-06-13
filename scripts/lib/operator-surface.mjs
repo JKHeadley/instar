@@ -52,3 +52,33 @@ export function isOperatorSurfaceFile(file) {
 export function artifactAddressesOperatorSurfaceQuality(content) {
   return /operator[- ]surface quality/i.test(String(content ?? ''));
 }
+
+/**
+ * Is this staged file an AUTHORIZATION/APPROVAL surface specifically — one where the
+ * operator confers authority (a grant/mandate/approval form or its renderer)? A subset
+ * of operator surfaces that additionally triggers the "Agent Proposes, Operator
+ * Approves" question (the operator must be APPROVING, never AUTHORING; and the authority
+ * text must be server-authored, not agent free-text).
+ */
+export const AUTHORIZATION_SURFACE_RE =
+  /(?:^|\/)(?:mandates|grant|authorization-request|approval|operator-approval)[^/]*\.(?:js|html|ts)$/i;
+
+export function isAuthorizationSurfaceFile(file) {
+  const f = String(file ?? '');
+  if (/\.(?:test|spec)\.(?:js|ts|mjs)$/i.test(f)) return false;
+  return AUTHORIZATION_SURFACE_RE.test(f);
+}
+
+/**
+ * The artifact engages the "Agent Proposes, Operator Approves" question when it carries
+ * the phrase (seeded by side-effects-artifact.md). Same structural-presence strength as
+ * the operator-surface-quality gate: an artifact touching an authorization surface that
+ * omits the section is blocked. The standard's display-integrity corollary — the
+ * authority text the operator approves must be server-authored, never agent free-text —
+ * is what this question forces the author to confirm in writing.
+ * @param {string} content the side-effects artifact text
+ * @returns {boolean}
+ */
+export function artifactAddressesAgentProposesApproves(content) {
+  return /agent[- ]proposes,? operator[- ]approves/i.test(String(content ?? ''));
+}

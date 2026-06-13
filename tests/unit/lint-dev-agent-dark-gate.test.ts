@@ -321,30 +321,30 @@ describe('lint-dev-agent-dark-gate', () => {
     const EXPECTED: Record<string, string> = {
       '138': 'monitoring.sessionReaper.enabled',
       '196': 'monitoring.agentWorktreeReaper.enabled',
-      '238': 'monitoring.mcpProcessReaper.enabled',
-      '252': 'monitoring.agentSleep.enabled',
-      '308': 'monitoring.correctionLearning.enabled',
-      '402': 'monitoring.apprenticeshipCycleSla.enabled',
-      '410': 'monitoring.geminiCapacityEscalation.enabled',
-      '434': 'monitoring.greenPrAutoMerge.enabled',
-      '484': 'threadline.a2aCheckIn.enabled',
-      '576': 'mentor.enabled',
-      '587': 'mentor.autonomousFix.enabled',
-      '602': 'mentee.enabled',
-      '721': 'multiMachine.sessionPool.enabled',
-      '746': 'multiMachine.sessionPool.inboundQueue.enabled',
-      '775': 'multiMachine.sessionPool.holdForStability.enabled',
-      '866': 'multiMachine.stateSync.preferences.enabled',
-      '880': 'multiMachine.stateSync.relationships.enabled',
-      '894': 'multiMachine.stateSync.learnings.enabled',
-      '909': 'multiMachine.stateSync.knowledge.enabled',
-      '923': 'multiMachine.stateSync.evolutionActions.enabled',
-      '1031': 'cartographer.freshnessSweep.enabled',
-      '1076': 'cartographer.conformanceAudit.llmEnrichment.enabled',
-      '1101': 'cartographer.subtreeNav.llmRerank.enabled',
+      '244': 'monitoring.mcpProcessReaper.enabled',
+      '258': 'monitoring.agentSleep.enabled',
+      '314': 'monitoring.correctionLearning.enabled',
+      '408': 'monitoring.apprenticeshipCycleSla.enabled',
+      '416': 'monitoring.geminiCapacityEscalation.enabled',
+      '440': 'monitoring.greenPrAutoMerge.enabled',
+      '490': 'threadline.a2aCheckIn.enabled',
+      '582': 'mentor.enabled',
+      '593': 'mentor.autonomousFix.enabled',
+      '608': 'mentee.enabled',
+      '727': 'multiMachine.sessionPool.enabled',
+      '752': 'multiMachine.sessionPool.inboundQueue.enabled',
+      '781': 'multiMachine.sessionPool.holdForStability.enabled',
+      '872': 'multiMachine.stateSync.preferences.enabled',
+      '886': 'multiMachine.stateSync.relationships.enabled',
+      '900': 'multiMachine.stateSync.learnings.enabled',
+      '915': 'multiMachine.stateSync.knowledge.enabled',
+      '929': 'multiMachine.stateSync.evolutionActions.enabled',
+      '1037': 'cartographer.freshnessSweep.enabled',
+      '1082': 'cartographer.conformanceAudit.llmEnrichment.enabled',
+      '1107': 'cartographer.subtreeNav.llmRerank.enabled',
       // subscriptionPool.credentialRepointing.enabled was re-gated to DEV_GATED_FEATURES
-      // (2026-06-13 operator directive) and now OMITS enabled in ConfigDefaults — so it no
-      // longer appears as a literal `enabled: false` here.
+      // (2026-06-13 operator directive) and now OMITS enabled in ConfigDefaults; the new
+      // monitoring.authorizationRequests OMITS enabled too — so neither appears here.
     };
     const actual = attributeRealConfigDefaults();
     expect(actual).toEqual(EXPECTED);

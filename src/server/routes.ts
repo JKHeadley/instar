@@ -34,6 +34,8 @@ import { describeTopicPlacement } from '../core/TopicPlacementDescription.js';
 import { buildRelocationNicknameSet } from '../core/RelocationNicknameSet.js';
 import { resolveSelfNickname } from '../core/SelfNicknameResolver.js';
 import { resolveDevAgentGate } from '../core/devAgentGate.js';
+import { PROPOSABLE_FLOOR_ACTIONS, renderAuthorizationCard } from '../core/AuthorizationRequestStore.js';
+import type { AuthorizationRequestStore, AuthorizationRequest } from '../core/AuthorizationRequestStore.js';
 import { planTransferByNickname } from '../core/TransferByNickname.js';
 import type { JobScheduler } from '../scheduler/JobScheduler.js';
 import type { InstarConfig, JobPriority } from '../core/types.js';
@@ -881,6 +883,20 @@ export interface RouteContext {
     audit: import('../coordination/MandateAudit.js').MandateAudit;
     /** ReviewExchange engine (spec §7 G2.3) — mandate-gated mutual code-review sign-offs. */
     reviews: import('../coordination/ReviewExchange.js').ReviewExchangeEngine;
+  } | null;
+  /** Operator Authorization Request (agent proposes → operator approves one-tap).
+   *  Spec: docs/specs/OPERATOR-AUTHORIZATION-REQUEST-SPEC.md. Null when stateDir is
+   *  unavailable. `enabled` is the resolved dev-gate (enabled-on-dev / dark-on-fleet);
+   *  the routes 503 when false. `resolvePrincipal` is the SAME registry the
+   *  SlackPermissionGate consumes (UserManager.resolveFromSlackUserId). The approve
+   *  route issues the grant via ctx.coordination.store — never a new authority path. */
+  authorizationRequests?: {
+    store: AuthorizationRequestStore;
+    enabled: boolean;
+    machineId: string;
+    ownerDisplay: string;
+    carrierSelfFp: string;
+    resolvePrincipal: (slackUserId: string) => { name: string; registered: boolean } | null;
   } | null;
   /** Cutover-READINESS checker (spec §7 G2.4, decision 1A: everything UP TO the
    *  door). Read-only objective conditions from durable state; the flip itself is
@@ -7283,6 +7299,149 @@ export function createRoutes(ctx: RouteContext): Router {
       });
     }
     res.status(201).json({ granted: true, mandate: { ...result.mandate, authorshipValid: ctx.coordination.store.verifyAuthorship(result.mandate) } });
+  });
+
+  // ── Operator Authorization Request (agent proposes → operator approves one-tap) ──
+  // The agent (Bearer) pre-fills a STRUCTURED request; the operator approves it with
+  // their dashboard PIN; only then does the server issue the grant via the existing
+  // signed MandateStore path. requester ≠ authorizer is preserved (the agent can never
+  // approve its own request). The operator-facing card is SERVER-authored from the
+  // structured proposal + the registry name — never agent free-text (deceptive-summary
+  // defense). Spec: docs/specs/OPERATOR-AUTHORIZATION-REQUEST-SPEC.md.
+  const authReqUnavailable = (res: import('express').Response): boolean => {
+    if (!ctx.authorizationRequests || !ctx.authorizationRequests.enabled) {
+      res.status(503).json({ error: 'authorization-requests feature not enabled' });
+      return true;
+    }
+    return false;
+  };
+
+  /** Decorate a stored request with the server-rendered, plain-language card (the only
+   *  text an operator surface should show). Resolves the display name from the registry. */
+  const decorateAuthReq = (r: AuthorizationRequest) => {
+    const ar = ctx.authorizationRequests!;
+    const principal = ar.resolvePrincipal(r.proposal.grantedToSlackUserId);
+    const card = renderAuthorizationCard(r, principal?.name ?? r.proposal.grantedToSlackUserId);
+    return {
+      id: r.id, status: r.status, kind: r.kind, createdAt: r.createdAt,
+      createdByAgent: r.createdByAgent, createdOnMachine: r.createdOnMachine,
+      requestExpiresAt: r.requestExpiresAt, resolvedAt: r.resolvedAt, resolvedBy: r.resolvedBy,
+      resultMandateId: r.resultMandateId, denyReason: r.denyReason,
+      // server-authored display (never agent free-text as the authority):
+      headline: card.headline, reason: card.reason,
+      heldOnThisMachine: r.createdOnMachine === ar.machineId,
+    };
+  };
+
+  // Agent proposes a structured request (Bearer). Confers no authority — inert until approved.
+  router.post('/authorization-requests', (req, res) => {
+    if (authReqUnavailable(res)) return;
+    const ar = ctx.authorizationRequests!;
+    const b = req.body ?? {};
+    const agentName = (typeof b.createdByAgent === 'string' && b.createdByAgent) ? b.createdByAgent : 'agent';
+    // FRESH-resolve the grantee against the principal registry at create (FD-12) — reject
+    // a phantom/unregistered id before it ever reaches the operator's approval queue.
+    const proposedUid = b?.proposal?.grantedToSlackUserId;
+    if (typeof proposedUid === 'string' && proposedUid) {
+      const principal = ar.resolvePrincipal(proposedUid);
+      if (!principal || !principal.registered) {
+        res.status(400).json({ error: 'unknown-user — the grantee must be a registered Slack user' });
+        return;
+      }
+    }
+    const result = ar.store.create({
+      createdByAgent: agentName,
+      createdOnMachine: ar.machineId,
+      proposal: b.proposal,
+      reason: typeof b.reason === 'string' ? b.reason : undefined,
+    });
+    if (!result.ok) { res.status(result.status).json({ error: result.error }); return; }
+    res.status(201).json({ id: result.request.id, deduped: result.deduped ?? false, request: decorateAuthReq(result.request) });
+  });
+
+  // List requests (filter ?status=pending). Each row carries the server-rendered card. Bearer.
+  router.get('/authorization-requests', (req, res) => {
+    if (authReqUnavailable(res)) return;
+    const ar = ctx.authorizationRequests!;
+    const status = typeof req.query.status === 'string' ? req.query.status : undefined;
+    const valid = ['pending', 'approved', 'denied', 'expired', 'withdrawn'];
+    const list = ar.store.list(valid.includes(status as string) ? (status as AuthorizationRequest['status']) : undefined);
+    res.json({ requests: list.map(decorateAuthReq), count: list.length });
+  });
+
+  // One request (with server-rendered display). Bearer.
+  router.get('/authorization-requests/:id', (req, res) => {
+    if (authReqUnavailable(res)) return;
+    const r = ctx.authorizationRequests!.store.get(req.params.id);
+    if (!r) { res.status(404).json({ error: 'request not found' }); return; }
+    res.json({ request: decorateAuthReq(r) });
+  });
+
+  // Operator APPROVES — PIN-GATED. The single authority-conferring step. The PIN covers
+  // the whole execution incl. the carrier-mandate auto-issue (no second prompt).
+  router.post('/authorization-requests/:id/approve', (req, res) => {
+    if (authReqUnavailable(res)) return;
+    if (!ctx.coordination) { res.status(503).json({ error: 'coordination mandate engine unavailable' }); return; }
+    if (!checkMandatePin(req, res)) return;
+    const ar = ctx.authorizationRequests!;
+    const result = ar.store.approve(req.params.id, {
+      execute: (proposal) => {
+        // Re-check the allowlist (defends against a config change while pending).
+        if (!PROPOSABLE_FLOOR_ACTIONS.includes(proposal.floorAction)) throw new Error('action-no-longer-proposable');
+        // FRESH-resolve the grantee against the registry (rejects phantom / reflects a rename).
+        const principal = ar.resolvePrincipal(proposal.grantedToSlackUserId);
+        if (!principal || !principal.registered) throw new Error('unknown-user');
+        // Issue a fresh per-grant carrier mandate WITH the grant signed in, via the
+        // existing PIN-authored signed path. expiry == grant lifetime (no clamp).
+        const now = Date.now();
+        const expiresAt = new Date(now + proposal.durationMs).toISOString();
+        const mandate = ctx.coordination!.store.issue({
+          scope: 'user-authority-grant',
+          agents: [ar.carrierSelfFp, ar.carrierSelfFp],
+          authorities: [],
+          author: 'system',
+          expiresAt,
+          grants: [{
+            floorAction: proposal.floorAction,
+            grantedTo: proposal.grantedToSlackUserId,
+            authorizedBy: ar.ownerDisplay,
+            expiresAt,
+          }],
+        });
+        ctx.coordination!.audit.record({
+          mandateId: mandate.id,
+          agentFp: proposal.grantedToSlackUserId,
+          action: `grant-floor:${proposal.floorAction}`,
+          decision: 'allow',
+          reason: `approved via authorization-request, authorizedBy ${ar.ownerDisplay} until ${expiresAt}`,
+        });
+        return mandate.id;
+      },
+    });
+    if (!result.ok) { res.status(result.status).json({ error: result.error }); return; }
+    res.status(result.alreadyApproved ? 200 : 201).json({
+      approved: true, alreadyApproved: result.alreadyApproved ?? false, request: decorateAuthReq(result.request),
+    });
+  });
+
+  // Operator DECLINES — PIN-GATED. denyReason REQUIRED.
+  router.post('/authorization-requests/:id/deny', (req, res) => {
+    if (authReqUnavailable(res)) return;
+    if (!checkMandatePin(req, res)) return;
+    const reason = typeof (req.body ?? {}).denyReason === 'string' ? req.body.denyReason : '';
+    const result = ctx.authorizationRequests!.store.deny(req.params.id, reason);
+    if (!result.ok) { res.status(result.status).json({ error: result.error }); return; }
+    res.json({ denied: true, request: decorateAuthReq(result.request) });
+  });
+
+  // Proposing agent WITHDRAWS its own still-pending request (Bearer).
+  router.post('/authorization-requests/:id/withdraw', (req, res) => {
+    if (authReqUnavailable(res)) return;
+    const b = req.body ?? {};
+    const agentName = (typeof b.createdByAgent === 'string' && b.createdByAgent) ? b.createdByAgent : 'agent';
+    const result = ctx.authorizationRequests!.store.withdraw(req.params.id, agentName);
+    if (!result.ok) { res.status(result.status).json({ error: result.error }); return; }
+    res.json({ withdrawn: true, request: decorateAuthReq(result.request) });
   });
 
   // ── ReviewExchange — autonomous code-review protocol (coordination-mandate spec §7 G2.3) ──
