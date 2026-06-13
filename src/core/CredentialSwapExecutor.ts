@@ -27,7 +27,7 @@
 import { CredentialLocationLedger, type LedgerPoolView } from './CredentialLocationLedger.js';
 import type { IdentityOracle } from './CredentialLocationLedger.js';
 import { CredentialWriteFunnel, credentialWriteFunnel } from './CredentialWriteFunnel.js';
-import { CredentialSwapJournal } from './CredentialSwapJournal.js';
+import { CredentialSwapJournal, type SwapJournalEntry } from './CredentialSwapJournal.js';
 import {
   type KeychainIO,
   SecurityKeychainIO,
@@ -100,6 +100,20 @@ export interface SwapOutcome {
   /** Slots quarantined during verify (oracle-unavailable / unrepairable mismatch). */
   quarantined?: string[];
   detail?: string;
+}
+
+export type RecoveryResolution =
+  | 'completed' // both slots already at the intended post-swap state → committed, staging freed
+  | 'aborted-noop' // both slots still pre-swap → nothing took, staging freed
+  | 're-driven' // genuinely partial → re-applied the move (adopt-on-newer), verified, committed
+  | 'deferred-oracle-unavailable' // oracle down → slot quarantined, staging retained, re-probe later
+  | 'quarantined' // unrecoverable (escrow/blob lost, or re-drive still mismatched) → quarantined, staging retained
+  | 'busy'; // a live swap held the locks → retry on the next sweep
+
+export interface RecoveryOutcome {
+  swapId: string;
+  resolution: RecoveryResolution;
+  quarantined?: string[];
 }
 
 let swapSeq = 0;
@@ -388,6 +402,123 @@ export class CredentialSwapExecutor {
         );
       }
     }
+  }
+
+  /**
+   * Boot-recovery sweep (spec §2.3 "Boot-recovery window" + Step 5c). For every in-flight swap left
+   * in the journal by a crash, resolve it against the on-disk + oracle truth under the single-mover
+   * mutex + per-slot locks (recovery WRITES take the locks, like any swap). Safe at every server
+   * start; a NO-OP when the journal has no in-flight swaps. Returns one outcome per swap.
+   *
+   * Journal-driven: every in-flight swap names its `stagingRef`, so this resolves staging for all
+   * KNOWN swaps. A staging entry whose journal row was LOST (a corrupt journal) is not enumerated
+   * here — it is harmless (the disjoint namespace is never read by a client) and is a documented
+   * residual for a keychain-enumeration sweep, not a recovery hazard.
+   */
+  async recoverInFlight(): Promise<RecoveryOutcome[]> {
+    // A corrupt ledger would make recovery's own recordAssignment throw exactly like the swap
+    // precondition (2nd-pass concern 2). Re-seed from the oracle first; if that cannot clear it the
+    // ledger raises its own HIGH attention item and `commitRecovered` skips the write (the slot is
+    // left for a later sweep after a clean re-seed) rather than throwing.
+    if (this.ledger.isUnknownMode()) {
+      try {
+        await this.ledger.seedFromOracle();
+      } catch {
+        // @silent-fallback-ok: the ledger surfaces its own UNKNOWN-mode attention item.
+      }
+    }
+    const outcomes: RecoveryOutcome[] = [];
+    for (const swap of this.journal.inFlight()) {
+      outcomes.push(await this.recoverOne(swap));
+    }
+    return outcomes;
+  }
+
+  private async recoverOne(swap: SwapJournalEntry): Promise<RecoveryOutcome> {
+    const keyA = credentialSlotKey(swap.slotA);
+    const keyB = credentialSlotKey(swap.slotB);
+    const mover = await this.funnel.withSingleMover(async () => {
+      const locked = await this.funnel.withSlotLocks([keyA, keyB], () => this.resolveInFlightSwap(swap));
+      return locked.ran ? locked.value : ({ swapId: swap.swapId, resolution: 'busy' } as RecoveryOutcome);
+    });
+    if (!mover.ran) return { swapId: swap.swapId, resolution: 'busy' };
+    return mover.value as RecoveryOutcome;
+  }
+
+  private async resolveInFlightSwap(swap: SwapJournalEntry): Promise<RecoveryOutcome> {
+    const { swapId, slotA, slotB, accountA, accountB, stagingRef } = swap;
+    // Intended end state: slotA holds accountB, slotB holds accountA.
+    const vA = await this.verifySlotIdentity(slotA, accountB);
+    const vB = await this.verifySlotIdentity(slotB, accountA);
+    if (vA === 'unavailable' || vB === 'unavailable') {
+      const q: string[] = [];
+      if (vA === 'unavailable') { this.ledger.quarantineSlot(slotA, `recovery ${swapId}: oracle unavailable`); q.push(slotA); }
+      if (vB === 'unavailable') { this.ledger.quarantineSlot(slotB, `recovery ${swapId}: oracle unavailable`); q.push(slotB); }
+      await this.raiseAttention(swapId, q, 'boot recovery: identity oracle unavailable — slot quarantined, staging retained, will re-probe');
+      return { swapId, resolution: 'deferred-oracle-unavailable', quarantined: q };
+    }
+    if (vA === 'ok' && vB === 'ok') {
+      // The exchange completed (or the client healed it) before the crash. Finish it.
+      this.commitRecovered(swap);
+      await this.keychain.delete(stagingRef);
+      this.journal.advance(swapId, 'done', 'recovery: both slots already at intended post-swap state');
+      return { swapId, resolution: 'completed' };
+    }
+    // Not the intended state. Is it the clean PRE-swap state (nothing took)?
+    const preA = await this.verifySlotIdentity(slotA, accountA);
+    const preB = await this.verifySlotIdentity(slotB, accountB);
+    if (preA === 'ok' && preB === 'ok') {
+      await this.keychain.delete(stagingRef);
+      this.journal.advance(swapId, 'aborted', 'recovery: pre-swap state, no exchange took');
+      return { swapId, resolution: 'aborted-noop' }; // ledger already reflects pre-swap
+    }
+    // Genuinely partial (a crash between the two exchange writes) → re-drive with adopt-on-newer.
+    return this.reDriveRecovery(swap);
+  }
+
+  /** Idempotently record the intended post-swap assignments; skips writing if the ledger is corrupt. */
+  private commitRecovered(swap: SwapJournalEntry): void {
+    if (this.ledger.isUnknownMode()) return; // can't write; a later sweep retries after a clean re-seed
+    this.ledger.recordAssignment(swap.slotA, swap.accountB, { verifiedAt: this.now() });
+    this.ledger.recordAssignment(swap.slotB, swap.accountA, { verifiedAt: this.now() });
+  }
+
+  /**
+   * Reconstruct a partially-exchanged swap. accountA's credential = the staging escrow; accountB's
+   * credential lives at whichever slot currently identity-verifies as accountB (its CURRENT bytes,
+   * adopt-on-newer). Write accountB→slotA, accountA(escrow)→slotB, re-verify. If either blob cannot
+   * be located, quarantine BOTH and retain staging — never guess.
+   */
+  private async reDriveRecovery(swap: SwapJournalEntry): Promise<RecoveryOutcome> {
+    const { swapId, slotA, slotB, accountA, accountB, stagingRef } = swap;
+    const svcA = slotService(slotA);
+    const svcB = slotService(slotB);
+    const stagedA = await this.keychain.read(stagingRef);
+    let blobBLoc: string | null = null;
+    if ((await this.verifySlotIdentity(slotA, accountB)) === 'ok') blobBLoc = svcA;
+    else if ((await this.verifySlotIdentity(slotB, accountB)) === 'ok') blobBLoc = svcB;
+    const blobB = blobBLoc ? await this.keychain.read(blobBLoc) : null;
+    if (!stagedA || !blobB) {
+      this.ledger.quarantineSlot(slotA, `recovery ${swapId}: unrecoverable partial — escrow/accountB blob missing`);
+      this.ledger.quarantineSlot(slotB, `recovery ${swapId}: unrecoverable partial — escrow/accountB blob missing`);
+      await this.raiseAttention(swapId, [slotA, slotB], 'boot recovery: a partial swap could not be reconstructed — slots quarantined, staging retained');
+      return { swapId, resolution: 'quarantined', quarantined: [slotA, slotB] };
+    }
+    await this.keychain.write(svcA, blobB); // slotA ← accountB (no-op overwrite if already there)
+    await this.keychain.write(svcB, stagedA); // slotB ← accountA (escrow)
+    const vA = await this.verifySlotIdentity(slotA, accountB);
+    const vB = await this.verifySlotIdentity(slotB, accountA);
+    if (vA === 'ok' && vB === 'ok') {
+      this.commitRecovered(swap);
+      await this.keychain.delete(stagingRef);
+      this.journal.advance(swapId, 'done', 'recovery: re-driven and verified');
+      return { swapId, resolution: 're-driven' };
+    }
+    const q: string[] = [];
+    if (vA !== 'ok') { this.ledger.quarantineSlot(slotA, `recovery ${swapId}: re-drive verify failed`); q.push(slotA); }
+    if (vB !== 'ok') { this.ledger.quarantineSlot(slotB, `recovery ${swapId}: re-drive verify failed`); q.push(slotB); }
+    await this.raiseAttention(swapId, q, 'boot recovery: a re-driven swap still failed verification — slot quarantined, staging retained');
+    return { swapId, resolution: 'quarantined', quarantined: q };
   }
 
   private exchangeMetadataBestEffort(slotA: string, slotB: string, swapId: string): void {

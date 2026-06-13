@@ -259,20 +259,33 @@ drain (CMT-1335 full) is Increment B.
   §2.3.1a adopt-on-newer, single-mover serialization. tsc clean, full lint clean, 231 credential tests green.
 - Second-pass review: required (highest-risk file) — verdict in the side-effects artifact.
 
+### 2026-06-13 — Step 5c (boot-recovery sweep) — BUILT + GREEN
+- `CredentialSwapExecutor.recoverInFlight()` + helpers (`recoverOne`/`resolveInFlightSwap`/`commitRecovered`/
+  `reDriveRecovery`): for each `journal.inFlight()` swap, under the single-mover + per-slot locks, verify both
+  slots against the intended post-swap identity → unavailable→quarantine+retain (`deferred-oracle-unavailable`);
+  both-intended→finish (idempotent recordAssignment, delete staging, `done` = `completed`); both-pre-swap→`aborted`
+  (`aborted-noop`); genuinely partial→`reDriveRecovery` (accountA=staging escrow, accountB=whichever slot verifies
+  as accountB with CURRENT bytes; write B→A, A→B, re-verify; clean→commit+`done`=`re-driven`, else quarantine).
+  Handles both 5b-flagged cases: partial-commit (idempotent re-commit reconciles) + UNKNOWN-mode (re-seed first,
+  commitRecovered skips-not-throws if still corrupt).
+- Tests: credential-swap-recovery (6) over a keychain-backed oracle — empty no-op, completed, aborted-noop,
+  re-driven, oracle-unavailable→quarantine+retain, busy. tsc clean, lint clean, 16 swap tests green.
+- Documented residual: a staging entry whose JOURNAL ROW was lost (corrupt journal) is not enumerated (harmless
+  disjoint namespace; would need a keychain-enumeration sweep — future refinement, not a recovery hazard).
+- Second-pass review: required (destructive re-drive writes) — verdict in the side-effects artifact.
+
 ### NEXT (resume here)
-- Step 5c: boot-recovery sweep — at server start, read `journal.inFlight()`; for each in-flight swap resolve by
-  the on-disk + journal-phase decidability (begin-only→unwind no-op; exchanged/committed→re-verify both slots via
-  oracle, adopt-on-newer, NEVER blind staging overwrite; clean→finish to `done`+delete staging; unverifiable→
-  quarantine+retain). Orphan-staging cleanup: delete any `instar-credential-swap-staging-*` entry with no matching
-  non-`done` journal row. Recovery WRITES take the single-mover + per-slot locks (round-2: not "outside the mutex").
-  Journal-in-flight slots excluded from placement/poll/balancing until resolved. Second-pass.
-  - 2nd-pass-flagged cases recovery MUST handle: (a) phase=`exchanged` with credentials ALREADY exchanged but the
-    ledger partially/not updated — a crash between the two commit `recordAssignment` calls leaves slotA=accountB and
-    slotB ABSENT (one-home enforcement dropped the old row); re-derive the intended assignments from the journal's
-    `accountA`/`accountB` + the on-disk blobs (oracle-verified) and re-commit. (b) recovery's OWN `recordAssignment`
-    must guard `isUnknownMode()` (re-seed via `seedFromOracle()` first) or it throws exactly like the swap precondition.
-- Then steps 6–9 (census re-routing, routes + audit scrub, provenance gate, migration) + Step 10 livetest.
-  (The balancer-first-pass recovery barrier + hang-timeout is Increment-B wiring — the balancer is Increment B.)
+- Step 6: Census consumer re-routing (spec §2.2 table — the 12 rows). Each live `configHome`-as-location read →
+  `ledger.slotOf/tenantOf` when the feature is enabled; ledger-unknown → today's behavior (additive, no behavior
+  change while dark). Key sites: QuotaPoller token read (`:108-115`), 401-refresh (`:218`), email auto-patch
+  SUPPRESSED (`:349-356`), needs-reauth attribution (`:262-269`); SessionManager spawn placement (`:1712-1716/:1989`);
+  InUseAccountResolver badge → `tenantOf('~/.claude')` NOT `auth status` (E4a liar); AccountSwitcher/switch-account/
+  autoMigrate REFUSE at the MANAGER when enabled; pool `configHome` PATCH → 409. (Recovery wiring at server start +
+  the balancer-first-pass barrier are Increment-B; for Increment A, recoverInFlight() exists + is unit-proven.)
+  - Increment-B wiring requirement (5c 2nd-pass observation #1): `recoverInFlight()` calls `seedFromOracle()`
+    OUTSIDE the single-mover mutex (awaited before the per-swap loop) — the recovery-complete barrier MUST gate the
+    balancer-first-pass so no balancer swap runs on the shared ledger while that unmutexed re-seed is in flight.
+- Then steps 7 (routes + audit scrub), 8 (provenance gate), 9 (migration parity + CLAUDE.md), 10 (livetest battery).
 - Step 5: `CredentialSwapExecutor` (staged exchange, §2.3.1a source-slot CAS, identity-verify,
   quarantine-never-repair, crash-boundary journal). Second-pass review.
 - Then steps 6–9 per the plan. Commit-gate notes: when committing, pass `--spec docs/specs/live-credential-repointing-rebalancer.md` (now `approved:true`); the no-deferrals pre-commit scan will flag the spec's legit Increment-B scoping language ("deferred", "follow-up") — add `<!-- tracked: 20905 -->` (or a CMT id) markers within 200 chars of each, or move the deferral into Increment B's own section, before the first commit.
