@@ -79,6 +79,16 @@ export type MeshCommand =
       request: { sinceSeq: number; incarnation?: string };
     }
   | {
+      // Preferences-pool read replication (MULTI-MACHINE-SEAMLESSNESS-SPEC
+      // §WS2.1). Read/observe class — serves OWN learned-preference records as
+      // seq-windowed delta pages (lastMutatedSeq > sinceSeq), incarnation-
+      // fenced, `learning`-field credential-shape redacted. First-hop: the
+      // receiver binds the replica to the AUTHENTICATED sender and rejects rows
+      // claiming other machines. Advisory signals, never authority.
+      type: 'preferences-sync';
+      request: { sinceSeq: number; incarnation?: string };
+    }
+  | {
       // Commitments-coherence owner-routed MUTATION (COMMITMENTS-COHERENCE-
       // SPEC §3.4). NOT read/observe class — this verb has its OWN RBAC case
       // below. verifyEnvelope (registered peer + signature + recipient
@@ -255,6 +265,7 @@ export function checkCommandRBAC(command: MeshCommand, sender: MachineId, deps: 
     case 'working-set-pull':
     case 'topic-profile-pull':
     case 'commitments-sync':
+    case 'preferences-sync':
     case 'secret-share':
       // Read/observe class (or e2e-encrypted) — any registered peer (already
       // proven a registered peer by verifyEnvelope). journal-sync joins this

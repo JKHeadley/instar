@@ -70,7 +70,7 @@ machines page the same as 2). Headless: no interactive step. Quorum N/A
        PreferenceReplicaStore, mergePreferenceViews (collapse-by-dedupeKey).
 2. [x] PreferencesManager: replicationSeq + lastMutatedSeq additive; expose
        getAllForSync() + advert{incarnation,replicationSeq}.
-3. [ ] MeshRpc verb + RBAC case + types.
+3. [x] MeshRpc verb (preferences-sync, read/observe RBAC group) + types. NOTE for step 4: commitments-sync dispatches via PeerPresencePuller.ts (receive cadence) + a serve handler in server.ts — mirror BOTH there.
 4. [ ] server.ts: serve handler + receive puller wiring + union into
        /preferences/session-context (flag-gated).
 5. [ ] config flag + ConfigDefaults dark-gate line-map + DEV_GATED_FEATURES.
