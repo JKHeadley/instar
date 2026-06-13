@@ -30,3 +30,5 @@ It ships **dark on the fleet** and **live on the development agent** (the dogfoo
 ## The one-line lesson
 
 A promise that depends on a single session staying alive is a wish; work that depends on a single session committing it is the same wish. This makes "the session died before it saved its work" a **detected, surfaced** event instead of a silent loss.
+
+This is the *detection* layer. The complementary *prevention* layer — a commit-or-surface discipline so a session can't yield while "standing by for tests" with work still uncommitted — is tracked as a follow-up; together they close both ends of the same failure class.

@@ -65,7 +65,7 @@ export function makeOrphanedWorkSentinelDeps(opts: {
 
   const porcelain = (p: string): string => {
     try { return readGit(['-C', p, 'status', '--porcelain'], p); }
-    catch { return ''; }
+    catch { /* @silent-fallback-ok: best-effort porcelain ENRICHMENT for the captured detail/patch — the orphaned-work DETECTION itself runs through base.isClean()/hasUncommittedWork, never this helper; a failed status read just omits the detailed listing, it can never suppress a detection */ return ''; }
   };
 
   const slug = (p: string): string => path.basename(p).replace(/[^a-z0-9-]+/gi, '-');
