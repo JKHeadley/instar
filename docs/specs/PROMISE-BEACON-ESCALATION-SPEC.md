@@ -2,7 +2,16 @@
 title: "Promise-Beacon Escalation — a promise survives its owning session's death"
 slug: "promise-beacon-escalation"
 author: "echo"
-eli16-overview: "docs/specs/promise-beacon-escalation.eli16.md"
+eli16-overview: "promise-beacon-escalation.eli16.md"
+review-convergence: "2026-06-13T03:46:46.401Z"
+review-iterations: 5
+review-completed-at: "2026-06-13T03:46:46.401Z"
+review-report: "docs/specs/reports/promise-beacon-escalation-convergence.md"
+cross-model-review: "codex-cli:gpt-5.5"
+single-run-completable: true
+frontloaded-decisions: 5
+cheap-to-change-tags: 1
+contested-then-cleared: 1
 ---
 
 # Promise-Beacon Escalation — a promise survives its owning session's death
