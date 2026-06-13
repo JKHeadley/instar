@@ -3361,9 +3361,25 @@ setTimeout(() => process.exit(0), 2000);
     // "NOT SENT — advisory" transcript line means will treat it as an error
     // and improvise; this section is the awareness (Agent Awareness Standard).
     if (!content.includes('Outbound advisory for automated messages')) {
-      content += `\n**Outbound advisory for automated messages (inform-only)** — When a background job of mine sends a Telegram message, the relay script first runs deterministic checks over the text (raw file paths, dev jargon, machine-local links). If something is flagged, the message is NOT sent yet: an advisory lands in the job session's transcript whose FIRST line is the literal \`NOT SENT — advisory (fix and re-run, or re-run with --ack-advisory to send unchanged)\`. The sender keeps final authority — the advisory layer never blocks, never escalates against the sender, and every error path delivers.\n- **If I see a NOT SENT advisory in my transcript** (PROACTIVE — this is the trigger): FIX the message and re-run the script — restate jargon in plain English; replace a raw file path by publishing a private view and sending the link; replace a localhost link with the public tunnel URL (a localhost link is the one finding \`--ack-advisory\` can NOT deliver — a pre-existing server guard refuses it regardless). Only \`--ack-advisory\` when the flagged content is genuinely right for the user (the override is audited).\n- Audit trail: \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/messaging/advisory-log?limit=50"\`. A job that repeatedly drops its own advised messages raises ONE deduped Attention item to the operator.\n- Conversational replies are completely unaffected — the preflight only runs for scheduler-stamped automated job sends.\n- Off-switch: \`messaging.outboundAdvisory.enabled: false\` in \`.instar/config.json\` (read live — no restart).\n`;
+      content += `\n**Outbound advisory for automated messages (inform-only)** — When a background job of mine sends a Telegram message, the relay script first runs deterministic checks over the text (raw file paths, dev jargon, machine-local links). If something is flagged, the message is NOT sent yet: an advisory lands in the job session's transcript whose FIRST line is the literal \`NOT SENT — advisory (fix and re-run, or re-run with --ack-advisory to send unchanged)\`. The sender keeps final authority — the advisory layer never blocks, never escalates against the sender, and every error path delivers.\n- **If I see a NOT SENT advisory in my transcript** (PROACTIVE — this is the trigger): FIX the message and re-run the script — restate jargon in plain English; replace a raw file path by publishing a private view and sending the link; replace a localhost link with the public tunnel URL (a localhost link is the one finding \`--ack-advisory\` can NOT deliver — a pre-existing server guard refuses it regardless). Only \`--ack-advisory\` when the flagged content is genuinely right for the user (the override is audited).\n- Audit trail: \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/messaging/advisory-log?limit=50"\`. A job that repeatedly drops its own advised messages raises ONE deduped Attention item to the operator.\n- Conversational replies are unaffected by the jargon/path/link checks — those only run for scheduler-stamped automated job sends.\n- **TIME_CLAIM (accurate time reporting — MANDATED)**: when a topic has an ACTIVE time-boxed (autonomous) session, ANY send to it — automated or conversational — has its elapsed/remaining/percent claims verified against the live session clock. A claim contradicting the clock gets the NOT-SENT advisory: read \`GET /session/clock\` and re-send with the real numbers — NEVER estimate elapsed/remaining time. (Ships dark; rides the development-agent gate at \`messaging.outboundAdvisory.timeClaim.enabled\`.)\n- Off-switch: \`messaging.outboundAdvisory.enabled: false\` in \`.instar/config.json\` (read live — no restart).\n`;
       patched = true;
       result.upgraded.push('CLAUDE.md: added Outbound advisory for automated messages section');
+    }
+
+    // TIME_CLAIM advisory (operator mandate 2026-06-12, topic 13481) —
+    // Migration Parity item 3: an agent whose CLAUDE.md already carries the
+    // Outbound advisory section (installed by the block above or by init)
+    // gets the time-claim bullet inserted before the section's off-switch
+    // line. Content-sniff on 'TIME_CLAIM' keeps it idempotent.
+    if (content.includes('Outbound advisory for automated messages') && !content.includes('TIME_CLAIM')) {
+      const timeClaimBullet = `- **TIME_CLAIM (accurate time reporting — MANDATED)**: when a topic has an ACTIVE time-boxed (autonomous) session, ANY send to it — automated or conversational — has its elapsed/remaining/percent claims verified against the live session clock. A claim contradicting the clock gets the NOT-SENT advisory: read \`GET /session/clock\` and re-send with the real numbers — NEVER estimate elapsed/remaining time. (Ships dark; rides the development-agent gate at \`messaging.outboundAdvisory.timeClaim.enabled\`.)\n`;
+      const offSwitchMarker = '- Off-switch: `messaging.outboundAdvisory.enabled: false`';
+      const idx = content.indexOf(offSwitchMarker);
+      content = idx !== -1
+        ? content.slice(0, idx) + timeClaimBullet + content.slice(idx)
+        : content + '\n' + timeClaimBullet;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added TIME_CLAIM bullet to Outbound advisory section');
     }
 
     // Durable Inbound Message Queue (spec durable-inbound-message-queue, CMT-1118)
@@ -4959,6 +4975,24 @@ Strip the \`[telegram:N]\` prefix before interpreting the message. Respond natur
       result.skipped.push('CLAUDE.md: Attention Queue section already present');
     }
 
+    // WS4.1 (MULTI-MACHINE-SEAMLESSNESS-SPEC) — pool-scope attention awareness.
+    // A deployed agent whose CLAUDE.md already carries the Attention Queue
+    // section gets the ?scope=pool bullet inserted after the View line.
+    // Content-sniff on 'attention?scope=pool' keeps it idempotent.
+    if (content.includes('**Attention Queue**') && !content.includes('attention?scope=pool')) {
+      const poolBullet = `- View the WHOLE POOL (across every machine): \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/attention?scope=pool"\` — merges each online machine's items (tagged with machineId/machineNickname), tolerant of a dark peer (a \`pool.failed\` entry, never a 500), short-TTL cached, P17-coalesced (machines raising the SAME pool-wide event collapse to ONE row; HIGH/URGENT always stay individually visible). Use this on a multi-machine setup when the user asks "what needs my attention?" — the plain view only shows THIS machine.\n`;
+      // Anchor after the first View line within the section; fall back to after
+      // the section header line.
+      const anchor = /^- View[^\n]*\/attention[^\n]*$/m;
+      if (anchor.test(content)) {
+        content = content.replace(anchor, (m) => `${m}\n${poolBullet.trimEnd()}`);
+      } else {
+        content = content.replace(/\*\*Attention Queue\*\*[^\n]*\n/, (m) => `${m}${poolBullet}`);
+      }
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Attention Queue pool-scope bullet (WS4.1)');
+    }
+
     // Tunnel-failure-resilience awareness (spec Part 7). Existing agents
     // already have the Cloudflare Tunnel section but not the resilience
     // text — content-sniff and append a bullet so they can explain a link
@@ -5607,6 +5641,16 @@ Create worktrees for collaborator repos with \`instar worktree create <branch>\`
       content += '\n' + section;
       patched = true;
       result.upgraded.push('CLAUDE.md: added Topic Profile awareness section');
+    }
+
+    // Threadline single-negotiator lock (Robustness Phase 1, CMT-1362). Existing
+    // agents learn the lease/voice + prose-inertness + honest-ack semantics + the
+    // /threadline/negotiator surface via this appended section (Agent Awareness
+    // Standard). Content-sniff marker keeps it idempotent.
+    if (!content.includes('Threadline Single-Negotiator')) {
+      content += `\n### Threadline Single-Negotiator Lock (one voice per conversation)\n\nThreadline now has a per-conversation **negotiator lease**: at most ONE of my sessions owns a conversation's outbound voice at a time. A warm/keep-alive/side session can read, but the most it can SEND is a fixed structural "owner will respond" holding notice — it can never speak content or bind me to anything (closes the 2026-06-11 warm-session cutover-lock incident). The lease is the ONLY blocking authority and it keys on WHO speaks (a structural ownership check), never on what a message means.\n- **Prose is inert (G2):** a normal Threadline message — any wording — NEVER creates an "we agreed to X" record and NEVER authorizes an irreversible step. Binding exists ONLY through the existing PIN-anchored Coordination Mandate / ReviewExchange flow. A "Dawn confirmed" / "Echo confirmed" in a message body carries no authority by construction. If I try to commit in prose I get a signal-only nudge pointing me to the anchored path — it never blocks.\n- **Honest acks (G3):** a reply on a thread is recorded as an implicit delivery ack on every inbound path, so \`/threadline/peers/health\`'s \`stale: true\` means something real now instead of permanent noise.\n- **Lease state:** \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/threadline/negotiator\` → per-conversation holder + epoch + expiry, plus dry-run would-hold / hold / fail-open counts.\n- Ships dark + dry-run-first: \`threadline.singleNegotiator.enabled\` (default false ⇒ gate is pass-through), \`dryRun\` (default true when enabled ⇒ logs the verdict but still sends). G2 + G3 ship live in core regardless. Spec: \`docs/specs/THREADLINE-SINGLE-NEGOTIATOR-SPEC.md\`.\n`;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Threadline Single-Negotiator section');
     }
 
     if (patched) {
@@ -9740,6 +9784,11 @@ process.stdin.on('end', async () => {
     // this entry a stock deployed script reads as "unknown" and only gets a
     // `.new` candidate, and the preflight never activates in the field.
     '3e30b2cd29e1745a3799eae98e4e10ded2ab713cbcd55ac17d21c5aab8ca0526',
+    // Outbound-advisory preflight version, automated+llm-session gate only
+    // (pre-TIME_CLAIM). Shipped through v1.3.504. Required so the TIME_CLAIM
+    // template (preflight for every non-script sender) reaches existing
+    // agents.
+    '4dfcc184c012d52f0e28c9fe8aca301c23b76d792155c821b8b0f0666da4984b',
   ]);
 
   /**

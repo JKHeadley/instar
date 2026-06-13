@@ -47,7 +47,12 @@ describe('WS1.1 — seamlessnessFlags heartbeat roundtrip', () => {
 
 describe('WS1.1 — server wiring seams (at-rest)', () => {
   it('the self-heartbeat advertises ws11DeliverReceive from the LIVE queue handle', () => {
-    expect(serverSrc).toMatch(/seamlessnessFlags: \{ ws11DeliverReceive: !!_inboundQueue \}/);
+    // WS1.2 (drain) extended this same object literal with a ws12DrainReceive
+    // sibling — the WS1.1 invariant (ws11DeliverReceive advertised LIVE from
+    // !!_inboundQueue) is unchanged. Assert the field inside the
+    // seamlessnessFlags object without pinning the exact sibling set, so a
+    // future sibling flag can't false-break this wiring assertion.
+    expect(serverSrc).toMatch(/seamlessnessFlags: \{[^}]*ws11DeliverReceive: !!_inboundQueue/);
   });
 
   it('the drain spawn boundary re-checks ownership and bounces non-owner spawns to un-routable', () => {

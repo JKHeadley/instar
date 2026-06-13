@@ -326,19 +326,21 @@ describe('lint-dev-agent-dark-gate', () => {
       '358': 'monitoring.releaseReadiness.enabled',
       // green-pr-automerge-enforcement: the greenPrAutoMerge block (a NEW
       // deliberate-fleet-default `enabled: false`) was inserted after
-      // releaseReadiness, adding its own entry at 373 and shifting every entry
-      // below it by +22. Verified by hand against ConfigDefaults.ts.
+      // releaseReadiness (373), composed in the merge with main's new
+      // threadline.singleNegotiator block (450). Every entry below shifted
+      // accordingly. Verified by hand against the MERGED ConfigDefaults.ts.
       '373': 'monitoring.greenPrAutoMerge.enabled',
       '423': 'threadline.a2aCheckIn.enabled',
-      '467': 'mentor.enabled',
-      '478': 'mentor.autonomousFix.enabled',
-      '493': 'mentee.enabled',
-      '593': 'multiMachine.sessionPool.enabled',
-      '618': 'multiMachine.sessionPool.inboundQueue.enabled',
-      '647': 'multiMachine.sessionPool.holdForStability.enabled',
-      '792': 'cartographer.freshnessSweep.enabled',
-      '837': 'cartographer.conformanceAudit.llmEnrichment.enabled',
-      '862': 'cartographer.subtreeNav.llmRerank.enabled',
+      '450': 'threadline.singleNegotiator.enabled',
+      '483': 'mentor.enabled',
+      '494': 'mentor.autonomousFix.enabled',
+      '509': 'mentee.enabled',
+      '609': 'multiMachine.sessionPool.enabled',
+      '634': 'multiMachine.sessionPool.inboundQueue.enabled',
+      '663': 'multiMachine.sessionPool.holdForStability.enabled',
+      '808': 'cartographer.freshnessSweep.enabled',
+      '853': 'cartographer.conformanceAudit.llmEnrichment.enabled',
+      '878': 'cartographer.subtreeNav.llmRerank.enabled',
     };
     const actual = attributeRealConfigDefaults();
     expect(actual).toEqual(EXPECTED);

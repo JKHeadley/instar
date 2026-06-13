@@ -303,3 +303,43 @@ describe('OwnershipReconciler — no-op guards (spec invariant 6) and dry-run', 
     sim.cleanup();
   });
 });
+
+describe('OwnershipReconciler — WS1.2 drain-grace (transferring-to-me claims)', () => {
+  it('holds the claim on a FRESH drain-flow record (the owner is still draining), then claims past the grace', () => {
+    const sim = makeSim(TWO);
+    seedActive(sim.registry, 'T', 'm_b');
+    sim.pinStoreFor('m_a').set('T', 'm_a');
+    // The owner's drain runner set transferring with drain provenance just now.
+    const t = sim.registry.cas({ type: 'transfer', to: 'm_a', drain: true }, { sessionKey: 'T', sender: 'm_b', nonce: 'd1' });
+    expect(t.ok).toBe(true);
+    expect(sim.registry.read('T')!.drainInFlight).toBe(true);
+    const recAt = sim.registry.read('T')!.timestamp;
+
+    // Fresh (within grace): the target reconciler DEFERS — no front-run of the live drain.
+    let simNow = recAt + 1_000;
+    const early = sim.reconcilerFor('m_a', { now: () => simNow }).tick();
+    expect(early.claims).toBe(0);
+    expect(sim.registry.read('T')!.status).toBe('transferring');
+
+    // Past the grace (owner died mid-drain): the backstop claim completes the handoff.
+    simNow = recAt + 46_000;
+    const late = sim.reconcilerFor('m_a', { now: () => simNow }).tick();
+    expect(late.claims).toBe(1);
+    expect(sim.registry.read('T')!).toMatchObject({ status: 'active', ownerMachineId: 'm_a' });
+    sim.cleanup();
+  });
+
+  it('a reconciler-cooperative transferring record (no drain provenance) is claimed promptly — WS1.3 unchanged', () => {
+    const sim = makeSim(TWO);
+    seedActive(sim.registry, 'T', 'm_b');
+    sim.pinStoreFor('m_a').set('T', 'm_a');
+    const t = sim.registry.cas({ type: 'transfer', to: 'm_a' }, { sessionKey: 'T', sender: 'm_b', nonce: 'c1' });
+    expect(t.ok).toBe(true);
+    const recAt = sim.registry.read('T')!.timestamp;
+    // Immediately (well inside what would be the drain grace): claims anyway.
+    const rep = sim.reconcilerFor('m_a', { now: () => recAt + 1_000 }).tick();
+    expect(rep.claims).toBe(1);
+    expect(sim.registry.read('T')!).toMatchObject({ status: 'active', ownerMachineId: 'm_a' });
+    sim.cleanup();
+  });
+});

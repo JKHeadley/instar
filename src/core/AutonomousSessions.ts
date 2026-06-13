@@ -243,6 +243,38 @@ export function suspendAutonomousTopicForMove(
   return { suspended: true, file: f };
 }
 
+/**
+ * Stamp a (move-suspended) run file `interrupted_mid_task: true` — the honest
+ * marker that the drain bound forced the close before the session reached a
+ * turn boundary (WS1.2). The resuming machine surfaces it so the run knows its
+ * final turn may be partial. Idempotent; missing file is a no-op (the drain
+ * may have closed a session with no run).
+ */
+export function markAutonomousInterruptedMidTask(stateDir: string, topic: string): boolean {
+  const f = path.join(autonomousDir(stateDir), `${topic}.local.md`);
+  let content: string;
+  try {
+    content = fs.readFileSync(f, 'utf8');
+  } catch {
+    return false;
+  }
+  const line = 'interrupted_mid_task: true';
+  const next = /^interrupted_mid_task:/m.test(content)
+    ? content.replace(/^interrupted_mid_task:.*$/m, line)
+    : content.replace(/^active:.*$/m, (m) => `${m}\n${line}`);
+  if (next === content) return /^interrupted_mid_task:\s*true\s*$/m.test(content);
+  const tmp = `${f}.tmp-interrupt`;
+  const fd = fs.openSync(tmp, 'w');
+  try {
+    fs.writeSync(fd, next, null, 'utf8');
+    fs.fsyncSync(fd);
+  } finally {
+    fs.closeSync(fd);
+  }
+  fs.renameSync(tmp, f);
+  return true;
+}
+
 export function stopAutonomousTopic(stateDir: string, topic: string, journal?: AutonomousJournalSeam): boolean {
   const f = path.join(autonomousDir(stateDir), `${topic}.local.md`);
   if (fs.existsSync(f)) {

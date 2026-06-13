@@ -38,8 +38,18 @@
 #   and every error path (server down, timeout, bad JSON) proceeds straight
 #   to the send as if the preflight returned nothing. Script-class senders
 #   (INSTAR_SENDER_CLASS=script) skip the preflight — there is no agent to
-#   inform. Conversational sessions have none of these env vars and are
-#   completely unaffected.
+#   inform.
+#
+#   Every OTHER sender (including a conversational session with no stamps —
+#   typically an interactive session running an autonomous job) also runs the
+#   preflight, with its real message kind defaulting to "reply". The server
+#   applies ONLY the TIME_CLAIM check to non-automated kinds — an
+#   elapsed/remaining claim contradicting the topic's live session clock
+#   (operator mandate 2026-06-12: accurate time reporting is structural, not
+#   willpower). Jargon/path/link detectors never run for conversational
+#   sends, and when the topic has no active time-boxed session the preflight
+#   returns nothing — conversational sends remain effectively unaffected.
+#   Same fail-open contract end-to-end.
 #
 # Port resolution (in order):
 #   1. INSTAR_PORT environment variable (explicit operator override).
@@ -180,7 +190,13 @@ esac
 JOB_SLUG=$(printf '%s' "${INSTAR_JOB_SLUG:-}" | tr -c 'A-Za-z0-9._-' '_' | head -c 128)
 
 ADVISORY_CODES_CSV=""
-if [ "$MESSAGE_KIND" = "automated" ] && [ "$SENDER_CLASS" = "llm-session" ]; then
+# Preflight gate: every sender EXCEPT script-class (no agent to inform).
+# automated+llm-session → full detector set server-side (unchanged);
+# anything else (incl. unstamped conversational sessions) → the server
+# applies only the TIME_CLAIM clock check, kind defaulting to "reply".
+# An older server returns no advisories for non-automated kinds — the new
+# gate is a no-op against it (version-skew safe both directions).
+if [ "$SENDER_CLASS" != "script" ]; then
   # Timeout: config messaging.outboundAdvisory.timeoutMs (default 2000ms),
   # converted ms→SECONDS for curl --max-time with ceil division, clamped to
   # [1, 10]. A raw `--max-time 2000` would be a ~33-minute fail-HANG and
@@ -194,11 +210,11 @@ if [ "$MESSAGE_KIND" = "automated" ] && [ "$SENDER_CLASS" = "llm-session" ]; the
 
   # Preflight body via python3 (already a hard dependency of this script). If
   # python3 is unavailable the preflight is skipped entirely — fail-open.
-  PREFLIGHT_BODY=$(PF_TOPIC="$TOPIC_ID" PF_SLUG="$JOB_SLUG" PF_KIND="$MESSAGE_KIND" python3 -c '
+  PREFLIGHT_BODY=$(PF_TOPIC="$TOPIC_ID" PF_SLUG="$JOB_SLUG" PF_KIND="${MESSAGE_KIND:-reply}" python3 -c '
 import sys, json, os
 print(json.dumps({
   "text": sys.stdin.read(),
-  "messageKind": os.environ.get("PF_KIND", "automated"),
+  "messageKind": os.environ.get("PF_KIND") or "reply",
   "topicId": int(os.environ.get("PF_TOPIC") or 0),
   "jobSlug": os.environ.get("PF_SLUG", ""),
 }))
@@ -252,7 +268,7 @@ for a in advisories:
       # was deliberately not yet sent and the next move belongs to the agent.
       echo "NOT SENT — advisory (fix and re-run, or re-run with --ack-advisory to send unchanged)"
       echo ""
-      echo "The outbound advisory flagged this automated message BEFORE delivery:"
+      echo "The outbound advisory flagged this outbound message BEFORE delivery:"
       printf '%s\n' "$ADVISORY_DETAIL"
       echo ""
       echo "Next move (yours — the advisory layer never blocks):"
@@ -269,7 +285,7 @@ fi
 # component is enum-validated or charset-clamped above, so this fragment is
 # safe to interpolate into JSON and (parameterized) SQL contexts.
 METADATA_JSON=""
-if [ -n "$MESSAGE_KIND" ] || [ -n "$SENDER_CLASS" ] || [ -n "$JOB_SLUG" ]; then
+if [ -n "$MESSAGE_KIND" ] || [ -n "$SENDER_CLASS" ] || [ -n "$JOB_SLUG" ] || { [ "$ACK_ADVISORY" = "1" ] && [ "$SENDER_CLASS" != "script" ]; }; then
   META_PARTS=""
   [ -n "$MESSAGE_KIND" ] && META_PARTS="\"messageKind\":\"${MESSAGE_KIND}\""
   if [ -n "$SENDER_CLASS" ]; then
@@ -280,7 +296,11 @@ if [ -n "$MESSAGE_KIND" ] || [ -n "$SENDER_CLASS" ] || [ -n "$JOB_SLUG" ]; then
     [ -n "$META_PARTS" ] && META_PARTS="${META_PARTS},"
     META_PARTS="${META_PARTS}\"jobSlug\":\"${JOB_SLUG}\""
   fi
-  if [ "$ACK_ADVISORY" = "1" ] && [ "$MESSAGE_KIND" = "automated" ] && [ "$SENDER_CLASS" = "llm-session" ]; then
+  # Ack annotation rides for EVERY non-script sender (not just automated):
+  # an unstamped interactive session's --ack-advisory must record 'acked'
+  # server-side, or its advised episodes never resolve and the escalation
+  # false-fires on messages that actually delivered (second-pass concern 2).
+  if [ "$ACK_ADVISORY" = "1" ] && [ "$SENDER_CLASS" != "script" ]; then
     # REQUIRED annotation (§2.4(4)) — how the server audits "acked" as the
     # single writer. Carries the overridden codes, including [] for a
     # preemptive ack on a clean message (itself a signal).

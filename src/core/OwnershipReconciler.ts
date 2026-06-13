@@ -90,6 +90,13 @@ export interface ReconcileTickReport {
 }
 
 const DEFAULT_DEBOUNCE_MS = 30_000;
+/** WS1.2 drain-grace: hold the transferring-to-me claim back long enough for a
+ *  LIVE owner's bounded drain (SessionDrainRunner) to finish and land the claim
+ *  itself — the reconciler claim is the BACKSTOP for an owner that died
+ *  mid-drain, never the front-runner that releases the inbound barrier before
+ *  the old session reached its turn boundary. Mirrors
+ *  DEFAULT_DRAIN_CLAIM_GRACE_MS (drain bound 30s + 15s close/CAS slack). */
+const DEFAULT_DRAIN_CLAIM_GRACE_MS = 45_000;
 const DEFAULT_SAFE_POINT_DEADLINE_MS = 120_000;
 const DEFAULT_DEATH_EVIDENCE_MS = 180_000;
 
@@ -146,7 +153,17 @@ export class OwnershipReconciler {
       const since = this.conflictSince.get(sessionKey)!;
 
       // ── Case B: a transfer is mid-flight TO ME → claim (completes the handoff).
+      // WS1.2 drain-grace: a FRESH drain-flow transferring record
+      // (drainInFlight) means the owner's SessionDrainRunner is still running
+      // — it lands the claim itself at drain completion. The reconciler claims
+      // only past the grace (the owner died mid-drain). Reconciler-cooperative
+      // transfers (no flag) claim promptly — the owner already waited for a
+      // safe point before transferring.
       if (rec?.status === 'transferring' && rec.transferTo === self) {
+        if (rec.drainInFlight === true && now - (rec.timestamp ?? 0) < DEFAULT_DRAIN_CLAIM_GRACE_MS) {
+          report.deferredBusy++;
+          continue;
+        }
         this.act(report, 'claims', sessionKey, { type: 'claim', machineId: self }, 'reconcile-claim');
         continue;
       }

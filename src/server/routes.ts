@@ -240,6 +240,10 @@ import type { ThreadlineRouter } from '../threadline/ThreadlineRouter.js';
 import { evaluateAndRecordInbound } from '../threadline/WarrantsReplyGate.js';
 import type { HandshakeManager } from '../threadline/HandshakeManager.js';
 import { createThreadlineRoutes } from '../threadline/ThreadlineEndpoints.js';
+import { evaluateSendGate, negotiatorLogDir } from '../threadline/NegotiatorGate.js';
+import { recordInboundAck } from '../threadline/recordInboundAck.js';
+import { resolveSingleNegotiatorConfig, readNegotiatorCounts } from '../threadline/NegotiatorLease.js';
+import { detectCommitmentClass, commitmentNudge } from '../threadline/ContentClassifier.js';
 import type { UnifiedTrustSystem } from '../threadline/UnifiedTrustWiring.js';
 import { DEFAULT_RELAY_URL } from '../threadline/constants.js';
 import { ThreadlineNicknames } from '../threadline/ThreadlineNicknames.js';
@@ -260,6 +264,7 @@ import type { MessageKind } from '../core/MessagingToneGate.js';
 import {
   OutboundAdvisoryAudit,
   composeAdvisories,
+  composeTimeClaimAdvisories,
   PREFLIGHT_TEXT_CAP,
 } from '../messaging/OutboundAdvisory.js';
 import type { PasteManager } from '../paste/PasteManager.js';
@@ -964,6 +969,11 @@ export interface RouteContext {
    *  null). Lets the placement/transfer routes proxy to the authoritative holder so
    *  they are answerable/callable from ANY machine. Null/absent (single-machine/dark). */
   resolveRouterUrl?: (() => string | null) | null;
+  /** WS1.2 sender leg (MULTI-MACHINE-SEAMLESSNESS-SPEC): order the topic's
+   *  current owner — local or remote — to DRAIN its live session for a
+   *  transfer (finish the turn bounded, close, land the target's claim).
+   *  Null/absent → the transfer route uses today's pin-and-release path. */
+  sendDrain?: ((ownerMachineId: string, sessionKey: string, target: string, ownershipEpoch: number) => Promise<{ ok: boolean; status?: string; reason?: string; noHandler?: boolean; runSuspended?: boolean }>) | null;
   /** Every OTHER registered, non-revoked machine with a known URL — for pool-wide
    *  aggregation (GET /sessions?scope=pool). Null/absent (single-machine/dark). */
   resolvePeerUrls?: (() => Array<{ machineId: string; url: string }>) | null;
@@ -8794,13 +8804,49 @@ export function createRoutes(ctx: RouteContext): Router {
       return;
     }
     const capped = text.length > PREFLIGHT_TEXT_CAP ? text.slice(0, PREFLIGHT_TEXT_CAP) : text;
-    // Advisories are composed for automated sends only — the conversational
-    // path already has the full authority pipeline, and the operator's
-    // over-block concern argues against any new friction there (§4 Q2).
-    const advisories = kind === 'automated' ? composeAdvisories(capped) : [];
+    // TIME_CLAIM (operator mandate 2026-06-12, topic 13481 — "MANDATE accurate
+    // time reporting"): when the sending topic has an ACTIVE time-boxed
+    // (autonomous) session, elapsed/remaining/percent claims in the candidate
+    // text are verified against the live session clock. Dev-gated dark
+    // (standard_development_agent_dark_feature_gate); resolution failure
+    // degrades to "no clocks" — fail-open like every detector.
+    const timeClaimEnabled = resolveDevAgentGate(
+      ctx.liveConfig?.get<boolean | undefined>('messaging.outboundAdvisory.timeClaim.enabled', undefined),
+      ctx.config,
+    );
+    let activeClocks: ReturnType<typeof readSessionClocks> = [];
+    if (timeClaimEnabled && Number.isFinite(topic) && topic > 0) {
+      try {
+        activeClocks = readSessionClocks(ctx.config.stateDir, Date.now(), String(topic)).filter(
+          (c) => c.status === 'active',
+        );
+      } catch {
+        /* @silent-fallback-ok — fail-open by the advisory contract (outbound-jargon-filepath-gap §2.3): a clock-read error skips the TIME_CLAIM signal, never withholds a message */
+        activeClocks = [];
+      }
+    }
+    // Full detector set for automated sends only — the conversational path
+    // already has the full authority pipeline, and the operator's over-block
+    // concern argues against any new friction there (§4 Q2). TIME_CLAIM is the
+    // ONE exception, for every non-script sender kind: an unstamped interactive
+    // session running an autonomous job is exactly where the founding "~7h
+    // elapsed" mis-report came from, and a contradicted time claim is wrong
+    // regardless of message kind. No active clock for the topic → no-op.
+    const advisories =
+      kind === 'automated'
+        ? composeAdvisories(capped, { sessionClocks: activeClocks })
+        : composeTimeClaimAdvisories(capped, activeClocks);
     outboundAdvisoryAudit.recordPreflight({
       topicId: Number.isFinite(topic) ? topic : 0,
-      jobSlug: typeof jobSlug === 'string' ? jobSlug : '',
+      // Non-automated (conversational-session) preflights carry no job slug —
+      // key their audit/escalation rows under a fixed readable label instead
+      // of an empty string.
+      jobSlug:
+        typeof jobSlug === 'string' && jobSlug.length > 0
+          ? jobSlug
+          : kind === 'automated'
+            ? ''
+            : 'interactive-session',
       kind,
       text: capped,
       advisories: advisories.map((a) => a.code),
@@ -9054,7 +9100,17 @@ export function createRoutes(ctx: RouteContext): Router {
         try {
           outboundAdvisoryAudit.recordAck({
             topicId,
-            jobSlug: metadataJobSlug,
+            // Same slug fallback as the preflight writer: a non-automated
+            // (conversational-session) ack must land under the SAME signature
+            // key its advised episodes were recorded under, or the episodes
+            // never resolve and the ignore-escalation false-fires on messages
+            // that actually delivered (second-pass review concern 2).
+            jobSlug:
+              metadataJobSlug.length > 0
+                ? metadataJobSlug
+                : (messageKind ?? 'reply') === 'automated'
+                  ? ''
+                  : 'interactive-session',
             kind: messageKind ?? 'reply',
             text,
             advisories: advisoryCodes,
@@ -9430,6 +9486,64 @@ export function createRoutes(ctx: RouteContext): Router {
     res.json(ctx.a2aDeliveryTracker.peerHealth(req.params.fp, { staleAfterMs }));
   });
 
+  // ── Negotiator lease state (Robustness Phase 1, FD-9) ──────────────────
+  // "Which session owns each conversation's voice?" — bearer-gated, paginated,
+  // own-data-only. Returns this agent's lease per active conversation (holder +
+  // epoch + expiry) plus dry-run would-hold / hold / CAS-retry / fail-open counts.
+  router.get('/threadline/negotiator', (req, res) => {
+    // Bearer-gated (defense in depth — own lease/voice state is agent-private).
+    if (ctx.config.authToken) {
+      const header = req.headers.authorization;
+      if (!header?.startsWith('Bearer ') || header.slice(7) !== ctx.config.authToken) {
+        res.status(401).json({ error: 'Unauthorized' });
+        return;
+      }
+    }
+    if (!ctx.conversationStore) {
+      res.status(503).json({ error: 'conversation store not available' });
+      return;
+    }
+    try {
+      const rawCfg = (ctx.config as { threadline?: { singleNegotiator?: unknown } }).threadline?.singleNegotiator;
+      const cfg = resolveSingleNegotiatorConfig(rawCfg);
+      // Paginate by threadId (stable order). Default 100, `after` cursor.
+      const limitRaw = typeof req.query.limit === 'string' ? parseInt(req.query.limit, 10) : 100;
+      const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(limitRaw, 500) : 100;
+      const after = typeof req.query.after === 'string' ? req.query.after : undefined;
+
+      const all = ctx.conversationStore.all()
+        .filter((c) => c.negotiatorLease)
+        .sort((a, b) => (a.threadId < b.threadId ? -1 : a.threadId > b.threadId ? 1 : 0));
+      const startIdx = after ? all.findIndex((c) => c.threadId === after) + 1 : 0;
+      const page = all.slice(startIdx, startIdx + limit);
+      const nextCursor = startIdx + limit < all.length ? page[page.length - 1]?.threadId : null;
+
+      const leases = page.map((c) => ({
+        threadId: c.threadId,
+        owner: c.negotiatorLease!.ownerSessionName,
+        ownerMachineId: c.negotiatorLease!.ownerMachineId,
+        epoch: c.negotiatorLease!.epoch,
+        expiresAt: c.negotiatorLease!.expiresAt,
+        lastHoldingNoticeEpoch: c.lastHoldingNoticeEpoch ?? null,
+        lastHoldingNoticeAt: c.lastHoldingNoticeAt ?? null,
+      }));
+
+      const counts = readNegotiatorCounts(negotiatorLogDir(ctx.config.stateDir), cfg.dryRunRetentionDays);
+      res.json({
+        enabled: cfg.enabled,
+        dryRun: cfg.dryRun,
+        leaseTtlMs: cfg.leaseTtlMs,
+        machineId: ctx.meshSelfId ?? (ctx.config as { machineId?: string }).machineId ?? 'local',
+        leases,
+        counts,
+        total: all.length,
+        nextCursor: nextCursor ?? null,
+      });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
   router.get('/threadline/observability/search', (req, res) => {
     if (!ctx.threadlineObservability) {
       res.status(503).json({ error: 'Threadline observability not initialized' });
@@ -9727,7 +9841,106 @@ export function createRoutes(ctx: RouteContext): Router {
     }
   });
 
-  router.get('/attention', (req, res) => {
+  // ── WS4.1 pool-scope merge helpers ───────────────────────────────────
+  // Short-TTL cache keyed by status, so repeated dashboard polls within the
+  // window reuse one fan-out instead of re-querying every peer per request.
+  const attentionPoolCache = new Map<string, { at: number; payload: unknown }>();
+  const ATTENTION_POOL_CACHE_TTL_MS = 3_000;
+  const ATTENTION_PEER_TIMEOUT_MS = 5_000;
+  // P17 coalesce key: items sharing this key across machines collapse to ONE
+  // merged row (a pool-wide event whose per-machine tripwires each raised an
+  // item). Mirrors the WS3.3 episode-key pattern: prefer an explicit
+  // sourceContext (the deduped escalation source), else category+title.
+  const attentionCoalesceKey = (it: { sourceContext?: string; category?: string; title?: string }): string =>
+    it.sourceContext && it.sourceContext.length > 0
+      ? `src:${it.sourceContext}`
+      : `ct:${it.category ?? ''}:${it.title ?? ''}`;
+
+  async function attentionPoolMerge(
+    localItems: Array<Record<string, unknown>>,
+    status: string | undefined,
+  ): Promise<Record<string, unknown>> {
+    const cacheKey = status ?? '*';
+    const cached = attentionPoolCache.get(cacheKey);
+    if (cached && Date.now() - cached.at < ATTENTION_POOL_CACHE_TTL_MS) {
+      return cached.payload as Record<string, unknown>;
+    }
+
+    const peers = ctx.resolvePeerUrls?.() ?? [];
+    const failed: Array<{ machineId: string; error: string }> = [];
+    const remote: Array<Record<string, unknown>> = [];
+    await Promise.all(
+      peers.map(async (p) => {
+        // Skip a peer the registry knows to be offline — saves the timeout
+        // wait; an unknown peer (no capacity row) is still tried.
+        const cap = ctx.machinePoolRegistry?.getCapacity(p.machineId);
+        if (cap && cap.online === false) {
+          failed.push({ machineId: p.machineId, error: 'offline' });
+          return;
+        }
+        try {
+          const qs = status ? `?status=${encodeURIComponent(status)}` : '';
+          const r = await fetch(`${p.url}/attention${qs}`, {
+            headers: { Authorization: `Bearer ${ctx.config.authToken}` },
+            signal: AbortSignal.timeout(ATTENTION_PEER_TIMEOUT_MS),
+          });
+          if (!r.ok) throw new Error(`HTTP ${r.status}`);
+          const body = (await r.json()) as { items?: Array<Record<string, unknown>> };
+          const nickname = cap?.nickname ?? null;
+          for (const it of body.items ?? []) {
+            remote.push({
+              ...it,
+              machineId: it.machineId ?? p.machineId,
+              machineNickname: it.machineNickname ?? nickname ?? undefined,
+              remote: true,
+            });
+          }
+        } catch (err) {
+          failed.push({ machineId: p.machineId, error: err instanceof Error ? err.message : String(err) });
+        }
+      }),
+    );
+
+    // P17 merge-point coalesce: collapse same-key items across machines into
+    // ONE row carrying the contributing machine list. Local items win the
+    // canonical row (the operator's own machine view); remote duplicates fold
+    // into coalescedFrom. HIGH/URGENT are NEVER coalesced (every critical item
+    // stays individually visible — same rule as the write-side flood guard).
+    const byKey = new Map<string, Record<string, unknown>>();
+    const out: Array<Record<string, unknown>> = [];
+    for (const it of [...localItems, ...remote]) {
+      const priority = String(it.priority ?? 'NORMAL');
+      if (priority === 'HIGH' || priority === 'URGENT') {
+        out.push(it);
+        continue;
+      }
+      const key = attentionCoalesceKey(it as { sourceContext?: string; category?: string; title?: string });
+      const existing = byKey.get(key);
+      if (!existing) {
+        const row = { ...it, coalescedFrom: [it.machineId] };
+        byKey.set(key, row);
+        out.push(row);
+      } else {
+        (existing.coalescedFrom as unknown[]).push(it.machineId);
+      }
+    }
+
+    const payload = {
+      items: out,
+      count: out.length,
+      pool: {
+        enabled: !!ctx.machinePoolRegistry,
+        selfMachineId: ctx.meshSelfId ?? null,
+        peersQueried: peers.length,
+        peersOk: peers.length - failed.length,
+        failed,
+      },
+    };
+    attentionPoolCache.set(cacheKey, { at: Date.now(), payload });
+    return payload;
+  }
+
+  router.get('/attention', async (req, res) => {
     if (!ctx.telegram) {
       res.status(503).json({ error: 'Telegram not configured' });
       return;
@@ -9735,8 +9948,35 @@ export function createRoutes(ctx: RouteContext): Router {
 
     const requestedStatus = req.query.status as string | undefined;
     const status = requestedStatus ? (normalizeAttentionStatus(requestedStatus) ?? requestedStatus) : undefined;
-    const items = ctx.telegram.getAttentionItems(status);
-    res.json({ items, count: items.length });
+    const selfMachineId = ctx.meshSelfId ?? null;
+    // Local items are stamped with THIS machine's id at read time (mirrors the
+    // sessions?scope=pool precedent — the store stays machine-agnostic; the
+    // route is where the machine view is composed). machineNickname resolved
+    // from the registry when wired.
+    const selfNickname = selfMachineId
+      ? ctx.machinePoolRegistry?.getCapacity(selfMachineId)?.nickname ?? undefined
+      : undefined;
+    const localItems = ctx.telegram.getAttentionItems(status).map((it) => ({
+      ...it,
+      machineId: it.machineId ?? selfMachineId ?? undefined,
+      machineNickname: selfNickname,
+    }));
+
+    // scope=pool (WS4.1, MULTI-MACHINE-SEAMLESSNESS-SPEC §WS4.1): merge every
+    // ONLINE peer's attention items so the dashboard shows one queue across the
+    // whole pool. Tolerant by design (per-peer timeout → a `failed` marker,
+    // never a 500), short-TTL cached so dashboard polling doesn't re-fan-out
+    // per request, and P17-coalesced at the merge point: N machines raising the
+    // SAME episode (same coalesce key) present as ONE row (the read-side bound;
+    // per-machine budgets remain the write-side bound). Plain GET stays a
+    // back-compatible object.
+    if (req.query.scope === 'pool') {
+      const merged = await attentionPoolMerge(localItems, status);
+      res.json(merged);
+      return;
+    }
+
+    res.json({ items: localItems, count: localItems.length });
   });
 
   router.get('/attention/:id', (req, res) => {
@@ -10761,6 +11001,51 @@ export function createRoutes(ctx: RouteContext): Router {
     }
     // transfer | noop | confirmed → set the pin and release local ownership if we hold it.
     const target = plan.targetMachine!;
+    // ── WS1.2 drain leg (MULTI-MACHINE-SEAMLESSNESS-SPEC): an ACTIVE
+    // conversation's transfer must COMPLETE, not half-move. When the topic has
+    // a current owner that can drain — itself (the live-swap topology: owner ==
+    // holder == this machine) or a remote peer that is online AND advertises
+    // ws12DrainReceive in its heartbeat — order the drain BEFORE the pin:
+    // finish the in-flight turn (bounded), suspend any autonomous run, close
+    // the owner's session, land the target's claim (the queue-barrier release).
+    //   · drain ok → proceed to pin+journal exactly as today (the place/claim
+    //     repair below sees active@target and correctly no-ops).
+    //   · aborted-emergency-stop → 409 failed-needs-retry, NO pin — an abort
+    //     leaves nothing split (the topic stays whole on its current machine).
+    //   · refused-*/no-handler/timeout/no-flag → DEGRADE to today's pin path
+    //     (recorded in the response; the reconciler + closeout converge it).
+    // The capability gate means an old peer is never sent a doomed order.
+    let drainLeg: { attempted: boolean; ok?: boolean; status?: string; reason?: string } = { attempted: false };
+    let drainRunSuspended = false;
+    try {
+      const currentOwner = plan.action !== 'noop' ? ctx.sessionOwnershipRegistry.ownerOf(topicId) : null;
+      const ownerCap = currentOwner && currentOwner !== self ? ctx.machinePoolRegistry?.getCapacity(currentOwner) : null;
+      const ownerCanDrain =
+        currentOwner != null &&
+        currentOwner !== target &&
+        ctx.sendDrain != null &&
+        (currentOwner === self ||
+          ((ownerCap?.online ?? false) && ownerCap?.seamlessnessFlags?.ws12DrainReceive === true));
+      if (ownerCanDrain) {
+        const observedEpoch = ctx.sessionOwnershipRegistry.read(topicId)?.ownershipEpoch ?? 0;
+        const r = await ctx.sendDrain!(currentOwner!, topicId, target, observedEpoch);
+        drainLeg = { attempted: true, ok: r.ok, status: r.status, reason: r.reason };
+        drainRunSuspended = r.runSuspended === true;
+        if (r.status === 'aborted-emergency-stop') {
+          res.status(409).json({
+            error: 'transfer aborted: emergency stop fired during the drain — the topic stays whole on its current machine',
+            failedNeedsRetry: true,
+            drain: drainLeg,
+          });
+          return;
+        }
+      }
+    } catch (err) {
+      // @silent-fallback-ok — NOT silent: recorded in the response's drain field;
+      // the transfer degrades to today's pin path (the safe direction — never a
+      // half-drain). A drain failure must never fail the transfer itself.
+      drainLeg = { attempted: true, ok: false, reason: err instanceof Error ? err.message : String(err) };
+    }
     // WS1.4 confirmed move: suspend the in-flight autonomous run AT ITS NEXT
     // TURN BOUNDARY (active:false releases the stop hook) while the state file
     // SURVIVES to ride the working-set carrier — the atomic fsync'd rewrite +
@@ -10905,7 +11190,8 @@ export function createRoutes(ctx: RouteContext): Router {
       pinned: plan.setPin ?? true,
       releasedLocalOwnership,
       placedOwnership,
-      autonomousRunSuspended,
+      autonomousRunSuspended: autonomousRunSuspended || drainRunSuspended,
+      ...(drainLeg.attempted ? { drain: drainLeg } : {}),
     });
   });
 
@@ -18202,19 +18488,17 @@ export function createRoutes(ctx: RouteContext): Router {
         // FINGERPRINT — on this same-machine path `from.agent` is the sender's
         // NAME, so resolve the thread owner's fingerprint (stored by captureOrigin,
         // R1) and fall back to the name only if unresolved. Recording-only.
-        if (ctx.a2aDeliveryTracker) {
-          try {
-            const ackThread = envelope.message?.threadId;
-            const ownerFp = ackThread ? ctx.threadResumeMap?.get(ackThread)?.remoteAgent : undefined;
-            const livenessFp = ownerFp || senderAgent;
-            if (livenessFp) ctx.a2aDeliveryTracker.recordInboundFrom(livenessFp, senderAgent ?? null);
-            if (ackThread) ctx.a2aDeliveryTracker.recordAckByThread(ackThread);
-          } catch (err) {
-            // @silent-fallback-ok: recording-only — A2A delivery/liveness tracking must
-            // never break inbound routing (the message was already accepted above). Logged.
-            console.warn(`[relay-agent] A2A inbound record failed (non-fatal): ${err instanceof Error ? err.message : err}`);
-          }
-        }
+        // Robustness Phase 1 (D-E): funnelled through the shared recordInboundAck
+        // so the wiring-integrity test can enforce that every inbound-receive path
+        // records the ack. (Same behavior as before — recording-only, idempotent.)
+        recordInboundAck(
+          { a2aDeliveryTracker: ctx.a2aDeliveryTracker, threadResumeMap: ctx.threadResumeMap ?? null },
+          {
+            threadId: envelope.message?.threadId,
+            senderFingerprint: senderAgent ?? undefined,
+            senderName: senderAgent ?? null,
+          },
+        );
 
         // Check if this message resolves a pending waitForReply request.
         // Local delivery bypasses the relay client's gate-passed event, so we
@@ -18758,6 +19042,12 @@ export function createRoutes(ctx: RouteContext): Router {
         version: '1.0',
         stateDir: ctx.config.stateDir,
       },
+      // Robustness Phase 1 (D-E / F4): wire the ack funnel so the verified E2E
+      // relay inbound path records the implicit ack (the one path that lacked it).
+      {
+        a2aDeliveryTracker: ctx.a2aDeliveryTracker,
+        threadResumeMap: ctx.threadResumeMap ?? null,
+      },
     );
     router.use(threadlineRoutes);
   }
@@ -19149,6 +19439,94 @@ export function createRoutes(ctx: RouteContext): Router {
     // first-contact messages aren't dropped on the recipient side. Both
     // sender and recipient will agree on this id going forward.
     const effectiveThreadId = threadId ?? randomUUID();
+
+    // ── Negotiator lease/voice gate (Robustness Phase 1, D-B) ───────
+    // Enforce single-voice: only the session that owns this conversation's lease
+    // may speak CONTENT in the agent's name (G1, closes F1). Ships dark
+    // (enabled:false ⇒ pure pass-through); dry-run logs the verdict but still
+    // sends; enforce withholds a non-owner's content and emits a holding notice.
+    // The gate never inspects content MEANING — it blocks only on the structural
+    // ownership check (Signal-vs-Authority: the lease is the sole authority, keyed
+    // on who-speaks, not on what a message means). Prose is inert (G2), so a
+    // fail-open window briefly risks only two of our own sessions both speaking
+    // inert prose — never a binding.
+    {
+      const negVerdict = await evaluateSendGate(effectiveThreadId, {
+        conversationStore: ctx.conversationStore ?? null,
+        rawConfig: (ctx.config as { threadline?: { singleNegotiator?: unknown } }).threadline?.singleNegotiator,
+        machineId: ctx.meshSelfId ?? (ctx.config as { machineId?: string }).machineId ?? 'local',
+        agentName: ctx.config.projectName,
+        ownerSessionName: typeof originSessionName === 'string' ? originSessionName : undefined,
+        logDir: negotiatorLogDir(ctx.config.stateDir),
+        isSessionLive: (name) =>
+          ctx.sessionManager.getCachedRunningSessions().sessions.some((s) => s.tmuxSession === name),
+        raiseFailOpenAlert: (detail) => {
+          // HIGH-priority Attention item — a window where single-voice is NOT
+          // enforced must never be silent (guard-bypass-carries-its-own-cap).
+          try {
+            void ctx.telegram?.createAttentionItem?.({
+              id: `threadline-negotiator-failopen:${detail.threadId}`,
+              title: 'Threadline single-negotiator: lease unavailable (fail-open)',
+              summary:
+                `Single-voice was NOT enforced for one send on thread ${detail.threadId} ` +
+                `(session ${detail.sessionName}). Reason: ${detail.reason}.`,
+              category: 'general',
+              priority: 'HIGH',
+              sourceContext: 'threadline-negotiator-failopen',
+            });
+          } catch { /* best-effort alert */ }
+        },
+      });
+
+      if (negVerdict.decision === 'hold') {
+        // ENFORCE: withhold this non-owner's content. Best-effort emit the holding
+        // notice to the peer (additive; NEVER creates an awaiting-ack record —
+        // FD-11). The owning session is the only voice.
+        if (negVerdict.notice) {
+          try {
+            const relay = ctx.threadlineRelayClient;
+            if (relay) {
+              const rid = looksLikeFingerprint
+                ? targetAgent
+                : (nicknameResolvedFp ?? await relay.resolveAgent(targetAgent));
+              if (rid) relay.sendAuto(rid, negVerdict.notice.text, effectiveThreadId);
+            }
+          } catch { /* @silent-fallback-ok: the holding notice is additive */ }
+        }
+        res.json({
+          success: true,
+          threadId: effectiveThreadId,
+          messageId: '',
+          delivered: false,
+          held: true,
+          deliveryPath: 'none',
+          deliveryOutcome: 'holding',
+          note:
+            `Another session (${negVerdict.ownerSessionName}) owns this conversation's ` +
+            `voice (epoch ${negVerdict.epoch}); your content was withheld and a holding ` +
+            `notice was sent to the peer. The owning session will respond.`,
+        });
+        return;
+      }
+    }
+
+    // Commitment-class advisory nudge (FD-10) — SIGNAL ONLY, never blocks, fails
+    // open to no-nudge. Surfaced as `advisory` on the success response so the
+    // sending session is pointed at the anchored (mandate/review-exchange) path.
+    try {
+      const sig = detectCommitmentClass(message);
+      if (sig.isCommitmentClass) {
+        const advisory = commitmentNudge(sig.matchedTerms);
+        const origJson = res.json.bind(res);
+        (res as unknown as { json: (b: unknown) => unknown }).json = (body: unknown) => {
+          if (body && typeof body === 'object' && (body as { success?: boolean }).success
+              && !(body as { note?: string }).note && !(body as { advisory?: string }).advisory) {
+            (body as { advisory?: string }).advisory = advisory;
+          }
+          return origJson(body as Record<string, unknown>);
+        };
+      }
+    } catch { /* advisory only — never affects the send */ }
 
     // ── Try local delivery first (same-machine agents) ──────────────
     // Read known-agents.json for local agent info. If the target is local,

@@ -22,6 +22,7 @@ import type { HandshakeManager, HelloPayload, ConfirmPayload } from './Handshake
 import type { ThreadlineRouter } from './ThreadlineRouter.js';
 import { verify } from './ThreadlineCrypto.js';
 import { IdentityManager } from './client/IdentityManager.js';
+import { recordInboundAck, type InboundAckDeps } from './recordInboundAck.js';
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -91,6 +92,10 @@ export function createThreadlineRoutes(
   handshakeManager: HandshakeManager,
   threadlineRouter: ThreadlineRouter | null,
   config: ThreadlineEndpointsConfig,
+  // Robustness Phase 1 (D-E / F4): the delivery tracker + thread-owner lookup so
+  // the verified E2E relay inbound path records the implicit ack through the
+  // shared recordInboundAck funnel. Optional — absent in tests that don't need it.
+  inboundAckDeps?: InboundAckDeps,
 ): Router {
   const router = Router();
   const nonceStore = new ThreadlineNonceStore();
@@ -425,6 +430,21 @@ export function createThreadlineRoutes(
       // returned). The former 422-retryable path was already unreachable — the
       // sender aborts at ~10s, long before the 9-30s spawn produced it.
       res.json({ accepted: true, async: true, threadId: body.message?.threadId });
+
+      // Robustness Phase 1 (D-E / closes F4): record the implicit delivery ack on
+      // the VERIFIED E2E relay inbound path — the path that previously lacked it,
+      // producing the permanent false `stale: true` noise. threadlineAuth has
+      // already validated the relay token + Ed25519 signature for the agent named
+      // in x-threadline-agent, so it is the authenticated sender. Funnelled through
+      // the shared recordInboundAck so the wiring-integrity test can enforce it.
+      try {
+        const verifiedSender = req.headers['x-threadline-agent'] as string | undefined;
+        recordInboundAck(inboundAckDeps ?? {}, {
+          threadId: body.message?.threadId,
+          senderFingerprint: verifiedSender,
+          senderName: verifiedSender ?? null,
+        });
+      } catch { /* @silent-fallback-ok: recording-only — never block inbound routing */ }
 
       void threadlineRouter.handleInboundMessage(envelope)
         .then((result) => {

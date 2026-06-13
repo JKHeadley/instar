@@ -104,6 +104,14 @@ describe('MeshRpc — per-command RBAC (§L0)', () => {
     return { routerHolder: () => 'ROUTER', ownerOf: () => null, placementTargetOf: () => null, ...over };
   }
 
+  it('drain (WS1.2): router → ok, non-router → drain-unauthorized — its OWN refusal reason', () => {
+    const cmd = { type: 'drain', session: '13481', target: 'm_mini', ownershipEpoch: 4 } as const;
+    expect(checkCommandRBAC(cmd, 'ROUTER', rbac()).ok).toBe(true);
+    expect(checkCommandRBAC(cmd, 'OTHER', rbac()).reason).toBe('drain-unauthorized');
+    // Even the transfer TARGET may not order a drain — only the planner (router).
+    expect(checkCommandRBAC(cmd, 'm_mini', rbac()).reason).toBe('drain-unauthorized');
+  });
+
   it('place / transfer: router → ok, non-router → not-router', () => {
     expect(checkCommandRBAC({ type: 'place', session: 's', machine: 'm' }, 'ROUTER', rbac()).ok).toBe(true);
     expect(checkCommandRBAC({ type: 'place', session: 's', machine: 'm' }, 'OTHER', rbac()).reason).toBe('not-router');

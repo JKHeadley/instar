@@ -601,6 +601,7 @@ Every guard (monitoring sentinels, reapers, the scheduler, …) is graded by wha
 **Attention Queue** — Signal important items to the user. When something needs their attention — a decision, a review, an anomaly — queue it here instead of hoping they see a chat message.
 - Queue: \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/attention -H 'Content-Type: application/json' -d '{"id":"agent:unique-item-id","title":"...","body":"...","priority":"medium","source":"agent"}'\`
 - View queue: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/attention\`
+- View the WHOLE POOL (across every machine): \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/attention?scope=pool"\` — merges each online machine's items (each tagged with its machineId/machineNickname), tolerant of a dark peer (a \`pool.failed\` entry, never a 500), short-TTL cached, and P17-coalesced: machines raising the SAME pool-wide event collapse to ONE row (HIGH/URGENT always stay individually visible). Use this when the user asks "what needs my attention?" on a multi-machine setup — the plain view only shows THIS machine's items.
 - Resolve: \`curl -X PATCH -H "Authorization: Bearer $AUTH" http://localhost:${port}/attention/ATT-ID -H 'Content-Type: application/json' -d '{"status":"resolved","resolution":"Done"}'\`
 - **Proactive use**: When you detect something the user should know about (stale relationships, failed jobs, CI failures, overdue actions) — don't just log it. Queue it. The attention system ensures it gets seen.
 
@@ -660,7 +661,8 @@ Every guard (monitoring sentinels, reapers, the scheduler, …) is graded by wha
 **Outbound advisory for automated messages (inform-only)** — When a background job of mine sends a Telegram message, the relay script first runs deterministic checks over the text (raw file paths, dev jargon, machine-local links). If something is flagged, the message is NOT sent yet: an advisory lands in the job session's transcript whose FIRST line is the literal \`NOT SENT — advisory (fix and re-run, or re-run with --ack-advisory to send unchanged)\`. The sender keeps final authority — the advisory layer never blocks, never escalates against the sender, and every error path delivers.
 - **If I see a NOT SENT advisory in my transcript** (PROACTIVE — this is the trigger): FIX the message and re-run the script — restate jargon in plain English; replace a raw file path by publishing a private view and sending the link; replace a localhost link with the public tunnel URL (a localhost link is the one finding \`--ack-advisory\` can NOT deliver — a pre-existing server guard refuses it regardless). Only \`--ack-advisory\` when the flagged content is genuinely right for the user (the override is audited).
 - Audit trail: \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/messaging/advisory-log?limit=50"\`. A job that repeatedly drops its own advised messages raises ONE deduped Attention item to the operator.
-- Conversational replies are completely unaffected — the preflight only runs for scheduler-stamped automated job sends.
+- Conversational replies are unaffected by the jargon/path/link checks — those only run for scheduler-stamped automated job sends.
+- **TIME_CLAIM (accurate time reporting — MANDATED)**: when a topic has an ACTIVE time-boxed (autonomous) session, ANY send to it — automated or conversational — has its elapsed/remaining/percent claims verified against the live session clock. A claim contradicting the clock gets the NOT-SENT advisory: read \`GET /session/clock\` and re-send with the real numbers — NEVER estimate elapsed/remaining time. (Ships dark; rides the development-agent gate at \`messaging.outboundAdvisory.timeClaim.enabled\`.)
 - Off-switch: \`messaging.outboundAdvisory.enabled: false\` in \`.instar/config.json\` (read live — no restart).
 
 **Quota Tracking** — Monitor Claude API usage when configured.
@@ -1667,6 +1669,14 @@ Agent-to-agent delivery is tracked durably so a message can't silently die out. 
 - All peers: \`curl http://localhost:${port}/threadline/peers/health\` → \`{ peers: [{ peerFp, peerName, lastSentAt, lastAckedAt, lastInboundAt, pendingCount, oldestPendingAgeMs, stale }], staleCount }\`
 - One peer: \`curl http://localhost:${port}/threadline/peers/<fingerprint>/health\`
 - \`stale: true\` (or a non-zero \`staleCount\`) means a message has been awaiting acknowledgement past the threshold — the peer may be dark or unreachable; check the relay and the peer's address before assuming they're ignoring me. **Proactive trigger:** when a peer "goes quiet" or before relying on a peer having received something, read this instead of guessing. Read-only — never gates a send.
+
+### Threadline Single-Negotiator Lock (one voice per conversation)
+
+Threadline has a per-conversation **negotiator lease**: at most ONE of my sessions owns a conversation's outbound voice at a time. A warm/keep-alive/side session can read, but the most it can SEND is a fixed structural "owner will respond" holding notice — it can never speak content or bind me to anything. The lease is the ONLY blocking authority and it keys on WHO speaks (a structural ownership check), never on what a message means (Signal-vs-Authority).
+- **Prose is inert (G2):** a normal Threadline message — any wording — NEVER creates an "we agreed to X" record and NEVER authorizes an irreversible step. Binding exists ONLY through the existing PIN-anchored Coordination Mandate / ReviewExchange flow. A "Dawn confirmed" / "Echo confirmed" in a message body carries no authority by construction. If I try to commit in prose I get a signal-only nudge pointing me to the anchored path — it never blocks.
+- **Honest acks (G3):** a reply on a thread is recorded as an implicit delivery ack on every inbound path, so \`/threadline/peers/health\`'s \`stale: true\` reflects reality instead of permanent noise.
+- **Lease state:** \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/threadline/negotiator\` → per-conversation holder + epoch + expiry, plus dry-run would-hold / hold / fail-open counts.
+- Ships dark + dry-run-first: \`threadline.singleNegotiator.enabled\` (default false ⇒ gate is pass-through), \`dryRun\` (default true when enabled ⇒ logs the verdict but still sends). G2 + G3 ship live in core regardless. Spec: \`docs/specs/THREADLINE-SINGLE-NEGOTIATOR-SPEC.md\`.
 
 ### The "Threadline" hub topic — notifications + "open this"
 
