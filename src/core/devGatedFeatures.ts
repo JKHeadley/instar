@@ -248,6 +248,11 @@ export const DARK_GATE_EXCLUSIONS: DarkGateExclusion[] = [
     category: 'optional-integration',
     reason: 'hold-for-stability policy; trails inboundQueue one rollout stage behind (operator discipline)',
   },
+  {
+    configPath: 'multiMachine.stateSync.preferences.enabled',
+    category: 'optional-integration',
+    reason: 'WS2.1 cross-machine preference replication on the HLC foundation; graduated rollout dark→dryRun→live per spec §10.1, opt-in per deployment (mirrors sessionPool.inboundQueue staging)',
+  },
   // ── deliberate-fleet-default — off for everyone by design (incl. dev) ──
   {
     configPath: 'monitoring.greenPrAutoMerge.enabled',

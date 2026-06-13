@@ -977,6 +977,13 @@ export interface RouteContext {
   /** Durable un-merged-origins registry (§7.4) — the live exclusion set the
    *  union reader consults. Null/absent while dark. */
   droppedOriginRegistry?: import('../core/RollbackUnmerge.js').DroppedOriginRegistry | null;
+  /** WS2.1 — the bypass-proof union reader for the `preferences` store
+   *  (multi-machine-replicated-store-foundation §7.2). GET /preferences/session-context
+   *  reads the no-clobber UNION through it (own + non-dropped peer replicas; an open
+   *  conflict yields BOTH variants as advisory hints, §15.1) ONLY when
+   *  multiMachine.stateSync.preferences.enabled is true. Null/absent ⇒ the route
+   *  keeps its legacy own-only / seamlessness-merge path, byte-identical. */
+  preferencesUnionReader?: import('../core/ReplicatedStoreReader.js').ReplicatedStoreReader | null;
   /** P1.5b owner-routed mutation (§3.4): forward a mutate intent to the
    *  owning machine (verdict back, or durably queued). Null/absent = dark
    *  (replica-targeted mutations answer 409 explaining the layer is off). */
@@ -15779,6 +15786,26 @@ export function createRoutes(ctx: RouteContext): Router {
       const maxBytes = typeof cfg.maxInjectedPreferencesBytes === 'number' && cfg.maxInjectedPreferencesBytes > 0
         ? cfg.maxInjectedPreferencesBytes
         : 4000;
+      // WS2.1 (multi-machine-replicated-store-foundation §7.2 + §15.1) — the
+      // FOUNDATION path SUPERSEDES the legacy seamlessness merge below. When
+      // multiMachine.stateSync.preferences.enabled is true AND the union reader is
+      // wired, read the no-clobber UNION through it: an OPEN concurrent conflict
+      // yields BOTH variants as advisory hints (it NEVER suppresses a usable hint
+      // waiting on operator resolution — POST /state/resolve-conflict is OPTIONAL
+      // cleanup, not a gate). Precedence: foundation flag wins over the legacy
+      // seamlessness flag (the two are mutually exclusive in practice, CMT-1416). A
+      // single-machine / pre-apply agent's union is just its own local store, so the
+      // block is byte-identical to the legacy own-only read.
+      const stateSyncPrefEnabled =
+        (ctx.config.multiMachine as { stateSync?: { preferences?: { enabled?: boolean } } } | undefined)
+          ?.stateSync?.preferences?.enabled === true;
+      if (stateSyncPrefEnabled && ctx.preferencesUnionReader) {
+        const { buildUnionSessionContext, PREF_STORE_KEY } = await import('../core/PreferencesReplicatedStore.js');
+        const union = ctx.preferencesUnionReader.readAll(PREF_STORE_KEY);
+        const out = buildUnionSessionContext(union, maxBytes);
+        res.json(out);
+        return;
+      }
       // MULTI-MACHINE-SEAMLESSNESS-SPEC §WS2.1 — when the pool flag is ON and we
       // hold replicas from peers, inject the MERGED (collapse-by-dedupeKey) view
       // so a preference learned on another machine is honored here. Flag OFF or

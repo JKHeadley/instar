@@ -4558,11 +4558,33 @@ When enabled, certain stores (preferences, relationships) replicate across my ma
 - See open conflicts: \`curl -H "Authorization: Bearer $AUTH" http://localhost:4042/state/conflicts\` → the unresolved divergences awaiting your call (each with a stable \`conflictId\` + the preserved versions).
 - Resolve one (YOUR authority — the foundation never picks a winner): \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:4042/state/resolve-conflict -H 'Content-Type: application/json' -d '{"conflictId":"<id>","winnerOrigin":"<machine id>"}'\` (or supply a \`mergedVersion\` object). The chosen/merged record then replicates as normal.
 - Roll back a machine's data (un-merge): disabling \`multiMachine.stateSync.<store>\` for a peer atomically DROPS that origin's contribution — the union recomputes live, a key that was winning from the dropped machine reverts to the latest among the REMAINING machines (or to "no record"), any conflict that only existed because of it auto-resolves, and the dropped streams are quarantined-aside (reversible, auditable, never a destructive delete). View what's currently un-merged: \`curl -H "Authorization: Bearer $AUTH" http://localhost:4042/state/quarantine\`.
+- **Preferences are the FIRST live store** (WS2.1): a preference I learned about you on one machine is honored on the others. My session-start preferences block reads the UNION — and when two machines learned DIVERGENT preferences for the same thing during a partition, the block injects BOTH as advisory hints (both are usable guidance) AND flags the conflict for your optional resolution. The flag is observability + optional cleanup, never a blocked preference — so you never lose a usable hint waiting on a decision. Enable with \`multiMachine.stateSync.preferences\` (ships dark: \`enabled:false\`, \`dryRun:true\` — the graduated rollout ladder).
 - **When to use** (PROACTIVE — these are the triggers): the user asks "why do I have two versions of preference X?" → read open conflicts and present them for resolution. The user says "roll back machine Y's data / forget what the other machine learned" → un-merge that origin. Spec: \`docs/specs/multi-machine-replicated-store-foundation.md\` §7.
 `;
       content += '\n' + oneMemory;
       patched = true;
       result.upgraded.push('CLAUDE.md: added One Memory (replicated stores) section');
+    } else if (
+      content.includes('One Memory (replicated stores)') &&
+      !content.includes('Preferences are the FIRST live store')
+    ) {
+      // WS2.1 (multi-machine-replicated-store-foundation §4): an agent that already
+      // has the foundation-Step One Memory section but not the WS2.1 preferences-
+      // consumer line gets the line spliced in BEFORE the "When to use" bullet
+      // (idempotent — guarded by the unique 'Preferences are the FIRST live store'
+      // marker; the next run no-ops). Migration Parity: the awareness must reach
+      // already-deployed agents, not just new ones.
+      const ws21Line =
+        '- **Preferences are the FIRST live store** (WS2.1): a preference I learned about you on one machine is honored on the others. My session-start preferences block reads the UNION — and when two machines learned DIVERGENT preferences for the same thing during a partition, the block injects BOTH as advisory hints (both are usable guidance) AND flags the conflict for your optional resolution. The flag is observability + optional cleanup, never a blocked preference — so you never lose a usable hint waiting on a decision. Enable with `multiMachine.stateSync.preferences` (ships dark: `enabled:false`, `dryRun:true` — the graduated rollout ladder).\n';
+      const anchor = '- **When to use** (PROACTIVE';
+      const idx = content.indexOf(anchor, content.indexOf('One Memory (replicated stores)'));
+      if (idx >= 0) {
+        content = content.slice(0, idx) + ws21Line + content.slice(idx);
+      } else {
+        content += `\n${ws21Line}`;
+      }
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added WS2.1 preferences-consumer line to One Memory (replicated stores)');
     }
 
     // ContextWedgeSentinel — the 4th silently-stopped sentinel. Tells the agent

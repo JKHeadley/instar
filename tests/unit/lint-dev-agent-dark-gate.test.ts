@@ -306,18 +306,28 @@ describe('lint-dev-agent-dark-gate', () => {
     // after multiMachine.sessionPool by +7. Verified by hand against
     // ConfigDefaults.ts after the post-#1079 merge.
     const EXPECTED: Record<string, string> = {
-      // HONEST-PROGRESS-MESSAGING (this PR): added monitoring.activeWorkSilenceSentinel
-      // tuning keys (+~10 lines near the top) and a top-level promiseBeacon block
-      // (+~13 lines before cartographer), shifting entries below each insertion.
-      // RECOMPUTED wholesale via the attributor against the MERGED ConfigDefaults.ts.
       '39': 'monitoring.bootHealthBeacon.enabled',
       '58': 'monitoring.parallelWorkSentinel.enabled',
       '138': 'monitoring.sessionReaper.enabled',
       '196': 'monitoring.agentWorktreeReaper.enabled',
+      // ORPHANED-WORK-SENTINEL: the monitoring.orphanedWorkSentinel default block
+      // (15 lines incl. comment, `enabled` deliberately OMITTED so it is dev-gated
+      // — hence NO new entry here) was inserted right after the agentWorktreeReaper
+      // block, shifting EVERY entry below by +15. Verified by hand (attributor)
+      // against ConfigDefaults.ts.
       '225': 'monitoring.mcpProcessReaper.enabled',
       '239': 'monitoring.agentSleep.enabled',
       '262': 'monitoring.failureLearning.enabled',
       '294': 'monitoring.correctionLearning.enabled',
+      // PROMISE-BEACON-ESCALATION-SPEC: the monitoring.promiseBeacon.escalation
+      // default block (22 lines, `enabled` deliberately OMITTED so it is dev-
+      // gated — hence NO new entry here) was inserted right after the
+      // correctionLearning block, shifting EVERY entry below by +22. Verified by
+      // hand (attributor) against the MERGED ConfigDefaults.ts.
+      // OrphanedWorkSentinel (THIS PR): adds a dev-gated monitoring.orphanedWorkSentinel
+      // config block (no attributed path — dev-gated) after correctionLearning, shifting
+      // every entry from apprenticeshipCycleSla onward +15. Recomputed via the attributor
+      // against the rebased ConfigDefaults.ts.
       '388': 'monitoring.apprenticeshipCycleSla.enabled',
       '396': 'monitoring.geminiCapacityEscalation.enabled',
       '404': 'monitoring.releaseReadiness.enabled',
@@ -329,10 +339,37 @@ describe('lint-dev-agent-dark-gate', () => {
       '706': 'multiMachine.sessionPool.enabled',
       '731': 'multiMachine.sessionPool.inboundQueue.enabled',
       '760': 'multiMachine.sessionPool.holdForStability.enabled',
-      '946': 'cartographer.freshnessSweep.enabled',
-      '991': 'cartographer.conformanceAudit.llmEnrichment.enabled',
-      '1016': 'cartographer.subtreeNav.llmRerank.enabled',
-      '1053': 'subscriptionPool.credentialRepointing.enabled',
+      // multi-machine-replicated-store-foundation Step 2: the multiMachine block
+      // gained a `stateSync` sub-block (foundation knobs only; NO `enabled` key →
+      // NO new attributed path) after coherenceJournal (which sits after sessionPool
+      // but before cartographer). sessionPool entries unshifted; every cartographer
+      // entry shifted +17 (the stateSync block's line count). Verified by hand
+      // (attributor) against the MERGED ConfigDefaults.ts.
+      // WS2.1 (multi-machine-replicated-store-foundation §4): the stateSync block
+      // gained a `preferences: { enabled:false, dryRun:true }` per-store sub-block —
+      // the FIRST concrete replicated-store consumer. It ADDS this literal
+      // `enabled:false` path (842, classified in DARK_GATE_EXCLUSIONS as
+      // optional-integration) and shifts every cartographer + credentialRepointing
+      // entry below it by +13 (the new sub-block's line count). RECOMPUTED via the
+      // attributor against the MERGED ConfigDefaults.ts.
+      '851': 'multiMachine.stateSync.preferences.enabled',
+      '959': 'cartographer.freshnessSweep.enabled',
+      '1004': 'cartographer.conformanceAudit.llmEnrichment.enabled',
+      '1029': 'cartographer.subtreeNav.llmRerank.enabled',
+      // Threadline Robustness Phase 2 (CMT-1362): the threadline.canonicalHistory
+      // block (no `enabled` literal — conversationDiscipline is dev-gated) is inserted
+      // AFTER the threadline section; entries at/after mentor.enabled shift again.
+      // RECOMPUTED via the attributor against the MERGED ConfigDefaults.ts.
+      // live-credential-repointing Increment A: subscriptionPool.credentialRepointing
+      // is appended at the END of SHARED_DEFAULTS (after topicProfiles), so it shifts
+      // no prior entry — it only ADDS this literal `enabled: false` path. category
+      // 'destructive' in DARK_GATE_EXCLUSIONS (writes OAuth credentials).
+      // multi-machine-replicated-store-foundation Step 3 (snapshot-then-tail, #1115)
+      // added stateSync cache config (NO new attributed `enabled` path) below the
+      // cartographer block but above credentialRepointing → this END entry shifted
+      // +15 (1015 → 1030); cartographer/sessionPool entries unchanged. RECOMPUTED via
+      // the attributor against the MERGED ConfigDefaults.ts.
+      '1066': 'subscriptionPool.credentialRepointing.enabled',
     };
     const actual = attributeRealConfigDefaults();
     expect(actual).toEqual(EXPECTED);

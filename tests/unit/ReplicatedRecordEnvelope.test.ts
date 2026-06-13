@@ -715,12 +715,28 @@ describe('wiring-integrity: every replicated kind must also be in JOURNAL_KINDS 
   // the invariant for the consumer PRs by checking a CONSTRUCTED registry.
   it('a registry seeded with a kind NOT in JOURNAL_KINDS is detectable (the silent no-replication trap)', () => {
     const reg = new ReplicatedKindRegistry();
-    reg.register({ kind: 'pref-record', store: 'pref', schema: valueSchema() });
-    // pref-record is NOT (yet) in JOURNAL_KINDS — so the coupling check would FAIL
-    // for it. This is exactly the trap a WS2.1 PR must avoid: registering here
-    // without extending JOURNAL_KINDS.
+    // Use a SYNTHETIC future kind that is NOT (yet) in JOURNAL_KINDS — this is
+    // exactly the trap a future store PR must avoid: registering here without
+    // extending JOURNAL_KINDS. (Post-WS2.1, the REAL 'pref-record' kind IS in
+    // JOURNAL_KINDS — see the coupling assertion below — so it can no longer stand
+    // in for the uncoupled case.)
+    reg.register({ kind: 'relationship-record', store: 'relationships', schema: valueSchema() });
     const missing = reg.kinds().filter((k) => !(JOURNAL_KINDS as string[]).includes(k));
-    expect(missing).toEqual(['pref-record']); // the ratchet SEES the gap
+    expect(missing).toEqual(['relationship-record']); // the ratchet SEES the gap
+  });
+
+  it('the WS2.1 pref-record kind IS coupled in BOTH registries (the post-WS2.1 ratchet)', async () => {
+    // The REAL coupling: the consumer's PREF_KIND_REGISTRATION registers
+    // 'pref-record' AND CoherenceJournal.JOURNAL_KINDS now lists it. A registry
+    // holding the real registration must report NO uncoupled kind — this is the
+    // CI ratchet that would RED if a future edit removed 'pref-record' from
+    // JOURNAL_KINDS while leaving it registered (the silent no-replication trap).
+    const { PREF_KIND_REGISTRATION } = await import('../../src/core/PreferencesReplicatedStore.js');
+    const reg = new ReplicatedKindRegistry();
+    reg.register(PREF_KIND_REGISTRATION);
+    const missing = reg.kinds().filter((k) => !(JOURNAL_KINDS as string[]).includes(k));
+    expect(missing).toEqual([]); // pref-record coupled in both registries
+    expect((JOURNAL_KINDS as string[]).includes('pref-record')).toBe(true);
   });
 
   it('once a kind is present in BOTH registries, the coupling check passes', () => {

@@ -36,9 +36,18 @@ import path from 'node:path';
 
 import { SafeFsExecutor } from './SafeFsExecutor.js';
 
-export type JournalKind = 'topic-placement' | 'session-lifecycle' | 'autonomous-run' | 'threadline-conversation' | 'guard-latch';
+export type JournalKind = 'topic-placement' | 'session-lifecycle' | 'autonomous-run' | 'threadline-conversation' | 'guard-latch' | 'pref-record';
 
-export const JOURNAL_KINDS: JournalKind[] = ['topic-placement', 'session-lifecycle', 'autonomous-run', 'threadline-conversation', 'guard-latch'];
+export const JOURNAL_KINDS: JournalKind[] = ['topic-placement', 'session-lifecycle', 'autonomous-run', 'threadline-conversation', 'guard-latch', 'pref-record'];
+// 'pref-record' added for WS2.1 (multi-machine-replicated-store-foundation §4): the
+// FIRST concrete replicated-store kind, riding the HLC foundation. This is the
+// STATIC half of the DUAL REGISTRY — a kind in ReplicatedKindRegistry but NOT here
+// would advertise stateSyncReceive=true yet serve/apply/pull NOTHING (a silent
+// no-replication, §4 callout). Its concrete schema/tier/bounds live in
+// PreferencesReplicatedStore.ts (the consumer); here it is just the kind tag the
+// serve/apply/getOwnAdvert path enumerates. Additive — readers ignore unknown
+// kinds (the applier's forward-compat contract), so an old peer that lacks it
+// simply never pulls it.
 
 /** §3.2 enums. */
 export type PlacementReason = 'user-move' | 'placed' | 'failover' | 'released' | 'quota-block-move' | 'reconcile';
@@ -137,6 +146,12 @@ export const DEFAULT_RETENTION: Record<JournalKind, KindRetention> = {
   'threadline-conversation': { maxFileBytes: 8 * 1024 * 1024, rotateKeep: 8 },
   // guard-latch: rare operator-initiated transitions; keep full history bounded.
   'guard-latch': { maxFileBytes: 4 * 1024 * 1024, rotateKeep: 4 },
+  // pref-record (WS2.1): preferences are FEW (a tight per-store cap — the
+  // PreferencesSync precedent's DEFAULT_MAX_REPLICATED_PREFERENCES=500). A small
+  // window with a few archives bounds a runaway edit-churn stream. The store's own
+  // ReplicatedKindBounds (PreferencesReplicatedStore.PREF_RECORD_BOUNDS) override
+  // these for the replicated stream; this is the journal-level fallback.
+  'pref-record': { maxFileBytes: 2 * 1024 * 1024, rotateKeep: 4 },
 };
 
 export const DEFAULT_FLUSH_INTERVAL_MS = 250;
@@ -310,7 +325,7 @@ export class CoherenceJournal {
   private state: WriterState = 'closed';
   private incarnation = '';
   /** Next seq to assign at enqueue, per kind (in-memory counter seeded at open). */
-  private nextSeq: Record<JournalKind, number> = { 'topic-placement': 1, 'session-lifecycle': 1, 'autonomous-run': 1, 'threadline-conversation': 1, 'guard-latch': 1 };
+  private nextSeq: Record<JournalKind, number> = { 'topic-placement': 1, 'session-lifecycle': 1, 'autonomous-run': 1, 'threadline-conversation': 1, 'guard-latch': 1, 'pref-record': 1 };
   /** Durable highWaterSeq per kind (advanced after data fdatasync). */
   private highWaterSeq: Record<JournalKind, number> = {
     'topic-placement': 0,
@@ -318,6 +333,7 @@ export class CoherenceJournal {
     'autonomous-run': 0,
     'threadline-conversation': 0,
     'guard-latch': 0,
+    'pref-record': 0,
   };
   /** In-memory enqueue order; drained by the flusher in seq order per kind. */
   private queue: QueuedEntry[] = [];
@@ -328,6 +344,7 @@ export class CoherenceJournal {
     'autonomous-run': new Set(),
     'threadline-conversation': new Set(),
     'guard-latch': new Set(),
+    'pref-record': new Set(),
   };
   private rateBuckets: Record<JournalKind, RateBucket>;
   private timer: ReturnType<typeof setInterval> | null = null;
@@ -368,6 +385,7 @@ export class CoherenceJournal {
       'autonomous-run': config.retention?.['autonomous-run'] ?? DEFAULT_RETENTION['autonomous-run'],
       'threadline-conversation': config.retention?.['threadline-conversation'] ?? DEFAULT_RETENTION['threadline-conversation'],
       'guard-latch': config.retention?.['guard-latch'] ?? DEFAULT_RETENTION['guard-latch'],
+      'pref-record': config.retention?.['pref-record'] ?? DEFAULT_RETENTION['pref-record'],
     };
     this.rateCapCfg = config.rateCap ?? DEFAULT_RATE_CAP;
     this.artifactRoots = (config.artifactRoots ?? [path.join(this.stateDir, 'autonomous'), this.stateDir]).map((r) => {
@@ -391,6 +409,7 @@ export class CoherenceJournal {
       'autonomous-run': { tokens: this.rateCapCfg.capacity, lastRefillMs: initMs },
       'threadline-conversation': { tokens: this.rateCapCfg.capacity, lastRefillMs: initMs },
       'guard-latch': { tokens: this.rateCapCfg.capacity, lastRefillMs: initMs },
+      'pref-record': { tokens: this.rateCapCfg.capacity, lastRefillMs: initMs },
     };
   }
 
