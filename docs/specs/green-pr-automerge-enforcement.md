@@ -10,7 +10,7 @@ lessons-engaged: [P1-structure-beats-willpower, P2-signal-vs-authority, P3-migra
 
 # Green-PR Auto-Merge Enforcement — Phase 7 becomes machinery, not memory
 
-**Status:** v4 (post round-3 review). Author: echo · Created: 2026-06-12 · Topic: 24662
+**Status:** v5 (post round-4 review). Author: echo · Created: 2026-06-12 · Topic: 24662
 **Companion (required):** `green-pr-automerge-enforcement.eli16.md`
 
 > Per the instar-dev gate, no code ships until convergence (`/spec-converge`) and Justin sets
@@ -205,7 +205,14 @@ Two enforcement gaps, two layers:
   or unparseable `gh pr list` call audits `tick-failed:<class>` and feeds the breaker
   after N consecutive; the status surface reports `lastTickAt`, `lastSuccessfulListAt`,
   in-flight attempt age, snapshot, and breaker state, so the guard-posture grade can
-  distinguish "running" from "able to see PRs".
+  distinguish "running" from "able to see PRs". **Floor-drift canary** (round-4, same
+  L5(b) class): periodically (and at boot) the code-pinned floor contexts + producers
+  are validated against the default branch's latest completed check runs; a mismatch
+  (renamed workflow, split job, changed app slug) audits a DISTINCT `floor-drift` class
+  and surfaces ONE line in the aggregated Attention item naming the drifted
+  context/producer — the operator learns "the floor pins are stale," never just "PR #N
+  failed three times" (a drifted floor turns the watcher into a permanent refuser whose
+  fix is itself a protected-paths PR — it must be named as drift, immediately).
 - R9 — **Runtime kill-switch + emergency-stop reach, POOL-VISIBLE**: two INDEPENDENT
   latches — `POST /green-pr-automerge/rollback` (re-armed only by `/enable`) and the
   MessageSentinel emergency-stop pause (cleared only by its own resume path) — and BOTH
@@ -227,11 +234,22 @@ Two enforcement gaps, two layers:
   was disabled on <machine> — confirm before re-arming"). Honest residual (posture
   table): a rollback acked by a machine that dies before BOTH the push-through and the
   journal flush can still be lost — the arrive-disabled-on-unreadable rule is what
-  bounds that window. Rollback is loud (HIGH Attention + audit) and Bearer-callable
-  (anyone can STOP); **`/enable` requires the operator's dashboard PIN** — re-arming
-  merge authority is the operator's, structurally (the Mandates precedent). `dryRun`
-  remains the config-level lever. Single-machine installs degrade to the local check.
-  Unit case named: rollback on A + A dark + lease moves → B does not merge.
+  bounds that window. **Disable is ABSORBING**: a rollback latch always wins ordering conflicts
+  regardless of epoch (a stale-epoch standby's STOP can never be out-ordered by an
+  earlier `/enable` from a higher epoch); `/enable` clears only the specific latch id(s)
+  it names. The push-through is deadline-bounded (per-peer ~2.5s, total budget ~10s —
+  the local durable write + journal append precede it, so safety never waits on the
+  network); on expiry it acks WITH the honest per-peer reached/missed report, relying on
+  replication + arrive-disabled-on-unreadable for missed peers. Rollback is loud (HIGH
+  Attention + audit) and Bearer-callable (anyone can STOP); **`/enable` requires the
+  operator's dashboard PIN** — re-arming merge authority is the operator's, structurally
+  (the Mandates-TAB precedent, not just the Mandates API): re-arm ships WITH its human
+  surface — a button on the dashboard guards/watcher panel — and the rollback Attention
+  item carries the dashboard link, so the operator can complete the re-arm from a phone
+  (Mobile-Complete Operator Actions; an API-only PIN route would be the exact
+  Scenario-8 defect that standard was earned from). `dryRun` remains the config-level
+  lever. Single-machine installs degrade to the local check. Unit case named: rollback
+  on A + A dark + lease moves → B does not merge.
 - R10 — **One watcher across the pool**: ticks run only on the multi-machine lease holder
   (single-machine installs hold the lease trivially). **Lease-acquire warm-up**: the first
   tick after acquiring the lease is OBSERVE-ONLY — it seeds hold memory (R3's debounce),
@@ -330,11 +348,20 @@ Two enforcement gaps, two layers:
   (R3), `mergeable == MERGEABLE`, **checks already settled green** (the watcher never
   invokes safe-merge into a pending wait — that keeps the per-attempt window seconds-long
   and makes timeout inversion structurally impossible), and **touching no protected
-  paths** — a PR whose diff modifies `.github/workflows/**`, `scripts/safe-merge.mjs`,
-  or the watcher/floor source paths is NEVER auto-merged (`waiting:protected-paths`,
-  manual merge only; round-3: a PR branch's own workflow copy runs for same-repo PRs, so
-  workflow-touching PRs could mint lookalike floor contexts — they get human eyes
-  instead). The list query is pinned **oldest-first server-side** (`sort:created-asc`) so
+  paths** — a PR whose diff modifies `.github/**` (workflows AND composite actions),
+  `scripts/safe-merge.mjs`, the watcher/floor source paths, or **the scripts the floor
+  contexts execute** (the gate `.mjs` scripts — the list is derived alongside the
+  code-pinned floor in the same source file; config extends, never shrinks) is NEVER
+  auto-merged (`waiting:protected-paths`, manual merge only; rounds 3-4: a same-repo PR
+  branch runs its own workflow copy AND its own gate-script bodies, so either door could
+  mint hollow floor contexts — they get human eyes instead). Changed files are
+  enumerated TO EXHAUSTION (paginated); an incomplete enumeration is
+  `waiting:protected-paths-unverifiable`, never a partial pass (fixture: a workflow edit
+  at file #150 of a 200-file PR). **A transition INTO `waiting:protected-paths` folds
+  one line into the aggregated Attention item immediately** ("PR #N is green but touches
+  protected paths — needs your manual merge"), transition-keyed per PR-head — a
+  deliberate human-eyes requirement nobody is promptly told about would be the gravity
+  well with a label on it (round-4). The list query is pinned **oldest-first server-side** (`sort:created-asc`) so
   pagination can never hide the oldest-rotting PR; sustained overflow feeds the
   aggregated Attention item with the count. No quiet period beyond that:
   draft / `[hold` / labels are the wait signals (frontloaded decision 5).
@@ -404,10 +431,22 @@ invisibly. Branch resolution is LAZY — computed only when the snapshot has can
 (one tiny file read, no git spawn), cached per session, sub-budget, fail-open.
 Documented fail-open wideners: sessions without `INSTAR_SESSION_ID` and sessions evicted
 from the receiver's 50-session cap simply never block. `greenPrBlock` is emitted only
-when `!killSwitch && !compactionInFlight` (the existing early-exits keep their
-authority). No hook events for the session → silent. A snapshot older than 2×
-`tickIntervalMs` never blocks (staleness gate); an already-merged snapshot entry never
-blocks.
+when `!killSwitch && !compactionInFlight` AND **the watcher is armed** — the snapshot
+carries the latch + breaker posture, and when rollback/emergency-pause/breaker has the
+watcher disarmed the gate emits either nothing or the disarmed variant ("the watcher is
+disabled by operator rollback — do NOT merge manually; confirm with the operator"),
+NEVER the merge coaching (round-4: a disarmed watcher's Layer 2 must not become a
+manual `--admin` merge-prompt machine around the operator's STOP; unit tests both
+sides). **Protected-paths entries ARE included in the snapshot** with their own variant
+("PR #N needs a MANUAL merge — it touches protected paths; run exactly:
+`<server-generated pinned command>`") — the ending session is exactly the right actor
+for that manual merge. No hook events for the session → silent. A snapshot older than
+2× `tickIntervalMs` never blocks (staleness gate); an already-merged snapshot entry
+never blocks. Linked-worktree reality (round-4): `.git` in a worktree is a FILE
+(`gitdir: <path>`), not a directory — branch resolution parses it and reads
+`<gitdir>/HEAD` (two tiny reads, no spawn, fail-open; unit case for the linked-worktree
+path — instar-dev builds live in worktrees, so a naive `.git/HEAD` read would ship
+Layer 2 inert for its primary audience).
 
 Block message (PR TITLES never appear in guidance — untrusted data stays out of prompt
 context; round-3: a hand-typed reduced command would bypass the hardened contract, so
