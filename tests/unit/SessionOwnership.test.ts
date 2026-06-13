@@ -147,3 +147,57 @@ describe('SessionOwnership — release requires active (2026-05-29 review crit)'
     if (rel.ok) expect(rel.next.status).toBe('released');
   });
 });
+
+describe('SessionOwnership — abort-transfer (WS1.2 emergency-stop-during-drain)', () => {
+  function transferring() {
+    const placed = place('m_a');
+    const claimed = applyOwnershipAction(placed, { type: 'claim', machineId: 'm_a' }, ctx());
+    if (!claimed.ok) throw new Error(claimed.reason);
+    const t = applyOwnershipAction(claimed.next, { type: 'transfer', to: 'm_b' }, ctx());
+    if (!t.ok) throw new Error(t.reason);
+    return t.next; // transferring(from m_a → m_b), epoch 3
+  }
+
+  it('the draining owner aborts → back to active(self) at epoch+1', () => {
+    const t = transferring();
+    const r = applyOwnershipAction(t, { type: 'abort-transfer', machineId: 'm_a' }, ctx());
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.next).toMatchObject({ status: 'active', ownerMachineId: 'm_a', ownershipEpoch: t.ownershipEpoch + 1 });
+      expect(r.next.transferTo).toBeUndefined();
+    }
+  });
+
+  it('the abort fences out the stale target: its claim then fails out-of-sequence', () => {
+    const t = transferring();
+    const aborted = applyOwnershipAction(t, { type: 'abort-transfer', machineId: 'm_a' }, ctx());
+    if (!aborted.ok) throw new Error(aborted.reason);
+    const staleClaim = applyOwnershipAction(aborted.next, { type: 'claim', machineId: 'm_b' }, ctx());
+    expect(staleClaim).toMatchObject({ ok: false, reason: 'claim-out-of-sequence' });
+  });
+
+  it('only the draining OWNER may abort — the target cannot', () => {
+    const t = transferring();
+    expect(applyOwnershipAction(t, { type: 'abort-transfer', machineId: 'm_b' }, ctx()))
+      .toMatchObject({ ok: false, reason: 'abort-not-owner' });
+  });
+
+  it('abort is illegal outside transferring (active / released / missing)', () => {
+    const placed = place('m_a');
+    const claimed = applyOwnershipAction(placed, { type: 'claim', machineId: 'm_a' }, ctx());
+    if (!claimed.ok) throw new Error(claimed.reason);
+    expect(applyOwnershipAction(claimed.next, { type: 'abort-transfer', machineId: 'm_a' }, ctx()))
+      .toMatchObject({ ok: false, reason: 'abort-not-transferring' });
+    expect(applyOwnershipAction(null, { type: 'abort-transfer', machineId: 'm_a' }, ctx()))
+      .toMatchObject({ ok: false, reason: 'abort-not-transferring' });
+  });
+
+  it('after an abort the owner can transfer AGAIN (failed-needs-retry is retryable)', () => {
+    const t = transferring();
+    const aborted = applyOwnershipAction(t, { type: 'abort-transfer', machineId: 'm_a' }, ctx());
+    if (!aborted.ok) throw new Error(aborted.reason);
+    const again = applyOwnershipAction(aborted.next, { type: 'transfer', to: 'm_b' }, ctx());
+    expect(again.ok).toBe(true);
+    if (again.ok) expect(again.next).toMatchObject({ status: 'transferring', transferTo: 'm_b' });
+  });
+});

@@ -451,6 +451,10 @@ let _inboundQueueStop: ((sessionKey: string) => void) | null = null;
  *  (forward/spawn on another machine → must NOT also dispatch locally) from a
  *  self placement. Set once in startServer()'s mesh block. */
 let _meshSelfId: string | null = null;
+/** WS1.2: the owner-side drain runner (null = pool dark / deps unavailable).
+ *  Presence IS the heartbeat-advertised ws12DrainReceive capability — a
+ *  machine only advertises what it can actually execute. */
+let _drainRunner: import('../core/SessionDrainRunner.js').SessionDrainRunner | null = null;
 /** WS1.1: read-only ownership lookup for the drain's spawn-boundary re-check
  *  (the registry is constructed later in startServer's pool block). */
 let _ownershipReadForDrain: ((sessionKey: string) => import('../core/SessionOwnership.js').SessionOwnershipRecord | null) | null = null;
@@ -462,6 +466,14 @@ let _resolveRouterUrl: (() => string | null) | null = null;
 /** Every OTHER active machine with a known URL — backs GET /sessions?scope=pool
  *  (pool-wide session aggregation for the dashboard). Set in the same mesh block. */
 let _resolvePeerUrls: (() => Array<{ machineId: string; url: string }>) | null = null;
+/** WS1.2 sender leg: order a REMOTE owner to drain `sessionKey` for a transfer
+ *  to `target` (signed mesh `drain` verb). Set in the mesh-client block; null =
+ *  pool dark / no client — the transfer route degrades to today's pin path. */
+let _sendDrain:
+  | ((ownerMachineId: string, sessionKey: string, target: string, ownershipEpoch: number) => Promise<
+      { ok: boolean; status?: string; reason?: string; noHandler?: boolean; runSuspended?: boolean }
+    >)
+  | null = null;
 let _listPoolMachines: (() => Array<{ machineId: string; nickname?: string; lastKnownUrl?: string | null }>) | null = null;
 /** Multi-Machine Session Pool §L4: per-topic placement pin store ("move this to <nickname>"). */
 let _topicPinStore: import('../core/TopicPlacementPinStore.js').TopicPlacementPinStore | null = null;
@@ -12682,7 +12694,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                 // WS1.1 capability advertisement (spec invariant 5): a bounded
                 // fixed-size summary, never an inventory. Reported live each
                 // heartbeat so a queue going dark withdraws the capability.
-                seamlessnessFlags: { ws11DeliverReceive: !!_inboundQueue },
+                seamlessnessFlags: { ws11DeliverReceive: !!_inboundQueue, ws12DrainReceive: !!_drainRunner },
                 // Durable Inbound Message Queue §5.1: depth + oldest + tenure +
                 // bounded top-K — the survivor's loss-SUSPECTED item, capped
                 // re-placement arm, and supersede-dedupe key all read these.
@@ -13020,6 +13032,74 @@ export async function startServer(options: StartOptions): Promise<void> {
               });
           },
         });
+        // ── WS1.2 owner-side drain runner (MULTI-MACHINE-SEAMLESSNESS-SPEC) ──
+        // Constructed here because every dep lives in this scope. Presence IS
+        // the heartbeat-advertised ws12DrainReceive capability. All I/O
+        // injected; the runner itself is the unit-tested pure sequence.
+        try {
+          const drainMod = await import('../core/SessionDrainRunner.js');
+          const autoMod = await import('../core/AutonomousSessions.js');
+          let drainNonce = 0;
+          _drainRunner = new drainMod.SessionDrainRunner({
+            selfMachineId: meshSelfId,
+            readOwnership: (sk) => ownReg.read(sk),
+            cas: (action, c) => {
+              const prev = ownReg.read(c.sessionKey)?.ownerMachineId;
+              const r = ownReg.cas(action, c);
+              // Journal pairing (§3.3): the drain's transfer/abort/claim CASes
+              // record placement history like every other CAS site.
+              emitPlacement(c.sessionKey, r, 'user-move', prev);
+              return r;
+            },
+            suspendAutonomousRun: (topic, target) =>
+              autoMod.suspendAutonomousTopicForMove(config.stateDir, topic, target, coherenceJournal ?? undefined),
+            sessionQuiet: (sk) => {
+              const topicNum = Number(sk);
+              if (!Number.isFinite(topicNum) || !telegram) return true; // nothing local to drain
+              const tmux = telegram.getSessionForTopic(topicNum);
+              if (!tmux || !sessionManager.isSessionAlive(tmux)) return true;
+              return !sessionManager.isSessionActivelyWorking(tmux);
+            },
+            // Emergency stop: the durable flag file freshly touched (within the
+            // drain window's scale) — a stale flag from an old stop must not
+            // permanently veto every future transfer.
+            emergencyStopActive: () => {
+              try {
+                const flagAt = fs.statSync(path.join(config.projectDir, '.instar', 'autonomous-emergency-stop')).mtimeMs;
+                return Date.now() - flagAt < 120_000;
+              } catch { /* @silent-fallback-ok — no flag file = no emergency stop (the defined absent-state, not a degradation) */ return false; }
+            },
+            terminateSession: async (sk, reason, opts) => {
+              const topicNum = Number(sk);
+              const tmux = Number.isFinite(topicNum) ? telegram?.getSessionForTopic(topicNum) : null;
+              const rec = tmux ? state.listSessions().find((s) => s.tmuxSession === tmux) : undefined;
+              if (!rec) return { terminated: false, skipped: 'no-local-session' };
+              return sessionManager.terminateSession(rec.id, reason, {
+                origin: 'autonomous',
+                via: 'ws12-drain',
+                bypassActiveProcessKeep: opts.force,
+                workEvidence: opts.force ? ['active-build-or-autonomous-run'] : undefined,
+              });
+            },
+            markInterrupted: (topic) => { autoMod.markAutonomousInterruptedMidTask(config.stateDir, topic); },
+            notifyInterrupted: (topic, target, detail) => {
+              const topicNum = Number(topic);
+              if (!telegram || !Number.isFinite(topicNum)) return;
+              void telegram
+                .sendToTopic(topicNum, `This conversation moved machines mid-task (${detail}). Work resumes on the new machine — the final turn before the move may be partial.`)
+                .catch(() => { /* @silent-fallback-ok — ONE best-effort notice; the audit row is the durable record */ });
+            },
+            audit: (event) => {
+              try { console.log(pc.dim(`  [ws12-drain] ${JSON.stringify(event)}`)); } catch { /* @silent-fallback-ok — observability only */ }
+            },
+            now: () => Date.now(),
+            sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+            nonce: () => `${meshSelfId}:drain:${Date.now()}:${++drainNonce}`,
+          });
+          console.log(pc.dim('  [ws12-drain] owner-side drain runner wired (capability advertised)'));
+        } catch (err) {
+          console.log(pc.dim(`  [ws12-drain] runner not wired: ${err instanceof Error ? err.message : String(err)}`));
+        }
         // ── Secret-sync inbound handler (cross-machine secret distribution, spec Phase 4) ──
         // Dark by default; live on the dev agent via the developmentAgent gate. An inbound
         // `secret-share` command is decrypted to THIS machine's X25519 key and stored in the
@@ -13205,6 +13285,29 @@ export async function startServer(options: StartOptions): Promise<void> {
             transfer: ownAction,
             release: ownAction,
             deliverMessage: deliverMessageHandler,
+            // WS1.2 owner-side drain (MULTI-MACHINE-SEAMLESSNESS-SPEC): the
+            // router orders THIS machine — the topic's current owner — to
+            // finish the live turn (bounded), close the local session, and
+            // land the target's claim, releasing the queue's barrier exactly
+            // at drain completion. RBAC is router-only ('drain-unauthorized');
+            // the runner re-validates ownership + epoch at its CAS fence
+            // regardless (reach ≠ authority). Answers 'drain disabled' until
+            // the runner is constructed (pool dark / deps unavailable) — the
+            // sender's capability gate means a doomed order is never sent to
+            // a machine that advertises the flag honestly.
+            drain: async (cmd) => {
+              const c = cmd as import('../core/MeshRpc.js').MeshCommand & { type: 'drain' };
+              if (!_drainRunner) return { ok: false, reason: 'drain disabled' };
+              const outcome = await _drainRunner.run({
+                sessionKey: c.session,
+                target: c.target,
+                senderObservedEpoch: c.ownershipEpoch,
+              });
+              return {
+                ok: outcome.status === 'drained' || outcome.status === 'drained-interrupted',
+                ...outcome,
+              };
+            },
             'secret-share': (cmd, sender) =>
               _secretShareHandler
                 ? _secretShareHandler.handle(cmd as { type: 'secret-share'; encrypted: string }, sender)
@@ -13232,6 +13335,43 @@ export async function startServer(options: StartOptions): Promise<void> {
           const peerUrl = (machineId: string): string | null =>
             meshIdMgr.getActiveMachines().find((m) => m.machineId === machineId)?.entry.lastKnownUrl ?? null;
           _meshSelfId = meshSelfId;
+          // WS1.2 sender leg: signed drain order to a remote owner. Bounded by
+          // the drain bound + slack so a clean drain (≤30s wait + close) can
+          // complete within one call; every failure shape maps to an explicit
+          // outcome — the transfer route NEVER hangs on this and degrades to
+          // today's pin path on anything but a real abort.
+          _sendDrain = async (ownerMachineId, sessionKey, target, ownershipEpoch) => {
+            // Local-owner arm: the live swap topology (owner == holder == this
+            // machine) drains via the SAME runner the mesh handler uses — one
+            // code path, no HTTP round-trip to ourselves.
+            if (ownerMachineId === meshSelfId) {
+              if (!_drainRunner) return { ok: false, reason: 'drain disabled' };
+              const o = await _drainRunner.run({ sessionKey, target, senderObservedEpoch: ownershipEpoch });
+              return {
+                ok: o.status === 'drained' || o.status === 'drained-interrupted',
+                status: o.status,
+                reason: o.detail,
+                runSuspended: o.autonomousRunSuspended,
+              };
+            }
+            const url = peerUrl(ownerMachineId);
+            if (!url) return { ok: false, reason: 'no-peer-url' };
+            try {
+              const res = await meshClient.send(
+                { machineId: ownerMachineId, url },
+                { type: 'drain', session: sessionKey, target, ownershipEpoch },
+                ownershipEpoch,
+                { timeoutMs: 50_000 },
+              );
+              if (res.ok) {
+                const r = (res.result ?? {}) as { ok?: boolean; status?: string; reason?: string };
+                return { ok: r.ok === true, status: typeof r.status === 'string' ? r.status : undefined, reason: typeof r.reason === 'string' ? r.reason : undefined };
+              }
+              return { ok: false, reason: res.reason ?? `status-${res.status}`, noHandler: res.status === 501 };
+            } catch (err) {
+              return { ok: false, reason: err instanceof Error ? err.message : String(err) };
+            }
+          };
           _resolveRouterUrl = () => {
             const h = coordinator.getSyncStatus().leaseHolder;
             return h && h !== meshSelfId ? peerUrl(h) : null;

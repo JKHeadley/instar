@@ -1916,6 +1916,11 @@ export interface MachineCapacity {
     /** This machine can durably RECEIVE forwarded inbound messages (the
      *  'deliverMessage' receiver handler + live durable queue). */
     ws11DeliverReceive?: boolean;
+    /** WS1.2: this machine can execute the owner-side `drain` verb (bounded
+     *  turn-boundary drain + claim handoff for an active-topic transfer).
+     *  ABSENT/false → the transfer sender degrades to today's pin-and-
+     *  idle-closeout path — never a doomed drain order. */
+    ws12DrainReceive?: boolean;
   };
   /** Compact guard-posture summary self-reported in the capacity heartbeat
    *  (GUARD-POSTURE-ENDPOINT-SPEC §2.3). Bound to the AUTHENTICATED sender at

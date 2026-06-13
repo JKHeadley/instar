@@ -397,6 +397,21 @@ export const SPEC_REVIEW_TIMEOUT_MS = 180_000;
 export const PARITY_PASS_TIMEOUT_MS = 360_000;
 
 /**
+ * Extended budget for the deterministic topic transfer (`/pool/transfer`,
+ * WS1.2). When the topic's current owner can drain, the handler awaits the
+ * owner-side SessionDrainRunner SYNCHRONOUSLY: it waits up to `drainBoundMs`
+ * (30s default) for the in-flight turn to reach a boundary, then closes the
+ * session and lands the claim — so a CLEAN drain routinely lands at or past
+ * 30s, and the remote `_sendDrain` mesh call is itself capped at 50s. Under
+ * the 30s default the client would get a 408 mid-drain while the handler kept
+ * running to completion (landing the claim + setting the pin) — the exact
+ * "408 while the handler keeps running" failure class the outbound-messaging
+ * and parity-pass overrides already exist to prevent (2026-06-12 second-pass
+ * review concern #1). 75s clears the 50s remote cap + slack with margin.
+ */
+export const POOL_TRANSFER_TIMEOUT_MS = 75_000;
+
+/**
  * Slack added on top of a configured parity-source TOTAL fetch budget when
  * deriving the parity-pass/import-dryrun route budgets: the route does the full
  * live fetch PLUS server-side compare/import work after it.
@@ -437,6 +452,9 @@ export function buildRequestTimeoutOverrides(opts?: { paritySourceTotalTimeoutMs
     // The REAL integrity pass spawns a child that does the same full-corpus fetch +
     // a persisted import + gate; the route awaits the child — same extended budget.
     '/cutover-readiness/integrity-pass': parityBudgetMs,
+    // WS1.2: the deterministic transfer awaits the owner-side drain (≤ drain
+    // bound + the 50s remote-call cap) synchronously — see POOL_TRANSFER_TIMEOUT_MS.
+    '/pool/transfer': POOL_TRANSFER_TIMEOUT_MS,
   };
 }
 

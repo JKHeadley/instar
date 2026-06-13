@@ -361,6 +361,8 @@ export class AgentServer {
     meshSelfId?: string;
     /** Resolve the lease-holder's base URL when this machine is not the holder (else null). */
     resolveRouterUrl?: () => string | null;
+    /** WS1.2 sender leg: order the topic's owner (local or remote) to drain for a transfer. */
+    sendDrain?: (ownerMachineId: string, sessionKey: string, target: string, ownershipEpoch: number) => Promise<{ ok: boolean; status?: string; reason?: string; noHandler?: boolean; runSuspended?: boolean }>;
     /** Every other active machine with a known URL — backs GET /sessions?scope=pool. */
     resolvePeerUrls?: () => Array<{ machineId: string; url: string }>;
     /** Guard runtime registry (GUARD-POSTURE-ENDPOINT-SPEC §2.1) — behind GET /guards. */
@@ -1843,6 +1845,7 @@ export class AgentServer {
       secretSync: options.secretSync ?? null,
       meshSelfId: options.meshSelfId ?? null,
       resolveRouterUrl: options.resolveRouterUrl ?? null,
+      sendDrain: options.sendDrain ?? null,
       resolvePeerUrls: options.resolvePeerUrls ?? null,
       guardRegistry: options.guardRegistry ?? null,
       listPoolMachines: options.listPoolMachines ?? null,

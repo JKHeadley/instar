@@ -958,6 +958,11 @@ export interface RouteContext {
    *  null). Lets the placement/transfer routes proxy to the authoritative holder so
    *  they are answerable/callable from ANY machine. Null/absent (single-machine/dark). */
   resolveRouterUrl?: (() => string | null) | null;
+  /** WS1.2 sender leg (MULTI-MACHINE-SEAMLESSNESS-SPEC): order the topic's
+   *  current owner — local or remote — to DRAIN its live session for a
+   *  transfer (finish the turn bounded, close, land the target's claim).
+   *  Null/absent → the transfer route uses today's pin-and-release path. */
+  sendDrain?: ((ownerMachineId: string, sessionKey: string, target: string, ownershipEpoch: number) => Promise<{ ok: boolean; status?: string; reason?: string; noHandler?: boolean; runSuspended?: boolean }>) | null;
   /** Every OTHER registered, non-revoked machine with a known URL — for pool-wide
    *  aggregation (GET /sessions?scope=pool). Null/absent (single-machine/dark). */
   resolvePeerUrls?: (() => Array<{ machineId: string; url: string }>) | null;
@@ -10816,6 +10821,50 @@ export function createRoutes(ctx: RouteContext): Router {
     }
     // transfer | noop | confirmed → set the pin and release local ownership if we hold it.
     const target = plan.targetMachine!;
+    // ── WS1.2 drain leg (MULTI-MACHINE-SEAMLESSNESS-SPEC): an ACTIVE
+    // conversation's transfer must COMPLETE, not half-move. When the topic has
+    // a current owner that can drain — itself (the live-swap topology: owner ==
+    // holder == this machine) or a remote peer that is online AND advertises
+    // ws12DrainReceive in its heartbeat — order the drain BEFORE the pin:
+    // finish the in-flight turn (bounded), suspend any autonomous run, close
+    // the owner's session, land the target's claim (the queue-barrier release).
+    //   · drain ok → proceed to pin+journal exactly as today (the place/claim
+    //     repair below sees active@target and correctly no-ops).
+    //   · aborted-emergency-stop → 409 failed-needs-retry, NO pin — an abort
+    //     leaves nothing split (the topic stays whole on its current machine).
+    //   · refused-*/no-handler/timeout/no-flag → DEGRADE to today's pin path
+    //     (recorded in the response; the reconciler + closeout converge it).
+    // The capability gate means an old peer is never sent a doomed order.
+    let drainLeg: { attempted: boolean; ok?: boolean; status?: string; reason?: string } = { attempted: false };
+    let drainRunSuspended = false;
+    try {
+      const currentOwner = plan.action !== 'noop' ? ctx.sessionOwnershipRegistry.ownerOf(topicId) : null;
+      const ownerCap = currentOwner && currentOwner !== self ? ctx.machinePoolRegistry?.getCapacity(currentOwner) : null;
+      const ownerCanDrain =
+        currentOwner != null &&
+        currentOwner !== target &&
+        ctx.sendDrain != null &&
+        (currentOwner === self ||
+          ((ownerCap?.online ?? false) && ownerCap?.seamlessnessFlags?.ws12DrainReceive === true));
+      if (ownerCanDrain) {
+        const observedEpoch = ctx.sessionOwnershipRegistry.read(topicId)?.ownershipEpoch ?? 0;
+        const r = await ctx.sendDrain!(currentOwner!, topicId, target, observedEpoch);
+        drainLeg = { attempted: true, ok: r.ok, status: r.status, reason: r.reason };
+        drainRunSuspended = r.runSuspended === true;
+        if (r.status === 'aborted-emergency-stop') {
+          res.status(409).json({
+            error: 'transfer aborted: emergency stop fired during the drain — the topic stays whole on its current machine',
+            failedNeedsRetry: true,
+            drain: drainLeg,
+          });
+          return;
+        }
+      }
+    } catch (err) {
+      // NOT silent: recorded in the response's drain field; the transfer
+      // degrades to today's pin path (the safe direction — never a half-drain).
+      drainLeg = { attempted: true, ok: false, reason: err instanceof Error ? err.message : String(err) };
+    }
     // WS1.4 confirmed move: suspend the in-flight autonomous run AT ITS NEXT
     // TURN BOUNDARY (active:false releases the stop hook) while the state file
     // SURVIVES to ride the working-set carrier — the atomic fsync'd rewrite +
@@ -10960,7 +11009,8 @@ export function createRoutes(ctx: RouteContext): Router {
       pinned: plan.setPin ?? true,
       releasedLocalOwnership,
       placedOwnership,
-      autonomousRunSuspended,
+      autonomousRunSuspended: autonomousRunSuspended || drainRunSuspended,
+      ...(drainLeg.attempted ? { drain: drainLeg } : {}),
     });
   });
 

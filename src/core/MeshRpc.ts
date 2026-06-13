@@ -31,6 +31,22 @@ export type MeshCommand =
   | { type: 'release'; session: string; epoch: number; failover?: boolean }
   | { type: 'transfer'; session: string; target: MachineId }
   | { type: 'deliverMessage'; session: string; messageId: string; payload: unknown; ownershipEpoch: number }
+  | {
+      // WS1.2 drain signal (MULTI-MACHINE-SEAMLESSNESS-SPEC): the transfer
+      // planner (router authority) tells the CURRENT owner of `session` to
+      // drain its live session because a transfer to `target` is in flight.
+      // Epoch-bound to the specific transfer (`ownershipEpoch` = the sender's
+      // observed epoch; the receiver's CAS to transferring re-validates it, so
+      // a stale or replayed drain dies at the fence). Router-only RBAC with
+      // its OWN refusal reason (`drain-unauthorized`) — reach ≠ authority: the
+      // receiver still re-validates ownership + epoch before acting. An old
+      // peer without the handler 501s (`no-handler`) and the sender degrades
+      // to today's idle-closeout-only transfer.
+      type: 'drain';
+      session: string;
+      target: MachineId;
+      ownershipEpoch: number;
+    }
   | { type: 'capacity-report' }
   | { type: 'session-status'; session?: string }
   | { type: 'secret-share'; encrypted: string }
@@ -180,7 +196,8 @@ export type RbacReason =
   | 'ok'
   | 'not-router'
   | 'claim-unauthorized'
-  | 'release-unauthorized';
+  | 'release-unauthorized'
+  | 'drain-unauthorized';
 
 export interface RbacDeps {
   /** The machine currently holding the router lease (verify-on-read, §L1), or null. */
@@ -204,6 +221,12 @@ export function checkCommandRBAC(command: MeshCommand, sender: MachineId, deps: 
     case 'deliverMessage':
       // Router-only (the router forwards inbound messages to the session owner — §L4).
       return isRouter ? { ok: true, reason: 'ok' } : { ok: false, reason: 'not-router' };
+    case 'drain':
+      // WS1.2: router-only with its OWN refusal reason (spec: "a NEW mesh verb
+      // with its own router-only RBAC case"). Only the transfer planner — the
+      // lease-holder — may order an owner to drain; a peer (even the transfer
+      // TARGET) may not.
+      return isRouter ? { ok: true, reason: 'ok' } : { ok: false, reason: 'drain-unauthorized' };
     case 'claim': {
       // The router's assigned target for this session, OR the router on a failover re-place.
       if (deps.placementTargetOf(command.session) === sender) return { ok: true, reason: 'ok' };
@@ -300,6 +323,7 @@ function statusForReason(reason: string): number {
     case 'not-router':
     case 'claim-unauthorized':
     case 'release-unauthorized':
+    case 'drain-unauthorized':
       return 403;
     case 'replayed-nonce':
     case 'stale-timestamp':
