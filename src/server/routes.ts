@@ -7832,23 +7832,165 @@ export function createRoutes(ctx: RouteContext): Router {
 
   // ── Jobs ────────────────────────────────────────────────────────
 
-  router.get('/jobs', (_req, res) => {
-    if (!ctx.scheduler) {
-      res.json({ jobs: [], scheduler: null });
-      return;
-    }
+  // Pool-scope job aggregation (WS4.3, MULTI-MACHINE-SEAMLESSNESS-SPEC §WS4.3 —
+  // READ-SIDE only). Mirrors the proven sessions?scope=pool / attention?scope=pool
+  // fan-out shape: a short-TTL cache so dashboard polls don't re-fan-out, a
+  // known-offline-peer skip, a per-peer timeout → failed marker (never a 500).
+  const jobsPoolCache = new Map<string, { at: number; payload: unknown }>();
+  const JOBS_POOL_CACHE_TTL_MS = 3_000;
+  const JOBS_PEER_TIMEOUT_MS = 5_000;
 
+  // Build THIS machine's local job list — the same shape the plain GET /jobs
+  // returns (so a peer's GET /jobs reply merges in identically).
+  function buildLocalJobs(): Array<Record<string, unknown>> {
+    if (!ctx.scheduler) return [];
     const nextRunTimes = ctx.scheduler.getNextRunTimes();
-    const jobs = ctx.scheduler.getJobs().map(job => {
+    return ctx.scheduler.getJobs().map((job) => {
       const jobState = ctx.state.getJobState(job.slug);
       // Merge live scheduler nextRun into state — fixes display bug where
       // never-run jobs show as "unscheduled" despite having active cron tasks
       const liveNext = nextRunTimes[job.slug];
       const mergedState = jobState
         ? { ...jobState, nextScheduled: jobState.nextScheduled ?? liveNext }
-        : liveNext ? { slug: job.slug, lastRun: null, lastResult: null, nextScheduled: liveNext, consecutiveFailures: 0 } : null;
+        : liveNext
+          ? { slug: job.slug, lastRun: null, lastResult: null, nextScheduled: liveNext, consecutiveFailures: 0 }
+          : null;
       return { ...job, state: mergedState, runsOnThisMachine: ctx.scheduler!.isJobLocal(job.slug) };
     });
+  }
+
+  // F8 job-placement divergence detector (observe-only — NEVER gates). Honest
+  // derivation: capacity carries no declared-job count, so we work from each
+  // machine's own /jobs reply. A divergence row flags ONLY the real F8 case — a
+  // machine that DECLARES jobs (its scheduler returned N>0) but RUNS none of
+  // them locally (runsOnThisMachine === true for 0 of them): "config says jobs
+  // here, machine isn't running them." A machine that declares ZERO jobs is NOT
+  // a divergence — a scheduler-less/dispatcher-only machine (or any machine
+  // with no jobs configured) legitimately has none, and flagging it is
+  // self-noise (2026-06-12 review finding). We never fabricate an expected
+  // count — only what the reply proves.
+  function detectJobDivergences(
+    perMachine: Array<{ machineId: string; nickname?: string | null; jobs: Array<Record<string, unknown>> }>,
+  ): Array<{ machineId: string; machineNickname?: string | null; declared: number; running: number; reason: string }> {
+    const out: Array<{ machineId: string; machineNickname?: string | null; declared: number; running: number; reason: string }> = [];
+    for (const m of perMachine) {
+      const declared = m.jobs.length;
+      const running = m.jobs.filter((j) => j.runsOnThisMachine === true).length;
+      if (declared > 0 && running === 0) {
+        out.push({
+          machineId: m.machineId,
+          machineNickname: m.nickname ?? undefined,
+          declared,
+          running,
+          reason: `machine ${m.nickname ?? m.machineId}: declares ${declared} jobs, running 0 locally`,
+        });
+      }
+    }
+    return out;
+  }
+
+  async function jobsPoolMerge(localJobs: Array<Record<string, unknown>>): Promise<Record<string, unknown>> {
+    const cacheKey = 'jobs';
+    const cached = jobsPoolCache.get(cacheKey);
+    if (cached && Date.now() - cached.at < JOBS_POOL_CACHE_TTL_MS) {
+      return cached.payload as Record<string, unknown>;
+    }
+
+    const selfMachineId = ctx.meshSelfId ?? null;
+    const selfNickname = selfMachineId
+      ? ctx.machinePoolRegistry?.getCapacity(selfMachineId)?.nickname ?? null
+      : null;
+
+    const peers = ctx.resolvePeerUrls?.() ?? [];
+    const failed: Array<{ machineId: string; error: string }> = [];
+    const remote: Array<Record<string, unknown>> = [];
+    // Per-machine declared/running view feeding the F8 divergence detector.
+    const perMachine: Array<{ machineId: string; nickname?: string | null; jobs: Array<Record<string, unknown>> }> = [
+      { machineId: selfMachineId ?? '(self)', nickname: selfNickname, jobs: localJobs },
+    ];
+    await Promise.all(
+      peers.map(async (p) => {
+        // Skip a peer the registry knows to be offline — saves the timeout
+        // wait; an unknown peer (no capacity row) is still tried.
+        const cap = ctx.machinePoolRegistry?.getCapacity(p.machineId);
+        if (cap && cap.online === false) {
+          failed.push({ machineId: p.machineId, error: 'offline' });
+          return;
+        }
+        try {
+          // Peers are called WITHOUT scope=pool — no recursion.
+          const r = await fetch(`${p.url}/jobs`, {
+            headers: { Authorization: `Bearer ${ctx.config.authToken}` },
+            signal: AbortSignal.timeout(JOBS_PEER_TIMEOUT_MS),
+          });
+          if (!r.ok) throw new Error(`HTTP ${r.status}`);
+          const body = (await r.json()) as { jobs?: Array<Record<string, unknown>> };
+          const nickname = cap?.nickname ?? null;
+          const peerJobs = body.jobs ?? [];
+          perMachine.push({ machineId: p.machineId, nickname, jobs: peerJobs });
+          for (const j of peerJobs) {
+            remote.push({
+              ...j,
+              machineId: j.machineId ?? p.machineId,
+              machineNickname: j.machineNickname ?? nickname ?? undefined,
+              remote: true,
+            });
+          }
+        } catch (err) {
+          failed.push({ machineId: p.machineId, error: err instanceof Error ? err.message : String(err) });
+        }
+      }),
+    );
+
+    // Tag local jobs with this machine's identity (additive — present only when
+    // the pool is wired). Mirrors sessions/attention self-tagging.
+    const localTagged = localJobs.map((j) => ({
+      ...j,
+      machineId: j.machineId ?? selfMachineId ?? undefined,
+      machineNickname: j.machineNickname ?? selfNickname ?? undefined,
+    }));
+
+    const jobs = [...localTagged, ...remote];
+    const payload = {
+      jobs,
+      count: jobs.length,
+      pool: {
+        enabled: !!ctx.machinePoolRegistry,
+        selfMachineId,
+        peersQueried: peers.length,
+        peersOk: peers.length - failed.length,
+        failed,
+        divergences: detectJobDivergences(perMachine),
+      },
+    };
+    jobsPoolCache.set(cacheKey, { at: Date.now(), payload });
+    return payload;
+  }
+
+  router.get('/jobs', async (req, res) => {
+    if (!ctx.scheduler) {
+      // scope=pool from a scheduler-less self still answers a coherent pool
+      // view (local-only empty) so the dashboard never 500s on a single role.
+      if (req.query.scope === 'pool') {
+        res.json(await jobsPoolMerge([]));
+        return;
+      }
+      res.json({ jobs: [], scheduler: null });
+      return;
+    }
+
+    const jobs = buildLocalJobs();
+
+    // scope=pool (WS4.3, MULTI-MACHINE-SEAMLESSNESS-SPEC §WS4.3): merge every
+    // ONLINE peer's plain GET /jobs into one view, each job tagged with its
+    // machine, plus an observe-only job-placement divergence list. Tolerant by
+    // design (per-peer timeout → a `failed` marker, never a 500), short-TTL
+    // cached so dashboard polling doesn't re-fan-out per request. Plain GET
+    // stays a back-compatible { jobs, queue } object.
+    if (req.query.scope === 'pool') {
+      res.json(await jobsPoolMerge(jobs));
+      return;
+    }
 
     res.json({ jobs, queue: ctx.scheduler.getQueue() });
   });

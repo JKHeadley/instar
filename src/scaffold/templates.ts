@@ -398,6 +398,7 @@ This routes feedback to the Instar maintainers automatically. Valid types: \`bug
 
 **Job Scheduler** — Run tasks on a schedule. Jobs in \`.instar/jobs.json\`.
 - View: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/jobs\`
+- View the WHOLE POOL (jobs across every machine): \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/jobs?scope=pool"\` — merges each online machine's jobs (each tagged with its machineId/machineNickname), tolerant of a dark peer (a \`pool.failed\` entry, never a 500), short-TTL cached. Also carries \`pool.divergences\` — an observe-only flag for a machine that DECLARES jobs but is running 0 locally (or returns 0 jobs while online). Use this when the user asks "what jobs do I have?" / "is a job running anywhere?" on a multi-machine setup — the plain view only shows THIS machine's jobs.
 - Trigger: \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/jobs/SLUG/trigger\`
 
 **Sessions** — Spawn and manage Claude Code sessions.
