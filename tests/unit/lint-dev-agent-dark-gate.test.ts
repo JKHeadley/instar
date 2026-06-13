@@ -352,6 +352,11 @@ describe('lint-dev-agent-dark-gate', () => {
       // block (no `enabled` literal — conversationDiscipline is dev-gated) is inserted
       // AFTER the threadline section; entries at/after mentor.enabled shift again.
       // RECOMPUTED via the attributor against the MERGED ConfigDefaults.ts.
+      // live-credential-repointing Increment A: subscriptionPool.credentialRepointing
+      // is appended at the END of SHARED_DEFAULTS (after topicProfiles), so it shifts
+      // no prior entry — it only ADDS this literal `enabled: false` path. category
+      // 'destructive' in DARK_GATE_EXCLUSIONS (writes OAuth credentials).
+      '1015': 'subscriptionPool.credentialRepointing.enabled',
     };
     const actual = attributeRealConfigDefaults();
     expect(actual).toEqual(EXPECTED);

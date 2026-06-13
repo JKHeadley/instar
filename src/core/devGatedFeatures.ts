@@ -195,6 +195,11 @@ export const DARK_GATE_EXCLUSIONS: DarkGateExclusion[] = [
     category: 'destructive',
     reason: 'kills MCP processes; off+dry-run for everyone',
   },
+  {
+    configPath: 'subscriptionPool.credentialRepointing.enabled',
+    category: 'destructive',
+    reason: 'writes OAuth credentials between config homes; off+dry-run for everyone (incl. dev) — live needs a deliberate enabled:true AND dryRun:false flip',
+  },
   // ── cost-bearing — ongoing third-party / LLM spend; explicit opt-in ──
   {
     configPath: 'mentor.autonomousFix.enabled',
