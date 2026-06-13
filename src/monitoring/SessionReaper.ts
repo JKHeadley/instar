@@ -267,6 +267,14 @@ export interface SessionReaperDeps {
   /** Count of active subagents for a session's claudeSessionId (0 when absent). */
   activeSubagentCount: (claudeSessionId: string | undefined) => number;
   buildOrAutonomousActive: (topicId: number | null) => boolean;
+  /** Build-Session Yield Safety (ACT-839): the shared bounded worktreeDirtyCheck.
+   *  Provided ONLY when the dev-gated yieldSafety feature is live (server.ts
+   *  resolves the developmentAgent gate and injects this iff enabled) — so its
+   *  mere presence is the gate. Run PRE-kill in the reaper's loop (never a
+   *  synchronous git call on the terminate chokepoint); a true result means the
+   *  session's worktree holds real uncommitted work → the reap carries the
+   *  `uncommitted-worktree-work` evidence. Absent ⇒ feature inert. */
+  dirtyCheck?: (worktreePath: string) => boolean;
   protectedSessions: () => string[];
   pressure: () => PressureReading;
   /** `opts.bypassActiveProcessKeep` lets the reaper carry its already-made
@@ -869,13 +877,24 @@ export class SessionReaper extends EventEmitter {
       // relaxation to the authority so it doesn't re-veto on the un-relaxed shared
       // guard (the 1,532× skipped:active-process stalemate). Scoped to active-process
       // only; every other KEEP-guard is still enforced by terminateSession.
+      // Build-Session Yield Safety (ACT-839): an idle session can still have a
+      // DIRTY worktree (uncommitted edits sitting there). Collect that here,
+      // PRE-kill, in the reaper's own loop — never a synchronous git call on the
+      // terminate chokepoint. `dirtyCheck` is present only when the dev-gated
+      // feature is live; it is bounded + fail-open internally.
+      const workEvidence: string[] = [];
+      if (this.deps.dirtyCheck && session.cwd) {
+        try { if (this.deps.dirtyCheck(session.cwd)) workEvidence.push('uncommitted-worktree-work'); }
+        catch { /* fail-open: a dirty-check failure never endangers the kill path */ }
+      }
       const r = await this.deps.terminate(session.id, 'reaped-idle', {
         bypassActiveProcessKeep: relaxedActiveProcess,
         // Pre-relaxation verdict as killer-supplied evidence (reap-notify R2.1):
-        // an idle-reap means this reaper PROVED no work — assert the empty set
-        // authoritatively so the chokepoint fallback can't re-stamp the
-        // active-process signal the relaxation just disproved.
-        workEvidence: [],
+        // an idle-reap means this reaper PROVED no active work — assert that set
+        // authoritatively (now possibly carrying uncommitted-worktree-work) so
+        // the chokepoint fallback can't re-stamp the active-process signal the
+        // relaxation just disproved.
+        workEvidence,
       });
       if (r.terminated) {
         this.reapTimestamps.push(this.now());

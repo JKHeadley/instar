@@ -12689,9 +12689,31 @@ export async function startServer(options: StartOptions): Promise<void> {
     // (setAwakeChecker is wired earlier, before the boot purge, so the purge is
     //  lease-gated — see the §P3/§P4 block above.)
 
+    // Build-Session Yield Safety (ACT-839): construct the bounded, cached
+    // worktreeDirtyCheck and inject it into the reaper ONLY when the dev-gated
+    // yieldSafety feature is live (its mere presence is the gate). Dev-enabled,
+    // dark on the fleet, per the Maturation Path standard.
+    let _yieldSafetyDirtyCheck: ((worktreePath: string) => boolean) | undefined;
+    if (resolveDevAgentGate(config.monitoring?.yieldSafety?.enabled, config)) {
+      const ysCfg = config.monitoring?.yieldSafety ?? {};
+      const { makeWorktreeDirtyCheck } = await import('../core/worktreeDirtyCheck.js');
+      const { SafeGitExecutor } = await import('../core/SafeGitExecutor.js');
+      _yieldSafetyDirtyCheck = makeWorktreeDirtyCheck({
+        readGit: (args, cwd) => SafeGitExecutor.readSync(args, {
+          cwd, encoding: 'utf-8',
+          timeout: ysCfg.dirtyCheckTimeoutMs ?? 5_000,
+          operation: 'src/core/worktreeDirtyCheck.ts (yield-safety)',
+          sourceTreeReadOk: true,
+          sourceTreeWorktreeManagerOk: true,
+        }),
+        config: { residueDenylist: ysCfg.residueDenylist, cacheTtlMs: ysCfg.dirtyCheckCacheTtlMs },
+      });
+    }
+
     const sessionReaper = new SessionReaper(
       {
         ...reapGuardDeps,
+        dirtyCheck: _yieldSafetyDirtyCheck,
         listRunningSessions: () => sessionManager.listRunningSessions(),
         captureOutput: (s, n) => sessionManager.captureOutput(s, n) ?? '',
         frameworkForSession: (s) => sessionManager.frameworkForSession(s) as 'claude-code' | 'codex-cli' | undefined,
