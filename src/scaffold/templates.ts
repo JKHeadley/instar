@@ -601,6 +601,7 @@ Every guard (monitoring sentinels, reapers, the scheduler, …) is graded by wha
 **Attention Queue** — Signal important items to the user. When something needs their attention — a decision, a review, an anomaly — queue it here instead of hoping they see a chat message.
 - Queue: \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/attention -H 'Content-Type: application/json' -d '{"id":"agent:unique-item-id","title":"...","body":"...","priority":"medium","source":"agent"}'\`
 - View queue: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/attention\`
+- View the WHOLE POOL (across every machine): \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/attention?scope=pool"\` — merges each online machine's items (each tagged with its machineId/machineNickname), tolerant of a dark peer (a \`pool.failed\` entry, never a 500), short-TTL cached, and P17-coalesced: machines raising the SAME pool-wide event collapse to ONE row (HIGH/URGENT always stay individually visible). Use this when the user asks "what needs my attention?" on a multi-machine setup — the plain view only shows THIS machine's items.
 - Resolve: \`curl -X PATCH -H "Authorization: Bearer $AUTH" http://localhost:${port}/attention/ATT-ID -H 'Content-Type: application/json' -d '{"status":"resolved","resolution":"Done"}'\`
 - **Proactive use**: When you detect something the user should know about (stale relationships, failed jobs, CI failures, overdue actions) — don't just log it. Queue it. The attention system ensures it gets seen.
 

@@ -1,0 +1,43 @@
+# Multi-machine seamlessness — attention queue, pooled (WS4.1 read-side)
+
+## What Changed
+
+- **`GET /attention?scope=pool`** merges every online machine's attention items into
+  one view (mirrors the `GET /sessions?scope=pool` precedent): per-peer 5s timeout
+  with a `pool.failed` marker on a dark peer (never a 500), a 3s short-TTL cache so
+  dashboard polling doesn't re-fan-out per request, and a **P17 merge-point coalesce**
+  — machines raising the SAME pool-wide event (same `sourceContext`, or
+  category+title) collapse to ONE row carrying the contributing machine list.
+  HIGH/URGENT items are never coalesced.
+- Items now carry optional `machineId`/`machineNickname`, stamped at read time
+  (the store stays machine-agnostic). Plain `GET /attention` is unchanged except for
+  these additive tags when the pool is wired.
+- CLAUDE.md template + an idempotent PostUpdateMigrator bullet so new AND deployed
+  agents learn the pooled view (Agent Awareness + Migration Parity).
+
+This is the READ half of WS4.1. The durable, operator-bound, machine-independent
+`/ack` (replicated ack record + mutating mesh verb + owner revalidation) is the
+security-sensitive write half and ships as a separate slice. <!-- tracked: CMT-1416 -->
+
+## Evidence
+
+- `tests/integration/attention-pool-scope.test.ts` (7, new): plain view self-tags
+  identity; scope=pool merges a REAL peer server's items tagged with the peer; P17
+  coalesce collapses same-key NORMAL items (machines listed) but NEVER HIGH/URGENT;
+  an offline peer is skipped to `failed` without waiting; an unreachable peer degrades
+  to `failed` with local items still answering; no-peers answers local-only.
+- PostUpdateMigrator suite green (423); `tsc --noEmit` clean.
+- Spec: MULTI-MACHINE-SEAMLESSNESS-SPEC §WS4.1 (converged 2026-06-12, approved).
+
+## What to Tell Your User
+
+When you run on more than one machine, "what needs my attention?" now answers across
+ALL your machines at once instead of just the one you happen to be asking. Each item
+shows which machine it came from, a machine that's offline is noted rather than
+silently dropped, and if the same alert fired on several machines you see it once, not
+a pile of duplicates — except genuinely critical items, which always show individually.
+
+## Summary of New Capabilities
+
+- One pooled attention view across the fleet (`GET /attention?scope=pool`), each item
+  machine-tagged, dark peers surfaced as `failed`, duplicate pool-wide alerts coalesced.

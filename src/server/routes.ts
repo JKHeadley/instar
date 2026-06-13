@@ -9656,7 +9656,106 @@ export function createRoutes(ctx: RouteContext): Router {
     }
   });
 
-  router.get('/attention', (req, res) => {
+  // ── WS4.1 pool-scope merge helpers ───────────────────────────────────
+  // Short-TTL cache keyed by status, so repeated dashboard polls within the
+  // window reuse one fan-out instead of re-querying every peer per request.
+  const attentionPoolCache = new Map<string, { at: number; payload: unknown }>();
+  const ATTENTION_POOL_CACHE_TTL_MS = 3_000;
+  const ATTENTION_PEER_TIMEOUT_MS = 5_000;
+  // P17 coalesce key: items sharing this key across machines collapse to ONE
+  // merged row (a pool-wide event whose per-machine tripwires each raised an
+  // item). Mirrors the WS3.3 episode-key pattern: prefer an explicit
+  // sourceContext (the deduped escalation source), else category+title.
+  const attentionCoalesceKey = (it: { sourceContext?: string; category?: string; title?: string }): string =>
+    it.sourceContext && it.sourceContext.length > 0
+      ? `src:${it.sourceContext}`
+      : `ct:${it.category ?? ''}:${it.title ?? ''}`;
+
+  async function attentionPoolMerge(
+    localItems: Array<Record<string, unknown>>,
+    status: string | undefined,
+  ): Promise<Record<string, unknown>> {
+    const cacheKey = status ?? '*';
+    const cached = attentionPoolCache.get(cacheKey);
+    if (cached && Date.now() - cached.at < ATTENTION_POOL_CACHE_TTL_MS) {
+      return cached.payload as Record<string, unknown>;
+    }
+
+    const peers = ctx.resolvePeerUrls?.() ?? [];
+    const failed: Array<{ machineId: string; error: string }> = [];
+    const remote: Array<Record<string, unknown>> = [];
+    await Promise.all(
+      peers.map(async (p) => {
+        // Skip a peer the registry knows to be offline — saves the timeout
+        // wait; an unknown peer (no capacity row) is still tried.
+        const cap = ctx.machinePoolRegistry?.getCapacity(p.machineId);
+        if (cap && cap.online === false) {
+          failed.push({ machineId: p.machineId, error: 'offline' });
+          return;
+        }
+        try {
+          const qs = status ? `?status=${encodeURIComponent(status)}` : '';
+          const r = await fetch(`${p.url}/attention${qs}`, {
+            headers: { Authorization: `Bearer ${ctx.config.authToken}` },
+            signal: AbortSignal.timeout(ATTENTION_PEER_TIMEOUT_MS),
+          });
+          if (!r.ok) throw new Error(`HTTP ${r.status}`);
+          const body = (await r.json()) as { items?: Array<Record<string, unknown>> };
+          const nickname = cap?.nickname ?? null;
+          for (const it of body.items ?? []) {
+            remote.push({
+              ...it,
+              machineId: it.machineId ?? p.machineId,
+              machineNickname: it.machineNickname ?? nickname ?? undefined,
+              remote: true,
+            });
+          }
+        } catch (err) {
+          failed.push({ machineId: p.machineId, error: err instanceof Error ? err.message : String(err) });
+        }
+      }),
+    );
+
+    // P17 merge-point coalesce: collapse same-key items across machines into
+    // ONE row carrying the contributing machine list. Local items win the
+    // canonical row (the operator's own machine view); remote duplicates fold
+    // into coalescedFrom. HIGH/URGENT are NEVER coalesced (every critical item
+    // stays individually visible — same rule as the write-side flood guard).
+    const byKey = new Map<string, Record<string, unknown>>();
+    const out: Array<Record<string, unknown>> = [];
+    for (const it of [...localItems, ...remote]) {
+      const priority = String(it.priority ?? 'NORMAL');
+      if (priority === 'HIGH' || priority === 'URGENT') {
+        out.push(it);
+        continue;
+      }
+      const key = attentionCoalesceKey(it as { sourceContext?: string; category?: string; title?: string });
+      const existing = byKey.get(key);
+      if (!existing) {
+        const row = { ...it, coalescedFrom: [it.machineId] };
+        byKey.set(key, row);
+        out.push(row);
+      } else {
+        (existing.coalescedFrom as unknown[]).push(it.machineId);
+      }
+    }
+
+    const payload = {
+      items: out,
+      count: out.length,
+      pool: {
+        enabled: !!ctx.machinePoolRegistry,
+        selfMachineId: ctx.meshSelfId ?? null,
+        peersQueried: peers.length,
+        peersOk: peers.length - failed.length,
+        failed,
+      },
+    };
+    attentionPoolCache.set(cacheKey, { at: Date.now(), payload });
+    return payload;
+  }
+
+  router.get('/attention', async (req, res) => {
     if (!ctx.telegram) {
       res.status(503).json({ error: 'Telegram not configured' });
       return;
@@ -9664,8 +9763,35 @@ export function createRoutes(ctx: RouteContext): Router {
 
     const requestedStatus = req.query.status as string | undefined;
     const status = requestedStatus ? (normalizeAttentionStatus(requestedStatus) ?? requestedStatus) : undefined;
-    const items = ctx.telegram.getAttentionItems(status);
-    res.json({ items, count: items.length });
+    const selfMachineId = ctx.meshSelfId ?? null;
+    // Local items are stamped with THIS machine's id at read time (mirrors the
+    // sessions?scope=pool precedent — the store stays machine-agnostic; the
+    // route is where the machine view is composed). machineNickname resolved
+    // from the registry when wired.
+    const selfNickname = selfMachineId
+      ? ctx.machinePoolRegistry?.getCapacity(selfMachineId)?.nickname ?? undefined
+      : undefined;
+    const localItems = ctx.telegram.getAttentionItems(status).map((it) => ({
+      ...it,
+      machineId: it.machineId ?? selfMachineId ?? undefined,
+      machineNickname: selfNickname,
+    }));
+
+    // scope=pool (WS4.1, MULTI-MACHINE-SEAMLESSNESS-SPEC §WS4.1): merge every
+    // ONLINE peer's attention items so the dashboard shows one queue across the
+    // whole pool. Tolerant by design (per-peer timeout → a `failed` marker,
+    // never a 500), short-TTL cached so dashboard polling doesn't re-fan-out
+    // per request, and P17-coalesced at the merge point: N machines raising the
+    // SAME episode (same coalesce key) present as ONE row (the read-side bound;
+    // per-machine budgets remain the write-side bound). Plain GET stays a
+    // back-compatible object.
+    if (req.query.scope === 'pool') {
+      const merged = await attentionPoolMerge(localItems, status);
+      res.json(merged);
+      return;
+    }
+
+    res.json({ items: localItems, count: localItems.length });
   });
 
   router.get('/attention/:id', (req, res) => {
