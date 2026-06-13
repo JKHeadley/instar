@@ -6,6 +6,15 @@ topic: 24662
 parent-principle: "No Manual Work (user *or* agent)"
 ships-staged: true
 lessons-engaged: [P1-structure-beats-willpower, P2-signal-vs-authority, P3-migration-parity, P4-testing-integrity, P5-agent-awareness, P7-llm-supervised-execution, P10-honest-coverage, P14-distrust-temporary-success, P17-bounded-notification-surface, P18-observation-needs-structure, P19-no-unbounded-loops, L5-state-detection-robustness, B10-verify-landed-before-claiming, B24-gate-latency-vs-client-timeout, graduated-feature-rollout, close-the-loop, cross-machine-coherence, mobile-complete-operator-actions]
+review-convergence: "2026-06-13T01:24:25.800Z"
+review-iterations: 7
+review-completed-at: "2026-06-13T01:24:25.800Z"
+review-report: "docs/specs/reports/green-pr-automerge-enforcement-convergence.md"
+cross-model-review: "codex-cli:gpt-5.5"
+single-run-completable: true
+frontloaded-decisions: 9
+cheap-to-change-tags: 8
+contested-then-cleared: 4
 ---
 
 # Green-PR Auto-Merge Enforcement — Phase 7 becomes machinery, not memory
@@ -657,7 +666,7 @@ would have missed PR #1084's own failure mode).
   detect live drift. A cheap real-gh smoke in CI (a `--capabilities` probe + one
   read-only checks fetch, where gh exists) closes L5(c) fully and ships with the build.
 
-## Frontloaded Decisions (round-1: all forks resolved; reversibility noted per decision)
+## Frontloaded Decisions (round-1: all forks resolved; reversibility noted per decision; Decisions 1, 3, and 9 are ratified by `approved: true`)
 
 1. **No dry-run soak on the dev agent; `dryRun` is a rollback lever only.** Auto-merge to
    `main` is a durable external side-effect — but this is not new authority: the operator
@@ -724,8 +733,7 @@ would have missed PR #1084's own failure mode).
 
 ## Open questions
 
-*(none — every fork is frontloaded above; Decisions 1, 3, and 9 are ratified by
-`approved: true`)*
+*(none)*
 
 ## Out of scope
 
