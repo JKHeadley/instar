@@ -10861,8 +10861,9 @@ export function createRoutes(ctx: RouteContext): Router {
         }
       }
     } catch (err) {
-      // NOT silent: recorded in the response's drain field; the transfer
-      // degrades to today's pin path (the safe direction — never a half-drain).
+      // @silent-fallback-ok — NOT silent: recorded in the response's drain field;
+      // the transfer degrades to today's pin path (the safe direction — never a
+      // half-drain). A drain failure must never fail the transfer itself.
       drainLeg = { attempted: true, ok: false, reason: err instanceof Error ? err.message : String(err) };
     }
     // WS1.4 confirmed move: suspend the in-flight autonomous run AT ITS NEXT

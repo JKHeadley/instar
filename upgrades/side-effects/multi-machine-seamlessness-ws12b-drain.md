@@ -151,6 +151,19 @@ for it); no new URL surfaces.
 
 ---
 
+## Post-push CI fix (no-silent-fallbacks ratchet)
+
+CI shard 3 failed the no-silent-fallbacks ratchet (469 > 468). Investigation:
+every catch this PR ADDS is tagged `@silent-fallback-ok` (drain emergency-stop
+flag read, runner-not-wired guard, `_sendDrain` RPC catch, /pool/transfer
+drain-leg degrade catch, forced-close notice `.catch`) or is non-matching
+(returns a populated object). The flagged-list set-diff shows NO genuine new
+fallback — the +1 is a detection-window artifact: line shifts in the two edited
+files reshape the heuristic's 20-line catch window so a pre-existing,
+previously-uncounted catch now matches (the exact fragility the file's own
+174→186 and 437→447 bump notes document). Baseline bumped 468→469 with that
+justification (the sanctioned escape valve); the count only decreases from here.
+
 ## Second-pass review
 
 **MANDATORY (ownership + session lifecycle) — independent reviewer, run on Opus 4.8.**

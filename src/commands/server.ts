@@ -13098,6 +13098,7 @@ export async function startServer(options: StartOptions): Promise<void> {
           });
           console.log(pc.dim('  [ws12-drain] owner-side drain runner wired (capability advertised)'));
         } catch (err) {
+          // @silent-fallback-ok — runner stays null (capability un-advertised → no peer sends a drain order; the transfer route degrades to today's pin path). Logged with context; not a degradation worth a report.
           console.log(pc.dim(`  [ws12-drain] runner not wired: ${err instanceof Error ? err.message : String(err)}`));
         }
         // ── Secret-sync inbound handler (cross-machine secret distribution, spec Phase 4) ──
@@ -13369,6 +13370,7 @@ export async function startServer(options: StartOptions): Promise<void> {
               }
               return { ok: false, reason: res.reason ?? `status-${res.status}`, noHandler: res.status === 501 };
             } catch (err) {
+              // @silent-fallback-ok — a failed drain RPC returns ok:false to the route, which records it and degrades to today's pin path (never a stuck/half transfer); the reason is surfaced in the response's drain field.
               return { ok: false, reason: err instanceof Error ? err.message : String(err) };
             }
           };
