@@ -52,6 +52,13 @@ const ALLOWLIST = new Set([
   // Owns `KeychainCredentialProvider.writeCredentials` (the raw `security -i` write) +
   // the sanctioned `writeCredentialsSerialized` funnel chokepoint that wraps it.
   'src/monitoring/CredentialProvider.ts',
+  // Step 5 (spec section 2.3). Owns the async execFile add-generic-password keychain write
+  // primitive (defaultKeychainExec) used for slot + staging writes. Every credential write the
+  // executor performs runs INSIDE funnel.withSingleMover then funnel.withSlotLocks([A,B], ...) —
+  // the staged exchange takes the single-mover mutex AND both slot locks before any write, so a
+  // swap write can never interleave with a refresh/switch on the same slot. Funnel-routing is at
+  // the call layer (the primitive must NOT self-lock under the slot locks). Sanctioned route.
+  'src/core/CredentialSwapExecutor.ts',
   // This lint file names the patterns it greps for.
   'scripts/lint-no-unfunneled-credential-write.js',
 ]);

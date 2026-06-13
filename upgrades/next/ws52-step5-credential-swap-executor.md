@@ -1,0 +1,44 @@
+# WS5.2 Step 5 — CredentialSwapExecutor (the staged-exchange swap primitive for live credential re-pointing)
+
+<!-- bump: patch -->
+
+<!--
+  NOTE: dark/additive + internal. A new exported class src/core/CredentialSwapExecutor.ts,
+  gated by the EXISTING subscriptionPool.credentialRepointing flag (enabled:false +
+  dryRun:true, already a DARK_GATE_EXCLUSIONS destructive entry shipped by Step 4b) —
+  NO new config flag, so the dark-gate line-map is UNCHANGED (no recompute; lint clean,
+  dark-gate test green as-is). Every credential write runs INSIDE the Step-4b funnel
+  (withSingleMover + withSlotLocks); the executor is added to the
+  lint-no-unfunneled-credential-write allowlist as the sanctioned Step-5 funnel route.
+  No HTTP route yet (routes are Step 7) — this is the swap PRIMITIVE.
+-->
+
+## What Changed
+
+The staged-exchange primitive (spec §2.3) that MOVES an account's OAuth credential between two config-home "slots" without restarting the sessions reading them. The sessions switch token sources on their next API call (the Claude client re-reads its credential store), so no restart, no aborted turns.
+
+- **Exchange, never copy** — `swap(slotA, slotB)` exchanges the two slots' credentials so exactly one account-lineage lives in each readable config home (the one-home-per-credential invariant holds by construction).
+- **Preconditions before any path expansion** — both slots must be EXACT members of the location ledger's enumerated slot set before any home-expansion/keychain call, so a `../`/`~`/absolute traversal value can never reach a keychain service (validated against the ledger, not the filesystem); a quarantined or no-refresh-token slot is refused.
+- **Source-slot CAS (§2.3.1a)** — immediately before each destructive write the slot is re-read; a same-tenant newer blob (the Claude client's own rotated copy) is ADOPTED, a different-tenant blob is a clobber-race that ABORTS the swap, and a changed blob the oracle cannot confirm ABORTS — never a silent overwrite.
+- **Crash-proof staging** — blob A is COPIED into a disjoint `instar-credential-swap-staging-*` keychain namespace and `begin` is journaled BEFORE the first destructive write, so a crash before the exchange unwinds to a true no-op and a crash mid-exchange recovers from the retained escrow.
+- **Identity-verified, repair-safe** — after the exchange each slot is verified on its ACCOUNT IDENTITY via the profile-endpoint oracle. A confirmed match commits; a mismatch with a reachable oracle gets ONE repair-from-staging then re-verify; an UNAVAILABLE oracle is quarantine-never-repair (an outage never triggers a destructive repair). The executor never commits a slot it cannot identity-confirm.
+- **Commit, then delayed re-verify** — the ledger is updated with staging RETAINED, then ~90s later both slots are re-verified before staging is deleted and the journal closed (the heal source for a client write-back that lands in the in-flight window).
+- **Bounded everywhere** — all `security` keychain calls are async with a 10s timeout (never sync, which could wedge the event loop); every swap runs under the single-mover mutex + both slot locks (the Step-4b funnel); boot recovery acquires the single-mover mutex and the balancer's first pass is gated on a recovery barrier WITH a hang-timeout (a wedged recovery can't freeze the system).
+- **Dark** — gated by the existing `subscriptionPool.credentialRepointing` flag (`enabled:false` + `dryRun:true`). With the feature off (the fleet + dev default) the executor is a strict no-op; with dry-run on it runs the full decision loop and audits the would-swap with zero writes. Going live needs a deliberate two-flag flip.
+
+The HTTP route + census re-routing that wire this into the running system are Steps 6 and 7 (a later increment); this ships the swap primitive plus its three test tiers.
+
+## What to Tell Your User
+
+This is internal plumbing that ships turned off, so day to day nothing changes for you. What it builds toward: when I hold more than one of your subscription accounts, I can move which account a running session is using WITHOUT restarting that session — today moving an account means killing and respawning the session, which loses in-flight work and re-pays the warm-up cost. The new mechanism swaps the credential under the hood and the session just picks up the new account on its next request. It is built to be safe under failure: it never leaves a session pointed at an account it could not positively confirm, it survives a crash mid-swap without losing a login, and it can never run two swaps at once on the same machine. It is off by default and does nothing until it is deliberately turned on after a review window.
+
+## Summary of New Capabilities
+
+New exported `CredentialSwapExecutor` (src/core/CredentialSwapExecutor.ts) — the spec §2.3 staged-exchange primitive of live credential re-pointing. Gated by the existing `subscriptionPool.credentialRepointing` flag; no new config flag, no new HTTP route (routes are a later step). Consumes the merged Step 2/3/4 primitives (location ledger, identity oracle, write funnel).
+
+## Evidence
+
+- `tests/unit/credential-swap-executor.test.ts` (20) — dark/dryRun inertness; preconditions (non-member/quarantined/no-refresh-token rejection, zero writes); the happy exchange (keychain-first, identity-verified, one-lineage-per-home, staging retained then deleted at step 6); clobber-race (different-tenant abort, same-tenant-newer adopt); identity verify/repair/quarantine (mismatch repair-then-commit; oracle-unavailable quarantine-never-repair); THE blocker lens (no committed-unverified write); permutation-property (2 and 5 concurrent swaps serialize, exactly one exchange); crash-at-every-boundary (budgets 0/1/2 + hang-timeout barrier quarantining before lift); orphan-staging sweep predicate; token-material scrub.
+- `tests/integration/credential-swap-executor-host.test.ts` (2) — the executor composed as its host will (REAL CredentialIdentityOracle profile-endpoint + REAL pool-mapping + REAL ledger + REAL funnel): oracle ALLOW yields commit; oracle UNAVAILABLE (5xx) at verify yields quarantine + attention.
+- `tests/e2e/credential-swap-executor-dark-ship-lifecycle.test.ts` (3) — Phase-1 dark-ship inertness on the production config path: a DEV and a fleet agent's real ConfigDefaults gate the executor to a strict no-op; recovery on the dark config is still crash-safe.
+- tsc clean; full `npm run lint` clean; dark-gate unchanged; docs-coverage green (CredentialSwapExecutor documented in architecture/under-the-hood.md).

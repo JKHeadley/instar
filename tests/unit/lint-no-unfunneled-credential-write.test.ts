@@ -136,7 +136,7 @@ describe('lint-no-unfunneled-credential-write (Step 4b)', () => {
     expect(result.code).toBe(0);
   });
 
-  it('the allowlist is closed to exactly the funnel, the two primitive owners, and the lint itself', () => {
+  it('the allowlist is closed to exactly the funnel, the primitive owners (incl. the Step-5 swap executor), and the lint itself', () => {
     const lintSource = fs.readFileSync(LINT_SCRIPT, 'utf8');
     const allowMatch = lintSource.match(/const ALLOWLIST = new Set\(\[([\s\S]*?)\]\);/);
     expect(allowMatch, 'ALLOWLIST block not found in lint script').not.toBeNull();
@@ -147,6 +147,9 @@ describe('lint-no-unfunneled-credential-write (Step 4b)', () => {
         'src/core/CredentialWriteFunnel.ts',
         'src/core/OAuthRefresher.ts',
         'src/monitoring/CredentialProvider.ts',
+        // Step 5 (spec §2.3): owns the async-execFile keychain write primitive; every write runs
+        // inside funnel.withSingleMover → withSlotLocks, so the funnel-routing is at the call layer.
+        'src/core/CredentialSwapExecutor.ts',
       ].sort(),
     );
   });
