@@ -228,6 +228,13 @@ export interface CredentialSwapExecutorDeps {
   emitAudit?: (record: SwapAuditRecord) => void;
   /** HIGH attention on a quarantine (the blast-radius surface). */
   emitAttention?: (item: { id: string; title: string; summary: string; category: string; priority: 'URGENT' | 'HIGH' | 'NORMAL' | 'LOW'; sourceContext?: string }) => void | Promise<void>;
+  /**
+   * Census #8 cache-bust hook. Invoked at commit with the slots whose tenant just changed. The
+   * server wires this to `InUseAccountResolver.bustCache()` so a default-slot (`~/.claude`) swap
+   * invalidates the stale in-use badge immediately — the keychain-first/config-second window is
+   * exactly when a re-probe would re-cache the wrong tenant. Best-effort; never throws into commit.
+   */
+  onSlotsChanged?: (slots: string[]) => void;
   now?: () => number;
   nowIso?: () => string;
   /** Delay before the step-6 re-verify (ms; default 90_000). Tests inject a small value. */
@@ -253,6 +260,7 @@ export class CredentialSwapExecutor {
   private readonly config: { enabled: boolean; dryRun: boolean };
   private readonly emitAudit?: (record: SwapAuditRecord) => void;
   private readonly emitAttention?: CredentialSwapExecutorDeps['emitAttention'];
+  private readonly onSlotsChanged?: (slots: string[]) => void;
   private readonly now: () => number;
   private readonly nowIso: () => string;
   private readonly reverifyDelayMs: number;
@@ -274,6 +282,7 @@ export class CredentialSwapExecutor {
     this.config = { enabled: deps.config?.enabled ?? false, dryRun: deps.config?.dryRun ?? true };
     this.emitAudit = deps.emitAudit;
     this.emitAttention = deps.emitAttention;
+    this.onSlotsChanged = deps.onSlotsChanged;
     this.now = deps.now ?? (() => Date.now());
     this.nowIso = deps.nowIso ?? (() => new Date(this.now()).toISOString());
     this.reverifyDelayMs = deps.reverifyDelayMs ?? DEFAULT_REVERIFY_DELAY_MS;
@@ -303,6 +312,19 @@ export class CredentialSwapExecutor {
   private audit(swapId: string, step: string, slotA: string, slotB: string, detail?: string): void {
     if (!this.emitAudit) return;
     this.emitAudit({ swapId, step, slotA, slotB, detail: detail ? scrub(detail) : undefined, at: this.nowIso() });
+  }
+
+  /** Census #8: fire the cache-bust hook (best-effort — a consumer error never breaks commit). */
+  private notifySlotsChanged(slots: string[]): void {
+    if (!this.onSlotsChanged) return;
+    try {
+      this.onSlotsChanged(slots);
+    } catch {
+      // @silent-fallback-ok — the cache-bust is an observability nicety (a stale in-use badge
+      // self-corrects at TTL expiry). A throwing consumer must never roll back or break the
+      // already-committed swap, which is the load-bearing operation; the slots are exchanged
+      // whether or not the badge was busted.
+    }
   }
 
   private stagingService(swapId: string): string {
@@ -419,6 +441,9 @@ export class CredentialSwapExecutor {
     this.ledger.recordAssignment(slotA, expectB, { verifiedAt: this.nowIso(), op: 'swap' });
     this.ledger.recordAssignment(slotB, expectA, { verifiedAt: this.nowIso(), op: 'swap' });
     this.audit(swapId, 'committed', slotA, slotB, `tenants exchanged (staging retained)`);
+    // Census #8: the slot tenants just changed — bust any in-use badge cache so a default-slot
+    // (`~/.claude`) swap doesn't leave the dashboard showing the pre-swap tenant for a full TTL.
+    this.notifySlotsChanged([slotA, slotB]);
 
     // Step 6: delayed re-verify, then staging delete. Scheduled (does NOT block the swap return);
     // a client whose refresh exchange was in flight DURING the swap lands its write after step 4.

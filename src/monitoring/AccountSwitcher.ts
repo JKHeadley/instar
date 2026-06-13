@@ -17,6 +17,7 @@ import {
   redactToken,
   writeCredentialsSerialized,
   DEFAULT_CREDENTIAL_SLOT,
+  CredentialWriteRepointingOwnedError,
 } from './CredentialProvider.js';
 
 interface AccountEntry {
@@ -161,6 +162,17 @@ export class AccountSwitcher {
         };
       }
     } catch (err) {
+      // Census #9: the slot is owned by live credential re-pointing — refuse cleanly (the manager
+      // chokepoint already refused; surface it as a named, non-destructive switch failure rather
+      // than a generic write error).
+      if (err instanceof CredentialWriteRepointingOwnedError) {
+        return {
+          success: false,
+          message: err.message,
+          previousAccount,
+          newAccount: null,
+        };
+      }
       return {
         success: false,
         message: `Failed to write credentials via ${this.provider.platform} provider: ${err instanceof Error ? err.message : String(err)}`,

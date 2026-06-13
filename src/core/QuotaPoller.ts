@@ -45,6 +45,7 @@ import {
   expandHome,
   type RefreshResult,
 } from './OAuthRefresher.js';
+import type { CredentialLocationGate } from './CredentialLocationGate.js';
 
 /** Injectable token resolver — returns an account's OAuth access token or null. */
 export type TokenResolver = (account: SubscriptionAccount) => string | null;
@@ -78,6 +79,14 @@ export interface QuotaPollerConfig {
   refresher?: AccountRefresher;
   /** Logger (defaults to console). */
   logger?: { log: (m: string) => void; warn: (m: string) => void };
+  /**
+   * Census re-routing gate (§2.2 rows #1–#4). When present AND enabled, the poller resolves
+   * each account's LIVE slot via the ledger instead of reading its enrollment `configHome` —
+   * so a swap mid-poll can't make the poller read the wrong tenant's token, refresh the wrong
+   * slot, cross-contaminate pool emails, or attribute needs-reauth to the wrong account. Absent
+   * (or flag-off / ledger-unknown) → byte-for-byte today's enrollment-home behavior.
+   */
+  locationGate?: CredentialLocationGate;
 }
 
 /** Outcome of a single usage read (internal). */
@@ -201,6 +210,7 @@ export class QuotaPoller {
   private readonly tokenResolver: TokenResolver;
   private readonly refresher: AccountRefresher;
   private readonly logger: { log: (m: string) => void; warn: (m: string) => void };
+  private readonly locationGate?: CredentialLocationGate;
   private interval: ReturnType<typeof setInterval> | null = null;
   /** Most-recent snapshot per account id. */
   private readonly lastByAccount = new Map<string, AccountQuotaSnapshot>();
@@ -217,6 +227,25 @@ export class QuotaPoller {
     this.refresher =
       config.refresher ?? ((account) => refreshClaudeToken(expandHome(account.configHome)));
     this.logger = config.logger ?? { log: () => {}, warn: () => {} };
+    this.locationGate = config.locationGate;
+  }
+
+  /**
+   * Census re-routing (§2.2 rows #1–#4): resolve the account's LIVE slot home through the ledger
+   * gate when enabled, else its enrollment `configHome` (today's behavior). The result is the
+   * config home every per-account credential read in this poller targets — so a swap mid-poll
+   * reads/refreshes/attributes against the slot the credential ACTUALLY lives in now. Sync,
+   * fail-open-loud (the gate never throws), back-compat when the ledger is unknown/never-seeded.
+   *
+   * Returns the account UNCHANGED when no re-route is needed, so the byte-identical flag-off path
+   * does not allocate a clone (and the default token resolver / refresher see the exact same
+   * object they do today).
+   */
+  private accountForReads(account: SubscriptionAccount): SubscriptionAccount {
+    if (!this.locationGate) return account;
+    const slot = this.locationGate.slotForAccount(account.id, account.configHome);
+    if (slot === account.configHome) return account;
+    return { ...account, configHome: slot };
   }
 
   start(): void {
@@ -278,7 +307,13 @@ export class QuotaPoller {
    * unresolvable or the read fails. NEVER logs or returns the token.
    */
   async pollAccount(account: SubscriptionAccount): Promise<AccountQuotaSnapshot | null> {
-    const token = this.tokenResolver(account);
+    // Census #1/#2/#4: every per-account credential read (token resolve, 401-refresh, needs-reauth
+    // attribution) targets the account's LIVE slot per the ledger gate — NOT its enrollment home —
+    // so a swap mid-poll can't read/refresh/flag the wrong tenant. account.id is preserved (only
+    // the slot home moves), so pool.update + logging still name the right account.
+    const slotAccount = this.accountForReads(account);
+
+    const token = this.tokenResolver(slotAccount);
     if (!token) {
       this.logger.warn(`[QuotaPoller] no resolvable token for account ${account.id} — skipping`);
       return null;
@@ -289,7 +324,7 @@ export class QuotaPoller {
 
     let body: Record<string, unknown> | null;
     if (read.authFailed) {
-      const refreshed = await this.refresher(account);
+      const refreshed = await this.refresher(slotAccount);
       if (!refreshed.ok) {
         if (refreshed.reason === 'write-skipped') {
           // The refresh exchange SUCCEEDED but the per-slot credential funnel lock was busy
@@ -355,11 +390,19 @@ export class QuotaPoller {
       const patch: Parameters<SubscriptionPool['update']>[1] = { lastQuota: snap };
       // A clean read on an account previously flagged needs-reauth restores it.
       if (account.status === 'needs-reauth') patch.status = 'active';
-      // Auto-populate the account email from the config home's own login record,
-      // so the stored email always reflects which account actually authenticated
-      // (a login into the wrong account surfaces here instead of hiding).
-      const email = readAccountEmail(account.configHome);
-      if (email && email !== account.email) patch.email = email;
+      // Census #3: email auto-patch. When credential re-pointing is enabled the enrollment home
+      // no longer maps 1:1 to a tenant (a swap moves the credential), so reading the slot's
+      // `.claude.json` email and writing it onto this pool account would CROSS-CONTAMINATE pool
+      // emails and poison the recovery probe's email→account map. So while the gate is enabled the
+      // auto-patch is SUPPRESSED (the ledger + identity oracle own divergence detection now). With
+      // the gate absent/off this is byte-for-byte today's behavior.
+      if (!this.locationGate?.isEnabled()) {
+        // Auto-populate the account email from the config home's own login record,
+        // so the stored email always reflects which account actually authenticated
+        // (a login into the wrong account surfaces here instead of hiding).
+        const email = readAccountEmail(account.configHome);
+        if (email && email !== account.email) patch.email = email;
+      }
       try {
         this.pool.update(account.id, patch);
       } catch {

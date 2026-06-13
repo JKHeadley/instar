@@ -19003,6 +19003,24 @@ export function createRoutes(ctx: RouteContext): Router {
       return;
     }
     const { nickname, framework, configHome, status, lastQuota, lastUsedAt, email } = req.body ?? {};
+    // Census #10/#11: while live credential re-pointing is enabled the account `configHome` is
+    // enrollment metadata, NOT the credential's live location (the ledger owns location). A hand
+    // edit here would silently desync the ledger and re-point sessions to the wrong slot, so the
+    // field is refused with 409 — the operator changes location via POST /credentials/set-default,
+    // never by editing this field. With the flag off (always, while dark) this is a no-op and the
+    // PATCH behaves exactly as today.
+    if (
+      configHome !== undefined &&
+      ctx.config.subscriptionPool?.credentialRepointing?.enabled === true
+    ) {
+      res.status(409).json({
+        error:
+          'configHome cannot be edited while live credential re-pointing is enabled — it is ' +
+          'enrollment metadata, not the credential location. Use POST /credentials/set-default ' +
+          'to change which account a slot serves.',
+      });
+      return;
+    }
     try {
       const updated = ctx.subscriptionPool.update(
         req.params.id,

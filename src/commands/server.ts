@@ -9145,6 +9145,61 @@ export async function startServer(options: StartOptions): Promise<void> {
       console.log(pc.green(`  Subscription pool: ${subscriptionPool.size()} account(s) registered`));
     }
 
+    // ── Live credential re-pointing — census consumer re-routing (WS5.2 Step 6) ──
+    // The CredentialLocationLedger is the machine-local source of truth for "which account is in
+    // which config-home slot" once re-pointing is enabled. The CredentialLocationGate re-routes
+    // the §2.2 census consumers (quota poll, spawn placement, in-use badge) through it. Ships DARK:
+    // the gate reads `subscriptionPool.credentialRepointing.enabled` LIVE per call — with the flag
+    // off (always, while dark) every gate read returns the enrollment-home fallback, so every
+    // consumer is byte-for-byte today's behavior. A never-seeded ledger is the same fallback (back-
+    // compat); only UNKNOWN mode (corrupt on-disk) raises a HIGH attention item, never throws.
+    const { CredentialLocationLedger } = await import('../core/CredentialLocationLedger.js');
+    const { CredentialIdentityOracle } = await import('../core/CredentialIdentityOracle.js');
+    const { CredentialLocationGate } = await import('../core/CredentialLocationGate.js');
+    const credentialGateEmitAttention = telegram
+      ? (item: import('../core/CredentialLocationGate.js').CredentialGateAttentionInput) =>
+          void telegram!.createAttentionItem({
+            id: item.id,
+            title: item.title,
+            summary: item.summary,
+            description: item.description,
+            category: item.category,
+            priority: item.priority,
+            sourceContext: item.sourceContext,
+          })
+      : undefined;
+    const credentialLocationLedger = new CredentialLocationLedger({
+      stateDir: config.stateDir,
+      pool: subscriptionPool,
+      oracle: new CredentialIdentityOracle(),
+      emitAttention: credentialGateEmitAttention,
+    });
+    const credentialLocationGate = new CredentialLocationGate({
+      // Live flag read — a restartless config flip is honored on the next read.
+      isEnabled: () => config.subscriptionPool?.credentialRepointing?.enabled === true,
+      ledger: credentialLocationLedger,
+      emitAttention: credentialGateEmitAttention,
+    });
+    // Census #9: the manager-level competing-writer refusal gate. Installed process-wide so
+    // AccountSwitcher / `/switch-account` / autoMigrate refuse a write to a repointing-owned slot
+    // at the funnel chokepoint, not just on a route. Refuses ONLY when re-pointing is enabled AND
+    // the ledger holds a tenant for the (canonicalized) slot.
+    const { setCredentialWriteRefusalGate } = await import('../monitoring/CredentialProvider.js');
+    const { credentialSlotKey: canonicalizeSlot } = await import('../core/OAuthRefresher.js');
+    setCredentialWriteRefusalGate({
+      shouldRefuse: (canonicalSlot: string) => {
+        if (config.subscriptionPool?.credentialRepointing?.enabled !== true) return false;
+        // The funnel passes a canonicalized slot key, but the ledger stores raw enrollment-home
+        // spellings (`~/.claude`, an enrollment path). Compare canonical-to-canonical so a
+        // repointing-owned slot is recognized regardless of spelling.
+        return credentialLocationLedger
+          .getAssignments()
+          .some((a) => !!a.accountId && canonicalizeSlot(a.slot) === canonicalSlot);
+      },
+    });
+    // Census #5/#6: spawn placement resolves a pinned account's home through the gate (no-op dark).
+    sessionManager.setCredentialLocationGate(credentialLocationGate);
+
     // QuotaPoller — per-account live quota reader (P1.2 of the Subscription &
     // Auth Standard). Reads each account's 5h/weekly utilization + reset dates
     // via the OAuth usage endpoint (transient per-account token, never persisted)
@@ -9156,6 +9211,8 @@ export async function startServer(options: StartOptions): Promise<void> {
     const quotaPoller = new QuotaPoller({
       pool: subscriptionPool,
       logger: { log: (m) => console.log(m), warn: (m) => console.warn(m) },
+      // Census #1–#4: resolve each account's LIVE slot through the ledger (no-op while dark).
+      locationGate: credentialLocationGate,
     });
     if (subscriptionPool.size() > 0) {
       quotaPoller.start();
@@ -9166,7 +9223,9 @@ export async function startServer(options: StartOptions): Promise<void> {
     // right now" for the dashboard "in use" badge (read-only; cached probe of
     // `claude auth status`). One shared instance so the TTL cache is honored.
     const { InUseAccountResolver } = await import('../core/InUseAccountResolver.js');
-    const inUseAccountResolver = new InUseAccountResolver({});
+    // Census #8 (the E4a liar): when re-pointing is enabled and the ledger knows the `~/.claude`
+    // tenant, the badge resolves from the ledger — NOT a stale `claude auth status` re-probe.
+    const inUseAccountResolver = new InUseAccountResolver({ locationGate: credentialLocationGate });
 
     // EnrollmentWizard — mobile-first new-account login (P2.1 of the Subscription
     // & Auth Standard). Dark with the pool: the /subscription-pool/enroll routes

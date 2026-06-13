@@ -124,6 +124,7 @@ function makeExecutor(opts: {
   funnel?: CredentialWriteFunnel;
   reverifyDelayMs?: number;
   emitAttention?: (i: { id: string }) => void;
+  onSlotsChanged?: (slots: string[]) => void;
 }) {
   return new CredentialSwapExecutor({
     funnel: opts.funnel ?? new CredentialWriteFunnel(),
@@ -134,6 +135,7 @@ function makeExecutor(opts: {
     reverifyDelayMs: opts.reverifyDelayMs ?? 50,
     swapIdFactory: (() => { let n = 0; return () => `swap${n++}`; })(),
     emitAttention: opts.emitAttention as never,
+    onSlotsChanged: opts.onSlotsChanged,
   });
 }
 
@@ -231,6 +233,28 @@ describe('CredentialSwapExecutor — the happy exchange (keychain-first, identit
     expect(km.map[stagingSvc!]).toBeUndefined();
     const journal = led.getJournal().filter((e) => e.op === 'swap');
     expect(journal.some((e) => e.phase === 'done')).toBe(true);
+  });
+
+  it('census #8: fires onSlotsChanged at commit with both swapped slots (in-use badge cache-bust)', async () => {
+    const km = memKeychain({ [claudeCredentialService(SLOT_A)]: blob(ACC_A), [claudeCredentialService(SLOT_B)]: blob(ACC_B) });
+    const led = makeLedger(stateDir);
+    const changed: string[][] = [];
+    const ex = makeExecutor({ km, ledger: led, resolveIdentity: identityFromMap(km), onSlotsChanged: (s) => changed.push(s) });
+    const res = await ex.swap(SLOT_A, SLOT_B);
+    expect(res.outcome).toBe('swapped');
+    expect(changed).toHaveLength(1);
+    expect(changed[0].sort()).toEqual([SLOT_A, SLOT_B].sort());
+    // SLOT_A is the default `~/.claude` home → the badge cache-bust is warranted.
+    expect(changed[0].some((s) => s === SLOT_A)).toBe(true);
+  });
+
+  it('census #8: a THROWING onSlotsChanged never rolls back the committed swap', async () => {
+    const km = memKeychain({ [claudeCredentialService(SLOT_A)]: blob(ACC_A), [claudeCredentialService(SLOT_B)]: blob(ACC_B) });
+    const led = makeLedger(stateDir);
+    const ex = makeExecutor({ km, ledger: led, resolveIdentity: identityFromMap(km), onSlotsChanged: () => { throw new Error('bust failed'); } });
+    const res = await ex.swap(SLOT_A, SLOT_B);
+    expect(res.outcome).toBe('swapped'); // commit survived a throwing cache-bust
+    expect(led.tenantOf(SLOT_A)).toBe(ACC_B);
   });
 
   it('exactly ONE lineage per readable config home after the exchange (§0.d — no duplicate)', async () => {

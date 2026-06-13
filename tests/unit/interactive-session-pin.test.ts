@@ -44,6 +44,11 @@ import { execFileSync } from 'node:child_process';
 import { SessionManager } from '../../src/core/SessionManager.js';
 import { StateManager } from '../../src/core/StateManager.js';
 import type { SessionManagerConfig } from '../../src/core/types.js';
+import { CredentialLocationLedger, type IdentityOracle, type LedgerPoolView } from '../../src/core/CredentialLocationLedger.js';
+import { CredentialLocationGate } from '../../src/core/CredentialLocationGate.js';
+
+const noopOracleForPin: IdentityOracle = { async resolveSlotTenant() { return { unavailable: true }; } };
+const emptyPoolView: LedgerPoolView = { list: () => [] };
 
 describe('interactive session pinning (B1) — unit', () => {
   let dir: string;
@@ -117,6 +122,40 @@ describe('interactive session pinning (B1) — unit', () => {
 
     expect(recordFor(tmux)?.subscriptionAccountId).toBeUndefined();
     expect(hasConfigDir()).toBe(false);
+  });
+
+  // ── WS5.2 Step 6 census #5/#6: pinned spawn home re-routes through the ledger gate ──
+
+  const gateWith = (stateDir: string, enabled: boolean, slot?: string, accountId?: string): CredentialLocationGate => {
+    const ledger = new CredentialLocationLedger({ stateDir, pool: emptyPoolView, oracle: noopOracleForPin });
+    if (slot && accountId) ledger.recordAssignment(slot, accountId);
+    return new CredentialLocationGate({ isEnabled: () => enabled, ledger });
+  };
+
+  it('census #6: flag ON + ledger KNOWN → pins to the account\'s LIVE slot, not its enrollment home', async () => {
+    manager.setSpawnAccountResolver(() => ({ configHome: '/h/.claude-enroll-a', accountId: 'acct-a' }));
+    manager.setCredentialLocationGate(gateWith(path.join(dir, 'state'), true, '/h/.claude-LIVE', 'acct-a'));
+    const tmux = await manager.spawnInteractiveSession(undefined, 'pin-rerouted');
+
+    expect(recordFor(tmux)?.subscriptionAccountId).toBe('acct-a');
+    expect(newSessionArgs()).toContain('CLAUDE_CONFIG_DIR=/h/.claude-LIVE');
+    expect(newSessionArgs()).not.toContain('CLAUDE_CONFIG_DIR=/h/.claude-enroll-a');
+  });
+
+  it('census #6: flag OFF → pins to the enrollment home (byte-identical to today)', async () => {
+    manager.setSpawnAccountResolver(() => ({ configHome: '/h/.claude-enroll-a', accountId: 'acct-a' }));
+    manager.setCredentialLocationGate(gateWith(path.join(dir, 'state'), false, '/h/.claude-LIVE', 'acct-a'));
+    const tmux = await manager.spawnInteractiveSession(undefined, 'pin-flag-off');
+
+    expect(newSessionArgs()).toContain('CLAUDE_CONFIG_DIR=/h/.claude-enroll-a');
+  });
+
+  it('census #6: flag ON + ledger never-seeded → enrollment home (back-compat)', async () => {
+    manager.setSpawnAccountResolver(() => ({ configHome: '/h/.claude-enroll-a', accountId: 'acct-a' }));
+    manager.setCredentialLocationGate(gateWith(path.join(dir, 'state'), true)); // no assignment
+    const tmux = await manager.spawnInteractiveSession(undefined, 'pin-unseeded');
+
+    expect(newSessionArgs()).toContain('CLAUDE_CONFIG_DIR=/h/.claude-enroll-a');
   });
 
   it('seeds onboarding flags on a resolver-pinned headless home, never touching tokens', async () => {

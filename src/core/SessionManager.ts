@@ -277,6 +277,15 @@ export class SessionManager extends EventEmitter {
    * no eligible account exists. */
   private spawnAccountResolver?: () => { configHome: string; accountId: string } | null;
 
+  /**
+   * Census #5/#6: live credential re-pointing gate. When set AND enabled, a pinned account's
+   * spawn home is resolved through the ledger (the account's CURRENT slot) instead of the
+   * enrollment `configHome` the resolver returns — so after a swap a session lands on the slot
+   * the credential ACTUALLY lives in now, not the stale enrollment home. Unset / flag-off /
+   * ledger-unknown → the enrollment home is used exactly as today (strict no-op while dark).
+   */
+  private credentialLocationGate?: import('./CredentialLocationGate.js').CredentialLocationGate;
+
   /** Prompt Gate InputDetector — monitors terminal output for interactive prompts */
   private promptDetector?: InputDetector;
 
@@ -549,6 +558,24 @@ rm()  { "${shimRunner}" rm  "$@"; }
    */
   setSpawnAccountResolver(resolver: () => { configHome: string; accountId: string } | null): void {
     this.spawnAccountResolver = resolver;
+  }
+
+  /**
+   * Wire the credential re-pointing gate (census #5/#6). Called from server startup; absent /
+   * flag-off keeps spawn placement on the enrollment home exactly as today.
+   */
+  setCredentialLocationGate(gate: import('./CredentialLocationGate.js').CredentialLocationGate): void {
+    this.credentialLocationGate = gate;
+  }
+
+  /**
+   * Census #5/#6: resolve a pinned account's LIVE spawn home through the ledger gate. Returns the
+   * account's current slot when re-pointing is enabled AND the ledger knows it; otherwise the
+   * enrollment `configHome` unchanged (today's behavior). Sync + fail-open (the gate never throws).
+   */
+  private resolvePinnedSpawnHome(pinned: { configHome: string; accountId: string }): string {
+    if (!this.credentialLocationGate) return pinned.configHome;
+    return this.credentialLocationGate.slotForAccount(pinned.accountId, pinned.configHome);
   }
 
   /**
@@ -1793,8 +1820,10 @@ rm()  { "${shimRunner}" rm  "$@"; }
       ? (this.spawnAccountResolver?.() ?? null)
       : null;
     if (pinnedAccount) {
-      headlessSpec.envOverrides.CLAUDE_CONFIG_DIR = pinnedAccount.configHome;
-      this.ensurePinnedHomeInteractiveReady(pinnedAccount.configHome, 'headless pin');
+      // Census #6: pin to the account's CURRENT slot per the ledger gate, not its enrollment home.
+      const pinnedHome = this.resolvePinnedSpawnHome(pinnedAccount);
+      headlessSpec.envOverrides.CLAUDE_CONFIG_DIR = pinnedHome;
+      this.ensurePinnedHomeInteractiveReady(pinnedHome, 'headless pin');
     }
     const frameworkEnvFlags: string[] = [];
     for (const [k, v] of Object.entries(headlessSpec.envOverrides)) {
@@ -2067,8 +2096,10 @@ rm()  { "${shimRunner}" rm  "$@"; }
     // and tag the session. No-op unless the resolver is wired + returns an account.
     const pinnedAccount = this.spawnAccountResolver?.() ?? null;
     if (pinnedAccount) {
-      launchSpec.envOverrides.CLAUDE_CONFIG_DIR = pinnedAccount.configHome;
-      this.ensurePinnedHomeInteractiveReady(pinnedAccount.configHome, 'interactive-reroute pin');
+      // Census #6: pin to the account's CURRENT slot per the ledger gate, not its enrollment home.
+      const pinnedHome = this.resolvePinnedSpawnHome(pinnedAccount);
+      launchSpec.envOverrides.CLAUDE_CONFIG_DIR = pinnedHome;
+      this.ensurePinnedHomeInteractiveReady(pinnedHome, 'interactive-reroute pin');
     }
     const frameworkEnvFlags: string[] = [];
     for (const [k, v] of Object.entries(launchSpec.envOverrides)) {
@@ -3187,7 +3218,11 @@ rm()  { "${shimRunner}" rm  "$@"; }
     const pinnedAccount = (!explicitConfigHome && framework === 'claude-code')
       ? (this.spawnAccountResolver?.() ?? null)
       : null;
-    const effectiveConfigHome = explicitConfigHome ?? pinnedAccount?.configHome;
+    // Census #6: when the home comes from a pinned pool account, resolve its LIVE slot through the
+    // ledger gate (an explicit caller-supplied home — the account-swap / SessionRefresh path — is a
+    // deliberate pin and always wins, unchanged).
+    const effectiveConfigHome =
+      explicitConfigHome ?? (pinnedAccount ? this.resolvePinnedSpawnHome(pinnedAccount) : undefined);
     const effectiveAccountId = options?.subscriptionAccountId ?? pinnedAccount?.accountId;
     // This interactive session is about to launch under a pool account's config
     // home — seed the onboarding flags first or a headless-enrolled home wedges
