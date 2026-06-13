@@ -330,9 +330,15 @@ describe('lint-dev-agent-dark-gate', () => {
       '682': 'multiMachine.sessionPool.enabled',
       '707': 'multiMachine.sessionPool.inboundQueue.enabled',
       '736': 'multiMachine.sessionPool.holdForStability.enabled',
-      '891': 'cartographer.freshnessSweep.enabled',
-      '936': 'cartographer.conformanceAudit.llmEnrichment.enabled',
-      '961': 'cartographer.subtreeNav.llmRerank.enabled',
+      // multi-machine-replicated-store-foundation Step 2: the multiMachine block
+      // gained a `stateSync` sub-block (foundation knobs only; NO `enabled` key →
+      // NO new attributed path) after coherenceJournal (which sits after sessionPool
+      // but before cartographer). sessionPool entries unshifted; every cartographer
+      // entry shifted +17 (the stateSync block's line count). Verified by hand
+      // (attributor) against the MERGED ConfigDefaults.ts.
+      '908': 'cartographer.freshnessSweep.enabled',
+      '953': 'cartographer.conformanceAudit.llmEnrichment.enabled',
+      '978': 'cartographer.subtreeNav.llmRerank.enabled',
       // Threadline Robustness Phase 2 (CMT-1362): the threadline.canonicalHistory
       // block (no `enabled` literal — conversationDiscipline is dev-gated) is inserted
       // AFTER the threadline section; entries at/after mentor.enabled shift again.

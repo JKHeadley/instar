@@ -798,6 +798,23 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
         'threadline-conversation': { maxFileBytes: 8388608, rotateKeep: 8 },
       },
     },
+    // Replicated-store foundation (multi-machine-replicated-store-foundation §10).
+    // Ships DARK per store: there is NO per-store key here yet (the first concrete
+    // store registers its own `enabled:false` flag with WS2.1) — this block seeds
+    // ONLY the FOUNDATION-LEVEL knobs every replicated store shares. None is named
+    // `enabled`, so the block is outside the dev-agent dark-gate lint (which
+    // matches the literal `enabled: false` spelling). validateStateSyncInvariants()
+    // rejects an out-of-range value at startup (maxDriftMs ∈ [60s,15min]; budgets
+    // > 0). applyDefaults add-missing semantics → migrateConfig backfills these
+    // literals on existing agents (Migration Parity). With no per-store flag on,
+    // the entire foundation is inert (no replicated kinds emitted) — the default
+    // preserves today's behavior exactly; a single-machine agent is a strict no-op.
+    stateSync: {
+      aggregateJournalBudgetBytes: 67108864, // 64 MiB (§10.2)
+      maxDriftMs: 300000, // 5 min — the §3.4 default, within the [60s,15min] clamp
+      maxCachedSnapshots: 16, // §8.2 snapshot-cache count ceiling
+      maxCacheBytes: 33554432, // 32 MiB — §8.2 snapshot-cache byte ceiling
+    },
   },
   // Session Boot Self-Knowledge (spec: session-boot-self-knowledge.md) — the
   // "what I already have" block (vault secret NAMES + operational facts) the

@@ -516,3 +516,21 @@ Spec: `docs/specs/MENTOR-LIVE-READINESS-SPEC.md` §Fix 2a.
   clock, so a slow machine never wrongly quarantines a legitimately-ahead peer). Pure +
   dependency-injected; ships inert until the replicated-store steps consume it. Spec:
   `docs/specs/multi-machine-replicated-store-foundation.md` §3.
+- **`ReplicatedRecordEnvelope`** (`src/core/ReplicatedRecordEnvelope.ts`) — the generic
+  substrate every replicated store (preferences, relationships, learnings, …) layers a
+  journal kind onto. It defines the **replicated-record envelope** — the fields each
+  replicated change carries on top of its store-specific data: `recordKey` (primary key),
+  `hlc` (the `HybridLogicalClock` stamp at author time), `op` (`put`/`delete`), `origin`
+  (the author machine), and `observed` (the single HLC the author had already merged for
+  that key — the last-writer-witness; absent means "no prior witness" so a conflict is
+  flagged, the safe direction). A strict, parameterizable validator mirrors the coherence
+  journal's typed-schema discipline (rejects free text, drops + counts unknown fields, jails
+  any path-shaped field). A `ReplicatedKindRegistry` lets each store register its kind
+  independently (it ships empty — the first concrete kind lands with the preferences pool),
+  and the emission gate is **flag-gated** (a store emits only when its
+  `multiMachine.stateSync.<store>.enabled` is on, default off) **and flag-coherence-gated**
+  (a kind is forwarded to a peer only when that peer advertises it can receive it — so a new
+  kind is never silently dropped by an older peer, the named skew-failure mode). A boot-time
+  pool-flag-coherence check surfaces a mixed-flag pool once, coalesced across all peers.
+  Pure mechanism, dark by default; a single-machine install is a strict no-op. Spec:
+  `docs/specs/multi-machine-replicated-store-foundation.md` §4 / §10.
