@@ -119,6 +119,7 @@ import type { ForensicFinding } from '../monitoring/FrameworkIssueLedger.js';
 import { BurnDetector, type BurnDetectionConfig } from '../monitoring/BurnDetector.js';
 import { EscalationGovernor } from '../core/EscalationGovernor.js';
 import { ModelSwapService } from '../core/ModelSwapService.js';
+import { EscalationHintStore } from '../core/EscalationHintStore.js';
 import { UltraSessionCapMonitor, startOfUtcDayMs } from '../monitoring/UltraSessionCapMonitor.js';
 import { escalatedModelIds, normalizeTierEscalationConfig } from '../core/ModelTierEscalation.js';
 import { BurnThrottleRunbook, type BurnThrottleConfig } from '../monitoring/BurnThrottleRunbook.js';
@@ -248,6 +249,12 @@ export class AgentServer {
   // (wired late in server.ts via getEscalationGovernor()) can release a
   // profile-killed session's ultra lease. Nothing else reads it post-init.
   private escalationGovernorRef: EscalationGovernor | null = null;
+  // WS5.3 (escalation-rides-topic) — the ephemeral per-topic escalation-hint
+  // carrier. Always constructed (cheap, file-backed, inert while the WS5.3
+  // sub-flag is off) so the /pool/transfer source-capture + destination
+  // re-admit are ALIVE on the production init path; the feature gates itself
+  // via config (tierEscalation.ridesTopic), never via missing wiring.
+  private escalationHints: EscalationHintStore | null = null;
   // Stored from constructor options for use in start()'s listen callback.
   // The burn-detection system needs this to route alerts; no other
   // AgentServer code reads it (the route handlers go through routeCtx).
@@ -1652,6 +1659,13 @@ export class AgentServer {
       // escalation port (server.ts wiring) can release a profile-killed
       // session's lease BEFORE expected-live is computed.
       this.escalationGovernorRef = escalationGovernor;
+      // WS5.3 — the ephemeral hint carrier, file-backed alongside the governor
+      // state. Inert until tierEscalation.ridesTopic is on (the route + resume
+      // seams gate on the live config); constructing it unconditionally keeps
+      // the wiring present so the feature is config-gated, not wiring-gated.
+      this.escalationHints = new EscalationHintStore({
+        filePath: path.join(options.config.stateDir, 'state', 'model-tier-escalation', 'rides-topic-hints.json'),
+      });
       // §7: release the lease on the SAME close event that retires the
       // session (the reap-log emit) — crash-safe alongside TTL + liveness.
       options.sessionManager.on(
@@ -1710,6 +1724,7 @@ export class AgentServer {
       this.modelTierSwap = null;
       this.ultraCapMonitor = null;
       this.escalationGovernorRef = null;
+      this.escalationHints = null;
     }
 
     // Routes
@@ -1771,6 +1786,7 @@ export class AgentServer {
       topicProfile: options.topicProfile ?? null,
       sessionRefresh: options.sessionRefresh ?? null,
       modelTierSwap: this.modelTierSwap,
+      escalationHints: this.escalationHints,
       autonomyManager: options.autonomyManager ?? null,
       trustElevationTracker: options.trustElevationTracker ?? null,
       autonomousEvolution: options.autonomousEvolution ?? null,
@@ -3496,6 +3512,17 @@ export class AgentServer {
    */
   getEscalationGovernor(): EscalationGovernor | null {
     return this.escalationGovernorRef;
+  }
+
+  /**
+   * WS5.3 (escalation-rides-topic) — the ephemeral per-topic escalation-hint
+   * carrier, exposed so the server.ts wiring can (a) let the topic-profile
+   * pull serve-handler PEEK the hint to carry it across the acquire pull, and
+   * (b) drive the destination CONSUME + re-admit when the resumed session
+   * spawns. Null when model-tier escalation failed to initialize.
+   */
+  getEscalationHintStore(): EscalationHintStore | null {
+    return this.escalationHints;
   }
 
   /**

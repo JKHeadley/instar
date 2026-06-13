@@ -79,6 +79,16 @@ export interface TierEscalationConfig {
   enabled: boolean;
   /** Log intended swaps without performing them. `enabled:false` wins. */
   dryRun: boolean;
+  /**
+   * WS5.3 — "escalation rides the topic". When a topic running on the
+   * escalated tier is moved via `POST /pool/transfer`, carry its active
+   * escalation TRIGGER as an ephemeral hint so the destination RE-ADMITS the
+   * resumed session through ITS OWN `EscalationGovernor.admit()` cost guards
+   * (a trigger carry, NEVER a tier grant — the destination always re-decides).
+   * Rides UNDER `enabled`: with `enabled:false` the whole carry+re-admit path
+   * is a strict no-op. Default false ⇒ ships dark independently of the rest
+   * of the escalation feature. */
+  ridesTopic: boolean;
   triggers: TierEscalationTriggers;
   frameworks: Partial<Record<EscalationFramework, TierEscalationFrameworkEntry>>;
   costGuards: TierEscalationCostGuards;
@@ -88,6 +98,9 @@ export interface TierEscalationConfig {
 export const DEFAULT_TIER_ESCALATION_CONFIG: TierEscalationConfig = {
   enabled: false,
   dryRun: true,
+  // WS5.3 escalation-rides-topic sub-flag — ships dark (default false). Rides
+  // under `enabled`: a no-op while escalation itself is off.
+  ridesTopic: false,
   triggers: {
     skills: ['build', 'autonomous', 'instar-dev', 'spec-converge'],
     projectDesign: true,
@@ -307,6 +320,7 @@ export function normalizeTierEscalationConfig(
   return {
     enabled: typeof r.enabled === 'boolean' ? r.enabled : d.enabled,
     dryRun: typeof r.dryRun === 'boolean' ? r.dryRun : d.dryRun,
+    ridesTopic: typeof r.ridesTopic === 'boolean' ? r.ridesTopic : d.ridesTopic,
     triggers: {
       skills: Array.isArray(r.triggers?.skills)
         ? r.triggers.skills.filter((s): s is string => typeof s === 'string')
