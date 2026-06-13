@@ -18,7 +18,7 @@ Two small, composable pieces:
 
 ## Honest about what it is
 
-This is **loss-reduction, not a magic guarantee.** A revived session can still die. The point is that when it does, the work is backed up and the alarm is loud — never a silent disappearance. It ships **off by default on EVERY machine, including the development agent** — and unlike most new features it does NOT auto-enable itself on the dev machine for dogfooding, because it actually *reaches into the live session machinery* (it brings sessions back and nudges commits), and that's not something to switch on silently on the very machine running those sessions. It only turns on when the operator deliberately flips one flag, on a machine they choose. Every failure mode falls back to "today's behavior," never to a stuck session.
+This is **loss-reduction, not a magic guarantee.** A revived session can still die. The point is that when it does, the work is backed up and the alarm is loud — never a silent disappearance. It ships **enabled on developer agents and dark on everyone else's fleet** — the standard way new infrastructure proves itself: the dev machine is the controlled place it runs for real and matures before it's turned on more widely. (It *does* reach into the live session machinery — bringing sessions back and nudging commits — and the dev agent is exactly the bounded, watched environment where that's supposed to be exercised, not hidden from.) Every failure mode falls back to "today's behavior," never to a stuck session, and a dev operator can flip it off if it ever misbehaves.
 
 ## Multi-machine note
 
