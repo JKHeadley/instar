@@ -149,26 +149,28 @@ export class EvolutionManager {
   private autonomousEvolution: AutonomousEvolution | null = null;
   private autonomyManager: AutonomyProfileManager | null = null;
 
-  // ── TaskFlow Phase 3a dual-write fields ──────────────────────────
+  // ── TaskFlow Phase 3b authoritative-write fields ────────────────
+  // Phase 3a previously labelled these "dual-write" because EvolutionManager
+  // also wrote to local JSON (`evolution-queue.json`). Phase 3b removed the
+  // JSON write from the cluster lifecycle methods — TaskFlow is now the sole
+  // authority for proposal state changes that go through
+  // `addProposal` / `updateProposalStatus`. See
+  // docs/specs/OPENCLAW-IMPORT-TASKFLOW-SPEC.md § Phase 3b, line 641.
   /** Registry handle (set when TaskFlow is enabled). */
   private taskFlowRegistry: TaskFlowRegistry | null = null;
   /** Per-process controller-instance id (server uuid). */
   private taskFlowControllerInstanceId: string | null = null;
   /**
-   * Set to true by DivergenceChecker when state-divergence is detected.
-   * When true, EvolutionManager continues JSON-only writes and DOES NOT
-   * dual-write to TaskFlow. The signal is reset on next divergence pass that
-   * reports zero divergence. This is a signal-emitted brake, not a hard gate.
+   * In-memory cache of proposals when TaskFlow is wired. Phase 3a relied on
+   * the JSON file to round-trip proposal records between `addProposal` and
+   * `updateProposalStatus`. With JSON writes removed under Phase 3b, we keep
+   * the proposal objects in process memory so the lifecycle methods can
+   * continue to find them. This cache holds only proposals created in the
+   * current process; backfilled / historical proposals are still served via
+   * `loadEvolution()`. Reset on `clear()`-style operations is out of scope —
+   * the cache is monotonic for a server's lifetime.
    */
-  private taskFlowShadowWritesHalted = false;
-  /** Most recent reason for halting; surfaced in /health and tests. */
-  private taskFlowShadowWritesHaltReason: string | null = null;
-  /**
-   * Source of the most recent halt. DivergenceChecker uses this to ensure it
-   * only auto-clears halts that DivergenceChecker itself imposed — an operator
-   * or sibling system's manual halt stays in place until that source clears it.
-   */
-  private taskFlowShadowWritesHaltSource: string | null = null;
+  private taskFlowProposalCache = new Map<string, EvolutionProposal>();
 
   // ── WikiClaim Evidence Phase 2 fields ───────────────────────────
   /**
@@ -190,12 +192,18 @@ export class EvolutionManager {
   // ── TaskFlow wiring ─────────────────────────────────────────────
 
   /**
-   * Wire a TaskFlow registry for Phase 3a dual-write. After this call:
-   *   - addProposal / updateProposalStatus shadow-write to TaskFlow
-   *   - migrateExistingToTaskFlow() backfills any in-flight clusters
-   *   - DivergenceChecker can call setShadowWritesHalted() to brake writes
+   * Wire a TaskFlow registry. After this call:
+   *   - addProposal / updateProposalStatus write proposal lifecycle state to
+   *     TaskFlow as the authoritative store (Phase 3b cutover).
+   *   - migrateExistingToTaskFlow() backfills any pre-cutover proposals from
+   *     the legacy local `evolution-queue.json` artifact.
    *
    * Idempotent — safe to call multiple times; subsequent calls overwrite.
+   *
+   * Phase 3b removed the shadow-halt brake (`setShadowWritesHalted`) along
+   * with the DivergenceChecker that toggled it. Without a divergence
+   * comparator there is no signal to gate on, and TaskFlow is now the sole
+   * authoritative path — there is no longer a parallel writer to brake.
    */
   setTaskFlowRegistry(
     registry: TaskFlowRegistry,
@@ -207,31 +215,6 @@ export class EvolutionManager {
 
   getTaskFlowRegistry(): TaskFlowRegistry | null {
     return this.taskFlowRegistry;
-  }
-
-  /**
-   * Halt or resume TaskFlow shadow-writes. Called by DivergenceChecker on a
-   * mismatch. Signal-vs-authority compliance: this is a signal-consumed brake,
-   * not a brittle blocker — the divergence checker decides, EvolutionManager
-   * obeys. JSON writes continue regardless (read-authoritative TaskFlow is
-   * shadow-mode in Phase 3a).
-   *
-   * The optional `source` parameter tags the halt with its origin so an
-   * automatic clearer (DivergenceChecker) only cancels halts it caused.
-   * Defaults to `'manual'` when omitted.
-   */
-  setShadowWritesHalted(halted: boolean, reason?: string, source?: string): void {
-    this.taskFlowShadowWritesHalted = halted;
-    this.taskFlowShadowWritesHaltReason = halted ? (reason ?? 'divergence-detected') : null;
-    this.taskFlowShadowWritesHaltSource = halted ? (source ?? 'manual') : null;
-  }
-
-  isShadowWritesHalted(): { halted: boolean; reason: string | null; source: string | null } {
-    return {
-      halted: this.taskFlowShadowWritesHalted,
-      reason: this.taskFlowShadowWritesHaltReason,
-      source: this.taskFlowShadowWritesHaltSource,
-    };
   }
 
   // ── WikiClaim Evidence Phase 2 wiring ───────────────────────────
@@ -266,8 +249,13 @@ export class EvolutionManager {
    */
   addClusterEvidence(proposalId: string, evidence: MemoryEvidence | MemoryEvidence[]): void {
     if (!this.semanticMemory) return;
-    const state = this.loadEvolution();
-    const proposal = state.proposals.find((p) => p.id === proposalId);
+    // Phase 3b: check the in-memory cache (wired-TaskFlow path) before
+    // falling back to the legacy JSON snapshot.
+    const cached = this.taskFlowRegistry ? this.taskFlowProposalCache.get(proposalId) : undefined;
+    const proposal = cached ?? (() => {
+      const state = this.loadEvolution();
+      return state.proposals.find((p) => p.id === proposalId);
+    })();
     if (!proposal || !proposal.entityId) return;
     // Throws EvidencePolicyError on producer/kind mismatch — surfaced to caller
     // by design so a buggy emit-site isn't silently dropped.
@@ -353,13 +341,19 @@ export class EvolutionManager {
   }
 
   /**
-   * Best-effort dual-write to TaskFlow. NEVER throws to the caller — JSON
-   * remains the local durability path; TaskFlow is shadow until Phase 3b
-   * cutover. All TaskFlow errors land in console and the divergence checker
-   * picks up via state comparison.
+   * Write a new proposal cluster to TaskFlow as the authoritative store
+   * (Phase 3b cutover — TaskFlow is sole authority, the local
+   * `evolution-queue.json` is now a read-only historical artifact).
+   *
+   * Best-effort and never throws to the caller. TaskFlow failures are logged
+   * but absorbed so a temporary registry blip doesn't crash the caller. With
+   * no JSON shadow write left, an absorbed failure means the proposal is not
+   * persisted — operators must watch the `[EvolutionManager] taskflow …`
+   * warn channel for this. Future hardening (Phase 3c, out of scope) may add
+   * a retry queue.
    */
-  private async dualWriteCreate(p: EvolutionProposal): Promise<void> {
-    if (!this.taskFlowRegistry || this.taskFlowShadowWritesHalted) return;
+  private async writeCreateToTaskFlow(p: EvolutionProposal): Promise<void> {
+    if (!this.taskFlowRegistry) return;
     const principal = this.taskFlowPrincipal();
     if (!principal || principal.scope !== 'controller') return;
     try {
@@ -373,16 +367,18 @@ export class EvolutionManager {
         stateJson: { proposalId: p.id, type: p.type, source: p.source },
       });
     } catch (err) {
-      // Swallow — JSON is the source of truth in Phase 3a.
+      // Swallow — registry blips are warn-logged but not raised to the
+      // caller. Phase 3b accepts that under registry failure the proposal
+      // is dropped on the floor; the local JSON shadow no longer rescues it.
       this.logTaskFlowError('createFlow', p.id, err);
     }
   }
 
-  private async dualWriteTransition(
+  private async writeTransitionToTaskFlow(
     proposalId: string,
     action: ProposalFlowAction
   ): Promise<void> {
-    if (!this.taskFlowRegistry || this.taskFlowShadowWritesHalted) return;
+    if (!this.taskFlowRegistry) return;
     if (action.kind === 'noop' || action.kind === 'create') return;
     const principal = this.taskFlowPrincipal();
     if (!principal) return;
@@ -395,9 +391,10 @@ export class EvolutionManager {
         `evolution-cluster-create-${proposalId}`
       );
       if (!existing) {
-        // No backfill yet — proposal exists in JSON but not TaskFlow. Skip
-        // the transition silently; the next migrate-existing pass will pick
-        // it up at its terminal state.
+        // Pre-cutover proposal not yet migrated. The startup-time
+        // `migrateExistingToTaskFlow` backfill is idempotent; if it has not
+        // yet run for this server boot the next pass will pick this proposal
+        // up at its terminal state. Skipping is safe.
         return;
       }
       const flow = registry.getFlow(existing.flowId, { bypassCache: true });
@@ -728,6 +725,10 @@ export class EvolutionManager {
 
   private nextProposalId(state: EvolutionState): string {
     const existing = new Set(state.proposals.map(p => p.id));
+    // Phase 3b: include in-process cache IDs so a wired-TaskFlow session that
+    // doesn't write back to `evolution-queue.json` still generates collision-
+    // free IDs across consecutive `addProposal` calls.
+    for (const id of this.taskFlowProposalCache.keys()) existing.add(id);
     let num = 1;
     while (existing.has(`EVO-${String(num).padStart(3, '0')}`)) num++;
     return `EVO-${String(num).padStart(3, '0')}`;
@@ -758,31 +759,57 @@ export class EvolutionManager {
       proposedAt: this.now(),
       tags: opts.tags,
     };
-    // WikiClaim Phase 2: create cluster MemoryEntity and capture entityId BEFORE
-    // saving JSON, so the persisted proposal carries its cluster reference.
+    // WikiClaim Phase 2: create cluster MemoryEntity and capture entityId.
     // Failure to create the cluster entity is logged and swallowed inside
     // createClusterEntity — the proposal still ships with `entityId: undefined`.
     const entityId = this.createClusterEntity(proposal);
     if (entityId) proposal.entityId = entityId;
 
     state.proposals.push(proposal);
-    this.saveEvolution(state);
+    // Phase 3b cutover: when TaskFlow is wired, it is the sole authority for
+    // proposal lifecycle state — the local `evolution-queue.json` file is
+    // retained on disk as a read-only historical artifact of pre-cutover
+    // state and is no longer written by the cluster lifecycle methods. See
+    // docs/specs/OPENCLAW-IMPORT-TASKFLOW-SPEC.md § Phase 3b, line 641.
+    //
+    // When TaskFlow is NOT wired (`taskFlow.enabled=false` opt-out installs),
+    // the JSON file continues to be the local persistence path so proposals
+    // are not silently dropped on the floor.
+    if (this.taskFlowRegistry) {
+      // In-memory cache of newly created proposals so updateProposalStatus /
+      // listProposals can find them without round-tripping through JSON.
+      this.taskFlowProposalCache.set(proposal.id, proposal);
+    } else {
+      this.saveEvolution(state);
+    }
 
-    // TaskFlow Phase 3a shadow-write — best-effort, JSON remains source of truth.
-    void this.dualWriteCreate(proposal);
+    // TaskFlow Phase 3b authoritative write — best-effort. On registry
+    // failure the proposal is dropped (warn-logged) since the JSON shadow
+    // no longer rescues it; operators should watch the taskflow log channel.
+    void this.writeCreateToTaskFlow(proposal);
 
     return proposal;
   }
 
   updateProposalStatus(id: string, status: EvolutionStatus, resolution?: string): boolean {
     const state = this.loadEvolution();
-    const proposal = state.proposals.find(p => p.id === id);
+    // Phase 3b: when TaskFlow is wired, in-process proposals live in the
+    // in-memory cache (JSON writes were removed in the cutover). Check the
+    // cache first; otherwise fall back to the JSON-loaded array.
+    const cached = this.taskFlowRegistry ? this.taskFlowProposalCache.get(id) : undefined;
+    const proposal = cached ?? state.proposals.find(p => p.id === id);
     if (!proposal) return false;
     const prevStatus = proposal.status;
     proposal.status = status;
     if (resolution) proposal.resolution = resolution;
     if (status === 'implemented') proposal.implementedAt = this.now();
-    this.saveEvolution(state);
+    // Phase 3b: skip the JSON persistence when TaskFlow is wired — TaskFlow
+    // is the sole authority. The legacy JSON file is a read-only historical
+    // artifact. Opt-out installs (no TaskFlow) keep the legacy write so
+    // their proposals are not silently lost.
+    if (!this.taskFlowRegistry) {
+      this.saveEvolution(state);
+    }
 
     // Feed decision to TrustElevationTracker for acceptance rate tracking
     if (this.trustElevationTracker && (status === 'approved' || status === 'rejected')) {
@@ -790,9 +817,9 @@ export class EvolutionManager {
       this.trustElevationTracker.recordProposalDecision(proposal, decision, false);
     }
 
-    // TaskFlow Phase 3a shadow-write — best-effort, JSON remains source of truth.
+    // TaskFlow Phase 3b authoritative write.
     const action = statusToFlowAction(prevStatus, status, resolution);
-    void this.dualWriteTransition(id, action);
+    void this.writeTransitionToTaskFlow(id, action);
 
     return true;
   }
@@ -815,8 +842,11 @@ export class EvolutionManager {
 
     const evaluation = this.autonomousEvolution.evaluateForAutoImplementation(review, isAutonomous);
 
+    // Phase 3b: prefer the in-memory cache (wired-TaskFlow path) over the
+    // legacy JSON snapshot when both have the proposal.
+    const cached = this.taskFlowRegistry ? this.taskFlowProposalCache.get(proposalId) : undefined;
     const state = this.loadEvolution();
-    const proposal = state.proposals.find(p => p.id === proposalId);
+    const proposal = cached ?? state.proposals.find(p => p.id === proposalId);
     if (!proposal) return null;
 
     switch (evaluation.action) {
@@ -843,6 +873,15 @@ export class EvolutionManager {
   listProposals(filter?: { status?: EvolutionStatus; type?: EvolutionType }): EvolutionProposal[] {
     const state = this.loadEvolution();
     let proposals = state.proposals;
+    // Phase 3b: merge in-process cached proposals (wired-TaskFlow path) with
+    // historical proposals from the read-only JSON artifact. De-duplicate by
+    // id so a cached proposal overrides any stale JSON snapshot of itself.
+    if (this.taskFlowRegistry && this.taskFlowProposalCache.size > 0) {
+      const byId = new Map<string, EvolutionProposal>();
+      for (const p of proposals) byId.set(p.id, p);
+      for (const [id, p] of this.taskFlowProposalCache) byId.set(id, p);
+      proposals = Array.from(byId.values());
+    }
     if (filter?.status) proposals = proposals.filter(p => p.status === filter.status);
     if (filter?.type) proposals = proposals.filter(p => p.type === filter.type);
     return proposals;

@@ -11931,7 +11931,6 @@ export async function startServer(options: StartOptions): Promise<void> {
     let taskFlowSweeper: import('../tasks/TaskFlowMaintenanceSweeper.js').TaskFlowMaintenanceSweeper | undefined;
     let taskFlowDueWaker: import('../tasks/TaskFlowDueWaker.js').TaskFlowDueWaker | undefined;
     let threadlineFlowBridge: import('../tasks/ThreadlineFlowBridge.js').ThreadlineFlowBridge | undefined;
-    let divergenceChecker: import('../tasks/DivergenceChecker.js').DivergenceChecker | undefined;
     if ((config as any).taskFlow?.enabled) {
       try {
         const { TaskFlowStore } = await import('../tasks/task-flow-registry.store.sqlite.js');
@@ -11962,12 +11961,19 @@ export async function startServer(options: StartOptions): Promise<void> {
         const { ThreadlineFlowBridge } = await import('../tasks/ThreadlineFlowBridge.js');
         threadlineFlowBridge = new ThreadlineFlowBridge({ registry: taskFlowRegistry });
 
-        // Phase 3a — wire EvolutionManager dual-write + divergence checker.
+        // Phase 3b — TaskFlow is the sole authority for evolution clusters.
+        // The DivergenceChecker (Phase 3a) was removed after the 7-day
+        // quiet-period gate cleared (per OPENCLAW-IMPORT-TASKFLOW-SPEC.md
+        // Phase 3b, line 641). The local `evolution-queue.json` file is
+        // retained on disk as a read-only historical artifact of pre-cutover
+        // proposal history; new state is written only to TaskFlow.
         const crypto = await import('node:crypto');
         const controllerInstanceId = crypto.randomUUID();
         evolution.setTaskFlowRegistry(taskFlowRegistry, controllerInstanceId);
-        // Backfill in-flight clusters into TaskFlow. Idempotent via
-        // `evolution-cluster-create-<id>` idempotency key.
+        // Backfill any in-flight clusters into TaskFlow. Idempotent via
+        // `evolution-cluster-create-<id>` idempotency key — safe to keep
+        // running every startup; pre-cutover proposals already migrated to
+        // TaskFlow during Phase 3a will hit `alreadyExisted`.
         try {
           const migrationReport = await evolution.migrateExistingToTaskFlow();
           console.log(
@@ -11980,13 +11986,6 @@ export async function startServer(options: StartOptions): Promise<void> {
         } catch (err) {
           console.warn('[instar] taskflow evolution backfill failed (non-fatal):', err);
         }
-        const { DivergenceChecker } = await import('../tasks/DivergenceChecker.js');
-        divergenceChecker = new DivergenceChecker({
-          registry: taskFlowRegistry,
-          evolutionManager: evolution,
-          ledger: sharedStateLedger ?? undefined,
-        });
-        divergenceChecker.start();
 
         // Phase 4 — wire InitiativeTracker to TaskFlow as the single source of
         // truth. Backfill any initiatives present in the legacy
@@ -12009,7 +12008,6 @@ export async function startServer(options: StartOptions): Promise<void> {
         console.warn('[instar] task-flow init failed (non-fatal):', err);
         taskFlowRegistry = undefined;
         threadlineFlowBridge = undefined;
-        divergenceChecker = undefined;
       }
     }
 
@@ -15492,7 +15490,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       console.error('  Boot health beacon stop failed (continuing to bind real server):', err instanceof Error ? err.message : err);
     }
     await server.start();
-    void taskFlowSweeper; void taskFlowDueWaker; void divergenceChecker;
+    void taskFlowSweeper; void taskFlowDueWaker;
 
     // ── No-LOSS recovery: re-run inbound events stranded in 'processing' (spec §8 G3a) ──
     // The complement to the inbound dedup gate: an event claimed but never
