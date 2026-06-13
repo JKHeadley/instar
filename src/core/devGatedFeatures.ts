@@ -110,6 +110,12 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     justification: 'Gate covers the WRITE path only (reads are always-on O(1) resolution) and ships dryRun:true (§14 shadow-field — logs intended respawns, performs none); no spend, no destructive action while the dry-run canary holds.',
   },
   {
+    name: 'credentialRepointing',
+    configPath: 'subscriptionPool.credentialRepointing.enabled',
+    description: 'Live credential re-pointing (WS5.2) — the /credentials/* levers + the autonomous balancer that MOVES a pool account\'s OAuth credential between config-home slots without restarting.',
+    justification: 'Ships dryRun:true (the dry-run canary): on a dev agent the levers + the balancer run the FULL decision loop and AUDIT every swap they WOULD make, but the CredentialSwapExecutor returns BEFORE the keychain/config write step while dryRun holds (verified at CredentialSwapExecutor §2.3 — outcome `dry-run`, ZERO writes). So live-on-dev is alive + observable but performs NO destructive credential write; real writes need a deliberate dryRun:false (gated behind the §5 livetest promotion). Same dogfooding posture as topicProfiles / threadline.singleNegotiator. (Operator directive 2026-06-13, topic 20905: NONE of this should be dark for development agents — replaces the rev-2 dark-for-everyone DARK_GATE_EXCLUSIONS choice.)',
+  },
+  {
     name: 'ws44PoolLinks',
     configPath: 'multiMachine.seamlessness.ws44PoolLinks',
     description: 'WS4.4 links that survive machine boundaries — tunnel-fronting machine proxies /view/:id to the holder.',
@@ -242,11 +248,10 @@ export const DARK_GATE_EXCLUSIONS: DarkGateExclusion[] = [
     category: 'destructive',
     reason: 'kills MCP processes; off+dry-run for everyone',
   },
-  {
-    configPath: 'subscriptionPool.credentialRepointing.enabled',
-    category: 'destructive',
-    reason: 'writes OAuth credentials between config homes; off+dry-run for everyone (incl. dev) — live needs a deliberate enabled:true AND dryRun:false flip',
-  },
+  // (subscriptionPool.credentialRepointing.enabled MOVED to DEV_GATED_FEATURES on
+  //  2026-06-13 per operator directive — live-on-dev in dry-run, dark fleet. Its
+  //  destructive write is gated by the SEPARATE dryRun flag, which the dry-run canary
+  //  holds; see the DEV_GATED_FEATURES entry's justification.)
   // ── cost-bearing — ongoing third-party / LLM spend; explicit opt-in ──
   {
     configPath: 'mentor.autonomousFix.enabled',

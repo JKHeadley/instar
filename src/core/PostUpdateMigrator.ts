@@ -135,6 +135,29 @@ export function migrateConfigWs44PoolLinks(config: Record<string, unknown>): boo
   return true;
 }
 
+/**
+ * Live credential re-pointing was re-gated from DARK_GATE_EXCLUSIONS (off+dry-run for
+ * everyone) to the developmentAgent gate (live-on-dev in dry-run, dark fleet) per the
+ * 2026-06-13 operator directive. Existing agents that ran the old ConfigDefaults carry an
+ * explicit `subscriptionPool.credentialRepointing.enabled: false`, which (being explicit)
+ * would keep resolveDevAgentGate DARK even on a dev agent. Strip that default-shaped
+ * `false` so the gate resolves (live on dev, dark on fleet) — mirroring the ws44PoolLinks
+ * strip. An explicit `true` is preserved (an operator who deliberately turned it on). The
+ * separate `dryRun`/`manualLeversEnabled` fields are left untouched (dryRun stays the
+ * write-safety canary). Idempotent.
+ */
+export function migrateConfigCredentialRepointingDevGate(config: Record<string, unknown>): boolean {
+  const sp = config.subscriptionPool as Record<string, unknown> | undefined;
+  if (!sp || typeof sp !== 'object') return false;
+  const cr = sp.credentialRepointing as Record<string, unknown> | undefined;
+  if (!cr || typeof cr !== 'object') return false;
+  if (!Object.prototype.hasOwnProperty.call(cr, 'enabled')) return false;
+  // Only a default-shaped `false` is stripped; an explicit `true` is preserved.
+  if (cr.enabled !== false) return false;
+  delete cr.enabled;
+  return true;
+}
+
 export class PostUpdateMigrator {
   private config: MigratorConfig;
   /**
@@ -6137,9 +6160,23 @@ Create worktrees for collaborator repos with \`instar worktree create <branch>\`
     // migration is idempotent and skips template-generated CLAUDE.md files. Harmless
     // on agents where the feature is dark (every lever 503s).
     if (!content.includes('Live Credential Re-pointing (move a pool account')) {
-      content += `\n**Live Credential Re-pointing (move a pool account's login between config-home "slots" without restarting — WS5.2)** — Beyond the subscription pool's session-MOVING, this MOVES the credential itself: it exchanges which pool account's OAuth login sits in which config-home "slot" via a staged keychain swap, so the sessions already reading that slot pick up the new account on their NEXT API call — no restart, no re-login, nothing on your screen. The unit shuffled is the CREDENTIAL (always a clean SWAP between two slots, never a copy — one home per credential), verified by identity after every move (quarantine-never-repair when the identity oracle can't confirm). **Ships DARK** behind \`subscriptionPool.credentialRepointing.enabled\` — every lever 503s/no-ops while disabled (byte-for-byte today's behavior); going live needs a deliberate \`enabled:true\` + \`dryRun:false\` flip, and that ON decision is yours, separate from any build.\n- **Which account is in which slot?** (Registry First — read it, never guess) \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/credentials/locations\` → the ledger census (slot ↔ account, since, lastVerifiedAt, quarantine state, journal tail, mode).\n- **Flip your default account (zero-touch)** — \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/credentials/set-default -H 'Content-Type: application/json' -d '{"toAccountId":"<account>"}'\` swaps which account \`~/.claude\` serves, with no restart of the session you're talking to.\n- **Swap two slots' credentials live** — \`POST /credentials/swap\` \`{"slotA":"<home>","slotB":"<home>"}\` (the staged §2.3 exchange). **Restore the enrollment layout** — \`POST /credentials/restore-enrollment\` (parks any identity-incoherent blob one-directionally; never exchanges it into a healthy slot). All levers are DETECTIVE controls — operator-notified + audited + param-validated + per-pair cooldown + a force budget on \`force:true\`. No token material ever exits any \`/credentials/*\` surface (the single CredentialAuditEmit scrub chokepoint).\n- **The autonomous balancer surface** — \`GET /credentials/rebalancer\` (the use-it-or-lose-it drainer is Increment B; this surfaces the env-token applicability gate's verdict + WHY re-pointing would refuse, when enabled).\n- **When to use** (PROACTIVE — these are the triggers): "flip my default account to X" / "make X my default" → \`POST /credentials/set-default\`; "which account is this session/slot on?" / "where does ~/.claude point?" → \`GET /credentials/locations\` (read it, don't infer from \`claude auth status\` — that reads a metadata file, not the live credential). Single-account agents are a no-op. (Spec: \`docs/specs/live-credential-repointing-rebalancer.md\`.)\n`;
+      content += `\n**Live Credential Re-pointing (move a pool account's login between config-home "slots" without restarting — WS5.2)** — Beyond the subscription pool's session-MOVING, this MOVES the credential itself: it exchanges which pool account's OAuth login sits in which config-home "slot" via a staged keychain swap, so the sessions already reading that slot pick up the new account on their NEXT API call — no restart, no re-login, nothing on your screen. The unit shuffled is the CREDENTIAL (always a clean SWAP between two slots, never a copy — one home per credential), verified by identity after every move (quarantine-never-repair when the identity oracle can't confirm). **On a development agent it runs LIVE in dry-run** (the developmentAgent gate, \`subscriptionPool.credentialRepointing.enabled\` omitted → resolves live-on-dev / dark-fleet) — the \`/credentials/*\` levers return real data and the balancer runs its full decision loop, but the executor performs ZERO credential writes while \`dryRun\` holds (the write-safety canary; on the fleet every lever 503s). Actually MOVING a credential needs a deliberate \`dryRun:false\` — that decision is yours (gated behind running the §5 livetest battery first).\n- **Which account is in which slot?** (Registry First — read it, never guess) \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/credentials/locations\` → the ledger census (slot ↔ account, since, lastVerifiedAt, quarantine state, journal tail, mode).\n- **Flip your default account (zero-touch)** — \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/credentials/set-default -H 'Content-Type: application/json' -d '{"toAccountId":"<account>"}'\` swaps which account \`~/.claude\` serves, with no restart of the session you're talking to.\n- **Swap two slots' credentials live** — \`POST /credentials/swap\` \`{"slotA":"<home>","slotB":"<home>"}\` (the staged §2.3 exchange). **Restore the enrollment layout** — \`POST /credentials/restore-enrollment\` (parks any identity-incoherent blob one-directionally; never exchanges it into a healthy slot). All levers are DETECTIVE controls — operator-notified + audited + param-validated + per-pair cooldown + a force budget on \`force:true\`. No token material ever exits any \`/credentials/*\` surface (the single CredentialAuditEmit scrub chokepoint).\n- **The autonomous balancer surface** — \`GET /credentials/rebalancer\` (the use-it-or-lose-it drainer is Increment B; this surfaces the env-token applicability gate's verdict + WHY re-pointing would refuse, when enabled).\n- **When to use** (PROACTIVE — these are the triggers): "flip my default account to X" / "make X my default" → \`POST /credentials/set-default\`; "which account is this session/slot on?" / "where does ~/.claude point?" → \`GET /credentials/locations\` (read it, don't infer from \`claude auth status\` — that reads a metadata file, not the live credential). Single-account agents are a no-op. (Spec: \`docs/specs/live-credential-repointing-rebalancer.md\`.)\n`;
       patched = true;
       result.upgraded.push('CLAUDE.md: added Live Credential Re-pointing awareness section');
+    }
+
+    // In-place re-word for agents that ALREADY have the credential section with the stale
+    // "Ships DARK ... enabled:true + dryRun:false" wording (pre-2026-06-13 re-gate). Replace
+    // that one sentence with the live-on-dev-dry-run truth; idempotent (the new text lacks the
+    // old phrase, so a second run is a no-op).
+    {
+      const stale = '**Ships DARK** behind `subscriptionPool.credentialRepointing.enabled` — every lever 503s/no-ops while disabled (byte-for-byte today\'s behavior); going live needs a deliberate `enabled:true` + `dryRun:false` flip, and that ON decision is yours, separate from any build.';
+      const fresh = '**On a development agent it runs LIVE in dry-run** (the developmentAgent gate, `subscriptionPool.credentialRepointing.enabled` omitted → resolves live-on-dev / dark-fleet) — the `/credentials/*` levers return real data and the balancer runs its full decision loop, but the executor performs ZERO credential writes while `dryRun` holds (the write-safety canary; on the fleet every lever 503s). Actually MOVING a credential needs a deliberate `dryRun:false` — that decision is yours (gated behind running the §5 livetest battery first).';
+      if (content.includes(stale)) {
+        content = content.replace(stale, fresh);
+        patched = true;
+        result.upgraded.push('CLAUDE.md: re-worded Live Credential Re-pointing to live-on-dev dry-run (2026-06-13 re-gate)');
+      }
     }
 
     if (patched) {
@@ -7099,6 +7136,15 @@ Create worktrees for collaborator repos with \`instar worktree create <branch>\`
       result.upgraded.push('config.json: stripped default-shaped multiMachine.seamlessness.ws44PoolLinks=false so the developmentAgent gate resolves it live');
     } else {
       result.skipped.push('config.json: multiMachine.seamlessness.ws44PoolLinks dev-gate already correct (omitted or operator-set)');
+    }
+
+    // Live credential re-pointing re-gated to the developmentAgent gate (2026-06-13 operator
+    // directive): strip a default-shaped enabled:false so it resolves live-on-dev / dark-fleet.
+    if (migrateConfigCredentialRepointingDevGate(config)) {
+      patched = true;
+      result.upgraded.push('config.json: stripped default-shaped subscriptionPool.credentialRepointing.enabled=false so the developmentAgent gate resolves it (live-on-dev dry-run, dark fleet)');
+    } else {
+      result.skipped.push('config.json: subscriptionPool.credentialRepointing.enabled dev-gate already correct (omitted or operator-set)');
     }
 
     if (patched) {

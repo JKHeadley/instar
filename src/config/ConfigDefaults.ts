@@ -1129,13 +1129,17 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
     defaults: {},                         // per-topic config-default profiles (§5.2)
   },
   // Live credential re-pointing (spec: live-credential-repointing-rebalancer.md).
-  // DARK + dry-run for EVERYONE incl. dev — it WRITES OAuth credentials between
-  // config homes (category 'destructive' in DARK_GATE_EXCLUSIONS, NOT dev-gated:
-  // a dev-gated omit-enabled would resolve LIVE-with-writes on Echo). Live needs a
-  // deliberate enabled:true AND dryRun:false flip. Review a dry-run pass first.
+  // developmentAgent dark-feature gate (operator directive 2026-06-13): `enabled` is
+  // OMITTED so resolveDevAgentGate resolves it LIVE on a dev agent + DARK on the fleet
+  // (the DEV_GATED_FEATURES entry). The destructive credential WRITE is gated by the
+  // SEPARATE dryRun flag (default true): live-on-dev runs the full decision loop +
+  // audits what it WOULD do, but the CredentialSwapExecutor returns before any keychain
+  // write while dryRun holds — the dry-run canary. Real writes need a deliberate
+  // dryRun:false (gated behind the §5 livetest promotion). DO NOT hardcode enabled here
+  // (a baked-in false would dark dev agents too — the #1001 shape the dark-gate lint
+  // forbids for a dev-gated block).
   subscriptionPool: {
     credentialRepointing: {
-      enabled: false,
       dryRun: true,
       manualLeversEnabled: true,
     },

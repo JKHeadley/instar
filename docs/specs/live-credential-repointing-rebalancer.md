@@ -747,6 +747,21 @@ spawn-time attribution lies (census #6, #7). Disposition:
   sane decisions; fleet stays dark. Registered on the Graduated Feature Rollout / maturation
   track as a DURABLE entry (named track artifact, not a private intention) with a
   promotion-review cadence (Close the Loop — dark features don't rot in the dark).
+- **AMENDMENT 2026-06-13 (operator directive, topic 20905 — "NONE of this should be dark for
+  development agents").** The R2 correction above conflated two SEPARATE flags: `enabled` (is the
+  feature alive?) and `dryRun` (does it WRITE?). R2's fear — "omitted-enabled in DEV_GATED_FEATURES
+  resolves LIVE on Echo with credential WRITES the instant it's wired" — is FALSE while `dryRun`
+  defaults true: the executor's dry-run gate (`CredentialSwapExecutor`, outcome `dry-run`) returns
+  BEFORE any keychain/config write, so live-on-dev runs the full decision loop + audits what it
+  WOULD do but performs ZERO writes. Per the operator directive, the feature is therefore re-gated
+  to the **developmentAgent gate**: `enabled` is OMITTED so `resolveDevAgentGate` resolves it LIVE
+  on a dev agent + DARK on the fleet (the same dry-run-canary posture as `topicProfiles` /
+  `threadline.singleNegotiator`). The destructive WRITE remains gated by the SEPARATE `dryRun:true`
+  default; promotion to real writes (`dryRun:false`) still requires the §5 livetest + the operator's
+  deliberate flip. This delivers the dogfooding R2's dark-for-everyone choice sacrificed, WITHOUT
+  exposing real credential writes. (Migration: `PostUpdateMigrator.migrateConfigCredentialRepointingDevGate`
+  strips a default-shaped `enabled:false` from existing agents so the gate resolves; an explicit
+  operator `enabled:true` is preserved.)
 - Rollback, ORDERED (round 1 caught the trap): `enabled: false` stops the balancer and
   levers (503) but the ledger REMAINS the read-resolution source whenever its assignments
   differ from enrollment ("disabled stops MOVES, never READS") — a dark-fallback to raw

@@ -19,6 +19,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { applyDefaults, getMigrationDefaults } from '../../src/config/ConfigDefaults.js';
 import { getConfigByPath } from '../../src/core/devGatedFeatures.js';
+import { resolveDevAgentGate } from '../../src/core/devAgentGate.js';
 import { CredentialWriteFunnel } from '../../src/core/CredentialWriteFunnel.js';
 import {
   CredentialLocationLedger,
@@ -74,15 +75,23 @@ function pool(): LedgerPoolView {
 }
 const allowAll: (slot: string) => Promise<SlotIdentity> = async (slot) => ({ accountId: slot === SLOT_A ? ACC_A : ACC_B });
 
-describe('CredentialSwapExecutor — dark-ship inertness on the production config path', () => {
+describe('CredentialSwapExecutor — write-safety on the production config path (re-gated 2026-06-13)', () => {
+  // Re-gated to the developmentAgent gate: a DEV agent resolves the feature LIVE but in
+  // DRY-RUN (the canary), so the executor runs the decision loop and returns 'dry-run' with
+  // ZERO writes; a FLEET agent resolves DARK ('disabled', strict no-op). The load-bearing
+  // invariant — ZERO credential writes on the production default — holds for BOTH; the only
+  // difference is dry-run runs the decision loop while disabled short-circuits.
   for (const isDev of [true, false]) {
-    it(`a ${isDev ? 'DEV' : 'fleet'} agent's production config gates the executor to a strict no-op (zero writes)`, async () => {
+    it(`a ${isDev ? 'DEV (live-in-dry-run)' : 'fleet (dark)'} agent's production config performs ZERO credential writes`, async () => {
       const cfg = bootConfig(isDev);
-      // The two-flag gate as a real agent reads it.
-      const enabled = getConfigByPath(cfg, 'subscriptionPool.credentialRepointing.enabled') as boolean;
+      // enabled is OMITTED in defaults → the dev-agent gate resolves it; dryRun stays the canary.
+      const enabled = resolveDevAgentGate(
+        getConfigByPath(cfg, 'subscriptionPool.credentialRepointing.enabled') as boolean | undefined,
+        cfg,
+      );
       const dryRun = getConfigByPath(cfg, 'subscriptionPool.credentialRepointing.dryRun') as boolean;
-      expect(enabled).toBe(false);
-      expect(dryRun).toBe(true);
+      expect(enabled).toBe(isDev);   // live on dev, dark on fleet
+      expect(dryRun).toBe(true);     // the write canary, both kinds
 
       const km = memKeychain();
       const led = new CredentialLocationLedger({ stateDir, pool: pool(), oracle: noopOracle });
@@ -90,7 +99,7 @@ describe('CredentialSwapExecutor — dark-ship inertness on the production confi
       led.recordAssignment(SLOT_B, ACC_B, { op: 'seed' });
       const versionBefore = led.version;
 
-      // Construct the executor EXACTLY as the composition root will: pass the real config block.
+      // Construct the executor EXACTLY as the composition root will: pass the resolved config.
       const ex = new CredentialSwapExecutor({
         funnel: new CredentialWriteFunnel(),
         ledger: led,
@@ -100,17 +109,19 @@ describe('CredentialSwapExecutor — dark-ship inertness on the production confi
       });
 
       const res = await ex.swap(SLOT_A, SLOT_B);
-      // DARK: feature off → strict no-op.
-      expect(res.outcome).toBe('disabled');
+      // DEV: feature live but dryRun → 'dry-run' (decision loop ran, zero writes).
+      // FLEET: feature off → 'disabled' (strict no-op).
+      expect(res.outcome).toBe(isDev ? 'dry-run' : 'disabled');
+      // THE invariant — ZERO credential writes either way.
       expect(km.writes.length).toBe(0);
       expect(km.deletes.length).toBe(0);
-      // The ledger was never mutated and the tenants are untouched.
-      expect(led.version).toBe(versionBefore);
       expect(led.tenantOf(SLOT_A)).toBe(ACC_A);
       expect(led.tenantOf(SLOT_B)).toBe(ACC_B);
       // The keychain blobs are byte-identical to before the call.
       expect(km.map[claudeCredentialService(SLOT_A)]).toBe(blob(ACC_A));
       expect(km.map[claudeCredentialService(SLOT_B)]).toBe(blob(ACC_B));
+      // dryRun never mutates the ledger version either.
+      expect(led.version).toBe(versionBefore);
     });
   }
 

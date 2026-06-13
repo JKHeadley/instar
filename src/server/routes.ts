@@ -19031,7 +19031,7 @@ export function createRoutes(ctx: RouteContext): Router {
     // PATCH behaves exactly as today.
     if (
       configHome !== undefined &&
-      ctx.config.subscriptionPool?.credentialRepointing?.enabled === true
+      resolveDevAgentGate(ctx.config.subscriptionPool?.credentialRepointing?.enabled, ctx.config)
     ) {
       res.status(409).json({
         error:
@@ -19200,7 +19200,7 @@ export function createRoutes(ctx: RouteContext): Router {
   // balancer is Increment B). EVERY response body is sent through `audit.response(...)` — the
   // §2.9 single scrub chokepoint — so no token material can exit any /credentials/* surface.
   const credRepointEnabled = (): boolean =>
-    ctx.config.subscriptionPool?.credentialRepointing?.enabled === true;
+    resolveDevAgentGate(ctx.config.subscriptionPool?.credentialRepointing?.enabled, ctx.config);
   const credLeversEnabled = (): boolean =>
     ctx.config.subscriptionPool?.credentialRepointing?.manualLeversEnabled !== false;
   // The scrub-everything sender: NO /credentials/* response leaves except through here.

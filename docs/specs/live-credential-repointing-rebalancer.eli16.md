@@ -79,3 +79,14 @@ build — the one step that isn't autonomous, by design. The design is converged
 **Approving authorizes the BUILD only** (worktree → PR → CI → merge, shipping dark/off). Turning
 it ON to actually start re-seating credentials stays a separate, later decision that's entirely
 yours.
+
+## Amendment (2026-06-13) — not dark for development agents
+
+The operator directed that this should not be dark for development agents. So the gating
+changed: on a **development agent** the feature now runs **live — but in dry-run**. That means
+the `/credentials/*` levers return real data and the balancer runs its full decision loop and
+shows every move it WOULD make, while a separate safety switch (`dryRun`, on by default) keeps it
+from actually moving any credential. The wider fleet stays fully dark. Actually moving logins
+between accounts still needs a deliberate, operator-controlled flip (`dryRun:false`), gated behind
+running the livetest battery first. So: alive and observable for dogfooding on a dev agent, with
+**zero real credential moves** until you say go.
