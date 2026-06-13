@@ -109,6 +109,14 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     description: 'Topic Profile — per-topic model/thinking/framework pins (TOPIC-PROFILE-SPEC).',
     justification: 'Gate covers the WRITE path only (reads are always-on O(1) resolution) and ships dryRun:true (§14 shadow-field — logs intended respawns, performs none); no spend, no destructive action while the dry-run canary holds.',
   },
+  {
+    name: 'outboundAdvisoryTimeClaim',
+    configPath: 'messaging.outboundAdvisory.timeClaim.enabled',
+    description:
+      'TIME_CLAIM outbound advisory — flags elapsed/remaining/percent claims that contradict the live session clock (operator mandate 2026-06-12).',
+    justification:
+      'Deterministic regex check feeding the existing inform-only advisory surface (never blocks; sender fixes or acks); no LLM, no egress, no spend, no destructive action.',
+  },
 ];
 
 /**

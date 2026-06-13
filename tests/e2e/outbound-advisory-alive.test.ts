@@ -111,6 +111,33 @@ describe('Outbound advisory E2E lifecycle (feature is alive)', () => {
     expect(log.status).toBe(401);
   });
 
+  it('TIME_CLAIM is alive end-to-end: an active run + a contradicted claim → advisory on the production init path', async () => {
+    // Explicit live-config enable (the fleet flip path — this e2e config is
+    // not a dev agent, so the gate alone would keep it dark).
+    liveValues['messaging.outboundAdvisory.timeClaim.enabled'] = true;
+    const autoDir = path.join(stateDir, 'autonomous');
+    fs.mkdirSync(autoDir, { recursive: true });
+    const startedAt = new Date(Date.now() - 6868 * 1000).toISOString().replace(/\.\d{3}Z$/, 'Z');
+    fs.writeFileSync(
+      path.join(autoDir, '13481.local.md'),
+      `---\nactive: true\niteration: 1\ngoal: "e2e run"\nduration_seconds: 86400\nstarted_at: "${startedAt}"\nreport_topic: "13481"\n---\n`,
+    );
+    const res = await request(app)
+      .post('/messaging/preflight')
+      .set(auth())
+      .send({ text: 'AUTONOMOUS PROGRESS: ~7h elapsed / 24h total.', messageKind: 'reply', topicId: 13481 });
+    expect(res.status).toBe(200);
+    expect(res.body.advisories.map((a: any) => a.code)).toEqual(['TIME_CLAIM']);
+
+    // Dark by default on this non-dev-agent config: same request, gate unset.
+    delete liveValues['messaging.outboundAdvisory.timeClaim.enabled'];
+    const dark = await request(app)
+      .post('/messaging/preflight')
+      .set(auth())
+      .send({ text: 'AUTONOMOUS PROGRESS: ~7h elapsed / 24h total.', messageKind: 'reply', topicId: 13481 });
+    expect(dark.body.advisories).toEqual([]);
+  });
+
   it('the live-config kill switch disables the preflight WITHOUT a restart', async () => {
     liveValues['messaging.outboundAdvisory.enabled'] = false;
     const res = await request(app)

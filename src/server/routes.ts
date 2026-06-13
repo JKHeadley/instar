@@ -257,6 +257,7 @@ import type { MessageKind } from '../core/MessagingToneGate.js';
 import {
   OutboundAdvisoryAudit,
   composeAdvisories,
+  composeTimeClaimAdvisories,
   PREFLIGHT_TEXT_CAP,
 } from '../messaging/OutboundAdvisory.js';
 import type { PasteManager } from '../paste/PasteManager.js';
@@ -8675,13 +8676,49 @@ export function createRoutes(ctx: RouteContext): Router {
       return;
     }
     const capped = text.length > PREFLIGHT_TEXT_CAP ? text.slice(0, PREFLIGHT_TEXT_CAP) : text;
-    // Advisories are composed for automated sends only — the conversational
-    // path already has the full authority pipeline, and the operator's
-    // over-block concern argues against any new friction there (§4 Q2).
-    const advisories = kind === 'automated' ? composeAdvisories(capped) : [];
+    // TIME_CLAIM (operator mandate 2026-06-12, topic 13481 — "MANDATE accurate
+    // time reporting"): when the sending topic has an ACTIVE time-boxed
+    // (autonomous) session, elapsed/remaining/percent claims in the candidate
+    // text are verified against the live session clock. Dev-gated dark
+    // (standard_development_agent_dark_feature_gate); resolution failure
+    // degrades to "no clocks" — fail-open like every detector.
+    const timeClaimEnabled = resolveDevAgentGate(
+      ctx.liveConfig?.get<boolean | undefined>('messaging.outboundAdvisory.timeClaim.enabled', undefined),
+      ctx.config,
+    );
+    let activeClocks: ReturnType<typeof readSessionClocks> = [];
+    if (timeClaimEnabled && Number.isFinite(topic) && topic > 0) {
+      try {
+        activeClocks = readSessionClocks(ctx.config.stateDir, Date.now(), String(topic)).filter(
+          (c) => c.status === 'active',
+        );
+      } catch {
+        /* @silent-fallback-ok — fail-open by the advisory contract (outbound-jargon-filepath-gap §2.3): a clock-read error skips the TIME_CLAIM signal, never withholds a message */
+        activeClocks = [];
+      }
+    }
+    // Full detector set for automated sends only — the conversational path
+    // already has the full authority pipeline, and the operator's over-block
+    // concern argues against any new friction there (§4 Q2). TIME_CLAIM is the
+    // ONE exception, for every non-script sender kind: an unstamped interactive
+    // session running an autonomous job is exactly where the founding "~7h
+    // elapsed" mis-report came from, and a contradicted time claim is wrong
+    // regardless of message kind. No active clock for the topic → no-op.
+    const advisories =
+      kind === 'automated'
+        ? composeAdvisories(capped, { sessionClocks: activeClocks })
+        : composeTimeClaimAdvisories(capped, activeClocks);
     outboundAdvisoryAudit.recordPreflight({
       topicId: Number.isFinite(topic) ? topic : 0,
-      jobSlug: typeof jobSlug === 'string' ? jobSlug : '',
+      // Non-automated (conversational-session) preflights carry no job slug —
+      // key their audit/escalation rows under a fixed readable label instead
+      // of an empty string.
+      jobSlug:
+        typeof jobSlug === 'string' && jobSlug.length > 0
+          ? jobSlug
+          : kind === 'automated'
+            ? ''
+            : 'interactive-session',
       kind,
       text: capped,
       advisories: advisories.map((a) => a.code),
@@ -8935,7 +8972,17 @@ export function createRoutes(ctx: RouteContext): Router {
         try {
           outboundAdvisoryAudit.recordAck({
             topicId,
-            jobSlug: metadataJobSlug,
+            // Same slug fallback as the preflight writer: a non-automated
+            // (conversational-session) ack must land under the SAME signature
+            // key its advised episodes were recorded under, or the episodes
+            // never resolve and the ignore-escalation false-fires on messages
+            // that actually delivered (second-pass review concern 2).
+            jobSlug:
+              metadataJobSlug.length > 0
+                ? metadataJobSlug
+                : (messageKind ?? 'reply') === 'automated'
+                  ? ''
+                  : 'interactive-session',
             kind: messageKind ?? 'reply',
             text,
             advisories: advisoryCodes,
