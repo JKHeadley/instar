@@ -32,6 +32,8 @@ None while dark — internal substrate. The user-visible capability — the peop
 
 None user-facing while dark. Two new internal modules: `UserRegistryReplicatedStore.ts` and `TopicOperatorReplicatedStore.ts`. `UserManager` + `TopicOperatorStore` each gain an injected (dark) replication emit seam. No new routes (the foundation /state/conflicts, /state/resolve-conflict, /state/quarantine surface is reused).
 
+Migration parity: `PostUpdateMigrator` wires both `multiMachine.stateSync.userRegistry` / `.topicOperator` config defaults and the dark-gate map entries into already-deployed agents on update, and idempotently splices the two WS2.6 One-Memory awareness lines (including the topic-operator untrusted-replicated invariant) into a deployed agent's CLAUDE.md — so existing agents receive the capability and its safety prose, not just new installs.
+
 ## Evidence
 
 - `tests/unit/UserRegistryReplicatedStore.test.ts` — dual-registry coupling; recordKey-identity-collapses-cross-machine (channel-set fingerprint, NEVER the local userId; order-independent; case-drift absorbed; collision-resistant; channel-less is null); disclosure-min-strips-local-id; fat-record-replicates + 64KB-named-error; type-clamp (ISO-8601 / finite-number / jailed-channel reject smuggled markup); op:delete-tombstone-erasure; advisory append-both union merge; foreign render safety; own-origin materialization keys on the channel set. Green.
