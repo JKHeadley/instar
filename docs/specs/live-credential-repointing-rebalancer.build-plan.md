@@ -274,10 +274,17 @@ drain (CMT-1335 full) is Increment B.
   disjoint namespace; would need a keychain-enumeration sweep — future refinement, not a recovery hazard).
 - Second-pass review: required (destructive re-drive writes) — verdict in the side-effects artifact.
 
+### 2026-06-13 — Step 6a (CredentialLocationResolver) — BUILT + GREEN
+- `src/core/CredentialLocationResolver.ts`: the single read-side chokepoint the 12 census consumers route through.
+  `slotForAccount(accountId, enrollmentHome)` / `tenantForSlot(slot)` / `active()` / `isEnabled()`. NO-OP while dark:
+  `active()` = enabled AND ledger.isSeeded() AND !isUnknownMode() — else today's behavior (enrollment home / null).
+  Reads the live config each call. Sync, never throws (spawn-hot-path safe). Tests: credential-location-resolver (7).
+  No consumer yet → second-pass not required; the re-routing commits (6b) carry their own review.
+
 ### NEXT (resume here)
-- Step 6: Census consumer re-routing (spec §2.2 table — the 12 rows). Each live `configHome`-as-location read →
-  `ledger.slotOf/tenantOf` when the feature is enabled; ledger-unknown → today's behavior (additive, no behavior
-  change while dark). Key sites: QuotaPoller token read (`:108-115`), 401-refresh (`:218`), email auto-patch
+- Step 6b: route the 12 §2.2 census consumers through `CredentialLocationResolver` (built in 6a). Each live
+  `configHome`-as-location read → `resolver.slotForAccount(accountId, account.configHome)`; each slot→tenant read →
+  `resolver.tenantForSlot(slot)`. Additive + provably no-op while dark (resolver returns enrollment home). Key sites: QuotaPoller token read (`:108-115`), 401-refresh (`:218`), email auto-patch
   SUPPRESSED (`:349-356`), needs-reauth attribution (`:262-269`); SessionManager spawn placement (`:1712-1716/:1989`);
   InUseAccountResolver badge → `tenantOf('~/.claude')` NOT `auth status` (E4a liar); AccountSwitcher/switch-account/
   autoMigrate REFUSE at the MANAGER when enabled; pool `configHome` PATCH → 409. (Recovery wiring at server start +
