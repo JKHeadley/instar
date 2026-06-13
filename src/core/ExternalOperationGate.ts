@@ -22,6 +22,7 @@ import path from 'node:path';
 import type { IntelligenceProvider } from './types.js';
 import { maybeRotateJsonl } from '../utils/jsonl-rotation.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
+import { requireAnchoredAuthorization } from '../coordination/AnchoredAuthorization.js';
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -284,8 +285,26 @@ export class ExternalOperationGate {
     itemCount?: number;
     /** The user's original request (for LLM proportionality check) */
     userRequest?: string;
+    /**
+     * OPTIONAL anchored authorization (Threadline Robustness Phase 1, G2 / D-C).
+     * When a caller supplies an authorization to justify an IRREVERSIBLE
+     * operation, it MUST be a typed anchored artifact (mandate / review-exchange
+     * / operator-confirm reference) — NEVER a string, transcript, conversation
+     * summary, or ContentClassifier output. This is the POSITIVE boundary that
+     * keeps prose from ever authorizing an irreversible step: the gate fails
+     * CLOSED on the authority path (throws AnchoredAuthorizationError) rather
+     * than letting an un-typed "we agreed in chat" justify the action. Omitting
+     * it is fine — the normal risk evaluation proceeds unchanged.
+     */
+    authorization?: unknown;
   }): Promise<GateDecision> {
     const now = new Date().toISOString();
+
+    // G2 positive boundary: if an authorization is supplied for an irreversible
+    // operation, it must be a typed anchored artifact. Prose has no pathway here.
+    if (params.authorization !== undefined && params.reversibility === 'irreversible') {
+      requireAnchoredAuthorization(params.authorization, `ExternalOperationGate:${params.service}`);
+    }
 
     // Step 1: Check if service is fully blocked
     if (this.config.blockedServices?.includes(params.service)) {

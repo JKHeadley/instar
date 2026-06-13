@@ -29,6 +29,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
+import type { NegotiatorLease, LeaseOwner, LeaseResult } from './NegotiatorLease.js';
+
 // ── Types ───────────────────────────────────────────────────────
 
 /**
@@ -118,6 +120,16 @@ export interface Conversation {
   trustLevel?: string;
   /** Snapshot of the MoltBridge IQS band at last contact. */
   iqsBand?: string;
+
+  // ── Negotiator lease (Robustness Phase 1 — additive + optional) ──
+  // An existing conversations.json without these loads unchanged; the acquire
+  // path defensively initializes them. See THREADLINE-SINGLE-NEGOTIATOR-SPEC.md.
+  /** The single-negotiator lease — names the one session that owns the voice. */
+  negotiatorLease?: NegotiatorLease;
+  /** Durable per-epoch holding-notice rate limit (FD-3). */
+  lastHoldingNoticeEpoch?: number;
+  /** Durable global min-interval floor for holding notices (FD-3). */
+  lastHoldingNoticeAt?: string;
 }
 
 /** Mutation function: receives a draft clone, returns the next record. */
@@ -536,6 +548,92 @@ export class ConversationStore {
     }
 
     return retired;
+  }
+
+  // ── Negotiator lease (Robustness Phase 1, D-A) ─────────────────
+
+  /**
+   * Acquire-or-renew the negotiator lease for a thread (D-A). One synchronous
+   * CAS transaction over `mutate()` — no background timers (FD-6). Decision:
+   *  - no lease / expired / owner provably dead → acquire (epoch += 1).
+   *  - already owned by the caller (and not expired) → renew (epoch unchanged).
+   *  - a live, unexpired FOREIGN lease → held (caller does NOT own the voice).
+   *
+   * `isOwnerLive(sessionName)` lets the caller fence a dead owner: a foreign
+   * lease whose owner session is absent from the live session registry is
+   * reclaimable even before its TTL expires. Never reads identity from a
+   * message body — the owner is always the server-authoritative live session.
+   */
+  async acquireOrRenewLease(
+    threadId: string,
+    owner: LeaseOwner,
+    opts: { ttlMs: number; now?: number; isOwnerLive?: (sessionName: string) => boolean },
+  ): Promise<LeaseResult> {
+    const nowMs = opts.now ?? Date.now();
+    const nowIso = new Date(nowMs).toISOString();
+    const expiresIso = new Date(nowMs + opts.ttlMs).toISOString();
+    const isOwnerLive = opts.isOwnerLive ?? (() => true);
+
+    let result: LeaseResult | null = null;
+    await this.mutate(threadId, (draft) => {
+      const existing = draft.negotiatorLease;
+      const ownedByCaller =
+        !!existing &&
+        existing.ownerSessionName === owner.ownerSessionName &&
+        existing.ownerMachineId === owner.ownerMachineId;
+      const expired = existing ? new Date(existing.expiresAt).getTime() <= nowMs : true;
+      const foreignDead =
+        !!existing && !ownedByCaller && !isOwnerLive(existing.ownerSessionName);
+
+      if (existing && !expired && !ownedByCaller && !foreignDead) {
+        // Live foreign lease — HELD. The lease itself is not mutated.
+        result = { disposition: 'held', lease: existing, ownedByCaller: false };
+        return draft;
+      }
+      if (existing && ownedByCaller && !expired) {
+        // Renew — extend expiry, epoch unchanged.
+        const renewed: NegotiatorLease = { ...existing, renewedAt: nowIso, expiresAt: expiresIso };
+        draft.negotiatorLease = renewed;
+        result = { disposition: 'renewed', lease: renewed, ownedByCaller: true };
+        return draft;
+      }
+      // Acquire (no lease / expired / dead foreign owner) — new monotonic epoch.
+      const acquired: NegotiatorLease = {
+        ownerSessionName: owner.ownerSessionName,
+        ownerMachineId: owner.ownerMachineId,
+        epoch: (existing?.epoch ?? 0) + 1,
+        acquiredAt: nowIso,
+        renewedAt: nowIso,
+        expiresAt: expiresIso,
+      };
+      draft.negotiatorLease = acquired;
+      result = { disposition: 'acquired', lease: acquired, ownedByCaller: true };
+      return draft;
+    });
+    // result is always set by the mutate fn (which runs at least once on commit).
+    if (!result) {
+      throw new Error(`acquireOrRenewLease: no result produced for ${threadId}`);
+    }
+    return result;
+  }
+
+  /** Read the current lease for a thread (no TTL filtering — lease may be stale). */
+  readLease(threadId: string): NegotiatorLease | null {
+    return this.snapshot().conversations[threadId]?.negotiatorLease ?? null;
+  }
+
+  /**
+   * Stamp the durable holding-notice rate-limit fields (FD-3). Called by the
+   * gate when it decides to emit a notice, so the per-epoch + min-interval
+   * limits survive restarts.
+   */
+  async recordHoldingNotice(threadId: string, epoch: number, now?: number): Promise<void> {
+    const nowIso = new Date(now ?? Date.now()).toISOString();
+    await this.mutate(threadId, (draft) => {
+      draft.lastHoldingNoticeEpoch = epoch;
+      draft.lastHoldingNoticeAt = nowIso;
+      return draft;
+    });
   }
 
   // ── Ephemeral verified-only peer affinity (in-memory, non-durable) ──

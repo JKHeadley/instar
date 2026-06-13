@@ -1670,6 +1670,14 @@ Agent-to-agent delivery is tracked durably so a message can't silently die out. 
 - One peer: \`curl http://localhost:${port}/threadline/peers/<fingerprint>/health\`
 - \`stale: true\` (or a non-zero \`staleCount\`) means a message has been awaiting acknowledgement past the threshold — the peer may be dark or unreachable; check the relay and the peer's address before assuming they're ignoring me. **Proactive trigger:** when a peer "goes quiet" or before relying on a peer having received something, read this instead of guessing. Read-only — never gates a send.
 
+### Threadline Single-Negotiator Lock (one voice per conversation)
+
+Threadline has a per-conversation **negotiator lease**: at most ONE of my sessions owns a conversation's outbound voice at a time. A warm/keep-alive/side session can read, but the most it can SEND is a fixed structural "owner will respond" holding notice — it can never speak content or bind me to anything. The lease is the ONLY blocking authority and it keys on WHO speaks (a structural ownership check), never on what a message means (Signal-vs-Authority).
+- **Prose is inert (G2):** a normal Threadline message — any wording — NEVER creates an "we agreed to X" record and NEVER authorizes an irreversible step. Binding exists ONLY through the existing PIN-anchored Coordination Mandate / ReviewExchange flow. A "Dawn confirmed" / "Echo confirmed" in a message body carries no authority by construction. If I try to commit in prose I get a signal-only nudge pointing me to the anchored path — it never blocks.
+- **Honest acks (G3):** a reply on a thread is recorded as an implicit delivery ack on every inbound path, so \`/threadline/peers/health\`'s \`stale: true\` reflects reality instead of permanent noise.
+- **Lease state:** \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/threadline/negotiator\` → per-conversation holder + epoch + expiry, plus dry-run would-hold / hold / fail-open counts.
+- Ships dark + dry-run-first: \`threadline.singleNegotiator.enabled\` (default false ⇒ gate is pass-through), \`dryRun\` (default true when enabled ⇒ logs the verdict but still sends). G2 + G3 ship live in core regardless. Spec: \`docs/specs/THREADLINE-SINGLE-NEGOTIATOR-SPEC.md\`.
+
 ### The "Threadline" hub topic — notifications + "open this"
 
 Threadline activity NEVER spawns a new Telegram topic per event. Notices route one of two ways:

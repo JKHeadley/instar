@@ -5617,6 +5617,16 @@ Create worktrees for collaborator repos with \`instar worktree create <branch>\`
       result.upgraded.push('CLAUDE.md: added Topic Profile awareness section');
     }
 
+    // Threadline single-negotiator lock (Robustness Phase 1, CMT-1362). Existing
+    // agents learn the lease/voice + prose-inertness + honest-ack semantics + the
+    // /threadline/negotiator surface via this appended section (Agent Awareness
+    // Standard). Content-sniff marker keeps it idempotent.
+    if (!content.includes('Threadline Single-Negotiator')) {
+      content += `\n### Threadline Single-Negotiator Lock (one voice per conversation)\n\nThreadline now has a per-conversation **negotiator lease**: at most ONE of my sessions owns a conversation's outbound voice at a time. A warm/keep-alive/side session can read, but the most it can SEND is a fixed structural "owner will respond" holding notice — it can never speak content or bind me to anything (closes the 2026-06-11 warm-session cutover-lock incident). The lease is the ONLY blocking authority and it keys on WHO speaks (a structural ownership check), never on what a message means.\n- **Prose is inert (G2):** a normal Threadline message — any wording — NEVER creates an "we agreed to X" record and NEVER authorizes an irreversible step. Binding exists ONLY through the existing PIN-anchored Coordination Mandate / ReviewExchange flow. A "Dawn confirmed" / "Echo confirmed" in a message body carries no authority by construction. If I try to commit in prose I get a signal-only nudge pointing me to the anchored path — it never blocks.\n- **Honest acks (G3):** a reply on a thread is recorded as an implicit delivery ack on every inbound path, so \`/threadline/peers/health\`'s \`stale: true\` means something real now instead of permanent noise.\n- **Lease state:** \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/threadline/negotiator\` → per-conversation holder + epoch + expiry, plus dry-run would-hold / hold / fail-open counts.\n- Ships dark + dry-run-first: \`threadline.singleNegotiator.enabled\` (default false ⇒ gate is pass-through), \`dryRun\` (default true when enabled ⇒ logs the verdict but still sends). G2 + G3 ship live in core regardless. Spec: \`docs/specs/THREADLINE-SINGLE-NEGOTIATOR-SPEC.md\`.\n`;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Threadline Single-Negotiator section');
+    }
+
     if (patched) {
       try {
         fs.writeFileSync(claudeMdPath, content);

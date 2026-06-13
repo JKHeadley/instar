@@ -163,6 +163,7 @@ import { WarmSessionPool } from '../threadline/WarmSessionPool.js';
 import { resolveThreadlineMcpEntry } from '../threadline/mcpEntry.js';
 import { ThreadResumeMap } from '../threadline/ThreadResumeMap.js';
 import { ConversationStore } from '../threadline/ConversationStore.js';
+import { recordInboundAck } from '../threadline/recordInboundAck.js';
 import { WarrantsReplyGate, evaluateAndRecordInbound } from '../threadline/WarrantsReplyGate.js';
 import { CollaborationSurfacer } from '../threadline/CollaborationSurfacer.js';
 import { ListenerSessionManager } from '../threadline/ListenerSessionManager.js';
@@ -10950,16 +10951,14 @@ export async function startServer(options: StartOptions): Promise<void> {
           // ack (a reply on the thread = processed-ack of our prior send) fires.
           // Same-machine local delivery is recorded separately in the
           // /messages/relay-agent route. Recording-only — never gates routing.
-          if (a2aDeliveryTracker) {
-            try {
-              a2aDeliveryTracker.recordInboundFrom(senderFingerprint, senderName ?? null);
-              if (msg.threadId) a2aDeliveryTracker.recordAckByThread(msg.threadId);
-            } catch (err) {
-              // @silent-fallback-ok: recording-only — A2A delivery/liveness tracking must
-              // never break inbound routing (the message was already accepted above). Logged.
-              console.warn(`[relay] A2A inbound record failed (non-fatal): ${err instanceof Error ? err.message : err}`);
-            }
-          }
+          // Robustness Phase 1 (D-E): funnelled through the shared recordInboundAck
+          // so every inbound-receive path records the ack via one helper. Here the
+          // senderFingerprint is the peer's real routing fingerprint, so liveness
+          // keys correctly without a thread-owner lookup. Recording-only.
+          recordInboundAck(
+            { a2aDeliveryTracker },
+            { threadId: msg.threadId, senderFingerprint, senderName: senderName ?? null },
+          );
 
           // Threadline → Telegram bridge: mirror inbound message into a per-thread
           // Telegram topic so the user has visibility into agent-to-agent

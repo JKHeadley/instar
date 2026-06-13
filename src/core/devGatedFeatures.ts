@@ -215,6 +215,11 @@ export const DARK_GATE_EXCLUSIONS: DarkGateExclusion[] = [
   },
   // ── deliberate-fleet-default — off for everyone by design (incl. dev) ──
   {
+    configPath: 'threadline.singleNegotiator.enabled',
+    category: 'deliberate-fleet-default',
+    reason: 'lease send-gate withholds a non-owner content send; off+dry-run-first for everyone until dry-run telemetry shows an acceptable false-positive rate (THREADLINE-SINGLE-NEGOTIATOR-SPEC FD-7)',
+  },
+  {
     configPath: 'monitoring.bootHealthBeacon.enabled',
     category: 'deliberate-fleet-default',
     reason: 'minimal boot /health responder; deliberate fleet default, off until a supervisor needs it',
