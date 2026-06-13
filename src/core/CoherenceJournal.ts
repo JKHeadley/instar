@@ -36,9 +36,18 @@ import path from 'node:path';
 
 import { SafeFsExecutor } from './SafeFsExecutor.js';
 
-export type JournalKind = 'topic-placement' | 'session-lifecycle' | 'autonomous-run' | 'threadline-conversation' | 'guard-latch' | 'pref-record';
+export type JournalKind = 'topic-placement' | 'session-lifecycle' | 'autonomous-run' | 'threadline-conversation' | 'guard-latch' | 'pref-record' | 'relationship-record';
 
-export const JOURNAL_KINDS: JournalKind[] = ['topic-placement', 'session-lifecycle', 'autonomous-run', 'threadline-conversation', 'guard-latch', 'pref-record'];
+export const JOURNAL_KINDS: JournalKind[] = ['topic-placement', 'session-lifecycle', 'autonomous-run', 'threadline-conversation', 'guard-latch', 'pref-record', 'relationship-record'];
+// 'relationship-record' added for WS2.3 (ws23-relationships-userregistry-security):
+// the SECOND replicated-store consumer and the FIRST PII kind, riding the same HLC
+// foundation. Like 'pref-record' it is the STATIC half of the DUAL REGISTRY — a kind
+// in ReplicatedKindRegistry but NOT here would advertise stateSyncReceive=true yet
+// serve/apply/pull NOTHING (a silent no-replication). Its concrete schema (a
+// discriminated union on `op` for value + tombstone), disclosure-minimized projection,
+// recordKey identity surface, 64KB per-entry cap, and bounds live in
+// RelationshipsReplicatedStore.ts (the consumer); here it is just the kind tag the
+// serve/apply/getOwnAdvert path enumerates. Additive — readers ignore unknown kinds.
 // 'pref-record' added for WS2.1 (multi-machine-replicated-store-foundation §4): the
 // FIRST concrete replicated-store kind, riding the HLC foundation. This is the
 // STATIC half of the DUAL REGISTRY — a kind in ReplicatedKindRegistry but NOT here
@@ -152,6 +161,13 @@ export const DEFAULT_RETENTION: Record<JournalKind, KindRetention> = {
   // ReplicatedKindBounds (PreferencesReplicatedStore.PREF_RECORD_BOUNDS) override
   // these for the replicated stream; this is the journal-level fallback.
   'pref-record': { maxFileBytes: 2 * 1024 * 1024, rotateKeep: 4 },
+  // relationship-record (WS2.3): a PII store — NEVER rotateKeep:0 (rotate-but-never-
+  // delete would be a compliance defect, REQ-D1). The chatty relationship stream
+  // (recordInteraction fires every message) is coalesced by the store's rate cap
+  // (RelationshipsReplicatedStore.RELATIONSHIP_RECORD_BOUNDS); this is the journal-
+  // level fallback. The per-entry size cap is RAISED to 64KB on the relationship-
+  // record applier path (RELATIONSHIP_MAX_ENTRY_BYTES) so a fat relationship replicates.
+  'relationship-record': { maxFileBytes: 8 * 1024 * 1024, rotateKeep: 4 },
 };
 
 export const DEFAULT_FLUSH_INTERVAL_MS = 250;
@@ -325,7 +341,7 @@ export class CoherenceJournal {
   private state: WriterState = 'closed';
   private incarnation = '';
   /** Next seq to assign at enqueue, per kind (in-memory counter seeded at open). */
-  private nextSeq: Record<JournalKind, number> = { 'topic-placement': 1, 'session-lifecycle': 1, 'autonomous-run': 1, 'threadline-conversation': 1, 'guard-latch': 1, 'pref-record': 1 };
+  private nextSeq: Record<JournalKind, number> = { 'topic-placement': 1, 'session-lifecycle': 1, 'autonomous-run': 1, 'threadline-conversation': 1, 'guard-latch': 1, 'pref-record': 1, 'relationship-record': 1 };
   /** Durable highWaterSeq per kind (advanced after data fdatasync). */
   private highWaterSeq: Record<JournalKind, number> = {
     'topic-placement': 0,
@@ -334,6 +350,7 @@ export class CoherenceJournal {
     'threadline-conversation': 0,
     'guard-latch': 0,
     'pref-record': 0,
+    'relationship-record': 0,
   };
   /** In-memory enqueue order; drained by the flusher in seq order per kind. */
   private queue: QueuedEntry[] = [];
@@ -345,6 +362,7 @@ export class CoherenceJournal {
     'threadline-conversation': new Set(),
     'guard-latch': new Set(),
     'pref-record': new Set(),
+    'relationship-record': new Set(),
   };
   private rateBuckets: Record<JournalKind, RateBucket>;
   private timer: ReturnType<typeof setInterval> | null = null;
@@ -386,6 +404,7 @@ export class CoherenceJournal {
       'threadline-conversation': config.retention?.['threadline-conversation'] ?? DEFAULT_RETENTION['threadline-conversation'],
       'guard-latch': config.retention?.['guard-latch'] ?? DEFAULT_RETENTION['guard-latch'],
       'pref-record': config.retention?.['pref-record'] ?? DEFAULT_RETENTION['pref-record'],
+      'relationship-record': config.retention?.['relationship-record'] ?? DEFAULT_RETENTION['relationship-record'],
     };
     this.rateCapCfg = config.rateCap ?? DEFAULT_RATE_CAP;
     this.artifactRoots = (config.artifactRoots ?? [path.join(this.stateDir, 'autonomous'), this.stateDir]).map((r) => {
@@ -410,6 +429,7 @@ export class CoherenceJournal {
       'threadline-conversation': { tokens: this.rateCapCfg.capacity, lastRefillMs: initMs },
       'guard-latch': { tokens: this.rateCapCfg.capacity, lastRefillMs: initMs },
       'pref-record': { tokens: this.rateCapCfg.capacity, lastRefillMs: initMs },
+      'relationship-record': { tokens: this.rateCapCfg.capacity, lastRefillMs: initMs },
     };
   }
 

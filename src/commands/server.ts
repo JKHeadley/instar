@@ -3576,6 +3576,17 @@ export async function startServer(options: StartOptions): Promise<void> {
     const { PREF_KIND_REGISTRATION } = await import('../core/PreferencesReplicatedStore.js');
     replicatedKindRegistry.register(PREF_KIND_REGISTRATION);
 
+    // WS2.3 (ws23-relationships-userregistry-security) — register the SECOND concrete
+    // replicated kind, `relationship-record`, onto the registry: the FIRST PII kind.
+    // Dual-registry's dynamic half (the static half is CoherenceJournal.JOURNAL_KINDS,
+    // which now lists 'relationship-record'). Registration is INERT — emission/serve/
+    // pull stay gated behind `multiMachine.stateSync.relationships.enabled` (default
+    // false ⇒ strict no-op, NO PII ever crosses a machine boundary). With it registered,
+    // selfStateSyncReceive self-reports `relationships:true` IFF the store is enabled,
+    // and the rollback-unmerge resolves its contributing kind via getByStore.
+    const { RELATIONSHIP_KIND_REGISTRATION } = await import('../core/RelationshipsReplicatedStore.js');
+    replicatedKindRegistry.register(RELATIONSHIP_KIND_REGISTRATION);
+
     // Snapshot-then-tail engine (Component 4 / build-order step 3,
     // multi-machine-replicated-store-foundation §6). The cache (FIXED ceiling,
     // §8.2 — NOT pool-scaled), the per-peer rebuild breaker (§6.3), and the engine
@@ -3684,6 +3695,53 @@ export async function startServer(options: StartOptions): Promise<void> {
     });
     // preferencesUnionReader is passed into AgentServer below (consumed by
     // /preferences/session-context's foundation path).
+
+    // WS2.3 — the relationships manager handle is declared here (assigned later, at
+    // its construction site) so the union-reader closures below can reference it. The
+    // closures only deref it at request time (well after assignment), so the forward
+    // reference is safe.
+    let relationships: RelationshipManager | undefined;
+
+    // WS2.3 — the bypass-proof union reader for the `relationships` store (REQ-M7).
+    // The single funnel every replicated relationship read routes through, so no
+    // caller reads a raw replica around the no-clobber rule. `loadOriginRecords`
+    // materializes the OWN relationship store as the single origin today (via
+    // relationshipToOriginRecord, keyed on the channel-set identity surface — the
+    // local UUID is NEVER replicated); when the journal apply path lands peer
+    // `relationship-record` replicas (a later rollout stage), the seam extends to read
+    // those peer namespaces too. With only the own origin the union is a strict no-op
+    // (= that one local record). tierOf returns HIGH (append-both-and-flag never
+    // silently clobbers two divergent people). Consulted by the relationships peer-read
+    // surface ONLY when stateSync.relationships.enabled is true.
+    const { relationshipTierOf, relationshipToOriginRecord, deriveRelationshipRecordKey, mergeUnionToRelationships, renderForeignRelationshipContext, RELATIONSHIP_STORE_KEY } = await import('../core/RelationshipsReplicatedStore.js');
+    const relationshipsUnionReader = new ReplicatedStoreReader({
+      registry: replicatedKindRegistry,
+      stores: (config.multiMachine as unknown as { stateSync?: import('../core/ReplicatedRecordEnvelope.js').StateSyncStores } | undefined)?.stateSync,
+      tierOf: relationshipTierOf,
+      loadOriginRecords: (store, recordKey) => {
+        if (store !== RELATIONSHIP_STORE_KEY || _meshSelfId === null || !relationships) return [];
+        // Own-origin materialization: find the local record whose channel-set identity
+        // surface matches this recordKey (mirrors the manager's channel-collision logic).
+        for (const r of relationships.getAll()) {
+          if (deriveRelationshipRecordKey(r.channels) === recordKey) {
+            const o = relationshipToOriginRecord(r, _meshSelfId);
+            return o ? [o] : [];
+          }
+        }
+        return [];
+      },
+      listRecordKeys: (store) => {
+        if (store !== RELATIONSHIP_STORE_KEY || !relationships) return [];
+        const keys: string[] = [];
+        for (const r of relationships.getAll()) {
+          const k = deriveRelationshipRecordKey(r.channels);
+          if (k !== null) keys.push(k);
+        }
+        return keys;
+      },
+      droppedOrigins: droppedOriginRegistry,
+      conflictStore,
+    });
 
     // Read local signing key for machine route authentication
     let localSigningKeyPem = '';
@@ -4488,7 +4546,6 @@ export async function startServer(options: StartOptions): Promise<void> {
       console.log(pc.green(`  Input Guard: enabled (action: ${guardConfig.action ?? 'warn'}, ${reviewBackend})`));
     }
 
-    let relationships: RelationshipManager | undefined;
     if (config.relationships) {
       // Wire LLM intelligence for identity resolution. Subscription path only —
       // direct Anthropic API is forbidden per Rule 2 of the path constraints.
@@ -4527,6 +4584,34 @@ export async function startServer(options: StartOptions): Promise<void> {
       relationships = new RelationshipManager(config.relationships);
       const count = relationships.getAll().length;
       console.log(pc.green(`  Relationships loaded: ${count} tracked (${intelligenceMode})`));
+
+      // WS2.3 — inject the union-read seam (REQ-M7/M14). The peer-read surface (what
+      // my OTHER machines know about this person) resolves THROUGH the bypass-proof
+      // union reader and returns FOREIGN, READ-ONLY, neutralized context blocks
+      // (each wrapped in `<replicated-untrusted-data>`). It is DISTINCT from the
+      // local-authoritative resolveByChannel/getContextForPerson — identity
+      // RESOLUTION of an inbound principal stays local-only. The seam is a strict
+      // no-op while `multiMachine.stateSync.relationships.enabled` is false (the reader
+      // returns nothing for a disabled store), so a single-machine / dark agent sees
+      // an empty peer view. The emit seam (the `put`/tombstone funnel) is wired in a
+      // later rollout stage on the same machinery — registered + dark here.
+      relationships.setPeerReadSeam({
+        peerContextForChannels: (channels) => {
+          const recordKey = deriveRelationshipRecordKey(channels);
+          if (recordKey === null) return [];
+          const result = relationshipsUnionReader.read(RELATIONSHIP_STORE_KEY, recordKey);
+          const views = mergeUnionToRelationships(new Map([[recordKey, result]]));
+          // Only FOREIGN origins are surfaced (the local record is already the
+          // authoritative getContextForPerson answer); render each as untrusted data.
+          const out: string[] = [];
+          for (const v of views) {
+            if (v.origin === _meshSelfId) continue;
+            const block = renderForeignRelationshipContext(v);
+            if (block) out.push(block);
+          }
+          return out;
+        },
+      });
     }
 
     // Set up quota tracking if enabled

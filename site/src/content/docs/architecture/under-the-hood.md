@@ -552,3 +552,24 @@ Spec: `docs/specs/MENTOR-LIVE-READINESS-SPEC.md` §Fix 2a.
   authenticated mesh RPC as a `state-snapshot` read/observe verb (Phase-C: no LAN broadcast).
   Pure mechanism, dark by default; a single-machine install is a strict no-op. Spec:
   `docs/specs/multi-machine-replicated-store-foundation.md` §6 / §8.2.
+- **`RelationshipsReplicatedStore`** (`src/core/RelationshipsReplicatedStore.ts`) — the SECOND
+  concrete consumer of the replicated-store foundation and the FIRST **PII kind**:
+  `relationship-record`. `RelationshipsReplicatedStore` layers the kind onto the generic
+  envelope with PII-specific hardening the security spec demands. Its schema is a
+  **discriminated union on `op`** — an `op:'put'` VALUE schema and an `op:'delete'` TOMBSTONE
+  schema coexist under one kind — and it **type-clamps every known field on receive**
+  (`firstInteraction`/`lastInteraction` validate as ISO-8601-only, `interactionCount`/
+  `significance` as finite numbers, free text length-clamped) so a foreign, attacker-controlled
+  record can never smuggle markup through a render slot that bypasses `sanitize()`. The
+  replicated projection is **disclosure-minimized** (only resolution + merge-relevant fields,
+  NEVER the raw on-disk blob and NEVER the local UUID `id`), and the cross-machine `recordKey`
+  is derived deterministically from a person's sorted **channel set** (the identity surface the
+  manager already collides on), so the same human reaches the same record across machines even
+  though each machine mints its own UUID. A delete propagates as a channel-keyed tombstone (so
+  an erased person stays erased on an offline-then-rejoining peer), and a foreign record is
+  rendered inside a `<replicated-untrusted-data origin="…">` envelope — quoted data, never an
+  instruction, never the authoritative answer to "who is messaging me". Per-entry cap raised to
+  64KB so a fat relationship replicates instead of wedging the stream; HIGH-impact
+  (append-both-and-flag, never a silent clobber of two divergent people). Pure mechanism, dark
+  by default behind `multiMachine.stateSync.relationships`; a single-machine install is a strict
+  no-op. Spec: `docs/specs/ws23-relationships-userregistry-security.md`.
