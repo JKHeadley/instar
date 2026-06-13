@@ -343,6 +343,13 @@ export class AgentServer {
     /** Preferences-pool replica store (MULTI-MACHINE-SEAMLESSNESS §WS2.1) —
      *  union read folds these into GET /preferences/session-context. Absent while dark. */
     preferenceReplicaStore?: import('../core/PreferencesSync.js').PreferenceReplicaStore;
+    /** Replicated-store conflict ledger (replicated-store-foundation §7.2/§7.3).
+     *  Backs GET /state/conflicts + POST /state/resolve-conflict. Absent while dark. */
+    conflictStore?: import('../core/ConflictStore.js').ConflictStore;
+    /** Rollback-unmerge engine (§7.4). Absent while dark. */
+    rollbackUnmerge?: import('../core/RollbackUnmerge.js').RollbackUnmerge;
+    /** Durable un-merged-origins registry (§7.4). Absent while dark. */
+    droppedOriginRegistry?: import('../core/RollbackUnmerge.js').DroppedOriginRegistry;
     /** P1.5b owner-routed mutation forward (§3.4). Absent while dark. */
     forwardCommitmentMutate?: (ownerMachineId: string, payload: import('../core/CommitmentMutation.js').CommitmentMutatePayload) => Promise<
       { kind: 'verdict'; outcome: import('../core/CommitmentMutation.js').MutateOutcome } | { kind: 'queued'; reason: string }
@@ -1860,6 +1867,9 @@ export class AgentServer {
       workingSetPullCoordinator: options.workingSetPullCoordinator ?? null,
       commitmentReplicaStore: options.commitmentReplicaStore ?? null,
       preferenceReplicaStore: options.preferenceReplicaStore ?? null,
+      conflictStore: options.conflictStore ?? null,
+      rollbackUnmerge: options.rollbackUnmerge ?? null,
+      droppedOriginRegistry: options.droppedOriginRegistry ?? null,
       forwardCommitmentMutate: options.forwardCommitmentMutate ?? null,
       sessionOwnershipRegistry: options.sessionOwnershipRegistry ?? null,
       topicPinStore: options.topicPinStore ?? null,

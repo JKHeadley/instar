@@ -967,6 +967,16 @@ export interface RouteContext {
    *  gated). Null/absent while dark (the route returns own rows only, byte-
    *  identical to before). */
   preferenceReplicaStore?: import('../core/PreferencesSync.js').PreferenceReplicaStore | null;
+  /** Replicated-store conflict ledger (multi-machine-replicated-store-foundation
+   *  §7.2/§7.3) — backs GET /state/conflicts + POST /state/resolve-conflict.
+   *  Null/absent while dark (the routes answer 503). */
+  conflictStore?: import('../core/ConflictStore.js').ConflictStore | null;
+  /** Rollback-unmerge engine (§7.4) — un-merges a (store, origin) from the union.
+   *  Null/absent while dark. */
+  rollbackUnmerge?: import('../core/RollbackUnmerge.js').RollbackUnmerge | null;
+  /** Durable un-merged-origins registry (§7.4) — the live exclusion set the
+   *  union reader consults. Null/absent while dark. */
+  droppedOriginRegistry?: import('../core/RollbackUnmerge.js').DroppedOriginRegistry | null;
   /** P1.5b owner-routed mutation (§3.4): forward a mutate intent to the
    *  owning machine (verdict back, or durably queued). Null/absent = dark
    *  (replica-targeted mutations answer 409 explaining the layer is off). */
@@ -11130,6 +11140,75 @@ export function createRoutes(ctx: RouteContext): Router {
       custodyDurability: 'unknown',
       oldestQueuedAgeMs: snap.counts.oldestQueuedAt ? Math.max(0, Date.now() - Date.parse(snap.counts.oldestQueuedAt)) : null,
     });
+  });
+
+  // ── Replicated-store conflict + rollback surfaces (multi-machine-replicated-
+  //    store-foundation §7.2/§7.3/§7.4). All Bearer-gated like every route; 503
+  //    while the foundation is dark (no store enabled). Signal vs Authority: the
+  //    foundation NEVER picks a conflict winner — POST /state/resolve-conflict is
+  //    the OPERATOR's authority, surfaced.
+
+  // GET /state/conflicts — the open (unresolved) replicated-store conflicts the
+  // union-reader flagged for operator resolution (§7.3 dashboard surface).
+  router.get('/state/conflicts', (_req, res) => {
+    const store = ctx.conflictStore ?? null;
+    if (!store) {
+      res.status(503).json({ error: 'replicated-store conflicts not enabled on this agent (ships dark; multiMachine.stateSync.<store>)' });
+      return;
+    }
+    res.json({ enabled: true, open: store.listOpen(), lossCounter: store.lossCounter });
+  });
+
+  // GET /state/quarantine — the replicated-store quarantine + rollback view: the
+  // currently un-merged (store, origin) pairs (§7.4) + the conflict ledger loss
+  // counter. (Per-record receiver quarantine lives in the journal applier; this
+  // surface reports the FOUNDATION's rollback/conflict state.)
+  router.get('/state/quarantine', (_req, res) => {
+    const dropped = ctx.droppedOriginRegistry ?? null;
+    const store = ctx.conflictStore ?? null;
+    if (!dropped && !store) {
+      res.status(503).json({ error: 'replicated-store quarantine not enabled on this agent (ships dark; multiMachine.stateSync.<store>)' });
+      return;
+    }
+    res.json({
+      enabled: true,
+      droppedOrigins: dropped?.list() ?? [],
+      conflictLossCounter: store?.lossCounter ?? 0,
+    });
+  });
+
+  // POST /state/resolve-conflict — the OPERATOR designates a winner or supplies a
+  // merged version (§7.3). Body: { conflictId, winnerOrigin } OR
+  // { conflictId, mergedVersion }. EXACTLY ONE of winnerOrigin/mergedVersion. The
+  // foundation records the resolution; the operator's chosen/merged record
+  // replicates as a normal record. 404 unknown id; 400 bad input; 503 dark.
+  router.post('/state/resolve-conflict', (req, res) => {
+    const store = ctx.conflictStore ?? null;
+    if (!store) {
+      res.status(503).json({ error: 'replicated-store conflicts not enabled on this agent (ships dark; multiMachine.stateSync.<store>)' });
+      return;
+    }
+    const body = (req.body ?? {}) as { conflictId?: unknown; winnerOrigin?: unknown; mergedVersion?: unknown };
+    const conflictId = typeof body.conflictId === 'string' ? body.conflictId.trim() : '';
+    if (!conflictId) {
+      res.status(400).json({ error: 'conflictId (string) is required' });
+      return;
+    }
+    const resolution: { winnerOrigin?: string; mergedVersion?: Record<string, unknown> } = {};
+    if (typeof body.winnerOrigin === 'string' && body.winnerOrigin.length > 0) resolution.winnerOrigin = body.winnerOrigin;
+    if (body.mergedVersion && typeof body.mergedVersion === 'object' && !Array.isArray(body.mergedVersion)) {
+      resolution.mergedVersion = body.mergedVersion as Record<string, unknown>;
+    }
+    try {
+      const entry = store.resolveConflict(conflictId, resolution);
+      if (!entry) {
+        res.status(404).json({ error: `unknown conflictId "${conflictId}"` });
+        return;
+      }
+      res.json({ resolved: true, entry });
+    } catch (e) {
+      res.status(400).json({ error: (e as Error).message });
+    }
   });
 
   // GET /pool/placement?topic=N — authoritative "which machine is this topic running

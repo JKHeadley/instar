@@ -4464,6 +4464,27 @@ A secret you give me on one machine — a Telegram token, an API key, a GitHub P
       result.upgraded.push('CLAUDE.md: added secret-sync push-opt-in safety line');
     }
 
+    // One Memory (replicated stores) — multi-machine-replicated-store-foundation
+    // §7. Deployed agents don't know certain stores now replicate with a no-clobber
+    // union + operator-resolved conflicts + origin-tagged rollback, nor the three
+    // /state/* routes. Append the section so an agent can answer "why do I have two
+    // versions of preference X?" / "roll back machine Y's data". Idempotent via the
+    // unique `/state/resolve-conflict` marker.
+    if (!content.includes('/state/resolve-conflict') && !content.includes('One Memory (replicated stores)')) {
+      const oneMemory = `
+### One Memory (replicated stores)
+
+When enabled, certain stores (preferences, relationships) replicate across my machines so I have ONE memory, not one-per-machine. A read returns the UNION of every machine's copy, merged by a no-clobber rule: a normal sequential edit history resolves to the latest writer; but two machines that edited the SAME thing DURING A PARTITION (a genuine concurrent divergence) are NEVER silently overwritten. For a high-impact store (preferences, relationships) BOTH versions are preserved and the conflict is flagged for you to resolve; for a low-impact store the latest wins but the overwrite is flagged, never silent. A replicated record never clobbers a divergent local one — reach is not authority. Ships DARK behind \`multiMachine.stateSync.<store>\` (default false); a single-machine agent is a strict no-op.
+- See open conflicts: \`curl -H "Authorization: Bearer $AUTH" http://localhost:4042/state/conflicts\` → the unresolved divergences awaiting your call (each with a stable \`conflictId\` + the preserved versions).
+- Resolve one (YOUR authority — the foundation never picks a winner): \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:4042/state/resolve-conflict -H 'Content-Type: application/json' -d '{"conflictId":"<id>","winnerOrigin":"<machine id>"}'\` (or supply a \`mergedVersion\` object). The chosen/merged record then replicates as normal.
+- Roll back a machine's data (un-merge): disabling \`multiMachine.stateSync.<store>\` for a peer atomically DROPS that origin's contribution — the union recomputes live, a key that was winning from the dropped machine reverts to the latest among the REMAINING machines (or to "no record"), any conflict that only existed because of it auto-resolves, and the dropped streams are quarantined-aside (reversible, auditable, never a destructive delete). View what's currently un-merged: \`curl -H "Authorization: Bearer $AUTH" http://localhost:4042/state/quarantine\`.
+- **When to use** (PROACTIVE — these are the triggers): the user asks "why do I have two versions of preference X?" → read open conflicts and present them for resolution. The user says "roll back machine Y's data / forget what the other machine learned" → un-merge that origin. Spec: \`docs/specs/multi-machine-replicated-store-foundation.md\` §7.
+`;
+      content += '\n' + oneMemory;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added One Memory (replicated stores) section');
+    }
+
     // ContextWedgeSentinel — the 4th silently-stopped sentinel. Tells the agent
     // about the transcript fast-fail wedges (thinking-block 400 + AUP-rejection
     // loop) + that auto-recovery is opt-in. Without it, an agent asked "why did
@@ -5943,6 +5964,16 @@ Create worktrees for collaborator repos with \`instar worktree create <branch>\`
       // Metrics precedent; each CLAUDE.md contains exactly one, so the other no-ops.
       '**Links that survive machine boundaries (WS4.4',
       '### Links that survive machine boundaries (WS4.4',
+      // One Memory (replicated stores) — multi-machine-replicated-store-foundation
+      // §7: framework-agnostic — a Codex/Gemini agent on a multi-machine pool must
+      // know stores replicate with a no-clobber union + operator-resolved conflicts
+      // (/state/conflicts, /state/resolve-conflict) + origin-tagged rollback
+      // (/state/quarantine), so it answers "why two versions of preference X?" /
+      // "roll back machine Y's data" instead of improvising a clobber. Two tail-
+      // truncated variants cover both deployed forms (templates' bold block +
+      // migrateClaudeMd's H3); each CLAUDE.md contains exactly one, so the other no-ops.
+      '**One Memory (replicated stores)',
+      '### One Memory (replicated stores)',
     ];
 
     for (const shadowName of ['AGENTS.md', 'GEMINI.md']) {
