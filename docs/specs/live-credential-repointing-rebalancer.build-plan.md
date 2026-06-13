@@ -281,18 +281,29 @@ drain (CMT-1335 full) is Increment B.
   Reads the live config each call. Sync, never throws (spawn-hot-path safe). Tests: credential-location-resolver (7).
   No consumer yet → second-pass not required; the re-routing commits (6b) carry their own review.
 
+### 2026-06-13 — Step 6b (census registry + QuotaPoller re-routes #1-3) — BUILT + GREEN
+- Added the process-wide resolver registry to `CredentialLocationResolver.ts`: `credentialLocationResolver()` getter /
+  `setCredentialLocationResolver` (wired at Step 7) / `resetCredentialLocationResolver` (tests); default NO-OP resolver
+  (`active()` always false → today's behavior). Re-routed QuotaPoller census #1 (`defaultTokenResolver` reads
+  `slotForAccount`), #2 (401-refresh closure refreshes the CURRENT slot — funnel-locked from 4b), #3 (email auto-patch
+  in `pollAll` SUPPRESSED while active — was cross-contaminating pool emails post-swap). NO-OP while dark.
+- Tests: registry (2) + census #3 suppression both-sides (`credential-census-routing.test.ts`, 2); existing 13
+  QuotaPoller tests prove the dark path byte-identical. tsc clean, lint clean. Second-pass not required (additive
+  read re-routing, no-op while dark).
+
 ### NEXT (resume here)
-- Step 6b: route the 12 §2.2 census consumers through `CredentialLocationResolver` (built in 6a). Each live
-  `configHome`-as-location read → `resolver.slotForAccount(accountId, account.configHome)`; each slot→tenant read →
-  `resolver.tenantForSlot(slot)`. Additive + provably no-op while dark (resolver returns enrollment home). Key sites: QuotaPoller token read (`:108-115`), 401-refresh (`:218`), email auto-patch
-  SUPPRESSED (`:349-356`), needs-reauth attribution (`:262-269`); SessionManager spawn placement (`:1712-1716/:1989`);
-  InUseAccountResolver badge → `tenantOf('~/.claude')` NOT `auth status` (E4a liar); AccountSwitcher/switch-account/
-  autoMigrate REFUSE at the MANAGER when enabled; pool `configHome` PATCH → 409. (Recovery wiring at server start +
-  the balancer-first-pass barrier are Increment-B; for Increment A, recoverInFlight() exists + is unit-proven.)
-  - Increment-B wiring requirement (5c 2nd-pass observation #1): `recoverInFlight()` calls `seedFromOracle()`
-    OUTSIDE the single-mover mutex (awaited before the per-swap loop) — the recovery-complete barrier MUST gate the
-    balancer-first-pass so no balancer swap runs on the shared ledger while that unmutexed re-seed is in flight.
-- Then steps 7 (routes + audit scrub), 8 (provenance gate), 9 (migration parity + CLAUDE.md), 10 (livetest battery).
-- Step 5: `CredentialSwapExecutor` (staged exchange, §2.3.1a source-slot CAS, identity-verify,
-  quarantine-never-repair, crash-boundary journal). Second-pass review.
-- Then steps 6–9 per the plan. Commit-gate notes: when committing, pass `--spec docs/specs/live-credential-repointing-rebalancer.md` (now `approved:true`); the no-deferrals pre-commit scan will flag the spec's legit Increment-B scoping language ("deferred", "follow-up") — add `<!-- tracked: 20905 -->` (or a CMT id) markers within 200 chars of each, or move the deferral into Increment B's own section, before the first commit.
+- Step 6c: the remaining §2.2 census re-routes through the resolver registry (each additive + no-op while dark; test
+  the ACTIVE side of each boundary — the dark side rides each consumer's existing suite). Sites left:
+  | 4 | QuotaPoller needs-reauth attribution (`:262-269`) | flag the LEDGER tenant of the failed slot; on a reauth flag involving a re-pointed slot, re-probe via the oracle BEFORE surfacing (needs the oracle/identity probe in QuotaPoller — thread it in). |
+  | 5 | SessionManager spawn placement (`:1712-1716` / `:1989-1990` / `:3083-3095`) | pin to `slotForAccount(account.id, home)` (sync in-memory read, never throws; ledger-unknown → today). |
+  | 6 | QuotaAwareScheduler restart-swap (`:195-199` next.configHome → SessionRefresh) | one chokepoint: resolve target home through the resolver. |
+  | 7 | Session→account attribution (ProactiveSwapMonitor `:287-292`, server.ts `:10527-10536`) | `tenantForSlot(slotForAccount(session-account))` at read time. |
+  | 8 | InUseAccountResolver default-home badge | resolve from `tenantForSlot('~/.claude')` NOT `claude auth status` (E4a liar); bust the 60s cache on any swap touching `~/.claude`. |
+  | 9 | AccountSwitcher + `/switch-account` + QuotaManager.autoMigrate | while `isEnabled()`: REFUSE at the MANAGER with a named reason → `POST /credentials/set-default`. |
+  | 10 | EnrollmentWizard (`:191-196` /login in login.configHome) | re-auth targets the account's CURRENT slot; a completed enrollment seeds/refreshes the ledger entry. |
+  | 12 | Pool `configHome` PATCH (SubscriptionPool.update via pool routes) | refused (409) while `isEnabled()` — it's enrollment metadata, not location. |
+- Then steps 7 (the `/credentials/*` routes + `CredentialAuditEmit.scrub` + the resolver/ledger/oracle WIRING at server
+  startup via `setCredentialLocationResolver` — this is what makes the dark re-routes reachable when enabled), 8
+  (provenance flag + env-token gate), 9 (migration parity + CLAUDE.md template), 10 (livetest battery).
+- Increment-B note: the recovery-complete barrier must gate the balancer before `recoverInFlight()`'s unmutexed
+  `seedFromOracle()` (5c 2nd-pass observation #1). Recovery wiring at server start + the balancer barrier are Increment-B.

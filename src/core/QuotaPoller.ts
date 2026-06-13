@@ -45,6 +45,7 @@ import {
   expandHome,
   type RefreshResult,
 } from './OAuthRefresher.js';
+import { credentialLocationResolver } from './CredentialLocationResolver.js';
 
 /** Injectable token resolver — returns an account's OAuth access token or null. */
 export type TokenResolver = (account: SubscriptionAccount) => string | null;
@@ -109,7 +110,10 @@ export function defaultTokenResolver(account: SubscriptionAccount): string | nul
   if (account.provider !== 'anthropic' || account.framework !== 'claude-code') {
     return null;
   }
-  const oauth = readClaudeOauth(account.configHome);
+  // §2.2 census #1: read the token from the account's CURRENT slot (the ledger location once the
+  // feature is live), not its enrollment home. NO-OP while dark — the resolver returns the
+  // enrollment home until the feature is enabled + the ledger seeded.
+  const oauth = readClaudeOauth(credentialLocationResolver().slotForAccount(account.id, account.configHome));
   const tok = oauth?.accessToken;
   return typeof tok === 'string' && tok.startsWith('sk-ant-oat') ? tok : null;
 }
@@ -215,7 +219,12 @@ export class QuotaPoller {
       ((url, init) => fetch(url, init as RequestInit) as unknown as ReturnType<FetchImpl>);
     this.tokenResolver = config.tokenResolver ?? defaultTokenResolver;
     this.refresher =
-      config.refresher ?? ((account) => refreshClaudeToken(expandHome(account.configHome)));
+      config.refresher ??
+      // §2.2 census #2: refresh the token in the account's CURRENT slot, not its enrollment home —
+      // refreshing the enrollment home post-swap would rotate the WRONG tenant's token. The funnel
+      // per-slot lock (Step 4b) already serializes the write. NO-OP while dark.
+      ((account) =>
+        refreshClaudeToken(expandHome(credentialLocationResolver().slotForAccount(account.id, account.configHome))));
     this.logger = config.logger ?? { log: () => {}, warn: () => {} };
   }
 
@@ -358,8 +367,14 @@ export class QuotaPoller {
       // Auto-populate the account email from the config home's own login record,
       // so the stored email always reflects which account actually authenticated
       // (a login into the wrong account surfaces here instead of hiding).
-      const email = readAccountEmail(account.configHome);
-      if (email && email !== account.email) patch.email = email;
+      // §2.2 census #3: while the ledger is active, SUPPRESS this patch — it reads the ENROLLMENT
+      // home's login record, which after a swap holds a DIFFERENT tenant's email and would
+      // cross-contaminate the pool's email→account map (poisoning the recovery probe). The divergence
+      // case is surfaced by the identity audit instead, never written to the pool. NO-OP while dark.
+      if (!credentialLocationResolver().active()) {
+        const email = readAccountEmail(account.configHome);
+        if (email && email !== account.email) patch.email = email;
+      }
       try {
         this.pool.update(account.id, patch);
       } catch {

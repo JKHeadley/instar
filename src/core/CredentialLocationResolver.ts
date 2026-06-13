@@ -75,3 +75,32 @@ export class CredentialLocationResolver {
     return this.ledger.tenantOf(slot);
   }
 }
+
+// ── Process-wide registry (Step 6b) ─────────────────────────────────
+// The census consumers reach the resolver through this registry rather than threading it through a
+// dozen constructors (the credentialWriteFunnel-singleton pattern). It DEFAULTS to a NO-OP resolver
+// whose `active()` is always false — so every re-routed consumer keeps EXACTLY today's behavior
+// until the real resolver is wired at server startup (Step 7). A dark or un-wired process is a
+// strict no-op by construction.
+
+const NOOP_RESOLVER = new CredentialLocationResolver({
+  ledger: { slotOf: () => null, tenantOf: () => null, isSeeded: () => false, isUnknownMode: () => false },
+  config: () => undefined,
+});
+
+let activeResolver: CredentialLocationResolver = NOOP_RESOLVER;
+
+/** The process-wide resolver. A NO-OP (today's behavior) until `setCredentialLocationResolver` wires the real one. */
+export function credentialLocationResolver(): CredentialLocationResolver {
+  return activeResolver;
+}
+
+/** Wire the real resolver (Step 7 server startup). */
+export function setCredentialLocationResolver(resolver: CredentialLocationResolver): void {
+  activeResolver = resolver;
+}
+
+/** Reset to the no-op resolver (tests + teardown). */
+export function resetCredentialLocationResolver(): void {
+  activeResolver = NOOP_RESOLVER;
+}

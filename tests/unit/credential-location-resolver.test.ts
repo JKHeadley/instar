@@ -5,8 +5,14 @@
  * consumers through it changes nothing until the deliberate two-flag flip.
  */
 
-import { describe, it, expect } from 'vitest';
-import { CredentialLocationResolver, type CredentialRepointingConfigView } from '../../src/core/CredentialLocationResolver.js';
+import { describe, it, expect, afterEach } from 'vitest';
+import {
+  CredentialLocationResolver,
+  credentialLocationResolver,
+  setCredentialLocationResolver,
+  resetCredentialLocationResolver,
+  type CredentialRepointingConfigView,
+} from '../../src/core/CredentialLocationResolver.js';
 
 /** A fake ledger read-surface with controllable seeded/unknown state + a slot map. */
 function fakeLedger(opts: { seeded?: boolean; unknown?: boolean; slots?: Record<string, string>; tenants?: Record<string, string> } = {}) {
@@ -93,5 +99,27 @@ describe('CredentialLocationResolver — active (enabled + seeded)', () => {
     expect(r.slotForAccount('acct-a', HOME_A)).toBe(HOME_A); // dark
     cfg = { enabled: true }; // operator flips it on
     expect(r.slotForAccount('acct-a', HOME_A)).toBe(SLOT_X); // now resolves live
+  });
+});
+
+describe('CredentialLocationResolver — process-wide registry (Step 6b)', () => {
+  afterEach(() => resetCredentialLocationResolver());
+
+  it('defaults to a NO-OP resolver (the census consumers see today\'s behavior until wired)', () => {
+    expect(credentialLocationResolver().active()).toBe(false);
+    expect(credentialLocationResolver().slotForAccount('acct-a', HOME_A)).toBe(HOME_A);
+    expect(credentialLocationResolver().tenantForSlot(SLOT_X)).toBeNull();
+  });
+
+  it('setCredentialLocationResolver wires the real resolver; reset restores the no-op', () => {
+    const real = new CredentialLocationResolver({
+      ledger: fakeLedger({ seeded: true, slots: { 'acct-a': SLOT_X }, tenants: { [SLOT_X]: 'acct-a' } }),
+      config: () => ({ enabled: true }),
+    });
+    setCredentialLocationResolver(real);
+    expect(credentialLocationResolver().slotForAccount('acct-a', HOME_A)).toBe(SLOT_X);
+    expect(credentialLocationResolver().tenantForSlot(SLOT_X)).toBe('acct-a');
+    resetCredentialLocationResolver();
+    expect(credentialLocationResolver().slotForAccount('acct-a', HOME_A)).toBe(HOME_A); // back to no-op
   });
 });
