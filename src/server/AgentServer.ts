@@ -350,6 +350,10 @@ export class AgentServer {
     rollbackUnmerge?: import('../core/RollbackUnmerge.js').RollbackUnmerge;
     /** Durable un-merged-origins registry (§7.4). Absent while dark. */
     droppedOriginRegistry?: import('../core/RollbackUnmerge.js').DroppedOriginRegistry;
+    /** WS2.1 union reader for the `preferences` store (§7.2). The bypass-proof
+     *  funnel GET /preferences/session-context reads the no-clobber union through
+     *  when stateSync.preferences.enabled. Absent while dark. */
+    preferencesUnionReader?: import('../core/ReplicatedStoreReader.js').ReplicatedStoreReader;
     /** P1.5b owner-routed mutation forward (§3.4). Absent while dark. */
     forwardCommitmentMutate?: (ownerMachineId: string, payload: import('../core/CommitmentMutation.js').CommitmentMutatePayload) => Promise<
       { kind: 'verdict'; outcome: import('../core/CommitmentMutation.js').MutateOutcome } | { kind: 'queued'; reason: string }
@@ -1870,6 +1874,7 @@ export class AgentServer {
       conflictStore: options.conflictStore ?? null,
       rollbackUnmerge: options.rollbackUnmerge ?? null,
       droppedOriginRegistry: options.droppedOriginRegistry ?? null,
+      preferencesUnionReader: options.preferencesUnionReader ?? null,
       forwardCommitmentMutate: options.forwardCommitmentMutate ?? null,
       sessionOwnershipRegistry: options.sessionOwnershipRegistry ?? null,
       topicPinStore: options.topicPinStore ?? null,

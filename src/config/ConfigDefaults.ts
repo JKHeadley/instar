@@ -838,6 +838,19 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       maxDriftMs: 300000, // 5 min — the §3.4 default, within the [60s,15min] clamp
       maxCachedSnapshots: 16, // §8.2 snapshot-cache count ceiling
       maxCacheBytes: 67108864, // 64 MiB — §8.2 snapshot-cache byte ceiling (reconciled to spec §8.2 from the 32 MiB Step-2 literal)
+      // WS2.1 (multi-machine-replicated-store-foundation §4/§10.1) — the FIRST
+      // concrete replicated-store consumer: `pref-record` on the HLC foundation.
+      // Per-store on-switch ships the graduated-rollout ladder dark:
+      // `enabled:false` (the foundation primitives stay inert) + `dryRun:true` (on
+      // first enable, log intended merges WITHOUT mutating store state). A literal
+      // `enabled:false` (NOT dev-gate-omit) per the spec ladder dark→dryRun→live —
+      // classified in DARK_GATE_EXCLUSIONS (optional-integration, staged rollout),
+      // mirroring multiMachine.sessionPool.inboundQueue. SUPERSEDES the legacy
+      // seamlessness path (CMT-1416), both dark ⇒ zero runtime duplication.
+      preferences: {
+        enabled: false,
+        dryRun: true,
+      },
     },
   },
   // Session Boot Self-Knowledge (spec: session-boot-self-knowledge.md) — the

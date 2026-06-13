@@ -1,4 +1,12 @@
 /**
+ * DEPRECATED / SUPERSEDED (CMT-1416): this seamlessness-spec WS2.1 advisory
+ * replicator is superseded by the HLC-foundation `pref-record` replicated store
+ * (`multiMachine.stateSync.preferences`, src/core/PreferencesReplicatedStore.ts).
+ * Retained dark (behind `multiMachine.seamlessness.ws21PreferencesPool`) until the
+ * foundation path is validated, then removed — a separate reviewable cleanup PR.
+ * BOTH ship dark/default-off ⇒ zero runtime duplication; they are mutually
+ * exclusive in practice (the foundation path takes precedence when its flag is on).
+ *
  * PreferencesSync — WS2.1 of multi-machine seamlessness: the serve / receive /
  * merge engine behind the `preferences-sync` mesh verb. Replicates the
  * correction-learning preference store (PreferencesManager,
