@@ -246,18 +246,33 @@ drain (CMT-1335 full) is Increment B.
 - PRIMITIVES ONLY: no swap logic, no consumer, no live write path → second-pass not required (4a precedent);
   the executor (5b) carries the full second-pass.
 
+### 2026-06-13 — Step 5b (CredentialSwapExecutor.swap) — BUILT + GREEN
+- `src/core/CredentialSwapExecutor.ts`: `swap(slotA,slotB)` — full §2.3 flow under `withSingleMover` +
+  `withSlotLocks([keyA,keyB])`: preconditions (exact ledger membership; same/unknown/quarantined rejected) →
+  1a source-slot CAS re-read (adopt newer parseable blob; unparseable→abort) → staging COPY + journal `begin` →
+  exchange B→A, A→B (metadata best-effort, repairable-not-quarantine) + journal `exchanged` → verify on ACCOUNT
+  IDENTITY (oracle); UNAVAILABLE/ambiguous→quarantine-NEVER-repair; confirmed mismatch→repair-once→re-verify→
+  still-wrong→quarantine → commit (recordAssignment both; journal `committed`; staging RETAINED) → scheduled
+  ~90s delayed re-verify → clean→delete staging+journal `done`+markVerified; drift→quarantine+retain staging.
+- Tests: credential-swap-executor (8) — happy path, precondition rejects, §2.3.4 unavailable→quarantine-not-repair,
+  mismatch repair-once→quarantine + repair-succeeds, staging-is-a-COPY (failed exchange write leaves slot A intact),
+  §2.3.1a adopt-on-newer, single-mover serialization. tsc clean, full lint clean, 231 credential tests green.
+- Second-pass review: required (highest-risk file) — verdict in the side-effects artifact.
+
 ### NEXT (resume here)
-- Step 5b: `CredentialSwapExecutor.swap(slotA, slotB)` (spec §2.3) using the 5a primitives + the funnel's
-  `withSlotLocks`/`withSingleMover`: step 1 preconditions (exact ledger membership BEFORE path expansion; reject
-  `../`/`~`/abs → 400; neither tenant quarantined) → 1a source-slot CAS re-read (adopt newer same-tenant blob) →
-  2 staging escrow COPY of blob A + journal `begin` → 3 exchange (keychain B→A then A→B from staging; config
-  `oauthAccount` blocks keychain-first; DEFAULT slot config = `~/.claude.json` home-root) + journal `exchanged` →
-  4 verify on ACCOUNT IDENTITY (oracle); UNAVAILABLE≠mismatch → quarantine-never-repair; mismatch → CAS repair
-  from staging → re-verify → still-wrong → quarantine → 5 commit (ledger.recordAssignment both slots; journal
-  `committed`; staging RETAINED) → 6 delayed re-verify ~90s → on clean, delete staging + journal `done`. Second-pass.
-- Step 5c: boot-recovery sweep — resolve in-flight journal rows (adopt-on-newer, never blind staging overwrite),
-  orphan-staging cleanup by the disjoint prefix; recovery WRITES take the single-mover + per-slot locks. Second-pass.
+- Step 5c: boot-recovery sweep — at server start, read `journal.inFlight()`; for each in-flight swap resolve by
+  the on-disk + journal-phase decidability (begin-only→unwind no-op; exchanged/committed→re-verify both slots via
+  oracle, adopt-on-newer, NEVER blind staging overwrite; clean→finish to `done`+delete staging; unverifiable→
+  quarantine+retain). Orphan-staging cleanup: delete any `instar-credential-swap-staging-*` entry with no matching
+  non-`done` journal row. Recovery WRITES take the single-mover + per-slot locks (round-2: not "outside the mutex").
+  Journal-in-flight slots excluded from placement/poll/balancing until resolved. Second-pass.
+  - 2nd-pass-flagged cases recovery MUST handle: (a) phase=`exchanged` with credentials ALREADY exchanged but the
+    ledger partially/not updated — a crash between the two commit `recordAssignment` calls leaves slotA=accountB and
+    slotB ABSENT (one-home enforcement dropped the old row); re-derive the intended assignments from the journal's
+    `accountA`/`accountB` + the on-disk blobs (oracle-verified) and re-commit. (b) recovery's OWN `recordAssignment`
+    must guard `isUnknownMode()` (re-seed via `seedFromOracle()` first) or it throws exactly like the swap precondition.
 - Then steps 6–9 (census re-routing, routes + audit scrub, provenance gate, migration) + Step 10 livetest.
+  (The balancer-first-pass recovery barrier + hang-timeout is Increment-B wiring — the balancer is Increment B.)
 - Step 5: `CredentialSwapExecutor` (staged exchange, §2.3.1a source-slot CAS, identity-verify,
   quarantine-never-repair, crash-boundary journal). Second-pass review.
 - Then steps 6–9 per the plan. Commit-gate notes: when committing, pass `--spec docs/specs/live-credential-repointing-rebalancer.md` (now `approved:true`); the no-deferrals pre-commit scan will flag the spec's legit Increment-B scoping language ("deferred", "follow-up") — add `<!-- tracked: 20905 -->` (or a CMT id) markers within 200 chars of each, or move the deferral into Increment B's own section, before the first commit.
