@@ -4967,6 +4967,25 @@ Strip the \`[telegram:N]\` prefix before interpreting the message. Respond natur
       result.upgraded.push('CLAUDE.md: added Attention Queue pool-scope bullet (WS4.1)');
     }
 
+    // WS4.3 (MULTI-MACHINE-SEAMLESSNESS-SPEC) — pool-scope jobs awareness.
+    // A deployed agent whose CLAUDE.md already carries the Job Scheduler
+    // section gets the ?scope=pool bullet inserted after the /jobs View line.
+    // Content-sniff on 'jobs?scope=pool' keeps it idempotent (route-qualified —
+    // a bare `scope=pool` sniff would falsely match other pool-scope routes).
+    if (content.includes('**Job Scheduler**') && !content.includes('jobs?scope=pool')) {
+      const poolBullet = `- View the WHOLE POOL (jobs across every machine): \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/jobs?scope=pool"\` — merges each online machine's jobs (each tagged with its machineId/machineNickname), tolerant of a dark peer (a \`pool.failed\` entry, never a 500), short-TTL cached. Also carries \`pool.divergences\` — an observe-only flag for a machine that DECLARES jobs but is running 0 locally (or returns 0 jobs while online). Use this when the user asks "what jobs do I have?" / "is a job running anywhere?" on a multi-machine setup — the plain view only shows THIS machine's jobs.\n`;
+      // Anchor after the first /jobs View line within the section; fall back to
+      // after the section header line.
+      const anchor = /^- View:[^\n]*\/jobs[^\n]*$/m;
+      if (anchor.test(content)) {
+        content = content.replace(anchor, (m) => `${m}\n${poolBullet.trimEnd()}`);
+      } else {
+        content = content.replace(/\*\*Job Scheduler\*\*[^\n]*\n/, (m) => `${m}${poolBullet}`);
+      }
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Job Scheduler pool-scope bullet (WS4.3)');
+    }
+
     // Tunnel-failure-resilience awareness (spec Part 7). Existing agents
     // already have the Cloudflare Tunnel section but not the resilience
     // text — content-sniff and append a bullet so they can explain a link
