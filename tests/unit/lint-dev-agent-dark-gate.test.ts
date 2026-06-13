@@ -325,22 +325,27 @@ describe('lint-dev-agent-dark-gate', () => {
       '350': 'monitoring.geminiCapacityEscalation.enabled',
       '358': 'monitoring.releaseReadiness.enabled',
       '399': 'threadline.a2aCheckIn.enabled',
-      '443': 'mentor.enabled',
-      '454': 'mentor.autonomousFix.enabled',
-      '469': 'mentee.enabled',
-      '569': 'multiMachine.sessionPool.enabled',
+      // threadline-single-negotiator (CMT-1362): the new `threadline.singleNegotiator`
+      // block (enabled at 426) adds 16 lines before `mentor`, shifting every entry
+      // at or after mentor.enabled by +16. Verified by hand against ConfigDefaults.ts
+      // after the rebase onto main.
+      '426': 'threadline.singleNegotiator.enabled',
+      '459': 'mentor.enabled',
+      '470': 'mentor.autonomousFix.enabled',
+      '485': 'mentee.enabled',
+      '585': 'multiMachine.sessionPool.enabled',
       // durable-inbound-message-queue (CMT-1118): the sessionPool block gained
-      // the inboundQueue (587) + holdForStability (616) sub-blocks (+41),
-      // composed with main's reap-notify +10 and ws3OneVoice +8 shifts.
+      // the inboundQueue + holdForStability sub-blocks, composed with main's
+      // reap-notify, ws3OneVoice, and the singleNegotiator +16 shifts.
       // Verified by hand against the MERGED ConfigDefaults.ts.
-      '594': 'multiMachine.sessionPool.inboundQueue.enabled',
-      '623': 'multiMachine.sessionPool.holdForStability.enabled',
-      '768': 'cartographer.freshnessSweep.enabled',
+      '610': 'multiMachine.sessionPool.inboundQueue.enabled',
+      '639': 'multiMachine.sessionPool.holdForStability.enabled',
+      '784': 'cartographer.freshnessSweep.enabled',
       // fix instar#1069: the freshnessSweep block gained the event-loop-safety
       // fields (detectInWorker…scaffoldChunkNodes), shifting the two later
-      // cartographer entries by +11. Verified by hand against ConfigDefaults.ts.
-      '813': 'cartographer.conformanceAudit.llmEnrichment.enabled',
-      '838': 'cartographer.subtreeNav.llmRerank.enabled',
+      // cartographer entries. Verified by hand against ConfigDefaults.ts.
+      '829': 'cartographer.conformanceAudit.llmEnrichment.enabled',
+      '854': 'cartographer.subtreeNav.llmRerank.enabled',
     };
     const actual = attributeRealConfigDefaults();
     expect(actual).toEqual(EXPECTED);
