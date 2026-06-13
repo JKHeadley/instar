@@ -1,6 +1,7 @@
 ---
 title: Green-PR Auto-Merge Enforcement — Phase 7 becomes machinery, not memory
-approved: false
+approved: true
+approved-by: "Justin (uid:7812716706), Telegram topic 24662, 2026-06-12 18:50 PDT"
 eli16-overview: green-pr-automerge-enforcement.eli16.md
 topic: 24662
 parent-principle: "No Manual Work (user *or* agent)"
