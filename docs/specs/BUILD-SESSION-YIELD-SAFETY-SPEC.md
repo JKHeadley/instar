@@ -16,8 +16,9 @@ single-run-completable: true
 frontloaded-decisions: 21
 cheap-to-change-tags: 11
 contested-then-cleared: 4
-approved: pending-operator
-approved-note: "Operator clarified 2026-06-13: the real requirement is the new Maturation Path standard — every feature ships ENABLED on developer agents so it can mature. Posture reverted from off-everywhere to dev-gated (DEV_GATED_FEATURES: ON dev / OFF fleet) accordingly. Re-confirming approval under the corrected posture."
+approved: true
+approved-by: justin
+approved-note: "Operator approved 2026-06-13 on the corrected dev-enabled posture (DEV_GATED_FEATURES: ON dev / OFF fleet), per the new Maturation Path standard."
 ---
 
 # Build-Session Yield Safety
