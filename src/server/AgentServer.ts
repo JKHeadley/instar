@@ -167,6 +167,7 @@ export class AgentServer {
   private streamTicketStore?: import('./StreamTicketStore.js').StreamTicketStore;
   private poolStreamAllowRemoteInput = false;
   private poolStreamConnector?: import('./WebSocketManager.js').PoolStreamConnector;
+  private poolLink?: import('./routes.js').RouteContext['poolLink'];
   private meshSelfId?: string;
   private routeContext: {
     wsManager: import('./WebSocketManager.js').WebSocketManager | null;
@@ -374,6 +375,8 @@ export class AgentServer {
     guardRegistry?: import('../monitoring/GuardRegistry.js').GuardRegistry;
     /** EVERY registered, non-revoked machine (URL or not) — the /guards?scope=pool accounting boundary. */
     listPoolMachines?: () => Array<{ machineId: string; nickname?: string; lastKnownUrl?: string | null }>;
+    /** WS4.4 "links that survive machine boundaries" — fronting proxy + holder verification handle (MULTI-MACHINE-SEAMLESSNESS-SPEC §WS4.4). */
+    poolLink?: import('./routes.js').RouteContext['poolLink'];
     /** Signed rollout-stage E2E result store (§Rollout). */
     sessionPoolE2EResultStore?: import('../core/SessionPoolE2EResultStore.js').SessionPoolE2EResultStore;
     localSigningKeyPem?: string;
@@ -559,6 +562,7 @@ export class AgentServer {
     this.streamTicketStore = options.streamTicketStore;
     this.poolStreamAllowRemoteInput = options.poolStreamAllowRemoteInput ?? false;
     this.poolStreamConnector = options.poolStreamConnector;
+    this.poolLink = options.poolLink ?? undefined;
     this.meshSelfId = options.meshSelfId ?? undefined;
     this.state = options.state;
     this.hookEventReceiver = options.hookEventReceiver ?? undefined;
@@ -1857,6 +1861,7 @@ export class AgentServer {
       resolvePeerUrls: options.resolvePeerUrls ?? null,
       guardRegistry: options.guardRegistry ?? null,
       listPoolMachines: options.listPoolMachines ?? null,
+      poolLink: options.poolLink ?? null,
       sessionPoolE2EResultStore: options.sessionPoolE2EResultStore ?? null,
       messageLedger: options.messageLedger ?? null,
       currentInboundByTopic: options.currentInboundByTopic ?? null,

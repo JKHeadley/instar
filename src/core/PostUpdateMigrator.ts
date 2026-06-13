@@ -103,6 +103,38 @@ export interface MigratorConfig {
   projectName: string;
 }
 
+/**
+ * WS4.4 dev-gate config migration (MULTI-MACHINE-SEAMLESSNESS-SPEC §WS4.4).
+ * SECURITY-CRITICAL feature, DEV-GATED dark: the runtime resolves the flag via
+ * `resolveDevAgentGate()` (`explicit ?? !!developmentAgent`), so the config must
+ * OMIT it — present on a dev agent ⇒ live, absent on the fleet ⇒ dark.
+ *
+ * This migration enforces that invariant existence-checked + idempotently. It
+ * STRIPS a default-shaped literal `multiMachine.seamlessness.ws44PoolLinks=false`
+ * (the PR #1001 anti-pattern — an injected `false` force-darks even dev agents)
+ * so the dev-gate resolves live, exactly like the cartographer-dev-gate fix.
+ *
+ * Pure + mutating-in-place so it is unit-testable; returns true iff it changed
+ * `config`. Rules:
+ *   - key absent           → no-op (false). The gate already decides correctly.
+ *   - key === false        → STRIP it (true). It was a default-shaped force-dark.
+ *   - key === true         → leave it (false). An operator's explicit fleet-flip wins.
+ * A stripped seamlessness block left empty is removed so the file stays clean.
+ */
+export function migrateConfigWs44PoolLinks(config: Record<string, unknown>): boolean {
+  const mm = config.multiMachine as Record<string, unknown> | undefined;
+  if (!mm || typeof mm !== 'object') return false;
+  const seam = mm.seamlessness as Record<string, unknown> | undefined;
+  if (!seam || typeof seam !== 'object') return false;
+  if (!Object.prototype.hasOwnProperty.call(seam, 'ws44PoolLinks')) return false;
+  // Only a default-shaped `false` is stripped; an explicit `true` is preserved.
+  if (seam.ws44PoolLinks !== false) return false;
+  delete seam.ws44PoolLinks;
+  // Tidy: drop an emptied seamlessness block so the migration leaves no cruft.
+  if (Object.keys(seam).length === 0) delete mm.seamlessness;
+  return true;
+}
+
 export class PostUpdateMigrator {
   private config: MigratorConfig;
   /**
@@ -3822,6 +3854,28 @@ Where to look (never guess mesh state — read it):
       result.upgraded.push('CLAUDE.md: added Cross-Machine Seamlessness section');
     }
 
+    // WS4.4 — links that survive machine boundaries (MULTI-MACHINE-SEAMLESSNESS-SPEC
+    // §WS4.4). Existing multi-machine agents need to know a private-view link keeps
+    // working no matter which machine is fronting, and the security model (the
+    // holder authorizes; the raw PIN never crosses; offline holder = honest
+    // unavailable). Content-sniffed on a distinctive marker for idempotency.
+    if (!content.includes('Links that survive machine boundaries (WS4.4')) {
+      const ws44Section = `
+### Links that survive machine boundaries (WS4.4 — pool-stable private-view links)
+
+A private-view link (\`/view/:id\`) keeps working no matter WHICH of my machines is fronting the tunnel, even when the content lives on a DIFFERENT machine. The fronting machine resolves the actual HOLDER of the view (view-id ownership ≠ topic ownership — by probing peers, since each view lives on the disk of the machine that made it) and proxies to it. Ships DARK behind \`multiMachine.seamlessness.ws44PoolLinks\` (dev-agent gated); a single-machine agent is a no-op (no peers to proxy to).
+
+Security model (what to tell the user if asked "is a shared link safe across my machines?"):
+- The END-USER credential is enforced end-to-end and the HOLDER makes the authorization decision — the fronting machine is a DUMB RELAY. It NEVER substitutes a machine/mesh credential for the user's, NEVER logs the token, and NEVER caches private content at the edge (\`Cache-Control: no-store\`).
+- The user's PIN/token is validated at the fronting edge, then the proxied request carries a SHORT-LIVED, audience-bound (target holder + the exact view id + HTTP method), SINGLE-USE, mesh-signed ASSERTION of that authentication — NOT the raw PIN. Each machine's PIN secret never crosses. A captured assertion cannot be replayed against another resource, another holder, or reused within its window.
+- An OFFLINE holder yields an honest "content temporarily unavailable — its machine is offline", never stale content or a bare 404.
+- **Proactive trigger:** user asks "will this link still work from my other machine / phone while the laptop is asleep?" → yes IF the holder machine is online (the content lives there); if that machine is offline the link honestly says so. Spec: \`docs/specs/MULTI-MACHINE-SEAMLESSNESS-SPEC.md\` §WS4.4.
+`;
+      content += '\n' + ws44Section;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added WS4.4 links-that-survive-machine-boundaries section');
+    }
+
     // CMT-519 — Threadline hub topic + "open this"/bind guidance. Existing agents
     // need to know threadline notices route parent-or-hub (never per-event topics)
     // and that "open this" / "tie this to X" in the hub means calling the bind
@@ -5848,6 +5902,16 @@ Create worktrees for collaborator repos with \`instar worktree create <branch>\`
       // the conversational triggers + read surfaces will guess instead of
       // reading GET /topic-profile/:topicId (the B2/B36 failure class).
       '**Topic Profile (per-topic model, thinking, framework pins)**',
+      // WS4.4 pool-stable links (MULTI-MACHINE-SEAMLESSNESS-SPEC §WS4.4):
+      // framework-agnostic — a Codex/Gemini agent fronting a multi-machine pool
+      // must know a /view/:id link proxies to the holder (and the security model:
+      // user PIN never crosses, single-use audience-bound signed assertion) so it
+      // answers "is a shared link safe across my machines?" instead of guessing.
+      // Two tail-truncated line-leading variants cover both deployed forms
+      // (templates' bold block + migrateClaudeMd's H3), per the Per-Feature LLM
+      // Metrics precedent; each CLAUDE.md contains exactly one, so the other no-ops.
+      '**Links that survive machine boundaries (WS4.4',
+      '### Links that survive machine boundaries (WS4.4',
     ];
 
     for (const shadowName of ['AGENTS.md', 'GEMINI.md']) {
@@ -6606,6 +6670,23 @@ Create worktrees for collaborator repos with \`instar worktree create <branch>\`
     } catch (err) {
       // Fallback: if ConfigDefaults import fails, log error but don't crash migration
       result.errors.push(`config.json defaults: ${err instanceof Error ? err.message : String(err)}`);
+    }
+
+    // WS4.4 — links that survive machine boundaries (MULTI-MACHINE-SEAMLESSNESS-
+    // SPEC §WS4.4). DEV-GATED dark feature: the runtime resolves
+    // `multiMachine.seamlessness.ws44PoolLinks` through resolveDevAgentGate()
+    // (`explicit ?? !!developmentAgent`), so the flag is intentionally OMITTED
+    // from config — a dev agent runs it live, the fleet stays dark. The existence-
+    // check migration here therefore STRIPS a default-shaped literal `false`
+    // (mirroring the cartographer-dev-gate fix) rather than injecting one: an
+    // injected `false` would FORCE-DARK dev agents and defeat dogfooding (the
+    // PR #1001 mechanism). When the key is absent it is a clean no-op. Idempotent;
+    // never touches an operator's explicit `true`.
+    if (migrateConfigWs44PoolLinks(config)) {
+      patched = true;
+      result.upgraded.push('config.json: stripped default-shaped multiMachine.seamlessness.ws44PoolLinks=false so the developmentAgent gate resolves it live');
+    } else {
+      result.skipped.push('config.json: multiMachine.seamlessness.ws44PoolLinks dev-gate already correct (omitted or operator-set)');
     }
 
     if (patched) {

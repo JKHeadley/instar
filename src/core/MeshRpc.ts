@@ -132,6 +132,30 @@ export type MeshCommand =
       topic: number;
       manifestOnly?: boolean;
       want?: { relPath: string; offset: number }[];
+    }
+  | {
+      // WS4.4 "links that survive machine boundaries"
+      // (MULTI-MACHINE-SEAMLESSNESS-SPEC §WS4.4). The tunnel-fronting machine
+      // asks the HOLDER to serve a private view it actually holds. The
+      // verifyEnvelope gate proves WHICH fronting machine is asking (the
+      // authenticated sender — used as the expected assertion issuer); the
+      // carried `assertion` is the audience-bound (holder fp + view id + method),
+      // single-use, short-TTL attestation that the END USER authenticated at the
+      // fronting edge. The holder verifies the assertion AND applies its own
+      // per-view authorization (it makes the decision; the fronting machine is a
+      // dumb relay). Read/observe class — serving OWN held views to a registered
+      // same-operator peer, gated by the user-auth assertion the handler checks.
+      // Two probe shapes ride one verb:
+      //   • probeOnly  — "do you hold this view?" (holder resolution fan-out;
+      //                  NO assertion required — discloses only existence to a
+      //                  registered peer, never the body).
+      //   • assertion  — present → serve the rendered body if the assertion
+      //                  verifies and the holder authorizes.
+      type: 'pool-view-fetch';
+      viewId: string;
+      method: string;
+      probeOnly?: boolean;
+      assertion?: unknown;
     };
 
 export interface MeshEnvelope {
@@ -266,6 +290,7 @@ export function checkCommandRBAC(command: MeshCommand, sender: MachineId, deps: 
     case 'topic-profile-pull':
     case 'commitments-sync':
     case 'preferences-sync':
+    case 'pool-view-fetch':
     case 'secret-share':
       // Read/observe class (or e2e-encrypted) — any registered peer (already
       // proven a registered peer by verifyEnvelope). journal-sync joins this
@@ -280,6 +305,13 @@ export function checkCommandRBAC(command: MeshCommand, sender: MachineId, deps: 
       // per-topic profile entries — disclosure-only for registered
       // same-operator peers; the receiver revalidates every field (§10.2)
       // before anything persists, so the verb carries reach, not authority.
+      // pool-view-fetch joins it (MULTI-MACHINE-SEAMLESSNESS-SPEC §WS4.4): the
+      // verb is reachable by any registered peer, but its HANDLER is the real
+      // gate — it serves a private view body ONLY when the carried user-auth
+      // ASSERTION verifies (audience-bound to this holder + this view + this
+      // method, single-use, signed by the authenticated sender) AND the
+      // holder's own per-view authorization passes. The probeOnly shape
+      // discloses only existence (not the body) to a registered peer.
       return { ok: true, reason: 'ok' };
     default:
       return { ok: false, reason: 'claim-unauthorized' };

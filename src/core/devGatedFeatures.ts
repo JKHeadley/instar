@@ -110,6 +110,12 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     justification: 'Gate covers the WRITE path only (reads are always-on O(1) resolution) and ships dryRun:true (§14 shadow-field — logs intended respawns, performs none); no spend, no destructive action while the dry-run canary holds.',
   },
   {
+    name: 'ws44PoolLinks',
+    configPath: 'multiMachine.seamlessness.ws44PoolLinks',
+    description: 'WS4.4 links that survive machine boundaries — tunnel-fronting machine proxies /view/:id to the holder.',
+    justification: 'Fronting machine is a dumb relay (holder authorizes); the proxied request carries a short-lived, audience-bound, single-use, mesh-signed user-auth assertion — never the raw PIN; private bodies never cached; single-machine = no-op. No destructive action, no third-party spend.',
+  },
+  {
     name: 'outboundAdvisoryTimeClaim',
     configPath: 'messaging.outboundAdvisory.timeClaim.enabled',
     description:

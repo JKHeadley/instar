@@ -1015,6 +1015,41 @@ export interface RouteContext {
    * messageLedger; both null when exactly-once is dark).
    */
   replyMarkerTransport: import('../core/ReplyMarkerTransport.js').ReplyMarkerTransport | null;
+  /**
+   * WS4.4 "links that survive machine boundaries" (MULTI-MACHINE-SEAMLESSNESS-SPEC
+   * §WS4.4). When present, the tunnel-fronting machine can resolve the actual
+   * HOLDER of a `/view/:id` (view-id ownership ≠ topic ownership) and proxy the
+   * request to it carrying a short-lived, audience-bound, single-use, mesh-signed
+   * USER-AUTH ASSERTION — never the raw PIN / view token (each machine's PIN
+   * secret never crosses). The holder makes the authorization decision; the
+   * fronting machine is a dumb relay. Null/absent on a single-machine install or
+   * when the dark flag (multiMachine.seamlessness.ws44PoolLinks) is off — the
+   * `/view/:id` route then behaves exactly as before (local-only).
+   */
+  poolLink?: {
+    /** This machine's mesh fingerprint (machineId) — issuer (fronting) / holder (serving). */
+    selfFingerprint: string;
+    /** Fronting-side: the holder-resolution + concurrency-capped proxy. */
+    proxy: import('../core/PoolViewProxy.js').PoolViewProxy;
+    /** Holder-side: the single-use jti replay store. */
+    jtiStore: import('../core/PoolLinkJtiStore.js').PoolLinkJtiStore;
+    /** Mint a signed assertion for (holder, view, method) on the fronting side. */
+    mintAssertion: (
+      audience: { holderFingerprint: string; viewId: string; method: string },
+      userAuth: import('../core/PoolLinkAssertion.js').PoolLinkAssertion['userAuth'],
+    ) => import('../core/PoolLinkAssertion.js').PoolLinkAssertion;
+    /** Resolve a peer machine's REGISTERED Ed25519 signing public key (PEM) — holder side. */
+    resolveIssuerPublicKeyPem: (iss: string) => string | null;
+    /** Ed25519 verify (canonical, signature, pem). */
+    verify: (canonical: string, signature: string, pem: string) => boolean;
+    /** Send a machine-authed proxied view fetch to the holder; streams the response. */
+    fetchFromHolder: (
+      holder: { machineId: string; url: string },
+      viewId: string,
+      method: string,
+      assertion: import('../core/PoolLinkAssertion.js').PoolLinkAssertion,
+    ) => Promise<{ status: number; contentType: string | null; body: Buffer }>;
+  } | null;
   startTime: Date;
 }
 
@@ -12921,7 +12956,7 @@ export function createRoutes(ctx: RouteContext): Router {
     });
   });
 
-  router.get('/view/:id', (req, res) => {
+  router.get('/view/:id', async (req, res) => {
     if (!ctx.viewer) {
       res.status(503).json({ error: 'Private viewer not configured' });
       return;
@@ -12934,6 +12969,18 @@ export function createRoutes(ctx: RouteContext): Router {
 
     const view = ctx.viewer.get(req.params.id);
     if (!view) {
+      // WS4.4: view-id ownership ≠ topic ownership. The view may be HELD by
+      // another machine in the pool. The end-user credential was already
+      // validated by the auth middleware (Bearer token, obtained via the
+      // dashboard PIN, OR the signed ?sig= tunnel URL) BEFORE this handler ran —
+      // so reaching here means the user is authenticated at this fronting edge.
+      // Resolve the actual holder and proxy, carrying a short-lived, audience-
+      // bound, single-use, mesh-signed assertion of THAT user-authentication —
+      // never the raw credential (each machine's PIN secret never crosses).
+      if (ctx.poolLink) {
+        await proxyViewToHolder(req, res, req.params.id);
+        return;
+      }
       res.status(404).json({ error: 'View not found' });
       return;
     }
@@ -12951,6 +12998,122 @@ export function createRoutes(ctx: RouteContext): Router {
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
     res.send(html);
   });
+
+  /**
+   * WS4.4 fronting-edge proxy (MULTI-MACHINE-SEAMLESSNESS-SPEC §WS4.4 a/b/c/d/e).
+   * Called ONLY when the view is NOT held locally AND the pool-link layer is wired
+   * AND the end-user credential already passed the auth middleware. Resolves the
+   * holder, mints a signed audience-bound assertion, proxies under a concurrency
+   * cap, and STREAMS the holder's response straight through — the holder makes the
+   * authorization decision (its 401/403 is relayed unchanged), private bodies are
+   * NEVER cached at the edge, and the raw user credential is NEVER forwarded.
+   */
+  async function proxyViewToHolder(
+    req: import('express').Request,
+    res: import('express').Response,
+    viewId: string,
+  ): Promise<void> {
+    const pl = ctx.poolLink!;
+    // §WS4.4 (f) load-shed-aware resolution: over the fronting CPU threshold this
+    // serves the LAST-CACHED holder resolution flagged stale instead of
+    // re-fanning-out. We label that staleness honestly on the wire (X-Pool-Link-
+    // Stale + age) below, and decline honestly when nothing is cached.
+    const tagged = await pl.proxy.resolveHolderTagged(viewId);
+    const resolution = tagged.resolution;
+    // When the resolution itself was served stale under load-shed, surface the
+    // honest staleness tag on EVERY downstream response for this request.
+    const tagStale = (): void => {
+      if (tagged.stale) {
+        res.setHeader('X-Pool-Link-Stale', 'true');
+        res.setHeader('X-Pool-Link-Resolution-Age-Ms', String(Math.max(0, Date.now() - tagged.cachedAtMs)));
+      }
+    };
+    if (resolution.kind === 'local') {
+      // Race: the view appeared locally between get() and here — re-serve local.
+      const v = ctx.viewer!.get(viewId);
+      if (v && !v.pinHash) {
+        res.setHeader('Content-Type', 'text/html; charset=utf-8');
+        res.send(ctx.viewer!.renderHtml(v));
+        return;
+      }
+      res.status(404).json({ error: 'View not found' });
+      return;
+    }
+    if (resolution.kind === 'not-found' || resolution.kind === 'no-peers') {
+      tagStale();
+      res.status(404).json({ error: 'View not found' });
+      return;
+    }
+    if (resolution.kind === 'load-shed') {
+      // §WS4.4 (f): the fronting machine is over its CPU threshold AND has no
+      // cached resolution to serve — decline a fresh fan-out honestly (load-shed,
+      // labeled), never a fabricated/stale body. (The broader pool-cache
+      // unification is the tracked follow-up CMT-1416; this in-scope posture is
+      // the staleness-tag on the holder-resolution caching surface.)
+      res.status(503).setHeader('Retry-After', '5');
+      res.json({ error: 'Fronting machine busy (load-shed) — retry shortly' });
+      return;
+    }
+    if (resolution.kind === 'holder-offline') {
+      // §WS4.4 d: honest unavailable — NEVER a bare 404, never stale content.
+      tagStale();
+      res.status(503).setHeader('Content-Type', 'text/html; charset=utf-8');
+      res.send(
+        '<!doctype html><meta charset="utf-8"><title>Temporarily unavailable</title>'
+        + '<body style="font-family:system-ui;max-width:40rem;margin:4rem auto;padding:0 1rem">'
+        + '<h1>Content temporarily unavailable</h1>'
+        + '<p>This content lives on one of your other machines, which is offline right now. '
+        + 'It will be reachable again once that machine comes back online.</p></body>',
+      );
+      return;
+    }
+
+    // resolution.kind === 'remote': proxy under the concurrency cap.
+    const method = (req.method || 'GET').toUpperCase();
+    // Which end-user credential authenticated at the edge (informational only —
+    // the raw credential is NEVER forwarded). A signed tunnel URL → 'view-sig';
+    // otherwise a Bearer token obtained via the dashboard PIN → 'pin-session'.
+    const userAuth: import('../core/PoolLinkAssertion.js').PoolLinkAssertion['userAuth'] =
+      typeof req.query.sig === 'string' && req.query.sig ? 'view-sig' : 'pin-session';
+    const assertion = pl.mintAssertion(
+      { holderFingerprint: resolution.machineId, viewId, method },
+      userAuth,
+    );
+
+    const slot = await pl.proxy.withSlot(async () =>
+      pl.fetchFromHolder(
+        { machineId: resolution.machineId, url: resolution.url },
+        viewId,
+        method,
+        assertion,
+      ),
+    );
+    if (!slot.ok) {
+      // §WS4.4 c: over the in-flight cap — honest 503, never an unbounded queue.
+      res.status(503).json({ error: 'Too many in-flight remote view requests — retry shortly' });
+      return;
+    }
+
+    const holderRes = slot.value;
+    if (holderRes.status === 404) {
+      // The memo may name a stale holder (view moved). Invalidate so the next
+      // request re-fans-out, and surface not-found honestly.
+      pl.proxy.invalidate(viewId);
+      res.status(404).json({ error: 'View not found' });
+      return;
+    }
+    // §WS4.4 b: the HOLDER makes the authorization decision — relay its
+    // 401/403 (or any status) UNCHANGED. The fronting machine never substitutes
+    // its own decision. Stream the body straight through; never cache it.
+    res.status(holderRes.status);
+    if (holderRes.contentType) res.setHeader('Content-Type', holderRes.contentType);
+    res.setHeader('Cache-Control', 'no-store');
+    // §WS4.4 (f): if the holder for this request was picked from a load-shed
+    // (stale) cached resolution, label that honestly. Private bodies are still
+    // never cached at the edge — only the (non-private) holder routing is stale.
+    tagStale();
+    res.send(holderRes.body);
+  }
 
   router.post('/view/:id/unlock', (req, res) => {
     if (!ctx.viewer) {

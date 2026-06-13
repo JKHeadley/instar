@@ -615,6 +615,17 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       // NOT named `enabled`, so it is outside the dev-agent dark-gate lint (which
       // matches the literal `enabled: false` spelling only).
       ws21PreferencesPool: false,
+      // WS4.4 "links that survive machine boundaries". DEV-AGENT DARK GATE:
+      // `ws44PoolLinks` is DELIBERATELY OMITTED here (not hardcoded false) so
+      // resolveDevAgentGate decides at runtime — LIVE on a development agent
+      // (dogfooding), DARK on the fleet until explicitly flipped on. Hardcoding
+      // `false` would force-dark even a dev agent (the PR #1001 bug). Registered
+      // in DEV_GATED_FEATURES (src/core/devGatedFeatures.ts). When dark, the
+      // /view/:id route is local-only (byte-for-byte today's behavior).
+      // WS4.4 (f) load-shed threshold: over this 1-min load-per-core, holder
+      // resolution serves last-cached (stale-tagged) instead of re-fanning-out.
+      // (A tunable, not a gate — a concrete default is correct here.)
+      ws44LoadShedLoadPerCore: 1.5,
     },
     sessionPool: {
       enabled: false,

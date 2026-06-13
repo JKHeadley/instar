@@ -155,6 +155,7 @@ describe('Feature Delivery Completeness', () => {
       'Model-Tier Escalation (EXPERIMENTAL', // FABLE-MODEL-ESCALATION-SPEC §10: heavy-work model escalation awareness (POST /sessions/:name/model-swap, tier enum only; dark fleet default; templates.ts + migrator + shadow-marker parity — a Codex agent spawning claude-code sessions can use the swap surface too).
       'Outbound advisory for automated messages', // outbound-jargon-filepath-gap §5: the inform-only preflight for automated job sends — what a "NOT SENT — advisory" transcript line means + the fix-then-re-run / --ack-advisory moves (templates.ts + migrator + shadow-marker parity).
       'Topic Profile (per-topic model', // TOPIC-PROFILE-SPEC §12: per-topic durable {model, thinkingMode, framework} pins resolved at spawn with gentlest-swap respawn — a user-invokable capability ("use codex here" / "pin this topic to Fable" / "set high thinking"). Full parity: templates.ts generateClaudeMd + migrator migrateClaudeMd + migrateFrameworkShadowCapabilities markers[] (framework-agnostic — a Codex agent can carry per-topic pins too).
+      'Links that survive machine boundaries (WS4.4', // MULTI-MACHINE-SEAMLESSNESS-SPEC §WS4.4: pool-stable private-view links — the fronting machine proxies /view/:id to the holder with an audience-bound single-use signed user-auth assertion. Full parity: templates.ts generateClaudeMd + migrator migrateClaudeMd. Ships DARK (multiMachine.seamlessness.ws44PoolLinks, dev-gated); a single-machine agent is a no-op.
     ];
 
     for (const section of featureSections) {

@@ -488,6 +488,11 @@ let _streamTicketStore: import('../server/StreamTicketStore.js').StreamTicketSto
  *  links to peers (mint a ticket via the mesh verb, then connect). Injected into
  *  the WebSocketManager so a remote-session subscribe streams from its owner. */
 let _poolStreamConnector: import('../server/WebSocketManager.js').PoolStreamConnector | null = null;
+/** WS4.4 "links that survive machine boundaries" (MULTI-MACHINE-SEAMLESSNESS-SPEC
+ *  §WS4.4): the fronting-proxy + holder verification handle attached to the routes
+ *  ctx. Constructed in the mesh-setup block (needs meshSelfId + identity manager);
+ *  null on single-machine or when the dark flag is off. */
+let _poolLink: import('../server/routes.js').RouteContext['poolLink'] | null = null;
 /** Recognize + apply a "move/run this on <nickname>" relocation on inbound; returns handled=true when the message WAS a relocation command (so it must not also be dispatched). */
 let _tryNicknameRelocation: ((topicId: number, text: string) => Promise<{ handled: boolean }>) | null = null;
 /** Per-topic framework override (claude-code | codex-cli). Populated from
@@ -12775,7 +12780,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                 // WS1.1 capability advertisement (spec invariant 5): a bounded
                 // fixed-size summary, never an inventory. Reported live each
                 // heartbeat so a queue going dark withdraws the capability.
-                seamlessnessFlags: { ws11DeliverReceive: !!_inboundQueue, ws12DrainReceive: !!_drainRunner },
+                seamlessnessFlags: { ws11DeliverReceive: !!_inboundQueue, ws12DrainReceive: !!_drainRunner, ws44PoolLinks: !!_poolLink },
                 // Durable Inbound Message Queue §5.1: depth + oldest + tenure +
                 // bounded top-K — the survivor's loss-SUSPECTED item, capped
                 // re-placement arm, and supersede-dedupe key all read these.
@@ -12843,6 +12848,112 @@ export async function startServer(options: StartOptions): Promise<void> {
             mintId: () => cryptoMod.randomBytes(32).toString('hex'),
             logger: (m) => console.log(pc.dim(`  ${m}`)),
           });
+        }
+        // WS4.4 "links that survive machine boundaries"
+        // (MULTI-MACHINE-SEAMLESSNESS-SPEC §WS4.4). Ships DARK behind
+        // multiMachine.seamlessness.ws44PoolLinks (dev-agent gated). When on, the
+        // tunnel-fronting machine can resolve the holder of a /view/:id it does
+        // NOT hold and proxy to it carrying a short-lived, audience-bound,
+        // single-use, mesh-signed user-auth assertion (never the raw PIN). The
+        // holder verifies the assertion + applies its own per-view authz.
+        let _ws44PoolViewProxy: import('../core/PoolViewProxy.js').PoolViewProxy | null = null;
+        let _ws44JtiStore: import('../core/PoolLinkJtiStore.js').PoolLinkJtiStore | null = null;
+        {
+          const ws44Cfg = config.multiMachine?.seamlessness;
+          const ws44Enabled = resolveDevAgentGate(ws44Cfg?.ws44PoolLinks, config);
+          if (ws44Enabled) {
+            try {
+              const plaMod = await import('../core/PoolLinkAssertion.js');
+              const jtiMod = await import('../core/PoolLinkJtiStore.js');
+              const proxyMod = await import('../core/PoolViewProxy.js');
+              const cryptoMod = await import('node:crypto');
+              const clientMod = await import('../core/MeshRpcClient.js');
+              _ws44JtiStore = new jtiMod.PoolLinkJtiStore({
+                filePath: path.join(config.stateDir, 'state', 'pool-link-jtis.json'),
+                now: () => Date.now(),
+                logger: (m) => console.log(pc.dim(`  ${m}`)),
+              });
+              // Probe + fetch use a dedicated MeshRpcClient (its own nonce lane).
+              let ws44Nonce = 0;
+              const ws44Client = new clientMod.MeshRpcClient({
+                selfMachineId: meshSelfId,
+                sign: (c) => idMod.sign(c, localSigningKeyPem),
+                nonce: () => `${meshSelfId}:pv:${Date.now()}:${++ws44Nonce}`,
+              });
+              _ws44PoolViewProxy = new proxyMod.PoolViewProxy({
+                selfMachineId: meshSelfId,
+                heldLocally: (viewId) => viewer.get(viewId) != null,
+                listPeers: () =>
+                  meshIdMgr
+                    .getActiveMachines()
+                    .filter((m) => m.machineId !== meshSelfId && !!m.entry.lastKnownUrl)
+                    .map((m) => ({
+                      machineId: m.machineId,
+                      url: m.entry.lastKnownUrl as string,
+                      online: machinePoolRegistry?.getCapacity(m.machineId)?.online,
+                    })),
+                probePeer: async (peer, viewId) => {
+                  const res = await ws44Client.send(
+                    { machineId: peer.machineId, url: peer.url },
+                    { type: 'pool-view-fetch', viewId, method: 'GET', probeOnly: true },
+                    0,
+                    { timeoutMs: 4000 },
+                  );
+                  if (!res.ok) return 'unreachable';
+                  const r = (res.result ?? {}) as { present?: boolean };
+                  return r.present === true ? 'present' : 'absent';
+                },
+                now: () => Date.now(),
+                // §WS4.4 (f) load-shed posture: over this 1-min load-per-core
+                // threshold, holder resolution serves the last-cached result with
+                // a staleness tag instead of re-fanning-out. Cores clamped to ≥1.
+                cpuLoadPerCore: () => os.loadavg()[0] / Math.max(1, os.cpus().length),
+                loadShedLoadPerCore: ws44Cfg?.ws44LoadShedLoadPerCore,
+                logger: (m) => console.log(pc.dim(`  ${m}`)),
+              });
+              // The fronting → holder fetch + assertion mint, attached to ctx.
+              const mintJti = () => cryptoMod.randomBytes(24).toString('hex');
+              _poolLink = {
+                selfFingerprint: meshSelfId,
+                proxy: _ws44PoolViewProxy,
+                jtiStore: _ws44JtiStore,
+                mintAssertion: (audience, userAuth) =>
+                  plaMod.mintPoolLinkAssertion(audience, userAuth, {
+                    selfFingerprint: meshSelfId,
+                    sign: (c) => idMod.sign(c, localSigningKeyPem),
+                    mintJti,
+                    now: () => Date.now(),
+                  }),
+                resolveIssuerPublicKeyPem: (iss) => meshIdMgr.getSigningPublicKeyPem(iss),
+                verify: (canonical, signature, pem) => {
+                  try { return idMod.verify(canonical, signature, pem); } catch { return false; }
+                },
+                fetchFromHolder: async (holder, viewId, method, assertion) => {
+                  const res = await ws44Client.send(
+                    { machineId: holder.machineId, url: holder.url },
+                    { type: 'pool-view-fetch', viewId, method, assertion },
+                    0,
+                    { timeoutMs: 8000 },
+                  );
+                  if (!res.ok) {
+                    // A mesh-level rejection (verify/RBAC/freshness) maps to its
+                    // status; treat anything but 200 as a holder verdict to relay.
+                    return { status: res.status ?? 502, contentType: 'application/json; charset=utf-8', body: Buffer.from(JSON.stringify({ error: res.reason ?? 'holder unreachable' })) };
+                  }
+                  const r = (res.result ?? {}) as { status?: number; contentType?: string | null; bodyBase64?: string };
+                  return {
+                    status: typeof r.status === 'number' ? r.status : 200,
+                    contentType: r.contentType ?? null,
+                    body: Buffer.from(r.bodyBase64 ?? '', 'base64'),
+                  };
+                },
+              };
+              console.log(pc.green('  WS4.4 pool-links enabled (fronting proxy + holder verification)'));
+            } catch (err) {
+              // @silent-fallback-ok — WS4.4 stays null; /view/:id behaves local-only (today's behavior). Logged with context.
+              console.log(pc.dim(`  [ws44-pool-links] not wired: ${err instanceof Error ? err.message : String(err)}`));
+            }
+          }
         }
         const seenMeshNonces = new Map<string, number>(); // `${sender}:${nonce}` → ts, age-pruned
         const meshPruneMs = Math.max(meshClockToleranceMs * 4, 120_000);
@@ -13419,6 +13530,66 @@ export async function startServer(options: StartOptions): Promise<void> {
               _secretShareHandler
                 ? _secretShareHandler.handle(cmd as { type: 'secret-share'; encrypted: string }, sender)
                 : { ok: false, reason: 'secret-sync disabled' },
+            // WS4.4 holder side (MULTI-MACHINE-SEAMLESSNESS-SPEC §WS4.4). The
+            // verifyEnvelope gate already proved WHICH fronting machine is asking
+            // (`sender` = the authenticated, registered peer — used as the
+            // EXPECTED assertion issuer). Two shapes:
+            //   • probeOnly → disclose ONLY whether we hold the view (never the
+            //     body) so the fronting machine can resolve the holder by fan-out.
+            //   • assertion → verify the audience-bound, single-use, signed
+            //     user-auth assertion AND apply our OWN per-view authorization,
+            //     then serve the rendered body. The fronting machine is a dumb
+            //     relay; THIS holder makes the authorization decision.
+            'pool-view-fetch': async (cmd, sender) => {
+              const c = cmd as import('../core/MeshRpc.js').MeshCommand & { type: 'pool-view-fetch' };
+              if (typeof c.viewId !== 'string' || !c.viewId) return { ok: false, reason: 'viewId required' };
+              const view = viewer.get(c.viewId);
+              // Probe: existence only. A registered same-operator peer learns
+              // whether we hold it — never the content (no body without an
+              // assertion). Absent → present:false (every non-holder answers this).
+              if (c.probeOnly === true) {
+                return { present: view != null };
+              }
+              if (!_poolLink || !_ws44JtiStore) return { ok: false, reason: 'ws44 disabled' };
+              if (!view) return { status: 404, contentType: 'application/json; charset=utf-8', bodyBase64: Buffer.from(JSON.stringify({ error: 'View not found' })).toString('base64') };
+              const plaMod = await import('../core/PoolLinkAssertion.js');
+              const assertion = c.assertion as import('../core/PoolLinkAssertion.js').PoolLinkAssertion;
+              const verdict = plaMod.verifyPoolLinkAssertion(
+                assertion,
+                { viewId: c.viewId, method: typeof c.method === 'string' ? c.method : 'GET' },
+                {
+                  selfFingerprint: meshSelfId,
+                  // The mesh transport authenticated `sender` independently —
+                  // the assertion's claimed issuer MUST equal it (a captured
+                  // assertion cannot be replayed by a different machine).
+                  expectedIssuer: sender,
+                  resolveIssuerPublicKeyPem: (iss) => meshIdMgr.getSigningPublicKeyPem(iss),
+                  verify: (canonical, signature, pem) => {
+                    try { return idMod.verify(canonical, signature, pem); } catch { return false; }
+                  },
+                  seenJti: (jti) => _ws44JtiStore!.seen(jti),
+                  now: () => Date.now(),
+                },
+              );
+              if (!verdict.ok) {
+                console.log(pc.dim(`  [ws44-pool-links] holder rejected assertion from ${sender}: ${verdict.reason}`));
+                return { status: plaMod.statusForPoolLinkReason(verdict.reason), contentType: 'application/json; charset=utf-8', bodyBase64: Buffer.from(JSON.stringify({ error: `assertion rejected: ${verdict.reason}` })).toString('base64') };
+              }
+              // Single-use: record the jti AFTER a fully-accepted assertion so a
+              // rejected one never burns it; a replay within the window is then
+              // caught by seenJti above.
+              _ws44JtiStore.record(assertion.jti, assertion.exp);
+              // HOLDER authorization decision (spec §WS4.4 b): a PIN-protected
+              // view is NOT served through the cross-machine assertion path —
+              // the assertion attests edge user-auth, not the per-view PIN, so a
+              // pin-gated view returns the holder's PIN page UNCHANGED for the
+              // fronting machine to relay (the holder owns the decision).
+              if (view.pinHash) {
+                return { status: 200, contentType: 'text/html; charset=utf-8', bodyBase64: Buffer.from(viewer.renderPinPage(view)).toString('base64') };
+              }
+              const html = viewer.renderHtml(view);
+              return { status: 200, contentType: 'text/html; charset=utf-8', bodyBase64: Buffer.from(html).toString('base64') };
+            },
           },
           logger: (m: string) => console.log(pc.dim(`  ${m}`)),
         });
@@ -14812,7 +14983,7 @@ export async function startServer(options: StartOptions): Promise<void> {
             carrier: _topicProfileCarrier,
           }
         : null;
-    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, cartographer: cartographer ?? undefined, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, subscriptionPool, quotaPoller, quotaAwareScheduler: _quotaAwareScheduler ?? undefined, proactiveSwapMonitor: _proactiveSwapMonitor ?? undefined, inUseAccountResolver, enrollmentWizard, semanticMemory, activitySentinel, rateLimitSentinel, releaseReadinessSentinel: releaseReadinessSentinel ?? undefined, greenPrAutoMerger: greenPrAutoMerger ?? undefined, guardLatchStore: guardLatchStore ?? undefined, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, topicProfile: _topicProfileCtx ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, localSigningKeyPem, leaseTransport, onLeasePullRequest: () => leaseCoordinatorRef?.currentLease() ?? null, liveTailReceiver, handoffWireTransport, onHandoffBegin, onHandoffInitiate: handoffInitiate, handoffInProgress: handoffSentinelInProgress, messageLedger, currentInboundByTopic, replyMarkerTransport, onReplyMarker: messageLedger ? (marker: unknown) => { const m = marker as { dedupeKey: string; platform: string; replyIdempotencyKey: string; epoch: number; topic?: string | null }; messageLedger!.applyRemoteReplyMarker(m.dedupeKey, { platform: m.platform, replyIdempotencyKey: m.replyIdempotencyKey, epoch: m.epoch, topic: m.topic ?? null }); } : undefined, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, warrantsReplyGate, collaborationSurfacer, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, a2aDeliveryTracker: a2aDeliveryTracker ?? undefined, responseReviewGate, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, machinePoolRegistry, getInboundQueue: () => _inboundQueue, meshRpcDispatcher, workingSetPullCoordinator, commitmentReplicaStore, preferenceReplicaStore, forwardCommitmentMutate, sessionOwnershipRegistry, topicPinStore: _topicPinStore ?? undefined, streamTicketStore: _streamTicketStore ?? undefined, poolStreamAllowRemoteInput: (config as { dashboard?: { poolStream?: { allowRemoteInput?: boolean } } }).dashboard?.poolStream?.allowRemoteInput ?? false, poolStreamConnector: _poolStreamConnector ?? undefined, secretSync: _secretSyncHandle ?? undefined, meshSelfId: _meshSelfId ?? undefined, resolveRouterUrl: _resolveRouterUrl ?? undefined, resolvePeerUrls: _resolvePeerUrls ?? undefined, guardRegistry, listPoolMachines: _listPoolMachines ?? undefined, sessionPoolE2EResultStore, proxyCoordinator, topicIntentStore, topicIntentArcCheck, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, briefDeps, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, agentWorktreeReaper, mcpProcessReaper, geminiLoopRunner, sleepController, agentActivityState, reapLog, resumeQueue, resumeDrainer, operatorStopRecorder: recordOperatorStop, sleepWakeDetector, unjustifiedStopGate, stopGateDb, stopNotifier });
+    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, cartographer: cartographer ?? undefined, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, subscriptionPool, quotaPoller, quotaAwareScheduler: _quotaAwareScheduler ?? undefined, proactiveSwapMonitor: _proactiveSwapMonitor ?? undefined, inUseAccountResolver, enrollmentWizard, semanticMemory, activitySentinel, rateLimitSentinel, releaseReadinessSentinel: releaseReadinessSentinel ?? undefined, greenPrAutoMerger: greenPrAutoMerger ?? undefined, guardLatchStore: guardLatchStore ?? undefined, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, topicProfile: _topicProfileCtx ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, localSigningKeyPem, leaseTransport, onLeasePullRequest: () => leaseCoordinatorRef?.currentLease() ?? null, liveTailReceiver, handoffWireTransport, onHandoffBegin, onHandoffInitiate: handoffInitiate, handoffInProgress: handoffSentinelInProgress, messageLedger, currentInboundByTopic, replyMarkerTransport, onReplyMarker: messageLedger ? (marker: unknown) => { const m = marker as { dedupeKey: string; platform: string; replyIdempotencyKey: string; epoch: number; topic?: string | null }; messageLedger!.applyRemoteReplyMarker(m.dedupeKey, { platform: m.platform, replyIdempotencyKey: m.replyIdempotencyKey, epoch: m.epoch, topic: m.topic ?? null }); } : undefined, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, warrantsReplyGate, collaborationSurfacer, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, a2aDeliveryTracker: a2aDeliveryTracker ?? undefined, responseReviewGate, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, machinePoolRegistry, getInboundQueue: () => _inboundQueue, meshRpcDispatcher, workingSetPullCoordinator, commitmentReplicaStore, preferenceReplicaStore, forwardCommitmentMutate, sessionOwnershipRegistry, topicPinStore: _topicPinStore ?? undefined, streamTicketStore: _streamTicketStore ?? undefined, poolStreamAllowRemoteInput: (config as { dashboard?: { poolStream?: { allowRemoteInput?: boolean } } }).dashboard?.poolStream?.allowRemoteInput ?? false, poolStreamConnector: _poolStreamConnector ?? undefined, secretSync: _secretSyncHandle ?? undefined, meshSelfId: _meshSelfId ?? undefined, resolveRouterUrl: _resolveRouterUrl ?? undefined, resolvePeerUrls: _resolvePeerUrls ?? undefined, guardRegistry, listPoolMachines: _listPoolMachines ?? undefined, poolLink: _poolLink ?? undefined, sessionPoolE2EResultStore, proxyCoordinator, topicIntentStore, topicIntentArcCheck, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, briefDeps, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, agentWorktreeReaper, mcpProcessReaper, geminiLoopRunner, sleepController, agentActivityState, reapLog, resumeQueue, resumeDrainer, operatorStopRecorder: recordOperatorStop, sleepWakeDetector, unjustifiedStopGate, stopGateDb, stopNotifier });
     // Resolve the late-bound topic-operator getter (increment 2e): routing was
     // wired before the server existed; from here on inbound binds use the
     // server's own store instance.

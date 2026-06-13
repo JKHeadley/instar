@@ -1921,6 +1921,12 @@ export interface MachineCapacity {
      *  ABSENT/false → the transfer sender degrades to today's pin-and-
      *  idle-closeout path — never a doomed drain order. */
     ws12DrainReceive?: boolean;
+    /** WS4.4 (§WS4.4 / F6): this machine can SERVE the holder side of a
+     *  cross-machine pool-view-fetch — answer the existence probe AND verify a
+     *  pool-link user-auth assertion before serving a held view body. ABSENT/false
+     *  → a fronting peer never proxies a /view to it (it stays local-only there).
+     *  Advertised only when the dark ws44PoolLinks flag resolved on. */
+    ws44PoolLinks?: boolean;
   };
   /** Compact guard-posture summary self-reported in the capacity heartbeat
    *  (GUARD-POSTURE-ENDPOINT-SPEC §2.3). Bound to the AUTHENTICATED sender at
@@ -2070,6 +2076,45 @@ export interface MultiMachineConfig {
    * replication a clean no-op.
    */
   coherenceJournal?: CoherenceJournalUserConfig;
+  /**
+   * Cross-Machine Seamlessness graduated-rollout flags (MULTI-MACHINE-
+   * SEAMLESSNESS-SPEC). Each workstream's dark flag lives here. All optional;
+   * ABSENT = today's behavior preserved exactly. Resolved through the
+   * developmentAgent gate (dark on the fleet, live on the dev agent) at the
+   * wiring callsite, NOT here, so a single source of truth for the rollout posture.
+   */
+  seamlessness?: {
+    /** WS3 one-voice speaker election (default false → unconditional speak). */
+    ws3OneVoice?: boolean;
+    /** WS3 dwell window (ms) before the election re-evaluates. Default 60000. */
+    ws3DwellMs?: number;
+    /** WS1.3 ownership reconcile (bounded pin/owner convergence). DARK default. */
+    ws13Reconcile?: boolean;
+    /** WS1.3 dry-run (logs intended CAS actions without performing them). Default true. */
+    ws13DryRun?: boolean;
+    /** WS1.3 reconcile tick cadence (ms). Default 30000. */
+    ws13TickMs?: number;
+    /**
+     * WS4.4 "links that survive machine boundaries" (§WS4.4 / F6). When on, the
+     * tunnel-fronting machine resolves the actual HOLDER of a `/view/:id` it does
+     * NOT hold and proxies the request to it, carrying a short-lived, audience-
+     * bound, single-use, mesh-signed USER-AUTH assertion — never the raw PIN /
+     * view token. The holder makes the authorization decision (dumb relay at the
+     * edge). DEFAULT (undefined/false) = local-only `/view`, no proxy — today's
+     * exact behavior. Resolved via resolveDevAgentGate(): dark on the fleet, live
+     * on the dev agent. Single-machine = strict no-op. DELIBERATELY OMITTED from
+     * config defaults (the gate decides) — a literal `false` would force-dark dev.
+     */
+    ws44PoolLinks?: boolean;
+    /**
+     * WS4.4 (f) load-shed: when the fronting machine is over this 1-min
+     * load-per-core threshold, holder-resolution serves the last-cached
+     * resolution with an explicit staleness tag instead of re-fanning-out
+     * (load-shed, honestly labeled). Default 1.5 (mirrors the SessionReaper
+     * cpuCriticalLoadPerCore default). Set 0 to disable load-shed (always fan out).
+     */
+    ws44LoadShedLoadPerCore?: number;
+  };
 }
 
 /**
