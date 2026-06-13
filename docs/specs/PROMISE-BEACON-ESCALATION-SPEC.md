@@ -12,6 +12,9 @@ single-run-completable: true
 frontloaded-decisions: 5
 cheap-to-change-tags: 1
 contested-then-cleared: 1
+approved: true
+approved-by: "justin"
+approved-at: "2026-06-13T04:46:00Z"
 ---
 
 # Promise-Beacon Escalation — a promise survives its owning session's death
