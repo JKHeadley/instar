@@ -60,3 +60,6 @@ Loss-reducing + additive. The single safety invariant (requester ≠ authorizer;
 
 ## Second-pass review (if required)
 The spec passed 3-round convergence with 6 independent reviewers (security, adversarial, integration/multi-machine, decision-completeness, lessons-aware/foundation, scalability) — the multi-angle adversarial review that catches what a single pass misses. The round-1 CRITICAL (deceptive display) and round-2 HIGH (bounds-as-deception) were both closed before convergence.
+
+## Implementation note (CapabilityIndex)
+The 6 `/authorization-requests` routes are classified in `src/server/CapabilityIndex.ts` as the agent-facing `authorizationRequest` capability (surfaced in `/capabilities`), satisfying the capabilities-discoverability ratchet.
