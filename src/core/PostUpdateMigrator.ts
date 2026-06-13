@@ -3671,6 +3671,7 @@ Rule: I do not state that work landed inside another agent's state unless I have
       const subscriptionPoolSection = `
 **Subscription Pool (multi-account quota + auto-swap + enrollment)** — Hold ALL of your subscriptions for a provider (e.g. several Claude logins) and use them as one pool: I read each account's live quota, drain each before its reset, and when a session hits an account's limit I resume it on another account instead of letting it die. The registry stores each account's login LOCATION (its config home), NEVER a token.
 - See the pool + each account's live quota: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/subscription-pool\` · one account's quota + burn: \`GET /subscription-pool/:id/quota\` · poll all now: \`POST /subscription-pool/poll\`.
+- **Quota across ALL my machines** (pool-scope read) — \`GET /subscription-pool?scope=pool\` fans out to every ONLINE peer's plain pool, tags each account with the machine holding it (\`machineId\`/\`machineNickname\`/\`remote:true\`), and merges into ONE dark-peer-tolerant object \`{ enabled, accounts:[...], pool:{ selfMachineId, peersQueried, peersOk, failed }, scope:'pool' }\`. A down/slow/unauth peer is a classified \`pool.failed\` row (normalized reason — never a peer URL or token), never a silent omission and never a 500. Per-machine seat is meaningful, so the SAME account on two machines stays individually visible (never coalesced). Single-machine → the plain self-only view tagged \`scope:'pool'\`. Use this when the operator asks "how much quota is left across ALL my machines?".
 - **Continuity guarantee** — a long session that hits its account's quota resumes on another eligible account (conversation preserved via \`--resume\`), never dies. Manual lever: \`POST /subscription-pool/swap\` \`{"sessionName":"...","exhaustedAccountId":"..."}\`. Auto-swap on rate-limit ships OFF (opt-in via \`subscriptionPool.autoSwapOnRateLimit\` — it moves a live session, real authority).
 - **Pre-limit (proactive) swap** — beyond the reactive swap above, I can move a session OFF an account BEFORE it walls, at a lag-aware measured threshold (default 80% — the polled reading trails real usage, so the swap completes with margin). It also covers the UNTAGGED interactive session (resolves its account from the default login), so the session you talk to doesn't wedge at the wall. Opt-in via \`subscriptionPool.proactiveSwap.enabled\` (same authority as auto-swap, earlier trigger). Status: \`GET /subscription-pool/proactive-swap\`; run a pass now: \`POST /subscription-pool/proactive-swap/check\`.
 - **Enroll a new account from your phone** — \`POST /subscription-pool/enroll\` \`{"id","label","provider","framework","configHome"}\` starts a login and returns a public code/URL (never a token); \`GET /subscription-pool/pending-logins\` is the surface; expired codes are auto-reissued. Mark done with \`POST /subscription-pool/enroll/:id/complete\`.
@@ -3699,6 +3700,26 @@ Rule: I do not state that work landed inside another agent's state unless I have
         content = content.replace(continuityAnchor, continuityAnchor + proactiveBullet);
         patched = true;
         result.upgraded.push('CLAUDE.md: added Subscription Pool pre-limit (proactive) swap bullet');
+      }
+    }
+
+    // WS5.1 pool-scope read awareness. Existing agents that ALREADY carry the
+    // Subscription Pool section won't get the new bullet from the section-install
+    // guard above. Patch it in idempotently: insert the pool-scope bullet right
+    // after the "See the pool" bullet when the section exists but the bullet is
+    // missing. Content-sniffed on the route phrase.
+    if (
+      content.includes('Subscription Pool (multi-account quota') &&
+      !content.includes('Quota across ALL my machines')
+    ) {
+      const seePoolAnchor =
+        '· poll all now: `POST /subscription-pool/poll`.';
+      const poolScopeBullet =
+        '\n- **Quota across ALL my machines** (pool-scope read) — `GET /subscription-pool?scope=pool` fans out to every ONLINE peer\'s plain pool, tags each account with the machine holding it (`machineId`/`machineNickname`/`remote:true`), and merges into ONE dark-peer-tolerant object `{ enabled, accounts:[...], pool:{ selfMachineId, peersQueried, peersOk, failed }, scope:\'pool\' }`. A down/slow/unauth peer is a classified `pool.failed` row (normalized reason — never a peer URL or token), never a silent omission and never a 500. Per-machine seat is meaningful, so the SAME account on two machines stays individually visible (never coalesced). Single-machine → the plain self-only view tagged `scope:\'pool\'`. Use this when the operator asks "how much quota is left across ALL my machines?".';
+      if (content.includes(seePoolAnchor)) {
+        content = content.replace(seePoolAnchor, seePoolAnchor + poolScopeBullet);
+        patched = true;
+        result.upgraded.push('CLAUDE.md: added Subscription Pool pool-scope (?scope=pool) bullet');
       }
     }
 

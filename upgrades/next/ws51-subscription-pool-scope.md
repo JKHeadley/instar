@@ -1,0 +1,37 @@
+# WS5.1 — subscription-pool quota visibility across ALL my machines (GET /subscription-pool?scope=pool)
+
+<!-- bump: patch -->
+
+<!--
+  NOTE: a read-side, additive, pure route-branch on GET /subscription-pool. No
+  config flag, no ConfigDefaults change → the dark-gate line-map is unchanged.
+  Mirrors the already-merged WS4.1 GET /sessions?scope=pool fan-out exactly. The
+  placement tie-breaker half is DEFERRED (CMT-1416) because it needs account-pool
+  headroom plumbed through the capacity heartbeat — larger than a clean slice.
+-->
+
+## What Changed
+
+`GET /subscription-pool?scope=pool` is a new read-side branch that gives the operator ONE view of "how much quota is left across ALL my machines and accounts" — not just the machine they happened to ask. It mirrors the already-shipped WS4.1 sessions pool fan-out (`GET /sessions?scope=pool`) line-for-line.
+
+- **The fan-out** — when `scope=pool`, the handler fans out over `ctx.resolvePeerUrls()` (online mesh peers, authenticated URLs), fetching each peer's PLAIN `/subscription-pool` (never `scope=pool` — no recursion), carrying THIS machine's Bearer, with a 5-second timeout each. Each remote account is tagged with the machine that holds it (`machineId` / `machineNickname` / `remote: true`); self accounts are tagged `remote: false`.
+- **Tolerant by design** — a down / slow / unauthorized peer becomes a classified `pool.failed` row with a NORMALIZED reason (`timeout` / `unreachable` / `unauthorized` / `error`) — never a raw error, peer URL, or token; never a silent omission; never a 500. The new peer-fetch catch is tagged `@silent-fallback-ok` (the degrade is reported up-stack, not swallowed).
+- **Per-machine seat preserved** — the SAME account on two machines stays individually visible (NOT coalesced); a per-machine seat is quota-meaningful.
+- **Strict no-op superset** — single-machine / no peers → the self-only view tagged `scope: 'pool'` with empty `pool.failed`. The plain `GET /subscription-pool` (no `scope`) is byte-for-byte unchanged.
+- **Awareness** — a "Quota across ALL my machines" bullet added to the Subscription Pool section in both `generateClaudeMd` (new agents) and an idempotent `migrateClaudeMd` patcher (existing agents).
+
+The placement tie-breaker (prefer the machine with more account-pool headroom on an otherwise-equal tie) is DEFERRED as a tracked follow-up (CMT-1416): it needs account-pool aggregate headroom carried in the capacity heartbeat, which `MachineCapacity` does not have yet. This slice ships the read alone.
+
+## What to Tell Your User
+
+When you run me on more than one machine, you can now ask me how much subscription quota is left across ALL of them at once, instead of one machine at a time. Each account shows which machine holds it, and a machine that is asleep or unreachable shows up honestly as a named failed entry rather than silently vanishing, so you can always tell "that machine has no accounts" apart from "that machine is dark right now." A machine that is dark is never mistaken for a machine with nothing. If you run me on a single machine, nothing changes.
+
+## Summary of New Capabilities
+
+`GET /subscription-pool?scope=pool` — pool-wide quota visibility: fans out to every online peer's plain pool, tags each account by machine, merges into one dark-peer-tolerant object (`{ enabled, accounts, pool: { selfMachineId, peersQueried, peersOk, failed }, scope: 'pool' }`). No new exported symbol; no new config flag.
+
+## Evidence
+
+- `tests/unit/subscription-pool-scope.test.ts` — merge/tag/classify on synthetic peers: self `remote:false` + remote `remote:true` with machine identity; per-reason `pool.failed` classification (401→unauthorized, 5xx→error, Timeout/Abort→timeout, other→unreachable); credential/URL-leak lens (an IP:port + the local token in the raw error never surface); same-account-on-two-machines kept individually visible; no-recursion lens (the peer fetch targets the PLAIN route, one call per peer); auth-boundary lens (the outbound Bearer is the self token, never a caller-supplied one); single-machine + unwired-pool no-op supersets. Green.
+- `tests/integration/subscription-pool-scope.test.ts` — over a REAL peer routes app + a REAL 401-enforcing peer + a dead port: object shape, every peer accounted for in `pool.failed`, an unauth peer's accounts never leaked, the plain route stays the back-compat shape. Green.
+- `tests/e2e/subscription-pool-scope-lifecycle.test.ts` — Phase-1 "feature is alive" on the production AgentServer init path: plain route stays a back-compat object; `scope=pool` answers 200 with the envelope + empty failed on a single-machine install (never 503); both require Bearer auth. Green.
