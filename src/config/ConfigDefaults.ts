@@ -226,6 +226,12 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       preservationMaxFileBytes: 52_428_800,
       preservationMaxTotalBytes: 104_857_600,
     },
+    // Operator Authorization Request (agent proposes → operator approves one-tap).
+    // `enabled` is OMITTED (Maturation Path) — resolved via resolveDevAgentGate so it
+    // ships enabled-on-dev / dark-on-fleet. Only the non-gating knob is defaulted here.
+    authorizationRequests: {
+      pendingCapPerAgent: 10,
+    },
     // McpProcessReaper (Responsible Resource Usage — MCP-leak fix, Option B).
     // Reaps leaked MCP-server children (playwright-mcp / mcp-remote / instar
     // stdio) whose owning session is dead/stale or fully orphaned — killing a

@@ -17,6 +17,8 @@ import { fileURLToPath } from 'node:url';
 import {
   isOperatorSurfaceFile,
   artifactAddressesOperatorSurfaceQuality,
+  isAuthorizationSurfaceFile,
+  artifactAddressesAgentProposesApproves,
 } from '../../scripts/lib/operator-surface.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -71,12 +73,46 @@ describe('artifactAddressesOperatorSurfaceQuality — both sides of the boundary
   });
 });
 
+describe('isAuthorizationSurfaceFile — the authorization/approval subset', () => {
+  it('YES: mandate/grant/authorization-request/approval renderers + forms', () => {
+    expect(isAuthorizationSurfaceFile('dashboard/mandates.js')).toBe(true);
+    expect(isAuthorizationSurfaceFile('src/server/authorization-request-page.ts')).toBe(true);
+    expect(isAuthorizationSurfaceFile('dashboard/grant-form.html')).toBe(true);
+    expect(isAuthorizationSurfaceFile('dashboard/operator-approval.js')).toBe(true);
+  });
+  it('NO: a generic dashboard file with no authorization role, and test/spec guards', () => {
+    expect(isAuthorizationSurfaceFile('dashboard/process-health.js')).toBe(false);
+    expect(isAuthorizationSurfaceFile('dashboard/mandates.test.js')).toBe(false);
+    expect(isAuthorizationSurfaceFile('src/core/SessionManager.ts')).toBe(false);
+    expect(isAuthorizationSurfaceFile('')).toBe(false);
+  });
+});
+
+describe('artifactAddressesAgentProposesApproves — both sides of the boundary', () => {
+  it('YES when the artifact engages the agent-proposes/operator-approves question', () => {
+    expect(artifactAddressesAgentProposesApproves(
+      'Agent Proposes, Operator Approves: the operator approves a server-authored card, never authors.',
+    )).toBe(true);
+    expect(artifactAddressesAgentProposesApproves('agent-proposes operator-approves: n/a')).toBe(true);
+  });
+  it('NO when the artifact never engages it', () => {
+    expect(artifactAddressesAgentProposesApproves('## 6b. Operator-surface quality\nleads with the action.')).toBe(false);
+    expect(artifactAddressesAgentProposesApproves('')).toBe(false);
+    expect(artifactAddressesAgentProposesApproves(undefined as unknown as string)).toBe(false);
+  });
+});
+
 describe('wiring integrity — the gate is actually called, not a no-op', () => {
   it('the precommit defines assertOperatorSurfaceQuality and uses the shared lib predicates', () => {
     expect(PRECOMMIT).toContain('function assertOperatorSurfaceQuality(');
     expect(PRECOMMIT).toContain("from './lib/operator-surface.mjs'");
     expect(PRECOMMIT).toContain('isOperatorSurfaceFile');
     expect(PRECOMMIT).toContain('artifactAddressesOperatorSurfaceQuality');
+  });
+
+  it('the precommit also wires the agent-proposes/operator-approves authorization-surface gate', () => {
+    expect(PRECOMMIT).toContain('isAuthorizationSurfaceFile');
+    expect(PRECOMMIT).toContain('artifactAddressesAgentProposesApproves');
   });
 
   it('the gate is invoked on BOTH pass paths (Tier-1 lite AND Tier-2 full)', () => {

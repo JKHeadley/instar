@@ -155,6 +155,14 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     justification:
       'Dev-enabled per the Maturation Path standard (the dev agent is the controlled blast radius where a lifecycle-touching feature matures before fleet). Loss-reducing only: R1 is a read-only pre-kill dirty-check (no egress, no spend); R2 is a SIGNAL + a tracked beacon (never a blocking gate) plus a NON-destructive preservation patch (git diff → a state-dir file, secret-scrubbed, size-capped; never mutates index/ref/history). The operator origin-veto is preserved — an explicit operator/user/emergency kill is never auto-revived. Fail-open everywhere.',
   },
+  {
+    name: 'authorizationRequests',
+    configPath: 'monitoring.authorizationRequests.enabled',
+    description:
+      'Operator Authorization Request — the agent pre-fills a structured grant request; the operator approves it one-tap with their dashboard PIN (replaces the raw-JSON mandate form). Spec: docs/specs/OPERATOR-AUTHORIZATION-REQUEST-SPEC.md.',
+    justification:
+      'Dev-enabled per the Maturation Path standard. Does NOT weaken authority: a pending request confers ZERO authority (it is inert); the grant is issued ONLY inside the existing PIN-gated path (checkMandatePin) via the existing signed MandateStore.issue/addGrants — requester ≠ authorizer is preserved and the agent can never approve its own request. The operator-facing card is SERVER-authored from the structured proposal + the registry display name (never agent free-text), closing the deceptive-summary class. Routes 503 when off; the existing mandate/grant path is unchanged. The dev agent is the controlled blast radius where the operator-surface matures before fleet.',
+  },
   // ── CMT-1438 (DEV-AGENT-DARK-GATE-TEETH): the 4 audited-safe migrants from the
   //    retired deliberate-fleet-default bucket. Each was code-grounded (D4) before
   //    the move; 3 candidates (correctionLearning, apprenticeshipCycleSla,

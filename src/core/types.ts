@@ -4235,6 +4235,16 @@ export interface MonitoringConfig {
     preservationMaxTotalBytes?: number;
   };
   /**
+   * Operator Authorization Request (agent proposes → operator approves one-tap).
+   * `enabled` is dev-gated (resolveDevAgentGate) — enabled-on-dev / dark-on-fleet —
+   * so it is OMITTED from ConfigDefaults. Spec: OPERATOR-AUTHORIZATION-REQUEST-SPEC.md.
+   */
+  authorizationRequests?: {
+    enabled?: boolean;
+    /** Max pending requests per proposing agent before 429 (FD-13). */
+    pendingCapPerAgent?: number;
+  };
+  /**
    * McpProcessReaper (RESPONSIBLE-RESOURCE-USAGE — MCP-leak fix, Option B).
    * Reaps leaked MCP-server children (playwright-mcp / mcp-remote / instar
    * stdio) whose owning session is dead/stale or fully orphaned. Killing a
