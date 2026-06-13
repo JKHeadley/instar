@@ -129,6 +129,33 @@ export interface PromiseBeaconConfig {
    * Default 4.
    */
   defaultAutoPauseAfterUnchanged?: number;
+  /**
+   * HONEST-PROGRESS-MESSAGING B1 — when the tmux snapshot is UNCHANGED, send
+   * nothing (the "still on it, no new output" line carried zero information and
+   * was the user's #1 noise complaint). The unchanged-count is still tracked for
+   * atRisk/auto-pause accounting; only the message is withheld. The beacon still
+   * speaks on genuine new output, atRisk, close-out, a deadline (B1a), or a
+   * sparse liveness tick (B1b). Default `true`; set `false` to restore the old
+   * every-tick templated heartbeat (rollback path). */
+  suppressUnchangedHeartbeats?: boolean;
+  /**
+   * HONEST-PROGRESS-MESSAGING B1b — sparse liveness. When unchanged heartbeats
+   * are suppressed, a genuinely long task would otherwise go fully dark. At most
+   * ONE "still watching, N min in" line is emitted per this interval while a
+   * session is still present and its turn is not finished. Default 60m. */
+  beaconLivenessIntervalMs?: number;
+  /**
+   * HONEST-PROGRESS-MESSAGING B2 / FD-1 — turn-finished close-out. When the
+   * session's live frame shows a finished/idle turn (no active-work indicator)
+   * for this many consecutive checks, the beacon emits ONE close-out prompt and
+   * auto-pauses (no clockwork heartbeats into a finished room). Default 3
+   * (≈60m at 20m cadence — rules out a momentary prompt-like frame mid-task). */
+  turnFinishedCloseoutChecks?: number;
+  /**
+   * HONEST-PROGRESS-MESSAGING B2 — detector for "is this session still actively
+   * working?" (wired to looksActivelyWorking on the live frame). When absent,
+   * turn-finished close-out is inactive (degrades safely). */
+  looksActivelyWorking?: (frame: string, sessionName: string) => boolean;
 
   // ── Escalation (PROMISE-BEACON-ESCALATION-SPEC §3–§5) ──────────────────────
   /**
@@ -198,6 +225,12 @@ interface HotState {
   sessionEpoch?: string;
   consecutiveUnchanged: number;
   templatedVariantCursor: number;
+  /** B1b — wall-clock (ISO) of the last sparse-liveness line, so it fires at most
+   *  once per beaconLivenessIntervalMs. */
+  lastLivenessAt?: string;
+  /** B2 — consecutive checks where the session's live frame read as turn-finished
+   *  (idle, no active-work indicator). Close-out fires at turnFinishedCloseoutChecks. */
+  consecutiveTurnFinished?: number;
 }
 
 // Rotating templated phrases (spec Round 3 #9).
@@ -259,11 +292,30 @@ function promiseExcerpt(c: Pick<Commitment, 'agentResponse' | 'userRequest'>): s
   const raw = (c.agentResponse || c.userRequest || '').replace(/\s+/g, ' ').trim();
   if (!raw) return '';
   const MAX = 80;
-  if (raw.length <= MAX) return raw;
-  const cut = raw.slice(0, MAX);
-  const lastSpace = cut.lastIndexOf(' ');
-  const boundary = lastSpace > 40 ? lastSpace : MAX;
-  return cut.slice(0, boundary) + '…';
+  let excerpt: string;
+  if (raw.length <= MAX) {
+    excerpt = raw;
+  } else {
+    const cut = raw.slice(0, MAX);
+    const lastSpace = cut.lastIndexOf(' ');
+    const boundary = lastSpace > 40 ? lastSpace : MAX;
+    excerpt = cut.slice(0, boundary) + '…';
+  }
+  // HONEST-PROGRESS-MESSAGING B5 / FD-7 — the excerpt derives from LLM- or
+  // user-originated commitment text and is embedded in every user-facing beacon
+  // surface. Run it through the same proxy guard applied to tmux-derived status
+  // lines; unsafe content falls back to a neutral placeholder.
+  const guard = guardProxyOutput(excerpt);
+  return guard.safe ? excerpt : 'this task';
+}
+
+// Human-friendly remaining-time string for the deadline-pressure line (B1a).
+function humanizeMs(ms: number): string {
+  const mins = Math.max(1, Math.round(ms / 60_000));
+  if (mins < 60) return `${mins} min`;
+  const hours = Math.floor(mins / 60);
+  const rem = mins % 60;
+  return rem > 0 ? `${hours}h ${rem}m` : `${hours}h`;
 }
 
 /**
@@ -462,7 +514,7 @@ export class PromiseBeacon extends EventEmitter {
     if (c.status !== 'pending' || c.beaconSuppressed || c.beaconPaused) return;
 
     // atRisk doubles cadence (spec Round 3 #1) — softer-toned + less frequent.
-    const baseCadence = c.cadenceMs ?? 10 * 60_000;
+    const baseCadence = c.cadenceMs ?? 20 * 60_000;
     const effective = c.atRisk ? baseCadence * 2 : baseCadence;
     const cadence = this.clampCadence(effective) * this.timerMult;
     const hot = this.loadHotState(c.id);
@@ -563,35 +615,53 @@ export class PromiseBeacon extends EventEmitter {
     }
 
     try {
-      // ── Capture & hash ──
-      let snapshot = '';
-      if (sessionName) {
-        const raw = this.config.captureSessionOutput(sessionName, 200);
-        if (raw) {
-          snapshot = sanitizeTmuxOutput(capOutput(raw), []);
-        }
-      }
+      // ── Capture (raw frame for turn-state, sanitized for hashing) ──
+      const rawFrame = sessionName ? (this.config.captureSessionOutput(sessionName, 200) ?? '') : '';
+      const snapshot = rawFrame ? sanitizeTmuxOutput(capOutput(rawFrame), []) : '';
       const hash = snapshot ? sha256(normalizeForHash(snapshot)) : 'empty';
       const hot = this.loadHotState(c.id);
       const unchanged = hash === hot.lastSnapshotHash;
+      const nowIso = new Date(this.now()).toISOString();
 
       const excerpt = promiseExcerpt(c);
       const suffix = excerpt ? ` — re: ${excerpt}` : '';
 
-      let text: string;
+      // ── B2: turn-finished close-out (HONEST-PROGRESS-MESSAGING / FD-1) ──
+      // If the session is alive but its live frame shows no active-work indicator
+      // for N consecutive checks, the promised work's turn has wrapped — emit ONE
+      // close-out prompt and auto-pause instead of heart-beating into a finished
+      // room. Inactive (degrades safely) when looksActivelyWorking isn't wired.
+      if (sessionName && this.config.looksActivelyWorking && this.config.isSessionAlive(sessionName) && rawFrame) {
+        let working = true;
+        try {
+          working = this.config.looksActivelyWorking(rawFrame, sessionName);
+        } catch {
+          // @silent-fallback-ok: FD-6 fail-safe — an unreliable detector read
+          // defaults to "still working" so a turn-finished close-out is never
+          // FALSELY fired. The safe direction for a notification suppressor.
+          working = true;
+        }
+        if (!working) {
+          hot.consecutiveTurnFinished = (hot.consecutiveTurnFinished ?? 0) + 1;
+          const closeoutAt = this.config.turnFinishedCloseoutChecks ?? 3;
+          if (hot.consecutiveTurnFinished >= closeoutAt) {
+            hot.lastSnapshotHash = hash;
+            this.saveHotState(c.id, hot);
+            await this.closeOutTurnFinished(c, excerpt);
+            return; // closed out + paused — do NOT re-arm
+          }
+        } else {
+          hot.consecutiveTurnFinished = 0;
+        }
+      }
+
+      let text: string | null = null;
       let atRiskSignal = false;
-      if (!snapshot || unchanged) {
-        // Templated — no LLM call. Prolonged unchanged output is itself a
-        // soft atRisk signal (2 consecutive unchanged snapshots).
-        const unchangedIsAtRisk = hot.consecutiveUnchanged >= 2;
-        const variants = unchangedIsAtRisk ? AT_RISK_VARIANTS : TEMPLATED_VARIANTS;
-        const phrase = variants[hot.templatedVariantCursor % variants.length];
-        text = `${this.prefix} ${phrase}${suffix}`;
-        if (unchangedIsAtRisk) atRiskSignal = true;
-        hot.consecutiveUnchanged += 1;
-        hot.templatedVariantCursor += 1;
-      } else {
-        // LLM call — background lane, with AbortController preemption.
+      let livenessFired = false;
+
+      if (snapshot && !unchanged) {
+        // ── Genuine new output → real LLM-summarized progress line ──
+        hot.consecutiveUnchanged = 0;
         try {
           const line = await this.config.llmQueue.enqueue(
             'background',
@@ -631,7 +701,6 @@ export class PromiseBeacon extends EventEmitter {
           }
 
           text = `${this.prefix} ${safeLine}${suffix}`;
-          hot.consecutiveUnchanged = 0;
         } catch (err) {
           if (err instanceof LlmAbortedError || (err as Error).message.includes('cap exceeded') || (err as Error).message.includes('reserve')) {
             text = `${this.prefix} still working (update deferred)${suffix}`;
@@ -639,26 +708,58 @@ export class PromiseBeacon extends EventEmitter {
             text = `${this.prefix} still working (status fetch failed)${suffix}`;
           }
         }
+      } else {
+        // ── Unchanged (or no snapshot) ──
+        hot.consecutiveUnchanged += 1;
+        const unchangedIsAtRisk = hot.consecutiveUnchanged >= 2;
+        if (unchangedIsAtRisk) atRiskSignal = true;
+        // B1: suppress the "nothing changed" filler by default. Speak only on
+        // deadline pressure (B1a) or a sparse liveness tick (B1b). When the
+        // operator opts out (suppressUnchangedHeartbeats:false), keep the legacy
+        // every-tick templated line (rollback path).
+        if (this.config.suppressUnchangedHeartbeats === false) {
+          const variants = unchangedIsAtRisk ? AT_RISK_VARIANTS : TEMPLATED_VARIANTS;
+          const phrase = variants[hot.templatedVariantCursor % variants.length];
+          text = `${this.prefix} ${phrase}${suffix}`;
+          hot.templatedVariantCursor += 1;
+        } else {
+          const deadlineLine = this.deadlinePressureLine(c, suffix);
+          if (deadlineLine) {
+            text = deadlineLine;
+          } else {
+            const livenessLine = this.maybeLivenessLine(c, hot, suffix, sessionName);
+            if (livenessLine) {
+              text = livenessLine;
+              livenessFired = true;
+            }
+          }
+        }
       }
 
-      // ── Send ──
-      await this.config.sendMessage(c.topicId, text, {
-        source: 'promise-beacon',
-        isProxy: true,
-        tier: 1,
-      });
+      // ── Send (only if there is something true to say — B1) ──
+      const sent = text != null;
+      if (sent) {
+        await this.config.sendMessage(c.topicId, text!, {
+          source: 'promise-beacon',
+          isProxy: true,
+          tier: 1,
+        });
+        if (livenessFired) hot.lastLivenessAt = nowIso;
+        hot.heartbeatCount += 1;
+      }
 
-      // ── Persist hot state + mutate cold ──
-      const nowIso = new Date(this.now()).toISOString();
+      // ── Persist hot state (cadence advances every check, sent or not, so a
+      //    suppressed tick can't tight-loop on a stale lastHeartbeatAt). ──
       hot.lastHeartbeatAt = nowIso;
-      hot.heartbeatCount += 1;
       hot.lastSnapshotHash = hash;
       this.saveHotState(c.id, hot);
 
       await this.config.commitmentTracker.mutate(c.id, prev => ({
         ...prev,
         lastHeartbeatAt: nowIso,
-        heartbeatCount: (prev.heartbeatCount ?? 0) + 1,
+        // heartbeatCount counts messages actually SENT (B1: a suppressed,
+        // unchanged-snapshot check is not a heartbeat the user saw).
+        heartbeatCount: (prev.heartbeatCount ?? 0) + (sent ? 1 : 0),
         lastSnapshotHash: hash,
         // atRisk is a signal-driven, non-terminal flag. Setting it does NOT
         // change status; it only nudges tone and doubles cadence below.
@@ -670,6 +771,7 @@ export class PromiseBeacon extends EventEmitter {
         topicId: c.topicId,
         templated: !snapshot || unchanged,
         atRisk: atRiskSignal,
+        sent,
       });
 
       // ── Auto-pause gate ───────────────────────────────────────────
@@ -722,6 +824,80 @@ export class PromiseBeacon extends EventEmitter {
     }));
     this.stopFor(c.id);
     this.emit('auto-paused', { id: c.id, topicId: c.topicId });
+  }
+
+  /**
+   * B1a (HONEST-PROGRESS-MESSAGING) — deadline-pressure exception. Total silence
+   * near a hard deadline is itself dishonest. When the commitment's hard deadline
+   * is within 2× the effective cadence, an unchanged tick still speaks with a
+   * low-confidence, honest line. Returns null when there is no deadline pressure.
+   */
+  private deadlinePressureLine(c: Commitment, suffix: string): string | null {
+    if (!c.hardDeadlineAt) return null;
+    const deadline = Date.parse(c.hardDeadlineAt);
+    if (Number.isNaN(deadline)) return null;
+    const remaining = deadline - this.now();
+    if (remaining <= 0) return null; // past the deadline — expiry is handled elsewhere
+    const baseCadence = c.cadenceMs ?? 20 * 60_000;
+    const effective = c.atRisk ? baseCadence * 2 : baseCadence;
+    if (remaining > 2 * effective) return null;
+    return `${this.prefix} no visible new output${suffix}, but still within your deadline (${humanizeMs(remaining)} left) — watching closely.`;
+  }
+
+  /**
+   * B1b (HONEST-PROGRESS-MESSAGING) — sparse liveness. When unchanged heartbeats
+   * are suppressed, a genuinely long task would go fully dark. Emit at most one
+   * "still watching, N min in" line per beaconLivenessIntervalMs while a session
+   * is present. Returns null when a liveness line isn't due yet.
+   */
+  private maybeLivenessLine(
+    c: Commitment,
+    hot: HotState,
+    suffix: string,
+    sessionName: string | null,
+  ): string | null {
+    if (!sessionName) return null;
+    const interval = this.config.beaconLivenessIntervalMs ?? 60 * 60_000;
+    const anchor = hot.lastLivenessAt
+      ? Date.parse(hot.lastLivenessAt)
+      : Date.parse(c.createdAt);
+    if (Number.isNaN(anchor)) return null;
+    if (this.now() - anchor < interval) return null;
+    const createdAt = Date.parse(c.createdAt);
+    const minIn = Number.isNaN(createdAt)
+      ? 0
+      : Math.max(1, Math.round((this.now() - createdAt) / 60_000));
+    return `${this.prefix} still watching${suffix} — ${minIn} min in, no new output yet.`;
+  }
+
+  /**
+   * B2 (HONEST-PROGRESS-MESSAGING) — turn-finished close-out. The promise's
+   * session has wrapped its turn; emit ONE honest close-out prompt and auto-pause
+   * (no clockwork heartbeats into a finished room). Non-terminal: status stays
+   * `pending`; resume re-arms via the `resumed` handler.
+   */
+  private async closeOutTurnFinished(c: Commitment, excerpt: string): Promise<void> {
+    const re = excerpt || 'this task';
+    const finalText =
+      `${this.prefix} I said I'd follow up on "${re}" but that work's session has wrapped — ` +
+      `want me to pick it back up, or close this out?`;
+    try {
+      await this.config.sendMessage(c.topicId!, finalText, {
+        source: 'promise-beacon',
+        isProxy: true,
+        tier: 1,
+      });
+    } catch (err) {
+      console.warn(`[PromiseBeacon] turn-finished close-out send failed for ${c.id}:`, (err as Error).message);
+    }
+    await this.config.commitmentTracker.mutate(c.id, prev => ({
+      ...prev,
+      beaconPaused: true,
+      beaconPausedReason: 'turn-finished',
+      beaconPausedAt: new Date(this.now()).toISOString(),
+    }));
+    this.stopFor(c.id);
+    this.emit('auto-paused', { id: c.id, topicId: c.topicId, reason: 'turn-finished' });
   }
 
   // ─── Internals ────────────────────────────────────────────────────────────

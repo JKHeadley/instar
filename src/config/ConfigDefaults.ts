@@ -102,6 +102,15 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
     // add `autoRecover: true` here so new agents + the rollout observer see it.
     activeWorkSilenceSentinel: {
       enabled: true,
+      // HONEST-PROGRESS-MESSAGING D — operator-tunable rollback levers (the
+      // monitors' DEFAULT_CONFIG already carries these, so behavior reaches every
+      // agent via code; persisting them here surfaces them for tuning and is the
+      // documented rollback path). UNLIKE the dark `autoRecover` flag above, these
+      // are STABLE defaults, not a dark flag awaiting a fleet flip — so persisting
+      // them is intentional. silenceThresholdMs raised 15m→30m; the 90m
+      // activeWorkMaxFrozenIndicatorMs is the A5 frozen-indicator backstop.
+      silenceThresholdMs: 1_800_000, // 30m (was 15m) — A4
+      activeWorkMaxFrozenIndicatorMs: 5_400_000, // 90m — A5 frozen-indicator backstop
     },
     // ContextWedgeSentinel — detect+recover the "thinking blocks ... cannot be
     // modified" 400 fast-fail wedge. ONLY the detection switch is persisted here
@@ -912,6 +921,20 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
   // LIVE on a dev agent (the zero-cost read surfaces dogfood there), DARK fleet-wide.
   // Registered in DEV_GATED_FEATURES (src/core/devGatedFeatures.ts). The live-fleet
   // flip is registering `enabled: true` here. Spec: DEV-AGENT-DARK-GATE-ENFORCEMENT.
+  // PromiseBeacon — commitment follow-through heartbeats. Read at TOP LEVEL
+  // (`config.promiseBeacon`, NOT `monitoring.promiseBeacon`) by server.ts; these
+  // are the keys the runtime actually consumes. HONEST-PROGRESS-MESSAGING B1/B1b/B2:
+  // silence the zero-information "still on it, no new output" filler by default,
+  // surface a sparse liveness line so long tasks aren't fully dark, and close out
+  // a finished turn instead of heart-beating into an empty room. The deep-merge
+  // add-missing backfill carries these to existing agents that already have a
+  // `promiseBeacon` block; the honest-progress-messaging-defaults migrator is the
+  // audited belt-and-suspenders backfill for agents without one.
+  promiseBeacon: {
+    suppressUnchangedHeartbeats: true, // B1 — false restores the legacy every-tick templated heartbeat (rollback)
+    beaconLivenessIntervalMs: 3_600_000, // B1b — at most one sparse "still watching" line per 60m
+    turnFinishedCloseoutChecks: 3, // B2/FD-1 — N idle-frame checks before the one-shot close-out
+  },
   cartographer: {
     maxDepth: 12,
     // Doc-freshness sweep (spec #2). A nested key under cartographer so the

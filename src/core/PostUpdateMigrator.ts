@@ -307,6 +307,7 @@ export class PostUpdateMigrator {
     this.migrateCommitmentOwnerBackfill(result);
     this.migrateMultiMachinePostureReviewDimension(result);
     this.migrateConformanceGateAutoInvoke(result);
+    this.migrateHonestProgressMessagingDefaults(result);
 
     return result;
   }
@@ -574,6 +575,85 @@ export class PostUpdateMigrator {
       result.upgraded.push(`cartographer-dev-gate: stripped default-shaped \`enabled: false\` at ${stripped.join(', ')} so the developmentAgent gate resolves them live`);
     } else {
       result.skipped.push('cartographer-dev-gate: no default-shaped false to strip (marker set)');
+    }
+  }
+
+  // ── HONEST-PROGRESS-MESSAGING D (Config surface + migration parity) ──
+  //
+  // The honest-messaging behavior reaches every agent via the monitors' code
+  // defaults already; this migration SURFACES the operator-tunable / rollback
+  // keys into a deployed agent's config.json so they are visible and settable,
+  // and logs which keys it backfilled (audit). Existence-checked + idempotent: a
+  // key the operator has explicitly set — including the rollback
+  // `suppressUnchangedHeartbeats: false` — is NEVER overwritten. Writes to the
+  // paths the runtime ACTUALLY reads: `monitoring.activeWorkSilenceSentinel.*`
+  // and TOP-LEVEL `promiseBeacon.*` (server.ts reads `config.promiseBeacon`, not
+  // `monitoring.promiseBeacon` — the spec prose's path was corrected against the
+  // real read site during the build).
+  private migrateHonestProgressMessagingDefaults(result: MigrationResult): void {
+    const configPath = path.join(this.config.stateDir, 'config.json');
+    if (!fs.existsSync(configPath)) {
+      result.skipped.push('honest-progress-messaging-defaults: config.json not found');
+      return;
+    }
+
+    let config: Record<string, unknown>;
+    try {
+      config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+    } catch (err) {
+      result.errors.push(`honest-progress-messaging-defaults: config.json read failed: ${err instanceof Error ? err.message : String(err)}`);
+      return;
+    }
+
+    const migrations = (config._instar_migrations ?? []) as string[];
+    const marker = 'honest-progress-messaging-defaults';
+    if (migrations.some(m => m.startsWith(marker))) {
+      result.skipped.push('honest-progress-messaging-defaults: already migrated');
+      return;
+    }
+
+    // Ensure a nested object exists without clobbering operator settings.
+    const ensureObj = (parent: Record<string, unknown>, key: string): Record<string, unknown> => {
+      const cur = parent[key];
+      if (cur && typeof cur === 'object' && !Array.isArray(cur)) return cur as Record<string, unknown>;
+      const fresh: Record<string, unknown> = {};
+      parent[key] = fresh;
+      return fresh;
+    };
+    // Set a key ONLY if absent (existence-checked) — operator overrides survive.
+    const backfilled: string[] = [];
+    const setIfAbsent = (obj: Record<string, unknown>, key: string, value: unknown, label: string): void => {
+      if (!(key in obj)) {
+        obj[key] = value;
+        backfilled.push(label);
+      }
+    };
+
+    const monitoring = ensureObj(config, 'monitoring');
+    const silence = ensureObj(monitoring, 'activeWorkSilenceSentinel');
+    setIfAbsent(silence, 'silenceThresholdMs', 1_800_000, 'monitoring.activeWorkSilenceSentinel.silenceThresholdMs');
+    setIfAbsent(silence, 'activeWorkMaxFrozenIndicatorMs', 5_400_000, 'monitoring.activeWorkSilenceSentinel.activeWorkMaxFrozenIndicatorMs');
+
+    const beacon = ensureObj(config, 'promiseBeacon');
+    setIfAbsent(beacon, 'suppressUnchangedHeartbeats', true, 'promiseBeacon.suppressUnchangedHeartbeats');
+    setIfAbsent(beacon, 'beaconLivenessIntervalMs', 3_600_000, 'promiseBeacon.beaconLivenessIntervalMs');
+    setIfAbsent(beacon, 'turnFinishedCloseoutChecks', 3, 'promiseBeacon.turnFinishedCloseoutChecks');
+
+    // Record the marker even when nothing was backfilled, so it runs exactly once.
+    const now = new Date().toISOString();
+    migrations.push(`${marker}-${now}`);
+    config._instar_migrations = migrations;
+    try {
+      fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+    } catch (err) {
+      result.errors.push(`honest-progress-messaging-defaults: config.json write failed: ${err instanceof Error ? err.message : String(err)}`);
+      return;
+    }
+
+    if (backfilled.length > 0) {
+      result.upgraded.push(`honest-progress-messaging-defaults: backfilled ${backfilled.join(', ')} (existence-checked — operator overrides preserved)`);
+    } else {
+      result.skipped.push('honest-progress-messaging-defaults: all keys already present (marker set)');
     }
   }
 
@@ -5790,6 +5870,17 @@ Create worktrees for collaborator repos with \`instar worktree create <branch>\`
       content += `\n### Threadline Single-Negotiator Lock (one voice per conversation)\n\nThreadline now has a per-conversation **negotiator lease**: at most ONE of my sessions owns a conversation's outbound voice at a time. A warm/keep-alive/side session can read, but the most it can SEND is a fixed structural "owner will respond" holding notice — it can never speak content or bind me to anything (closes the 2026-06-11 warm-session cutover-lock incident). The lease is the ONLY blocking authority and it keys on WHO speaks (a structural ownership check), never on what a message means.\n- **Prose is inert (G2):** a normal Threadline message — any wording — NEVER creates an "we agreed to X" record and NEVER authorizes an irreversible step. Binding exists ONLY through the existing PIN-anchored Coordination Mandate / ReviewExchange flow. A "Dawn confirmed" / "Echo confirmed" in a message body carries no authority by construction. If I try to commit in prose I get a signal-only nudge pointing me to the anchored path — it never blocks.\n- **Honest acks (G3):** a reply on a thread is recorded as an implicit delivery ack on every inbound path, so \`/threadline/peers/health\`'s \`stale: true\` means something real now instead of permanent noise.\n- **Lease state:** \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/threadline/negotiator\` → per-conversation holder + epoch + expiry, plus dry-run would-hold / hold / fail-open counts.\n- Dev-gated + dry-run-first: \`threadline.singleNegotiator.enabled\` is OMITTED from config so it rides the developmentAgent gate — LIVE on a dev agent (in dry-run: it engages the lease and logs every would-hold verdict for the FD-7 false-positive telemetry, but withholds nothing) and DARK on the fleet. \`dryRun\` (default true) means a real send is only ever withheld by an explicit \`dryRun: false\`. G2 + G3 ship live in core regardless. Spec: \`docs/specs/THREADLINE-SINGLE-NEGOTIATOR-SPEC.md\`.\n`;
       patched = true;
       result.upgraded.push('CLAUDE.md: added Threadline Single-Negotiator section');
+    }
+
+    // HONEST-PROGRESS-MESSAGING C (docs alignment) — the silent-freeze watchdog +
+    // promise beacon are now honest (corroborate before claiming a freeze; silent
+    // unless there's something true to say). Existing agents learn what they are,
+    // their defaults, and how to tune/disable via this appended subsection (Agent
+    // Awareness Standard). Content-sniff marker keeps it idempotent.
+    if (!content.includes('Honest progress messaging (silent-freeze watchdog + promise beacon)')) {
+      content += `\n### Honest progress messaging (silent-freeze watchdog + promise beacon)\n\nTwo background notifiers used to post frequent, falsely-confident noise because they judged "work" by whether the terminal *screen* repainted — a busy long task looks identical to a frozen one. Both are now honest. They are SIGNALS, never gates: they only decide whether to notify you, and every error path fails toward silence.\n- **Silent-freeze watchdog** (ActiveWorkSilenceSentinel): before claiming a session is stuck, it re-captures the LIVE frame and corroborates — if the frame still shows an active-work indicator (spinner / "esc to interrupt"), a sub-agent is live, or it's a clean idle prompt, it stays SILENT. It speaks only when genuinely wedged, and even then hedges ("…hasn't changed in N min and a nudge didn't wake it — it may be stuck, or on a long task I can't see into. Want me to check?"). Threshold raised 15m→30m; a 90m frozen-indicator backstop still surfaces a real mid-tool hang. Tune/disable: \`monitoring.activeWorkSilenceSentinel.enabled\` (off), \`.silenceThresholdMs\` (default 30m), \`.activeWorkMaxFrozenIndicatorMs\` (default 90m).\n- **Promise beacon** (the ⏳ heartbeats): the zero-information "still on it, no new output" filler is suppressed by default — it speaks only on genuine new progress, deadline pressure, a sparse once-per-60m liveness line, or a one-shot turn-finished close-out. Base cadence relaxed 10m→20m. Tune/disable: \`promiseBeacon.suppressUnchangedHeartbeats: false\` (restore the legacy every-tick heartbeat — the rollback lever), \`promiseBeacon.beaconLivenessIntervalMs\` (default 60m), \`promiseBeacon.turnFinishedCloseoutChecks\` (default 3).\n- **Doc correction:** the trio's escalations are NOT gated by \`monitoring.sentinelTelegramEscalation\` (that gate governs a different path); they route through the tone-gated \`/attention\` surface and are controlled by each sentinel's own \`enabled\` flag (both default true). Effectiveness is measurable in \`logs/sentinel-events.jsonl\` and the per-feature LLM-metrics surface (feature keys \`active-work-silence\`, \`promise-beacon\`). Spec: \`docs/specs/HONEST-PROGRESS-MESSAGING-SPEC.md\`.\n`;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Honest progress messaging section');
     }
 
     if (patched) {

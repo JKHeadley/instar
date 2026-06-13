@@ -31,7 +31,18 @@ export type SilenceStatus =
   | 'recovered'
   | 'recovering'
   | 'recovery-failed'
+  | 'suppressed-active'
   | 'escalated';
+
+/** Observability funnel events (HONEST-PROGRESS-MESSAGING E). */
+export type SilenceFunnelEvent =
+  | 'detected'
+  | 'suppressed_active_indicator'
+  | 'suppressed_subagent_live'
+  | 'suppressed_corroborate_error'
+  | 'escalated_indeterminate'
+  | 'escalated_frozen_indicator'
+  | 'escalated_legacy';
 
 export interface SilenceState {
   sessionName: string;
@@ -42,6 +53,13 @@ export interface SilenceState {
   /** Auto-recovery (respawn) attempts made for this stall episode. Bounded by
    *  maxAutoRecoveries to prevent a respawn-loop on a session that stays stuck. */
   recoveryAttempts: number;
+  /** A1/A5: when escalation was suppressed because the live frame still showed an
+   *  active-work indicator, the wall-clock the suppression began AND the frozen
+   *  frame's hash. If the SAME frame stays byte-identical past
+   *  activeWorkMaxFrozenIndicatorMs, A5 escalates (a frozen-indicator hang).
+   *  Reset whenever the frame changes (genuine progress). */
+  activeFrozenSince?: number;
+  activeFrozenHash?: string;
 }
 
 export interface SessionRegistryEntry {
@@ -68,6 +86,27 @@ export interface ActiveWorkSilenceSentinelDeps {
    *  ask-the-user escalation. DESTRUCTIVE (discards in-context work), so it only
    *  runs after the nudge fails AND is bounded by maxAutoRecoveries. */
   recoverFn?: (sessionName: string) => Promise<boolean>;
+  /** Capture the session's CURRENT live tmux frame (HONEST-PROGRESS-MESSAGING
+   *  A1/A2). Used to corroborate a wedge before escalating. When absent, the
+   *  sentinel keeps its legacy behavior (escalate on threshold+nudge, no
+   *  corroboration) — back-compat for callers that don't wire it. */
+  captureFrame?: (sessionName: string) => string | null;
+  /** Does this live frame still show an active-work indicator (spinner / "esc to
+   *  interrupt" / "(running)")? Wired to looksActivelyWorking(). A1: if true, the
+   *  session is in an active turn — suppress, never escalate. */
+  looksActivelyWorking?: (frame: string, sessionName: string) => boolean;
+  /** Is this live frame a clean idle prompt (turn finished, waiting for input)?
+   *  A2(b): a clean idle prompt is NOT a wedge — only an indeterminate non-prompt
+   *  frame is. When absent, the indeterminate check degrades to "no active-work
+   *  indicator" alone. */
+  isCleanIdlePrompt?: (frame: string, sessionName: string) => boolean;
+  /** Does the session have a live sub-agent (SubagentTracker, no stoppedAt)?
+   *  A2(c): a session whose sub-agent is mid-work is not wedged — suppress. */
+  hasActiveSubagents?: (sessionName: string) => boolean;
+  /** Observability hook (HONEST-PROGRESS-MESSAGING E). Records a funnel event so
+   *  the suppressed-vs-escalated rates are auditable. Never throws into the
+   *  sentinel; best-effort. */
+  recordEvent?: (event: SilenceFunnelEvent, sessionName: string, detail?: string) => void;
   /** Override Date.now for tests. */
   now?: () => number;
   /** Override timer setters for tests. */
@@ -79,10 +118,19 @@ export interface ActiveWorkSilenceSentinelConfig {
   enabled?: boolean;
   /** Tick interval — how often we walk the registry (ms). Default 60s. */
   tickIntervalMs?: number;
-  /** Silence threshold — output gap that triggers detection (ms). Default 15m. */
+  /** Silence threshold — output gap that triggers detection (ms). Default 30m
+   *  (HONEST-PROGRESS-MESSAGING A4 — raised from 15m; with A1/A2 corroboration
+   *  this collapses the false-positive rate without missing a genuine wedge). */
   silenceThresholdMs?: number;
   /** Verify window — how long after nudge before declaring escalate (ms). Default 30s. */
   verifyWindowMs?: number;
+  /** Frozen-indicator hard timeout (HONEST-PROGRESS-MESSAGING A5). A1 suppresses
+   *  escalation whenever the live frame still shows an active-work indicator —
+   *  which would permanently hide a genuine hang that froze mid-tool with the
+   *  indicator still on screen. Backstop: if a frame WITH an active-work
+   *  indicator stays byte-identical this long, escalate once with an extra-hedged
+   *  message. Default 90m. */
+  activeWorkMaxFrozenIndicatorMs?: number;
   /** Auto-recover (respawn) a stalled session after the nudge fails, instead of
    *  only asking the user. DARK by default — destructive (discards in-context
    *  work), so opt-in. When off, behaviour is unchanged (nudge → ask). */
@@ -96,8 +144,9 @@ export interface ActiveWorkSilenceSentinelConfig {
 const DEFAULT_CONFIG: Required<ActiveWorkSilenceSentinelConfig> = {
   enabled: true,
   tickIntervalMs: 60_000,
-  silenceThresholdMs: 15 * 60_000,
+  silenceThresholdMs: 30 * 60_000,
   verifyWindowMs: 30_000,
+  activeWorkMaxFrozenIndicatorMs: 90 * 60_000,
   autoRecover: false,
   maxAutoRecoveries: 1,
 };
@@ -137,15 +186,33 @@ export class ActiveWorkSilenceSentinel extends EventEmitter {
     this.lastTickAt = Date.now();
     const now = (this.deps.now ?? Date.now)();
     const sessions = this.deps.listSessions();
+    const pastThreshold = new Set<string>();
     for (const s of sessions) {
       if (s.paused || s.recoveryInFlight) continue;
       if (!s.lastOutputAt || s.lastOutputAt <= 0) continue;
       // Session is in the registry but never produced output → not "actively working then stopped"; skip.
       const idleMs = now - s.lastOutputAt;
       if (idleMs < this.cfg.silenceThresholdMs) continue;
+      pastThreshold.add(s.sessionName);
       const existing = this.states.get(s.sessionName);
-      if (existing) continue; // already handling
+      if (existing) {
+        // A1/A5 (HONEST-PROGRESS-MESSAGING): a session whose escalation was
+        // suppressed because it still looked actively working is re-evaluated
+        // every tick — so A5's frozen-indicator timeout can eventually fire and
+        // a turn that finishes mid-suppression gets re-judged as a real wedge.
+        if (existing.status === 'suppressed-active') void this.escalate(s.sessionName);
+        continue; // any other status: already handling
+      }
       this.report(s.sessionName, s.lastOutputAt);
+    }
+    // A suppressed-active session that is no longer past the silence threshold
+    // (its frame changed → genuine progress, or it ended) is cleared so the map
+    // can't leak and the session is monitored fresh.
+    for (const [name, st] of this.states) {
+      if (st.status === 'suppressed-active' && !pastThreshold.has(name)) {
+        this.clear(name);
+        this.emit('recovered', name);
+      }
     }
   }
 
@@ -198,8 +265,8 @@ export class ActiveWorkSilenceSentinel extends EventEmitter {
     }
 
     if (!accepted) {
-      // Couldn't even nudge — escalate immediately.
-      this.escalate(sessionName);
+      // Couldn't even nudge — escalate immediately (corroborated inside escalate).
+      void this.escalate(sessionName);
       return;
     }
 
@@ -224,10 +291,137 @@ export class ActiveWorkSilenceSentinel extends EventEmitter {
       this.clear(sessionName);
       return;
     }
-    this.escalate(sessionName);
+    void this.escalate(sessionName);
   }
 
-  private escalate(sessionName: string): void {
+  /**
+   * Corroboration gate (HONEST-PROGRESS-MESSAGING A1/A2/A5). Before claiming a
+   * session is stuck, re-capture its LIVE frame and prove it really is wedged —
+   * a static scrollback on a session that is mid-tool, mid-sub-agent, or just
+   * finished is NOT a freeze. The whole path FAILS CLOSED (FD-6): any error
+   * suppresses the escalation rather than risk a false "it's stuck" claim.
+   */
+  private async escalate(sessionName: string): Promise<void> {
+    const state = this.states.get(sessionName);
+    if (!state) return;
+
+    // Legacy path: no live-frame capture wired → keep the original behavior but
+    // with the honest A3 wording. Corroboration is unavailable, so escalate on
+    // threshold + failed-nudge as before.
+    if (!this.deps.captureFrame) {
+      this.deps.recordEvent?.('escalated_legacy', sessionName);
+      this.proceedEscalation(sessionName, this.honestAskMessage(sessionName));
+      return;
+    }
+
+    let frame: string | null;
+    try {
+      frame = this.deps.captureFrame(sessionName);
+    } catch (err) {
+      // FD-6 — capture threw: unreliable evidence, suppress + re-arm.
+      this.deps.recordEvent?.('suppressed_corroborate_error', sessionName, String(err));
+      this.markSuppressedActive(state, undefined);
+      return;
+    }
+    if (!frame) {
+      // No frame to judge → fail closed (suppress + re-arm).
+      this.deps.recordEvent?.('suppressed_corroborate_error', sessionName, 'empty-frame');
+      this.markSuppressedActive(state, undefined);
+      return;
+    }
+
+    let activelyWorking = false;
+    try {
+      activelyWorking = this.deps.looksActivelyWorking?.(frame, sessionName) ?? false;
+    } catch (err) {
+      this.deps.recordEvent?.('suppressed_corroborate_error', sessionName, String(err));
+      this.markSuppressedActive(state, undefined);
+      return;
+    }
+
+    // A1 + A5: the live frame still shows an active-work indicator → in an active
+    // turn (a long task), NOT a freeze. Suppress — unless the SAME frame has been
+    // byte-identical past the frozen-indicator timeout, the rare genuine hang.
+    if (activelyWorking) {
+      const hash = cheapHash(frame);
+      const now = (this.deps.now ?? Date.now)();
+      const frozenLongEnough =
+        state.activeFrozenHash === hash &&
+        state.activeFrozenSince != null &&
+        now - state.activeFrozenSince >= this.cfg.activeWorkMaxFrozenIndicatorMs;
+      if (frozenLongEnough) {
+        this.deps.recordEvent?.('escalated_frozen_indicator', sessionName);
+        state.status = 'escalated';
+        const minutes = Math.max(1, Math.round(this.cfg.activeWorkMaxFrozenIndicatorMs / 60_000));
+        void this.notify(
+          sessionName,
+          `${friendlyName(sessionName)} has shown the same "working" frame for ${minutes} min with zero change — could be a long task, or a hang that froze mid-step. Worth a look?`,
+        );
+        this.emit('escalated', sessionName);
+        return;
+      }
+      // Still working (or the frozen-frame timer hasn't elapsed) → suppress.
+      this.markSuppressedActive(state, hash);
+      this.deps.recordEvent?.('suppressed_active_indicator', sessionName);
+      return;
+    }
+
+    // A2(c): a live sub-agent means the session is mid-work, not wedged. Suppress.
+    let subagentLive = false;
+    try {
+      subagentLive = this.deps.hasActiveSubagents?.(sessionName) ?? false;
+    } catch {
+      // A failing tracker read is unreliable evidence → fail closed (suppress).
+      this.deps.recordEvent?.('suppressed_corroborate_error', sessionName, 'subagent-check-threw');
+      this.markSuppressedActive(state, undefined);
+      return;
+    }
+    if (subagentLive) {
+      this.markSuppressedActive(state, undefined);
+      this.deps.recordEvent?.('suppressed_subagent_live', sessionName);
+      return;
+    }
+
+    // A2(b): a clean idle prompt is a finished/idle turn, not a wedge. Drop the
+    // episode silently (the tracker's paused flag normally catches this; the live
+    // frame is the authority).
+    let cleanIdle = false;
+    try {
+      cleanIdle = this.deps.isCleanIdlePrompt?.(frame, sessionName) ?? false;
+    } catch {
+      cleanIdle = false;
+    }
+    if (cleanIdle) {
+      this.clear(sessionName);
+      this.emit('recovered', sessionName);
+      return;
+    }
+
+    // Corroborated wedge: no active-work indicator, no live sub-agent, and the
+    // frame is in an indeterminate non-prompt state. This is a genuine freeze.
+    this.deps.recordEvent?.('escalated_indeterminate', sessionName);
+    this.proceedEscalation(sessionName, this.honestAskMessage(sessionName));
+  }
+
+  /** Mark a session as suppressed-active and (re)stamp the frozen-frame timer.
+   *  A changed frame hash resets the A5 timer (genuine progress within the turn). */
+  private markSuppressedActive(state: SilenceState, frameHash: string | undefined): void {
+    const now = (this.deps.now ?? Date.now)();
+    if (frameHash != null && state.activeFrozenHash !== frameHash) {
+      state.activeFrozenHash = frameHash;
+      state.activeFrozenSince = now;
+    } else if (frameHash == null) {
+      // Couldn't hash the frame (error path) — don't arm A5 on bad evidence.
+      state.activeFrozenHash = undefined;
+      state.activeFrozenSince = undefined;
+    } // else: same hash → keep the existing activeFrozenSince so A5 can elapse.
+    state.status = 'suppressed-active';
+    this.emit('suppressed-active', state.sessionName);
+  }
+
+  /** The autoRecover-or-ask escalation, reached only after corroboration (or in
+   *  the legacy no-capture path). */
+  private proceedEscalation(sessionName: string, askText: string): void {
     const state = this.states.get(sessionName);
     if (!state) return;
     // Auto-heal path (dark by default): after the nudge failed, recover the
@@ -240,12 +434,16 @@ export class ActiveWorkSilenceSentinel extends EventEmitter {
       return;
     }
     state.status = 'escalated';
-    const minutes = Math.max(1, Math.round(((this.deps.now ?? Date.now)() - state.lastOutputAtAtDetection) / 60_000));
-    void this.notify(
-      sessionName,
-      `${friendlyName(sessionName)} was working and went quiet about ${minutes} minutes ago. I tried a gentle nudge and nothing came back. Want me to dig in?`,
-    );
+    void this.notify(sessionName, askText);
     this.emit('escalated', sessionName);
+  }
+
+  /** A3 honest wording — evidence + uncertainty, never an asserted conclusion. */
+  private honestAskMessage(sessionName: string): string {
+    const state = this.states.get(sessionName);
+    const base = state?.lastOutputAtAtDetection ?? (this.deps.now ?? Date.now)();
+    const minutes = Math.max(1, Math.round(((this.deps.now ?? Date.now)() - base) / 60_000));
+    return `${friendlyName(sessionName)}'s screen hasn't changed in ${minutes} min and a nudge didn't wake it — it may be stuck, or on a long task I can't see into. Want me to check?`;
   }
 
   /**
@@ -321,5 +519,25 @@ export class ActiveWorkSilenceSentinel extends EventEmitter {
 }
 
 function friendlyName(sessionName: string): string {
-  return sessionName.replace(/^ai\.instar\./, '').replace(/-server$/, '').replace(/-lifeline$/, '');
+  const stripped = sessionName
+    .replace(/^ai\.instar\./, '')
+    .replace(/-server$/, '')
+    .replace(/-lifeline$/, '');
+  // FD-7 (HONEST-PROGRESS-MESSAGING): the name is embedded in a user-facing
+  // message — clamp to a safe charset so a crafted tmux session name can't inject
+  // markdown/control characters into the escalation text. Session names are
+  // already alphanumeric/dash/dot by construction; this is defense-in-depth.
+  const safe = stripped.replace(/[^A-Za-z0-9._-]/g, '');
+  return safe.length > 0 ? safe : 'a session';
+}
+
+/** FNV-1a — enough to detect that a captured live frame changed byte-for-byte
+ *  (A5 frozen-indicator timer). Not security-sensitive. */
+function cheapHash(s: string): string {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return (h >>> 0).toString(16);
 }
