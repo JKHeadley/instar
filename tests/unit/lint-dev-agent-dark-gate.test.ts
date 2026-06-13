@@ -356,7 +356,12 @@ describe('lint-dev-agent-dark-gate', () => {
       // is appended at the END of SHARED_DEFAULTS (after topicProfiles), so it shifts
       // no prior entry — it only ADDS this literal `enabled: false` path. category
       // 'destructive' in DARK_GATE_EXCLUSIONS (writes OAuth credentials).
-      '1015': 'subscriptionPool.credentialRepointing.enabled',
+      // multi-machine-replicated-store-foundation Step 3 (snapshot-then-tail, #1115)
+      // added stateSync cache config (NO new attributed `enabled` path) below the
+      // cartographer block but above credentialRepointing → this END entry shifted
+      // +15 (1015 → 1030); cartographer/sessionPool entries unchanged. RECOMPUTED via
+      // the attributor against the MERGED ConfigDefaults.ts.
+      '1030': 'subscriptionPool.credentialRepointing.enabled',
     };
     const actual = attributeRealConfigDefaults();
     expect(actual).toEqual(EXPECTED);

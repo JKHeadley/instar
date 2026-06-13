@@ -200,12 +200,29 @@ drain (CMT-1335 full) is Increment B.
 - `tests/unit/credential-identity-oracle.test.ts`: 9 tests — every §2.11 branch + Bearer-header
   wiring + a real-non-stub wiring test. tsc clean, llm-http lint clean, all green.
 
+### 2026-06-13 — Step 3 SHIPPED on PR #1114 (b0b41df85); decision file rode (husky fixed).
+
+### 2026-06-13 — Step 4a (CredentialWriteFunnel PRIMITIVE) — BUILT + GREEN
+- `src/core/CredentialWriteFunnel.ts`: in-process serialization primitive — `withSlotLock` (per-slot),
+  `withSlotLocks` (canonical-ordered multi-slot, deadlock-free), `withSingleMover` (machine-local
+  single-mover mutex for swaps). Try-lock-WITH-TIMEOUT → bounded SKIP with a named reason, never a
+  wedged slot. Bounds acquisition only; caller bounds its own inner await. All state in-memory
+  (restart clears crash-stale holds).
+- `tests/unit/credential-write-funnel.test.ts`: 8 tests — same-slot serialization, cross-slot
+  concurrency, throw-releases-lock + GC, try-lock timeout SKIP, no-deadlock-after-skip, single-mover
+  refuse+recover, ordered multi-slot no-interleave. tsc clean, all green.
+- PRIMITIVE ONLY: no consumers, no lint yet (Step 4b).
+
 ### NEXT (resume here)
-- Step 4: `CredentialWriteFunnel` (withSlotLock per-slot lock + single-mover mutex; bounded
-  try-lock-with-timeout; refresh fetch carries AbortSignal.timeout) + lint forbidding the TWO
-  keychain-write primitives (`defaultCredentialStore.write` AND
-  `KeychainCredentialProvider.writeCredentials`, plus the scoped `add-generic-password` string)
-  outside the funnel. Route the 4 in-process writers through it.
+- Step 4b (ATOMIC — lint can't land before routing): route the 4 in-process keychain writers through
+  `withSlotLock` — (1) CredentialSwapExecutor (Step 5, not yet), (2) QuotaPoller 401-refresh closure
+  (QuotaPoller.ts:218; a lock-timeout skip there returns NO-SNAPSHOT, NEVER markNeedsReauth),
+  (3) OAuthRefresher re-auth / EnrollmentWizard writes, (4) KeychainCredentialProvider.writeCredentials
+  (CredentialProvider.ts:137) — THEN add `scripts/lint-no-unfunneled-credential-write.js` forbidding,
+  outside the funnel: `defaultCredentialStore.write`, `KeychainCredentialProvider.writeCredentials`,
+  and a string-literal `add-generic-password` SCOPED to the `Claude Code-credentials` service (so it
+  does NOT false-positive on WorktreeKeyVault/SecretStore/GlobalSecretStore/RemediationKeyVault). Lint
+  test asserts both primitives + the `security -i` stdin form are caught. This step gets a second-pass review.
 - Step 5: `CredentialSwapExecutor` (staged exchange, §2.3.1a source-slot CAS, identity-verify,
-  quarantine-never-repair, crash-boundary journal). THIS step gets the Phase-5 second-pass review.
+  quarantine-never-repair, crash-boundary journal). Second-pass review.
 - Then steps 6–9 per the plan. Commit-gate notes: when committing, pass `--spec docs/specs/live-credential-repointing-rebalancer.md` (now `approved:true`); the no-deferrals pre-commit scan will flag the spec's legit Increment-B scoping language ("deferred", "follow-up") — add `<!-- tracked: 20905 -->` (or a CMT id) markers within 200 chars of each, or move the deferral into Increment B's own section, before the first commit.
