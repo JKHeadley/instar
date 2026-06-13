@@ -1,0 +1,89 @@
+# Threadline Canonical, Symmetric History + Conversation Discipline (Robustness Phase 2)
+
+## What Changed
+
+- **New `src/threadline/ThreadLog.ts`** — a canonical, append-only, hash-chained log,
+  one file per conversation (`{stateDir}/threadline/threads/{id}.log.jsonl`), reusing
+  the in-tree `MandateAudit`/`TrustAuditLog` pattern verbatim. Idempotent on
+  `(threadId, messageId, direction)` via a PERSISTED seen-set (a duplicate replayed
+  after many intervening entries is still deduped — the live log, not a tail window, is
+  the authority); a same-id-different-content replay records a saturating `collision`,
+  never overwrites. `verify()` walks the live chain; `head()` returns `{count, headHash,
+  setAccum}` rebuilt from the log on any cache mismatch; retention rotates oldest entries
+  to `archive/` WITHOUT changing the running `count`/`setAccum` (so asymmetric local
+  rotation can never manufacture a false divergence).
+- **New `src/threadline/recordThreadMessage.ts`** — the ONE append funnel every
+  message-persisting route now calls (the structural F3 fix: a sender can always read
+  back what it itself said). A wiring-integrity test enumerates the persisting routes
+  and fails if a future path bypasses the funnel. Also hosts the conversation-discipline
+  resolver. The append never blocks delivery; N consecutive append failures raise ONE
+  deduped Attention item.
+- **New `src/threadline/threadDigest.ts`** — the FROZEN v1 cross-agent wire encoding: an
+  identity-free `contentDigest` (RFC 8785 / JCS over `{body, createdAt, messageId,
+  threadId}`) and an order-independent, O(1)-maintained 256-bit modular-sum accumulator
+  (`setAccum`). Reference vectors are pinned so an independent peer (Dawn) reproduces the
+  bytes exactly.
+- **New `src/threadline/threadSymmetry.ts`** — the advisory cross-end symmetry state
+  machine + the participant-authorized, terminating convergence backfill. The
+  requester/responder key on the fingerprint DERIVED from the verified Ed25519 signature
+  (never a name/body claim); ingestion recomputes everything and ignores peer chain
+  fields; divergence drives at most one bounded round then a STICKY terminal state with
+  one deduped Attention item.
+- **New `src/threadline/canonicalHistoryRead.ts`** — the UNION read source (canonical log
+  ∪ one-time bounded backfill from the outbox tail + the per-thread aggregate), so
+  history can only gain, never regress; a restore-from-backup re-runs backfill rather
+  than stranding an empty thread.
+- **Re-pointed reads + new routes** — `threadline_history` / `GET /messages/thread/:id`
+  now read the canonical log union; the placeholder hard-zero thread route is deleted; a
+  new bearer-gated `GET /threadline/threads/:id` + `/health` serve the canonical log + the
+  advisory symmetry state (id allowlist + path-confinement traversal defense); the
+  dashboard Threadline tab surfaces the corrected count + symmetry state.
+- **Config / migration / template** — a new canonical-history config block (the resolver
+  JOIN rides the development-agent gate, dark on the fleet, dry-run-first); a net-new
+  backup-manifest entry for the per-conversation head anchor; CLAUDE.md awareness
+  paragraph for new and existing agents.
+
+## What to Tell Your User
+
+Your agent can now reliably read back its own side of any conversation with another
+agent — the bug where it answered "0 messages" on a thread it had just sent four messages
+on is fixed. Every message it sends and receives is written once to a tamper-evident log
+per conversation, and asking for a thread's history now reads that real log. The two ends
+can also check whether they hold the same conversation and flag it if they have drifted
+apart — that flag is informational and never blocks a message. Replies to the same peer
+about the same topic now stay in one conversation instead of splitting into many new
+ones; starting a genuinely new conversation takes an explicit new-thread signal. None of
+this needs the other agent to update, and nothing new can block or commit anything — the
+log is a record and the grouping is a convenience you can always correct.
+
+## Summary of New Capabilities
+
+- Audit a conversation's canonical history: open the thread on the dashboard Threadline
+  tab, or read it through the agent (it will use the new history route).
+- Ask the agent "what did I actually say to that peer?" or "are our histories in sync?" —
+  it reads the canonical log and the in-sync state instead of guessing.
+- Conversations with one peer about one topic stay grouped as one thread; an explicit
+  fork starts a new one.
+
+## Evidence
+
+- Unit (51): `tests/unit/threadDigest.test.ts` (frozen reference vectors incl. a
+  non-ASCII body + order-independence), `ThreadLog.test.ts` (chain verify/tamper,
+  persisted-seen-set idempotency past the cache bound, content-collision, head rebuild,
+  retention-invariant accumulator, traversal allowlist), `recordThreadMessage.test.ts`
+  (funnel + the join-vs-fork resolver matrix + the deduped append-failure item),
+  `threadSymmetry.test.ts` (the closed state set, participant-auth SA1, untrusted ingest
+  SA4, the terminating one-episode bound SA2), `ConversationStore-canonicalHistory.test.ts`
+  (close-only retention SA5 + the verified-only resolver binding).
+- Integration (`tests/integration/threadline/`): the wiring-integrity test (every
+  persisting route through the funnel), the F3 read-back + health + traversal + bearer
+  gate routes, and the union + memoized backfill + restore (SI2) + participant-auth +
+  untrusted-ingest + legacy-downgrade cases.
+- E2E (`tests/e2e/threadline-canonical-history-lifecycle.test.ts`): feature-alive 200,
+  the F3 and F5 incidents reproduced + fixed, cross-instance symmetry convergence over
+  the identity-free projection, diverged → bounded backfill → sticky terminal with one
+  Attention item, and the dev-gate live-on-dev / dark-on-fleet check.
+- Second-pass review: CONCUR — independently verified no new block authority, the
+  dev-gated (not hardcoded-dark) resolver flag, the verified-fingerprint participant
+  checks, untrusted ingestion, and close-only-never-cold retention. `tsc --noEmit` clean;
+  the dev-gate dark-gate lint + golden line-map green.

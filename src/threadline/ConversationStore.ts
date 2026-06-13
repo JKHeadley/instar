@@ -130,6 +130,35 @@ export interface Conversation {
   lastHoldingNoticeEpoch?: number;
   /** Durable global min-interval floor for holding notices (FD-3). */
   lastHoldingNoticeAt?: string;
+
+  // ── Canonical-history head cache (Robustness Phase 2, D-A/FD-2 — additive) ──
+  // A best-effort COALESCED cache of the ThreadLog head — the JSONL log is the
+  // source of truth. Refreshed off a debounce / lifecycle mutate, NEVER inside a
+  // synchronous per-message CAS. On any read, if the cache ≠ the log's actual
+  // head, the cache is rebuilt from the log (log wins) before use.
+  /** Cached count of NON-backfilled canonical-log entries (symmetry `count`). */
+  historyCount?: number;
+  /** Cached canonical-log chain head hash. */
+  historyHeadHash?: string;
+  /** Cached order-independent symmetry accumulator (64-hex). */
+  historySetAccum?: string;
+  /** Saturating count of same-id-different-content collisions (FD-2, anti-amplify). */
+  collisionCount?: number;
+
+  // ── Conversation-discipline resolver binding (D-E — additive, verified-only) ──
+  // When set, THIS thread is the canonical thread for the (peerPrincipal,
+  // workstreamKey) group. The resolver joins later outbound sends on the same key
+  // to this threadId instead of minting a fork. peerPrincipal is ALWAYS the
+  // VERIFIED peer fingerprint (never a name/subject a peer asserts).
+  canonicalBinding?: { peerPrincipal: string; workstreamKey: string };
+
+  // ── Cross-end symmetry state (D-D — additive, advisory-only) ──
+  /** Last symmetry health computed for this thread (closed set; advisory). */
+  symmetryState?: string;
+  /** Last peer-reported threadSync (verified-participant, monotonic). */
+  peerThreadSync?: { digestVersion: number; count: number; setAccum: string; at: string };
+  /** True once a one-time bounded backfill has run for this thread (memoized). */
+  backfilled?: boolean;
 }
 
 /** Mutation function: receives a draft clone, returns the next record. */
@@ -159,6 +188,9 @@ const MUTATE_CAS_MAX_RETRIES = 8;
 /** Read-snapshot cache TTL — keeps the gate's hot path off per-call disk reads. */
 const READ_CACHE_TTL_MS = 250;
 
+/** Saturating ceiling for the per-thread collision counter (FD-2, anti-amplify). */
+const COLLISION_COUNTER_CEILING = 1000;
+
 // ── Ephemeral verified-only peer-affinity (NOT persisted) ────────
 //
 // The legacy peer-affinity map is a SHORT (10-min sliding / 2-hr absolute),
@@ -187,9 +219,29 @@ interface MutateQueueEntry {
 /** P3 §3.1 — states whose entry counts as 'closed' for the lifecycle diff. */
 const TERMINAL_CONVERSATION_STATES = new Set(['resolved', 'failed', 'archived']);
 
+/**
+ * Robustness Phase 2 (SA5/FD-10) — the states whose ENTRY drives canonical-log
+ * DELETION. Deliberately a STRICT SUBSET of TERMINAL_CONVERSATION_STATES: it
+ * EXCLUDES 'archived' because `archived` is the COLD/inactivity-retired state
+ * (retireInactive uses it, and a later peer reply can reactivate the thread) —
+ * deleting its log would destroy a live relationship's history and re-create an
+ * empty log on the next message, a fresh F3 regression. Only a genuine terminal
+ * close (resolved/failed) deletes the log. A cold LRU/prune eviction never fires
+ * this seam at all (pruneMapInPlace deletes the map key with no lifecycle diff).
+ */
+const LOG_DELETION_STATES = new Set(['resolved', 'failed']);
+
 export class ConversationStore {
   /** P3 §3.1 — injected coherence-journal emitter (undefined = dark). */
   private journalSeam?: (data: { action: 'started' | 'bound' | 'unbound' | 'closed'; conversationId: string; peerFingerprint: string; topicId?: number }) => void;
+
+  /**
+   * Robustness Phase 2 (SA5/E1) — injected post-commit canonical-log retention
+   * seam (undefined = dark). Fired ONLY when a NON-pinned conversation transitions
+   * INTO a genuine terminal close (resolved/failed) — NOT on cold archive/LRU
+   * eviction. The server wires this to `ThreadLog.deleteThread` (SafeFsExecutor).
+   */
+  private logRetentionSeam?: (threadId: string) => void;
 
   private filePath: string;
 
@@ -435,6 +487,7 @@ export class ConversationStore {
     this.writeFileAtomic(file);
     this.invalidateCache();
     this.emitLifecycleDiff(prev, committed);
+    this.fireLogRetention(prev, committed);
     return committed;
   }
 
@@ -477,6 +530,31 @@ export class ConversationStore {
   /** P3 §3.1 — inject the coherence-journal emitter (server wiring). */
   setCoherenceJournalSeam(seam: (data: { action: 'started' | 'bound' | 'unbound' | 'closed'; conversationId: string; peerFingerprint: string; topicId?: number }) => void): void {
     this.journalSeam = seam;
+  }
+
+  /**
+   * Robustness Phase 2 (SA5/E1) — inject the post-commit canonical-log retention
+   * seam (server wires it to `ThreadLog.deleteThread`). Fires ONLY on a non-pinned
+   * conversation's transition INTO resolved/failed — NOT on cold archive/LRU.
+   */
+  setLogRetentionSeam(seam: (threadId: string) => void): void {
+    this.logRetentionSeam = seam;
+  }
+
+  /**
+   * Robustness Phase 2 — fire the canonical-log retention seam when a non-pinned
+   * conversation transitions INTO a genuine terminal close (resolved/failed). A
+   * POST-COMMIT action (the write has already landed), never mid-mutate, so a CAS
+   * rollback can't strand a record without its log. Never throws into the write.
+   */
+  private fireLogRetention(prev: Conversation | null, next: Conversation): void {
+    if (!this.logRetentionSeam) return;
+    try {
+      if (next.pinned) return; // pinned conversations keep their log
+      const wasDeletable = prev ? LOG_DELETION_STATES.has(prev.state) : false;
+      const isDeletable = LOG_DELETION_STATES.has(next.state);
+      if (!wasDeletable && isDeletable) this.logRetentionSeam(next.threadId);
+    } catch { /* @silent-fallback-ok: retention is post-commit best-effort; a residual log is reclaimed by the orphan sweep */ }
   }
 
   /**
@@ -664,6 +742,91 @@ export class ConversationStore {
       return null;
     }
     return hint.threadId;
+  }
+
+  // ── Canonical-history head cache + collisions (Robustness Phase 2, D-A/FD-2) ──
+
+  /**
+   * Stamp the COALESCED canonical-log head cache (count/headHash/setAccum). The
+   * JSONL log is the source of truth; this is a best-effort cache the funnel
+   * refreshes on a debounced cadence — NEVER a synchronous per-message CAS. A
+   * READ never calls this (read-never-writes, SI1).
+   */
+  async stampHistoryHead(threadId: string, head: { count: number; headHash: string; setAccum: string }): Promise<void> {
+    await this.mutate(threadId, (draft) => {
+      draft.historyCount = head.count;
+      draft.historyHeadHash = head.headHash;
+      draft.historySetAccum = head.setAccum;
+      return draft;
+    });
+  }
+
+  /** Record the memoized one-time backfill marker for a thread (D-C). */
+  async stampBackfilled(threadId: string, value: boolean): Promise<void> {
+    await this.mutate(threadId, (draft) => { draft.backfilled = value; return draft; });
+  }
+
+  /** Stamp the last computed symmetry state + (optionally) the peer threadSync (D-D). */
+  async stampSymmetry(threadId: string, symmetryState: string, peerThreadSync?: { digestVersion: number; count: number; setAccum: string; at: string }): Promise<void> {
+    await this.mutate(threadId, (draft) => {
+      draft.symmetryState = symmetryState;
+      if (peerThreadSync) draft.peerThreadSync = peerThreadSync;
+      return draft;
+    });
+  }
+
+  /**
+   * Bump the SATURATING collision counter (FD-2). Saturates at a ceiling so an
+   * endless same-id-different-content replay cannot write-amplify conversations.json.
+   */
+  async recordCollision(threadId: string): Promise<void> {
+    await this.mutate(threadId, (draft) => {
+      const cur = draft.collisionCount ?? 0;
+      if (cur < COLLISION_COUNTER_CEILING) draft.collisionCount = cur + 1;
+      return draft;
+    });
+  }
+
+  // ── Conversation-discipline resolver binding (D-E — verified-only, durable) ──
+
+  /**
+   * Resolve the canonical thread for a verified `(peerPrincipal, workstreamKey)`
+   * group, or null if none is bound yet. Returns `{ kind:'found', threadId }`,
+   * `{ kind:'none' }`, or `{ kind:'lookup-failed' }` (a transient read error). The
+   * caller MUST distinguish lookup-failed from none — a lookup failure observes/
+   * retries; it does NOT mint a fresh canonical (avoids an under-load F5
+   * regression). `peerPrincipal` MUST be the VERIFIED peer fingerprint.
+   */
+  resolveCanonicalThread(peerPrincipal: string, workstreamKey: string): { kind: 'found'; threadId: string } | { kind: 'none' } | { kind: 'lookup-failed' } {
+    let convs: Conversation[];
+    try {
+      convs = Object.values(this.snapshot().conversations);
+    } catch {
+      return { kind: 'lookup-failed' };
+    }
+    // The FIRST (oldest by createdAt) matching binding is canonical (deterministic).
+    let best: Conversation | null = null;
+    for (const c of convs) {
+      const b = c.canonicalBinding;
+      if (!b || b.peerPrincipal !== peerPrincipal || b.workstreamKey !== workstreamKey) continue;
+      if (!c.pinned && this.isExpired(c)) continue;
+      if (!best || new Date(c.createdAt).getTime() < new Date(best.createdAt).getTime()) best = c;
+    }
+    return best ? { kind: 'found', threadId: best.threadId } : { kind: 'none' };
+  }
+
+  /**
+   * Bind a thread as the canonical thread for a verified `(peerPrincipal,
+   * workstreamKey)` group. First-write-wins: if a DIFFERENT thread already holds
+   * the binding for that key, this is a no-op (the existing canonical stands).
+   */
+  async bindCanonicalThread(threadId: string, peerPrincipal: string, workstreamKey: string): Promise<void> {
+    const existing = this.resolveCanonicalThread(peerPrincipal, workstreamKey);
+    if (existing.kind === 'found' && existing.threadId !== threadId) return; // first-write-wins
+    await this.mutate(threadId, (draft) => {
+      if (!draft.canonicalBinding) draft.canonicalBinding = { peerPrincipal, workstreamKey };
+      return draft;
+    });
   }
 
   // ── Maintenance ────────────────────────────────────────────────

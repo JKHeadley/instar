@@ -324,15 +324,19 @@ describe('lint-dev-agent-dark-gate', () => {
       '380': 'monitoring.releaseReadiness.enabled',
       '395': 'monitoring.greenPrAutoMerge.enabled',
       '445': 'threadline.a2aCheckIn.enabled',
-      '508': 'mentor.enabled',
-      '519': 'mentor.autonomousFix.enabled',
-      '534': 'mentee.enabled',
-      '653': 'multiMachine.sessionPool.enabled',
-      '678': 'multiMachine.sessionPool.inboundQueue.enabled',
-      '707': 'multiMachine.sessionPool.holdForStability.enabled',
-      '862': 'cartographer.freshnessSweep.enabled',
-      '907': 'cartographer.conformanceAudit.llmEnrichment.enabled',
-      '932': 'cartographer.subtreeNav.llmRerank.enabled',
+      '537': 'mentor.enabled',
+      '548': 'mentor.autonomousFix.enabled',
+      '563': 'mentee.enabled',
+      '682': 'multiMachine.sessionPool.enabled',
+      '707': 'multiMachine.sessionPool.inboundQueue.enabled',
+      '736': 'multiMachine.sessionPool.holdForStability.enabled',
+      '891': 'cartographer.freshnessSweep.enabled',
+      '936': 'cartographer.conformanceAudit.llmEnrichment.enabled',
+      '961': 'cartographer.subtreeNav.llmRerank.enabled',
+      // Threadline Robustness Phase 2 (CMT-1362): the threadline.canonicalHistory
+      // block (no `enabled` literal — conversationDiscipline is dev-gated) is inserted
+      // AFTER the threadline section; entries at/after mentor.enabled shift again.
+      // RECOMPUTED via the attributor against the MERGED ConfigDefaults.ts.
     };
     const actual = attributeRealConfigDefaults();
     expect(actual).toEqual(EXPECTED);

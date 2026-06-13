@@ -478,6 +478,35 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       holdingNoticeMinIntervalMs: 300000, // 5 min global floor per thread (FD-3)
       dryRunRetentionDays: 7,
     },
+    // Canonical, symmetric history + conversation discipline (Threadline
+    // Robustness Phase 2, CMT-1362). The canonical per-thread log + append funnel
+    // + read-source UNION + symmetry DETECTION are CORE/ungated (additive,
+    // gain-only, observability). The ONE behavior change — the D-E resolver JOIN
+    // that reroutes which threadId an outbound send uses (a one-way wire effect) —
+    // is DEV-GATED + dry-run-first: `conversationDiscipline.enabled` is deliberately
+    // OMITTED so the server resolves it via the developmentAgent gate
+    // (`enabled ?? !!config.developmentAgent`) — live on a dev agent, dark on the
+    // fleet — and `dryRun:true` only LOGS the would-join decision (performs no
+    // reroute) until an operator flips it off after telemetry proves the join/fork
+    // rate. applyDefaults deep-merges this under `threadline` on update (Migration
+    // Parity). Spec: docs/specs/THREADLINE-CANONICAL-HISTORY-SPEC.md.
+    canonicalHistory: {
+      conversationDiscipline: {
+        // `enabled` OMITTED on purpose (dev-gate decides). NEVER hardcode it here.
+        dryRun: true,
+      },
+      workstreamKeyMode: 'subject-slug', // 'subject-slug' | 'peer-only' | 'off'
+      maxEntriesPerThread: 2000,         // live-segment cap before archive/ rotation
+      seenSetMaxPerThread: 5000,         // in-memory dedup cache bound (live log is authority)
+      seenSetMaxThreads: 512,            // LRU ceiling on in-memory per-thread state
+      headCacheCoalesceMs: 500,          // coalesced head-cache debounce (never per-message CAS)
+      appendFailureAlertThreshold: 3,    // N consecutive append failures → ONE Attention item
+      inlineMaxBytes: 8192,              // body inline cap before a store reference
+      backfillOutboxTailLines: 5000,     // tail-bounded outbox scan for one-time backfill
+      backfillMaxDigestsPerRequest: 100, // bounded, participant-authorized backfill caps
+      backfillMaxRecordsPerResponse: 50,
+      backfillRequestsPerPeerPerMinute: 6, // rate-limits episode INITIATION, not in-episode requests
+    },
   },
   // Topic-intent auto-capture loop (rung 0 of continuous-working-awareness).
   // ON by default (ratified): every substantive conversation turn gets a cheap
