@@ -25,6 +25,7 @@ import { CredentialLocationLedger, type IdentityOracle } from '../../src/core/Cr
 import { CredentialSwapExecutor, type KeychainCredentialExec, type ResolveSlotIdentity } from '../../src/core/CredentialSwapExecutor.js';
 import { CredentialAuditEmit } from '../../src/core/CredentialAuditEmit.js';
 import { CredentialManualLevers } from '../../src/core/CredentialManualLevers.js';
+import { CredentialEnvTokenGate, type EnvTokenFleetSession } from '../../src/core/CredentialEnvTokenGate.js';
 import { CredentialWriteFunnel } from '../../src/core/CredentialWriteFunnel.js';
 import { claudeCredentialService } from '../../src/core/OAuthRefresher.js';
 import type { InstarConfig } from '../../src/core/types.js';
@@ -66,7 +67,11 @@ function memKeychain(): KeychainCredentialExec {
 }
 const resolveAllow: ResolveSlotIdentity = async (slot) => ({ accountId: slot === SLOT_A ? ACC_B : ACC_A });
 
-function buildRepointing(stateDir: string, enabled: boolean) {
+function buildRepointing(
+  stateDir: string,
+  enabled: boolean,
+  envTokenOpts?: { anthropicApiKey?: string; fleet?: EnvTokenFleetSession[] },
+) {
   const ledger = new CredentialLocationLedger({ stateDir, pool: { list: () => [] }, oracle: noopOracle });
   ledger.recordAssignment(SLOT_A, ACC_A, { op: 'seed' });
   ledger.recordAssignment(SLOT_B, ACC_B, { op: 'seed' });
@@ -75,13 +80,18 @@ function buildRepointing(stateDir: string, enabled: boolean) {
     funnel: new CredentialWriteFunnel(), ledger, keychain: memKeychain(),
     resolveIdentity: resolveAllow, config: { enabled, dryRun: true }, reverifyDelayMs: 5,
   });
-  return { ledger, swapExecutor, resolveIdentity: resolveAllow, audit, levers: new CredentialManualLevers() };
+  const envTokenGate = new CredentialEnvTokenGate({
+    getAnthropicApiKey: () => envTokenOpts?.anthropicApiKey ?? '',
+    listSessions: () => envTokenOpts?.fleet ?? [],
+  });
+  return { ledger, swapExecutor, resolveIdentity: resolveAllow, audit, levers: new CredentialManualLevers(), envTokenGate };
 }
 
 describe('WS5.2 Step 7 /credentials/* E2E lifecycle (feature is alive)', () => {
   let tmpDir: string;
   let enabledServer: AgentServer; let enabledApp: express.Express;
   let darkServer: AgentServer; let darkApp: express.Express;
+  let envGateServer: AgentServer; let envGateApp: express.Express;
 
   beforeAll(async () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cred-step7-e2e-'));
@@ -105,11 +115,28 @@ describe('WS5.2 Step 7 /credentials/* E2E lifecycle (feature is alive)', () => {
     });
     await darkServer.start();
     darkApp = darkServer.getApp();
+
+    // Step 8 §2.10 — enabled feature with a LIVE env-token condition (a running claude-code session
+    // tagged credentialSource:'env'), config field empty. The env-token gate must REFUSE on the
+    // live-fleet path even though the config field is clean (the mid-life flip).
+    const envGateStateDir = mkStateDir(tmpDir, 'env-gate');
+    envGateServer = new AgentServer({
+      config: baseConfig(envGateStateDir, tmpDir, true),
+      sessionManager: createMockSessionManager() as never,
+      state: new StateManager(envGateStateDir),
+      credentialRepointing: buildRepointing(envGateStateDir, true, {
+        anthropicApiKey: '',
+        fleet: [{ framework: 'claude-code', status: 'running', credentialSource: 'env' }],
+      }),
+    });
+    await envGateServer.start();
+    envGateApp = envGateServer.getApp();
   });
 
   afterAll(async () => {
     await enabledServer?.stop();
     await darkServer?.stop();
+    await envGateServer?.stop();
     SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/e2e/credential-repointing-routes-alive.test.ts' });
   });
 
@@ -145,7 +172,25 @@ describe('WS5.2 Step 7 /credentials/* E2E lifecycle (feature is alive)', () => {
     expect((await request(enabledApp).get('/credentials/rebalancer')).status).toBe(401);
   });
 
-  it('rebalancer is 503 in Increment A even when the feature is enabled', async () => {
-    expect((await request(enabledApp).get('/credentials/rebalancer').set(auth())).status).toBe(503);
+  it('(d) Step 8 §2.10: rebalancer DARK is a strict 503 no-op (unchanged surface)', async () => {
+    // The dark case keeps the byte-for-byte prior surface: 503, balancer-not-wired, no gate eval.
+    const r = await request(darkApp).get('/credentials/rebalancer').set(auth());
+    expect(r.status).toBe(503);
+  });
+
+  it('(e) Step 8 §2.10: rebalancer ENABLED + clean config + all-store fleet PERMITS (refused:false)', async () => {
+    const r = await request(enabledApp).get('/credentials/rebalancer').set(auth());
+    expect(r.status).toBe(200);
+    expect(r.body.enabled).toBe(true);
+    expect(r.body.balancerWired).toBe(false); // the autonomous balancer is Increment B
+    expect(r.body.envTokenGate.refused).toBe(false);
+  });
+
+  it('(f) Step 8 §2.10: rebalancer ENABLED + a live env-token session REFUSES with named reason', async () => {
+    const r = await request(envGateApp).get('/credentials/rebalancer').set(auth());
+    expect(r.status).toBe(200);
+    expect(r.body.envTokenGate.refused).toBe(true);
+    expect(r.body.envTokenGate.reason).toBe('env-token-session-in-fleet');
+    expect(r.body.envTokenGate.envSessionCount).toBe(1);
   });
 });

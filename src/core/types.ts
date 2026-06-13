@@ -124,6 +124,24 @@ export interface Session {
    * soak's success criterion (zero 'headless' under force) is machine-checkable. */
   launchLane?: 'headless' | 'rerouted-interactive';
   /**
+   * Credential provenance (live-credential-repointing-rebalancer §2.10). Records,
+   * at spawn, WHERE this session's Anthropic credential comes from:
+   * - 'store' — the per-`CLAUDE_CONFIG_DIR` credential store (steerable by the
+   *   live re-pointing mechanism; the swap takes effect on its next API call).
+   * - 'env'   — an env-token launch (`CLAUDE_CODE_OAUTH_TOKEN` / `ANTHROPIC_API_KEY`
+   *   set from a non-empty `config.anthropicApiKey`); the session ignores the store
+   *   and is INVISIBLE to re-pointing (the §0.b applicability precondition).
+   *
+   * SINGLE SOURCE OF TRUTH: derived at the spawn site from the IDENTICAL expression
+   * that selects the session's Anthropic env block —
+   * `(config.anthropicApiKey ?? '') !== '' ? 'env' : 'store'` — NEVER an independent
+   * recomputation (a later recompute re-creates the spawn-time staleness class this
+   * spec exists to kill). Default 'store'; only set on claude-code launch lanes
+   * (the only lanes that build an Anthropic env block). Undefined on legacy records
+   * and non-claude-code sessions; the env-token gate's fleet scan treats undefined
+   * as 'store' (the safe, non-refusing direction). */
+  credentialSource?: 'store' | 'env';
+  /**
    * Hard lifetime ceiling in minutes for a rerouted-interactive session
    * (june15-headless-spawn-reroute, PR2 finding O1 belt-and-suspenders). An
    * interactive REPL never exits, so if the model phrases its finish differently

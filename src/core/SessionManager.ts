@@ -1837,6 +1837,14 @@ rm()  { "${shimRunner}" rm  "$@"; }
           '-e', `ANTHROPIC_BASE_URL=${this.config.anthropicBaseUrl ?? ''}`,
         ]
       : [];
+    // §2.10 provenance — SINGLE SOURCE OF TRUTH: the SAME `(anthropicApiKey ?? '') !== ''`
+    // predicate that selects the Anthropic env block above. Non-empty ⇒ this session launches
+    // with an env token (store-bypassing) ⇒ 'env'; empty ⇒ it reads the per-CLAUDE_CONFIG_DIR
+    // store ⇒ 'store'. Only meaningful for the claude-code env-block lane (undefined otherwise).
+    const headlessCredentialSource: 'store' | 'env' | undefined =
+      headlessFramework === 'claude-code'
+        ? ((this.config.anthropicApiKey ?? '') !== '' ? 'env' : 'store')
+        : undefined;
 
     try {
       execFileSync(this.config.tmuxPath, [
@@ -1913,6 +1921,8 @@ rm()  { "${shimRunner}" rm  "$@"; }
       // Subscription-pool pinning: tag the session with the account it launched
       // under, so auto-swap can move it when that account hits a quota wall.
       ...(pinnedAccount ? { subscriptionAccountId: pinnedAccount.accountId } : {}),
+      // §2.10 credential provenance — derived from the SAME predicate as the env block.
+      ...(headlessCredentialSource ? { credentialSource: headlessCredentialSource } : {}),
       // Positive-lane observability (june15-headless-spawn-reroute O4): always
       // populated now, so the soak's "zero headless under force" criterion is
       // machine-checkable from GET /sessions. completionMode stays 'exit' (the
@@ -2111,6 +2121,10 @@ rm()  { "${shimRunner}" rm  "$@"; }
         ? ['-e', `CLAUDE_CODE_OAUTH_TOKEN=${this.config.anthropicApiKey}`, '-e', 'ANTHROPIC_API_KEY=']
         : ['-e', `ANTHROPIC_API_KEY=${this.config.anthropicApiKey ?? ''}`, '-e', 'CLAUDE_CODE_OAUTH_TOKEN='];
     anthropicEnvFlags.push('-e', `ANTHROPIC_BASE_URL=${this.config.anthropicBaseUrl ?? ''}`);
+    // §2.10 provenance — SINGLE SOURCE OF TRUTH: the SAME `(anthropicApiKey ?? '') !== ''`
+    // predicate as the env block above (this lane is always claude-code → always set).
+    const reroutedCredentialSource: 'store' | 'env' =
+      (this.config.anthropicApiKey ?? '') !== '' ? 'env' : 'store';
 
     try {
       execFileSync(this.config.tmuxPath, [
@@ -2181,6 +2195,8 @@ rm()  { "${shimRunner}" rm  "$@"; }
       // Subscription-pool pinning: tag with the account this launched under, so
       // auto-swap can move it when that account hits a quota wall.
       ...(pinnedAccount ? { subscriptionAccountId: pinnedAccount.accountId } : {}),
+      // §2.10 credential provenance — derived from the SAME predicate as the env block.
+      credentialSource: reroutedCredentialSource,
       // The reroute's completion contract (spec O1 + O4):
       launchLane: 'rerouted-interactive',
       completionMode: 'pattern',
@@ -3224,6 +3240,13 @@ rm()  { "${shimRunner}" rm  "$@"; }
     const effectiveConfigHome =
       explicitConfigHome ?? (pinnedAccount ? this.resolvePinnedSpawnHome(pinnedAccount) : undefined);
     const effectiveAccountId = options?.subscriptionAccountId ?? pinnedAccount?.accountId;
+    // §2.10 provenance — SINGLE SOURCE OF TRUTH: the SAME `(anthropicApiKey ?? '') !== ''`
+    // predicate that selects the Anthropic env block in the execFileSync below. Only meaningful
+    // for the claude-code lane (the only one whose env block claude-code actually reads).
+    const interactiveCredentialSource: 'store' | 'env' | undefined =
+      framework === 'claude-code'
+        ? ((this.config.anthropicApiKey ?? '') !== '' ? 'env' : 'store')
+        : undefined;
     // This interactive session is about to launch under a pool account's config
     // home — seed the onboarding flags first or a headless-enrolled home wedges
     // it on the first-launch onboarding wizard (2026-06-09 incident). Applies to
@@ -3361,6 +3384,8 @@ rm()  { "${shimRunner}" rm  "$@"; }
       // user-facing interactive lane is now tagged just like the headless lane).
       // Undefined for single-account agents (resolver unwired → no pin).
       ...(effectiveAccountId ? { subscriptionAccountId: effectiveAccountId } : {}),
+      // §2.10 credential provenance — derived from the SAME predicate as the env block.
+      ...(interactiveCredentialSource ? { credentialSource: interactiveCredentialSource } : {}),
       prompt: effectiveInitialMessage,
       maxDurationMinutes: this.effectiveMaxDurationMinutes,
       // R2.8/L13: record the spawn cwd so a resume-queue entry can revive
@@ -3646,6 +3671,11 @@ rm()  { "${shimRunner}" rm  "$@"; }
       tmuxSession,
       startedAt: new Date().toISOString(),
       maxDurationMinutes: 10,
+      // §2.10 provenance — the triage lane hardcodes an EMPTY `ANTHROPIC_API_KEY=` above
+      // (it always reads the per-CLAUDE_CONFIG_DIR store, never an env token), so 'store' is
+      // the deterministic provenance here. Set explicitly so no claude-code spawn record is
+      // provenance-blind (an env-token lane that forgot the flag would be a lint-caught bug).
+      credentialSource: 'store',
     };
     this.state.saveSession(session);
 

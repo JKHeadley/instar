@@ -673,6 +673,9 @@ export interface RouteContext {
     audit: import('../core/CredentialAuditEmit.js').CredentialAuditEmit;
     /** Per-pair cooldown + §0.g force budget. */
     levers: import('../core/CredentialManualLevers.js').CredentialManualLevers;
+    /** §2.10 env-token gate (Step 8) — refuses the feature (config field OR live env-token fleet)
+     *  with a named reason surfaced on GET /credentials/rebalancer. */
+    envTokenGate: import('../core/CredentialEnvTokenGate.js').CredentialEnvTokenGate;
     /** Raw-blob reader for a slot (restore-enrollment coherence probe). Injectable for tests. */
     readBlob?: (slot: string) => Promise<{ raw: string; oauth: import('../core/OAuthRefresher.js').ClaudeOauth | null } | null>;
   } | null;
@@ -19230,10 +19233,36 @@ export function createRoutes(ctx: RouteContext): Router {
     });
   });
 
-  // GET /credentials/rebalancer — the autonomous balancer's last-pass surface. 503 in Increment A
-  // (the CredentialRebalancer is Increment B). Named so the route exists + is discoverable now.
+  // GET /credentials/rebalancer — the autonomous balancer's last-pass surface. The CredentialRebalancer
+  // (Increment B) is not wired in Increment A, so the balancer ITSELF still reports 503/not-wired. But
+  // Step 8 (§2.10) surfaces the ENV-TOKEN GATE verdict here: WHY the feature would refuse to run even
+  // once the balancer lands. SHIPS DARK: with the flag off (always, while dark) the route is a strict
+  // no-op 503, byte-for-byte its prior behavior. With the flag ON it ALSO carries the env-token gate's
+  // named refusal reason (config field OR live-fleet env-token sessions), scrubbed via the audit
+  // chokepoint — the §2.10 applicability precondition made visible.
   router.get('/credentials/rebalancer', (_req, res) => {
-    res.status(503).json({ enabled: false, reason: 'the autonomous balancer is Increment B — not wired in Increment A' });
+    const cr = ctx.credentialRepointing;
+    // Dark / unwired → strict no-op 503 (unchanged): the surface stays exactly as it shipped at Step 7.
+    if (!cr || !credRepointEnabled()) {
+      const body = { enabled: false, reason: 'the autonomous balancer is Increment B — not wired in Increment A' };
+      // Route through the scrub chokepoint when the bundle is wired; else send the static body.
+      res.status(503).json(cr ? cr.audit.response(body) : body);
+      return;
+    }
+    // Flag ON: evaluate the §2.10 env-token gate (config field + live fleet) and surface its verdict.
+    const verdict = cr.envTokenGate.evaluate();
+    credSend(res, 200, {
+      enabled: true,
+      // The balancer loop itself is Increment B — never running in Increment A regardless of the gate.
+      balancerWired: false,
+      envTokenGate: {
+        refused: verdict.refused,
+        // A named CATEGORY, not a credential; scrubbed regardless by credSend → audit.response.
+        reason: verdict.reason,
+        detail: verdict.detail,
+        envSessionCount: verdict.envSessionCount,
+      },
+    });
   });
 
   // Shared lever guard: dark → 503; levers disabled → 403. Returns the wired bundle or null.
