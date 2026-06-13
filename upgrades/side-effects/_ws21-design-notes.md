@@ -66,9 +66,9 @@ machines page the same as 2). Headless: no interactive step. Quorum N/A
 (read replication, last-writer-wins is monotonic, no election).
 
 ## Build order
-1. [ ] PreferencesSync.ts engine (pure): wire shapes, buildPreferencesSyncPage,
+1. [x] PreferencesSync.ts engine (pure): wire shapes, buildPreferencesSyncPage,
        PreferenceReplicaStore, mergePreferenceViews (collapse-by-dedupeKey).
-2. [ ] PreferencesManager: replicationSeq + lastMutatedSeq additive; expose
+2. [x] PreferencesManager: replicationSeq + lastMutatedSeq additive; expose
        getAllForSync() + advert{incarnation,replicationSeq}.
 3. [ ] MeshRpc verb + RBAC case + types.
 4. [ ] server.ts: serve handler + receive puller wiring + union into
