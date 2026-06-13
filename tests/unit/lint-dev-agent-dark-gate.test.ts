@@ -310,29 +310,34 @@ describe('lint-dev-agent-dark-gate', () => {
       '58': 'monitoring.parallelWorkSentinel.enabled',
       '129': 'monitoring.sessionReaper.enabled',
       '187': 'monitoring.agentWorktreeReaper.enabled',
-      '201': 'monitoring.mcpProcessReaper.enabled',
-      '215': 'monitoring.agentSleep.enabled',
-      '238': 'monitoring.failureLearning.enabled',
-      '270': 'monitoring.correctionLearning.enabled',
+      // ORPHANED-WORK-SENTINEL: the monitoring.orphanedWorkSentinel default block
+      // (15 lines incl. comment, `enabled` deliberately OMITTED so it is dev-gated
+      // — hence NO new entry here) was inserted right after the agentWorktreeReaper
+      // block, shifting EVERY entry below by +15. Verified by hand (attributor)
+      // against ConfigDefaults.ts.
+      '216': 'monitoring.mcpProcessReaper.enabled',
+      '230': 'monitoring.agentSleep.enabled',
+      '253': 'monitoring.failureLearning.enabled',
+      '285': 'monitoring.correctionLearning.enabled',
       // PROMISE-BEACON-ESCALATION-SPEC: the monitoring.promiseBeacon.escalation
       // default block (22 lines, `enabled` deliberately OMITTED so it is dev-
       // gated — hence NO new entry here) was inserted right after the
       // correctionLearning block, shifting EVERY entry below by +22. Verified by
       // hand (attributor) against the MERGED ConfigDefaults.ts.
-      '364': 'monitoring.apprenticeshipCycleSla.enabled',
-      '372': 'monitoring.geminiCapacityEscalation.enabled',
-      '380': 'monitoring.releaseReadiness.enabled',
-      '395': 'monitoring.greenPrAutoMerge.enabled',
-      '445': 'threadline.a2aCheckIn.enabled',
-      '508': 'mentor.enabled',
-      '519': 'mentor.autonomousFix.enabled',
-      '534': 'mentee.enabled',
-      '653': 'multiMachine.sessionPool.enabled',
-      '678': 'multiMachine.sessionPool.inboundQueue.enabled',
-      '707': 'multiMachine.sessionPool.holdForStability.enabled',
-      '862': 'cartographer.freshnessSweep.enabled',
-      '907': 'cartographer.conformanceAudit.llmEnrichment.enabled',
-      '932': 'cartographer.subtreeNav.llmRerank.enabled',
+      '379': 'monitoring.apprenticeshipCycleSla.enabled',
+      '387': 'monitoring.geminiCapacityEscalation.enabled',
+      '395': 'monitoring.releaseReadiness.enabled',
+      '410': 'monitoring.greenPrAutoMerge.enabled',
+      '460': 'threadline.a2aCheckIn.enabled',
+      '523': 'mentor.enabled',
+      '534': 'mentor.autonomousFix.enabled',
+      '549': 'mentee.enabled',
+      '668': 'multiMachine.sessionPool.enabled',
+      '693': 'multiMachine.sessionPool.inboundQueue.enabled',
+      '722': 'multiMachine.sessionPool.holdForStability.enabled',
+      '877': 'cartographer.freshnessSweep.enabled',
+      '922': 'cartographer.conformanceAudit.llmEnrichment.enabled',
+      '947': 'cartographer.subtreeNav.llmRerank.enabled',
     };
     const actual = attributeRealConfigDefaults();
     expect(actual).toEqual(EXPECTED);
