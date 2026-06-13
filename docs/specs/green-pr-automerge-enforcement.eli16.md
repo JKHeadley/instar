@@ -31,9 +31,12 @@ not just when the PR was first seen. Held PRs that sit for over a week get surfa
 lazy hold can't become the new way work rots.
 
 **2. A nudge at session exit.** If I try to end a session whose branch has a green
-unmerged PR, the existing session-exit guard blocks me once: "merge it or mark it [HOLD]."
-Sessions unrelated to the PR are never bothered, and if anything about the check errors,
-the session ends normally — it nudges, it never traps.
+unmerged PR, the existing session-exit guard blocks me once: "hold it, or just end the
+session — the watcher lands it in ~10 minutes. Don't merge it by hand." (The final
+review round removed the ready-to-run merge command this message originally included:
+if the watcher is healthy, a manual merge is exactly the manual work this whole build
+exists to kill.) Sessions unrelated to the PR are never bothered, and if anything about
+the check errors, the session ends normally — it nudges, it never traps.
 
 ## What the review process hardened (the honest part)
 
@@ -57,7 +60,7 @@ that only the real dev process produces, so junk on a lookalike branch can't rid
 you say "hold #N" in chat, I have a one-call lever that stamps the hold marker on the PR
 immediately, so a conversational hold becomes a real hold the machinery respects.
 
-The final review round (round 5) closed four more: a PR that touches the merge machinery
+Round 5 closed four more: a PR that touches the merge machinery
 itself (CI workflows, the verifier script, the watcher's own code) was already excluded
 from auto-merge — "those need human eyes" — but the session-exit nudge would have handed
 the agent an exact ready-to-run merge command for them, quietly defeating the human-eyes
@@ -86,7 +89,16 @@ merge did it. If you'd rather pay the treadmill cost for re-testing, there's a k
   makes the actual merge decision, not new code.
 - Doesn't resolve conflicts; a stale PR is reported, and fixing it stays my job.
 
-## The one decision you're ratifying with "approved: true"
+Round 6 (the final round) caught that two of the staleness self-checks added in round 5
+were aimed at the wrong target (the CI checks they validate only ever run on PRs, never
+on main itself — so they now validate against recently-merged PRs instead), gave the
+"this pool deliberately turned the watcher on" breadcrumb a proper off-switch so a
+deliberate disable can't alarm forever, and removed that session-exit merge command.
+One outside reviewer (Gemini) went further than the others and said the scoped-GitHub-App
+credential should come *before* shipping at all, not just before fleet expansion — the
+full report quotes that dissent so you're deciding with it on the table.
+
+## The decisions you're ratifying with "approved: true"
 
 **This ships live on me immediately — no observe-only trial period.** My reasoning: you've
 directed this exact behavior twice, the merge has been formally mandatory (just manual)

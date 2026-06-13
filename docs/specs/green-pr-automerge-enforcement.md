@@ -10,7 +10,7 @@ lessons-engaged: [P1-structure-beats-willpower, P2-signal-vs-authority, P3-migra
 
 # Green-PR Auto-Merge Enforcement — Phase 7 becomes machinery, not memory
 
-**Status:** v6 (post round-5 review). Author: echo · Created: 2026-06-12 · Topic: 24662
+**Status:** v7 (post round-6 review). Author: echo · Created: 2026-06-12 · Topic: 24662
 **Companion (required):** `green-pr-automerge-enforcement.eli16.md`
 
 > Per the instar-dev gate, no code ships until convergence (`/spec-converge`) and Justin sets
@@ -134,7 +134,15 @@ Two enforcement gaps, two layers:
   independently flagged the operator-token `--admin` daemon as acceptable only for the
   bounded single-agent scope). The operator-token phase is explicitly the
   single-dev-agent phase; the rollout checklist item reads "credential migrated to a
-  scoped GitHub App" before any second agent is armed.
+  scoped GitHub App" before any second agent is armed — and the same checklist carries
+  "strict-base-freshness mode evaluated" (re-verify against a test-merge commit /
+  `minGreenAgeMs`; Decision 9's residual is acceptable for the bounded dev-agent phase,
+  not silently inherited by a fleet). **Round-6 external dissent, recorded for the
+  approval read**: Gemini 2.5 Pro holds that the GitHub App should precede ANY ship and
+  that the GitHub-Actions alternative deserves re-evaluation; the operator-ratified
+  posture (Decision 1, this threat model, twice-given operator direction) accepts the
+  bounded single-agent operator-token phase. The convergence report quotes the dissent
+  verbatim so `approved: true` is an informed choice.
 
 ## Requirements
 
@@ -190,10 +198,18 @@ Two enforcement gaps, two layers:
   cleared on classification; the child runs in its OWN process group and the server's
   shutdown path kills the group; and a boot/warm-up that finds a recorded in-flight
   attempt FIRST reaps any surviving orphan (kill the recorded pgid if alive, verify the
-  pid's identity before signaling) and re-verifies the PR's live state via `gh pr view`
-  before any new attempt — a wedged-then-unwedged child can never complete a merge
-  minutes after a rollback latched during the restart window, and the new boot cannot
-  double-attempt. A tick that finds an attempt
+  pid's identity before signaling; round-6: a dead/recycled LEADER pid with a live
+  group is handled too — scan the group for the expected command identity, or hold the
+  in-flight record and audit `orphan-reap-incomplete` until the group is empty) and
+  re-verifies the PR's live state via `gh pr view`
+  before any new attempt — so the boot cannot double-attempt, and the orphan window is
+  reduced to the same accepted seconds-wide residual class as R3's hold re-check window
+  (a rollback latching while a child is ALREADY spawned can see that one head-pinned,
+  pre-verified merge complete; acknowledged in R9's residual note). Round-6 wording
+  precision: the durable write is necessarily TWO-PHASE — an intent record lands before
+  the spawn, pid/pgid are patched in immediately after — and a pid-less in-flight
+  record found at boot is treated as attempt-of-unknown-outcome (re-verify via gh,
+  never assume not-spawned). A tick that finds an attempt
   in flight skips with `tick-skipped-busy`, and N consecutive busy-skips (default 3) feed
   the breaker; **deadline-kills are NOT free**: they bypass the per-PR ladder (the PR is
   healthy) but count toward the global breaker after `deadlineKillBreakerThreshold`
@@ -224,7 +240,18 @@ Two enforcement gaps, two layers:
   `diverged-from-default` (the alarm class) instead of `off (dark-default)` — without
   this, BOTH visibility nets miss the de-armed standby (the dark-default grade reads as
   "normal, never noise," and the §3.4 rot backstop runs inside the watcher, so it is off
-  too). Repo-gated: inert without an analyzable instar repo AND
+  too). **The marker has a full lifecycle** (round-6: an arm-only marker means a
+  deliberate fleet-wide off alarms FOREVER — the same perpetual-false-alarm disease, one
+  surface over): a **pool-disarm** action (operator-PIN-gated, same authority class and
+  dashboard panel as R9's `/enable` — re-shaping merge-authority posture is the
+  operator's) writes a superseding `pool-disarmed` entry through the same `guard-latch`
+  kind under the same epoch+sequence ordering rules; the cleared state grades back to
+  healthy `off (dark-default)`. Disarm does NOT clear an active rollback latch, and a
+  rollback does not disarm the pool marker (independent levers, like R9's two latches).
+  With the coherence journal off, this divergence net honestly degrades to
+  single-machine (R9's arrive-disabled rule remains the merge-safety backstop). Unit
+  cases: armed→disarmed→no alarm; disarm leaves rollback latched; rollback leaves
+  pool-armed standing. Repo-gated: inert without an analyzable instar repo AND
   `scripts/safe-merge.mjs` present. `ships-staged: true` — the fleet flip rides the
   rollout/maturation track, not author memory (Close the Loop).
 - R8 — **Observable Intelligence / audit**: every decision transition (candidate-found,
@@ -239,18 +266,30 @@ Two enforcement gaps, two layers:
   L5(b) class): every `floorDriftCheckTicks` ticks (default 6) and at boot, the
   code-pinned floor contexts + producers — AND any config-EXTENDED floor entries (a junk
   config entry must surface as drift, not as eternal merge refusals) — are validated
-  against a defined reference: **the most recent default-branch commit that HAS completed
-  check runs for the pinned workflows**, found by a bounded walk-back
-  (`floorDriftLookbackCommits`, default 30). Round-5: "the latest commit" is NOT a valid
-  reference on this repo — release automation makes `main`'s HEAD a `[skip ci]` commit
-  with ZERO check runs most of the time, so a naive canary would false-alarm perpetually
-  and bury the real drift signal it exists for. A mismatch at the reference
+  against a reference chosen PER CONTEXT FAMILY by trigger type (round-6 adversarial
+  grounding: two of the three pinned floor families — the eli16 and decision-audit gates
+  — are `pull_request`-only workflows whose check runs attach to PR HEAD SHAs, never to
+  default-branch commits; squash merges mint new SHAs carrying only push-triggered runs,
+  so a default-branch reference can NEVER observe them — under one reading the canary
+  would report perpetual `floor-drift-unverifiable`, under the other perpetual FALSE
+  `floor-drift`):
+  **PR-triggered floor contexts** are validated against the head SHAs of recently
+  MERGED agent-namespace PRs (bounded walk-back, `floorDriftLookbackPrs` default 10 —
+  each carries the full gate-context set a real dev-process pass produces);
+  **push-triggered contexts** are validated against the most recent default-branch
+  commit qualified INDEPENDENTLY of the pinned set (any completed, non-skip-ci check
+  runs present — qualifying ON the pinned workflows would make a rename select a stale
+  pre-rename commit or exhaust the bound, structurally hiding the exact drift the
+  canary exists to catch), found by a bounded walk-back (`floorDriftLookbackCommits`,
+  default 30; round-5: `main`'s HEAD is usually a `[skip ci]` release commit with ZERO
+  runs, so "the latest commit" is never a valid reference on this repo). A mismatch at
+  the reference
   (renamed workflow, split job, changed app slug) audits a DISTINCT `floor-drift` class
   and surfaces ONE line in the aggregated Attention item naming the drifted
   context/producer — the operator learns "the floor pins are stale," never just "PR #N
   failed three times" (a drifted floor turns the watcher into a permanent refuser whose
   fix is itself a protected-paths PR — it must be named as drift, immediately). No
-  qualifying reference commit within the walk-back bound audits its own
+  qualifying reference within a family's walk-back bound audits its own
   `floor-drift-unverifiable` class (distinct from `floor-drift` — "couldn't check" must
   never wear the "drifted" label).
 - R9 — **Runtime kill-switch + emergency-stop reach, POOL-VISIBLE**: two INDEPENDENT
@@ -281,7 +320,17 @@ Two enforcement gaps, two layers:
   the local durable write + journal append precede it, so safety never waits on the
   network); on expiry it acks WITH the honest per-peer reached/missed report, relying on
   replication + arrive-disabled-on-unreadable for missed peers. Rollback is loud (HIGH
-  Attention + audit) and Bearer-callable (anyone can STOP); **`/enable` requires the
+  Attention + audit) and Bearer-callable (anyone can STOP); the latch gates TICKS — a
+  safe-merge child already spawned in the same seconds is the acknowledged R3-class
+  residual (head-pinned, pre-verified, bounded by the settled-green-only invocation
+  rule). **Why this bespoke latch and not a simpler primitive** (round-6 external): the
+  latches ride the two distributed primitives the pool ALREADY operates (the coherence
+  journal and the fenced lease) — no new store, no new replication protocol; a single
+  authoritative store would be a new single point of failure needing its own
+  replication anyway, and a GitHub-side gate (environment/secret/label) would place the
+  stop authority outside the agent's emergency-stop reach and audit surfaces — the same
+  locality reason the Alternatives section gives for not delegating merge authority to
+  CI. **`/enable` requires the
   operator's dashboard PIN** — re-arming merge authority is the operator's, structurally
   (the Mandates-TAB precedent, not just the Mandates API): re-arm ships WITH its human
   surface — a button on the dashboard guards/watcher panel — and the rollback Attention
@@ -498,9 +547,16 @@ keep off the merge button. Coaching it through a pinned `--admin` invocation wou
 re-create auto-merge with one extra hop and zero human review. The protected-paths
 variant therefore routes to the OPERATOR, mirroring the §3.2 Attention line: *"PR #N is
 green but touches protected paths — it needs the operator's review and merge; it is
-already on the Attention queue."* The server-generated pinned command is reserved for
-NON-protected candidates only (unit tests cover both variants — protected never
-contains a runnable command). No hook events for the session → silent. A snapshot older than
+already on the Attention queue."* And round-6 (external GPT-tier) closed the remaining
+door: **NO Layer-2 variant carries a runnable merge command at all.** Layer 2 only
+blocks when the snapshot is FRESH and the watcher ARMED — i.e. exactly when the
+machinery is about to act anyway — so a pinned command in the healthy case is an
+invitation to reflexive manual merging, "No Manual Work" recreated as a scripted click
+(and every can't-act state already has a command-free variant: disarmed → the
+do-not-merge coaching; protected → operator-routed; stale/merged snapshot → silent).
+This also retires the round-3 hand-typed-reduced-command concern outright — no command
+shown means no command to mistype. Unit tests assert NO variant contains a runnable
+command. No hook events for the session → silent. A snapshot older than
 2× `tickIntervalMs` never blocks (staleness gate); an already-merged snapshot entry
 never blocks. Linked-worktree reality (round-4): `.git` in a worktree is a FILE
 (`gitdir: <path>`), not a directory — branch resolution parses it and reads
@@ -509,12 +565,12 @@ path — instar-dev builds live in worktrees, so a naive `.git/HEAD` read would 
 Layer 2 inert for its primary audience).
 
 Block message (PR TITLES never appear in guidance — untrusted data stays out of prompt
-context; round-3: a hand-typed reduced command would bypass the hardened contract, so
-the server generates the FULL pinned invocation from snapshot data): *"PR #N (your
-branch) is green and unmerged. Either hold it (`POST /green-pr-automerge/hold {\"pr\":
-N, \"reason\": \"…\"}`) or let the watcher land it within ~10 minutes. To merge it
-yourself NOW, run exactly: `<server-generated safe-merge command with --repo,
---match-head-commit <snapshot SHA>, --deadline-ms>`."*
+context): *"PR #N (your branch) is green and unmerged. Either hold it
+(`POST /green-pr-automerge/hold {\"pr\": N, \"reason\": \"…\"}`) or end the session —
+the watcher lands it within ~10 minutes. Do NOT merge it manually."* (Round-6: the
+earlier draft appended a server-generated pinned merge command "to merge it yourself
+NOW" — removed; the watcher being armed and the snapshot fresh is precisely the state
+where manual merging is pure recreated manual work.)
 
 Layer 2's honest role (round-1 external challenge): Layer 1 is the guarantee; Layer 2 is
 immediacy + the teaching surface. It costs nothing on the stop path (snapshot read), so
@@ -588,7 +644,11 @@ would have missed PR #1084's own failure mode).
   (503 unwired); a fake-gh harness driving tick → safe-merge argv (asserted at the spawn
   boundary, incl. `--match-head-commit` and `--repo`) → post-merge verification →
   episode; burst invariant: K permanently-failing candidates → bounded attempts, breaker,
-  ONE aggregated attention id, zero per-PR items; emergency-stop pauses ticks.
+  ONE aggregated attention id, zero per-PR items; emergency-stop pauses ticks; **chaos
+  interleaving scenario** (round-6 external): server restart + rollback latch + lease
+  transfer landing DURING an in-flight merge attempt — asserts the orphan is reaped or
+  honestly audited, the latch wins all subsequent ticks on both machines, no
+  double-attempt, and the outcome classification is truthful.
 - **E2E**: feature-alive — real AgentServer boots with the watcher wired as server.ts
   wires it; status route 200 (not 503); wiring integrity (async runner, audit sink,
   attention sink, lease-checker real and delegating).
@@ -664,7 +724,8 @@ would have missed PR #1084's own failure mode).
 
 ## Open questions
 
-*(none — every fork is frontloaded above; Decision 1 is ratified by `approved: true`)*
+*(none — every fork is frontloaded above; Decisions 1, 3, and 9 are ratified by
+`approved: true`)*
 
 ## Out of scope
 
