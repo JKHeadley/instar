@@ -504,3 +504,15 @@ Spec: `docs/specs/_drafts/subscription-auth-standard-master-spec.md`.
   of recently-processed marker ids; idempotency against Telegram retry / adapter restart.
 
 Spec: `docs/specs/MENTOR-LIVE-READINESS-SPEC.md` §Fix 2a.
+
+## Cross-machine memory foundation
+
+- **`HybridLogicalClock`** (`src/core/HybridLogicalClock.ts`) — the total-order clock the
+  cross-machine memory-replication family is built on. Each replicated change carries a
+  `{ physical, logical, node }` stamp; the canonical HLC merge keeps cause before effect,
+  `compare()` is a strict total order (machine id breaks ties) so every machine sorts the
+  same history identically, it is monotonic across restarts (atomic persistence), and it
+  rejects a poison far-future stamp measured against the *pool's* reference (not the local
+  clock, so a slow machine never wrongly quarantines a legitimately-ahead peer). Pure +
+  dependency-injected; ships inert until the replicated-store steps consume it. Spec:
+  `docs/specs/multi-machine-replicated-store-foundation.md` §3.

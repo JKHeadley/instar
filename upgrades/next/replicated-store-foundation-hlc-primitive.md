@@ -1,0 +1,52 @@
+# Replicated-store foundation — Step 1: HybridLogicalClock primitive
+
+## What Changed
+
+- **New `src/core/HybridLogicalClock.ts`** — the first primitive of the WS2
+  replicated-store foundation (spec `multi-machine-replicated-store-foundation.md` §3,
+  build-order Step 1). A pure, dependency-injected hybrid logical clock that will give
+  every cross-machine replicated change a well-defined total order:
+  - `tick()` — local-event advance (physical never regresses; same-ms bumps the logical
+    counter); strictly monotonic.
+  - `receive(remote, { poolReference })` — canonical HLC merge across all four
+    physical-comparison branches; monotonic vs both local and remote.
+  - `static compare(a, b)` — strict total order (physical → logical → node tie-break).
+  - **Skew-rejection** — a poison-future remote clock (physical beyond a POOL-RELATIVE
+    reference + a FIXED `maxDriftMs` clamped to [60s, 15min]) is rejected as a typed
+    result and never advances the clock; a legitimately-ahead peer or a slow local
+    receiver is never wrongly rejected.
+  - **Restart-monotonic** via injected atomic persistence; a corrupt durable stamp
+    fails toward a fresh-but-monotonic clock (never crashes construction).
+- Pure + injected (clock / nodeId / persistence are constructor seams) — no ambient
+  `Date.now()`/`fs` in the hot path.
+
+This primitive is **inert** — nothing imports it yet. Its consumers are the subsequent
+foundation steps (journal-kind envelope → snapshot-then-tail → quarantine ring →
+union-reader), sequenced in the spec's build order §13.
+
+## Evidence
+
+- `tests/unit/HybridLogicalClock.test.ts` (44, new): tick monotonicity + same-ms
+  logical bump; receive merge correctness for all four branches + monotonicity vs both
+  sides; `compare()` total-order incl. node tie-break + identical-triple equality;
+  skew-rejection on a poison-future remote with both boundary sides; pool-relative
+  reference (a slow receiver does NOT reject a within-bound ahead peer); the
+  [60s,15min] clamp; restart-monotonicity from persisted state; persist-on-advance;
+  corrupt-persisted-stamp degradation across 8 malformed shapes; serialize/parse
+  round-trips + malformed-input rejection. `tsc --noEmit` clean; full lint chain green.
+- Adversarial review: distributed-correctness brute-forced 3456 merge tuples vs the
+  canonical Kulkarni HLC merge (zero mismatches); integration-purity MEDIUM (corrupt
+  stamp crash) fixed.
+
+## What to Tell Your User
+
+Nothing changes for you yet — this is internal groundwork. It's the clock that will let
+your agent keep one coherent memory across multiple machines (so a preference or
+relationship learned on one machine orders correctly against changes on another). The
+machine-spanning memory features that use it land in the following steps.
+
+## Summary of New Capabilities
+
+- Internal foundation primitive `HybridLogicalClock` (cross-machine total-order clock
+  with pool-relative skew-rejection + restart-monotonicity). Not yet wired to any
+  feature — it is the substrate the WS2 memory-replication steps build on.
