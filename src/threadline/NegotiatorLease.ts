@@ -19,6 +19,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
+import { resolveDevAgentGate } from '../core/devAgentGate.js';
 
 // ── The durable lease shape (additive, optional on Conversation) ────────
 
@@ -60,7 +61,13 @@ export interface LeaseResult {
 // ── Config (FD-1, FD-3, FD-7, FD-9) ─────────────────────────────────────
 
 export interface SingleNegotiatorConfig {
-  /** Master switch. Default false ⇒ gate is pure pass-through (ships dark). */
+  /**
+   * Master switch. Resolved through the developmentAgent dark-feature gate:
+   * the config OMITS `enabled` so it runs LIVE on a development agent (the
+   * dogfooding ground — in dry-run, so it withholds nothing) and DARK on the
+   * fleet. An explicit `enabled` in config always wins. Default (no key, no dev
+   * agent) ⇒ pure pass-through.
+   */
   enabled: boolean;
   /** When enabled, dry-run logs the verdict it WOULD reach but still sends. */
   dryRun: boolean;
@@ -85,13 +92,26 @@ export const SINGLE_NEGOTIATOR_DEFAULTS: SingleNegotiatorConfig = {
  * missing fields fall back to the safe (dark, dry-run) defaults. `dryRun`
  * defaults TRUE when enabled (FD-7) — enforce (withholding a real send) is only
  * ever reached by an explicit `dryRun: false`.
+ *
+ * `enabled` resolves through the developmentAgent dark-feature gate
+ * ({@link resolveDevAgentGate}): the config OMITS `enabled` so the lease runs
+ * LIVE on a development agent (in dry-run — it logs would-hold verdicts but
+ * withholds nothing, gathering the FD-7 false-positive telemetry) and DARK on
+ * the fleet. An explicit `enabled` in config always wins. Pass the agent config
+ * (only `developmentAgent` is read); omit it and the gate resolves fleet-dark.
  */
-export function resolveSingleNegotiatorConfig(raw: unknown): SingleNegotiatorConfig {
+export function resolveSingleNegotiatorConfig(
+  raw: unknown,
+  devGateConfig?: { developmentAgent?: boolean },
+): SingleNegotiatorConfig {
   const r = (raw ?? {}) as Record<string, unknown>;
   const posNum = (v: unknown, d: number): number =>
     typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : d;
   return {
-    enabled: r.enabled === true,
+    enabled: resolveDevAgentGate(
+      typeof r.enabled === 'boolean' ? r.enabled : undefined,
+      devGateConfig ?? {},
+    ),
     // Default true when the key is absent; only an explicit `false` disarms it.
     dryRun: r.dryRun === undefined ? true : r.dryRun !== false,
     leaseTtlMs: posNum(r.leaseTtlMs, SINGLE_NEGOTIATOR_DEFAULTS.leaseTtlMs),

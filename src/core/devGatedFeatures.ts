@@ -117,6 +117,14 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     justification:
       'Deterministic regex check feeding the existing inform-only advisory surface (never blocks; sender fixes or acks); no LLM, no egress, no spend, no destructive action.',
   },
+  {
+    name: 'threadlineSingleNegotiator',
+    configPath: 'threadline.singleNegotiator.enabled',
+    description:
+      'Threadline single-negotiator lease — one session owns each conversation\'s outbound voice (THREADLINE-SINGLE-NEGOTIATOR-SPEC, CMT-1362).',
+    justification:
+      'Lives live on a dev agent ONLY in dry-run (dryRun defaults true) — it engages the lease logic and logs every would-hold verdict for the FD-7 false-positive telemetry but withholds NOTHING (a real send is only blocked by an explicit dryRun:false). No egress, no spend, no destructive action; this is exactly the dogfooding posture FD-7 requires before the lease can ever enforce. (Was mis-classified deliberate-fleet-default at ship, which starved the telemetry — corrected here.)',
+  },
 ];
 
 /**
@@ -218,11 +226,6 @@ export const DARK_GATE_EXCLUSIONS: DarkGateExclusion[] = [
     configPath: 'monitoring.greenPrAutoMerge.enabled',
     category: 'deliberate-fleet-default',
     reason: 'green-PR auto-merge watcher — action-bearing (merges PRs), so NOT dev-gated (the dev-gate registry bars action-bearing features, devGatedFeatures.ts contract). Off fleet-wide; flipped on per dev agent with expectedGhLogin. safe-merge re-verifies + lease-gated + runtime rollback + breaker; GitHub App is a binding precondition before any fleet promotion.',
-  },
-  {
-    configPath: 'threadline.singleNegotiator.enabled',
-    category: 'deliberate-fleet-default',
-    reason: 'lease send-gate withholds a non-owner content send; off+dry-run-first for everyone until dry-run telemetry shows an acceptable false-positive rate (THREADLINE-SINGLE-NEGOTIATOR-SPEC FD-7)',
   },
   {
     configPath: 'monitoring.bootHealthBeacon.enabled',
