@@ -413,6 +413,22 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       ttlMs: 600000, // 10 min
       trustFloor: 'verified',
     },
+    // Single-negotiator lock (Threadline Robustness Phase 1, CMT-1362). The
+    // per-conversation lease that makes exactly ONE session own a conversation's
+    // outbound voice (G1, closes F1). Ships DARK + dry-run-first: enabled:false ⇒
+    // the gate is pure pass-through; when enabled, dryRun:true logs the verdict it
+    // WOULD reach but still sends (measures false-positive rate before it can
+    // withhold a real send). G2 (prose inertness) + G3 (honest ack wiring) ship
+    // live in CORE and are NOT gated by this — only the lease's hard-block is.
+    // applyDefaults deep-merges this under `threadline` on update (Migration
+    // Parity). Spec: docs/specs/THREADLINE-SINGLE-NEGOTIATOR-SPEC.md.
+    singleNegotiator: {
+      enabled: false,
+      dryRun: true,
+      leaseTtlMs: 90000, // 90s — long enough not to thrash mid-reply, short enough a dead owner reclaims fast
+      holdingNoticeMinIntervalMs: 300000, // 5 min global floor per thread (FD-3)
+      dryRunRetentionDays: 7,
+    },
   },
   // Topic-intent auto-capture loop (rung 0 of continuous-working-awareness).
   // ON by default (ratified): every substantive conversation turn gets a cheap

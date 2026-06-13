@@ -40,3 +40,7 @@ And a small honesty fix: the one reply-path that forgot to record acknowledgemen
 ## What ships when
 
 The honesty fix (acknowledgements) ships live immediately — it only makes an existing signal truthful and can't block anything. The lease and the send gate ship **off by default**, then run in a "dry-run" mode that logs what they *would* block on real traffic without actually blocking, so we can confirm they don't misfire before they're ever allowed to stop a real message. The irreversible-bind refusal is the last and most carefully gated rung, switched on only after the lease has proven clean. Canonical shared history and one-identity-per-agent are deliberately left for later phases; this phase only closes the two highest-risk holes from that night.
+
+## Which principle this serves
+
+This change is anchored to the constitution's root standard, **Structure beats Willpower**: "one voice" and "prose is inert" are made *structural* — enforced by the lease and the typed authorization boundary in code — rather than left as rules a session has to remember in the moment. A background session cannot speak for the agent not because it was told not to, but because the architecture doesn't give it the talking stick; a chat message cannot authorize an irreversible step not because a filter caught the wording, but because prose has no pathway to authority by construction.

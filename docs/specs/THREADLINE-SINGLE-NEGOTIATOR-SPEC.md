@@ -5,11 +5,12 @@ author: "echo"
 eli16-overview: "threadline-single-negotiator.eli16.md"
 tracking: "CMT-1362"
 program: "Threadline Robustness (problem statement .instar/plans/threadline-robustness-problem-statement.md, F1–F6)"
+parent-principle: "Structure beats Willpower"
 lessons-engaged:
   - "docs/signal-vs-authority.md — the send-gate's only blocking authority is the lease, keyed on a structural send path, not on a classifier output"
   - "guard-bypass-carries-its-own-cap — the fail-open path for ordinary prose is bounded + logged + alertable; the authority path (existing Mandate/ReviewExchange) fails closed"
   - "Bounded Notification Surface — holding-notice has a global min-interval floor, not just per-epoch"
-  - "P10 Comprehensive-First — no recurrence-risking deferral: G2 (prose inertness) + G3 (acks) ship in CORE, ungated"
+  - "P10 Comprehensive-First — no recurrence-risking partial ship: G2 (prose inertness) + G3 (acks) ship in CORE, ungated"
   - "Structure > Willpower — one voice and prose-inertness are structural, not rules a session must remember"
 approved: true
 approved-by: "Justin (operator, telegram topic 12476)"
@@ -285,7 +286,7 @@ funnel (a future path that bypasses it fails the test).
   Prose inertness is the *absence* of a prose→binding pathway plus reuse of existing
   operator-anchored gates — no blocking authority over ordinary traffic, nothing to dry-run. Ack
   wiring is pure observability correctness. **Nothing incident-critical is behind a flag** (the
-  explicit answer to the round-1 "recurrence-risking deferral" finding).
+  explicit answer to the round-1 "recurrence-risking partial-ship" finding).
 - **G1 (the lease) hard-block enforcement is the only dry-run-gated rung** (withholding a content
   send is the one new blocking action over ordinary traffic):
   - `threadline.singleNegotiator.enabled` (default **false**) — off ⇒ lease is observe-only

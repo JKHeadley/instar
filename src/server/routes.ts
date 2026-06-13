@@ -238,6 +238,10 @@ import type { ThreadlineRouter } from '../threadline/ThreadlineRouter.js';
 import { evaluateAndRecordInbound } from '../threadline/WarrantsReplyGate.js';
 import type { HandshakeManager } from '../threadline/HandshakeManager.js';
 import { createThreadlineRoutes } from '../threadline/ThreadlineEndpoints.js';
+import { evaluateSendGate, negotiatorLogDir } from '../threadline/NegotiatorGate.js';
+import { recordInboundAck } from '../threadline/recordInboundAck.js';
+import { resolveSingleNegotiatorConfig, readNegotiatorCounts } from '../threadline/NegotiatorLease.js';
+import { detectCommitmentClass, commitmentNudge } from '../threadline/ContentClassifier.js';
 import type { UnifiedTrustSystem } from '../threadline/UnifiedTrustWiring.js';
 import { DEFAULT_RELAY_URL } from '../threadline/constants.js';
 import { ThreadlineNicknames } from '../threadline/ThreadlineNicknames.js';
@@ -9312,6 +9316,64 @@ export function createRoutes(ctx: RouteContext): Router {
     res.json(ctx.a2aDeliveryTracker.peerHealth(req.params.fp, { staleAfterMs }));
   });
 
+  // ── Negotiator lease state (Robustness Phase 1, FD-9) ──────────────────
+  // "Which session owns each conversation's voice?" — bearer-gated, paginated,
+  // own-data-only. Returns this agent's lease per active conversation (holder +
+  // epoch + expiry) plus dry-run would-hold / hold / CAS-retry / fail-open counts.
+  router.get('/threadline/negotiator', (req, res) => {
+    // Bearer-gated (defense in depth — own lease/voice state is agent-private).
+    if (ctx.config.authToken) {
+      const header = req.headers.authorization;
+      if (!header?.startsWith('Bearer ') || header.slice(7) !== ctx.config.authToken) {
+        res.status(401).json({ error: 'Unauthorized' });
+        return;
+      }
+    }
+    if (!ctx.conversationStore) {
+      res.status(503).json({ error: 'conversation store not available' });
+      return;
+    }
+    try {
+      const rawCfg = (ctx.config as { threadline?: { singleNegotiator?: unknown } }).threadline?.singleNegotiator;
+      const cfg = resolveSingleNegotiatorConfig(rawCfg);
+      // Paginate by threadId (stable order). Default 100, `after` cursor.
+      const limitRaw = typeof req.query.limit === 'string' ? parseInt(req.query.limit, 10) : 100;
+      const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(limitRaw, 500) : 100;
+      const after = typeof req.query.after === 'string' ? req.query.after : undefined;
+
+      const all = ctx.conversationStore.all()
+        .filter((c) => c.negotiatorLease)
+        .sort((a, b) => (a.threadId < b.threadId ? -1 : a.threadId > b.threadId ? 1 : 0));
+      const startIdx = after ? all.findIndex((c) => c.threadId === after) + 1 : 0;
+      const page = all.slice(startIdx, startIdx + limit);
+      const nextCursor = startIdx + limit < all.length ? page[page.length - 1]?.threadId : null;
+
+      const leases = page.map((c) => ({
+        threadId: c.threadId,
+        owner: c.negotiatorLease!.ownerSessionName,
+        ownerMachineId: c.negotiatorLease!.ownerMachineId,
+        epoch: c.negotiatorLease!.epoch,
+        expiresAt: c.negotiatorLease!.expiresAt,
+        lastHoldingNoticeEpoch: c.lastHoldingNoticeEpoch ?? null,
+        lastHoldingNoticeAt: c.lastHoldingNoticeAt ?? null,
+      }));
+
+      const counts = readNegotiatorCounts(negotiatorLogDir(ctx.config.stateDir), cfg.dryRunRetentionDays);
+      res.json({
+        enabled: cfg.enabled,
+        dryRun: cfg.dryRun,
+        leaseTtlMs: cfg.leaseTtlMs,
+        machineId: ctx.meshSelfId ?? (ctx.config as { machineId?: string }).machineId ?? 'local',
+        leases,
+        counts,
+        total: all.length,
+        nextCursor: nextCursor ?? null,
+      });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
   router.get('/threadline/observability/search', (req, res) => {
     if (!ctx.threadlineObservability) {
       res.status(503).json({ error: 'Threadline observability not initialized' });
@@ -18084,19 +18146,17 @@ export function createRoutes(ctx: RouteContext): Router {
         // FINGERPRINT — on this same-machine path `from.agent` is the sender's
         // NAME, so resolve the thread owner's fingerprint (stored by captureOrigin,
         // R1) and fall back to the name only if unresolved. Recording-only.
-        if (ctx.a2aDeliveryTracker) {
-          try {
-            const ackThread = envelope.message?.threadId;
-            const ownerFp = ackThread ? ctx.threadResumeMap?.get(ackThread)?.remoteAgent : undefined;
-            const livenessFp = ownerFp || senderAgent;
-            if (livenessFp) ctx.a2aDeliveryTracker.recordInboundFrom(livenessFp, senderAgent ?? null);
-            if (ackThread) ctx.a2aDeliveryTracker.recordAckByThread(ackThread);
-          } catch (err) {
-            // @silent-fallback-ok: recording-only — A2A delivery/liveness tracking must
-            // never break inbound routing (the message was already accepted above). Logged.
-            console.warn(`[relay-agent] A2A inbound record failed (non-fatal): ${err instanceof Error ? err.message : err}`);
-          }
-        }
+        // Robustness Phase 1 (D-E): funnelled through the shared recordInboundAck
+        // so the wiring-integrity test can enforce that every inbound-receive path
+        // records the ack. (Same behavior as before — recording-only, idempotent.)
+        recordInboundAck(
+          { a2aDeliveryTracker: ctx.a2aDeliveryTracker, threadResumeMap: ctx.threadResumeMap ?? null },
+          {
+            threadId: envelope.message?.threadId,
+            senderFingerprint: senderAgent ?? undefined,
+            senderName: senderAgent ?? null,
+          },
+        );
 
         // Check if this message resolves a pending waitForReply request.
         // Local delivery bypasses the relay client's gate-passed event, so we
@@ -18640,6 +18700,12 @@ export function createRoutes(ctx: RouteContext): Router {
         version: '1.0',
         stateDir: ctx.config.stateDir,
       },
+      // Robustness Phase 1 (D-E / F4): wire the ack funnel so the verified E2E
+      // relay inbound path records the implicit ack (the one path that lacked it).
+      {
+        a2aDeliveryTracker: ctx.a2aDeliveryTracker,
+        threadResumeMap: ctx.threadResumeMap ?? null,
+      },
     );
     router.use(threadlineRoutes);
   }
@@ -19031,6 +19097,94 @@ export function createRoutes(ctx: RouteContext): Router {
     // first-contact messages aren't dropped on the recipient side. Both
     // sender and recipient will agree on this id going forward.
     const effectiveThreadId = threadId ?? randomUUID();
+
+    // ── Negotiator lease/voice gate (Robustness Phase 1, D-B) ───────
+    // Enforce single-voice: only the session that owns this conversation's lease
+    // may speak CONTENT in the agent's name (G1, closes F1). Ships dark
+    // (enabled:false ⇒ pure pass-through); dry-run logs the verdict but still
+    // sends; enforce withholds a non-owner's content and emits a holding notice.
+    // The gate never inspects content MEANING — it blocks only on the structural
+    // ownership check (Signal-vs-Authority: the lease is the sole authority, keyed
+    // on who-speaks, not on what a message means). Prose is inert (G2), so a
+    // fail-open window briefly risks only two of our own sessions both speaking
+    // inert prose — never a binding.
+    {
+      const negVerdict = await evaluateSendGate(effectiveThreadId, {
+        conversationStore: ctx.conversationStore ?? null,
+        rawConfig: (ctx.config as { threadline?: { singleNegotiator?: unknown } }).threadline?.singleNegotiator,
+        machineId: ctx.meshSelfId ?? (ctx.config as { machineId?: string }).machineId ?? 'local',
+        agentName: ctx.config.projectName,
+        ownerSessionName: typeof originSessionName === 'string' ? originSessionName : undefined,
+        logDir: negotiatorLogDir(ctx.config.stateDir),
+        isSessionLive: (name) =>
+          ctx.sessionManager.getCachedRunningSessions().sessions.some((s) => s.tmuxSession === name),
+        raiseFailOpenAlert: (detail) => {
+          // HIGH-priority Attention item — a window where single-voice is NOT
+          // enforced must never be silent (guard-bypass-carries-its-own-cap).
+          try {
+            void ctx.telegram?.createAttentionItem?.({
+              id: `threadline-negotiator-failopen:${detail.threadId}`,
+              title: 'Threadline single-negotiator: lease unavailable (fail-open)',
+              summary:
+                `Single-voice was NOT enforced for one send on thread ${detail.threadId} ` +
+                `(session ${detail.sessionName}). Reason: ${detail.reason}.`,
+              category: 'general',
+              priority: 'HIGH',
+              sourceContext: 'threadline-negotiator-failopen',
+            });
+          } catch { /* best-effort alert */ }
+        },
+      });
+
+      if (negVerdict.decision === 'hold') {
+        // ENFORCE: withhold this non-owner's content. Best-effort emit the holding
+        // notice to the peer (additive; NEVER creates an awaiting-ack record —
+        // FD-11). The owning session is the only voice.
+        if (negVerdict.notice) {
+          try {
+            const relay = ctx.threadlineRelayClient;
+            if (relay) {
+              const rid = looksLikeFingerprint
+                ? targetAgent
+                : (nicknameResolvedFp ?? await relay.resolveAgent(targetAgent));
+              if (rid) relay.sendAuto(rid, negVerdict.notice.text, effectiveThreadId);
+            }
+          } catch { /* @silent-fallback-ok: the holding notice is additive */ }
+        }
+        res.json({
+          success: true,
+          threadId: effectiveThreadId,
+          messageId: '',
+          delivered: false,
+          held: true,
+          deliveryPath: 'none',
+          deliveryOutcome: 'holding',
+          note:
+            `Another session (${negVerdict.ownerSessionName}) owns this conversation's ` +
+            `voice (epoch ${negVerdict.epoch}); your content was withheld and a holding ` +
+            `notice was sent to the peer. The owning session will respond.`,
+        });
+        return;
+      }
+    }
+
+    // Commitment-class advisory nudge (FD-10) — SIGNAL ONLY, never blocks, fails
+    // open to no-nudge. Surfaced as `advisory` on the success response so the
+    // sending session is pointed at the anchored (mandate/review-exchange) path.
+    try {
+      const sig = detectCommitmentClass(message);
+      if (sig.isCommitmentClass) {
+        const advisory = commitmentNudge(sig.matchedTerms);
+        const origJson = res.json.bind(res);
+        (res as unknown as { json: (b: unknown) => unknown }).json = (body: unknown) => {
+          if (body && typeof body === 'object' && (body as { success?: boolean }).success
+              && !(body as { note?: string }).note && !(body as { advisory?: string }).advisory) {
+            (body as { advisory?: string }).advisory = advisory;
+          }
+          return origJson(body as Record<string, unknown>);
+        };
+      }
+    } catch { /* advisory only — never affects the send */ }
 
     // ── Try local delivery first (same-machine agents) ──────────────
     // Read known-agents.json for local agent info. If the target is local,

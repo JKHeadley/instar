@@ -1,0 +1,80 @@
+# Threadline Single-Negotiator Lock + Honest Acks (Robustness Phase 1)
+
+## What Changed
+
+- **Single-negotiator lease (G1, closes F1):** a per-conversation lease on the
+  existing `ConversationStore` names exactly ONE session as the owner of a
+  conversation's outbound voice. A warm/keep-alive/side session that is NOT the
+  owner has its content send WITHHELD; the most it can emit is a fixed structural
+  `holding-notice` to the peer. The lease is the only blocking authority and it
+  keys on a STRUCTURAL ownership check `(ownerSessionName, ownerMachineId, epoch)`
+  over the CAS record — never on message content. Renew-on-send, 90s TTL, dead-owner
+  reclaim, epoch-fenced stale holders, no background timers.
+- **Ships dark + dry-run-first:** `threadline.singleNegotiator.enabled` (default
+  false ⇒ pure pass-through, zero behavior change) and `dryRun` (default true when
+  enabled ⇒ logs the verdict it WOULD reach to `logs/threadline-negotiator-*.jsonl`
+  but still sends). Enforcement (withholding a real send) requires an explicit
+  `dryRun:false`. Fail-open on a lease-store error (raises a HIGH attention item —
+  never silent), because prose is inert.
+- **Prose is inert (G2) via a POSITIVE boundary:** new `AnchoredAuthorization` type
+  + `requireAnchoredAuthorization` guard — an irreversible-action gate accepts
+  authorization ONLY as a typed anchored artifact (mandate / review-exchange /
+  operator-confirm reference), never a string/transcript/summary/classifier output.
+  Wired into `ExternalOperationGate` (fails CLOSED on prose for an irreversible op).
+  `ContentClassifier` gains a SIGNAL-ONLY `detectCommitmentClass` nudge (advisory,
+  never blocks, fails open to no-nudge).
+- **Honest acks (G3, closes F4):** the verified relay inbound path
+  (`POST /threadline/messages/receive`) now records the implicit delivery ack, via a
+  shared `recordInboundAck` funnel that all three inbound-receive sites route
+  through — so `/threadline/peers/health`'s `stale:true` reflects reality instead of
+  permanent false noise.
+- **New read route** `GET /threadline/negotiator` (bearer-gated, paginated): per-
+  conversation holder + epoch + expiry, plus dry-run would-hold / hold / fail-open
+  counts.
+- CLAUDE.md template + `PostUpdateMigrator` migration + `ConfigDefaults` default +
+  dark-gate classification, so new AND deployed agents learn the capability and
+  backfill the config (Agent Awareness + Migration Parity).
+
+## Evidence
+
+- Unit (31): `tests/unit/NegotiatorLease.test.ts` (20 — acquire/renew/expire/epoch-
+  fence, CAS race, dead-owner reclaim, backward-compat, holding-notice per-epoch +
+  min-interval limits, config resolver, holder-singularity, observability log),
+  `tests/unit/AnchoredAuthorization.test.ts` (7), `tests/unit/recordInboundAck.test.ts`
+  (4 — clears pending by threadId; the F4 mechanism).
+- Integration (9): `negotiator-send-gate.test.ts` (enforce→held content withheld +
+  only the holding notice reaches the peer + NO awaiting-ack record; owner delivered;
+  dry-run still sends; advisory nudge; `/threadline/negotiator` 200/bearer/paginated),
+  `inbound-ack-wiring.test.ts` (every inbound site funnels through recordInboundAck).
+- E2E (10): `threadline-negotiator-alive.test.ts` (route alive 200/bearer + real
+  lease state), `threadline-g2-boundary.test.ts` (import-boundary; gate rejects prose
+  / accepts anchored; holder-singularity invariant).
+- Existing suites green: threadline integration (172), ConversationStore +
+  A2ADeliveryTracker + ContentClassifier (137), PostUpdateMigrator + ConfigDefaults
+  (452), manifest integrity (30). `pnpm lint` clean; build green.
+- Independent second-pass review (outbound messaging block/allow surface) — CONCUR,
+  verdict appended to `upgrades/side-effects/threadline-single-negotiator.md`.
+
+## What to Tell Your User
+
+Threadline is now much harder to confuse when I'm running more than one session at
+once. Before, a background "warm" session could speak in my name on a conversation —
+that's how, on June 11, a side session "confirmed" an irreversible cutover window
+that no coherent single me had actually agreed to. Now exactly one of my sessions
+owns each conversation's voice at a time; any other session is held back and can only
+post a short "the owner will respond" notice — it can never speak content or commit me
+to anything. And a plain chat message can never authorize an irreversible step on its
+own: real commitments only travel through the PIN-anchored approval path, by design.
+This ships OFF by default and in a measure-only mode first, so nothing about how I
+talk to other agents changes until it's proven safe to turn on.
+
+## Summary of New Capabilities
+
+- A per-conversation negotiator lease guarantees single-voice (one owning session)
+  per conversation; warm/side sessions are structurally withheld.
+- Prose carries no authority by construction; irreversible-action gates accept only a
+  typed anchored authorization artifact (`AnchoredAuthorization`).
+- Honest agent-to-agent delivery acks on the verified relay inbound path (closes the
+  false-`stale` peer-health noise).
+- `GET /threadline/negotiator` surfaces lease state + dry-run telemetry.
+- Off by default; dry-run-first; `threadline.singleNegotiator.*` config.

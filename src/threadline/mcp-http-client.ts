@@ -81,6 +81,10 @@ export async function sendMessageViaHttp(
       error?: string;
       deliveryOutcome?: string;
       deliveryPath?: string;
+      delivered?: boolean;
+      held?: boolean;
+      note?: string;
+      advisory?: string;
     } = {};
     if (raw) {
       try {
@@ -99,6 +103,12 @@ export async function sendMessageViaHttp(
         replyFrom: parsed.replyFrom,
         deliveryOutcome: parsed.deliveryOutcome,
         deliveryPath: parsed.deliveryPath,
+        // Negotiator lease (Robustness Phase 1): surface withheld/held + the
+        // holding note + the commitment-class advisory back to the session.
+        delivered: parsed.delivered,
+        held: parsed.held,
+        note: parsed.note,
+        advisory: parsed.advisory,
       };
     }
 
