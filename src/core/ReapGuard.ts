@@ -221,7 +221,24 @@ export class ReapGuard {
         () => this.deps.recentUserMessage(boundTopicId, this.opts.recentUserWindowMs),
         'recent-user-message',
       );
-      probe(() => this.deps.activeCommitmentForTopic(boundTopicId), 'open-commitment');
+      // Open commitment — gated by the SAME staleness horizon evaluate()'s KEEP
+      // check uses (guard J above). A commitment counts as in-flight-work evidence
+      // ONLY while the topic has had a user message within staleCommitmentWindowMs;
+      // past that, evaluate() treats the commitment as abandoned and lets the
+      // session die — so workEvidence() must NOT re-assert it as work. Without this
+      // gate the two methods disagree on the same commitment: an idle session is
+      // killed (evaluate: stale ⇒ reap) then immediately revived (workEvidence:
+      // open-commitment ⇒ resume-eligible), forever. They MUST agree on what an
+      // open commitment means. (2026-06-13: 13 idle sessions across 6 topics were
+      // age-killed + revived in a loop, every one tagged solely [open-commitment]
+      // on a commitment the KEEP-guard had already judged stale.)
+      probe(
+        () =>
+          this.opts.protectOpenCommitments &&
+          this.deps.activeCommitmentForTopic(boundTopicId) &&
+          this.deps.recentUserMessage(boundTopicId, this.opts.staleCommitmentWindowMs),
+        'open-commitment',
+      );
     }
     probe(() => this.deps.activeSubagentCount(session.claudeSessionId) > 0, 'active-subagent');
     probe(() => this.deps.buildOrAutonomousActive(topicId), 'structural-long-work');
