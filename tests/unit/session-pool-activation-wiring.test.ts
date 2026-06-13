@@ -38,12 +38,12 @@ describe('Session Pool activation wiring (§L4)', () => {
   it('the SessionRouter is constructed with the real registry/ownership/placement + outbound mesh client', () => {
     const idx = src.indexOf('new routerMod.SessionRouter({');
     expect(idx).toBeGreaterThan(0);
-    // Window 4000 (was 3200, was 2000): the coherence-journal emitPlacement
-    // pairing (spec §3.3, enforced by lint-cas-emit-placement) and then the
-    // TOPIC-PROFILE-SPEC §5.3 acquire seam (the `_topicProfileCarrier?.onTopicAcquired`
-    // pull inside casClaimOwnership) added lines inside the construction, pushing
-    // the later assertions out.
-    const block = src.slice(idx, idx + 4000);
+    // Window 5000 (was 4000, 3200, 2000): the coherence-journal emitPlacement
+    // pairing (spec §3.3), the TOPIC-PROFILE-SPEC §5.3 acquire seam, and then
+    // the WS1.1 ownerSupportsForward skew gate (MULTI-MACHINE-SEAMLESSNESS-SPEC)
+    // added lines inside the construction, pushing the later assertions out
+    // (deliverMessage: now sits ~4200 chars in).
+    const block = src.slice(idx, idx + 5000);
     // The registry dep filters suspect machines from placement candidates
     // (owner-suspect breaker, P19) with an all-suspect unfiltered fallback —
     // still sourced from the REAL machinePoolRegistry capacities.
