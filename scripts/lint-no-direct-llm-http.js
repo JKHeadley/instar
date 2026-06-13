@@ -59,6 +59,12 @@ const ALLOWLIST = new Set([
   // so there is nothing for burn-detection to attribute. Same class as the
   // anthropic-headless usageMeterProvider above.
   'src/core/QuotaPoller.ts',
+  // Live credential re-pointing (spec live-credential-repointing-rebalancer.md §2.3/§2.11):
+  // the CredentialIdentityOracle calls the READ-ONLY /api/oauth/profile endpoint to read
+  // which account a slot's credential belongs to — identity bookkeeping, NOT an LLM
+  // inference call, so there is nothing for burn-detection to attribute. Same class as
+  // QuotaPoller's /api/oauth/usage call above.
+  'src/core/CredentialIdentityOracle.ts',
 ]);
 
 /**

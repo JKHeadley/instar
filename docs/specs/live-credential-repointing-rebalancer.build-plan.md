@@ -181,8 +181,31 @@ drain (CMT-1335 full) is Increment B.
   unknown-mode (corrupt + wrong-shape, reads-null, mutations-refuse, seed-recovers), one-home invariant,
   journal pruning, persistence round-trip. ALL GREEN. tsc clean; no-empty-catch + repo-invariants pass.
 
+### 2026-06-13 — Steps 1-2 SHIPPED as one gated commit — PR #1114 (a6d7c1fac)
+- Re-committed through the FULL gate stack after wiring a missing husky shim (the first two
+  commits had bypassed all hooks — caught by the CI decision-audit gate). One clean commit now
+  carries the decision-audit entry, release fragment, and both side-effects artifacts. CI gates
+  green (decision-audit, eli16, docs-coverage, repo-invariants, verify); unit shards running.
+
+### 2026-06-13 — Step 3 (CredentialIdentityOracle) — BUILT + GREEN
+- `src/core/CredentialIdentityOracle.ts`: implements `IdentityOracle`. Reads a slot's blob via
+  `readClaudeOauth` (OAuthRefresher — no hand-rolled keychain), probes read-only `/api/oauth/profile`
+  with the slot's token (bounded 10s timeout, injectable fetch), returns the raw email or
+  `unavailable`. §2.11 fail-closed: no-token / non-2xx (401/403/429/5xx) / fetch-throw / unparseable
+  / missing-empty-nonstring email → unavailable, NEVER mismatch. Pool-mapping stays in the ledger.
+  Expired-token refresh-before-profile is tracked to Step 4/5 (needs the write funnel); until then
+  an expired token → unavailable (safe direction).
+- Added the file to `scripts/lint-no-direct-llm-http.js` ALLOWLIST (read-only OAuth identity, not
+  an LLM call — same class as QuotaPoller `/usage`).
+- `tests/unit/credential-identity-oracle.test.ts`: 9 tests — every §2.11 branch + Bearer-header
+  wiring + a real-non-stub wiring test. tsc clean, llm-http lint clean, all green.
+
 ### NEXT (resume here)
-- Step 3: identity-oracle client implementing `IdentityOracle` (extract/reuse `QuotaCollector.oauthGet`
-  profile path, QuotaCollector.ts:847-874) + wiring test (real oracle non-null/non-stub).
-- Step 4: `CredentialWriteFunnel` + lint (forbid the two keychain-write primitives outside the funnel).
-- Then steps 5–9 per the plan. Commit-gate notes: when committing, pass `--spec docs/specs/live-credential-repointing-rebalancer.md` (now `approved:true`); the no-deferrals pre-commit scan will flag the spec's legit Increment-B scoping language ("deferred", "follow-up") — add `<!-- tracked: 20905 -->` (or a CMT id) markers within 200 chars of each, or move the deferral into Increment B's own section, before the first commit.
+- Step 4: `CredentialWriteFunnel` (withSlotLock per-slot lock + single-mover mutex; bounded
+  try-lock-with-timeout; refresh fetch carries AbortSignal.timeout) + lint forbidding the TWO
+  keychain-write primitives (`defaultCredentialStore.write` AND
+  `KeychainCredentialProvider.writeCredentials`, plus the scoped `add-generic-password` string)
+  outside the funnel. Route the 4 in-process writers through it.
+- Step 5: `CredentialSwapExecutor` (staged exchange, §2.3.1a source-slot CAS, identity-verify,
+  quarantine-never-repair, crash-boundary journal). THIS step gets the Phase-5 second-pass review.
+- Then steps 6–9 per the plan. Commit-gate notes: when committing, pass `--spec docs/specs/live-credential-repointing-rebalancer.md` (now `approved:true`); the no-deferrals pre-commit scan will flag the spec's legit Increment-B scoping language ("deferred", "follow-up") — add `<!-- tracked: 20905 -->` (or a CMT id) markers within 200 chars of each, or move the deferral into Increment B's own section, before the first commit.
