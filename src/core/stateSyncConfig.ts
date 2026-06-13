@@ -28,7 +28,7 @@ import type { MultiMachineConfig } from './types.js';
 /** Foundation-level stateSync defaults (§10.2). */
 export const DEFAULT_AGGREGATE_JOURNAL_BUDGET_BYTES = 64 * 1024 * 1024; // 64 MiB
 export const DEFAULT_MAX_CACHED_SNAPSHOTS = 16;
-export const DEFAULT_MAX_CACHE_BYTES = 32 * 1024 * 1024; // 32 MiB
+export const DEFAULT_MAX_CACHE_BYTES = 64 * 1024 * 1024; // 64 MiB (§8.2 — reconciled to the spec from the 32 MiB Step-2 ship; matches the 64 MiB aggregate budget on line 29)
 /**
  * The propagation allowance (§10.2): the invariant `maxDriftMs > flush interval +
  * propagation allowance` must hold so the drift bound can never be tighter than

@@ -103,6 +103,7 @@ import { wireRegistrySync } from '../core/wireRegistrySync.js';
 import { assertSeamlessnessInvariants } from '../core/seamlessnessConfig.js';
 import { assertStateSyncInvariants } from '../core/stateSyncConfig.js';
 import { ReplicatedKindRegistry, checkPoolFlagCoherence, type PeerStateSyncAdvert } from '../core/ReplicatedRecordEnvelope.js';
+import { SnapshotCache, SnapshotRebuildBreaker, StoreSnapshotEngine } from '../core/StoreSnapshot.js';
 import { FencedLease, type LeaseCrypto } from '../core/FencedLease.js';
 import { GitLeaseStore } from '../core/GitLeaseStore.js';
 import { LocalLeaseStore } from '../core/LocalLeaseStore.js';
@@ -3560,6 +3561,37 @@ export async function startServer(options: StartOptions): Promise<void> {
     // registry the advert is `{}` (non-participant for every store): the correct
     // single-machine / no-store-yet behavior (a strict no-op).
     const replicatedKindRegistry = new ReplicatedKindRegistry();
+
+    // Snapshot-then-tail engine (Component 4 / build-order step 3,
+    // multi-machine-replicated-store-foundation §6). The cache (FIXED ceiling,
+    // §8.2 — NOT pool-scaled), the per-peer rebuild breaker (§6.3), and the engine
+    // are constructed here so the substrate is WIRED + dependency-injectable from
+    // the first PR (machinery presence, testable — never a null/no-op). With the
+    // registry EMPTY (no concrete store yet) the engine has no contributing kinds
+    // to load, so a snapshot request finds no entries and the holder declines —
+    // the correct single-machine / no-store-yet behavior (a strict no-op). The
+    // heavy whole-store materialization runs OFF the event loop in
+    // storeSnapshotBuild.worker.js (instar#1069). The first concrete store (WS2.1)
+    // supplies the own-entry loader for its kind(s) onto this same engine.
+    const snapshotCache = new SnapshotCache({
+      maxCachedSnapshots: stateSync.maxCachedSnapshots,
+      maxCacheBytes: stateSync.maxCacheBytes,
+    });
+    const snapshotRebuildBreaker = new SnapshotRebuildBreaker({ now: () => Date.now() });
+    const storeSnapshotEngine = new StoreSnapshotEngine({
+      cache: snapshotCache,
+      breaker: snapshotRebuildBreaker,
+      seams: {
+        // Step-3 substrate: no concrete store kind is registered yet, so there are
+        // no contributing own-streams to load. A consumer PR (WS2.1) replaces this
+        // with a loader that reads the CoherenceJournal own streams for its kind(s).
+        loadOwnEntries: () => ({}),
+        now: () => Date.now(),
+      },
+      maxSnapshotBytes: stateSync.maxCacheBytes,
+    });
+    void storeSnapshotEngine; // consumed by the state-snapshot mesh handler below + the store PRs (WS2.1+)
+
     const selfStateSyncReceive = (): Record<string, boolean> => {
       const out: Record<string, boolean> = {};
       const stores = (config.multiMachine as unknown as { stateSync?: Record<string, { enabled?: boolean }> } | undefined)?.stateSync;
@@ -13745,6 +13777,30 @@ export async function startServer(options: StartOptions): Promise<void> {
                 advert: _preferencesManagerForSync.getReplicationAdvert(),
                 syncPageBytes: wsCfgP?.syncPageBytes,
               });
+            },
+            // Single-origin store-snapshot pull (multi-machine-replicated-store-
+            // foundation §6.1/§6.3). The HOLDER serves a single-origin snapshot of
+            // a store it AUTHORED — origin === THIS machine (the authenticated
+            // recipient), so the §6.1 anti-forgery invariant holds end-to-end. The
+            // build runs OFF the event loop in a worker (instar#1069); a flapping
+            // peer is served the cached snapshot (breaker-gated, §6.3). In the
+            // Step-3 substrate the registry is EMPTY, so loadOwnEntries returns no
+            // contributing kinds and serveSnapshot answers 'no-entries' — the
+            // holder declines and the caller falls back to a from-genesis tail
+            // (the legacy behavior). A consumer PR (WS2.1) supplies the own-entry
+            // loader for its kind(s), at which point this same handler serves real
+            // data. `sender` is the recovering peer (for the breaker key); the
+            // origin served is ALWAYS this machine (meshSelfId), never a value the
+            // peer supplies — single-origin is structural, not trusted.
+            'state-snapshot': async (cmd, sender) => {
+              const c = cmd as import('../core/MeshRpc.js').MeshCommand & { type: 'state-snapshot' };
+              const store = c.request?.store;
+              if (typeof store !== 'string' || !store) return { ok: false, reason: 'store required' };
+              // Single-origin: we only ever serve OUR OWN authored records, so the
+              // origin is this machine — never a peer-supplied field.
+              const result = await storeSnapshotEngine.serveSnapshot(sender, meshSelfId, store);
+              if (!result.ok) return { ok: false, reason: result.reason };
+              return { ok: true, snapshot: result.snapshot, source: result.source, truncated: result.truncated };
             },
             place: ownAction,
             claim: ownAction,
