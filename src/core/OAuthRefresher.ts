@@ -46,6 +46,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { CredentialWriteFunnel, credentialWriteFunnel } from './CredentialWriteFunnel.js';
 
 /** Public Claude Code OAuth token endpoint (from the official client binary). */
 export const CLAUDE_TOKEN_URL = 'https://platform.claude.com/v1/oauth/token';
@@ -61,7 +62,8 @@ export type RefreshFailReason =
   | 'no-refresh-token' // no refresh token present → genuine re-auth needed
   | 'exchange-failed' // the OAuth token endpoint rejected / was unreachable
   | 'malformed-response' // 200 but the response wasn't a usable credential
-  | 'write-failed'; // exchange ok but the new credential couldn't be persisted
+  | 'write-failed' // exchange ok but the new credential couldn't be persisted
+  | 'write-skipped'; // exchange ok but the per-slot funnel lock was busy — transient, RETRY (never needs-reauth)
 
 export type RefreshResult =
   | { ok: true; accessToken: string; expiresAt: number; rotated: boolean }
@@ -97,6 +99,13 @@ export interface RefreshDeps {
   now?: () => number;
   tokenUrl?: string;
   clientId?: string;
+  /**
+   * The credential-write funnel (Step 4b). The token write is serialized through
+   * `withSlotLock(configHome, …)` so a refresh write can never interleave with a
+   * swap (Step 5) or another refresh on the SAME slot. Defaults to the process-wide
+   * `credentialWriteFunnel` singleton; tests inject their own to assert serialization.
+   */
+  funnel?: CredentialWriteFunnel;
 }
 
 export function expandHome(p: string): string {
@@ -104,6 +113,18 @@ export function expandHome(p: string): string {
     return path.join(process.env.HOME ?? '', p.slice(1));
   }
   return p;
+}
+
+/**
+ * Canonical per-slot lock key for a config home (Step 4b). The funnel keys its per-slot lock on
+ * THIS string, so two writers to the SAME keychain entry must derive the SAME key regardless of
+ * how the home was spelled. `path.resolve` over the home-expanded path strips a trailing slash and
+ * collapses `.`/`..` so `~/.claude` and `~/.claude/` (or `/h/.claude` and `/h/./.claude`) map to one
+ * lock — closing the string-identity race a refresh and a switch could otherwise have on the same
+ * account (second-pass review, 2026-06-13).
+ */
+export function credentialSlotKey(configHome: string): string {
+  return path.resolve(expandHome(configHome));
 }
 
 /**
@@ -213,6 +234,7 @@ export async function refreshClaudeToken(
   const now = deps.now ?? (() => Date.now());
   const tokenUrl = deps.tokenUrl ?? CLAUDE_TOKEN_URL;
   const clientId = deps.clientId ?? CLAUDE_CODE_CLIENT_ID;
+  const funnel = deps.funnel ?? credentialWriteFunnel;
 
   const raw = store.read(configHome);
   if (!raw) return { ok: false, reason: 'read-failed' };
@@ -280,7 +302,18 @@ export async function refreshClaudeToken(
   };
   const updatedRaw = { ...parsed, claudeAiOauth: updatedOauth };
 
-  if (!store.write(configHome, JSON.stringify(updatedRaw))) {
+  // Serialize the write through the per-slot funnel (Step 4b): a refresh write can never
+  // interleave with a swap or another refresh on the SAME configHome slot. A lock-timeout is
+  // NOT a corruption — it is "busy, retry": surface 'write-skipped' so the QuotaPoller treats it
+  // as no-snapshot-this-cycle, NEVER needs-reauth. The exchange already succeeded; the existing
+  // (still-valid) credential is untouched.
+  const writeOutcome = await funnel.withSlotLock(credentialSlotKey(configHome), () =>
+    store.write(configHome, JSON.stringify(updatedRaw)),
+  );
+  if (!writeOutcome.ran) {
+    return { ok: false, reason: 'write-skipped' };
+  }
+  if (!writeOutcome.value) {
     return { ok: false, reason: 'write-failed' };
   }
   return { ok: true, accessToken: newAccess, expiresAt, rotated };
