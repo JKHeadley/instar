@@ -39,6 +39,29 @@ import type { SemanticMemory } from '../memory/SemanticMemory.js';
 import type { MemoryEvidence } from './types.js';
 
 /**
+ * WS2.2 (multi-machine-replicated-store-foundation) — the learning-record replication
+ * emitter seam. server.ts injects a journal-backed emitter (built from the
+ * CoherenceJournal clock + the `learning-record` kind) ONLY when
+ * `multiMachine.stateSync.learnings.enabled` is true (default false ⇒ NOT injected ⇒ a
+ * strict no-op, byte-identical single-machine behavior). The emitter NEVER throws out of
+ * a learning write — a replication failure must never break a local write (the emitter
+ * swallows + counts internally), so the manager calls it best-effort.
+ *
+ * CRITICAL: emitDelete MUST fire for every learning PRUNED over maxLearnings (the
+ * saveLearnings prune path) — else a peer re-replicates the locally-pruned learning
+ * forever (resurrection). The emitter keys the tombstone on the SAME content-fingerprint
+ * recordKey the put used, so the delete reaches the same lesson on every machine even
+ * though the local LRN-NNN ids differ.
+ */
+export interface LearningReplicationEmitter {
+  /** Emit a `put` for a persisted learning (called from the save funnel). */
+  emitPut(record: LearningEntry): void;
+  /** Emit a `delete` tombstone for a removed/pruned learning, keyed on its content
+   *  fingerprint (title/category/source). */
+  emitDelete(title: string, category: string, source: LearningSource, deletedAt: string): void;
+}
+
+/**
  * TaskFlow controller identity for EvolutionManager (Phase 3a dual-write).
  * Every proposal's flow is owned by this controllerId; the registry uses it
  * for OCC scope checks. Single-instance per server process.
@@ -182,9 +205,26 @@ export class EvolutionManager {
    */
   private semanticMemory: SemanticMemory | null = null;
 
+  /**
+   * WS2.2 learning-record replication emitter (injected, dark by default). Absent ⇒
+   * strict no-op (single-machine, byte-identical). server.ts late-binds a journal-backed
+   * emitter ONLY when `multiMachine.stateSync.learnings.enabled` is true.
+   */
+  private learningReplication: LearningReplicationEmitter | null = null;
+
   constructor(config: EvolutionManagerConfig) {
     this.config = config;
     this.stateDir = config.stateDir;
+  }
+
+  /**
+   * Late-bind the WS2.2 learning-record replication emitter (server.ts constructs the
+   * journal/clock AFTER the manager). Idempotent; passing undefined/null detaches (back
+   * to single-machine no-op). The emit funnel checks `this.learningReplication` per
+   * write, so attaching mid-life takes effect on the next save.
+   */
+  setLearningReplicationEmitter(emitter: LearningReplicationEmitter | null | undefined): void {
+    this.learningReplication = emitter ?? null;
   }
 
   // ── TaskFlow wiring ─────────────────────────────────────────────
@@ -877,6 +917,7 @@ export class EvolutionManager {
     };
 
     const max = this.config.maxLearnings || 500;
+    const beforePrune = state.learnings;
     if (state.learnings.length > max) {
       const unapplied = state.learnings.filter(l => !l.applied);
       const appliedEntries = state.learnings.filter(l => l.applied);
@@ -885,6 +926,37 @@ export class EvolutionManager {
     }
 
     this.writeFile('learning-registry', state);
+
+    // WS2.2 — best-effort replication emission (dark by default; the emitter is only
+    // injected when multiMachine.stateSync.learnings.enabled is true). The emitter
+    // swallows its own errors, but we wrap defensively so a replication fault can NEVER
+    // break a local learning write. CRITICAL (tombstone resurrection guard): a learning
+    // that was PRUNED over maxLearnings emits an op:delete tombstone, else a peer
+    // re-replicates the locally-pruned learning forever.
+    const emitter = this.learningReplication;
+    if (emitter) {
+      const survivors = new Set(state.learnings.map(l => l.id));
+      const deletedAt = this.now();
+      for (const pruned of beforePrune) {
+        if (survivors.has(pruned.id)) continue;
+        try {
+          emitter.emitDelete(pruned.title, pruned.category, pruned.source, deletedAt);
+        } catch {
+          // @silent-fallback-ok: a replication emit fault must never break or roll back
+          // a local learning write — the durable on-disk state is already persisted
+          // above. The emitter counts its own failures internally; this guard only
+          // ensures a throw from the seam cannot propagate into the local write path.
+        }
+      }
+      for (const l of state.learnings) {
+        try {
+          emitter.emitPut(l);
+        } catch {
+          // @silent-fallback-ok: see the emitDelete guard above — replication is
+          // best-effort and must never break the local write.
+        }
+      }
+    }
   }
 
   private nextLearningId(state: LearningState): string {

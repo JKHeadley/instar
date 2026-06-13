@@ -1,0 +1,41 @@
+# WS2.2 — learnings become the SECOND memory-family replicated store on the HLC foundation
+
+<!-- bump: patch -->
+
+<!--
+  NOTE: internal substrate, dark by default (multiMachine.stateSync.learnings,
+  enabled:false + dryRun:true). The change touches runtime src/ (a new core module,
+  dual-registry wiring, the EvolutionManager emit seam, server wiring, migration +
+  awareness), so the tests/docs-only lane does not apply. The user-facing sections
+  honestly state the capability and that it only becomes real once an operator flips
+  the flag.
+-->
+
+## What Changed
+
+The **learning registry is now the THIRD concrete consumer of the HLC replicated-store foundation and the SECOND memory-family kind** (after WS2.3 relationships) — `learning-record` rides the foundation primitives (envelope / union-reader / conflict-store / rollback-unmerge / bounds) so a lesson the agent learned on one machine is known on the others. It REUSES the WS2.3 PII machinery rather than reinventing it. Per `docs/specs/ws22-learnings-replication.md` + `docs/specs/multi-machine-replicated-store-foundation.md`.
+
+- **The `learning-record` replicated kind** (`src/core/LearningsReplicatedStore.ts`) — a STRICT typed schema that is a **discriminated union on `op`** (a value schema AND a delete-tombstone schema coexist under one kind) and **type-clamps every known field on receive** (`source.discoveredAt` is ISO-8601-only, `applied` is a strict boolean, `tags[]`/`description` are length-clamped — so a foreign, attacker-controlled record can't smuggle markup through a render slot). The **disclosure-minimized projection** emits ONLY the enumerated merge-relevant fields — never the raw on-disk blob and never the local sequential `LRN-NNN` id. The cross-machine `recordKey` is a **content fingerprint** — `sha256(normalize(title) + normalize(category) + (source.contentId || source.discoveredAt))` — so the SAME lesson learned on two machines collapses to ONE record instead of duplicating (the LRN-id is the cross-machine-unstable id, exactly the relationship-UUID trap solved with a stable identity surface). The per-entry cap is **raised to 64KB** so a fat learning replicates instead of wedging the stream; a record still over-cap after projection is a NAMED rejection, never a silent truncate. HIGH impact tier at the **replication** layer (append-both-and-flag, never a silent clobber) but **advisory** at the **read** layer (both variants of an open conflict surface as guidance hints — a learning is guidance, not authority — the read never blocks).
+- **DUAL REGISTRY** — `learning-record` is registered in BOTH `JOURNAL_KINDS` (`CoherenceJournal.ts` — the static serve/apply/advert half, with a `DEFAULT_RETENTION` entry that is never `rotateKeep:0` for compliance) AND `ReplicatedKindRegistry` (the dynamic half). A kind in only one silently replicates nothing; the coupling test asserts it.
+- **Emit-on-write funnel + tombstones** — `EvolutionManager` gains an injected (dark-by-default) `LearningReplicationEmitter` seam; `saveLearnings()` emits a `put` per surviving learning and — CRITICALLY — an `op:'delete'` **tombstone** per learning PRUNED over `maxLearnings` (else a peer re-replicates a locally-pruned learning forever — resurrection). The emit is best-effort: a throwing emitter never breaks the local write.
+- **Read-only neutralized union** — the merged read resolves THROUGH the bypass-proof `ReplicatedStoreReader` and renders each foreign learning inside a `<replicated-untrusted-data origin="…">` envelope (quoted advisory data, never an instruction). A replicated record never clobbers a divergent local one.
+- **Config + advert + awareness + migration** — `multiMachine.stateSync.learnings { enabled:false, dryRun:true }` added to ConfigDefaults (classified in `DARK_GATE_EXCLUSIONS`; the dark-gate line-map recomputed by hand; `applyDefaults` backfills existing agents); the `stateSyncReceive` advert self-reports `learnings` from the registry; the "One Memory" CLAUDE.md section gains a WS2.2 line in both `generateClaudeMd` and an idempotent `migrateClaudeMd` splicer.
+- **Slice** — this PR builds `learning-record` ONLY. KB / evolution-queue / playbook (the other memory-family kinds) reduce to "add schema + projection + flag" on this proven machinery and are a tracked follow-up (CMT-1416).
+
+Pure MECHANISM, dark by default. A single-machine / flag-off agent is a strict no-op (no learning ever crosses a machine boundary while dark).
+
+## What to Tell Your User
+
+None while dark — internal substrate. The user-visible capability — a lesson I learned on one machine follows you to your others, collapsing the same lesson by content fingerprint instead of duplicating it — becomes real only when an operator turns on cross-machine learning replication. That awareness ships in the CLAUDE.md "One Memory" section so the agent can honestly answer "do my learnings and lessons follow me across machines?".
+
+## Summary of New Capabilities
+
+None user-facing while dark. New internal module `LearningsReplicatedStore.ts`; `EvolutionManager` gains an injected (dark) learning-replication emit seam. No new routes (the foundation `/state/conflicts` · `/state/resolve-conflict` · `/state/quarantine` surface is reused).
+
+## Evidence
+
+- `tests/unit/LearningsReplicatedStore.test.ts` (42) — dual-registry coupling; recordKey identity derivation (content fingerprint, NEVER the LRN id; same lesson collapses across machines/formatting; collision-resistant across different lessons + a `\x1f` field-straddle guard + contentId disambiguation); disclosure-minimization (no local id, no extra field); `fat-record-replicates` + `fat-record-does-not-wedge-stream`; `foreign-record-type-clamped` (ISO-8601 / boolean clamps reject smuggled markup); `tombstone-coexists-with-value` + delete-resurrection guard; the advisory append-both union merge; foreign-record render safety. Green.
+- `tests/unit/evolution-manager-learning-replication.test.ts` (5) — dark no-op; emit-on-write; **PRUNE EMITS TOMBSTONE** (no resurrection); a throwing emitter never breaks the local write; detach returns to no-op. Green.
+- `tests/unit/ws22-learnings-wiring.test.ts` (11) — dual-registry + server.ts registration/union-reader wiring + EvolutionManager emit seam + ConfigDefaults dark default + dev-gate exclusion + the awareness section + §12 union-reader-cannot-be-bypassed. Green.
+- `tests/integration/ws22-learnings-emit.test.ts` (3) — the emit-on-mutation contract over HTTP (`POST /evolution/learnings` + `PATCH /evolution/learnings/:id/apply` fire the put funnel; `GET /evolution/learnings` still serves). Green.
+- `tests/e2e/ws22-learnings-alive.test.ts` (3) — the Phase-1 "feature is alive" E2E: enabled = a learning-record conflict is open + readable + resolvable over HTTP (200); disabled = 503; routes require Bearer auth. Green.

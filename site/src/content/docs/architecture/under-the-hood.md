@@ -573,3 +573,28 @@ Spec: `docs/specs/MENTOR-LIVE-READINESS-SPEC.md` §Fix 2a.
   (append-both-and-flag, never a silent clobber of two divergent people). Pure mechanism, dark
   by default behind `multiMachine.stateSync.relationships`; a single-machine install is a strict
   no-op. Spec: `docs/specs/ws23-relationships-userregistry-security.md`.
+- **`LearningsReplicatedStore`** (`src/core/LearningsReplicatedStore.ts`) — the THIRD
+  concrete consumer of the replicated-store foundation and the SECOND **memory-family kind**:
+  `learning-record`. `LearningsReplicatedStore` layers the kind onto the generic envelope so a
+  lesson the agent learned on machine A is known on machine B — ONE learning registry, not
+  one-per-machine. It REUSES the WS2.3 PII machinery rather than downgrading it: a discriminated
+  union on `op` (an `op:'put'` VALUE schema and an `op:'delete'` TOMBSTONE schema), a strict
+  **type-clamp on receive** (`source.discoveredAt` validates as ISO-8601-only, `applied` as a
+  strict boolean, `tags[]`/`description` length-clamped) so a foreign, attacker-controlled record
+  can never smuggle markup through a render slot. The replicated projection is
+  **disclosure-minimized** (only the merge-relevant fields, NEVER the raw on-disk blob and NEVER
+  the local sequential `LRN-NNN` id), and the cross-machine `recordKey` is a **content
+  fingerprint** — `sha256(normalize(title) + normalize(category) + (source.contentId ||
+  source.discoveredAt))` — so the SAME lesson learned on two machines collapses to ONE record
+  instead of duplicating (the LRN-id is the cross-machine-unstable id, exactly the
+  relationship-UUID trap solved with a stable identity surface). A removal/prune propagates as a
+  channel-keyed tombstone (CRITICAL: the EvolutionManager prune-over-`maxLearnings` path emits a
+  tombstone per pruned learning, else a peer re-replicates it forever — resurrection), and a
+  foreign record renders inside a `<replicated-untrusted-data origin="…">` envelope — quoted
+  advisory data, never an instruction. Per-entry cap raised to 64KB so a fat learning replicates;
+  HIGH-impact at the **replication** layer (append-both-and-flag) but **advisory** at the **read**
+  layer (both variants of an open conflict surface as guidance hints — a learning is guidance,
+  not authority — the read never blocks). Pure mechanism, dark by default behind
+  `multiMachine.stateSync.learnings`; a single-machine install is a strict no-op. The
+  `LearningsReplicatedStore` projection strips the local id by construction. Spec:
+  `docs/specs/multi-machine-replicated-store-foundation.md` §4 / §7.

@@ -3587,6 +3587,18 @@ export async function startServer(options: StartOptions): Promise<void> {
     const { RELATIONSHIP_KIND_REGISTRATION } = await import('../core/RelationshipsReplicatedStore.js');
     replicatedKindRegistry.register(RELATIONSHIP_KIND_REGISTRATION);
 
+    // WS2.2 (multi-machine-replicated-store-foundation) — register the THIRD concrete
+    // replicated kind, `learning-record`, onto the registry: the SECOND memory-family
+    // kind (after WS2.3 relationships). Dual-registry's dynamic half (the static half is
+    // CoherenceJournal.JOURNAL_KINDS, which now lists 'learning-record'). Registration is
+    // INERT — emission/serve/pull stay gated behind `multiMachine.stateSync.learnings.enabled`
+    // (default false ⇒ strict no-op). With it registered, selfStateSyncReceive self-reports
+    // `learnings:true` IFF the store is enabled, and the rollback-unmerge resolves its
+    // contributing kind via getByStore. The local LRN-NNN id is NEVER replicated — the
+    // recordKey is a content fingerprint (LearningsReplicatedStore.deriveLearningRecordKey).
+    const { LEARNING_KIND_REGISTRATION } = await import('../core/LearningsReplicatedStore.js');
+    replicatedKindRegistry.register(LEARNING_KIND_REGISTRATION);
+
     // Snapshot-then-tail engine (Component 4 / build-order step 3,
     // multi-machine-replicated-store-foundation §6). The cache (FIXED ceiling,
     // §8.2 — NOT pool-scaled), the per-peer rebuild breaker (§6.3), and the engine
@@ -8082,6 +8094,46 @@ export async function startServer(options: StartOptions): Promise<void> {
       ...(config.evolution || {}),
     });
     console.log(pc.green('  Evolution system enabled'));
+
+    // WS2.2 — the bypass-proof union reader for the `learnings` store. The single funnel
+    // every replicated learning read routes through, so no caller reads a raw replica
+    // around the no-clobber rule. `loadOriginRecords` materializes the OWN learning store
+    // as the single origin today (via learningToOriginRecord, keyed on the content-
+    // fingerprint identity surface — the local LRN-NNN id is NEVER replicated); when the
+    // journal apply path lands peer `learning-record` replicas (a later rollout stage),
+    // the seam extends to read those peer namespaces too. With only the own origin the
+    // union is a strict no-op (= that one local record). tierOf returns HIGH (append-both-
+    // and-flag never silently clobbers two divergent lessons; the READ layer is advisory,
+    // injecting both variants as hints rather than blocking — fork #2). Consulted by a
+    // learnings peer-read surface ONLY when stateSync.learnings.enabled is true.
+    const { learningTierOf, learningToOriginRecord, deriveLearningRecordKey, LEARNING_STORE_KEY } = await import('../core/LearningsReplicatedStore.js');
+    const learningsUnionReader = new ReplicatedStoreReader({
+      registry: replicatedKindRegistry,
+      stores: (config.multiMachine as unknown as { stateSync?: import('../core/ReplicatedRecordEnvelope.js').StateSyncStores } | undefined)?.stateSync,
+      tierOf: learningTierOf,
+      loadOriginRecords: (store, recordKey) => {
+        if (store !== LEARNING_STORE_KEY || _meshSelfId === null) return [];
+        for (const l of evolution.listLearnings()) {
+          if (deriveLearningRecordKey(l.title, l.category, l.source) === recordKey) {
+            const o = learningToOriginRecord(l, _meshSelfId);
+            return o ? [o] : [];
+          }
+        }
+        return [];
+      },
+      listRecordKeys: (store) => {
+        if (store !== LEARNING_STORE_KEY) return [];
+        const keys: string[] = [];
+        for (const l of evolution.listLearnings()) {
+          const k = deriveLearningRecordKey(l.title, l.category, l.source);
+          if (k !== null) keys.push(k);
+        }
+        return keys;
+      },
+      droppedOrigins: droppedOriginRegistry,
+      conflictStore,
+    });
+    void learningsUnionReader; // consumed by the learnings peer-read surface + the journal-apply rollout stage (WS2.2+)
 
     // Start MemoryPressureMonitor (platform-aware memory tracking)
     const { MemoryPressureMonitor } = await import('../monitoring/MemoryPressureMonitor.js');

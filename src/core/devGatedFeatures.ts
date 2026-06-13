@@ -258,6 +258,11 @@ export const DARK_GATE_EXCLUSIONS: DarkGateExclusion[] = [
     category: 'optional-integration',
     reason: 'WS2.3 cross-machine relationship replication — the FIRST PII kind on the HLC foundation; graduated rollout dark→dryRun→live per ws23-relationships-userregistry-security §INV-iii, opt-in per deployment (PII never crosses a machine boundary while dark; mirrors the preferences sibling)',
   },
+  {
+    configPath: 'multiMachine.stateSync.learnings.enabled',
+    category: 'optional-integration',
+    reason: 'WS2.2 cross-machine learning replication — the SECOND memory-family kind on the HLC foundation; graduated rollout dark→dryRun→live per multi-machine-replicated-store-foundation, opt-in per deployment (no learning crosses a machine boundary while dark; the local LRN-NNN id is never replicated; mirrors the relationships sibling)',
+  },
   // ── deliberate-fleet-default — off for everyone by design (incl. dev) ──
   {
     configPath: 'monitoring.greenPrAutoMerge.enabled',

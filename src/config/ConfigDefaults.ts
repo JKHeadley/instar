@@ -865,6 +865,20 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
         enabled: false,
         dryRun: true,
       },
+      // WS2.2 (multi-machine-replicated-store-foundation) — the THIRD replicated-store
+      // consumer and the SECOND memory-family kind: `learning-record` on the HLC
+      // foundation. Per-store on-switch ships the graduated-rollout ladder dark:
+      // `enabled:false` (the foundation primitives stay inert, NO learning ever crosses
+      // a machine boundary; the local LRN-NNN id is NEVER replicated) + `dryRun:true`
+      // (on first enable, log intended merges WITHOUT mutating store state). A literal
+      // `enabled:false` (NOT dev-gate-omit) per the spec ladder dark→dryRun→live —
+      // classified in DARK_GATE_EXCLUSIONS (optional-integration, staged rollout),
+      // mirroring the relationships sibling. WS2.4 (KB) / WS2.5 (evolution) / WS2.6
+      // (playbook) reduce to schema+projection+flag on this same machinery (CMT-1416).
+      learnings: {
+        enabled: false,
+        dryRun: true,
+      },
     },
   },
   // Session Boot Self-Knowledge (spec: session-boot-self-knowledge.md) — the
