@@ -365,6 +365,30 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       staleEpisodeTtlDays: 30,
       fetchTimeoutMs: 30_000,
     },
+    // green-pr-automerge-enforcement R7: the background watcher that merges a
+    // green, mergeable, non-held PR this agent authored (Phase 7 becomes
+    // machinery). DARK_GATE_EXCLUSIONS: deliberate-fleet-default — off fleet-wide,
+    // flipped on (with expectedGhLogin) per dev agent. Repo-gated.
+    greenPrAutoMerge: {
+      enabled: false,
+      dryRun: false,
+      tickIntervalMs: 600_000,
+      maxAttempts: 3,
+      maxRearmEpisodes: 3,
+      breakerThreshold: 3,
+      deadlineKillBreakerThreshold: 3,
+      busySkipBreakerThreshold: 3,
+      breakerCooldownMin: 60,
+      mergeTimeoutMs: 1_500_000,
+      mergeKillGraceMs: 60_000,
+      expectedGhLogin: '',
+      identityRecheckTicks: 6,
+      holdReleaseTicks: 2,
+      staleHoldDays: 7,
+      floorDriftCheckTicks: 6,
+      floorDriftLookbackPrs: 10,
+      floorDriftLookbackCommits: 30,
+    },
     // Master gate for Telegram delivery of silently-stopped-sentinel
     // escalations. Default false → sentinel notices are housekeeping and stay
     // in the logs (server.log + sentinel-events.jsonl). Set true to receive

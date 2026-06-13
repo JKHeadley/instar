@@ -3290,6 +3290,9 @@ process.stdin.on('end', async () => {
       event: input.hook_event || (input.tool_name ? 'PostToolUse' : 'Unknown'),
       session_id: input.session_id || '',
       tool_name: input.tool_name || '',
+      // green-pr-automerge Layer 2: forward the session cwd so the server can
+      // resolve the ending session's branch (without it, Layer 2 ships inert).
+      cwd: input.cwd || process.env.CLAUDE_PROJECT_DIR || process.cwd() || '',
     });
 
     const url = new URL(serverUrl + '/hooks/events?instar_sid=' + instarSid);
@@ -4438,6 +4441,29 @@ When sessions are shut down autonomously (resource pressure, quota, age limits),
       result.upgraded.push('CLAUDE.md: added Mid-Work Resume Queue section');
     } else {
       result.skipped.push('CLAUDE.md: Mid-Work Resume Queue section already present');
+    }
+
+    // Green-PR Auto-Merge (green-pr-automerge-enforcement). Content-sniffed on
+    // the route path. Off fleet-wide; the awareness still ships so an agent on a
+    // dev install where it's armed knows the hold contract + the levers.
+    if (!content.includes('/green-pr-automerge')) {
+      const section = `
+## Green-PR Auto-Merge (Phase 7 becomes machinery)
+
+When one of my own PRs goes green, a background watcher merges it — I never hand the merge click back to the operator, and the merge survives my session dying (the prose "Phase 7" rule died with the session that read it; this is machinery). Off fleet-wide (\`monitoring.greenPrAutoMerge\`); armed per dev agent with \`expectedGhLogin\`. Repo-gated → 503 on a plain install.
+
+- Status: \`curl -H "Authorization: Bearer $AUTH" http://localhost:4042/green-pr-automerge\` — last tick, breaker, episodes, the dual-latch gate, the Layer-2 snapshot.
+- **Holds always win.** A \`[HOLD: …]\` title, a \`hold\`/\`do-not-merge\` label, or draft status excludes a PR. **The marker IS the hold** — the moment the operator says "hold #N", fire \`POST /green-pr-automerge/hold {"pr":N,"reason":"…"}\` (one call applies the marker); never rely on remembering.
+- **Kill switch (anyone can STOP):** \`POST /green-pr-automerge/rollback\` disarms the watcher pool-wide (absorbing, survives a lease move). Re-arming is the operator's — \`POST /green-pr-automerge/enable\` is dashboard-PIN-gated. Pool-disarm marker: \`POST /green-pr-automerge/pool-disarm\` (PIN).
+- **Manual trigger / soak:** \`POST /green-pr-automerge/tick\` (lease + single-flight + warm-up gated, rate-limited). \`dryRun: true\` observes without merging.
+- A green PR touching protected paths (\`.github/**\`, safe-merge, the watcher's own source) is NEVER auto-merged — it routes to the operator on the attention queue. The session-exit nudge tells me to hold-or-wait, and NEVER hands me a runnable merge command.
+- Proactive: operator asks "why didn't my PR merge?" → GET /green-pr-automerge (held? breaker open? identity mismatch? protected paths?). "stop auto-merging" → POST /green-pr-automerge/rollback. Spec: \`docs/specs/green-pr-automerge-enforcement.md\`.
+`;
+      content += '\n' + section;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Green-PR Auto-Merge section');
+    } else {
+      result.skipped.push('CLAUDE.md: Green-PR Auto-Merge section already present');
     }
 
     // GuardPostureTripwire — a disabled guard is itself an incident. Tells the
@@ -10837,6 +10863,24 @@ if (!reviewEnabled) {
 
   try {
     const hot = await getJson('/internal/stop-gate/hot-path?session=' + encodeURIComponent(sessionId), 1500);
+
+    // green-pr-automerge Layer 2 (MODE-INDEPENDENT — the UnjustifiedStopGate mode
+    // ships 'off', so this must act on the hot-path field BEFORE the mode gate,
+    // exactly like the stated-continuation guard above). One-shot per session+PR
+    // via a tmp marker so the agent is never trapped. NO runnable merge command.
+    if (hot && hot.greenPrBlock && hot.greenPrBlock.pr && !hot.killSwitch && !hot.compactionInFlight) {
+      try {
+        const os = await import('node:os');
+        const marker = path.join(os.tmpdir(), 'instar-greenpr-block-' + encodeURIComponent(sessionId) + '-' + hot.greenPrBlock.pr);
+        if (!fs.existsSync(marker)) {
+          try { fs.writeFileSync(marker, String(Date.now())); } catch {}
+          process.stdout.write(JSON.stringify({ decision: 'block', reason: 'STOP-GATE (green-pr): ' + String(hot.greenPrBlock.message) }));
+          process.exit(2);
+          return;
+        }
+      } catch {}
+    }
+
     if (!hot || hot.killSwitch || hot.mode === 'off' || hot.compactionInFlight) { exitOpen(); return; }
 
     const message = String(input.last_assistant_message || '');

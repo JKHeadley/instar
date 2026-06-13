@@ -12580,6 +12580,69 @@ export async function startServer(options: StartOptions): Promise<void> {
       }
     }
 
+    // ── GreenPrAutoMerger (green-pr-automerge-enforcement) ──────────────
+    // Repo-gated, action-bearing watcher: only constructed when the install has
+    // an analyzable instar git repo AND scripts/safe-merge.mjs, AND the feature
+    // is enabled in config. On a plain npm install both are absent → null →
+    // routes 503. Started here (interval-driven) so the guarantee survives
+    // session death; the dual-latch gate is read every tick.
+    let greenPrAutoMerger: import('../monitoring/GreenPrAutoMerger.js').GreenPrAutoMerger | null = null;
+    let guardLatchStore: import('../monitoring/GuardLatchStore.js').GuardLatchStore | null = null;
+    {
+      const gpCfg = config.monitoring?.greenPrAutoMerge as Record<string, unknown> | undefined;
+      const repoPath = process.cwd();
+      const safeMergePath = path.join(repoPath, 'scripts', 'safe-merge.mjs');
+      if (gpCfg?.enabled) {
+        const wiring = await import('../monitoring/greenPrAutomergeWiring.js');
+        if (wiring.isAnalyzableGreenPrRepo(repoPath, safeMergePath)) {
+          const gpMachineId = coordinator.identity?.machineId ?? `m_host_${os.hostname()}`;
+          const agentNamespace = config.projectName || 'agent';
+          const wiringOpts = {
+            repoPath, safeMergePath, stateDir: config.stateDir, machineId: gpMachineId,
+            repo: 'JKHeadley/instar', agentNamespace,
+            mergeTimeoutMs: Number(gpCfg.mergeTimeoutMs) || 1_500_000,
+            mergeKillGraceMs: Number(gpCfg.mergeKillGraceMs) || 60_000,
+            holdsLease: () => (leaseCoordinatorRef ? leaseCoordinatorRef.holdsLease() : true),
+            leaseEpoch: () => (leaseCoordinatorRef ? leaseCoordinatorRef.currentEpoch() : 0),
+            // Single-machine: the durable local file is the authoritative gate.
+            // Multi-machine peer-latch merge is a follow-up read surface.
+            readPeerLatches: () => [],
+            journal: coherenceJournal ? { emitGuardLatch: (d: Record<string, unknown>) => coherenceJournal!.emitGuardLatch(d as never) } : undefined,
+            postAttentionAggregate: async (lines: string[]) => {
+              if (!telegram) return;
+              try {
+                await telegram.createAttentionItem({
+                  id: 'green-pr-automerge:aggregate',
+                  title: 'Green-PR auto-merge needs attention',
+                  summary: lines.join('\n'),
+                  category: 'degradation',
+                  priority: 'MEDIUM',
+                } as never);
+              } catch { /* attention delivery is non-fatal */ }
+            },
+            auditPath: path.join(config.stateDir, '..', 'logs', 'green-pr-automerge.jsonl'),
+          };
+          guardLatchStore = wiring.buildGuardLatchStore(wiringOpts);
+          const deps = wiring.buildGreenPrDeps(wiringOpts, guardLatchStore);
+          const { GreenPrAutoMerger } = await import('../monitoring/GreenPrAutoMerger.js');
+          greenPrAutoMerger = new GreenPrAutoMerger(deps, {
+            ...(gpCfg as object),
+            agentNamespace,
+            repo: 'JKHeadley/instar',
+          } as never);
+          if (greenPrAutoMerger.invariantOk) {
+            guardLatchStore.markPoolArmed(); // R7: this pool is deliberately armed
+            greenPrAutoMerger.start();
+            console.log(pc.green('  GreenPrAutoMerger enabled (auto-merges green self-authored PRs — Phase 7 machinery)'));
+          } else {
+            console.log(pc.red(`  GreenPrAutoMerger NOT started — timeout invariant violated: ${greenPrAutoMerger.invariantReason}`));
+          }
+        } else {
+          console.log(pc.dim('  GreenPrAutoMerge enabled in config but no analyzable instar repo + safe-merge found — staying inert'));
+        }
+      }
+    }
+
     // ── Multi-Machine Session Pool registry (§L2) — live MachineCapacity view for GET /pool ──
     // Always instantiated (cheap); the feature stays dark behind the sessionPool stage gate.
     // Self-attests hardware + records a self-heartbeat so GET /pool + the Machines tab show
@@ -14502,7 +14565,7 @@ export async function startServer(options: StartOptions): Promise<void> {
             carrier: _topicProfileCarrier,
           }
         : null;
-    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, cartographer: cartographer ?? undefined, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, subscriptionPool, quotaPoller, quotaAwareScheduler: _quotaAwareScheduler ?? undefined, proactiveSwapMonitor: _proactiveSwapMonitor ?? undefined, inUseAccountResolver, enrollmentWizard, semanticMemory, activitySentinel, rateLimitSentinel, releaseReadinessSentinel: releaseReadinessSentinel ?? undefined, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, topicProfile: _topicProfileCtx ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, localSigningKeyPem, leaseTransport, onLeasePullRequest: () => leaseCoordinatorRef?.currentLease() ?? null, liveTailReceiver, handoffWireTransport, onHandoffBegin, onHandoffInitiate: handoffInitiate, handoffInProgress: handoffSentinelInProgress, messageLedger, currentInboundByTopic, replyMarkerTransport, onReplyMarker: messageLedger ? (marker: unknown) => { const m = marker as { dedupeKey: string; platform: string; replyIdempotencyKey: string; epoch: number; topic?: string | null }; messageLedger!.applyRemoteReplyMarker(m.dedupeKey, { platform: m.platform, replyIdempotencyKey: m.replyIdempotencyKey, epoch: m.epoch, topic: m.topic ?? null }); } : undefined, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, warrantsReplyGate, collaborationSurfacer, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, a2aDeliveryTracker: a2aDeliveryTracker ?? undefined, responseReviewGate, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, machinePoolRegistry, getInboundQueue: () => _inboundQueue, meshRpcDispatcher, workingSetPullCoordinator, commitmentReplicaStore, forwardCommitmentMutate, sessionOwnershipRegistry, topicPinStore: _topicPinStore ?? undefined, streamTicketStore: _streamTicketStore ?? undefined, poolStreamAllowRemoteInput: (config as { dashboard?: { poolStream?: { allowRemoteInput?: boolean } } }).dashboard?.poolStream?.allowRemoteInput ?? false, poolStreamConnector: _poolStreamConnector ?? undefined, secretSync: _secretSyncHandle ?? undefined, meshSelfId: _meshSelfId ?? undefined, resolveRouterUrl: _resolveRouterUrl ?? undefined, resolvePeerUrls: _resolvePeerUrls ?? undefined, guardRegistry, listPoolMachines: _listPoolMachines ?? undefined, sessionPoolE2EResultStore, proxyCoordinator, topicIntentStore, topicIntentArcCheck, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, briefDeps, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, agentWorktreeReaper, mcpProcessReaper, geminiLoopRunner, sleepController, agentActivityState, reapLog, resumeQueue, resumeDrainer, operatorStopRecorder: recordOperatorStop, sleepWakeDetector, unjustifiedStopGate, stopGateDb, stopNotifier });
+    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, cartographer: cartographer ?? undefined, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, subscriptionPool, quotaPoller, quotaAwareScheduler: _quotaAwareScheduler ?? undefined, proactiveSwapMonitor: _proactiveSwapMonitor ?? undefined, inUseAccountResolver, enrollmentWizard, semanticMemory, activitySentinel, rateLimitSentinel, releaseReadinessSentinel: releaseReadinessSentinel ?? undefined, greenPrAutoMerger: greenPrAutoMerger ?? undefined, guardLatchStore: guardLatchStore ?? undefined, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, topicProfile: _topicProfileCtx ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, localSigningKeyPem, leaseTransport, onLeasePullRequest: () => leaseCoordinatorRef?.currentLease() ?? null, liveTailReceiver, handoffWireTransport, onHandoffBegin, onHandoffInitiate: handoffInitiate, handoffInProgress: handoffSentinelInProgress, messageLedger, currentInboundByTopic, replyMarkerTransport, onReplyMarker: messageLedger ? (marker: unknown) => { const m = marker as { dedupeKey: string; platform: string; replyIdempotencyKey: string; epoch: number; topic?: string | null }; messageLedger!.applyRemoteReplyMarker(m.dedupeKey, { platform: m.platform, replyIdempotencyKey: m.replyIdempotencyKey, epoch: m.epoch, topic: m.topic ?? null }); } : undefined, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, warrantsReplyGate, collaborationSurfacer, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, a2aDeliveryTracker: a2aDeliveryTracker ?? undefined, responseReviewGate, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, machinePoolRegistry, getInboundQueue: () => _inboundQueue, meshRpcDispatcher, workingSetPullCoordinator, commitmentReplicaStore, forwardCommitmentMutate, sessionOwnershipRegistry, topicPinStore: _topicPinStore ?? undefined, streamTicketStore: _streamTicketStore ?? undefined, poolStreamAllowRemoteInput: (config as { dashboard?: { poolStream?: { allowRemoteInput?: boolean } } }).dashboard?.poolStream?.allowRemoteInput ?? false, poolStreamConnector: _poolStreamConnector ?? undefined, secretSync: _secretSyncHandle ?? undefined, meshSelfId: _meshSelfId ?? undefined, resolveRouterUrl: _resolveRouterUrl ?? undefined, resolvePeerUrls: _resolvePeerUrls ?? undefined, guardRegistry, listPoolMachines: _listPoolMachines ?? undefined, sessionPoolE2EResultStore, proxyCoordinator, topicIntentStore, topicIntentArcCheck, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, briefDeps, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, agentWorktreeReaper, mcpProcessReaper, geminiLoopRunner, sleepController, agentActivityState, reapLog, resumeQueue, resumeDrainer, operatorStopRecorder: recordOperatorStop, sleepWakeDetector, unjustifiedStopGate, stopGateDb, stopNotifier });
     // Resolve the late-bound topic-operator getter (increment 2e): routing was
     // wired before the server existed; from here on inbound binds use the
     // server's own store instance.

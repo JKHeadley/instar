@@ -223,6 +223,102 @@ export interface HotPathState {
   compactionInFlight: boolean;
   sessionStartTs: number | null;
   routeVersion: number;
+  /**
+   * green-pr-automerge-enforcement Layer 2: present only when the ending
+   * session's branch matches a fresh, armed green-PR snapshot candidate. The
+   * hook acts on it MODE-INDEPENDENTLY (one-shot block). NO variant carries a
+   * runnable merge command (round-6) — the watcher being armed is exactly the
+   * state where manual merging is recreated manual work.
+   */
+  greenPrBlock?: GreenPrBlock | null;
+}
+
+export interface GreenPrBlock {
+  pr: number;
+  message: string;
+  variant: 'mergeable' | 'protected-paths' | 'disarmed';
+}
+
+/** A minimal projection of the watcher's last-tick snapshot for Layer 2. */
+export interface GreenPrSnapshotForBlock {
+  at: number;
+  entries: Array<{ pr: number; headRefName: string; kind: 'mergeable' | 'protected-paths' }>;
+}
+
+/**
+ * Compute the Layer-2 greenPrBlock for an ending session. Pure + testable.
+ * Blocks ONLY when: the snapshot is fresh (≤ 2× tickIntervalMs), the session's
+ * branch matches a candidate, and not suppressed by killSwitch/compaction. When
+ * the watcher is DISARMED, the matching entry yields the do-not-merge variant
+ * (never the merge coaching). No variant contains a runnable command.
+ */
+export function computeGreenPrBlock(args: {
+  snapshot: GreenPrSnapshotForBlock | null;
+  sessionBranch: string | null;
+  armed: boolean;
+  killSwitch: boolean;
+  compactionInFlight: boolean;
+  tickIntervalMs: number;
+  now: number;
+}): GreenPrBlock | null {
+  const { snapshot, sessionBranch, armed, killSwitch, compactionInFlight, tickIntervalMs, now } = args;
+  if (!snapshot || !sessionBranch) return null;
+  if (killSwitch || compactionInFlight) return null;
+  if (now - snapshot.at > 2 * tickIntervalMs) return null; // staleness gate
+  const match = snapshot.entries.find((e) => e.headRefName === sessionBranch);
+  if (!match) return null;
+  if (!armed) {
+    return {
+      pr: match.pr,
+      variant: 'disarmed',
+      message: `PR #${match.pr} (your branch) is green, but the auto-merge watcher is disabled by operator rollback — do NOT merge it manually; confirm with the operator.`,
+    };
+  }
+  if (match.kind === 'protected-paths') {
+    return {
+      pr: match.pr,
+      variant: 'protected-paths',
+      message: `PR #${match.pr} (your branch) is green but touches protected paths — it needs the operator's review and merge; it is already on the attention queue. Do NOT merge it manually.`,
+    };
+  }
+  return {
+    pr: match.pr,
+    variant: 'mergeable',
+    message: `PR #${match.pr} (your branch) is green and unmerged. Either hold it (POST /green-pr-automerge/hold {"pr": ${match.pr}, "reason": "…"}) or end the session — the watcher lands it within ~10 minutes. Do NOT merge it manually.`,
+  };
+}
+
+/**
+ * Resolve a session's current git branch from its cwd, handling the linked-
+ * worktree case where `.git` is a FILE (`gitdir: <path>`) not a directory
+ * (instar-dev builds live in worktrees). Two tiny reads, no git spawn,
+ * fail-open (null → never blocks). Pure over the injected fs reader.
+ */
+export function resolveBranchFromCwd(cwd: string, readFile: (p: string) => string, exists: (p: string) => boolean): string | null {
+  try {
+    const dotGit = path.join(cwd, '.git');
+    if (!exists(dotGit)) return null;
+    let gitDir = dotGit;
+    // A worktree's .git is a file: "gitdir: /abs/path/to/worktrees/x/.git".
+    let headPath: string;
+    try {
+      const content = readFile(dotGit);
+      const m = content.match(/^gitdir:\s*(.+)\s*$/m);
+      if (m) {
+        gitDir = path.isAbsolute(m[1].trim()) ? m[1].trim() : path.resolve(cwd, m[1].trim());
+        headPath = path.join(gitDir, 'HEAD');
+      } else {
+        headPath = path.join(dotGit, 'HEAD');
+      }
+    } catch { /* @silent-fallback-ok: green-pr-automerge Layer-2 belt — .git is a directory; fall through to .git/HEAD. Fail-open. */
+      headPath = path.join(dotGit, 'HEAD');
+    }
+    const head = readFile(headPath);
+    const ref = head.match(/^ref:\s*refs\/heads\/(.+)\s*$/m);
+    return ref ? ref[1].trim() : null;
+  } catch { /* @silent-fallback-ok: green-pr-automerge Layer-2 belt — branch resolution is fail-open; null means no block, never a wrong block. */
+    return null;
+  }
 }
 
 export interface HotPathInputs {

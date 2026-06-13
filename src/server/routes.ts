@@ -76,6 +76,8 @@ import {
   recordSessionStart,
   getMode,
   setMode,
+  computeGreenPrBlock,
+  resolveBranchFromCwd,
 } from './stopGate.js';
 import {
   UnjustifiedStopGate,
@@ -649,6 +651,11 @@ export interface RouteContext {
   /** ReleaseReadinessSentinel (Layer B of release-readiness-visibility). Null on
    *  installs with no analyzable instar git repo, or when disabled in config. */
   releaseReadinessSentinel: import('../monitoring/ReleaseReadinessSentinel.js').ReleaseReadinessSentinel | null;
+  /** GreenPrAutoMerger (green-pr-automerge-enforcement). Null on installs with no
+   *  analyzable instar repo + safe-merge, or when disabled in config. */
+  greenPrAutoMerger: import('../monitoring/GreenPrAutoMerger.js').GreenPrAutoMerger | null;
+  /** GuardLatchStore — the pool-visible rollback/enable/pool-armed latches. */
+  guardLatchStore: import('../monitoring/GuardLatchStore.js').GuardLatchStore | null;
   messageRouter: MessageRouter | null;
   summarySentinel: SessionSummarySentinel | null;
   spawnManager: SpawnRequestManager | null;
@@ -2375,6 +2382,32 @@ export function createRoutes(ctx: RouteContext): Router {
   router.get('/internal/stop-gate/hot-path', (req, res) => {
     const sessionId = typeof req.query.session === 'string' ? req.query.session : '';
     const state = getHotPathState({ sessionId: sessionId || undefined });
+    // green-pr-automerge Layer 2: compute greenPrBlock LAZILY — only when the
+    // watcher has snapshot candidates (the common zero-candidate stop costs
+    // nothing). Branch resolution reads .git/HEAD (fail-open).
+    try {
+      const snap = ctx.greenPrAutoMerger?.snapshot().snapshot;
+      if (snap && snap.entries.length > 0 && sessionId) {
+        // Latest recorded cwd for the session (reporter forwards it).
+        let cwd: string | null = null;
+        const evs = ctx.hookEventReceiver?.getSessionEvents(sessionId) ?? [];
+        for (let i = evs.length - 1; i >= 0; i--) {
+          const c = evs[i]?.payload?.cwd;
+          if (typeof c === 'string' && c) { cwd = c; break; }
+        }
+        const branch = cwd ? resolveBranchFromCwd(cwd, (p) => fs.readFileSync(p, 'utf-8'), (p) => fs.existsSync(p)) : null;
+        const gate = ctx.guardLatchStore?.isMergeAllowed();
+        state.greenPrBlock = computeGreenPrBlock({
+          snapshot: { at: snap.at, entries: snap.entries.map((e) => ({ pr: e.pr, headRefName: e.headRefName, kind: e.kind })) },
+          sessionBranch: branch,
+          armed: gate ? gate.allowed : false,
+          killSwitch: state.killSwitch,
+          compactionInFlight: state.compactionInFlight,
+          tickIntervalMs: Number(ctx.config.monitoring?.greenPrAutoMerge?.tickIntervalMs) || 600_000,
+          now: Date.now(),
+        });
+      }
+    } catch { /* Layer 2 is a belt — never let it break the hot path */ }
     res.json(state);
   });
 
@@ -7382,6 +7415,91 @@ export function createRoutes(ctx: RouteContext): Router {
     }
     ctx.releaseReadinessSentinel.enable();
     res.json({ ok: true, enabled: true });
+  });
+
+  // ── Green-PR auto-merge (green-pr-automerge-enforcement) ──────────────
+  // The watcher is null on installs with no analyzable instar repo + safe-merge,
+  // or when disabled in config → routes 503. The GuardLatchStore may exist even
+  // when the watcher does not (single-machine rollback still needs to persist).
+  router.get('/green-pr-automerge', (_req, res) => {
+    if (!ctx.greenPrAutoMerger) {
+      res.status(503).json({ error: 'green-pr auto-merge not configured (no analyzable instar repo + safe-merge, or disabled)' });
+      return;
+    }
+    const state = ctx.greenPrAutoMerger.snapshot();
+    const latch = ctx.guardLatchStore?.snapshot() ?? null;
+    res.json({
+      lastTickAt: state.lastTickAt ?? null,
+      lastSuccessfulListAt: state.lastSuccessfulListAt ?? null,
+      consecutiveWarmupOnlyTenures: state.consecutiveWarmupOnlyTenures,
+      breaker: state.breaker,
+      episodes: Object.values(state.episodes ?? {}),
+      snapshot: state.snapshot,
+      gate: latch,
+      invariantOk: ctx.greenPrAutoMerger.invariantOk,
+    });
+  });
+
+  router.post('/green-pr-automerge/tick', async (_req, res) => {
+    if (!ctx.greenPrAutoMerger) {
+      res.status(503).json({ error: 'green-pr auto-merge not configured' });
+      return;
+    }
+    const r = await ctx.greenPrAutoMerger.tick({ manual: true });
+    res.json({ ok: true, ...r });
+  });
+
+  // Rollback is Bearer-gated and LOUD: anyone may STOP. The latch is absorbing
+  // and pool-replicated, so a STOP survives a lease move (R9).
+  router.post('/green-pr-automerge/rollback', (req, res) => {
+    if (!ctx.guardLatchStore) {
+      res.status(503).json({ error: 'green-pr auto-merge not configured' });
+      return;
+    }
+    const reason = typeof req.body?.reason === 'string' ? req.body.reason : 'operator-rollback';
+    const latchId = ctx.guardLatchStore.set('rollback', reason);
+    res.json({ ok: true, rolledBack: true, latchId });
+  });
+
+  // Re-arming merge authority is the operator's: dashboard-PIN-gated (the Mandates
+  // precedent). Clears only the named latch id(s), or all active rollback ids.
+  router.post('/green-pr-automerge/enable', (req, res) => {
+    if (!ctx.guardLatchStore) {
+      res.status(503).json({ error: 'green-pr auto-merge not configured' });
+      return;
+    }
+    if (!checkMandatePin(req, res)) return;
+    const named = Array.isArray(req.body?.latchIds) ? req.body.latchIds.filter((s: unknown): s is string => typeof s === 'string') : [];
+    const ids = named.length > 0 ? named : ctx.guardLatchStore.activeLatchIds('rollback');
+    ctx.guardLatchStore.clear('rollback', ids, 're-arm');
+    res.json({ ok: true, enabled: true, cleared: ids });
+  });
+
+  // Conversational-hold assist (R3): apply the [HOLD: …] marker via gh in one call.
+  router.post('/green-pr-automerge/hold', async (req, res) => {
+    if (!ctx.greenPrAutoMerger) {
+      res.status(503).json({ error: 'green-pr auto-merge not configured' });
+      return;
+    }
+    const pr = Number(req.body?.pr);
+    if (!Number.isInteger(pr) || pr <= 0) {
+      res.status(400).json({ error: 'pr must be a positive integer' });
+      return;
+    }
+    const reason = typeof req.body?.reason === 'string' ? req.body.reason.replace(/[\]\n\r]/g, ' ').slice(0, 200) : '';
+    const result = await ctx.greenPrAutoMerger.applyHold(pr, reason);
+    res.status(result.ok ? 200 : (result.status ?? 502)).json(result);
+  });
+
+  // Pool-disarm marker (R7): PIN-gated, superseding entry → grades back to healthy.
+  router.post('/green-pr-automerge/pool-disarm', (req, res) => {
+    if (!ctx.guardLatchStore) {
+      res.status(503).json({ error: 'green-pr auto-merge not configured' });
+      return;
+    }
+    if (!checkMandatePin(req, res)) return;
+    ctx.guardLatchStore.markPoolDisarmed();
+    res.json({ ok: true, poolDisarmed: true });
   });
 
   // ── Human-as-Detector heat map ───────────────────────────────────────

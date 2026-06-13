@@ -643,8 +643,8 @@ describe('CoherenceJournal — getOwnAdvert (§3.4 rule 5)', () => {
     const j = makeJournal();
     // Nothing written yet → every kind advertises lastSeq 0.
     const empty = j.getOwnAdvert();
-    expect(Object.keys(empty).sort()).toEqual(['autonomous-run', 'session-lifecycle', 'threadline-conversation', 'topic-placement']);
-    for (const kind of ['topic-placement', 'session-lifecycle', 'autonomous-run', 'threadline-conversation'] as JournalKind[]) {
+    expect(Object.keys(empty).sort()).toEqual(['autonomous-run', 'guard-latch', 'session-lifecycle', 'threadline-conversation', 'topic-placement']);
+    for (const kind of ['topic-placement', 'session-lifecycle', 'autonomous-run', 'threadline-conversation', 'guard-latch'] as JournalKind[]) {
       expect(empty[kind].lastSeq).toBe(0);
     }
     const incarnation = empty['topic-placement'].incarnation;

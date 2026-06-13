@@ -4292,6 +4292,33 @@ export interface MonitoringConfig {
     repoPath?: string;
   };
   /**
+   * green-pr-automerge-enforcement R7: the background watcher that merges a
+   * green, mergeable, non-held PR this agent authored (Phase 7 becomes
+   * machinery). DARK_GATE_EXCLUSIONS: deliberate-fleet-default — off fleet-wide,
+   * flipped on per dev agent with expectedGhLogin. Repo-gated.
+   */
+  greenPrAutoMerge?: {
+    enabled: boolean;
+    dryRun?: boolean;
+    tickIntervalMs?: number;
+    maxAttempts?: number;
+    maxRearmEpisodes?: number;
+    breakerThreshold?: number;
+    deadlineKillBreakerThreshold?: number;
+    busySkipBreakerThreshold?: number;
+    breakerCooldownMin?: number;
+    mergeTimeoutMs?: number;
+    mergeKillGraceMs?: number;
+    /** The agent's verified gh login (R4 identity contract). Unset → inert. */
+    expectedGhLogin?: string;
+    identityRecheckTicks?: number;
+    holdReleaseTicks?: number;
+    staleHoldDays?: number;
+    floorDriftCheckTicks?: number;
+    floorDriftLookbackPrs?: number;
+    floorDriftLookbackCommits?: number;
+  };
+  /**
    * Master gate for Telegram delivery of silently-stopped-sentinel escalations
    * (SentinelNotifier). Default false → sentinel notices are logged to the
    * server log + .instar/../logs/sentinel-events.jsonl only; the user never

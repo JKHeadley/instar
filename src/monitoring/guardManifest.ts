@@ -102,6 +102,18 @@ export const GUARD_MANIFEST: readonly GuardManifestEntry[] = [
     description: 'User-facing notice when a session is autonomously shut down.',
   },
   {
+    key: 'monitoring.greenPrAutoMerge.enabled',
+    kind: 'config',
+    configPath: 'monitoring.greenPrAutoMerge.enabled',
+    defaultEnabled: false,
+    dryRunConfigPath: 'monitoring.greenPrAutoMerge.dryRun',
+    expectedTickMs: 600_000,
+    process: 'server',
+    expectRuntime: true,
+    component: 'GreenPrAutoMerger',
+    description: 'Background watcher that merges a green, mergeable, non-held PR this agent authored (Phase 7 becomes machinery). Repo-gated; lease-serialized; runtime rollback + breaker.',
+  },
+  {
     key: 'monitoring.watchdog.enabled',
     kind: 'config',
     configPath: 'monitoring.watchdog.enabled',

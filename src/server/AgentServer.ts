@@ -295,6 +295,8 @@ export class AgentServer {
     activitySentinel?: import('../monitoring/SessionActivitySentinel.js').SessionActivitySentinel;
     rateLimitSentinel?: import('../monitoring/RateLimitSentinel.js').RateLimitSentinel;
     releaseReadinessSentinel?: import('../monitoring/ReleaseReadinessSentinel.js').ReleaseReadinessSentinel;
+    greenPrAutoMerger?: import('../monitoring/GreenPrAutoMerger.js').GreenPrAutoMerger;
+    guardLatchStore?: import('../monitoring/GuardLatchStore.js').GuardLatchStore;
     workingMemory?: import('../memory/WorkingMemoryAssembler.js').WorkingMemoryAssembler;
     quotaManager?: import('../monitoring/QuotaManager.js').QuotaManager;
     messageRouter?: MessageRouter;
@@ -1728,6 +1730,8 @@ export class AgentServer {
       activitySentinel: options.activitySentinel ?? null,
       rateLimitSentinel: options.rateLimitSentinel ?? null,
       releaseReadinessSentinel: options.releaseReadinessSentinel ?? null,
+      greenPrAutoMerger: options.greenPrAutoMerger ?? null,
+      guardLatchStore: options.guardLatchStore ?? null,
       workingMemory: options.workingMemory ?? null,
       quotaManager: options.quotaManager ?? null,
       messageRouter: options.messageRouter ?? null,

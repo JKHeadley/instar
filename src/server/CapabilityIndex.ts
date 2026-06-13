@@ -125,6 +125,22 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     }),
   },
   {
+    key: 'greenPrAutoMerge',
+    prefixes: ['/green-pr-automerge'],
+    description: 'Green-PR auto-merge watcher (green-pr-automerge-enforcement) — merges a green, mergeable, non-held PR this agent authored, surviving session death (Phase 7 becomes machinery). Off fleet-wide (deliberate-fleet-default), armed per dev agent with expectedGhLogin, repo-gated. Pool-visible rollback kill-switch (Bearer); PIN-gated re-arm + pool-disarm; conversational-hold assist. Null on installs with no analyzable instar repo + safe-merge, or when disabled.',
+    build: ({ ctx }) => ({
+      configured: !!ctx.greenPrAutoMerger,
+      endpoints: [
+        'GET /green-pr-automerge',
+        'POST /green-pr-automerge/tick',
+        'POST /green-pr-automerge/rollback',
+        'POST /green-pr-automerge/enable',
+        'POST /green-pr-automerge/hold',
+        'POST /green-pr-automerge/pool-disarm',
+      ],
+    }),
+  },
+  {
     key: 'parallelWork',
     prefixes: ['/parallel-work'],
     description: 'Parallel-Work Awareness — a cross-topic read index over the Topic-Intent layer: every topic, its current focus, high-specificity tags, and whether a session is live on it. Lets the agent see what all its hands are doing across topics/sessions (the overlap-councilor read surface; the proactive ParallelWorkSentinel is Phase B, ships dark). Signal-only; never gates.',

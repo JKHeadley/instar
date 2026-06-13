@@ -36,9 +36,9 @@ import path from 'node:path';
 
 import { SafeFsExecutor } from './SafeFsExecutor.js';
 
-export type JournalKind = 'topic-placement' | 'session-lifecycle' | 'autonomous-run' | 'threadline-conversation';
+export type JournalKind = 'topic-placement' | 'session-lifecycle' | 'autonomous-run' | 'threadline-conversation' | 'guard-latch';
 
-export const JOURNAL_KINDS: JournalKind[] = ['topic-placement', 'session-lifecycle', 'autonomous-run', 'threadline-conversation'];
+export const JOURNAL_KINDS: JournalKind[] = ['topic-placement', 'session-lifecycle', 'autonomous-run', 'threadline-conversation', 'guard-latch'];
 
 /** §3.2 enums. */
 export type PlacementReason = 'user-move' | 'placed' | 'failover' | 'released' | 'quota-block-move' | 'reconcile';
@@ -52,6 +52,15 @@ export type SessionStatus = 'created' | 'completed' | 'killed' | 'reaped' | 'fai
 export type AutonomousAction = 'started' | 'stopped';
 /** P3 (THREADLINE-CONVERSATION-COHERENCE-SPEC §3.1). */
 export type ThreadlineConversationAction = 'started' | 'bound' | 'unbound' | 'closed';
+/**
+ * guard-latch (green-pr-automerge-enforcement R9/R7). A pool-visible latch or
+ * marker that gates a guarded autonomous authority across the machine pool. The
+ * `latchKind` namespaces independent latch families so they cannot collide; the
+ * `action` is set/clear. ABSORBING ordering (set wins ties regardless of epoch)
+ * is resolved by the consumer (GuardLatchStore), NOT here — the journal only
+ * carries the content-free fact that a transition occurred.
+ */
+export type GuardLatchAction = 'set' | 'clear';
 
 export interface PlacementData {
   owner: string;
@@ -79,6 +88,22 @@ export interface ThreadlineConversationData {
   conversationId: string;
   peerFingerprint: string;
   topicId?: number;
+}
+
+/**
+ * guard-latch (green-pr-automerge-enforcement R9/R7). Content-free: the latch
+ * family, the set/clear action, the lease epoch + a monotonic sequence the
+ * consumer uses for ordering, and a stable `latchId` so `/enable` can clear a
+ * SPECIFIC latch without touching siblings. No free text (the typed-schema
+ * invariant); `reason` is a short enum-like slug, length-capped.
+ */
+export interface GuardLatchData {
+  latchKind: string;
+  latchId: string;
+  action: GuardLatchAction;
+  epoch: number;
+  seq: number;
+  reason?: string;
 }
 
 /** One line in a stream file. */
@@ -110,6 +135,8 @@ export const DEFAULT_RETENTION: Record<JournalKind, KindRetention> = {
   'session-lifecycle': { maxFileBytes: 16 * 1024 * 1024, rotateKeep: 4 },
   'autonomous-run': { maxFileBytes: 8 * 1024 * 1024, rotateKeep: 8 },
   'threadline-conversation': { maxFileBytes: 8 * 1024 * 1024, rotateKeep: 8 },
+  // guard-latch: rare operator-initiated transitions; keep full history bounded.
+  'guard-latch': { maxFileBytes: 4 * 1024 * 1024, rotateKeep: 4 },
 };
 
 export const DEFAULT_FLUSH_INTERVAL_MS = 250;
@@ -283,13 +310,14 @@ export class CoherenceJournal {
   private state: WriterState = 'closed';
   private incarnation = '';
   /** Next seq to assign at enqueue, per kind (in-memory counter seeded at open). */
-  private nextSeq: Record<JournalKind, number> = { 'topic-placement': 1, 'session-lifecycle': 1, 'autonomous-run': 1, 'threadline-conversation': 1 };
+  private nextSeq: Record<JournalKind, number> = { 'topic-placement': 1, 'session-lifecycle': 1, 'autonomous-run': 1, 'threadline-conversation': 1, 'guard-latch': 1 };
   /** Durable highWaterSeq per kind (advanced after data fdatasync). */
   private highWaterSeq: Record<JournalKind, number> = {
     'topic-placement': 0,
     'session-lifecycle': 0,
     'autonomous-run': 0,
     'threadline-conversation': 0,
+    'guard-latch': 0,
   };
   /** In-memory enqueue order; drained by the flusher in seq order per kind. */
   private queue: QueuedEntry[] = [];
@@ -299,6 +327,7 @@ export class CoherenceJournal {
     'session-lifecycle': new Set(),
     'autonomous-run': new Set(),
     'threadline-conversation': new Set(),
+    'guard-latch': new Set(),
   };
   private rateBuckets: Record<JournalKind, RateBucket>;
   private timer: ReturnType<typeof setInterval> | null = null;
@@ -338,6 +367,7 @@ export class CoherenceJournal {
       'session-lifecycle': config.retention?.['session-lifecycle'] ?? DEFAULT_RETENTION['session-lifecycle'],
       'autonomous-run': config.retention?.['autonomous-run'] ?? DEFAULT_RETENTION['autonomous-run'],
       'threadline-conversation': config.retention?.['threadline-conversation'] ?? DEFAULT_RETENTION['threadline-conversation'],
+      'guard-latch': config.retention?.['guard-latch'] ?? DEFAULT_RETENTION['guard-latch'],
     };
     this.rateCapCfg = config.rateCap ?? DEFAULT_RATE_CAP;
     this.artifactRoots = (config.artifactRoots ?? [path.join(this.stateDir, 'autonomous'), this.stateDir]).map((r) => {
@@ -360,6 +390,7 @@ export class CoherenceJournal {
       'session-lifecycle': { tokens: this.rateCapCfg.capacity, lastRefillMs: initMs },
       'autonomous-run': { tokens: this.rateCapCfg.capacity, lastRefillMs: initMs },
       'threadline-conversation': { tokens: this.rateCapCfg.capacity, lastRefillMs: initMs },
+      'guard-latch': { tokens: this.rateCapCfg.capacity, lastRefillMs: initMs },
     };
   }
 
@@ -514,6 +545,20 @@ export class CoherenceJournal {
   }
 
   /**
+   * guard-latch (green-pr-automerge R9/R7). Op key: (latchKind, latchId, seq) —
+   * each transition carries a fresh monotonic `seq`, so distinct transitions are
+   * never deduped away while a genuine retry of the SAME (kind,id,seq) collapses.
+   */
+  emitGuardLatch(data: GuardLatchData): void {
+    this.emit(
+      'guard-latch',
+      undefined,
+      data as unknown as Record<string, unknown>,
+      `${data?.latchKind}:${data?.latchId}:${data?.seq}`,
+    );
+  }
+
+  /**
    * Generic non-blocking emit: validate + jail + dedupe + rate-cap + serialize,
    * assign a seq, enqueue, and RETURN. No synchronous file I/O on this stack —
    * the flusher does all of it. Never throws into the caller.
@@ -642,6 +687,26 @@ export class CoherenceJournal {
       if (topicId !== undefined && (typeof topicId !== 'number' || !Number.isFinite(topicId))) return null;
       out = { action, conversationId, peerFingerprint, ...(topicId !== undefined ? { topicId } : {}) };
       known = ['action', 'conversationId', 'peerFingerprint', 'topicId'];
+    } else if (kind === 'guard-latch') {
+      // green-pr-automerge R9/R7 — content-free latch transition. Free text
+      // structurally excluded; `reason` is a short slug, length-capped.
+      const latchKind = raw.latchKind;
+      const latchId = raw.latchId;
+      const action = raw.action;
+      const epoch = raw.epoch;
+      const seq = raw.seq;
+      const actions: GuardLatchAction[] = ['set', 'clear'];
+      if (typeof latchKind !== 'string' || !latchKind || latchKind.length > 64) return null;
+      if (typeof latchId !== 'string' || !latchId || latchId.length > 128) return null;
+      if (typeof action !== 'string' || !actions.includes(action as GuardLatchAction)) return null;
+      if (typeof epoch !== 'number' || !Number.isFinite(epoch)) return null;
+      if (typeof seq !== 'number' || !Number.isFinite(seq)) return null;
+      out = { latchKind, latchId, action, epoch, seq };
+      known = ['latchKind', 'latchId', 'action', 'epoch', 'seq', 'reason'];
+      if (raw.reason !== undefined) {
+        if (typeof raw.reason !== 'string') return null;
+        out.reason = raw.reason.slice(0, 80);
+      }
     } else {
       return null;
     }
@@ -870,6 +935,7 @@ export class CoherenceJournal {
         'session-lifecycle': { highWaterSeq: this.highWaterSeq['session-lifecycle'] },
         'autonomous-run': { highWaterSeq: this.highWaterSeq['autonomous-run'] },
         'threadline-conversation': { highWaterSeq: this.highWaterSeq['threadline-conversation'] },
+        'guard-latch': { highWaterSeq: this.highWaterSeq['guard-latch'] },
       },
     };
     const metaPath = this.metaPath();
@@ -1000,6 +1066,10 @@ export class CoherenceJournal {
       // data, not entry.topic (round-1 integration finding).
       if (typeof d.conversationId !== 'string' || typeof d.action !== 'string') return null;
       return `${d.conversationId}:${d.action}:${typeof d.topicId === 'number' ? d.topicId : ''}`;
+    }
+    if (kind === 'guard-latch') {
+      if (typeof d.latchKind !== 'string' || typeof d.latchId !== 'string' || typeof d.seq !== 'number') return null;
+      return `${d.latchKind}:${d.latchId}:${d.seq}`;
     }
     return null;
   }
