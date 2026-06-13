@@ -815,18 +815,34 @@
     .mnd-bad { color: #f85149; border-color: #f8514955; font-weight: 700; }
     .mnd-deny { color: #d29922; border-color: #d2992255; }
     .mnd-dead { color: var(--text-dim); }
-    .mnd-meta { font-size: 13px; color: var(--text-dim); }
-    .mnd-authorities { margin: 0; padding-left: 18px; font-size: 13px; line-height: 1.7; }
+    /* Internals (id, fingerprints, scope slug, action slugs) are SUPPORT
+       metadata only — de-emphasized, never the headline (Operator-Surface
+       Quality item 2). */
+    .mnd-meta { font-size: 12px; color: var(--text-dim); }
+    /* The card's plain-language headline sentence — the primary content. */
+    .mnd-summary { margin: 0; font-size: 15px; line-height: 1.5; color: var(--text-bright); }
     .mnd-empty { font-size: 16px; color: var(--text-dim); line-height: 1.6; padding: 12px 0; }
-    .mnd-revoke-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .mnd-revoke-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 8px 0 4px; }
     .mnd-pin { width: 110px; } .mnd-reason { flex: 1; min-width: 160px; }
     .mnd-btn { padding: 6px 14px; cursor: pointer; }
-    .mnd-btn-danger { color: #f85149; }
+    .mnd-btn-primary { font-weight: 600; }
+    /* Destructive action: quiet by design, never featured (item 3). */
+    .mnd-btn-danger { color: #f85149; font-weight: 400; }
     .mnd-dead-note { font-size: 13px; color: var(--text-dim); font-style: italic; }
     .mnd-grants-head { font-size: 13px; color: var(--text-dim); }
-    .mnd-grants { margin: 0; padding-left: 18px; font-size: 13px; line-height: 1.7; }
-    .mnd-grant-details { font-size: 13px; }
-    .mnd-grant-summary { cursor: pointer; color: var(--text-dim); }
+    .mnd-grants { margin: 0; padding-left: 18px; font-size: 14px; line-height: 1.7; }
+    .mnd-grant-id { color: var(--text-dim); font-size: 12px; }
+    /* The grant form is the card's PRIMARY action — an open, titled block, never
+       a collapsed toggle (Operator-Surface Quality item 1). */
+    .mnd-grant-block { border-top: 1px solid var(--border); padding-top: 10px; margin-top: 2px; }
+    .mnd-grant-title { font-size: 14px; font-weight: 600; color: var(--text-bright); margin-bottom: 6px; }
+    .mnd-grant-sep { font-size: 13px; color: var(--text-dim); }
+    /* Revoke is demoted to a quiet, collapsed secondary control (item 3). */
+    .mnd-revoke-details { font-size: 13px; margin-top: 4px; }
+    .mnd-revoke-summary { cursor: pointer; color: var(--text-dim); font-size: 13px; }
+    .mnd-about { font-size: 14px; color: var(--text-dim); margin-top: -8px; }
+    .mnd-about summary { cursor: pointer; }
+    .mnd-about p { margin: 8px 0 0; line-height: 1.55; }
     .mnd-grant-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 8px 0 4px; }
     .mnd-grant-field { min-width: 130px; max-width: 100%; padding: 6px 8px; }
     .mnd-notice { min-height: 20px; font-size: 14px; color: #3fb950; }
@@ -842,9 +858,19 @@
     .mnd-notice-ok { border: 1px solid #15803d; background: rgba(21, 128, 61, 0.12); color: #86efac; padding: 12px 14px; border-radius: 8px; font-size: 17px; font-weight: 600; line-height: 1.5; }
     .mnd-table { width: 100%; border-collapse: collapse; font-size: 13px; }
     .mnd-table th, .mnd-table td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
-    .mnd-reason-cell { color: var(--text-dim); max-width: 420px; }
-    .mnd-audit-head { display: flex; gap: 12px; align-items: center; margin-bottom: 8px; }
+    .mnd-reason-cell { color: var(--text-dim); }
+    .mnd-audit-head { display: flex; gap: 12px; align-items: center; margin-bottom: 8px; flex-wrap: wrap; }
     .mnd-dim { font-size: 13px; color: var(--text-dim); }
+    /* Mobile-first (item 5): at phone width the 5-column audit table stacks into
+       labelled rows so the reason — the useful column — is never truncated. */
+    @media (max-width: 640px) {
+      .mnd-table thead { position: absolute; left: -9999px; }
+      .mnd-table tr { display: block; border: 1px solid var(--border); border-radius: 8px; margin-bottom: 10px; padding: 6px 4px; }
+      .mnd-table td { display: flex; justify-content: space-between; gap: 12px; border-bottom: none; padding: 4px 8px; }
+      .mnd-table td::before { content: attr(data-label); font-weight: 600; color: var(--text-dim); flex: 0 0 auto; }
+      .mnd-reason-cell { text-align: right; word-break: break-word; }
+      .mnd-grant-field, .mnd-pin, .mnd-reason { width: 100%; min-width: 0; flex: 1 1 100%; }
+    }
 
     /* ── process-health tab (PROCESS-HEALTH-DASHBOARD-TAB-SPEC §4.1) ──
        Large, readable, calm. No monospace, no tables, no alarm colors.
@@ -3384,7 +3410,11 @@
         <h2 class="ph-title">Coordination Mandates</h2>
         <div id="mndStamp" class="ph-stamp" aria-live="polite"></div>
       </div>
-      <p class="ph-intro">Your bounded "permission slips" for autonomous agent-to-agent work. The slip — never the agent — is the authorizer. Issuing and revoking require <strong>your dashboard PIN</strong>; agent credentials alone are refused by design. With no slip issued, every delegated action is denied.</p>
+      <p class="ph-intro">Permission slips you sign with your PIN to let your agents do bounded work together.</p>
+      <details class="mnd-about">
+        <summary>What is this?</summary>
+        <p>These are your permission slips for autonomous agent-to-agent work — each one authorizes a specific, bounded task. The slip — never the agent — is the authorizer. Issuing and revoking require <strong>your dashboard PIN</strong>; an agent's own credentials are refused by design. With no slip issued, every delegated action is denied.</p>
+      </details>
       <div id="mndNotice" class="mnd-notice" aria-live="polite"></div>
       <section class="ph-section">
         <h3 class="ph-h">Issued mandates</h3>

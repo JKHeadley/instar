@@ -20,7 +20,7 @@ import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { renderMandates, renderGrants, renderGrantForm, createController } from '../../dashboard/mandates.js';
+import { renderMandates, renderGrants, renderGrantForm, renderAudit, createController } from '../../dashboard/mandates.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const HTML = fs.readFileSync(path.resolve(__dirname, '../../dashboard/index.html'), 'utf-8');
@@ -73,18 +73,21 @@ describe('grant form renderers (pick, don’t type)', () => {
     expect(expired).not.toContain('data-grant="m-live"');
   });
 
-  it('renderGrants lists carried grants with the person’s NAME and marks expired ones', () => {
+  it('renderGrants reads in plain language: NAME prominent, slug humanized, "you", expired marked', () => {
     const html = renderGrants(activeMandate({
       grants: [
         { floorAction: 'prod-deploy', grantedTo: 'U_MIA', authorizedBy: 'operator (dashboard PIN)', expiresAt: '2999-01-01T00:00:00Z' },
         { floorAction: 'external-send', grantedTo: 'U_GONE', authorizedBy: 'justin', expiresAt: '2000-01-01T00:00:00Z' },
       ],
     }), USERS);
-    expect(html).toContain('Mia Member (U_MIA)');
-    expect(html).toContain('prod-deploy');
-    expect(html).toContain('operator (dashboard PIN)');
+    expect(html).toContain('Mia Member');         // the person's NAME, not the slug
+    expect(html).toContain('U_MIA');               // the id stays as muted support metadata
+    expect(html).toContain('deploy to production'); // floor-action slug humanized, not raw
+    expect(html).not.toContain('prod-deploy');     // the raw slug is NOT the operator-facing text
+    expect(html).toContain('authorized by you');   // operator-via-PIN reads as "you"
     expect(html).toContain('expired');
-    expect(html).toContain('U_GONE'); // unknown id still shown verbatim, never hidden
+    expect(html).toContain('U_GONE');              // unknown id still shown verbatim, never hidden
+    expect(html).toContain('send something externally'); // the other slug humanized too
   });
 
   it('the dashboard floor-action list cannot drift from the RolePolicy enum (set-equality, both directions)', () => {
@@ -130,6 +133,75 @@ describe('grant form renderers (pick, don’t type)', () => {
       grants: [{ floorAction: xss, grantedTo: xss, authorizedBy: xss, expiresAt: '2999-01-01T00:00:00Z' }],
     }), []);
     expect(grants).not.toContain('<img');
+  });
+});
+
+// ── Operator-Surface Quality (the 2026-06-12 redesign, CMT-1434) ──
+// The card is the operator's surface; it must lead with the primary action,
+// expose zero raw internals as primary content, and de-emphasize the
+// destructive action. Each acceptance criterion gets a load-bearing pin.
+
+describe('Operator-Surface Quality — the Mandates card redesign', () => {
+  // bounds the OLD card dumped as raw JSON; the redesign must humanize them.
+  const cardWithBounds = () => renderMandates([activeMandate({
+    scope: 'feedback-migration',
+    authorities: [
+      { action: 'exchange-read-credential', bounds: { credentialScope: 'read-only', onMachine: true } },
+      { action: 'sign-code-review', bounds: { artifact: 'migration-port', mutual: true } },
+    ],
+  })], USERS);
+
+  it('item 1 — the Grant form is the PRIMARY action: rendered open, NOT inside a collapsed <details>', () => {
+    const form = renderGrantForm(activeMandate(), USERS);
+    expect(form).not.toContain('<details'); // never collapsed/toggled
+    expect(form).toContain('mnd-grant-block'); // an open, titled primary block
+    expect(form).toContain('Grant a person an action');
+    // …and it is open inside the full card too.
+    const card = renderMandates([activeMandate()], USERS);
+    const grantBlockIdx = card.indexOf('mnd-grant-block');
+    expect(grantBlockIdx).toBeGreaterThan(-1);
+    // The grant block must NOT sit inside the revoke <details> (i.e. the grant
+    // form is not nested under a collapsed control).
+    expect(card.indexOf('mnd-revoke-details')).toBeGreaterThan(grantBlockIdx);
+  });
+
+  it('item 2 — ZERO raw internals as primary content: no JSON blob in the card body', () => {
+    const card = cardWithBounds();
+    expect(card).not.toContain('{"');                 // no JSON.stringify of bounds
+    expect(card).not.toContain('credentialScope');    // no raw bounds keys
+    expect(card).not.toContain('onMachine');
+    // The humanized summary speaks plain language instead.
+    expect(card).toContain('exchange a read-only credential');
+    expect(card).toContain('co-sign a code review');
+    // The headline is the de-slugified scope, not the raw slug.
+    expect(card).toContain('Feedback migration');
+  });
+
+  it('item 2 — internal ids/fingerprints/slugs survive only as muted SUPPORT metadata', () => {
+    const card = cardWithBounds();
+    expect(card).toContain('For support:');           // the de-emphasized reference line
+    expect(card).toContain('id <code>');              // id kept for support, not as headline
+    // The raw scope slug is allowed ONLY in the muted support line, never as the title.
+    expect(card).toContain('scope <code>feedback-migration</code>');
+  });
+
+  it('item 3 — the destructive Revoke is DEMOTED (quiet, collapsed) and ordered AFTER Grant', () => {
+    const card = renderMandates([activeMandate()], USERS);
+    const grantIdx = card.indexOf('data-grant="m-live"');
+    const revokeIdx = card.indexOf('data-revoke="m-live"');
+    expect(grantIdx).toBeGreaterThan(-1);
+    expect(revokeIdx).toBeGreaterThan(-1);
+    expect(grantIdx).toBeLessThan(revokeIdx);         // Grant precedes Revoke in the DOM
+    expect(card).toContain('mnd-revoke-details');     // Revoke is a collapsed secondary control
+    expect(card).toContain('mnd-btn-danger');         // still clearly marked, just not featured
+  });
+
+  it('item 4 — plain-language audit cells carry mobile labels and never lose the reason', () => {
+    const audit = renderAudit({ chain: { ok: true }, entries: [
+      { ts: '2026-06-12T20:37:00Z', decision: 'deny', action: 'prod-deploy', agentFp: '63b1dbb21646e2f5', reason: 'requester is not the authorizer' },
+    ] });
+    expect(audit).toContain('data-label="Reason"');   // stacks (not truncates) on phone width
+    expect(audit).toContain('requester is not the authorizer'); // the useful column, in full
   });
 });
 
