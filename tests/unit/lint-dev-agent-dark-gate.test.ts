@@ -321,6 +321,11 @@ describe('lint-dev-agent-dark-gate', () => {
     const EXPECTED: Record<string, string> = {
       '138': 'monitoring.sessionReaper.enabled',
       '196': 'monitoring.agentWorktreeReaper.enabled',
+      // REBASE onto current main (incl. operator-auth-request #1138 authorizationRequests +
+      // credential-repointing Increment B): main shifted mcpProcessReaper-onward; WS2.6 inserts
+      // two new `enabled: false` stateSync blocks (userRegistry+topicOperator) after evolutionActions,
+      // pushing cartographer to 1066/1111/1136. credentialRepointing + authorizationRequests OMIT
+      // enabled (dev-gated). Every line RE-VERIFIED by hand via the attributor on the merged ConfigDefaults.
       '244': 'monitoring.mcpProcessReaper.enabled',
       '258': 'monitoring.agentSleep.enabled',
       '314': 'monitoring.correctionLearning.enabled',
@@ -339,12 +344,11 @@ describe('lint-dev-agent-dark-gate', () => {
       '900': 'multiMachine.stateSync.learnings.enabled',
       '915': 'multiMachine.stateSync.knowledge.enabled',
       '929': 'multiMachine.stateSync.evolutionActions.enabled',
-      '1037': 'cartographer.freshnessSweep.enabled',
-      '1082': 'cartographer.conformanceAudit.llmEnrichment.enabled',
-      '1107': 'cartographer.subtreeNav.llmRerank.enabled',
-      // subscriptionPool.credentialRepointing.enabled was re-gated to DEV_GATED_FEATURES
-      // (2026-06-13 operator directive) and now OMITS enabled in ConfigDefaults; the new
-      // monitoring.authorizationRequests OMITS enabled too — so neither appears here.
+      '943': 'multiMachine.stateSync.userRegistry.enabled',
+      '958': 'multiMachine.stateSync.topicOperator.enabled',
+      '1066': 'cartographer.freshnessSweep.enabled',
+      '1111': 'cartographer.conformanceAudit.llmEnrichment.enabled',
+      '1136': 'cartographer.subtreeNav.llmRerank.enabled',
     };
     const actual = attributeRealConfigDefaults();
     expect(actual).toEqual(EXPECTED);

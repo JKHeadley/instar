@@ -23,6 +23,22 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { establishOperator, type VerifiedOperator } from '../core/PrincipalGuard.js';
 
+/**
+ * WS2.6 topic-operator-record replication emit seam (injected, dark by default). server.ts
+ * late-binds a journal-backed emitter ONLY when `multiMachine.stateSync.topicOperator.enabled` is
+ * true; absent ⇒ strict no-op (single-machine, byte-identical). The emitter NEVER throws into the
+ * store (it swallows + counts internally), so the store calls it best-effort.
+ *
+ * THE LOAD-BEARING INVARIANT: this seam only EMITS the LOCAL authoritative binding to peers — it
+ * never RECEIVES one. A replicated topic-operator record can NEVER establish/override the local
+ * operator (that path does not exist by construction). emitPut carries the disclosure-minimized
+ * projection {platform, uid, names, boundAt} keyed on sha256(topicId + ":" + verified-uid).
+ */
+export interface TopicOperatorReplicationEmitter {
+  /** Emit a `put` for a freshly-bound (or re-bound) topic operator (called from setOperator). */
+  emitPut(topicId: number | string, record: TopicOperator): void;
+}
+
 /** The stored operator record for a topic. */
 export interface TopicOperator {
   /** The channel the operator is verified on. */
@@ -41,9 +57,21 @@ export interface TopicOperator {
 export class TopicOperatorStore {
   private readonly file: string;
   private cache: Record<string, TopicOperator> | null = null;
+  /** WS2.6 topic-operator-record replication emitter (injected, dark by default). Absent ⇒ strict no-op. */
+  private operatorReplication: TopicOperatorReplicationEmitter | null = null;
 
   constructor(stateDir: string) {
     this.file = path.join(stateDir, 'topic-operators.json');
+  }
+
+  /**
+   * Late-bind the WS2.6 topic-operator-record replication emitter (server.ts constructs the
+   * journal/clock AFTER the store). Idempotent; passing undefined/null detaches (back to
+   * single-machine no-op). The emit funnel checks `this.operatorReplication` per bind, so
+   * attaching mid-life takes effect on the next setOperator.
+   */
+  setOperatorReplicationEmitter(emitter: TopicOperatorReplicationEmitter | null | undefined): void {
+    this.operatorReplication = emitter ?? null;
   }
 
   private load(): Record<string, TopicOperator> {
@@ -97,6 +125,23 @@ export class TopicOperatorStore {
     const map = { ...this.load() };
     map[String(topicId)] = record;
     this.save(map);
+
+    // WS2.6 — best-effort topic-operator-record replication emission on a REAL bind (dark by
+    // default; the emitter is only injected when multiMachine.stateSync.topicOperator.enabled is
+    // true). The idempotent-skip above already returned, so we only emit when the binding actually
+    // changed. The emitter swallows its own errors, but we wrap defensively so a replication fault
+    // can NEVER break a local operator bind. This emits the LOCAL authoritative binding to peers;
+    // it never receives one (a replicated record is never authoritative — the invariant).
+    const emitter = this.operatorReplication;
+    if (emitter) {
+      try {
+        emitter.emitPut(topicId, record);
+      } catch {
+        // @silent-fallback-ok: a replication emit fault must never break or roll back a local
+        // operator bind — the durable on-disk state is already persisted above. The emitter counts
+        // its own failures internally; this guard only ensures a throw from the seam cannot propagate.
+      }
+    }
     return record;
   }
 
