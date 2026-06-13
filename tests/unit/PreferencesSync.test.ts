@@ -1,3 +1,5 @@
+// safe-git-allow: test fixture cleanup uses fs.rmSync on tmp dirs only.
+// safe-fs-allow: test fixture cleanup uses fs.rmSync on tmp dirs only.
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';

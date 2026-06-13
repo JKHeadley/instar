@@ -381,8 +381,12 @@ export class PreferencesManager {
     fs.renameSync(tmp, this.preferencesPath);
 
     // WS2.1 rewind fence: the meta sidecar tracks the high-water replicationSeq.
-    // Written AFTER the store (a crash between leaves the sidecar BEHIND the
-    // store — harmless; ahead would false-trip the rewind fence). Best-effort.
+    // Written AFTER the store rename (a crash between leaves the sidecar BEHIND
+    // the store — harmless; ahead would false-trip the rewind fence). The store
+    // fd is fsync'd before its rename above, so in program order the sidecar can
+    // never be persisted ahead of the store — the fence cannot false-trip on a
+    // reorder (review WS2.1 finding #6: ordering verified sufficient, no barrier
+    // needed). Best-effort: a sidecar write failure only weakens rewind detection.
     try {
       const seq = store.replicationSeq;
       if (typeof seq === 'number') {
