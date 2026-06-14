@@ -5360,6 +5360,18 @@ export class TelegramAdapter implements MessagingAdapter {
       throw new Error(`Telegram API returned not ok: ${JSON.stringify(data)}`);
     }
 
+    // Self-heal: a successful send/action to the lifeline topic is positive
+    // proof the lifeline is reachable — clear any stale Telegram.Lifeline
+    // degradation events so they don't linger after recovery.
+    try {
+      const lifelineId = this.config?.lifelineTopicId;
+      const threadId = params?.message_thread_id;
+      const isLifelineMethod = method === 'sendMessage' || method === 'sendChatAction';
+      if (isLifelineMethod && lifelineId != null && threadId === lifelineId) {
+        DegradationReporter.getInstance().clearByFeature('Telegram.Lifeline');
+      }
+    } catch { /* self-heal best-effort */ }
+
     return data.result;
   }
 }
