@@ -15691,7 +15691,33 @@ export async function startServer(options: StartOptions): Promise<void> {
             // wouldEnqueue/wouldHold/wouldRefuse counters ARE the promotion
             // evidence and /pool/queue must serve them. The boot sweep already
             // gate-expired any live→dry-run residual rows.
-            if (qcfg.enabled && _sessionPoolStage() !== 'dark') {
+            //
+            // BOOT-ORDER FIX: do NOT consult `_sessionPoolStage()` here — at this
+            // point in the synchronous boot flow it is still the line-~443 stub
+            // (`() => 'dark'`); the real impl is only assigned ~350 lines BELOW
+            // (the `_sessionPoolStage = () => { ... }` reassignment after the
+            // peer-presence puller is wired). Reading the stub made the gate
+            // ALWAYS false, so the inbound-queue engine never constructed even
+            // when correctly configured, and `/pool/queue` 503'd forever. Resolve
+            // the stage INLINE from config here — mirroring the line-~16045 impl
+            // exactly (liveConfig override with the static config block as the
+            // fallback) — instead of depending on the not-yet-wired ref.
+            const _sessionPoolStageNow = ((): string => {
+              try {
+                const fallback = (config.multiMachine?.sessionPool ?? {}) as { enabled?: boolean; stage?: string };
+                const live = liveConfig.get('multiMachine.sessionPool', fallback) as { enabled?: boolean; stage?: string };
+                return iqcMod.resolveSessionPoolStage(live);
+              } catch {
+                // @silent-fallback-ok: a config-read failure resolves the stage
+                // to 'dark' (the inert default) → the queue simply does not
+                // construct this boot, byte-identical to the ships-dark default.
+                // This is the SAFE direction (fail-closed: no queue), not a
+                // degraded capability worth a DegradationReporter event. Mirrors
+                // the live _sessionPoolStage getter's identical guard below.
+                return 'dark';
+              }
+            })();
+            if (qcfg.enabled && _sessionPoolStageNow !== 'dark') {
               const inv = iqcMod.validateInboundQueueInvariants(qcfg, hcfg);
               if (!inv.ok) {
                 for (const v of inv.violations) {
@@ -16042,11 +16068,12 @@ export async function startServer(options: StartOptions): Promise<void> {
           const peerPresenceTimer = setInterval(() => { void peerPresencePuller.pullOnce(); }, 30_000);
           if (typeof peerPresenceTimer.unref === 'function') peerPresenceTimer.unref();
 
+          const { resolveSessionPoolStage: _resolveSessionPoolStage } = await import('../core/inboundQueueConfig.js');
           _sessionPoolStage = () => {
             try {
               const fallback = (config.multiMachine?.sessionPool ?? {}) as { enabled?: boolean; stage?: string };
               const live = liveConfig.get('multiMachine.sessionPool', fallback) as { enabled?: boolean; stage?: string };
-              return live?.enabled && live?.stage ? String(live.stage) : 'dark';
+              return _resolveSessionPoolStage(live);
             } catch { return 'dark'; }
           };
           console.log(pc.green('  SessionRouter wired (L4) — inert until rollout stage advances past dark'));
