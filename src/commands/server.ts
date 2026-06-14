@@ -9408,7 +9408,7 @@ export async function startServer(options: StartOptions): Promise<void> {
     // (dev-gate-resolved AND the §2.10 env-token gate), and the executor's own dryRun keeps it a
     // dry-run dogfood on a dev agent (full decision loop + audit, ZERO writes) until dryRun:false.
     const { CredentialRebalancer } = await import('../core/CredentialRebalancer.js');
-    const { mapSlots: credMapSlots, mapAccounts: credMapAccounts, resolveRebalancerConfig: credResolveBalancerConfig } =
+    const { mapSlots: credMapSlots, mapAccounts: credMapAccounts, resolveRebalancerConfig: credResolveBalancerConfig, computeBusynessBySlot: credComputeBusyness } =
       await import('../core/CredentialRebalancerSnapshot.js');
     const CRED_DEFAULT_SLOT = '~/.claude';
     const credentialRebalancer = new CredentialRebalancer({
@@ -9417,15 +9417,25 @@ export async function startServer(options: StartOptions): Promise<void> {
         resolveDevAgentGate(config.subscriptionPool?.credentialRepointing?.enabled, config) &&
         !credentialEnvTokenGate.evaluate().refused,
       isDryRun: () => config.subscriptionPool?.credentialRepointing?.dryRun !== false,
-      listSlots: () => credMapSlots(credentialLocationLedger.getAssignments(), { defaultSlot: CRED_DEFAULT_SLOT }),
+      // Busyness = count of RUNNING claude-code sessions per slot (the drain "busiest slot"
+      // signal), resolved from the live session list through the ledger's account→slot map.
+      listSlots: () =>
+        credMapSlots(credentialLocationLedger.getAssignments(), {
+          defaultSlot: CRED_DEFAULT_SLOT,
+          busynessBySlot: credComputeBusyness(
+            state.listSessions(),
+            (accountId) => credentialLocationLedger.slotOf(accountId),
+            CRED_DEFAULT_SLOT,
+          ),
+        }),
       listAccounts: () => credMapAccounts(subscriptionPool.list(), Date.now()),
       resolveConfig: () =>
         credResolveBalancerConfig({
           ...(config.subscriptionPool?.credentialRepointing?.balancer ?? {}),
           slotCount: credentialLocationLedger.getAssignments().length,
-          // Dry-run dogfood defaults: keep the account currently in ~/.claude as the desired
-          // default (objective-0 keeps it alive). An explicit operator default-account config +
-          // tmux-activity busyness for the drain target are refinements <!-- tracked: 20905 -->.
+          // Dry-run dogfood default: keep the account currently in ~/.claude as the desired
+          // default (objective-0 keeps it alive). An explicit operator default-account config
+          // is a refinement <!-- tracked: 20905 -->.
           desiredDefaultAccountId: credentialLocationLedger.tenantOf(CRED_DEFAULT_SLOT) ?? null,
         }),
       swap: async (a, b) => {

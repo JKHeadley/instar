@@ -99,6 +99,40 @@ export function mapSlots(assignments: readonly CredentialAssignment[], opts: Slo
   return assignments.map((a) => mapSlot(a, opts));
 }
 
+/** A session snapshot the busyness computation reads — only these three fields. */
+export interface BusynessSession {
+  status: string;
+  framework?: string;
+  /** The pool account this session launched under (→ its current slot via the ledger). */
+  subscriptionAccountId?: string;
+}
+
+/**
+ * Per-slot busyness = count of RUNNING claude-code sessions on each slot (the drain
+ * "busiest slot" signal, §2.4 — the balancer drains toward the busiest slot so an
+ * expiring weekly window is spent where the work actually is). A session's slot is its
+ * account's CURRENT slot (`slotOf(subscriptionAccountId)`); an UNTAGGED session (no pool
+ * account — the default interactive session) counts toward the default slot. Non-running
+ * or non-claude-code sessions don't count (only claude-code sessions read the credential
+ * store the balancer steers). Pure; the live wiring passes `state.listSessions()`.
+ */
+export function computeBusynessBySlot(
+  sessions: readonly BusynessSession[],
+  slotOf: (accountId: string) => string | null,
+  defaultSlot: string,
+): Record<string, number> {
+  const busy: Record<string, number> = {};
+  for (const s of sessions) {
+    if (s.status !== 'running') continue;
+    // Undefined framework = a legacy record (pre-framework-tag) — treat as claude-code (the
+    // default); only an EXPLICIT non-claude framework is excluded.
+    if (s.framework !== undefined && s.framework !== 'claude-code') continue;
+    const slot = s.subscriptionAccountId ? slotOf(s.subscriptionAccountId) : defaultSlot;
+    if (slot) busy[slot] = (busy[slot] ?? 0) + 1;
+  }
+  return busy;
+}
+
 function clamp(v: number | undefined, lo: number, hi: number, dflt: number): number {
   const n = typeof v === 'number' && Number.isFinite(v) ? v : dflt;
   return Math.min(hi, Math.max(lo, n));
