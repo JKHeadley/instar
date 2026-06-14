@@ -351,16 +351,18 @@ describe('lint-dev-agent-dark-gate', () => {
       '786': 'multiMachine.sessionPool.enabled',
       '811': 'multiMachine.sessionPool.inboundQueue.enabled',
       '840': 'multiMachine.sessionPool.holdForStability.enabled',
-      '931': 'multiMachine.stateSync.preferences.enabled',
-      '945': 'multiMachine.stateSync.relationships.enabled',
-      '959': 'multiMachine.stateSync.learnings.enabled',
-      '974': 'multiMachine.stateSync.knowledge.enabled',
-      '988': 'multiMachine.stateSync.evolutionActions.enabled',
-      '1002': 'multiMachine.stateSync.userRegistry.enabled',
-      '1017': 'multiMachine.stateSync.topicOperator.enabled',
-      '1125': 'cartographer.freshnessSweep.enabled',
-      '1170': 'cartographer.conformanceAudit.llmEnrichment.enabled',
-      '1195': 'cartographer.subtreeNav.llmRerank.enabled',
+      // mm-stores-devgate (operator directive 2026-06-13, topic 13481): the 7
+      // multiMachine.stateSync.* memory stores MOVED from DARK_GATE_EXCLUSIONS to
+      // DEV_GATED_FEATURES and their `enabled: false` literals were REMOVED from
+      // ConfigDefaults (the stores now OMIT `enabled` so the dev-gate resolves them
+      // live on a dev agent, dark on the fleet) — so they have NO attributed path
+      // here anymore (exactly like credentialRepointing/authorizationRequests). Their
+      // removal shrank the stateSync block, shifting cartographer up: 1125→1100,
+      // 1170→1145, 1195→1170. RE-VERIFIED by hand via the attributor on the edited
+      // ConfigDefaults (each maps to a real `enabled: false,` line).
+      '1100': 'cartographer.freshnessSweep.enabled',
+      '1145': 'cartographer.conformanceAudit.llmEnrichment.enabled',
+      '1170': 'cartographer.subtreeNav.llmRerank.enabled',
     };
     const actual = attributeRealConfigDefaults();
     expect(actual).toEqual(EXPECTED);

@@ -918,104 +918,79 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       maxDriftMs: 300000, // 5 min — the §3.4 default, within the [60s,15min] clamp
       maxCachedSnapshots: 16, // §8.2 snapshot-cache count ceiling
       maxCacheBytes: 67108864, // 64 MiB — §8.2 snapshot-cache byte ceiling (reconciled to spec §8.2 from the 32 MiB Step-2 literal)
-      // WS2.1 (multi-machine-replicated-store-foundation §4/§10.1) — the FIRST
-      // concrete replicated-store consumer: `pref-record` on the HLC foundation.
-      // Per-store on-switch ships the graduated-rollout ladder dark:
-      // `enabled:false` (the foundation primitives stay inert) + `dryRun:true` (on
-      // first enable, log intended merges WITHOUT mutating store state). A literal
-      // `enabled:false` (NOT dev-gate-omit) per the spec ladder dark→dryRun→live —
-      // classified in DARK_GATE_EXCLUSIONS (optional-integration, staged rollout),
-      // mirroring multiMachine.sessionPool.inboundQueue. SUPERSEDES the legacy
-      // seamlessness path (CMT-1416), both dark ⇒ zero runtime duplication.
+      // ── The 7 stateSync memory stores follow the developmentAgent dark-feature
+      //    gate (standard_development_agent_dark_feature_gate), MOVED from
+      //    DARK_GATE_EXCLUSIONS on 2026-06-13 per operator directive topic 13481:
+      //    "NOTHING should ship dark on development agents — every multi-machine
+      //    feature must be live on dev agents so it actually gets tested, not rot."
+      //    Each store OMITS `enabled` so resolveDevAgentGate decides at runtime —
+      //    LIVE on a dev agent (Echo/the Mini, the dogfooding ground), DARK on the
+      //    fleet. A literal `enabled: false` would force-dark dev agents too (the
+      //    #1001 shape the §12.5 dark-gate lint forbids for a dev-gated block) — so
+      //    it is OMITTED, NOT baked false. The four consumer funnels
+      //    (selfStateSyncReceive, ReplicatedStoreReader.isLive, isStoreEmissionEnabled,
+      //    and the /preferences/session-context route) read the gate-RESOLVED stores
+      //    map built at the construction boundary in server.ts (resolveStateSyncStores),
+      //    so the gate genuinely flips them live — not just registry array-shuffling.
+      //    UNLIKE credentialRepointing (whose keychain WRITE is destructive, so it keeps
+      //    dryRun:true as the write-safety canary), these stores replicate between the
+      //    operator's OWN machines with NO external egress and NO destructive/irreversible
+      //    write — fully reversible via the foundation's rollback-unmerge (disabling a
+      //    store atomically drops that origin's contribution). A dry-run would defeat
+      //    "actually gets tested", so `dryRun: false` (genuinely live). An operator's
+      //    EXPLICIT `enabled` in .instar/config.json remains the documented force-dark /
+      //    fleet-flip override. applyDefaults is add-missing-only deep-merge, so existing
+      //    agents backfill these on update (Migration Parity) and an operator's existing
+      //    values are NEVER overwritten.
+      // WS2.1 (multi-machine-replicated-store-foundation §4/§10.1) — `pref-record`.
+      // SUPERSEDES the legacy seamlessness path (CMT-1416).
       preferences: {
-        enabled: false,
-        dryRun: true,
+        dryRun: false,
       },
-      // WS2.3 (ws23-relationships-userregistry-security) — the SECOND replicated-
-      // store consumer and the FIRST PII kind: `relationship-record` on the HLC
-      // foundation. Per-store on-switch ships the graduated-rollout ladder dark:
-      // `enabled:false` (the foundation primitives stay inert, NO PII ever crosses
-      // a machine boundary) + `dryRun:true` (on first enable, log intended merges
-      // WITHOUT mutating store state). A literal `enabled:false` (NOT dev-gate-omit)
-      // per the spec ladder dark→dryRun→live — classified in DARK_GATE_EXCLUSIONS
-      // (optional-integration, staged rollout), mirroring the preferences sibling.
-      // user-registry + topic-operator (the spec's other two PII kinds) are a
-      // tracked follow-up (CMT-1416) on the proven relationship-record machinery.
+      // WS2.3 (ws23-relationships-userregistry-security) — `relationship-record`, the
+      // FIRST PII kind. Every replicated field is type-clamped on receive; a peer
+      // record is quoted UNTRUSTED data, never the authoritative "who is messaging me";
+      // a delete propagates a tombstone. PII crosses ONLY between the operator's own
+      // machines (transit-encrypted).
       relationships: {
-        enabled: false,
-        dryRun: true,
+        dryRun: false,
       },
-      // WS2.2 (multi-machine-replicated-store-foundation) — the THIRD replicated-store
-      // consumer and the SECOND memory-family kind: `learning-record` on the HLC
-      // foundation. Per-store on-switch ships the graduated-rollout ladder dark:
-      // `enabled:false` (the foundation primitives stay inert, NO learning ever crosses
-      // a machine boundary; the local LRN-NNN id is NEVER replicated) + `dryRun:true`
-      // (on first enable, log intended merges WITHOUT mutating store state). A literal
-      // `enabled:false` (NOT dev-gate-omit) per the spec ladder dark→dryRun→live —
-      // classified in DARK_GATE_EXCLUSIONS (optional-integration, staged rollout),
-      // mirroring the relationships sibling. WS2.4 (KB) / WS2.5 (evolution) / WS2.6
-      // (playbook) reduce to schema+projection+flag on this same machinery (CMT-1416).
+      // WS2.2 (multi-machine-replicated-store-foundation) — `learning-record`, the SECOND
+      // memory-family kind. The local LRN-NNN id is NEVER replicated (the recordKey is a
+      // content fingerprint).
       learnings: {
-        enabled: false,
-        dryRun: true,
+        dryRun: false,
       },
-      // WS2.4 (multi-machine-replicated-store-foundation) — the FOURTH replicated-store
-      // consumer and the THIRD memory-family kind: `knowledge-record` on the HLC
-      // foundation. Per-store on-switch ships the graduated-rollout ladder dark:
-      // `enabled:false` (the foundation primitives stay inert, NO knowledge source ever
-      // crosses a machine boundary; the local generated id + filePath are NEVER replicated
-      // — only the catalog metadata, never the file body) + `dryRun:true` (on first enable,
-      // log intended merges WITHOUT mutating store state). A literal `enabled:false` (NOT
-      // dev-gate-omit) per the spec ladder dark→dryRun→live — classified in
-      // DARK_GATE_EXCLUSIONS (optional-integration, staged rollout), mirroring the
-      // learnings sibling. Full-content-body sync (beyond catalog metadata) is a tracked
-      // follow-up (CMT-1416).
+      // WS2.4 (multi-machine-replicated-store-foundation) — `knowledge-record`, the THIRD
+      // memory-family kind. Only catalog METADATA crosses (NEVER the file body or the
+      // local path); the local generated id is never replicated.
       knowledge: {
-        enabled: false,
-        dryRun: true,
+        dryRun: false,
       },
-      // WS2.5 (multi-machine-replicated-store-foundation) — the FIFTH replicated-store
-      // consumer and the FOURTH memory-family kind: `evolution-action-record` on the HLC
-      // foundation (the agent's self-improvement action queue). Per-store on-switch ships the
-      // graduated-rollout ladder dark: `enabled:false` (the foundation primitives stay inert,
-      // NO action ever crosses a machine boundary; the local ACT-NNN id is NEVER replicated) +
-      // `dryRun:true` (on first enable, log intended merges WITHOUT mutating store state). A
-      // literal `enabled:false` (NOT dev-gate-omit) per the spec ladder dark→dryRun→live —
-      // classified in DARK_GATE_EXCLUSIONS (optional-integration, staged rollout), mirroring
-      // the knowledge sibling. The load-bearing cross-machine field is `status` — a peer must
-      // SEE an action was already completed/in_progress elsewhere so it does not redo it.
+      // WS2.5 (multi-machine-replicated-store-foundation) — `evolution-action-record`, the
+      // FOURTH memory-family kind (the agent's self-improvement action queue). The local
+      // ACT-NNN id is NEVER replicated; the load-bearing cross-machine field is `status` —
+      // a peer must SEE an action was already completed/in_progress elsewhere so it does
+      // not redo it.
       evolutionActions: {
-        enabled: false,
-        dryRun: true,
+        dryRun: false,
       },
-      // WS2.6 (multi-machine-replicated-store-foundation) — the SIXTH replicated-store
-      // consumer and the SECOND PII kind: `user-record` on the HLC foundation (the multi-user
-      // registry the UserManager resolves an inbound message to). Per-store on-switch ships the
-      // graduated-rollout ladder dark: `enabled:false` (the foundation primitives stay inert, NO
-      // user PII ever crosses a machine boundary; the local userId is NEVER replicated — the
-      // recordKey is the channel-set identity surface) + `dryRun:true` (on first enable, log
-      // intended merges WITHOUT mutating store state). A literal `enabled:false` (NOT dev-gate-
-      // omit) per the spec ladder dark→dryRun→live — classified in DARK_GATE_EXCLUSIONS
-      // (optional-integration, staged rollout), mirroring the relationships sibling. Completes the
-      // WS2 memory family alongside topicOperator (CMT-1416).
+      // WS2.6 (multi-machine-replicated-store-foundation) — `user-record`, the SECOND PII
+      // kind (the multi-user registry). The local userId is NEVER replicated — the recordKey
+      // is the channel-set identity surface; inbound-principal RESOLUTION stays LOCAL-ONLY
+      // (the local channel index is always authoritative). User PII crosses ONLY between the
+      // operator's own machines (transit-encrypted).
       userRegistry: {
-        enabled: false,
-        dryRun: true,
+        dryRun: false,
       },
-      // WS2.6 (multi-machine-replicated-store-foundation) — the SEVENTH replicated-store consumer
-      // and the THIRD PII kind: `topic-operator-record` on the HLC foundation (which VERIFIED
-      // operator a topic was bound to). Per-store on-switch ships the graduated-rollout ladder
-      // dark: `enabled:false` (the foundation primitives stay inert, NO operator binding ever
-      // crosses a machine boundary; the recordKey is sha256(topicId + ":" + verified-uid), NEVER a
-      // content-name) + `dryRun:true`. A literal `enabled:false` (NOT dev-gate-omit) per the spec
-      // ladder dark→dryRun→live — classified in DARK_GATE_EXCLUSIONS (optional-integration, staged
-      // rollout), mirroring the userRegistry sibling. THE LOAD-BEARING SAFETY INVARIANT: a
-      // replicated topic-operator record is UNTRUSTED peer data — NEVER this machine's
-      // authoritative answer to "who is my verified operator?" (only the local authenticated
-      // setOperator binds the principal; Know-Your-Principal).
+      // WS2.6 (multi-machine-replicated-store-foundation) — `topic-operator-record`, the
+      // THIRD PII kind (which VERIFIED operator a topic was bound to). The recordKey is
+      // sha256(topicId + ":" + verified-uid), NEVER a content-name. THE LOAD-BEARING SAFETY
+      // INVARIANT: a replicated topic-operator record is UNTRUSTED peer data — NEVER this
+      // machine's authoritative answer to "who is my verified operator?" (only the local
+      // authenticated setOperator binds the principal; Know-Your-Principal).
       topicOperator: {
-        enabled: false,
-        dryRun: true,
+        dryRun: false,
       },
     },
   },

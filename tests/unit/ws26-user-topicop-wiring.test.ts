@@ -108,12 +108,14 @@ describe('WS2.6 manager emit seams (source touchpoints)', () => {
 });
 
 describe('WS2.6 ConfigDefaults + dev-gate + awareness', () => {
-  it('ConfigDefaults ships BOTH stateSync dark defaults (enabled:false, dryRun:true)', () => {
+  it('ConfigDefaults ships BOTH stateSync dev-gated postures (OMIT enabled, dryRun:false — operator directive 2026-06-13)', () => {
     const defaultsSrc = read('src/config/ConfigDefaults.ts');
-    expect(defaultsSrc).toMatch(/userRegistry:\s*\{\s*\n\s*enabled:\s*false,\s*\n\s*dryRun:\s*true,/);
-    expect(defaultsSrc).toMatch(/topicOperator:\s*\{\s*\n\s*enabled:\s*false,\s*\n\s*dryRun:\s*true,/);
+    expect(defaultsSrc).toMatch(/userRegistry:\s*\{\s*\n\s*dryRun:\s*false,\s*\n\s*\},/);
+    expect(defaultsSrc).toMatch(/topicOperator:\s*\{\s*\n\s*dryRun:\s*false,\s*\n\s*\},/);
+    expect(defaultsSrc).not.toMatch(/userRegistry:\s*\{\s*\n\s*enabled:\s*false/);
+    expect(defaultsSrc).not.toMatch(/topicOperator:\s*\{\s*\n\s*enabled:\s*false/);
   });
-  it('the dev-gate dark exclusions classify BOTH paths', () => {
+  it('the dev-gate classifies BOTH paths as DEV_GATED (live-on-dev), not dark exclusions', () => {
     const devGated = read('src/core/devGatedFeatures.ts');
     expect(devGated).toContain("configPath: 'multiMachine.stateSync.userRegistry.enabled'");
     expect(devGated).toContain("configPath: 'multiMachine.stateSync.topicOperator.enabled'");

@@ -1,0 +1,68 @@
+# Multi-machine memory stores — dev-gated (live-on-dev, dark-fleet)
+
+## What Changed
+
+- **The 7 `multiMachine.stateSync.*` cross-machine memory stores** (preferences,
+  relationships, learnings, knowledge, evolutionActions, userRegistry, topicOperator)
+  **moved from `DARK_GATE_EXCLUSIONS` (off for EVERYONE, including dev agents) to
+  `DEV_GATED_FEATURES` (live-on-dev / dark-fleet, `dryRun:false`)**, mirroring the
+  `subscriptionPool.credentialRepointing` precedent.
+- **Driver — operator directive (topic 13481, 2026-06-13):** "NOTHING should ship dark
+  on development agents — every multi-machine feature must be live on dev agents so it
+  actually gets tested, not rot." A literal `enabled: false` in `ConfigDefaults` had
+  force-darked the stores everywhere, so the WS2 replicated-store family never got
+  dogfooded on a dev agent and never graduated.
+- **How it resolves now:** each store's `ConfigDefaults` block OMITS `enabled` so the
+  developmentAgent gate decides — LIVE on a dev agent, DARK on the fleet. A new helper
+  `resolveStateSyncStores(config)` resolves the gate ONCE at the server construction
+  boundary; the resolved stores map is fed into `selfStateSyncReceive`, all 7
+  `ReplicatedStoreReader` instances, and `checkPoolFlagCoherence`, so every consumer
+  funnel keeps its unchanged `enabled === true` semantics but now sees a live flag on a
+  dev agent. The `/preferences/session-context` route resolves the same gate so it
+  agrees with the union reader's `isLive()`.
+- **`dryRun:false` (genuinely live):** unlike `credentialRepointing` (whose keychain
+  write is destructive, so it keeps `dryRun:true` as a write-safety canary), these stores
+  replicate between the operator's OWN machines with NO external egress and NO
+  destructive/irreversible write — fully reversible via the foundation's rollback-unmerge.
+  A dry-run would defeat "actually gets tested".
+- **Fleet + single-machine agents are an unchanged no-op** — the stores resolve dark
+  exactly as before. An operator's explicit `multiMachine.stateSync.<store>.enabled` in
+  config remains the documented force-dark (false) / fleet-flip (true) override.
+
+## Migration
+
+- `PostUpdateMigrator.migrateConfigStateSyncStoresDevGate` strips ONLY the exact
+  old-default signature `{ enabled:false, dryRun:true }` per store (the
+  ConfigDefaults-backfilled shape, never an operator hand-edit) so `applyDefaults`
+  backfills the new `dryRun:false` and the gate resolves `enabled`. Any divergent
+  (operator-touched) block is left entirely alone — reach is not authority. Idempotent.
+
+## Evidence
+
+- `tests/unit/state-sync-stores-dark-gate.test.ts` (40): each of the 7 stores resolves
+  live-on-dev / dark-on-fleet through the gate; an explicit `enabled` (true/false) wins;
+  per-store `dryRun` + non-store foundation knobs are preserved by `resolveStateSyncStores`.
+- `tests/unit/PostUpdateMigrator-stateSyncStoresDevGate.test.ts` (7): the migrator strips
+  the exact old-default signature, leaves operator-touched blocks alone, and is idempotent.
+- `tests/unit/lint-dev-agent-dark-gate.test.ts`: the EXPECTED attribution map no longer
+  carries the 7 stateSync `enabled:false` paths (the literals were removed); the dark-gate
+  lint confirms the stores are dev-gated, not force-darked.
+- `tests/unit/ws22..ws26-*-wiring.test.ts`: the existing wiring tests stay green against
+  the gate-resolved stores map.
+
+## Summary of New Capabilities
+
+- The 7 cross-machine memory stores (preferences, relationships, learnings, knowledge,
+  evolution-actions, user-registry, topic-operator) now run LIVE on development agents
+  (dark on the fleet) so the WS2 replicated-store family is actually exercised instead of
+  shipping dark everywhere.
+
+## What to Tell Your User
+
+Nothing changes for fleet agents — these cross-machine memory-sync features stay off for
+everyone except development agents, where they now run live so they finally get tested.
+There is no user-facing action and no behavior change on a normal install (or any
+single-machine agent). An operator can still force-dark or fleet-flip any individual store
+explicitly through the multi-machine state-sync settings in config.
+
+<!-- tracked: CMT-1416 -->
