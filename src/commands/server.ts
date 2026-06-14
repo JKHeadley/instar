@@ -18,7 +18,7 @@ import pc from 'picocolors';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 import { loadConfig, ensureStateDir, detectTmuxPath, detectGeminiPath } from '../core/Config.js';
 import { isNonFatalUncaught, shouldLogStackForUncaught } from '../core/uncaughtExceptionPolicy.js';
-import { resolveDevAgentGate } from '../core/devAgentGate.js';
+import { resolveDevAgentGate, resolveStateSyncStores } from '../core/devAgentGate.js';
 import { parseProfileTrigger, platformMessageIdFrom } from '../core/topicProfileIngress.js';
 import {
   TopicProfileOrchestrator,
@@ -3720,9 +3720,21 @@ export async function startServer(options: StartOptions): Promise<void> {
     });
     void storeSnapshotEngine; // consumed by the state-snapshot mesh handler below + the store PRs (WS2.1+)
 
+    // The 7 stateSync memory stores follow the developmentAgent dark-feature gate
+    // (operator directive 2026-06-13, topic 13481): their ConfigDefaults OMIT
+    // `enabled` so the gate decides — LIVE on a dev agent, DARK on the fleet. Resolve
+    // the gate ONCE here so every consumer funnel below (selfStateSyncReceive, the 7
+    // union readers, checkPoolFlagCoherence) receives a stores map whose per-store
+    // `enabled` is already the resolved boolean — the funnels keep their unchanged
+    // `enabled === true` semantics but now see a live flag on a dev agent. An explicit
+    // operator `enabled` in config still wins (force-dark false / fleet-flip true).
+    const _stateSyncStoresResolved = resolveStateSyncStores(
+      config as { developmentAgent?: boolean; multiMachine?: { stateSync?: Record<string, { enabled?: boolean } & Record<string, unknown>> } },
+    ) as import('../core/ReplicatedRecordEnvelope.js').StateSyncStores | undefined;
+
     const selfStateSyncReceive = (): Record<string, boolean> => {
       const out: Record<string, boolean> = {};
-      const stores = (config.multiMachine as unknown as { stateSync?: Record<string, { enabled?: boolean }> } | undefined)?.stateSync;
+      const stores = _stateSyncStoresResolved;
       for (const store of replicatedKindRegistry.stores()) {
         // Advertise the receive capability iff the machinery exists (kind
         // registered) AND the store is enabled here — so a peer never forwards a
@@ -3780,7 +3792,7 @@ export async function startServer(options: StartOptions): Promise<void> {
     const { prefEntryToOriginRecord, prefTierOf, PREF_STORE_KEY } = await import('../core/PreferencesReplicatedStore.js');
     const preferencesUnionReader = new ReplicatedStoreReader({
       registry: replicatedKindRegistry,
-      stores: (config.multiMachine as unknown as { stateSync?: import('../core/ReplicatedRecordEnvelope.js').StateSyncStores } | undefined)?.stateSync,
+      stores: _stateSyncStoresResolved, // gate-resolved (dev-live / fleet-dark) per operator directive 2026-06-13
       tierOf: prefTierOf,
       loadOriginRecords: (store, recordKey) => {
         if (store !== PREF_STORE_KEY || _meshSelfId === null) return [];
@@ -3819,7 +3831,7 @@ export async function startServer(options: StartOptions): Promise<void> {
     const { relationshipTierOf, relationshipToOriginRecord, deriveRelationshipRecordKey, mergeUnionToRelationships, renderForeignRelationshipContext, RELATIONSHIP_STORE_KEY } = await import('../core/RelationshipsReplicatedStore.js');
     const relationshipsUnionReader = new ReplicatedStoreReader({
       registry: replicatedKindRegistry,
-      stores: (config.multiMachine as unknown as { stateSync?: import('../core/ReplicatedRecordEnvelope.js').StateSyncStores } | undefined)?.stateSync,
+      stores: _stateSyncStoresResolved, // gate-resolved (dev-live / fleet-dark) per operator directive 2026-06-13
       tierOf: relationshipTierOf,
       loadOriginRecords: (store, recordKey) => {
         if (store !== RELATIONSHIP_STORE_KEY || _meshSelfId === null || !relationships) return [];
@@ -5402,7 +5414,12 @@ export async function startServer(options: StartOptions): Promise<void> {
         const telegramForRoleGuard = telegram; // const-narrow for the closure
         scheduler.setRoleGuard(
           () => ({
-            enabled: config.multiMachine?.seamlessness?.ws43RoleGuard === true,
+            // DEV-AGENT DARK GATE (operator directive 2026-06-13, topic 13481):
+            // read ws43RoleGuard through resolveDevAgentGate so it resolves LIVE on
+            // a dev agent / DARK on the fleet. The guard can only ever REFUSE a
+            // spawn (never wrongly spawn — the safe direction); single-machine
+            // agents always hold the lease, so it never fires there even live.
+            enabled: resolveDevAgentGate(config.multiMachine?.seamlessness?.ws43RoleGuard, config),
             holdsLease: coordinator.holdsLease(),
           }),
           (slug, machineId) => {
@@ -8252,7 +8269,7 @@ export async function startServer(options: StartOptions): Promise<void> {
     const { learningTierOf, learningToOriginRecord, deriveLearningRecordKey, LEARNING_STORE_KEY } = await import('../core/LearningsReplicatedStore.js');
     const learningsUnionReader = new ReplicatedStoreReader({
       registry: replicatedKindRegistry,
-      stores: (config.multiMachine as unknown as { stateSync?: import('../core/ReplicatedRecordEnvelope.js').StateSyncStores } | undefined)?.stateSync,
+      stores: _stateSyncStoresResolved, // gate-resolved (dev-live / fleet-dark) per operator directive 2026-06-13
       tierOf: learningTierOf,
       loadOriginRecords: (store, recordKey) => {
         if (store !== LEARNING_STORE_KEY || _meshSelfId === null) return [];
@@ -8303,7 +8320,7 @@ export async function startServer(options: StartOptions): Promise<void> {
     } = await import('../core/KnowledgeReplicatedStore.js');
     const knowledgeUnionReader = new ReplicatedStoreReader({
       registry: replicatedKindRegistry,
-      stores: (config.multiMachine as unknown as { stateSync?: import('../core/ReplicatedRecordEnvelope.js').StateSyncStores } | undefined)?.stateSync,
+      stores: _stateSyncStoresResolved, // gate-resolved (dev-live / fleet-dark) per operator directive 2026-06-13
       tierOf: knowledgeTierOf,
       loadOriginRecords: (store, recordKey) => {
         if (store !== KNOWLEDGE_STORE_KEY || _meshSelfId === null) return [];
@@ -8352,7 +8369,7 @@ export async function startServer(options: StartOptions): Promise<void> {
     } = await import('../core/EvolutionActionsReplicatedStore.js');
     const evolutionActionsUnionReader = new ReplicatedStoreReader({
       registry: replicatedKindRegistry,
-      stores: (config.multiMachine as unknown as { stateSync?: import('../core/ReplicatedRecordEnvelope.js').StateSyncStores } | undefined)?.stateSync,
+      stores: _stateSyncStoresResolved, // gate-resolved (dev-live / fleet-dark) per operator directive 2026-06-13
       tierOf: evolutionActionTierOf,
       loadOriginRecords: (store, recordKey) => {
         if (store !== EVOLUTION_ACTION_STORE_KEY || _meshSelfId === null) return [];
@@ -8394,7 +8411,7 @@ export async function startServer(options: StartOptions): Promise<void> {
     const { userTierOf, userToOriginRecord, deriveUserRecordKey, USER_STORE_KEY } = await import('../core/UserRegistryReplicatedStore.js');
     const userRegistryUnionReader = new ReplicatedStoreReader({
       registry: replicatedKindRegistry,
-      stores: (config.multiMachine as unknown as { stateSync?: import('../core/ReplicatedRecordEnvelope.js').StateSyncStores } | undefined)?.stateSync,
+      stores: _stateSyncStoresResolved, // gate-resolved (dev-live / fleet-dark) per operator directive 2026-06-13
       tierOf: userTierOf,
       loadOriginRecords: (store, recordKey) => {
         if (store !== USER_STORE_KEY || _meshSelfId === null) return [];
@@ -8436,7 +8453,7 @@ export async function startServer(options: StartOptions): Promise<void> {
     const { topicOperatorTierOf, topicOperatorToOriginRecord, deriveTopicOperatorRecordKey, TOPIC_OPERATOR_STORE_KEY } = await import('../core/TopicOperatorReplicatedStore.js');
     const topicOperatorUnionReader = new ReplicatedStoreReader({
       registry: replicatedKindRegistry,
-      stores: (config.multiMachine as unknown as { stateSync?: import('../core/ReplicatedRecordEnvelope.js').StateSyncStores } | undefined)?.stateSync,
+      stores: _stateSyncStoresResolved, // gate-resolved (dev-live / fleet-dark) per operator directive 2026-06-13
       tierOf: topicOperatorTierOf,
       loadOriginRecords: (store, recordKey) => {
         if (store !== TOPIC_OPERATOR_STORE_KEY || _meshSelfId === null) return [];
@@ -9738,7 +9755,12 @@ export async function startServer(options: StartOptions): Promise<void> {
     const { SpeakerElection } = await import('../monitoring/SpeakerElection.js');
     const ws3Cfg = () => ((config as Record<string, any>).multiMachine?.seamlessness ?? {}) as { ws3OneVoice?: boolean; ws3DwellMs?: number };
     const speakerElection = new SpeakerElection({
-      enabled: () => ws3Cfg().ws3OneVoice === true,
+      // DEV-AGENT DARK GATE (operator directive 2026-06-13, topic 13481): read
+      // ws3OneVoice through resolveDevAgentGate so it resolves LIVE on a dev agent
+      // (config OMITS it → undefined → !!developmentAgent) and DARK on the fleet.
+      // An explicit config value still wins. Single-machine is a no-op regardless
+      // (the election never engages below 2 online machines).
+      enabled: () => resolveDevAgentGate(ws3Cfg().ws3OneVoice, config),
       currentMachineId: (() => {
         // @silent-fallback-ok — no machine identity = the election's legacy-no-machine-id
         // verdict (always speak): the designed single-machine degradation, not a loss.
@@ -13809,8 +13831,18 @@ export async function startServer(options: StartOptions): Promise<void> {
           scheduler.setJournalLeaseCutover(
             leaseStore,
             () => ({
-              enabled: config.multiMachine?.seamlessness?.ws43JournalLease === true,
-              dryRun: config.multiMachine?.seamlessness?.ws43JournalLeaseDryRun !== false,
+              // DEV-AGENT DARK GATE (operator directive 2026-06-13, topic 13481):
+              // read ws43JournalLease through resolveDevAgentGate → LIVE on a dev
+              // agent / DARK on the fleet (config OMITS both flags). ws43JournalLease
+              // DryRun resolves COHERENTLY: on a dev agent the cutover goes genuinely
+              // live (dryRun → false) so the journal-lease path is actually exercised,
+              // not just logged; on the fleet it resolves to the safe dry-run default
+              // (true). An explicit config value still wins on either flag. A genuine
+              // live cutover only engages when the flag resolves live AND the pool is
+              // flag-coherent (≥2 machines all advertising not-dry-run), so a
+              // single-machine dev agent never half-migrates.
+              enabled: resolveDevAgentGate(config.multiMachine?.seamlessness?.ws43JournalLease, config),
+              dryRun: config.multiMachine?.seamlessness?.ws43JournalLeaseDryRun ?? !resolveDevAgentGate(undefined, config),
               epoch: coordinator.getLeaseEpoch(),
               peers: registryForCutover
                 .getCapacities()
@@ -13901,7 +13933,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                 // WS1.1 capability advertisement (spec invariant 5): a bounded
                 // fixed-size summary, never an inventory. Reported live each
                 // heartbeat so a queue going dark withdraws the capability.
-                seamlessnessFlags: { ws11DeliverReceive: !!_inboundQueue, ws12DrainReceive: !!_drainRunner, ws44PoolLinks: !!_poolLink, ws44PoolCache: !!_poolPollCache, ws43JournalLease: config.multiMachine?.seamlessness?.ws43JournalLease === true && config.multiMachine?.seamlessness?.ws43JournalLeaseDryRun !== true, stateSyncReceive: selfStateSyncReceive() },
+                seamlessnessFlags: { ws11DeliverReceive: !!_inboundQueue, ws12DrainReceive: !!_drainRunner, ws44PoolLinks: !!_poolLink, ws44PoolCache: !!_poolPollCache, ws43JournalLease: resolveDevAgentGate(config.multiMachine?.seamlessness?.ws43JournalLease, config) && (config.multiMachine?.seamlessness?.ws43JournalLeaseDryRun ?? !resolveDevAgentGate(undefined, config)) !== true, stateSyncReceive: selfStateSyncReceive() },
                 // Durable Inbound Message Queue §5.1: depth + oldest + tenure +
                 // bounded top-K — the survivor's loss-SUSPECTED item, capped
                 // re-placement arm, and supersede-dedupe key all read these.
@@ -13957,7 +13989,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                 online: c.online,
                 stateSyncReceive: c.seamlessnessFlags?.stateSyncReceive,
               }));
-            const stores = (config.multiMachine as unknown as { stateSync?: import('../core/ReplicatedRecordEnvelope.js').StateSyncStores } | undefined)?.stateSync;
+            const stores = _stateSyncStoresResolved; // gate-resolved (dev-live / fleet-dark) per operator directive 2026-06-13
             const verdict = checkPoolFlagCoherence(replicatedKindRegistry, stores, peers);
             if (verdict.mixedStores.length > 0) {
               // Surface ONCE (coalesced): one log line listing every mixed store.
@@ -14192,7 +14224,14 @@ export async function startServer(options: StartOptions): Promise<void> {
           const ws13Cfg = () => ((config as Record<string, any>).multiMachine?.seamlessness ?? {}) as { ws13Reconcile?: boolean; ws13DryRun?: boolean; ws13TickMs?: number };
           const { OwnershipReconciler } = await import('../core/OwnershipReconciler.js');
           const reconciler = new OwnershipReconciler({
-            enabled: () => ws13Cfg().ws13Reconcile === true,
+            // DEV-AGENT DARK GATE (operator directive 2026-06-13, topic 13481):
+            // read ws13Reconcile through resolveDevAgentGate so the reconcile loop
+            // resolves LIVE on a dev agent / DARK on the fleet. ws13DryRun STAYS a
+            // plain config read (the in-component "log intended CAS without
+            // performing it" rung — NOT the dev-gate); so on a dev agent the loop
+            // runs live but in dry-run (no destructive CAS), exactly as the rollout
+            // ladder intends. Strict single-machine no-op inside the module.
+            enabled: () => resolveDevAgentGate(ws13Cfg().ws13Reconcile, config),
             dryRun: () => ws13Cfg().ws13DryRun !== false,
             selfMachineId: _meshSelfId,
             pinStore: _topicPinStore,

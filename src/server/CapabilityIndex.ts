@@ -764,6 +764,17 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     }),
   },
   {
+    key: 'feedbackInbox',
+    prefixes: ['/feedback-inbox'],
+    description: 'Feedback-inbox drainer (feedback-factory-migration Q2b, Option-B receiving end) — read-only status of the cloud Blob-inbox → durable canonical FeedbackStore mover on the operated machine. Ships dark (feedbackFactory.receiverPersistence.enabled + Blob token env required); 503 when dark.',
+    build: ({ ctx }) => ({
+      enabled: !!ctx.inboxDrainer,
+      endpoints: [
+        'GET /feedback-inbox/status — { running, drained, duplicates, quarantined, errors, ticks, lastTickAt, lastDrainAt, lastError } (read-only counters)',
+      ],
+    }),
+  },
+  {
     key: 'cutoverReadiness',
     prefixes: ['/cutover-readiness'],
     description: 'Cutover-READINESS checker (coordination-mandate spec §7 G2.4, decision 1A) — everything UP TO the cutover door, never the door. Composes the two objective conditions from REAL durable state: the persisted import IntegrityReport (integrity-gate-pass) and the durable zero-divergence parity window with a freshness bound (parity-zero-divergence). The flip itself is the operator\'s manual click; there is NO fire-cutover route by design.',

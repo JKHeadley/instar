@@ -348,19 +348,31 @@ describe('lint-dev-agent-dark-gate', () => {
       // lease cutover inserts another 18-line plain-boolean seamlessness block
       // (ws43JournalLease + ws43JournalLeaseDryRun, NOT `enabled:` paths) above
       // sessionPool, a further +18 shift. RE-VERIFIED by hand via the attributor on the merged ConfigDefaults.
-      '786': 'multiMachine.sessionPool.enabled',
-      '811': 'multiMachine.sessionPool.inboundQueue.enabled',
-      '840': 'multiMachine.sessionPool.holdForStability.enabled',
-      '931': 'multiMachine.stateSync.preferences.enabled',
-      '945': 'multiMachine.stateSync.relationships.enabled',
-      '959': 'multiMachine.stateSync.learnings.enabled',
-      '974': 'multiMachine.stateSync.knowledge.enabled',
-      '988': 'multiMachine.stateSync.evolutionActions.enabled',
-      '1002': 'multiMachine.stateSync.userRegistry.enabled',
-      '1017': 'multiMachine.stateSync.topicOperator.enabled',
-      '1125': 'cartographer.freshnessSweep.enabled',
-      '1170': 'cartographer.conformanceAudit.llmEnrichment.enabled',
-      '1195': 'cartographer.subtreeNav.llmRerank.enabled',
+      // mm-pool-seamlessness-devgate (operator directive 2026-06-13, topic 13481):
+      // the 5 multiMachine.seamlessness coherence flags (ws3OneVoice, ws13Reconcile,
+      // ws41DurableAck, ws43RoleGuard, ws43JournalLease) had their hardcoded `false`
+      // literals REMOVED (now OMITTED so the dev-gate resolves them live-on-dev / dark-
+      // fleet). They were never `enabled:` paths so the attributor never tracked them, but
+      // removing the literals + their comment reflow shifted the sessionPool block DOWN by
+      // +23 (786→809) and cartographer DOWN by +23 (1100→1123). The 3 sessionPool flags
+      // stay HARDCODED false (held — they share the StageAdvancer `stage !== 'dark'` gate,
+      // not cleanly dev-gatable), so they remain attributed here. RE-VERIFIED by hand via
+      // the attributor on the edited ConfigDefaults (each maps to a real `enabled: false,` line).
+      '809': 'multiMachine.sessionPool.enabled',
+      '834': 'multiMachine.sessionPool.inboundQueue.enabled',
+      '863': 'multiMachine.sessionPool.holdForStability.enabled',
+      // mm-stores-devgate (operator directive 2026-06-13, topic 13481): the 7
+      // multiMachine.stateSync.* memory stores MOVED from DARK_GATE_EXCLUSIONS to
+      // DEV_GATED_FEATURES and their `enabled: false` literals were REMOVED from
+      // ConfigDefaults (the stores now OMIT `enabled` so the dev-gate resolves them
+      // live on a dev agent, dark on the fleet) — so they have NO attributed path
+      // here anymore (exactly like credentialRepointing/authorizationRequests). Their
+      // removal shrank the stateSync block, shifting cartographer up: 1125→1100,
+      // 1170→1145, 1195→1170. RE-VERIFIED by hand via the attributor on the edited
+      // ConfigDefaults (each maps to a real `enabled: false,` line).
+      '1123': 'cartographer.freshnessSweep.enabled',
+      '1168': 'cartographer.conformanceAudit.llmEnrichment.enabled',
+      '1193': 'cartographer.subtreeNav.llmRerank.enabled',
     };
     const actual = attributeRealConfigDefaults();
     expect(actual).toEqual(EXPECTED);

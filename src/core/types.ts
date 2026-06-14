@@ -2654,6 +2654,29 @@ export interface InstarConfig {
     operationalFacts?: Array<string | { fact: string; updatedAt?: string; machine?: string }>;
   };
   /**
+   * Feedback-factory operated-instance config (docs/specs/feedback-factory-migration.md).
+   * `receiverPersistence` is the Option-B receiving end: the canonical front (Vercel)
+   * writes accepted reports to a durable Blob inbox; the InboxDrainer on THIS machine
+   * ingests them into the durable canonical JsonlFeedbackStore. Ships DARK
+   * (enabled !== true ⇒ no drainer, route 503s). The Blob token is read from the env
+   * var named by `blobTokenEnv` (default FEEDBACK_INBOX_BLOB_TOKEN) — never stored in
+   * config.json.
+   */
+  feedbackFactory?: {
+    receiverPersistence?: {
+      /** Master switch. Dark default — nothing runs unless explicitly true. */
+      enabled?: boolean;
+      /** Env var holding the Vercel Blob read-write token. Default FEEDBACK_INBOX_BLOB_TOKEN. */
+      blobTokenEnv?: string;
+      /** Override the Blob API base (tests / fake server). */
+      blobApiBase?: string;
+      /** Drain poll cadence (default 60000). */
+      pollIntervalMs?: number;
+      /** Canonical store directory (default <stateDir>/state/feedback-factory/store). */
+      dataDir?: string;
+    };
+  };
+  /**
    * Model-routing config. `tierEscalation` is the Model-Tier Escalation
    * Policy (docs/specs/FABLE-MODEL-ESCALATION-SPEC.md §9): default every
    * session to its framework's default model, escalate to the framework's

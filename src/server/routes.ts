@@ -903,6 +903,10 @@ export interface RouteContext {
    *  door). Read-only objective conditions from durable state; the flip itself is
    *  never autonomous. Null when stateDir is unavailable. */
   cutoverReadiness: import('../feedback-factory/cutoverReadiness.js').CutoverReadiness | null;
+  /** Option-B receiving end (feedback-factory-migration Q2b): the Blob-inbox →
+   *  durable canonical store drainer. Null when dark (config off / no token) →
+   *  GET /feedback-inbox/status 503s. */
+  inboxDrainer?: import('../feedback-factory/inbox/InboxDrainer.js').InboxDrainer | null;
   /** Cross-topic activity index (Parallel-Work Awareness Phase A). Backs GET /parallel-work/activities. */
   parallelActivityIndex?: import('../core/ParallelActivityIndex.js').ParallelActivityIndex | null;
   /** The shared intelligence provider (an IntelligenceRouter when per-component routing is wired). Backs GET /intelligence/routing. */
@@ -7563,6 +7567,17 @@ export function createRoutes(ctx: RouteContext): Router {
   // flip itself is the operator's manual click — there is NO fire-cutover route
   // here by design, and `door` says so machine-readably.
 
+  // ── Feedback-inbox drainer status (Option-B receiving end, Q2b) ──
+  // Read-only counters for the cloud-inbox → canonical-store mover. 503 when the
+  // feature is dark (config off / no Blob token) — the standard null-dep pattern.
+  router.get('/feedback-inbox/status', (_req, res) => {
+    if (!ctx.inboxDrainer) {
+      res.status(503).json({ error: 'feedback-inbox drainer unavailable (feedbackFactory.receiverPersistence disabled or no Blob token)' });
+      return;
+    }
+    res.json(ctx.inboxDrainer.status());
+  });
+
   // The readiness signal. Read-only.
   router.get('/cutover-readiness', (_req, res) => {
     if (!ctx.cutoverReadiness) {
@@ -10399,11 +10414,17 @@ export function createRoutes(ctx: RouteContext): Router {
   const ATTENTION_PEER_TIMEOUT_MS = 5_000;
 
   // WS4.1 follow-up (CMT-1416): durable operator-bound /ack across machines.
-  // Plain seamlessness boolean read LIVE (mirrors ws21PreferencesPool) — off ⇒
-  // POST /attention/:id/remote-ack 503s, the PATCH precedence guard is inert,
-  // and the store is never touched (strict no-op on a flag-off agent).
+  // DEV-AGENT DARK GATE (operator directive 2026-06-13, topic 13481): read
+  // ws41DurableAck through resolveDevAgentGate so it resolves LIVE on a dev agent
+  // (config OMITS it → undefined → !!developmentAgent) / DARK on the fleet. An
+  // explicit config value still wins. Off ⇒ POST /attention/:id/remote-ack 503s,
+  // the PATCH precedence guard is inert, and the store is never touched (strict
+  // no-op); single-machine agents are a no-op even live (no peers to route to).
   const ws41DurableAckEnabled = (): boolean =>
-    ((ctx.config as Record<string, any>).multiMachine?.seamlessness ?? {}).ws41DurableAck === true;
+    resolveDevAgentGate(
+      ((ctx.config as Record<string, any>).multiMachine?.seamlessness ?? {}).ws41DurableAck,
+      ctx.config,
+    );
   const remoteAckStore = new RemoteAckStore(ctx.config.stateDir);
   const remoteAckLimiter = rateLimiter(60_000, 30);
   const REMOTE_ACK_GIVE_UP_ATTEMPTS = 50;
@@ -16282,9 +16303,19 @@ export function createRoutes(ctx: RouteContext): Router {
       // seamlessness flag (the two are mutually exclusive in practice, CMT-1416). A
       // single-machine / pre-apply agent's union is just its own local store, so the
       // block is byte-identical to the legacy own-only read.
-      const stateSyncPrefEnabled =
+      // The `preferences` store follows the developmentAgent dark-feature gate
+      // (operator directive 2026-06-13, topic 13481): its ConfigDefaults OMIT `enabled`
+      // so the gate decides — LIVE on a dev agent, DARK on the fleet. Resolve it the
+      // same way the union reader's construction boundary did (resolveStateSyncStores),
+      // so the route's own gate and ctx.preferencesUnionReader.isLive() agree.
+      // E2E-PAIRING: EXEMPT — no new route/feature-alive surface; this only re-resolves
+      // the EXISTING /preferences/session-context gating through resolveDevAgentGate so it
+      // agrees with the union reader (a gating-consistency change, not a new endpoint).
+      const stateSyncPrefEnabled = resolveDevAgentGate(
         (ctx.config.multiMachine as { stateSync?: { preferences?: { enabled?: boolean } } } | undefined)
-          ?.stateSync?.preferences?.enabled === true;
+          ?.stateSync?.preferences?.enabled,
+        ctx.config as { developmentAgent?: boolean },
+      );
       if (stateSyncPrefEnabled && ctx.preferencesUnionReader) {
         const { buildUnionSessionContext, PREF_STORE_KEY } = await import('../core/PreferencesReplicatedStore.js');
         const union = ctx.preferencesUnionReader.readAll(PREF_STORE_KEY);

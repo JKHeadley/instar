@@ -115,6 +115,54 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     description: 'Live credential re-pointing (WS5.2) — the /credentials/* levers + the autonomous balancer that MOVES a pool account\'s OAuth credential between config-home slots without restarting.',
     justification: 'Ships dryRun:true (the dry-run canary): on a dev agent the levers + the balancer run the FULL decision loop and AUDIT every swap they WOULD make, but the CredentialSwapExecutor returns BEFORE the keychain/config write step while dryRun holds (verified at CredentialSwapExecutor §2.3 — outcome `dry-run`, ZERO writes). So live-on-dev is alive + observable but performs NO destructive credential write; real writes need a deliberate dryRun:false (gated behind the §5 livetest promotion). Same dogfooding posture as topicProfiles / threadline.singleNegotiator. (Operator directive 2026-06-13, topic 20905: NONE of this should be dark for development agents — replaces the rev-2 dark-for-everyone DARK_GATE_EXCLUSIONS choice.)',
   },
+  // ── multi-machine seamlessness coherence layers (WS3 / WS1.3 / WS4.1 / WS4.3),
+  //    MOVED from hardcoded `false` in ConfigDefaults on 2026-06-13 per operator
+  //    directive topic 13481 ("NOTHING should ship dark on development agents —
+  //    every multi-machine feature must be live on dev agents so it actually gets
+  //    tested, not rot"). Each ConfigDefaults entry now OMITS the flag (NOT
+  //    hardcoded false), so resolveDevAgentGate flips it LIVE on a dev agent / DARK
+  //    on the fleet — mirroring the ws44PoolLinks/ws44PoolCache siblings below. They
+  //    coordinate across the operator's OWN machines (active-active) with NO external
+  //    egress; each is reversible (a config flip OR single-machine no-op) and runs in
+  //    the SAFE direction on dev. Spec: docs/specs/MULTI-MACHINE-SEAMLESSNESS-SPEC.md.
+  //    NOTE: the multiMachine.sessionPool.* master switch + its inboundQueue /
+  //    holdForStability sub-flags are DELIBERATELY NOT moved here — they share a
+  //    SECOND structural gate (`sessionPool.stage`, StageAdvancer-write-only, E2E-
+  //    gated rollout ladder dark→shadow→live-transfer→rebalance). The activation
+  //    expression everywhere is `enabled && stage !== 'dark'`, so dev-gating
+  //    `enabled` alone leaves them inert (still-dark-on-dev), and forcing `stage`
+  //    past dark in ConfigDefaults would bypass the deliberate cutover discipline.
+  //    They stay in DARK_GATE_EXCLUSIONS for an operator decision (held PR2). ──
+  {
+    name: 'ws3OneVoice',
+    configPath: 'multiMachine.seamlessness.ws3OneVoice',
+    description: 'WS3 one-voice gate — the SpeakerElection that gives a multi-machine conversation a single outbound voice (no double-replies across machines).',
+    justification: 'Coordinates between the operator\'s OWN machines only — no external egress; when dark/single-machine the election returns "speak" unconditionally (byte-for-byte today\'s behavior) and never engages below 2 online machines; a verdict only WITHHOLDS a duplicate send (the safe direction), never fabricates one. No destructive action, no third-party spend. Operator directive 2026-06-13 topic 13481.',
+  },
+  {
+    name: 'ws13Reconcile',
+    configPath: 'multiMachine.seamlessness.ws13Reconcile',
+    description: 'WS1.3 ownership reconcile — bounded pin/owner convergence (cooperative transfer→claim while the owner lives; force only with owner-death evidence + quorum).',
+    justification: 'Coordinates between the operator\'s OWN machines only — no external egress; its in-component dryRun sub-knob (ws13DryRun) stays a plain hardcoded default true, so live-on-dev runs the reconcile loop but LOGS intended CAS actions without performing them (no destructive CAS) exactly as the rollout ladder intends; strict single-machine no-op inside the module. No third-party spend. Operator directive 2026-06-13 topic 13481.',
+  },
+  {
+    name: 'ws41DurableAck',
+    configPath: 'multiMachine.seamlessness.ws41DurableAck',
+    description: 'WS4.1 durable operator-bound /ack across machines — a pooled-attention ack whose owner is briefly offline is persisted with the authenticated operator principal and re-delivered when the owner returns.',
+    justification: 'Coordinates between the operator\'s OWN machines only — no external egress; the persisted intent is bound to the AUTHENTICATED operator and the owner REVALIDATES at apply time (a stale resolve against a since-escalated item is rejected — current state wins); when dark the routes 503 and the precedence guard is inert; strict single-machine no-op (no peers). No destructive action, no third-party spend. Operator directive 2026-06-13 topic 13481.',
+  },
+  {
+    name: 'ws43RoleGuard',
+    configPath: 'multiMachine.seamlessness.ws43RoleGuard',
+    description: 'WS4.3 role-guard-at-spawn — the scheduler refuses to spawn a STATE-WRITING job on a machine that does NOT hold the lease (closes the TOCTOU hole where a machine demotes to read-only standby mid-run while its cron tasks keep firing).',
+    justification: 'Coordinates between the operator\'s OWN machines only — no external egress; the guard can ONLY ever REFUSE a spawn (never wrongly spawn — the safe direction); when dark it is a strict no-op (byte-for-byte today\'s behavior); single-machine agents always hold the lease so it never fires there even live. The refusal raises ONE deduped attention item (no flood). No destructive action, no third-party spend. Operator directive 2026-06-13 topic 13481.',
+  },
+  {
+    name: 'ws43JournalLease',
+    configPath: 'multiMachine.seamlessness.ws43JournalLease',
+    description: 'WS4.3 journal-lease cutover — job claims upgrade from the best-effort AgentBus broadcast to a durable, epoch-fenced lease over the replicated journal (the JobLeaseCutoverGate guarantees the two mechanisms are NEVER both live for a job set).',
+    justification: 'Coordinates between the operator\'s OWN machines only — no external egress. The dryRun sub-flag (ws43JournalLeaseDryRun) is ALSO omitted from ConfigDefaults and resolves COHERENTLY with this flag at the consumer (dev → live, fleet → dry-run) so live-on-dev actually exercises the lease path. A genuine live cutover engages ONLY when the flag resolves live AND the pool is flag-coherent (≥2 machines all advertising not-dry-run), so a single-machine dev agent never half-migrates (strict no-op). Job-claim coordination on durable local/replicated state — no destructive/irreversible write, no third-party spend. Operator directive 2026-06-13 topic 13481.',
+  },
   {
     name: 'ws44PoolLinks',
     configPath: 'multiMachine.seamlessness.ws44PoolLinks',
@@ -202,6 +250,64 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     configPath: 'monitoring.bootHealthBeacon.enabled',
     description: 'Boot health beacon — a minimal /health responder during the heavy boot phase.',
     justification: 'D4-verified read-only: binds a localhost-only inbound /health socket during boot and cleanly releases it before the real server binds; zero outbound (no fetch/Telegram), no spend, no destructive action.',
+  },
+  // ── multi-machine replicated-store memory family (WS2.1–WS2.6) — the 7 stateSync
+  //    stores, MOVED from DARK_GATE_EXCLUSIONS on 2026-06-13 per operator directive
+  //    topic 13481 ("NOTHING should ship dark on development agents — every
+  //    multi-machine feature must be live on dev agents so it actually gets tested").
+  //    UNLIKE credentialRepointing (which keeps dryRun:true because its keychain WRITE
+  //    is destructive), these replicate between the operator's OWN two machines with NO
+  //    external egress and NO destructive/irreversible write — the foundation's
+  //    rollback-unmerge drops a peer's namespace on disable, so they are fully
+  //    reversible. A dry-run would defeat "actually gets tested", so the ConfigDefaults
+  //    OMIT `enabled` (resolveDevAgentGate flips them LIVE on dev / DARK on fleet) AND
+  //    set `dryRun:false` (genuinely live). Spec: docs/specs/multi-machine-replicated-
+  //    store-foundation.md (these are its consumers). The `enabled` reads at the four
+  //    funnels (selfStateSyncReceive, ReplicatedStoreReader.isLive,
+  //    isStoreEmissionEnabled, the /preferences/session-context route) are routed
+  //    through resolveDevAgentGate at the construction boundary so the gate actually
+  //    flips them live — not just array-shuffling. ──
+  {
+    name: 'stateSyncPreferences',
+    configPath: 'multiMachine.stateSync.preferences.enabled',
+    description: 'WS2.1 cross-machine preference replication (multi-machine-replicated-store-foundation).',
+    justification: 'Replicates between the operator\'s OWN machines only — no external egress; advisory-only on read (never authority); fully reversible (rollback-unmerge drops a peer namespace on disable); no destructive/irreversible write, no third-party spend. Runs live AND dryRun:false on dev (no destructive write warrants a dry-run). Operator directive 2026-06-13 topic 13481.',
+  },
+  {
+    name: 'stateSyncRelationships',
+    configPath: 'multiMachine.stateSync.relationships.enabled',
+    description: 'WS2.3 cross-machine relationship replication — the FIRST PII kind (ws23-relationships-userregistry-security).',
+    justification: 'PII crosses only between the operator\'s OWN machines (transit-encrypted); every replicated field is type-clamped on receive; a peer record is quoted UNTRUSTED data, never the authoritative answer to "who is messaging me"; a delete propagates a tombstone; fully reversible (rollback-unmerge). No external egress, no destructive write, no spend. Runs live AND dryRun:false on dev. Operator directive 2026-06-13 topic 13481.',
+  },
+  {
+    name: 'stateSyncLearnings',
+    configPath: 'multiMachine.stateSync.learnings.enabled',
+    description: 'WS2.2 cross-machine learning replication — the SECOND memory-family kind (multi-machine-replicated-store-foundation).',
+    justification: 'Replicates between the operator\'s OWN machines only — no external egress; advisory-only on read; type-clamped on receive; tombstoned deletes; the local LRN-NNN id is never replicated; fully reversible (rollback-unmerge); no destructive write, no spend. Runs live AND dryRun:false on dev. Operator directive 2026-06-13 topic 13481.',
+  },
+  {
+    name: 'stateSyncKnowledge',
+    configPath: 'multiMachine.stateSync.knowledge.enabled',
+    description: 'WS2.4 cross-machine knowledge-base replication — the THIRD memory-family kind (multi-machine-replicated-store-foundation).',
+    justification: 'Only catalog METADATA crosses (never the file body or local path), between the operator\'s OWN machines; advisory-only on read; type-clamped on receive; tombstoned deletes; fully reversible (rollback-unmerge); no external egress, no destructive write, no spend. Runs live AND dryRun:false on dev. Operator directive 2026-06-13 topic 13481.',
+  },
+  {
+    name: 'stateSyncEvolutionActions',
+    configPath: 'multiMachine.stateSync.evolutionActions.enabled',
+    description: 'WS2.5 cross-machine evolution-action-queue replication — the FOURTH memory-family kind (multi-machine-replicated-store-foundation).',
+    justification: 'Replicates the self-improvement action queue between the operator\'s OWN machines only; advisory work-items on read (load-bearing field is status so a peer does not redo completed work); type-clamped on receive; tombstoned removals; the local ACT-NNN id is never replicated; fully reversible (rollback-unmerge); no external egress, no destructive write, no spend. Runs live AND dryRun:false on dev. Operator directive 2026-06-13 topic 13481.',
+  },
+  {
+    name: 'stateSyncUserRegistry',
+    configPath: 'multiMachine.stateSync.userRegistry.enabled',
+    description: 'WS2.6 cross-machine user-registry replication — the SECOND PII kind (multi-machine-replicated-store-foundation).',
+    justification: 'User PII crosses only between the operator\'s OWN machines (transit-encrypted); type-clamped on receive; a peer record is quoted UNTRUSTED data and inbound-principal RESOLUTION stays LOCAL-ONLY (the local channel index is authoritative); tombstoned deletes; fully reversible (rollback-unmerge); no external egress, no destructive write, no spend. Runs live AND dryRun:false on dev. Operator directive 2026-06-13 topic 13481.',
+  },
+  {
+    name: 'stateSyncTopicOperator',
+    configPath: 'multiMachine.stateSync.topicOperator.enabled',
+    description: 'WS2.6 cross-machine topic-operator replication — the THIRD PII kind (multi-machine-replicated-store-foundation).',
+    justification: 'Replicates the verified-operator binding between the operator\'s OWN machines only; THE LOAD-BEARING SAFETY INVARIANT (Know Your Principal): a replicated record is UNTRUSTED peer data and is NEVER the authoritative answer to "who is my verified operator?" — only the LOCAL authenticated setOperator binds it; recordKey is sha256(topicId+verified-uid), never a content-name; tombstoned unbinds; fully reversible (rollback-unmerge); no external egress, no destructive write, no spend. Runs live AND dryRun:false on dev. Operator directive 2026-06-13 topic 13481.',
   },
 ];
 
@@ -314,41 +420,14 @@ export const DARK_GATE_EXCLUSIONS: DarkGateExclusion[] = [
     category: 'optional-integration',
     reason: 'hold-for-stability policy; trails inboundQueue one rollout stage behind (operator discipline)',
   },
-  {
-    configPath: 'multiMachine.stateSync.preferences.enabled',
-    category: 'optional-integration',
-    reason: 'WS2.1 cross-machine preference replication on the HLC foundation; graduated rollout dark→dryRun→live per spec §10.1, opt-in per deployment (mirrors sessionPool.inboundQueue staging)',
-  },
-  {
-    configPath: 'multiMachine.stateSync.relationships.enabled',
-    category: 'optional-integration',
-    reason: 'WS2.3 cross-machine relationship replication — the FIRST PII kind on the HLC foundation; graduated rollout dark→dryRun→live per ws23-relationships-userregistry-security §INV-iii, opt-in per deployment (PII never crosses a machine boundary while dark; mirrors the preferences sibling)',
-  },
-  {
-    configPath: 'multiMachine.stateSync.learnings.enabled',
-    category: 'optional-integration',
-    reason: 'WS2.2 cross-machine learning replication — the SECOND memory-family kind on the HLC foundation; graduated rollout dark→dryRun→live per multi-machine-replicated-store-foundation, opt-in per deployment (no learning crosses a machine boundary while dark; the local LRN-NNN id is never replicated; mirrors the relationships sibling)',
-  },
-  {
-    configPath: 'multiMachine.stateSync.knowledge.enabled',
-    category: 'optional-integration',
-    reason: 'WS2.4 cross-machine knowledge-base replication — the THIRD memory-family kind on the HLC foundation; graduated rollout dark→dryRun→live per multi-machine-replicated-store-foundation, opt-in per deployment (no knowledge source crosses a machine boundary while dark; the local generated id + filePath are never replicated, only catalog metadata; mirrors the learnings sibling)',
-  },
-  {
-    configPath: 'multiMachine.stateSync.evolutionActions.enabled',
-    category: 'optional-integration',
-    reason: 'WS2.5 cross-machine evolution-action-queue replication — the FOURTH memory-family kind on the HLC foundation; graduated rollout dark→dryRun→live per multi-machine-replicated-store-foundation, opt-in per deployment (no action crosses a machine boundary while dark; the local ACT-NNN id is never replicated; the load-bearing field is status so a peer sees an action was already completed elsewhere; mirrors the knowledge sibling)',
-  },
-  {
-    configPath: 'multiMachine.stateSync.userRegistry.enabled',
-    category: 'optional-integration',
-    reason: 'WS2.6 cross-machine user-registry replication — the SECOND PII kind on the HLC foundation; graduated rollout dark→dryRun→live per multi-machine-replicated-store-foundation, opt-in per deployment (no user PII crosses a machine boundary while dark; the local userId is never replicated, the recordKey is the channel-set identity surface; mirrors the relationships sibling)',
-  },
-  {
-    configPath: 'multiMachine.stateSync.topicOperator.enabled',
-    category: 'optional-integration',
-    reason: 'WS2.6 cross-machine topic-operator replication — the THIRD PII kind on the HLC foundation; graduated rollout dark to dryRun to live per multi-machine-replicated-store-foundation, opt-in per deployment (no operator binding crosses a machine boundary while dark; recordKey is sha256 of topicId plus the verified uid, never a content-name; THE LOAD-BEARING INVARIANT: a replicated topic-operator record is NEVER the authoritative principal — only the local authenticated setOperator binds it; mirrors the userRegistry sibling)',
-  },
+  // (the 7 multiMachine.stateSync.* memory stores — preferences, relationships,
+  //  learnings, knowledge, evolutionActions, userRegistry, topicOperator — MOVED to
+  //  DEV_GATED_FEATURES on 2026-06-13 per operator directive topic 13481: "NOTHING
+  //  should ship dark on development agents — every multi-machine feature must be
+  //  live on dev agents so it actually gets tested, not rot." They replicate between
+  //  the operator's OWN machines (no external egress, fully reversible via the
+  //  foundation's rollback-unmerge), so unlike credentialRepointing they run live AND
+  //  dryRun:false on a dev agent — see the DEV_GATED_FEATURES entries' justifications.)
   // ── action-bearing — when merely enabled, automatically produces an outbound
   //    side-effect that reaches an external system or the operator (a send, a PR
   //    merge, a remote mutation). De-dup/rate-limiting reduces severity but an

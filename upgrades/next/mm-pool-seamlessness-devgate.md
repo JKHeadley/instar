@@ -1,0 +1,72 @@
+# Multi-machine seamlessness coherence layers — dev-gated (live-on-dev, dark-fleet)
+
+## What Changed
+
+- **The 5 `multiMachine.seamlessness` coherence flags** — `ws3OneVoice` (one-voice
+  election), `ws13Reconcile` (ownership reconcile), `ws41DurableAck` (durable cross-machine
+  acknowledgement), `ws43RoleGuard` (role-guard-at-spawn), `ws43JournalLease` (journal-lease
+  cutover) — **moved from a hardcoded `false` in `ConfigDefaults` to the developmentAgent
+  gate (live-on-dev / dark-fleet)**, mirroring the already-merged `ws44PoolLinks` /
+  `ws44PoolCache` precedent.
+- **Driver — operator directive (topic 13481, 2026-06-13):** "Nothing should ship dark for
+  development agents. Everything fully functional so it actually gets tested and doesn't
+  just rot." This is PR2 of that directive; PR1 (#1151) moved the 7 cross-machine memory
+  stores.
+- **How it resolves now:** each flag's `ConfigDefaults` block OMITS the literal so
+  `resolveDevAgentGate` decides — LIVE on a development agent, DARK on the fleet. Every
+  consumer read-site (the SpeakerElection, the OwnershipReconciler, the durable remote-ack
+  routes, the scheduler role-guard, the journal-lease cutover gate, and the heartbeat
+  capability advert) was routed through that one gate, and `ws43JournalLeaseDryRun` is
+  computed COHERENTLY with its gate (a dev agent runs the cutover genuinely live, the fleet
+  stays in the safe dry-run posture).
+- **The session-pool master switch is deliberately HELD.** `multiMachine.sessionPool`
+  (the active-active master plus its inbound-queue and hold-for-stability sub-flags) was NOT
+  moved. It carries a second, structurally-enforced rollout gate (`sessionPool.stage`,
+  advanced only through an end-to-end-test-gated ladder); flipping only the dev gate would
+  leave the pool inert, and forcing the stage would bypass that deliberate cutover
+  discipline. It is surfaced for an operator decision instead (advance the stage on the dev
+  mesh if active-active pooling should be dogfooded live).
+- **Fleet + single-machine agents are an unchanged no-op** — every layer resolves dark
+  exactly as before, and each is a strict no-op without a second online machine. An
+  operator's explicit per-flag setting remains the documented force-dark (false) /
+  fleet-flip (true) override.
+
+## Migration
+
+- `PostUpdateMigrator.migrateConfigSeamlessnessDevGate` strips a default-shaped `false` per
+  flag on update (and the paired `ws43JournalLeaseDryRun:true` only alongside a
+  default-shaped `ws43JournalLease:false`) so the gate resolves on already-deployed dev
+  agents. An operator-set value is left entirely alone — reach is not authority. Idempotent.
+
+## Evidence
+
+- `tests/unit/seamlessness-dev-gate-wiring.test.ts` (13): each flag resolves live-on-dev /
+  dark-on-fleet through the gate; the dryRun coherence holds; a no-missed-consumer
+  source-string check fails CI if any consumer reverts to the raw read; the registry
+  coherence check confirms the 5 flags are dev-gated and the 3 session-pool flags stay held.
+- `tests/unit/PostUpdateMigrator-seamlessnessDevGate.test.ts` (9): the migrator strips the
+  default-shaped values, leaves operator-touched config alone, and is idempotent.
+- `tests/e2e/attention-remote-ack-alive.test.ts`: two new dev-gate cases prove the durable
+  remote-ack route goes ALIVE on a dev agent with the flag omitted and stays a 503 on the
+  fleet — the gate flips the real route, not just a registry entry.
+- `tests/unit/lint-dev-agent-dark-gate.test.ts`: the EXPECTED attribution map line numbers
+  were recomputed; the 3 session-pool flags remain as held hardcoded defaults.
+
+## Summary of New Capabilities
+
+- The five cross-machine coherence layers — single outbound voice, ownership reconcile,
+  durable cross-machine acknowledgement, the spawn-time role-guard, and the job journal-lease
+  cutover — now run LIVE on development agents (dark on the fleet) so they are actually
+  exercised across the operator's two machines instead of shipping dark everywhere.
+
+## What to Tell Your User
+
+Nothing changes for fleet agents — these multi-machine coherence features stay off for
+everyone except development agents. On a development agent that runs across two of your
+machines, the coordination layers that keep the two machines behaving as one agent (one
+voice per conversation, no double-replies, durable acknowledgements that survive a briefly
+offline machine, and a guard that keeps state-writing jobs on the right machine) now run
+live, so they finally get real-world testing before reaching everyone. There is no
+user-facing action and no behavior change on a normal install or any single-machine agent.
+The active-active session pool itself stays off pending a separate operator decision, because
+it has its own staged rollout that should advance deliberately.

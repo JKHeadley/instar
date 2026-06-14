@@ -18,6 +18,7 @@ import { SessionLivenessOracle, type SessionLivenessOracleConfig } from './Sessi
 import { resolveGhTokenFromVault } from './ghToken.js';
 import type { ReapGuard } from './ReapGuard.js';
 import { clampWorkEvidence, isMidWork } from './WorkEvidence.js';
+import { resolveFrameworkTranscriptPath } from './FrameworkSessionStore.js';
 import { paneShowsClaudeWorking } from './claudeActivityIndicators.js';
 import { extractGeminiFinalAssistantBlock, meaningfulTail } from './paneText.js';
 import { ensureInteractiveReady } from './ensureInteractiveReady.js';
@@ -80,6 +81,39 @@ import { AgeKillBackoff } from './AgeKillBackoff.js';
 
 /** Absolute maximum session duration (4 hours) — safety net for sessions without explicit timeout */
 const DEFAULT_MAX_DURATION_MINUTES = 240;
+
+/** Age-gate transcript-activity window (ms). A session whose framework transcript
+ *  (JSONL) was modified within this window is treated as actively producing work
+ *  — the same "defer the kill" treatment a live child process gets — even when
+ *  its tmux pane shows an idle-looking prompt and it has no non-baseline child
+ *  process. This closes the age-kill blind spot to MCP/tool work (Playwright and
+ *  other MCP servers run OUT of the pane's process tree; bash tool calls are
+ *  short-lived), which terminal-killed an actively-working session on 2026-06-13.
+ *  Claude Code appends to the JSONL on every turn/tool event, so a recent mtime
+ *  is ground-truth liveness independent of the pane. 2 min comfortably covers the
+ *  gap between tool calls; over-deferring a just-finished session for up to one
+ *  window is harmless (the idle-detection block below still reaps it later). */
+const AGE_GATE_TRANSCRIPT_ACTIVE_MS = 120_000;
+
+/**
+ * Pure age-gate idle decision — extracted so the exact 2026-06-13 incident can be
+ * reproduced at the decision boundary (Bug-Fix Evidence Bar). A session past its
+ * age limit is "truly idle" — and thus age-kill-eligible — ONLY when ALL THREE
+ * hold: its pane shows an idle prompt, it has no non-baseline child process, and
+ * its framework transcript is not recently active. Any ONE positive activity
+ * signal (a live child process OR a growing transcript) defers the kill. The
+ * transcript term is the fix: it closes the blind spot to MCP/tool work that runs
+ * OUT of the pane's process tree. The incident inputs
+ * (idleAtPrompt=true, hasActiveProcs=false, transcriptActive=true) return
+ * `false` ⇒ DEFERRED, not killed — which the pre-fix two-signal decision got wrong.
+ */
+export function isAgeGateTrulyIdle(
+  idleAtPrompt: boolean,
+  hasActiveProcs: boolean,
+  transcriptActive: boolean,
+): boolean {
+  return idleAtPrompt && !hasActiveProcs && !transcriptActive;
+}
 
 /** Minutes of idle-at-prompt before a non-protected session is killed */
 const IDLE_PROMPT_KILL_MINUTES = 15;
@@ -1247,7 +1281,17 @@ rm()  { "${shimRunner}" rm  "$@"; }
             const ageGateOutput = this.captureMeaningfulTail(session.tmuxSession, 5);
             const ageGateIsIdle = ageGateOutput && IDLE_PROMPT_PATTERNS.some(p => ageGateOutput.includes(p));
             const ageGateHasProcs = this.hasActiveProcesses(session.tmuxSession);
-            const ageGateTrulyIdle = ageGateIsIdle && !ageGateHasProcs;
+            // Transcript-activity backstop (2026-06-13 incident): the pane+procs
+            // check is BLIND to MCP/tool work. A session driving Playwright (or any
+            // MCP server) runs that work OUT of the tmux process tree, and between
+            // tool calls the pane shows an idle-looking prompt — so an actively
+            // working session reads as "idle, no procs" and was terminal-killed at
+            // the age limit. The framework transcript grows on every turn/tool
+            // event, so a recently-modified JSONL is ground-truth that the session
+            // is alive and producing. Treat it exactly like a live child process:
+            // defer the kill.
+            const ageGateTranscriptActive = this.isTranscriptRecentlyActive(session, AGE_GATE_TRANSCRIPT_ACTIVE_MS);
+            const ageGateTrulyIdle = isAgeGateTrulyIdle(!!ageGateIsIdle, ageGateHasProcs, ageGateTranscriptActive);
 
             if (!ageGateTrulyIdle) {
               // Over age limit but actively working. Log once per session to
@@ -1257,7 +1301,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
                 this.overAgeButActiveLogged.add(session.id);
                 console.warn(
                   `[SessionManager] Session "${session.name}" is past the age limit (${Math.round(elapsed)}m > ${maxMinutes}m) ` +
-                  `but is actively working (procs=${ageGateHasProcs}, idleAtPrompt=${!!ageGateIsIdle}). Deferring kill; ` +
+                  `but is actively working (procs=${ageGateHasProcs}, idleAtPrompt=${!!ageGateIsIdle}, transcriptActive=${ageGateTranscriptActive}). Deferring kill; ` +
                   `the idle-detection block will catch it once it stops producing work.`
                 );
               }
@@ -2626,6 +2670,39 @@ rm()  { "${shimRunner}" rm  "$@"; }
     const raw = this.captureOutput(tmuxSession, Math.max(lines * 4, 50));
     if (raw === null) return null;
     return meaningfulTail(raw, lines);
+  }
+
+  /**
+   * Transcript-activity probe — ground-truth liveness independent of the tmux
+   * pane and process tree. A session doing MCP/tool work (e.g. driving Playwright)
+   * runs that work OUT of the pane's process tree and, between tool calls, shows an
+   * idle-looking prompt with no non-baseline child process — so the pane+procs
+   * activity check reads it as idle and the age-kill terminal-reaped it mid-work
+   * (2026-06-13 incident). The framework JSONL grows on every turn/tool event, so
+   * a transcript modified within `withinMs` proves the session is alive and
+   * producing. Returns true on a recent mtime; false on anything unprobeable
+   * (no session id, '' path, missing file, stat error) — never block a kill on a
+   * transcript we cannot read (the safe direction is to fall through to the
+   * pane/procs verdict, not to keep a possibly-dead session alive forever).
+   */
+  isTranscriptRecentlyActive(session: Session, withinMs: number): boolean {
+    try {
+      const sessionId = session.claudeSessionId;
+      if (!sessionId) return false;
+      const jsonlPath = resolveFrameworkTranscriptPath({
+        framework: session.framework ?? 'claude-code',
+        sessionId,
+        projectDir: session.cwd ?? this.config.projectDir,
+      });
+      if (!jsonlPath) return false;
+      const stat = fs.statSync(jsonlPath);
+      return Date.now() - stat.mtimeMs < withinMs;
+    } catch {
+      // @silent-fallback-ok — an unprobeable transcript is NOT evidence of
+      // activity; fall through to the pane/procs verdict rather than pinning a
+      // possibly-dead session alive on a read error.
+      return false;
+    }
   }
 
   private currentPaneCwd(tmuxSession: string): string | null {

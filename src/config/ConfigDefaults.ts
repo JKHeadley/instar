@@ -694,13 +694,27 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
     // byte-for-byte today's behavior. Single-machine pools are a strict no-op
     // even when enabled (the election never engages below 2 online machines).
     seamlessness: {
-      ws3OneVoice: false,
+      // WS3 one-voice gate. DEV-AGENT DARK GATE (operator directive 2026-06-13,
+      // topic 13481 — "NOTHING should ship dark on development agents"):
+      // `ws3OneVoice` is DELIBERATELY OMITTED here (not hardcoded false) so
+      // resolveDevAgentGate decides at runtime — LIVE on a development agent
+      // (dogfooding across the operator's own machines), DARK on the fleet until
+      // explicitly flipped on. Hardcoding `false` would force-dark even a dev
+      // agent (the PR #1001 bug). Registered in DEV_GATED_FEATURES
+      // (src/core/devGatedFeatures.ts). When dark/single-machine the
+      // SpeakerElection returns "speak" unconditionally (byte-for-byte today's
+      // behavior); the election never engages below 2 online machines, so a
+      // single-machine dev agent is a strict no-op even when resolved live.
       ws3DwellMs: 60000,
       // WS1.3 ownership reconcile: bounded pin/owner convergence (cooperative
       // transfer→claim while the owner lives; force only with owner-death
-      // evidence + quorum). DARK + dry-run default — dryRun logs intended CAS
-      // actions without performing them.
-      ws13Reconcile: false,
+      // evidence + quorum). DEV-AGENT DARK GATE: `ws13Reconcile` is DELIBERATELY
+      // OMITTED here (not hardcoded false) so resolveDevAgentGate decides at
+      // runtime — LIVE on a development agent, DARK on the fleet. Its dry-run
+      // sub-knob (ws13DryRun, default true) STAYS a plain hardcoded default — it
+      // is the in-component "log intended CAS actions without performing them"
+      // rung, NOT the dev-gate, so the reconcile loop runs live on dev but in
+      // dry-run (no destructive CAS) exactly as the rollout ladder intends.
       ws13DryRun: true,
       ws13TickMs: 30000,
       // WS2.1 preferences pool: cross-machine read-replication of the
@@ -715,26 +729,27 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       // operator acks a pooled attention item whose OWNER is briefly offline,
       // the ack intent is persisted (with the authenticated operator principal)
       // and re-delivered when the owner returns — so the intent survives a dark
-      // owner instead of evaporating. DARK default; a plain seamlessness boolean
-      // (read live at the route + drain sites), mirroring the ws21PreferencesPool
-      // sibling — NOT named `enabled`, so it is outside the dev-agent dark-gate
-      // lint. When off, POST /attention/:id/remote-ack 503s and the receiver's
+      // owner instead of evaporating. DEV-AGENT DARK GATE (operator directive
+      // 2026-06-13, topic 13481): `ws41DurableAck` is DELIBERATELY OMITTED here
+      // (not hardcoded false) so resolveDevAgentGate decides at runtime — LIVE on
+      // a development agent, DARK on the fleet. Registered in DEV_GATED_FEATURES.
+      // When dark, POST /attention/:id/remote-ack 503s and the receiver's
       // remote-ack precedence guard is a no-op; single-machine agents are a
-      // strict no-op even when on (no peers to route to).
-      ws41DurableAck: false,
+      // strict no-op even when resolved live (no peers to route to).
       // WS4.3 role-guard-at-spawn (CMT-1416 follow-up to the merged WS4.3 jobs
       // read-side, PR #1104). When on, the scheduler refuses to spawn a
       // STATE-WRITING job (JobDefinition.writesState) on a machine that does NOT
       // hold the lease — the spawn-boundary re-check that closes the TOCTOU hole
       // where a machine awake at boot demotes to read-only standby mid-run while
       // its cron tasks keep firing (the scheduler is constructed only when awake
-      // but is never torn down on demotion). DARK default; a plain seamlessness
-      // boolean (read live at the triggerJob spawn boundary), mirroring the
-      // ws41DurableAck sibling — NOT named `enabled`, so it is outside the
-      // dev-agent dark-gate lint. When off, the guard is a strict no-op
-      // (byte-for-byte today's behavior). Single-machine agents always hold the
-      // lease, so the guard never fires there even when on.
-      ws43RoleGuard: false,
+      // but is never torn down on demotion). DEV-AGENT DARK GATE (operator
+      // directive 2026-06-13, topic 13481): `ws43RoleGuard` is DELIBERATELY
+      // OMITTED here (not hardcoded false) so resolveDevAgentGate decides at
+      // runtime — LIVE on a development agent, DARK on the fleet. Registered in
+      // DEV_GATED_FEATURES. When dark, the guard is a strict no-op (byte-for-byte
+      // today's behavior). Single-machine agents always hold the lease, so the
+      // guard never fires there even when resolved live (it can only ever refuse,
+      // never wrongly spawn — the safe direction).
       // WS4.3 journal-lease cutover (MULTI-MACHINE-SEAMLESSNESS-SPEC §WS4.3,
       // "Cutover discipline"). When on AND the pool is flag-coherent (every
       // online peer advertises ws43JournalLease), job claims upgrade from the
@@ -742,17 +757,25 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       // replicated journal. The cutover gate (JobLeaseCutoverGate) guarantees the
       // two mechanisms are NEVER both live for a job set (the named migration
       // hazard: one machine leasing via journal while a peer broadcasts via bus).
-      // DARK default; a plain seamlessness boolean (read live at the claim
-      // boundary), mirroring the ws43RoleGuard sibling — NOT named `enabled`, so
-      // outside the dev-agent dark-gate lint. When off, or in a mixed/older pool,
-      // or single-machine, the scheduler stays on the legacy bus path
-      // (byte-for-byte today's behavior).
-      ws43JournalLease: false,
+      // DEV-AGENT DARK GATE (operator directive 2026-06-13, topic 13481):
+      // `ws43JournalLease` is DELIBERATELY OMITTED here (not hardcoded false) so
+      // resolveDevAgentGate decides at runtime — LIVE on a development agent,
+      // DARK on the fleet. Registered in DEV_GATED_FEATURES. When dark, or in a
+      // mixed/older pool, or single-machine, the scheduler stays on the legacy
+      // bus path (byte-for-byte today's behavior); the JobLeaseCutoverGate's
+      // flag-coherence requirement means a single-machine dev agent (no peers)
+      // is a strict no-op even when the flag resolves live.
+      //
       // WS4.3 journal-lease DRY-RUN (the WS-wide "log intended claims" posture).
-      // When the gate is coherent-but-dry-run, the intended journal claim is
-      // LOGGED but the legacy bus path still runs — so a dry-run pool never
-      // half-migrates. Default true: the first rung of the rollout ladder.
-      ws43JournalLeaseDryRun: true,
+      // `ws43JournalLeaseDryRun` is ALSO DELIBERATELY OMITTED so the dev-gate
+      // resolves it COHERENTLY with ws43JournalLease: on a dev agent the cutover
+      // goes LIVE (dryRun → false) so the journal-lease path is actually
+      // exercised (not just logged); on the fleet it resolves to the safe dry-run
+      // default (true). The consumer computes `dryRun: cfg?.ws43JournalLeaseDryRun
+      // ?? !resolveDevAgentGate(undefined, config)` — an explicit config value
+      // still wins. A genuine live cutover only engages when the flag resolves
+      // live AND the pool is flag-coherent (≥2 machines all advertising the
+      // capability not-dry-run), so a single-machine dev agent never half-migrates.
       // WS4.4 "links that survive machine boundaries". DEV-AGENT DARK GATE:
       // `ws44PoolLinks` is DELIBERATELY OMITTED here (not hardcoded false) so
       // resolveDevAgentGate decides at runtime — LIVE on a development agent
@@ -918,104 +941,79 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       maxDriftMs: 300000, // 5 min — the §3.4 default, within the [60s,15min] clamp
       maxCachedSnapshots: 16, // §8.2 snapshot-cache count ceiling
       maxCacheBytes: 67108864, // 64 MiB — §8.2 snapshot-cache byte ceiling (reconciled to spec §8.2 from the 32 MiB Step-2 literal)
-      // WS2.1 (multi-machine-replicated-store-foundation §4/§10.1) — the FIRST
-      // concrete replicated-store consumer: `pref-record` on the HLC foundation.
-      // Per-store on-switch ships the graduated-rollout ladder dark:
-      // `enabled:false` (the foundation primitives stay inert) + `dryRun:true` (on
-      // first enable, log intended merges WITHOUT mutating store state). A literal
-      // `enabled:false` (NOT dev-gate-omit) per the spec ladder dark→dryRun→live —
-      // classified in DARK_GATE_EXCLUSIONS (optional-integration, staged rollout),
-      // mirroring multiMachine.sessionPool.inboundQueue. SUPERSEDES the legacy
-      // seamlessness path (CMT-1416), both dark ⇒ zero runtime duplication.
+      // ── The 7 stateSync memory stores follow the developmentAgent dark-feature
+      //    gate (standard_development_agent_dark_feature_gate), MOVED from
+      //    DARK_GATE_EXCLUSIONS on 2026-06-13 per operator directive topic 13481:
+      //    "NOTHING should ship dark on development agents — every multi-machine
+      //    feature must be live on dev agents so it actually gets tested, not rot."
+      //    Each store OMITS `enabled` so resolveDevAgentGate decides at runtime —
+      //    LIVE on a dev agent (Echo/the Mini, the dogfooding ground), DARK on the
+      //    fleet. A literal `enabled: false` would force-dark dev agents too (the
+      //    #1001 shape the §12.5 dark-gate lint forbids for a dev-gated block) — so
+      //    it is OMITTED, NOT baked false. The four consumer funnels
+      //    (selfStateSyncReceive, ReplicatedStoreReader.isLive, isStoreEmissionEnabled,
+      //    and the /preferences/session-context route) read the gate-RESOLVED stores
+      //    map built at the construction boundary in server.ts (resolveStateSyncStores),
+      //    so the gate genuinely flips them live — not just registry array-shuffling.
+      //    UNLIKE credentialRepointing (whose keychain WRITE is destructive, so it keeps
+      //    dryRun:true as the write-safety canary), these stores replicate between the
+      //    operator's OWN machines with NO external egress and NO destructive/irreversible
+      //    write — fully reversible via the foundation's rollback-unmerge (disabling a
+      //    store atomically drops that origin's contribution). A dry-run would defeat
+      //    "actually gets tested", so `dryRun: false` (genuinely live). An operator's
+      //    EXPLICIT `enabled` in .instar/config.json remains the documented force-dark /
+      //    fleet-flip override. applyDefaults is add-missing-only deep-merge, so existing
+      //    agents backfill these on update (Migration Parity) and an operator's existing
+      //    values are NEVER overwritten.
+      // WS2.1 (multi-machine-replicated-store-foundation §4/§10.1) — `pref-record`.
+      // SUPERSEDES the legacy seamlessness path (CMT-1416).
       preferences: {
-        enabled: false,
-        dryRun: true,
+        dryRun: false,
       },
-      // WS2.3 (ws23-relationships-userregistry-security) — the SECOND replicated-
-      // store consumer and the FIRST PII kind: `relationship-record` on the HLC
-      // foundation. Per-store on-switch ships the graduated-rollout ladder dark:
-      // `enabled:false` (the foundation primitives stay inert, NO PII ever crosses
-      // a machine boundary) + `dryRun:true` (on first enable, log intended merges
-      // WITHOUT mutating store state). A literal `enabled:false` (NOT dev-gate-omit)
-      // per the spec ladder dark→dryRun→live — classified in DARK_GATE_EXCLUSIONS
-      // (optional-integration, staged rollout), mirroring the preferences sibling.
-      // user-registry + topic-operator (the spec's other two PII kinds) are a
-      // tracked follow-up (CMT-1416) on the proven relationship-record machinery.
+      // WS2.3 (ws23-relationships-userregistry-security) — `relationship-record`, the
+      // FIRST PII kind. Every replicated field is type-clamped on receive; a peer
+      // record is quoted UNTRUSTED data, never the authoritative "who is messaging me";
+      // a delete propagates a tombstone. PII crosses ONLY between the operator's own
+      // machines (transit-encrypted).
       relationships: {
-        enabled: false,
-        dryRun: true,
+        dryRun: false,
       },
-      // WS2.2 (multi-machine-replicated-store-foundation) — the THIRD replicated-store
-      // consumer and the SECOND memory-family kind: `learning-record` on the HLC
-      // foundation. Per-store on-switch ships the graduated-rollout ladder dark:
-      // `enabled:false` (the foundation primitives stay inert, NO learning ever crosses
-      // a machine boundary; the local LRN-NNN id is NEVER replicated) + `dryRun:true`
-      // (on first enable, log intended merges WITHOUT mutating store state). A literal
-      // `enabled:false` (NOT dev-gate-omit) per the spec ladder dark→dryRun→live —
-      // classified in DARK_GATE_EXCLUSIONS (optional-integration, staged rollout),
-      // mirroring the relationships sibling. WS2.4 (KB) / WS2.5 (evolution) / WS2.6
-      // (playbook) reduce to schema+projection+flag on this same machinery (CMT-1416).
+      // WS2.2 (multi-machine-replicated-store-foundation) — `learning-record`, the SECOND
+      // memory-family kind. The local LRN-NNN id is NEVER replicated (the recordKey is a
+      // content fingerprint).
       learnings: {
-        enabled: false,
-        dryRun: true,
+        dryRun: false,
       },
-      // WS2.4 (multi-machine-replicated-store-foundation) — the FOURTH replicated-store
-      // consumer and the THIRD memory-family kind: `knowledge-record` on the HLC
-      // foundation. Per-store on-switch ships the graduated-rollout ladder dark:
-      // `enabled:false` (the foundation primitives stay inert, NO knowledge source ever
-      // crosses a machine boundary; the local generated id + filePath are NEVER replicated
-      // — only the catalog metadata, never the file body) + `dryRun:true` (on first enable,
-      // log intended merges WITHOUT mutating store state). A literal `enabled:false` (NOT
-      // dev-gate-omit) per the spec ladder dark→dryRun→live — classified in
-      // DARK_GATE_EXCLUSIONS (optional-integration, staged rollout), mirroring the
-      // learnings sibling. Full-content-body sync (beyond catalog metadata) is a tracked
-      // follow-up (CMT-1416).
+      // WS2.4 (multi-machine-replicated-store-foundation) — `knowledge-record`, the THIRD
+      // memory-family kind. Only catalog METADATA crosses (NEVER the file body or the
+      // local path); the local generated id is never replicated.
       knowledge: {
-        enabled: false,
-        dryRun: true,
+        dryRun: false,
       },
-      // WS2.5 (multi-machine-replicated-store-foundation) — the FIFTH replicated-store
-      // consumer and the FOURTH memory-family kind: `evolution-action-record` on the HLC
-      // foundation (the agent's self-improvement action queue). Per-store on-switch ships the
-      // graduated-rollout ladder dark: `enabled:false` (the foundation primitives stay inert,
-      // NO action ever crosses a machine boundary; the local ACT-NNN id is NEVER replicated) +
-      // `dryRun:true` (on first enable, log intended merges WITHOUT mutating store state). A
-      // literal `enabled:false` (NOT dev-gate-omit) per the spec ladder dark→dryRun→live —
-      // classified in DARK_GATE_EXCLUSIONS (optional-integration, staged rollout), mirroring
-      // the knowledge sibling. The load-bearing cross-machine field is `status` — a peer must
-      // SEE an action was already completed/in_progress elsewhere so it does not redo it.
+      // WS2.5 (multi-machine-replicated-store-foundation) — `evolution-action-record`, the
+      // FOURTH memory-family kind (the agent's self-improvement action queue). The local
+      // ACT-NNN id is NEVER replicated; the load-bearing cross-machine field is `status` —
+      // a peer must SEE an action was already completed/in_progress elsewhere so it does
+      // not redo it.
       evolutionActions: {
-        enabled: false,
-        dryRun: true,
+        dryRun: false,
       },
-      // WS2.6 (multi-machine-replicated-store-foundation) — the SIXTH replicated-store
-      // consumer and the SECOND PII kind: `user-record` on the HLC foundation (the multi-user
-      // registry the UserManager resolves an inbound message to). Per-store on-switch ships the
-      // graduated-rollout ladder dark: `enabled:false` (the foundation primitives stay inert, NO
-      // user PII ever crosses a machine boundary; the local userId is NEVER replicated — the
-      // recordKey is the channel-set identity surface) + `dryRun:true` (on first enable, log
-      // intended merges WITHOUT mutating store state). A literal `enabled:false` (NOT dev-gate-
-      // omit) per the spec ladder dark→dryRun→live — classified in DARK_GATE_EXCLUSIONS
-      // (optional-integration, staged rollout), mirroring the relationships sibling. Completes the
-      // WS2 memory family alongside topicOperator (CMT-1416).
+      // WS2.6 (multi-machine-replicated-store-foundation) — `user-record`, the SECOND PII
+      // kind (the multi-user registry). The local userId is NEVER replicated — the recordKey
+      // is the channel-set identity surface; inbound-principal RESOLUTION stays LOCAL-ONLY
+      // (the local channel index is always authoritative). User PII crosses ONLY between the
+      // operator's own machines (transit-encrypted).
       userRegistry: {
-        enabled: false,
-        dryRun: true,
+        dryRun: false,
       },
-      // WS2.6 (multi-machine-replicated-store-foundation) — the SEVENTH replicated-store consumer
-      // and the THIRD PII kind: `topic-operator-record` on the HLC foundation (which VERIFIED
-      // operator a topic was bound to). Per-store on-switch ships the graduated-rollout ladder
-      // dark: `enabled:false` (the foundation primitives stay inert, NO operator binding ever
-      // crosses a machine boundary; the recordKey is sha256(topicId + ":" + verified-uid), NEVER a
-      // content-name) + `dryRun:true`. A literal `enabled:false` (NOT dev-gate-omit) per the spec
-      // ladder dark→dryRun→live — classified in DARK_GATE_EXCLUSIONS (optional-integration, staged
-      // rollout), mirroring the userRegistry sibling. THE LOAD-BEARING SAFETY INVARIANT: a
-      // replicated topic-operator record is UNTRUSTED peer data — NEVER this machine's
-      // authoritative answer to "who is my verified operator?" (only the local authenticated
-      // setOperator binds the principal; Know-Your-Principal).
+      // WS2.6 (multi-machine-replicated-store-foundation) — `topic-operator-record`, the
+      // THIRD PII kind (which VERIFIED operator a topic was bound to). The recordKey is
+      // sha256(topicId + ":" + verified-uid), NEVER a content-name. THE LOAD-BEARING SAFETY
+      // INVARIANT: a replicated topic-operator record is UNTRUSTED peer data — NEVER this
+      // machine's authoritative answer to "who is my verified operator?" (only the local
+      // authenticated setOperator binds the principal; Know-Your-Principal).
       topicOperator: {
-        enabled: false,
-        dryRun: true,
+        dryRun: false,
       },
     },
   },
