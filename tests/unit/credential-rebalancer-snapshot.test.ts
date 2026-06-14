@@ -9,7 +9,7 @@
 
 import { describe, it, expect } from 'vitest';
 import {
-  mapAccountStatus, mapAccount, mapSlot, resolveRebalancerConfig,
+  mapAccountStatus, mapAccount, mapSlot, resolveRebalancerConfig, computeBusynessBySlot,
 } from '../../src/core/CredentialRebalancerSnapshot.js';
 import type { SubscriptionAccount } from '../../src/core/SubscriptionPool.js';
 import type { CredentialAssignment } from '../../src/core/CredentialLocationLedger.js';
@@ -116,5 +116,52 @@ describe('resolveRebalancerConfig', () => {
   it('passes through the desired default account id', () => {
     const c = resolveRebalancerConfig({ desiredDefaultAccountId: 'acct-D' });
     expect(c.desiredDefaultAccountId).toBe('acct-D');
+  });
+});
+
+describe('computeBusynessBySlot', () => {
+  // Account → slot map: A→slot-1, B→slot-2; an unknown account → null.
+  const slotOf = (a: string): string | null => (a === 'A' ? 'slot-1' : a === 'B' ? 'slot-2' : null);
+  const DEFAULT = '~/.claude';
+
+  it('counts RUNNING claude-code sessions per slot via the account→slot map', () => {
+    const busy = computeBusynessBySlot(
+      [
+        { status: 'running', framework: 'claude-code', subscriptionAccountId: 'A' },
+        { status: 'running', framework: 'claude-code', subscriptionAccountId: 'A' },
+        { status: 'running', framework: 'claude-code', subscriptionAccountId: 'B' },
+      ],
+      slotOf, DEFAULT,
+    );
+    expect(busy).toEqual({ 'slot-1': 2, 'slot-2': 1 });
+  });
+
+  it('attributes an UNTAGGED running session (no account) to the default slot', () => {
+    const busy = computeBusynessBySlot([{ status: 'running', framework: 'claude-code' }], slotOf, DEFAULT);
+    expect(busy).toEqual({ [DEFAULT]: 1 });
+  });
+
+  it('excludes non-running sessions', () => {
+    const busy = computeBusynessBySlot(
+      [{ status: 'stopped', framework: 'claude-code', subscriptionAccountId: 'A' }, { status: 'crashed', subscriptionAccountId: 'A' }],
+      slotOf, DEFAULT,
+    );
+    expect(busy).toEqual({});
+  });
+
+  it('excludes an EXPLICIT non-claude-code framework but counts an undefined (legacy) one', () => {
+    const busy = computeBusynessBySlot(
+      [
+        { status: 'running', framework: 'codex-cli', subscriptionAccountId: 'A' }, // excluded
+        { status: 'running', subscriptionAccountId: 'A' },                          // legacy → counted
+      ],
+      slotOf, DEFAULT,
+    );
+    expect(busy).toEqual({ 'slot-1': 1 });
+  });
+
+  it('drops a tagged session whose account has no current slot (slotOf null)', () => {
+    const busy = computeBusynessBySlot([{ status: 'running', framework: 'claude-code', subscriptionAccountId: 'GHOST' }], slotOf, DEFAULT);
+    expect(busy).toEqual({});
   });
 });
