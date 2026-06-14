@@ -10399,11 +10399,17 @@ export function createRoutes(ctx: RouteContext): Router {
   const ATTENTION_PEER_TIMEOUT_MS = 5_000;
 
   // WS4.1 follow-up (CMT-1416): durable operator-bound /ack across machines.
-  // Plain seamlessness boolean read LIVE (mirrors ws21PreferencesPool) — off ⇒
-  // POST /attention/:id/remote-ack 503s, the PATCH precedence guard is inert,
-  // and the store is never touched (strict no-op on a flag-off agent).
+  // DEV-AGENT DARK GATE (operator directive 2026-06-13, topic 13481): read
+  // ws41DurableAck through resolveDevAgentGate so it resolves LIVE on a dev agent
+  // (config OMITS it → undefined → !!developmentAgent) / DARK on the fleet. An
+  // explicit config value still wins. Off ⇒ POST /attention/:id/remote-ack 503s,
+  // the PATCH precedence guard is inert, and the store is never touched (strict
+  // no-op); single-machine agents are a no-op even live (no peers to route to).
   const ws41DurableAckEnabled = (): boolean =>
-    ((ctx.config as Record<string, any>).multiMachine?.seamlessness ?? {}).ws41DurableAck === true;
+    resolveDevAgentGate(
+      ((ctx.config as Record<string, any>).multiMachine?.seamlessness ?? {}).ws41DurableAck,
+      ctx.config,
+    );
   const remoteAckStore = new RemoteAckStore(ctx.config.stateDir);
   const remoteAckLimiter = rateLimiter(60_000, 30);
   const REMOTE_ACK_GIVE_UP_ATTEMPTS = 50;

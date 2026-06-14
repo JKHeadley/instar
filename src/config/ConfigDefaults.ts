@@ -694,13 +694,27 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
     // byte-for-byte today's behavior. Single-machine pools are a strict no-op
     // even when enabled (the election never engages below 2 online machines).
     seamlessness: {
-      ws3OneVoice: false,
+      // WS3 one-voice gate. DEV-AGENT DARK GATE (operator directive 2026-06-13,
+      // topic 13481 — "NOTHING should ship dark on development agents"):
+      // `ws3OneVoice` is DELIBERATELY OMITTED here (not hardcoded false) so
+      // resolveDevAgentGate decides at runtime — LIVE on a development agent
+      // (dogfooding across the operator's own machines), DARK on the fleet until
+      // explicitly flipped on. Hardcoding `false` would force-dark even a dev
+      // agent (the PR #1001 bug). Registered in DEV_GATED_FEATURES
+      // (src/core/devGatedFeatures.ts). When dark/single-machine the
+      // SpeakerElection returns "speak" unconditionally (byte-for-byte today's
+      // behavior); the election never engages below 2 online machines, so a
+      // single-machine dev agent is a strict no-op even when resolved live.
       ws3DwellMs: 60000,
       // WS1.3 ownership reconcile: bounded pin/owner convergence (cooperative
       // transfer→claim while the owner lives; force only with owner-death
-      // evidence + quorum). DARK + dry-run default — dryRun logs intended CAS
-      // actions without performing them.
-      ws13Reconcile: false,
+      // evidence + quorum). DEV-AGENT DARK GATE: `ws13Reconcile` is DELIBERATELY
+      // OMITTED here (not hardcoded false) so resolveDevAgentGate decides at
+      // runtime — LIVE on a development agent, DARK on the fleet. Its dry-run
+      // sub-knob (ws13DryRun, default true) STAYS a plain hardcoded default — it
+      // is the in-component "log intended CAS actions without performing them"
+      // rung, NOT the dev-gate, so the reconcile loop runs live on dev but in
+      // dry-run (no destructive CAS) exactly as the rollout ladder intends.
       ws13DryRun: true,
       ws13TickMs: 30000,
       // WS2.1 preferences pool: cross-machine read-replication of the
@@ -715,26 +729,27 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       // operator acks a pooled attention item whose OWNER is briefly offline,
       // the ack intent is persisted (with the authenticated operator principal)
       // and re-delivered when the owner returns — so the intent survives a dark
-      // owner instead of evaporating. DARK default; a plain seamlessness boolean
-      // (read live at the route + drain sites), mirroring the ws21PreferencesPool
-      // sibling — NOT named `enabled`, so it is outside the dev-agent dark-gate
-      // lint. When off, POST /attention/:id/remote-ack 503s and the receiver's
+      // owner instead of evaporating. DEV-AGENT DARK GATE (operator directive
+      // 2026-06-13, topic 13481): `ws41DurableAck` is DELIBERATELY OMITTED here
+      // (not hardcoded false) so resolveDevAgentGate decides at runtime — LIVE on
+      // a development agent, DARK on the fleet. Registered in DEV_GATED_FEATURES.
+      // When dark, POST /attention/:id/remote-ack 503s and the receiver's
       // remote-ack precedence guard is a no-op; single-machine agents are a
-      // strict no-op even when on (no peers to route to).
-      ws41DurableAck: false,
+      // strict no-op even when resolved live (no peers to route to).
       // WS4.3 role-guard-at-spawn (CMT-1416 follow-up to the merged WS4.3 jobs
       // read-side, PR #1104). When on, the scheduler refuses to spawn a
       // STATE-WRITING job (JobDefinition.writesState) on a machine that does NOT
       // hold the lease — the spawn-boundary re-check that closes the TOCTOU hole
       // where a machine awake at boot demotes to read-only standby mid-run while
       // its cron tasks keep firing (the scheduler is constructed only when awake
-      // but is never torn down on demotion). DARK default; a plain seamlessness
-      // boolean (read live at the triggerJob spawn boundary), mirroring the
-      // ws41DurableAck sibling — NOT named `enabled`, so it is outside the
-      // dev-agent dark-gate lint. When off, the guard is a strict no-op
-      // (byte-for-byte today's behavior). Single-machine agents always hold the
-      // lease, so the guard never fires there even when on.
-      ws43RoleGuard: false,
+      // but is never torn down on demotion). DEV-AGENT DARK GATE (operator
+      // directive 2026-06-13, topic 13481): `ws43RoleGuard` is DELIBERATELY
+      // OMITTED here (not hardcoded false) so resolveDevAgentGate decides at
+      // runtime — LIVE on a development agent, DARK on the fleet. Registered in
+      // DEV_GATED_FEATURES. When dark, the guard is a strict no-op (byte-for-byte
+      // today's behavior). Single-machine agents always hold the lease, so the
+      // guard never fires there even when resolved live (it can only ever refuse,
+      // never wrongly spawn — the safe direction).
       // WS4.3 journal-lease cutover (MULTI-MACHINE-SEAMLESSNESS-SPEC §WS4.3,
       // "Cutover discipline"). When on AND the pool is flag-coherent (every
       // online peer advertises ws43JournalLease), job claims upgrade from the
@@ -742,17 +757,25 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       // replicated journal. The cutover gate (JobLeaseCutoverGate) guarantees the
       // two mechanisms are NEVER both live for a job set (the named migration
       // hazard: one machine leasing via journal while a peer broadcasts via bus).
-      // DARK default; a plain seamlessness boolean (read live at the claim
-      // boundary), mirroring the ws43RoleGuard sibling — NOT named `enabled`, so
-      // outside the dev-agent dark-gate lint. When off, or in a mixed/older pool,
-      // or single-machine, the scheduler stays on the legacy bus path
-      // (byte-for-byte today's behavior).
-      ws43JournalLease: false,
+      // DEV-AGENT DARK GATE (operator directive 2026-06-13, topic 13481):
+      // `ws43JournalLease` is DELIBERATELY OMITTED here (not hardcoded false) so
+      // resolveDevAgentGate decides at runtime — LIVE on a development agent,
+      // DARK on the fleet. Registered in DEV_GATED_FEATURES. When dark, or in a
+      // mixed/older pool, or single-machine, the scheduler stays on the legacy
+      // bus path (byte-for-byte today's behavior); the JobLeaseCutoverGate's
+      // flag-coherence requirement means a single-machine dev agent (no peers)
+      // is a strict no-op even when the flag resolves live.
+      //
       // WS4.3 journal-lease DRY-RUN (the WS-wide "log intended claims" posture).
-      // When the gate is coherent-but-dry-run, the intended journal claim is
-      // LOGGED but the legacy bus path still runs — so a dry-run pool never
-      // half-migrates. Default true: the first rung of the rollout ladder.
-      ws43JournalLeaseDryRun: true,
+      // `ws43JournalLeaseDryRun` is ALSO DELIBERATELY OMITTED so the dev-gate
+      // resolves it COHERENTLY with ws43JournalLease: on a dev agent the cutover
+      // goes LIVE (dryRun → false) so the journal-lease path is actually
+      // exercised (not just logged); on the fleet it resolves to the safe dry-run
+      // default (true). The consumer computes `dryRun: cfg?.ws43JournalLeaseDryRun
+      // ?? !resolveDevAgentGate(undefined, config)` — an explicit config value
+      // still wins. A genuine live cutover only engages when the flag resolves
+      // live AND the pool is flag-coherent (≥2 machines all advertising the
+      // capability not-dry-run), so a single-machine dev agent never half-migrates.
       // WS4.4 "links that survive machine boundaries". DEV-AGENT DARK GATE:
       // `ws44PoolLinks` is DELIBERATELY OMITTED here (not hardcoded false) so
       // resolveDevAgentGate decides at runtime — LIVE on a development agent

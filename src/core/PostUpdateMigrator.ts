@@ -236,6 +236,67 @@ export function migrateConfigStateSyncStoresDevGate(config: Record<string, unkno
   return changed;
 }
 
+/**
+ * The 5 multiMachine.seamlessness coherence flags (WS3 / WS1.3 / WS4.1 / WS4.3)
+ * re-gated to the developmentAgent gate on 2026-06-13 (operator directive topic
+ * 13481). Each was a hardcoded `false` in ConfigDefaults; now OMITTED so
+ * resolveDevAgentGate decides (live-on-dev / dark-fleet) — mirroring ws44PoolLinks.
+ */
+const SEAMLESSNESS_DEV_GATED_FLAGS = [
+  'ws3OneVoice',
+  'ws13Reconcile',
+  'ws41DurableAck',
+  'ws43RoleGuard',
+  'ws43JournalLease',
+] as const;
+
+/**
+ * Strip default-shaped literal `false` for the 5 seamlessness coherence flags so
+ * the developmentAgent gate resolves them (live on dev, dark on fleet) — exactly the
+ * ws44PoolLinks / ws44PoolCache invariant, applied to ws3OneVoice / ws13Reconcile /
+ * ws41DurableAck / ws43RoleGuard / ws43JournalLease (operator directive 2026-06-13,
+ * topic 13481). An existing agent that ran the old ConfigDefaults carries an explicit
+ * `false` per flag, which (being explicit) would keep resolveDevAgentGate DARK even on
+ * a dev agent. Rules per flag:
+ *   - absent          → no-op. The gate already decides correctly.
+ *   - === false       → STRIP it. It was a default-shaped force-dark.
+ *   - === true        → leave it. An operator's explicit fleet-flip wins.
+ *
+ * SPECIAL CASE ws43JournalLeaseDryRun: the OLD default carried the PAIR
+ * `{ ws43JournalLease:false, ws43JournalLeaseDryRun:true }`. The new ConfigDefaults
+ * OMIT BOTH so the consumer computes dryRun COHERENTLY with the gate (dev→false/live,
+ * fleet→true/dry-run). So when ws43JournalLease is a default-shaped `false` AND
+ * ws43JournalLeaseDryRun is a default-shaped `true`, strip the dryRun key too (so the
+ * consumer's coherent default applies). An operator-set ws43JournalLeaseDryRun (any
+ * other value, or present without the paired false) is left untouched — reach is not
+ * authority. A stripped seamlessness block left empty is removed. Idempotent.
+ */
+export function migrateConfigSeamlessnessDevGate(config: Record<string, unknown>): boolean {
+  const mm = config.multiMachine as Record<string, unknown> | undefined;
+  if (!mm || typeof mm !== 'object') return false;
+  const seam = mm.seamlessness as Record<string, unknown> | undefined;
+  if (!seam || typeof seam !== 'object') return false;
+  let changed = false;
+  for (const flag of SEAMLESSNESS_DEV_GATED_FLAGS) {
+    if (!Object.prototype.hasOwnProperty.call(seam, flag)) continue;
+    // Only a default-shaped `false` is stripped; an explicit `true` is preserved.
+    if (seam[flag] !== false) continue;
+    delete seam[flag];
+    changed = true;
+    // Coherent dryRun strip — only alongside a default-shaped ws43JournalLease:false.
+    if (
+      flag === 'ws43JournalLease' &&
+      Object.prototype.hasOwnProperty.call(seam, 'ws43JournalLeaseDryRun') &&
+      seam.ws43JournalLeaseDryRun === true
+    ) {
+      delete seam.ws43JournalLeaseDryRun;
+    }
+  }
+  // Tidy: drop an emptied seamlessness block so the migration leaves no cruft.
+  if (changed && Object.keys(seam).length === 0) delete mm.seamlessness;
+  return changed;
+}
+
 export class PostUpdateMigrator {
   private config: MigratorConfig;
   /**
@@ -7329,6 +7390,19 @@ Create worktrees for collaborator repos with \`instar worktree create <branch>\`
       result.upgraded.push('config.json: stripped default-shaped multiMachine.stateSync.* memory-store {enabled:false,dryRun:true} blocks so the developmentAgent gate resolves them (live-on-dev, dark fleet, dryRun:false)');
     } else {
       result.skipped.push('config.json: multiMachine.stateSync.* memory-store dev-gates already correct (omitted or operator-set)');
+    }
+
+    // The 5 multiMachine.seamlessness coherence flags (WS3 / WS1.3 / WS4.1 / WS4.3)
+    // re-gated to the developmentAgent gate (2026-06-13 operator directive topic
+    // 13481): strip a default-shaped literal `false` per flag so the gate resolves
+    // them live-on-dev / dark-fleet — same omitted-gate invariant as ws44PoolLinks.
+    // ws43JournalLeaseDryRun:true is stripped alongside a default-shaped
+    // ws43JournalLease:false so the consumer's coherent dryRun default applies.
+    if (migrateConfigSeamlessnessDevGate(config)) {
+      patched = true;
+      result.upgraded.push('config.json: stripped default-shaped multiMachine.seamlessness.{ws3OneVoice,ws13Reconcile,ws41DurableAck,ws43RoleGuard,ws43JournalLease}=false (and paired ws43JournalLeaseDryRun:true) so the developmentAgent gate resolves them (live-on-dev, dark fleet)');
+    } else {
+      result.skipped.push('config.json: multiMachine.seamlessness coherence-flag dev-gates already correct (omitted or operator-set)');
     }
 
     if (patched) {
