@@ -33,6 +33,8 @@ import { TOPIC_STYLE } from '../messaging/TelegramAdapter.js';
 import type { JobDefinition, JobSchedulerConfig, JobState, JobPriority } from '../core/types.js';
 import type { TelegramAdapter } from '../messaging/TelegramAdapter.js';
 import type { JobClaimManager } from './JobClaimManager.js';
+import type { JobLeaseClaimStore } from './JobLeaseClaimStore.js';
+import { decideClaimPath, type CutoverGateInput, type CutoverDecision } from './JobLeaseCutoverGate.js';
 import type { TopicMemory } from '../memory/TopicMemory.js';
 
 /**
@@ -115,6 +117,27 @@ export class JobScheduler {
 
   /** Optional job claim manager for multi-machine deduplication (Phase 4C) */
   private claimManager: JobClaimManager | null = null;
+
+  /**
+   * MULTI-MACHINE-SEAMLESSNESS-SPEC §WS4.3 journal-lease cutover. The durable,
+   * epoch-fenced lease store — the journal-backed UPGRADE of the best-effort
+   * AgentBus broadcast in `claimManager`. It is consulted for a job ONLY when
+   * `journalLeaseGate` selects the 'journal' path (flag on + pool coherent). The
+   * gate guarantees the two mechanisms are never both live for a job set (the
+   * named migration hazard). When unset, the scheduler stays on the legacy bus
+   * path (byte-for-byte today's behavior).
+   */
+  private leaseClaimStore: JobLeaseClaimStore | null = null;
+  /**
+   * Live provider for the cutover-gate input (flag + dry-run + the pool peers'
+   * advertised ws43JournalLease capability + this machine's lease epoch). Read
+   * LIVE at each claim boundary so a flag flip / a peer going dark cuts the pool
+   * back to the bus immediately. When unset, the gate is never consulted and the
+   * legacy bus path runs (strict no-op).
+   */
+  private journalLeaseGate: (() => CutoverGateInput & { epoch: number }) | null = null;
+  /** Optional sink for the most-recent cutover decision (status/audit surface). */
+  private onCutoverDecision: ((slug: string, decision: CutoverDecision) => void) | null = null;
   /**
    * UNIFIED-SESSION-LIFECYCLE §P0 #9 (SE-8): function returning cumulative
    * wall-time-asleep in milliseconds during a half-open window [startMs, endMs).
@@ -220,6 +243,68 @@ export class JobScheduler {
    */
   setJobClaimManager(manager: JobClaimManager): void {
     this.claimManager = manager;
+  }
+
+  /**
+   * MULTI-MACHINE-SEAMLESSNESS-SPEC §WS4.3 — inject the journal-lease cutover.
+   *
+   * `store` is the durable epoch-fenced lease store; `gateInput` returns the
+   * LIVE cutover-gate input (flag, dry-run, pool peers' advertised capability,
+   * and this machine's current lease epoch) — read fresh at each claim boundary,
+   * never cached. `onDecision` (optional) receives the resolved decision per job
+   * for the status/audit surface.
+   *
+   * When omitted, the scheduler never consults the journal path — the legacy
+   * AgentBus `claimManager` runs unchanged (single-machine / flag-off no-op).
+   */
+  setJournalLeaseCutover(
+    store: JobLeaseClaimStore,
+    gateInput: () => CutoverGateInput & { epoch: number },
+    onDecision?: (slug: string, decision: CutoverDecision) => void,
+  ): void {
+    this.leaseClaimStore = store;
+    this.journalLeaseGate = gateInput;
+    this.onCutoverDecision = onDecision ?? null;
+  }
+
+  /**
+   * Resolve which claim mechanism a job uses RIGHT NOW. Pure read of the live
+   * gate input. Returns null when the cutover is not wired (legacy bus only).
+   * Exposed for the scheduler's claim seams (check + claim + complete) so a
+   * single evaluation drives all three — never two mechanisms for one job.
+   */
+  private resolveClaimPath(slug: string): { path: 'journal' | 'bus'; epoch: number; journalDryRun: boolean } | null {
+    if (!this.journalLeaseGate || !this.leaseClaimStore) return null;
+    let input: CutoverGateInput & { epoch: number };
+    try {
+      input = this.journalLeaseGate();
+    } catch {
+      // @silent-fallback-ok — fail toward the legacy bus path (the conservative
+      // side) if the live gate read throws; never strand a job on a broken gate.
+      return null;
+    }
+    const decision = decideClaimPath(input);
+    this.onCutoverDecision?.(slug, decision);
+    return { path: decision.path, epoch: input.epoch, journalDryRun: decision.journalDryRun };
+  }
+
+  /**
+   * Release a claim for a completed job across BOTH mechanisms. The path that
+   * actually took the claim may differ from the path the gate would pick at
+   * completion time (a mid-run flag flip), so we release both — each store's
+   * completeClaim is a strict no-op when this machine does not own the slug's
+   * live record, so releasing the unused store is harmless. The journal release
+   * is synchronous (durable); the bus release is best-effort async.
+   */
+  private releaseClaim(slug: string, result: 'success' | 'failure'): void {
+    try {
+      this.leaseClaimStore?.completeClaim(slug, result);
+    } catch {
+      /* @silent-fallback-ok — best-effort; lease expires on its own otherwise */
+    }
+    this.claimManager?.completeClaim(slug, result).catch(err => {
+      console.error(`[scheduler] Failed to broadcast claim completion for "${slug}": ${err}`);
+    });
   }
 
   /**
@@ -428,15 +513,27 @@ export class JobScheduler {
       }
     }
 
-    // Multi-machine claim check (Phase 4C — Gap 5)
-    // If another machine already claimed this job, skip it.
-    if (this.claimManager?.hasRemoteClaim(slug)) {
+    // Multi-machine claim check (Phase 4C — Gap 5; WS4.3 journal-lease cutover).
+    // The cutover gate resolves WHICH mechanism owns dedup for this job RIGHT
+    // NOW — the durable epoch-fenced journal lease (flag on + pool coherent) or
+    // the legacy AgentBus broadcast. Exactly one is consulted per job, so the
+    // two never run simultaneously for the same job set (the named migration
+    // hazard). The decision is recomputed live at each seam; in the steady
+    // coherent state it is stable across the same tick.
+    const claimPath = this.resolveClaimPath(slug);
+    const remoteHeld = claimPath?.path === 'journal'
+      ? this.leaseClaimStore!.hasRemoteClaim(slug)
+      : (this.claimManager?.hasRemoteClaim(slug) ?? false);
+    if (remoteHeld) {
+      const claimedBy = claimPath?.path === 'journal'
+        ? this.leaseClaimStore!.getClaim(slug)?.machineId
+        : this.claimManager?.getClaim(slug)?.machineId;
       this.skipLedger.recordSkip(slug, 'claimed');
       this.state.appendEvent({
         type: 'job_skipped',
         summary: `Job "${slug}" skipped — claimed by another machine`,
         timestamp: new Date().toISOString(),
-        metadata: { slug, reason, claimedBy: this.claimManager.getClaim(slug)?.machineId },
+        metadata: { slug, reason, claimedBy, claimPath: claimPath?.path ?? 'bus' },
       });
       return 'skipped';
     }
@@ -509,12 +606,38 @@ export class JobScheduler {
       return 'queued';
     }
 
-    // Broadcast claim before spawning (async, best-effort)
-    if (this.claimManager) {
-      const timeoutMs = (job.expectedDurationMinutes ?? 30) * 2 * 60_000;
-      this.claimManager.tryClaim(slug, timeoutMs).catch(err => {
-        console.error(`[scheduler] Failed to broadcast claim for "${slug}": ${err}`);
-      });
+    // Take the claim before spawning. The cutover gate (resolved at the check
+    // seam above) decides the mechanism: a durable epoch-fenced journal lease
+    // when the pool is coherent, else the legacy best-effort AgentBus broadcast.
+    // DRY-RUN: when the gate is coherent-but-dry-run, the intended journal claim
+    // is LOGGED (the WS-wide "log intended claims" posture) but the bus path
+    // still runs — so a dry-run pool never half-migrates.
+    const timeoutMs = (job.expectedDurationMinutes ?? 30) * 2 * 60_000;
+    if (claimPath?.path === 'journal') {
+      // Synchronous, durable: the lease is persisted before the spawn, so a
+      // crash between claim and spawn leaves the lease (fenced, expiring) rather
+      // than a silent double-run window.
+      const attempt = this.leaseClaimStore!.tryClaim(slug, claimPath.epoch, timeoutMs);
+      if (!attempt.ok && attempt.reason === 'held-by-peer') {
+        // A peer leased it between the check and here — yield (rare race).
+        this.skipLedger.recordSkip(slug, 'claimed');
+        this.state.appendEvent({
+          type: 'job_skipped',
+          summary: `Job "${slug}" skipped — leased by another machine`,
+          timestamp: new Date().toISOString(),
+          metadata: { slug, reason, claimedBy: attempt.heldBy, claimPath: 'journal' },
+        });
+        return 'skipped';
+      }
+    } else {
+      if (claimPath?.journalDryRun) {
+        console.log(`[scheduler] WS4.3 journal-lease DRY-RUN — would lease "${slug}" via journal (epoch ${claimPath.epoch}); running legacy bus path.`);
+      }
+      if (this.claimManager) {
+        this.claimManager.tryClaim(slug, timeoutMs).catch(err => {
+          console.error(`[scheduler] Failed to broadcast claim for "${slug}": ${err}`);
+        });
+      }
     }
 
     // Clear retry state on successful trigger
@@ -753,8 +876,9 @@ export class JobScheduler {
       try {
         // Note: claim is finalized as 'failure' (slug is unblocked for the next tick)
         // while run history records 'timeout' (preserves the cause for diagnostics).
-        // The asymmetry is intentional — don't "fix" it.
-        this.claimManager?.completeClaim(run.slug, 'failure');
+        // The asymmetry is intentional — don't "fix" it. Releases both the journal
+        // lease and the legacy bus claim (whichever took it).
+        this.releaseClaim(run.slug, 'failure');
       } catch {
         // Best-effort — claim may have already cleared.
       }
@@ -865,7 +989,7 @@ export class JobScheduler {
         consecutiveFailures: 0,
         nextScheduled: this.getNextRun(job.slug),
       });
-      this.claimManager?.completeClaim(job.slug, 'success');
+      this.releaseClaim(job.slug, 'success');
     }).catch((err: unknown) => {
       const errorMsg = err instanceof Error ? err.message : String(err);
       const output = [
@@ -883,7 +1007,7 @@ export class JobScheduler {
         consecutiveFailures: (previous?.consecutiveFailures ?? 0) + 1,
         nextScheduled: this.getNextRun(job.slug),
       });
-      this.claimManager?.completeClaim(job.slug, 'failure');
+      this.releaseClaim(job.slug, 'failure');
       this.scheduleRetry(job.slug, 'error');
     });
   }
@@ -1233,12 +1357,9 @@ export class JobScheduler {
       this.activeRunIds.delete(session.name);
     }
 
-    // Signal claim completion (Phase 4C — Gap 5)
-    if (this.claimManager) {
-      this.claimManager.completeClaim(job.slug, failed ? 'failure' : 'success').catch(err => {
-        console.error(`[scheduler] Failed to broadcast claim completion for "${job.slug}": ${err}`);
-      });
-    }
+    // Signal claim completion (Phase 4C — Gap 5; WS4.3 journal-lease cutover).
+    // Releases whichever mechanism took the claim (journal lease or legacy bus).
+    this.releaseClaim(job.slug, failed ? 'failure' : 'success');
 
     // Clear active-job.json now that the job is done
     const activeJob = this.state.get<{ slug: string }>('active-job');

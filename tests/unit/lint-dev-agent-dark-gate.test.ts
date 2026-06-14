@@ -344,21 +344,23 @@ describe('lint-dev-agent-dark-gate', () => {
       // (CMT-1416) inserts a 17-line seamlessness block (the OMITTED `ws44PoolCache`
       // dev-gate comment + the plain `ws44PoolCacheTtlMs: 3000` tunable — neither is
       // an `enabled:` path, so the attributor ignores both) above sessionPool,
-      // shifting every sessionPool-onward `enabled: false` line +17 from the
-      // pre-WS4.4(f) map. RE-VERIFIED by hand via the attributor on the merged ConfigDefaults.
-      '768': 'multiMachine.sessionPool.enabled',
-      '793': 'multiMachine.sessionPool.inboundQueue.enabled',
-      '822': 'multiMachine.sessionPool.holdForStability.enabled',
-      '913': 'multiMachine.stateSync.preferences.enabled',
-      '927': 'multiMachine.stateSync.relationships.enabled',
-      '941': 'multiMachine.stateSync.learnings.enabled',
-      '956': 'multiMachine.stateSync.knowledge.enabled',
-      '970': 'multiMachine.stateSync.evolutionActions.enabled',
-      '984': 'multiMachine.stateSync.userRegistry.enabled',
-      '999': 'multiMachine.stateSync.topicOperator.enabled',
-      '1107': 'cartographer.freshnessSweep.enabled',
-      '1152': 'cartographer.conformanceAudit.llmEnrichment.enabled',
-      '1177': 'cartographer.subtreeNav.llmRerank.enabled',
+      // shifting every sessionPool-onward `enabled: false` line. WS4.3 journal-
+      // lease cutover inserts another 18-line plain-boolean seamlessness block
+      // (ws43JournalLease + ws43JournalLeaseDryRun, NOT `enabled:` paths) above
+      // sessionPool, a further +18 shift. RE-VERIFIED by hand via the attributor on the merged ConfigDefaults.
+      '786': 'multiMachine.sessionPool.enabled',
+      '811': 'multiMachine.sessionPool.inboundQueue.enabled',
+      '840': 'multiMachine.sessionPool.holdForStability.enabled',
+      '931': 'multiMachine.stateSync.preferences.enabled',
+      '945': 'multiMachine.stateSync.relationships.enabled',
+      '959': 'multiMachine.stateSync.learnings.enabled',
+      '974': 'multiMachine.stateSync.knowledge.enabled',
+      '988': 'multiMachine.stateSync.evolutionActions.enabled',
+      '1002': 'multiMachine.stateSync.userRegistry.enabled',
+      '1017': 'multiMachine.stateSync.topicOperator.enabled',
+      '1125': 'cartographer.freshnessSweep.enabled',
+      '1170': 'cartographer.conformanceAudit.llmEnrichment.enabled',
+      '1195': 'cartographer.subtreeNav.llmRerank.enabled',
     };
     const actual = attributeRealConfigDefaults();
     expect(actual).toEqual(EXPECTED);

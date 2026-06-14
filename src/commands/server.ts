@@ -13788,6 +13788,47 @@ export async function startServer(options: StartOptions): Promise<void> {
         const poolSelfId =
           machineHeartbeat?.config?.machineId ??
           (poolIdMgr.hasIdentity() ? poolIdMgr.loadIdentity().machineId : null);
+
+        // WS4.3 journal-lease cutover (MULTI-MACHINE-SEAMLESSNESS-SPEC §WS4.3,
+        // "Cutover discipline"). Wired HERE (not at setRoleGuard) because the
+        // gate needs the machinePoolRegistry — declared after the scheduler is
+        // built. The gate-input is read LIVE at each claim boundary: the flag +
+        // dry-run from config, this machine's lease epoch from the coordinator,
+        // and the pool peers' advertised ws43JournalLease capability from their
+        // last heartbeat (absent = older peer = non-participant → the whole pool
+        // stays on the bus). Single-machine (no peers) is a strict no-op inside
+        // the gate. The cutover guarantees the journal-lease and the legacy bus
+        // broadcast are NEVER both live for a job set (the named migration hazard).
+        if (poolSelfId && scheduler) {
+          const leaseMod = await import('../scheduler/JobLeaseClaimStore.js');
+          const leaseStore = new leaseMod.JobLeaseClaimStore({
+            machineId: poolSelfId,
+            stateDir: config.stateDir,
+          });
+          const registryForCutover = machinePoolRegistry!;
+          scheduler.setJournalLeaseCutover(
+            leaseStore,
+            () => ({
+              enabled: config.multiMachine?.seamlessness?.ws43JournalLease === true,
+              dryRun: config.multiMachine?.seamlessness?.ws43JournalLeaseDryRun !== false,
+              epoch: coordinator.getLeaseEpoch(),
+              peers: registryForCutover
+                .getCapacities()
+                .filter((c) => c.machineId !== poolSelfId)
+                .map((c) => ({
+                  machineId: c.machineId,
+                  online: c.online,
+                  ws43JournalLease: c.seamlessnessFlags?.ws43JournalLease === true,
+                })),
+            }),
+            (slug, decision) => {
+              if (decision.reason === 'peers-incoherent' && decision.incoherentPeers.length > 0) {
+                console.log(pc.dim(`  [scheduler] WS4.3 cutover withheld for "${slug}" — pool not flag-coherent (peers without ws43JournalLease: ${decision.incoherentPeers.join(', ')}); staying on the legacy bus path.`));
+              }
+            },
+          );
+          console.log(pc.dim('  [scheduler] WS4.3 journal-lease cutover wired (engages only when flag on + pool coherent).'));
+        }
         if (poolSelfId) {
           try {
             poolIdMgr.recordSelfHardware(poolSelfId, poolMod.captureHardware());
@@ -13860,7 +13901,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                 // WS1.1 capability advertisement (spec invariant 5): a bounded
                 // fixed-size summary, never an inventory. Reported live each
                 // heartbeat so a queue going dark withdraws the capability.
-                seamlessnessFlags: { ws11DeliverReceive: !!_inboundQueue, ws12DrainReceive: !!_drainRunner, ws44PoolLinks: !!_poolLink, ws44PoolCache: !!_poolPollCache, stateSyncReceive: selfStateSyncReceive() },
+                seamlessnessFlags: { ws11DeliverReceive: !!_inboundQueue, ws12DrainReceive: !!_drainRunner, ws44PoolLinks: !!_poolLink, ws44PoolCache: !!_poolPollCache, ws43JournalLease: config.multiMachine?.seamlessness?.ws43JournalLease === true && config.multiMachine?.seamlessness?.ws43JournalLeaseDryRun !== true, stateSyncReceive: selfStateSyncReceive() },
                 // Durable Inbound Message Queue §5.1: depth + oldest + tenure +
                 // bounded top-K — the survivor's loss-SUSPECTED item, capped
                 // re-placement arm, and supersede-dedupe key all read these.
