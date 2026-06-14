@@ -40,6 +40,7 @@
  */
 
 import type { ResumeQueue, ResumeQueueEntry } from './ResumeQueue.js';
+import { AGE_LIMIT_ACTIVE_RUN_REASON } from '../core/WorkEvidence.js';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const JOB_SLUG_RE = /^[a-z0-9-]+$/;
@@ -63,6 +64,15 @@ export interface ResumeQueueDrainerDeps {
   topicBindingMatches: (topicId: number, cwd: string) => boolean;
   /** An operator stop instruction recorded for the topic since the entry queued. */
   operatorStopSince: (topicId: number, sinceIso: string) => boolean;
+  /**
+   * Resume-idle-autonomous fix (spec: resume-idle-autonomous-on-reap.md):
+   * OPTIONAL drain-time liveness re-check for an entry admitted because its topic
+   * had an active autonomous run at age-limit-reap time. Returns `false` when the
+   * run is NO LONGER active (completed OR its window elapsed between enqueue and
+   * drain) → the entry invalidates `autonomous-run-finished`, never a spawn.
+   * Absent (undefined) ⇒ today's behavior (no extra check) — back-compat.
+   */
+  autonomousRunFinished?: (topicId: number, reason: string) => boolean;
   /** Jobs: exists, not disabled, not CrashLoopPauser-paused, not run since queuedAt. */
   jobCheck: (slug: string, queuedAtIso: string) => { ok: boolean; why?: string };
   pathExists: (p: string) => boolean;
@@ -409,6 +419,21 @@ export class ResumeQueueDrainer {
       if (this.safeBool(() => this.deps.topicOwnerElsewhere(topicId), true)) return 'topic-owner-elsewhere';
       if (!this.safeBool(() => this.deps.topicBindingMatches(topicId, entry.cwd), false)) return 'binding-mismatch';
       if (this.safeBool(() => this.deps.operatorStopSince(topicId, sinceIso), true)) return 'operator-stop';
+      // Resume-idle-autonomous fix (spec: resume-idle-autonomous-on-reap.md): for an
+      // entry admitted via the age-limit-active-run path, re-verify the run is STILL
+      // live immediately before the spawn. If it completed or its window elapsed since
+      // enqueue, invalidate (never a spawn) — closing the window-elapsed/completed-by-
+      // drain subset of the stale-marker residual structurally, without spending a
+      // resurrection slot to discover it. A throwing/absent dep resolves to the SAFE
+      // side (NOT finished ⇒ no extra invalidation) so this is strictly additive: it
+      // can only ADD an invalidation, never wrongly drop a legitimate revival.
+      if (
+        entry.reason === AGE_LIMIT_ACTIVE_RUN_REASON &&
+        this.deps.autonomousRunFinished &&
+        this.safeBool(() => this.deps.autonomousRunFinished!(topicId, entry.reason), false)
+      ) {
+        return 'autonomous-run-finished';
+      }
     } else if (entry.jobSlug) {
       const check = this.safeVal(() => this.deps.jobCheck(entry.jobSlug!, sinceIso), { ok: false, why: 'job-check-failed' });
       if (!check.ok) return check.why ?? 'job-invalid';

@@ -31,6 +31,7 @@ import { CodexResumeMap, type CodexSpawnFence } from '../core/CodexResumeMap.js'
 import { paneIdleWithEmptyInput } from '../core/ModelSwapService.js';
 import { escalatedModelIds, normalizeTierEscalationConfig, type TierEscalationConfig } from '../core/ModelTierEscalation.js';
 import { activeAutonomousJobs, autonomousRunRemainingForTopic } from '../core/AutonomousSessions.js';
+import { AGE_LIMIT_ACTIVE_RUN_REASON } from '../core/WorkEvidence.js';
 import { TopicProfileTransferCarrier, createTopicProfilePullHandler } from '../core/TopicProfileTransferCarrier.js';
 import type { SendPullOutcome, TopicProfilePullResponse } from '../core/TopicProfileTransferCarrier.js';
 import type { ResolvedTopicProfile } from '../core/TopicProfileResolver.js';
@@ -6695,7 +6696,13 @@ export async function startServer(options: StartOptions): Promise<void> {
         },
         {
           enabled: rqCfg.enabled ?? true,
-          dryRun: rqCfg.dryRun ?? true, // shipped observe-only (decision 2)
+          // Live-on-dev (no-dark-on-dev directive, topic 13481): the queue ships
+          // observe-only (dryRun:true) fleet-wide, but resolves to LIVE
+          // (dryRun:false) on a development agent so the resume-idle-autonomous
+          // fix is genuinely exercised on Echo. An explicit operator
+          // monitoring.resumeQueue.dryRun still wins; the resume-queue keys stay
+          // CODE-defaulted (never frozen into ConfigDefaults — preserves the fleet flip).
+          dryRun: rqCfg.dryRun ?? !resolveDevAgentGate(undefined, config),
           maxAttempts: rqCfg.maxAttempts ?? 3,
           maxResurrections: rqCfg.maxResurrections ?? 2,
           entryTtlHours: rqCfg.entryTtlHours ?? 24,
@@ -6768,6 +6775,16 @@ export async function startServer(options: StartOptions): Promise<void> {
               } catch { /* no flag */ }
               return Math.max(perTopic, globalOperatorStopAt, flagAt) > since;
             },
+            // Resume-idle-autonomous fix (spec: resume-idle-autonomous-on-reap.md):
+            // drain-time liveness re-check for an entry admitted via the
+            // age-limit-active-run path. Returns true (= run FINISHED) when the topic's
+            // autonomous run is no longer active (completed OR window elapsed) since
+            // enqueue → the drainer invalidates `autonomous-run-finished`, never a
+            // spawn. Reads the LOCAL autonomous-run state file (same vantage that
+            // admitted the entry). A throw resolves to NOT-finished inside the drainer's
+            // safeBool (SAFE side — the revival still passes the other reality gates).
+            autonomousRunFinished: (topicId) =>
+              autonomousRunRemainingForTopic(config.stateDir, topicId) == null,
             jobCheck: (slug, queuedAtIso) => {
               if (!scheduler) return { ok: false, why: 'scheduler-unavailable' };
               const job = scheduler.getJobs().find((j) => j.slug === slug);
@@ -6890,7 +6907,7 @@ export async function startServer(options: StartOptions): Promise<void> {
           },
         );
         resumeDrainer.start();
-        console.log(pc.green(`  ResumeQueue started (${rqCfg.dryRun ?? true ? 'dry-run observe-only' : 'LIVE'}; drainer ${rqCfg.drainIntervalSec ?? 60}s tick)`));
+        console.log(pc.green(`  ResumeQueue started (${(rqCfg.dryRun ?? !resolveDevAgentGate(undefined, config)) ? 'dry-run observe-only' : 'LIVE'}; drainer ${rqCfg.drainIntervalSec ?? 60}s tick)`));
 
         // Boot reconciliation half 2 (R2.4): re-enqueue recent mid-work reaps
         // the queue lost to a crash window. Deferred 30s so the Telegram
@@ -6968,6 +6985,28 @@ export async function startServer(options: StartOptions): Promise<void> {
           const jobDef = e.session.jobSlug
             ? scheduler?.getJobs().find((j) => j.slug === e.session.jobSlug)
             : undefined;
+          // Resume-idle-autonomous fix (spec: resume-idle-autonomous-on-reap.md):
+          // an age-limit reap fires precisely when an autonomous session is IDLE
+          // between turns, so its process-based work evidence is empty by
+          // construction → it is never enqueued for revival, and an away-operator's
+          // run sits dead until the next message. When the reaped topic still has an
+          // ACTIVE autonomous run, the live run IS the work evidence: append the TRUE
+          // `build-or-autonomous-active` strong signal (re-clamped by considerEnqueue)
+          // and tag the reason so the drainer can re-verify liveness at drain time.
+          // Guard ordering is load-bearing: the cold-path autonomousRunRemainingForTopic
+          // read runs ONLY on the literal `age-limit` reason (every other reap pays
+          // zero added cost), and the whole block sits inside the existing try/catch so
+          // a throw fails toward NO injection (status-quo no-revive), never a spawn.
+          let candidateReason = e.reason;
+          let candidateWorkEvidence = e.workEvidence ?? [];
+          if (
+            e.reason === 'age-limit' &&
+            topicId != null &&
+            autonomousRunRemainingForTopic(config.stateDir, topicId) != null
+          ) {
+            candidateReason = AGE_LIMIT_ACTIVE_RUN_REASON;
+            candidateWorkEvidence = [...candidateWorkEvidence, 'build-or-autonomous-active'];
+          }
           resumeQueue.considerEnqueue({
             sessionName: e.session.name,
             tmuxSession: e.session.tmuxSession,
@@ -6976,10 +7015,10 @@ export async function startServer(options: StartOptions): Promise<void> {
             jobResumeOptIn: jobDef?.resumeOnReap === true,
             resumeUuid: topicId != null ? (_topicResumeMap?.get(topicId) ?? null) : null,
             cwd: e.session.cwd ?? _projectDir,
-            reason: e.reason,
+            reason: candidateReason,
             disposition: e.disposition ?? 'terminal',
             origin: e.origin ?? 'autonomous',
-            workEvidence: e.workEvidence ?? [],
+            workEvidence: candidateWorkEvidence,
           });
         }
       } catch (err) {
