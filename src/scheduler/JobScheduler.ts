@@ -42,6 +42,25 @@ import type { TopicMemory } from '../memory/TopicMemory.js';
  */
 const DEFAULT_EXPECTED_MINUTES = 30;
 
+/**
+ * Auth-failure landmarks to scan for in session output.
+ *
+ * Claude Code exits cleanly (status = 'completed', exit code 0) on a
+ * 401 / invalid-auth response. Without scanning the output the scheduler
+ * records these silent failures as successes — the job appears healthy
+ * while authentication is actually broken. Match any of these patterns
+ * and the completion handler reclassifies the session as a failure.
+ */
+const AUTH_FAILURE_PATTERNS: readonly RegExp[] = [
+  /\b401\b[\s\S]{0,60}\b(?:Unauthorized|Invalid|authentication)\b/i,
+  /Invalid (?:authentication|API key|bearer token|x-api-key)/i,
+  /authentication[_ -]?(?:failed|error)/i,
+  /\bUnauthorized\b/,
+  /OAuth token (?:has expired|is invalid|expired|missing)/i,
+  /API key not (?:valid|found|provided)/i,
+  /Please (?:re-?)?authenticate/i,
+];
+
 interface QueuedJob {
   slug: string;
   reason: string;
@@ -1204,7 +1223,8 @@ export class JobScheduler {
     if (!job) return;
 
     // Update job state with completion result
-    const failed = session.status === 'failed' || session.status === 'killed';
+    let authFailureReason: string | null = null;
+    let failed = session.status === 'failed' || session.status === 'killed';
 
     // Capture session output FIRST — needed for both history and notifications
     let output = '';
@@ -1214,13 +1234,29 @@ export class JobScheduler {
       // Session may already be dead — that's fine
     }
 
+    // Claude Code exits cleanly on 401 / invalid-auth responses, leaving
+    // session.status = 'completed'. Scan the last 4 KB of output against
+    // well-known auth-failure landmarks and reclassify as a failure on hit.
+    if (!failed && output) {
+      const recent = output.slice(-4000);
+      for (const pattern of AUTH_FAILURE_PATTERNS) {
+        const match = recent.match(pattern);
+        if (match) {
+          authFailureReason = `Auth failure in output: ${match[0].trim().slice(0, 120)}`;
+          failed = true;
+          console.error(`[scheduler] auth failure detected in "${job.slug}" — flagging session ${session.name} as failure`);
+          break;
+        }
+      }
+    }
+
     // Record completion in run history (with output summary)
     const runId = this.activeRunIds.get(session.name);
     if (runId) {
       this.runHistory.recordCompletion({
         runId,
         result: session.status === 'killed' ? 'timeout' : (failed ? 'failure' : 'success'),
-        error: failed ? `Session ${session.status} (${session.name})` : undefined,
+        error: failed ? (authFailureReason ?? `Session ${session.status} (${session.name})`) : undefined,
         outputSummary: output ? output.slice(-1000) : undefined,
       });
 
@@ -1250,7 +1286,7 @@ export class JobScheduler {
       slug: job.slug,
       lastRun: existingState?.lastRun ?? new Date().toISOString(),
       lastResult: failed ? 'failure' : 'success',
-      lastError: failed ? `Session ${session.status} (${session.name})` : undefined,
+      lastError: failed ? (authFailureReason ?? `Session ${session.status} (${session.name})`) : undefined,
       consecutiveFailures: failed ? (existingState?.consecutiveFailures ?? 0) + 1 : 0,
       nextScheduled: this.getNextRun(job.slug),
     };
