@@ -30,7 +30,7 @@ import {
 import { CodexResumeMap, type CodexSpawnFence } from '../core/CodexResumeMap.js';
 import { paneIdleWithEmptyInput } from '../core/ModelSwapService.js';
 import { escalatedModelIds, normalizeTierEscalationConfig, type TierEscalationConfig } from '../core/ModelTierEscalation.js';
-import { activeAutonomousJobs } from '../core/AutonomousSessions.js';
+import { activeAutonomousJobs, autonomousRunRemainingForTopic } from '../core/AutonomousSessions.js';
 import { TopicProfileTransferCarrier, createTopicProfilePullHandler } from '../core/TopicProfileTransferCarrier.js';
 import type { SendPullOutcome, TopicProfilePullResponse } from '../core/TopicProfileTransferCarrier.js';
 import type { ResolvedTopicProfile } from '../core/TopicProfileResolver.js';
@@ -6551,6 +6551,22 @@ export async function startServer(options: StartOptions): Promise<void> {
         quietHoursEndAt: (now) => notificationBatcher.quietHoursEndAt(now),
         summaryReleaseAt: (now) => notificationBatcher.nextSummaryReleaseAt(now),
         resumeQueuedFor: (tmuxSession) => resumeQueuedForSession(tmuxSession),
+        // Honest-recycle (honest-session-recycle-spec): tell ReapNotifier whether
+        // this session's topic has an ACTIVE autonomous run (and how long is left),
+        // so an age-limit RECYCLE of a still-active run reads as a continuation
+        // instead of a "reached its maximum allowed runtime" death. Read here at
+        // the wiring layer (which has the autonomous state) — SessionManager's kill
+        // chokepoint is untouched. Returns null ⇒ legacy death copy (safe default).
+        autonomousRunActiveFor: (tmuxSession) => {
+          try {
+            const t = telegram?.getTopicForSession(tmuxSession);
+            if (t == null) return null;
+            return autonomousRunRemainingForTopic(config.stateDir, t);
+          } catch {
+            // Fail toward the legacy death copy — never silence the notice.
+            return null;
+          }
+        },
         reportDegradation: (reason, impact) => {
           try {
             DegradationReporter.getInstance().report({
