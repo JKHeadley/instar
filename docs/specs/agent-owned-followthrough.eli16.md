@@ -24,3 +24,7 @@ The bigger, more sensitive idea — letting the agent *earn standing permission*
 ## Why it ships quietly first
 
 It turns on for the development agent only, in a watch-but-don't-act mode at first, so we can see it behave before it changes anything for real. You can always turn it off with one switch.
+
+---
+
+_Ratified by Justin on 2026-06-14; ships dark-on-fleet and live-in-dry-run on the dev agent first (it watches and logs, changing nothing) before any real behavior change. The "earn standing permission" follow-up is tracked separately._
