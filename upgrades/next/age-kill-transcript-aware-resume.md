@@ -1,0 +1,60 @@
+# Upgrade Guide — age-kill transcript-awareness
+
+<!-- bump: patch -->
+
+## What Changed
+
+The session age-limit reaper (`SessionManager`'s wall-clock timeout in `monitorTick`) now
+consults the session's live transcript before judging it idle enough to kill. Previously the
+age-gate's "truly idle?" check looked only at the tmux pane (idle prompt) and the process tree
+(no non-baseline child process) — both BLIND to MCP/tool work, which runs out of the pane's
+process tree (the Playwright MCP server) with only short-lived bash calls in between. A session
+actively driving a browser therefore looked idle between tool calls and was terminal-killed at
+the ~5h age cap with `midWork:false` (no resume).
+
+The other reap path — the `SessionReaper` (pressure/idle) — already cross-checks transcript
+growth and would not have killed it. This change brings the age-kill path to parity:
+`SessionManager.isTranscriptRecentlyActive(session, withinMs)` resolves the per-framework
+transcript via the core `resolveFrameworkTranscriptPath` and treats a session whose transcript
+was written within `AGE_GATE_TRANSCRIPT_ACTIVE_MS` (2 min) as actively working — the kill is held
+off, exactly as it already is for a session with a live child process. The idle decision is
+extracted into a pure, exported `isAgeGateTrulyIdle(idleAtPrompt, hasActiveProcs, transcriptActive)`.
+An unresolvable transcript (no session id, missing file, or a framework with no resolver case like
+pi-cli) returns false and the gate falls back to exactly today's pane/procs behavior — safe
+degradation, no regression. Machine-local; no config key, route, or migration.
+
+## What to Tell Your User
+
+- **Long-running sessions don't get killed while they're busy**: "If one of my longer sessions was
+  ever shut down while I was actually in the middle of real work — especially driving a browser or
+  an automation tool — that shouldn't happen anymore. I now tell whether I'm still working from my
+  live activity, not just whether the terminal looks quiet, so the watchdog leaves me alone until I
+  genuinely stop."
+
+## Summary of New Capabilities
+
+| Capability | How to Use |
+|-----------|-----------|
+| Age-reaper recognizes browser/tool work as "active" | automatic |
+
+## Evidence
+
+This fixes a real production incident, verified two ways:
+
+**Before (the actual failure, from `logs/reap-log.jsonl`):** the session
+`Self-Coherence — Knowing My Own Parallel Work` (topic 25660), which was actively driving the
+Playwright MCP server to provision a GitHub identity, was reaped at `2026-06-14T03:34:55Z` with
+`reason:"age-limit"`, `disposition:"terminal"`, `midWork:false` — killed mid-work, no resume, at
+the ~5h cap, because between tool calls the pane looked idle and no child process existed.
+
+**After (decision-boundary reproduction):** the extracted `isAgeGateTrulyIdle` is unit-tested over
+all 8 input combinations. The exact incident inputs — idle pane + no child process + a transcript
+written in the last 2 minutes — now resolve to `false` (held off, not killed), while the
+genuine-zombie inputs (idle pane + no process + a quiet transcript) still resolve to `true` (still
+reaped — no regression to the real zombie-cleanup). Behavioral tests also cover
+`isTranscriptRecentlyActive` for recent/stale/no-id/missing-file/cross-framework cases.
+
+**Why not a full live before/after:** reproducing the original end-to-end requires a >5h wall-clock
+wait plus a live MCP session, so it is not practical to exercise in dev; the decision-boundary
+repro over the captured incident inputs is the faithful, deterministic substitute, and the real
+reap-log entry above is the production "before."

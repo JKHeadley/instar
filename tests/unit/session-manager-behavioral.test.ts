@@ -92,7 +92,8 @@ vi.mock('node:child_process', () => {
 import { execFileSync } from 'node:child_process';
 import { SessionManager } from '../../src/core/SessionManager.js';
 import { StateManager } from '../../src/core/StateManager.js';
-import type { SessionManagerConfig } from '../../src/core/types.js';
+import type { SessionManagerConfig, Session } from '../../src/core/types.js';
+import { resolveFrameworkTranscriptPath } from '../../src/core/FrameworkSessionStore.js';
 
 describe('SessionManager behavioral tests', () => {
   let tmpDir: string;
@@ -530,5 +531,113 @@ describe('SessionManager behavioral tests', () => {
     it('unknown instar session id is a safe no-op', () => {
       expect(() => manager.setClaudeSessionId('no-such-id', 'some-uuid')).not.toThrow();
     });
+  });
+});
+
+/**
+ * isTranscriptRecentlyActive — the age-kill transcript blind-spot fix (2026-06-13).
+ *
+ * A session doing MCP/tool work (e.g. driving Playwright) runs that work OUT of
+ * the tmux process tree and, between tool calls, shows an idle-looking prompt
+ * with no non-baseline child process — so the pane+procs activity check read it
+ * as idle and the age-kill terminal-reaped it mid-work. The framework JSONL grows
+ * on every turn/tool event, so a recently-modified transcript proves liveness.
+ *
+ * The method resolves the REAL per-framework transcript path (it does not take a
+ * home/root override — that override exists only for the resolver's own tests),
+ * so this test writes the fixture at the resolved path (a uniquely-named encoded
+ * subfolder keyed on a unique tmpDir + UUID — no collision) and removes it after.
+ */
+describe('SessionManager.isTranscriptRecentlyActive', () => {
+  const SESSION_UUID = 'eeeeeeee-1111-4000-8000-aaaaaaaaaaaa';
+  let tmpDir: string;
+  let sm: SessionManager;
+  let writtenPath: string | null;
+
+  const session = (over: Partial<Session> = {}): Session => ({
+    id: 'sess-1',
+    name: 'work',
+    tmuxSession: 'work',
+    claudeSessionId: SESSION_UUID,
+    framework: 'claude-code',
+    cwd: tmpDir,
+    status: 'running',
+    startedAt: new Date().toISOString(),
+    ...over,
+  } as Session);
+
+  const writeTranscript = (mtimeMsAgo: number): void => {
+    // Resolve exactly as the production method does (default home) so the file
+    // we write is the file it reads.
+    const p = resolveFrameworkTranscriptPath({
+      framework: 'claude-code',
+      sessionId: SESSION_UUID,
+      projectDir: tmpDir,
+    });
+    expect(p).not.toBe('');
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, '{"type":"assistant"}\n');
+    const whenSec = (Date.now() - mtimeMsAgo) / 1000;
+    fs.utimesSync(p, whenSec, whenSec);
+    writtenPath = p;
+  };
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-transcript-active-'));
+    const stateDir = path.join(tmpDir, 'state');
+    fs.mkdirSync(stateDir, { recursive: true });
+    const config: SessionManagerConfig = {
+      tmuxPath: '/usr/bin/tmux',
+      claudePath: '/usr/local/bin/claude',
+      projectDir: tmpDir,
+      maxSessions: 3,
+      protectedSessions: [],
+      completionPatterns: [],
+      framework: 'claude-code',
+    };
+    sm = new SessionManager(config, new StateManager(stateDir));
+    writtenPath = null;
+    mockTmuxSessions.clear();
+  });
+
+  afterEach(() => {
+    // Remove the fixture transcript + its unique encoded parent dir.
+    const op = 'tests/unit/session-manager-behavioral.test.ts: isTranscriptRecentlyActive fixture cleanup';
+    try {
+      if (writtenPath) {
+        SafeFsExecutor.safeRmSync(writtenPath, { force: true, operation: op });
+        SafeFsExecutor.safeRmSync(path.dirname(writtenPath), { recursive: true, force: true, operation: op });
+      }
+    } catch { /* ignore */ }
+    try { SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: op }); } catch { /* ignore */ }
+  });
+
+  it('returns true when the transcript was modified within the window (MCP work is live)', () => {
+    writeTranscript(10_000); // 10s ago
+    expect(sm.isTranscriptRecentlyActive(session(), 120_000)).toBe(true);
+  });
+
+  it('returns false when the transcript is older than the window (genuinely idle)', () => {
+    writeTranscript(10 * 60_000); // 10 min ago
+    expect(sm.isTranscriptRecentlyActive(session(), 120_000)).toBe(false);
+  });
+
+  it('returns false with no claudeSessionId (unresolvable ⇒ not activity evidence)', () => {
+    writeTranscript(1_000);
+    expect(sm.isTranscriptRecentlyActive(session({ claudeSessionId: undefined }), 120_000)).toBe(false);
+  });
+
+  it('returns false when the transcript file is absent (no false-positive)', () => {
+    // No writeTranscript() — the resolved path has no file ⇒ stat throws ⇒ false.
+    expect(sm.isTranscriptRecentlyActive(session(), 120_000)).toBe(false);
+  });
+
+  it('safe-degrades for a non-claude framework whose transcript is unresolvable', () => {
+    // codex-cli globs ~/.codex/sessions/<date>/...-<uuid>.jsonl; a never-seen UUID
+    // resolves to '' (or no file) ⇒ false. The age gate then falls back to today's
+    // pane/procs verdict — no regression. (Integration-reviewer finding: cross-framework
+    // coverage; same safe-degradation path pi-cli takes via the resolver's default case.)
+    expect(sm.isTranscriptRecentlyActive(session({ framework: 'codex-cli' }), 120_000)).toBe(false);
+    expect(sm.isTranscriptRecentlyActive(session({ framework: 'pi-cli' }), 120_000)).toBe(false);
   });
 });
