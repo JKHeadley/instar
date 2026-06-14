@@ -58,6 +58,28 @@ export const MARKER_WORK_EVIDENCE = ['unverified-under-pressure'] as const;
  */
 export const AGE_LIMIT_ACTIVE_RUN_REASON = 'age-limit (active autonomous run)';
 
+/**
+ * Closed-world predicate: is this resume-queue PAUSE reason a blunt
+ * emergency/sentinel stop that the drainer may auto-resume once it has gone
+ * provably stale (spec: docs/specs/resume-queue-stale-emergency-pause.md)?
+ *
+ * It matches ONLY the panic-reflex class — the MessageSentinel emergency-stop
+ * (`'message-sentinel emergency stop'`, routes.ts) — and NEVER the deliberate
+ * `'autonomous stop-all'` operator pause (a chosen "halt all automation", which
+ * stays manual by design). The match is a substring test against an
+ * INTERNALLY-generated pause reason (never user free-text).
+ *
+ * HARD RULE FOR FUTURE CALLERS: any NEW reason string passed to
+ * `ResumeQueue.pause()` MUST be considered against this predicate and pinned in
+ * the unit test (`tests/unit/resume-queue-drainer.test.ts`) so a rewording can
+ * never silently change auto-resume behavior. A future structured `pauseKind`
+ * enum would replace the substring at THIS single callsite.
+ */
+export function isAutoResumableEmergencyPauseReason(reason: string | undefined | null): boolean {
+  if (typeof reason !== 'string') return false;
+  return /emergency|sentinel/i.test(reason);
+}
+
 export type StrongWorkEvidence = (typeof STRONG_WORK_EVIDENCE)[number];
 export type WeakWorkEvidence = (typeof WEAK_WORK_EVIDENCE)[number];
 export type MarkerWorkEvidence = (typeof MARKER_WORK_EVIDENCE)[number];

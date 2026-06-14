@@ -5109,6 +5109,24 @@ When sessions are shut down autonomously (resource pressure, quota, age limits),
       result.skipped.push('CLAUDE.md: Mid-Work Resume Queue section already present');
     }
 
+    // Stale emergency-stop pause self-heal (resume-queue-stale-emergency-pause).
+    // An agent whose Mid-Work Resume Queue section predates this fix doesn't know
+    // a stale emergency pause now self-heals — so it would tell the user a
+    // self-restart "shouldn't happen" (Agent Awareness standard). Separately
+    // sniffed on a unique phrase so it appends even when the parent section is
+    // already present. Idempotent.
+    if (content.includes('/sessions/resume-queue') && !content.includes('autoResumeStalePause')) {
+      const staleNote = `
+- **A stale emergency-stop pause self-heals (resume-queue-stale-emergency-pause).** An emergency-stop pauses the WHOLE revival queue, and that pause used to never lift — silently stranding later, unrelated active-run revivals (the 2026-06-14 4-hour-silent-strand). Now: while the queue is paused with sessions waiting, you get ONE plain-English heads-up that revival is paused (Layer 1, always on); and if the pause is a stale emergency/sentinel stop AND an active autonomous run has since been recycled and queued well after the stop, the queue auto-resumes itself (Layer 2, on by default — \`monitoring.resumeQueue.autoResumeStalePause: false\` to disable; \`staleEmergencyPauseAutoResumeMin\` tunes the window, default 60). Any topic you actually stopped stays blocked by its per-topic operator-stop record even after the queue resumes, and a deliberate \`autonomous stop-all\` halt is NEVER auto-cleared. Proactive: user asks "why did my session restart by itself after a stop?" / "why is revival paused?" → GET /sessions/resume-queue (paused state) + the resume-queue audit log, then explain in plain words.`;
+      // Append the note inside the existing section by inserting after the
+      // section's last resume-queue proactive line if present; otherwise append.
+      content += '\n' + staleNote + '\n';
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added stale emergency-stop pause self-heal note');
+    } else if (content.includes('autoResumeStalePause')) {
+      result.skipped.push('CLAUDE.md: stale emergency-stop pause self-heal note already present');
+    }
+
     // Green-PR Auto-Merge (green-pr-automerge-enforcement). Content-sniffed on
     // the route path. Off fleet-wide; the awareness still ships so an agent on a
     // dev install where it's armed knows the hold contract + the levers.

@@ -4292,6 +4292,20 @@ export interface MonitoringConfig {
     includeOperatorKills?: boolean;
     /** The observe-only Tier 1 LLM check's own experiment lever. */
     tier1Check?: boolean;
+    /**
+     * Stale-emergency-pause auto-recovery (spec:
+     * resume-queue-stale-emergency-pause.md). Layer 2 auto-resumes a stale
+     * emergency/sentinel pause only when an active-autonomous-run entry was
+     * queued STRICTLY MORE than this many minutes after the pause began
+     * (default 60). CODE-defaulted in the drainer (absent from ConfigDefaults).
+     */
+    staleEmergencyPauseAutoResumeMin?: number;
+    /**
+     * Master off-switch for Layer 2 (the bounded auto-resume behavior change;
+     * default true). Layer 1 (the paused-with-waiting-work alert) is unaffected
+     * and always on.
+     */
+    autoResumeStalePause?: boolean;
   };
   /**
    * AgentWorktreeReaper (Responsible Resource Usage — OS resource hygiene).
