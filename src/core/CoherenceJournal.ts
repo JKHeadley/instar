@@ -36,9 +36,22 @@ import path from 'node:path';
 
 import { SafeFsExecutor } from './SafeFsExecutor.js';
 
-export type JournalKind = 'topic-placement' | 'session-lifecycle' | 'autonomous-run' | 'threadline-conversation' | 'guard-latch' | 'pref-record' | 'relationship-record' | 'learning-record' | 'knowledge-record' | 'evolution-action-record';
+export type JournalKind = 'topic-placement' | 'session-lifecycle' | 'autonomous-run' | 'threadline-conversation' | 'guard-latch' | 'pref-record' | 'relationship-record' | 'learning-record' | 'knowledge-record' | 'evolution-action-record' | 'user-record' | 'topic-operator-record';
 
-export const JOURNAL_KINDS: JournalKind[] = ['topic-placement', 'session-lifecycle', 'autonomous-run', 'threadline-conversation', 'guard-latch', 'pref-record', 'relationship-record', 'learning-record', 'knowledge-record', 'evolution-action-record'];
+export const JOURNAL_KINDS: JournalKind[] = ['topic-placement', 'session-lifecycle', 'autonomous-run', 'threadline-conversation', 'guard-latch', 'pref-record', 'relationship-record', 'learning-record', 'knowledge-record', 'evolution-action-record', 'user-record', 'topic-operator-record'];
+// 'user-record' + 'topic-operator-record' added for WS2.6 (multi-machine-replicated-store-foundation):
+// the SIXTH + SEVENTH replicated-store consumers and the SECOND + THIRD PII kinds (after WS2.3
+// relationships), completing the WS2 memory family. Like 'relationship-record' they are the STATIC
+// half of the DUAL REGISTRY — a kind in ReplicatedKindRegistry but NOT here would advertise
+// stateSyncReceive=true yet serve/apply/pull NOTHING (a silent no-replication). user-record's
+// concrete schema (discriminated union on `op` for value + tombstone), disclosure-minimized
+// projection (the local userId NEVER replicated), channel-set recordKey identity surface
+// (sha256(sorted channel-set)), 64KB per-entry cap, and bounds live in UserRegistryReplicatedStore.ts;
+// topic-operator-record's live in TopicOperatorReplicatedStore.ts (recordKey = sha256(topicId + ":" +
+// verified-uid), NEVER a content-name). THE LOAD-BEARING SAFETY INVARIANT (topic-operator): a
+// replicated topic-operator record is UNTRUSTED peer data — NEVER this machine's authoritative answer
+// to "who is my verified operator?" (only the local authenticated setOperator binds the principal).
+// Additive — readers ignore unknown kinds.
 // 'evolution-action-record' added for WS2.5 (multi-machine-replicated-store-foundation): the
 // FIFTH replicated-store consumer and the FOURTH memory-family kind, riding the same HLC
 // foundation. Like 'knowledge-record' it is the STATIC half of the DUAL REGISTRY — a kind in
@@ -226,6 +239,19 @@ export const DEFAULT_RETENTION: Record<JournalKind, KindRetention> = {
   // evolution-action-record applier path (EVOLUTION_ACTION_MAX_ENTRY_BYTES) so a fat action
   // description replicates.
   'evolution-action-record': { maxFileBytes: 4 * 1024 * 1024, rotateKeep: 4 },
+  // user-record (WS2.6): a PII store — NEVER rotateKeep:0 (rotate-but-never-delete would be a
+  // compliance defect). Registered principals are FEW + bounded, so a small window with a few
+  // archives mirrors the relationship-record sibling. The churny upsert loop is coalesced by the
+  // store's rate cap (UserRegistryReplicatedStore.USER_RECORD_BOUNDS); this is the journal-level
+  // fallback. The per-entry size cap is RAISED to 64KB on the user-record applier path
+  // (USER_MAX_ENTRY_BYTES) so a fat profile replicates (the local userId is never replicated).
+  'user-record': { maxFileBytes: 4 * 1024 * 1024, rotateKeep: 4 },
+  // topic-operator-record (WS2.6): a PII store — NEVER rotateKeep:0. One binding per topic, so a
+  // small window mirrors the user-record sibling. The per-message re-bind loop is coalesced by the
+  // store's rate cap (TopicOperatorReplicatedStore.TOPIC_OPERATOR_RECORD_BOUNDS). The per-entry size
+  // cap is RAISED to 64KB on the applier path (TOPIC_OPERATOR_MAX_ENTRY_BYTES). NOTE: this kind is
+  // ADVISORY-only — a replicated topic-operator record is NEVER the authoritative principal.
+  'topic-operator-record': { maxFileBytes: 2 * 1024 * 1024, rotateKeep: 4 },
 };
 
 export const DEFAULT_FLUSH_INTERVAL_MS = 250;
@@ -399,7 +425,7 @@ export class CoherenceJournal {
   private state: WriterState = 'closed';
   private incarnation = '';
   /** Next seq to assign at enqueue, per kind (in-memory counter seeded at open). */
-  private nextSeq: Record<JournalKind, number> = { 'topic-placement': 1, 'session-lifecycle': 1, 'autonomous-run': 1, 'threadline-conversation': 1, 'guard-latch': 1, 'pref-record': 1, 'relationship-record': 1, 'learning-record': 1, 'knowledge-record': 1, 'evolution-action-record': 1 };
+  private nextSeq: Record<JournalKind, number> = { 'topic-placement': 1, 'session-lifecycle': 1, 'autonomous-run': 1, 'threadline-conversation': 1, 'guard-latch': 1, 'pref-record': 1, 'relationship-record': 1, 'learning-record': 1, 'knowledge-record': 1, 'evolution-action-record': 1, 'user-record': 1, 'topic-operator-record': 1 };
   /** Durable highWaterSeq per kind (advanced after data fdatasync). */
   private highWaterSeq: Record<JournalKind, number> = {
     'topic-placement': 0,
@@ -412,6 +438,8 @@ export class CoherenceJournal {
     'learning-record': 0,
     'knowledge-record': 0,
     'evolution-action-record': 0,
+    'user-record': 0,
+    'topic-operator-record': 0,
   };
   /** In-memory enqueue order; drained by the flusher in seq order per kind. */
   private queue: QueuedEntry[] = [];
@@ -427,6 +455,8 @@ export class CoherenceJournal {
     'learning-record': new Set(),
     'knowledge-record': new Set(),
     'evolution-action-record': new Set(),
+    'user-record': new Set(),
+    'topic-operator-record': new Set(),
   };
   private rateBuckets: Record<JournalKind, RateBucket>;
   private timer: ReturnType<typeof setInterval> | null = null;
@@ -472,6 +502,8 @@ export class CoherenceJournal {
       'learning-record': config.retention?.['learning-record'] ?? DEFAULT_RETENTION['learning-record'],
       'knowledge-record': config.retention?.['knowledge-record'] ?? DEFAULT_RETENTION['knowledge-record'],
       'evolution-action-record': config.retention?.['evolution-action-record'] ?? DEFAULT_RETENTION['evolution-action-record'],
+      'user-record': config.retention?.['user-record'] ?? DEFAULT_RETENTION['user-record'],
+      'topic-operator-record': config.retention?.['topic-operator-record'] ?? DEFAULT_RETENTION['topic-operator-record'],
     };
     this.rateCapCfg = config.rateCap ?? DEFAULT_RATE_CAP;
     this.artifactRoots = (config.artifactRoots ?? [path.join(this.stateDir, 'autonomous'), this.stateDir]).map((r) => {
@@ -500,6 +532,8 @@ export class CoherenceJournal {
       'learning-record': { tokens: this.rateCapCfg.capacity, lastRefillMs: initMs },
       'knowledge-record': { tokens: this.rateCapCfg.capacity, lastRefillMs: initMs },
       'evolution-action-record': { tokens: this.rateCapCfg.capacity, lastRefillMs: initMs },
+      'user-record': { tokens: this.rateCapCfg.capacity, lastRefillMs: initMs },
+      'topic-operator-record': { tokens: this.rateCapCfg.capacity, lastRefillMs: initMs },
     };
   }
 

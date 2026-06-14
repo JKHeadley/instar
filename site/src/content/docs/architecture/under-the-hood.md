@@ -662,6 +662,57 @@ Spec: `docs/specs/MENTOR-LIVE-READINESS-SPEC.md` §Fix 2a.
   the local ACT id by construction. Spec:
   `docs/specs/multi-machine-replicated-store-foundation.md` §4 / §7.
 
+- **`UserRegistryReplicatedStore`** (`src/core/UserRegistryReplicatedStore.ts`) — the SIXTH
+  concrete consumer of the replicated-store foundation and the SECOND **PII kind** (after WS2.3
+  relationships): `user-record`. `UserRegistryReplicatedStore` layers the kind onto the generic
+  envelope so a registered USER the agent knows on machine A (the UserManager registry —
+  `UserProfile`) is known on machine B — ONE user registry, not one-per-machine. It REUSES the
+  WS2.3 PII machinery rather than downgrading it: a discriminated union on `op` (an `op:'put'`
+  VALUE schema and an `op:'delete'` TOMBSTONE schema), a strict **type-clamp on receive**
+  (`createdAt` validates as ISO-8601, `telegramUserId` as a finite number, `channels[]`/
+  `permissions[]`/free text length-clamped, a path-shaped channel `type` jailed out) so a foreign,
+  attacker-controlled record can never smuggle markup through a render slot. The replicated
+  projection is **disclosure-minimized**: the local `userId` is NEVER replicated. The cross-machine
+  `recordKey` is the **channel set** — `sha256(sorted("type:identifier" pairs))`, mirroring
+  `UserManager.channelIndex` — so the SAME user on two machines collapses to ONE record instead of
+  duplicating (the local id is the cross-machine-unstable id, exactly the relationship-UUID trap
+  solved with a stable identity surface). HIGH-impact at the **replication** layer
+  (append-both-and-flag — auto-merging two divergent profiles could fuse two distinct humans) but
+  **advisory** at the **read** layer: a replicated user record is a HINT about what the agent's
+  OTHER machines know, NEVER the authoritative answer to "who is this inbound sender?" — identity
+  RESOLUTION of an inbound principal is LOCAL-ONLY (the local channel index always wins). A removed
+  user emits a channel-keyed tombstone (resurrection guard); a foreign record renders inside a
+  `<replicated-untrusted-data origin="…">` envelope. Per-entry cap raised to 64KB; the
+  `UserManager.persistUsers`/`removeUser` funnels carry the emit seam. Pure mechanism, dark by
+  default behind `multiMachine.stateSync.userRegistry`; a single-machine install is a strict no-op.
+  Spec: `docs/specs/multi-machine-replicated-store-foundation.md` §4 / §7,
+  `docs/specs/ws23-relationships-userregistry-security.md`.
+
+- **`TopicOperatorReplicatedStore`** (`src/core/TopicOperatorReplicatedStore.ts`) — the SEVENTH
+  concrete consumer of the replicated-store foundation and the THIRD **PII kind**, completing the
+  WS2 memory family: `topic-operator-record`. `TopicOperatorReplicatedStore` layers the kind onto
+  the generic envelope so the VERIFIED operator a topic was bound to on machine A (the
+  `TopicOperatorStore` binding — `TopicOperator`) is VISIBLE as advisory context on machine B. **THE
+  LOAD-BEARING SAFETY INVARIANT** (the whole point of this kind — Know Your Principal): a replicated
+  topic-operator record is UNTRUSTED peer data — it can NEVER become this machine's authoritative
+  answer to "who is my verified operator?". The LOCAL auth-derived binding
+  (`TopicOperatorStore.setOperator` from an AUTHENTICATED sender) is ALWAYS authoritative; the
+  replicated record is advisory context only, rendered as quoted untrusted data that EXPLICITLY says
+  so, and there is NO apply path back into `TopicOperatorStore` by construction. It rides the same
+  hardened machinery: a discriminated union on `op`, a strict **type-clamp on receive** (`boundAt`
+  ISO-8601-or-absent, `platform`/`uid` short slugs jailed, `names[]` length-bounded), a
+  **disclosure-minimized** projection of exactly `{platform, uid, names, boundAt}`. The cross-machine
+  `recordKey` is `sha256(topicId + ":" + verified-uid)` — keyed on the topic + the AUTHENTICATED uid,
+  NEVER a content-name (a name in a message body can never become part of the identity surface). An
+  unbind emits a tombstone; HIGH-impact at the **replication** layer (append-both-and-flag) but
+  **advisory** at the **read** layer (a replicated operator record is a hint, never the authoritative
+  principal). Per-entry cap raised to 64KB; the `TopicOperatorStore.setOperator` funnel carries the
+  emit seam (emit the LOCAL binding to peers; never receive one). Pure mechanism, dark by default
+  behind `multiMachine.stateSync.topicOperator`; a single-machine install is a strict no-op. With
+  `UserRegistryReplicatedStore`, the WS2 memory family is COMPLETE (7 kinds; playbook deferred).
+  Spec: `docs/specs/multi-machine-replicated-store-foundation.md` §4 / §7,
+  `docs/specs/ws23-relationships-userregistry-security.md`.
+
 ## Live Credential Re-pointing (Subscription & Auth Standard)
 
 The machinery that can move a pool account's OAuth credential between config-home "slots" without

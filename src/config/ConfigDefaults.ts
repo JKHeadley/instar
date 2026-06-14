@@ -929,6 +929,35 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
         enabled: false,
         dryRun: true,
       },
+      // WS2.6 (multi-machine-replicated-store-foundation) — the SIXTH replicated-store
+      // consumer and the SECOND PII kind: `user-record` on the HLC foundation (the multi-user
+      // registry the UserManager resolves an inbound message to). Per-store on-switch ships the
+      // graduated-rollout ladder dark: `enabled:false` (the foundation primitives stay inert, NO
+      // user PII ever crosses a machine boundary; the local userId is NEVER replicated — the
+      // recordKey is the channel-set identity surface) + `dryRun:true` (on first enable, log
+      // intended merges WITHOUT mutating store state). A literal `enabled:false` (NOT dev-gate-
+      // omit) per the spec ladder dark→dryRun→live — classified in DARK_GATE_EXCLUSIONS
+      // (optional-integration, staged rollout), mirroring the relationships sibling. Completes the
+      // WS2 memory family alongside topicOperator (CMT-1416).
+      userRegistry: {
+        enabled: false,
+        dryRun: true,
+      },
+      // WS2.6 (multi-machine-replicated-store-foundation) — the SEVENTH replicated-store consumer
+      // and the THIRD PII kind: `topic-operator-record` on the HLC foundation (which VERIFIED
+      // operator a topic was bound to). Per-store on-switch ships the graduated-rollout ladder
+      // dark: `enabled:false` (the foundation primitives stay inert, NO operator binding ever
+      // crosses a machine boundary; the recordKey is sha256(topicId + ":" + verified-uid), NEVER a
+      // content-name) + `dryRun:true`. A literal `enabled:false` (NOT dev-gate-omit) per the spec
+      // ladder dark→dryRun→live — classified in DARK_GATE_EXCLUSIONS (optional-integration, staged
+      // rollout), mirroring the userRegistry sibling. THE LOAD-BEARING SAFETY INVARIANT: a
+      // replicated topic-operator record is UNTRUSTED peer data — NEVER this machine's
+      // authoritative answer to "who is my verified operator?" (only the local authenticated
+      // setOperator binds the principal; Know-Your-Principal).
+      topicOperator: {
+        enabled: false,
+        dryRun: true,
+      },
     },
   },
   // Session Boot Self-Knowledge (spec: session-boot-self-knowledge.md) — the

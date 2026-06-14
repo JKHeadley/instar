@@ -3660,6 +3660,30 @@ export async function startServer(options: StartOptions): Promise<void> {
     const { EVOLUTION_ACTION_KIND_REGISTRATION } = await import('../core/EvolutionActionsReplicatedStore.js');
     replicatedKindRegistry.register(EVOLUTION_ACTION_KIND_REGISTRATION);
 
+    // WS2.6 (multi-machine-replicated-store-foundation) — register the SIXTH concrete replicated
+    // kind, `user-record`, onto the registry: the SECOND PII kind (after WS2.3 relationships).
+    // Dual-registry's dynamic half (the static half is CoherenceJournal.JOURNAL_KINDS, which now
+    // lists 'user-record'). Registration is INERT — emission/serve/pull stay gated behind
+    // `multiMachine.stateSync.userRegistry.enabled` (default false ⇒ strict no-op, NO user PII ever
+    // crosses a machine boundary). With it registered, selfStateSyncReceive self-reports
+    // `userRegistry:true` IFF the store is enabled, and the rollback-unmerge resolves its
+    // contributing kind via getByStore. The local userId is NEVER replicated — the recordKey is the
+    // channel-set identity surface (UserRegistryReplicatedStore.deriveUserRecordKey).
+    const { USER_KIND_REGISTRATION } = await import('../core/UserRegistryReplicatedStore.js');
+    replicatedKindRegistry.register(USER_KIND_REGISTRATION);
+
+    // WS2.6 (multi-machine-replicated-store-foundation) — register the SEVENTH concrete replicated
+    // kind, `topic-operator-record`, onto the registry: the THIRD PII kind, completing the WS2
+    // memory family. Dual-registry's dynamic half (the static half is CoherenceJournal.JOURNAL_KINDS,
+    // which now lists 'topic-operator-record'). Registration is INERT — emission/serve/pull stay
+    // gated behind `multiMachine.stateSync.topicOperator.enabled` (default false ⇒ strict no-op). The
+    // recordKey is sha256(topicId + ":" + verified-uid), NEVER a content-name
+    // (TopicOperatorReplicatedStore.deriveTopicOperatorRecordKey). THE LOAD-BEARING INVARIANT: a
+    // replicated topic-operator record is UNTRUSTED peer data — NEVER this machine's authoritative
+    // answer to "who is my verified operator?" (only the local authenticated setOperator binds it).
+    const { TOPIC_OPERATOR_KIND_REGISTRATION } = await import('../core/TopicOperatorReplicatedStore.js');
+    replicatedKindRegistry.register(TOPIC_OPERATOR_KIND_REGISTRATION);
+
     // Snapshot-then-tail engine (Component 4 / build-order step 3,
     // multi-machine-replicated-store-foundation §6). The cache (FIXED ceiling,
     // §8.2 — NOT pool-scaled), the per-peer rebuild breaker (§6.3), and the engine
@@ -8320,6 +8344,92 @@ export async function startServer(options: StartOptions): Promise<void> {
     });
     void evolutionActionsUnionReader; // consumed by the evolution-actions peer-read surface + the journal-apply rollout stage (WS2.5+)
     void evolution.setEvolutionActionReplicationEmitter; // the emit seam exists (unit-tested + dark by default); the journal-backed emitter is attached in a later rollout stage, mirroring the WS2.2 learnings sibling
+
+    // WS2.6 — the bypass-proof union reader for the `userRegistry` store (the SECOND PII kind). The
+    // single funnel every replicated user read routes through, so no caller reads a raw replica
+    // around the no-clobber rule. `loadOriginRecords` materializes the OWN user registry as the
+    // single origin today (via userToOriginRecord, keyed on the channel-set identity surface — the
+    // local userId is NEVER replicated); when the journal apply path lands peer `user-record`
+    // replicas (a later rollout stage), the seam extends to read those peer namespaces too. With
+    // only the own origin the union is a strict no-op. tierOf returns HIGH (append-both-and-flag
+    // never silently clobbers two divergent profiles; the READ layer is advisory — a replicated
+    // user is a HINT, never the authoritative inbound-resolution answer, which is LOCAL-ONLY). The
+    // emit seam is attached ONLY when stateSync.userRegistry.enabled is true (default false ⇒ NOT
+    // injected ⇒ strict no-op, byte-identical single-machine behavior).
+    const { UserManager: _UMForUnion } = await import('../users/UserManager.js');
+    const { userTierOf, userToOriginRecord, deriveUserRecordKey, USER_STORE_KEY } = await import('../core/UserRegistryReplicatedStore.js');
+    const userRegistryUnionReader = new ReplicatedStoreReader({
+      registry: replicatedKindRegistry,
+      stores: (config.multiMachine as unknown as { stateSync?: import('../core/ReplicatedRecordEnvelope.js').StateSyncStores } | undefined)?.stateSync,
+      tierOf: userTierOf,
+      loadOriginRecords: (store, recordKey) => {
+        if (store !== USER_STORE_KEY || _meshSelfId === null) return [];
+        const mgr = new _UMForUnion(config.stateDir, config.users);
+        for (const u of mgr.listUsers()) {
+          if (deriveUserRecordKey(u.channels) === recordKey) {
+            const o = userToOriginRecord(u, _meshSelfId);
+            return o ? [o] : [];
+          }
+        }
+        return [];
+      },
+      listRecordKeys: (store) => {
+        if (store !== USER_STORE_KEY) return [];
+        const mgr = new _UMForUnion(config.stateDir, config.users);
+        const keys: string[] = [];
+        for (const u of mgr.listUsers()) {
+          const k = deriveUserRecordKey(u.channels);
+          if (k !== null) keys.push(k);
+        }
+        return keys;
+      },
+      droppedOrigins: droppedOriginRegistry,
+      conflictStore,
+    });
+    void userRegistryUnionReader; // consumed by the user-registry peer-read surface + the journal-apply rollout stage (WS2.6+)
+
+    // WS2.6 — the bypass-proof union reader for the `topicOperator` store (the THIRD PII kind). The
+    // single funnel every replicated topic-operator read routes through. `loadOriginRecords`
+    // materializes the OWN topic-operator store as the single origin today (via
+    // topicOperatorToOriginRecord, keyed on sha256(topicId + ":" + verified-uid) — never a
+    // content-name); when the journal apply path lands peer `topic-operator-record` replicas (a
+    // later rollout stage), the seam extends to read those peer namespaces too. With only the own
+    // origin the union is a strict no-op. tierOf returns HIGH (append-both-and-flag). THE
+    // LOAD-BEARING INVARIANT: the READ layer is ADVISORY — a replicated topic-operator record is a
+    // HINT about what a peer machine bound, NEVER this machine's authoritative principal (only the
+    // local authenticated setOperator binds it; there is no apply path back into TopicOperatorStore).
+    const { TopicOperatorStore: _TOSForUnion } = await import('../users/TopicOperatorStore.js');
+    const { topicOperatorTierOf, topicOperatorToOriginRecord, deriveTopicOperatorRecordKey, TOPIC_OPERATOR_STORE_KEY } = await import('../core/TopicOperatorReplicatedStore.js');
+    const topicOperatorUnionReader = new ReplicatedStoreReader({
+      registry: replicatedKindRegistry,
+      stores: (config.multiMachine as unknown as { stateSync?: import('../core/ReplicatedRecordEnvelope.js').StateSyncStores } | undefined)?.stateSync,
+      tierOf: topicOperatorTierOf,
+      loadOriginRecords: (store, recordKey) => {
+        if (store !== TOPIC_OPERATOR_STORE_KEY || _meshSelfId === null) return [];
+        const tos = new _TOSForUnion(config.stateDir);
+        const all = tos.all();
+        for (const [topicId, op] of Object.entries(all)) {
+          if (deriveTopicOperatorRecordKey(topicId, op.uid) === recordKey) {
+            const o = topicOperatorToOriginRecord(topicId, op, _meshSelfId);
+            return o ? [o] : [];
+          }
+        }
+        return [];
+      },
+      listRecordKeys: (store) => {
+        if (store !== TOPIC_OPERATOR_STORE_KEY) return [];
+        const tos = new _TOSForUnion(config.stateDir);
+        const keys: string[] = [];
+        for (const [topicId, op] of Object.entries(tos.all())) {
+          const k = deriveTopicOperatorRecordKey(topicId, op.uid);
+          if (k !== null) keys.push(k);
+        }
+        return keys;
+      },
+      droppedOrigins: droppedOriginRegistry,
+      conflictStore,
+    });
+    void topicOperatorUnionReader; // consumed by the topic-operator peer-read surface + the journal-apply rollout stage (WS2.6+)
 
     // Start MemoryPressureMonitor (platform-aware memory tracking)
     const { MemoryPressureMonitor } = await import('../monitoring/MemoryPressureMonitor.js');

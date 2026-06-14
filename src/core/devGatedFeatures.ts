@@ -333,6 +333,16 @@ export const DARK_GATE_EXCLUSIONS: DarkGateExclusion[] = [
     category: 'optional-integration',
     reason: 'WS2.5 cross-machine evolution-action-queue replication — the FOURTH memory-family kind on the HLC foundation; graduated rollout dark→dryRun→live per multi-machine-replicated-store-foundation, opt-in per deployment (no action crosses a machine boundary while dark; the local ACT-NNN id is never replicated; the load-bearing field is status so a peer sees an action was already completed elsewhere; mirrors the knowledge sibling)',
   },
+  {
+    configPath: 'multiMachine.stateSync.userRegistry.enabled',
+    category: 'optional-integration',
+    reason: 'WS2.6 cross-machine user-registry replication — the SECOND PII kind on the HLC foundation; graduated rollout dark→dryRun→live per multi-machine-replicated-store-foundation, opt-in per deployment (no user PII crosses a machine boundary while dark; the local userId is never replicated, the recordKey is the channel-set identity surface; mirrors the relationships sibling)',
+  },
+  {
+    configPath: 'multiMachine.stateSync.topicOperator.enabled',
+    category: 'optional-integration',
+    reason: 'WS2.6 cross-machine topic-operator replication — the THIRD PII kind on the HLC foundation; graduated rollout dark to dryRun to live per multi-machine-replicated-store-foundation, opt-in per deployment (no operator binding crosses a machine boundary while dark; recordKey is sha256 of topicId plus the verified uid, never a content-name; THE LOAD-BEARING INVARIANT: a replicated topic-operator record is NEVER the authoritative principal — only the local authenticated setOperator binds it; mirrors the userRegistry sibling)',
+  },
   // ── action-bearing — when merely enabled, automatically produces an outbound
   //    side-effect that reaches an external system or the operator (a send, a PR
   //    merge, a remote mutation). De-dup/rate-limiting reduces severity but an
