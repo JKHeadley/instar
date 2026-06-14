@@ -17,17 +17,29 @@
  * docs/signal-vs-authority.md "safety guards on irreversible actions"
  * carve-out) — prevents infinite-respawn loops. Not a judgment call.
  *
- * Scope: Telegram-bound sessions. Topic resolution checks the in-memory map
- * first and, on a miss, falls back to a fresh disk read of the persisted
- * topic-session registry — so a binding registered after this process loaded
- * the registry (e.g. on a --no-telegram server) is still recoverable. Genuinely
- * non-Telegram-bound sessions (Slack, iMessage, headless) return
- * { ok: false, code: 'not_telegram_bound' } and remain a follow-up.
+ * Scope: Telegram-bound AND Slack-bound sessions (TOPIC-PROFILE-SPEC §10.5 —
+ * Slack parity is an explicit prerequisite, not a v2 follow-up). Binding
+ * resolution checks Telegram first (in-memory map, then a fresh disk read of
+ * the persisted topic-session registry — so a binding registered after this
+ * process loaded the registry, e.g. on a --no-telegram server, is still
+ * recoverable), then the Slack channel/thread registry via the optional
+ * `slack` dep. Slack respawns go through the optional `slackRespawner`
+ * callback; when a session is Slack-bound but no slackRespawner is wired the
+ * refusal is the structured `slack_respawner_unwired` (so callers can degrade
+ * to CONTINUATION-on-next-message, disclosed honestly, per §10.5). Genuinely
+ * unbound sessions (iMessage, headless) return
+ * { ok: false, code: 'not_telegram_bound' } (code kept for back-compat).
  */
 
 import fs from 'node:fs';
 import path from 'node:path';
 import { ensureInteractiveReady } from './ensureInteractiveReady.js';
+import {
+  slackConversationKey,
+  slackRoutingKeySyntheticId,
+  type SlackRefreshBinding,
+  type SlackRespawner,
+} from './slackRefreshBinding.js';
 import type { SessionManager } from './SessionManager.js';
 import type { StateManager } from './StateManager.js';
 import type { TelegramAdapter } from '../messaging/TelegramAdapter.js';
@@ -118,6 +130,20 @@ export interface SessionRefreshDeps {
      *  account's config home + record the account id. Omitted = unchanged. */
     accountSwap?: { configHome?: string; accountId?: string },
   ) => Promise<string>;
+  /**
+   * Slack binding resolution (§10.5, optional + additive). SlackAdapter
+   * satisfies this structurally; null/omitted = Telegram-only behavior,
+   * byte-for-byte as before. Consulted only after BOTH Telegram lookups miss
+   * (Telegram-bound resolution takes precedence, matching today's order).
+   */
+  slack?: SlackRefreshBinding | null;
+  /**
+   * Slack respawner callback (§10.5, optional + additive). Wired by server
+   * bootstrap to mirror the Slack message-handler spawn path (resume read +
+   * spawnInteractiveSession + registerChannelSession) — see SlackRespawner
+   * docs. Same kill contract as `respawner`: SessionRefresh kills first.
+   */
+  slackRespawner?: SlackRespawner | null;
   /** Rate-guard config. Defaults: 5 refreshes per 10-minute rolling window. */
   rateLimit?: { maxPerWindow: number; windowMs: number };
   /** Injectable clock for tests. Defaults to Date.now. */
@@ -125,7 +151,19 @@ export interface SessionRefreshDeps {
 }
 
 export type RefreshResult =
-  | { ok: true; newSessionName: string; topicId: number }
+  | {
+      ok: true;
+      newSessionName: string;
+      /** Telegram topic id, or (Slack) the stable NEGATIVE synthetic id —
+       *  same hash the rest of the system uses to bridge Slack channels into
+       *  numeric topic space. Kept required for back-compat consumers. */
+      topicId: number;
+      /** §10.5 platform tag. Absent = Telegram (pre-Slack result shape is
+       *  preserved byte-for-byte for existing consumers/tests). */
+      platform?: 'slack';
+      /** §10.5 conversation key (`slack:<channel>[:<thread>]`). Slack only. */
+      conversationKey?: string;
+    }
   | { ok: false; code: RefreshFailureCode; message: string };
 
 export type RefreshFailureCode =
@@ -133,6 +171,7 @@ export type RefreshFailureCode =
   | 'session_not_found'
   | 'not_telegram_bound'
   | 'no_telegram_adapter'
+  | 'slack_respawner_unwired'
   | 'refresh_in_progress';
 
 export interface RefreshOptions {
@@ -198,35 +237,66 @@ export class SessionRefresh {
     const { sessionName, followUpPrompt, reason, fresh } = opts;
 
     // ── detect ─────────────────────────────────────────────────────────
-    if (!this.deps.telegram) {
+    if (!this.deps.telegram && !this.deps.slack) {
       return {
         ok: false,
         code: 'no_telegram_adapter',
-        message: 'No Telegram adapter wired — self-refresh requires a Telegram-bound session in v1.',
+        message: 'No Telegram adapter wired (and no Slack binding either) — self-refresh requires a platform-bound session.',
       };
     }
 
-    let topicId = this.deps.telegram.getTopicForSession(sessionName);
-    if (topicId === null) {
-      // In-memory miss does NOT mean the session is unbound. A binding
-      // registered after this process loaded the registry won't be in the
-      // in-memory reverse map — most importantly on a `--no-telegram` server,
-      // whose map reflects only its boot-time snapshot while the lifeline keeps
-      // writing new bindings to disk. That is exactly the gap that left wedged
-      // long-lived dev sessions (e.g. the Codey collaboration session, topic
-      // 13435) un-recoverable: getTopicForSession returned null, recovery bailed
-      // with not_telegram_bound, and the dead session stayed dead. Fall back to
-      // a fresh disk-backed reverse lookup before giving up.
-      topicId = this.deps.telegram.resolveTopicForSessionFromDisk?.(sessionName) ?? null;
+    let topicId: number | null = null;
+    if (this.deps.telegram) {
+      topicId = this.deps.telegram.getTopicForSession(sessionName);
+      if (topicId === null) {
+        // In-memory miss does NOT mean the session is unbound. A binding
+        // registered after this process loaded the registry won't be in the
+        // in-memory reverse map — most importantly on a `--no-telegram` server,
+        // whose map reflects only its boot-time snapshot while the lifeline keeps
+        // writing new bindings to disk. That is exactly the gap that left wedged
+        // long-lived dev sessions (e.g. the Codey collaboration session, topic
+        // 13435) un-recoverable: getTopicForSession returned null, recovery bailed
+        // with not_telegram_bound, and the dead session stayed dead. Fall back to
+        // a fresh disk-backed reverse lookup before giving up.
+        topicId = this.deps.telegram.resolveTopicForSessionFromDisk?.(sessionName) ?? null;
+      }
     }
-    if (topicId === null) {
-      // Genuinely unbound (no topic on disk either): non-Telegram-bound sessions
-      // (Slack, iMessage, headless) remain a follow-up — the respawn path is
-      // built around topicId → context routing.
+
+    // §10.5 Slack arm: consulted only after BOTH Telegram lookups miss, so a
+    // Telegram-bound session resolves exactly as before. The routing key is
+    // `<channelId>` or `<channelId>:<thread_ts>` — the same key the kill-time
+    // beforeSessionKill listener saves the channel-resume entry under.
+    let slackRoutingKey: string | null = null;
+    if (topicId === null && this.deps.slack) {
+      slackRoutingKey = this.deps.slack.getChannelForSession(sessionName);
+      if (slackRoutingKey === null) {
+        // Disk-backed fallback parity with the Telegram arm (optional method —
+        // adapters without it just skip the fallback).
+        slackRoutingKey = this.deps.slack.resolveChannelForSessionFromDisk?.(sessionName) ?? null;
+      }
+    }
+
+    if (topicId === null && slackRoutingKey === null) {
+      // Genuinely unbound (no binding on either platform): iMessage/headless
+      // sessions remain a follow-up — the respawn path is built around
+      // conversation-key → context routing. Code kept as 'not_telegram_bound'
+      // for back-compat with existing consumers/log greps.
       return {
         ok: false,
         code: 'not_telegram_bound',
-        message: `Session "${sessionName}" is not bound to a Telegram topic (checked in-memory + disk registry); cannot self-refresh.`,
+        message: `Session "${sessionName}" is not bound to a Telegram topic${this.deps.slack ? ' or Slack conversation' : ''} (checked in-memory + disk registry); cannot self-refresh.`,
+      };
+    }
+
+    if (topicId === null && slackRoutingKey !== null && !this.deps.slackRespawner) {
+      // Slack-bound, but the Slack respawner isn't wired on this server.
+      // Structured refusal (NOT a throw) so the caller can degrade honestly —
+      // §10.5: "a respawn-requiring change on a Slack topic degrades to
+      // CONTINUATION-on-next-message, disclosed honestly."
+      return {
+        ok: false,
+        code: 'slack_respawner_unwired',
+        message: `Session "${sessionName}" is Slack-bound (${slackConversationKey(slackRoutingKey)}) but no Slack respawner is wired — the session will resume via CONTINUATION on the next message instead of an immediate respawn.`,
       };
     }
 
@@ -281,10 +351,17 @@ export class SessionRefresh {
       // so the respawner finds no entry and spawns a brand-new conversation
       // instead of `--resume`-ing the corrupted transcript. MUST run after the
       // kill (beforeSessionKill writes the entry) and before the respawner
-      // reads it.
+      // reads it. Platform-routed: Telegram entries live in TopicResumeMap;
+      // Slack entries live in the adapter's channel-resume map keyed on the
+      // routing key (the same key beforeSessionKill saved under).
       if (fresh) {
-        this.deps.topicResumeMap?.remove(topicId);
-        console.log(`[SessionRefresh] fresh respawn — cleared resume UUID for topic ${topicId} (sessionName=${sessionName})`);
+        if (topicId !== null) {
+          this.deps.topicResumeMap?.remove(topicId);
+          console.log(`[SessionRefresh] fresh respawn — cleared resume UUID for topic ${topicId} (sessionName=${sessionName})`);
+        } else if (slackRoutingKey !== null) {
+          this.deps.slack?.removeChannelResume(slackRoutingKey);
+          console.log(`[SessionRefresh] fresh respawn — cleared Slack channel resume for ${slackConversationKey(slackRoutingKey)} (sessionName=${sessionName})`);
+        }
       }
 
       // The respawner spawns a fresh tmux session that runs `claude
@@ -329,11 +406,30 @@ export class SessionRefresh {
         }
       }
 
-      const newSessionName = await this.deps.respawner(sessionName, topicId, followUpPrompt, accountSwap);
+      // §10.5 Slack respawn path. The slackRespawner mirrors the Slack
+      // message-handler spawn: read+consume getChannelResume(routingKey) and
+      // spawnInteractiveSession with the resume UUID + channel/thread opts,
+      // then re-register the routing-key → session binding. Guarded non-null
+      // by the slack_respawner_unwired refusal in detect.
+      if (topicId === null && slackRoutingKey !== null) {
+        const newSessionName = await this.deps.slackRespawner!(sessionName, slackRoutingKey, followUpPrompt, accountSwap);
+        const conversationKey = slackConversationKey(slackRoutingKey);
+        // ── verify + finalize (Slack) ──────────────────────────────────
+        console.log(`[SessionRefresh] Refreshed "${sessionName}" → "${newSessionName}" (${conversationKey})${reason ? ` reason="${reason}"` : ''}`);
+        return {
+          ok: true,
+          newSessionName,
+          topicId: slackRoutingKeySyntheticId(slackRoutingKey),
+          platform: 'slack',
+          conversationKey,
+        };
+      }
+
+      const newSessionName = await this.deps.respawner(sessionName, topicId!, followUpPrompt, accountSwap);
 
       // ── verify + finalize ────────────────────────────────────────────
       console.log(`[SessionRefresh] Refreshed "${sessionName}" → "${newSessionName}" (topic ${topicId})${reason ? ` reason="${reason}"` : ''}`);
-      return { ok: true, newSessionName, topicId };
+      return { ok: true, newSessionName, topicId: topicId! };
     } finally {
       this.inFlight.delete(sessionName);
     }

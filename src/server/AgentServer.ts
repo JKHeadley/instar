@@ -17,6 +17,8 @@ import { ApprovalLedger } from '../core/ApprovalLedger.js';
 import { resolveDevAgentGate } from '../core/devAgentGate.js';
 import { TopicOperatorStore } from '../users/TopicOperatorStore.js';
 import { MandateStore } from '../coordination/MandateStore.js';
+import { AuthorizationRequestStore } from '../core/AuthorizationRequestStore.js';
+import { UserManager } from '../users/UserManager.js';
 import { MandateGate } from '../coordination/MandateGate.js';
 import { MandateAudit } from '../coordination/MandateAudit.js';
 import { ConditionsRegistry } from '../coordination/conditions.js';
@@ -122,6 +124,7 @@ import type { ForensicFinding } from '../monitoring/FrameworkIssueLedger.js';
 import { BurnDetector, type BurnDetectionConfig } from '../monitoring/BurnDetector.js';
 import { EscalationGovernor } from '../core/EscalationGovernor.js';
 import { ModelSwapService } from '../core/ModelSwapService.js';
+import { EscalationHintStore } from '../core/EscalationHintStore.js';
 import { UltraSessionCapMonitor, startOfUtcDayMs } from '../monitoring/UltraSessionCapMonitor.js';
 import { escalatedModelIds, normalizeTierEscalationConfig } from '../core/ModelTierEscalation.js';
 import { BurnThrottleRunbook, type BurnThrottleConfig } from '../monitoring/BurnThrottleRunbook.js';
@@ -170,6 +173,8 @@ export class AgentServer {
   private streamTicketStore?: import('./StreamTicketStore.js').StreamTicketStore;
   private poolStreamAllowRemoteInput = false;
   private poolStreamConnector?: import('./WebSocketManager.js').PoolStreamConnector;
+  private poolLink?: import('./routes.js').RouteContext['poolLink'];
+  private poolPollCache?: import('./PoolPollCache.js').PoolPollCache | null;
   private meshSelfId?: string;
   private routeContext: {
     wsManager: import('./WebSocketManager.js').WebSocketManager | null;
@@ -195,6 +200,16 @@ export class AgentServer {
   /** Coordination Mandate enforcement (spec §4): deny-by-default gate + signed
    *  store + hash-chained audit. Null when stateDir is unavailable. */
   private coordination: { store: MandateStore; gate: MandateGate; audit: MandateAudit; conditions: ConditionsRegistry; reviews: ReviewExchangeEngine } | null = null;
+  /** Operator Authorization Request (agent proposes → operator approves one-tap). Null
+   *  when coordination/stateDir is unavailable. `enabled` is the resolved dev-gate. */
+  private authorizationRequests: {
+    store: import('../core/AuthorizationRequestStore.js').AuthorizationRequestStore;
+    enabled: boolean;
+    machineId: string;
+    ownerDisplay: string;
+    carrierSelfFp: string;
+    resolvePrincipal: (slackUserId: string) => { name: string; registered: boolean } | null;
+  } | null = null;
   private cutoverReadiness: CutoverReadiness | null = null;
   /** Option-B receiving end (feedback-factory-migration Q2b): drains the cloud
    *  Blob inbox into the durable canonical JsonlFeedbackStore. Null when dark
@@ -250,6 +265,16 @@ export class AgentServer {
   // ultra-cap monitor (rides BurnDetector's tick — no own poller).
   private modelTierSwap: ModelSwapService | null = null;
   private ultraCapMonitor: UltraSessionCapMonitor | null = null;
+  // TOPIC-PROFILE-SPEC §8/§9 — retained so the orchestrator's escalation port
+  // (wired late in server.ts via getEscalationGovernor()) can release a
+  // profile-killed session's ultra lease. Nothing else reads it post-init.
+  private escalationGovernorRef: EscalationGovernor | null = null;
+  // WS5.3 (escalation-rides-topic) — the ephemeral per-topic escalation-hint
+  // carrier. Always constructed (cheap, file-backed, inert while the WS5.3
+  // sub-flag is off) so the /pool/transfer source-capture + destination
+  // re-admit are ALIVE on the production init path; the feature gates itself
+  // via config (tierEscalation.ridesTopic), never via missing wiring.
+  private escalationHints: EscalationHintStore | null = null;
   // Stored from constructor options for use in start()'s listen callback.
   // The burn-detection system needs this to route alerts; no other
   // AgentServer code reads it (the route handlers go through routeCtx).
@@ -294,10 +319,13 @@ export class AgentServer {
     proactiveSwapMonitor?: import('../core/ProactiveSwapMonitor.js').ProactiveSwapMonitor;
     inUseAccountResolver?: import('../core/InUseAccountResolver.js').InUseAccountResolver;
     enrollmentWizard?: import('../core/EnrollmentWizard.js').EnrollmentWizard;
+    credentialRepointing?: import('./routes.js').RouteContext['credentialRepointing'];
     semanticMemory?: import('../memory/SemanticMemory.js').SemanticMemory;
     activitySentinel?: import('../monitoring/SessionActivitySentinel.js').SessionActivitySentinel;
     rateLimitSentinel?: import('../monitoring/RateLimitSentinel.js').RateLimitSentinel;
     releaseReadinessSentinel?: import('../monitoring/ReleaseReadinessSentinel.js').ReleaseReadinessSentinel;
+    greenPrAutoMerger?: import('../monitoring/GreenPrAutoMerger.js').GreenPrAutoMerger;
+    guardLatchStore?: import('../monitoring/GuardLatchStore.js').GuardLatchStore;
     workingMemory?: import('../memory/WorkingMemoryAssembler.js').WorkingMemoryAssembler;
     quotaManager?: import('../monitoring/QuotaManager.js').QuotaManager;
     messageRouter?: MessageRouter;
@@ -308,6 +336,21 @@ export class AgentServer {
     selfKnowledgeTree?: import('../knowledge/SelfKnowledgeTree.js').SelfKnowledgeTree;
     coverageAuditor?: import('../knowledge/CoverageAuditor.js').CoverageAuditor;
     topicResumeMap?: import('../core/TopicResumeMap.js').TopicResumeMap;
+    /** Topic Profile (TOPIC-PROFILE-SPEC) — store + resolver + write surface
+     *  + shared confirm slots, constructed in server.ts. Backs the §9
+     *  model-swap pin consult and the /topic-profile routes. */
+    topicProfile?: {
+      store: import('../core/TopicProfileStore.js').TopicProfileStore;
+      resolver: import('../core/TopicProfileResolver.js').TopicProfileResolver;
+      surface: import('../core/topicProfileWriteSurface.js').TopicProfileWriteSurface;
+      confirmSlots: import('../core/topicProfileIngress.js').ProfileConfirmSlots;
+      /** §8 orchestrator — model-swap route runExclusive wrap + ingress
+       *  confirm surfaces. Null until the server wiring constructs it. */
+      orchestrator?: import('../core/TopicProfileOrchestrator.js').TopicProfileOrchestrator | null;
+      /** §5.3 transfer carrier — pendingTransferPull staleness on the read
+       *  surface + the /pool/transfer acquire seam. Null on single-machine. */
+      carrier?: import('../core/TopicProfileTransferCarrier.js').TopicProfileTransferCarrier | null;
+    } | null;
     sessionRefresh?: import('../core/SessionRefresh.js').SessionRefresh;
     autonomyManager?: import('../core/AutonomyProfileManager.js').AutonomyProfileManager;
     trustElevationTracker?: import('../core/TrustElevationTracker.js').TrustElevationTracker;
@@ -315,6 +358,8 @@ export class AgentServer {
     coordinator?: MultiMachineCoordinator;
     /** Multi-Machine Session Pool registry (§L2) — live MachineCapacity view behind GET /pool. */
     machinePoolRegistry?: import('../core/MachinePoolRegistry.js').MachinePoolRegistry;
+    /** Durable Inbound Message Queue engine getter (late-bound; null = dark). */
+    getInboundQueue?: () => import('../core/QueueDrainLoop.js').QueueDrainLoop | null;
     /** MeshRpc dispatcher (§L0) — receive side behind POST /mesh/rpc. */
     meshRpcDispatcher?: import('../core/MeshRpc.js').MeshRpcDispatcher;
     /** Working-set pull coordinator (WORKING-SET-HANDOFF §3.3) — behind
@@ -323,6 +368,20 @@ export class AgentServer {
     /** Commitments-coherence replica store (COMMITMENTS-COHERENCE §3.2) —
      *  merged GET /commitments?scope=mesh. Absent while dark. */
     commitmentReplicaStore?: import('../core/CommitmentsSync.js').CommitmentReplicaStore;
+    /** Preferences-pool replica store (MULTI-MACHINE-SEAMLESSNESS §WS2.1) —
+     *  union read folds these into GET /preferences/session-context. Absent while dark. */
+    preferenceReplicaStore?: import('../core/PreferencesSync.js').PreferenceReplicaStore;
+    /** Replicated-store conflict ledger (replicated-store-foundation §7.2/§7.3).
+     *  Backs GET /state/conflicts + POST /state/resolve-conflict. Absent while dark. */
+    conflictStore?: import('../core/ConflictStore.js').ConflictStore;
+    /** Rollback-unmerge engine (§7.4). Absent while dark. */
+    rollbackUnmerge?: import('../core/RollbackUnmerge.js').RollbackUnmerge;
+    /** Durable un-merged-origins registry (§7.4). Absent while dark. */
+    droppedOriginRegistry?: import('../core/RollbackUnmerge.js').DroppedOriginRegistry;
+    /** WS2.1 union reader for the `preferences` store (§7.2). The bypass-proof
+     *  funnel GET /preferences/session-context reads the no-clobber union through
+     *  when stateSync.preferences.enabled. Absent while dark. */
+    preferencesUnionReader?: import('../core/ReplicatedStoreReader.js').ReplicatedStoreReader;
     /** P1.5b owner-routed mutation forward (§3.4). Absent while dark. */
     forwardCommitmentMutate?: (ownerMachineId: string, payload: import('../core/CommitmentMutation.js').CommitmentMutatePayload) => Promise<
       { kind: 'verdict'; outcome: import('../core/CommitmentMutation.js').MutateOutcome } | { kind: 'queued'; reason: string }
@@ -347,8 +406,18 @@ export class AgentServer {
     meshSelfId?: string;
     /** Resolve the lease-holder's base URL when this machine is not the holder (else null). */
     resolveRouterUrl?: () => string | null;
+    /** WS1.2 sender leg: order the topic's owner (local or remote) to drain for a transfer. */
+    sendDrain?: (ownerMachineId: string, sessionKey: string, target: string, ownershipEpoch: number) => Promise<{ ok: boolean; status?: string; reason?: string; noHandler?: boolean; runSuspended?: boolean }>;
     /** Every other active machine with a known URL — backs GET /sessions?scope=pool. */
     resolvePeerUrls?: () => Array<{ machineId: string; url: string }>;
+    /** Guard runtime registry (GUARD-POSTURE-ENDPOINT-SPEC §2.1) — behind GET /guards. */
+    guardRegistry?: import('../monitoring/GuardRegistry.js').GuardRegistry;
+    /** EVERY registered, non-revoked machine (URL or not) — the /guards?scope=pool accounting boundary. */
+    listPoolMachines?: () => Array<{ machineId: string; nickname?: string; lastKnownUrl?: string | null }>;
+    /** WS4.4 "links that survive machine boundaries" — fronting proxy + holder verification handle (MULTI-MACHINE-SEAMLESSNESS-SPEC §WS4.4). */
+    poolLink?: import('./routes.js').RouteContext['poolLink'];
+    /** WS4.4(f) global pool-cache unification — the ONE shared per-peer poll cache pool-scope surfaces fan out through (MULTI-MACHINE-SEAMLESSNESS-SPEC §WS4.4 clause (f)). */
+    poolPollCache?: import('./PoolPollCache.js').PoolPollCache | null;
     /** Signed rollout-stage E2E result store (§Rollout). */
     sessionPoolE2EResultStore?: import('../core/SessionPoolE2EResultStore.js').SessionPoolE2EResultStore;
     localSigningKeyPem?: string;
@@ -425,6 +494,9 @@ export class AgentServer {
     /** Threadline Phase 1 keystone — Conversation store + warrants-a-reply gate,
      *  so the local co-located inbound path gates like the relay funnel. */
     conversationStore?: import('../threadline/ConversationStore.js').ConversationStore;
+    /** Robustness Phase 2 (D-A/D-B) — the canonical per-thread log + append funnel. */
+    threadLog?: import('../threadline/ThreadLog.js').ThreadLog;
+    threadMessageRecorder?: import('../threadline/recordThreadMessage.js').ThreadMessageRecorder;
     warrantsReplyGate?: import('../threadline/WarrantsReplyGate.js').WarrantsReplyGate;
     collaborationSurfacer?: import('../threadline/CollaborationSurfacer.js').CollaborationSurfacer; // CMT-509
     /** ThreadResumeMap — for topic-linkage outbound capture on /threadline/relay-send.
@@ -493,6 +565,9 @@ export class AgentServer {
     /** AgentWorktreeReaper — reclaims stale CLI worktrees. Powers
      *  GET /worktrees/agent-reaper. */
     agentWorktreeReaper?: import('../monitoring/AgentWorktreeReaper.js').AgentWorktreeReaper;
+    /** OrphanedWorkSentinel — the silent-uncommitted-death backstop. Powers
+     *  GET /orphaned-work. */
+    orphanedWorkSentinel?: import('../monitoring/OrphanedWorkSentinel.js').OrphanedWorkSentinel;
     /** McpProcessReaper — reclaims leaked MCP-server children of dead/stale
      *  sessions. Powers GET /processes/mcp-reaper. */
     mcpProcessReaper?: import('../monitoring/McpProcessReaper.js').McpProcessReaper;
@@ -506,6 +581,11 @@ export class AgentServer {
     /** ReapLog — durable audit of every reap + skipped-reap (UNIFIED-SESSION-LIFECYCLE
      *  §P4). Powers GET /sessions/reap-log. */
     reapLog?: import('../monitoring/ReapLog.js').ReapLog;
+    /** ResumeQueue + drainer (reap-notify spec R2.10) — /sessions/resume-queue*. */
+    resumeQueue?: import('../monitoring/ResumeQueue.js').ResumeQueue | null;
+    resumeDrainer?: import('../monitoring/ResumeQueueDrainer.js').ResumeQueueDrainer | null;
+    /** Records operator stop instructions for the drainer's R2.6 validation. */
+    operatorStopRecorder?: (topicId: number | null) => void;
     /** SleepWakeDetector — timer-drift sleep detection with CPU-starvation guard.
      *  Powers GET /monitoring/sleep-wake (wake + suppression telemetry). */
     sleepWakeDetector?: import('../core/SleepWakeDetector.js').SleepWakeDetector;
@@ -529,6 +609,8 @@ export class AgentServer {
     this.streamTicketStore = options.streamTicketStore;
     this.poolStreamAllowRemoteInput = options.poolStreamAllowRemoteInput ?? false;
     this.poolStreamConnector = options.poolStreamConnector;
+    this.poolLink = options.poolLink ?? undefined;
+    this.poolPollCache = options.poolPollCache ?? undefined;
     this.meshSelfId = options.meshSelfId ?? undefined;
     this.state = options.state;
     this.hookEventReceiver = options.hookEventReceiver ?? undefined;
@@ -792,12 +874,13 @@ export class AgentServer {
     }
 
     // Parallel-Work Awareness, Phase B — the proactive overlap councilor sentinel.
-    // Ships DARK (monitoring.parallelWorkSentinel.enabled defaults false). When on, it
-    // ticks on a cadence over the index, detects cross-topic overlap, and emits ONE
-    // deduped nudge. Signal-only. Own try/catch (cascade isolation). Every transition is
-    // audited to logs/sentinel-events.jsonl (house pattern); a nudge additionally surfaces
-    // to the user via the post-update channel if Telegram is wired.
-    const pwsEnabled = options.config.monitoring?.parallelWorkSentinel?.enabled === true;
+    // DEV-GATED (CMT-1438): `enabled` is OMITTED from the ConfigDefaults block so the
+    // developmentAgent gate decides — LIVE on a dev agent (the dogfooding ground),
+    // DARK on the fleet. When on, it ticks on a cadence over the index, detects
+    // cross-topic overlap, and emits ONE in-process nudge event (no listener wired).
+    // Signal-only. Own try/catch (cascade isolation). Every transition is audited to
+    // logs/sentinel-events.jsonl (house pattern). D4-verified observe-only.
+    const pwsEnabled = resolveDevAgentGate(options.config.monitoring?.parallelWorkSentinel?.enabled, options.config);
     if (pwsEnabled && this.parallelActivityIndex && options.config.stateDir) {
       try {
         const index = this.parallelActivityIndex;
@@ -1160,6 +1243,34 @@ export class AgentServer {
           gate,
         });
         this.coordination = { store, gate, audit, conditions, reviews };
+
+        // Operator Authorization Request — agent proposes → operator approves one-tap.
+        // Built on the SAME stateDir; the approve route issues grants via `store` above
+        // (the existing signed MandateStore), so no new authority path is introduced.
+        // `enabled` is dev-gated (enabled-on-dev / dark-on-fleet); routes 503 when off.
+        try {
+          const arUsers = new UserManager(options.config.stateDir, options.config.users);
+          const arStore = new AuthorizationRequestStore({
+            filePath: path.join(options.config.stateDir, 'state', 'authorization-requests.json'),
+            pendingCapPerAgent: options.config.monitoring?.authorizationRequests?.pendingCapPerAgent,
+          });
+          const arMachineId = os.hostname();
+          this.authorizationRequests = {
+            store: arStore,
+            enabled: resolveDevAgentGate(options.config.monitoring?.authorizationRequests?.enabled, options.config),
+            machineId: arMachineId,
+            ownerDisplay: 'operator',
+            carrierSelfFp: arMachineId,
+            resolvePrincipal: (slackUserId: string) => {
+              const u = arUsers.resolveFromSlackUserId(slackUserId);
+              return u ? { name: u.name || slackUserId, registered: true } : null;
+            },
+          };
+        } catch (arErr) {
+          // @silent-fallback-ok — non-fatal; null leaves the routes 503 (feature-off), never blocks boot.
+          console.warn('[instar] authorization-request init failed (non-fatal):', arErr);
+          this.authorizationRequests = null;
+        }
       }
     } catch (err) {
       // @silent-fallback-ok — reported via console.warn; init failure leaves the engine null → routes 503 (deny-safe), never blocks boot.
@@ -1201,12 +1312,15 @@ export class AgentServer {
     }
 
     // Failure-Learning Loop (docs/specs/FAILURE-LEARNING-LOOP-SPEC.md) — instar
-    // self-hosting dev-process forensics. Ships OFF; constructed only when
-    // enabled (else the inline /failures routes 503-stub via the null ledger).
-    // Toolchain attribution is instar-repo-local (§3 scope). Own try/catch so a
-    // failure here can never cascade into the other ledgers' init.
+    // self-hosting dev-process forensics. DEV-GATED (CMT-1438): `enabled` is OMITTED
+    // from the ConfigDefaults block so the developmentAgent gate decides — LIVE on a
+    // dev agent, DARK on the fleet (the inline /failures routes 503-stub via the null
+    // ledger when off). D4-verified observe-only at default sub-flags: append-only
+    // ledger, ingestion sources all off by default, no auto-send. Toolchain
+    // attribution is instar-repo-local (§3 scope). Own try/catch so a failure here
+    // can never cascade into the other ledgers' init.
     try {
-      if (options.config.monitoring?.failureLearning?.enabled === true && options.config.stateDir) {
+      if (resolveDevAgentGate(options.config.monitoring?.failureLearning?.enabled, options.config) && options.config.stateDir) {
         this.failureLedger = new FailureLedger({
           dbPath: path.join(options.config.stateDir, 'failure-ledger.db'),
         });
@@ -1630,6 +1744,17 @@ export class AgentServer {
           }
         },
       });
+      // TOPIC-PROFILE-SPEC §9: expose the governor so the orchestrator's
+      // escalation port (server.ts wiring) can release a profile-killed
+      // session's lease BEFORE expected-live is computed.
+      this.escalationGovernorRef = escalationGovernor;
+      // WS5.3 — the ephemeral hint carrier, file-backed alongside the governor
+      // state. Inert until tierEscalation.ridesTopic is on (the route + resume
+      // seams gate on the live config); constructing it unconditionally keeps
+      // the wiring present so the feature is config-gated, not wiring-gated.
+      this.escalationHints = new EscalationHintStore({
+        filePath: path.join(options.config.stateDir, 'state', 'model-tier-escalation', 'rides-topic-hints.json'),
+      });
       // §7: release the lease on the SAME close event that retires the
       // session (the reap-log emit) — crash-safe alongside TTL + liveness.
       options.sessionManager.on(
@@ -1641,6 +1766,8 @@ export class AgentServer {
         },
       );
       const telegramForSwap = this.telegramAdapter;
+      // swap-unconfirmed routes to the maturation-track audit breadcrumb, not
+      // Attention (TOPIC-PROFILE-SPEC §11/§14 — maturing-feature-health-no-alerts).
       this.modelTierSwap = new ModelSwapService({
         stateDir: options.config.stateDir,
         sessions: options.sessionManager,
@@ -1648,9 +1775,27 @@ export class AgentServer {
         protectedSessions: () => options.sessionManager.getProtectedSessions(),
         getConfig: teConfig,
         governor: escalationGovernor,
-        attention: telegramForSwap
-          ? (item) => telegramForSwap.createAttentionItem(item)
-          : undefined,
+        // TOPIC-PROFILE-SPEC §9 — the server-side pin consult (in-memory,
+        // O(1)). NOT gated by topicProfiles.enabled: honor-on-read covers the
+        // escalation arm (§5.2(c) — disabling the feature must not silently
+        // flip a "never escalate this topic" into 2x-cost escalation).
+        topicProfileConsult: (session) => {
+          const tp = options.topicProfile;
+          const tg = telegramForSwap;
+          if (!tp || !tg) return null;
+          const topicId = tg.getTopicForSession(session.tmuxSession);
+          if (topicId == null) return null;
+          const resolved = tp.resolver.resolve(topicId);
+          // Only a PIN counts as the topic baseline (§9 round-4): a model
+          // sourced from config defaults is not operator intent — tier:
+          // 'default' then falls to FABLE's global default as today.
+          const pinned =
+            resolved.sources.model === 'profile-pin' || resolved.sources.model === 'profile-tier-pin';
+          return {
+            suppressEscalation: resolved.escalationOverride === 'suppress',
+            baselineModel: pinned ? resolved.model ?? null : null,
+          };
+        },
       });
       // §8 mid-run cap monitor — rides BurnDetector's tick (constructed in
       // setupTokenLedgerObservability; the field is read there).
@@ -1667,6 +1812,8 @@ export class AgentServer {
       console.warn('[instar] model-tier escalation init failed (non-fatal):', err);
       this.modelTierSwap = null;
       this.ultraCapMonitor = null;
+      this.escalationGovernorRef = null;
+      this.escalationHints = null;
     }
 
     // Routes
@@ -1709,10 +1856,13 @@ export class AgentServer {
       proactiveSwapMonitor: options.proactiveSwapMonitor,
       inUseAccountResolver: options.inUseAccountResolver,
       enrollmentWizard: options.enrollmentWizard ?? null,
+      credentialRepointing: options.credentialRepointing ?? null,
       semanticMemory: options.semanticMemory ?? null,
       activitySentinel: options.activitySentinel ?? null,
       rateLimitSentinel: options.rateLimitSentinel ?? null,
       releaseReadinessSentinel: options.releaseReadinessSentinel ?? null,
+      greenPrAutoMerger: options.greenPrAutoMerger ?? null,
+      guardLatchStore: options.guardLatchStore ?? null,
       workingMemory: options.workingMemory ?? null,
       quotaManager: options.quotaManager ?? null,
       messageRouter: options.messageRouter ?? null,
@@ -1723,8 +1873,10 @@ export class AgentServer {
       selfKnowledgeTree: options.selfKnowledgeTree ?? null,
       coverageAuditor: options.coverageAuditor ?? null,
       topicResumeMap: options.topicResumeMap ?? null,
+      topicProfile: options.topicProfile ?? null,
       sessionRefresh: options.sessionRefresh ?? null,
       modelTierSwap: this.modelTierSwap,
+      escalationHints: this.escalationHints,
       autonomyManager: options.autonomyManager ?? null,
       trustElevationTracker: options.trustElevationTracker ?? null,
       autonomousEvolution: options.autonomousEvolution ?? null,
@@ -1738,6 +1890,8 @@ export class AgentServer {
       instructionsVerifier: options.instructionsVerifier ?? null,
       threadlineRouter: options.threadlineRouter ?? null,
       conversationStore: options.conversationStore,
+      threadLog: options.threadLog,
+      threadMessageRecorder: options.threadMessageRecorder,
       warrantsReplyGate: options.warrantsReplyGate,
       collaborationSurfacer: options.collaborationSurfacer,
       threadResumeMap: options.threadResumeMap ?? null,
@@ -1784,6 +1938,7 @@ export class AgentServer {
       approvalLedger: this.approvalLedger,
       topicOperatorStore: this.topicOperatorStore,
       coordination: this.coordination,
+      authorizationRequests: this.authorizationRequests,
       cutoverReadiness: this.cutoverReadiness,
       inboxDrainer: this.inboxDrainer,
       parallelActivityIndex: this.parallelActivityIndex,
@@ -1801,11 +1956,15 @@ export class AgentServer {
       geminiCapacityEscalationMonitor: this.geminiCapacityEscalationMonitor,
       sessionReaper: options.sessionReaper ?? null,
       agentWorktreeReaper: options.agentWorktreeReaper ?? null,
+      orphanedWorkSentinel: options.orphanedWorkSentinel ?? null,
       mcpProcessReaper: options.mcpProcessReaper ?? null,
       geminiLoopRunner: options.geminiLoopRunner ?? null,
       sleepController: options.sleepController ?? null,
       agentActivityState: options.agentActivityState ?? null,
       reapLog: options.reapLog ?? null,
+      resumeQueue: options.resumeQueue ?? null,
+      resumeDrainer: options.resumeDrainer ?? null,
+      operatorStopRecorder: options.operatorStopRecorder ?? null,
       sleepWakeDetector: options.sleepWakeDetector ?? null,
       telegramBridgeConfig: options.telegramBridgeConfig ?? null,
       telegramBridge: options.telegramBridge ?? null,
@@ -1815,16 +1974,27 @@ export class AgentServer {
       threadlineFlowBridge: options.threadlineFlowBridge ?? null,
       coordinator: options.coordinator ?? null,
       machinePoolRegistry: options.machinePoolRegistry ?? null,
+      getInboundQueue: options.getInboundQueue ?? null,
       meshRpcDispatcher: options.meshRpcDispatcher ?? null,
       workingSetPullCoordinator: options.workingSetPullCoordinator ?? null,
       commitmentReplicaStore: options.commitmentReplicaStore ?? null,
+      preferenceReplicaStore: options.preferenceReplicaStore ?? null,
+      conflictStore: options.conflictStore ?? null,
+      rollbackUnmerge: options.rollbackUnmerge ?? null,
+      droppedOriginRegistry: options.droppedOriginRegistry ?? null,
+      preferencesUnionReader: options.preferencesUnionReader ?? null,
       forwardCommitmentMutate: options.forwardCommitmentMutate ?? null,
       sessionOwnershipRegistry: options.sessionOwnershipRegistry ?? null,
       topicPinStore: options.topicPinStore ?? null,
       secretSync: options.secretSync ?? null,
       meshSelfId: options.meshSelfId ?? null,
       resolveRouterUrl: options.resolveRouterUrl ?? null,
+      sendDrain: options.sendDrain ?? null,
       resolvePeerUrls: options.resolvePeerUrls ?? null,
+      guardRegistry: options.guardRegistry ?? null,
+      listPoolMachines: options.listPoolMachines ?? null,
+      poolLink: options.poolLink ?? null,
+      poolPollCache: options.poolPollCache ?? null,
       sessionPoolE2EResultStore: options.sessionPoolE2EResultStore ?? null,
       messageLedger: options.messageLedger ?? null,
       currentInboundByTopic: options.currentInboundByTopic ?? null,
@@ -3435,5 +3605,36 @@ export class AgentServer {
    */
   getTopicOperatorStore(): TopicOperatorStore | null {
     return this.topicOperatorStore;
+  }
+
+  /**
+   * TOPIC-PROFILE-SPEC §9 — the escalation governor, exposed for the
+   * orchestrator's escalation port (server.ts wiring late-binds through the
+   * AgentServer ref so a profile-triggered kill releases the topic's ultra
+   * lease). Null when model-tier escalation failed to initialize.
+   */
+  getEscalationGovernor(): EscalationGovernor | null {
+    return this.escalationGovernorRef;
+  }
+
+  /**
+   * WS5.3 (escalation-rides-topic) — the ephemeral per-topic escalation-hint
+   * carrier, exposed so the server.ts wiring can (a) let the topic-profile
+   * pull serve-handler PEEK the hint to carry it across the acquire pull, and
+   * (b) drive the destination CONSUME + re-admit when the resumed session
+   * spawns. Null when model-tier escalation failed to initialize.
+   */
+  getEscalationHintStore(): EscalationHintStore | null {
+    return this.escalationHints;
+  }
+
+  /**
+   * TOPIC-PROFILE-SPEC §7 — the FABLE in-flight swap engine, exposed for the
+   * orchestrator's inFlightSwap port (the §7 in-flight row delegates to the
+   * SAME ModelSwapService the /sessions/:name/model-swap route uses, so the
+   * §10.2 closed-enum + cost-guard + idle disciplines apply identically).
+   */
+  getModelTierSwap(): ModelSwapService | null {
+    return this.modelTierSwap;
   }
 }

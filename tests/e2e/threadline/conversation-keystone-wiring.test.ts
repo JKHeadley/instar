@@ -71,7 +71,11 @@ describe('Threadline keystone — wiring integrity (feature alive)', () => {
     // This was caught in test-as-self; the assertion guards against regression.
     const relayAgentIdx = routesSrc.indexOf("router.post('/messages/relay-agent'");
     expect(relayAgentIdx).toBeGreaterThan(0);
-    const route = routesSrc.slice(relayAgentIdx, relayAgentIdx + 12000);
+    // Window sized to span the route body up to the handleInboundMessage spawn.
+    // Widened from 12000 → 16000 after Robustness Phase 2 added the canonical-log
+    // append funnel + threadSync honoring to this inbound path (the spawn moved to
+    // ~13.2k); the gate-before-spawn ORDER this test guards is unchanged.
+    const route = routesSrc.slice(relayAgentIdx, relayAgentIdx + 16000);
     const gateIdx = route.indexOf('evaluateAndRecordInbound(ctx.warrantsReplyGate, ctx.conversationStore');
     // Match the call by method+first-arg so the assertion survives formatting of
     // the `ctx.threadlineRouter` receiver AND extra args (the local-attribution fix

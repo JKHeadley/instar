@@ -73,7 +73,7 @@ describe('ActiveWorkSilenceSentinel — detection', () => {
     const deps = makeDeps({
       now,
       sessions: [
-        { sessionName: 'agent-1', lastOutputAt: now - 20 * 60_000 }, // 20 min idle, threshold 15 min default
+        { sessionName: 'agent-1', lastOutputAt: now - 35 * 60_000 }, // 35 min idle, threshold 30 min default (HONEST-PROGRESS-MESSAGING A4)
       ],
     });
     const sentinel = new ActiveWorkSilenceSentinel(deps);
@@ -86,7 +86,7 @@ describe('ActiveWorkSilenceSentinel — detection', () => {
     const deps = makeDeps({
       now,
       sessions: [
-        { sessionName: 'agent-1', lastOutputAt: now - 5 * 60_000 }, // 5 min idle, < 15 min
+        { sessionName: 'agent-1', lastOutputAt: now - 5 * 60_000 }, // 5 min idle, < 30 min
       ],
     });
     const sentinel = new ActiveWorkSilenceSentinel(deps);
@@ -106,7 +106,7 @@ describe('ActiveWorkSilenceSentinel — detection', () => {
     const now = 1_000_000_000;
     const deps = makeDeps({
       now,
-      sessions: [{ sessionName: 'agent-1', lastOutputAt: now - 20 * 60_000, paused: true }],
+      sessions: [{ sessionName: 'agent-1', lastOutputAt: now - 35 * 60_000, paused: true }],
     });
     const sentinel = new ActiveWorkSilenceSentinel(deps);
     sentinel.tick();
@@ -117,7 +117,7 @@ describe('ActiveWorkSilenceSentinel — detection', () => {
     const now = 1_000_000_000;
     const deps = makeDeps({
       now,
-      sessions: [{ sessionName: 'agent-1', lastOutputAt: now - 20 * 60_000, recoveryInFlight: true }],
+      sessions: [{ sessionName: 'agent-1', lastOutputAt: now - 35 * 60_000, recoveryInFlight: true }],
     });
     const sentinel = new ActiveWorkSilenceSentinel(deps);
     sentinel.tick();
@@ -128,7 +128,7 @@ describe('ActiveWorkSilenceSentinel — detection', () => {
     const now = 1_000_000_000;
     const deps = makeDeps({ now });
     const sentinel = new ActiveWorkSilenceSentinel(deps);
-    sentinel.report('agent-1', now - 20 * 60_000);
+    sentinel.report('agent-1', now - 35 * 60_000);
     sentinel.report('agent-1', now - 25 * 60_000);
     expect(sentinel.listActive().length).toBe(1);
   });
@@ -139,7 +139,7 @@ describe('ActiveWorkSilenceSentinel — recovery + escalation', () => {
     const now = 1_000_000_000;
     const deps = makeDeps({
       now,
-      sessions: [{ sessionName: 'agent-1', lastOutputAt: now - 20 * 60_000 }],
+      sessions: [{ sessionName: 'agent-1', lastOutputAt: now - 35 * 60_000 }],
       recoveredAfterNudge: true,
     });
     const sentinel = new ActiveWorkSilenceSentinel(deps);
@@ -150,14 +150,14 @@ describe('ActiveWorkSilenceSentinel — recovery + escalation', () => {
     deps.drainTimers();
     expect(sentinel.isRecoveryActive('agent-1')).toBe(false);
     // No escalation message
-    expect(deps.captured.some(c => /Want me to dig in/i.test(c.text))).toBe(false);
+    expect(deps.captured.some(c => /Want me to check/i.test(c.text))).toBe(false);
   });
 
   it('escalates when nudge fails to advance output', async () => {
     const now = 1_000_000_000;
     const deps = makeDeps({
       now,
-      sessions: [{ sessionName: 'agent-1', lastOutputAt: now - 20 * 60_000 }],
+      sessions: [{ sessionName: 'agent-1', lastOutputAt: now - 35 * 60_000 }],
       recoveredAfterNudge: false,
     });
     const sentinel = new ActiveWorkSilenceSentinel(deps);
@@ -166,7 +166,7 @@ describe('ActiveWorkSilenceSentinel — recovery + escalation', () => {
     deps.drainTimers();
     const states = sentinel.listActive();
     expect(states[0].status).toBe('escalated');
-    const esc = deps.captured.find(c => /Want me to dig in/i.test(c.text));
+    const esc = deps.captured.find(c => /Want me to check/i.test(c.text));
     expect(esc).toBeDefined();
   });
 
@@ -174,7 +174,7 @@ describe('ActiveWorkSilenceSentinel — recovery + escalation', () => {
     const now = 1_000_000_000;
     const deps = makeDeps({
       now,
-      sessions: [{ sessionName: 'agent-1', lastOutputAt: now - 20 * 60_000 }],
+      sessions: [{ sessionName: 'agent-1', lastOutputAt: now - 35 * 60_000 }],
       nudgeAccept: false,
     });
     const sentinel = new ActiveWorkSilenceSentinel(deps);
@@ -187,13 +187,13 @@ describe('ActiveWorkSilenceSentinel — recovery + escalation', () => {
     const now = 1_000_000_000;
     const deps = makeDeps({
       now,
-      sessions: [{ sessionName: 'agent-1', lastOutputAt: now - 20 * 60_000 }],
+      sessions: [{ sessionName: 'agent-1', lastOutputAt: now - 35 * 60_000 }],
       nudgeAccept: false,
     });
     const sentinel = new ActiveWorkSilenceSentinel(deps);
     sentinel.tick();
     await new Promise(r => setImmediate(r));
-    const esc = deps.captured.find(c => /Want me to dig in/i.test(c.text));
+    const esc = deps.captured.find(c => /Want me to check/i.test(c.text));
     expect(esc).toBeDefined();
     const lower = esc!.text.toLowerCase();
     expect(lower).not.toMatch(/\btmux\b/);
@@ -206,7 +206,7 @@ describe('ActiveWorkSilenceSentinel — recovery + escalation', () => {
     const now = 1_000_000_000;
     const deps = makeDeps({
       now,
-      sessions: [{ sessionName: 'agent-1', lastOutputAt: now - 20 * 60_000 }],
+      sessions: [{ sessionName: 'agent-1', lastOutputAt: now - 35 * 60_000 }],
     });
     const sentinel = new ActiveWorkSilenceSentinel(deps);
     sentinel.tick();
@@ -221,7 +221,7 @@ describe('ActiveWorkSilenceSentinel — recovery + escalation', () => {
     const now = 1_000_000_000;
     const deps = makeDeps({
       now,
-      sessions: [{ sessionName: 'agent-1', lastOutputAt: now - 20 * 60_000 }],
+      sessions: [{ sessionName: 'agent-1', lastOutputAt: now - 35 * 60_000 }],
     });
     const sentinel = new ActiveWorkSilenceSentinel(deps);
     sentinel.tick();
@@ -233,7 +233,7 @@ describe('ActiveWorkSilenceSentinel — recovery + escalation', () => {
 describe('ActiveWorkSilenceSentinel — auto-heal ladder (dark)', () => {
   // runRecovery() chains several awaits; flush microtasks so it settles.
   const flush = async () => { for (let i = 0; i < 6; i++) await new Promise(r => setImmediate(r)); };
-  const baseSession = (now: number): SessionRegistryEntry => ({ sessionName: 'agent-1', lastOutputAt: now - 20 * 60_000 });
+  const baseSession = (now: number): SessionRegistryEntry => ({ sessionName: 'agent-1', lastOutputAt: now - 35 * 60_000 });
 
   it('autoRecover OFF (default): a failed nudge asks the user, never respawns', async () => {
     const now = 1_000_000_000;
@@ -243,7 +243,7 @@ describe('ActiveWorkSilenceSentinel — auto-heal ladder (dark)', () => {
     await flush();
     expect(deps.recoverCalls.length).toBe(0);
     expect(sentinel.listActive()[0].status).toBe('escalated');
-    expect(deps.captured.some(c => /Want me to dig in/i.test(c.text))).toBe(true);
+    expect(deps.captured.some(c => /Want me to check/i.test(c.text))).toBe(true);
   });
 
   it('autoRecover ON + respawn succeeds: respawns once, notifies recovery, clears state', async () => {
@@ -261,7 +261,7 @@ describe('ActiveWorkSilenceSentinel — auto-heal ladder (dark)', () => {
     expect(deps.captured.some(c => /auto-recovering it now/i.test(c.text))).toBe(true);
     expect(deps.captured.some(c => /I recovered it/i.test(c.text))).toBe(true);
     // No ask-the-user message on the success path.
-    expect(deps.captured.some(c => /Want me to dig in/i.test(c.text))).toBe(false);
+    expect(deps.captured.some(c => /Want me to check/i.test(c.text))).toBe(false);
     // State cleared → the freshly respawned session is monitored anew.
     expect(sentinel.isRecoveryActive('agent-1')).toBe(false);
   });

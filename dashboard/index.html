@@ -217,6 +217,20 @@
        already names the machine, so a slightly dimmed row is enough hint. */
     .session-item.remote { opacity: 0.9; cursor: pointer; }
     .session-item.remote:hover { opacity: 1; }
+    /* WS4.2: explicit per-machine state when a pool machine has no session
+       tiles — an idle machine must never look identical to a broken one.
+       Plain flex row; inherits the sidebar width (mobile-safe). */
+    .machine-status-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 12px;
+      font-size: 11px;
+      color: var(--text-dim, #8b8fa3);
+      border-top: 1px dashed rgba(139, 143, 163, 0.25);
+    }
+    .machine-status-row.offline .machine-status-text { color: #f87171; }
+    .machine-status-row.online .machine-status-text { opacity: 0.85; }
 
     .type-badge {
       padding: 1px 6px;
@@ -801,14 +815,41 @@
     .mnd-bad { color: #f85149; border-color: #f8514955; font-weight: 700; }
     .mnd-deny { color: #d29922; border-color: #d2992255; }
     .mnd-dead { color: var(--text-dim); }
-    .mnd-meta { font-size: 13px; color: var(--text-dim); }
-    .mnd-authorities { margin: 0; padding-left: 18px; font-size: 13px; line-height: 1.7; }
+    /* Internals (id, fingerprints, scope slug, action slugs) are SUPPORT
+       metadata only — de-emphasized, never the headline (Operator-Surface
+       Quality item 2). */
+    .mnd-meta { font-size: 12px; color: var(--text-dim); }
+    /* The card's plain-language headline sentence — the primary content. */
+    .mnd-summary { margin: 0; font-size: 15px; line-height: 1.5; color: var(--text-bright); }
     .mnd-empty { font-size: 16px; color: var(--text-dim); line-height: 1.6; padding: 12px 0; }
-    .mnd-revoke-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .mnd-revoke-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 8px 0 4px; }
     .mnd-pin { width: 110px; } .mnd-reason { flex: 1; min-width: 160px; }
     .mnd-btn { padding: 6px 14px; cursor: pointer; }
-    .mnd-btn-danger { color: #f85149; }
+    .mnd-btn-primary { font-weight: 600; }
+    /* Destructive action: quiet by design, never featured (item 3). */
+    .mnd-btn-danger { color: #f85149; font-weight: 400; }
     .mnd-dead-note { font-size: 13px; color: var(--text-dim); font-style: italic; }
+    .mnd-grants-head { font-size: 13px; color: var(--text-dim); }
+    .mnd-grants { margin: 0; padding-left: 18px; font-size: 14px; line-height: 1.7; }
+    .mnd-grant-id { color: var(--text-dim); font-size: 12px; }
+    /* The grant form is the card's PRIMARY action — an open, titled block, never
+       a collapsed toggle (Operator-Surface Quality item 1). */
+    .mnd-grant-block { border-top: 1px solid var(--border); padding-top: 10px; margin-top: 2px; }
+    .mnd-grant-title { font-size: 14px; font-weight: 600; color: var(--text-bright); margin-bottom: 6px; }
+    .mnd-grant-sep { font-size: 13px; color: var(--text-dim); }
+    /* Revoke is demoted to a quiet, collapsed secondary control (item 3). */
+    .mnd-revoke-details { font-size: 13px; margin-top: 4px; }
+    .mnd-revoke-summary { cursor: pointer; color: var(--text-dim); font-size: 13px; }
+    .mnd-about { font-size: 14px; color: var(--text-dim); margin-top: -8px; }
+    .mnd-about summary { cursor: pointer; }
+    .mnd-about p { margin: 8px 0 0; line-height: 1.55; }
+    .mnd-grant-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 8px 0 4px; }
+    .mnd-grant-field { min-width: 130px; max-width: 100%; padding: 6px 8px; }
+    .mnd-approval-card { border: 1px solid var(--accent, #2f81f7); border-radius: 12px; padding: 16px 18px; margin-bottom: 12px; background: rgba(47,129,247,0.06); display: flex; flex-direction: column; gap: 10px; }
+    .mnd-approval-ask { font-size: 13px; opacity: 0.75; }
+    .mnd-approval-headline { font-size: 18px; font-weight: 600; line-height: 1.4; }
+    .mnd-approval-reason { font-size: 13px; opacity: 0.7; border-left: 3px solid var(--border); padding-left: 10px; }
+    .mnd-btn-quiet { opacity: 0.7; font-weight: 400; }
     .mnd-notice { min-height: 20px; font-size: 14px; color: #3fb950; }
     .mnd-issue-form { display: flex; flex-direction: column; gap: 14px; max-width: 640px; padding: 12px 0; }
     .mnd-issue-form label { display: flex; flex-direction: column; gap: 4px; font-size: 15px; color: var(--text-bright); }
@@ -822,9 +863,19 @@
     .mnd-notice-ok { border: 1px solid #15803d; background: rgba(21, 128, 61, 0.12); color: #86efac; padding: 12px 14px; border-radius: 8px; font-size: 17px; font-weight: 600; line-height: 1.5; }
     .mnd-table { width: 100%; border-collapse: collapse; font-size: 13px; }
     .mnd-table th, .mnd-table td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
-    .mnd-reason-cell { color: var(--text-dim); max-width: 420px; }
-    .mnd-audit-head { display: flex; gap: 12px; align-items: center; margin-bottom: 8px; }
+    .mnd-reason-cell { color: var(--text-dim); }
+    .mnd-audit-head { display: flex; gap: 12px; align-items: center; margin-bottom: 8px; flex-wrap: wrap; }
     .mnd-dim { font-size: 13px; color: var(--text-dim); }
+    /* Mobile-first (item 5): at phone width the 5-column audit table stacks into
+       labelled rows so the reason — the useful column — is never truncated. */
+    @media (max-width: 640px) {
+      .mnd-table thead { position: absolute; left: -9999px; }
+      .mnd-table tr { display: block; border: 1px solid var(--border); border-radius: 8px; margin-bottom: 10px; padding: 6px 4px; }
+      .mnd-table td { display: flex; justify-content: space-between; gap: 12px; border-bottom: none; padding: 4px 8px; }
+      .mnd-table td::before { content: attr(data-label); font-weight: 600; color: var(--text-dim); flex: 0 0 auto; }
+      .mnd-reason-cell { text-align: right; word-break: break-word; }
+      .mnd-grant-field, .mnd-pin, .mnd-reason { width: 100%; min-width: 0; flex: 1 1 100%; }
+    }
 
     /* ── process-health tab (PROCESS-HEALTH-DASHBOARD-TAB-SPEC §4.1) ──
        Large, readable, calm. No monospace, no tables, no alarm colors.
@@ -1381,6 +1432,7 @@
     .toast.success { background: #166534; border: 1px solid #22c55e; }
     .toast.error { background: #7f1d1d; border: 1px solid #ef4444; }
     .toast.warning { background: #713f12; border: 1px solid #eab308; }
+    .toast.info { background: #1e3a8a; border: 1px solid #60a5fa; }
 
     @keyframes toastIn {
       from { opacity: 0; transform: translateY(8px); }
@@ -1581,6 +1633,15 @@
     .session-close-btn:hover {
       color: var(--red);
       background: rgba(239, 68, 68, 0.1);
+    }
+
+    /* In-flight close (REMOTE-SESSION-CLOSE-SPEC §2.2): a relayed close can
+       take up to ~5s against a dead peer — show pending, not an inert button
+       the user double-clicks into parallel relays. !important outranks the
+       hover/active opacity rules above. */
+    .session-close-btn:disabled {
+      opacity: 0.35 !important;
+      cursor: wait;
     }
 
     .session-name-row {
@@ -3354,14 +3415,22 @@
         <h2 class="ph-title">Coordination Mandates</h2>
         <div id="mndStamp" class="ph-stamp" aria-live="polite"></div>
       </div>
-      <p class="ph-intro">Your bounded "permission slips" for autonomous agent-to-agent work. The slip — never the agent — is the authorizer. Issuing and revoking require <strong>your dashboard PIN</strong>; agent credentials alone are refused by design. With no slip issued, every delegated action is denied.</p>
+      <p class="ph-intro">Permission slips you sign with your PIN to let your agents do bounded work together.</p>
+      <details class="mnd-about">
+        <summary>What is this?</summary>
+        <p>These are your permission slips for autonomous agent-to-agent work — each one authorizes a specific, bounded task. The slip — never the agent — is the authorizer. Issuing and revoking require <strong>your dashboard PIN</strong>; an agent's own credentials are refused by design. With no slip issued, every delegated action is denied.</p>
+      </details>
       <div id="mndNotice" class="mnd-notice" aria-live="polite"></div>
+      <section class="ph-section" id="mndApprovalsSection" style="display:none">
+        <h3 class="ph-h">Approvals waiting for you</h3>
+        <div id="mndApprovals"></div>
+      </section>
       <section class="ph-section">
         <h3 class="ph-h">Issued mandates</h3>
         <div id="mndList"></div>
       </section>
       <details class="ph-detail" id="mndIssueDetails">
-        <summary class="ph-detail-summary">Issue a new mandate (PIN required)</summary>
+        <summary class="ph-detail-summary">Advanced — author a mandate by hand (PIN required)</summary>
         <div class="mnd-issue-form">
           <label>What is this permission slip for?
             <span class="mnd-hint">A short name for the project the two agents may work on together, e.g. feedback-migration.</span>
@@ -3687,6 +3756,10 @@
     // Kept separate from `sessions` because the WebSocket replaces that array
     // with LOCAL sessions on every broadcast — merging would be wiped each tick.
     let remoteSessions = [];
+    // WS4.2 (multi-machine-seamlessness spec, F7): pool machine inventory for the
+    // per-machine empty-state strip. Populated only when the pool is enabled with
+    // 2+ machines — single-machine agents never see the strip (strict no-op).
+    let poolMachinesView = [];
     let selfMachineNickname = null;
     let activeSession = null;
     let activeMachineId = null; // non-null when the active session streams from a peer (§2.2)
@@ -3948,6 +4021,9 @@
         empty.style.display = 'flex';
         // Clear any existing session items
         list.querySelectorAll('.session-item').forEach(el => el.remove());
+        // WS4.2: even with zero sessions anywhere, each pool machine still gets
+        // an explicit state row — an idle machine must never look broken.
+        renderMachineStatusStrip(list, all);
         return;
       }
 
@@ -4023,7 +4099,7 @@
         el.innerHTML = `
           <div class="session-name-row">
             <div class="session-name">${escapeHtml(session.platformName || session.name)}</div>
-            ${session.remote ? '' : `<button class="session-close-btn" data-tmux="${escapeHtml(session.tmuxSession)}" data-name="${escapeHtml(session.name)}" onclick="event.stopPropagation();closeSession(this.dataset.tmux,this.dataset.name)" title="Close session">&times;</button>`}
+            <button class="session-close-btn" data-tmux="${escapeHtml(session.tmuxSession)}" data-name="${escapeHtml(session.name)}"${session.remote ? ` data-remote="1" data-uuid="${escapeHtml(session.id || '')}" data-machine-id="${escapeHtml(session.machineId || '')}" data-machine-nickname="${escapeHtml(session.machineNickname || '')}"` : ''} data-protected="${session.protected === true ? '1' : session.protected === false ? '0' : ''}"${closesInFlight.has(closeKey(session.remote ? session.machineId : null, session.tmuxSession)) ? ' disabled' : ''} onclick="event.stopPropagation();closeSessionFromBtn(this)" title="Close session">&times;</button>
           </div>
           <div class="session-meta">
             <span class="type-badge ${sType}">${sType}</span>
@@ -4034,6 +4110,45 @@
           </div>
           ${telemetryHtml}
         `;
+      }
+
+      // WS4.2: per-machine state strip after the tiles.
+      renderMachineStatusStrip(list, all);
+    }
+
+    // WS4.2 (multi-machine-seamlessness spec, F7 — 2026-06-12 live incident):
+    // a machine with zero running sessions used to render as NOTHING, identical
+    // to a broken or unreachable machine. Render an explicit state row per pool
+    // machine that has no session tiles. The three states are computed SERVER-
+    // SIDE in pool.machines[].emptyState (honest derivation from the registry +
+    // the live fan-out) — the dashboard just styles + prints them:
+    //   - online      → "online — no active sessions" (idle but healthy)
+    //   - offline     → "offline since <t>"            (known absence)
+    //   - unreachable → "unreachable (last seen <t>)"  (was online, now silent)
+    // Pool disabled or single-machine → poolMachinesView is empty → zero rows,
+    // zero behavior change (single-machine strict no-op, spec invariant 6).
+    function machineStatusInfo(m) {
+      const es = m && m.emptyState;
+      if (es && es.kind && es.text) {
+        // 'online' is calm; 'offline'/'unreachable' both read as offline styling.
+        return { cls: es.kind === 'online' ? 'online' : 'offline', text: es.text };
+      }
+      // No server-computed empty-state present (shouldn't happen for a 0-session
+      // machine, but never fabricate "online" — surface the honest unknown).
+      return { cls: 'offline', text: 'state unknown' };
+    }
+    function renderMachineStatusStrip(list, allSessions) {
+      list.querySelectorAll('.machine-status-row').forEach(el => el.remove());
+      if (!poolMachinesView.length) return;
+      for (const m of poolMachinesView) {
+        // A machine WITH sessions already names itself via its tiles' badges.
+        if (m.sessionCount > 0) continue;
+        const label = m.nickname || m.machineId || 'unnamed machine';
+        const info = machineStatusInfo(m);
+        const row = document.createElement('div');
+        row.className = `machine-status-row ${info.cls}`;
+        row.innerHTML = `<span class="machine-badge">${escapeHtml(label)}</span><span class="machine-status-text">${escapeHtml(info.text)}</span>`;
+        list.appendChild(row);
       }
     }
 
@@ -4421,15 +4536,100 @@
     }
 
     // ── Close Session ─────────────────────────────────────────
-    async function closeSession(tmuxSession, sessionName) {
-      if (!confirm(`Close session "${sessionName}"?`)) return;
+    // Remote-session close (REMOTE-SESSION-CLOSE-SPEC §2.2): remote tiles
+    // render the same × as local tiles, relayed via
+    // POST /sessions/:name/remote-close. The confirm is the informed-consent
+    // surface — it names the machine and flags a PROTECTED session (close
+    // still proceeds on confirm; operator-origin semantics, there is no
+    // server-side refusal). A flag-less remote row (pre-feature peer) says
+    // "protection status unknown" rather than silently implying unprotected.
+    const closesInFlight = new Set(); // tile keys with a close pending — survives re-renders
+
+    function closeKey(machineId, tmuxSession) {
+      return (machineId || 'local') + ':' + tmuxSession;
+    }
+
+    function closeSessionFromBtn(btn) {
+      const d = btn.dataset;
+      closeSession(d.tmux, d.name, {
+        remote: d.remote === '1',
+        sessionUuid: d.uuid || undefined,
+        machineId: d.machineId || undefined,
+        machineNickname: d.machineNickname || undefined,
+        protected: d.protected === '1' ? true : d.protected === '0' ? false : undefined,
+        button: btn,
+      });
+    }
+
+    async function closeSession(tmuxSession, sessionName, opts) {
+      opts = opts || {}; // backward-compatible: local callers may pass (tmux, name) only
+      const nickname = opts.machineNickname || opts.machineId || 'another machine';
+
+      let prompt;
+      if (opts.protected === true) {
+        // Informed consent (spec §2.0/§2.2): protected sessions ARE closeable —
+        // the safety is that the operator closes them knowingly. The local ×
+        // gains this warning too (deliberate UX improvement, spec AC#6).
+        prompt = opts.remote
+          ? `"${sessionName}" is a PROTECTED session on ${nickname} — close it anyway?`
+          : `"${sessionName}" is a PROTECTED session — close it anyway?`;
+      } else {
+        prompt = opts.remote
+          ? `Close session "${sessionName}" on ${nickname}?`
+          : `Close session "${sessionName}"?`;
+      }
+      if (opts.remote && opts.protected === undefined) {
+        // Version skew: a pre-feature peer's records omit the additive
+        // `protected` flag — say so rather than implying unprotected.
+        prompt += ' (protection status unknown — machine needs update)';
+      }
+      if (!confirm(prompt)) return;
+
+      const key = closeKey(opts.remote ? opts.machineId : null, tmuxSession);
+      if (closesInFlight.has(key)) return; // a close for this tile is already in flight
+      closesInFlight.add(key);
+      if (opts.button) opts.button.disabled = true; // pending — no double-click into parallel relays
 
       try {
-        const resp = await fetch(`/sessions/${encodeURIComponent(tmuxSession)}`, {
-          method: 'DELETE',
-          headers: { 'Authorization': `Bearer ${token}` },
-        });
+        let resp;
+        if (opts.remote) {
+          resp = await fetch(`/sessions/${encodeURIComponent(sessionName)}/remote-close`, {
+            method: 'POST',
+            headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ machineId: opts.machineId, sessionUuid: opts.sessionUuid }),
+          });
+        } else {
+          resp = await fetch(`/sessions/${encodeURIComponent(tmuxSession)}`, {
+            method: 'DELETE',
+            headers: { 'Authorization': `Bearer ${token}` },
+          });
+        }
         const data = await resp.json();
+
+        if (opts.remote) {
+          if (resp.ok && data.alreadyClosed) {
+            // Calm path (spec §2.3): a stale tile whose session already ended
+            // is a close that just won, not an error — simultaneous dashboard
+            // viewers are normal.
+            showToast(`Session "${sessionName}" already closed — refreshing`, 'success');
+          } else if (resp.ok) {
+            showToast(`Session "${sessionName}" closed on ${nickname}`, 'success');
+          } else if (data.outcomeUnknown) {
+            // Delivery honesty (spec §2.3): the peer may be mid-kill — report
+            // OBSERVED state via a refresh, never "closed nothing".
+            showToast(`Session "${sessionName}" — outcome unknown — refreshing`, 'info');
+            refreshPoolSessions();
+            return;
+          } else {
+            showToast(data.error || 'Failed to close remote session', 'error');
+            return;
+          }
+          refreshPoolSessions();
+          if (activeSession === tmuxSession && activeMachineId === (opts.machineId || null)) {
+            goBack();
+          }
+          return;
+        }
 
         if (!resp.ok) {
           showToast(data.error || 'Failed to close session', 'error');
@@ -4444,6 +4644,9 @@
         }
       } catch (err) {
         showToast('Network error: ' + (err.message || 'Cannot reach server'), 'error');
+      } finally {
+        closesInFlight.delete(key);
+        if (opts.button && opts.button.isConnected) opts.button.disabled = false;
       }
     }
 
@@ -4451,7 +4654,7 @@
       if (!activeSession) return;
       const session = sessions.find(s => s.tmuxSession === activeSession);
       const name = session ? session.name : activeSession;
-      closeSession(activeSession, name);
+      closeSession(activeSession, name, session ? { protected: session.protected } : undefined);
     }
 
     // ── Helpers ───────────────────────────────────────────────
@@ -4485,20 +4688,38 @@
     // multi-machine pool, poll the aggregated view so every session — on every
     // machine — shows in the list, each tagged with the machine it runs on.
     let poolPollTimer = null;
+    // Callable outside the poll loop too: a remote close triggers an immediate
+    // refresh so the list shows OBSERVED state (REMOTE-SESSION-CLOSE-SPEC §2.2).
+    async function refreshPoolSessions() {
+      try {
+        const r = await fetch('/sessions?scope=pool', { headers: { 'Authorization': `Bearer ${token}` } });
+        if (!r.ok) return;
+        const j = await r.json();
+        selfMachineNickname = (j.pool && j.pool.selfMachineNickname) || null;
+        // LIVE remote sessions only: a peer's plain /sessions returns its FULL
+        // registry (completed/killed records included), while the local sidebar
+        // is built from listRunningSessions(). Without this status filter,
+        // long-dead peer sessions render as live "click to stream" tiles
+        // (2026-06-11: five closed Mac Mini sessions reappeared on the laptop
+        // dashboard hours after they were closed).
+        remoteSessions = (j.sessions || []).filter(s => s.remote === true && (s.status === 'running' || s.status === 'starting'));
+        // WS4.2 (F7): the pooled sessions response now carries pool.machines —
+        // every registered machine with its session count and, when idle, an
+        // explicit SERVER-COMPUTED empty-state (online / offline / unreachable),
+        // honestly derived from the registry + the live fan-out. Render it so an
+        // idle machine reads "online — no active sessions" and a dark machine
+        // reads "offline since"/"unreachable" — never an indistinguishable blank.
+        // >=2 machines is the multi-machine case; single-machine stays empty (no-op).
+        poolMachinesView = (j.pool && j.pool.enabled && Array.isArray(j.pool.machines) && j.pool.machines.length >= 2)
+          ? j.pool.machines
+          : [];
+        renderSessionList();
+      } catch { /* best-effort — peers may be offline; next tick retries */ }
+    }
     function startPoolSessionsPolling() {
       if (poolPollTimer) return;
-      const poll = async () => {
-        try {
-          const r = await fetch('/sessions?scope=pool', { headers: { 'Authorization': `Bearer ${token}` } });
-          if (!r.ok) return;
-          const j = await r.json();
-          selfMachineNickname = (j.pool && j.pool.selfMachineNickname) || null;
-          remoteSessions = (j.sessions || []).filter(s => s.remote === true);
-          renderSessionList();
-        } catch { /* best-effort — peers may be offline; next tick retries */ }
-      };
-      poll();
-      poolPollTimer = setInterval(poll, 15000);
+      refreshPoolSessions();
+      poolPollTimer = setInterval(refreshPoolSessions, 15000);
     }
 
     function startWaPolling() {
@@ -4970,6 +5191,35 @@
       if (m.loadAvg < 4) return 'working';
       return 'busy';
     }
+    function machineGuardsLine(m) {
+      // Guard posture (GUARD-POSTURE-ENDPOINT-SPEC §2.3): last-known summary
+      // with RECEIVER-side age. No posture ever received → honest "unknown",
+      // never "0 on / 0 off". Only problem classes get named; dark-default
+      // offs stay quiet (alarm-fatigue is how the next Mini stays off while
+      // displayed).
+      const p = m.guardPosture;
+      if (!p) return 'guards: unknown';
+      const problems = [];
+      if (p.offDeviant) problems.push(p.offDeviant + ' off that should be on');
+      if (p.offRuntimeDivergent) problems.push(p.offRuntimeDivergent + ' off despite settings');
+      if (p.onStale) problems.push(p.onStale + ' frozen');
+      if (p.missing) problems.push(p.missing + ' missing');
+      if (p.errored) problems.push(p.errored + ' erroring');
+      if (p.divergedPendingRestart) problems.push(p.divergedPendingRestart + ' awaiting restart');
+      const okPart = 'guards: ' + ((p.onConfirmed ?? 0) + (p.onUnverified ?? 0) + (p.onDryRun ?? 0)) + ' on' +
+        (p.onConfirmed ? ' (' + p.onConfirmed + ' confirmed)' : '');
+      let age = '';
+      if (m.guardPostureReceivedAt) {
+        const ms = Date.now() - Date.parse(m.guardPostureReceivedAt);
+        if (isFinite(ms) && ms >= 0) {
+          const mins = Math.round(ms / 60000);
+          age = mins < 2 ? 'just now' : mins < 90 ? 'as of ' + mins + 'm ago'
+            : mins < 2880 ? 'as of ' + Math.round(mins / 60) + 'h ago'
+            : 'as of ' + Math.round(mins / 1440) + 'd ago';
+        }
+      }
+      return [okPart, problems.length ? '⚠ ' + problems.join(', ') : '', age].filter(Boolean).join(' · ');
+    }
     function renderMachineCard(m, routerHolder) {
       const online = !!m.online;
       const dot = !online ? 'off' : (m.clockSkewStatus === 'suspect-clock-removed' ? 'warn' : 'ok');
@@ -4988,6 +5238,7 @@
         '</div>' +
         '<div class="machine-meta">' + escapeHtml(machineSpecLine(m.hardware)) + '</div>' +
         '<div class="machine-meta">' + tail + '</div>' +
+        '<div class="machine-meta">' + escapeHtml(machineGuardsLine(m)) + '</div>' +
       '</div>';
     }
     async function saveMachineNickname(input) {
@@ -8919,6 +9170,8 @@
       if (!__mndController) {
         const els = {
           list: document.getElementById('mndList'),
+          approvals: document.getElementById('mndApprovals'),
+          approvalsSection: document.getElementById('mndApprovalsSection'),
           audit: document.getElementById('mndAudit'),
           notice: document.getElementById('mndNotice'),
           stamp: document.getElementById('mndStamp'),

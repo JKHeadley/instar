@@ -55,6 +55,7 @@ import path from 'node:path';
 
 import {
   type ThreadlineConversationAction,
+  type GuardLatchAction,
   JOURNAL_KINDS,
   sanitizeMachineId,
   readTailTolerant,
@@ -569,6 +570,18 @@ export class JournalSyncApplier {
       if (typeof raw.peerFingerprint !== 'string' || !raw.peerFingerprint || raw.peerFingerprint.length > 256) return false;
       if (raw.topicId !== undefined && (typeof raw.topicId !== 'number' || !Number.isFinite(raw.topicId))) return false;
       const known = ['action', 'conversationId', 'peerFingerprint', 'topicId'];
+      return keys.every((k) => known.includes(k));
+    }
+    if (kind === 'guard-latch') {
+      // green-pr-automerge R9/R7 — receive-side mirror of CoherenceJournal.validate.
+      const actions: GuardLatchAction[] = ['set', 'clear'];
+      if (typeof raw.latchKind !== 'string' || !raw.latchKind || raw.latchKind.length > 64) return false;
+      if (typeof raw.latchId !== 'string' || !raw.latchId || raw.latchId.length > 128) return false;
+      if (typeof raw.action !== 'string' || !actions.includes(raw.action as GuardLatchAction)) return false;
+      if (typeof raw.epoch !== 'number' || !Number.isFinite(raw.epoch)) return false;
+      if (typeof raw.seq !== 'number' || !Number.isFinite(raw.seq)) return false;
+      if (raw.reason !== undefined && typeof raw.reason !== 'string') return false;
+      const known = ['latchKind', 'latchId', 'action', 'epoch', 'seq', 'reason'];
       return keys.every((k) => known.includes(k));
     }
     return false;

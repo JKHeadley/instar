@@ -214,6 +214,35 @@ export interface Commitment {
    * commitments-sync a seq-windowed DELTA instead of a whole-store blob.
    */
   lastMutatedSeq?: number;
+
+  // ── Promise-Beacon Escalation (PROMISE-BEACON-ESCALATION-SPEC §4) ──
+  // ALL server-written-only (I11): never accepted on POST/PATCH /commitments.
+  // Durable cold-state so a restart cannot reset the cap (I1).
+  /** Count of Rung-1 revive attempts. Incremented BEFORE the spawn (I1). */
+  escalationAttempts?: number;
+  /** ISO of the most recent escalation attempt (backoff floor anchor). */
+  lastEscalationAt?: string;
+  /** Which rung the escalation is currently on. */
+  currentRung?: '1' | '2' | '3' | null;
+  /** Idempotency key for the in-flight Rung-1 spawn (I6/I14). */
+  escalationAttemptId?: string;
+  /** True while a Rung-1 revive is in flight (resolved by the timeout contract, §3.1). */
+  escalationInFlight?: boolean;
+  /**
+   * Spawn-time marker on a revived session. Read by the external-operation-gate
+   * to block side-effecting tools until server-recorded revalidation (I13).
+   */
+  revivalMode?: 'status-only-until-revalidated';
+  /** Server-recorded revalidation time (ISO). Unblocks side-effects in the gate (I13). */
+  revalidatedAt?: string;
+  /** The authenticated session id that revalidated (I13). */
+  revalidatedBy?: string;
+  /** Count of Rung-2 honest-status notifications sent (bounded, §3.2). */
+  rung2NotificationCount?: number;
+  /** ISO of the most recent Rung-2 send (per-commitment floor). */
+  lastRung2At?: string;
+  /** Most recent escalation refusal reason for observability (§6). */
+  refusalReason?: string;
 }
 
 export interface CommitmentStore {
@@ -475,7 +504,13 @@ export class CommitmentTracker extends EventEmitter {
       softDeadlineAt: input.softDeadlineAt,
       hardDeadlineAt: autoHardDeadlineAt,
       sessionEpoch: input.sessionEpoch,
-      ownerMachineId: input.ownerMachineId,
+      // WS3.2 (MULTI-MACHINE-SEAMLESSNESS-SPEC, closes F19): ownerMachineId is
+      // recorded at creation — defaulting to the creating machine, which IS the
+      // machine serving the topic when the promise is made. Previously this was
+      // caller-supplied only and never populated, so PromiseBeacon's ownership
+      // gate compared against undefined and was silently inert. The stamp is a
+      // FALLBACK: the beacon re-resolves the live topic owner at speak time.
+      ownerMachineId: input.ownerMachineId ?? this.config.originMachineId,
       externalKey: input.externalKey,
       beaconCreatedBySource: input.beaconCreatedBySource,
       heartbeatCount: 0,

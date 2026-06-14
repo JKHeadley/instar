@@ -22,6 +22,7 @@ The Instar server exposes a REST API on `localhost:4040` (configurable). All end
 | POST | `/sessions/:name/input` | Send text to a session |
 | POST | `/sessions/spawn` | Spawn a new session (rate limited). Body: `name`, `prompt`, `model?`, `jobSlug?` |
 | DELETE | `/sessions/:id` | Kill a session |
+| GET | `/orphaned-work` | Worktrees holding uncommitted work whose owning session died (the `OrphanedWorkSentinel` findings). 503 when the feature is dark, 200 when live |
 
 ## Jobs
 
@@ -252,6 +253,9 @@ with respect to behavior; the ratio is a signal, never a gate.
 - `GET /attention/:id`
 - `PATCH /attention/:id`
 - `POST /attention`
+- `POST /attention/:id/remote-ack` — durable operator-bound ack for a pooled attention item owned by ANOTHER machine (WS4.1 follow-up). Delivers immediately when the owner is reachable, else persists the intent (bound to the authenticated operator) and re-delivers when the owner returns; the owner revalidates at apply time and rejects a stale resolve against a since-escalated HIGH/URGENT item. Ships dark behind `multiMachine.seamlessness.ws41DurableAck`.
+- `GET /attention/_remote-ack/pending` — list still-pending durable remote-acks (observability).
+- `POST /attention/_remote-ack/drain` — manually drain pending durable remote-acks to their owning machines.
 
 ## /autonomy
 - `GET /autonomy`
@@ -750,9 +754,15 @@ changes-requested, terminal). Deny-by-default inherited: no mandate → 403.
 - `GET /sessions/:name/output`
 - `GET /sessions/tmux`
 - `POST /sessions/:name/input`
+- `POST /sessions/:name/remote-close`
 - `POST /sessions/cleanup-stale`
 - `POST /sessions/create`
 - `POST /sessions/refresh`
+- `GET /sessions/resume-queue`
+- `POST /sessions/resume-queue/:id/cancel`
+- `POST /sessions/resume-queue/:id/requeue`
+- `POST /sessions/resume-queue/drain`
+- `POST /sessions/resume-queue/resume`
 - `POST /sessions/spawn`
 
 ## /shared-state

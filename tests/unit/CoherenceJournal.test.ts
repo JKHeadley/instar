@@ -80,6 +80,24 @@ describe('CoherenceJournal — paths & sanitization (§3.1)', () => {
     j.close();
   });
 
+  it("accepts the WS1.3 'reconcile' placement reason — the runtime allowlist matches the PlacementReason union (second-pass finding, 2026-06-12)", () => {
+    // The type annotation on the validator's allowlist cannot enforce
+    // completeness (a subset of the union is type-legal), so extending
+    // PlacementReason without the allowlist silently schema-rejects the new
+    // reason AT THE SOURCE. This is the semantic-correctness test for every
+    // reconciler-driven CAS's journal pairing.
+    const j = makeJournal();
+    const before = j.getDegradation().schemaRejects;
+    j.emitPlacement(13481, { owner: 'm_a', epoch: 7, reason: 'reconcile' });
+    j.flush();
+    expect(j.getDegradation().schemaRejects).toBe(before); // NOT rejected
+    expect(fs.existsSync(streamFile('topic-placement'))).toBe(true);
+    const lines = fs.readFileSync(streamFile('topic-placement'), 'utf-8').trim().split('\n');
+    const last = JSON.parse(lines[lines.length - 1]);
+    expect(last.data?.reason).toBe('reconcile');
+    j.close();
+  });
+
   it('sanitizes machine ids that contain path-unsafe characters (mirrors MachineHeartbeat)', () => {
     expect(sanitizeMachineId('a/b')).toBe('a%2fb'); // slash encoded
     expect(sanitizeMachineId('../x')).toBe('%2e%2e%2fx'); // dots + slash all encoded (traversal-safe)
@@ -625,8 +643,8 @@ describe('CoherenceJournal — getOwnAdvert (§3.4 rule 5)', () => {
     const j = makeJournal();
     // Nothing written yet → every kind advertises lastSeq 0.
     const empty = j.getOwnAdvert();
-    expect(Object.keys(empty).sort()).toEqual(['autonomous-run', 'session-lifecycle', 'threadline-conversation', 'topic-placement']);
-    for (const kind of ['topic-placement', 'session-lifecycle', 'autonomous-run', 'threadline-conversation'] as JournalKind[]) {
+    expect(Object.keys(empty).sort()).toEqual(['autonomous-run', 'evolution-action-record', 'guard-latch', 'knowledge-record', 'learning-record', 'pref-record', 'relationship-record', 'session-lifecycle', 'threadline-conversation', 'topic-operator-record', 'topic-placement', 'user-record']);
+    for (const kind of ['topic-placement', 'session-lifecycle', 'autonomous-run', 'threadline-conversation', 'guard-latch', 'pref-record', 'relationship-record', 'learning-record', 'knowledge-record', 'evolution-action-record', 'user-record', 'topic-operator-record'] as JournalKind[]) {
       expect(empty[kind].lastSeq).toBe(0);
     }
     const incarnation = empty['topic-placement'].incarnation;

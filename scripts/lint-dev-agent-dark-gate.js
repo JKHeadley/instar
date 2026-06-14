@@ -272,13 +272,31 @@ for (const file of resolveTargets()) {
   const gatedSet = new Set(gatedPaths);
   const exclusionSet = new Set(exclusionPaths);
 
+  // ── Count-match guard (CMT-1438, DEV-AGENT-DARK-GATE-TEETH) ──
+  // `extractRegistry` parses an exclusion's configPath (via configPathOf's path
+  // regex) and its category+reason (via the stricter entryRe) with two different
+  // patterns. An entry whose `reason` is written as a backtick/template literal (or
+  // otherwise reordered) matches the path regex but NOT entryRe — so its category +
+  // reason validation below is SILENTLY SKIPPED, letting a bogus category slip past
+  // CI. entryRe always requires a quoted configPath that configPathOf also matches,
+  // so exclusionEntries.length <= exclusionPaths.length always holds; any shortfall
+  // means an entry escaped validation. Fail LOUD on the mismatch (fail-safe — it can
+  // only over-trip on a malformed entry, never fail-open on one).
+  if (exclusionEntries.length !== exclusionPaths.length) {
+    violations.push({
+      file: DEV_GATED_FEATURES_REL, line: 0, kind: 'C: exclusion entry escaped validation',
+      text: `parsed ${exclusionPaths.length} DARK_GATE_EXCLUSIONS configPath(s) but only ${exclusionEntries.length} full {configPath,category,reason} entr(y/ies) — ${exclusionPaths.length - exclusionEntries.length} entr(y/ies) did not parse for category+reason validation`,
+      fix: 'an exclusion entry must be a literal `{ configPath: "...", category: "...", reason: "..." }` with a STRING (quote-delimited, not backtick/template-literal) reason, fields in that order, so the validator can read its category — rewrite the offending entry so all three fields parse',
+    });
+  }
+
   // Validate exclusion-entry quality (closed enum + reason length).
   for (const e of exclusionEntries) {
     if (!VALID_CATEGORIES.has(e.category)) {
       violations.push({
         file: DEV_GATED_FEATURES_REL, line: 0, kind: 'C: invalid exclusion category',
         text: `${e.configPath} → category '${e.category}'`,
-        fix: `category must be one of: ${[...VALID_CATEGORIES].join(', ')}`,
+        fix: `category must name a CONCRETE reason dev-live is wrong — one of: ${[...VALID_CATEGORIES].join(', ')}. The catch-all 'deliberate-fleet-default' was retired (CMT-1438): if the feature is actually SAFE + runnable on a dev agent, it does NOT belong here — move it to DEV_GATED_FEATURES (omit \`enabled\` from its ConfigDefaults block so the gate resolves it live-on-dev).`,
       });
     }
     const reasonLen = (e.reason || '').replace(/\s/g, '').length;

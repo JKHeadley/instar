@@ -104,6 +104,14 @@ describe('MeshRpc — per-command RBAC (§L0)', () => {
     return { routerHolder: () => 'ROUTER', ownerOf: () => null, placementTargetOf: () => null, ...over };
   }
 
+  it('drain (WS1.2): router → ok, non-router → drain-unauthorized — its OWN refusal reason', () => {
+    const cmd = { type: 'drain', session: '13481', target: 'm_mini', ownershipEpoch: 4 } as const;
+    expect(checkCommandRBAC(cmd, 'ROUTER', rbac()).ok).toBe(true);
+    expect(checkCommandRBAC(cmd, 'OTHER', rbac()).reason).toBe('drain-unauthorized');
+    // Even the transfer TARGET may not order a drain — only the planner (router).
+    expect(checkCommandRBAC(cmd, 'm_mini', rbac()).reason).toBe('drain-unauthorized');
+  });
+
   it('place / transfer: router → ok, non-router → not-router', () => {
     expect(checkCommandRBAC({ type: 'place', session: 's', machine: 'm' }, 'ROUTER', rbac()).ok).toBe(true);
     expect(checkCommandRBAC({ type: 'place', session: 's', machine: 'm' }, 'OTHER', rbac()).reason).toBe('not-router');
@@ -128,6 +136,15 @@ describe('MeshRpc — per-command RBAC (§L0)', () => {
     for (const cmd of [{ type: 'capacity-report' }, { type: 'session-status' }, { type: 'secret-share', encrypted: 'x' }] as MeshCommand[]) {
       expect(checkCommandRBAC(cmd, 'ANY_PEER', rbac()).ok).toBe(true);
     }
+  });
+
+  it('state-snapshot is read/observe class — any registered peer → ok (no router/owner role)', () => {
+    // The single-origin snapshot pull is self-binding (origin === serving machine);
+    // RBAC adds NO authorization beyond verifyEnvelope, exactly like the other
+    // read-replication verbs (journal-sync/preferences-sync). (multi-machine-
+    // replicated-store-foundation §6.1/§6.3.)
+    const cmd: MeshCommand = { type: 'state-snapshot', request: { store: 'pref' } };
+    expect(checkCommandRBAC(cmd, 'ANY_PEER', rbac()).ok).toBe(true);
   });
 });
 

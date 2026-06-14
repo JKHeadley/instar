@@ -164,6 +164,96 @@ describe('SessionReaper — topic-moved closeout (post-transfer duplicate sessio
     expect(h.terminate).not.toHaveBeenCalled();
   });
 
+  // ── WS1.2 P19 breaker (MULTI-MACHINE-SEAMLESSNESS-SPEC) ────────────────────
+  // The spec's required sustained-failure test: a permanently-vetoing session
+  // gets BOUNDED attempts + exactly ONE escalation — the 2026-06-12 incident
+  // (closeout attacking a working session every 2 minutes for hours) becomes
+  // impossible by construction.
+
+  it('P19 breaker: a permanently-vetoing session gets exactly N attempts, then retries stop', async () => {
+    const terminate = vi.fn(async () => ({ terminated: false, skipped: 'active-process' }));
+    const raiseAttention = vi.fn();
+    const h = harness({
+      cfg: { topicMovedVetoBreakerAttempts: 3 },
+      deps: { topicOwnerElsewhere: () => 'Laptop', terminate, raiseAttention },
+    });
+    // Run far past the threshold — 10 ticks.
+    for (let i = 0; i < 10; i++) { h.setNow(1_000_000 + i * 120_000); await h.reaper.tick(); }
+    // Dwell eats tick 1; attempts on ticks 2,3,4; breaker open from tick 5 on.
+    expect(terminate).toHaveBeenCalledTimes(3);
+    // Exactly ONE breaker-open audit and ONE escalation.
+    expect(h.audits.filter(a => a.event === 'closeout-breaker-open')).toHaveLength(1);
+    expect(raiseAttention).toHaveBeenCalledTimes(1);
+    const item = raiseAttention.mock.calls[0][0] as { id: string; title: string; description?: string };
+    expect(item.id).toBe('closeout-breaker:s1'); // stable id — attention store dedupes on it
+    expect(item.title).toContain('Laptop');
+    expect(String(item.description)).toContain('active-process');
+  });
+
+  it('P19 breaker: topic returning home resets the episode — a future genuine move retries fresh', async () => {
+    let owner: string | null = 'Laptop';
+    const terminate = vi.fn(async () => ({ terminated: false, skipped: 'active-process' }));
+    const raiseAttention = vi.fn();
+    const h = harness({
+      cfg: { topicMovedVetoBreakerAttempts: 2 },
+      deps: { topicOwnerElsewhere: () => owner, terminate, raiseAttention },
+    });
+    let t = 1_000_000;
+    const tick = async () => { h.setNow(t); t += 120_000; await h.reaper.tick(); };
+    await tick(); await tick(); await tick(); // dwell + 2 vetoed attempts → breaker open
+    expect(terminate).toHaveBeenCalledTimes(2);
+    await tick();                              // breaker open — no attempt
+    expect(terminate).toHaveBeenCalledTimes(2);
+    owner = null; await tick();                // topic home — episode resets
+    owner = 'Laptop'; await tick(); await tick(); // fresh dwell + attempt
+    expect(terminate).toHaveBeenCalledTimes(3);
+  });
+
+  it('P19 breaker: a successful close before the threshold clears the veto counter', async () => {
+    let veto = true;
+    const terminate = vi.fn(async () => (veto ? { terminated: false, skipped: 'active-process' } : { terminated: true }));
+    const raiseAttention = vi.fn();
+    const h = harness({
+      cfg: { topicMovedVetoBreakerAttempts: 3 },
+      deps: { topicOwnerElsewhere: () => 'Laptop', terminate, raiseAttention },
+    });
+    await h.reaper.tick();
+    h.setNow(1_120_000); await h.reaper.tick(); // vetoed attempt 1
+    h.setNow(1_240_000); veto = false; await h.reaper.tick(); // succeeds
+    expect(h.audits.some(a => a.event === 'reaped')).toBe(true);
+    expect(raiseAttention).not.toHaveBeenCalled(); // breaker never opened
+  });
+
+  it('P19 breaker: pin-conflict hold withdraws the closeout intent and clears the counter', async () => {
+    let pinned = false;
+    const terminate = vi.fn(async () => ({ terminated: false, skipped: 'active-process' }));
+    const raiseAttention = vi.fn();
+    const h = harness({
+      cfg: { topicMovedVetoBreakerAttempts: 2 },
+      deps: { topicOwnerElsewhere: () => 'Laptop', topicPinnedHere: () => pinned, terminate, raiseAttention },
+    });
+    let t = 1_000_000;
+    const tick = async () => { h.setNow(t); t += 120_000; await h.reaper.tick(); };
+    await tick(); await tick();        // dwell + vetoed attempt 1 (one below threshold)
+    expect(terminate).toHaveBeenCalledTimes(1);
+    pinned = true; await tick();       // pin-conflict hold — counter cleared (streak parked at -1)
+    // The -1 sentinel climbs back through 0 → fresh dwell takes 3 ticks, then 2 attempts.
+    pinned = false; await tick(); await tick(); await tick(); await tick();
+    expect(terminate).toHaveBeenCalledTimes(3); // 1 + the fresh episode's 2 — counter genuinely reset
+    expect(raiseAttention).toHaveBeenCalledTimes(1); // breaker opened only in the second episode
+  });
+
+  it('P19 breaker: absent raiseAttention dep is audit-only (no crash)', async () => {
+    const terminate = vi.fn(async () => ({ terminated: false, skipped: 'active-process' }));
+    const h = harness({
+      cfg: { topicMovedVetoBreakerAttempts: 2 },
+      deps: { topicOwnerElsewhere: () => 'Laptop', terminate, raiseAttention: undefined },
+    });
+    for (let i = 0; i < 5; i++) { h.setNow(1_000_000 + i * 120_000); await h.reaper.tick(); }
+    expect(terminate).toHaveBeenCalledTimes(2);
+    expect(h.audits.filter(a => a.event === 'closeout-breaker-open')).toHaveLength(1);
+  });
+
   it('respects maxReapsPerTick across multiple moved topics', async () => {
     const sessions = [
       mkSession({ id: 's1', tmuxSession: 't1' }),

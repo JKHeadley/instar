@@ -24,6 +24,7 @@ import type { SocketDisconnectSentinelDeps } from './SocketDisconnectSentinel.js
 import type {
   ActiveWorkSilenceSentinelDeps,
   SessionRegistryEntry,
+  SilenceFunnelEvent,
 } from './ActiveWorkSilenceSentinel.js';
 import type {
   ContextWedgeSentinelDeps,
@@ -181,6 +182,28 @@ export function looksActivelyWorking(
 }
 
 /**
+ * Stricter sibling of looksActivelyWorking (HONEST-PROGRESS-MESSAGING A1): is the
+ * framework GENERATING RIGHT NOW? Uses only the live-generation markers
+ * (`liveActivity` — the animated spinner / "Working (Ns" / "esc to interrupt"),
+ * deliberately EXCLUDING `toolCallOrSpinner`'s scrollback-persistent tool names
+ * which linger in an idle pane. This is the correct signal for the silence
+ * sentinel's live-frame re-check: a frozen scrollback full of past `Read(`/`Bash(`
+ * is NOT "generating now", but a still-rendered spinner / "esc to interrupt" IS.
+ */
+export function looksGeneratingNow(
+  output: string,
+  framework?: IntelligenceFramework,
+): boolean {
+  if (!output) return false;
+  const sig = getActivitySignal(framework);
+  return (
+    sig.liveActivity.test(output) ||
+    sig.escapeToInterrupt.test(output) ||
+    sig.runningIndicator.test(output)
+  );
+}
+
+/**
  * Tracks per-session output-change time so the silence sentinel can tell
  * "frozen mid-task" from "still producing output". Only sessions whose most
  * recent frame shows active-work signatures are surfaced as candidates; an
@@ -270,6 +293,15 @@ export function buildActiveWorkSilenceDeps(opts: {
   getTopicForSession?: (sessionName: string) => number | null | undefined;
   /** Deliver a notice to a specific topic. Returns success; never throws. */
   deliverToTopic?: (topicId: number, text: string) => Promise<boolean>;
+  /** HONEST-PROGRESS-MESSAGING A1/A2 — capture the session's CURRENT live frame
+   *  for corroboration before escalating. */
+  captureFrame?: (sessionName: string) => string | null;
+  /** A2(c) — does the session have a live sub-agent (SubagentTracker)? */
+  hasActiveSubagents?: (sessionName: string) => boolean;
+  /** Resolve the framework so the live-frame "generating now" check is accurate. */
+  frameworkForSession?: (sessionName: string) => IntelligenceFramework | undefined;
+  /** Observability funnel hook (E). */
+  recordEvent?: (event: SilenceFunnelEvent, sessionName: string, detail?: string) => void;
 }): ActiveWorkSilenceSentinelDeps {
   return {
     listSessions: () => opts.tracker.snapshot(),
@@ -289,6 +321,15 @@ export function buildActiveWorkSilenceDeps(opts: {
       await opts.escalate(sessionName, text);
     },
     recoverFn: opts.recoverFn,
+    captureFrame: opts.captureFrame,
+    // A1 uses the STRICT "generating now" check (live spinner / esc-to-interrupt
+    // / running), never the broad scrollback-matching looksActivelyWorking — a
+    // frozen pane full of past tool names is NOT generating now.
+    looksActivelyWorking: opts.captureFrame
+      ? (frame, sessionName) => looksGeneratingNow(frame, opts.frameworkForSession?.(sessionName))
+      : undefined,
+    hasActiveSubagents: opts.hasActiveSubagents,
+    recordEvent: opts.recordEvent,
   };
 }
 

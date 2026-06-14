@@ -24,6 +24,7 @@ import { execFileSync } from 'node:child_process';
 import { createRoutes, type RouteContext } from '../../src/server/routes.js';
 import { authMiddleware } from '../../src/server/middleware.js';
 import { CartographerTree } from '../../src/core/CartographerTree.js';
+import { runDetect, writeSnapshot } from '../../src/core/cartographerDetect.js';
 import { resolveDevAgentGate } from '../../src/core/devAgentGate.js';
 import { applyDefaults, getMigrationDefaults } from '../../src/config/ConfigDefaults.js';
 
@@ -96,9 +97,33 @@ describe('Cartographer dev-gate — feature is alive (Tier 3 E2E, production ini
     const cfg = buildAgentConfig(true);
     // Sanity: the REAL defaults OMIT cartographer.enabled (dev-gate decides).
     expect((cfg.cartographer as { enabled?: unknown })?.enabled).toBeUndefined();
-    const res = await bearer(request(appFor(cfg)).get('/cartographer/health'));
+
+    // fix instar#1069: /health serves the per-host snapshot, never a lazy scaffold.
+    // Before any detect has run, the LIVE surface answers 200 with snapshot:'absent'
+    // (honest empty) — proving the route is wired, with no event-loop walk.
+    let res = await bearer(request(appFor(cfg)).get('/cartographer/health'));
     expect(res.status).toBe(200);
     expect(res.body.enabled).toBe(true);
+    expect(res.body.snapshot).toBe('absent');
+
+    // With the index built (boot scaffold's job) + a detect snapshot (the sweep's
+    // job), the same route serves real counts — the full aliveness proof.
+    const t = new CartographerTree({ projectDir: repo, stateDir });
+    t.scaffold();
+    const r = runDetect({
+      indexPath: t.indexFilePath(), projectDir: repo, maxIndexBytes: 256 * 1024 * 1024,
+      maxCandidates: 100, maxNodesPerPass: 25, maxDeferredPasses: 5, revalidateSamplePerPass: 0,
+      graceMs: 0, gitMaxBuffer: 64 * 1024 * 1024, snapshotSampleMax: 500, nowMs: Date.now(),
+    });
+    writeSnapshot(t.snapshotPath(), {
+      generatedAt: new Date().toISOString(), headSha: r.counts.headSha, counts: r.counts,
+      freshness: r.freshness, staleSample: r.staleSample, staleTotal: r.staleTotal,
+      staleSampleTruncated: r.staleSample.length < r.staleTotal,
+      lastDetectStatus: 'ok', lastDetectAt: new Date().toISOString(), durationMs: r.durationMs,
+    });
+    res = await bearer(request(appFor(cfg)).get('/cartographer/health'));
+    expect(res.status).toBe(200);
+    expect(res.body.snapshot).toBe('present');
     expect(res.body.nodeCount).toBeGreaterThanOrEqual(1);
   });
 

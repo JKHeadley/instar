@@ -19,7 +19,6 @@ import {
   ModelSwapService,
   paneConfirmsModel,
   paneIdleWithEmptyInput,
-  type AttentionItemLike,
   type SwapSessionFacade,
 } from '../../src/core/ModelSwapService.js';
 import {
@@ -133,7 +132,6 @@ describe('ModelSwapService.swap', () => {
   let postInjectTail: string | null;
   let injected: string[];
   let saved: Session[];
-  let attentionItems: AttentionItemLike[];
   let admitResult: { allow: boolean; reason?: string };
   let admitCalls: Array<Record<string, unknown>>;
   let injectionRecords: Array<[string, string]>;
@@ -146,7 +144,6 @@ describe('ModelSwapService.swap', () => {
     postInjectTail = null;
     injected = [];
     saved = [];
-    attentionItems = [];
     admitResult = { allow: true };
     admitCalls = [];
     injectionRecords = [];
@@ -195,7 +192,6 @@ describe('ModelSwapService.swap', () => {
           return true;
         },
       } as never,
-      attention: item => attentionItems.push(item),
       canaryAttempts: 3,
       canaryIntervalMs: 1,
       wait: () => Promise.resolve(),
@@ -282,14 +278,24 @@ describe('ModelSwapService.swap', () => {
     expect(saved[0].model).toBe('claude-fable-5');
   });
 
-  it('UNCONFIRMED swap: Session.model untouched, ONE attention item, STILL counted', async () => {
+  it('UNCONFIRMED swap: Session.model untouched, silent maturation breadcrumb (never Attention), STILL counted', async () => {
     postInjectTail = IDLE_TAIL; // never confirms
     const r = await service().swap('topic-chat', 'escalated');
     expect(r).toMatchObject({ status: 'unconfirmed', confirmed: false });
     expect(saved).toHaveLength(0); // Session.model NOT written
     expect(session.model).toBe('claude-opus-4-8');
-    expect(attentionItems).toHaveLength(1);
-    expect(attentionItems[0].id).toBe('model-swap-unconfirmed-inst-1-escalated');
+    // TOPIC-PROFILE-SPEC §11/§14 (maturing-feature-health-no-alerts): the
+    // signal is a maturation-track audit breadcrumb, not an Attention item.
+    const audit = fs.readFileSync(
+      path.join(stateDir, 'state', 'model-tier-escalation', 'audit.jsonl'), 'utf-8');
+    const unconfirmedRow = audit
+      .trim().split('\n').map(l => JSON.parse(l) as Record<string, unknown>)
+      .find(e => e.type === 'swap-unconfirmed');
+    expect(unconfirmedRow).toMatchObject({
+      maturationSignal: true,
+      feature: 'model-tier-escalation',
+      session: 'topic-chat',
+    });
     expect(injectionRecords).toHaveLength(1); // fails toward counting
   });
 

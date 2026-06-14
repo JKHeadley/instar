@@ -86,6 +86,9 @@ function appWith(cartographer: CartographerTree | null, sweepEnabled = true): ex
 }
 
 const tree = (): CartographerTree => new CartographerTree({ projectDir: repo, stateDir });
+// fix instar#1069: the refresh route no longer lazy-scaffolds — a node must already
+// exist (the boot-path scaffold builds the index). Tests targeting a real node scaffold first.
+const scaffoldedTree = (): CartographerTree => { const t = tree(); t.scaffold(); return t; };
 const bearer = (r: request.Test) => r.set('Authorization', `Bearer ${AUTH}`);
 
 describe('POST /cartographer/node/refresh (Tier 2 integration)', () => {
@@ -112,7 +115,7 @@ describe('POST /cartographer/node/refresh (Tier 2 integration)', () => {
   });
 
   it('200 happy path → refreshed, and the node reads back with inline-agent provenance + fresh', async () => {
-    const app = appWith(tree());
+    const app = appWith(scaffoldedTree());
     const res = await bearer(
       request(app).post('/cartographer/node/refresh'),
     ).send({ path: 'src/Sample.ts', summary: 'Implements uniqueSampleSymbol for the sample.' });
@@ -164,7 +167,7 @@ describe('POST /cartographer/node/refresh (Tier 2 integration)', () => {
 
   it('400 for a symbol-less summary against a node WITH a distinctive symbol', async () => {
     const res = await bearer(
-      request(appWith(tree())).post('/cartographer/node/refresh'),
+      request(appWith(scaffoldedTree())).post('/cartographer/node/refresh'),
     ).send({ path: 'src/Sample.ts', summary: 'This module does some generic work here.' });
     expect(res.status).toBe(400);
     expect(res.body.error).toMatch(/no symbol present/i);

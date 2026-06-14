@@ -1,0 +1,17 @@
+{
+  "ts": "2026-06-13T20:23:18.678Z",
+  "slug": "ws52-step7-routes-audit",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new route (router.<verb>() added",
+    "new capability: new exported class / subsystem added",
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 8,
+  "loc": 585,
+  "causalAutopsy": null,
+  "verdict": "pass"
+}

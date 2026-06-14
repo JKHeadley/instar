@@ -192,3 +192,42 @@ describe('GET /permissions/baselines (integration — Pillar 3)', () => {
     expect(res.body.baselines).toEqual({});
   });
 });
+
+describe('GET /permissions/users (integration) — the grant form person picker', () => {
+  function seedUsers(stateDir: string, users: unknown[]): void {
+    fs.writeFileSync(path.join(stateDir, 'users.json'), JSON.stringify(users, null, 2));
+  }
+
+  it('returns ONLY users carrying a Slack identity, with name + orgRole', async () => {
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'perm-routes-'));
+    seedUsers(tmp, [
+      { id: 'slack-U_MIA', name: 'Mia Member', channels: [{ type: 'slack', identifier: 'U_MIA' }], permissions: ['member'], preferences: {}, slackUserId: 'U_MIA', orgRole: 'member', createdAt: 'x' },
+      { id: 'slack-U_ADAM', name: 'Adam Admin', channels: [{ type: 'slack', identifier: 'U_ADAM' }], permissions: ['member'], preferences: {}, slackUserId: 'U_ADAM', orgRole: 'admin', createdAt: 'x' },
+      { id: 'tg-justin', name: 'Justin', channels: [{ type: 'telegram', identifier: '123' }], permissions: ['admin'], preferences: {}, createdAt: 'x' },
+    ]);
+    const res = await request(appWith(tmp)).get('/permissions/users');
+    expect(res.status).toBe(200);
+    expect(res.body.users).toHaveLength(2); // the Telegram-only user is excluded
+    const mia = res.body.users.find((u: any) => u.slackUserId === 'U_MIA');
+    expect(mia).toEqual({ slackUserId: 'U_MIA', name: 'Mia Member', orgRole: 'member' });
+    // Read-only person picker: no channel identifiers, permissions, or preferences leak.
+    expect(JSON.stringify(res.body)).not.toMatch(/telegram|preferences|permissions"/);
+  });
+
+  it('returns an empty list (not an error) when no users exist yet', async () => {
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'perm-routes-'));
+    const res = await request(appWith(tmp)).get('/permissions/users');
+    expect(res.status).toBe(200);
+    expect(res.body.users).toEqual([]);
+  });
+
+  it('tolerates a user record without orgRole (null, not missing)', async () => {
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'perm-routes-'));
+    seedUsers(tmp, [
+      { id: 'slack-U_X', name: 'X', channels: [{ type: 'slack', identifier: 'U_X' }], permissions: [], preferences: {}, slackUserId: 'U_X', createdAt: 'x' },
+    ]);
+    const res = await request(appWith(tmp)).get('/permissions/users');
+    expect(res.status).toBe(200);
+    expect(res.body.users[0]).toEqual({ slackUserId: 'U_X', name: 'X', orgRole: null });
+  });
+});

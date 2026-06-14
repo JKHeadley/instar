@@ -51,6 +51,9 @@ const LONG_LIVED_STORES = [
   'src/messaging/pending-relay-store.ts',
   'src/messaging/imessage/NativeBackend.ts',
   'src/threadline/A2ADeliveryTracker.ts',
+  // Durable Inbound Message Queue (CMT-1118): the custody store registers its
+  // handle in the constructor (registerSqliteHandle), process-lifetime.
+  'src/core/PendingInboundStore.ts',
 ];
 
 /**

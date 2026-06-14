@@ -47,6 +47,10 @@ describe('PromiseBeacon — UX fixes', () => {
       isSessionAlive: () => true,
       sendMessage: async (_topicId, text) => { sent.push({ text }); },
       defaultAutoPauseAfterUnchanged: 0, // disable auto-pause for this test
+      // This test exercises the legacy templated-heartbeat suffix specifically,
+      // so opt out of B1 suppression (which would otherwise withhold the
+      // unchanged heartbeat entirely).
+      suppressUnchangedHeartbeats: false,
     });
     beacon.start();
 

@@ -32,6 +32,7 @@ import { checkEli16Overview, MIN_ELI16_CHARS } from './eli16-overview-check.mjs'
 import { verifyProposalDerivedRunbooks } from '../skills/instar-dev/scripts/verify-proposal-derived-runbook.mjs';
 import { classifyTier, decideRequirementSet } from './lib/classify-tier.mjs';
 import { recognizeConvergence } from './lib/convergence-recognition.mjs';
+import { isOperatorSurfaceFile, artifactAddressesOperatorSurfaceQuality, isAuthorizationSurfaceFile, artifactAddressesAgentProposesApproves } from './lib/operator-surface.mjs';
 
 // Report-Backed Converging Audit (docs/specs/CONVERGING-AUDIT-DEFAULT.md, Part B).
 // The precommit reads NO config file and runs pre-compile, so it cannot import
@@ -884,6 +885,7 @@ if (!promotionGateResult.ok) {
 // ─── Pass ────────────────────────────────────────────────────────────────
 
 assertFrameworkGenerality(inScopeFiles, validTrace.trace);
+assertOperatorSurfaceQuality(staged, validTrace.trace);
 
 console.error(
   `[instar-dev-precommit] OK — trace ${path.basename(validTrace.entry.file)} covers ${inScopeFiles.length} in-scope file(s), artifact ${validTrace.trace.artifactPath} verified, spec ${spec} is converged + approved` +
@@ -925,6 +927,72 @@ function assertFrameworkGenerality(inScopeFiles, trace) {
         '  framework abstraction? Is it correct for codex-cli and gemini-cli, or is',
         '  it a Claude-specific assumption? (Standard: docs/STANDARDS-REGISTRY.md →',
         '  "Framework-Agnostic — and Framework-Optimizing".)',
+      ].join('\n'),
+    );
+  }
+}
+
+// Operator-Surface Quality review gate (docs/STANDARDS-REGISTRY.md →
+// "Operator-Surface Quality", CMT-1434). A change touching an operator surface
+// (dashboard renderers/markup, approval pages, grant/secret forms) must answer
+// the operator-surface-quality question in the side-effects artifact IN WRITING:
+// does the surface lead with its primary action, expose zero raw internals,
+// de-emphasize destructive actions, and work at phone width? A "reachable but
+// bad" surface passes Mobile-Complete and still fails the operator (the
+// 2026-06-12 "abysmal" Mandates-grant-form lesson) — this makes the quality
+// question unskippable. Operator-surface files are NOT in the gate's inScope set
+// (they live under dashboard/), so we scan the full STAGED set, not inScopeFiles.
+// Scoped tight so a non-surface commit pays nothing. Companion to
+// assertFrameworkGenerality.
+function assertOperatorSurfaceQuality(stagedFiles, trace) {
+  const touched = (stagedFiles || []).filter(isOperatorSurfaceFile);
+  if (touched.length === 0) return;
+  const artifactRel = trace.sideEffectsPath || trace.artifactPath;
+  if (!artifactRel) return; // a missing artifact is already blocked upstream
+  const artifactAbs = path.resolve(ROOT, artifactRel);
+  if (!fs.existsSync(artifactAbs)) return;
+  const content = fs.readFileSync(artifactAbs, 'utf8');
+  // The artifact must engage the operator-surface-quality question (the §6b
+  // section seeded by skills/instar-dev/templates/side-effects-artifact.md).
+  if (!artifactAddressesOperatorSurfaceQuality(content)) {
+    blockCommit(
+      touched,
+      [
+        'Operator-Surface Quality review gate:',
+        `  ${touched.join(', ')} change an OPERATOR SURFACE,`,
+        '  but the side-effects artifact never answers the operator-surface-quality',
+        '  question — a surface can be phone-reachable (Mobile-Complete) and still be',
+        '  unusable (the 2026-06-12 "abysmal" Mandates grant-form lesson, CMT-1434).',
+        '',
+        '  Add the "## 6b. Operator-surface quality" section and answer in writing:',
+        '  does the surface (1) lead with its primary action, (2) expose zero raw',
+        '  internals as primary content, (3) de-emphasize destructive actions, and',
+        '  (4) read in plain language at phone width? (Standard:',
+        '  docs/STANDARDS-REGISTRY.md → "Operator-Surface Quality". Template:',
+        '  skills/instar-dev/templates/side-effects-artifact.md §6b.)',
+      ].join('\n'),
+    );
+  }
+  // "Agent Proposes, Operator Approves" — the authorization-surface subset additionally
+  // requires the artifact to confirm the operator is APPROVING (not authoring) and that
+  // the authority text is SERVER-authored (not agent free-text — the display-integrity
+  // corollary). Same structural-presence strength.
+  const authTouched = (stagedFiles || []).filter(isAuthorizationSurfaceFile);
+  if (authTouched.length > 0 && !artifactAddressesAgentProposesApproves(content)) {
+    blockCommit(
+      authTouched,
+      [
+        'Agent-Proposes-Operator-Approves review gate:',
+        `  ${authTouched.join(', ')} change an AUTHORIZATION/APPROVAL surface,`,
+        '  but the side-effects artifact never answers the agent-proposes/operator-approves',
+        '  question. The operator must be APPROVING a server-authored request, never',
+        '  AUTHORING authority from raw fields (the 2026-06-13 raw-JSON mandate-form lesson),',
+        '  and the authority text they approve must be server-authored, never agent free-text.',
+        '',
+        '  Confirm in writing in the side-effects artifact: does the operator (1) approve a',
+        '  pre-filled request rather than construct one, and (2) read an authority statement',
+        '  authored by the SERVER from structured data, not agent-supplied free-text?',
+        '  (Standard: docs/STANDARDS-REGISTRY.md → "Agent Proposes, Operator Approves".)',
       ].join('\n'),
     );
   }
@@ -1125,6 +1193,7 @@ function enforceTier1(trace, traceFile) {
   }
 
   assertFrameworkGenerality(inScopeFiles, trace);
+  assertOperatorSurfaceQuality(staged, trace);
 
   console.error(
     `[instar-dev-precommit] OK (Tier 1) — trace ${traceName} covers ${inScopeFiles.length} in-scope file(s), ` +

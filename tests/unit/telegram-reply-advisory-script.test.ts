@@ -197,15 +197,69 @@ describe('advisory preflight — the inform-only loop', () => {
     expect(stdout).toContain('Sent');
   });
 
-  it('conversational session (no kind env): NO preflight, legacy body shape', async () => {
+  it('conversational session (no kind env): preflight runs as kind "reply" (TIME_CLAIM path), legacy body shape', async () => {
+    // Since the TIME_CLAIM template (operator mandate 2026-06-12), every
+    // non-script sender runs the preflight — an unstamped interactive session
+    // defaults to kind "reply", where the server applies ONLY the session-clock
+    // check (no jargon/path detectors). The send body stays legacy-shaped.
     const { stdout } = await runScript({
       text: 'just a normal reply',
       curl: {},
     });
     expect(stdout).toContain('Sent');
-    expect(callsTo('/messaging/preflight')).toHaveLength(0);
+    const preflights = callsTo('/messaging/preflight');
+    expect(preflights).toHaveLength(1);
+    const pfBody = JSON.parse(preflights[0].find((a) => a.startsWith('{'))!);
+    expect(pfBody.messageKind).toBe('reply');
     const body = JSON.parse(callsTo('/telegram/reply/')[0].find((a) => a.startsWith('{'))!);
     expect(body).toEqual({ text: 'just a normal reply' });
+  });
+
+  it('unstamped sender flagged with TIME_CLAIM: NOT delivered, literal first line, exit 0', async () => {
+    // The founding-incident path (operator mandate 2026-06-12): an interactive
+    // session running an autonomous job reports a wrong elapsed time — the
+    // preflight returns TIME_CLAIM and the send is withheld exactly like any
+    // other advisory.
+    const { stdout } = await runScript({
+      text: 'AUTONOMOUS PROGRESS: ~7h elapsed / 24h total.',
+      curl: {
+        preflightBody: JSON.stringify({
+          advisories: [
+            {
+              code: 'TIME_CLAIM',
+              match: 'claimed "~7h elapsed"; live clock: 1h 54m elapsed',
+              guidance: 'Never estimate time — read GET /session/clock and quote its numbers exactly.',
+            },
+          ],
+        }),
+      },
+    });
+    expect(stdout.split('\n')[0]).toBe(
+      'NOT SENT — advisory (fix and re-run, or re-run with --ack-advisory to send unchanged)',
+    );
+    expect(stdout).toContain('TIME_CLAIM');
+    expect(callsTo('/telegram/reply/')).toHaveLength(0);
+  });
+
+  it('unstamped sender --ack-advisory annotates the override (acked must resolve the advised episode)', async () => {
+    // Second-pass concern 2: without this annotation a conversational
+    // session's ack never records 'acked' server-side, the advised episodes
+    // never resolve, and the ignore-escalation false-fires on delivered
+    // messages.
+    const { stdout } = await runScript({
+      args: ['--ack-advisory'],
+      text: 'AUTONOMOUS PROGRESS: ~7h elapsed / 24h total.',
+      curl: {
+        preflightBody: JSON.stringify({
+          advisories: [{ code: 'TIME_CLAIM', guidance: 'read the clock' }],
+        }),
+      },
+    });
+    expect(stdout).toContain('Sent');
+    const body = JSON.parse(callsTo('/telegram/reply/')[0].find((a) => a.startsWith('{'))!);
+    expect(body.metadata.advisoryAck).toBe(true);
+    expect(body.metadata.advisoryCodes).toEqual(['TIME_CLAIM']);
+    expect(body.metadata.messageKind).toBeUndefined();
   });
 
   it('script-class sender skips the preflight; kind metadata still rides', async () => {
@@ -221,13 +275,19 @@ describe('advisory preflight — the inform-only loop', () => {
     expect(body.metadata.senderClass).toBe('script');
   });
 
-  it('an invalid kind env value forwards nothing (enum validation)', async () => {
+  it('an invalid kind env value forwards nothing (enum validation) — preflight degrades to "reply"', async () => {
     await runScript({
       env: { INSTAR_MESSAGE_KIND: 'evil; rm -rf /', INSTAR_SENDER_CLASS: 'llm-session' },
       text: 'hello',
       curl: {},
     });
-    expect(callsTo('/messaging/preflight')).toHaveLength(0);
+    // The injection-shaped value never reaches any wire surface: the enum
+    // rejects it, the preflight (which still runs — llm-session sender) is
+    // keyed to the safe default "reply", and the send metadata omits the kind.
+    const preflights = callsTo('/messaging/preflight');
+    expect(preflights).toHaveLength(1);
+    const pfBody = JSON.parse(preflights[0].find((a) => a.startsWith('{'))!);
+    expect(pfBody.messageKind).toBe('reply');
     const body = JSON.parse(callsTo('/telegram/reply/')[0].find((a) => a.startsWith('{'))!);
     expect(body.metadata?.messageKind).toBeUndefined();
   });

@@ -138,6 +138,14 @@ export interface SendMessageResult {
   deliveryOutcome?: string;
   /** How the message was delivered (local, relay) */
   deliveryPath?: string;
+  /** Whether the content was actually delivered (false when withheld by the negotiator lease). */
+  delivered?: boolean;
+  /** True when the single-negotiator lease withheld this content send (G1 holding). */
+  held?: boolean;
+  /** Human-readable note (e.g. why content was withheld by the lease). */
+  note?: string;
+  /** Signal-only advisory nudge (e.g. commitment-class prose → anchor via mandate). */
+  advisory?: string;
 }
 
 export interface RequestSecretParams {
@@ -642,12 +650,22 @@ export class ThreadlineMCPServer {
             // the message. It's true unless the recipient reported an
             // error outcome. When no outcome info is available we default
             // to true (success path) — result.success is already checked above.
-            delivered: !(result.deliveryOutcome?.startsWith('error')),
+            // The single-negotiator lease can explicitly set delivered:false when
+            // it WITHHELD this non-owner content send (G1 holding) — honor it.
+            delivered: result.delivered !== undefined
+              ? result.delivered
+              : !(result.deliveryOutcome?.startsWith('error')),
             outcome: result.deliveryOutcome ?? 'accepted',
             deliveryPath: result.deliveryPath,
             threadId: result.threadId,
             messageId: result.messageId,
           };
+          // Surface the negotiator lease's holding note + the commitment-class
+          // advisory nudge so the sending session learns it is not the voice /
+          // is pointed at the anchored binding path (Robustness Phase 1).
+          if (result.held) response.held = true;
+          if (result.note) response.note = result.note;
+          if (result.advisory) response.advisory = result.advisory;
 
           if (args.waitForReply && result.reply) {
             response.reply = result.reply;

@@ -32,6 +32,14 @@ export interface TransferByNicknameState {
   now: () => number;
   /** Minimum ms between placement updates per topic. Default 10000. */
   minUpdateIntervalMs?: number;
+  /**
+   * WS1.4 (MULTI-MACHINE-SEAMLESSNESS-SPEC): a LIVE autonomous run on this
+   * topic on THIS machine, or null when none. Evaluated FIRST among the
+   * consent gates (before offline/mid-reply) — moving a topic out from under
+   * an in-flight autonomous run suspends real work, so it always requires
+   * explicit confirmation. Optional for backward compatibility.
+   */
+  autonomousRunActive?: (sessionKey: string) => { goal: string | null; remainingMinutes: number | null } | null;
 }
 
 export type TransferPlanAction = 'transfer' | 'noop' | 'confirm-required' | 'reject';
@@ -92,17 +100,40 @@ export function planTransferByNickname(command: NicknameCommand, state: Transfer
     return { action: 'reject', sessionKey, targetMachine: target, rejectReason: 'rate-limited' };
   }
 
-  // Confirmation gate (§L4): offline target, OR a different owner while mid-reply.
+  // Consent gates — ALL applicable conditions are evaluated and STACKED into
+  // ONE prompt, so confirming is always informed consent to everything that is
+  // actually true (a confirm given for the autonomous-run prompt must never
+  // silently consent to an offline target the user was not shown — second-pass
+  // finding, 2026-06-13). The WS1.4 autonomous-run condition leads (spec
+  // precedence: it fires at transfer-request time, before any move mechanics);
+  // `detail` carries every condition, '+'-joined, so callers can see exactly
+  // what a confirm consents to.
+  const consents: Array<{ detail: string; prompt: string }> = [];
+  const run = state.autonomousRunActive?.(sessionKey) ?? null;
+  if (run) {
+    const remaining = run.remainingMinutes != null ? `, ~${run.remainingMinutes} minutes remaining` : '';
+    consents.push({
+      detail: 'autonomous-run-in-flight',
+      prompt: `There's an autonomous run in flight on this topic${remaining}${run.goal ? ` (goal: ${run.goal})` : ''} — moving will pause it at the next turn boundary and carry its state over.`,
+    });
+  }
   if (!state.isOnline(target)) {
-    return {
-      action: 'confirm-required', sessionKey, targetMachine: target, setPin: true,
-      confirmationPrompt: `${command.nickname} is offline right now. Move this conversation there anyway? It'll pick up like a fresh-session catch-up once it's back.`,
-    };
+    consents.push({
+      detail: 'target-offline',
+      prompt: `${command.nickname} is offline right now — it'll pick up like a fresh-session catch-up once it's back.`,
+    });
   }
   if (owner != null && owner !== target && state.isMidReply(sessionKey)) {
+    consents.push({
+      detail: 'mid-reply',
+      prompt: `I'm mid-reply — it'll be like a fresh-session catch-up on the other machine.`,
+    });
+  }
+  if (consents.length > 0) {
     return {
       action: 'confirm-required', sessionKey, targetMachine: target, setPin: true,
-      confirmationPrompt: `Move this to ${command.nickname}? I'm mid-reply — it'll be like a fresh-session catch-up on the other machine.`,
+      detail: consents.map((c) => c.detail).join('+'),
+      confirmationPrompt: `${consents.map((c) => c.prompt).join(' Also: ')} Move to ${command.nickname} anyway?`,
     };
   }
 

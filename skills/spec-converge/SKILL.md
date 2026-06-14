@@ -61,6 +61,29 @@ The skill adds `review-convergence`, `review-iterations`, `review-completed-at`,
 
 ### Phase 1 — Initial review round
 
+**Standards-Conformance Gate auto-invocation (MANDATORY, every round).** Before
+spawning the reviewers, the agent calls the constitution inspector against the spec
+and feeds its report into the round as a reviewer input:
+
+```bash
+AUTH=$(python3 -c "import json; print(json.load(open('.instar/config.json')).get('authToken',''))" 2>/dev/null)
+PORT=$(python3 -c "import json; print(json.load(open('.instar/config.json')).get('port',4040))" 2>/dev/null)
+curl -sS -m 90 -X POST -H "Authorization: Bearer ${AUTH:-$INSTAR_AUTH_TOKEN}" -H 'Content-Type: application/json' \
+  -d "{\"specPath\": \"$(realpath docs/specs/<slug>.md)\"}" \
+  "http://localhost:${PORT}/spec/conformance-check"
+```
+
+The report is SIGNAL-ONLY (it never blocks — Signal vs. Authority), but it is not
+optional to RUN: its per-standard flags are handed to the reviewers alongside the
+spec (the lessons-aware reviewer in particular must engage every flagged standard),
+and the convergence report's Iteration Summary records one line per round —
+`Standards-Conformance Gate: ran (N flags)` or, honestly, `unavailable: <reason>`
+(server down / route 503). An unavailable gate NEVER blocks convergence, but a
+SKIPPED-without-reason gate fails report validation. This closes the 2026-06-12
+finding (topic 13481): the gate shipped 2026-05-24 explicitly staged for this exact
+wiring, and the staging lived only in prose — zero runs in 19 days. Auto-invocation
+is now part of the round itself, not a remembered follow-up.
+
 The skill spawns reviewers in parallel:
 
 **Internal reviewers (Claude subagents):**
@@ -68,7 +91,7 @@ The skill spawns reviewers in parallel:
 - **Security.** Attack surfaces, leaks, privilege escalation, auth on endpoints, prompt injection vectors, rotation races.
 - **Scalability/performance.** Hot-path cost, concurrent writes, memory churn, fail-open semantics, hook latency.
 - **Adversarial.** Misbehaving-session scenarios — bad-entry poisoning, self-reinforcing loops, stale claims, authority ambiguity, kind gaming.
-- **Integration/deployment.** Migration, backup/restore, multi-machine, config knobs, dashboard surface, rollback.
+- **Integration/deployment.** Migration, backup/restore, multi-machine, config knobs, dashboard surface, rollback. **Multi-machine posture (Cross-Machine Coherence — mandatory check):** every feature/state surface the spec introduces must declare its posture when the agent runs on more than one machine — replicated (named replication path) / proxied-on-read (named merged read) / machine-local BY DESIGN (with the reason). A spec whose features silently assume a single machine is a MATERIAL finding: ~20 features shipped machine-blind before this check existed (2026-06-12 audit, topic 13481; MULTI-MACHINE-SEAMLESSNESS-SPEC is the cleanup bill). Probe specifically: user-facing notices (one-voice gating?), durable state (strands on topic transfer?), generated URLs (survive machine boundaries?).
 - **Decision-Completeness.** (Autonomy Principle 2 — `docs/specs/AUTONOMY-PRINCIPLES-ENFORCEMENT-SPEC.md` Piece 2.) Enumerates every point where the building agent would have to **stop mid-run and ask the user**. Each must be either **frontloaded** into a `## Frontloaded Decisions` section or explicitly tagged **cheap-to-change-after** because the work ships behind a named dark/dry-run/read-only phase. The reviewer **CONTESTS every cheap tag** — it independently asserts reversibility, and a closed non-cheap taxonomy overrides any tag: anything touching **durable external side-effects, money, identity, or a published/user-visible interface is NEVER cheap**, regardless of a "ships dark" label. A contested tag the reviewer rejects is a **material finding that blocks convergence**. Prompt: `templates/reviewer-decision-completeness.md`. Applies to ALL specs through this skill (D7) — no size gate, no per-spec override (D11; the rejected `disposition: override` escape hatch would reopen the exact skip-hatch Principle 2 closes).
 - **Lessons-aware.** Loads the canonical Instar Design Principles + Lessons Learned index (`docs/INSTAR-DESIGN-PRINCIPLES-AND-LESSONS.md`) plus the running agent's local `.instar/memory/feedback_*.md` entries, then checks the spec for (a) direct contradictions of documented principles/lessons, (b) applicable lessons the spec fails to engage with, (c) behavioral lessons violated by agent-facing surfaces the spec proposes, and **(d) FOUNDATION/SUBSYSTEM AUDIT — the design the spec TESTS, EXTENDS, or BUILDS ON, not just the spec's own surface: does that foundation violate a known standard or repeat a known mistake?** The audit MUST reach one layer below the spec boundary. A spec can be internally clean while faithfully testing or extending a flawed foundation — e.g. a test-harness spec that correctly proves a permission gate which *itself* holds brittle blocking authority in violation of Signal-vs-Authority, or an extension spec built on a subsystem with an unaddressed gap. Taking the underlying subsystem "as given" is exactly how a standards violation survives review: the spec passes, the foundation's flaw is never weighed. When the foundation is flawed, the finding is "this spec is sound but the subsystem it depends on violates standard X / repeats mistake Y — surface it before building on/around it." Catches the "Phase 2" anti-pattern, the spec-converge-pre-auth-circular failure mode (see `feedback_spec_converge_pre_auth_circular`), and the foundation-not-audited gap (the Slack-permission-gate brittle-enum-as-authority that the harness convergence cleared because it audited only the harness, 2026-06-09).
 

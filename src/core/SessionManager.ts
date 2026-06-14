@@ -17,6 +17,7 @@ import { fileURLToPath } from 'node:url';
 import { SessionLivenessOracle, type SessionLivenessOracleConfig } from './SessionLivenessOracle.js';
 import { resolveGhTokenFromVault } from './ghToken.js';
 import type { ReapGuard } from './ReapGuard.js';
+import { clampWorkEvidence, isMidWork } from './WorkEvidence.js';
 import { paneShowsClaudeWorking } from './claudeActivityIndicators.js';
 import { extractGeminiFinalAssistantBlock, meaningfulTail } from './paneText.js';
 import { ensureInteractiveReady } from './ensureInteractiveReady.js';
@@ -250,6 +251,9 @@ export class SessionManager extends EventEmitter {
   private activeRecoveryChecker?: (session: Session) => boolean;
   /** Shared stateless KEEP-guard consulted by terminateSession (§P2). */
   private reapGuard?: ReapGuard;
+
+  /** Pressure-tier provider for the work-evidence fallback (reap-notify R2.1). */
+  private pressureTier?: () => 'normal' | 'moderate' | 'critical';
   /** Sessions the §P5 backstop has flagged long-`indeterminate` — excluded from
    *  the ABSOLUTE spawn cap so unverifiable panes can't lock out spawning. */
   private longIndeterminateSessions = new Set<string>();
@@ -272,6 +276,15 @@ export class SessionManager extends EventEmitter {
    * is enabled, so it is a strict no-op by default). Returns null per-call when
    * no eligible account exists. */
   private spawnAccountResolver?: () => { configHome: string; accountId: string } | null;
+
+  /**
+   * Census #5/#6: live credential re-pointing gate. When set AND enabled, a pinned account's
+   * spawn home is resolved through the ledger (the account's CURRENT slot) instead of the
+   * enrollment `configHome` the resolver returns — so after a swap a session lands on the slot
+   * the credential ACTUALLY lives in now, not the stale enrollment home. Unset / flag-off /
+   * ledger-unknown → the enrollment home is used exactly as today (strict no-op while dark).
+   */
+  private credentialLocationGate?: import('./CredentialLocationGate.js').CredentialLocationGate;
 
   /** Prompt Gate InputDetector — monitors terminal output for interactive prompts */
   private promptDetector?: InputDetector;
@@ -548,6 +561,24 @@ rm()  { "${shimRunner}" rm  "$@"; }
   }
 
   /**
+   * Wire the credential re-pointing gate (census #5/#6). Called from server startup; absent /
+   * flag-off keeps spawn placement on the enrollment home exactly as today.
+   */
+  setCredentialLocationGate(gate: import('./CredentialLocationGate.js').CredentialLocationGate): void {
+    this.credentialLocationGate = gate;
+  }
+
+  /**
+   * Census #5/#6: resolve a pinned account's LIVE spawn home through the ledger gate. Returns the
+   * account's current slot when re-pointing is enabled AND the ledger knows it; otherwise the
+   * enrollment `configHome` unchanged (today's behavior). Sync + fail-open (the gate never throws).
+   */
+  private resolvePinnedSpawnHome(pinned: { configHome: string; accountId: string }): string {
+    if (!this.credentialLocationGate) return pinned.configHome;
+    return this.credentialLocationGate.slotForAccount(pinned.accountId, pinned.configHome);
+  }
+
+  /**
    * Defensive onboarding-readiness seed before any launch under a pool
    * account's CLAUDE_CONFIG_DIR (2026-06-09 incident): a headless-enrolled
    * home is missing the interactive first-launch flags, so an interactive
@@ -767,9 +798,22 @@ rm()  { "${shimRunner}" rm  "$@"; }
       finalStatus?: 'completed' | 'killed';
       disposition?: 'terminal' | 'recovery-bounce';
       origin?: 'operator' | 'autonomous';
+      /** UNTRUSTED caller-supplied provenance claim (REMOTE-SESSION-CLOSE-SPEC
+       *  §2.3) — recorded in the reap-log as `viaClaim`, NEVER consulted in any
+       *  authority/bypass decision (signal-vs-authority). */
+      via?: string;
       knownDead?: boolean;
       bypassRecoveryFlag?: boolean;
       bypassActiveProcessKeep?: boolean;
+      /**
+       * Killer-supplied work evidence (reap-notify spec R2.1): computed at the
+       * KILLER's decision point — the only moment the work was observable (the
+       * quota-shed migrator computes it BEFORE its Ctrl+C grace round tears the
+       * work down; a chokepoint re-run is empty by construction for
+       * guard-cleared kills). Clamped to the WorkEvidence enum here regardless
+       * of which killer supplied it; unknown names are dropped, not stored.
+       */
+      workEvidence?: string[];
     },
   ): Promise<{ terminated: boolean; skipped?: string }> {
     const session = this.state.getSession(sessionId);
@@ -856,6 +900,35 @@ rm()  { "${shimRunner}" rm  "$@"; }
     }
     this.terminating.add(sessionId);
     try {
+      // ── Work-evidence stamp (reap-notify spec R2.1) ──
+      // Killer-supplied evidence wins (clamped to the enum); when the killer
+      // supplied nothing, fall back to the guard's observe-only collection
+      // (expected-empty for guard-cleared kills — documented). knownDead skips
+      // stamping entirely: a proven-dead session has no work to evidence.
+      let workEvidence: string[] = [];
+      if (!opts?.knownDead) {
+        if (opts?.workEvidence !== undefined) {
+          // Killer-supplied is AUTHORITATIVE — including an explicit empty
+          // array (e.g. the idle-reaper proved the session idle; re-collecting
+          // here would re-stamp the very active-process signal it disproved).
+          workEvidence = clampWorkEvidence(opts.workEvidence);
+        } else if (this.reapGuard) {
+          try {
+            workEvidence = this.reapGuard.workEvidence(session, {
+              skipForkChecks: this.pressureTier?.() === 'critical',
+            });
+            // A bypassActiveProcessKeep kill means the killer PROVED the
+            // process tree idle — the fallback must not re-assert it (R2.1).
+            if (opts?.bypassActiveProcessKeep) {
+              workEvidence = workEvidence.filter((e) => e !== 'active-process');
+            }
+          } catch {
+            workEvidence = []; // never let evidence collection endanger the kill path
+          }
+        }
+      }
+      const midWork = isMidWork(workEvidence);
+
       // Emit BEFORE destroying tmux so listeners (TopicResumeMap, SlackAdapter)
       // can capture resume UUIDs while the session is still alive.
       this.emit('beforeSessionKill', session);
@@ -865,16 +938,51 @@ rm()  { "${shimRunner}" rm  "$@"; }
       session.status = opts?.finalStatus ?? 'completed';
       session.endedAt = new Date().toISOString();
       session.endedReason = reason;
+      if (!opts?.knownDead) {
+        session.endedMidWork = midWork;
+        if (workEvidence.length > 0) session.endedWorkEvidence = workEvidence;
+      }
       this.state.saveSession(session);
       this.emit('sessionComplete', session);
       // The single reap-notification signal (§P3): terminal reaps may reach the
       // user; recovery-bounce reaps are silent. One emission, at the one chokepoint.
-      this.emit('sessionReaped', { session, reason, disposition, origin });
+      this.emit('sessionReaped', { session, reason, disposition, origin, midWork, workEvidence, ...(opts?.via ? { via: opts.via } : {}) });
       this.idlePromptSince.delete(session.id);
       this.reapingSessions.delete(session.id);
       return { terminated: true };
     } finally {
       this.terminating.delete(sessionId);
+    }
+  }
+
+  /**
+   * Pressure-tier provider for the evidence fallback (reap-notify spec R2.1):
+   * at tier 'critical' the fork-based closures are skipped and the
+   * `unverified-under-pressure` marker is stamped instead. Wired at boot to
+   * the shared PressureGauge; absent ⇒ forks run normally.
+   */
+  setPressureTierProvider(provider: () => 'normal' | 'moderate' | 'critical'): void {
+    this.pressureTier = provider;
+  }
+
+  /**
+   * Observe-only work-evidence snapshot for a LIVE session (reap-notify spec
+   * R2.1) — for killers that must capture evidence at their decision moment,
+   * before their own teardown destroys it (the quota-shed migrator's Ctrl+C
+   * grace round). Never throws; never blocks anything.
+   */
+  collectWorkEvidence(sessionId: string): string[] {
+    try {
+      const session = this.state.getSession(sessionId);
+      if (!session || !this.reapGuard) return [];
+      return this.reapGuard.workEvidence(session, {
+        skipForkChecks: this.pressureTier?.() === 'critical',
+      });
+    } catch {
+      // @silent-fallback-ok — evidence collection must never endanger the kill
+      // path (reap-notify R2.1); an error means "no evidence collected", which
+      // the chokepoint records honestly as the expected-empty fallback.
+      return [];
     }
   }
 
@@ -1712,8 +1820,10 @@ rm()  { "${shimRunner}" rm  "$@"; }
       ? (this.spawnAccountResolver?.() ?? null)
       : null;
     if (pinnedAccount) {
-      headlessSpec.envOverrides.CLAUDE_CONFIG_DIR = pinnedAccount.configHome;
-      this.ensurePinnedHomeInteractiveReady(pinnedAccount.configHome, 'headless pin');
+      // Census #6: pin to the account's CURRENT slot per the ledger gate, not its enrollment home.
+      const pinnedHome = this.resolvePinnedSpawnHome(pinnedAccount);
+      headlessSpec.envOverrides.CLAUDE_CONFIG_DIR = pinnedHome;
+      this.ensurePinnedHomeInteractiveReady(pinnedHome, 'headless pin');
     }
     const frameworkEnvFlags: string[] = [];
     for (const [k, v] of Object.entries(headlessSpec.envOverrides)) {
@@ -1727,6 +1837,14 @@ rm()  { "${shimRunner}" rm  "$@"; }
           '-e', `ANTHROPIC_BASE_URL=${this.config.anthropicBaseUrl ?? ''}`,
         ]
       : [];
+    // §2.10 provenance — SINGLE SOURCE OF TRUTH: the SAME `(anthropicApiKey ?? '') !== ''`
+    // predicate that selects the Anthropic env block above. Non-empty ⇒ this session launches
+    // with an env token (store-bypassing) ⇒ 'env'; empty ⇒ it reads the per-CLAUDE_CONFIG_DIR
+    // store ⇒ 'store'. Only meaningful for the claude-code env-block lane (undefined otherwise).
+    const headlessCredentialSource: 'store' | 'env' | undefined =
+      headlessFramework === 'claude-code'
+        ? ((this.config.anthropicApiKey ?? '') !== '' ? 'env' : 'store')
+        : undefined;
 
     try {
       execFileSync(this.config.tmuxPath, [
@@ -1803,6 +1921,8 @@ rm()  { "${shimRunner}" rm  "$@"; }
       // Subscription-pool pinning: tag the session with the account it launched
       // under, so auto-swap can move it when that account hits a quota wall.
       ...(pinnedAccount ? { subscriptionAccountId: pinnedAccount.accountId } : {}),
+      // §2.10 credential provenance — derived from the SAME predicate as the env block.
+      ...(headlessCredentialSource ? { credentialSource: headlessCredentialSource } : {}),
       // Positive-lane observability (june15-headless-spawn-reroute O4): always
       // populated now, so the soak's "zero headless under force" criterion is
       // machine-checkable from GET /sessions. completionMode stays 'exit' (the
@@ -1986,8 +2106,10 @@ rm()  { "${shimRunner}" rm  "$@"; }
     // and tag the session. No-op unless the resolver is wired + returns an account.
     const pinnedAccount = this.spawnAccountResolver?.() ?? null;
     if (pinnedAccount) {
-      launchSpec.envOverrides.CLAUDE_CONFIG_DIR = pinnedAccount.configHome;
-      this.ensurePinnedHomeInteractiveReady(pinnedAccount.configHome, 'interactive-reroute pin');
+      // Census #6: pin to the account's CURRENT slot per the ledger gate, not its enrollment home.
+      const pinnedHome = this.resolvePinnedSpawnHome(pinnedAccount);
+      launchSpec.envOverrides.CLAUDE_CONFIG_DIR = pinnedHome;
+      this.ensurePinnedHomeInteractiveReady(pinnedHome, 'interactive-reroute pin');
     }
     const frameworkEnvFlags: string[] = [];
     for (const [k, v] of Object.entries(launchSpec.envOverrides)) {
@@ -1999,6 +2121,10 @@ rm()  { "${shimRunner}" rm  "$@"; }
         ? ['-e', `CLAUDE_CODE_OAUTH_TOKEN=${this.config.anthropicApiKey}`, '-e', 'ANTHROPIC_API_KEY=']
         : ['-e', `ANTHROPIC_API_KEY=${this.config.anthropicApiKey ?? ''}`, '-e', 'CLAUDE_CODE_OAUTH_TOKEN='];
     anthropicEnvFlags.push('-e', `ANTHROPIC_BASE_URL=${this.config.anthropicBaseUrl ?? ''}`);
+    // §2.10 provenance — SINGLE SOURCE OF TRUTH: the SAME `(anthropicApiKey ?? '') !== ''`
+    // predicate as the env block above (this lane is always claude-code → always set).
+    const reroutedCredentialSource: 'store' | 'env' =
+      (this.config.anthropicApiKey ?? '') !== '' ? 'env' : 'store';
 
     try {
       execFileSync(this.config.tmuxPath, [
@@ -2069,6 +2195,8 @@ rm()  { "${shimRunner}" rm  "$@"; }
       // Subscription-pool pinning: tag with the account this launched under, so
       // auto-swap can move it when that account hits a quota wall.
       ...(pinnedAccount ? { subscriptionAccountId: pinnedAccount.accountId } : {}),
+      // §2.10 credential provenance — derived from the SAME predicate as the env block.
+      credentialSource: reroutedCredentialSource,
       // The reroute's completion contract (spec O1 + O4):
       launchLane: 'rerouted-interactive',
       completionMode: 'pattern',
@@ -2987,6 +3115,21 @@ rm()  { "${shimRunner}" rm  "$@"; }
      *  explicit value wins; otherwise B1 fills it from the resolver-pinned account
      *  (kept in lockstep with configHome). */
     subscriptionAccountId?: string;
+    /** Topic Profile §6 — per-topic thinking mode, threaded to the launch
+     *  builder (claude `--effort` / codex `model_reasoning_effort`; no-op on
+     *  frameworks without a reasoning knob). */
+    thinkingMode?: import('./topicProfileValidation.js').ThinkingMode;
+    /** Topic Profile — per-topic Claude Code `--effort` level pin, threaded to
+     *  the launch builder as `--effort <level>` (claude-code only; strict no-op
+     *  on other frameworks). A DIRECT CLI-flag pin, distinct from thinkingMode. */
+    effort?: import('./topicProfileValidation.js').EffortLevel;
+    /** Explicit per-spawn working directory (reap-notify spec R2.8 / L13 —
+     *  a NAMED extension: no spawn path accepted a per-spawn cwd before).
+     *  The resume-queue drainer threads a queue entry's recorded cwd /
+     *  worktreePath here so an interrupted worktree session resumes in ITS
+     *  tree, not the module-level project dir. Unset = projectDir (today's
+     *  behavior, byte-for-byte). */
+    cwd?: string;
   }): Promise<string> {
     const sanitized = name
       ? name.toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '').slice(0, 40)
@@ -3091,8 +3234,19 @@ rm()  { "${shimRunner}" rm  "$@"; }
     const pinnedAccount = (!explicitConfigHome && framework === 'claude-code')
       ? (this.spawnAccountResolver?.() ?? null)
       : null;
-    const effectiveConfigHome = explicitConfigHome ?? pinnedAccount?.configHome;
+    // Census #6: when the home comes from a pinned pool account, resolve its LIVE slot through the
+    // ledger gate (an explicit caller-supplied home — the account-swap / SessionRefresh path — is a
+    // deliberate pin and always wins, unchanged).
+    const effectiveConfigHome =
+      explicitConfigHome ?? (pinnedAccount ? this.resolvePinnedSpawnHome(pinnedAccount) : undefined);
     const effectiveAccountId = options?.subscriptionAccountId ?? pinnedAccount?.accountId;
+    // §2.10 provenance — SINGLE SOURCE OF TRUTH: the SAME `(anthropicApiKey ?? '') !== ''`
+    // predicate that selects the Anthropic env block in the execFileSync below. Only meaningful
+    // for the claude-code lane (the only one whose env block claude-code actually reads).
+    const interactiveCredentialSource: 'store' | 'env' | undefined =
+      framework === 'claude-code'
+        ? ((this.config.anthropicApiKey ?? '') !== '' ? 'env' : 'store')
+        : undefined;
     // This interactive session is about to launch under a pool account's config
     // home — seed the onboarding flags first or a headless-enrolled home wedges
     // it on the first-launch onboarding wizard (2026-06-09 incident). Applies to
@@ -3123,6 +3277,12 @@ rm()  { "${shimRunner}" rm  "$@"; }
       ...(framework === 'pi-cli'
         ? { piSessionDir: path.join(this.config.projectDir, '.instar', 'state', 'pi-sessions') }
         : {}),
+      // Topic Profile §6: per-topic thinking mode (claude --effort / codex
+      // model_reasoning_effort; strict no-op on gemini/pi).
+      ...(options?.thinkingMode ? { thinkingMode: options.thinkingMode } : {}),
+      // Topic Profile: direct per-topic Claude `--effort` pin (claude-code
+      // only; the builder validates the enum + drops an unknown value).
+      ...(options?.effort ? { effort: options.effort } : {}),
     });
 
     // Spawn the framework CLI in tmux — no bash -c shell intermediary.
@@ -3132,7 +3292,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
       const tmuxArgs = [
         'new-session', '-d',
         '-s', tmuxSession,
-        '-c', this.config.projectDir,
+        '-c', options?.cwd ?? this.config.projectDir,
         '-x', '200', '-y', '50',
         // Opt-in: raise Claude Code's own retry count so it rides out transient
         // throttle/overload longer before surfacing to the RateLimitSentinel.
@@ -3224,8 +3384,13 @@ rm()  { "${shimRunner}" rm  "$@"; }
       // user-facing interactive lane is now tagged just like the headless lane).
       // Undefined for single-account agents (resolver unwired → no pin).
       ...(effectiveAccountId ? { subscriptionAccountId: effectiveAccountId } : {}),
+      // §2.10 credential provenance — derived from the SAME predicate as the env block.
+      ...(interactiveCredentialSource ? { credentialSource: interactiveCredentialSource } : {}),
       prompt: effectiveInitialMessage,
       maxDurationMinutes: this.effectiveMaxDurationMinutes,
+      // R2.8/L13: record the spawn cwd so a resume-queue entry can revive
+      // this session in ITS tree (worktree round-trip).
+      cwd: options?.cwd ?? this.config.projectDir,
     };
     this.state.saveSession(session);
 
@@ -3506,6 +3671,11 @@ rm()  { "${shimRunner}" rm  "$@"; }
       tmuxSession,
       startedAt: new Date().toISOString(),
       maxDurationMinutes: 10,
+      // §2.10 provenance — the triage lane hardcodes an EMPTY `ANTHROPIC_API_KEY=` above
+      // (it always reads the per-CLAUDE_CONFIG_DIR store, never an env token), so 'store' is
+      // the deterministic provenance here. Set explicitly so no claude-code spawn record is
+      // provenance-blind (an env-token lane that forgot the flag would be a lint-caught bug).
+      credentialSource: 'store',
     };
     this.state.saveSession(session);
 

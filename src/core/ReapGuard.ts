@@ -24,6 +24,7 @@
  */
 
 import type { Session } from './types.js';
+import type { WorkEvidenceName } from './WorkEvidence.js';
 
 export type ReapConfidence = 'high' | 'low';
 
@@ -168,5 +169,88 @@ export class ReapGuard {
     // All stateless guards clear. (The reaper layers transcript-growth +
     // positive-idle after this; other killers proceed to terminate.)
     return null;
+  }
+
+  /**
+   * Observe-only work-evidence collection (reap-notify spec R2.1) — the
+   * CHOKEPOINT FALLBACK when the killer supplied no evidence of its own.
+   *
+   * Documented expected-empty for guard-cleared kills: an autonomous kill
+   * reaches the chokepoint's body only when these same closures returned
+   * nothing (or a named bypass fired), so a re-run here usually proves
+   * nothing — real evidence comes from the killer at its decision point.
+   *
+   * Differences from `blockedReason` (deliberate, per spec):
+   *  - Collects ALL work-POSITIVE signals, not first-hit; protected /
+   *    spawn-grace / recovery-in-flight are not work evidence and are skipped.
+   *  - A closure that throws contributes NOTHING (no keep-true fail-safe:
+   *    "cannot inspect ⇒ keep" is correct for blocking a kill, wrong for
+   *    asserting work happened).
+   *  - With `skipForkChecks` (pressure tier critical), the fork-based
+   *    closures (process tree, main-process probe) are not run and the
+   *    `unverified-under-pressure` marker is stamped instead — a record
+   *    that verification was skipped, never resume-eligible.
+   */
+  workEvidence(session: Session, opts?: { skipForkChecks?: boolean }): WorkEvidenceName[] {
+    const out: WorkEvidenceName[] = [];
+    const probe = (fn: () => boolean, name: WorkEvidenceName): void => {
+      try {
+        if (fn()) out.push(name);
+      } catch {
+        // @silent-fallback-ok — closure error ⇒ no evidence from this closure
+        // (never keep-true here); the evidence snapshot must never throw into
+        // a killer's decision path (reap-notify R2.1).
+      }
+    };
+
+    probe(() => this.deps.hasPendingInjection(session.tmuxSession), 'pending-injection');
+    probe(() => this.deps.isRelayLeaseActive(session.id), 'relay-lease');
+
+    let topicId: number | null = null;
+    try {
+      topicId = this.deps.topicBinding(session.tmuxSession);
+    } catch {
+      // @silent-fallback-ok — unresolvable binding ⇒ the topic-scoped probes
+      // are skipped; the session-scoped probes still run (same never-throw
+      // contract as `probe` above).
+      topicId = null;
+    }
+    if (topicId != null) {
+      const boundTopicId = topicId;
+      probe(
+        () => this.deps.recentUserMessage(boundTopicId, this.opts.recentUserWindowMs),
+        'recent-user-message',
+      );
+      // Open commitment — gated by the SAME staleness horizon evaluate()'s KEEP
+      // check uses (guard J above). A commitment counts as in-flight-work evidence
+      // ONLY while the topic has had a user message within staleCommitmentWindowMs;
+      // past that, evaluate() treats the commitment as abandoned and lets the
+      // session die — so workEvidence() must NOT re-assert it as work. Without this
+      // gate the two methods disagree on the same commitment: an idle session is
+      // killed (evaluate: stale ⇒ reap) then immediately revived (workEvidence:
+      // open-commitment ⇒ resume-eligible), forever. They MUST agree on what an
+      // open commitment means. (2026-06-13: 13 idle sessions across 6 topics were
+      // age-killed + revived in a loop, every one tagged solely [open-commitment]
+      // on a commitment the KEEP-guard had already judged stale.)
+      probe(
+        () =>
+          this.opts.protectOpenCommitments &&
+          this.deps.activeCommitmentForTopic(boundTopicId) &&
+          this.deps.recentUserMessage(boundTopicId, this.opts.staleCommitmentWindowMs),
+        'open-commitment',
+      );
+    }
+    probe(() => this.deps.activeSubagentCount(session.claudeSessionId) > 0, 'active-subagent');
+    probe(() => this.deps.buildOrAutonomousActive(topicId), 'structural-long-work');
+
+    if (opts?.skipForkChecks) {
+      out.push('unverified-under-pressure');
+      return out;
+    }
+    probe(() => this.deps.hasActiveProcesses(session.tmuxSession), 'active-process');
+    if (this.deps.mainProcessActive) {
+      probe(() => this.deps.mainProcessActive!(session.tmuxSession) === true, 'main-process-active');
+    }
+    return out;
   }
 }

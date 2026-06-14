@@ -28,6 +28,13 @@ export interface SessionOwnershipRecord {
   status: SessionOwnershipStatus;
   /** During `transferring`: the target machine the session is moving to. */
   transferTo?: string;
+  /** WS1.2: this transferring record was set by the DRAIN flow — the owner's
+   *  SessionDrainRunner will land the target's claim itself at drain
+   *  completion. Consumers (the WS1.3 reconciler) hold their backstop claim
+   *  for the drain grace instead of front-running the live drain. Absent on
+   *  reconciler-cooperative transfers (claim promptly) and on records from
+   *  pre-WS1.2 peers. */
+  drainInFlight?: boolean;
   nonce: string;
   timestamp: number;
   updatedAt: string;
@@ -37,8 +44,30 @@ export interface SessionOwnershipRecord {
 export type OwnershipAction =
   | { type: 'place'; machineId: string } // router assigns a new session to machineId
   | { type: 'claim'; machineId: string } // target claims → active (new session, or transfer target)
-  | { type: 'transfer'; to: string } // current owner → transferring(to)
-  | { type: 'release'; machineId: string }; // owner ends the session
+  | { type: 'transfer'; to: string; drain?: boolean } // current owner → transferring(to); drain=true ⇒ WS1.2 drain flow
+  | { type: 'release'; machineId: string } // owner ends the session
+  /**
+   * WS1.3 (MULTI-MACHINE-SEAMLESSNESS-SPEC): claim ownership of a record whose
+   * owner is PROVABLY DEAD — the convergence-deadline path for a pin/owner
+   * divergence that cannot reconcile cooperatively because the owner machine is
+   * gone. The FSM only enforces sequencing + the fenced epoch increment (the
+   * stale owner's later CAS attempts fail at the old epoch — clock-proof);
+   * DEATH EVIDENCE (offline past the bound, lease lapse, quorum membership) is
+   * validated by the caller (OwnershipReconciler) BEFORE issuing the action,
+   * never by wall-clock timers alone. A reachable-but-slow owner must get the
+   * cooperative transfer path, never a force-claim.
+   */
+  | { type: 'force-claim'; machineId: string }
+  /**
+   * WS1.2 (MULTI-MACHINE-SEAMLESSNESS-SPEC): the emergency-stop-during-drain
+   * path — the CURRENT owner aborts its own in-flight transfer and returns to
+   * `active` at epoch+1, so the topic STAYS on the old machine and nothing is
+   * left split. The fenced epoch increment makes the stale target's later
+   * claim fail (claim-out-of-sequence on an active record at a newer epoch).
+   * Owner-only by construction: only the machine the transferring record
+   * names may abort.
+   */
+  | { type: 'abort-transfer'; machineId: string };
 
 export type OwnershipReason =
   | 'ok'
@@ -48,6 +77,9 @@ export type OwnershipReason =
   | 'transfer-not-active'
   | 'release-not-owner'
   | 'release-requires-active'
+  | 'force-claim-self'
+  | 'abort-not-transferring'
+  | 'abort-not-owner'
   | 'no-record';
 
 /**
@@ -100,7 +132,34 @@ export function applyOwnershipAction(
       if (!current || current.status !== 'active') return { ok: false, reason: 'transfer-not-active' };
       return {
         ok: true,
-        next: { ...base, ownerMachineId: current.ownerMachineId, ownershipEpoch: epoch + 1, status: 'transferring', transferTo: action.to },
+        next: {
+          ...base, ownerMachineId: current.ownerMachineId, ownershipEpoch: epoch + 1, status: 'transferring', transferTo: action.to,
+          ...(action.drain ? { drainInFlight: true } : {}),
+        },
+      };
+    }
+    case 'force-claim': {
+      // WS1.3 dead-owner takeover. Legal on a live record (active/transferring/
+      // placing) precisely because the cooperative paths are closed when the
+      // owner is gone — and on a released/missing record the normal place→claim
+      // path applies instead (use that, not force). Claiming what you already
+      // own is a no-op worth rejecting loudly (it would burn an epoch for
+      // nothing and masks a reconciler bug).
+      if (!current) return { ok: false, reason: 'no-record' };
+      if (current.ownerMachineId === action.machineId && current.status === 'active') {
+        return { ok: false, reason: 'force-claim-self' };
+      }
+      return { ok: true, next: { ...base, ownerMachineId: action.machineId, ownershipEpoch: epoch + 1, status: 'active' } };
+    }
+    case 'abort-transfer': {
+      // WS1.2 emergency-stop-during-drain: only the DRAINING OWNER of a
+      // `transferring` record may abort, returning itself to `active` at
+      // epoch+1 (the fence that invalidates the stale target's claim).
+      if (!current || current.status !== 'transferring') return { ok: false, reason: 'abort-not-transferring' };
+      if (current.ownerMachineId !== action.machineId) return { ok: false, reason: 'abort-not-owner' };
+      return {
+        ok: true,
+        next: { ...base, ownerMachineId: action.machineId, ownershipEpoch: epoch + 1, status: 'active' },
       };
     }
     case 'release': {

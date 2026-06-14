@@ -202,6 +202,19 @@ export class StateManager {
   saveSession(session: Session): void {
     this.guardWrite('saveSession', { sessionScoped: true });
     this.validateKey(session.id, 'sessionId');
+    // One-running-record-per-tmux invariant (ghost-record fix): registering a
+    // record as live for a tmux name supersedes any OTHER record still marked
+    // live for the same name. tmux session names are unique among live
+    // sessions, so two live records for one name are definitionally stale —
+    // crisis respawns leaked one ghost per respawn and the dashboard rendered
+    // each as a separate "duplicate session" (2026-06-11 Mac Mini: 5 running
+    // records all pointing at the single tmux session
+    // echo-resource-limitation-mitigation). Enforced HERE because saveSession
+    // is the single funnel every spawn site already passes through — the same
+    // rationale as the journal funnel below.
+    if (session.status === 'running' || session.status === 'starting') {
+      this.supersedeStaleLiveRecords(session);
+    }
     const filePath = path.join(this.stateDir, 'state', 'sessions', `${session.id}.json`);
     // Coherence-journal lifecycle funnel (COHERENCE-JOURNAL-SPEC §3.3): EVERY
     // session status transition passes through saveSession — deriving the
@@ -212,6 +225,33 @@ export class StateManager {
     this.atomicWrite(filePath, JSON.stringify(session, null, 2));
     this.invalidateSessionsCache(); // a write must be visible to the next list
     this.recordLifecycleTransition(prevStatus, session);
+  }
+
+  /**
+   * Close every OTHER record still marked live for the same tmux session name
+   * (ghost-record supersession). Each ghost is closed through saveSession
+   * itself so the journal funnel records its completed transition — the
+   * reentry terminates because a 'completed' save never enters this path.
+   * Best-effort: a failure here must never endanger the spawn being saved.
+   */
+  private supersedeStaleLiveRecords(next: Session): void {
+    try {
+      const ghosts = this.listSessions().filter(
+        (s) =>
+          s.id !== next.id &&
+          s.tmuxSession === next.tmuxSession &&
+          (s.status === 'running' || s.status === 'starting'),
+      );
+      for (const ghost of ghosts) {
+        this.saveSession({
+          ...ghost,
+          status: 'completed',
+          endedAt: new Date().toISOString(),
+          endedReason: 'superseded',
+          supersededBy: next.id,
+        });
+      }
+    } catch { /* @silent-fallback-ok: supersession is registry hygiene — it must never block the live spawn being registered */ }
   }
 
   /** Best-effort read of an existing session record's status (funnel diff input). */

@@ -161,6 +161,12 @@ Freezes the running version at startup and compares it to what's on disk. Detect
 ### ForegroundRestartWatcher
 When running without a supervisor, watches for restart signals (written by AutoUpdater after an update). Notifies you, waits 3 seconds for graceful shutdown, then exits so the process manager can restart with the new code.
 
+### CredentialSwapExecutor
+Ships **dark** (off + dry-run for everyone). The staged-exchange primitive of live credential re-pointing: it MOVES an account's OAuth credential between two config-home "slots" without restarting the sessions reading them (the `claude` client re-reads its store on the next API call). The `CredentialSwapExecutor` exchanges (never copies) the two slots' credentials through a crash-proof sequence — stage an escrow copy and journal `begin`, exchange keychain-first then config-second, verify each slot on its **account identity** via the profile-endpoint oracle, commit with the escrow retained, then re-verify ~90s later before deleting the escrow. It writes only what an oracle can identity-confirm: an unverifiable slot is quarantined, never repaired blindly. Going live requires a deliberate two-flag flip (`enabled:true` AND `dryRun:false`); see `docs/specs/live-credential-repointing-rebalancer.md` §2.3.
+
+### CredentialAuditEmit
+The single secret-scrub chokepoint for live credential re-pointing (spec §2.9). Every `logs/credential-swaps.jsonl` audit write, every `/credentials/*` HTTP response body, and every attention-item this feature constructs routes through one `CredentialAuditEmit.scrub(record)` funnel that deep-walks the record and redacts any token-shaped run (reusing `CredentialProvider.redactToken`). The no-token-material invariant is enforced **structurally**, not by "remember to scrub at each callsite": the real leak vector is developer-authored interpolation (a `${raw}`-bearing log line, a `security`/keychain stderr that carries a token fragment in free text), exactly what a single chokepoint neutralizes. The `/credentials/swap`, `/credentials/set-default`, and `/credentials/restore-enrollment` levers all send their responses through `CredentialAuditEmit` so no token byte can exit any surface.
+
 </details>
 
 ---
@@ -284,6 +290,9 @@ Sends the running session list to all connected clients every 5 seconds. Include
 ### OrphanProcessReaper
 Every 60 seconds, detects orphaned Claude processes that aren't tracked by the session manager. Classifies them (managed vs orphaned vs external IDE processes), auto-kills orphans after 1 hour, and reports external processes to you.
 
+### Reap notices & the mid-work resume queue
+When a session is autonomously killed, `ReapNotifier` posts a plain-English notice into the topic that lost it (durably delivered by the always-on `ReapNoticeDrain` over the pending-relay store), and the kill chokepoint stamps killer-supplied `WorkEvidence` onto the reap event and reap-log. Sessions killed mid-work enter the durable `ResumeQueue`; `ResumeQueueDrainer` revives at most one per tick once the machine is calm and quota allows, re-validating reality before any spawn. See [Reap notices & the mid-work resume queue](/features/reap-notify-resume-queue/).
+
 ### JSONL Rotation
 Lazy, size-based rotation built into all append-only log files. When a file exceeds 10MB, it keeps the newest 75% and atomically replaces the file. Non-fatal — rotation failure doesn't block writes.
 
@@ -390,7 +399,9 @@ The sections above describe what each subsystem does at a behavioral level. The 
 
 ### `src/scheduler/` — cron + agentmd job execution
 
-`AgentMdAtomicSave`, `AgentMdJobLoader`, `AgentMdLockFile`, `AgentMdReconcile`, `DisabledBodyDrift`, `InstallBuiltinJobs`, `IntegrationGate`, `JobClaimManager`, `JobLoader`, `JobRunHistory`, `JobScheduler`, `MigrationInvariants`, `MigrationLedger`, `SkipLedger`.
+`AgentMdAtomicSave`, `AgentMdJobLoader`, `AgentMdLockFile`, `AgentMdReconcile`, `DisabledBodyDrift`, `InstallBuiltinJobs`, `IntegrationGate`, `JobClaimManager`, `JobLeaseCutoverGate`, `JobLeaseClaimStore`, `JobLoader`, `JobRunHistory`, `JobScheduler`, `MigrationInvariants`, `MigrationLedger`, `SkipLedger`.
+
+**WS4.3 journal-lease cutover.** On a multi-machine pool, scheduled-job claims start on the best-effort AgentBus broadcast (`JobClaimManager`) and upgrade to a durable, epoch-fenced lease over the replicated journal (`JobLeaseClaimStore`) — but only when the `JobLeaseCutoverGate` confirms every online peer advertises the `ws43JournalLease` capability (invariant-5 flag coherence). The gate is the single decision point that guarantees the two claim mechanisms are never both live for the same job set (the named migration hazard); a mixed or single-machine pool stays on the legacy bus path, byte-for-byte today's behavior. Ships dark behind `multiMachine.seamlessness.ws43JournalLease` (dry-run first).
 
 ### `src/identity/` — machine + agent cryptographic identity
 
@@ -501,3 +512,261 @@ Spec: `docs/specs/_drafts/subscription-auth-standard-master-spec.md`.
   of recently-processed marker ids; idempotency against Telegram retry / adapter restart.
 
 Spec: `docs/specs/MENTOR-LIVE-READINESS-SPEC.md` §Fix 2a.
+
+## Cross-machine memory foundation
+
+- **`HybridLogicalClock`** (`src/core/HybridLogicalClock.ts`) — the total-order clock the
+  cross-machine memory-replication family is built on. Each replicated change carries a
+  `{ physical, logical, node }` stamp; the canonical HLC merge keeps cause before effect,
+  `compare()` is a strict total order (machine id breaks ties) so every machine sorts the
+  same history identically, it is monotonic across restarts (atomic persistence), and it
+  rejects a poison far-future stamp measured against the *pool's* reference (not the local
+  clock, so a slow machine never wrongly quarantines a legitimately-ahead peer). Pure +
+  dependency-injected; ships inert until the replicated-store steps consume it. Spec:
+  `docs/specs/multi-machine-replicated-store-foundation.md` §3.
+- **`ReplicatedRecordEnvelope`** (`src/core/ReplicatedRecordEnvelope.ts`) — the generic
+  substrate every replicated store (preferences, relationships, learnings, …) layers a
+  journal kind onto. It defines the **replicated-record envelope** — the fields each
+  replicated change carries on top of its store-specific data: `recordKey` (primary key),
+  `hlc` (the `HybridLogicalClock` stamp at author time), `op` (`put`/`delete`), `origin`
+  (the author machine), and `observed` (the single HLC the author had already merged for
+  that key — the last-writer-witness; absent means "no prior witness" so a conflict is
+  flagged, the safe direction). A strict, parameterizable validator mirrors the coherence
+  journal's typed-schema discipline (rejects free text, drops + counts unknown fields, jails
+  any path-shaped field). A `ReplicatedKindRegistry` lets each store register its kind
+  independently (it ships empty — the first concrete kind lands with the preferences pool),
+  and the emission gate is **flag-gated** (a store emits only when its
+  `multiMachine.stateSync.<store>.enabled` is on, default off) **and flag-coherence-gated**
+  (a kind is forwarded to a peer only when that peer advertises it can receive it — so a new
+  kind is never silently dropped by an older peer, the named skew-failure mode). A boot-time
+  pool-flag-coherence check surfaces a mixed-flag pool once, coalesced across all peers.
+  Pure mechanism, dark by default; a single-machine install is a strict no-op. Spec:
+  `docs/specs/multi-machine-replicated-store-foundation.md` §4 / §10.
+- **`StoreSnapshot`** (`src/core/StoreSnapshot.ts`) — the **snapshot-then-tail** join/recover
+  path so a returning / compacted / long-dark machine never replays a peer's journal from
+  genesis. `materializeSnapshot()` builds a **single-origin** snapshot — a peer serves ONLY
+  the records it authored (`origin === serving machine`, the first-hop anti-forgery invariant
+  enforced at materialization: a cross-origin entry is dropped, never landed). The snapshot
+  carries a per-`(origin, kind)` seq-watermark **vector** (not a scalar), computed from which
+  entries actually materialized so it cannot lie; `applySnapshotCutover()` seeds
+  `PeerMeta.lastHeldSeq = snapshotSeq` and then tails via the UNCHANGED `buildServeBatch` seq
+  transport, so the no-gap / no-double-apply guarantee is inherited from the existing
+  seq-contiguity (HLC is demoted to a secondary dedup hint). A deleted-keys high-water seed
+  blocks delete-resurrection across tombstone GC. `StoreSnapshotEngine` runs the build **off
+  the event loop** in `storeSnapshotBuild.worker.ts` (the instar#1069 worker discipline,
+  mirroring `CartographerSweepEngine`); `SnapshotCache` is a fixed-ceiling LRU ring
+  (`maxCachedSnapshots` + `maxCacheBytes`, NOT pool-scaled) with a `cacheLossCounter`, and
+  `SnapshotRebuildBreaker` bounds rebuild storms from a flapping peer. The pull rides the
+  authenticated mesh RPC as a `state-snapshot` read/observe verb (Phase-C: no LAN broadcast).
+  Pure mechanism, dark by default; a single-machine install is a strict no-op. Spec:
+  `docs/specs/multi-machine-replicated-store-foundation.md` §6 / §8.2.
+- **`RelationshipsReplicatedStore`** (`src/core/RelationshipsReplicatedStore.ts`) — the SECOND
+  concrete consumer of the replicated-store foundation and the FIRST **PII kind**:
+  `relationship-record`. `RelationshipsReplicatedStore` layers the kind onto the generic
+  envelope with PII-specific hardening the security spec demands. Its schema is a
+  **discriminated union on `op`** — an `op:'put'` VALUE schema and an `op:'delete'` TOMBSTONE
+  schema coexist under one kind — and it **type-clamps every known field on receive**
+  (`firstInteraction`/`lastInteraction` validate as ISO-8601-only, `interactionCount`/
+  `significance` as finite numbers, free text length-clamped) so a foreign, attacker-controlled
+  record can never smuggle markup through a render slot that bypasses `sanitize()`. The
+  replicated projection is **disclosure-minimized** (only resolution + merge-relevant fields,
+  NEVER the raw on-disk blob and NEVER the local UUID `id`), and the cross-machine `recordKey`
+  is derived deterministically from a person's sorted **channel set** (the identity surface the
+  manager already collides on), so the same human reaches the same record across machines even
+  though each machine mints its own UUID. A delete propagates as a channel-keyed tombstone (so
+  an erased person stays erased on an offline-then-rejoining peer), and a foreign record is
+  rendered inside a `<replicated-untrusted-data origin="…">` envelope — quoted data, never an
+  instruction, never the authoritative answer to "who is messaging me". Per-entry cap raised to
+  64KB so a fat relationship replicates instead of wedging the stream; HIGH-impact
+  (append-both-and-flag, never a silent clobber of two divergent people). Pure mechanism, dark
+  by default behind `multiMachine.stateSync.relationships`; a single-machine install is a strict
+  no-op. Spec: `docs/specs/ws23-relationships-userregistry-security.md`.
+- **`LearningsReplicatedStore`** (`src/core/LearningsReplicatedStore.ts`) — the THIRD
+  concrete consumer of the replicated-store foundation and the SECOND **memory-family kind**:
+  `learning-record`. `LearningsReplicatedStore` layers the kind onto the generic envelope so a
+  lesson the agent learned on machine A is known on machine B — ONE learning registry, not
+  one-per-machine. It REUSES the WS2.3 PII machinery rather than downgrading it: a discriminated
+  union on `op` (an `op:'put'` VALUE schema and an `op:'delete'` TOMBSTONE schema), a strict
+  **type-clamp on receive** (`source.discoveredAt` validates as ISO-8601-only, `applied` as a
+  strict boolean, `tags[]`/`description` length-clamped) so a foreign, attacker-controlled record
+  can never smuggle markup through a render slot. The replicated projection is
+  **disclosure-minimized** (only the merge-relevant fields, NEVER the raw on-disk blob and NEVER
+  the local sequential `LRN-NNN` id), and the cross-machine `recordKey` is a **content
+  fingerprint** — `sha256(normalize(title) + normalize(category) + (source.contentId ||
+  source.discoveredAt))` — so the SAME lesson learned on two machines collapses to ONE record
+  instead of duplicating (the LRN-id is the cross-machine-unstable id, exactly the
+  relationship-UUID trap solved with a stable identity surface). A removal/prune propagates as a
+  channel-keyed tombstone (CRITICAL: the EvolutionManager prune-over-`maxLearnings` path emits a
+  tombstone per pruned learning, else a peer re-replicates it forever — resurrection), and a
+  foreign record renders inside a `<replicated-untrusted-data origin="…">` envelope — quoted
+  advisory data, never an instruction. Per-entry cap raised to 64KB so a fat learning replicates;
+  HIGH-impact at the **replication** layer (append-both-and-flag) but **advisory** at the **read**
+  layer (both variants of an open conflict surface as guidance hints — a learning is guidance,
+  not authority — the read never blocks). Pure mechanism, dark by default behind
+  `multiMachine.stateSync.learnings`; a single-machine install is a strict no-op. The
+  `LearningsReplicatedStore` projection strips the local id by construction. Spec:
+  `docs/specs/multi-machine-replicated-store-foundation.md` §4 / §7.
+- **`KnowledgeReplicatedStore`** (`src/core/KnowledgeReplicatedStore.ts`) — the FOURTH
+  concrete consumer of the replicated-store foundation and the THIRD **memory-family kind**:
+  `knowledge-record`. `KnowledgeReplicatedStore` layers the kind onto the generic envelope so a
+  knowledge SOURCE the agent ingested on machine A is known on machine B — ONE knowledge catalog,
+  not one-per-machine. It REUSES the WS2.2/WS2.3 PII machinery rather than downgrading it: a
+  discriminated union on `op` (an `op:'put'` VALUE schema and an `op:'delete'` TOMBSTONE schema),
+  a strict **type-clamp on receive** (`ingestedAt` validates as ISO-8601-only, `type` against the
+  {article, transcript, doc} enum, `wordCount` as a finite number, `tags[]`/`summary` length-clamped,
+  a path-shaped `url` jailed out) so a foreign, attacker-controlled record can never smuggle markup
+  through a render slot. The replicated projection is **disclosure-minimized + metadata-only**: only
+  the catalog metadata (title, url, type, tags, summary, word count) crosses the wire — NEVER the
+  markdown file BODY (the `filePath` file can be a huge transcript; full-content sync is a tracked
+  follow-up), NEVER the local generated `id`, and NEVER the local `filePath`. The cross-machine
+  `recordKey` is a **content fingerprint** — `sha256(normalize(url || title) + normalize(type))` —
+  so the SAME article ingested on two machines collapses to ONE record instead of duplicating (the
+  generated id is the cross-machine-unstable id, exactly the relationship-UUID / LRN-id trap solved
+  with a stable identity surface). A removal propagates as a fingerprint-keyed tombstone (CRITICAL:
+  the `KnowledgeManager.remove()` path emits a tombstone per removed source, else a peer
+  re-replicates it forever — resurrection), and a foreign record renders inside a
+  `<replicated-untrusted-data origin="…">` envelope — quoted advisory reference, never an
+  instruction. Per-entry cap raised to 64KB so a fat summary replicates; HIGH-impact at the
+  **replication** layer (append-both-and-flag) but **advisory** at the **read** layer (both variants
+  of an open conflict surface as guidance hints — a knowledge source is reference, not authority —
+  the read never blocks). Pure mechanism, dark by default behind `multiMachine.stateSync.knowledge`;
+  a single-machine install is a strict no-op. The `KnowledgeReplicatedStore` projection strips the
+  local id + filePath by construction. Spec:
+  `docs/specs/multi-machine-replicated-store-foundation.md` §4 / §7.
+- **`EvolutionActionsReplicatedStore`** (`src/core/EvolutionActionsReplicatedStore.ts`) — the FIFTH
+  concrete consumer of the replicated-store foundation and the FOURTH **memory-family kind**:
+  `evolution-action-record`. `EvolutionActionsReplicatedStore` layers the kind onto the generic
+  envelope so a self-improvement ACTION the agent raised on machine A (the EvolutionManager action
+  queue — `ActionItem`) is known on machine B — ONE action queue, not one-per-machine. It REUSES the
+  WS2.4/WS2.2 machinery rather than downgrading it: a discriminated union on `op` (an `op:'put'` VALUE
+  schema and an `op:'delete'` TOMBSTONE schema), a strict **type-clamp on receive**
+  (`createdAt`/`dueBy`/`completedAt` validate as ISO-8601-or-absent, `priority` against the
+  {critical, high, medium, low} enum, `status` against the {pending, in_progress, completed, cancelled}
+  enum, `tags[]`/free text length-clamped, a path-shaped `source` sub-field jailed out) so a foreign,
+  attacker-controlled record can never smuggle markup through a render slot. The replicated projection
+  is **disclosure-minimized**: the local `ACT-NNN` id is NEVER replicated. The cross-machine `recordKey`
+  is a **content fingerprint** — `sha256(normalize(title) + normalize(commitTo) + createdAt)` — so the
+  SAME committed action on two machines collapses to ONE record instead of duplicating (the ACT id is
+  the cross-machine-unstable id, exactly the relationship-UUID / LRN-id trap solved with a stable
+  identity surface). **`status` is the load-bearing cross-machine field**: a status change RE-EMITS a
+  put so a peer SEES that an action was already completed/in_progress elsewhere and does not redo the
+  work; `status`/`priority`/`completedAt` are mutable (last-writer-witness wins; a concurrent
+  divergence — one machine completed, another in_progress — rides the SAME append-both-and-flag path,
+  no CRDT special-case). A `completed`/`cancelled` action is a TERMINAL state whose record is RETAINED
+  (history), NOT tombstoned — only an actual queue-REMOVAL (the prune-over-maxActions path) emits a
+  fingerprint-keyed tombstone (the resurrection guard); a foreign record renders inside a
+  `<replicated-untrusted-data origin="…">` envelope — quoted advisory work-item, never an instruction.
+  Per-entry cap raised to 64KB so a fat action description replicates; HIGH-impact at the
+  **replication** layer (append-both-and-flag) but **advisory** at the **read** layer (both variants of
+  an open conflict surface as guidance hints — an action is a work item to surface, not authority — the
+  read never blocks). Pure mechanism, dark by default behind `multiMachine.stateSync.evolutionActions`;
+  a single-machine install is a strict no-op. The `EvolutionActionsReplicatedStore` projection strips
+  the local ACT id by construction. Spec:
+  `docs/specs/multi-machine-replicated-store-foundation.md` §4 / §7.
+
+- **`UserRegistryReplicatedStore`** (`src/core/UserRegistryReplicatedStore.ts`) — the SIXTH
+  concrete consumer of the replicated-store foundation and the SECOND **PII kind** (after WS2.3
+  relationships): `user-record`. `UserRegistryReplicatedStore` layers the kind onto the generic
+  envelope so a registered USER the agent knows on machine A (the UserManager registry —
+  `UserProfile`) is known on machine B — ONE user registry, not one-per-machine. It REUSES the
+  WS2.3 PII machinery rather than downgrading it: a discriminated union on `op` (an `op:'put'`
+  VALUE schema and an `op:'delete'` TOMBSTONE schema), a strict **type-clamp on receive**
+  (`createdAt` validates as ISO-8601, `telegramUserId` as a finite number, `channels[]`/
+  `permissions[]`/free text length-clamped, a path-shaped channel `type` jailed out) so a foreign,
+  attacker-controlled record can never smuggle markup through a render slot. The replicated
+  projection is **disclosure-minimized**: the local `userId` is NEVER replicated. The cross-machine
+  `recordKey` is the **channel set** — `sha256(sorted("type:identifier" pairs))`, mirroring
+  `UserManager.channelIndex` — so the SAME user on two machines collapses to ONE record instead of
+  duplicating (the local id is the cross-machine-unstable id, exactly the relationship-UUID trap
+  solved with a stable identity surface). HIGH-impact at the **replication** layer
+  (append-both-and-flag — auto-merging two divergent profiles could fuse two distinct humans) but
+  **advisory** at the **read** layer: a replicated user record is a HINT about what the agent's
+  OTHER machines know, NEVER the authoritative answer to "who is this inbound sender?" — identity
+  RESOLUTION of an inbound principal is LOCAL-ONLY (the local channel index always wins). A removed
+  user emits a channel-keyed tombstone (resurrection guard); a foreign record renders inside a
+  `<replicated-untrusted-data origin="…">` envelope. Per-entry cap raised to 64KB; the
+  `UserManager.persistUsers`/`removeUser` funnels carry the emit seam. Pure mechanism, dark by
+  default behind `multiMachine.stateSync.userRegistry`; a single-machine install is a strict no-op.
+  Spec: `docs/specs/multi-machine-replicated-store-foundation.md` §4 / §7,
+  `docs/specs/ws23-relationships-userregistry-security.md`.
+
+- **`TopicOperatorReplicatedStore`** (`src/core/TopicOperatorReplicatedStore.ts`) — the SEVENTH
+  concrete consumer of the replicated-store foundation and the THIRD **PII kind**, completing the
+  WS2 memory family: `topic-operator-record`. `TopicOperatorReplicatedStore` layers the kind onto
+  the generic envelope so the VERIFIED operator a topic was bound to on machine A (the
+  `TopicOperatorStore` binding — `TopicOperator`) is VISIBLE as advisory context on machine B. **THE
+  LOAD-BEARING SAFETY INVARIANT** (the whole point of this kind — Know Your Principal): a replicated
+  topic-operator record is UNTRUSTED peer data — it can NEVER become this machine's authoritative
+  answer to "who is my verified operator?". The LOCAL auth-derived binding
+  (`TopicOperatorStore.setOperator` from an AUTHENTICATED sender) is ALWAYS authoritative; the
+  replicated record is advisory context only, rendered as quoted untrusted data that EXPLICITLY says
+  so, and there is NO apply path back into `TopicOperatorStore` by construction. It rides the same
+  hardened machinery: a discriminated union on `op`, a strict **type-clamp on receive** (`boundAt`
+  ISO-8601-or-absent, `platform`/`uid` short slugs jailed, `names[]` length-bounded), a
+  **disclosure-minimized** projection of exactly `{platform, uid, names, boundAt}`. The cross-machine
+  `recordKey` is `sha256(topicId + ":" + verified-uid)` — keyed on the topic + the AUTHENTICATED uid,
+  NEVER a content-name (a name in a message body can never become part of the identity surface). An
+  unbind emits a tombstone; HIGH-impact at the **replication** layer (append-both-and-flag) but
+  **advisory** at the **read** layer (a replicated operator record is a hint, never the authoritative
+  principal). Per-entry cap raised to 64KB; the `TopicOperatorStore.setOperator` funnel carries the
+  emit seam (emit the LOCAL binding to peers; never receive one). Pure mechanism, dark by default
+  behind `multiMachine.stateSync.topicOperator`; a single-machine install is a strict no-op. With
+  `UserRegistryReplicatedStore`, the WS2 memory family is COMPLETE (7 kinds; playbook deferred).
+  Spec: `docs/specs/multi-machine-replicated-store-foundation.md` §4 / §7,
+  `docs/specs/ws23-relationships-userregistry-security.md`.
+
+## Live Credential Re-pointing (Subscription & Auth Standard)
+
+The machinery that can move a pool account's OAuth credential between config-home "slots" without
+restarting the sessions reading them — the "stock-trader" rebalancer. Ships dark/dry-run-first (live on
+a development agent in dry-run, dark on the fleet); a real credential write needs a deliberate
+`dryRun:false`. Spec: `docs/specs/live-credential-repointing-rebalancer.md`.
+
+### CredentialRebalancerPolicy
+
+The pure §2.4 decision core: `decidePass(snapshot)` computes the zero-or-more credential swaps for one
+balancer pass from a read-only snapshot (per-account quota + reset proximity, per-slot tenancy/verify/
+activity, cooldown state, resolved config). Objective-0 dead/quarantined-default eviction + the
+correlated-oracle-outage floor; objective-1 wall avoidance + the bounded wall-override (fresh-data gate,
+`maxForcedSwapsPerPass`, per-window override budget, recency gate); objective-2 use-it-or-lose-it drain
+(weekly-only, headroom floor, per-slot drain-in-progress hold); eligibility + hysteresis (per-pair +
+per-tenant cooldowns on the account basis, urgency-clamped min-improvement floor, 1 swap/pass). No IO,
+no authority — it decides; the actuator routes an accepted decision through the gated executor.
+
+### CredentialRebalancer
+
+The stateful orchestrator that wraps `decidePass()` in a pass loop: on each `tick()` it builds the
+read-only snapshot from injected providers, asks the policy for the swaps, and actuates each through the
+injected `CredentialSwapExecutor` wrapper — but ONLY under the feature's dark/dry-run gate (dark = a
+strict no-op; dry-run actuates the decision but the executor writes nothing). Carries the cross-pass
+hysteresis the pure policy cannot (cooldown timestamps) and the §2.4 P19 breaker (N consecutive LIVE
+failed swaps opens it; a success resets it; it self-heals by re-probing).
+
+### CredentialRebalancerSnapshot
+
+The pure mappers translating the live system state into the policy's snapshot: `mapAccount` (a
+SubscriptionPool account → `AccountState`; a missing quota reading maps to an epoch `measuredAt` so the
+account is treated as stale/source-only; `rate-limited` stays eligible so wall-avoidance can rescue its
+slot), `mapSlot` (a CredentialLocationLedger assignment → `SlotState`), and `resolveRebalancerConfig`
+(clamp the configured knobs + derive the cooldowns from the poll interval). Kept pure so a units/sign
+bug that would mis-steer the balancer is unit-testable.
+
+### CredentialRepointingLivetest
+
+The §5 livetest battery as testable orchestration — the dry-run→live PROMOTION gate (NOT part of merge
+CI; runs only when the operator arms it at enablement, since it exchanges REAL credentials between REAL
+accounts). Drives the automatable round-trips (identity-verified exchange-then-restore via the oracle,
+always restoring) and surfaces the inherently-manual items (refresher correctness, the §0.c at-expiry
+residual via a disposable grant, liveness) without ever auto-passing them. An `armed` guard performs
+zero swaps unless explicitly armed, so importing or unit-testing the module can never move a credential.
+
+### POST /credentials/livetest (the promotion gate)
+
+`POST /credentials/livetest` is the reachable entrypoint for the §5 livetest battery (the
+`CredentialRepointingLivetest` harness) — the dry-run→live PROMOTION gate. It wires the harness to
+the real swap executor + identity oracle and runs the automatable round-trips. Two independent
+gates protect it: the harness performs ZERO swaps unless `armed:true` is in the request body (the
+operator explicitly arms the battery), and even armed the executor's own `dryRun` keeps writes off
+until a deliberate `dryRun:false`. Dark → 503; every named slot is validated against the enumerated
+ledger set (→ 400) before the harness runs. The report is scrubbed and carries no token material.
+

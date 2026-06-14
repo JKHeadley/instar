@@ -1,0 +1,14 @@
+{
+  "ts": "2026-06-13T05:01:01.000Z",
+  "slug": "multi-machine-seamlessness-ws21-preferences-pool",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": ["cross-machine replication of learned-preference data (security-sensitive); dark-default flag-gated"],
+  "belowFloor": false,
+  "files": 11,
+  "loc": 1676,
+  "causalAutopsy": null,
+  "verdict": "pass",
+  "note": "Record authored post-hoc: the instar-dev pre-commit gate did not auto-emit in this raw 'git worktree add' worktree (documented husky-shim gap). Review WAS performed — a 4-dimension adversarial-review Workflow (16 agents) served as the mandatory second-pass; 7 confirmed findings fixed; side-effects artifact at upgrades/side-effects/multi-machine-seamlessness-ws21-preferences-pool.md."
+}

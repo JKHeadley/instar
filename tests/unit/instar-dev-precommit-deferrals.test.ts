@@ -77,16 +77,16 @@ describe('instar-dev pre-commit — orphan deferrals enforcement', () => {
       'export function verifyProposalDerivedRunbooks() { return { ok: true, reason: "no-proposal-derived-runbooks-or-all-verified" }; }\n',
     );
 
-    // Copy the hook script under test + its pure lib dependencies
-    // (scripts/lib/classify-tier.mjs + scripts/lib/convergence-recognition.mjs)
-    // into the sandbox so the spawned hook's relative imports resolve.
-    fs.mkdirSync(path.join(sandbox, 'scripts', 'lib'), { recursive: true });
-    for (const lib of ['classify-tier.mjs', 'convergence-recognition.mjs']) {
-      fs.copyFileSync(
-        path.join(path.dirname(HOOK_SCRIPT), 'lib', lib),
-        path.join(sandbox, 'scripts', 'lib', lib),
-      );
-    }
+    // Copy the WHOLE scripts/lib dir so every one of the hook's pure lib imports
+    // (classify-tier.mjs, convergence-recognition.mjs, operator-surface.mjs, …)
+    // resolves in the sandbox. Copying the whole dir — rather than enumerating
+    // each file — means a NEW lib import added to the hook can't silently break
+    // this test with ERR_MODULE_NOT_FOUND.
+    fs.cpSync(
+      path.join(path.dirname(HOOK_SCRIPT), 'lib'),
+      path.join(sandbox, 'scripts', 'lib'),
+      { recursive: true },
+    );
     fs.copyFileSync(HOOK_SCRIPT, path.join(sandbox, 'scripts', 'instar-dev-precommit.js'));
   });
 
