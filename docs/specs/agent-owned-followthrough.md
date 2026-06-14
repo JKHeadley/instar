@@ -2,6 +2,7 @@
 title: "The Agent Carries the Loop"
 slug: "agent-owned-followthrough"
 author: "echo"
+parent-principle: "The Agent Carries the Loop"
 eli16-overview: "agent-owned-followthrough.eli16.md"
 lessons-engaged:
   - "Signal vs. Authority (classifier flags; deterministic taxonomy + tool-call gate hold authority)"

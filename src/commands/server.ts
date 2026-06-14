@@ -10306,6 +10306,13 @@ export async function startServer(options: StartOptions): Promise<void> {
           const escRawCfg = ((config as { monitoring?: { promiseBeacon?: { escalation?: Record<string, unknown> } } })
             .monitoring?.promiseBeacon?.escalation) ?? {};
           const escEnabled = resolveDevAgentGate(escRawCfg.enabled as boolean | undefined, config);
+          // ── C1+C2 "The Agent Carries the Loop" rollout (spec §4.8) ────────
+          // Dark-on-fleet / live-in-dryRun-on-dev via the developmentAgent gate;
+          // dryRun defaults true (the dark→live promotion is the operator's flip).
+          const aoftRawCfg = ((config as { commitments?: { agentOwnedFollowthrough?: Record<string, unknown> } })
+            .commitments?.agentOwnedFollowthrough) ?? {};
+          const aoftEnabled = resolveDevAgentGate(aoftRawCfg.enabled as boolean | undefined, config);
+          const aoftDryRun = aoftRawCfg.dryRun !== false;
           // I14 — spawn-surface idempotency: a duplicate revive for the SAME
           // attemptId (within the window) is a no-op, so a beacon-side marker
           // loss or a crash between persist and spawn cannot double-spawn.
@@ -10439,6 +10446,12 @@ export async function startServer(options: StartOptions): Promise<void> {
             // B2 turn-finished detection — "is the session still generating now?"
             looksActivelyWorking: (frame: string, name: string) =>
               _beaconLooksGeneratingNow(frame, sessionManager.frameworkForSession(name)),
+            // ── C1+C2 "The Agent Carries the Loop" (§4.2/§4.4/§4.5/§4.8) ──
+            agentOwnedFollowthrough: () => ({ enabled: aoftEnabled, dryRun: aoftDryRun }),
+            externalBlockWindowMs: aoftRawCfg.externalBlockWindowMs as number | undefined,
+            externalBlockCeilingMs: aoftRawCfg.externalBlockCeilingMs as number | undefined,
+            externalBlockSweepMs: aoftRawCfg.externalBlockSweepMs as number | undefined,
+            holdsLease: () => (leaseCoordinatorRef ? leaseCoordinatorRef.holdsLease() : true),
           });
           promiseBeacon.start();
           (globalThis as Record<string, unknown>).__instarPromiseBeacon = promiseBeacon;
