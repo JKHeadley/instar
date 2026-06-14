@@ -1,0 +1,20 @@
+{
+  "phase": "complete",
+  "slug": "self-coherence-parallel-work-attribution",
+  "tier": 2,
+  "tierReasoning": "Tier-2 spec DRAFT, docs-only. No src/scripts/.husky/SKILL.md files in scope, so the instar-dev pre-commit gate's in-scope filter is empty and the commit passes the empty-in-scope early-exit. The trace, side-effects artifact, ELI16, and next-fragment are authored as the requested deliverables and as hygiene. The spec is a draft for operator convergence (approved: false) — it is NOT yet eligible for an /instar-dev src build.",
+  "coveredFiles": [
+    "docs/specs/self-coherence-parallel-work-attribution.md",
+    "docs/specs/self-coherence-parallel-work-attribution.eli16.md"
+  ],
+  "specPath": "docs/specs/self-coherence-parallel-work-attribution.md",
+  "eli16Path": "docs/specs/self-coherence-parallel-work-attribution.eli16.md",
+  "artifactPath": "upgrades/side-effects/self-coherence-parallel-work-attribution.md",
+  "sideEffectsPath": "upgrades/side-effects/self-coherence-parallel-work-attribution.md",
+  "artifactSha256": "ad240fb427310b0811b2e36752347364e1f767e884b1f6be5a52207e1ea4cbfe",
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "Latent self-coherence gap: there is no identity signal separating the agent's own parallel hands from the operator or a genuine external party, so the agent defaulted to inferring 'a maintainer' for its own concurrent PR output. Surfaced by operator Justin in topic 13481 on 2026-06-13."
+  },
+  "createdAt": "2026-06-13T00:00:00Z"
+}
