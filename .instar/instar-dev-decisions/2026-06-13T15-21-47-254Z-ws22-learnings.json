@@ -1,0 +1,17 @@
+{
+  "ts": "2026-06-13T15:21:47.254Z",
+  "slug": "ws22-learnings",
+  "suggestedTier": 2,
+  "declaredTier": null,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 8,
+  "loc": 843,
+  "causalAutopsy": null,
+  "verdict": "pass"
+}

@@ -36,12 +36,78 @@ import path from 'node:path';
 
 import { SafeFsExecutor } from './SafeFsExecutor.js';
 
-export type JournalKind = 'topic-placement' | 'session-lifecycle' | 'autonomous-run' | 'threadline-conversation';
+export type JournalKind = 'topic-placement' | 'session-lifecycle' | 'autonomous-run' | 'threadline-conversation' | 'guard-latch' | 'pref-record' | 'relationship-record' | 'learning-record' | 'knowledge-record' | 'evolution-action-record' | 'user-record' | 'topic-operator-record';
 
-export const JOURNAL_KINDS: JournalKind[] = ['topic-placement', 'session-lifecycle', 'autonomous-run', 'threadline-conversation'];
+export const JOURNAL_KINDS: JournalKind[] = ['topic-placement', 'session-lifecycle', 'autonomous-run', 'threadline-conversation', 'guard-latch', 'pref-record', 'relationship-record', 'learning-record', 'knowledge-record', 'evolution-action-record', 'user-record', 'topic-operator-record'];
+// 'user-record' + 'topic-operator-record' added for WS2.6 (multi-machine-replicated-store-foundation):
+// the SIXTH + SEVENTH replicated-store consumers and the SECOND + THIRD PII kinds (after WS2.3
+// relationships), completing the WS2 memory family. Like 'relationship-record' they are the STATIC
+// half of the DUAL REGISTRY — a kind in ReplicatedKindRegistry but NOT here would advertise
+// stateSyncReceive=true yet serve/apply/pull NOTHING (a silent no-replication). user-record's
+// concrete schema (discriminated union on `op` for value + tombstone), disclosure-minimized
+// projection (the local userId NEVER replicated), channel-set recordKey identity surface
+// (sha256(sorted channel-set)), 64KB per-entry cap, and bounds live in UserRegistryReplicatedStore.ts;
+// topic-operator-record's live in TopicOperatorReplicatedStore.ts (recordKey = sha256(topicId + ":" +
+// verified-uid), NEVER a content-name). THE LOAD-BEARING SAFETY INVARIANT (topic-operator): a
+// replicated topic-operator record is UNTRUSTED peer data — NEVER this machine's authoritative answer
+// to "who is my verified operator?" (only the local authenticated setOperator binds the principal).
+// Additive — readers ignore unknown kinds.
+// 'evolution-action-record' added for WS2.5 (multi-machine-replicated-store-foundation): the
+// FIFTH replicated-store consumer and the FOURTH memory-family kind, riding the same HLC
+// foundation. Like 'knowledge-record' it is the STATIC half of the DUAL REGISTRY — a kind in
+// ReplicatedKindRegistry but NOT here would advertise stateSyncReceive=true yet
+// serve/apply/pull NOTHING (a silent no-replication). Its concrete schema (a discriminated
+// union on `op` for value + tombstone), disclosure-minimized projection (the local ACT-NNN id
+// NEVER replicated), content-fingerprint recordKey identity surface (normalize(title) +
+// normalize(commitTo) + createdAt), 64KB per-entry cap, and bounds live in
+// EvolutionActionsReplicatedStore.ts (the consumer); here it is just the kind tag the
+// serve/apply/getOwnAdvert path enumerates. Additive — readers ignore unknown kinds. The
+// load-bearing cross-machine field is `status`: a peer must SEE an action was already
+// completed/in_progress elsewhere so it does not redo it.
+// 'knowledge-record' added for WS2.4 (multi-machine-replicated-store-foundation): the
+// FOURTH replicated-store consumer and the THIRD memory-family kind, riding the same HLC
+// foundation. Like 'learning-record' it is the STATIC half of the DUAL REGISTRY — a kind
+// in ReplicatedKindRegistry but NOT here would advertise stateSyncReceive=true yet
+// serve/apply/pull NOTHING (a silent no-replication). Its concrete schema (a discriminated
+// union on `op` for value + tombstone), disclosure-minimized projection (the local
+// generated id + filePath NEVER replicated — only the catalog METADATA, never the file
+// body), content-fingerprint recordKey identity surface (normalize(url||title) + type),
+// 64KB per-entry cap, and bounds live in KnowledgeReplicatedStore.ts (the consumer); here
+// it is just the kind tag the serve/apply/getOwnAdvert path enumerates. Additive — readers
+// ignore unknown kinds.
+// 'learning-record' added for WS2.2 (multi-machine-replicated-store-foundation): the
+// THIRD replicated-store consumer and the SECOND memory-family kind, riding the same HLC
+// foundation. Like 'relationship-record' it is the STATIC half of the DUAL REGISTRY — a
+// kind in ReplicatedKindRegistry but NOT here would advertise stateSyncReceive=true yet
+// serve/apply/pull NOTHING (a silent no-replication). Its concrete schema (a discriminated
+// union on `op` for value + tombstone), disclosure-minimized projection (the local LRN-NNN
+// id NEVER replicated), content-fingerprint recordKey identity surface, 64KB per-entry cap,
+// and bounds live in LearningsReplicatedStore.ts (the consumer); here it is just the kind
+// tag the serve/apply/getOwnAdvert path enumerates. Additive — readers ignore unknown kinds.
+// 'relationship-record' added for WS2.3 (ws23-relationships-userregistry-security):
+// the SECOND replicated-store consumer and the FIRST PII kind, riding the same HLC
+// foundation. Like 'pref-record' it is the STATIC half of the DUAL REGISTRY — a kind
+// in ReplicatedKindRegistry but NOT here would advertise stateSyncReceive=true yet
+// serve/apply/pull NOTHING (a silent no-replication). Its concrete schema (a
+// discriminated union on `op` for value + tombstone), disclosure-minimized projection,
+// recordKey identity surface, 64KB per-entry cap, and bounds live in
+// RelationshipsReplicatedStore.ts (the consumer); here it is just the kind tag the
+// serve/apply/getOwnAdvert path enumerates. Additive — readers ignore unknown kinds.
+// 'pref-record' added for WS2.1 (multi-machine-replicated-store-foundation §4): the
+// FIRST concrete replicated-store kind, riding the HLC foundation. This is the
+// STATIC half of the DUAL REGISTRY — a kind in ReplicatedKindRegistry but NOT here
+// would advertise stateSyncReceive=true yet serve/apply/pull NOTHING (a silent
+// no-replication, §4 callout). Its concrete schema/tier/bounds live in
+// PreferencesReplicatedStore.ts (the consumer); here it is just the kind tag the
+// serve/apply/getOwnAdvert path enumerates. Additive — readers ignore unknown
+// kinds (the applier's forward-compat contract), so an old peer that lacks it
+// simply never pulls it.
 
 /** §3.2 enums. */
-export type PlacementReason = 'user-move' | 'placed' | 'failover' | 'released' | 'quota-block-move';
+export type PlacementReason = 'user-move' | 'placed' | 'failover' | 'released' | 'quota-block-move' | 'reconcile';
+// 'reconcile' added for WS1.3 (MULTI-MACHINE-SEAMLESSNESS-SPEC): the
+// OwnershipReconciler's bounded pin/owner convergence CAS chain. Additive —
+// readers ignore unknowns (the journal applier's forward-compat contract).
 // 'failed' added at wiring time: Session records carry a real terminal
 // 'failed' status the spec's §3.2 enum missed; recording it as 'completed'
 // or 'killed' would misstate history. Additive — readers ignore unknowns.
@@ -49,6 +115,15 @@ export type SessionStatus = 'created' | 'completed' | 'killed' | 'reaped' | 'fai
 export type AutonomousAction = 'started' | 'stopped';
 /** P3 (THREADLINE-CONVERSATION-COHERENCE-SPEC §3.1). */
 export type ThreadlineConversationAction = 'started' | 'bound' | 'unbound' | 'closed';
+/**
+ * guard-latch (green-pr-automerge-enforcement R9/R7). A pool-visible latch or
+ * marker that gates a guarded autonomous authority across the machine pool. The
+ * `latchKind` namespaces independent latch families so they cannot collide; the
+ * `action` is set/clear. ABSORBING ordering (set wins ties regardless of epoch)
+ * is resolved by the consumer (GuardLatchStore), NOT here — the journal only
+ * carries the content-free fact that a transition occurred.
+ */
+export type GuardLatchAction = 'set' | 'clear';
 
 export interface PlacementData {
   owner: string;
@@ -76,6 +151,22 @@ export interface ThreadlineConversationData {
   conversationId: string;
   peerFingerprint: string;
   topicId?: number;
+}
+
+/**
+ * guard-latch (green-pr-automerge-enforcement R9/R7). Content-free: the latch
+ * family, the set/clear action, the lease epoch + a monotonic sequence the
+ * consumer uses for ordering, and a stable `latchId` so `/enable` can clear a
+ * SPECIFIC latch without touching siblings. No free text (the typed-schema
+ * invariant); `reason` is a short enum-like slug, length-capped.
+ */
+export interface GuardLatchData {
+  latchKind: string;
+  latchId: string;
+  action: GuardLatchAction;
+  epoch: number;
+  seq: number;
+  reason?: string;
 }
 
 /** One line in a stream file. */
@@ -107,6 +198,60 @@ export const DEFAULT_RETENTION: Record<JournalKind, KindRetention> = {
   'session-lifecycle': { maxFileBytes: 16 * 1024 * 1024, rotateKeep: 4 },
   'autonomous-run': { maxFileBytes: 8 * 1024 * 1024, rotateKeep: 8 },
   'threadline-conversation': { maxFileBytes: 8 * 1024 * 1024, rotateKeep: 8 },
+  // guard-latch: rare operator-initiated transitions; keep full history bounded.
+  'guard-latch': { maxFileBytes: 4 * 1024 * 1024, rotateKeep: 4 },
+  // pref-record (WS2.1): preferences are FEW (a tight per-store cap — the
+  // PreferencesSync precedent's DEFAULT_MAX_REPLICATED_PREFERENCES=500). A small
+  // window with a few archives bounds a runaway edit-churn stream. The store's own
+  // ReplicatedKindBounds (PreferencesReplicatedStore.PREF_RECORD_BOUNDS) override
+  // these for the replicated stream; this is the journal-level fallback.
+  'pref-record': { maxFileBytes: 2 * 1024 * 1024, rotateKeep: 4 },
+  // relationship-record (WS2.3): a PII store — NEVER rotateKeep:0 (rotate-but-never-
+  // delete would be a compliance defect, REQ-D1). The chatty relationship stream
+  // (recordInteraction fires every message) is coalesced by the store's rate cap
+  // (RelationshipsReplicatedStore.RELATIONSHIP_RECORD_BOUNDS); this is the journal-
+  // level fallback. The per-entry size cap is RAISED to 64KB on the relationship-
+  // record applier path (RELATIONSHIP_MAX_ENTRY_BYTES) so a fat relationship replicates.
+  'relationship-record': { maxFileBytes: 8 * 1024 * 1024, rotateKeep: 4 },
+  // learning-record (WS2.2): a memory-family store — NEVER rotateKeep:0 (rotate-but-
+  // never-delete would be a compliance defect). Learnings are FEW + bounded (the
+  // EvolutionManager prunes to maxLearnings=500), so a small window with a few archives
+  // mirrors the pref-record sibling. The churny apply/markApplied loop is coalesced by
+  // the store's rate cap (LearningsReplicatedStore.LEARNING_RECORD_BOUNDS); this is the
+  // journal-level fallback. The per-entry size cap is RAISED to 64KB on the
+  // learning-record applier path (LEARNING_MAX_ENTRY_BYTES) so a fat learning replicates.
+  'learning-record': { maxFileBytes: 4 * 1024 * 1024, rotateKeep: 4 },
+  // knowledge-record (WS2.4): a memory-family store — NEVER rotateKeep:0 (rotate-but-
+  // never-delete would be a compliance defect). Knowledge sources are FEW + bounded (a
+  // catalog of ingested pointers), so a small window with a few archives mirrors the
+  // learning-record sibling. The churny re-ingest loop is coalesced by the store's rate
+  // cap (KnowledgeReplicatedStore.KNOWLEDGE_RECORD_BOUNDS); this is the journal-level
+  // fallback. The per-entry size cap is RAISED to 64KB on the knowledge-record applier
+  // path (KNOWLEDGE_MAX_ENTRY_BYTES) so a fat summary replicates (the file BODY is never
+  // replicated — only the catalog metadata).
+  'knowledge-record': { maxFileBytes: 4 * 1024 * 1024, rotateKeep: 4 },
+  // evolution-action-record (WS2.5): a memory-family store — NEVER rotateKeep:0 (rotate-but-
+  // never-delete would be a compliance defect). Actions are FEW + bounded (the
+  // EvolutionManager prunes to maxActions=300), so a small window with a few archives mirrors
+  // the learning-record sibling. The churny add/updateAction loop is coalesced by the store's
+  // rate cap (EvolutionActionsReplicatedStore.EVOLUTION_ACTION_RECORD_BOUNDS); this is the
+  // journal-level fallback. The per-entry size cap is RAISED to 64KB on the
+  // evolution-action-record applier path (EVOLUTION_ACTION_MAX_ENTRY_BYTES) so a fat action
+  // description replicates.
+  'evolution-action-record': { maxFileBytes: 4 * 1024 * 1024, rotateKeep: 4 },
+  // user-record (WS2.6): a PII store — NEVER rotateKeep:0 (rotate-but-never-delete would be a
+  // compliance defect). Registered principals are FEW + bounded, so a small window with a few
+  // archives mirrors the relationship-record sibling. The churny upsert loop is coalesced by the
+  // store's rate cap (UserRegistryReplicatedStore.USER_RECORD_BOUNDS); this is the journal-level
+  // fallback. The per-entry size cap is RAISED to 64KB on the user-record applier path
+  // (USER_MAX_ENTRY_BYTES) so a fat profile replicates (the local userId is never replicated).
+  'user-record': { maxFileBytes: 4 * 1024 * 1024, rotateKeep: 4 },
+  // topic-operator-record (WS2.6): a PII store — NEVER rotateKeep:0. One binding per topic, so a
+  // small window mirrors the user-record sibling. The per-message re-bind loop is coalesced by the
+  // store's rate cap (TopicOperatorReplicatedStore.TOPIC_OPERATOR_RECORD_BOUNDS). The per-entry size
+  // cap is RAISED to 64KB on the applier path (TOPIC_OPERATOR_MAX_ENTRY_BYTES). NOTE: this kind is
+  // ADVISORY-only — a replicated topic-operator record is NEVER the authoritative principal.
+  'topic-operator-record': { maxFileBytes: 2 * 1024 * 1024, rotateKeep: 4 },
 };
 
 export const DEFAULT_FLUSH_INTERVAL_MS = 250;
@@ -280,13 +425,21 @@ export class CoherenceJournal {
   private state: WriterState = 'closed';
   private incarnation = '';
   /** Next seq to assign at enqueue, per kind (in-memory counter seeded at open). */
-  private nextSeq: Record<JournalKind, number> = { 'topic-placement': 1, 'session-lifecycle': 1, 'autonomous-run': 1, 'threadline-conversation': 1 };
+  private nextSeq: Record<JournalKind, number> = { 'topic-placement': 1, 'session-lifecycle': 1, 'autonomous-run': 1, 'threadline-conversation': 1, 'guard-latch': 1, 'pref-record': 1, 'relationship-record': 1, 'learning-record': 1, 'knowledge-record': 1, 'evolution-action-record': 1, 'user-record': 1, 'topic-operator-record': 1 };
   /** Durable highWaterSeq per kind (advanced after data fdatasync). */
   private highWaterSeq: Record<JournalKind, number> = {
     'topic-placement': 0,
     'session-lifecycle': 0,
     'autonomous-run': 0,
     'threadline-conversation': 0,
+    'guard-latch': 0,
+    'pref-record': 0,
+    'relationship-record': 0,
+    'learning-record': 0,
+    'knowledge-record': 0,
+    'evolution-action-record': 0,
+    'user-record': 0,
+    'topic-operator-record': 0,
   };
   /** In-memory enqueue order; drained by the flusher in seq order per kind. */
   private queue: QueuedEntry[] = [];
@@ -296,6 +449,14 @@ export class CoherenceJournal {
     'session-lifecycle': new Set(),
     'autonomous-run': new Set(),
     'threadline-conversation': new Set(),
+    'guard-latch': new Set(),
+    'pref-record': new Set(),
+    'relationship-record': new Set(),
+    'learning-record': new Set(),
+    'knowledge-record': new Set(),
+    'evolution-action-record': new Set(),
+    'user-record': new Set(),
+    'topic-operator-record': new Set(),
   };
   private rateBuckets: Record<JournalKind, RateBucket>;
   private timer: ReturnType<typeof setInterval> | null = null;
@@ -335,6 +496,14 @@ export class CoherenceJournal {
       'session-lifecycle': config.retention?.['session-lifecycle'] ?? DEFAULT_RETENTION['session-lifecycle'],
       'autonomous-run': config.retention?.['autonomous-run'] ?? DEFAULT_RETENTION['autonomous-run'],
       'threadline-conversation': config.retention?.['threadline-conversation'] ?? DEFAULT_RETENTION['threadline-conversation'],
+      'guard-latch': config.retention?.['guard-latch'] ?? DEFAULT_RETENTION['guard-latch'],
+      'pref-record': config.retention?.['pref-record'] ?? DEFAULT_RETENTION['pref-record'],
+      'relationship-record': config.retention?.['relationship-record'] ?? DEFAULT_RETENTION['relationship-record'],
+      'learning-record': config.retention?.['learning-record'] ?? DEFAULT_RETENTION['learning-record'],
+      'knowledge-record': config.retention?.['knowledge-record'] ?? DEFAULT_RETENTION['knowledge-record'],
+      'evolution-action-record': config.retention?.['evolution-action-record'] ?? DEFAULT_RETENTION['evolution-action-record'],
+      'user-record': config.retention?.['user-record'] ?? DEFAULT_RETENTION['user-record'],
+      'topic-operator-record': config.retention?.['topic-operator-record'] ?? DEFAULT_RETENTION['topic-operator-record'],
     };
     this.rateCapCfg = config.rateCap ?? DEFAULT_RATE_CAP;
     this.artifactRoots = (config.artifactRoots ?? [path.join(this.stateDir, 'autonomous'), this.stateDir]).map((r) => {
@@ -357,6 +526,14 @@ export class CoherenceJournal {
       'session-lifecycle': { tokens: this.rateCapCfg.capacity, lastRefillMs: initMs },
       'autonomous-run': { tokens: this.rateCapCfg.capacity, lastRefillMs: initMs },
       'threadline-conversation': { tokens: this.rateCapCfg.capacity, lastRefillMs: initMs },
+      'guard-latch': { tokens: this.rateCapCfg.capacity, lastRefillMs: initMs },
+      'pref-record': { tokens: this.rateCapCfg.capacity, lastRefillMs: initMs },
+      'relationship-record': { tokens: this.rateCapCfg.capacity, lastRefillMs: initMs },
+      'learning-record': { tokens: this.rateCapCfg.capacity, lastRefillMs: initMs },
+      'knowledge-record': { tokens: this.rateCapCfg.capacity, lastRefillMs: initMs },
+      'evolution-action-record': { tokens: this.rateCapCfg.capacity, lastRefillMs: initMs },
+      'user-record': { tokens: this.rateCapCfg.capacity, lastRefillMs: initMs },
+      'topic-operator-record': { tokens: this.rateCapCfg.capacity, lastRefillMs: initMs },
     };
   }
 
@@ -511,6 +688,20 @@ export class CoherenceJournal {
   }
 
   /**
+   * guard-latch (green-pr-automerge R9/R7). Op key: (latchKind, latchId, seq) —
+   * each transition carries a fresh monotonic `seq`, so distinct transitions are
+   * never deduped away while a genuine retry of the SAME (kind,id,seq) collapses.
+   */
+  emitGuardLatch(data: GuardLatchData): void {
+    this.emit(
+      'guard-latch',
+      undefined,
+      data as unknown as Record<string, unknown>,
+      `${data?.latchKind}:${data?.latchId}:${data?.seq}`,
+    );
+  }
+
+  /**
    * Generic non-blocking emit: validate + jail + dedupe + rate-cap + serialize,
    * assign a seq, enqueue, and RETURN. No synchronous file I/O on this stack —
    * the flusher does all of it. Never throws into the caller.
@@ -585,7 +776,11 @@ export class CoherenceJournal {
       const reason = raw.reason;
       if (typeof owner !== 'string' || !owner) return null;
       if (typeof epoch !== 'number' || !Number.isFinite(epoch)) return null;
-      const reasons: PlacementReason[] = ['user-move', 'placed', 'failover', 'released', 'quota-block-move'];
+      // KEEP IN SYNC with the PlacementReason union above — the type annotation
+      // does NOT enforce completeness (a subset is type-legal), so extending the
+      // union without this list silently schema-rejects the new reason at the
+      // source (caught by the WS1.3 second-pass review, 2026-06-12).
+      const reasons: PlacementReason[] = ['user-move', 'placed', 'failover', 'released', 'quota-block-move', 'reconcile'];
       if (typeof reason !== 'string' || !reasons.includes(reason as PlacementReason)) return null;
       out = { owner, epoch, reason };
       known = ['owner', 'epoch', 'reason', 'prevOwner'];
@@ -635,6 +830,26 @@ export class CoherenceJournal {
       if (topicId !== undefined && (typeof topicId !== 'number' || !Number.isFinite(topicId))) return null;
       out = { action, conversationId, peerFingerprint, ...(topicId !== undefined ? { topicId } : {}) };
       known = ['action', 'conversationId', 'peerFingerprint', 'topicId'];
+    } else if (kind === 'guard-latch') {
+      // green-pr-automerge R9/R7 — content-free latch transition. Free text
+      // structurally excluded; `reason` is a short slug, length-capped.
+      const latchKind = raw.latchKind;
+      const latchId = raw.latchId;
+      const action = raw.action;
+      const epoch = raw.epoch;
+      const seq = raw.seq;
+      const actions: GuardLatchAction[] = ['set', 'clear'];
+      if (typeof latchKind !== 'string' || !latchKind || latchKind.length > 64) return null;
+      if (typeof latchId !== 'string' || !latchId || latchId.length > 128) return null;
+      if (typeof action !== 'string' || !actions.includes(action as GuardLatchAction)) return null;
+      if (typeof epoch !== 'number' || !Number.isFinite(epoch)) return null;
+      if (typeof seq !== 'number' || !Number.isFinite(seq)) return null;
+      out = { latchKind, latchId, action, epoch, seq };
+      known = ['latchKind', 'latchId', 'action', 'epoch', 'seq', 'reason'];
+      if (raw.reason !== undefined) {
+        if (typeof raw.reason !== 'string') return null;
+        out.reason = raw.reason.slice(0, 80);
+      }
     } else {
       return null;
     }
@@ -863,6 +1078,7 @@ export class CoherenceJournal {
         'session-lifecycle': { highWaterSeq: this.highWaterSeq['session-lifecycle'] },
         'autonomous-run': { highWaterSeq: this.highWaterSeq['autonomous-run'] },
         'threadline-conversation': { highWaterSeq: this.highWaterSeq['threadline-conversation'] },
+        'guard-latch': { highWaterSeq: this.highWaterSeq['guard-latch'] },
       },
     };
     const metaPath = this.metaPath();
@@ -993,6 +1209,10 @@ export class CoherenceJournal {
       // data, not entry.topic (round-1 integration finding).
       if (typeof d.conversationId !== 'string' || typeof d.action !== 'string') return null;
       return `${d.conversationId}:${d.action}:${typeof d.topicId === 'number' ? d.topicId : ''}`;
+    }
+    if (kind === 'guard-latch') {
+      if (typeof d.latchKind !== 'string' || typeof d.latchId !== 'string' || typeof d.seq !== 'number') return null;
+      return `${d.latchKind}:${d.latchId}:${d.seq}`;
     }
     return null;
   }

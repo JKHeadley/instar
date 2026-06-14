@@ -289,3 +289,63 @@ export class ContentClassifier {
 export function createDisabledClassifier(): ContentClassifier {
   return new ContentClassifier({ enabled: false });
 }
+
+// ── Commitment-class SIGNAL (Robustness Phase 1, FD-10 — advisory only) ──
+//
+// SIGNAL, NOT AUTHORITY. This deterministic lexicon surfaces a NUDGE to the
+// sending session ("this reads like a commitment — it carries no authority
+// unless you anchor it via a mandate/review-exchange"). It NEVER blocks, NEVER
+// refuses, and fails open to no-nudge. Because it has no authority, an
+// incomplete lexicon is not a safety hole (a missed nudge = no hint; prose is
+// inert either way — G2 does not depend on it). See
+// THREADLINE-SINGLE-NEGOTIATOR-SPEC.md §"Why G2 is prose-is-inert".
+
+export interface CommitmentSignal {
+  /** True when the text reads like an attempt to commit/lock an irreversible step. */
+  isCommitmentClass: boolean;
+  /** The binding terms that matched (for the advisory message). */
+  matchedTerms: string[];
+}
+
+/**
+ * Binding verbs/phrases that, over an irreversible or temporal object, read as a
+ * commitment. Deliberately colloquial-inclusive — the incident's own evidence
+ * ("see you at the gate", "yep, go ahead") had no formal keyword. This is recall
+ * for a NUDGE; it does not need to be exhaustive to be correct (FD-10).
+ */
+const COMMITMENT_TERMS: readonly string[] = [
+  'go ahead', 'go-ahead', 'green light', 'greenlight', 'green-light',
+  'sign off', 'sign-off', 'signed off', 'signing off',
+  "let's schedule", 'let us schedule', "let's lock", 'lock it in', 'locked in',
+  'move forward', 'go live', 'go-live', 'going live', 'ship it',
+  'confirmed for', 'confirm the', 'we agreed', 'we agree to', 'agreed to',
+  'i confirm', 'you are approved', 'approve the', 'approved the', 'approval to',
+  'lock the', 'locking the', 'schedule the cutover', 'cutover window',
+  'see you at the gate', 'commit to', 'committing to',
+];
+
+/**
+ * Detect commitment-class prose. PURE, deterministic, no I/O — safe to call
+ * off the send path with zero latency. Returns a signal only; the caller
+ * surfaces it as a non-blocking nudge (e.g. an advisory note on the send
+ * response). It is NEVER wired to a block path.
+ */
+export function detectCommitmentClass(content: string): CommitmentSignal {
+  const lower = (content ?? '').toLowerCase();
+  const matched: string[] = [];
+  for (const term of COMMITMENT_TERMS) {
+    if (lower.includes(term)) matched.push(term);
+  }
+  return { isCommitmentClass: matched.length > 0, matchedTerms: matched };
+}
+
+/** The fixed advisory nudge text shown when commitment-class prose is detected. */
+export function commitmentNudge(matchedTerms: string[]): string {
+  const sample = matchedTerms.slice(0, 3).join('", "');
+  return (
+    `This message reads like a commitment (matched "${sample}"). Prose carries NO ` +
+    `authority on Threadline — it can never lock an irreversible step. To make a ` +
+    `binding agreement with the peer, anchor it through a Coordination Mandate or ` +
+    `ReviewExchange (PIN-anchored). The message was sent unchanged; this is only a hint.`
+  );
+}

@@ -13,7 +13,11 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import type { SessionManager } from '../core/SessionManager.js';
-import { KNOWN_CLAUDE_MODEL_IDS } from '../core/ModelTierEscalation.js';
+import {
+  KNOWN_CLAUDE_MODEL_IDS,
+  escalatedModelIds,
+  normalizeTierEscalationConfig,
+} from '../core/ModelTierEscalation.js';
 import {
   validateSummaryDeterministic,
   neutralizeInstructionShapedContent,
@@ -30,6 +34,8 @@ import { describeTopicPlacement } from '../core/TopicPlacementDescription.js';
 import { buildRelocationNicknameSet } from '../core/RelocationNicknameSet.js';
 import { resolveSelfNickname } from '../core/SelfNicknameResolver.js';
 import { resolveDevAgentGate } from '../core/devAgentGate.js';
+import { PROPOSABLE_FLOOR_ACTIONS, renderAuthorizationCard } from '../core/AuthorizationRequestStore.js';
+import type { AuthorizationRequestStore, AuthorizationRequest } from '../core/AuthorizationRequestStore.js';
 import { planTransferByNickname } from '../core/TransferByNickname.js';
 import type { JobScheduler } from '../scheduler/JobScheduler.js';
 import type { InstarConfig, JobPriority } from '../core/types.js';
@@ -48,6 +54,16 @@ import { CoherenceJournalReader, InvalidCursorError } from '../core/CoherenceJou
 import { creditUsherOnOutbound } from '../core/UsherActedCorrelator.js';
 import { validateWriteToken, canPerformOperation } from '../core/StateWriteAuthority.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
+import {
+  readGuardPostureBootSnapshot,
+  resolveGuardConfigSnapshot,
+} from '../monitoring/guardPosture.js';
+import { buildGuardInventory } from '../monitoring/guardPostureView.js';
+import { GuardRegistry } from '../monitoring/GuardRegistry.js';
+import { isPeerUrlAllowedForCredentials } from './peerUrlGuard.js';
+import { classifyMachineEmptyState } from './poolEmptyState.js';
+import { RemoteCloseAudit } from '../core/RemoteCloseAudit.js';
+import { RemoteAckStore } from '../core/RemoteAckStore.js';
 import { FailureLedger } from '../monitoring/FailureLedger.js';
 import { FailureAttributionEngine } from '../monitoring/FailureAttributionEngine.js';
 import { FailureAnalyzer } from '../monitoring/FailureAnalyzer.js';
@@ -68,6 +84,8 @@ import {
   recordSessionStart,
   getMode,
   setMode,
+  computeGreenPrBlock,
+  resolveBranchFromCwd,
 } from './stopGate.js';
 import {
   UnjustifiedStopGate,
@@ -200,6 +218,7 @@ import {
   canStartAutonomousJob,
   stopAutonomousTopic,
   stopAllAutonomousJobs,
+  suspendAutonomousTopicForMove,
   DEFAULT_MAX_CONCURRENT_AUTONOMOUS,
 } from '../core/AutonomousSessions.js';
 import type { MemoryPressureMonitor } from '../monitoring/MemoryPressureMonitor.js';
@@ -229,6 +248,14 @@ import type { ThreadlineRouter } from '../threadline/ThreadlineRouter.js';
 import { evaluateAndRecordInbound } from '../threadline/WarrantsReplyGate.js';
 import type { HandshakeManager } from '../threadline/HandshakeManager.js';
 import { createThreadlineRoutes } from '../threadline/ThreadlineEndpoints.js';
+import { evaluateSendGate, negotiatorLogDir } from '../threadline/NegotiatorGate.js';
+import { recordInboundAck } from '../threadline/recordInboundAck.js';
+import { recordThreadMessage } from '../threadline/recordThreadMessage.js';
+import { THREAD_ID_RE } from '../threadline/ThreadLog.js';
+import { readThreadHistoryUnion, type CanonicalReadDeps, type AggregateMessage } from '../threadline/canonicalHistoryRead.js';
+import { computeSymmetryState, localThreadSync, honorPeerThreadSync, type SymmetryState } from '../threadline/threadSymmetry.js';
+import { resolveSingleNegotiatorConfig, readNegotiatorCounts } from '../threadline/NegotiatorLease.js';
+import { detectCommitmentClass, commitmentNudge } from '../threadline/ContentClassifier.js';
 import type { UnifiedTrustSystem } from '../threadline/UnifiedTrustWiring.js';
 import { DEFAULT_RELAY_URL } from '../threadline/constants.js';
 import { ThreadlineNicknames } from '../threadline/ThreadlineNicknames.js';
@@ -249,6 +276,7 @@ import type { MessageKind } from '../core/MessagingToneGate.js';
 import {
   OutboundAdvisoryAudit,
   composeAdvisories,
+  composeTimeClaimAdvisories,
   PREFLIGHT_TEXT_CAP,
 } from '../messaging/OutboundAdvisory.js';
 import type { PasteManager } from '../paste/PasteManager.js';
@@ -634,12 +662,40 @@ export interface RouteContext {
   inUseAccountResolver?: import('../core/InUseAccountResolver.js').InUseAccountResolver;
   /** EnrollmentWizard (P2.1) — mobile-first login + auto-reissue. Null until wired. */
   enrollmentWizard: import('../core/EnrollmentWizard.js').EnrollmentWizard | null;
+  /** Live credential re-pointing (WS5.2) — the swap/set-default/restore-enrollment levers
+   *  + ledger census + audit-scrub chokepoint. Null until the server wiring constructs it;
+   *  ships DARK behind `subscriptionPool.credentialRepointing.enabled` (the routes 503 /
+   *  no-op when the flag is off, regardless of whether this bundle is wired). */
+  credentialRepointing?: {
+    ledger: import('../core/CredentialLocationLedger.js').CredentialLocationLedger;
+    /** Constructs+runs the staged exchange live (the Step-5 executor host). */
+    swapExecutor: import('../core/CredentialSwapExecutor.js').CredentialSwapExecutor;
+    /** Slot → confirmed accountId | unavailable (the composed oracle→pool resolver). */
+    resolveIdentity: import('../core/CredentialSwapExecutor.js').ResolveSlotIdentity;
+    /** The SINGLE secret-scrub chokepoint every response/audit/attention routes through. */
+    audit: import('../core/CredentialAuditEmit.js').CredentialAuditEmit;
+    /** Per-pair cooldown + §0.g force budget. */
+    levers: import('../core/CredentialManualLevers.js').CredentialManualLevers;
+    /** §2.10 env-token gate (Step 8) — refuses the feature (config field OR live env-token fleet)
+     *  with a named reason surfaced on GET /credentials/rebalancer. */
+    envTokenGate: import('../core/CredentialEnvTokenGate.js').CredentialEnvTokenGate;
+    /** B3b — the autonomous balancer (Increment B). Its `status()` is surfaced on
+     *  GET /credentials/rebalancer (last pass + breaker). Optional so tests can omit it. */
+    rebalancer?: import('../core/CredentialRebalancer.js').CredentialRebalancer;
+    /** Raw-blob reader for a slot (restore-enrollment coherence probe). Injectable for tests. */
+    readBlob?: (slot: string) => Promise<{ raw: string; oauth: import('../core/OAuthRefresher.js').ClaudeOauth | null } | null>;
+  } | null;
   semanticMemory: SemanticMemory | null;
   activitySentinel: SessionActivitySentinel | null;
   rateLimitSentinel: import('../monitoring/RateLimitSentinel.js').RateLimitSentinel | null;
   /** ReleaseReadinessSentinel (Layer B of release-readiness-visibility). Null on
    *  installs with no analyzable instar git repo, or when disabled in config. */
   releaseReadinessSentinel: import('../monitoring/ReleaseReadinessSentinel.js').ReleaseReadinessSentinel | null;
+  /** GreenPrAutoMerger (green-pr-automerge-enforcement). Null on installs with no
+   *  analyzable instar repo + safe-merge, or when disabled in config. */
+  greenPrAutoMerger: import('../monitoring/GreenPrAutoMerger.js').GreenPrAutoMerger | null;
+  /** GuardLatchStore — the pool-visible rollback/enable/pool-armed latches. */
+  guardLatchStore: import('../monitoring/GuardLatchStore.js').GuardLatchStore | null;
   messageRouter: MessageRouter | null;
   summarySentinel: SessionSummarySentinel | null;
   spawnManager: SpawnRequestManager | null;
@@ -650,6 +706,23 @@ export interface RouteContext {
   selfKnowledgeTree: SelfKnowledgeTree | null;
   coverageAuditor: CoverageAuditor | null;
   topicResumeMap: TopicResumeMap | null;
+  /** Topic Profile (TOPIC-PROFILE-SPEC §10.1/§12) — store + resolver + write
+   *  surface + shared confirm slots behind GET/POST /topic-profile/:topicId.
+   *  Null when the profile store failed to initialize; the routes then report
+   *  unwired honestly (503). */
+  topicProfile?: {
+    store: import('../core/TopicProfileStore.js').TopicProfileStore;
+    resolver: import('../core/TopicProfileResolver.js').TopicProfileResolver;
+    surface: import('../core/topicProfileWriteSurface.js').TopicProfileWriteSurface;
+    confirmSlots: import('../core/topicProfileIngress.js').ProfileConfirmSlots;
+    /** §8 orchestrator — the model-swap route serializes its live-session
+     *  mutation through orchestrator.runExclusive (the §5.1/§9 per-topic
+     *  lock pass-through). Null until the server wiring constructs it. */
+    orchestrator?: import('../core/TopicProfileOrchestrator.js').TopicProfileOrchestrator | null;
+    /** §5.3 transfer carrier — read-surface staleness (`pendingTransferPull`)
+     *  + the /pool/transfer acquire seam. Null on single-machine installs. */
+    carrier?: import('../core/TopicProfileTransferCarrier.js').TopicProfileTransferCarrier | null;
+  } | null;
   /** Agent-initiated session respawn. Null when no Telegram adapter is
    *  wired (v1 requires a Telegram-bound session). */
   sessionRefresh: SessionRefresh | null;
@@ -658,6 +731,12 @@ export interface RouteContext {
    *  model-swap. Null only when no SessionManager exists; the route then
    *  reports unwired honestly (503). */
   modelTierSwap?: import('../core/ModelSwapService.js').ModelSwapService | null;
+  /** WS5.3 (escalation-rides-topic) — the ephemeral per-topic escalation-hint
+   *  carrier. The `/pool/transfer` SOURCE leg files a hint when the moving
+   *  topic has a live escalated session; the destination resume/acquire pull
+   *  consumes it to RE-ADMIT through its own governor. Null on single-machine
+   *  installs or when WS5.3 is unwired (the path is then a strict no-op). */
+  escalationHints?: import('../core/EscalationHintStore.js').EscalationHintStore | null;
   autonomyManager: AutonomyProfileManager | null;
   trustElevationTracker: TrustElevationTracker | null;
   autonomousEvolution: AutonomousEvolution | null;
@@ -675,6 +754,13 @@ export interface RouteContext {
    *  path (/messages/relay-agent) gates identically to the relay funnel. Without
    *  this, same-machine agents bypass the loop gate (caught in test-as-self). */
   conversationStore?: import('../threadline/ConversationStore.js').ConversationStore;
+  /** Robustness Phase 2 (D-A) — the canonical, append-only, hash-chained
+   *  per-thread log. The authoritative read source for `threadline_history` and
+   *  the structural F3 fix. Optional; absent when threadline is disabled. */
+  threadLog?: import('../threadline/ThreadLog.js').ThreadLog;
+  /** Robustness Phase 2 (D-B/D-E) — the single append funnel + conversation
+   *  -discipline resolver. Every message-persisting route appends through this. */
+  threadMessageRecorder?: import('../threadline/recordThreadMessage.js').ThreadMessageRecorder;
   warrantsReplyGate?: import('../threadline/WarrantsReplyGate.js').WarrantsReplyGate;
   /** CMT-509: surface parentless Threadline conversations to a dedicated topic. */
   collaborationSurfacer?: import('../threadline/CollaborationSurfacer.js').CollaborationSurfacer;
@@ -799,6 +885,20 @@ export interface RouteContext {
     /** ReviewExchange engine (spec §7 G2.3) — mandate-gated mutual code-review sign-offs. */
     reviews: import('../coordination/ReviewExchange.js').ReviewExchangeEngine;
   } | null;
+  /** Operator Authorization Request (agent proposes → operator approves one-tap).
+   *  Spec: docs/specs/OPERATOR-AUTHORIZATION-REQUEST-SPEC.md. Null when stateDir is
+   *  unavailable. `enabled` is the resolved dev-gate (enabled-on-dev / dark-on-fleet);
+   *  the routes 503 when false. `resolvePrincipal` is the SAME registry the
+   *  SlackPermissionGate consumes (UserManager.resolveFromSlackUserId). The approve
+   *  route issues the grant via ctx.coordination.store — never a new authority path. */
+  authorizationRequests?: {
+    store: AuthorizationRequestStore;
+    enabled: boolean;
+    machineId: string;
+    ownerDisplay: string;
+    carrierSelfFp: string;
+    resolvePrincipal: (slackUserId: string) => { name: string; registered: boolean } | null;
+  } | null;
   /** Cutover-READINESS checker (spec §7 G2.4, decision 1A: everything UP TO the
    *  door). Read-only objective conditions from durable state; the flip itself is
    *  never autonomous. Null when stateDir is unavailable. */
@@ -855,9 +955,20 @@ export interface RouteContext {
    *  (older boot paths). Powers GET /sessions/reaper observability. */
   sessionReaper?: import('../monitoring/SessionReaper.js').SessionReaper | null;
   reapLog?: import('../monitoring/ReapLog.js').ReapLog | null;
+  /** ResumeQueue + drainer (reap-notify spec R2.10). Null when Part B is off
+   *  or the queue is lock-disabled. Powers /sessions/resume-queue*. */
+  resumeQueue?: import('../monitoring/ResumeQueue.js').ResumeQueue | null;
+  resumeDrainer?: import('../monitoring/ResumeQueueDrainer.js').ResumeQueueDrainer | null;
+  /** Records an operator stop instruction (per-topic, or null = global) so the
+   *  drainer's R2.6 operator-stop validation can see stops that post-date an
+   *  entry's enqueue. Wired by the boot block alongside the queue. */
+  operatorStopRecorder?: ((topicId: number | null) => void) | null;
   /** AgentWorktreeReaper — reclaims stale CLI worktrees. Null when not wired.
    *  Powers GET /worktrees/agent-reaper observability. */
   agentWorktreeReaper?: import('../monitoring/AgentWorktreeReaper.js').AgentWorktreeReaper | null;
+  /** OrphanedWorkSentinel — the silent-uncommitted-death backstop. Null when not
+   *  wired / dark. Powers GET /orphaned-work observability. */
+  orphanedWorkSentinel?: import('../monitoring/OrphanedWorkSentinel.js').OrphanedWorkSentinel | null;
   /** McpProcessReaper — reclaims leaked MCP-server children. Null when not wired.
    *  Powers GET /processes/mcp-reaper observability. */
   mcpProcessReaper?: import('../monitoring/McpProcessReaper.js').McpProcessReaper | null;
@@ -885,6 +996,10 @@ export interface RouteContext {
   /** Multi-Machine Session Pool registry (§L2) — live MachineCapacity view behind
    *  GET /pool + the Machines dashboard tab. Null/absent when not wired (ships dark). */
   machinePoolRegistry?: import('../core/MachinePoolRegistry.js').MachinePoolRegistry | null;
+  /** Durable Inbound Message Queue engine getter — late-bound (the engine is
+   *  constructed in the mesh block after the server). Null/absent or a null
+   *  return = the queue is dark/gated; GET /pool/queue answers 503. */
+  getInboundQueue?: (() => import('../core/QueueDrainLoop.js').QueueDrainLoop | null) | null;
   /** MeshRpc dispatcher (§L0) — the receive side behind POST /mesh/rpc (signed,
    *  recipient-bound, RBAC-gated m2m commands). Null/absent when not wired (dark). */
   meshRpcDispatcher?: import('../core/MeshRpc.js').MeshRpcDispatcher | null;
@@ -897,6 +1012,28 @@ export interface RouteContext {
    *  the merged GET /commitments view folds these replicas in. Null/absent
    *  while dark (the routes return own rows only, byte-identical to before). */
   commitmentReplicaStore?: import('../core/CommitmentsSync.js').CommitmentReplicaStore | null;
+  /** Preferences-pool replica store (MULTI-MACHINE-SEAMLESSNESS-SPEC §WS2.1) —
+   *  the merged GET /preferences/session-context folds these replicas in (flag-
+   *  gated). Null/absent while dark (the route returns own rows only, byte-
+   *  identical to before). */
+  preferenceReplicaStore?: import('../core/PreferencesSync.js').PreferenceReplicaStore | null;
+  /** Replicated-store conflict ledger (multi-machine-replicated-store-foundation
+   *  §7.2/§7.3) — backs GET /state/conflicts + POST /state/resolve-conflict.
+   *  Null/absent while dark (the routes answer 503). */
+  conflictStore?: import('../core/ConflictStore.js').ConflictStore | null;
+  /** Rollback-unmerge engine (§7.4) — un-merges a (store, origin) from the union.
+   *  Null/absent while dark. */
+  rollbackUnmerge?: import('../core/RollbackUnmerge.js').RollbackUnmerge | null;
+  /** Durable un-merged-origins registry (§7.4) — the live exclusion set the
+   *  union reader consults. Null/absent while dark. */
+  droppedOriginRegistry?: import('../core/RollbackUnmerge.js').DroppedOriginRegistry | null;
+  /** WS2.1 — the bypass-proof union reader for the `preferences` store
+   *  (multi-machine-replicated-store-foundation §7.2). GET /preferences/session-context
+   *  reads the no-clobber UNION through it (own + non-dropped peer replicas; an open
+   *  conflict yields BOTH variants as advisory hints, §15.1) ONLY when
+   *  multiMachine.stateSync.preferences.enabled is true. Null/absent ⇒ the route
+   *  keeps its legacy own-only / seamlessness-merge path, byte-identical. */
+  preferencesUnionReader?: import('../core/ReplicatedStoreReader.js').ReplicatedStoreReader | null;
   /** P1.5b owner-routed mutation (§3.4): forward a mutate intent to the
    *  owning machine (verdict back, or durably queued). Null/absent = dark
    *  (replica-targeted mutations answer 409 explaining the layer is off). */
@@ -919,9 +1056,33 @@ export interface RouteContext {
    *  null). Lets the placement/transfer routes proxy to the authoritative holder so
    *  they are answerable/callable from ANY machine. Null/absent (single-machine/dark). */
   resolveRouterUrl?: (() => string | null) | null;
+  /** WS1.2 sender leg (MULTI-MACHINE-SEAMLESSNESS-SPEC): order the topic's
+   *  current owner — local or remote — to DRAIN its live session for a
+   *  transfer (finish the turn bounded, close, land the target's claim).
+   *  Null/absent → the transfer route uses today's pin-and-release path. */
+  sendDrain?: ((ownerMachineId: string, sessionKey: string, target: string, ownershipEpoch: number) => Promise<{ ok: boolean; status?: string; reason?: string; noHandler?: boolean; runSuspended?: boolean }>) | null;
   /** Every OTHER registered, non-revoked machine with a known URL — for pool-wide
    *  aggregation (GET /sessions?scope=pool). Null/absent (single-machine/dark). */
   resolvePeerUrls?: (() => Array<{ machineId: string; url: string }>) | null;
+  /** WS4.4(f) global pool-cache unification (MULTI-MACHINE-SEAMLESSNESS-SPEC
+   *  §WS4.4 clause (f)): the ONE shared per-peer poll cache that every
+   *  pool-scope surface routes its per-peer fetch through, so a dashboard
+   *  polling several tabs hits each peer once per interval instead of once per
+   *  surface per client (and serves last-cached under CPU load-shed). Constructed
+   *  in the mesh block ONLY when the dark `ws44PoolCache` flag resolves on; null
+   *  ⇒ surfaces keep their existing direct per-peer fetch (byte-for-byte today's
+   *  behavior). Single-machine has no peers, so it is a strict no-op there. */
+  poolPollCache?: import('./PoolPollCache.js').PoolPollCache | null;
+  /** Guard runtime registry (GUARD-POSTURE-ENDPOINT-SPEC §2.1) — boot-time
+   *  self-registered sync getters behind GET /guards. Null/absent → the route
+   *  still serves the config-derived inventory (every guard on-unverified at
+   *  best), never a 503: visibility must not have an off-switch. */
+  guardRegistry?: import('../monitoring/GuardRegistry.js').GuardRegistry | null;
+  /** EVERY registered, non-revoked machine (with or without a known URL) —
+   *  the /guards?scope=pool accounting boundary (a machine with no URL emits
+   *  a named failure row, never a silent omission — spec §2.3). Null/absent
+   *  (single-machine/dark). */
+  listPoolMachines?: (() => Array<{ machineId: string; nickname?: string; lastKnownUrl?: string | null }>) | null;
   /** Signed, append-only rollout-stage E2E results (§Rollout) — backs GET
    *  /session-pool/e2e-results so the gate state is observable. Null/absent (dark). */
   sessionPoolE2EResultStore?: import('../core/SessionPoolE2EResultStore.js').SessionPoolE2EResultStore | null;
@@ -945,6 +1106,41 @@ export interface RouteContext {
    * messageLedger; both null when exactly-once is dark).
    */
   replyMarkerTransport: import('../core/ReplyMarkerTransport.js').ReplyMarkerTransport | null;
+  /**
+   * WS4.4 "links that survive machine boundaries" (MULTI-MACHINE-SEAMLESSNESS-SPEC
+   * §WS4.4). When present, the tunnel-fronting machine can resolve the actual
+   * HOLDER of a `/view/:id` (view-id ownership ≠ topic ownership) and proxy the
+   * request to it carrying a short-lived, audience-bound, single-use, mesh-signed
+   * USER-AUTH ASSERTION — never the raw PIN / view token (each machine's PIN
+   * secret never crosses). The holder makes the authorization decision; the
+   * fronting machine is a dumb relay. Null/absent on a single-machine install or
+   * when the dark flag (multiMachine.seamlessness.ws44PoolLinks) is off — the
+   * `/view/:id` route then behaves exactly as before (local-only).
+   */
+  poolLink?: {
+    /** This machine's mesh fingerprint (machineId) — issuer (fronting) / holder (serving). */
+    selfFingerprint: string;
+    /** Fronting-side: the holder-resolution + concurrency-capped proxy. */
+    proxy: import('../core/PoolViewProxy.js').PoolViewProxy;
+    /** Holder-side: the single-use jti replay store. */
+    jtiStore: import('../core/PoolLinkJtiStore.js').PoolLinkJtiStore;
+    /** Mint a signed assertion for (holder, view, method) on the fronting side. */
+    mintAssertion: (
+      audience: { holderFingerprint: string; viewId: string; method: string },
+      userAuth: import('../core/PoolLinkAssertion.js').PoolLinkAssertion['userAuth'],
+    ) => import('../core/PoolLinkAssertion.js').PoolLinkAssertion;
+    /** Resolve a peer machine's REGISTERED Ed25519 signing public key (PEM) — holder side. */
+    resolveIssuerPublicKeyPem: (iss: string) => string | null;
+    /** Ed25519 verify (canonical, signature, pem). */
+    verify: (canonical: string, signature: string, pem: string) => boolean;
+    /** Send a machine-authed proxied view fetch to the holder; streams the response. */
+    fetchFromHolder: (
+      holder: { machineId: string; url: string },
+      viewId: string,
+      method: string,
+      assertion: import('../core/PoolLinkAssertion.js').PoolLinkAssertion,
+    ) => Promise<{ status: number; contentType: string | null; body: Buffer }>;
+  } | null;
   startTime: Date;
 }
 
@@ -2327,6 +2523,32 @@ export function createRoutes(ctx: RouteContext): Router {
   router.get('/internal/stop-gate/hot-path', (req, res) => {
     const sessionId = typeof req.query.session === 'string' ? req.query.session : '';
     const state = getHotPathState({ sessionId: sessionId || undefined });
+    // green-pr-automerge Layer 2: compute greenPrBlock LAZILY — only when the
+    // watcher has snapshot candidates (the common zero-candidate stop costs
+    // nothing). Branch resolution reads .git/HEAD (fail-open).
+    try {
+      const snap = ctx.greenPrAutoMerger?.snapshot().snapshot;
+      if (snap && snap.entries.length > 0 && sessionId) {
+        // Latest recorded cwd for the session (reporter forwards it).
+        let cwd: string | null = null;
+        const evs = ctx.hookEventReceiver?.getSessionEvents(sessionId) ?? [];
+        for (let i = evs.length - 1; i >= 0; i--) {
+          const c = evs[i]?.payload?.cwd;
+          if (typeof c === 'string' && c) { cwd = c; break; }
+        }
+        const branch = cwd ? resolveBranchFromCwd(cwd, (p) => fs.readFileSync(p, 'utf-8'), (p) => fs.existsSync(p)) : null;
+        const gate = ctx.guardLatchStore?.isMergeAllowed();
+        state.greenPrBlock = computeGreenPrBlock({
+          snapshot: { at: snap.at, entries: snap.entries.map((e) => ({ pr: e.pr, headRefName: e.headRefName, kind: e.kind })) },
+          sessionBranch: branch,
+          armed: gate ? gate.allowed : false,
+          killSwitch: state.killSwitch,
+          compactionInFlight: state.compactionInFlight,
+          tickIntervalMs: Number(ctx.config.monitoring?.greenPrAutoMerge?.tickIntervalMs) || 600_000,
+          now: Date.now(),
+        });
+      }
+    } catch { /* Layer 2 is a belt — never let it break the hot path */ }
     res.json(state);
   });
 
@@ -3793,12 +4015,24 @@ export function createRoutes(ctx: RouteContext): Router {
 
   router.post('/autonomous/stop-all', (_req, res) => {
     const result = stopAllAutonomousJobs(ctx.config.stateDir, ctx.state.getCoherenceJournal());
+    // Emergency stop reaches the resume queue (reap-notify R2.7): the
+    // queue-global pause flag is set (entries + states untouched, TTLs
+    // frozen); the explicit unpause lever is POST /sessions/resume-queue/resume.
+    try {
+      ctx.resumeQueue?.pause('autonomous stop-all');
+    } catch { /* the stop must succeed regardless */ }
     res.json({ ok: true, ...result });
   });
 
   router.post('/autonomous/sessions/:topic/stop', (req, res) => {
     const topic = req.params.topic;
     const stopped = stopAutonomousTopic(ctx.config.stateDir, topic, ctx.state.getCoherenceJournal());
+    // An explicit per-topic stop cancels that topic's queued resumes (R2.7).
+    try {
+      const topicNum = Number(topic);
+      if (Number.isFinite(topicNum)) ctx.resumeQueue?.cancelByTopic(topicNum);
+      ctx.operatorStopRecorder?.(Number.isFinite(topicNum) ? topicNum : null);
+    } catch { /* @silent-fallback-ok — an operator STOP must never fail because queue-cancel bookkeeping raised; an uncancelled entry is still recoverable via TTL + the cancel lever */ }
     res.status(stopped ? 200 : 404).json({ ok: stopped, topic });
   });
 
@@ -4213,16 +4447,71 @@ export function createRoutes(ctx: RouteContext): Router {
   // Cartographer doc-tree — hierarchical, semantic map of the codebase with
   // git-hash staleness derivation (cartographer-doc-tree-schema spec #1). Ships
   // dark behind cartographer.enabled (503 when disabled). Read-only — authoring
-  // is in-process only. Routes lazy-scaffold the structural skeleton on first use.
+  // is in-process only.
+  //
+  // fix instar#1069: NO request path runs an O(nodeCount)/67MB synchronous op on
+  // the event loop. /health + /stale serve the per-host SNAPSHOT the sweep writes;
+  // /tree is byte-bounded (too-large-for-request above the ceiling); the lazy
+  // scaffold()/loadIndex() preamble is GONE (routes serve indexState:'not-built'
+  // when no index exists — the boot-path chunked scaffold builds it off-request).
+  // The Slice-5 callsite lint forbids loadIndex/staleNodes/freshnessHealth/scaffold
+  // here, so this regression cannot return by accident.
+
+  /** Snapshot-enum + provenance, computed cheaply (one `git rev-parse --short HEAD`). */
+  const cartoSnapshotMeta = (
+    snap: import('../core/cartographerDetect.js').CartographerSnapshot | null,
+  ): { snapshot: 'present' | 'absent' | 'detect-failing'; snapshotStale: boolean; ageMs: number | null; headMoved: boolean; lastDetectStatus: string | null; lastDetectAt: string | null; headSha: string | null } => {
+    if (!snap) {
+      return { snapshot: 'absent', snapshotStale: true, ageMs: null, headMoved: false, lastDetectStatus: null, lastDetectAt: null, headSha: null };
+    }
+    const currentHead = ctx.cartographer ? ctx.cartographer.currentHeadShort() : null;
+    const headMoved = snap.headSha != null && currentHead != null && snap.headSha !== currentHead;
+    const ageMs = snap.generatedAt ? Math.max(0, Date.now() - Date.parse(snap.generatedAt)) : null;
+    const failing = snap.lastDetectStatus !== 'ok';
+    return {
+      snapshot: failing ? 'detect-failing' : 'present',
+      snapshotStale: headMoved || failing,
+      ageMs,
+      headMoved,
+      lastDetectStatus: snap.lastDetectStatus,
+      lastDetectAt: snap.lastDetectAt,
+      headSha: snap.headSha,
+    };
+  };
+
   router.get('/cartographer/tree', (req, res) => {
     if (!ctx.cartographer) { res.status(503).json({ error: 'Cartographer not enabled' }); return; }
-    let index = ctx.cartographer.loadIndex();
-    if (!index) index = ctx.cartographer.scaffold();
+    const snap = ctx.cartographer.readSnapshot();
     if (req.query.format === 'compact') {
-      res.json({ root: index.root, generatedAt: index.generatedAt, nodeCount: Object.keys(index.nodes).length });
+      // Cheap: nodeCount + generatedAt from the snapshot (no index parse).
+      res.json({
+        root: '',
+        generatedAt: snap?.generatedAt ?? null,
+        nodeCount: snap?.counts.nodeCount ?? 0,
+        indexState: snap ? 'built' : 'not-built',
+        ...cartoSnapshotMeta(snap),
+      });
       return;
     }
-    res.json(index);
+    // Full index: byte-bounded so a huge tree never triggers the 67MB sync parse.
+    const fsCfg = (ctx.config as { cartographer?: { freshnessSweep?: { maxRequestNodes?: number } } }).cartographer?.freshnessSweep;
+    const maxRequestNodes = typeof fsCfg?.maxRequestNodes === 'number' ? fsCfg.maxRequestNodes : 50000;
+    const byteCeiling = maxRequestNodes * 512; // generous per-entry estimate
+    const loaded = ctx.cartographer.loadIndexBounded(byteCeiling);
+    if (loaded.state === 'not-built') {
+      res.json({ root: '', generatedAt: null, nodeCount: 0, indexState: 'not-built', ...cartoSnapshotMeta(snap) });
+      return;
+    }
+    if (loaded.state === 'too-large') {
+      res.json({
+        indexState: 'too-large-for-request',
+        nodeCount: snap?.counts.nodeCount ?? null,
+        guidance: 'index too large to serve whole; use GET /cartographer/navigate?query=... for a bounded subtree',
+        ...cartoSnapshotMeta(snap),
+      });
+      return;
+    }
+    res.json(loaded.index);
   });
 
   router.get('/cartographer/node', (req, res) => {
@@ -4233,33 +4522,64 @@ export function createRoutes(ctx: RouteContext): Router {
     if (p.startsWith('/') || p.split('/').includes('..')) {
       res.status(400).json({ error: 'invalid path' }); return;
     }
-    if (!ctx.cartographer.loadIndex()) ctx.cartographer.scaffold();
+    // getNode reads ONE node file (O(1)) — no index parse, no scaffold preamble.
     const node = ctx.cartographer.getNode(p);
-    if (!node) { res.status(404).json({ error: 'no such node' }); return; }
+    if (!node) { res.status(404).json({ error: 'no such node', indexState: ctx.cartographer.readSnapshot() ? 'built' : 'not-built' }); return; }
     res.json(node);
   });
 
   router.get('/cartographer/stale', (_req, res) => {
     if (!ctx.cartographer) { res.status(503).json({ error: 'Cartographer not enabled' }); return; }
-    if (!ctx.cartographer.loadIndex()) ctx.cartographer.scaffold();
-    const nodes = ctx.cartographer.staleNodes();
-    res.json({ count: nodes.length, nodes });
+    const snap = ctx.cartographer.readSnapshot();
+    const meta = cartoSnapshotMeta(snap);
+    if (!snap) {
+      res.json({ count: 0, nodes: [], total: 0, truncated: false, ...meta });
+      return;
+    }
+    // Serve the bounded, secret-filtered sample with the honest total + truncation.
+    const reasonFor = (s: string): string =>
+      s === 'never-authored' ? 'no summary authored yet'
+        : s === 'stale' ? 'code changed since the summary was authored'
+          : s === 'path-gone' ? 'covered path no longer in HEAD' : '';
+    const nodes = snap.staleSample.map((e) => ({ path: e.path, status: e.status, reason: reasonFor(e.status) }));
+    res.json({ count: nodes.length, nodes, total: snap.staleTotal, truncated: snap.staleSampleTruncated, ...meta });
   });
 
   router.get('/cartographer/health', (_req, res) => {
     if (!ctx.cartographer) { res.status(503).json({ error: 'Cartographer not enabled' }); return; }
-    if (!ctx.cartographer.loadIndex()) ctx.cartographer.scaffold();
     const sweepCfg = (ctx.config as { cartographer?: { freshnessSweep?: { enabled?: boolean; cadenceMs?: number } } })
       .cartographer?.freshnessSweep;
-    // Spec #2: surface the freshness ratio + the two ABSOLUTE backlog counts so a
-    // green ratio can't hide a growing un-authored/quarantined backlog. Grace =
-    // one cadence so a just-scaffolded node isn't counted as debt immediately.
-    const graceMs = (sweepCfg?.cadenceMs ?? 600000) * 2;
+    const snap = ctx.cartographer.readSnapshot();
+    const meta = cartoSnapshotMeta(snap);
+    // fix instar#1069: the entire freshness block is served from the SNAPSHOT — the
+    // route never calls health()/freshnessHealth() (the request-thread starvers).
+    // Legacy field names/semantics are preserved (additive contract); new fields
+    // carry snapshot provenance so a stale/failing detect is visible on the route.
+    if (!snap) {
+      res.json({
+        enabled: true,
+        nodeCount: 0, authoredCount: 0, neverAuthoredCount: 0, staleCount: 0, generatedAt: null,
+        freshness: {
+          nodeCount: 0, authorableCount: 0, freshCount: 0, staleCount: 0, neverAuthoredCount: 0,
+          neverAuthoredWithinGrace: 0, neverAuthoredPastGrace: 0, authorFailedCount: 0, freshRatio: 1, generatedAt: null,
+        },
+        sweepEnabled: sweepCfg?.enabled === true,
+        ...meta,
+      });
+      return;
+    }
     res.json({
       enabled: true,
-      ...ctx.cartographer.health(),
-      freshness: ctx.cartographer.freshnessHealth({ graceMs }),
+      // Legacy health() fields, sourced from the snapshot:
+      nodeCount: snap.counts.nodeCount,
+      authoredCount: snap.counts.authoredCount,
+      neverAuthoredCount: snap.counts.neverAuthored,
+      staleCount: snap.counts.stale,
+      generatedAt: snap.generatedAt,
+      // Legacy freshnessHealth() block, sourced from the snapshot:
+      freshness: snap.freshness,
       sweepEnabled: sweepCfg?.enabled === true,
+      ...meta,
     });
   });
 
@@ -4297,7 +4617,8 @@ export function createRoutes(ctx: RouteContext): Router {
     }
     if (!summaryRaw || summaryRaw.length > 4096) { res.status(400).json({ error: 'invalid summary' }); return; }
 
-    if (!ctx.cartographer.loadIndex()) ctx.cartographer.scaffold();
+    // fix instar#1069: no lazy scaffold()/loadIndex() preamble — getNode is a single
+    // node-file read. An un-scaffolded node 400s (the boot scaffold builds the index).
     const node = ctx.cartographer.getNode(p);
     if (!node) { res.status(400).json({ error: 'no such node — only an existing scaffolded node can be refreshed' }); return; }
 
@@ -4366,8 +4687,9 @@ export function createRoutes(ctx: RouteContext): Router {
     if (maxDepthOverride === null) { res.status(400).json({ error: 'maxDepth out of range (1..32)' }); return; }
     if (maxResultsOverride === null) { res.status(400).json({ error: 'maxResults out of range (1..500)' }); return; }
 
-    if (!ctx.cartographer.loadIndex()) ctx.cartographer.scaffold();
-
+    // fix instar#1069: no lazy scaffold()/loadIndex() preamble — the navigator is
+    // bounded (maxNodesVisited) and returns an empty manifest when the root node is
+    // absent (index not built yet); the boot-path scaffold builds it off-request.
     const manifest = cartographerNavigate(ctx.cartographer, query, {
       maxDepth: maxDepthOverride ?? navCfg.maxDepth,
       branchingFactor: navCfg.branchingFactor,
@@ -4915,6 +5237,18 @@ export function createRoutes(ctx: RouteContext): Router {
     res.json(ctx.agentWorktreeReaper.snapshot());
   });
 
+  // OrphanedWorkSentinel — the silent-uncommitted-death backstop. Read-only
+  // snapshot: one classifier pass over the agent's worktrees (skip / orphaned +
+  // reason) + the orphaned count + whether the sentinel is armed + whether the
+  // optional preservation patch is on. 503 when dark (not wired). Bearer-auth.
+  router.get('/orphaned-work', (_req, res) => {
+    if (!ctx.orphanedWorkSentinel) {
+      res.status(503).json({ error: 'orphaned-work sentinel unavailable (dark)' });
+      return;
+    }
+    res.json(ctx.orphanedWorkSentinel.snapshot());
+  });
+
   // McpProcessReaper (RESPONSIBLE-RESOURCE-USAGE — MCP-leak fix, Option B). The
   // pull-surface answer to "which leaked MCP-server procs can be reclaimed, and
   // why is each kept?": every matched MCP proc's verdict (session-live /
@@ -5002,6 +5336,215 @@ export function createRoutes(ctx: RouteContext): Router {
     const rawLimit = Number(req.query.limit);
     const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(Math.floor(rawLimit), 1000) : 200;
     res.json({ entries: ctx.reapLog.read(limit) });
+  });
+
+  // ── Resume Queue (reap-notify spec R2.10) ───────────────────────────
+  // The durable queue of mid-work reaped sessions awaiting revival. All
+  // Bearer-auth (router-level middleware). A wedged drainer is detectable
+  // from lastTickAt + paused + breaker state in the GET.
+
+  router.get('/sessions/resume-queue', (_req, res) => {
+    if (!ctx.resumeQueue) {
+      res.status(503).json({ error: 'resume-queue not available on this agent' });
+      return;
+    }
+    const snapshot = ctx.resumeQueue.snapshot();
+    const drainer = ctx.resumeDrainer?.status() ?? null;
+    res.json({
+      ...snapshot,
+      lastTickAt: drainer?.lastTickAt ?? null,
+      breaker: drainer
+        ? { open: drainer.breakerOpen, openUntil: drainer.breakerOpenUntil, consecutiveFailures: drainer.consecutiveFailures }
+        : null,
+      calmTicks: drainer?.calmTicks ?? null,
+    });
+  });
+
+  router.post('/sessions/resume-queue/:id/cancel', (req, res) => {
+    if (!ctx.resumeQueue) {
+      res.status(503).json({ error: 'resume-queue not available on this agent' });
+      return;
+    }
+    const ok = ctx.resumeQueue.cancel(req.params.id);
+    res.status(ok ? 200 : 404).json({ ok, id: req.params.id });
+  });
+
+  // Requeue clamps (R2.10): gave-up:* ONLY (never cancelled — an operator
+  // stop), refused 409 while paused (a Bearer holder cannot undo an
+  // emergency stop). Resets attempts + re-anchors the TTL clock.
+  router.post('/sessions/resume-queue/:id/requeue', (req, res) => {
+    if (!ctx.resumeQueue) {
+      res.status(503).json({ error: 'resume-queue not available on this agent' });
+      return;
+    }
+    const result = ctx.resumeQueue.requeue(req.params.id);
+    if (result.ok) {
+      res.json({ ok: true, id: req.params.id });
+      return;
+    }
+    const status = result.why === 'queue-paused' ? 409 : result.why === 'not-found' ? 404 : 409;
+    res.status(status).json({ ok: false, id: req.params.id, error: result.why });
+  });
+
+  // The explicit unpause lever (R2.7) — a forgotten pause is visible in the
+  // GET and reversible here, never a silent feature death.
+  router.post('/sessions/resume-queue/resume', (_req, res) => {
+    if (!ctx.resumeQueue) {
+      res.status(503).json({ error: 'resume-queue not available on this agent' });
+      return;
+    }
+    const wasPaused = ctx.resumeQueue.isPaused();
+    ctx.resumeQueue.unpause();
+    res.json({ ok: true, wasPaused });
+  });
+
+  // Manual single-step drain (R2.10): skips the calm-ticks requirement ONLY —
+  // every other deterministic gate still applies. Refused while paused.
+  router.post('/sessions/resume-queue/drain', async (_req, res) => {
+    if (!ctx.resumeQueue || !ctx.resumeDrainer) {
+      res.status(503).json({ error: 'resume-queue not available on this agent' });
+      return;
+    }
+    if (ctx.resumeQueue.isPaused()) {
+      res.status(409).json({ ok: false, error: 'queue-paused' });
+      return;
+    }
+    const result = await ctx.resumeDrainer.tick({ skipCalmTicks: true });
+    res.json({ ok: true, ...result });
+  });
+
+  // ── Guard Posture (GUARD-POSTURE-ENDPOINT-SPEC) ─────────────────────
+  // Read-only, Bearer-auth (router-level middleware — NEVER added to any auth
+  // exemption list: posture is an attack-timing oracle, spec §3). Reports
+  // every shipped guard's HONEST effective state: config-on is not working
+  // (the Mini's reaper lesson). Local inventory is fully synchronous (one
+  // disk-read config snapshot + sync in-memory runtime getters, <100ms);
+  // ?scope=pool fans out to peers with classified per-peer failures, never a
+  // 500. Deliberately NO `guards.enabled` config gate — an off-switch on the
+  // guard-visibility surface would itself be an invisible disabled guard
+  // (always-on read-only observability; reap-log/TokenLedger precedent).
+  const guardsPoolLimiter = rateLimiter(60_000, 6);
+  router.get('/guards', async (req, res) => {
+    const stateDir = ctx.config.stateDir;
+    const projectDir = path.dirname(stateDir);
+    const snapshot = resolveGuardConfigSnapshot(projectDir);
+    if (snapshot.readError) {
+      // Config-read failure is a top-level error — never a truthful-looking
+      // empty inventory (spec §2.2).
+      res.status(500).json({ error: `guard inventory unavailable: config read failed (${snapshot.readError})` });
+      return;
+    }
+    const inventory = buildGuardInventory({
+      snapshot,
+      bootSnapshot: readGuardPostureBootSnapshot(stateDir),
+      registry: ctx.guardRegistry ?? new GuardRegistry(),
+    });
+    const selfMachineId = ctx.meshSelfId ?? null;
+    const body: Record<string, unknown> = {
+      machineId: selfMachineId,
+      nickname: selfMachineId
+        ? (ctx.machinePoolRegistry?.getCapacity(selfMachineId)?.nickname ?? null)
+        : null,
+      version: ProcessIntegrity.getInstance()?.runningVersion || ctx.config.version || '0.0.0',
+      generatedAt: new Date().toISOString(),
+      guards: inventory.guards,
+      summary: inventory.summary,
+    };
+
+    if (req.query.scope !== 'pool') {
+      res.json(body);
+      return;
+    }
+
+    // scope=pool — every registered machine accounted for: a posture row or a
+    // NAMED, classified failure row; silent omission re-creates the blind spot
+    // at the pool level (spec §2.3). Non-recursive (peers get plain /guards),
+    // rate-limited (anti-amplification, spec §3(d)).
+    guardsPoolLimiter(req, res, async () => {
+      const known = (ctx.listPoolMachines?.() ?? []).filter((m) => m.machineId !== selfMachineId);
+      if (known.length === 0) {
+        res.json({ ...body, pool: { enabled: false, peersQueried: 0, knownMachines: 0, machines: [], failed: [] } });
+        return;
+      }
+      const extraAllowlist = (ctx.config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)
+        ?.peerUrlAllowlist;
+      const machines: Record<string, unknown>[] = [];
+      const failed: Array<{ machineId: string; reason: string; version?: string }> = [];
+      let peersQueried = 0;
+      await Promise.all(known.map(async (m) => {
+        const capacity = ctx.machinePoolRegistry?.getCapacity(m.machineId) ?? null;
+        const peerVersion = capacity?.hardware?.instarVersion;
+        if (!m.lastKnownUrl) {
+          failed.push({ machineId: m.machineId, reason: 'no-known-url' });
+          return;
+        }
+        if (capacity && capacity.online === false) {
+          // The heartbeat piggyback (durable last-known posture on the pool
+          // view) covers dark peers — a doomed fetch buys nothing but timeout.
+          failed.push({ machineId: m.machineId, reason: 'offline' });
+          return;
+        }
+        const verdict = isPeerUrlAllowedForCredentials(m.lastKnownUrl, extraAllowlist);
+        if (!verdict.ok) {
+          // The Bearer token was NEVER attached (spec §3(c)) — visible, named.
+          failed.push({ machineId: m.machineId, reason: 'url-rejected' });
+          return;
+        }
+        peersQueried++;
+        try {
+          const r = await fetch(`${m.lastKnownUrl}/guards`, {
+            headers: { Authorization: `Bearer ${ctx.config.authToken}` },
+            signal: AbortSignal.timeout(5000),
+          });
+          if (r.status === 404) {
+            // Pre-/guards peer version: "needs update to report", not a
+            // phantom outage (rollout-skew honesty, spec §2.3).
+            failed.push({ machineId: m.machineId, reason: 'route-missing', ...(peerVersion ? { version: peerVersion } : {}) });
+            return;
+          }
+          if (r.status === 401 || r.status === 403) {
+            failed.push({ machineId: m.machineId, reason: 'unauthorized' });
+            return;
+          }
+          if (!r.ok) {
+            failed.push({ machineId: m.machineId, reason: 'error' });
+            return;
+          }
+          const peerBody = (await r.json()) as Record<string, unknown>;
+          machines.push({
+            // Merge identity: the row is keyed on the REGISTRY's machine
+            // identity; the body's self-reported machineId is data and a
+            // mismatch is FLAGGED, never allowed to shadow another row.
+            machineId: m.machineId,
+            nickname: capacity?.nickname ?? m.nickname,
+            ...(typeof peerBody.machineId === 'string' && peerBody.machineId !== m.machineId
+              ? { identityMismatch: true, claimedMachineId: peerBody.machineId }
+              : {}),
+            version: peerBody.version,
+            generatedAt: peerBody.generatedAt,
+            guards: peerBody.guards,
+            summary: peerBody.summary,
+          });
+        } catch (err) {
+          // Normalized enum only — raw err.message leaks URL/TLS internals.
+          const name = err instanceof Error ? err.name : '';
+          failed.push({
+            machineId: m.machineId,
+            reason: name === 'TimeoutError' || name === 'AbortError' ? 'timeout' : 'unreachable',
+          });
+        }
+      }));
+      res.json({
+        ...body,
+        pool: {
+          enabled: !!ctx.machinePoolRegistry,
+          knownMachines: known.length,
+          peersQueried,
+          machines,
+          failed,
+        },
+      });
+    });
   });
 
   // Coherence Journal merged read API (COHERENCE-JOURNAL-SPEC §3.5). The
@@ -5114,6 +5657,12 @@ export function createRoutes(ctx: RouteContext): Router {
         if (selfMachineNickname) result.machineNickname = selfMachineNickname;
       }
 
+      // Informed-consent input for the dashboard close confirm (REMOTE-SESSION-
+      // CLOSE-SPEC §2.2): protected status was previously a config-side
+      // membership test evaluated only inside terminateSession on the owner —
+      // invisible to any UI. Additive; flows through the pool fan-out unchanged.
+      result.protected = (ctx.config.sessions?.protectedSessions ?? []).includes(s.tmuxSession);
+
       // Add hook event telemetry
       if (req.query.enrich !== 'false' && ctx.hookEventReceiver) {
         const summary = ctx.hookEventReceiver.getSessionSummary(s.tmuxSession);
@@ -5168,14 +5717,24 @@ export function createRoutes(ctx: RouteContext): Router {
       const peers = ctx.resolvePeerUrls?.() ?? [];
       const failed: Array<{ machineId: string; error: string }> = [];
       const remote: Record<string, unknown>[] = [];
+      // WS4.2: per-machine classified fetch verdict — null = fetch succeeded,
+      // a normalized reason = the live attempt failed (feeds the empty-state
+      // classifier so an idle peer reads "online — no active sessions" but a
+      // dark peer reads "unreachable", never a fabricated state).
+      const peerFetchReason = new Map<string, string | null>();
       await Promise.all(peers.map(async (p) => {
         try {
           const r = await fetch(`${p.url}/sessions`, {
             headers: { Authorization: `Bearer ${ctx.config.authToken}` },
             signal: AbortSignal.timeout(5000),
           });
-          if (!r.ok) throw new Error(`HTTP ${r.status}`);
+          if (!r.ok) {
+            failed.push({ machineId: p.machineId, error: `HTTP ${r.status}` });
+            peerFetchReason.set(p.machineId, r.status === 401 || r.status === 403 ? 'unauthorized' : 'error');
+            return;
+          }
           const list = (await r.json()) as Record<string, unknown>[];
+          peerFetchReason.set(p.machineId, null);
           const nickname = ctx.machinePoolRegistry?.getCapacity(p.machineId)?.nickname ?? null;
           for (const s of list) {
             remote.push({
@@ -5186,11 +5745,73 @@ export function createRoutes(ctx: RouteContext): Router {
             });
           }
         } catch (err) {
+          // @silent-fallback-ok — a peer being down/slow is the DESIGNED tolerant
+          // path (spec: degrade to a named failed entry, never a 500); the failure
+          // is reported up-stack in pool.failed + the per-machine empty-state, not
+          // swallowed. Normalized reason (never raw err.message → no URL/TLS leak).
+          const name = err instanceof Error ? err.name : '';
           failed.push({ machineId: p.machineId, error: err instanceof Error ? err.message : String(err) });
+          peerFetchReason.set(p.machineId, name === 'TimeoutError' || name === 'AbortError' ? 'timeout' : 'unreachable');
         }
       }));
+
+      // WS4.2 (F7): explicit per-machine empty-state. Account for EVERY
+      // registered machine (self + every peer from listPoolMachines), not just
+      // the online peers that resolvePeerUrls yielded — a machine that is
+      // offline or unreachable is exactly the case the operator could not tell
+      // apart from idle before this. A machine WITH sessions gets no empty-state
+      // (its tiles already name it). Each empty-state is derived honestly from
+      // the registry's online flag + last-seen + the live fan-out verdict.
+      const allSessionsMerged = [...enriched, ...remote];
+      const sessionCountByMachine = new Map<string, number>();
+      for (const s of allSessionsMerged) {
+        const mid = typeof s.machineId === 'string' ? s.machineId : (selfMachineId ?? '__local__');
+        sessionCountByMachine.set(mid, (sessionCountByMachine.get(mid) ?? 0) + 1);
+      }
+      const nowMs = Date.now();
+      const machines: Array<{
+        machineId: string;
+        nickname: string | null;
+        isSelf: boolean;
+        sessionCount: number;
+        emptyState?: { kind: string; text: string; lastSeen: string | null };
+      }> = [];
+      // Registry-wide roster: self + every known machine. listPoolMachines is
+      // the /guards?scope=pool accounting boundary (every registered machine,
+      // online or not). Absent (single-machine/dark) → roster is just self.
+      const knownMachines = ctx.listPoolMachines?.() ?? [];
+      const rosterIds = new Set<string>();
+      if (selfMachineId) rosterIds.add(selfMachineId);
+      for (const m of knownMachines) rosterIds.add(m.machineId);
+      for (const machineId of rosterIds) {
+        const isSelf = machineId === selfMachineId;
+        const capacity = ctx.machinePoolRegistry?.getCapacity(machineId) ?? null;
+        const nickname = capacity?.nickname
+          ?? knownMachines.find((m) => m.machineId === machineId)?.nickname
+          ?? (isSelf ? selfMachineNickname : null)
+          ?? null;
+        const sessionCount = sessionCountByMachine.get(machineId)
+          ?? (isSelf ? (sessionCountByMachine.get('__local__') ?? 0) : 0);
+        const entry: (typeof machines)[number] = { machineId, nickname, isSelf, sessionCount };
+        if (sessionCount === 0) {
+          // Self is always "online" when it answered this request — it is the
+          // machine serving the response. Peers derive from registry + fan-out.
+          const state = classifyMachineEmptyState(
+            {
+              online: isSelf ? true : (capacity?.online ?? false),
+              failedReason: isSelf ? null : (peerFetchReason.get(machineId) ?? (capacity?.online ? null : 'offline')),
+              routerReceivedAt: capacity?.routerReceivedAt,
+              selfReportedLastSeen: capacity?.selfReportedLastSeen,
+            },
+            nowMs,
+          );
+          entry.emptyState = { kind: state.kind, text: state.text, lastSeen: state.lastSeen };
+        }
+        machines.push(entry);
+      }
+
       res.json({
-        sessions: [...enriched, ...remote],
+        sessions: allSessionsMerged,
         pool: {
           enabled: !!ctx.machinePoolRegistry,
           selfMachineId,
@@ -5198,6 +5819,11 @@ export function createRoutes(ctx: RouteContext): Router {
           peersQueried: peers.length,
           peersOk: peers.length - failed.length,
           failed,
+          // WS4.2: every registered machine with its session count and, when
+          // idle, an explicit classified empty-state. >=2 machines is the
+          // multi-machine case the dashboard renders; single-machine installs
+          // still get the (lone) self row, harmlessly.
+          machines,
         },
       });
       return;
@@ -5296,7 +5922,21 @@ export function createRoutes(ctx: RouteContext): Router {
       return;
     }
     try {
-      const result = await ctx.modelTierSwap.swap(req.params.name, tier);
+      // TOPIC-PROFILE-SPEC §9 — the in-flight swap is a live-session mutation:
+      // serialize it through the topic's single-writer lock (orchestrator
+      // runExclusive) so it can never interleave with a profile-triggered
+      // kill/respawn on the same topic. The escalation reconciler hook drives
+      // this same route, so one wrap covers both initiators. No orchestrator /
+      // no topic binding ⇒ today's unserialized behavior (single-machine boot
+      // window / non-topic sessions).
+      const performSwap = (): Promise<import('../core/ModelSwapService.js').SwapResult> =>
+        ctx.modelTierSwap!.swap(req.params.name, tier);
+      const orch = ctx.topicProfile?.orchestrator ?? null;
+      const swapTopicId = ctx.telegram?.getTopicForSession?.(req.params.name) ?? null;
+      const result =
+        orch && swapTopicId !== null
+          ? await orch.runExclusive(swapTopicId, performSwap)
+          : await performSwap();
       const httpStatus =
         result.status === 'refused'
           ? result.reason === 'unknown-session'
@@ -5313,6 +5953,238 @@ export function createRoutes(ctx: RouteContext): Router {
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
     }
+  });
+
+  // ── Topic Profile (TOPIC-PROFILE-SPEC §10.1 / §12) ────────────────────────
+  // GET: the read surface (Bearer — profile entries carry the operator's
+  // platform uid in updatedBy). POST: the TOKEN-TRUST write surface —
+  // authenticated by Bearer + X-Instar-Request like sibling mutating routes,
+  // recorded as `updatedBy:'api-token'`, NEVER operator-attributed; a
+  // body-supplied updatedBy is ignored by construction. The §12.5 key clamp:
+  // numeric Telegram topic id, or `slack:<channel>[:<thread>]`.
+  const TOPIC_PROFILE_KEY_RE = /^(?:\d{1,16}|slack:[A-Za-z0-9._-]{1,64}(?::[0-9.]{1,32})?)$/;
+
+  const topicProfileRefusalStatus = (reason: string | undefined): number => {
+    switch (reason) {
+      case 'validation':
+      case 'empty-patch':
+        return 400;
+      case 'no-bound-operator':
+      case 'not-bound-operator':
+        return 403;
+      case 'disabled':
+      case 'local-model-binding-active':
+      case 'lock-timeout':
+      case 'nothing-to-undo':
+      case 'nothing-parked':
+      case 'cooldown-confirm-required':
+        return 409;
+      case 'flush-failed':
+        return 500;
+      default:
+        return 400;
+    }
+  };
+
+  router.get('/topic-profile/:topicId', (req, res) => {
+    if (!TOPIC_PROFILE_KEY_RE.test(req.params.topicId)) {
+      res.status(400).json({ error: 'Invalid topic key — numeric topic id or slack:<channel>[:<thread>]' });
+      return;
+    }
+    if (!ctx.topicProfile) {
+      res.status(503).json({ error: 'Topic profiles not wired on this server' });
+      return;
+    }
+    const key = req.params.topicId;
+    const entry = ctx.topicProfile.store.get(key);
+    const resolved = ctx.topicProfile.resolver.resolve(key);
+    // §5.3 — reads name their staleness: while a transfer pull from the
+    // previous owner is pending, the local entry is served (a slightly-stale
+    // operator pin beats defaults) but flagged "possibly stale".
+    let pendingTransferPull = false;
+    try {
+      pendingTransferPull = ctx.topicProfile.carrier?.hasPendingPull(key) ?? false;
+    } catch {
+      /* @silent-fallback-ok: the staleness flag is read-surface annotation only — a carrier read error must never fail the profile read; the flag defaults to false (TOPIC-PROFILE-SPEC §5.3) */
+    }
+    res.json({
+      topicId: key,
+      resolved: {
+        framework: resolved.framework,
+        model: resolved.model ?? null,
+        modelTier: resolved.modelTier,
+        thinkingMode: resolved.thinkingMode ?? null,
+        effort: resolved.effort ?? null,
+        escalationOverride: resolved.escalationOverride,
+        sources: resolved.sources,
+      },
+      // Once-per-transition fallback notices that fired on THIS resolution
+      // (the read consumed them — surfaced here rather than dropped).
+      notices: resolved.notices,
+      pin: entry?.current ?? null,
+      previous: entry?.previous ?? null,
+      parked: entry?.parked ?? null,
+      intendedProfile: entry?.intendedProfile ?? null,
+      breakerCount: entry?.breakerCount ?? 0,
+      // §5.3 staleness annotation: true while a pull from this topic's
+      // previous owner is pending — the entry above is "as of when this topic
+      // last lived here — possibly stale".
+      pendingTransferPull,
+      ...(pendingTransferPull && entry?.current
+        ? { staleness: 'pending-transfer-pull — entry is as of when this topic last lived on this machine (possibly stale)' }
+        : {}),
+    });
+  });
+
+  const requireTopicProfileWrite = (req: import('express').Request, res: import('express').Response):
+    | { key: string; surface: NonNullable<typeof ctx.topicProfile>['surface'] }
+    | null => {
+    if (req.headers['x-instar-request'] !== '1') {
+      res.status(403).json({ error: 'Topic-profile writes require the X-Instar-Request: 1 intent header' });
+      return null;
+    }
+    if (!TOPIC_PROFILE_KEY_RE.test(req.params.topicId)) {
+      res.status(400).json({ error: 'Invalid topic key — numeric topic id or slack:<channel>[:<thread>]' });
+      return null;
+    }
+    if (!ctx.topicProfile) {
+      res.status(503).json({ error: 'Topic profiles not wired on this server' });
+      return null;
+    }
+    return { key: req.params.topicId, surface: ctx.topicProfile.surface };
+  };
+
+  router.post('/topic-profile/:topicId', async (req, res) => {
+    const gate = requireTopicProfileWrite(req, res);
+    if (!gate) return;
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const patch: Record<string, string | null> = {};
+    for (const field of ['framework', 'model', 'modelTier', 'thinkingMode', 'effort', 'escalationOverride'] as const) {
+      if (!(field in body)) continue;
+      const value = body[field];
+      if (value !== null && typeof value !== 'string') {
+        res.status(400).json({ error: `"${field}" must be a string or null` });
+        return;
+      }
+      patch[field] = value;
+    }
+    // §10.1: a body-supplied updatedBy is IGNORED — the principal is the
+    // shared token, stamped server-side as 'api-token'.
+    try {
+      const result = await gate.surface.applyWrite({
+        topicKey: gate.key,
+        patch,
+        principal: { kind: 'token' },
+        origin: 'http',
+      });
+      if (!result.ok) {
+        res.status(topicProfileRefusalStatus(result.refusal?.reason)).json({
+          ok: false,
+          reason: result.refusal?.reason,
+          ...(result.refusal?.validation
+            ? { validation: { field: result.refusal.validation.field, failure: result.refusal.validation.failure, reason: result.refusal.validation.reason } }
+            : {}),
+          message: result.reply,
+        });
+        return;
+      }
+      res.json({
+        ok: true,
+        appliedLive: result.appliedLive ?? [],
+        shadowed: result.shadowed ?? [],
+        refusedFields: result.refusedFields ?? [],
+        noop: result.noop ?? false,
+        supersededParked: result.supersededParked ?? false,
+        message: result.reply,
+        pin: ctx.topicProfile?.store.resolve(gate.key) ?? null,
+      });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  // §10.1 propose lane — registers an AGENT-COMPOSED structured delta in the
+  // server-side slot and sends the SERVER-rendered echo to the topic; the
+  // operator's first-party "yes" (recognized by the ingress parse) converts
+  // it to the operator-attributed write. Never writes the store itself.
+  router.post('/topic-profile/:topicId/propose', async (req, res) => {
+    const gate = requireTopicProfileWrite(req, res);
+    if (!gate) return;
+    if (!ctx.topicProfile || !ctx.telegram || !/^\d+$/.test(gate.key)) {
+      res.status(409).json({ error: 'Propose-confirm needs a platform-bound numeric topic on this server' });
+      return;
+    }
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const patch: Record<string, string | null> = {};
+    for (const field of ['framework', 'model', 'modelTier', 'thinkingMode', 'effort', 'escalationOverride'] as const) {
+      if (!(field in body)) continue;
+      const value = body[field];
+      if (value !== null && typeof value !== 'string') {
+        res.status(400).json({ error: `"${field}" must be a string or null` });
+        return;
+      }
+      patch[field] = value;
+    }
+    const rendered = gate.surface.renderProposalEcho(gate.key, patch);
+    if (!rendered.ok) {
+      res.status(400).json({ ok: false, message: rendered.reply });
+      return;
+    }
+    const armed = ctx.topicProfile.confirmSlots.arm(gate.key, 'propose-confirm', rendered.patch, rendered.echo, 'agent-composed');
+    if (!armed.ok) {
+      res.status(429).json({ ok: false, reason: armed.reason, message: 'Proposal churn cooldown — re-state the intent later' });
+      return;
+    }
+    try {
+      const sent = await ctx.telegram.sendToTopic(Number(gate.key), rendered.echo);
+      ctx.topicProfile.confirmSlots.recordEchoMessageId(gate.key, sent.messageId);
+      res.json({ ok: true, echo: rendered.echo, superseded: armed.superseded });
+    } catch (err) {
+      // Echo undelivered — tear the slot down (an unseen echo must never be
+      // confirmable; matchConfirm would refuse on no-echo-id anyway).
+      ctx.topicProfile.confirmSlots.disarm(gate.key);
+      res.status(502).json({ ok: false, error: `Echo delivery failed: ${err instanceof Error ? err.message : String(err)}` });
+    }
+  });
+
+  // §10.3 / §5.2(b) recovery surfaces (token-trust like the main POST).
+  router.post('/topic-profile/:topicId/undo', async (req, res) => {
+    const gate = requireTopicProfileWrite(req, res);
+    if (!gate) return;
+    const result = await gate.surface.undo({ topicKey: gate.key, principal: { kind: 'token' }, origin: 'http' });
+    if (!result.ok) {
+      res.status(topicProfileRefusalStatus(result.refusal?.reason)).json({ ok: false, reason: result.refusal?.reason, message: result.reply });
+      return;
+    }
+    res.json({ ok: true, message: result.reply, pin: ctx.topicProfile?.store.resolve(gate.key) ?? null });
+  });
+
+  router.post('/topic-profile/:topicId/clear', async (req, res) => {
+    const gate = requireTopicProfileWrite(req, res);
+    if (!gate) return;
+    const result = await gate.surface.clear({ topicKey: gate.key, principal: { kind: 'token' }, origin: 'http' });
+    if (!result.ok) {
+      res.status(topicProfileRefusalStatus(result.refusal?.reason)).json({ ok: false, reason: result.refusal?.reason, message: result.reply });
+      return;
+    }
+    res.json({ ok: true, message: result.reply, pin: ctx.topicProfile?.store.resolve(gate.key) ?? null });
+  });
+
+  router.post('/topic-profile/:topicId/reapply', async (req, res) => {
+    const gate = requireTopicProfileWrite(req, res);
+    if (!gate) return;
+    const confirmed = (req.body ?? {}).confirm === true;
+    const result = await gate.surface.reapply({ topicKey: gate.key, principal: { kind: 'token' }, origin: 'http', confirmed });
+    if (!result.ok) {
+      res.status(topicProfileRefusalStatus(result.refusal?.reason)).json({
+        ok: false,
+        reason: result.refusal?.reason,
+        needsConfirm: result.needsConfirm ?? false,
+        message: result.reply,
+      });
+      return;
+    }
+    res.json({ ok: true, message: result.reply, pin: ctx.topicProfile?.store.resolve(gate.key) ?? null });
   });
 
   // Rate limit session spawning — each session is a real Claude Code process.
@@ -5549,9 +6421,16 @@ export function createRoutes(ctx: RouteContext): Router {
         res.status(404).json({ error: `Session "${req.params.id}" not found` });
         return;
       }
+      // UNTRUSTED provenance claim (REMOTE-SESSION-CLOSE-SPEC §2.3): any token
+      // holder could set this header. Recorded in the reap-log as `viaClaim`
+      // (a signal in the audit trail); NEVER consulted in authority decisions —
+      // those read the route-stamped `origin` below. Sanitized + bounded.
+      const viaHeader = req.headers['x-instar-close-via'];
+      const via = typeof viaHeader === 'string' && /^[a-z0-9-]{1,40}$/.test(viaHeader) ? viaHeader : undefined;
       const result = await ctx.sessionManager.terminateSession(target.id, 'operator-kill', {
         origin: 'operator',
         finalStatus: 'killed',
+        ...(via ? { via } : {}),
       });
       if (!result.terminated) {
         res.status(404).json({ error: `Session "${req.params.id}" not found`, skipped: result.skipped });
@@ -5560,6 +6439,104 @@ export function createRoutes(ctx: RouteContext): Router {
       res.json({ ok: true, killed: req.params.id });
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  // ── Remote Session Close (REMOTE-SESSION-CLOSE-SPEC) ────────────────
+  // Relay an OPERATOR-origin close to the machine that owns the session —
+  // the same kill the dashboard already produces locally, executed on the
+  // owner (§2.0: no new authority class; reach expands, which is why the
+  // rate limit + URL allowlist + relay-side audit below are load-bearing).
+  // A NEW path by design: a pre-feature server 404s it cleanly, so a
+  // mixed-version pool can never misroute this into a LOCAL same-named kill
+  // (§2.1 — the wrong-machine-kill shape the query-param design had).
+  const remoteCloseLimiter = rateLimiter(60_000, 10);
+  const remoteCloseAudit = new RemoteCloseAudit(ctx.config.stateDir);
+  router.post('/sessions/:name/remote-close', remoteCloseLimiter, async (req, res) => {
+    const { machineId, sessionUuid } = (req.body ?? {}) as { machineId?: unknown; sessionUuid?: unknown };
+    // machineId is a registry LOOKUP KEY ONLY — charset-clamped, never used
+    // to construct a URL (§2.1; closes the SSRF-with-credentials shape).
+    if (typeof machineId !== 'string' || !/^[A-Za-z0-9_-]{1,64}$/.test(machineId)) {
+      res.status(404).json({ error: 'unknown machine' });
+      return;
+    }
+    if (typeof sessionUuid !== 'string' || !/^[A-Za-z0-9-]{1,64}$/.test(sessionUuid)) {
+      res.status(400).json({ error: 'sessionUuid required' });
+      return;
+    }
+    const sessionName = SESSION_NAME_RE.test(req.params.name) ? req.params.name : undefined;
+    const machine = (ctx.listPoolMachines?.() ?? []).find((m) => m.machineId === machineId);
+    if (!machine || !machine.lastKnownUrl) {
+      // Unknown or unresolvable machine: 404 with ZERO outbound request.
+      res.status(404).json({ error: 'unknown machine', machineId });
+      return;
+    }
+    const nickname = ctx.machinePoolRegistry?.getCapacity(machineId)?.nickname ?? machine.nickname;
+    const extraAllowlist = (ctx.config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)
+      ?.peerUrlAllowlist;
+    if (!isPeerUrlAllowedForCredentials(machine.lastKnownUrl, extraAllowlist).ok) {
+      // The pool Bearer token NEVER travels to a non-allowlisted URL —
+      // stronger here than on the read fan-out because this verb is
+      // destructive (§2.1 shipping dependency).
+      remoteCloseAudit.record({ targetMachineId: machineId, targetNickname: nickname, sessionUuid, sessionName, outcome: 'url-rejected' });
+      res.status(502).json({ error: 'url-rejected', machineId });
+      return;
+    }
+    try {
+      // The peer's PLAIN local close — no relay params forwarded (single-hop
+      // by construction, §2.1); UUID-targeted (the peer's existing route is
+      // UUID-first, so on a ghost-bearing peer this closes exactly the tile
+      // the operator saw). The via header is the UNTRUSTED §2.3 claim the
+      // peer records as viaClaim.
+      const r = await fetch(`${machine.lastKnownUrl}/sessions/${encodeURIComponent(sessionUuid)}`, {
+        method: 'DELETE',
+        headers: {
+          Authorization: `Bearer ${ctx.config.authToken}`,
+          'X-Instar-Close-Via': 'remote-dashboard',
+        },
+        signal: AbortSignal.timeout(5000),
+      });
+      let peerBody: Record<string, unknown> | null = null;
+      try {
+        peerBody = (await r.json()) as Record<string, unknown>;
+      } catch {
+        // @silent-fallback-ok — a non-JSON body (Cloudflare 502/530 HTML
+        // error page) is normalized below so the dashboard's resp.json()
+        // never throws into a reasonless "Network error" (§2.2).
+        peerBody = null;
+      }
+      if (r.ok) {
+        remoteCloseAudit.record({ targetMachineId: machineId, targetNickname: nickname, sessionUuid, sessionName, outcome: 'closed', peerStatus: r.status });
+        res.json({ ok: true, killed: sessionUuid, machineId, nickname });
+        return;
+      }
+      if (r.status === 404) {
+        // Idempotent skip / already gone / just won by another viewer —
+        // a CALM already-closed outcome, not a scary error (§2.3).
+        remoteCloseAudit.record({ targetMachineId: machineId, targetNickname: nickname, sessionUuid, sessionName, outcome: 'already-closed', peerStatus: 404 });
+        res.json({ ok: true, alreadyClosed: true, machineId, nickname });
+        return;
+      }
+      if (r.status === 401 || r.status === 403) {
+        remoteCloseAudit.record({ targetMachineId: machineId, targetNickname: nickname, sessionUuid, sessionName, outcome: 'unauthorized', peerStatus: r.status });
+        res.status(502).json({ error: `unauthorized by ${nickname ?? machineId}` });
+        return;
+      }
+      remoteCloseAudit.record({ targetMachineId: machineId, targetNickname: nickname, sessionUuid, sessionName, outcome: 'peer-error', peerStatus: r.status });
+      res.status(502).json({
+        error: typeof peerBody?.error === 'string' ? peerBody.error : `${r.status} from ${nickname ?? machineId}`,
+      });
+    } catch (err) {
+      const name = err instanceof Error ? err.name : '';
+      if (name === 'TimeoutError' || name === 'AbortError') {
+        // Delivery honesty (§2.3): the peer may be mid-kill under the same
+        // load that made the tile stale. UNKNOWN, never "closed nothing".
+        remoteCloseAudit.record({ targetMachineId: machineId, targetNickname: nickname, sessionUuid, sessionName, outcome: 'unknown' });
+        res.status(504).json({ error: 'outcome unknown — peer did not answer in time', outcomeUnknown: true, machineId, nickname });
+        return;
+      }
+      remoteCloseAudit.record({ targetMachineId: machineId, targetNickname: nickname, sessionUuid, sessionName, outcome: 'unreachable' });
+      res.status(502).json({ error: `unreachable: ${nickname ?? machineId}` });
     }
   });
 
@@ -6334,6 +7311,149 @@ export function createRoutes(ctx: RouteContext): Router {
     res.status(201).json({ granted: true, mandate: { ...result.mandate, authorshipValid: ctx.coordination.store.verifyAuthorship(result.mandate) } });
   });
 
+  // ── Operator Authorization Request (agent proposes → operator approves one-tap) ──
+  // The agent (Bearer) pre-fills a STRUCTURED request; the operator approves it with
+  // their dashboard PIN; only then does the server issue the grant via the existing
+  // signed MandateStore path. requester ≠ authorizer is preserved (the agent can never
+  // approve its own request). The operator-facing card is SERVER-authored from the
+  // structured proposal + the registry name — never agent free-text (deceptive-summary
+  // defense). Spec: docs/specs/OPERATOR-AUTHORIZATION-REQUEST-SPEC.md.
+  const authReqUnavailable = (res: import('express').Response): boolean => {
+    if (!ctx.authorizationRequests || !ctx.authorizationRequests.enabled) {
+      res.status(503).json({ error: 'authorization-requests feature not enabled' });
+      return true;
+    }
+    return false;
+  };
+
+  /** Decorate a stored request with the server-rendered, plain-language card (the only
+   *  text an operator surface should show). Resolves the display name from the registry. */
+  const decorateAuthReq = (r: AuthorizationRequest) => {
+    const ar = ctx.authorizationRequests!;
+    const principal = ar.resolvePrincipal(r.proposal.grantedToSlackUserId);
+    const card = renderAuthorizationCard(r, principal?.name ?? r.proposal.grantedToSlackUserId);
+    return {
+      id: r.id, status: r.status, kind: r.kind, createdAt: r.createdAt,
+      createdByAgent: r.createdByAgent, createdOnMachine: r.createdOnMachine,
+      requestExpiresAt: r.requestExpiresAt, resolvedAt: r.resolvedAt, resolvedBy: r.resolvedBy,
+      resultMandateId: r.resultMandateId, denyReason: r.denyReason,
+      // server-authored display (never agent free-text as the authority):
+      headline: card.headline, reason: card.reason,
+      heldOnThisMachine: r.createdOnMachine === ar.machineId,
+    };
+  };
+
+  // Agent proposes a structured request (Bearer). Confers no authority — inert until approved.
+  router.post('/authorization-requests', (req, res) => {
+    if (authReqUnavailable(res)) return;
+    const ar = ctx.authorizationRequests!;
+    const b = req.body ?? {};
+    const agentName = (typeof b.createdByAgent === 'string' && b.createdByAgent) ? b.createdByAgent : 'agent';
+    // FRESH-resolve the grantee against the principal registry at create (FD-12) — reject
+    // a phantom/unregistered id before it ever reaches the operator's approval queue.
+    const proposedUid = b?.proposal?.grantedToSlackUserId;
+    if (typeof proposedUid === 'string' && proposedUid) {
+      const principal = ar.resolvePrincipal(proposedUid);
+      if (!principal || !principal.registered) {
+        res.status(400).json({ error: 'unknown-user — the grantee must be a registered Slack user' });
+        return;
+      }
+    }
+    const result = ar.store.create({
+      createdByAgent: agentName,
+      createdOnMachine: ar.machineId,
+      proposal: b.proposal,
+      reason: typeof b.reason === 'string' ? b.reason : undefined,
+    });
+    if (!result.ok) { res.status(result.status).json({ error: result.error }); return; }
+    res.status(201).json({ id: result.request.id, deduped: result.deduped ?? false, request: decorateAuthReq(result.request) });
+  });
+
+  // List requests (filter ?status=pending). Each row carries the server-rendered card. Bearer.
+  router.get('/authorization-requests', (req, res) => {
+    if (authReqUnavailable(res)) return;
+    const ar = ctx.authorizationRequests!;
+    const status = typeof req.query.status === 'string' ? req.query.status : undefined;
+    const valid = ['pending', 'approved', 'denied', 'expired', 'withdrawn'];
+    const list = ar.store.list(valid.includes(status as string) ? (status as AuthorizationRequest['status']) : undefined);
+    res.json({ requests: list.map(decorateAuthReq), count: list.length });
+  });
+
+  // One request (with server-rendered display). Bearer.
+  router.get('/authorization-requests/:id', (req, res) => {
+    if (authReqUnavailable(res)) return;
+    const r = ctx.authorizationRequests!.store.get(req.params.id);
+    if (!r) { res.status(404).json({ error: 'request not found' }); return; }
+    res.json({ request: decorateAuthReq(r) });
+  });
+
+  // Operator APPROVES — PIN-GATED. The single authority-conferring step. The PIN covers
+  // the whole execution incl. the carrier-mandate auto-issue (no second prompt).
+  router.post('/authorization-requests/:id/approve', (req, res) => {
+    if (authReqUnavailable(res)) return;
+    if (!ctx.coordination) { res.status(503).json({ error: 'coordination mandate engine unavailable' }); return; }
+    if (!checkMandatePin(req, res)) return;
+    const ar = ctx.authorizationRequests!;
+    const result = ar.store.approve(req.params.id, {
+      execute: (proposal) => {
+        // Re-check the allowlist (defends against a config change while pending).
+        if (!PROPOSABLE_FLOOR_ACTIONS.includes(proposal.floorAction)) throw new Error('action-no-longer-proposable');
+        // FRESH-resolve the grantee against the registry (rejects phantom / reflects a rename).
+        const principal = ar.resolvePrincipal(proposal.grantedToSlackUserId);
+        if (!principal || !principal.registered) throw new Error('unknown-user');
+        // Issue a fresh per-grant carrier mandate WITH the grant signed in, via the
+        // existing PIN-authored signed path. expiry == grant lifetime (no clamp).
+        const now = Date.now();
+        const expiresAt = new Date(now + proposal.durationMs).toISOString();
+        const mandate = ctx.coordination!.store.issue({
+          scope: 'user-authority-grant',
+          agents: [ar.carrierSelfFp, ar.carrierSelfFp],
+          authorities: [],
+          author: 'system',
+          expiresAt,
+          grants: [{
+            floorAction: proposal.floorAction,
+            grantedTo: proposal.grantedToSlackUserId,
+            authorizedBy: ar.ownerDisplay,
+            expiresAt,
+          }],
+        });
+        ctx.coordination!.audit.record({
+          mandateId: mandate.id,
+          agentFp: proposal.grantedToSlackUserId,
+          action: `grant-floor:${proposal.floorAction}`,
+          decision: 'allow',
+          reason: `approved via authorization-request, authorizedBy ${ar.ownerDisplay} until ${expiresAt}`,
+        });
+        return mandate.id;
+      },
+    });
+    if (!result.ok) { res.status(result.status).json({ error: result.error }); return; }
+    res.status(result.alreadyApproved ? 200 : 201).json({
+      approved: true, alreadyApproved: result.alreadyApproved ?? false, request: decorateAuthReq(result.request),
+    });
+  });
+
+  // Operator DECLINES — PIN-GATED. denyReason REQUIRED.
+  router.post('/authorization-requests/:id/deny', (req, res) => {
+    if (authReqUnavailable(res)) return;
+    if (!checkMandatePin(req, res)) return;
+    const reason = typeof (req.body ?? {}).denyReason === 'string' ? req.body.denyReason : '';
+    const result = ctx.authorizationRequests!.store.deny(req.params.id, reason);
+    if (!result.ok) { res.status(result.status).json({ error: result.error }); return; }
+    res.json({ denied: true, request: decorateAuthReq(result.request) });
+  });
+
+  // Proposing agent WITHDRAWS its own still-pending request (Bearer).
+  router.post('/authorization-requests/:id/withdraw', (req, res) => {
+    if (authReqUnavailable(res)) return;
+    const b = req.body ?? {};
+    const agentName = (typeof b.createdByAgent === 'string' && b.createdByAgent) ? b.createdByAgent : 'agent';
+    const result = ctx.authorizationRequests!.store.withdraw(req.params.id, agentName);
+    if (!result.ok) { res.status(result.status).json({ error: result.error }); return; }
+    res.json({ withdrawn: true, request: decorateAuthReq(result.request) });
+  });
+
   // ── ReviewExchange — autonomous code-review protocol (coordination-mandate spec §7 G2.3) ──
   // One mutual, MANDATE-GATED sign-off of a review artifact between the two agents named
   // in a mandate. Both sign-offs run through /the same/ MandateGate (named party, bounds,
@@ -6669,6 +7789,91 @@ export function createRoutes(ctx: RouteContext): Router {
     }
     ctx.releaseReadinessSentinel.enable();
     res.json({ ok: true, enabled: true });
+  });
+
+  // ── Green-PR auto-merge (green-pr-automerge-enforcement) ──────────────
+  // The watcher is null on installs with no analyzable instar repo + safe-merge,
+  // or when disabled in config → routes 503. The GuardLatchStore may exist even
+  // when the watcher does not (single-machine rollback still needs to persist).
+  router.get('/green-pr-automerge', (_req, res) => {
+    if (!ctx.greenPrAutoMerger) {
+      res.status(503).json({ error: 'green-pr auto-merge not configured (no analyzable instar repo + safe-merge, or disabled)' });
+      return;
+    }
+    const state = ctx.greenPrAutoMerger.snapshot();
+    const latch = ctx.guardLatchStore?.snapshot() ?? null;
+    res.json({
+      lastTickAt: state.lastTickAt ?? null,
+      lastSuccessfulListAt: state.lastSuccessfulListAt ?? null,
+      consecutiveWarmupOnlyTenures: state.consecutiveWarmupOnlyTenures,
+      breaker: state.breaker,
+      episodes: Object.values(state.episodes ?? {}),
+      snapshot: state.snapshot,
+      gate: latch,
+      invariantOk: ctx.greenPrAutoMerger.invariantOk,
+    });
+  });
+
+  router.post('/green-pr-automerge/tick', async (_req, res) => {
+    if (!ctx.greenPrAutoMerger) {
+      res.status(503).json({ error: 'green-pr auto-merge not configured' });
+      return;
+    }
+    const r = await ctx.greenPrAutoMerger.tick({ manual: true });
+    res.json({ ok: true, ...r });
+  });
+
+  // Rollback is Bearer-gated and LOUD: anyone may STOP. The latch is absorbing
+  // and pool-replicated, so a STOP survives a lease move (R9).
+  router.post('/green-pr-automerge/rollback', (req, res) => {
+    if (!ctx.guardLatchStore) {
+      res.status(503).json({ error: 'green-pr auto-merge not configured' });
+      return;
+    }
+    const reason = typeof req.body?.reason === 'string' ? req.body.reason : 'operator-rollback';
+    const latchId = ctx.guardLatchStore.set('rollback', reason);
+    res.json({ ok: true, rolledBack: true, latchId });
+  });
+
+  // Re-arming merge authority is the operator's: dashboard-PIN-gated (the Mandates
+  // precedent). Clears only the named latch id(s), or all active rollback ids.
+  router.post('/green-pr-automerge/enable', (req, res) => {
+    if (!ctx.guardLatchStore) {
+      res.status(503).json({ error: 'green-pr auto-merge not configured' });
+      return;
+    }
+    if (!checkMandatePin(req, res)) return;
+    const named = Array.isArray(req.body?.latchIds) ? req.body.latchIds.filter((s: unknown): s is string => typeof s === 'string') : [];
+    const ids = named.length > 0 ? named : ctx.guardLatchStore.activeLatchIds('rollback');
+    ctx.guardLatchStore.clear('rollback', ids, 're-arm');
+    res.json({ ok: true, enabled: true, cleared: ids });
+  });
+
+  // Conversational-hold assist (R3): apply the [HOLD: …] marker via gh in one call.
+  router.post('/green-pr-automerge/hold', async (req, res) => {
+    if (!ctx.greenPrAutoMerger) {
+      res.status(503).json({ error: 'green-pr auto-merge not configured' });
+      return;
+    }
+    const pr = Number(req.body?.pr);
+    if (!Number.isInteger(pr) || pr <= 0) {
+      res.status(400).json({ error: 'pr must be a positive integer' });
+      return;
+    }
+    const reason = typeof req.body?.reason === 'string' ? req.body.reason.replace(/[\]\n\r]/g, ' ').slice(0, 200) : '';
+    const result = await ctx.greenPrAutoMerger.applyHold(pr, reason);
+    res.status(result.ok ? 200 : (result.status ?? 502)).json(result);
+  });
+
+  // Pool-disarm marker (R7): PIN-gated, superseding entry → grades back to healthy.
+  router.post('/green-pr-automerge/pool-disarm', (req, res) => {
+    if (!ctx.guardLatchStore) {
+      res.status(503).json({ error: 'green-pr auto-merge not configured' });
+      return;
+    }
+    if (!checkMandatePin(req, res)) return;
+    ctx.guardLatchStore.markPoolDisarmed();
+    res.json({ ok: true, poolDisarmed: true });
   });
 
   // ── Human-as-Detector heat map ───────────────────────────────────────
@@ -7108,23 +8313,188 @@ export function createRoutes(ctx: RouteContext): Router {
 
   // ── Jobs ────────────────────────────────────────────────────────
 
-  router.get('/jobs', (_req, res) => {
-    if (!ctx.scheduler) {
-      res.json({ jobs: [], scheduler: null });
-      return;
-    }
+  // Pool-scope job aggregation (WS4.3, MULTI-MACHINE-SEAMLESSNESS-SPEC §WS4.3 —
+  // READ-SIDE only). Mirrors the proven sessions?scope=pool / attention?scope=pool
+  // fan-out shape: a short-TTL cache so dashboard polls don't re-fan-out, a
+  // known-offline-peer skip, a per-peer timeout → failed marker (never a 500).
+  const jobsPoolCache = new Map<string, { at: number; payload: unknown }>();
+  const JOBS_POOL_CACHE_TTL_MS = 3_000;
+  const JOBS_PEER_TIMEOUT_MS = 5_000;
 
+  // Build THIS machine's local job list — the same shape the plain GET /jobs
+  // returns (so a peer's GET /jobs reply merges in identically).
+  function buildLocalJobs(): Array<Record<string, unknown>> {
+    if (!ctx.scheduler) return [];
     const nextRunTimes = ctx.scheduler.getNextRunTimes();
-    const jobs = ctx.scheduler.getJobs().map(job => {
+    return ctx.scheduler.getJobs().map((job) => {
       const jobState = ctx.state.getJobState(job.slug);
       // Merge live scheduler nextRun into state — fixes display bug where
       // never-run jobs show as "unscheduled" despite having active cron tasks
       const liveNext = nextRunTimes[job.slug];
       const mergedState = jobState
         ? { ...jobState, nextScheduled: jobState.nextScheduled ?? liveNext }
-        : liveNext ? { slug: job.slug, lastRun: null, lastResult: null, nextScheduled: liveNext, consecutiveFailures: 0 } : null;
+        : liveNext
+          ? { slug: job.slug, lastRun: null, lastResult: null, nextScheduled: liveNext, consecutiveFailures: 0 }
+          : null;
       return { ...job, state: mergedState, runsOnThisMachine: ctx.scheduler!.isJobLocal(job.slug) };
     });
+  }
+
+  // F8 job-placement divergence detector (observe-only — NEVER gates). Honest
+  // derivation: capacity carries no declared-job count, so we work from each
+  // machine's own /jobs reply. A divergence row flags ONLY the real F8 case — a
+  // machine that DECLARES jobs (its scheduler returned N>0) but RUNS none of
+  // them locally (runsOnThisMachine === true for 0 of them): "config says jobs
+  // here, machine isn't running them." A machine that declares ZERO jobs is NOT
+  // a divergence — a scheduler-less/dispatcher-only machine (or any machine
+  // with no jobs configured) legitimately has none, and flagging it is
+  // self-noise (2026-06-12 review finding). We never fabricate an expected
+  // count — only what the reply proves.
+  function detectJobDivergences(
+    perMachine: Array<{ machineId: string; nickname?: string | null; jobs: Array<Record<string, unknown>> }>,
+  ): Array<{ machineId: string; machineNickname?: string | null; declared: number; running: number; reason: string }> {
+    const out: Array<{ machineId: string; machineNickname?: string | null; declared: number; running: number; reason: string }> = [];
+    for (const m of perMachine) {
+      const declared = m.jobs.length;
+      const running = m.jobs.filter((j) => j.runsOnThisMachine === true).length;
+      if (declared > 0 && running === 0) {
+        out.push({
+          machineId: m.machineId,
+          machineNickname: m.nickname ?? undefined,
+          declared,
+          running,
+          reason: `machine ${m.nickname ?? m.machineId}: declares ${declared} jobs, running 0 locally`,
+        });
+      }
+    }
+    return out;
+  }
+
+  async function jobsPoolMerge(localJobs: Array<Record<string, unknown>>): Promise<Record<string, unknown>> {
+    const cacheKey = 'jobs';
+    const cached = jobsPoolCache.get(cacheKey);
+    if (cached && Date.now() - cached.at < JOBS_POOL_CACHE_TTL_MS) {
+      return cached.payload as Record<string, unknown>;
+    }
+
+    const selfMachineId = ctx.meshSelfId ?? null;
+    const selfNickname = selfMachineId
+      ? ctx.machinePoolRegistry?.getCapacity(selfMachineId)?.nickname ?? null
+      : null;
+
+    const peers = ctx.resolvePeerUrls?.() ?? [];
+    const failed: Array<{ machineId: string; error: string }> = [];
+    const remote: Array<Record<string, unknown>> = [];
+    // WS4.4(f): set true when ANY peer body was served stale by the shared
+    // pool-cache under CPU load-shed — surfaced as an honest `pool.stale` tag.
+    let poolStale = false;
+    // Per-machine declared/running view feeding the F8 divergence detector.
+    const perMachine: Array<{ machineId: string; nickname?: string | null; jobs: Array<Record<string, unknown>> }> = [
+      { machineId: selfMachineId ?? '(self)', nickname: selfNickname, jobs: localJobs },
+    ];
+    await Promise.all(
+      peers.map(async (p) => {
+        // Skip a peer the registry knows to be offline — saves the timeout
+        // wait; an unknown peer (no capacity row) is still tried.
+        const cap = ctx.machinePoolRegistry?.getCapacity(p.machineId);
+        if (cap && cap.online === false) {
+          failed.push({ machineId: p.machineId, error: 'offline' });
+          return;
+        }
+        try {
+          // The actual peer fetch — called WITHOUT scope=pool (no recursion).
+          const fetchPeerJobs = async () => {
+            const r = await fetch(`${p.url}/jobs`, {
+              headers: { Authorization: `Bearer ${ctx.config.authToken}` },
+              signal: AbortSignal.timeout(JOBS_PEER_TIMEOUT_MS),
+            });
+            if (!r.ok) throw new Error(`HTTP ${r.status}`);
+            return (await r.json()) as { jobs?: Array<Record<string, unknown>> };
+          };
+          // WS4.4(f): when the shared pool-cache is wired (dark flag on), route
+          // the per-peer fetch through it so two pool-scope surfaces hitting the
+          // SAME peer in the same poll window share ONE fan-out, and a CPU
+          // load-shed serves last-cached (stale-tagged) instead of re-fanning.
+          // When null (flag dark / single-machine), call the fetcher directly —
+          // byte-for-byte today's behavior.
+          let body: { jobs?: Array<Record<string, unknown>> };
+          if (ctx.poolPollCache) {
+            const res = await ctx.poolPollCache.fetchPeer(p.machineId, '/jobs', fetchPeerJobs);
+            body = res.body;
+            if (res.stale) poolStale = true;
+          } else {
+            body = await fetchPeerJobs();
+          }
+          const nickname = cap?.nickname ?? null;
+          const peerJobs = body.jobs ?? [];
+          perMachine.push({ machineId: p.machineId, nickname, jobs: peerJobs });
+          for (const j of peerJobs) {
+            remote.push({
+              ...j,
+              machineId: j.machineId ?? p.machineId,
+              machineNickname: j.machineNickname ?? nickname ?? undefined,
+              remote: true,
+            });
+          }
+        } catch (err) {
+          failed.push({ machineId: p.machineId, error: err instanceof Error ? err.message : String(err) });
+        }
+      }),
+    );
+
+    // Tag local jobs with this machine's identity (additive — present only when
+    // the pool is wired). Mirrors sessions/attention self-tagging.
+    const localTagged = localJobs.map((j) => ({
+      ...j,
+      machineId: j.machineId ?? selfMachineId ?? undefined,
+      machineNickname: j.machineNickname ?? selfNickname ?? undefined,
+    }));
+
+    const jobs = [...localTagged, ...remote];
+    const payload = {
+      jobs,
+      count: jobs.length,
+      pool: {
+        enabled: !!ctx.machinePoolRegistry,
+        selfMachineId,
+        peersQueried: peers.length,
+        peersOk: peers.length - failed.length,
+        failed,
+        divergences: detectJobDivergences(perMachine),
+        // WS4.4(f): honestly labeled when the shared pool-cache served any peer
+        // body from its last-cached value under CPU load-shed (load-shed, never
+        // silent stale). Absent/false ⇒ every peer body in this merge is fresh.
+        ...(poolStale ? { stale: true } : {}),
+      },
+    };
+    jobsPoolCache.set(cacheKey, { at: Date.now(), payload });
+    return payload;
+  }
+
+  router.get('/jobs', async (req, res) => {
+    if (!ctx.scheduler) {
+      // scope=pool from a scheduler-less self still answers a coherent pool
+      // view (local-only empty) so the dashboard never 500s on a single role.
+      if (req.query.scope === 'pool') {
+        res.json(await jobsPoolMerge([]));
+        return;
+      }
+      res.json({ jobs: [], scheduler: null });
+      return;
+    }
+
+    const jobs = buildLocalJobs();
+
+    // scope=pool (WS4.3, MULTI-MACHINE-SEAMLESSNESS-SPEC §WS4.3): merge every
+    // ONLINE peer's plain GET /jobs into one view, each job tagged with its
+    // machine, plus an observe-only job-placement divergence list. Tolerant by
+    // design (per-peer timeout → a `failed` marker, never a 500), short-TTL
+    // cached so dashboard polling doesn't re-fan-out per request. Plain GET
+    // stays a back-compatible { jobs, queue } object.
+    if (req.query.scope === 'pool') {
+      res.json(await jobsPoolMerge(jobs));
+      return;
+    }
 
     res.json({ jobs, queue: ctx.scheduler.getQueue() });
   });
@@ -7963,13 +9333,49 @@ export function createRoutes(ctx: RouteContext): Router {
       return;
     }
     const capped = text.length > PREFLIGHT_TEXT_CAP ? text.slice(0, PREFLIGHT_TEXT_CAP) : text;
-    // Advisories are composed for automated sends only — the conversational
-    // path already has the full authority pipeline, and the operator's
-    // over-block concern argues against any new friction there (§4 Q2).
-    const advisories = kind === 'automated' ? composeAdvisories(capped) : [];
+    // TIME_CLAIM (operator mandate 2026-06-12, topic 13481 — "MANDATE accurate
+    // time reporting"): when the sending topic has an ACTIVE time-boxed
+    // (autonomous) session, elapsed/remaining/percent claims in the candidate
+    // text are verified against the live session clock. Dev-gated dark
+    // (standard_development_agent_dark_feature_gate); resolution failure
+    // degrades to "no clocks" — fail-open like every detector.
+    const timeClaimEnabled = resolveDevAgentGate(
+      ctx.liveConfig?.get<boolean | undefined>('messaging.outboundAdvisory.timeClaim.enabled', undefined),
+      ctx.config,
+    );
+    let activeClocks: ReturnType<typeof readSessionClocks> = [];
+    if (timeClaimEnabled && Number.isFinite(topic) && topic > 0) {
+      try {
+        activeClocks = readSessionClocks(ctx.config.stateDir, Date.now(), String(topic)).filter(
+          (c) => c.status === 'active',
+        );
+      } catch {
+        /* @silent-fallback-ok — fail-open by the advisory contract (outbound-jargon-filepath-gap §2.3): a clock-read error skips the TIME_CLAIM signal, never withholds a message */
+        activeClocks = [];
+      }
+    }
+    // Full detector set for automated sends only — the conversational path
+    // already has the full authority pipeline, and the operator's over-block
+    // concern argues against any new friction there (§4 Q2). TIME_CLAIM is the
+    // ONE exception, for every non-script sender kind: an unstamped interactive
+    // session running an autonomous job is exactly where the founding "~7h
+    // elapsed" mis-report came from, and a contradicted time claim is wrong
+    // regardless of message kind. No active clock for the topic → no-op.
+    const advisories =
+      kind === 'automated'
+        ? composeAdvisories(capped, { sessionClocks: activeClocks })
+        : composeTimeClaimAdvisories(capped, activeClocks);
     outboundAdvisoryAudit.recordPreflight({
       topicId: Number.isFinite(topic) ? topic : 0,
-      jobSlug: typeof jobSlug === 'string' ? jobSlug : '',
+      // Non-automated (conversational-session) preflights carry no job slug —
+      // key their audit/escalation rows under a fixed readable label instead
+      // of an empty string.
+      jobSlug:
+        typeof jobSlug === 'string' && jobSlug.length > 0
+          ? jobSlug
+          : kind === 'automated'
+            ? ''
+            : 'interactive-session',
       kind,
       text: capped,
       advisories: advisories.map((a) => a.code),
@@ -8223,7 +9629,17 @@ export function createRoutes(ctx: RouteContext): Router {
         try {
           outboundAdvisoryAudit.recordAck({
             topicId,
-            jobSlug: metadataJobSlug,
+            // Same slug fallback as the preflight writer: a non-automated
+            // (conversational-session) ack must land under the SAME signature
+            // key its advised episodes were recorded under, or the episodes
+            // never resolve and the ignore-escalation false-fires on messages
+            // that actually delivered (second-pass review concern 2).
+            jobSlug:
+              metadataJobSlug.length > 0
+                ? metadataJobSlug
+                : (messageKind ?? 'reply') === 'automated'
+                  ? ''
+                  : 'interactive-session',
             kind: messageKind ?? 'reply',
             text,
             advisories: advisoryCodes,
@@ -8570,7 +9986,28 @@ export function createRoutes(ctx: RouteContext): Router {
     }
     const detail = ctx.threadlineObservability.getThread(req.params.threadId);
     if (!detail) { res.status(404).json({ error: 'Thread not found' }); return; }
-    res.json(detail);
+    // Robustness Phase 2 (E6): surface the CANONICAL log head + advisory symmetry
+    // state onto the dashboard thread view, so corrected history + divergence are
+    // visible to the human (the canonical log is the authoritative count, not the
+    // lossy aggregate). Additive — absent when threadline/canonical-history is off.
+    let canonicalHistory: unknown;
+    try {
+      const tid = req.params.threadId;
+      if (ctx.threadLog && THREAD_ID_RE.test(tid) && ctx.threadLog.isPathConfined(tid)) {
+        const head = ctx.threadLog.head(tid);
+        const verify = ctx.threadLog.verify(tid);
+        const conv = ctx.conversationStore?.get(tid);
+        canonicalHistory = {
+          count: head.count,
+          headHash: head.headHash,
+          setAccum: head.setAccum,
+          chainOk: verify.ok,
+          symmetryState: conv?.symmetryState ?? 'unknown',
+          collisionCount: conv?.collisionCount ?? 0,
+        };
+      }
+    } catch { /* @silent-fallback-ok: observability augmentation is best-effort; the base detail still returns */ }
+    res.json(canonicalHistory ? { ...detail, canonicalHistory } : detail);
   });
 
   // ── A2A peer-health (A2A-DURABLE-DELIVERY-SPEC.md) ──────────────────────
@@ -8597,6 +10034,64 @@ export function createRoutes(ctx: RouteContext): Router {
       ? Number(req.query.staleAfterMs)
       : undefined;
     res.json(ctx.a2aDeliveryTracker.peerHealth(req.params.fp, { staleAfterMs }));
+  });
+
+  // ── Negotiator lease state (Robustness Phase 1, FD-9) ──────────────────
+  // "Which session owns each conversation's voice?" — bearer-gated, paginated,
+  // own-data-only. Returns this agent's lease per active conversation (holder +
+  // epoch + expiry) plus dry-run would-hold / hold / CAS-retry / fail-open counts.
+  router.get('/threadline/negotiator', (req, res) => {
+    // Bearer-gated (defense in depth — own lease/voice state is agent-private).
+    if (ctx.config.authToken) {
+      const header = req.headers.authorization;
+      if (!header?.startsWith('Bearer ') || header.slice(7) !== ctx.config.authToken) {
+        res.status(401).json({ error: 'Unauthorized' });
+        return;
+      }
+    }
+    if (!ctx.conversationStore) {
+      res.status(503).json({ error: 'conversation store not available' });
+      return;
+    }
+    try {
+      const rawCfg = (ctx.config as { threadline?: { singleNegotiator?: unknown } }).threadline?.singleNegotiator;
+      const cfg = resolveSingleNegotiatorConfig(rawCfg, ctx.config as { developmentAgent?: boolean });
+      // Paginate by threadId (stable order). Default 100, `after` cursor.
+      const limitRaw = typeof req.query.limit === 'string' ? parseInt(req.query.limit, 10) : 100;
+      const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(limitRaw, 500) : 100;
+      const after = typeof req.query.after === 'string' ? req.query.after : undefined;
+
+      const all = ctx.conversationStore.all()
+        .filter((c) => c.negotiatorLease)
+        .sort((a, b) => (a.threadId < b.threadId ? -1 : a.threadId > b.threadId ? 1 : 0));
+      const startIdx = after ? all.findIndex((c) => c.threadId === after) + 1 : 0;
+      const page = all.slice(startIdx, startIdx + limit);
+      const nextCursor = startIdx + limit < all.length ? page[page.length - 1]?.threadId : null;
+
+      const leases = page.map((c) => ({
+        threadId: c.threadId,
+        owner: c.negotiatorLease!.ownerSessionName,
+        ownerMachineId: c.negotiatorLease!.ownerMachineId,
+        epoch: c.negotiatorLease!.epoch,
+        expiresAt: c.negotiatorLease!.expiresAt,
+        lastHoldingNoticeEpoch: c.lastHoldingNoticeEpoch ?? null,
+        lastHoldingNoticeAt: c.lastHoldingNoticeAt ?? null,
+      }));
+
+      const counts = readNegotiatorCounts(negotiatorLogDir(ctx.config.stateDir), cfg.dryRunRetentionDays);
+      res.json({
+        enabled: cfg.enabled,
+        dryRun: cfg.dryRun,
+        leaseTtlMs: cfg.leaseTtlMs,
+        machineId: ctx.meshSelfId ?? (ctx.config as { machineId?: string }).machineId ?? 'local',
+        leases,
+        counts,
+        total: all.length,
+        nextCursor: nextCursor ?? null,
+      });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
   });
 
   router.get('/threadline/observability/search', (req, res) => {
@@ -8896,7 +10391,178 @@ export function createRoutes(ctx: RouteContext): Router {
     }
   });
 
-  router.get('/attention', (req, res) => {
+  // ── WS4.1 pool-scope merge helpers ───────────────────────────────────
+  // Short-TTL cache keyed by status, so repeated dashboard polls within the
+  // window reuse one fan-out instead of re-querying every peer per request.
+  const attentionPoolCache = new Map<string, { at: number; payload: unknown }>();
+  const ATTENTION_POOL_CACHE_TTL_MS = 3_000;
+  const ATTENTION_PEER_TIMEOUT_MS = 5_000;
+
+  // WS4.1 follow-up (CMT-1416): durable operator-bound /ack across machines.
+  // Plain seamlessness boolean read LIVE (mirrors ws21PreferencesPool) — off ⇒
+  // POST /attention/:id/remote-ack 503s, the PATCH precedence guard is inert,
+  // and the store is never touched (strict no-op on a flag-off agent).
+  const ws41DurableAckEnabled = (): boolean =>
+    ((ctx.config as Record<string, any>).multiMachine?.seamlessness ?? {}).ws41DurableAck === true;
+  const remoteAckStore = new RemoteAckStore(ctx.config.stateDir);
+  const remoteAckLimiter = rateLimiter(60_000, 30);
+  const REMOTE_ACK_GIVE_UP_ATTEMPTS = 50;
+
+  // Best-effort delivery of one pending ack intent to its owning machine via the
+  // peer's existing PATCH /attention/:id (carrying the X-Instar-Remote-Ack
+  // annotation so the owner runs its precedence guard). Returns the terminal
+  // disposition; 'queued' means the owner is still unreachable (keep the intent).
+  async function deliverRemoteAck(
+    intent: { itemId: string; targetMachineId: string; status: string; operatorUid: string; operatorDisplayName?: string },
+  ): Promise<'delivered' | 'stale-superseded' | 'queued'> {
+    const machine = (ctx.listPoolMachines?.() ?? []).find((m) => m.machineId === intent.targetMachineId);
+    if (!machine || !machine.lastKnownUrl) return 'queued';
+    const extraAllowlist = (ctx.config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)?.peerUrlAllowlist;
+    if (!isPeerUrlAllowedForCredentials(machine.lastKnownUrl, extraAllowlist).ok) return 'queued';
+    try {
+      const r = await fetch(`${machine.lastKnownUrl}/attention/${encodeURIComponent(intent.itemId)}`, {
+        method: 'PATCH',
+        headers: {
+          Authorization: `Bearer ${ctx.config.authToken}`,
+          'Content-Type': 'application/json',
+          'X-Instar-Remote-Ack': intent.operatorUid || 'operator',
+        },
+        body: JSON.stringify({ status: intent.status }),
+        signal: AbortSignal.timeout(ATTENTION_PEER_TIMEOUT_MS),
+      });
+      if (r.ok) return 'delivered';
+      // 425 = the owner's precedence guard rejected a stale resolve (item since
+      // escalated). 404 = item already gone on the owner. Both are TERMINAL —
+      // drop the intent; retrying can never succeed.
+      if (r.status === 425 || r.status === 404) return 'stale-superseded';
+      return 'queued';
+    } catch {
+      // @silent-fallback-ok — unreachable owner (timeout/offline) keeps the
+      // intent durable for the next drain; never a thrown error in the ack path.
+      return 'queued';
+    }
+  }
+
+  // Drain every still-pending intent (called on the route's enqueue path AND on
+  // a peer-online signal). Gives up loudly past the attempt cap so a permanently
+  // unreachable owner doesn't leave an intent retrying forever.
+  async function drainRemoteAcks(): Promise<{ delivered: number; dropped: number; pending: number }> {
+    if (!ws41DurableAckEnabled()) return { delivered: 0, dropped: 0, pending: 0 };
+    let delivered = 0;
+    let dropped = 0;
+    for (const intent of remoteAckStore.list()) {
+      if (intent.attempts >= REMOTE_ACK_GIVE_UP_ATTEMPTS) {
+        remoteAckStore.resolve(intent.itemId, intent.targetMachineId);
+        dropped += 1;
+        continue;
+      }
+      const disposition = await deliverRemoteAck(intent);
+      if (disposition === 'delivered') {
+        remoteAckStore.resolve(intent.itemId, intent.targetMachineId);
+        delivered += 1;
+      } else if (disposition === 'stale-superseded') {
+        remoteAckStore.resolve(intent.itemId, intent.targetMachineId);
+        dropped += 1;
+      } else {
+        remoteAckStore.recordAttempt(intent.itemId, intent.targetMachineId, 'unreachable');
+      }
+    }
+    return { delivered, dropped, pending: remoteAckStore.size };
+  }
+  // P17 coalesce key: items sharing this key across machines collapse to ONE
+  // merged row (a pool-wide event whose per-machine tripwires each raised an
+  // item). Mirrors the WS3.3 episode-key pattern: prefer an explicit
+  // sourceContext (the deduped escalation source), else category+title.
+  const attentionCoalesceKey = (it: { sourceContext?: string; category?: string; title?: string }): string =>
+    it.sourceContext && it.sourceContext.length > 0
+      ? `src:${it.sourceContext}`
+      : `ct:${it.category ?? ''}:${it.title ?? ''}`;
+
+  async function attentionPoolMerge(
+    localItems: Array<Record<string, unknown>>,
+    status: string | undefined,
+  ): Promise<Record<string, unknown>> {
+    const cacheKey = status ?? '*';
+    const cached = attentionPoolCache.get(cacheKey);
+    if (cached && Date.now() - cached.at < ATTENTION_POOL_CACHE_TTL_MS) {
+      return cached.payload as Record<string, unknown>;
+    }
+
+    const peers = ctx.resolvePeerUrls?.() ?? [];
+    const failed: Array<{ machineId: string; error: string }> = [];
+    const remote: Array<Record<string, unknown>> = [];
+    await Promise.all(
+      peers.map(async (p) => {
+        // Skip a peer the registry knows to be offline — saves the timeout
+        // wait; an unknown peer (no capacity row) is still tried.
+        const cap = ctx.machinePoolRegistry?.getCapacity(p.machineId);
+        if (cap && cap.online === false) {
+          failed.push({ machineId: p.machineId, error: 'offline' });
+          return;
+        }
+        try {
+          const qs = status ? `?status=${encodeURIComponent(status)}` : '';
+          const r = await fetch(`${p.url}/attention${qs}`, {
+            headers: { Authorization: `Bearer ${ctx.config.authToken}` },
+            signal: AbortSignal.timeout(ATTENTION_PEER_TIMEOUT_MS),
+          });
+          if (!r.ok) throw new Error(`HTTP ${r.status}`);
+          const body = (await r.json()) as { items?: Array<Record<string, unknown>> };
+          const nickname = cap?.nickname ?? null;
+          for (const it of body.items ?? []) {
+            remote.push({
+              ...it,
+              machineId: it.machineId ?? p.machineId,
+              machineNickname: it.machineNickname ?? nickname ?? undefined,
+              remote: true,
+            });
+          }
+        } catch (err) {
+          failed.push({ machineId: p.machineId, error: err instanceof Error ? err.message : String(err) });
+        }
+      }),
+    );
+
+    // P17 merge-point coalesce: collapse same-key items across machines into
+    // ONE row carrying the contributing machine list. Local items win the
+    // canonical row (the operator's own machine view); remote duplicates fold
+    // into coalescedFrom. HIGH/URGENT are NEVER coalesced (every critical item
+    // stays individually visible — same rule as the write-side flood guard).
+    const byKey = new Map<string, Record<string, unknown>>();
+    const out: Array<Record<string, unknown>> = [];
+    for (const it of [...localItems, ...remote]) {
+      const priority = String(it.priority ?? 'NORMAL');
+      if (priority === 'HIGH' || priority === 'URGENT') {
+        out.push(it);
+        continue;
+      }
+      const key = attentionCoalesceKey(it as { sourceContext?: string; category?: string; title?: string });
+      const existing = byKey.get(key);
+      if (!existing) {
+        const row = { ...it, coalescedFrom: [it.machineId] };
+        byKey.set(key, row);
+        out.push(row);
+      } else {
+        (existing.coalescedFrom as unknown[]).push(it.machineId);
+      }
+    }
+
+    const payload = {
+      items: out,
+      count: out.length,
+      pool: {
+        enabled: !!ctx.machinePoolRegistry,
+        selfMachineId: ctx.meshSelfId ?? null,
+        peersQueried: peers.length,
+        peersOk: peers.length - failed.length,
+        failed,
+      },
+    };
+    attentionPoolCache.set(cacheKey, { at: Date.now(), payload });
+    return payload;
+  }
+
+  router.get('/attention', async (req, res) => {
     if (!ctx.telegram) {
       res.status(503).json({ error: 'Telegram not configured' });
       return;
@@ -8904,8 +10570,43 @@ export function createRoutes(ctx: RouteContext): Router {
 
     const requestedStatus = req.query.status as string | undefined;
     const status = requestedStatus ? (normalizeAttentionStatus(requestedStatus) ?? requestedStatus) : undefined;
-    const items = ctx.telegram.getAttentionItems(status);
-    res.json({ items, count: items.length });
+    const selfMachineId = ctx.meshSelfId ?? null;
+    // Local items are stamped with THIS machine's id at read time (mirrors the
+    // sessions?scope=pool precedent — the store stays machine-agnostic; the
+    // route is where the machine view is composed). machineNickname resolved
+    // from the registry when wired.
+    const selfNickname = selfMachineId
+      ? ctx.machinePoolRegistry?.getCapacity(selfMachineId)?.nickname ?? undefined
+      : undefined;
+    const localItems = ctx.telegram.getAttentionItems(status).map((it) => ({
+      ...it,
+      machineId: it.machineId ?? selfMachineId ?? undefined,
+      machineNickname: selfNickname,
+    }));
+
+    // scope=pool (WS4.1, MULTI-MACHINE-SEAMLESSNESS-SPEC §WS4.1): merge every
+    // ONLINE peer's attention items so the dashboard shows one queue across the
+    // whole pool. Tolerant by design (per-peer timeout → a `failed` marker,
+    // never a 500), short-TTL cached so dashboard polling doesn't re-fan-out
+    // per request, and P17-coalesced at the merge point: N machines raising the
+    // SAME episode (same coalesce key) present as ONE row (the read-side bound;
+    // per-machine budgets remain the write-side bound). Plain GET stays a
+    // back-compatible object.
+    if (req.query.scope === 'pool') {
+      // WS4.1 follow-up: opportunistically drain any pending durable remote-acks
+      // — the pool read is exactly when a previously-dark owner is likely back
+      // online (the dashboard polls this). Fire-and-forget; never blocks the read.
+      if (ws41DurableAckEnabled() && remoteAckStore.size > 0) {
+        void drainRemoteAcks().catch(() => {
+          /* @silent-fallback-ok — drain is best-effort; failures keep intents durable */
+        });
+      }
+      const merged = await attentionPoolMerge(localItems, status);
+      res.json(merged);
+      return;
+    }
+
+    res.json({ items: localItems, count: localItems.length });
   });
 
   router.get('/attention/:id', (req, res) => {
@@ -8934,6 +10635,36 @@ export function createRoutes(ctx: RouteContext): Router {
       return;
     }
 
+    // WS4.1 follow-up (CMT-1416) receiver-side precedence guard. When a PATCH
+    // arrives carrying X-Instar-Remote-Ack (a relayed operator ack from a peer,
+    // possibly enqueued while THIS machine was offline), the OWNER's CURRENT
+    // item state wins: a stale resolve against an item that has SINCE escalated
+    // to HIGH/URGENT is rejected (and surfaced) rather than silently applied.
+    // Gated on ws41DurableAck — off ⇒ this whole block is inert (the header is
+    // ignored and the PATCH behaves exactly as before). The header is only an
+    // ANNOTATION; the Bearer auth (already enforced upstream) is the authority.
+    if (req.get('X-Instar-Remote-Ack') && ws41DurableAckEnabled()) {
+      const current = ctx.telegram.getAttentionItem(req.params.id);
+      if (!current) {
+        res.status(404).json({ error: 'Attention item not found' });
+        return;
+      }
+      const currentPriority = String(current.priority ?? 'NORMAL');
+      const downgrades = status === 'DONE' || status === 'WONT_DO' || status === 'ACKNOWLEDGED';
+      if ((currentPriority === 'HIGH' || currentPriority === 'URGENT') && downgrades) {
+        // Reconcile precedence: never auto-resolve a since-escalated critical
+        // item via a stale relayed ack. Surfaced to the relayer (425) so the
+        // RemoteAckStore drops the stale intent rather than retrying forever.
+        res.status(425).json({
+          error: 'stale-superseded',
+          reason: `item has escalated to ${currentPriority} since the ack was issued — current state wins`,
+          itemId: req.params.id,
+          currentPriority,
+        });
+        return;
+      }
+    }
+
     const success = await ctx.telegram.updateAttentionStatus(req.params.id, status);
     if (!success) {
       res.status(404).json({ error: 'Attention item not found' });
@@ -8942,6 +10673,87 @@ export function createRoutes(ctx: RouteContext): Router {
 
     const item = ctx.telegram.getAttentionItem(req.params.id);
     res.json(item);
+  });
+
+  // WS4.1 follow-up (CMT-1416): durable operator-bound /ack for an attention
+  // item OWNED BY ANOTHER MACHINE. The dashboard sends this when the operator
+  // acks a pooled (remote) item; the ack is delivered to the owner immediately
+  // when reachable, else persisted (with the authenticated operator principal)
+  // and re-delivered when the owner returns — so the operator's intent survives
+  // a briefly-dark owner instead of evaporating. Bearer auth (already enforced)
+  // is the operator authority; the topicId resolves the bound operator uid for
+  // the owner's revalidation. Mutating mesh verb → rate-limited like remote-close.
+  router.post('/attention/:id/remote-ack', remoteAckLimiter, async (req, res) => {
+    if (!ws41DurableAckEnabled()) {
+      res.status(503).json({ error: 'WS4.1 durable remote-ack is disabled (multiMachine.seamlessness.ws41DurableAck)' });
+      return;
+    }
+    const { machineId, status: rawStatus, topicId } = (req.body ?? {}) as {
+      machineId?: unknown;
+      status?: unknown;
+      topicId?: unknown;
+    };
+    // machineId is a registry LOOKUP KEY ONLY — charset-clamped, never a URL.
+    if (typeof machineId !== 'string' || !/^[A-Za-z0-9_-]{1,64}$/.test(machineId)) {
+      res.status(400).json({ error: 'machineId required (the owning machine)' });
+      return;
+    }
+    const status = normalizeAttentionStatus(rawStatus);
+    if (!status) {
+      res.status(400).json({ error: `"status" must be one of: ${ATTENTION_STATUSES.join(', ')}` });
+      return;
+    }
+    // Self-ack is a plain local PATCH — refuse the mesh verb for own items so a
+    // single-machine agent (or an item that lives here) never round-trips.
+    if (ctx.meshSelfId && machineId === ctx.meshSelfId) {
+      res.status(400).json({ error: 'item is owned by this machine — use PATCH /attention/:id' });
+      return;
+    }
+    // Bind the authenticated operator principal from the topic-operator store
+    // when a topicId is supplied (the same VERIFIED-binding source as Operator
+    // Binding — never a name from content). Absent/unresolvable → 'operator'.
+    let operatorUid = 'operator';
+    let operatorDisplayName: string | undefined;
+    if (typeof topicId === 'number' || (typeof topicId === 'string' && topicId.trim())) {
+      const op = ctx.topicOperatorStore?.asVerifiedOperator(topicId as number | string);
+      if (op) {
+        operatorUid = op.uid;
+        operatorDisplayName = op.names?.[0];
+      }
+    }
+    const intent = { itemId: req.params.id, targetMachineId: machineId, status, operatorUid, operatorDisplayName };
+    // Try immediate delivery; on success no durable row is needed.
+    const disposition = await deliverRemoteAck(intent);
+    if (disposition === 'delivered') {
+      res.json({ ok: true, delivered: true, itemId: req.params.id, machineId });
+      return;
+    }
+    if (disposition === 'stale-superseded') {
+      res.status(409).json({ ok: false, staleSuperseded: true, itemId: req.params.id, machineId, reason: 'owner rejected — item has since escalated; current state wins' });
+      return;
+    }
+    // Owner unreachable: persist the intent durably and report it queued.
+    remoteAckStore.enqueue(intent);
+    res.json({ ok: true, queued: true, itemId: req.params.id, machineId, reason: 'owner unreachable — ack persisted and will be delivered when it returns', pending: remoteAckStore.size });
+  });
+
+  // Pending durable remote-acks (observability + a manual drain trigger). Two
+  // segments past /attention so it never collides with GET /attention/:id.
+  router.get('/attention/_remote-ack/pending', (_req, res) => {
+    if (!ws41DurableAckEnabled()) {
+      res.status(503).json({ error: 'WS4.1 durable remote-ack is disabled (multiMachine.seamlessness.ws41DurableAck)' });
+      return;
+    }
+    res.json({ pending: remoteAckStore.list(), count: remoteAckStore.size });
+  });
+
+  router.post('/attention/_remote-ack/drain', async (_req, res) => {
+    if (!ws41DurableAckEnabled()) {
+      res.status(503).json({ error: 'WS4.1 durable remote-ack is disabled (multiMachine.seamlessness.ws41DurableAck)' });
+      return;
+    }
+    const result = await drainRemoteAcks();
+    res.json({ ok: true, ...result });
   });
 
   router.delete('/attention/:id', async (req, res) => {
@@ -9727,6 +11539,121 @@ export function createRoutes(ctx: RouteContext): Router {
     });
   });
 
+  // GET /pool/poll-cache — WS4.4(f) global pool-cache observability
+  // (MULTI-MACHINE-SEAMLESSNESS-SPEC §WS4.4 clause (f)). Read-only: reports
+  // whether the shared per-peer poll cache is wired, its TTL + load-shed
+  // threshold, the live load-per-core, whether it is currently load-shedding,
+  // and the cumulative counters (fan-outs avoided via cache hits + load-sheds,
+  // single-flight coalesces). 503 while the dark `ws44PoolCache` flag is off
+  // (the ships-dark contract — like /pool/queue), so the route's presence
+  // honestly reflects whether the unification is engaged on this agent.
+  router.get('/pool/poll-cache', (_req, res) => {
+    if (!ctx.poolPollCache) {
+      res.status(503).json({
+        enabled: false,
+        error:
+          'pool-cache unification not enabled on this agent (ships dark; multiMachine.seamlessness.ws44PoolCache — dev-agent gated)',
+      });
+      return;
+    }
+    res.json(ctx.poolPollCache.snapshot());
+  });
+
+  // GET /pool/queue — Durable Inbound Message Queue observability (spec
+  // §Observability). Bearer-gated like every route; 503 while the queue is
+  // dark/gated (the spec's ships-dark contract). delivered24h EXCLUDES
+  // possibly-not-injected rows (success totals never overstate — they are
+  // summed separately as deliveredUnconfirmed24h).
+  router.get('/pool/queue', (_req, res) => {
+    const engine = ctx.getInboundQueue?.() ?? null;
+    if (!engine) {
+      res.status(503).json({ error: 'inbound queue not enabled on this agent (ships dark; multiMachine.sessionPool.inboundQueue)' });
+      return;
+    }
+    const snap = engine.snapshot();
+    res.json({
+      enabled: true,
+      paused: snap.paused,
+      tenure: snap.tenure,
+      counts: snap.counts,
+      counters: snap.counters,
+      held: snap.heldSeqs,
+      // §1 storage posture as a live field (round-8 external): this build
+      // detects nothing beyond "local filesystem present", reported honestly.
+      custodyDurability: 'unknown',
+      oldestQueuedAgeMs: snap.counts.oldestQueuedAt ? Math.max(0, Date.now() - Date.parse(snap.counts.oldestQueuedAt)) : null,
+    });
+  });
+
+  // ── Replicated-store conflict + rollback surfaces (multi-machine-replicated-
+  //    store-foundation §7.2/§7.3/§7.4). All Bearer-gated like every route; 503
+  //    while the foundation is dark (no store enabled). Signal vs Authority: the
+  //    foundation NEVER picks a conflict winner — POST /state/resolve-conflict is
+  //    the OPERATOR's authority, surfaced.
+
+  // GET /state/conflicts — the open (unresolved) replicated-store conflicts the
+  // union-reader flagged for operator resolution (§7.3 dashboard surface).
+  router.get('/state/conflicts', (_req, res) => {
+    const store = ctx.conflictStore ?? null;
+    if (!store) {
+      res.status(503).json({ error: 'replicated-store conflicts not enabled on this agent (ships dark; multiMachine.stateSync.<store>)' });
+      return;
+    }
+    res.json({ enabled: true, open: store.listOpen(), lossCounter: store.lossCounter });
+  });
+
+  // GET /state/quarantine — the replicated-store quarantine + rollback view: the
+  // currently un-merged (store, origin) pairs (§7.4) + the conflict ledger loss
+  // counter. (Per-record receiver quarantine lives in the journal applier; this
+  // surface reports the FOUNDATION's rollback/conflict state.)
+  router.get('/state/quarantine', (_req, res) => {
+    const dropped = ctx.droppedOriginRegistry ?? null;
+    const store = ctx.conflictStore ?? null;
+    if (!dropped && !store) {
+      res.status(503).json({ error: 'replicated-store quarantine not enabled on this agent (ships dark; multiMachine.stateSync.<store>)' });
+      return;
+    }
+    res.json({
+      enabled: true,
+      droppedOrigins: dropped?.list() ?? [],
+      conflictLossCounter: store?.lossCounter ?? 0,
+    });
+  });
+
+  // POST /state/resolve-conflict — the OPERATOR designates a winner or supplies a
+  // merged version (§7.3). Body: { conflictId, winnerOrigin } OR
+  // { conflictId, mergedVersion }. EXACTLY ONE of winnerOrigin/mergedVersion. The
+  // foundation records the resolution; the operator's chosen/merged record
+  // replicates as a normal record. 404 unknown id; 400 bad input; 503 dark.
+  router.post('/state/resolve-conflict', (req, res) => {
+    const store = ctx.conflictStore ?? null;
+    if (!store) {
+      res.status(503).json({ error: 'replicated-store conflicts not enabled on this agent (ships dark; multiMachine.stateSync.<store>)' });
+      return;
+    }
+    const body = (req.body ?? {}) as { conflictId?: unknown; winnerOrigin?: unknown; mergedVersion?: unknown };
+    const conflictId = typeof body.conflictId === 'string' ? body.conflictId.trim() : '';
+    if (!conflictId) {
+      res.status(400).json({ error: 'conflictId (string) is required' });
+      return;
+    }
+    const resolution: { winnerOrigin?: string; mergedVersion?: Record<string, unknown> } = {};
+    if (typeof body.winnerOrigin === 'string' && body.winnerOrigin.length > 0) resolution.winnerOrigin = body.winnerOrigin;
+    if (body.mergedVersion && typeof body.mergedVersion === 'object' && !Array.isArray(body.mergedVersion)) {
+      resolution.mergedVersion = body.mergedVersion as Record<string, unknown>;
+    }
+    try {
+      const entry = store.resolveConflict(conflictId, resolution);
+      if (!entry) {
+        res.status(404).json({ error: `unknown conflictId "${conflictId}"` });
+        return;
+      }
+      res.json({ resolved: true, entry });
+    } catch (e) {
+      res.status(400).json({ error: (e as Error).message });
+    }
+  });
+
   // GET /pool/placement?topic=N — authoritative "which machine is this topic running
   // on, and WHY (deliberately pinned vs. load-placed)" + the current lease-holder.
   // Answerable from ANY machine: a non-holder PROXIES to the holder, whose local pin
@@ -9782,7 +11709,18 @@ export function createRoutes(ctx: RouteContext): Router {
       selfMachineId: ctx.meshSelfId ?? null,
       nicknameOf,
     });
-    res.json({ ...description, answeredBy: holderUrl ? 'local-fallback' : 'local' });
+    // WS1.3 (MULTI-MACHINE-SEAMLESSNESS-SPEC): a pin that disagrees with live
+    // ownership is a first-class PENDING state, surfaced honestly with its age —
+    // never a silent internal contradiction (the 2026-06-12 stuck-divergence
+    // incident). `since` is the conflicting pin's own set-time: the divergence
+    // cannot predate the pin that defines it.
+    const pendingReplacement = !!(pinnedTo && owner && owner !== pinnedTo);
+    res.json({
+      ...description,
+      pendingReplacement,
+      ...(pendingReplacement && pin ? { pendingSince: pin.updatedAt } : {}),
+      answeredBy: holderUrl ? 'local-fallback' : 'local',
+    });
   });
 
   // POST /pool/transfer — deterministic topic transfer that does NOT depend on
@@ -9842,6 +11780,20 @@ export function createRoutes(ctx: RouteContext): Router {
       if (self && n === self) return self;
       return null;
     };
+    // WS1.4: a LIVE autonomous run on this topic (this machine's stateDir is
+    // the run registry — the run lives where its state file lives).
+    const liveAutonomousRun = (sk: string): { goal: string | null; remainingMinutes: number | null } | null => {
+      try {
+        const job = listAutonomousJobs(ctx.config.stateDir).find((j) => j.topic === sk && j.active && !j.paused);
+        if (!job) return null;
+        let remainingMinutes: number | null = null;
+        if (job.startedAt && job.durationSeconds != null) {
+          const endMs = Date.parse(job.startedAt) + job.durationSeconds * 1000;
+          if (Number.isFinite(endMs)) remainingMinutes = Math.max(0, Math.round((endMs - Date.now()) / 60_000));
+        }
+        return { goal: job.goal, remainingMinutes };
+      } catch { return null; /* @silent-fallback-ok — unreadable run registry → veto not applied; the transfer behaves as before WS1.4 */ }
+    };
     const plan = planTransferByNickname(
       { intent: 'transfer', nickname: to, matchedVerb: 'transfer' },
       {
@@ -9852,6 +11804,12 @@ export function createRoutes(ctx: RouteContext): Router {
         isMidReply: () => false,
         lastPlacementUpdateAt: (sk) => ctx.topicPinStore!.lastUpdatedAtMs(sk) ?? null,
         now: () => Date.now(),
+        // WS1.4 consent gate. NOT suppressed on confirm:true — the planner
+        // stacks every live condition into ONE prompt + '+'-joined detail, so
+        // the confirmed call re-evaluates the full chain and a confirm can
+        // never silently consent to a condition the caller was not shown
+        // (second-pass finding, 2026-06-13).
+        autonomousRunActive: liveAutonomousRun,
       },
       topicId,
     );
@@ -9866,11 +11824,128 @@ export function createRoutes(ctx: RouteContext): Router {
       return;
     }
     if (plan.action === 'confirm-required' && body.confirm !== true) {
-      res.status(409).json({ needsConfirmation: true, prompt: plan.confirmationPrompt, targetMachine: plan.targetMachine });
+      // `detail` names every condition the confirm would consent to
+      // ('+'-joined) — callers relay the prompt, which already states all of them.
+      res.status(409).json({ needsConfirmation: true, prompt: plan.confirmationPrompt, targetMachine: plan.targetMachine, detail: plan.detail });
       return;
     }
     // transfer | noop | confirmed → set the pin and release local ownership if we hold it.
     const target = plan.targetMachine!;
+    // ── WS1.2 drain leg (MULTI-MACHINE-SEAMLESSNESS-SPEC): an ACTIVE
+    // conversation's transfer must COMPLETE, not half-move. When the topic has
+    // a current owner that can drain — itself (the live-swap topology: owner ==
+    // holder == this machine) or a remote peer that is online AND advertises
+    // ws12DrainReceive in its heartbeat — order the drain BEFORE the pin:
+    // finish the in-flight turn (bounded), suspend any autonomous run, close
+    // the owner's session, land the target's claim (the queue-barrier release).
+    //   · drain ok → proceed to pin+journal exactly as today (the place/claim
+    //     repair below sees active@target and correctly no-ops).
+    //   · aborted-emergency-stop → 409 failed-needs-retry, NO pin — an abort
+    //     leaves nothing split (the topic stays whole on its current machine).
+    //   · refused-*/no-handler/timeout/no-flag → DEGRADE to today's pin path
+    //     (recorded in the response; the reconciler + closeout converge it).
+    // The capability gate means an old peer is never sent a doomed order.
+    let drainLeg: { attempted: boolean; ok?: boolean; status?: string; reason?: string } = { attempted: false };
+    let drainRunSuspended = false;
+    try {
+      const currentOwner = plan.action !== 'noop' ? ctx.sessionOwnershipRegistry.ownerOf(topicId) : null;
+      const ownerCap = currentOwner && currentOwner !== self ? ctx.machinePoolRegistry?.getCapacity(currentOwner) : null;
+      const ownerCanDrain =
+        currentOwner != null &&
+        currentOwner !== target &&
+        ctx.sendDrain != null &&
+        (currentOwner === self ||
+          ((ownerCap?.online ?? false) && ownerCap?.seamlessnessFlags?.ws12DrainReceive === true));
+      if (ownerCanDrain) {
+        const observedEpoch = ctx.sessionOwnershipRegistry.read(topicId)?.ownershipEpoch ?? 0;
+        const r = await ctx.sendDrain!(currentOwner!, topicId, target, observedEpoch);
+        drainLeg = { attempted: true, ok: r.ok, status: r.status, reason: r.reason };
+        drainRunSuspended = r.runSuspended === true;
+        if (r.status === 'aborted-emergency-stop') {
+          res.status(409).json({
+            error: 'transfer aborted: emergency stop fired during the drain — the topic stays whole on its current machine',
+            failedNeedsRetry: true,
+            drain: drainLeg,
+          });
+          return;
+        }
+      }
+    } catch (err) {
+      // @silent-fallback-ok — NOT silent: recorded in the response's drain field;
+      // the transfer degrades to today's pin path (the safe direction — never a
+      // half-drain). A drain failure must never fail the transfer itself.
+      drainLeg = { attempted: true, ok: false, reason: err instanceof Error ? err.message : String(err) };
+    }
+    // WS1.4 confirmed move: suspend the in-flight autonomous run AT ITS NEXT
+    // TURN BOUNDARY (active:false releases the stop hook) while the state file
+    // SURVIVES to ride the working-set carrier — the atomic fsync'd rewrite +
+    // the journal `stopped` emit (which re-fires the receiver's working-set
+    // pull) happen inside the suspend. Runs before the pin/release so the
+    // re-fired pull sees the final, consistent file. Only fires for a real
+    // move (noop/already-there never suspends).
+    let autonomousRunSuspended = false;
+    if (plan.action !== 'noop' && liveAutonomousRun(topicId)) {
+      try {
+        autonomousRunSuspended = suspendAutonomousTopicForMove(
+          ctx.config.stateDir, topicId, target, ctx.state.getCoherenceJournal() ?? undefined,
+        ).suspended;
+      } catch (err) {
+        // NOT silent: a failed suspend is reported in the response below
+        // (autonomousRunSuspended:false) — the transfer still proceeds (the
+        // pin is the user's explicit, confirmed intent), and the run's own
+        // stop hook keeps it honest on the old machine.
+        console.warn(`[pool/transfer] autonomous-run suspend failed for topic ${topicId}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+    // ── WS5.3 (escalation-rides-topic) SOURCE capture ───────────────────────
+    // When the moving topic has a LIVE session running on the escalated tier,
+    // file an EPHEMERAL escalation hint keyed by topic. The destination's
+    // acquire pull serves it and RE-ADMITS through its OWN governor — a trigger
+    // carry, NEVER a tier grant. Gated under tierEscalation.enabled && ridesTopic
+    // (default false ⇒ strict no-op). Honors escalationOverride:'suppress' (a
+    // suppressed topic files NO hint — it must never be re-escalated on arrival).
+    // Only a REAL move files (noop/already-there never does).
+    let escalationHintFiled = false;
+    if (plan.action !== 'noop' && ctx.escalationHints) {
+      try {
+        const teCfg = normalizeTierEscalationConfig(
+          (ctx.config as { models?: { tierEscalation?: unknown } }).models?.tierEscalation,
+        );
+        if (teCfg.enabled && teCfg.ridesTopic) {
+          // The topic's live session on THIS machine (the source in the
+          // live-swap topology owner==holder==self; a remote-owner move
+          // degrades safely — no local session, no hint, default tier).
+          const topicNum = Number(topicId);
+          const srcSessionName = Number.isFinite(topicNum)
+            ? ctx.telegram?.getSessionForTopic?.(topicNum) ?? null
+            : null;
+          const srcSession = srcSessionName
+            ? ctx.sessionManager.listRunningSessions().find(
+                (s) => s.name === srcSessionName || s.tmuxSession === srcSessionName,
+              ) ?? null
+            : null;
+          const escalatedIds = escalatedModelIds(teCfg);
+          const isEscalated = srcSession?.model != null && escalatedIds.has(srcSession.model);
+          // suppress consult: a 'suppress'-pinned topic files no hint.
+          const suppressed =
+            ctx.topicProfile?.resolver?.resolve(topicNum)?.escalationOverride === 'suppress';
+          if (isEscalated && !suppressed) {
+            ctx.escalationHints.file(topicId, {
+              trigger: 'transfer', // audit label only — the destination governor re-decides from real state
+              sourceTier: 'escalated',
+              ...(self ? { sourceMachineId: self } : {}),
+            });
+            escalationHintFiled = true;
+          }
+        }
+      } catch {
+        // @silent-fallback-ok — filing the hint is fire-and-forget enrichment of
+        // the transfer: a capture error must never fail the move. Worst case the
+        // resumed session re-evaluates escalation only when its heavy-work trigger
+        // fires again on the destination (default tier in the meantime — the safe
+        // direction, identical to WS5.3 being off).
+      }
+    }
     ctx.topicPinStore.set(topicId, target, plan.setPin ?? true);
     let releasedLocalOwnership = false;
     try {
@@ -9947,6 +12022,20 @@ export function createRoutes(ctx: RouteContext): Router {
         };
         if (casAndJournal({ type: 'place', machineId: target }, 'tplace')) {
           placedOwnership = casAndJournal({ type: 'claim', machineId: target }, 'tclaim');
+          // TOPIC-PROFILE-SPEC §5.3 acquire seam (deterministic-transfer arm):
+          // when THIS machine is the transfer target, the landed tclaim is an
+          // ownership ACQUIRE — pull the topic's profile from its previous
+          // owner. (target !== self: the target machine fires its own acquire
+          // seam when the first forwarded message lands — deliverMessage
+          // onAccepted; firing here would stage a pull on a non-owner, which
+          // the carrier's apply-time ownership recheck would just discard.)
+          if (placedOwnership && target === self && prevOwner && prevOwner !== self) {
+            try {
+              ctx.topicProfile?.carrier?.onTopicAcquired(topicId, prevOwner);
+            } catch {
+              /* @silent-fallback-ok: the §5.3 pull is fire-and-forget enrichment of the transfer — a carrier failure must never fail the transfer itself; the durable retry ledger re-files on the next acquire/tick (TOPIC-PROFILE-SPEC §5.3) */
+            }
+          }
         } else {
           // A resting 'placing' record already naming the target (legacy pre-fix
           // state, or a raced earlier transfer) → confirm the claim (placing→active),
@@ -9954,6 +12043,14 @@ export function createRoutes(ctx: RouteContext): Router {
           const cur = ctx.sessionOwnershipRegistry.read(topicId);
           if (cur?.status === 'placing' && cur.ownerMachineId === target) {
             placedOwnership = casAndJournal({ type: 'claim', machineId: target }, 'tclaim');
+            // §5.3 acquire seam — same self-target arm as the place→claim path above.
+            if (placedOwnership && target === self && prevOwner && prevOwner !== self) {
+              try {
+                ctx.topicProfile?.carrier?.onTopicAcquired(topicId, prevOwner);
+              } catch {
+                /* @silent-fallback-ok: fire-and-forget §5.3 pull — never fails the transfer; the durable ledger re-files (TOPIC-PROFILE-SPEC §5.3) */
+              }
+            }
           }
         }
       }
@@ -9972,6 +12069,9 @@ export function createRoutes(ctx: RouteContext): Router {
       pinned: plan.setPin ?? true,
       releasedLocalOwnership,
       placedOwnership,
+      autonomousRunSuspended: autonomousRunSuspended || drainRunSuspended,
+      ...(drainLeg.attempted ? { drain: drainLeg } : {}),
+      ...(escalationHintFiled ? { escalationHintFiled: true } : {}),
     });
   });
 
@@ -11553,7 +13653,7 @@ export function createRoutes(ctx: RouteContext): Router {
     });
   });
 
-  router.get('/view/:id', (req, res) => {
+  router.get('/view/:id', async (req, res) => {
     if (!ctx.viewer) {
       res.status(503).json({ error: 'Private viewer not configured' });
       return;
@@ -11566,6 +13666,18 @@ export function createRoutes(ctx: RouteContext): Router {
 
     const view = ctx.viewer.get(req.params.id);
     if (!view) {
+      // WS4.4: view-id ownership ≠ topic ownership. The view may be HELD by
+      // another machine in the pool. The end-user credential was already
+      // validated by the auth middleware (Bearer token, obtained via the
+      // dashboard PIN, OR the signed ?sig= tunnel URL) BEFORE this handler ran —
+      // so reaching here means the user is authenticated at this fronting edge.
+      // Resolve the actual holder and proxy, carrying a short-lived, audience-
+      // bound, single-use, mesh-signed assertion of THAT user-authentication —
+      // never the raw credential (each machine's PIN secret never crosses).
+      if (ctx.poolLink) {
+        await proxyViewToHolder(req, res, req.params.id);
+        return;
+      }
       res.status(404).json({ error: 'View not found' });
       return;
     }
@@ -11583,6 +13695,122 @@ export function createRoutes(ctx: RouteContext): Router {
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
     res.send(html);
   });
+
+  /**
+   * WS4.4 fronting-edge proxy (MULTI-MACHINE-SEAMLESSNESS-SPEC §WS4.4 a/b/c/d/e).
+   * Called ONLY when the view is NOT held locally AND the pool-link layer is wired
+   * AND the end-user credential already passed the auth middleware. Resolves the
+   * holder, mints a signed audience-bound assertion, proxies under a concurrency
+   * cap, and STREAMS the holder's response straight through — the holder makes the
+   * authorization decision (its 401/403 is relayed unchanged), private bodies are
+   * NEVER cached at the edge, and the raw user credential is NEVER forwarded.
+   */
+  async function proxyViewToHolder(
+    req: import('express').Request,
+    res: import('express').Response,
+    viewId: string,
+  ): Promise<void> {
+    const pl = ctx.poolLink!;
+    // §WS4.4 (f) load-shed-aware resolution: over the fronting CPU threshold this
+    // serves the LAST-CACHED holder resolution flagged stale instead of
+    // re-fanning-out. We label that staleness honestly on the wire (X-Pool-Link-
+    // Stale + age) below, and decline honestly when nothing is cached.
+    const tagged = await pl.proxy.resolveHolderTagged(viewId);
+    const resolution = tagged.resolution;
+    // When the resolution itself was served stale under load-shed, surface the
+    // honest staleness tag on EVERY downstream response for this request.
+    const tagStale = (): void => {
+      if (tagged.stale) {
+        res.setHeader('X-Pool-Link-Stale', 'true');
+        res.setHeader('X-Pool-Link-Resolution-Age-Ms', String(Math.max(0, Date.now() - tagged.cachedAtMs)));
+      }
+    };
+    if (resolution.kind === 'local') {
+      // Race: the view appeared locally between get() and here — re-serve local.
+      const v = ctx.viewer!.get(viewId);
+      if (v && !v.pinHash) {
+        res.setHeader('Content-Type', 'text/html; charset=utf-8');
+        res.send(ctx.viewer!.renderHtml(v));
+        return;
+      }
+      res.status(404).json({ error: 'View not found' });
+      return;
+    }
+    if (resolution.kind === 'not-found' || resolution.kind === 'no-peers') {
+      tagStale();
+      res.status(404).json({ error: 'View not found' });
+      return;
+    }
+    if (resolution.kind === 'load-shed') {
+      // §WS4.4 (f): the fronting machine is over its CPU threshold AND has no
+      // cached resolution to serve — decline a fresh fan-out honestly (load-shed,
+      // labeled), never a fabricated/stale body. (The broader pool-cache
+      // unification is the tracked follow-up CMT-1416; this in-scope posture is
+      // the staleness-tag on the holder-resolution caching surface.)
+      res.status(503).setHeader('Retry-After', '5');
+      res.json({ error: 'Fronting machine busy (load-shed) — retry shortly' });
+      return;
+    }
+    if (resolution.kind === 'holder-offline') {
+      // §WS4.4 d: honest unavailable — NEVER a bare 404, never stale content.
+      tagStale();
+      res.status(503).setHeader('Content-Type', 'text/html; charset=utf-8');
+      res.send(
+        '<!doctype html><meta charset="utf-8"><title>Temporarily unavailable</title>'
+        + '<body style="font-family:system-ui;max-width:40rem;margin:4rem auto;padding:0 1rem">'
+        + '<h1>Content temporarily unavailable</h1>'
+        + '<p>This content lives on one of your other machines, which is offline right now. '
+        + 'It will be reachable again once that machine comes back online.</p></body>',
+      );
+      return;
+    }
+
+    // resolution.kind === 'remote': proxy under the concurrency cap.
+    const method = (req.method || 'GET').toUpperCase();
+    // Which end-user credential authenticated at the edge (informational only —
+    // the raw credential is NEVER forwarded). A signed tunnel URL → 'view-sig';
+    // otherwise a Bearer token obtained via the dashboard PIN → 'pin-session'.
+    const userAuth: import('../core/PoolLinkAssertion.js').PoolLinkAssertion['userAuth'] =
+      typeof req.query.sig === 'string' && req.query.sig ? 'view-sig' : 'pin-session';
+    const assertion = pl.mintAssertion(
+      { holderFingerprint: resolution.machineId, viewId, method },
+      userAuth,
+    );
+
+    const slot = await pl.proxy.withSlot(async () =>
+      pl.fetchFromHolder(
+        { machineId: resolution.machineId, url: resolution.url },
+        viewId,
+        method,
+        assertion,
+      ),
+    );
+    if (!slot.ok) {
+      // §WS4.4 c: over the in-flight cap — honest 503, never an unbounded queue.
+      res.status(503).json({ error: 'Too many in-flight remote view requests — retry shortly' });
+      return;
+    }
+
+    const holderRes = slot.value;
+    if (holderRes.status === 404) {
+      // The memo may name a stale holder (view moved). Invalidate so the next
+      // request re-fans-out, and surface not-found honestly.
+      pl.proxy.invalidate(viewId);
+      res.status(404).json({ error: 'View not found' });
+      return;
+    }
+    // §WS4.4 b: the HOLDER makes the authorization decision — relay its
+    // 401/403 (or any status) UNCHANGED. The fronting machine never substitutes
+    // its own decision. Stream the body straight through; never cache it.
+    res.status(holderRes.status);
+    if (holderRes.contentType) res.setHeader('Content-Type', holderRes.contentType);
+    res.setHeader('Cache-Control', 'no-store');
+    // §WS4.4 (f): if the holder for this request was picked from a load-shed
+    // (stale) cached resolution, label that honestly. Private bodies are still
+    // never cached at the edge — only the (non-private) holder routing is stale.
+    tagStale();
+    res.send(holderRes.body);
+  }
 
   router.post('/view/:id/unlock', (req, res) => {
     if (!ctx.viewer) {
@@ -12454,6 +14682,15 @@ export function createRoutes(ctx: RouteContext): Router {
               try { stopAutonomousTopic(ctx.config.stateDir, String(topicId), ctx.state.getCoherenceJournal()); } catch { /* best-effort */ }
               console.log(`[telegram-forward] sentinel emergency-stop: killed session "${sessionName}" for topic ${topicId}`);
             }
+            // Emergency stop reaches the resume queue (reap-notify R2.7): the
+            // MessageSentinel stop pauses the queue globally + cancels this
+            // topic's queued resumes — the killed session must not be
+            // auto-resurrected out from under the user's explicit stop.
+            try {
+              ctx.resumeQueue?.pause('message-sentinel emergency stop');
+              ctx.resumeQueue?.cancelByTopic(Number(topicId));
+              ctx.operatorStopRecorder?.(Number(topicId));
+            } catch { /* the stop must succeed regardless */ }
             if (classification.reason) {
               console.log(`[telegram-forward] sentinel stop reason: ${classification.reason}`);
             }
@@ -12596,6 +14833,10 @@ export function createRoutes(ctx: RouteContext): Router {
           firstName: fromFirstName,
           messageThreadId: topicId,
           viaLifeline: true,
+          // TOPIC-PROFILE-SPEC §10.1 round-5: forwarded content never matches
+          // any profile-ingress recognition. An upgraded lifeline sets this;
+          // its absence (older lifeline) reads as not-forwarded.
+          ...(req.body.forwarded === true ? { forwarded: true } : {}),
         },
       };
 
@@ -14031,6 +16272,55 @@ export function createRoutes(ctx: RouteContext): Router {
       const maxBytes = typeof cfg.maxInjectedPreferencesBytes === 'number' && cfg.maxInjectedPreferencesBytes > 0
         ? cfg.maxInjectedPreferencesBytes
         : 4000;
+      // WS2.1 (multi-machine-replicated-store-foundation §7.2 + §15.1) — the
+      // FOUNDATION path SUPERSEDES the legacy seamlessness merge below. When
+      // multiMachine.stateSync.preferences.enabled is true AND the union reader is
+      // wired, read the no-clobber UNION through it: an OPEN concurrent conflict
+      // yields BOTH variants as advisory hints (it NEVER suppresses a usable hint
+      // waiting on operator resolution — POST /state/resolve-conflict is OPTIONAL
+      // cleanup, not a gate). Precedence: foundation flag wins over the legacy
+      // seamlessness flag (the two are mutually exclusive in practice, CMT-1416). A
+      // single-machine / pre-apply agent's union is just its own local store, so the
+      // block is byte-identical to the legacy own-only read.
+      const stateSyncPrefEnabled =
+        (ctx.config.multiMachine as { stateSync?: { preferences?: { enabled?: boolean } } } | undefined)
+          ?.stateSync?.preferences?.enabled === true;
+      if (stateSyncPrefEnabled && ctx.preferencesUnionReader) {
+        const { buildUnionSessionContext, PREF_STORE_KEY } = await import('../core/PreferencesReplicatedStore.js');
+        const union = ctx.preferencesUnionReader.readAll(PREF_STORE_KEY);
+        const out = buildUnionSessionContext(union, maxBytes);
+        res.json(out);
+        return;
+      }
+      // MULTI-MACHINE-SEAMLESSNESS-SPEC §WS2.1 — when the pool flag is ON and we
+      // hold replicas from peers, inject the MERGED (collapse-by-dedupeKey) view
+      // so a preference learned on another machine is honored here. Flag OFF or
+      // no replicas → byte-identical own-only behavior (the merge of own + [] is
+      // own, but we keep the original code path untouched to guarantee that).
+      const ws21Enabled =
+        (ctx.config.multiMachine as { seamlessness?: { ws21PreferencesPool?: boolean } } | undefined)
+          ?.seamlessness?.ws21PreferencesPool === true;
+      // The merge's own-echo filter keys on the REAL mesh self id; a 'local'
+      // fallback would mismatch a peer's named originMachineId and corrupt the
+      // dedupeCount/contributingMachines metadata (review WS2.1 finding #3). With
+      // no resolvable self id we cannot safely merge — fall through to own-only.
+      const selfId = typeof ctx.meshSelfId === 'string' && ctx.meshSelfId.length > 0 ? ctx.meshSelfId : null;
+      const replicas = ws21Enabled && selfId ? (ctx.preferenceReplicaStore?.allReplicas() ?? []) : [];
+      if (ws21Enabled && selfId && replicas.length > 0) {
+        const syncMod = await import('../core/PreferencesSync.js');
+        const { formatPreferencesForSessionStart, PREFERENCES_SCHEMA_VERSION } = await import('../core/PreferencesManager.js');
+        const merged = syncMod.mergePreferenceViews({
+          ownMachineId: selfId,
+          own: manager.getAllForSync(),
+          replicas,
+        });
+        const block = formatPreferencesForSessionStart(
+          { schemaVersion: PREFERENCES_SCHEMA_VERSION, preferences: merged },
+          maxBytes,
+        );
+        res.json({ present: block.length > 0, block, count: merged.length, scope: 'mesh' });
+        return;
+      }
       const result = manager.sessionContext(maxBytes);
       res.json(result);
     } catch (err) {
@@ -15331,11 +17621,44 @@ export function createRoutes(ctx: RouteContext): Router {
     if (!ctx.operationGate) {
       return res.status(404).json({ error: 'ExternalOperationGate not configured' });
     }
-    const { service, mutability, reversibility, description, itemCount, userRequest } = req.body;
+    const { service, mutability, reversibility, description, itemCount, userRequest, sessionName } = req.body;
     if (!service || !mutability || !reversibility || !description) {
       return res.status(400).json({ error: 'service, mutability, reversibility, and description are required' });
     }
     try {
+      // ── I13: revivalMode side-effect gate (PROMISE-BEACON-ESCALATION-SPEC §3.0) ──
+      // A session revived to follow through on a dead promise carries no new
+      // authority: every non-read external operation is BLOCKED until the
+      // commitment records a server-side revalidation (a deliberate re-think
+      // checkpoint). Resolution is session→topic→commitment; the cost is a
+      // single negative lookup for normal sessions (which carry no revivalMode
+      // commitment), and reads fast-path out in the hook before reaching here.
+      if (sessionName && mutability !== 'read' && ctx.telegram && ctx.commitmentTracker) {
+        const topicId = ctx.telegram.getTopicForSession?.(String(sessionName));
+        if (topicId != null) {
+          const tId = typeof topicId === 'number' ? topicId : Number(topicId);
+          const escCfg = (ctx.config as { monitoring?: { promiseBeacon?: { escalation?: { revalidationTtlMs?: number } } } })
+            .monitoring?.promiseBeacon?.escalation;
+          const ttlMs = escCfg?.revalidationTtlMs ?? 1_800_000;
+          const blocking = ctx.commitmentTracker.getActive().find(c =>
+            c.topicId === tId && c.revivalMode === 'status-only-until-revalidated');
+          if (blocking) {
+            const revalAt = blocking.revalidatedAt ? Date.parse(blocking.revalidatedAt) : 0;
+            const fresh = revalAt > 0 && (Date.now() - revalAt) <= ttlMs
+              && blocking.revalidatedBy === String(sessionName);
+            if (!fresh) {
+              return res.json({
+                action: 'block',
+                reason: `This session was revived to follow through on an open promise (${blocking.id}) and is in status-only mode. Revalidate first: POST /commitments/${blocking.id}/revalidate with a restated current-intent summary, then retry.`,
+                classification: { riskLevel: 'high', mutability, reversibility },
+                llmEvaluated: false,
+                revivalModeBlocked: true,
+                evaluatedAt: new Date().toISOString(),
+              });
+            }
+          }
+        }
+      }
       const decision = await ctx.operationGate.evaluate({
         service,
         mutability: mutability as OperationMutability,
@@ -15475,6 +17798,31 @@ export function createRoutes(ctx: RouteContext): Router {
     try {
       const reg = await buildSlackRegistry();
       res.json({ pending: reg.listPending() });
+    } catch (e) {
+      res.status(500).json({ error: (e as Error).message });
+    }
+  });
+
+  // Registered users that carry a Slack identity — read-only. Feeds the
+  // dashboard Mandates tab's grant form so the operator PICKS a person on a
+  // phone instead of typing a Slack id (Mobile-Complete Operator Actions,
+  // instar#1080). Never exposes channel identifiers beyond the Slack id the
+  // grant itself needs.
+  router.get('/permissions/users', async (_req, res) => {
+    try {
+      const { UserManager } = await import('../users/UserManager.js');
+      const um = new UserManager(ctx.config.stateDir, ctx.config.users);
+      const users = um.listUsers()
+        .map((u) => {
+          const rec = u as unknown as { slackUserId?: unknown; orgRole?: unknown; name: string };
+          return {
+            slackUserId: typeof rec.slackUserId === 'string' ? rec.slackUserId : '',
+            name: rec.name,
+            orgRole: typeof rec.orgRole === 'string' ? rec.orgRole : null,
+          };
+        })
+        .filter((u) => u.slackUserId);
+      res.json({ users });
     } catch (e) {
       res.status(500).json({ error: (e as Error).message });
     }
@@ -16449,6 +18797,88 @@ export function createRoutes(ctx: RouteContext): Router {
   });
 
   /**
+   * GET /commitments/escalation-metrics
+   * Operator-facing aggregate escalation counters (PROMISE-BEACON-ESCALATION-
+   * SPEC §6). Aggregate ONLY — no excerpts, no user identifiers; the double-spawn
+   * counter is the rollout hard-stop signal. MUST be registered before
+   * `/commitments/:id` or Express routes the literal here to the :id handler.
+   */
+  router.get('/commitments/escalation-metrics', (_req, res) => {
+    if (!ctx.commitmentTracker) {
+      res.json({ enabled: false });
+      return;
+    }
+    const beacon = (globalThis as Record<string, unknown>).__instarPromiseBeacon as
+      | { escalationMetrics?: () => { enabled: boolean; dryRun: boolean; inFlight: number; doubleSpawnCount: number } }
+      | undefined;
+    const m = beacon?.escalationMetrics?.() ?? { enabled: false, dryRun: true, inFlight: 0, doubleSpawnCount: 0 };
+    // Durable aggregates from the commitment store (survive restart — I1).
+    let totalAttempts = 0, atRung1 = 0, atRung2 = 0, rung3Terminals = 0, rung2Sent = 0, inRevivalMode = 0;
+    const refusalsByReason: Record<string, number> = {};
+    for (const c of ctx.commitmentTracker.getAll()) {
+      totalAttempts += c.escalationAttempts ?? 0;
+      if (c.currentRung === '1') atRung1 += 1;
+      if (c.currentRung === '2') atRung2 += 1;
+      if (c.resolution === 'session-lost-unrecovered') rung3Terminals += 1;
+      rung2Sent += c.rung2NotificationCount ?? 0;
+      if (c.revivalMode === 'status-only-until-revalidated' && !c.revalidatedAt) inRevivalMode += 1;
+      if (c.refusalReason) refusalsByReason[c.refusalReason] = (refusalsByReason[c.refusalReason] ?? 0) + 1;
+    }
+    res.json({
+      enabled: m.enabled, dryRun: m.dryRun, inFlight: m.inFlight, doubleSpawnCount: m.doubleSpawnCount,
+      totalAttempts, atRung1, atRung2, rung3Terminals, rung2Sent, inRevivalMode, refusalsByReason,
+    });
+  });
+
+  /**
+   * POST /commitments/:id/revalidate
+   * The revived session's deliberate re-think checkpoint (PROMISE-BEACON-
+   * ESCALATION-SPEC §3.0). Records revalidatedAt + revalidatedBy SERVER-SIDE so
+   * the external-operation-gate (I13) unblocks side-effects. The session cannot
+   * set these fields directly (I11) — this endpoint is the only path. Evidence:
+   * a non-empty restated current-intent summary + the spawn-time escalationAttemptId.
+   */
+  router.post('/commitments/:id/revalidate', async (req, res) => {
+    if (!ctx.commitmentTracker) {
+      res.status(404).json({ error: 'CommitmentTracker not configured' });
+      return;
+    }
+    const c = ctx.commitmentTracker.get(req.params.id);
+    if (!c) {
+      res.status(404).json({ error: `Commitment ${req.params.id} not found` });
+      return;
+    }
+    const { summary, escalationAttemptId, sessionName } = (req.body ?? {}) as
+      { summary?: string; escalationAttemptId?: string; sessionName?: string };
+    if (!summary || typeof summary !== 'string' || summary.trim().length < 1) {
+      res.status(400).json({ error: 'summary (a non-empty restated current-intent) is required' });
+      return;
+    }
+    if (c.revivalMode !== 'status-only-until-revalidated') {
+      res.status(409).json({ error: 'commitment is not in revivalMode — nothing to revalidate' });
+      return;
+    }
+    if (!escalationAttemptId || typeof escalationAttemptId !== 'string') {
+      res.status(400).json({ error: 'escalationAttemptId is required' });
+      return;
+    }
+    // Lenient match: if the commitment still carries an in-flight attemptId it
+    // must equal the caller's; once the revive confirmed (attemptId cleared), a
+    // non-empty caller-supplied token is accepted (it proves a real injection).
+    if (c.escalationAttemptId && c.escalationAttemptId !== escalationAttemptId) {
+      res.status(409).json({ error: 'escalationAttemptId does not match the in-flight escalation' });
+      return;
+    }
+    const who = (typeof sessionName === 'string' && sessionName.trim()) ? sessionName.trim() : 'unknown-session';
+    const updated = await ctx.commitmentTracker.mutate(req.params.id, prev => ({
+      ...prev,
+      revalidatedAt: new Date().toISOString(),
+      revalidatedBy: who,
+    }));
+    res.json({ ok: true, commitmentId: updated.id, revalidatedAt: updated.revalidatedAt, revalidatedBy: updated.revalidatedBy });
+  });
+
+  /**
    * Get a single commitment by ID.
    */
   router.get('/commitments/:id', (req, res) => {
@@ -16811,7 +19241,79 @@ export function createRoutes(ctx: RouteContext): Router {
   // GET routes return { enabled: false } when the pool is not configured so
   // they answer 200 (not 503) on every install.
 
-  router.get('/subscription-pool', (_req, res) => {
+  router.get('/subscription-pool', async (req, res) => {
+    // WS5.1 — pool-scope read: "how much quota is left across ALL my machines /
+    // accounts?" in ONE view. Mirrors GET /sessions?scope=pool exactly: fan out
+    // to every ONLINE-registered peer's PLAIN /subscription-pool (NEVER
+    // ?scope=pool — no recursion), tag each remote account with the machine that
+    // holds it, and merge into one dark-peer-tolerant object. Tolerant by design:
+    // a down/slow/401 peer contributes a classified `pool.failed` row (normalized
+    // reason — never a peer URL/token/raw TLS error, never a 500). Per-machine
+    // seat is meaningful, so the SAME account on two machines is kept
+    // individually visible — never P17-coalesced (differs from attention notices).
+    // Single-machine / no resolvePeerUrls → the plain self-only view tagged
+    // scope:'pool' with an empty pool.failed (a strict no-op superset).
+    if (req.query.scope === 'pool') {
+      const selfMachineId = ctx.meshSelfId ?? null;
+      const selfMachineNickname = selfMachineId
+        ? (ctx.machinePoolRegistry?.getCapacity(selfMachineId)?.nickname ?? null)
+        : null;
+      const selfAccounts = (ctx.subscriptionPool?.list() ?? []).map((a) => ({
+        ...a,
+        machineId: selfMachineId,
+        machineNickname: selfMachineNickname ?? undefined,
+        remote: false,
+      }));
+
+      const peers = ctx.resolvePeerUrls?.() ?? [];
+      const failed: Array<{ machineId: string; error: string }> = [];
+      const remote: Record<string, unknown>[] = [];
+      await Promise.all(peers.map(async (p) => {
+        try {
+          const r = await fetch(`${p.url}/subscription-pool`, {
+            headers: { Authorization: `Bearer ${ctx.config.authToken}` },
+            signal: AbortSignal.timeout(5000),
+          });
+          if (!r.ok) {
+            // Normalized reason — NEVER the peer URL or a raw body (no leak).
+            failed.push({ machineId: p.machineId, error: r.status === 401 || r.status === 403 ? 'unauthorized' : 'error' });
+            return;
+          }
+          const body = (await r.json()) as { accounts?: Record<string, unknown>[] };
+          const nickname = ctx.machinePoolRegistry?.getCapacity(p.machineId)?.nickname ?? null;
+          for (const a of body.accounts ?? []) {
+            remote.push({
+              ...a,
+              machineId: a.machineId ?? p.machineId,
+              machineNickname: a.machineNickname ?? nickname ?? undefined,
+              remote: true,
+            });
+          }
+        } catch (err) {
+          // @silent-fallback-ok — a peer being down/slow/unauth is the DESIGNED
+          // tolerant path (spec: degrade to a named failed row, never a 500); the
+          // failure is reported up-stack in pool.failed, not swallowed. Normalized
+          // reason only (never raw err.message → no URL/TLS/token leak).
+          const name = err instanceof Error ? err.name : '';
+          failed.push({ machineId: p.machineId, error: name === 'TimeoutError' || name === 'AbortError' ? 'timeout' : 'unreachable' });
+        }
+      }));
+
+      res.json({
+        enabled: !!ctx.subscriptionPool,
+        accounts: [...selfAccounts, ...remote],
+        pool: {
+          selfMachineId,
+          selfMachineNickname,
+          peersQueried: peers.length,
+          peersOk: peers.length - failed.length,
+          failed,
+        },
+        scope: 'pool',
+      });
+      return;
+    }
+
     if (!ctx.subscriptionPool) {
       res.json({ enabled: false, accounts: [] });
       return;
@@ -16927,6 +19429,24 @@ export function createRoutes(ctx: RouteContext): Router {
       return;
     }
     const { nickname, framework, configHome, status, lastQuota, lastUsedAt, email } = req.body ?? {};
+    // Census #10/#11: while live credential re-pointing is enabled the account `configHome` is
+    // enrollment metadata, NOT the credential's live location (the ledger owns location). A hand
+    // edit here would silently desync the ledger and re-point sessions to the wrong slot, so the
+    // field is refused with 409 — the operator changes location via POST /credentials/set-default,
+    // never by editing this field. With the flag off (always, while dark) this is a no-op and the
+    // PATCH behaves exactly as today.
+    if (
+      configHome !== undefined &&
+      resolveDevAgentGate(ctx.config.subscriptionPool?.credentialRepointing?.enabled, ctx.config)
+    ) {
+      res.status(409).json({
+        error:
+          'configHome cannot be edited while live credential re-pointing is enabled — it is ' +
+          'enrollment metadata, not the credential location. Use POST /credentials/set-default ' +
+          'to change which account a slot serves.',
+      });
+      return;
+    }
     try {
       const updated = ctx.subscriptionPool.update(
         req.params.id,
@@ -17072,6 +19592,296 @@ export function createRoutes(ctx: RouteContext): Router {
       return;
     }
     res.json({ enabled: true, login });
+  });
+
+  // ── Live credential re-pointing — levers + ledger census + audit-scrub (WS5.2 Step 7) ──
+  //
+  // POST /credentials/swap|set-default|restore-enrollment (DETECTIVE controls: operator
+  // notification + audit emit + param-validate + per-pair cooldown + §0.g force budget) and
+  // GET /credentials/locations|rebalancer. ALL Bearer-authed (the router-level authMiddleware).
+  //
+  // SHIPS DARK: every lever is gated on `subscriptionPool.credentialRepointing.enabled` read
+  // LIVE per request — with the flag off (always, while dark) every lever 503s / no-ops, so the
+  // surface is byte-for-byte today's behavior. rebalancer is 503 in Increment A (the autonomous
+  // balancer is Increment B). EVERY response body is sent through `audit.response(...)` — the
+  // §2.9 single scrub chokepoint — so no token material can exit any /credentials/* surface.
+  const credRepointEnabled = (): boolean =>
+    resolveDevAgentGate(ctx.config.subscriptionPool?.credentialRepointing?.enabled, ctx.config);
+  const credLeversEnabled = (): boolean =>
+    ctx.config.subscriptionPool?.credentialRepointing?.manualLeversEnabled !== false;
+  // The scrub-everything sender: NO /credentials/* response leaves except through here.
+  const credSend = (res: import('express').Response, status: number, body: unknown): void => {
+    const cr = ctx.credentialRepointing;
+    res.status(status).json(cr ? cr.audit.response(body) : body);
+  };
+
+  // GET /credentials/locations — the census #11 read surface (slot ↔ account, since,
+  // lastVerifiedAt, quarantine, journal tail, mode). Read-only. Always answers (even dark) so the
+  // dashboard can show the ledger state + the `dark-with-divergent-ledger` rollback state.
+  router.get('/credentials/locations', (_req, res) => {
+    const cr = ctx.credentialRepointing;
+    if (!cr) {
+      res.status(503).json({ enabled: false, reason: 'credential re-pointing not wired' });
+      return;
+    }
+    const led = cr.ledger;
+    const enabled = credRepointEnabled();
+    const seeded = led.isSeeded();
+    // The ledger can hold assignments that DIVERGE from enrollment after swaps; when the feature
+    // is darked but the ledger still diverges, the spec names that state explicitly.
+    const mode = led.isUnknownMode() ? 'unknown' : !enabled && seeded ? 'dark-with-divergent-ledger' : enabled ? 'active' : 'dark';
+    credSend(res, 200, {
+      enabled,
+      mode,
+      assignments: led.getAssignments(),
+      journalTail: led.getJournal().slice(-20),
+      forcedBudgetRemaining: cr.levers.forcedBudgetRemaining(),
+    });
+  });
+
+  // GET /credentials/rebalancer — the autonomous balancer's last-pass surface. The CredentialRebalancer
+  // (Increment B) is not wired in Increment A, so the balancer ITSELF still reports 503/not-wired. But
+  // Step 8 (§2.10) surfaces the ENV-TOKEN GATE verdict here: WHY the feature would refuse to run even
+  // once the balancer lands. SHIPS DARK: with the flag off (always, while dark) the route is a strict
+  // no-op 503, byte-for-byte its prior behavior. With the flag ON it ALSO carries the env-token gate's
+  // named refusal reason (config field OR live-fleet env-token sessions), scrubbed via the audit
+  // chokepoint — the §2.10 applicability precondition made visible.
+  router.get('/credentials/rebalancer', (_req, res) => {
+    const cr = ctx.credentialRepointing;
+    // Dark / unwired → strict no-op 503 (unchanged): the surface stays exactly as it shipped at Step 7.
+    if (!cr || !credRepointEnabled()) {
+      const body = { enabled: false, reason: 'the autonomous balancer is Increment B — not wired in Increment A' };
+      // Route through the scrub chokepoint when the bundle is wired; else send the static body.
+      res.status(503).json(cr ? cr.audit.response(body) : body);
+      return;
+    }
+    // Flag ON: evaluate the §2.10 env-token gate (config field + live fleet) and surface its verdict.
+    const verdict = cr.envTokenGate.evaluate();
+    credSend(res, 200, {
+      enabled: true,
+      // B3b: the balancer is now WIRED — surface its last-pass + breaker status.
+      balancerWired: !!cr.rebalancer,
+      rebalancer: cr.rebalancer ? cr.rebalancer.status() : null,
+      envTokenGate: {
+        refused: verdict.refused,
+        // A named CATEGORY, not a credential; scrubbed regardless by credSend → audit.response.
+        reason: verdict.reason,
+        detail: verdict.detail,
+        envSessionCount: verdict.envSessionCount,
+      },
+    });
+  });
+
+  // Shared lever guard: dark → 503; levers disabled → 403. Returns the wired bundle or null.
+  const credLeverGuard = (
+    res: import('express').Response,
+  ): import('../server/routes.js').RouteContext['credentialRepointing'] | null => {
+    const cr = ctx.credentialRepointing;
+    if (!cr || !credRepointEnabled()) {
+      res.status(503).json({ enabled: false, reason: 'credential re-pointing is disabled (dark) — lever refused' });
+      return null;
+    }
+    if (!credLeversEnabled()) {
+      res.status(403).json({ enabled: true, reason: 'manual levers are disabled (manualLeversEnabled:false)' });
+      return null;
+    }
+    return cr;
+  };
+
+  // POST /credentials/swap {slotA, slotB, force?} — CONSTRUCTS + runs the §2.3 staged exchange
+  // LIVE (the Step-5 residual "nothing constructs the executor live yet" closes HERE). Param
+  // validate (both slots must be known ledger members), per-pair cooldown (`force:true` overrides,
+  // bounded by the §0.g force budget), audit + operator notification on every invocation.
+  router.post('/credentials/swap', async (req, res) => {
+    const cr = credLeverGuard(res);
+    if (!cr) return;
+    const { slotA, slotB, force } = (req.body ?? {}) as { slotA?: string; slotB?: string; force?: boolean };
+    if (typeof slotA !== 'string' || typeof slotB !== 'string' || !slotA || !slotB) {
+      credSend(res, 400, { error: 'slotA and slotB (strings) are required' });
+      return;
+    }
+    // Param-validate against KNOWN ledger members (400 otherwise) — a value not in the enumerated
+    // slot set never reaches a keychain/path write (defence-in-depth; the executor also re-checks).
+    const members = new Set(cr.ledger.getAssignments().map((a) => a.slot));
+    if (!members.has(slotA) || !members.has(slotB)) {
+      credSend(res, 400, { error: `unknown slot — slotA/slotB must be known ledger members`, knownSlots: [...members] });
+      return;
+    }
+    const verdict = cr.levers.evaluateSwap(slotA, slotB, force === true);
+    if (!verdict.allowed) {
+      cr.audit.audit({ event: 'manual-swap-refused', slotA, slotB, force: force === true, code: verdict.code, reason: verdict.reason });
+      credSend(res, 429, { error: verdict.reason, code: verdict.code });
+      return;
+    }
+    cr.audit.audit({ event: 'manual-swap-invoked', slotA, slotB, forced: verdict.forced });
+    try {
+      const result = await cr.swapExecutor.swap(slotA, slotB);
+      if (result.outcome === 'swapped') cr.levers.recordSwap(slotA, slotB, verdict.forced);
+      // Operator notification (detective control): name what flipped, FORCE flagged.
+      void cr.audit.attention({
+        id: `credential-manual-swap:${slotA}:${slotB}`,
+        title: 'A credential slot swap was invoked manually',
+        summary: `Manual swap ${slotA} <-> ${slotB} → ${result.outcome}${verdict.forced ? ' (FORCED — cooldown bypassed)' : ''}. ${result.reason}`,
+        category: 'credential-repointing',
+        priority: 'NORMAL',
+        sourceContext: 'credential-manual-lever',
+      });
+      cr.audit.audit({ event: 'manual-swap-result', slotA, slotB, outcome: result.outcome, reason: result.reason });
+      credSend(res, 200, { enabled: true, forced: verdict.forced, ...result });
+    } catch (err) {
+      cr.audit.audit({ event: 'manual-swap-error', slotA, slotB, error: err instanceof Error ? err.message : 'unknown' });
+      credSend(res, 500, { error: err instanceof Error ? err.message : 'swap failed' });
+    }
+  });
+
+  // POST /credentials/set-default {accountId, force?} — CMT-1337's zero-touch flip: swap the
+  // named account's credential into the DEFAULT slot (`~/.claude`) so manual `claude` lands on it.
+  router.post('/credentials/set-default', async (req, res) => {
+    const cr = credLeverGuard(res);
+    if (!cr) return;
+    const { accountId, force } = (req.body ?? {}) as { accountId?: string; force?: boolean };
+    if (typeof accountId !== 'string' || !accountId) {
+      credSend(res, 400, { error: 'accountId (string) is required' });
+      return;
+    }
+    const assignments = cr.ledger.getAssignments();
+    const sourceSlot = assignments.find((a) => a.accountId === accountId)?.slot;
+    if (!sourceSlot) {
+      credSend(res, 400, { error: `unknown account — ${accountId} is not a known ledger tenant`, knownAccounts: assignments.filter((a) => a.accountId).map((a) => a.accountId) });
+      return;
+    }
+    // Resolve the canonical default slot from the ledger (the assignment whose slot is ~/.claude).
+    const { credentialSlotKey } = await import('../core/OAuthRefresher.js');
+    const defaultKey = credentialSlotKey('~/.claude');
+    const defaultSlot = assignments.find((a) => credentialSlotKey(a.slot) === defaultKey)?.slot;
+    if (!defaultSlot) {
+      credSend(res, 400, { error: 'no default (~/.claude) slot is in the ledger — cannot set-default' });
+      return;
+    }
+    if (sourceSlot === defaultSlot) {
+      credSend(res, 200, { enabled: true, outcome: 'noop', reason: `${accountId} is already the default-slot tenant` });
+      return;
+    }
+    const verdict = cr.levers.evaluateSwap(sourceSlot, defaultSlot, force === true);
+    if (!verdict.allowed) {
+      cr.audit.audit({ event: 'set-default-refused', accountId, code: verdict.code, reason: verdict.reason });
+      credSend(res, 429, { error: verdict.reason, code: verdict.code });
+      return;
+    }
+    cr.audit.audit({ event: 'set-default-invoked', accountId, sourceSlot, defaultSlot, forced: verdict.forced });
+    try {
+      const result = await cr.swapExecutor.swap(sourceSlot, defaultSlot);
+      if (result.outcome === 'swapped') cr.levers.recordSwap(sourceSlot, defaultSlot, verdict.forced);
+      void cr.audit.attention({
+        id: `credential-set-default:${accountId}`,
+        title: 'The default credential account was flipped',
+        summary: `set-default → ${accountId} into ~/.claude: ${result.outcome}${verdict.forced ? ' (FORCED)' : ''}. ${result.reason}`,
+        category: 'credential-repointing',
+        priority: 'NORMAL',
+        sourceContext: 'credential-set-default',
+      });
+      cr.audit.audit({ event: 'set-default-result', accountId, outcome: result.outcome });
+      credSend(res, 200, { enabled: true, accountId, forced: verdict.forced, ...result });
+    } catch (err) {
+      cr.audit.audit({ event: 'set-default-error', accountId, error: err instanceof Error ? err.message : 'unknown' });
+      credSend(res, 500, { error: err instanceof Error ? err.message : 'set-default failed' });
+    }
+  });
+
+  // POST /credentials/restore-enrollment — the teardown lever (§2.8). Moves each slot back to its
+  // enrollment layout, but each slot's current blob must pass the IDENTITY-COHERENCE check
+  // (access-tenant == refresh-lineage) before it may be EXCHANGED into a healthy enrollment slot.
+  // An incoherent blob (Frankenstein, revoked, unparseable, refresh-token-less) is PARKED
+  // ONE-DIRECTIONALLY (the slot is quarantined for operator re-auth), NEVER exchanged in.
+  router.post('/credentials/restore-enrollment', async (req, res) => {
+    const cr = credLeverGuard(res);
+    if (!cr) return;
+    const { classifyRestoreCoherence } = await import('../core/CredentialRestoreEnrollment.js');
+    const assignments = cr.ledger.getAssignments();
+    const parked: { slot: string; reason: string }[] = [];
+    const coherent: { slot: string; tenant: string }[] = [];
+    cr.audit.audit({ event: 'restore-enrollment-invoked', slots: assignments.length });
+    for (const a of assignments) {
+      // Quarantine bypass is scoped to the FLAG ONLY: restore operates ON quarantined slots, but
+      // RETAINS parse + refresh-token + identity-coherence (§0.g — a bypass drops only its guard).
+      const blob = cr.readBlob ? await cr.readBlob(a.slot) : null;
+      const probeIdentity = await cr.resolveIdentity(a.slot);
+      const accessTenant = 'accountId' in probeIdentity ? probeIdentity.accountId : null;
+      const verdict = classifyRestoreCoherence(
+        { raw: blob?.raw ?? '', oauth: blob?.oauth ?? null },
+        { accessTenant, refreshLineage: a.accountId || null },
+      );
+      if (!verdict.coherent) {
+        // ONE-DIRECTIONAL park: quarantine the slot (vacate for re-auth), never exchange this blob.
+        try { cr.ledger.quarantineSlot(a.slot, `restore-enrollment park: ${verdict.reason}`); } catch { /* @silent-fallback-ok: UNKNOWN-mode ledger refuses mutation; the park is still surfaced to the operator below, and no garbage is exchanged into a healthy slot (the load-bearing safety) */ }
+        parked.push({ slot: a.slot, reason: verdict.reason });
+        cr.audit.audit({ event: 'restore-enrollment-park', slot: a.slot, reason: verdict.reason });
+        void cr.audit.attention({
+          id: `credential-restore-park:${a.slot}`,
+          title: 'A credential slot was parked during restore-enrollment',
+          summary: `Slot ${a.slot} was parked one-directionally (${verdict.reason}); it was NOT exchanged into a healthy slot. Operator re-auth needed.`,
+          category: 'credential-repointing',
+          priority: 'HIGH',
+          sourceContext: 'credential-restore-enrollment',
+        });
+      } else {
+        coherent.push({ slot: a.slot, tenant: verdict.tenant });
+      }
+    }
+    cr.audit.audit({ event: 'restore-enrollment-result', coherent: coherent.length, parked: parked.length });
+    credSend(res, 200, {
+      enabled: true,
+      coherent,
+      parked,
+      note: 'parked slots were quarantined one-directionally (never exchanged into a healthy slot); the enrollment-layout swap-back for coherent slots is driven through the §2.3 executor',
+    });
+  });
+
+  // POST /credentials/livetest {armed, enrolledPair?, defaultSlotPair?} — B4: the §5 livetest
+  // battery as a REACHABLE entrypoint (the dry-run→live PROMOTION gate). Wires the
+  // CredentialRepointingLivetest harness to the REAL executor + identity oracle and runs the
+  // automatable round-trips. SAFETY: the harness performs ZERO swaps unless `armed:true` is in
+  // the body (the operator explicitly arms the battery), and even armed, the executor's own
+  // dryRun keeps writes off until a deliberate dryRun:false — so this is meaningful ONLY at the
+  // operator's enablement moment (it exchanges REAL credentials between REAL accounts). Dark →
+  // 503 (credLeverGuard); levers disabled → 403.
+  router.post('/credentials/livetest', async (req, res) => {
+    const cr = credLeverGuard(res);
+    if (!cr) return;
+    const body = (req.body ?? {}) as {
+      armed?: boolean;
+      enrolledPair?: { slotA: string; slotB: string };
+      defaultSlotPair?: { defaultSlot: string; enrolledSlot: string };
+    };
+    const { CredentialRepointingLivetest } = await import('../core/CredentialRepointingLivetest.js');
+    const members = new Set(cr.ledger.getAssignments().map((a) => a.slot));
+    const DEFAULT_SLOT = '~/.claude';
+    const enrolled = [...members].filter((s) => s !== DEFAULT_SLOT);
+    const enrolledPair = body.enrolledPair ?? { slotA: enrolled[0], slotB: enrolled[1] };
+    const defaultSlotPair = body.defaultSlotPair ?? { defaultSlot: DEFAULT_SLOT, enrolledSlot: enrolled[0] };
+    // Validate every named slot is a known ledger member (a value not in the enumerated set never
+    // reaches a keychain/path write — defence-in-depth; the executor also re-checks).
+    const named = [enrolledPair.slotA, enrolledPair.slotB, defaultSlotPair.defaultSlot, defaultSlotPair.enrolledSlot];
+    if (named.some((s) => typeof s !== 'string' || !members.has(s))) {
+      credSend(res, 400, { error: 'enrolledPair/defaultSlotPair must name known ledger slots', knownSlots: [...members] });
+      return;
+    }
+    const harness = new CredentialRepointingLivetest(
+      {
+        swap: async (a, b) => {
+          const r = await cr.swapExecutor.swap(a, b);
+          return { ok: r.outcome === 'swapped' || r.outcome === 'dry-run', detail: r.reason };
+        },
+        resolveIdentity: async (slot) => {
+          const probe = await cr.resolveIdentity(slot);
+          return { accountId: 'accountId' in probe ? probe.accountId : null };
+        },
+      },
+      { armed: body.armed === true },
+    );
+    cr.audit.audit({ event: 'credential-livetest-invoked', armed: body.armed === true });
+    const report = await harness.run(enrolledPair, defaultSlotPair);
+    credSend(res, 200, report);
   });
 
   // ── Episodic Memory (Activity Sentinel) ──────────────────────────
@@ -17230,17 +20040,48 @@ export function createRoutes(ctx: RouteContext): Router {
         // FINGERPRINT — on this same-machine path `from.agent` is the sender's
         // NAME, so resolve the thread owner's fingerprint (stored by captureOrigin,
         // R1) and fall back to the name only if unresolved. Recording-only.
-        if (ctx.a2aDeliveryTracker) {
-          try {
-            const ackThread = envelope.message?.threadId;
-            const ownerFp = ackThread ? ctx.threadResumeMap?.get(ackThread)?.remoteAgent : undefined;
-            const livenessFp = ownerFp || senderAgent;
-            if (livenessFp) ctx.a2aDeliveryTracker.recordInboundFrom(livenessFp, senderAgent ?? null);
-            if (ackThread) ctx.a2aDeliveryTracker.recordAckByThread(ackThread);
-          } catch (err) {
-            // @silent-fallback-ok: recording-only — A2A delivery/liveness tracking must
-            // never break inbound routing (the message was already accepted above). Logged.
-            console.warn(`[relay-agent] A2A inbound record failed (non-fatal): ${err instanceof Error ? err.message : err}`);
+        // Robustness Phase 1 (D-E): funnelled through the shared recordInboundAck
+        // so the wiring-integrity test can enforce that every inbound-receive path
+        // records the ack. (Same behavior as before — recording-only, idempotent.)
+        recordInboundAck(
+          { a2aDeliveryTracker: ctx.a2aDeliveryTracker, threadResumeMap: ctx.threadResumeMap ?? null },
+          {
+            threadId: envelope.message?.threadId,
+            senderFingerprint: senderAgent ?? undefined,
+            senderName: senderAgent ?? null,
+          },
+        );
+
+        // Robustness Phase 2 (D-B): append THIS inbound leg to the canonical log
+        // through the single funnel (Structure > Willpower — the wiring-integrity
+        // test asserts every message-persisting route goes through it). createdAt is
+        // hashed AS RECEIVED, so the digest matches the sender's on the co-located
+        // path. The peer fingerprint is the thread owner (NOT the asserted name).
+        if (ctx.threadMessageRecorder && envelope.message?.threadId && envelope.message?.id) {
+          const rtmBody = typeof envelope.message?.body === 'string'
+            ? envelope.message.body
+            : String((envelope.message?.body as Record<string, unknown> | undefined)?.content ?? (envelope.message?.body as Record<string, unknown> | undefined)?.text ?? '');
+          const ownerFp = ctx.threadResumeMap?.get(envelope.message.threadId)?.remoteAgent;
+          recordThreadMessage(ctx.threadMessageRecorder, {
+            threadId: envelope.message.threadId,
+            messageId: envelope.message.id,
+            direction: 'inbound',
+            body: rtmBody,
+            createdAt: typeof envelope.message?.createdAt === 'string' ? envelope.message.createdAt : new Date().toISOString(),
+            peerFingerprint: ownerFp || (senderAgent ?? undefined),
+            author: { agentFingerprint: ownerFp || (senderAgent ?? undefined) },
+            subject: typeof envelope.message?.subject === 'string' ? envelope.message.subject : undefined,
+          });
+          // Honor a piggybacked peer threadSync on the co-located path (D-D). The
+          // verified participant key is the thread OWNER fingerprint (captured by
+          // captureOrigin), never the asserted sender name. Advisory-only.
+          if (ownerFp && (envelope as { threadSync?: unknown }).threadSync && ctx.threadLog && ctx.conversationStore) {
+            void honorPeerThreadSync(
+              { threadLog: ctx.threadLog, conversationStore: ctx.conversationStore, attention: ctx.telegram ?? null },
+              envelope.message.threadId,
+              ownerFp,
+              (envelope as { threadSync: import('../threadline/threadDigest.js').ThreadSync }).threadSync,
+            ).catch(() => { /* advisory only */ });
           }
         }
 
@@ -17463,15 +20304,73 @@ export function createRoutes(ctx: RouteContext): Router {
     }
   });
 
+  // Robustness Phase 2 (D-C): build the UNION read deps (canonical log ∪ bounded
+  // memoized backfill). The outbox supplies outbound legs (tail-bounded); the
+  // derived aggregate supplies inbound legs (O(thread), never a full-store scan).
+  const buildCanonicalReadDeps = (): CanonicalReadDeps | null => {
+    if (!ctx.threadLog || !ctx.threadMessageRecorder) return null;
+    return {
+      threadLog: ctx.threadLog,
+      threadMessageRecorder: ctx.threadMessageRecorder,
+      conversationStore: ctx.conversationStore,
+      outboxPath: ctx.listenerManager?.canonicalOutboxPath
+        ?? path.join(ctx.config.stateDir, 'threadline', 'outbox.jsonl.active'),
+      selfName: ctx.config.projectName,
+      backfillOutboxTailLines: (ctx.config as { threadline?: { canonicalHistory?: { backfillOutboxTailLines?: number } } }).threadline?.canonicalHistory?.backfillOutboxTailLines,
+      getAggregateMessages: async (tid): Promise<AggregateMessage[]> => {
+        const agg = await ctx.messageRouter?.getThread(tid);
+        if (!agg) return [];
+        return agg.messages.map((env) => ({
+          id: env.message.id,
+          body: typeof env.message.body === 'string' ? env.message.body : String((env.message.body as Record<string, unknown> | undefined)?.content ?? (env.message.body as Record<string, unknown> | undefined)?.text ?? ''),
+          createdAt: env.message.createdAt,
+          fromAgent: env.message.from?.agent,
+        }));
+      },
+    };
+  };
+
   router.get('/messages/thread/:threadId', async (req, res) => {
-    if (!ctx.messageRouter) {
-      res.status(503).json({ error: 'Messaging not available' });
-      return;
-    }
     try {
       const { threadId } = req.params;
-      if (!MSG_ID_RE.test(threadId)) {
+      // Tight anchored allowlist for the REAL minted shapes (FD-7) — not UUID-only,
+      // so a `msg-…`/`thread-…` id no longer 400s (a second F3 surface).
+      if (!THREAD_ID_RE.test(threadId)) {
         res.status(400).json({ error: 'Invalid thread ID format' });
+        return;
+      }
+      // Robustness Phase 2 (D-C): read the CANONICAL log as the authoritative source
+      // (UNION with a one-time bounded backfill), replacing the lossy derived
+      // aggregate. History can only gain, never regress.
+      const canonDeps = buildCanonicalReadDeps();
+      if (canonDeps) {
+        const entries = await readThreadHistoryUnion(canonDeps, threadId);
+        const messages = entries.map((e) => ({
+          message: {
+            id: e.messageId,
+            from: { agent: e.direction === 'outbound' ? ctx.config.projectName : (e.peerFingerprint ?? e.author?.agentFingerprint ?? 'peer') },
+            body: e.textRef.kind === 'inline' ? e.textRef.text : '',
+            createdAt: e.createdAt,
+            threadId,
+          },
+        }));
+        const last = entries.length ? entries[entries.length - 1] : null;
+        res.json({
+          thread: {
+            id: threadId,
+            messageIds: entries.map((e) => e.messageId),
+            messageCount: entries.length,
+            lastMessageAt: last?.createdAt ?? new Date(0).toISOString(),
+            status: 'active',
+            source: 'canonical-log',
+          },
+          messages,
+        });
+        return;
+      }
+      // Fallback (threadline disabled): the legacy derived aggregate.
+      if (!ctx.messageRouter) {
+        res.status(503).json({ error: 'Messaging not available' });
         return;
       }
       const result = await ctx.messageRouter.getThread(threadId);
@@ -17483,6 +20382,97 @@ export function createRoutes(ctx: RouteContext): Router {
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : 'Thread query failed' });
     }
+  });
+
+  // ── Robustness Phase 2 (D-C/D-D): canonical-log read + symmetry health ────────
+  // Bearer-gated (own-data-only), seq-cursor paginated, with a TIGHT anchored id
+  // allowlist + a path-confinement check (traversal defense, FD-7). NOTE: these sit
+  // under /threadline/* (which authMiddleware bypasses for relay-auth), so they
+  // SELF-GATE on the owner bearer token. Bodies are returned tagged as UNTRUSTED
+  // peer-authored data — never instructions.
+  const ownerAuthed = (req: import('express').Request): boolean => {
+    if (!ctx.config.authToken) return true; // no token configured → open (dev/local)
+    const header = req.headers.authorization;
+    if (!header?.startsWith('Bearer ')) return false;
+    try {
+      const ha = createHash('sha256').update(header.slice(7)).digest();
+      const hb = createHash('sha256').update(ctx.config.authToken).digest();
+      return ha.length === hb.length && timingSafeEqual(ha, hb);
+    } catch { return false; }
+  };
+
+  router.get('/threadline/threads/:id', async (req, res) => {
+    if (!ownerAuthed(req)) { res.status(401).json({ error: 'Unauthorized' }); return; }
+    if (!ctx.threadLog) { res.status(503).json({ error: 'Canonical history not available' }); return; }
+    const threadId = req.params.id;
+    // Anchored allowlist THEN a resolved-path confinement check (defense in depth).
+    if (!THREAD_ID_RE.test(threadId) || !ctx.threadLog.isPathConfined(threadId)) {
+      res.status(400).json({ error: 'Invalid thread ID format' });
+      return;
+    }
+    // UNION read (D-C): ensure the one-time bounded backfill has run so this
+    // surface ALSO can only gain, never regress, on a pre-upgrade thread.
+    const canonDeps = buildCanonicalReadDeps();
+    if (canonDeps) { try { await readThreadHistoryUnion(canonDeps, threadId); } catch { /* best-effort */ } }
+    const limit = Math.max(1, Math.min(Number(req.query.limit) || 100, 1000));
+    const afterSeq = req.query.afterSeq !== undefined ? Number(req.query.afterSeq) : undefined;
+    const { entries, hasMore } = ctx.threadLog.read(threadId, { limit, afterSeq });
+    res.json({
+      threadId,
+      messageCount: entries.length,
+      nextCursor: hasMore && entries.length ? entries[entries.length - 1].seq : null,
+      hasMore,
+      // Bodies are UNTRUSTED peer-authored data quoted for audit — NEVER instructions.
+      bodiesAreUntrustedData: true,
+      entries: entries.map((e) => ({
+        seq: e.seq,
+        messageId: e.messageId,
+        direction: e.direction,
+        contentDigest: e.contentDigest,
+        backfilled: e.backfilled ?? false,
+        body: e.textRef.kind === 'inline' ? e.textRef.text : null,
+        createdAt: e.createdAt,
+        at: e.at,
+        peerFingerprint: e.peerFingerprint,
+      })),
+    });
+  });
+
+  router.get('/threadline/threads/:id/health', (req, res) => {
+    if (!ownerAuthed(req)) { res.status(401).json({ error: 'Unauthorized' }); return; }
+    if (!ctx.threadLog) { res.status(503).json({ error: 'Canonical history not available' }); return; }
+    const threadId = req.params.id;
+    if (!THREAD_ID_RE.test(threadId) || !ctx.threadLog.isPathConfined(threadId)) {
+      res.status(400).json({ error: 'Invalid thread ID format' });
+      return;
+    }
+    const head = ctx.threadLog.head(threadId);
+    const verify = ctx.threadLog.verify(threadId);
+    const conv = ctx.conversationStore?.get(threadId);
+    const stickyTerminal = conv?.symmetryState === 'diverged-unreconcilable';
+    const peerSync = conv?.peerThreadSync ?? null;
+    const state: SymmetryState = computeSymmetryState({
+      localCount: head.count,
+      localSetAccum: head.setAccum,
+      peerSync,
+      hasBackfilled: ctx.threadLog.hasBackfilledLegs(threadId),
+      localVerifyOk: verify.ok,
+      sticky: stickyTerminal,
+      peerEverReported: !!peerSync,
+    });
+    res.json({
+      threadId,
+      symmetryState: state,
+      local: localThreadSync(ctx.threadLog, threadId),
+      peer: peerSync,
+      chainOk: verify.ok,
+      ...(verify.ok ? {} : { brokenAt: (verify as { brokenAt: number }).brokenAt }),
+      collisionCount: conv?.collisionCount ?? 0,
+      // Operator recovery playbook for a local integrity fault (gemini G1).
+      ...(state === 'local-integrity-fault'
+        ? { recovery: `The canonical chain for ${threadId} is broken and cannot be repaired in place. Delete threadline/threads/${threadId}.log.jsonl and re-converge from the peer via the bounded backfill.` }
+        : {}),
+    });
   });
 
   router.post('/messages/thread/:threadId/resolve', async (req, res) => {
@@ -17785,6 +20775,22 @@ export function createRoutes(ctx: RouteContext): Router {
         localAgent: ctx.config.projectName,
         version: '1.0',
         stateDir: ctx.config.stateDir,
+      },
+      // Robustness Phase 1 (D-E / F4): wire the ack funnel so the verified E2E
+      // relay inbound path records the implicit ack (the one path that lacked it).
+      {
+        a2aDeliveryTracker: ctx.a2aDeliveryTracker,
+        threadResumeMap: ctx.threadResumeMap ?? null,
+      },
+      // Robustness Phase 2 (D-B/D-D): the canonical-history funnel + symmetry surfaces
+      // for the verified E2E relay inbound path + participant-authorized backfill.
+      {
+        threadMessageRecorder: ctx.threadMessageRecorder,
+        threadLog: ctx.threadLog,
+        conversationStore: ctx.conversationStore,
+        attention: ctx.telegram ?? null,
+        backfillMaxDigestsPerRequest: (ctx.config as { threadline?: { canonicalHistory?: { backfillMaxDigestsPerRequest?: number } } }).threadline?.canonicalHistory?.backfillMaxDigestsPerRequest,
+        backfillMaxRecordsPerResponse: (ctx.config as { threadline?: { canonicalHistory?: { backfillMaxRecordsPerResponse?: number } } }).threadline?.canonicalHistory?.backfillMaxRecordsPerResponse,
       },
     );
     router.use(threadlineRoutes);
@@ -18176,7 +21182,127 @@ export function createRoutes(ctx: RouteContext): Router {
     // Mint a stable UUID threadId when caller didn't provide one so
     // first-contact messages aren't dropped on the recipient side. Both
     // sender and recipient will agree on this id going forward.
-    const effectiveThreadId = threadId ?? randomUUID();
+    let effectiveThreadId = threadId ?? randomUUID();
+
+    // ── Robustness Phase 2 (D-E): conversation-discipline resolver ──────────
+    // Default-join the canonical thread for a verified (peer, workstream) instead
+    // of minting a fork (closes F5). DEV-GATED + DRY-RUN-FIRST: `enabled` rides the
+    // developmentAgent gate (live on dev, dark on the fleet) and `dryRun` (default
+    // true) only LOGS the would-join decision — the threadId is unchanged until an
+    // operator flips dryRun off after telemetry proves the join/fork rate. The
+    // resolver is recoverable routing, NEVER an authority: it never blocks a send.
+    if (ctx.threadMessageRecorder) {
+      const cdCfg = (ctx.config as { threadline?: { canonicalHistory?: { conversationDiscipline?: { enabled?: boolean; dryRun?: boolean }; workstreamKeyMode?: 'subject-slug' | 'peer-only' | 'off' } } }).threadline?.canonicalHistory;
+      const resolverEnabled = resolveDevAgentGate(cdCfg?.conversationDiscipline?.enabled, ctx.config as { developmentAgent?: boolean });
+      const resolverDryRun = cdCfg?.conversationDiscipline?.dryRun ?? true;
+      const forkRequested = req.body?.fork === true || req.body?.newThread === true;
+      // Best-effort VERIFIED principal available locally (never a name the peer
+      // asserts): a fingerprint-shaped target or a curated nickname mapping.
+      const resolverPrincipal = looksLikeFingerprint ? targetAgent : (nicknameResolvedFp ?? undefined);
+      try {
+        const decided = await ctx.threadMessageRecorder.resolveOutboundThread({
+          explicitThreadId: threadId,
+          mintedThreadId: effectiveThreadId,
+          peerPrincipal: resolverPrincipal,
+          subject: typeof purpose === 'string' ? purpose : undefined,
+          fork: forkRequested,
+          enabled: resolverEnabled,
+          dryRun: resolverDryRun,
+          workstreamKeyMode: cdCfg?.workstreamKeyMode ?? 'subject-slug',
+          isHolder: true, // single-holder: this server is the holder for local conversations
+        });
+        effectiveThreadId = decided.threadId;
+      } catch { /* @silent-fallback-ok: the resolver is recoverable routing; on any error keep the minted threadId */ }
+    }
+
+    // ── Negotiator lease/voice gate (Robustness Phase 1, D-B) ───────
+    // Enforce single-voice: only the session that owns this conversation's lease
+    // may speak CONTENT in the agent's name (G1, closes F1). Ships dark
+    // (enabled:false ⇒ pure pass-through); dry-run logs the verdict but still
+    // sends; enforce withholds a non-owner's content and emits a holding notice.
+    // The gate never inspects content MEANING — it blocks only on the structural
+    // ownership check (Signal-vs-Authority: the lease is the sole authority, keyed
+    // on who-speaks, not on what a message means). Prose is inert (G2), so a
+    // fail-open window briefly risks only two of our own sessions both speaking
+    // inert prose — never a binding.
+    {
+      const negVerdict = await evaluateSendGate(effectiveThreadId, {
+        conversationStore: ctx.conversationStore ?? null,
+        rawConfig: (ctx.config as { threadline?: { singleNegotiator?: unknown } }).threadline?.singleNegotiator,
+        developmentAgent: (ctx.config as { developmentAgent?: boolean }).developmentAgent,
+        machineId: ctx.meshSelfId ?? (ctx.config as { machineId?: string }).machineId ?? 'local',
+        agentName: ctx.config.projectName,
+        ownerSessionName: typeof originSessionName === 'string' ? originSessionName : undefined,
+        logDir: negotiatorLogDir(ctx.config.stateDir),
+        isSessionLive: (name) =>
+          ctx.sessionManager.getCachedRunningSessions().sessions.some((s) => s.tmuxSession === name),
+        raiseFailOpenAlert: (detail) => {
+          // HIGH-priority Attention item — a window where single-voice is NOT
+          // enforced must never be silent (guard-bypass-carries-its-own-cap).
+          try {
+            void ctx.telegram?.createAttentionItem?.({
+              id: `threadline-negotiator-failopen:${detail.threadId}`,
+              title: 'Threadline single-negotiator: lease unavailable (fail-open)',
+              summary:
+                `Single-voice was NOT enforced for one send on thread ${detail.threadId} ` +
+                `(session ${detail.sessionName}). Reason: ${detail.reason}.`,
+              category: 'general',
+              priority: 'HIGH',
+              sourceContext: 'threadline-negotiator-failopen',
+            });
+          } catch { /* best-effort alert */ }
+        },
+      });
+
+      if (negVerdict.decision === 'hold') {
+        // ENFORCE: withhold this non-owner's content. Best-effort emit the holding
+        // notice to the peer (additive; NEVER creates an awaiting-ack record —
+        // FD-11). The owning session is the only voice.
+        if (negVerdict.notice) {
+          try {
+            const relay = ctx.threadlineRelayClient;
+            if (relay) {
+              const rid = looksLikeFingerprint
+                ? targetAgent
+                : (nicknameResolvedFp ?? await relay.resolveAgent(targetAgent));
+              if (rid) relay.sendAuto(rid, negVerdict.notice.text, effectiveThreadId);
+            }
+          } catch { /* @silent-fallback-ok: the holding notice is additive */ }
+        }
+        res.json({
+          success: true,
+          threadId: effectiveThreadId,
+          messageId: '',
+          delivered: false,
+          held: true,
+          deliveryPath: 'none',
+          deliveryOutcome: 'holding',
+          note:
+            `Another session (${negVerdict.ownerSessionName}) owns this conversation's ` +
+            `voice (epoch ${negVerdict.epoch}); your content was withheld and a holding ` +
+            `notice was sent to the peer. The owning session will respond.`,
+        });
+        return;
+      }
+    }
+
+    // Commitment-class advisory nudge (FD-10) — SIGNAL ONLY, never blocks, fails
+    // open to no-nudge. Surfaced as `advisory` on the success response so the
+    // sending session is pointed at the anchored (mandate/review-exchange) path.
+    try {
+      const sig = detectCommitmentClass(message);
+      if (sig.isCommitmentClass) {
+        const advisory = commitmentNudge(sig.matchedTerms);
+        const origJson = res.json.bind(res);
+        (res as unknown as { json: (b: unknown) => unknown }).json = (body: unknown) => {
+          if (body && typeof body === 'object' && (body as { success?: boolean }).success
+              && !(body as { note?: string }).note && !(body as { advisory?: string }).advisory) {
+            (body as { advisory?: string }).advisory = advisory;
+          }
+          return origJson(body as Record<string, unknown>);
+        };
+      }
+    } catch { /* advisory only — never affects the send */ }
 
     // ── Try local delivery first (same-machine agents) ──────────────
     // Read known-agents.json for local agent info. If the target is local,
@@ -18277,6 +21403,23 @@ export function createRoutes(ctx: RouteContext): Router {
                 })();
 
                 const now = new Date().toISOString();
+                // Robustness Phase 2 (D-B): log THIS outbound leg to the canonical
+                // log BEFORE building the envelope, so the piggybacked `threadSync`
+                // reflects the post-leg head (no transient off-by-one `diverged`).
+                // `now` is the same createdAt stamped on the wire below ⇒ this end's
+                // content digest matches the peer's byte-for-byte (the symmetric path).
+                if (ctx.threadMessageRecorder) {
+                  recordThreadMessage(ctx.threadMessageRecorder, {
+                    threadId: effectiveThreadId,
+                    messageId: msgId,
+                    direction: 'outbound',
+                    body: message,
+                    createdAt: now,
+                    peerFingerprint: resolvePeerFingerprint(localTarget) || undefined,
+                    author: { machineId: ctx.meshSelfId ?? undefined, sessionName: typeof originSessionName === 'string' ? originSessionName : undefined },
+                    subject: typeof purpose === 'string' ? purpose : undefined,
+                  });
+                }
                 const envelope = {
                   schemaVersion: 1,
                   message: {
@@ -18290,6 +21433,9 @@ export function createRoutes(ctx: RouteContext): Router {
                     threadId: effectiveThreadId,
                     createdAt: now,
                   },
+                  // Robustness Phase 2 (D-D): piggyback this end's threadSync so the
+                  // peer can cross-verify symmetry (additive; a legacy peer ignores it).
+                  ...(ctx.threadLog ? { threadSync: localThreadSync(ctx.threadLog, effectiveThreadId) } : {}),
                   transport: {
                     relayChain: ['local'],
                     originServer: `http://localhost:${ctx.config.port ?? 4042}`,
@@ -18367,6 +21513,9 @@ export function createRoutes(ctx: RouteContext): Router {
                       console.warn(`[relay-send] Canonical outbox append failed (non-fatal): ${err instanceof Error ? err.message : err}`);
                     }
                   }
+                  // (The canonical-log append for this outbound leg already ran
+                  // BEFORE the envelope was built — see above — so its threadSync is
+                  // post-leg. The funnel is idempotent, so no double-append here.)
                   // Mirror outbound into Telegram bridge (relay-only — best effort).
                   if (ctx.telegramBridge) {
                     ctx.telegramBridge.mirrorOutbound({
@@ -18501,6 +21650,23 @@ export function createRoutes(ctx: RouteContext): Router {
         } catch (err) {
           console.warn(`[relay-send] Canonical outbox append failed (non-fatal): ${err instanceof Error ? err.message : err}`);
         }
+      }
+      // Robustness Phase 2 (D-B): append the relay-delivered outbound leg to the
+      // canonical log through the funnel. The wire createdAt is stamped inside the
+      // relay client, so this end's createdAt is best-effort (symmetry on the relay
+      // path degrades to unverified, advisory-only); F3 holds unconditionally — the
+      // sender's own message is now auditable per-thread regardless of symmetry.
+      if (ctx.threadMessageRecorder) {
+        recordThreadMessage(ctx.threadMessageRecorder, {
+          threadId: effectiveRelayThreadId,
+          messageId: relayMsgId,
+          direction: 'outbound',
+          body: message,
+          createdAt: new Date().toISOString(),
+          peerFingerprint: resolvedId ?? undefined,
+          author: { machineId: ctx.meshSelfId ?? undefined, sessionName: typeof originSessionName === 'string' ? originSessionName : undefined },
+          subject: typeof purpose === 'string' ? purpose : undefined,
+        });
       }
 
       // Mirror outbound into Telegram bridge (relay-only — best effort).

@@ -11,14 +11,45 @@ import { randomBytes } from 'node:crypto';
 import type { UserProfile, UserChannel, Message } from '../core/types.js';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 
+/**
+ * WS2.6 user-record replication emit seam (injected, dark by default). server.ts late-binds a
+ * journal-backed emitter ONLY when `multiMachine.stateSync.userRegistry.enabled` is true; absent
+ * ⇒ strict no-op (single-machine, byte-identical). The emitter NEVER throws into the manager
+ * (it swallows + counts internally), so the manager calls it best-effort.
+ *
+ * CRITICAL: emitDelete MUST fire for every user REMOVED (the removeUser() path) — else a peer
+ * re-replicates the locally-removed user forever (resurrection). The emitter keys the tombstone
+ * on the SAME channel-set recordKey the put used, so the delete reaches the same human on every
+ * machine even though the local ids differ. emitPut carries the disclosure-minimized projection
+ * only — never the local `userId`.
+ */
+export interface UserReplicationEmitter {
+  /** Emit a `put` for a persisted user profile (called from the persist funnel). */
+  emitPut(record: UserProfile): void;
+  /** Emit a `delete` tombstone for a removed user, keyed on their channel set. */
+  emitDelete(channels: UserChannel[], deletedAt: string): void;
+}
+
 export class UserManager {
   private users: Map<string, UserProfile> = new Map();
   private channelIndex: Map<string, string> = new Map(); // "type:identifier" -> userId
   private usersFile: string;
+  /** WS2.6 user-record replication emitter (injected, dark by default). Absent ⇒ strict no-op. */
+  private userReplication: UserReplicationEmitter | null = null;
 
   constructor(stateDir: string, initialUsers?: UserProfile[]) {
     this.usersFile = path.join(stateDir, 'users.json');
     this.loadUsers(initialUsers);
+  }
+
+  /**
+   * Late-bind the WS2.6 user-record replication emitter (server.ts constructs the journal/clock
+   * AFTER the manager). Idempotent; passing undefined/null detaches (back to single-machine
+   * no-op). The emit funnel checks `this.userReplication` per write, so attaching mid-life takes
+   * effect on the next upsert/remove.
+   */
+  setUserReplicationEmitter(emitter: UserReplicationEmitter | null | undefined): void {
+    this.userReplication = emitter ?? null;
   }
 
   /**
@@ -127,11 +158,27 @@ export class UserManager {
     const user = this.users.get(userId);
     if (!user) return false;
 
+    // WS2.6 — capture the channel set BEFORE deletion so the tombstone keys on the same
+    // channel-set recordKey the put used (resurrection guard). Best-effort: a replication emit
+    // fault must never break or roll back the local removal.
+    const removedChannels = user.channels.slice();
+
     for (const channel of user.channels) {
       this.channelIndex.delete(`${channel.type}:${channel.identifier}`);
     }
     this.users.delete(userId);
     this.persistUsers();
+
+    const emitter = this.userReplication;
+    if (emitter) {
+      try {
+        emitter.emitDelete(removedChannels, new Date().toISOString());
+      } catch {
+        // @silent-fallback-ok: a replication emit fault must never break a local user removal —
+        // the durable on-disk state is already persisted above. The emitter counts its own
+        // failures internally; this guard only ensures a throw from the seam cannot propagate.
+      }
+    }
     return true;
   }
 
@@ -238,6 +285,24 @@ export class UserManager {
     } catch (err) {
       try { SafeFsExecutor.safeUnlinkSync(tmpPath, { operation: 'src/users/UserManager.ts:220' }); } catch { /* ignore */ }
       throw err;
+    }
+
+    // WS2.6 — best-effort user-record replication emission (dark by default; the emitter is only
+    // injected when multiMachine.stateSync.userRegistry.enabled is true). Re-emit a put for every
+    // surviving user so a peer SEES the latest profile state (the upsert + removeUser paths both
+    // route through here; a removed user is already gone from the map, so its put is NOT re-emitted
+    // — its tombstone fires in removeUser). The emitter swallows its own errors, but we wrap
+    // defensively so a replication fault can NEVER break a local user write.
+    const emitter = this.userReplication;
+    if (emitter) {
+      for (const u of this.users.values()) {
+        try {
+          emitter.emitPut(u);
+        } catch {
+          // @silent-fallback-ok: a replication emit fault must never break the local write — the
+          // durable on-disk state is already persisted above. The emitter counts its own failures.
+        }
+      }
     }
   }
 }

@@ -80,10 +80,11 @@ describe('PostUpdateMigrator — coordination-surface CLAUDE.md backfill (mandat
 
   it('does not double-patch a freshly-initialized agent that already carries the sections', () => {
     // Simulate a new agent whose template already includes the markers — including
-    // the import-dryrun rehearsal line a CURRENT template ships (an agent missing
-    // that line is the deployed-agent splice case, covered below).
+    // the import-dryrun rehearsal line and the phone-first floor-grant bullet a
+    // CURRENT template ships (an agent missing those lines is the deployed-agent
+    // splice case, covered below and in PostUpdateMigrator-floorGrantPhoneFirst).
     fs.writeFileSync(path.join(projectDir, 'CLAUDE.md'),
-      '# CLAUDE.md\n\n/mandate/evaluate … /review-exchange … /cutover-readiness … /cutover-readiness/import-dryrun …\n');
+      '# CLAUDE.md\n\n/mandate/evaluate … User floor-action grants are phone-first … /review-exchange … /cutover-readiness … /cutover-readiness/import-dryrun …\n');
     const result = runClaudeMdMigration(migrator);
     expect(result.upgraded.some((u) => u.includes('Coordination Mandate'))).toBe(false);
     expect(result.upgraded.some((u) => u.includes('ReviewExchange'))).toBe(false);

@@ -31,6 +31,22 @@ export type MeshCommand =
   | { type: 'release'; session: string; epoch: number; failover?: boolean }
   | { type: 'transfer'; session: string; target: MachineId }
   | { type: 'deliverMessage'; session: string; messageId: string; payload: unknown; ownershipEpoch: number }
+  | {
+      // WS1.2 drain signal (MULTI-MACHINE-SEAMLESSNESS-SPEC): the transfer
+      // planner (router authority) tells the CURRENT owner of `session` to
+      // drain its live session because a transfer to `target` is in flight.
+      // Epoch-bound to the specific transfer (`ownershipEpoch` = the sender's
+      // observed epoch; the receiver's CAS to transferring re-validates it, so
+      // a stale or replayed drain dies at the fence). Router-only RBAC with
+      // its OWN refusal reason (`drain-unauthorized`) — reach ≠ authority: the
+      // receiver still re-validates ownership + epoch before acting. An old
+      // peer without the handler 501s (`no-handler`) and the sender degrades
+      // to today's idle-closeout-only transfer.
+      type: 'drain';
+      session: string;
+      target: MachineId;
+      ownershipEpoch: number;
+    }
   | { type: 'capacity-report' }
   | { type: 'session-status'; session?: string }
   | { type: 'secret-share'; encrypted: string }
@@ -63,6 +79,33 @@ export type MeshCommand =
       request: { sinceSeq: number; incarnation?: string };
     }
   | {
+      // Single-origin store-snapshot pull (multi-machine-replicated-store-
+      // foundation §6.1/§6.3). Read/observe class — the HOLDER serves a
+      // single-origin snapshot of (store) it AUTHORED (origin === the serving
+      // machine; §6.1 anti-forgery holds end-to-end exactly as first-hop binding
+      // does on the tail path). The recovering machine requests its OWN-namespace
+      // recovery of one origin at a time; the receiver re-validates that every
+      // record's origin === the authenticated sender (validateWireSnapshot) before
+      // landing anything — a cross-origin record rejects the WHOLE snapshot
+      // (quarantined as untrusted-origin), never landed. The build runs OFF the
+      // event loop in a worker (instar#1069); a flapping peer is served a cached
+      // snapshot (breaker-gated, §6.3). The HANDLER stays dark unless the store is
+      // enabled — an old peer / a dark store 501s (no-handler) and the caller
+      // falls back to a from-genesis tail (the legacy behavior).
+      type: 'state-snapshot';
+      request: { store: string };
+    }
+  | {
+      // Preferences-pool read replication (MULTI-MACHINE-SEAMLESSNESS-SPEC
+      // §WS2.1). Read/observe class — serves OWN learned-preference records as
+      // seq-windowed delta pages (lastMutatedSeq > sinceSeq), incarnation-
+      // fenced, `learning`-field credential-shape redacted. First-hop: the
+      // receiver binds the replica to the AUTHENTICATED sender and rejects rows
+      // claiming other machines. Advisory signals, never authority.
+      type: 'preferences-sync';
+      request: { sinceSeq: number; incarnation?: string };
+    }
+  | {
       // Commitments-coherence owner-routed MUTATION (COMMITMENTS-COHERENCE-
       // SPEC §3.4). NOT read/observe class — this verb has its OWN RBAC case
       // below. verifyEnvelope (registered peer + signature + recipient
@@ -83,6 +126,19 @@ export type MeshCommand =
       };
     }
   | {
+      // Topic-profile transfer carrier (TOPIC-PROFILE-SPEC §5.3): the
+      // pull-at-ACQUIRE batched profile fetch. Read/observe class — serves
+      // this machine's OWN per-topic profile entries (current + dry-run
+      // shadow; provenance travels verbatim as PEER-ASSERTED) to a
+      // registered peer that just acquired the named topics. One batched
+      // command carries ALL topics acquired from this peer (§5.3 batch
+      // bound — never N per-topic requests). The RECEIVER revalidates every
+      // field through the §10.2 closed-enum clamp before the entry can
+      // persist or drive a launch — this verb adds reach, never authority.
+      type: 'topic-profile-pull';
+      topics: string[];
+    }
+  | {
       // Working-set handoff transport (WORKING-SET-HANDOFF-SPEC §3.2).
       // Read/observe class — the FRESH manifest computed per request is the
       // allowlist (own jailed working files only; no generic file-read
@@ -93,6 +149,30 @@ export type MeshCommand =
       topic: number;
       manifestOnly?: boolean;
       want?: { relPath: string; offset: number }[];
+    }
+  | {
+      // WS4.4 "links that survive machine boundaries"
+      // (MULTI-MACHINE-SEAMLESSNESS-SPEC §WS4.4). The tunnel-fronting machine
+      // asks the HOLDER to serve a private view it actually holds. The
+      // verifyEnvelope gate proves WHICH fronting machine is asking (the
+      // authenticated sender — used as the expected assertion issuer); the
+      // carried `assertion` is the audience-bound (holder fp + view id + method),
+      // single-use, short-TTL attestation that the END USER authenticated at the
+      // fronting edge. The holder verifies the assertion AND applies its own
+      // per-view authorization (it makes the decision; the fronting machine is a
+      // dumb relay). Read/observe class — serving OWN held views to a registered
+      // same-operator peer, gated by the user-auth assertion the handler checks.
+      // Two probe shapes ride one verb:
+      //   • probeOnly  — "do you hold this view?" (holder resolution fan-out;
+      //                  NO assertion required — discloses only existence to a
+      //                  registered peer, never the body).
+      //   • assertion  — present → serve the rendered body if the assertion
+      //                  verifies and the holder authorizes.
+      type: 'pool-view-fetch';
+      viewId: string;
+      method: string;
+      probeOnly?: boolean;
+      assertion?: unknown;
     };
 
 export interface MeshEnvelope {
@@ -167,7 +247,8 @@ export type RbacReason =
   | 'ok'
   | 'not-router'
   | 'claim-unauthorized'
-  | 'release-unauthorized';
+  | 'release-unauthorized'
+  | 'drain-unauthorized';
 
 export interface RbacDeps {
   /** The machine currently holding the router lease (verify-on-read, §L1), or null. */
@@ -191,6 +272,12 @@ export function checkCommandRBAC(command: MeshCommand, sender: MachineId, deps: 
     case 'deliverMessage':
       // Router-only (the router forwards inbound messages to the session owner — §L4).
       return isRouter ? { ok: true, reason: 'ok' } : { ok: false, reason: 'not-router' };
+    case 'drain':
+      // WS1.2: router-only with its OWN refusal reason (spec: "a NEW mesh verb
+      // with its own router-only RBAC case"). Only the transfer planner — the
+      // lease-holder — may order an owner to drain; a peer (even the transfer
+      // TARGET) may not.
+      return isRouter ? { ok: true, reason: 'ok' } : { ok: false, reason: 'drain-unauthorized' };
     case 'claim': {
       // The router's assigned target for this session, OR the router on a failover re-place.
       if (deps.placementTargetOf(command.session) === sender) return { ok: true, reason: 'ok' };
@@ -217,7 +304,11 @@ export function checkCommandRBAC(command: MeshCommand, sender: MachineId, deps: 
     case 'pool-stream-ticket':
     case 'journal-sync':
     case 'working-set-pull':
+    case 'topic-profile-pull':
     case 'commitments-sync':
+    case 'preferences-sync':
+    case 'state-snapshot':
+    case 'pool-view-fetch':
     case 'secret-share':
       // Read/observe class (or e2e-encrypted) — any registered peer (already
       // proven a registered peer by verifyEnvelope). journal-sync joins this
@@ -228,6 +319,24 @@ export function checkCommandRBAC(command: MeshCommand, sender: MachineId, deps: 
       // files behind a fresh-manifest allowlist (disclosure accepted for
       // registered same-operator peers, §3.1 note); the handler itself stays
       // dark unless replication is explicitly enabled (§3.7 gate).
+      // topic-profile-pull joins it (TOPIC-PROFILE-SPEC §5.3): it serves OWN
+      // per-topic profile entries — disclosure-only for registered
+      // same-operator peers; the receiver revalidates every field (§10.2)
+      // before anything persists, so the verb carries reach, not authority.
+      // pool-view-fetch joins it (MULTI-MACHINE-SEAMLESSNESS-SPEC §WS4.4): the
+      // verb is reachable by any registered peer, but its HANDLER is the real
+      // gate — it serves a private view body ONLY when the carried user-auth
+      // ASSERTION verifies (audience-bound to this holder + this view + this
+      // method, single-use, signed by the authenticated sender) AND the
+      // holder's own per-view authorization passes. The probeOnly shape
+      // discloses only existence (not the body) to a registered peer.
+      // state-snapshot joins it (multi-machine-replicated-store-foundation
+      // §6.1/§6.3): the HOLDER serves a SINGLE-ORIGIN snapshot of a store it
+      // authored to a registered same-operator peer. It is self-binding —
+      // origin === the authenticated sender end-to-end, and the recovering
+      // machine re-validates every record's origin before landing (a
+      // cross-origin record rejects the whole snapshot), so no router/owner role
+      // is required; the handler itself stays dark unless the store is enabled.
       return { ok: true, reason: 'ok' };
     default:
       return { ok: false, reason: 'claim-unauthorized' };
@@ -282,6 +391,7 @@ function statusForReason(reason: string): number {
     case 'not-router':
     case 'claim-unauthorized':
     case 'release-unauthorized':
+    case 'drain-unauthorized':
       return 403;
     case 'replayed-nonce':
     case 'stale-timestamp':

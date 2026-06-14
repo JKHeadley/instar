@@ -13,6 +13,12 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
+import {
+  credentialWriteFunnel,
+  type CredentialWriteFunnel,
+  type FunnelResult,
+} from '../core/CredentialWriteFunnel.js';
+import { credentialSlotKey } from '../core/OAuthRefresher.js';
 
 // ── Interfaces ──────────────────────────────────────────────────────
 
@@ -258,4 +264,86 @@ export function createDefaultProvider(): CredentialProvider {
     'Consider installing keytar for OS-native encrypted storage.'
   );
   return new ClaudeConfigCredentialProvider();
+}
+
+// ── Serialized write chokepoint (Step 4b) ───────────────────────────
+
+/**
+ * The default config-home slot a `CredentialProvider` writes to — the keychain's
+ * `Claude Code-credentials` service is the `~/.claude` home. Callers that target a
+ * non-default home pass that home as `slot` instead.
+ */
+export const DEFAULT_CREDENTIAL_SLOT = credentialSlotKey('~/.claude');
+
+/**
+ * Thrown by `writeCredentialsSerialized` when the target slot is owned by the credential
+ * re-pointing ledger (census #9). A competing writer (AccountSwitcher / `/switch-account` /
+ * `autoMigrate`) writing that slot would graft a Frankenstein blob over the ledger's tenant and
+ * silently resurrect a stranded account (spec §2.7). This is a NAMED, NON-DESTRUCTIVE refusal —
+ * nothing was written — pointing the caller at the sanctioned replacement.
+ */
+export class CredentialWriteRepointingOwnedError extends Error {
+  constructor(reason: string) {
+    super(reason);
+    this.name = 'CredentialWriteRepointingOwnedError';
+  }
+}
+
+/**
+ * Manager-level refusal gate for the competing-writer census row (#9). Injected at the funnel
+ * chokepoint so a refusal lives at the MANAGER, not only on the two known routes — any future
+ * caller of `writeCredentialsSerialized` inherits it (the "every item a unique source" dodge the
+ * flood-ceiling lesson warns against, applied to credential writes).
+ *
+ *   `shouldRefuse(slot)` → true ⇒ the write is refused (the slot is repointing-owned). It receives
+ *   the canonicalized slot key so the gate matches the ledger's spelling regardless of caller
+ *   input. Returns false (or the gate being absent) ⇒ the write proceeds exactly as today.
+ */
+export interface CredentialWriteRefusalGate {
+  shouldRefuse(canonicalSlot: string): boolean;
+}
+
+/** Process-shared refusal gate; wired at server startup when re-pointing is enabled. */
+let sharedWriteRefusalGate: CredentialWriteRefusalGate | undefined;
+
+/** Install (or clear, with `undefined`) the process-shared competing-writer refusal gate. */
+export function setCredentialWriteRefusalGate(gate: CredentialWriteRefusalGate | undefined): void {
+  sharedWriteRefusalGate = gate;
+}
+
+/**
+ * Serialize a `provider.writeCredentials` through the per-slot credential funnel (Step 4b).
+ *
+ * This is the ONLY sanctioned path for an external caller (e.g. AccountSwitcher) to write the
+ * active account credential: it shares the per-slot lock with the QuotaPoller refresh write and
+ * the swap executor (Step 5), so a switch can never interleave with a refresh on the same slot.
+ * The companion lint (`lint-no-unfunneled-credential-write.js`) forbids calling
+ * `provider.writeCredentials(...)` directly outside this funnel-owning module.
+ *
+ * Census #9 (manager-level competing-writer refusal): when the process-shared refusal gate (or an
+ * explicitly-passed `refusalGate`) reports the target slot is repointing-owned, the write is
+ * REFUSED here at the manager — BEFORE the funnel lock — with a `CredentialWriteRepointingOwnedError`.
+ * This is the funnel: a non-route caller can't dodge it. Refusal is non-destructive (nothing was
+ * written) and names the sanctioned replacement (`POST /credentials/set-default`).
+ *
+ * Returns the funnel result. `ran:false` means the lock was busy and the write was SKIPPED (the
+ * caller decides whether to surface "busy, try again"); it is never a credential corruption.
+ */
+export async function writeCredentialsSerialized(
+  provider: Pick<CredentialProvider, 'writeCredentials'>,
+  slot: string,
+  creds: ClaudeCredentials,
+  funnel: CredentialWriteFunnel = credentialWriteFunnel,
+  refusalGate: CredentialWriteRefusalGate | undefined = sharedWriteRefusalGate,
+): Promise<FunnelResult<void>> {
+  // Canonicalize the slot so a switch and a refresh on the SAME home share one lock regardless
+  // of spelling (second-pass review hardening, 2026-06-13).
+  const canonicalSlot = credentialSlotKey(slot);
+  if (refusalGate?.shouldRefuse(canonicalSlot)) {
+    throw new CredentialWriteRepointingOwnedError(
+      `credential slot '${slot}' is owned by live credential re-pointing — a direct switch/migrate ` +
+        `write would clobber the ledger's tenant. Use POST /credentials/set-default instead.`,
+    );
+  }
+  return funnel.withSlotLock(canonicalSlot, () => provider.writeCredentials(creds));
 }

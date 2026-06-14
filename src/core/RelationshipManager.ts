@@ -29,6 +29,44 @@ const MAX_CHANNELS = 50;
 /** Maximum length of notes field. */
 const MAX_NOTES_LENGTH = 10_000;
 
+/**
+ * WS2.3 cross-machine replication seam (additive, dark by default). The manager
+ * routes EVERY persistence mutation through its single `save()` funnel and EVERY
+ * deletion through `delete()`/`mergeRelationships()`; when a replication emitter is
+ * injected, it emits a disclosure-minimized `relationship-record` envelope (`put` on
+ * save, `delete` tombstone on delete) so a relationship learned on one machine
+ * replicates to the others. PURE-INJECTED so the manager stays testable: the real
+ * wiring (server.ts) supplies an emitter gated behind
+ * `multiMachine.stateSync.relationships.enabled` (default false ⇒ NOT injected ⇒ a
+ * strict no-op, byte-identical single-machine behavior). The emitter NEVER throws
+ * out of a mutation — a replication failure must never break a local write (the
+ * emitter swallows + counts internally), so the manager calls it best-effort.
+ */
+export interface RelationshipReplicationEmitter {
+  /** Emit a `put` for a persisted record (called from the save funnel). */
+  emitPut(record: RelationshipRecord): void;
+  /** Emit a `delete` tombstone for a removed person, keyed on their channel set
+   *  (called from delete + the merged-record half of mergeRelationships). */
+  emitDelete(channels: UserChannel[], deletedAt: string): void;
+}
+
+/**
+ * WS2.3 union-read seam (REQ-M7). The peer-read surface — "what do my OTHER machines
+ * know about this person" — resolves THROUGH the bypass-proof ReplicatedStoreReader
+ * union (server.ts injects this), so no caller reads a raw replica around the
+ * no-clobber rule. It returns the FOREIGN, READ-ONLY rendered context blocks (each
+ * already wrapped in the `<replicated-untrusted-data>` envelope). It is DISTINCT from
+ * the local-authoritative resolveByChannel/get/getContextForPerson — identity
+ * RESOLUTION of an inbound principal is LOCAL-ONLY (REQ-M14) and must NEVER read a
+ * foreign binding. Absent ⇒ no peer view (the single-machine no-op).
+ */
+export interface RelationshipPeerReadSeam {
+  /** Render the FOREIGN replicated context for the person reached by these channels
+   *  (the union of every peer's replica for the matching identity surface), or [] when
+   *  dark / no peer knows them. The result is quoted untrusted data, never authoritative. */
+  peerContextForChannels(channels: UserChannel[]): string[];
+}
+
 export class RelationshipManager {
   private relationships: Map<string, RelationshipRecord> = new Map();
   /** Maps "channel_type:identifier" -> relationship ID for cross-platform resolution */
@@ -36,13 +74,47 @@ export class RelationshipManager {
   /** Maps normalized name -> set of relationship IDs for fuzzy name resolution */
   private nameIndex: Map<string, Set<string>> = new Map();
   private config: RelationshipManagerConfig;
+  /** WS2.3 replication emitter (injected, dark by default). Absent ⇒ strict no-op. */
+  private replication?: RelationshipReplicationEmitter;
+  /** WS2.3 union-read seam (injected, dark by default). Absent ⇒ no peer view. */
+  private peerRead?: RelationshipPeerReadSeam;
 
-  constructor(config: RelationshipManagerConfig) {
+  constructor(config: RelationshipManagerConfig, replication?: RelationshipReplicationEmitter) {
     this.config = config;
+    this.replication = replication;
     if (!existsSync(config.relationshipsDir)) {
       mkdirSync(config.relationshipsDir, { recursive: true });
     }
     this.loadAll();
+  }
+
+  /**
+   * Late-bind the WS2.3 replication emitter (server.ts constructs the union
+   * reader/journal/clock AFTER the manager). Idempotent; passing undefined detaches
+   * (back to single-machine no-op). The emit funnel checks `this.replication` per
+   * mutation, so attaching mid-life takes effect on the next save/delete.
+   */
+  setReplicationEmitter(emitter: RelationshipReplicationEmitter | undefined): void {
+    this.replication = emitter;
+  }
+
+  /** Late-bind the WS2.3 union-read seam (server.ts builds the union reader after the
+   *  manager). Passing undefined detaches (no peer view). */
+  setPeerReadSeam(seam: RelationshipPeerReadSeam | undefined): void {
+    this.peerRead = seam;
+  }
+
+  /**
+   * WS2.3 (REQ-M7/M14) — "what do my OTHER machines know about this person?" The
+   * peer-read surface, READ-ONLY + neutralized: it returns FOREIGN replicated context
+   * blocks (each already wrapped in `<replicated-untrusted-data>` and fully sanitized),
+   * tagged by origin, resolved THROUGH the bypass-proof union reader. It is a SEPARATE
+   * method from resolveByChannel/getContextForPerson — identity RESOLUTION of an
+   * inbound principal stays LOCAL-ONLY (REQ-M14): this never makes a foreign record the
+   * answer to "who is this". Returns [] when dark / no peer knows them.
+   */
+  peerContextForChannels(channels: UserChannel[]): string[] {
+    return this.peerRead ? this.peerRead.peerContextForChannels(channels) : [];
   }
 
   /** Normalize a name for fuzzy matching: lowercase, trim, collapse whitespace, strip leading @ */
@@ -548,6 +620,15 @@ Respond with ONLY: YES or NO`;
     const merge = this.relationships.get(mergeId);
     if (!keep || !merge) return;
 
+    // WS2.3: snapshot the MERGED person's STANDALONE channel set BEFORE we fold its
+    // channels into the survivor — the coherent put(survivor)+delete(merged) pair the
+    // merge emits keys the tombstone on this OLD set. After the fold the survivor's
+    // channel set (and therefore its recordKey) SUBSUMES these, so the tombstone's
+    // recordKey is DISTINCT from the survivor's new recordKey — no replication loop,
+    // no tombstone that suppresses the survivor (the survivor's `put` carries the
+    // consolidated identity; the tombstone only retires the merged's standalone replica).
+    const mergedChannelsBefore = [...merge.channels];
+
     // Merge channels (respect MAX_CHANNELS cap)
     for (const channel of merge.channels) {
       if (keep.channels.length >= MAX_CHANNELS) break;
@@ -597,12 +678,25 @@ Respond with ONLY: YES or NO`;
     }
 
     keep.significance = this.calculateSignificance(keep);
-    this.save(keep);
+    this.save(keep); // emits the survivor `put` (now carrying the consolidated channel set)
 
     // Delete the merged record and clean up name index
     this.unindexName(mergeId, merge.name);
     this.relationships.delete(mergeId);
     this.deleteFile(mergeId);
+
+    // WS2.3: emit the merged record's TOMBSTONE keyed on its OLD standalone channel
+    // set so peers retire its standalone replica — the `delete` half of the coherent
+    // put+delete pair. Best-effort; strict no-op when dark. The survivor's recordKey
+    // (now subsuming these channels) differs from this tombstone's recordKey, so the
+    // tombstone can never suppress the survivor (no dangling tombstone, no loop).
+    if (this.replication) {
+      try {
+        this.replication.emitDelete(mergedChannelsBefore, new Date().toISOString());
+      } catch {
+        // @silent-fallback-ok — additive replication never breaks the local merge.
+      }
+    }
   }
 
   /**
@@ -611,6 +705,10 @@ Respond with ONLY: YES or NO`;
   delete(id: string): boolean {
     const record = this.relationships.get(id);
     if (!record) return false;
+
+    // Snapshot the channel set BEFORE we mutate the indexes — the WS2.3 tombstone is
+    // keyed on the channel-set identity surface (REQ-D4/D17), not the local UUID.
+    const channels = [...record.channels];
 
     // Remove channel index entries
     for (const channel of record.channels) {
@@ -625,6 +723,19 @@ Respond with ONLY: YES or NO`;
 
     this.relationships.delete(id);
     this.deleteFile(id);
+
+    // WS2.3 (§4.2 REQ-D4): a delete propagates as a `relationship-record` `op:'delete'`
+    // TOMBSTONE keyed on the channel-set identity surface so it reaches the same human's
+    // record on every machine (incl. an offline-then-rejoining peer, §4.3) — never a
+    // record absence that cannot distinguish "deleted" from "never replicated". Emitted
+    // AFTER the durable local delete; best-effort; strict no-op when dark.
+    if (this.replication) {
+      try {
+        this.replication.emitDelete(channels, new Date().toISOString());
+      } catch {
+        // @silent-fallback-ok — additive replication never breaks the local delete.
+      }
+    }
     return true;
   }
 
@@ -780,6 +891,21 @@ Respond with ONLY: YES or NO`;
     } catch (err) {
       try { SafeFsExecutor.safeUnlinkSync(tmpPath, { operation: 'src/core/RelationshipManager.ts:781' }); } catch { /* ignore */ }
       throw err;
+    }
+    // WS2.3 (ws23-relationships-userregistry-security §5 REQ-M3/M4): the single
+    // persistence funnel is the ONE place a `relationship-record` `put` is emitted,
+    // so every mutator (findOrCreate, updateNotes, linkChannel, addTags, …) replicates
+    // through it without per-method wiring. Best-effort + AFTER the durable local
+    // write succeeded: a replication failure must NEVER break the local write (the
+    // injected emitter swallows + counts internally). Strict no-op when no emitter is
+    // injected (the dark default).
+    if (this.replication) {
+      try {
+        this.replication.emitPut(record);
+      } catch {
+        // @silent-fallback-ok — replication is additive; a local write must never fail
+        // because cross-machine emission did. The emitter records its own failures.
+      }
     }
   }
 

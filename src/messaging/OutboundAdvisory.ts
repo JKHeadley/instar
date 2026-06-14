@@ -45,10 +45,11 @@ import crypto from 'node:crypto';
 import { detectJargon } from '../core/JargonDetector.js';
 import { detectRawFilePath } from '../core/raw-file-path.js';
 import { detectLocalhostLink } from '../core/localhost-link.js';
+import { detectTimeClaimContradiction, type TimeClaimClock } from '../core/time-claim.js';
 
 // ── Advisory composition ────────────────────────────────────────────────
 
-export type AdvisoryCode = 'JARGON' | 'RAW_FILE_PATH' | 'LOCALHOST_LINK';
+export type AdvisoryCode = 'JARGON' | 'RAW_FILE_PATH' | 'LOCALHOST_LINK' | 'TIME_CLAIM';
 
 export interface Advisory {
   code: AdvisoryCode;
@@ -70,16 +71,64 @@ const GUIDANCE: Record<AdvisoryCode, string> = {
     'This message contains a machine-local (localhost/loopback) link the user cannot open from their device. ' +
     'IMPORTANT: the server’s pre-existing deterministic guard will refuse a raw localhost link REGARDLESS of --ack-advisory — ' +
     'acknowledging this advisory will NOT deliver it. Replace the link with the public tunnel URL (GET /tunnel → url + path) before re-sending.',
+  TIME_CLAIM:
+    'This message states an elapsed/remaining time for this topic’s active time-boxed session that contradicts the live session clock. ' +
+    'Never estimate time — read GET /session/clock (Bearer auth) and quote its numbers exactly, then re-send with the corrected figure.',
 };
 
 /** Analyzed-text cap (consistent with the pipeline's downstream rejects). */
 export const PREFLIGHT_TEXT_CAP = 64 * 1024;
 
+export interface ComposeAdvisoryOptions {
+  /**
+   * Active session clock(s) for the sending topic (caller resolves them —
+   * this module stays pure). Absent/empty → the TIME_CLAIM detector is a
+   * no-op. Spec: time-claim verification rides the same inform-only slot
+   * (operator mandate 2026-06-12, topic 13481).
+   */
+  sessionClocks?: ReadonlyArray<TimeClaimClock>;
+}
+
+/**
+ * The TIME_CLAIM detector alone — used for NON-automated (conversational
+ * session) preflights, where the jargon/path detectors deliberately do NOT
+ * apply (over-block concern, outbound-jargon-filepath-gap §4 Q2) but a time
+ * claim contradicting the live clock is wrong regardless of message kind.
+ * Fail-OPEN like every detector.
+ */
+export function composeTimeClaimAdvisories(
+  text: string,
+  sessionClocks: ReadonlyArray<TimeClaimClock> | undefined,
+): Advisory[] {
+  if (!sessionClocks || sessionClocks.length === 0) return [];
+  try {
+    const input =
+      typeof text === 'string'
+        ? text.length > PREFLIGHT_TEXT_CAP
+          ? text.slice(0, PREFLIGHT_TEXT_CAP)
+          : text
+        : '';
+    const tc = detectTimeClaimContradiction(input, sessionClocks);
+    if (tc.detected) {
+      return [
+        {
+          code: 'TIME_CLAIM',
+          match: tc.match ? tc.match.slice(0, 120) : undefined,
+          guidance: GUIDANCE.TIME_CLAIM,
+        },
+      ];
+    }
+  } catch {
+    /* @silent-fallback-ok — fail-open by spec contract (outbound-jargon-filepath-gap §2.3): a detector error skips the signal, never withholds a message */
+  }
+  return [];
+}
+
 /**
  * Run the deterministic detectors over a candidate text. Each detector is
  * individually fail-OPEN: a throw skips that signal and never withholds.
  */
-export function composeAdvisories(text: string): Advisory[] {
+export function composeAdvisories(text: string, opts?: ComposeAdvisoryOptions): Advisory[] {
   const input =
     typeof text === 'string'
       ? text.length > PREFLIGHT_TEXT_CAP
@@ -122,6 +171,8 @@ export function composeAdvisories(text: string): Advisory[] {
   } catch {
     /* @silent-fallback-ok — fail-open by spec contract (outbound-jargon-filepath-gap §2.3): a detector error skips the signal, never withholds a message */
   }
+
+  advisories.push(...composeTimeClaimAdvisories(input, opts?.sessionClocks));
 
   return advisories;
 }

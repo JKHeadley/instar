@@ -24,7 +24,11 @@
  *    own acknowledgment of the /model command, parsed to exclude the echo
  *    of our injected input. Only on a confirmed match is Session.model
  *    updated. Unconfirmed ⇒ Session.model untouched, behaviourally default,
- *    ONE Attention item (round-1 Adversarial-H5 / Lessons-C3).
+ *    and a SILENT maturation-track audit breadcrumb — never an Attention
+ *    item (TOPIC-PROFILE-SPEC §11/§14: the `maturing-feature-health-no-alerts`
+ *    operator directive, 2026-06-10, superseding round-1 Adversarial-H5 /
+ *    Lessons-C3's per-event item, which produced three "Model swap
+ *    unconfirmed" Attention topics in one day).
  *  - **Accounting fails toward counting** (round-2 Adversarial-NEW-2): the
  *    escalation is counted at injection, before the canary, once per
  *    (instance, transition) episode.
@@ -37,6 +41,8 @@ import * as path from 'node:path';
 import type { Session } from './types.js';
 import { IDLE_PROMPT_PATTERNS } from './SessionManager.js';
 import {
+  KNOWN_MODEL_IDS,
+  MODEL_ID_RE,
   SWAP_CAPABILITY,
   escalatedModelIds,
   resolveTierModel,
@@ -45,20 +51,13 @@ import {
   type TierEscalationConfig,
 } from './ModelTierEscalation.js';
 import type { AdmitResult, EscalationGovernor } from './EscalationGovernor.js';
+import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 
 /** The narrow SessionManager surface the swap service is allowed to touch. */
 export interface SwapSessionFacade {
   listRunningSessions(): Session[];
   captureMeaningfulTail(tmuxSession: string, lines: number): string | null;
   sendInput(tmuxSession: string, input: string): boolean;
-}
-
-export interface AttentionItemLike {
-  id: string;
-  title: string;
-  summary: string;
-  category: string;
-  priority: 'URGENT' | 'HIGH' | 'NORMAL' | 'LOW';
 }
 
 export interface ModelSwapServiceDeps {
@@ -69,9 +68,26 @@ export interface ModelSwapServiceDeps {
   protectedSessions: () => string[];
   getConfig: () => TierEscalationConfig;
   governor: Pick<EscalationGovernor, 'admitEscalation' | 'recordInjection'>;
-  /** Raise an Attention item (TelegramAdapter.createAttentionItem). Optional —
-   *  absence degrades to audit-only, never throws. */
-  attention?: (item: AttentionItemLike) => unknown;
+  /**
+   * TOPIC-PROFILE-SPEC §9 — the server-side pin consult. Given a session,
+   * return the session's topic profile consult, or null when the session has
+   * no bound topic / no pin. The consult runs on the AUTHORITY side (this
+   * endpoint), never in the FABLE hook (its pure-filesystem contract holds):
+   *  - `suppressEscalation`: the topic's `escalationOverride === 'suppress'`
+   *    pin — an 'escalated' swap is REFUSED (the operator explicitly opted
+   *    this topic out of the heavy-work ultra mandate). `inherit` pins never
+   *    set this (the mandate keeps firing even on a pinned topic).
+   *  - `baselineModel`: the topic's pinned BASELINE (explicit model or
+   *    resolved tier pin) — a 'default' de-escalation lands HERE, never the
+   *    global default (otherwise the swap-back silently drops the pin).
+   *    Already clamped through the §10.2 closed enum by the resolver.
+   * NOT gated by `topicProfiles.enabled` — honor-on-read covers the
+   * escalation arm (§5.2(c): disabling the feature must not silently flip a
+   * "never escalate this topic" into 2x-cost escalation).
+   */
+  topicProfileConsult?: (
+    session: Session,
+  ) => { suppressEscalation: boolean; baselineModel: string | null } | null;
   /** Canary attempts/cadence — injectable for tests. */
   canaryAttempts?: number;
   canaryIntervalMs?: number;
@@ -192,8 +208,43 @@ export class ModelSwapService {
       return this.refuse(session.name, tier, 'protected-session');
     }
 
-    // Server-derived id — the caller can only ever name a TIER.
-    const targetId = resolveTierModel(framework, tier, cfg, e =>
+    // TOPIC-PROFILE-SPEC §9 — the server-side pin consult (in-memory, O(1)).
+    // Fail-soft: a consult error keeps today's behavior (no pin).
+    let pinConsult: { suppressEscalation: boolean; baselineModel: string | null } | null = null;
+    try {
+      pinConsult = this.deps.topicProfileConsult?.(session) ?? null;
+    } catch (err) {
+      // Fail-soft per §9 (a consult error keeps today's no-pin behavior) —
+      // but NOT silent: a consult error can drop an operator 'suppress' pin.
+      DegradationReporter.getInstance().report({
+        feature: 'ModelSwapService.topicProfileConsult',
+        primary: "Consult the topic-profile pin before a tier swap (§9 — a 'suppress' pin vetoes escalation)",
+        fallback: 'Proceed as if the topic has no pin (pre-profile behavior)',
+        reason: `Pin consult threw: ${err instanceof Error ? err.message : String(err)}`,
+        impact: "An operator 'suppress' pin may be ignored for this swap; a pinned baseline may de-escalate to the global default instead of the pin",
+      });
+    }
+    if (tier === 'escalated' && pinConsult?.suppressEscalation) {
+      // §9: a 'suppress' pinned topic is NEVER escalated — operator authority.
+      return this.refuse(session.name, tier, 'profile-suppresses-escalation');
+    }
+
+    // Server-derived id — the caller can only ever name a TIER. §9: for a
+    // pinned topic, tier:'default' resolves to that topic's pinned BASELINE
+    // (the de-escalation lands on the pin, never the global default).
+    // Defense-in-depth: the consult's id is resolver-clamped already, but it
+    // re-passes the closed enum here before it can reach send-keys (§10.2 —
+    // the same fail-closed discipline as resolveTierModel).
+    let baselinePin: string | null = null;
+    if (tier === 'default' && pinConsult?.baselineModel) {
+      const candidate = pinConsult.baselineModel;
+      if (MODEL_ID_RE.test(candidate) && (KNOWN_MODEL_IDS[framework] ?? []).includes(candidate)) {
+        baselinePin = candidate;
+      } else {
+        this.audit({ type: 'resolve-rejected', framework, tier, reason: 'id-not-in-closed-enum', rejectedId: candidate.slice(0, 80) });
+      }
+    }
+    const targetId = baselinePin ?? resolveTierModel(framework, tier, cfg, e =>
       this.audit({ type: 'resolve-rejected', ...e }),
     );
     if (targetId == null) {
@@ -301,24 +352,21 @@ export class ModelSwapService {
     }
 
     // NOT confirmed: do NOT mark reconciled, do NOT touch Session.model;
-    // behaviourally the session is treated as default. One Attention item.
+    // behaviourally the session is treated as default. The signal routes to
+    // the maturation track as a silent audit breadcrumb (TOPIC-PROFILE-SPEC
+    // §11/§14) — a maturing feature's health signal is never a per-event
+    // Attention item; the future evidence-file sink finds these rows by
+    // `maturationSignal: true`.
     this.lastSwapAt.set(session.id, this.now()); // still dwell — don't re-inject in a tight loop
-    this.audit({ type: 'swap-unconfirmed', session: session.name, tier, model: targetId, attempts });
-    try {
-      this.deps.attention?.({
-        id: `model-swap-unconfirmed-${session.id}-${tier}`,
-        title: `Model swap unconfirmed: ${session.name}`,
-        summary:
-          `Injected /model ${targetId} into "${session.name}" but the independent ` +
-          `read-back did not confirm within ${attempts} attempts. The session is ` +
-          `treated as DEFAULT tier; the swap was still counted against the ` +
-          `escalation budget (fails toward counting).`,
-        category: 'model-tier-escalation',
-        priority: 'NORMAL',
-      });
-    } catch {
-      // attention surface unavailable — the audit record stands
-    }
+    this.audit({
+      type: 'swap-unconfirmed',
+      session: session.name,
+      tier,
+      model: targetId,
+      attempts,
+      maturationSignal: true,
+      feature: 'model-tier-escalation',
+    });
     return { status: 'unconfirmed', model: targetId, confirmed: false };
   }
 

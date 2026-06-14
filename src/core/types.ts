@@ -78,6 +78,25 @@ export interface Session {
    *  (e.g. 'idle-zombie', 'reaped-idle', 'manual-kill'). Undefined on records
    *  ended before this field existed. */
   endedReason?: string;
+  /** True when the kill interrupted evidenced work (reap-notify spec R2.1:
+   *  any non-marker work evidence at kill time). Stamped by terminateSession
+   *  alongside the sessionReaped emission. Undefined on legacy records. */
+  endedMidWork?: boolean;
+  /** The clamped work-evidence names behind endedMidWork (enum-clamped at the
+   *  chokepoint — see src/core/WorkEvidence.ts). */
+  endedWorkEvidence?: string[];
+  /** Working directory the session was spawned with (reap-notify R2.8/L13 —
+   *  recorded so a resume-queue entry can revive the session in ITS tree).
+   *  Absent on legacy records ⇒ the module project dir. */
+  cwd?: string;
+  /** Ghost-record supersession (one-running-record-per-tmux invariant): when a
+   *  NEW record registers as running for a tmux session name, any OTHER record
+   *  still marked running/starting for that same name is closed with this field
+   *  set to the new record's id. tmux names are unique among live sessions, so
+   *  two live records for one name are definitionally stale — the leak that
+   *  showed N "duplicate sessions" on the dashboard after crisis respawns
+   *  (2026-06-11 Mac Mini: 5 records × 1 tmux session). */
+  supersededBy?: string;
   /**
    * How this session signals task completion (june15-headless-spawn-reroute, PR2).
    * - undefined/'exit': today's behavior — a headless one-shot signals completion
@@ -104,6 +123,24 @@ export interface Session {
    * now for claude-code spawns; surfaced in GET /sessions and the reap-log so the
    * soak's success criterion (zero 'headless' under force) is machine-checkable. */
   launchLane?: 'headless' | 'rerouted-interactive';
+  /**
+   * Credential provenance (live-credential-repointing-rebalancer §2.10). Records,
+   * at spawn, WHERE this session's Anthropic credential comes from:
+   * - 'store' — the per-`CLAUDE_CONFIG_DIR` credential store (steerable by the
+   *   live re-pointing mechanism; the swap takes effect on its next API call).
+   * - 'env'   — an env-token launch (`CLAUDE_CODE_OAUTH_TOKEN` / `ANTHROPIC_API_KEY`
+   *   set from a non-empty `config.anthropicApiKey`); the session ignores the store
+   *   and is INVISIBLE to re-pointing (the §0.b applicability precondition).
+   *
+   * SINGLE SOURCE OF TRUTH: derived at the spawn site from the IDENTICAL expression
+   * that selects the session's Anthropic env block —
+   * `(config.anthropicApiKey ?? '') !== '' ? 'env' : 'store'` — NEVER an independent
+   * recomputation (a later recompute re-creates the spawn-time staleness class this
+   * spec exists to kill). Default 'store'; only set on claude-code launch lanes
+   * (the only lanes that build an Anthropic env block). Undefined on legacy records
+   * and non-claude-code sessions; the env-token gate's fleet scan treats undefined
+   * as 'store' (the safe, non-refusing direction). */
+  credentialSource?: 'store' | 'env';
   /**
    * Hard lifetime ceiling in minutes for a rerouted-interactive session
    * (june15-headless-spawn-reroute, PR2 finding O1 belt-and-suspenders). An
@@ -314,6 +351,24 @@ export interface JobDefinition {
    *  Example: `curl -sf http://localhost:3000/updates | python3 -c "import sys,json; exit(0 if json.load(sys.stdin).get('updateAvailable') else 1)"`
    */
   gate?: string;
+  /** Reap-notify spec R2.2 — opt this job INTO the mid-work resume queue.
+   *  Default false: jobs already have cron recurrence as their recovery path,
+   *  and instar jobs carry no idempotency contract, so a reap-triggered early
+   *  re-run must be a deliberate per-job choice. Older agents' job parsers
+   *  ignore unknown fields (additive-safe). */
+  resumeOnReap?: boolean;
+  /** MULTI-MACHINE-SEAMLESSNESS-SPEC §WS4.3 role-guard-at-spawn — opt this job
+   *  IN as a STATE-WRITING job. A state-writing job mutates shared/replicated
+   *  state that only the writable owner (the lease-holder) may touch; it must
+   *  NOT spawn on a read-only standby. When `multiMachine.seamlessness.ws43RoleGuard`
+   *  is on and this machine does not hold the lease, the scheduler refuses the
+   *  spawn at the spawn boundary (the TOCTOU re-check — a machine awake at boot
+   *  can demote mid-run while its cron tasks keep firing). The writable owner's
+   *  own scheduler runs the job (the cron fires on every machine; only the
+   *  owner's pass clears the guard), so the refusal re-routes by construction.
+   *  Default-absent = NOT state-writing → never guarded (additive-safe; older
+   *  agents' parsers ignore the unknown field). */
+  writesState?: boolean;
   /** Tags for filtering/grouping */
   tags?: string[];
   /** Telegram topic ID this job reports to (auto-created if not set) */
@@ -994,6 +1049,7 @@ export type SkipReason =
   | 'claimed'         // Another machine already claimed this job (Phase 4C — Gap 5)
   | 'machine-scope'   // Job is scoped to a different machine
   | 'already-running' // A live session already holds this jobSlug (june15-headless-spawn-reroute O3: per-slug double-run guard)
+  | 'role-guard'      // WS4.3: state-writing job refused on a read-only standby (not the lease-holder)
   | 'gate';           // Gate command returned non-zero (nothing to do)
 
 /**
@@ -1868,6 +1924,95 @@ export interface MachineCapacity {
    *  unless every machine is blocked or the user hard-pinned here. Absent =
    *  unknown = treated as not blocked (heartbeats from older versions). */
   quotaState?: { blocked: boolean; blockedUntil?: string; reason?: string };
+  /** Durable Inbound Message Queue (spec §5.1): self-reported custody state —
+   *  consumed by the survivor's loss-SUSPECTED item + capped re-placement arm
+   *  and the supersede-dedupe episode key (machineId + tenure). Absent =
+   *  older peer or queue dark — "a mesh-less peer's depth is honestly
+   *  unknown and the item says so". topK is bounded (K=10). */
+  inboundQueue?: {
+    queueDepth: number;
+    oldestQueuedAt: string | null;
+    tenure: string | null;
+    topK: Array<{ sessionKey: string; depth: number }>;
+  };
+  /** WS1.1 (MULTI-MACHINE-SEAMLESSNESS-SPEC invariant 5): bounded summary of
+   *  this machine's seamlessness capabilities, advertised in the capacity
+   *  heartbeat (rides the same authenticated envelope as the rest of the
+   *  report). ABSENT = the peer predates this spec OR the feature is dark =
+   *  non-participant for every gated workstream (the conservative side —
+   *  senders never forward to a peer that cannot durably receive; the journal
+   *  applier's silently-drop-unknown-kinds behavior is the named skew-failure
+   *  mode this gate prevents). Fixed-size booleans only — never an inventory. */
+  seamlessnessFlags?: {
+    /** This machine can durably RECEIVE forwarded inbound messages (the
+     *  'deliverMessage' receiver handler + live durable queue). */
+    ws11DeliverReceive?: boolean;
+    /** WS1.2: this machine can execute the owner-side `drain` verb (bounded
+     *  turn-boundary drain + claim handoff for an active-topic transfer).
+     *  ABSENT/false → the transfer sender degrades to today's pin-and-
+     *  idle-closeout path — never a doomed drain order. */
+    ws12DrainReceive?: boolean;
+    /** WS4.4 (§WS4.4 / F6): this machine can SERVE the holder side of a
+     *  cross-machine pool-view-fetch — answer the existence probe AND verify a
+     *  pool-link user-auth assertion before serving a held view body. ABSENT/false
+     *  → a fronting peer never proxies a /view to it (it stays local-only there).
+     *  Advertised only when the dark ws44PoolLinks flag resolved on. */
+    ws44PoolLinks?: boolean;
+    /** WS4.3 (§WS4.3 "Cutover discipline"): this machine claims scheduled jobs
+     *  via the durable, epoch-fenced JOURNAL LEASE rather than the legacy AgentBus
+     *  broadcast. The cutover engages pool-wide ONLY when EVERY online peer
+     *  advertises this — a peer that does not (older version, flag off there)
+     *  keeps the whole pool on the bus (invariant-5 flag coherence). ABSENT/false
+     *  = non-participant (the conservative side). Advertised only when the dark
+     *  ws43JournalLease flag is on AND not dry-run. */
+    ws43JournalLease?: boolean;
+    /** WS4.4 (f) global pool-cache unification (§WS4.4 clause (f)): this machine
+     *  routes its pool-scope per-peer fan-out through the shared PoolPollCache.
+     *  Advertised only when the dark ws44PoolCache flag resolved on; ABSENT/false
+     *  → the surfaces fan out per-route (today's behavior). */
+    ws44PoolCache?: boolean;
+    /** WS2 replicated-store foundation (§10.2 capability advert). Per-store
+     *  receive capability: `stateSyncReceive[store] === true` means this machine
+     *  can durably RECEIVE + apply that store's replicated journal kind. ABSENT
+     *  (older peer, or the store dark here) = non-participant for that store (the
+     *  conservative side — a sender NEVER forwards a store's kind to a peer that
+     *  does not advertise it, since the journal applier silently drops an unknown
+     *  kind: the NAMED data-loss skew mode this advert prevents). Keyed by the
+     *  same `store` key the stateSync config + registry use, so a store added
+     *  later needs no change here. Self-reported from machinery presence in the
+     *  capacity heartbeat (the ws11DeliverReceive/ws44PoolLinks pattern). */
+    stateSyncReceive?: Record<string, boolean>;
+  };
+  /** Compact guard-posture summary self-reported in the capacity heartbeat
+   *  (GUARD-POSTURE-ENDPOINT-SPEC §2.3). Bound to the AUTHENTICATED sender at
+   *  ingestion (a body-claimed machineId can never overwrite another machine's
+   *  row); displayed age derives from `guardPostureReceivedAt` (receiver-side
+   *  clock), never the block's own `generatedAt`. Absent = the machine has
+   *  never reported posture ("guards: unknown", never "0 on / 0 off"). */
+  guardPosture?: GuardPostureSummary;
+  /** RECEIVER-side receipt time (ISO) of the posture block — survives local
+   *  restarts via the durable last-known store, so a dark peer renders with
+   *  its honest age. */
+  guardPostureReceivedAt?: string;
+}
+
+/** The compact posture block that rides the capacity heartbeat
+ *  (GUARD-POSTURE-ENDPOINT-SPEC §2.3). Counts plus per-key detail for ONLY
+ *  the two sharpest signals (offDeviantKeys, offRuntimeDivergentKeys) —
+ *  bounded by the manifest size. */
+export interface GuardPostureSummary {
+  onConfirmed: number;
+  onUnverified: number;
+  onStale: number;
+  onDryRun: number;
+  offDeviant: number;
+  offDeviantKeys: string[];
+  offRuntimeDivergent: number;
+  offRuntimeDivergentKeys: string[];
+  divergedPendingRestart: number;
+  errored: number;
+  missing: number;
+  generatedAt: string;
 }
 
 export interface MultiMachineConfig {
@@ -1986,6 +2131,143 @@ export interface MultiMachineConfig {
    * replication a clean no-op.
    */
   coherenceJournal?: CoherenceJournalUserConfig;
+  /**
+   * Replicated-store foundation (multi-machine-replicated-store-foundation.md
+   * §10). The substrate that lets independent stores (preferences, relationships,
+   * learnings, …) replicate via flag-gated, flag-coherence-gated journal-kind
+   * emission. Ships DARK per store: each `stateSync.<store>.enabled` defaults
+   * false, so the default preserves today's behavior exactly (no replicated
+   * kinds emitted). The per-store flags ARE the foundation's on-switch, store by
+   * store — there is no foundation-level master enable. The foundation-level
+   * knobs (the journal budget, the HLC drift ceiling, the snapshot-cache bounds)
+   * are validated at startup by validateStateSyncInvariants() — a bad value is
+   * REJECTED, not silently coerced. A single-machine install is a strict no-op
+   * (emission is gated on a peer advertising the matching capability).
+   */
+  stateSync?: StateSyncConfig;
+  /**
+   * Cross-Machine Seamlessness graduated-rollout flags (MULTI-MACHINE-
+   * SEAMLESSNESS-SPEC). Each workstream's dark flag lives here. All optional;
+   * ABSENT = today's behavior preserved exactly. Resolved through the
+   * developmentAgent gate (dark on the fleet, live on the dev agent) at the
+   * wiring callsite, NOT here, so a single source of truth for the rollout posture.
+   */
+  seamlessness?: {
+    /** WS3 one-voice speaker election (default false → unconditional speak). */
+    ws3OneVoice?: boolean;
+    /** WS3 dwell window (ms) before the election re-evaluates. Default 60000. */
+    ws3DwellMs?: number;
+    /** WS1.3 ownership reconcile (bounded pin/owner convergence). DARK default. */
+    ws13Reconcile?: boolean;
+    /** WS1.3 dry-run (logs intended CAS actions without performing them). Default true. */
+    ws13DryRun?: boolean;
+    /** WS1.3 reconcile tick cadence (ms). Default 30000. */
+    ws13TickMs?: number;
+    /**
+     * WS4.4 "links that survive machine boundaries" (§WS4.4 / F6). When on, the
+     * tunnel-fronting machine resolves the actual HOLDER of a `/view/:id` it does
+     * NOT hold and proxies the request to it, carrying a short-lived, audience-
+     * bound, single-use, mesh-signed USER-AUTH assertion — never the raw PIN /
+     * view token. The holder makes the authorization decision (dumb relay at the
+     * edge). DEFAULT (undefined/false) = local-only `/view`, no proxy — today's
+     * exact behavior. Resolved via resolveDevAgentGate(): dark on the fleet, live
+     * on the dev agent. Single-machine = strict no-op. DELIBERATELY OMITTED from
+     * config defaults (the gate decides) — a literal `false` would force-dark dev.
+     */
+    ws44PoolLinks?: boolean;
+    /**
+     * WS4.3 role-guard-at-spawn (§WS4.3 / F8, F21; CMT-1416). When on, the
+     * scheduler refuses to spawn a STATE-WRITING job (JobDefinition.writesState)
+     * on a machine that does NOT hold the lease — the spawn-boundary TOCTOU
+     * re-check that closes the window where a machine awake at boot demotes to a
+     * read-only standby mid-run while its cron tasks keep firing. DEFAULT
+     * (undefined/false) = strict no-op (byte-for-byte today's behavior). The
+     * writable owner's own scheduler runs the job; a refusal raises ONE deduped
+     * attention item. Single-machine agents always hold the lease → never fires.
+     */
+    ws43RoleGuard?: boolean;
+    /**
+     * WS4.3 journal-lease cutover (§WS4.3, "Cutover discipline"). When on AND
+     * the pool is flag-coherent (every online peer advertises ws43JournalLease),
+     * job claims upgrade from the best-effort AgentBus broadcast to a durable,
+     * epoch-fenced lease over the replicated journal. The cutover gate
+     * (JobLeaseCutoverGate) guarantees the two mechanisms are NEVER both live for
+     * a job set (the named migration hazard). DEFAULT (undefined/false) = strict
+     * no-op (legacy bus path). A mixed/older pool, or single-machine, also stays
+     * on the bus — degrade conservatively.
+     */
+    ws43JournalLease?: boolean;
+    /**
+     * WS4.3 journal-lease DRY-RUN (the WS-wide "log intended claims" posture).
+     * When coherent-but-dry-run, the intended journal claim is LOGGED but the
+     * legacy bus path still runs. DEFAULT (undefined→true via ConfigDefaults) =
+     * dry-run, the first rung of the rollout ladder.
+     */
+    ws43JournalLeaseDryRun?: boolean;
+    /**
+     * WS4.4 (f) load-shed: when the fronting machine is over this 1-min
+     * load-per-core threshold, holder-resolution serves the last-cached
+     * resolution with an explicit staleness tag instead of re-fanning-out
+     * (load-shed, honestly labeled). Default 1.5 (mirrors the SessionReaper
+     * cpuCriticalLoadPerCore default). Set 0 to disable load-shed (always fan out).
+     */
+    ws44LoadShedLoadPerCore?: number;
+    /**
+     * WS4.4 (f) global pool-cache unification (§WS4.4 clause (f); CMT-1416). When
+     * on, every pool-scope surface (sessions/jobs/attention/guards/…) routes its
+     * per-peer fan-out through ONE shared PoolPollCache so a dashboard polling
+     * several tabs hits each peer ONCE per interval instead of once per surface
+     * per client; over the load-shed threshold the cache serves last-cached
+     * (stale-tagged) instead of re-fanning. Resolved via resolveDevAgentGate():
+     * dark on the fleet, live on the dev agent. DELIBERATELY OMITTED from config
+     * defaults (the gate decides) — a literal `false` would force-dark dev. When
+     * off (or single-machine), surfaces keep their direct per-peer fetch
+     * (byte-for-byte today's behavior).
+     */
+    ws44PoolCache?: boolean;
+    /**
+     * WS4.4 (f) shared poll interval (ms): within this window a (peer, route)
+     * pair is served from the shared pool-cache without a network call. A
+     * tunable, not a gate. Default 3000 (matches the per-route pool caches).
+     */
+    ws44PoolCacheTtlMs?: number;
+  };
+}
+
+/**
+ * Per-store stateSync flags (multi-machine-replicated-store-foundation §10.2).
+ * Each replicated store carries its OWN on-switch + dry-run, so stores ship dark
+ * INDEPENDENTLY. `enabled` (default false) is the §4 flag-gated-emission switch:
+ * when false the store NEVER emits its kind (strict no-op). `dryRun` (default
+ * true on first enable) logs intended merges/applies WITHOUT mutating store
+ * state — the `dark → dryRun → live` rollout ladder (§10.1).
+ */
+export interface StoreStateSyncConfig {
+  enabled?: boolean;
+  dryRun?: boolean;
+}
+
+/**
+ * The `multiMachine.stateSync` block (multi-machine-replicated-store-foundation
+ * §10). FOUNDATION-LEVEL knobs (shared by every replicated store) are named
+ * fields; PER-STORE flag blocks live as additional keys (e.g. `pref`,
+ * `relationship`) and are typed via the index signature, so a store added later
+ * (WS2.1+) needs no change to this interface. ALL optional — ABSENT preserves
+ * today's behavior exactly. The foundation knobs are validated at startup by
+ * validateStateSyncInvariants(); a per-store `enabled` is the dark-by-default
+ * on-switch and is NOT range-validated.
+ */
+export interface StateSyncConfig {
+  /** Aggregate journal byte budget across all replicated kinds (§10.2). Default 64 MiB. */
+  aggregateJournalBudgetBytes?: number;
+  /** The HLC bounded-drift ceiling (§3.4 / §10.2). Must be within [60s, 15min]. Default 5min. */
+  maxDriftMs?: number;
+  /** Snapshot-cache count ceiling (§8.2). Default 16. */
+  maxCachedSnapshots?: number;
+  /** Snapshot-cache byte ceiling (§8.2). Default 32 MiB. */
+  maxCacheBytes?: number;
+  /** Per-store on-switches (e.g. `pref`, `relationship`, …) — added by the store PRs. */
+  [store: string]: StoreStateSyncConfig | number | undefined;
 }
 
 /**
@@ -2039,6 +2321,13 @@ export interface CoherenceJournalUserConfig {
     maxPendingOpsPerOwner?: number;
     opKeyTtlDays?: number;
   };
+  /** WS2.1 preferences pool — independent page-sizing dials (MULTI-MACHINE-SEAMLESSNESS-SPEC §WS2.1). */
+  preferences?: {
+    syncPageBytes?: number;
+    maxSyncPagesPerTick?: number;
+    replicaStaleWarnMs?: number;
+    maxReplicatedPreferences?: number;
+  };
   /**
    * Per-kind retention. rotateKeep N>0 = rotate at maxFileBytes, keep N
    * archives, delete older; 0 = rotate at maxFileBytes but NEVER delete
@@ -2087,6 +2376,15 @@ export interface SessionPoolConfig {
    * nickname/hardware/history for fast re-placement.
    */
   machineRecordEvictionMs?: number;
+  /**
+   * Durable Inbound Message Queue (docs/specs/durable-inbound-message-queue.md
+   * §Config). Ships dark (enabled:false + dryRun:true). Canonical defaults +
+   * field semantics live in src/core/inboundQueueConfig.ts.
+   */
+  inboundQueue?: Partial<import('./inboundQueueConfig.js').InboundQueueConfig>;
+  /** Hold-for-stability policy (same spec §4) — trails inboundQueue one
+   *  rollout stage behind by operator discipline. */
+  holdForStability?: Partial<import('./inboundQueueConfig.js').HoldForStabilityConfig>;
   /**
    * MeshRpc (§L0) command timestamp tolerance (ms) — a signed command whose
    * timestamp is outside |now - ts| is rejected `stale-timestamp`. Default 30000.
@@ -2381,6 +2679,40 @@ export interface InstarConfig {
    */
   topicFrameworks?: Record<string, 'claude-code' | 'codex-cli' | 'gemini-cli' | 'pi-cli'>;
   /**
+   * Topic Profile — per-topic model / thinking-mode / framework pins
+   * (docs/specs/TOPIC-PROFILE-SPEC.md §12.5). The conversational surface
+   * ("use codex here", "pin this topic to Fable") writes durable per-topic
+   * profiles to `state/topic-profiles.json`; resolution is read-side and
+   * always on (the flag gates WRITES, never reads).
+   */
+  topicProfiles?: {
+    /**
+     * Master switch. Deliberately OPTIONAL (dev-gate convention, §12.5): when
+     * omitted, the runtime resolves it via resolveDevAgentGate — LIVE on a
+     * development agent, DARK on the fleet. Set explicitly to force either
+     * way (an operator override). Registered in DEV_GATED_FEATURES.
+     * migrateConfig NEVER writes a literal value here (round-13 lessons).
+     */
+    enabled?: boolean;
+    /** §14 shadow-field dry-run — log intended respawns, perform none (default true). */
+    dryRun?: boolean;
+    /** Same-framework trailing-edge respawn debounce window, ms (§8; default 7000). */
+    respawnDebounceMs?: number;
+    /** Heavier framework-switch debounce window, ms (§8; default 45000). */
+    frameworkSwitchDebounceMs?: number;
+    /** Global profile-respawn stagger cap K (§8; default 2). */
+    maxConcurrentProfileRespawns?: number;
+    /** §10.4 spawn-failure circuit-breaker threshold N (default 3). */
+    spawnFailureBreakerThreshold?: number;
+    /** §8 'switch now' confirmation validity window, ms (default 300000). */
+    switchNowConfirmTtlMs?: number;
+    /**
+     * Optional per-topic config-default profiles (§5.2); keys use the §10.5
+     * conversation-key scheme (numeric topic id, or `slack:<channel>[:<thread>]`).
+     */
+    defaults?: Record<string, { model?: string; thinkingMode?: string; effort?: string }>;
+  };
+  /**
    * Topic-intent auto-capture loop config (rung 0 of continuous-working-awareness).
    * `capture.enabled` (default true) is the kill-switch for the per-turn extraction
    * loop. See docs/specs/topic-intent-capture-loop.md.
@@ -2627,6 +2959,48 @@ export interface InstarConfig {
       loginCommands?: Record<string, string>;
       /** Auto-reissue sweep cadence in ms (default 300000 = 5 min). */
       reissueSweepMs?: number;
+    };
+    /**
+     * DARK + dry-run by default (DARK_GATE_EXCLUSIONS, category 'destructive' —
+     * it WRITES OAuth credentials between config homes). Live credential
+     * re-pointing: rebalance which account's credential sits in a config home a
+     * session already reads — restartless, picked up on the next API call (no
+     * session restart). Spec: docs/specs/live-credential-repointing-rebalancer.md.
+     * Increment A ships the swap-primitive + ledger + identity-oracle + manual
+     * levers; the autonomous drain balancer is Increment B. Going live requires a
+     * deliberate `enabled:true` AND `dryRun:false` flip (the two-flag gate).
+     */
+    credentialRepointing?: {
+      /** Master switch. Default false (dark, for EVERYONE incl. dev). */
+      enabled?: boolean;
+      /** When true, the balancer/levers run the full decision loop and AUDIT what
+       *  they WOULD do, but perform zero keychain/config writes. Default true. */
+      dryRun?: boolean;
+      /** When false, the manual levers (POST /credentials/swap|set-default|
+       *  restore-enrollment) refuse with a named reason. Default true (the levers
+       *  are still gated by `enabled`/`dryRun` above). */
+      manualLeversEnabled?: boolean;
+      /** §0.g force budget: max FORCED (`force:true`) manual swaps per rolling
+       *  window. The `force:true` bypass of the per-pair cooldown carries its OWN
+       *  bounded budget so it is not the one uncapped bypass left in the spec.
+       *  Default 10 (generous under single-operator autonomy). */
+      maxForcedManualSwapsPerWindow?: number;
+      /** §0.g force-budget rolling window length ms. Default 3600000 (1h). */
+      forcedManualSwapWindowMs?: number;
+      /** Balancer knobs (Increment B); all clamped at read-time. Present here so
+       *  the config shape is stable from Increment A. */
+      balancer?: {
+        /** Pass cadence ms; clamp [60000, 3600000]. Default 300000 (5 min). */
+        passIntervalMs?: number;
+        /** High-water utilization % for wall-avoidance; clamp [50,99]. Default 85. */
+        highWaterPct?: number;
+        /** Critical mark % for the wall-override; clamp [85,99]. Default 95. */
+        criticalPct?: number;
+        /** Max forced (wall-override) swaps per pass; clamp [1, N-slots]. Default 1. */
+        maxForcedSwapsPerPass?: number;
+        /** Min score delta to justify a non-forced move; clamp [0,1000]. Default 10. */
+        minScoreDelta?: number;
+      };
     };
   };
   /** Secret handling config */
@@ -3862,6 +4236,39 @@ export interface MonitoringConfig {
   reapNotify?: {
     enabled?: boolean;
     coalesceWindowMs?: number;
+    /** v2 per-topic grouping (reap-notify spec R1.1). false = legacy
+     *  single-buffer behavior — the grouping rollback lever. */
+    perTopic?: boolean;
+    /** Max notices released IMMEDIATE in one flush (R1.5). */
+    maxImmediatePerFlush?: number;
+    /** Durable delivery via store + ReapNoticeDrain (R1.3). false reverts
+     *  delivery to the legacy direct send — the durability rollback lever
+     *  (grouping unaffected; R1's durability claim lapses, stated).
+     *  CODE-defaulted true; deliberately NOT in ConfigDefaults. */
+    drainEnabled?: boolean;
+  };
+  /**
+   * Mid-work resume queue (reap-notify spec Part B). Classified in
+   * DARK_GATE_EXCLUSIONS (cost-bearing: the drainer spawns sessions / makes
+   * LLM calls). ALL keys are CODE-defaulted — deliberately NOT registered in
+   * ConfigDefaults, so the later fleet flip of the shipped `dryRun` default
+   * actually takes effect. Shipped posture: enabled + dryRun (observe-only)
+   * fleet-wide; the dev agent flips dryRun locally for the soak.
+   */
+  resumeQueue?: {
+    enabled?: boolean;
+    dryRun?: boolean;
+    drainIntervalSec?: number;
+    requiredCalmTicks?: number;
+    maxAttempts?: number;
+    maxResurrections?: number;
+    entryTtlHours?: number;
+    maxQueueSize?: number;
+    breakerThreshold?: number;
+    breakerCooldownMin?: number;
+    includeOperatorKills?: boolean;
+    /** The observe-only Tier 1 LLM check's own experiment lever. */
+    tier1Check?: boolean;
   };
   /**
    * AgentWorktreeReaper (Responsible Resource Usage — OS resource hygiene).
@@ -3874,6 +4281,60 @@ export interface MonitoringConfig {
     dryRun?: boolean;
     reapIntervalMs?: number;
     maxReapsPerPass?: number;
+  };
+  /**
+   * OrphanedWorkSentinel — the silent-uncommitted-death backstop (2026-06-12,
+   * topic 22367). Detects agent worktrees with uncommitted work whose owning
+   * session is DEAD and that have SETTLED, records them durably, and raises ONE
+   * deduped attention item; needs nothing registered (it reads the stranded work
+   * off disk — the case the PromiseBeacon escalation ladder can't see). Signal-
+   * only; the optional `preserveWork` writes a non-destructive preservation patch.
+   * `enabled` is OMITTED from the default so the developmentAgent dark-feature
+   * gate decides (LIVE on a dev agent, DARK on the fleet). GET /orphaned-work.
+   */
+  orphanedWorkSentinel?: {
+    enabled?: boolean;
+    scanIntervalMs?: number;
+    settleMs?: number;
+    preserveWork?: boolean;
+    maxFlagsPerPass?: number;
+  };
+  /**
+   * Build-Session Yield Safety (ACT-839; spec BUILD-SESSION-YIELD-SAFETY-SPEC).
+   * A reaped session whose worktree holds uncommitted work becomes resume-
+   * eligible (a new `uncommitted-worktree-work` WorkEvidence value, collected
+   * pre-kill via the shared worktreeDirtyCheck), and the revived session gets a
+   * durably-tracked obligation to commit/preserve it. `enabled` is OMITTED so
+   * the developmentAgent dark-feature gate decides (LIVE on dev, DARK on fleet,
+   * per the Maturation Path standard). Registered in DEV_GATED_FEATURES.
+   * (Config-path note: top-level `monitoring.yieldSafety` rather than the spec's
+   * `monitoring.resumeQueue.yieldSafety` — `resumeQueue.*` keys are deliberately
+   * code-defaulted and absent from ConfigDefaults, so a sibling top-level block
+   * matching orphanedWorkSentinel is the clean home.)
+   */
+  yieldSafety?: {
+    enabled?: boolean;
+    /** Hard timeout for the pre-kill dirty-check git subprocess (ms). */
+    dirtyCheckTimeoutMs?: number;
+    /** Per-resolved-worktree-path dirty-check cache TTL (ms). */
+    dirtyCheckCacheTtlMs?: number;
+    /** Revives before the give-up path preserves instead of reviving again. */
+    resurrectionCap?: number;
+    /** Build-residue path prefixes/globs that don't count as "real work". */
+    residueDenylist?: string[];
+    /** Per-file / total caps for the preservation patch (bytes). */
+    preservationMaxFileBytes?: number;
+    preservationMaxTotalBytes?: number;
+  };
+  /**
+   * Operator Authorization Request (agent proposes → operator approves one-tap).
+   * `enabled` is dev-gated (resolveDevAgentGate) — enabled-on-dev / dark-on-fleet —
+   * so it is OMITTED from ConfigDefaults. Spec: OPERATOR-AUTHORIZATION-REQUEST-SPEC.md.
+   */
+  authorizationRequests?: {
+    enabled?: boolean;
+    /** Max pending requests per proposing agent before 429 (FD-13). */
+    pendingCapPerAgent?: number;
   };
   /**
    * McpProcessReaper (RESPONSIBLE-RESOURCE-USAGE — MCP-leak fix, Option B).
@@ -4135,6 +4596,33 @@ export interface MonitoringConfig {
     canonicalRemote?: string;
     /** Override the instar repo path to analyze (default: the agent home). */
     repoPath?: string;
+  };
+  /**
+   * green-pr-automerge-enforcement R7: the background watcher that merges a
+   * green, mergeable, non-held PR this agent authored (Phase 7 becomes
+   * machinery). DARK_GATE_EXCLUSIONS: deliberate-fleet-default — off fleet-wide,
+   * flipped on per dev agent with expectedGhLogin. Repo-gated.
+   */
+  greenPrAutoMerge?: {
+    enabled: boolean;
+    dryRun?: boolean;
+    tickIntervalMs?: number;
+    maxAttempts?: number;
+    maxRearmEpisodes?: number;
+    breakerThreshold?: number;
+    deadlineKillBreakerThreshold?: number;
+    busySkipBreakerThreshold?: number;
+    breakerCooldownMin?: number;
+    mergeTimeoutMs?: number;
+    mergeKillGraceMs?: number;
+    /** The agent's verified gh login (R4 identity contract). Unset → inert. */
+    expectedGhLogin?: string;
+    identityRecheckTicks?: number;
+    holdReleaseTicks?: number;
+    staleHoldDays?: number;
+    floorDriftCheckTicks?: number;
+    floorDriftLookbackPrs?: number;
+    floorDriftLookbackCommits?: number;
   };
   /**
    * Master gate for Telegram delivery of silently-stopped-sentinel escalations

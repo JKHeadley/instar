@@ -29,6 +29,13 @@ const BLOCKED_FILES = new Set(['config.json', 'secrets', 'machine']);
 // skipped during snapshot creation regardless of config source.
 const BLOCKED_PATH_PREFIXES = new Set([
   '.instar/secrets/',
+  // Durable Inbound Message Queue (spec §5.5): the custody store + sidecars +
+  // quarantined copies are in-flight per-machine state — restoring them to a
+  // new machine would claim custody the new machine never took. Unconditional
+  // (NOT the remediation-gated F-7 list). stateDir-relative prefixes, matching
+  // how includeFiles entries resolve (sourcePath = path.join(stateDir, entry)).
+  'state/pending-inbound.',
+  'state/pending-inbound-quarantine/',
 ]);
 
 /**
@@ -70,6 +77,10 @@ const DEFAULT_CONFIG: BackupConfig = {
     // time — see resolveIncludedFiles()). Glob matches the active ledger and
     // any rotated .jsonl.<epoch> archives.
     'shared-state.jsonl*',
+    // Threadline Robustness Phase 2 (FD-9): the canonical-history HEAD ANCHOR.
+    // The bulky per-thread `threadline/threads/*.log.jsonl` are EXCLUDED by design
+    // (large, reconstructable via backfill; the symmetry surface flags any gap).
+    'threadline/conversations.json',
   ],
 };
 

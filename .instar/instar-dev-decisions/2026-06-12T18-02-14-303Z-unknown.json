@@ -1,0 +1,15 @@
+{
+  "ts": "2026-06-12T18:02:14.303Z",
+  "slug": "unknown",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/monitoring/SessionReaper.ts matches session reaper"
+  ],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 100,
+  "causalAutopsy": null,
+  "verdict": "pass"
+}

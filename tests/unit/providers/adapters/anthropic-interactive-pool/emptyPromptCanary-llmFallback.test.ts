@@ -1,3 +1,4 @@
+// safe-git-allow: test-tmpdir-cleanup — afterEach removes the per-test mkdtempSync signature-store tmpdir (same pattern as emptyPromptSignaturePersistence.test.ts); SafeFsExecutor migration tracked separately.
 /**
  * Tests for the empty-prompt canary's LLM fallback path.
  *
@@ -9,11 +10,32 @@
  * function directly with crafted before/after buffers.
  */
 
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { runEmptyPromptCanary } from '../../../../../src/providers/adapters/anthropic-interactive-pool/canary/emptyPromptCanary.js';
+import { resetSignatureForTests } from '../../../../../src/providers/adapters/anthropic-interactive-pool/canary/emptyPromptSignature.js';
 import { configFromEnv } from '../../../../../src/providers/adapters/anthropic-interactive-pool/config.js';
 import type { CanaryLlmFallback } from '../../../../../src/providers/adapters/anthropic-interactive-pool/canary/emptyPromptCanary.js';
 import type { InteractivePool, PoolSession } from '../../../../../src/providers/adapters/anthropic-interactive-pool/pool.js';
+
+// Signature-store isolation (same pattern as emptyPromptSignaturePersistence.test.ts).
+// Without this, a self-heal in one test PERSISTS the derived signature into the real
+// `~/.instar/providers/...`, and every later run (this file or any suite) structurally
+// matches on the first try — flipping the expected 'self-healed' outcome to 'pass'.
+// That exact pollution made this file order/state-dependent on dev machines.
+let sigTmpDir: string;
+beforeEach(() => {
+  sigTmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-canary-llm-'));
+  process.env['INSTAR_PROVIDER_STATE_DIR'] = sigTmpDir;
+  resetSignatureForTests();
+});
+afterEach(() => {
+  resetSignatureForTests();
+  delete process.env['INSTAR_PROVIDER_STATE_DIR'];
+  fs.rmSync(sigTmpDir, { recursive: true, force: true });
+});
 
 function makeFakePool(overrides: { beforeBuf?: string; afterBuf?: string }): InteractivePool {
   let firstCapture = true;

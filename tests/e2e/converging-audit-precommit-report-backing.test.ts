@@ -35,6 +35,7 @@ const COPY_FILES = [
   'scripts/eli16-overview-check.mjs',
   'scripts/lib/classify-tier.mjs',
   'scripts/lib/convergence-recognition.mjs',
+  'scripts/lib/operator-surface.mjs',
   'skills/instar-dev/scripts/verify-proposal-derived-runbook.mjs',
   'docs/STANDARDS-REGISTRY.md',
 ];

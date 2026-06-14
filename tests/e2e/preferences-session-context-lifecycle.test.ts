@@ -140,6 +140,84 @@ describe('Preferences session-start injection E2E lifecycle', () => {
     });
   });
 
+  // ── Phase 1c: WS2.1 foundation union path is ALIVE on the real AgentServer ──
+  // multi-machine-replicated-store-foundation §7.2 + §15.1: when
+  // multiMachine.stateSync.preferences.enabled AND the union reader is wired exactly
+  // as server.ts wires it, /preferences/session-context reads the no-clobber UNION
+  // and an OPEN conflict injects BOTH variants (scope:mesh) — over the production
+  // AgentServer boot path. This is the Phase-1 "feature is alive" assertion for WS2.1.
+  describe('Phase 1c: WS2.1 union path alive (production AgentServer boot path)', () => {
+    let tmpDir: string;
+    let stateDir: string;
+    let server: AgentServer;
+    let app: ReturnType<AgentServer['getApp']>;
+
+    beforeAll(async () => {
+      tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'prefs-e2e-ws21-'));
+      stateDir = path.join(tmpDir, '.instar');
+      fs.mkdirSync(path.join(stateDir, 'state', 'sessions'), { recursive: true });
+      fs.writeFileSync(path.join(stateDir, 'config.json'), JSON.stringify({ port: 0, projectName: 'prefs-e2e-ws21' }));
+
+      const { ReplicatedKindRegistry } = await import('../../src/core/ReplicatedRecordEnvelope.js');
+      const { ConflictStore } = await import('../../src/core/ConflictStore.js');
+      const { DroppedOriginRegistry } = await import('../../src/core/RollbackUnmerge.js');
+      const { ReplicatedStoreReader } = await import('../../src/core/ReplicatedStoreReader.js');
+      const { PREF_KIND_REGISTRATION, prefTierOf, prefEntryToOriginRecord } = await import('../../src/core/PreferencesReplicatedStore.js');
+
+      const registry = new ReplicatedKindRegistry();
+      registry.register(PREF_KIND_REGISTRATION);
+      const dropped = new DroppedOriginRegistry({ stateDir });
+      const conflictStore = new ConflictStore({ stateDir, now: () => new Date() });
+      // Two concurrent origins on the same dedupeKey ⇒ HIGH-impact open conflict.
+      const records = [
+        prefEntryToOriginRecord({ learning: 'plainer please', provenance: 'correction-loop', dedupeKey: 'k', recordedAt: '2026-06-13T00:00:00.000Z', confidence: 0.9, dedupeCount: 2 }, 'mA'),
+        prefEntryToOriginRecord({ learning: 'be terse', provenance: 'correction-loop', dedupeKey: 'k', recordedAt: '2026-06-13T01:00:00.000Z', confidence: 0.7, dedupeCount: 1 }, 'mB'),
+      ];
+      const preferencesUnionReader = new ReplicatedStoreReader({
+        registry,
+        stores: { preferences: { enabled: true } },
+        tierOf: prefTierOf,
+        loadOriginRecords: (store, key) => (store === 'preferences' && key === 'k' ? records : []),
+        listRecordKeys: (store) => (store === 'preferences' ? ['k'] : []),
+        droppedOrigins: dropped,
+        conflictStore,
+      });
+
+      const config: InstarConfig = {
+        projectName: 'prefs-e2e-ws21',
+        agentName: 'E2E Agent',
+        projectDir: tmpDir,
+        stateDir,
+        port: 0,
+        authToken: AUTH_TOKEN,
+        monitoring: { correctionLearning: { enabled: true } },
+        multiMachine: { stateSync: { preferences: { enabled: true } } },
+      } as InstarConfig;
+
+      server = new AgentServer({
+        config,
+        sessionManager: createMockSessionManager() as any,
+        state: new StateManager(stateDir),
+        preferencesUnionReader,
+      });
+      app = server.getApp();
+    });
+
+    afterAll(async () => {
+      try { await (server as unknown as { stop?: () => Promise<void> }).stop?.(); } catch { /* ignore */ }
+      SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'preferences-session-context-lifecycle:phase1c' });
+    });
+
+    it('200 + scope:mesh, and an OPEN conflict injects BOTH variants (the §15.1 advisory reconciliation)', async () => {
+      const res = await request(app).get('/preferences/session-context').set(auth());
+      expect(res.status).toBe(200);
+      expect(res.body.scope).toBe('mesh');
+      expect(res.body.count).toBe(2);
+      expect(res.body.block).toContain('plainer please');
+      expect(res.body.block).toContain('be terse');
+    });
+  });
+
   // ── Phase 2: the generated hook's preference-injection logic ──
   describe('Phase 2: session-start hook injects the <auto-learned-preference> block', () => {
     let tmpDir: string;

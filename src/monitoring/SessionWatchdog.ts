@@ -200,6 +200,8 @@ export class SessionWatchdog extends EventEmitter {
   private escalationState = new Map<string, EscalationState>();
   private interventionHistory: InterventionEvent[] = [];
   private enabled = true;
+  /** Liveness of the poll loop (GUARD-POSTURE-ENDPOINT-SPEC §2.2): 0 = never polled. */
+  private lastPollAt = 0;
   private running = false;
 
   private stuckThresholdMs: number;
@@ -308,6 +310,7 @@ export class SessionWatchdog extends EventEmitter {
   // --- Core polling ---
 
   private async poll(): Promise<void> {
+    this.lastPollAt = Date.now();
     if (!this.enabled || this.running) return;
     this.running = true;
 
@@ -1145,5 +1148,11 @@ export class SessionWatchdog extends EventEmitter {
     } catch {
       // @silent-fallback-ok — rotation failure is non-critical
     }
+  }
+
+  /** Sync in-memory runtime read for the GuardRegistry (GET /guards).
+   *  Cheap property read ONLY — getStatus() lists sessions. */
+  guardStatus(): { enabled: boolean; lastTickAt: number } {
+    return { enabled: this.enabled, lastTickAt: this.lastPollAt };
   }
 }

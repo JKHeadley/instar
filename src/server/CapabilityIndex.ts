@@ -27,6 +27,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { SafeGitExecutor } from '../core/SafeGitExecutor.js';
+import { resolveDevAgentGate } from '../core/devAgentGate.js';
 import { activeAutonomousJobs, DEFAULT_MAX_CONCURRENT_AUTONOMOUS } from '../core/AutonomousSessions.js';
 import type { SecretDrop } from './SecretDrop.js';
 import type { RouteContext } from './routes.js';
@@ -91,6 +92,33 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     }),
   },
   {
+    key: 'credentialRepointing',
+    prefixes: ['/credentials'],
+    description: 'Live credential re-pointing (WS5.2) — manual levers that MOVE a pool account\'s OAuth credential between config-home "slots" without restarting the sessions reading them (the staged §2.3 exchange), plus the ledger census + the single secret-scrub audit chokepoint. POST /credentials/swap exchanges two slots\' credentials live; POST /credentials/set-default flips which account ~/.claude serves (CMT-1337 zero-touch default flip); POST /credentials/restore-enrollment tears down to the enrollment layout, parking any identity-incoherent blob one-directionally (never exchanged into a healthy slot). GET /credentials/locations is the ledger read (slot ↔ account, since, lastVerifiedAt, quarantine, journal tail, mode); GET /credentials/rebalancer is the autonomous-balancer surface (503 in Increment A). All levers are DETECTIVE controls — operator notification + audit + param-validate + per-pair cooldown + a §0.g force budget on force:true. No token material ever exits any /credentials/* surface (the CredentialAuditEmit scrub chokepoint). Ships DARK behind subscriptionPool.credentialRepointing.enabled — every lever 503s/no-ops while disabled (byte-for-byte today\'s behavior).',
+    build: ({ ctx }) => ({
+      configured: !!ctx.credentialRepointing,
+      enabled: resolveDevAgentGate(ctx.config.subscriptionPool?.credentialRepointing?.enabled, ctx.config),
+      endpoints: [
+        'GET /credentials/locations',
+        'GET /credentials/rebalancer',
+        'POST /credentials/swap',
+        'POST /credentials/set-default',
+        'POST /credentials/restore-enrollment',
+      ],
+    }),
+  },
+  {
+    key: 'guardPosture',
+    prefixes: ['/guards'],
+    description: 'Guard Posture (GUARD-POSTURE-ENDPOINT-SPEC) — read every machine\'s safety-guard flags with HONEST verification-graded states: on-confirmed (live runtime confirms) / on-unverified (config-on only, grey not green) / on-stale (dead tick loop) / on-dry-run (watching but toothless) / off classified dark-default vs diverged-from-default (the load-shed signature — the only off that alerts) / diverged-pending-restart (disk edit not yet live) / errored / missing (expected runtime never registered) / off-runtime-divergent (runtime contradicts an on-config — the in-memory load-shed class). ?scope=pool accounts for EVERY registered machine by name (classified failure rows, never silent omission); the Machines tab shows last-known posture with age even for a dark peer (heartbeat piggyback + durable store). Read-only, always-on (deliberately no enabled gate — an off-switch on the guard-visibility surface would itself be an invisible disabled guard). When asked "are my guards on?" / "why didn\'t the watchdog fire on machine X?" / after any incident load-shed → read this, never guess. To re-enable a guard via PATCH /config, send the guard\'s FULL config block (one-level-deep merge erases sibling tuning).',
+    build: ({ ctx }) => ({
+      configured: true,
+      runtimeEnriched: !!ctx.guardRegistry,
+      pool: !!ctx.listPoolMachines,
+      endpoints: ['GET /guards', 'GET /guards?scope=pool'],
+    }),
+  },
+  {
     key: 'multiMachinePool',
     prefixes: ['/pool'],
     description: 'Multi-Machine Session Pool status — which machine holds the router + every machine\'s nickname, hardware, online status, load, and clock-skew. Backs the Machines dashboard tab and "where is this running?" / "move this to <nickname>". Single-machine until >1 paired.',
@@ -110,6 +138,22 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
         'POST /release-readiness/tick',
         'POST /release-readiness/rollback',
         'POST /release-readiness/enable',
+      ],
+    }),
+  },
+  {
+    key: 'greenPrAutoMerge',
+    prefixes: ['/green-pr-automerge'],
+    description: 'Green-PR auto-merge watcher (green-pr-automerge-enforcement) — merges a green, mergeable, non-held PR this agent authored, surviving session death (Phase 7 becomes machinery). Off fleet-wide (deliberate-fleet-default), armed per dev agent with expectedGhLogin, repo-gated. Pool-visible rollback kill-switch (Bearer); PIN-gated re-arm + pool-disarm; conversational-hold assist. Null on installs with no analyzable instar repo + safe-merge, or when disabled.',
+    build: ({ ctx }) => ({
+      configured: !!ctx.greenPrAutoMerger,
+      endpoints: [
+        'GET /green-pr-automerge',
+        'POST /green-pr-automerge/tick',
+        'POST /green-pr-automerge/rollback',
+        'POST /green-pr-automerge/enable',
+        'POST /green-pr-automerge/hold',
+        'POST /green-pr-automerge/pool-disarm',
       ],
     }),
   },
@@ -682,7 +726,24 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
         'GET /mandate/audit?limit=N — the chained decision audit (chain.ok:false = tampering — surface it)',
         'POST /mandate/issue — PIN-GATED (operator only; agent Bearer token is refused)',
         'POST /mandate/:id/revoke — PIN-GATED (the operator kill switch)',
-        'POST /mandate/:id/grants — PIN-GATED: sign user→agent floor-action grant(s) into a mandate { grants:[{floorAction,grantedTo,authorizedBy,expiresAt}] } (expiresAt MUST be <= mandate.expiresAt); re-signs so authProof covers them',
+        'POST /mandate/:id/grants — PIN-GATED: sign user→agent floor-action grant(s) into a mandate { grants:[{floorAction,grantedTo,authorizedBy,expiresAt}] } (expiresAt MUST be <= mandate.expiresAt); re-signs so authProof covers them. The dashboard Mandates tab carries the phone-friendly form for this (pick person + action + duration + PIN) — point operators THERE, never at a terminal',
+        'GET /permissions/users — registered users carrying a Slack identity ({ users: [{slackUserId,name,orgRole}] }); feeds the grant form person picker',
+      ],
+    }),
+  },
+  {
+    key: 'authorizationRequest',
+    prefixes: ['/authorization-requests'],
+    description: 'Operator Authorization Request — agent proposes → operator approves one-tap. Instead of making the operator hand-build a mandate, the agent PRE-FILLS a structured grant request and the operator approves it with their PIN on a dead-simple "Approvals waiting for you" card. requester ≠ authorizer is preserved (a pending request confers ZERO authority; only the PIN issues the grant, via the existing signed MandateStore path; the agent can never approve its own request). The operator-facing card is SERVER-authored from the structured proposal + the registered user\'s real name — never agent free-text. Ships dev-enabled / fleet-dark.',
+    build: ({ ctx }) => ({
+      enabled: !!(ctx.authorizationRequests && ctx.authorizationRequests.enabled),
+      endpoints: [
+        'POST /authorization-requests — propose a grant (Bearer; confers no authority) { createdByAgent, proposal:{floorAction,grantedToSlackUserId,durationMs}, reason? }. Allowed floorActions: prod-deploy, money-movement, credential-access, destructive-data, external-send (grant-authority excluded). durationMs ∈ [60000, 86400000]',
+        'GET /authorization-requests?status=pending — list (each row carries the server-rendered headline + createdOnMachine)',
+        'GET /authorization-requests/:id — one request with its server-rendered display',
+        'POST /authorization-requests/:id/approve — PIN-GATED (operator only): issues the grant via the signed MandateStore path; point operators at the dashboard Mandates tab "Approvals waiting for you" card, never a terminal',
+        'POST /authorization-requests/:id/deny — PIN-GATED (operator only); denyReason required',
+        'POST /authorization-requests/:id/withdraw — the proposing agent withdraws its own pending request',
       ],
     }),
   },
@@ -762,7 +823,9 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     prefixes: ['/failures'],
     description: 'Failure-Learning Loop — instar dev-process failure forensics (which spec/tool produced a failure; what process gaps recur)',
     build: ({ ctx }) => ({
-      enabled: ctx.config.monitoring?.failureLearning?.enabled === true,
+      // DEV-GATED (CMT-1438): resolve through the funnel so the capability report
+      // matches the construction gate — LIVE on a dev agent, DARK on the fleet.
+      enabled: resolveDevAgentGate(ctx.config.monitoring?.failureLearning?.enabled, ctx.config),
       endpoints: [
         'GET /failures — list failure records (filter by source/category/initiative/attribution)',
         'GET /failures/:id — one record',
@@ -1091,6 +1154,7 @@ export const INTERNAL_PREFIXES: ReadonlyArray<{ prefix: string; reason: string }
   { prefix: 'scope-coherence', reason: 'operator-only scope-coherence observability' },
   { prefix: 'human-as-detector', reason: 'operator-only observability — the heat map of human-caught guardian failures; the agent-facing payoff is the silent capture + future evolution use, not a discoverable endpoint' },
   { prefix: 'topic-intent', reason: 'operator-only observability — per-topic captured facts/decisions + the capture-loop funnel; the agent-facing payoff is the silent session-start briefing + ArcCheck, not a discoverable endpoint' },
+  { prefix: 'topic-profile', reason: 'operator/dashboard read-write surface for the per-topic profile (model/thinking/framework pins, TOPIC-PROFILE-SPEC §12). The agent-facing surface is CONVERSATIONAL — "use codex here" / "pin this topic to Fable" via the propose-confirm ingress, documented in the CLAUDE.md template (which explicitly says NEVER instruct the user to type /topic) — not this HTTP route, which backs the dashboard + power-user /topic command. Same class as topic-intent: not a discoverable agent endpoint.' },
   { prefix: 'spec', reason: 'build-time tool — the standards-conformance gate checks a draft spec against the constitution; used during spec authoring, not a discoverable runtime capability' },
   { prefix: 'usher', reason: 'operator-only observability — the mid-task re-surface signal pull surface + its precision metrics; signal-only, the agent-facing payoff is the future gated injection (rung 5), not a discoverable endpoint' },
   { prefix: 'rate-limit', reason: 'operator-only rate-limit-sentinel observability — agent-facing surface is the sentinel’s own notices' },
@@ -1107,9 +1171,10 @@ export const INTERNAL_PREFIXES: ReadonlyArray<{ prefix: string; reason: string }
   { prefix: 'self-knowledge', reason: 'surfaced inside `capability-map`' },
   { prefix: 'capability-map', reason: 'separate self-knowledge surface with its own discovery path' },
   { prefix: 'build', reason: 'operator-only build endpoint' },
-  { prefix: 'sessions', reason: 'operator/dashboard-only session listing (no agent-facing API)' },
+  { prefix: 'sessions', reason: 'operator/dashboard session surface (listing/streaming/refresh stay dashboard-facing). ONE agent-facing verb exists — POST /sessions/:name/remote-close, the relayed operator close (REMOTE-SESSION-CLOSE-SPEC §2.4) — surfaced via the CLAUDE.md template (Multi-Machine Session Pool section) rather than graduating the prefix: a deliberate pass, no new top-level prefix.' },
   { prefix: 'worktrees', reason: 'AgentWorktreeReaper read-only report (reclaimable stale worktrees) — operational observability the agent READS, like /sessions/reap-log; not a user-invokable capability' },
   { prefix: 'processes', reason: 'McpProcessReaper read-only report (reclaimable leaked MCP-server procs + per-proc keep/reap verdict) — operational observability the agent READS, like /worktrees/agent-reaper; not a user-invokable capability' },
+  { prefix: 'orphaned-work', reason: 'OrphanedWorkSentinel read-only snapshot (agent worktrees with uncommitted work whose owning session died — the silent-uncommitted-death backstop) — operational observability the agent READS, like /worktrees/agent-reaper; dev-gated dark, 503 on the fleet; not a user-invokable capability' },
   { prefix: 'sleep', reason: 'SleepController read-only verdict (agent hard-sleep decision + which guard holds it awake) — operational observability the agent READS; not a user-invokable capability' },
   { prefix: 'gemini-loop', reason: 'GeminiLoopRunner (need-gem-002) multi-turn loop-driver — the dark, developmentAgent-gated mechanism the apprenticeship machinery uses to drive a Gemini mentee across turns. 503 on the fleet (dark); not a general user-invokable capability yet. Reclassify under apprenticeshipProgram if/when it graduates live.' },
   { prefix: 'ci', reason: 'operator-only CI status surface' },

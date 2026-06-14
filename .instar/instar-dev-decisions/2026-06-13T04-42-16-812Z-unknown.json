@@ -1,0 +1,13 @@
+{
+  "ts": "2026-06-13T04:42:16.812Z",
+  "slug": "unknown",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 12,
+  "loc": 250,
+  "causalAutopsy": null,
+  "verdict": "pass"
+}

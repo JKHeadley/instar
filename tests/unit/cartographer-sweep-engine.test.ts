@@ -67,6 +67,10 @@ function defaultConfig(over: Partial<SweepEngineConfig> = {}): SweepEngineConfig
     maxDeferredPasses: 5,
     revalidateSamplePerPass: 0,
     minNodesUnderPressure: 3,
+    // fix instar#1069: unit tests run the SAME bounded detect synchronously (a
+    // worker_threads worker can't load .ts source); the worker path is covered by
+    // the dist-backed integration test.
+    detectInWorker: false,
     ...over,
   };
 }

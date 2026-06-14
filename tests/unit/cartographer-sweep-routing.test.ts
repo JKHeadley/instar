@@ -12,7 +12,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { CartographerTree } from '../../src/core/CartographerTree.js';
-import { CartographerSweepEngine, type SweepEngineConfig, type SweepLlmQueueLike } from '../../src/core/CartographerSweepEngine.js';
+import { CartographerSweepEngine, resolveSweepFrameworkRouting, type SweepEngineConfig, type SweepLlmQueueLike } from '../../src/core/CartographerSweepEngine.js';
 import { IntelligenceRouter, type ComponentFrameworksConfig } from '../../src/core/IntelligenceRouter.js';
 import { categoryForComponent } from '../../src/core/componentCategories.js';
 import type { IntelligenceProvider } from '../../src/core/types.js';
@@ -41,13 +41,34 @@ function cfg(over: Partial<SweepEngineConfig> = {}): SweepEngineConfig {
   return {
     maxNodesPerPass: 25, maxCentsPerPass: 25, estCentsPerAuthor: 1, maxLeafBytes: 24576,
     minSummaryChars: 10, maxSummaryChars: 600, allowClaudeFallback: false,
-    nodeFailQuarantineThreshold: 3, maxDeferredPasses: 5, revalidateSamplePerPass: 0, minNodesUnderPressure: 3, ...over,
+    nodeFailQuarantineThreshold: 3, maxDeferredPasses: 5, revalidateSamplePerPass: 0, minNodesUnderPressure: 3,
+    detectInWorker: false, // fix instar#1069: sync detect in unit tests (no .ts worker)
+    ...over,
   };
 }
 
 describe('componentCategories wiring', () => {
   it('CartographerSweep is registered under category "job" (off-Claude routable)', () => {
     expect(categoryForComponent('CartographerSweep')).toBe('job');
+  });
+});
+
+describe('Slice 3 — resolveSweepFrameworkRouting (freshnessSweep.framework honored, explicit-set-only)', () => {
+  it('freshnessSweep.framework becomes the effective override when nothing explicit is set', () => {
+    const r = resolveSweepFrameworkRouting({}, 'codex-cli');
+    expect(r).toEqual({ framework: 'codex-cli', source: 'freshnessSweep.framework', injectOverride: true });
+  });
+  it('an explicit overrides.CartographerSweep wins and is NOT re-injected', () => {
+    const r = resolveSweepFrameworkRouting({ overrides: { CartographerSweep: 'pi-cli' } }, 'codex-cli');
+    expect(r).toEqual({ framework: 'pi-cli', source: 'overrides.CartographerSweep', injectOverride: false });
+  });
+  it('an explicitly-configured categories.job is never silently overridden (migration safety)', () => {
+    const r = resolveSweepFrameworkRouting({ categories: { job: 'gemini-cli' } }, 'codex-cli');
+    expect(r).toEqual({ framework: 'gemini-cli', source: 'categories.job', injectOverride: false });
+  });
+  it('nothing configured + no sweep framework → default (no injection)', () => {
+    const r = resolveSweepFrameworkRouting(undefined, undefined);
+    expect(r).toEqual({ framework: undefined, source: 'default', injectOverride: false });
   });
 });
 

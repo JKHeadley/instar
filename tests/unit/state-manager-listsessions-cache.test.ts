@@ -67,9 +67,11 @@ describe('StateManager.listSessions cache', () => {
   });
 
   it('applies the status filter to the cached list', () => {
-    sm.saveSession(mkSession({ id: 'a', status: 'running' }));
-    sm.saveSession(mkSession({ id: 'b', status: 'completed' }));
-    sm.saveSession(mkSession({ id: 'c', status: 'running' }));
+    // Distinct tmux names: two RUNNING records sharing one name would now be
+    // collapsed by the ghost-record supersession invariant (saveSession).
+    sm.saveSession(mkSession({ id: 'a', status: 'running', tmuxSession: 'tmux-a' }));
+    sm.saveSession(mkSession({ id: 'b', status: 'completed', tmuxSession: 'tmux-b' }));
+    sm.saveSession(mkSession({ id: 'c', status: 'running', tmuxSession: 'tmux-c' }));
     expect(sm.listSessions({ status: 'running' }).map(s => s.id).sort()).toEqual(['a', 'c']);
     // second call (cache hit) returns the same filtered result
     expect(sm.listSessions({ status: 'completed' }).map(s => s.id)).toEqual(['b']);

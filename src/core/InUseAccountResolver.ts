@@ -25,6 +25,7 @@
 
 import { execFile } from 'node:child_process';
 
+import type { CredentialLocationGate } from './CredentialLocationGate.js';
 import type { SubscriptionAccount } from './SubscriptionPool.js';
 
 /** Probe the DEFAULT claude config's authenticated account email (or null). */
@@ -37,6 +38,15 @@ export interface InUseAccountResolverConfig {
   ttlMs?: number;
   /** Injected for tests. */
   now?: () => number;
+  /**
+   * Census #8 (the E4a liar). When present AND enabled, the default-tenant badge resolves from
+   * `ledger.tenantOf('~/.claude')` instead of re-probing `claude auth status` — `auth status`
+   * reads `.claude.json` `oauthAccount`, which is STALE during the keychain-first/config-second
+   * window after a swap, so re-probing would re-cache the WRONG tenant for the full TTL. The
+   * swap-commit cache-bust (`bustCache`) keeps the badge honest across a `~/.claude` swap.
+   * Absent (or flag-off / ledger-unknown) → byte-for-byte today's re-probe behavior.
+   */
+  locationGate?: CredentialLocationGate;
 }
 
 export interface InUseResult {
@@ -115,6 +125,7 @@ export class InUseAccountResolver {
   private readonly probe: AuthStatusProbe;
   private readonly ttlMs: number;
   private readonly now: () => number;
+  private readonly locationGate?: CredentialLocationGate;
   private cached: { email: string | null; at: number } | null = null;
   private inFlight: Promise<string | null> | null = null;
 
@@ -122,6 +133,17 @@ export class InUseAccountResolver {
     this.probe = config.probe ?? defaultAuthStatusProbe;
     this.ttlMs = config.ttlMs ?? 60_000;
     this.now = config.now ?? (() => Date.now());
+    this.locationGate = config.locationGate;
+  }
+
+  /**
+   * Census #8: invalidate the cached probe result so the next badge read re-resolves. The swap
+   * executor calls this immediately on a commit touching `~/.claude` (the keychain-first/
+   * config-second window is exactly when a re-probe would re-cache the wrong tenant). Cheap +
+   * idempotent — a no-op when nothing is cached.
+   */
+  bustCache(): void {
+    this.cached = null;
   }
 
   /** The active default-config email, cached for ttlMs. Coalesces concurrent probes. */
@@ -144,8 +166,30 @@ export class InUseAccountResolver {
     return this.inFlight;
   }
 
-  /** Resolve which pool account the agent is currently running on. */
+  /**
+   * Resolve which pool account the agent is currently running on.
+   *
+   * Census #8 (the E4a liar stays dead): when the location gate is enabled AND the ledger knows
+   * the `~/.claude` tenant, the badge is resolved DIRECTLY from `ledger.tenantOf('~/.claude')` —
+   * the `claude auth status` re-probe is NOT run at all. That probe reads `.claude.json`
+   * `oauthAccount`, which lags during the metadata-repair window after a swap, so trusting it
+   * would re-cache the wrong tenant for the full TTL. With the gate off / absent / ledger-unknown
+   * the resolver falls through to its original probe-and-match path (byte-for-byte today).
+   */
   async resolve(accounts: SubscriptionAccount[]): Promise<InUseResult> {
+    if (this.locationGate?.isEnabled()) {
+      const tenantAccountId = this.locationGate.tenantForSlot('~/.claude');
+      if (tenantAccountId) {
+        // Ledger is authoritative for the slot — report its tenant WITHOUT re-probing auth status.
+        const acct = accounts.find((a) => a.id === tenantAccountId);
+        return {
+          activeAccountId: tenantAccountId,
+          activeEmail: acct?.email ?? null,
+        };
+      }
+      // Gate enabled but the ledger has no `~/.claude` record (never-seeded / UNKNOWN) → fall
+      // through to today's re-probe behavior (back-compat — never break the badge).
+    }
     const activeEmail = await this.activeEmail();
     return {
       activeEmail,

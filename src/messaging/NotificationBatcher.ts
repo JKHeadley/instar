@@ -261,6 +261,42 @@ export class NotificationBatcher {
     return lines.join('\n').trimEnd();
   }
 
+  /**
+   * Epoch ms when the CURRENT quiet-hours window ends, or null when quiet
+   * hours are disabled / not currently active. The single quiet-hours
+   * definition shared with the reap-notice release-hold computation
+   * (reap-notify spec R1.5) — one clock, not two.
+   */
+  quietHoursEndAt(nowMs: number = Date.now()): number | null {
+    if (!this.config.quietHours?.enabled) return null;
+    const now = new Date(nowMs);
+    const currentMinutes = now.getHours() * 60 + now.getMinutes();
+    const [startH, startM] = this.config.quietHours.start.split(':').map(Number);
+    const [endH, endM] = this.config.quietHours.end.split(':').map(Number);
+    const startMinutes = startH * 60 + startM;
+    const endMinutes = endH * 60 + endM;
+    const inWindow =
+      startMinutes > endMinutes
+        ? currentMinutes >= startMinutes || currentMinutes < endMinutes
+        : currentMinutes >= startMinutes && currentMinutes < endMinutes;
+    if (!inWindow) return null;
+    const end = new Date(nowMs);
+    end.setHours(endH, endM, 0, 0);
+    if (end.getTime() <= nowMs) end.setDate(end.getDate() + 1);
+    return end.getTime();
+  }
+
+  /**
+   * Epoch ms of the next SUMMARY-window flush (≤ one interval out). Used as
+   * the SUMMARY-tier release hold for durable reap notices (R1.5).
+   */
+  nextSummaryReleaseAt(nowMs: number = Date.now()): number {
+    const intervalMs = this.config.summaryIntervalMinutes * 60_000;
+    const last = this.lastSummaryFlush?.getTime() ?? nowMs;
+    const next = last + intervalMs;
+    return next > nowMs ? next : nowMs + intervalMs;
+  }
+
   isQuietHours(): boolean {
     if (!this.config.quietHours?.enabled) return false;
 

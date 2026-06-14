@@ -62,6 +62,9 @@ function appWith(cartographer: CartographerTree | null): express.Express {
 }
 
 const tree = (): CartographerTree => new CartographerTree({ projectDir: repo, stateDir });
+// fix instar#1069: navigate no longer lazy-scaffolds (returns an empty manifest when
+// the index isn't built). Tests asserting real paths scaffold first.
+const scaffoldedTree = (): CartographerTree => { const t = tree(); t.scaffold(); return t; };
 const bearer = (r: request.Test) => r.set('Authorization', `Bearer ${AUTH}`);
 
 describe('GET /cartographer/navigate (Tier 2 integration)', () => {
@@ -111,8 +114,8 @@ describe('GET /cartographer/navigate (Tier 2 integration)', () => {
     expect(res.status).toBe(400);
   });
 
-  it('200 + manifest shape + relevantPaths (lazy scaffold on first call)', async () => {
-    const res = await bearer(request(appWith(tree())).get('/cartographer/navigate?query=TelegramAdapter+messaging'));
+  it('200 + manifest shape + relevantPaths (index built off-request)', async () => {
+    const res = await bearer(request(appWith(scaffoldedTree())).get('/cartographer/navigate?query=TelegramAdapter+messaging'));
     expect(res.status).toBe(200);
     expect(res.body.query).toBe('TelegramAdapter messaging');
     expect(Array.isArray(res.body.relevantPaths)).toBe(true);
@@ -126,7 +129,7 @@ describe('GET /cartographer/navigate (Tier 2 integration)', () => {
   });
 
   it('200 + maxResults bound honored + truncated reported', async () => {
-    const res = await bearer(request(appWith(tree())).get('/cartographer/navigate?query=telegram+messaging+src+index&maxResults=1'));
+    const res = await bearer(request(appWith(scaffoldedTree())).get('/cartographer/navigate?query=telegram+messaging+src+index&maxResults=1'));
     expect(res.status).toBe(200);
     expect(res.body.scored.length).toBeLessThanOrEqual(1);
   });

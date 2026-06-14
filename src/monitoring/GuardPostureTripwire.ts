@@ -33,15 +33,21 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import {
+  COST_INCREASING_ENABLE_KEYS,
+  diffGuardPosture,
+  extractGuardPosture,
+  guardPostureSnapshotPath,
+  type GuardPosture,
+  type GuardPostureDiff,
+} from './guardPosture.js';
 
-export type GuardPosture = Record<string, boolean>;
-
-export interface GuardPostureDiff {
-  /** Guards that were enabled last boot and are disabled now. */
-  disabled: string[];
-  /** Guards that were disabled last boot and are enabled now. */
-  enabled: string[];
-}
+// The extraction/diff logic lives in the SHARED guardPosture module
+// (GUARD-POSTURE-ENDPOINT-SPEC §2.1 single-funnel rule: one definition of
+// "what is a guard", consumed by both this tripwire and GET /guards).
+// Re-exported here so existing importers keep working unchanged.
+export { COST_INCREASING_ENABLE_KEYS, diffGuardPosture, extractGuardPosture };
+export type { GuardPosture, GuardPostureDiff };
 
 export interface AttentionItemInput {
   id: string;
@@ -77,85 +83,12 @@ export interface GuardPostureTripwireResult {
   error?: string;
 }
 
-/**
- * Extract the guard posture from a resolved config object.
- *
- * Covered surface (generic by design — a future guard is covered the moment
- * it follows the `monitoring.<key>.enabled` convention, with no tripwire
- * change):
- *   - `monitoring.<key>.enabled` (boolean) → `monitoring.<key>.enabled`
- *   - `monitoring.<key>` (plain boolean)   → `monitoring.<key>`
- *   - `scheduler.enabled` (boolean)        → `scheduler.enabled`
- */
-/** Posture keys whose false→true transition is COST-INCREASING and must be
- *  surfaced as loudly as a guard-disable (FABLE-MODEL-ESCALATION-SPEC §10). */
-export const COST_INCREASING_ENABLE_KEYS: ReadonlySet<string> = new Set([
-  'models.tierEscalation.enabled',
-]);
-
-export function extractGuardPosture(config: unknown): GuardPosture {
-  const posture: GuardPosture = {};
-  if (!config || typeof config !== 'object') return posture;
-  const cfg = config as Record<string, unknown>;
-
-  const monitoring = cfg.monitoring;
-  if (monitoring && typeof monitoring === 'object' && !Array.isArray(monitoring)) {
-    for (const [key, value] of Object.entries(monitoring as Record<string, unknown>)) {
-      if (typeof value === 'boolean') {
-        posture[`monitoring.${key}`] = value;
-      } else if (value && typeof value === 'object' && !Array.isArray(value)) {
-        const enabled = (value as Record<string, unknown>).enabled;
-        if (typeof enabled === 'boolean') posture[`monitoring.${key}.enabled`] = enabled;
-      }
-    }
-  }
-
-  const scheduler = cfg.scheduler;
-  if (scheduler && typeof scheduler === 'object' && !Array.isArray(scheduler)) {
-    const enabled = (scheduler as Record<string, unknown>).enabled;
-    if (typeof enabled === 'boolean') posture['scheduler.enabled'] = enabled;
-  }
-
-  // Model-tier escalation (FABLE-MODEL-ESCALATION-SPEC §10): a COST-INCREASING
-  // enable gets the same visibility as a guard-disable, and a dryRun-off flip
-  // is the moment real swaps start — both are posture.
-  const models = cfg.models;
-  if (models && typeof models === 'object' && !Array.isArray(models)) {
-    const tierEscalation = (models as Record<string, unknown>).tierEscalation;
-    if (tierEscalation && typeof tierEscalation === 'object' && !Array.isArray(tierEscalation)) {
-      const te = tierEscalation as Record<string, unknown>;
-      if (typeof te.enabled === 'boolean') posture['models.tierEscalation.enabled'] = te.enabled;
-      if (typeof te.dryRun === 'boolean') posture['models.tierEscalation.dryRun'] = te.dryRun;
-    }
-  }
-
-  return posture;
-}
-
-/**
- * Diff two postures. Only keys present in BOTH snapshots can transition —
- * a key appearing for the first time (new feature) or vanishing (config
- * cleanup) is a shape change, not a guard flip, and raises nothing.
- */
-export function diffGuardPosture(prev: GuardPosture, cur: GuardPosture): GuardPostureDiff {
-  const disabled: string[] = [];
-  const enabled: string[] = [];
-  for (const key of Object.keys(cur).sort()) {
-    if (!(key in prev)) continue;
-    if (prev[key] === true && cur[key] === false) disabled.push(key);
-    else if (prev[key] === false && cur[key] === true) enabled.push(key);
-  }
-  return { disabled, enabled };
-}
-
 interface Snapshot {
   ts: string;
   posture: GuardPosture;
 }
 
-function snapshotPath(stateDir: string): string {
-  return path.join(stateDir, 'state', 'guard-posture.json');
-}
+const snapshotPath = guardPostureSnapshotPath;
 
 function breadcrumbPath(logsDir: string): string {
   return path.join(logsDir, 'guard-posture.jsonl');
@@ -194,6 +127,7 @@ export async function runGuardPostureTripwire(
     // Persist the new snapshot FIRST so even an emit failure below leaves the
     // baseline current (no repeat alarms for the same transition next boot).
     fs.mkdirSync(path.dirname(snapPath), { recursive: true });
+    /* state-registry: guard-posture-snapshot */
     fs.writeFileSync(snapPath, JSON.stringify({ ts: now.toISOString(), posture } satisfies Snapshot, null, 2));
 
     if (!prev) {

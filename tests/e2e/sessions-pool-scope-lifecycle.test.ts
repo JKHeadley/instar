@@ -73,6 +73,10 @@ describe('Sessions pool-scope E2E lifecycle (feature is alive)', () => {
     expect(res.body.pool.enabled).toBe(false);
     expect(res.body.pool.peersQueried).toBe(0);
     expect(res.body.pool.failed).toEqual([]);
+    // WS4.2 (F7): the per-machine empty-state surface is ALIVE on the production
+    // init path — pool.machines is always present (an array, never undefined).
+    // Single-machine install with no mesh id → an empty roster (strict no-op).
+    expect(Array.isArray(res.body.pool.machines)).toBe(true);
   });
 
   it('requires Bearer auth', async () => {

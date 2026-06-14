@@ -25,7 +25,7 @@ describe('Session Pool activation wiring (§L4)', () => {
 
   it('the interception FAILS SAFE — any route error falls back to local dispatch', () => {
     const idx = src.indexOf("_sessionRouter && _sessionPoolStage() !== 'dark'");
-    const block = src.slice(idx, idx + 2200);
+    const block = src.slice(idx, idx + 5200);
     expect(block).toContain('try {');
     expect(block).toContain('await _sessionRouter.route(');
     expect(block).toContain('falling back to local dispatch');
@@ -38,10 +38,12 @@ describe('Session Pool activation wiring (§L4)', () => {
   it('the SessionRouter is constructed with the real registry/ownership/placement + outbound mesh client', () => {
     const idx = src.indexOf('new routerMod.SessionRouter({');
     expect(idx).toBeGreaterThan(0);
-    // Window 3200 (was 2000): the coherence-journal emitPlacement pairing
-    // (spec §3.3, enforced by lint-cas-emit-placement) added lines inside
-    // casClaimOwnership/confirmClaim, pushing the later assertions out.
-    const block = src.slice(idx, idx + 3200);
+    // Window 5000 (was 4000, 3200, 2000): the coherence-journal emitPlacement
+    // pairing (spec §3.3), the TOPIC-PROFILE-SPEC §5.3 acquire seam, and then
+    // the WS1.1 ownerSupportsForward skew gate (MULTI-MACHINE-SEAMLESSNESS-SPEC)
+    // added lines inside the construction, pushing the later assertions out
+    // (deliverMessage: now sits ~4200 chars in).
+    const block = src.slice(idx, idx + 5000);
     // The registry dep filters suspect machines from placement candidates
     // (owner-suspect breaker, P19) with an all-suspect unfiltered fallback —
     // still sourced from the REAL machinePoolRegistry capacities.
@@ -71,7 +73,7 @@ describe('Session Pool activation wiring (§L4)', () => {
     expect(idx).toBeGreaterThan(0);
     // Window widened 4200→5000: the working-set move trigger (WORKING-SET-HANDOFF §3.3)
     // now prefixes the onAccepted body before the stage gate.
-    const block = src.slice(idx, idx + 5000);
+    const block = src.slice(idx, idx + 7500);
     // Gated on a non-dark stage + only with Telegram present.
     expect(block).toContain("_sessionPoolStage() === 'dark' || !telegram");
     // Bridges to the existing local spawn/resume path for the topic (now wrapped in an
@@ -88,7 +90,7 @@ describe('Session Pool activation wiring (§L4)', () => {
     expect(idx).toBeGreaterThan(0);
     // Window widened 4200→5000: the working-set move trigger (WORKING-SET-HANDOFF §3.3)
     // now prefixes the onAccepted body before the stage gate.
-    const block = src.slice(idx, idx + 5000);
+    const block = src.slice(idx, idx + 7500);
     // A live session for the topic short-circuits to injection BEFORE the spawn IIFE.
     const injectIdx = block.indexOf('sessionManager.isSessionAlive(existing)');
     const spawnIdx = block.indexOf('spawnSessionForTopic(sessionManager, tg, spawnName');

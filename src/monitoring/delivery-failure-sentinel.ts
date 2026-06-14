@@ -668,6 +668,7 @@ export class DeliveryFailureSentinel extends EventEmitter {
   }
 
   private purgeStaleRows(): void {
+    const nowIso = new Date(this.deps.now()).toISOString();
     const cutoff = new Date(this.deps.now() - this.cfg.restorePurgeAgeMs).toISOString();
     try {
       // LOUD purge: a restore-purge deletes a queued-undelivered outbound
@@ -677,14 +678,17 @@ export class DeliveryFailureSentinel extends EventEmitter {
       // victims first so every loss is traceable, and report the
       // degradation so the agent learns its outbound message evaporated
       // (and can decide to resend) instead of believing it delivered.
-      const victims = this.deps.store.listStaleClaimable(cutoff);
+      // Rows HELD for future release (next_attempt_at ahead of the cutoff,
+      // within the 7-day clamp) are exempt — reap-notify spec R1.6.
+      const victims = this.deps.store.listStaleClaimable(cutoff, nowIso);
       if (victims.length === 0) return;
       for (const v of victims) {
+        const clampNote = v.farFutureClamp ? ' [far-future next_attempt_at — corrupt-row clamp]' : '';
         console.warn(
-          `[delivery-sentinel] restore-purge dropping ${v.delivery_id} (topic ${v.topic_id}, queued since ${v.attempted_at}): "${(v.text ?? '').slice(0, 60)}"`,
+          `[delivery-sentinel] restore-purge dropping ${v.delivery_id} (topic ${v.topic_id}, queued since ${v.attempted_at})${clampNote}: "${(v.text ?? '').slice(0, 60)}"`,
         );
       }
-      const deleted = this.deps.store.purgeStaleClaimable(cutoff);
+      const deleted = this.deps.store.purgeStaleClaimable(cutoff, nowIso);
       console.log(`[delivery-sentinel] restore-purged ${deleted} stale rows (older than ${this.cfg.restorePurgeAgeMs}ms)`);
       try {
         DegradationReporter.getInstance().report({

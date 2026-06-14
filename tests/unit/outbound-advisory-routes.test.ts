@@ -29,7 +29,7 @@ let sendToTopic: ReturnType<typeof vi.fn>;
 let reviewCalls: Array<{ text: string; context: any }>;
 let liveValues: Record<string, unknown>;
 
-async function boot(opts: { withGate?: boolean } = {}) {
+async function boot(opts: { withGate?: boolean; developmentAgent?: boolean } = {}) {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'advisory-routes-'));
   fs.mkdirSync(path.join(dir, '.instar'), { recursive: true });
   sendToTopic = vi.fn().mockResolvedValue({ messageId: 42, topicId: 12476 });
@@ -39,7 +39,12 @@ async function boot(opts: { withGate?: boolean } = {}) {
     telegram: { sendToTopic },
     sessionManager: { clearInjectionTracker: vi.fn() },
     state: { listSessions: () => [] },
-    config: { authToken: 't', stateDir: path.join(dir, '.instar'), port: 0 },
+    config: {
+      authToken: 't',
+      stateDir: path.join(dir, '.instar'),
+      port: 0,
+      ...(opts.developmentAgent ? { developmentAgent: true } : {}),
+    },
     liveConfig: {
       get: <T,>(p: string, def: T): T => (p in liveValues ? (liveValues[p] as T) : def),
     },
@@ -305,5 +310,139 @@ describe('cross-channel single-sourcing (§2.2 — the computation lives in eval
     expect(reviewCalls[0].context.messageKind).toBe('automated');
     expect(reviewCalls[0].context.signals.jargon).toBeDefined();
     expect(reviewCalls[0].context.signals.filePath).toBeDefined();
+  });
+});
+
+describe('POST /messaging/preflight — TIME_CLAIM (live session clock verification)', () => {
+  // A 24h run, ~1h54m in at request time — the founding-incident clock shape
+  // (2026-06-12 topic 13481: "~7h elapsed" reported at 1h35m real).
+  function writeActiveRun(topicId: number, elapsedSeconds = 6868, durationSeconds = 86400) {
+    const autoDir = path.join(dir, '.instar', 'autonomous');
+    fs.mkdirSync(autoDir, { recursive: true });
+    const startedAt = new Date(Date.now() - elapsedSeconds * 1000).toISOString().replace(/\.\d{3}Z$/, 'Z');
+    fs.writeFileSync(
+      path.join(autoDir, `${topicId}.local.md`),
+      [
+        '---',
+        'active: true',
+        'iteration: 1',
+        'goal: "test run"',
+        `duration_seconds: ${durationSeconds}`,
+        `started_at: "${startedAt}"`,
+        `report_topic: "${topicId}"`,
+        '---',
+        '',
+      ].join('\n'),
+    );
+  }
+
+  const WRONG_CLAIM = 'AUTONOMOUS PROGRESS: ~7h elapsed / 24h total. All gates green.';
+
+  it('FIRES for an automated send whose elapsed claim contradicts the live clock (dev agent)', async () => {
+    await boot({ developmentAgent: true });
+    writeActiveRun(12476);
+    const res = await preflight({
+      text: WRONG_CLAIM,
+      messageKind: 'automated',
+      topicId: 12476,
+      jobSlug: 'autonomous-report',
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    const codes = body.advisories.map((a: any) => a.code);
+    expect(codes).toContain('TIME_CLAIM');
+    const tc = body.advisories.find((a: any) => a.code === 'TIME_CLAIM');
+    expect(tc.match).toContain('claimed');
+    expect(tc.guidance).toContain('/session/clock');
+  });
+
+  it('FIRES for a conversational reply kind too — and runs ONLY the clock check (no RAW_FILE_PATH)', async () => {
+    await boot({ developmentAgent: true });
+    writeActiveRun(12476);
+    const res = await preflight({
+      text: `${WRONG_CLAIM} See /Users/justin/projects/notes.md`,
+      messageKind: 'reply',
+      topicId: 12476,
+    });
+    expect(res.status).toBe(200);
+    const codes = (await res.json()).advisories.map((a: any) => a.code);
+    expect(codes).toEqual(['TIME_CLAIM']);
+  });
+
+  it('PASSES an accurate report (both decision sides)', async () => {
+    await boot({ developmentAgent: true });
+    writeActiveRun(12476);
+    const res = await preflight({
+      text: 'Run status: about 2h elapsed, roughly 22h left, 8% through.',
+      messageKind: 'reply',
+      topicId: 12476,
+    });
+    expect((await res.json()).advisories).toEqual([]);
+  });
+
+  it('no active run for the topic → no TIME_CLAIM (nothing to contradict)', async () => {
+    await boot({ developmentAgent: true });
+    const res = await preflight({ text: WRONG_CLAIM, messageKind: 'reply', topicId: 12476 });
+    expect((await res.json()).advisories).toEqual([]);
+  });
+
+  it('an inactive (completed) run never fires', async () => {
+    await boot({ developmentAgent: true });
+    writeActiveRun(12476);
+    const file = path.join(dir, '.instar', 'autonomous', '12476.local.md');
+    fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace('active: true', 'active: false'));
+    const res = await preflight({ text: WRONG_CLAIM, messageKind: 'reply', topicId: 12476 });
+    expect((await res.json()).advisories).toEqual([]);
+  });
+
+  it('DARK on the fleet by default (dev-agent gate); explicit enable flips it on', async () => {
+    await boot(); // no developmentAgent
+    writeActiveRun(12476);
+    const dark = await preflight({ text: WRONG_CLAIM, messageKind: 'reply', topicId: 12476 });
+    expect((await dark.json()).advisories).toEqual([]);
+
+    liveValues['messaging.outboundAdvisory.timeClaim.enabled'] = true;
+    const lit = await preflight({ text: WRONG_CLAIM, messageKind: 'reply', topicId: 12476 });
+    expect((await lit.json()).advisories.map((a: any) => a.code)).toEqual(['TIME_CLAIM']);
+  });
+
+  it('explicit enabled:false force-darks even a dev agent', async () => {
+    await boot({ developmentAgent: true });
+    writeActiveRun(12476);
+    liveValues['messaging.outboundAdvisory.timeClaim.enabled'] = false;
+    const res = await preflight({ text: WRONG_CLAIM, messageKind: 'reply', topicId: 12476 });
+    expect((await res.json()).advisories).toEqual([]);
+  });
+
+  it('a reply-kind advised row is audit-keyed under "interactive-session"', async () => {
+    await boot({ developmentAgent: true });
+    writeActiveRun(12476);
+    await preflight({ text: WRONG_CLAIM, messageKind: 'reply', topicId: 12476 });
+    const res = await fetch(`${server.url}/messaging/advisory-log?limit=5`);
+    const { entries } = await res.json();
+    expect(entries).toHaveLength(1);
+    expect(entries[0].action).toBe('advised');
+    expect(entries[0].jobSlug).toBe('interactive-session');
+    expect(entries[0].advisories).toEqual(['TIME_CLAIM']);
+  });
+
+  it('a kindless ack lands its acked row under the SAME "interactive-session" key (episode resolves)', async () => {
+    await boot({ developmentAgent: true });
+    writeActiveRun(12476);
+    await preflight({ text: WRONG_CLAIM, messageKind: 'reply', topicId: 12476 });
+    const ackRes = await fetch(`${server.url}/telegram/reply/12476`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        text: WRONG_CLAIM,
+        metadata: { advisoryAck: true, advisoryCodes: ['TIME_CLAIM'] },
+      }),
+    });
+    expect(ackRes.status).toBe(200);
+    const { entries } = await (await fetch(`${server.url}/messaging/advisory-log?limit=5`)).json();
+    const acked = entries.filter((e: any) => e.action === 'acked');
+    expect(acked).toHaveLength(1);
+    expect(acked[0].jobSlug).toBe('interactive-session');
+    expect(acked[0].advisories).toEqual(['TIME_CLAIM']);
   });
 });

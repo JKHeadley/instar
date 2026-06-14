@@ -77,6 +77,10 @@ const ALLOWLIST = new Set([
   // Same bootstrap-escape pattern (june15-headless-spawn-reroute funnel
   // lint) — read-only `git diff --cached --name-only` only.
   'scripts/lint-no-unfunneled-headless-launch.js',
+  // Same bootstrap-escape pattern (Step 4b credential-write funnel lint) —
+  // read-only `git diff --cached --name-only` for --staged. Cannot depend on
+  // the TS funnel because TS is not compiled when the lint runs in pre-push.
+  'scripts/lint-no-unfunneled-credential-write.js',
   // Same bootstrap-escape pattern (blocking-process-scan lint, topic 21816
   // post-mortem #3) — read-only `git diff --cached --name-only` only.
   'scripts/lint-no-blocking-process-scans.js',
@@ -88,6 +92,10 @@ const ALLOWLIST = new Set([
   // completeness) — read-only `git diff --cached --name-only` for --staged.
   // Cannot depend on the TS funnel because TS is not compiled at pre-push.
   'scripts/lint-llm-attribution.js',
+  // Same bootstrap-escape pattern (cartographer main-thread-walk lint, fix
+  // instar#1069) — read-only `git diff --cached --name-only` for --staged.
+  // Cannot depend on the TS funnel because TS is not compiled at pre-push.
+  'scripts/lint-no-mainthread-cartographer-walk.js',
   // Postinstall bootstrap script — runs before TypeScript is compiled and
   // before SafeFsExecutor is available. CommonJS, can't use ESM imports.
   'scripts/fix-better-sqlite3.cjs',
