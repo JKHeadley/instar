@@ -328,14 +328,29 @@ describe('lint-dev-agent-dark-gate', () => {
       // enabled (dev-gated). Every line RE-VERIFIED by hand via the attributor on the merged ConfigDefaults.
       '244': 'monitoring.mcpProcessReaper.enabled',
       '258': 'monitoring.agentSleep.enabled',
-      '314': 'monitoring.correctionLearning.enabled',
-      '408': 'monitoring.apprenticeshipCycleSla.enabled',
-      '416': 'monitoring.geminiCapacityEscalation.enabled',
-      '440': 'monitoring.greenPrAutoMerge.enabled',
-      '490': 'threadline.a2aCheckIn.enabled',
-      '582': 'mentor.enabled',
-      '593': 'mentor.autonomousFix.enabled',
-      '608': 'mentee.enabled',
+      // self-unblock-before-escalating (CMT-1519): the blockerLedger ConfigDefaults block
+      // gained two nested OMITTED-`enabled` dev-gate sub-blocks (selfUnblockChecklist +
+      // durableVaultSession) + a 6-line explanatory comment. Neither sub-block carries an
+      // `enabled:` literal (they OMIT it so the dev-gate resolves them), so the attributor
+      // does NOT track them — but the +10 lines they add shift every `enabled: false` default
+      // BELOW blockerLedger (correctionLearning-onward) DOWN by +10. The four reapers/sleep
+      // ABOVE the block (sessionReaper/agentWorktreeReaper/mcpProcessReaper/agentSleep) are
+      // unchanged. Every line below RE-VERIFIED by hand via the attributor on the edited
+      // ConfigDefaults (each maps to a real `enabled: false,` line).
+      // self-unblock-producer-wiring (PRODUCER increment): the
+      // monitoring.blockerLedger.selfUnblockChecklist block gained an OMITTED-enabled
+      // `credentialScopeTags: {}` fail-closed default plus a 5-line explanatory
+      // comment (NOT an `enabled:` path, so the attributor ignores it) ABOVE every
+      // block below — shifting each subsequent `enabled: false` line DOWN by +5.
+      // RE-VERIFIED by hand via the attributor on the edited ConfigDefaults.
+      '329': 'monitoring.correctionLearning.enabled',
+      '423': 'monitoring.apprenticeshipCycleSla.enabled',
+      '431': 'monitoring.geminiCapacityEscalation.enabled',
+      '455': 'monitoring.greenPrAutoMerge.enabled',
+      '505': 'threadline.a2aCheckIn.enabled',
+      '597': 'mentor.enabled',
+      '608': 'mentor.autonomousFix.enabled',
+      '623': 'mentee.enabled',
       // WS4.1-durable-ack (CMT-1416) inserts a plain `ws41DurableAck: false`
       // seamlessness boolean (NOT `enabled:`, so the attributor ignores it) above
       // sessionPool. WS4.3-role-guard (CMT-1416) inserts another plain
@@ -358,9 +373,9 @@ describe('lint-dev-agent-dark-gate', () => {
       // stay HARDCODED false (held — they share the StageAdvancer `stage !== 'dark'` gate,
       // not cleanly dev-gatable), so they remain attributed here. RE-VERIFIED by hand via
       // the attributor on the edited ConfigDefaults (each maps to a real `enabled: false,` line).
-      '809': 'multiMachine.sessionPool.enabled',
-      '834': 'multiMachine.sessionPool.inboundQueue.enabled',
-      '863': 'multiMachine.sessionPool.holdForStability.enabled',
+      '824': 'multiMachine.sessionPool.enabled',
+      '849': 'multiMachine.sessionPool.inboundQueue.enabled',
+      '878': 'multiMachine.sessionPool.holdForStability.enabled',
       // mm-stores-devgate (operator directive 2026-06-13, topic 13481): the 7
       // multiMachine.stateSync.* memory stores MOVED from DARK_GATE_EXCLUSIONS to
       // DEV_GATED_FEATURES and their `enabled: false` literals were REMOVED from
@@ -370,9 +385,9 @@ describe('lint-dev-agent-dark-gate', () => {
       // removal shrank the stateSync block, shifting cartographer up: 1125→1100,
       // 1170→1145, 1195→1170. RE-VERIFIED by hand via the attributor on the edited
       // ConfigDefaults (each maps to a real `enabled: false,` line).
-      '1123': 'cartographer.freshnessSweep.enabled',
-      '1168': 'cartographer.conformanceAudit.llmEnrichment.enabled',
-      '1193': 'cartographer.subtreeNav.llmRerank.enabled',
+      '1138': 'cartographer.freshnessSweep.enabled',
+      '1183': 'cartographer.conformanceAudit.llmEnrichment.enabled',
+      '1208': 'cartographer.subtreeNav.llmRerank.enabled',
     };
     const actual = attributeRealConfigDefaults();
     expect(actual).toEqual(EXPECTED);

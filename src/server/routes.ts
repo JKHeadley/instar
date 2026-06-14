@@ -932,6 +932,16 @@ export interface RouteContext {
    *  POST /blockers/:id/advance, POST /blockers/:id/settle. Signal-only — it never
    *  blocks a message; the true-blocker settle routes through the B17 authority. */
   blockerLedger?: import('../monitoring/BlockerLedger.js').BlockerLedger | null;
+  /** Self-Unblock checklist run store ("Self-Unblock Before Escalating", §5/§7).
+   *  Null/absent when monitoring.blockerLedger.selfUnblockChecklist.enabled is false
+   *  (default, ships dark) → GET /blockers/self-unblock-runs 503s (after auth). The
+   *  read-only view of recent checklist runs + the rung. */
+  selfUnblockRunStore?: import('../monitoring/SelfUnblockChecklist.js').SelfUnblockRunStore | null;
+  /** The PRODUCTION Self-Unblock checklist — real probe providers + the run store.
+   *  Null/absent when the self-unblock sub-feature is dark → POST /blockers/self-unblock-run
+   *  503s (after auth). The PRODUCER surface: running it produces the verified run a
+   *  true-blocker settle requires (closing the gap where no run could be produced). */
+  selfUnblockChecklist?: import('../monitoring/SelfUnblockChecklist.js').SelfUnblockChecklist | null;
   /** GrowthMilestoneAnalyst — the proactive growth & milestone analyst. Null/absent
    *  when monitoring.growthAnalyst.enabled is false (default, ships dark) →
    *  /growth/* 503s. Powers GET /growth/digest, GET /growth/findings,
@@ -6800,6 +6810,127 @@ export function createRoutes(ctx: RouteContext): Router {
       const offset = req.query.offset ? Number(req.query.offset) : undefined;
       const includeArchived = req.query.includeArchived === '1' || req.query.includeArchived === 'true';
       res.json(ctx.blockerLedger.list({ limit, offset, includeArchived }));
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      res.status(500).json({ error: msg });
+    }
+  });
+
+  // ── Self-Unblock Before Escalating (read-only checklist-run view, spec §7) ───
+  // Extends the /blockers read surface with the recent self-unblock checklist runs
+  // (per-probe results + the rung). Registered BEFORE GET /blockers/:id so the
+  // literal path is not swallowed by the :id param. Bearer-gated by the same
+  // router-wide authMiddleware (NOT auth-exempt); the 503-when-dark check happens
+  // AFTER auth (an unauthenticated caller gets 401 from the middleware, never a 503
+  // that would confirm the route exists). Cache-Control: no-store — the body is
+  // credential-reachability reconnaissance. Default-bounded (?limit=, last 200) +
+  // skip-corrupt-lines (the store's list() tolerates partial lines). Served through
+  // the <blocker-ledger-data> envelope — each run's untrusted detail is DATA.
+  const SELF_UNBLOCK_DARK =
+    'Self-Unblock checklist not initialized (monitoring.blockerLedger.selfUnblockChecklist.enabled is false)';
+  router.get('/blockers/self-unblock-runs', async (req, res) => {
+    if (!ctx.selfUnblockRunStore) {
+      res.status(503).json({ error: SELF_UNBLOCK_DARK });
+      return;
+    }
+    try {
+      const { toLlmSafeEnvelope } = await import('../monitoring/BlockerLedger.js');
+      const { resolveRung } = await import('../monitoring/SelfUnblockChecklist.js');
+      const rawLimit = req.query.limit ? Number(req.query.limit) : 200;
+      const limit = Number.isFinite(rawLimit) ? Math.min(Math.max(rawLimit, 1), 200) : 200;
+      const runs = ctx.selfUnblockRunStore.list(limit);
+      const view = runs.map((run) => {
+        // Derive the rung from the run (no action-class / operator-only context
+        // available on a pure read — surface the BASE rung the run implies).
+        const rung = resolveRung({ run }).rung;
+        return {
+          runId: run.runId,
+          target: run.target,
+          requiredAttemptType: run.requiredAttemptType,
+          completedAt: run.completedAt,
+          exhausted: run.exhausted,
+          rung,
+          probes: run.probes.map((p) => ({
+            source: p.source,
+            reachable: p.reachable,
+            holdsRelevantCred: p.holdsRelevantCred,
+            probedAt: p.probedAt,
+            matchedScopeTags: p.matchedScopeTags,
+            // Untrusted free text → DATA, wrapped in the ledger envelope.
+            detail: p.detail ? toLlmSafeEnvelope(p.detail) : undefined,
+          })),
+        };
+      });
+      res.set('Cache-Control', 'no-store');
+      res.json({ runs: view, total: view.length });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      res.status(500).json({ error: msg });
+    }
+  });
+
+  // ── Self-Unblock Before Escalating — RUN the checklist (the PRODUCER, spec §5) ─
+  // POST /blockers/self-unblock-run runs the PRODUCTION checklist (real probe
+  // providers + durable run store) against a target and persists the run, so a
+  // true-blocker settle can REFERENCE that verified run. Without this surface
+  // nothing in production could PRODUCE a run, so enabling the feature made
+  // settling a credential-blocker impossible — this closes that gap.
+  //
+  // Bearer-gated by the router-wide authMiddleware (NOT auth-exempt); the
+  // 503-when-dark check happens AFTER auth (an unauthenticated caller gets 401 from
+  // the middleware, never a 503 confirming the route exists). Cache-Control:
+  // no-store — the body is credential-reachability reconnaissance. Registered
+  // BEFORE POST /blockers/:id/* is irrelevant (those are distinct literal paths),
+  // but it MUST precede GET /blockers/:id (above) — which it does, sharing the
+  // /blockers/self-unblock-* prefix that is registered first. Run is rate-limited.
+  const SELF_UNBLOCK_RUN_DARK =
+    'Self-Unblock checklist producer not initialized (monitoring.blockerLedger.selfUnblockChecklist.enabled is false)';
+  router.post('/blockers/self-unblock-run', blockerWriteLimiter, async (req, res) => {
+    if (!ctx.selfUnblockChecklist) {
+      res.status(503).json({ error: SELF_UNBLOCK_RUN_DARK });
+      return;
+    }
+    if (req.headers['x-instar-request'] !== '1') {
+      res.status(403).json({ error: 'POST /blockers/self-unblock-run requires the X-Instar-Request: 1 intent header' });
+      return;
+    }
+    try {
+      const body = (req.body ?? {}) as { target?: unknown; requiredAttemptType?: unknown };
+      const target = typeof body.target === 'string' ? body.target.trim() : '';
+      if (!target) {
+        res.status(400).json({ error: 'target (a non-empty service:scope string) is required' });
+        return;
+      }
+      const rawType = body.requiredAttemptType;
+      if (rawType !== undefined && rawType !== 'self-fetch' && rawType !== 'dry-run') {
+        res.status(400).json({ error: "requiredAttemptType must be 'self-fetch' or 'dry-run'" });
+        return;
+      }
+      const requiredAttemptType: 'self-fetch' | 'dry-run' =
+        rawType === 'dry-run' ? 'dry-run' : 'self-fetch';
+
+      const { toLlmSafeEnvelope } = await import('../monitoring/BlockerLedger.js');
+      const { resolveRung } = await import('../monitoring/SelfUnblockChecklist.js');
+      const run = await ctx.selfUnblockChecklist.run({ target, requiredAttemptType });
+      const rung = resolveRung({ run }).rung;
+      res.set('Cache-Control', 'no-store');
+      res.json({
+        runId: run.runId,
+        target: run.target,
+        requiredAttemptType: run.requiredAttemptType,
+        completedAt: run.completedAt,
+        exhausted: run.exhausted,
+        rung,
+        probes: run.probes.map((p) => ({
+          source: p.source,
+          reachable: p.reachable,
+          holdsRelevantCred: p.holdsRelevantCred,
+          probedAt: p.probedAt,
+          matchedScopeTags: p.matchedScopeTags,
+          // Untrusted free text → DATA, wrapped in the ledger envelope.
+          detail: p.detail ? toLlmSafeEnvelope(p.detail) : undefined,
+        })),
+      });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       res.status(500).json({ error: msg });
