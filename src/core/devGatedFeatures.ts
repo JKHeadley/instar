@@ -104,6 +104,18 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     justification: 'Signal-only local recorder (never blocks a message); file-JSON state, no egress, no destructive action; the only LLM use is one bounded (<=200-token) fail-closed B17 settle check on the rare true-blocker settle.',
   },
   {
+    name: 'selfUnblockChecklist',
+    configPath: 'monitoring.blockerLedger.selfUnblockChecklist.enabled',
+    description: 'Self-Unblock Before Escalating — the deterministic exhaustion checklist that PRODUCES (and BlockerLedger then verifies) the failed-attempt evidence required to settle a true-blocker (/blockers extension; self-unblock-before-escalating spec §5.1).',
+    justification: 'Signal-only, deterministic, fail-closed: the checklist RECORDS probe results to a local JSONL run store and the rung onto BlockerLedger\'s existing AuthorityCheckEvidence — it never blocks a message and adds NO new gate (the one judgment stays BlockerLedger\'s Tier-1 B17 authority). The relevance match is pure code (no LLM); each probe is timeout-bounded and degrades to reachable:false; ENABLING it only makes BlockerLedger derive the failed attempt from a VERIFIED persisted run instead of accepting a caller-embedded one (strictly HARDER to settle a true-blocker). No egress of its own, no destructive action; the cloud-account probes are read-only auth checks behind injected providers.',
+  },
+  {
+    name: 'durableVaultSession',
+    configPath: 'monitoring.blockerLedger.durableVaultSession.enabled',
+    description: 'Durable org-Bitwarden session (self-unblock-before-escalating spec §5.3) — a TTL+idle-bounded, in-flight-only warm session the org-vault probe uses so an in-vault credential is actually reachable.',
+    justification: 'The session value lives in PROCESS MEMORY ONLY — never written to any log/config/temp file, never passed as a CLI argv (handed to bw only via the child BW_SESSION env), and NEVER placed on the multiMachine.secretSync path (machine-local). It is held warm only while a checklist run is in flight and carries a TTL + idle-expiry, so the standing-privilege window is minimal. The master password stays operator-held; no new on-disk secret is introduced. The dev agent is the controlled blast radius where this matures before any fleet flip.',
+  },
+  {
     name: 'topicProfiles',
     configPath: 'topicProfiles.enabled',
     description: 'Topic Profile — per-topic model/thinking/framework pins (TOPIC-PROFILE-SPEC).',

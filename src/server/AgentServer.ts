@@ -32,6 +32,7 @@ import { HttpParitySource } from '../feedback-factory/dryrun/HttpParitySource.js
 import { runDryRunCompare } from '../feedback-factory/dryrun/dryRunCompare.js';
 import { InMemoryImportTarget, runImport, type ImportRunResult } from '../feedback-factory/migration/importRunner.js';
 import { SecretStore } from '../core/SecretStore.js';
+import { secretKeyPaths } from '../core/SecretSync.js';
 import { fileURLToPath } from 'node:url';
 import type { SessionManager } from '../core/SessionManager.js';
 import type { StateManager } from '../core/StateManager.js';
@@ -70,6 +71,10 @@ import { RevertDetector } from '../monitoring/RevertDetector.js';
 import { CorrectionLedger } from '../monitoring/CorrectionLedger.js';
 import { BlockerLedger } from '../monitoring/BlockerLedger.js';
 import { buildB17SettleAuthority } from '../monitoring/blockerSettleAuthority.js';
+import { SelfUnblockRunStore, SelfUnblockChecklist } from '../monitoring/SelfUnblockChecklist.js';
+import { DurableVaultSession } from '../monitoring/DurableVaultSession.js';
+import { buildProductionProbeProviders, deriveBitwardenSession } from '../monitoring/SelfUnblockProbeProviders.js';
+import { BitwardenProvider } from '../core/BitwardenProvider.js';
 import { GrowthMilestoneAnalyst, resolveGrowthSettings } from '../monitoring/GrowthMilestoneAnalyst.js';
 import { GrowthDigestPublisher, createGrowthDigestAuditSink } from '../monitoring/GrowthDigestPublisher.js';
 import { ApprenticeshipProgram } from '../core/ApprenticeshipProgram.js';
@@ -247,6 +252,15 @@ export class AgentServer {
   private revertDetector: RevertDetector | null = null;
   private correctionLedger: CorrectionLedger | null = null;
   private blockerLedger: BlockerLedger | null = null;
+  /** Self-Unblock checklist run store (the read surface + the store BlockerLedger verifies). */
+  private selfUnblockRunStore: SelfUnblockRunStore | null = null;
+  /**
+   * The PRODUCTION Self-Unblock checklist — wired with real probe providers and the
+   * durable run store. The PRODUCER half: routes RUN this to produce a verified
+   * run (the gap that made settling a credential-blocker impossible until now).
+   * Null when the self-unblock sub-feature is dark.
+   */
+  private selfUnblockChecklist: SelfUnblockChecklist | null = null;
   private growthMilestoneAnalyst: GrowthMilestoneAnalyst | null = null;
   private growthDigestPublisher: GrowthDigestPublisher | null = null;
   private apprenticeshipProgram: ApprenticeshipProgram | null = null;
@@ -1464,14 +1478,104 @@ export class AgentServer {
       if (blockerLedgerEnabled && options.config.stateDir) {
         // The gate can resolve true on a dev agent with no config block at all.
         const bl = options.config.monitoring?.blockerLedger ?? ({} as NonNullable<NonNullable<typeof options.config.monitoring>['blockerLedger']>);
+        // "Self-Unblock Before Escalating" (docs/specs/self-unblock-before-escalating.md,
+        // §5.1) EXTENDS the ledger (no parallel gate). Its OWN dev-gate resolves
+        // independently — when ON, we inject the durable run store so the true-blocker
+        // settle DERIVES the failed attempt from a VERIFIED persisted checklist run
+        // (a caller-embedded failedAttempt with no run is HARD-rejected). When OFF
+        // (the dark default), the store is not injected and BlockerLedger's existing
+        // caller-supplied path is unchanged.
+        const selfUnblockEnabled = resolveDevAgentGate(
+          bl.selfUnblockChecklist?.enabled,
+          options.config,
+        );
+        this.selfUnblockRunStore = selfUnblockEnabled
+          ? new SelfUnblockRunStore({ stateDir: options.config.stateDir })
+          : null;
         this.blockerLedger = new BlockerLedger({
           stateDir: options.config.stateDir,
           settleAuthority: buildB17SettleAuthority(options.intelligence ?? null),
+          selfUnblockRunStore: this.selfUnblockRunStore ?? undefined,
           archiveAfterDays: bl.archiveAfterDays,
           recheckAfterDays: bl.recheckAfterDays,
           maxNoEvidenceResettles: bl.maxNoEvidenceResettles,
           maxFreeTextChars: bl.maxFreeTextChars,
         });
+
+        // The PRODUCER half (docs/specs/self-unblock-before-escalating.md §5):
+        // when the self-unblock sub-feature is ON, build the PRODUCTION checklist
+        // wired with REAL probe providers + the durable run store. Without this,
+        // nothing could PRODUCE a verified run, so settling a credential-blocker
+        // was impossible (the gate demands a run that could not be made). The
+        // DurableVaultSession is built only when its OWN sub-gate is on (mirrors how
+        // the run store is gated) — its deriveSession unlocks the org Bitwarden vault
+        // via the existing BitwardenProvider path, reading the master password from
+        // the agent's own vault key `bw-master-password` (NO new on-disk secret; if
+        // the master pw isn't available, deriveSession returns null and the org-vault
+        // probe reports unreachable).
+        if (selfUnblockEnabled && this.selfUnblockRunStore) {
+          const stateDir = options.config.stateDir;
+          const agentName = options.config.projectName;
+          const credentialScopeTags = bl.selfUnblockChecklist?.credentialScopeTags;
+
+          // DurableVaultSession is gated on its OWN sub-flag (the §5.3 standing-
+          // privilege tradeoff). resolveDevAgentGate so it is LIVE on a dev agent,
+          // DARK on the fleet — exactly like the run store.
+          const durableVaultEnabled = resolveDevAgentGate(
+            bl.durableVaultSession?.enabled,
+            options.config,
+          );
+          let durableVaultSession: DurableVaultSession | undefined;
+          if (durableVaultEnabled) {
+            const bw = new BitwardenProvider({ agentName });
+            durableVaultSession = new DurableVaultSession({
+              ttlMs: bl.durableVaultSession?.ttlMs,
+              idleMs: bl.durableVaultSession?.idleMs,
+              // Derive a fresh org-vault session via the testable helper: read the
+              // operator-held master password from the agent's own vault (existing
+              // key — no new secret), unlock via BitwardenProvider, and return the
+              // live session from getSessionKey() (NOT process.env — unlock() stores
+              // it in a private field). Used in-process only; never logged.
+              deriveSession: (): string | null =>
+                deriveBitwardenSession({
+                  getMasterPassword: (): string | null => {
+                    const v = new SecretStore({ stateDir }).get('bw-master-password');
+                    return typeof v === 'string' && v.length > 0 ? v : null;
+                  },
+                  bw,
+                }),
+            });
+          }
+
+          // Build the production providers. Vault-key listing is NAMES ONLY (never
+          // values); the cloudflare token getter reads an existing vault key. All
+          // external access is injected so the checklist stays test-isolated.
+          const providers = buildProductionProbeProviders({
+            credentialScopeTags,
+            durableVaultSession,
+            getVaultKeys: (): string[] => {
+              try {
+                return secretKeyPaths(new SecretStore({ stateDir }).read());
+              } catch {
+                // @silent-fallback-ok — locked/decrypt-failed vault → no keys (probe unreachable).
+                return [];
+              }
+            },
+            getCloudflareToken: (): string | null => {
+              try {
+                const v = new SecretStore({ stateDir }).get('cloudflare-token');
+                return typeof v === 'string' && v.length > 0 ? v : null;
+              } catch {
+                // @silent-fallback-ok — no token available → cloudflare probe unreachable.
+                return null;
+              }
+            },
+          });
+          this.selfUnblockChecklist = new SelfUnblockChecklist({
+            providers,
+            store: this.selfUnblockRunStore,
+          });
+        }
       }
     } catch (err) {
       // @silent-fallback-ok — reported via console.warn; a blocker-ledger init
@@ -1948,6 +2052,8 @@ export class AgentServer {
       failureAttributionEngine: this.failureAttributionEngine,
       correctionLedger: this.correctionLedger,
       blockerLedger: this.blockerLedger,
+      selfUnblockRunStore: this.selfUnblockRunStore,
+      selfUnblockChecklist: this.selfUnblockChecklist,
       growthMilestoneAnalyst: this.growthMilestoneAnalyst,
       growthDigestPublisher: this.growthDigestPublisher,
       apprenticeshipProgram: this.apprenticeshipProgram,
@@ -3594,6 +3700,15 @@ export class AgentServer {
   /** Wiring-integrity accessor: the ParallelWorkSentinel when constructed (enabled), else null. */
   getParallelWorkSentinel(): ParallelWorkSentinel | null {
     return this.parallelWorkSentinel;
+  }
+
+  /**
+   * Wiring-integrity accessor: the PRODUCTION Self-Unblock checklist (real probe
+   * providers + durable run store) when the self-unblock sub-feature is on, else
+   * null. The PRODUCER surface POST /blockers/self-unblock-run runs this.
+   */
+  getSelfUnblockChecklist(): SelfUnblockChecklist | null {
+    return this.selfUnblockChecklist;
   }
 
   /**

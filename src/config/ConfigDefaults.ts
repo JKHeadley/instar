@@ -309,7 +309,22 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
     // dark feature: `enabled` is deliberately OMITTED so the runtime resolves it
     // via resolveDevAgentGate — LIVE on a development agent (dogfood), DARK on
     // the fleet (the /blockers routes 503). Registered in DEV_GATED_FEATURES.
-    blockerLedger: {},
+    //
+    // "Self-Unblock Before Escalating" (docs/specs/self-unblock-before-escalating.md)
+    // EXTENDS this gate (no parallel kill-switch): the nested selfUnblockChecklist
+    // + durableVaultSession blocks ALSO OMIT `enabled` so the same developmentAgent
+    // dark-feature gate resolves them — LIVE on a development agent, DARK on the
+    // fleet. Registered in DEV_GATED_FEATURES. The empty nested objects are present
+    // so applyDefaults backfills the dotted gate path on existing agents.
+    blockerLedger: {
+      // The self-unblock sub-feature OMITS `enabled` (dev-gate decides) and ships
+      // with an EMPTY operator-declared scope map — the fail-closed default. With no
+      // declared tags, no probe is ever surfaced as relevant, runs always exhaust,
+      // and the feature behaves exactly like today (under-self-unblock, never
+      // mis-apply). The operator opts a source IN by declaring its scope tags.
+      selfUnblockChecklist: { credentialScopeTags: {} },
+      durableVaultSession: {},
+    },
     correctionLearning: {
       enabled: false,
       // Self-Violation Signal extension (ships DARK). Even when correctionLearning
