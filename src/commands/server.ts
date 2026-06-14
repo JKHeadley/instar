@@ -20,6 +20,7 @@ import { loadConfig, ensureStateDir, detectTmuxPath, detectGeminiPath } from '..
 import { isNonFatalUncaught, shouldLogStackForUncaught } from '../core/uncaughtExceptionPolicy.js';
 import { resolveDevAgentGate, resolveStateSyncStores } from '../core/devAgentGate.js';
 import { parseProfileTrigger, platformMessageIdFrom } from '../core/topicProfileIngress.js';
+import { slugifyChannelName } from '../messaging/slack/sanitize.js';
 import {
   TopicProfileOrchestrator,
   resolvedToApplied,
@@ -2584,7 +2585,7 @@ async function ensureSlackAttentionChannel(
 
   try {
     const agentName = (slack as unknown as { config: { workspaceName?: string } }).config?.workspaceName?.replace(/-agent$/, '') || 'agent';
-    const channelId = await slack.createChannel(`${agentName}-sys-attention`);
+    const channelId = await slack.createChannel(slugifyChannelName(`${agentName}-sys-attention`));
     state.set('slack-attention-channel', channelId);
     await slack.sendToChannel(channelId,
       `Attention channel active. Blocked tasks, critical errors, quota alerts, and anything that needs your attention will appear here.`
@@ -2607,7 +2608,7 @@ async function ensureSlackUpdatesChannel(
 
   try {
     const agentName = (slack as unknown as { config: { workspaceName?: string } }).config?.workspaceName?.replace(/-agent$/, '') || 'agent';
-    const channelId = await slack.createChannel(`${agentName}-sys-updates`);
+    const channelId = await slack.createChannel(slugifyChannelName(`${agentName}-sys-updates`));
     state.set('slack-updates-channel', channelId);
     await slack.sendToChannel(channelId,
       `Updates channel active. Version updates, new features, and system announcements will appear here.`

@@ -3,6 +3,10 @@
  *
  * Prevents prompt injection, path traversal, and SSRF attacks
  * by validating and cleaning user-controlled fields before use.
+ *
+ * CONTRACT-EVIDENCE: EXEMPT — pure string-validation/slug helpers; this module
+ * makes NO Slack API calls and touches no API-contract surface. The added
+ * slugifyChannelName is covered by tests/unit/slack-channel-slug.test.ts.
  */
 
 const CHANNEL_ID_PATTERN = /^[CDG][A-Z0-9]{8,12}$/;
@@ -39,6 +43,26 @@ export function validateChannelId(id: string): boolean {
  */
 export function validateChannelName(name: string): boolean {
   return CHANNEL_NAME_PATTERN.test(name);
+}
+
+/**
+ * Slugify an arbitrary string into a valid Slack channel name.
+ *
+ * Slack channel names must be lowercase and may only contain [a-z0-9-_]
+ * (see {@link validateChannelName}). A workspace-derived name like
+ * "SageMind Live Test" contains spaces and uppercase, which `createChannel`
+ * rejects via validate-and-throw. This produces a guaranteed-valid slug:
+ * lowercase, non-[a-z0-9] runs collapsed to a single hyphen, leading/trailing
+ * hyphens trimmed, and clamped to Slack's 80-char limit.
+ *
+ * Mirrors the session-channel slug logic in SlackAdapter.
+ */
+export function slugifyChannelName(name: string): string {
+  return name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 80);
 }
 
 /**
