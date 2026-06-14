@@ -22,7 +22,7 @@ describe('Feedback webhook configuration', () => {
       path.join(process.cwd(), 'src/core/canonicalFeedback.ts'),
       'utf-8'
     );
-    expect(canonicalSource).toContain('https://feedback.instar.sh/api/feedback');
+    expect(canonicalSource).toContain('https://feedback.dawn-tunnel.dev/api/feedback');
   });
 
   it('feedback CLI command uses server endpoint', () => {
