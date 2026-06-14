@@ -133,6 +133,30 @@ export class JobScheduler {
   /** Optional TopicMemory for topic-aware job sessions */
   private topicMemory: TopicMemory | null = null;
 
+  /**
+   * MULTI-MACHINE-SEAMLESSNESS-SPEC §WS4.3 role-guard-at-spawn (CMT-1416).
+   * When set, a STATE-WRITING job (JobDefinition.writesState) is refused at the
+   * spawn boundary if this machine does NOT hold the lease — the TOCTOU re-check
+   * that closes the window where a machine awake at boot demotes to read-only
+   * standby mid-run while its cron tasks keep firing (the scheduler is built only
+   * when awake but is never torn down on demotion). The provider returns the live
+   * gate state read at the spawn boundary (NOT cached at wiring time): `enabled`
+   * reflects `multiMachine.seamlessness.ws43RoleGuard` and `holdsLease` reflects
+   * the coordinator's structural lease verdict. When unset (or `enabled:false`),
+   * the guard is a strict no-op — byte-for-byte today's behavior. A
+   * single-machine agent always holds the lease, so the guard never fires.
+   */
+  private roleGuardProvider: (() => { enabled: boolean; holdsLease: boolean }) | null = null;
+
+  /**
+   * MULTI-MACHINE-SEAMLESSNESS-SPEC §WS4.3 — best-effort callback to raise ONE
+   * deduped attention item when a state-writing job is refused at the spawn
+   * boundary. Wired by server.ts to the attention surface. Signal-only: a missing
+   * callback (or a throwing one) never blocks the refusal — the refusal is the
+   * load-bearing safety, the attention item is the operator heads-up.
+   */
+  private roleGuardAttention: ((slug: string, machineId: string | null) => void) | null = null;
+
   constructor(
     config: JobSchedulerConfig,
     sessionManager: SessionManager,
@@ -230,6 +254,21 @@ export class JobScheduler {
    */
   setTopicMemory(topicMemory: TopicMemory): void {
     this.topicMemory = topicMemory;
+  }
+
+  /**
+   * MULTI-MACHINE-SEAMLESSNESS-SPEC §WS4.3 — inject the role-guard-at-spawn
+   * provider. `provider` is read LIVE at each spawn boundary (never cached) so a
+   * mid-run demotion takes effect immediately. `onRefused` (optional) raises the
+   * deduped attention item when a state-writing job is refused. When the provider
+   * is omitted the guard is a strict no-op. See `roleGuardProvider`.
+   */
+  setRoleGuard(
+    provider: () => { enabled: boolean; holdsLease: boolean },
+    onRefused?: (slug: string, machineId: string | null) => void,
+  ): void {
+    this.roleGuardProvider = provider;
+    this.roleGuardAttention = onRefused ?? null;
   }
 
   /**
@@ -346,6 +385,47 @@ export class JobScheduler {
         metadata: { slug, reason, machines: job.machines },
       });
       return 'skipped';
+    }
+
+    // WS4.3 role-guard-at-spawn (MULTI-MACHINE-SEAMLESSNESS-SPEC §WS4.3,
+    // CMT-1416). A STATE-WRITING job must not spawn on a read-only standby. The
+    // scheduler is constructed only on an awake machine, but it is NEVER torn
+    // down on demotion — so a machine awake at boot that loses the lease mid-run
+    // keeps firing cron tasks. This is the spawn-boundary TOCTOU re-check (the
+    // same family as WS1.1's _ownershipReadForDrain): the provider is read LIVE
+    // here, so a mid-run demotion takes effect immediately. The writable owner's
+    // own scheduler runs the job (the cron fires on every machine; only the
+    // owner's pass clears the guard), so the refusal re-routes by construction —
+    // and ONE deduped attention item gives the operator a heads-up. DARK by
+    // default (provider unset or enabled:false → strict no-op); single-machine
+    // agents always hold the lease, so the guard never fires.
+    if (job.writesState && this.roleGuardProvider) {
+      let guard: { enabled: boolean; holdsLease: boolean };
+      try {
+        guard = this.roleGuardProvider();
+      } catch {
+        // @silent-fallback-ok — a throwing provider must never gate a job: the
+        // guard is an additive safety, and a broken provider degrades to today's
+        // behavior (spawn proceeds) rather than wedging the scheduler.
+        guard = { enabled: false, holdsLease: true };
+      }
+      if (guard.enabled && !guard.holdsLease) {
+        this.skipLedger.recordSkip(slug, 'role-guard');
+        console.log(`[scheduler] Job "${slug}" refused at spawn boundary — state-writing job on a read-only standby (not the lease-holder).`);
+        this.state.appendEvent({
+          type: 'job_skipped',
+          summary: `Job "${slug}" refused — state-writing job not allowed on a read-only standby`,
+          timestamp: new Date().toISOString(),
+          metadata: { slug, reason, gateReason: 'role-guard', writesState: true },
+        });
+        try {
+          this.roleGuardAttention?.(slug, this.machineId);
+        } catch {
+          // @silent-fallback-ok — the attention heads-up is best-effort; the
+          // refusal above is the load-bearing safety and already happened.
+        }
+        return 'skipped';
+      }
     }
 
     // Multi-machine claim check (Phase 4C — Gap 5)

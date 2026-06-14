@@ -357,6 +357,18 @@ export interface JobDefinition {
    *  re-run must be a deliberate per-job choice. Older agents' job parsers
    *  ignore unknown fields (additive-safe). */
   resumeOnReap?: boolean;
+  /** MULTI-MACHINE-SEAMLESSNESS-SPEC §WS4.3 role-guard-at-spawn — opt this job
+   *  IN as a STATE-WRITING job. A state-writing job mutates shared/replicated
+   *  state that only the writable owner (the lease-holder) may touch; it must
+   *  NOT spawn on a read-only standby. When `multiMachine.seamlessness.ws43RoleGuard`
+   *  is on and this machine does not hold the lease, the scheduler refuses the
+   *  spawn at the spawn boundary (the TOCTOU re-check — a machine awake at boot
+   *  can demote mid-run while its cron tasks keep firing). The writable owner's
+   *  own scheduler runs the job (the cron fires on every machine; only the
+   *  owner's pass clears the guard), so the refusal re-routes by construction.
+   *  Default-absent = NOT state-writing → never guarded (additive-safe; older
+   *  agents' parsers ignore the unknown field). */
+  writesState?: boolean;
   /** Tags for filtering/grouping */
   tags?: string[];
   /** Telegram topic ID this job reports to (auto-created if not set) */
@@ -1037,6 +1049,7 @@ export type SkipReason =
   | 'claimed'         // Another machine already claimed this job (Phase 4C — Gap 5)
   | 'machine-scope'   // Job is scoped to a different machine
   | 'already-running' // A live session already holds this jobSlug (june15-headless-spawn-reroute O3: per-slug double-run guard)
+  | 'role-guard'      // WS4.3: state-writing job refused on a read-only standby (not the lease-holder)
   | 'gate';           // Gate command returned non-zero (nothing to do)
 
 /**
@@ -2149,6 +2162,17 @@ export interface MultiMachineConfig {
      * config defaults (the gate decides) — a literal `false` would force-dark dev.
      */
     ws44PoolLinks?: boolean;
+    /**
+     * WS4.3 role-guard-at-spawn (§WS4.3 / F8, F21; CMT-1416). When on, the
+     * scheduler refuses to spawn a STATE-WRITING job (JobDefinition.writesState)
+     * on a machine that does NOT hold the lease — the spawn-boundary TOCTOU
+     * re-check that closes the window where a machine awake at boot demotes to a
+     * read-only standby mid-run while its cron tasks keep firing. DEFAULT
+     * (undefined/false) = strict no-op (byte-for-byte today's behavior). The
+     * writable owner's own scheduler runs the job; a refusal raises ONE deduped
+     * attention item. Single-machine agents always hold the lease → never fires.
+     */
+    ws43RoleGuard?: boolean;
     /**
      * WS4.4 (f) load-shed: when the fronting machine is over this 1-min
      * load-per-core threshold, holder-resolution serves the last-cached

@@ -5524,6 +5524,22 @@ Strip the \`[telegram:N]\` prefix before interpreting the message. Respond natur
       result.upgraded.push('CLAUDE.md: added Job Scheduler pool-scope bullet (WS4.3)');
     }
 
+    // WS4.3 follow-up (CMT-1416) — role-guard-at-spawn awareness. A deployed
+    // agent whose CLAUDE.md already carries the Job Scheduler section gets the
+    // role-guard bullet inserted after the /jobs Trigger line. Content-sniff on
+    // 'ws43RoleGuard' (flag-qualified) keeps it idempotent.
+    if (content.includes('**Job Scheduler**') && !content.includes('ws43RoleGuard')) {
+      const roleGuardBullet = `- **Role-guard-at-spawn (WS4.3, ships DARK behind \`multiMachine.seamlessness.ws43RoleGuard\`):** a job marked \`"writesState": true\` in \`.instar/jobs.json\` is STATE-WRITING — it mutates shared/replicated state only the lease-holder may touch. When the flag is on and this machine is a read-only standby (does NOT hold the lease), the scheduler REFUSES to spawn that job at the spawn boundary (recorded as a \`role-guard\` skip) and raises ONE deduped attention item ("Job X could not run on this machine"). This closes the TOCTOU window where a machine awake at boot demotes mid-run while its cron tasks keep firing. The writable owner's own scheduler runs the job, so the refusal re-routes by construction. When the flag is off, or on a single-machine agent (always the lease-holder), the guard is a strict no-op. If the user asks "why didn't job X run on machine Y?" → check the \`role-guard\` skip ledger + the attention item; Y is a read-only standby for that work.\n`;
+      const rgAnchor = /^- Trigger:[^\n]*\/jobs\/SLUG\/trigger[^\n]*$/m;
+      if (rgAnchor.test(content)) {
+        content = content.replace(rgAnchor, (m) => `${m}\n${roleGuardBullet.trimEnd()}`);
+      } else {
+        content = content.replace(/\*\*Job Scheduler\*\*[^\n]*\n/, (m) => `${m}${roleGuardBullet}`);
+      }
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Job Scheduler role-guard-at-spawn bullet (WS4.3 follow-up, CMT-1416)');
+    }
+
     // Tunnel-failure-resilience awareness (spec Part 7). Existing agents
     // already have the Cloudflare Tunnel section but not the resilience
     // text — content-sniff and append a bullet so they can explain a link

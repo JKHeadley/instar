@@ -5385,6 +5385,34 @@ export async function startServer(options: StartOptions): Promise<void> {
         if (topicMemory?.isReady()) {
           scheduler.setTopicMemory(topicMemory);
         }
+        // WS4.3 role-guard-at-spawn (MULTI-MACHINE-SEAMLESSNESS-SPEC §WS4.3,
+        // CMT-1416). The provider is read LIVE at each spawn boundary: `enabled`
+        // from multiMachine.seamlessness.ws43RoleGuard (DARK default), `holdsLease`
+        // from the coordinator's structural lease verdict — so a mid-run demotion
+        // takes effect immediately. The attention callback raises ONE per-slug
+        // deduped item (createAttentionItem dedups on id) so the operator learns a
+        // state-writing job could not run on this read-only standby; it is
+        // best-effort (the refusal itself is the load-bearing safety).
+        const telegramForRoleGuard = telegram; // const-narrow for the closure
+        scheduler.setRoleGuard(
+          () => ({
+            enabled: config.multiMachine?.seamlessness?.ws43RoleGuard === true,
+            holdsLease: coordinator.holdsLease(),
+          }),
+          (slug, machineId) => {
+            void telegramForRoleGuard.createAttentionItem({
+              id: `agent:ws43-role-guard:${slug}`,
+              title: `Job "${slug}" could not run on this machine`,
+              summary: 'State-writing job refused on a read-only standby (not the lease-holder).',
+              description: `The scheduled job "${slug}" writes shared state, so it may only run on the machine that holds the lease. This machine (${machineId ?? 'unknown'}) is a read-only standby, so the spawn was refused at the spawn boundary. The writable owner's scheduler runs the job; no action is needed unless no writable machine exists.`,
+              category: 'system',
+              priority: 'LOW',
+              sourceContext: 'ws43-role-guard',
+              lane: 'agent-health',
+              healthKey: `ws43-role-guard:${slug}`,
+            }).catch(() => { /* @silent-fallback-ok — best-effort heads-up; refusal already enforced */ });
+          },
+        );
       }
 
       // Ensure Agent Attention topic exists (the agent's direct line to the user)

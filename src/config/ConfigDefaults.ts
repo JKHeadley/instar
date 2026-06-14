@@ -722,6 +722,19 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       // remote-ack precedence guard is a no-op; single-machine agents are a
       // strict no-op even when on (no peers to route to).
       ws41DurableAck: false,
+      // WS4.3 role-guard-at-spawn (CMT-1416 follow-up to the merged WS4.3 jobs
+      // read-side, PR #1104). When on, the scheduler refuses to spawn a
+      // STATE-WRITING job (JobDefinition.writesState) on a machine that does NOT
+      // hold the lease — the spawn-boundary re-check that closes the TOCTOU hole
+      // where a machine awake at boot demotes to read-only standby mid-run while
+      // its cron tasks keep firing (the scheduler is constructed only when awake
+      // but is never torn down on demotion). DARK default; a plain seamlessness
+      // boolean (read live at the triggerJob spawn boundary), mirroring the
+      // ws41DurableAck sibling — NOT named `enabled`, so it is outside the
+      // dev-agent dark-gate lint. When off, the guard is a strict no-op
+      // (byte-for-byte today's behavior). Single-machine agents always hold the
+      // lease, so the guard never fires there even when on.
+      ws43RoleGuard: false,
       // WS4.4 "links that survive machine boundaries". DEV-AGENT DARK GATE:
       // `ws44PoolLinks` is DELIBERATELY OMITTED here (not hardcoded false) so
       // resolveDevAgentGate decides at runtime — LIVE on a development agent

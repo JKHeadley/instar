@@ -338,21 +338,24 @@ describe('lint-dev-agent-dark-gate', () => {
       '608': 'mentee.enabled',
       // WS4.1-durable-ack (CMT-1416) inserts a plain `ws41DurableAck: false`
       // seamlessness boolean (NOT `enabled:`, so the attributor ignores it) above
-      // sessionPool — shifting every sessionPool-onward `enabled: false` line +11.
+      // sessionPool. WS4.3-role-guard (CMT-1416) inserts another plain
+      // `ws43RoleGuard: false` seamlessness boolean (also NOT `enabled:`, ignored
+      // by the attributor) above sessionPool — together shifting every
+      // sessionPool-onward `enabled: false` line +13 from the pre-WS4.3 map.
       // RE-VERIFIED by hand via the attributor on the merged ConfigDefaults.
-      '738': 'multiMachine.sessionPool.enabled',
-      '763': 'multiMachine.sessionPool.inboundQueue.enabled',
-      '792': 'multiMachine.sessionPool.holdForStability.enabled',
-      '883': 'multiMachine.stateSync.preferences.enabled',
-      '897': 'multiMachine.stateSync.relationships.enabled',
-      '911': 'multiMachine.stateSync.learnings.enabled',
-      '926': 'multiMachine.stateSync.knowledge.enabled',
-      '940': 'multiMachine.stateSync.evolutionActions.enabled',
-      '954': 'multiMachine.stateSync.userRegistry.enabled',
-      '969': 'multiMachine.stateSync.topicOperator.enabled',
-      '1077': 'cartographer.freshnessSweep.enabled',
-      '1122': 'cartographer.conformanceAudit.llmEnrichment.enabled',
-      '1147': 'cartographer.subtreeNav.llmRerank.enabled',
+      '751': 'multiMachine.sessionPool.enabled',
+      '776': 'multiMachine.sessionPool.inboundQueue.enabled',
+      '805': 'multiMachine.sessionPool.holdForStability.enabled',
+      '896': 'multiMachine.stateSync.preferences.enabled',
+      '910': 'multiMachine.stateSync.relationships.enabled',
+      '924': 'multiMachine.stateSync.learnings.enabled',
+      '939': 'multiMachine.stateSync.knowledge.enabled',
+      '953': 'multiMachine.stateSync.evolutionActions.enabled',
+      '967': 'multiMachine.stateSync.userRegistry.enabled',
+      '982': 'multiMachine.stateSync.topicOperator.enabled',
+      '1090': 'cartographer.freshnessSweep.enabled',
+      '1135': 'cartographer.conformanceAudit.llmEnrichment.enabled',
+      '1160': 'cartographer.subtreeNav.llmRerank.enabled',
     };
     const actual = attributeRealConfigDefaults();
     expect(actual).toEqual(EXPECTED);
