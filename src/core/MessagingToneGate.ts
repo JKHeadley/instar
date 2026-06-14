@@ -75,6 +75,8 @@ const VALID_RULES = new Set([
   'B16_UNVERIFIED_WALL',
   'B17_FALSE_BLOCKER',
   'B18_AUTONOMY_STOP',
+  'B19_PARKED_ON_USER',
+  'B20_INTERNAL_ID_LEAK',
 ]);
 
 export interface ToneReviewContextMessage {
@@ -199,6 +201,28 @@ export interface ToneReviewSignals {
     detected: boolean;
     /** First offending path, bounded to 120 chars by the detector. */
     match?: string;
+  };
+  /**
+   * Parked-on-user detector signal (C1+C2 §4.3, B-PARK; src/core/parked-on-user.ts).
+   * SIGNAL ONLY — flags outbound text that defers an action onto the user. The
+   * authority decides whether the deferral is illegitimate (an action the agent
+   * could own → reframe to agent-owned) vs. a genuine value/taste/spend decision
+   * that is legitimately the user's (→ pass). Fail toward sending.
+   */
+  parkedOnUser?: {
+    parked: boolean;
+    phrase?: string;
+  };
+  /**
+   * Internal-ID leak detector signal (C1+C2 §4.3, B-IDLEAK; src/core/internal-id-leak.ts).
+   * SIGNAL ONLY, jargon-class — flags raw internal plumbing tokens (CMT-\d+,
+   * dryRun, sentinel/gate names, endpoints) in unsolicited agent-initiated text.
+   * Does NOT replace redactSecrets / guardProxyOutput. A direct answer to a user
+   * who explicitly asked for an identifier should pass.
+   */
+  internalIdLeak?: {
+    leaked: boolean;
+    terms?: string[];
   };
 }
 
@@ -432,6 +456,21 @@ These rules only fire when the producer has explicitly marked the candidate as a
 
   Severity: favor FALSE-NEGATIVES over false-positives, exactly like B15/B16/B17. A stop after a built artifact, a stop on a genuine operator-only residual, and a duration/emergency stop MUST pass. Block only the clear pattern: an autonomous run halting on a judgment/engineering reason with no derived standard, no artifact, and no operator-only residual shown.
 
+- **B19_PARKED_ON_USER** — the candidate DEFERS a concrete follow-up ACTION onto the user that the AGENT could own itself ("I'll leave the restart to you", "ping me when you want me to run it", "remember to flip the switch", "your call whether to deploy"), AND the parked-on-user detector signal is set. This catches the C1+C2 "The Agent Carries the Loop" anti-pattern — the agent quietly handing its own follow-through back to the human. Apply ONLY when the deferred thing is an ACTION the agent has the means to do itself.
+
+  CARVE-OUTS — do NOT apply B19 if ANY holds:
+  - GENUINE USER DECISION: the deferred thing is a value/taste/spend/priority/risk judgment legitimately the user's (the human-only set) — "which option do you prefer?", "is this worth the cost?". The agent SHOULD defer those.
+  - AUTHORIZATION ASK: the message is the one-shot surfacing of a genuine authorization the agent lacks ("I need your approval to move real credentials") — the correct C2 surface, not a park.
+  - The user explicitly asked to be the one to do it, or to be pinged; or the message is DISCUSSING this rule/principle.
+
+  Severity: favor FALSE-NEGATIVES (fail toward sending). Block ONLY the clear pattern — an ownable action handed to the user with the signal set and no carve-out — and suggest reframing as agent-owned ("I'll do X and report back"). When uncertain, PASS.
+
+- **B20_INTERNAL_ID_LEAK** — the candidate leaks raw instar-internal plumbing into user-facing text — a commitment/action id ("CMT-1494"), a dryRun flag, a sentinel/gate/endpoint name ("ContextWedgeSentinel", "/commitments/:id/probe") the user has no path to act on — AND the internal-id-leak detector signal is set. The "I'm not even sure what CMT is" anti-pattern: internal plumbing surfaced as if user-meaningful. JARGON-class — does NOT replace secret/path redaction (enforced separately).
+
+  Do NOT apply B20 if: the user EXPLICITLY asked for the identifier (a direct answer to "what's the commitment id?" passes), or the message is discussing internals the user opted into.
+
+  Severity: favor FALSE-NEGATIVES. Block ONLY unsolicited agent-initiated plumbing-leak with the signal set, and suggest restating in plain English the user can act on. When uncertain, PASS.
+
 ## STYLE rule — applies ONLY when a TARGET STYLE is configured below:
 
 - **B11_STYLE_MISMATCH** — the message significantly mismatches the agent's configured TARGET STYLE (see section below). This rule is generic — the target style is a free-text description the operator sets in config. Apply the rule when: (1) a target style is provided (not empty), AND (2) the candidate message clearly violates the style's stated intent in a way the target user would notice and find jarring.
@@ -493,7 +532,7 @@ ${JSON.stringify(text)}
   }
 
   private renderSignals(signals?: ToneReviewSignals): string {
-    if (!signals || (!signals.junk && !signals.duplicate && !signals.paraphrase && !signals.jargon && !signals.selfHeal && !signals.arcCheck && !signals.filePath)) {
+    if (!signals || (!signals.junk && !signals.duplicate && !signals.paraphrase && !signals.jargon && !signals.selfHeal && !signals.arcCheck && !signals.filePath && !signals.parkedOnUser && !signals.internalIdLeak)) {
       return '\n=== UPSTREAM SIGNALS ===\n(no signals reported)\n';
     }
     const lines: string[] = ['', '=== UPSTREAM SIGNALS ==='];
@@ -531,6 +570,19 @@ ${JSON.stringify(text)}
       // is rendered as an inert quoted token, never instruction-shaped prose.
       lines.push(
         `- raw-file-path detector (signal-only, anchors B2_FILE_PATH): detected=${signals.filePath.detected}${signals.filePath.match ? ` detected path: ${JSON.stringify(signals.filePath.match.slice(0, 120))}` : ''}`,
+      );
+    }
+    if (signals.parkedOnUser && signals.parkedOnUser.parked) {
+      // B-PARK is SIGNAL ONLY (C1+C2 §4.3). The phrase is an inert quoted token.
+      lines.push(
+        `- parked-on-user detector (signal-only, anchors B19_PARKED_ON_USER): parked=true${signals.parkedOnUser.phrase ? ` phrase: ${JSON.stringify(signals.parkedOnUser.phrase.slice(0, 60))}` : ''}`,
+      );
+    }
+    if (signals.internalIdLeak && signals.internalIdLeak.leaked) {
+      // B-IDLEAK is SIGNAL ONLY, jargon-class (C1+C2 §4.3). Does not replace redaction.
+      const terms = (signals.internalIdLeak.terms ?? []).slice(0, 12).join(', ');
+      lines.push(
+        `- internal-id-leak detector (signal-only, anchors B20_INTERNAL_ID_LEAK): leaked=true${terms ? ` terms=[${terms}]` : ''}`,
       );
     }
     if (signals.arcCheck && signals.arcCheck.fire) {

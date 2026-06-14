@@ -130,4 +130,57 @@ describe('Commitments API lifecycle', () => {
       .expect(200);
     expect(activeAfter.body.commitments.map((c: any) => c.id)).not.toContain(id);
   });
+
+  // ── C1+C2 "The Agent Carries the Loop" — feature is ALIVE (Testing Integrity
+  //    Tier 3): the owner⟂blockedOn fields + the new routes return real results
+  //    (not 404/503) through the production AgentServer wiring. ──
+  it('C1+C2: owner/blockedOn round-trip + probe + transition routes are alive', async () => {
+    const created = await request(app)
+      .post('/commitments')
+      .set(auth())
+      .send({
+        type: 'one-time-action',
+        userRequest: 'wait on CI to go green',
+        agentResponse: 'monitoring CI',
+        topicId: 459,
+        owner: 'agent',
+        blockedOn: 'external',
+      })
+      .expect(201);
+    expect(created.body.owner).toBe('agent');
+    expect(created.body.blockedOn).toBe('external');
+    const id = created.body.id;
+
+    // probe route alive — records lastProbe, resets the staleness window.
+    const probed = await request(app)
+      .post(`/commitments/${id}/probe`)
+      .set(auth())
+      .send({ checked: 'CI run #99', readinessSignal: 'all green' })
+      .expect(200);
+    expect(probed.body.probed).toBe(true);
+    expect(probed.body.lastProbe.checked).toBe('CI run #99');
+
+    // transition route alive — guarded in-place state change (re-runs the gate).
+    const transitioned = await request(app)
+      .post(`/commitments/${id}/transition`)
+      .set(auth())
+      .send({ blockedOn: 'none' })
+      .expect(200);
+    expect(transitioned.body.transitioned).toBe(true);
+    expect(transitioned.body.blockedOn).toBe('none');
+    expect(transitioned.body.id).toBe(id); // in place — no close-and-reopen
+
+    // forward gate over HTTP: user-authorization without actionClass → 400.
+    await request(app)
+      .post('/commitments')
+      .set(auth())
+      .send({
+        type: 'one-time-action',
+        userRequest: 'need approval',
+        agentResponse: 'awaiting your ok',
+        owner: 'user',
+        blockedOn: 'user-authorization',
+      })
+      .expect(400);
+  });
 });
