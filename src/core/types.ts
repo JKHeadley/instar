@@ -1958,6 +1958,11 @@ export interface MachineCapacity {
      *  → a fronting peer never proxies a /view to it (it stays local-only there).
      *  Advertised only when the dark ws44PoolLinks flag resolved on. */
     ws44PoolLinks?: boolean;
+    /** WS4.4 (f) global pool-cache unification (§WS4.4 clause (f)): this machine
+     *  routes its pool-scope per-peer fan-out through the shared PoolPollCache.
+     *  Advertised only when the dark ws44PoolCache flag resolved on; ABSENT/false
+     *  → the surfaces fan out per-route (today's behavior). */
+    ws44PoolCache?: boolean;
     /** WS2 replicated-store foundation (§10.2 capability advert). Per-store
      *  receive capability: `stateSyncReceive[store] === true` means this machine
      *  can durably RECEIVE + apply that store's replicated journal kind. ABSENT
@@ -2181,6 +2186,25 @@ export interface MultiMachineConfig {
      * cpuCriticalLoadPerCore default). Set 0 to disable load-shed (always fan out).
      */
     ws44LoadShedLoadPerCore?: number;
+    /**
+     * WS4.4 (f) global pool-cache unification (§WS4.4 clause (f); CMT-1416). When
+     * on, every pool-scope surface (sessions/jobs/attention/guards/…) routes its
+     * per-peer fan-out through ONE shared PoolPollCache so a dashboard polling
+     * several tabs hits each peer ONCE per interval instead of once per surface
+     * per client; over the load-shed threshold the cache serves last-cached
+     * (stale-tagged) instead of re-fanning. Resolved via resolveDevAgentGate():
+     * dark on the fleet, live on the dev agent. DELIBERATELY OMITTED from config
+     * defaults (the gate decides) — a literal `false` would force-dark dev. When
+     * off (or single-machine), surfaces keep their direct per-peer fetch
+     * (byte-for-byte today's behavior).
+     */
+    ws44PoolCache?: boolean;
+    /**
+     * WS4.4 (f) shared poll interval (ms): within this window a (peer, route)
+     * pair is served from the shared pool-cache without a network call. A
+     * tunable, not a gate. Default 3000 (matches the per-route pool caches).
+     */
+    ws44PoolCacheTtlMs?: number;
   };
 }
 

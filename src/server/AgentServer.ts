@@ -171,6 +171,7 @@ export class AgentServer {
   private poolStreamAllowRemoteInput = false;
   private poolStreamConnector?: import('./WebSocketManager.js').PoolStreamConnector;
   private poolLink?: import('./routes.js').RouteContext['poolLink'];
+  private poolPollCache?: import('./PoolPollCache.js').PoolPollCache | null;
   private meshSelfId?: string;
   private routeContext: {
     wsManager: import('./WebSocketManager.js').WebSocketManager | null;
@@ -408,6 +409,8 @@ export class AgentServer {
     listPoolMachines?: () => Array<{ machineId: string; nickname?: string; lastKnownUrl?: string | null }>;
     /** WS4.4 "links that survive machine boundaries" — fronting proxy + holder verification handle (MULTI-MACHINE-SEAMLESSNESS-SPEC §WS4.4). */
     poolLink?: import('./routes.js').RouteContext['poolLink'];
+    /** WS4.4(f) global pool-cache unification — the ONE shared per-peer poll cache pool-scope surfaces fan out through (MULTI-MACHINE-SEAMLESSNESS-SPEC §WS4.4 clause (f)). */
+    poolPollCache?: import('./PoolPollCache.js').PoolPollCache | null;
     /** Signed rollout-stage E2E result store (§Rollout). */
     sessionPoolE2EResultStore?: import('../core/SessionPoolE2EResultStore.js').SessionPoolE2EResultStore;
     localSigningKeyPem?: string;
@@ -600,6 +603,7 @@ export class AgentServer {
     this.poolStreamAllowRemoteInput = options.poolStreamAllowRemoteInput ?? false;
     this.poolStreamConnector = options.poolStreamConnector;
     this.poolLink = options.poolLink ?? undefined;
+    this.poolPollCache = options.poolPollCache ?? undefined;
     this.meshSelfId = options.meshSelfId ?? undefined;
     this.state = options.state;
     this.hookEventReceiver = options.hookEventReceiver ?? undefined;
@@ -1949,6 +1953,7 @@ export class AgentServer {
       guardRegistry: options.guardRegistry ?? null,
       listPoolMachines: options.listPoolMachines ?? null,
       poolLink: options.poolLink ?? null,
+      poolPollCache: options.poolPollCache ?? null,
       sessionPoolE2EResultStore: options.sessionPoolE2EResultStore ?? null,
       messageLedger: options.messageLedger ?? null,
       currentInboundByTopic: options.currentInboundByTopic ?? null,

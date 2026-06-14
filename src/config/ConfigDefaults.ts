@@ -746,6 +746,23 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       // resolution serves last-cached (stale-tagged) instead of re-fanning-out.
       // (A tunable, not a gate — a concrete default is correct here.)
       ws44LoadShedLoadPerCore: 1.5,
+      // WS4.4 (f) global pool-cache unification (CMT-1416 follow-up). DEV-AGENT
+      // DARK GATE: `ws44PoolCache` is DELIBERATELY OMITTED here (not hardcoded
+      // false) so resolveDevAgentGate decides at runtime — LIVE on a development
+      // agent (dogfooding), DARK on the fleet until explicitly flipped on.
+      // Hardcoding `false` would force-dark even a dev agent (the PR #1001 bug).
+      // Registered in DEV_GATED_FEATURES (src/core/devGatedFeatures.ts). When
+      // ON, every pool-scope surface (sessions/jobs/attention/guards/…) routes
+      // its per-peer fan-out through ONE shared PoolPollCache so a dashboard
+      // polling several tabs hits each peer ONCE per interval instead of once
+      // per surface per client; over the load-shed threshold the cache serves
+      // last-cached (stale-tagged) instead of re-fanning. When dark, surfaces
+      // keep their existing direct per-peer fetch (byte-for-byte today's
+      // behavior). NOT named `enabled`, so it is outside the dark-gate lint.
+      // ws44PoolCache DELIBERATELY OMITTED — see comment above.
+      // The shared poll interval (ms). Within this window a (peer, route) pair
+      // is served from cache without a network call. A tunable, not a gate.
+      ws44PoolCacheTtlMs: 3000,
     },
     sessionPool: {
       enabled: false,

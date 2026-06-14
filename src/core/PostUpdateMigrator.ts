@@ -136,6 +136,27 @@ export function migrateConfigWs44PoolLinks(config: Record<string, unknown>): boo
 }
 
 /**
+ * WS4.4(f) global pool-cache unification (CMT-1416). Same omitted-gate invariant
+ * as ws44PoolLinks: `ws44PoolCache` is a dev-gated dark flag resolved via
+ * resolveDevAgentGate(), so the config must OMIT it (present on a dev agent ⇒
+ * live, absent on the fleet ⇒ dark). An existing agent that somehow carries a
+ * default-shaped literal `false` would force-dark even a dev agent — strip it so
+ * the gate resolves correctly. An explicit `true` (operator fleet-flip) is
+ * preserved. Idempotent + existence-checked.
+ */
+export function migrateConfigWs44PoolCache(config: Record<string, unknown>): boolean {
+  const mm = config.multiMachine as Record<string, unknown> | undefined;
+  if (!mm || typeof mm !== 'object') return false;
+  const seam = mm.seamlessness as Record<string, unknown> | undefined;
+  if (!seam || typeof seam !== 'object') return false;
+  if (!Object.prototype.hasOwnProperty.call(seam, 'ws44PoolCache')) return false;
+  if (seam.ws44PoolCache !== false) return false;
+  delete seam.ws44PoolCache;
+  if (Object.keys(seam).length === 0) delete mm.seamlessness;
+  return true;
+}
+
+/**
  * Live credential re-pointing was re-gated from DARK_GATE_EXCLUSIONS (off+dry-run for
  * everyone) to the developmentAgent gate (live-on-dev in dry-run, dark fleet) per the
  * 2026-06-13 operator directive. Existing agents that ran the old ConfigDefaults carry an
@@ -4121,6 +4142,23 @@ Security model (what to tell the user if asked "is a shared link safe across my 
       result.upgraded.push('CLAUDE.md: added WS4.4 links-that-survive-machine-boundaries section');
     }
 
+    // WS4.4(f) global pool-cache unification (CMT-1416): existing agents need to
+    // know pool-scope views share ONE per-peer poll cache (less egress) and may
+    // serve last-cached tagged `stale: true` under CPU load-shed, plus the
+    // /pool/poll-cache observability route. Content-sniffed for idempotency.
+    if (!content.includes('Shared pool-cache (WS4.4(f)')) {
+      const ws44fSection = `
+### Shared pool-cache (WS4.4(f) — one fan-out feeds every pool-scope view)
+
+When I run on more than one machine and a dashboard polls several pool-scope tabs at once (sessions / jobs / attention / guards, each \`?scope=pool\`), I no longer hit every peer once PER tab PER poll. All those surfaces share ONE per-peer poll cache, so each peer is queried once per interval and the result feeds every view — far less wasted egress + peer CPU. When the fronting machine is over a CPU load-shed threshold, a pool view serves its last-cached peer data tagged \`stale: true\` instead of re-fanning (honest load-shedding, never silent staleness). Ships DARK behind \`multiMachine.seamlessness.ws44PoolCache\` (dev-agent gated); a single-machine agent is a no-op (no peers).
+- **See the cache:** \`curl -H "Authorization: Bearer $AUTH" http://localhost:4042/pool/poll-cache\` → \`{ ttlMs, loadShedPerCore, loadPerCore, loadShedding, cachedKeys, inflight, stats: { fetches, cacheHits, loadSheds, coalesced, errors } }\` (503 when the flag is dark on this agent).
+- **Proactive trigger:** user asks "why does this pool view say stale?" → I'm load-shedding under CPU pressure and serving last-cached peer data (read \`/pool/poll-cache\` → \`loadShedding\`); "why is the dashboard hammering my other machines?" → with this on, it doesn't — each peer is polled once per interval and shared. Spec: \`docs/specs/MULTI-MACHINE-SEAMLESSNESS-SPEC.md\` §WS4.4 clause (f).
+`;
+      content += '\n' + ws44fSection;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added WS4.4(f) shared pool-cache section');
+    }
+
     // CMT-519 — Threadline hub topic + "open this"/bind guidance. Existing agents
     // need to know threadline notices route parent-or-hub (never per-event topics)
     // and that "open this" / "tie this to X" in the hub means calling the bind
@@ -6410,6 +6448,15 @@ Create worktrees for collaborator repos with \`instar worktree create <branch>\`
       // Metrics precedent; each CLAUDE.md contains exactly one, so the other no-ops.
       '**Links that survive machine boundaries (WS4.4',
       '### Links that survive machine boundaries (WS4.4',
+      // WS4.4(f) shared pool-cache (MULTI-MACHINE-SEAMLESSNESS-SPEC §WS4.4 (f)):
+      // framework-agnostic — a Codex/Gemini agent fronting a multi-machine pool
+      // must know pool-scope views share one per-peer poll cache (less egress)
+      // and may serve last-cached tagged stale under CPU load-shed, so it answers
+      // "why does this pool view say stale?" instead of guessing. Two tail-
+      // truncated variants cover both deployed forms (templates' bold block +
+      // migrateClaudeMd's H3); each CLAUDE.md contains exactly one, so the other no-ops.
+      '**Shared pool-cache (WS4.4(f)',
+      '### Shared pool-cache (WS4.4(f)',
       // One Memory (replicated stores) — multi-machine-replicated-store-foundation
       // §7: framework-agnostic — a Codex/Gemini agent on a multi-machine pool must
       // know stores replicate with a no-clobber union + operator-resolved conflicts
@@ -7195,6 +7242,16 @@ Create worktrees for collaborator repos with \`instar worktree create <branch>\`
       result.upgraded.push('config.json: stripped default-shaped multiMachine.seamlessness.ws44PoolLinks=false so the developmentAgent gate resolves it live');
     } else {
       result.skipped.push('config.json: multiMachine.seamlessness.ws44PoolLinks dev-gate already correct (omitted or operator-set)');
+    }
+
+    // WS4.4(f) global pool-cache unification (CMT-1416) — same omitted-gate
+    // invariant as ws44PoolLinks: strip a default-shaped literal `false` so the
+    // developmentAgent gate resolves it (live on dev, dark on the fleet).
+    if (migrateConfigWs44PoolCache(config)) {
+      patched = true;
+      result.upgraded.push('config.json: stripped default-shaped multiMachine.seamlessness.ws44PoolCache=false so the developmentAgent gate resolves it live');
+    } else {
+      result.skipped.push('config.json: multiMachine.seamlessness.ws44PoolCache dev-gate already correct (omitted or operator-set)');
     }
 
     // Live credential re-pointing re-gated to the developmentAgent gate (2026-06-13 operator

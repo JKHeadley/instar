@@ -122,6 +122,12 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     justification: 'Fronting machine is a dumb relay (holder authorizes); the proxied request carries a short-lived, audience-bound, single-use, mesh-signed user-auth assertion — never the raw PIN; private bodies never cached; single-machine = no-op. No destructive action, no third-party spend.',
   },
   {
+    name: 'ws44PoolCache',
+    configPath: 'multiMachine.seamlessness.ws44PoolCache',
+    description: 'WS4.4(f) global pool-cache unification — every pool-scope surface (sessions/jobs/attention/guards/…) routes its per-peer fan-out through ONE shared PoolPollCache so each peer is hit once per interval, not once per surface per client; over the load-shed threshold the cache serves last-cached (stale-tagged) instead of re-fanning.',
+    justification: 'Pure read-side observability/efficiency: caches only peer route bodies the surfaces ALREADY fetch over the mesh, introduces NO new authority, NEVER mutates, never caches private end-user content; a failed fetch is never cached; single-machine = no-op (no peers). No destructive action, no third-party spend.',
+  },
+  {
     name: 'canonicalHistoryConversationDiscipline',
     configPath: 'threadline.canonicalHistory.conversationDiscipline.enabled',
     description:

@@ -1064,6 +1064,15 @@ export interface RouteContext {
   /** Every OTHER registered, non-revoked machine with a known URL — for pool-wide
    *  aggregation (GET /sessions?scope=pool). Null/absent (single-machine/dark). */
   resolvePeerUrls?: (() => Array<{ machineId: string; url: string }>) | null;
+  /** WS4.4(f) global pool-cache unification (MULTI-MACHINE-SEAMLESSNESS-SPEC
+   *  §WS4.4 clause (f)): the ONE shared per-peer poll cache that every
+   *  pool-scope surface routes its per-peer fetch through, so a dashboard
+   *  polling several tabs hits each peer once per interval instead of once per
+   *  surface per client (and serves last-cached under CPU load-shed). Constructed
+   *  in the mesh block ONLY when the dark `ws44PoolCache` flag resolves on; null
+   *  ⇒ surfaces keep their existing direct per-peer fetch (byte-for-byte today's
+   *  behavior). Single-machine has no peers, so it is a strict no-op there. */
+  poolPollCache?: import('./PoolPollCache.js').PoolPollCache | null;
   /** Guard runtime registry (GUARD-POSTURE-ENDPOINT-SPEC §2.1) — boot-time
    *  self-registered sync getters behind GET /guards. Null/absent → the route
    *  still serves the config-derived inventory (every guard on-unverified at
@@ -8376,6 +8385,9 @@ export function createRoutes(ctx: RouteContext): Router {
     const peers = ctx.resolvePeerUrls?.() ?? [];
     const failed: Array<{ machineId: string; error: string }> = [];
     const remote: Array<Record<string, unknown>> = [];
+    // WS4.4(f): set true when ANY peer body was served stale by the shared
+    // pool-cache under CPU load-shed — surfaced as an honest `pool.stale` tag.
+    let poolStale = false;
     // Per-machine declared/running view feeding the F8 divergence detector.
     const perMachine: Array<{ machineId: string; nickname?: string | null; jobs: Array<Record<string, unknown>> }> = [
       { machineId: selfMachineId ?? '(self)', nickname: selfNickname, jobs: localJobs },
@@ -8390,13 +8402,29 @@ export function createRoutes(ctx: RouteContext): Router {
           return;
         }
         try {
-          // Peers are called WITHOUT scope=pool — no recursion.
-          const r = await fetch(`${p.url}/jobs`, {
-            headers: { Authorization: `Bearer ${ctx.config.authToken}` },
-            signal: AbortSignal.timeout(JOBS_PEER_TIMEOUT_MS),
-          });
-          if (!r.ok) throw new Error(`HTTP ${r.status}`);
-          const body = (await r.json()) as { jobs?: Array<Record<string, unknown>> };
+          // The actual peer fetch — called WITHOUT scope=pool (no recursion).
+          const fetchPeerJobs = async () => {
+            const r = await fetch(`${p.url}/jobs`, {
+              headers: { Authorization: `Bearer ${ctx.config.authToken}` },
+              signal: AbortSignal.timeout(JOBS_PEER_TIMEOUT_MS),
+            });
+            if (!r.ok) throw new Error(`HTTP ${r.status}`);
+            return (await r.json()) as { jobs?: Array<Record<string, unknown>> };
+          };
+          // WS4.4(f): when the shared pool-cache is wired (dark flag on), route
+          // the per-peer fetch through it so two pool-scope surfaces hitting the
+          // SAME peer in the same poll window share ONE fan-out, and a CPU
+          // load-shed serves last-cached (stale-tagged) instead of re-fanning.
+          // When null (flag dark / single-machine), call the fetcher directly —
+          // byte-for-byte today's behavior.
+          let body: { jobs?: Array<Record<string, unknown>> };
+          if (ctx.poolPollCache) {
+            const res = await ctx.poolPollCache.fetchPeer(p.machineId, '/jobs', fetchPeerJobs);
+            body = res.body;
+            if (res.stale) poolStale = true;
+          } else {
+            body = await fetchPeerJobs();
+          }
           const nickname = cap?.nickname ?? null;
           const peerJobs = body.jobs ?? [];
           perMachine.push({ machineId: p.machineId, nickname, jobs: peerJobs });
@@ -8433,6 +8461,10 @@ export function createRoutes(ctx: RouteContext): Router {
         peersOk: peers.length - failed.length,
         failed,
         divergences: detectJobDivergences(perMachine),
+        // WS4.4(f): honestly labeled when the shared pool-cache served any peer
+        // body from its last-cached value under CPU load-shed (load-shed, never
+        // silent stale). Absent/false ⇒ every peer body in this merge is fresh.
+        ...(poolStale ? { stale: true } : {}),
       },
     };
     jobsPoolCache.set(cacheKey, { at: Date.now(), payload });
@@ -11505,6 +11537,26 @@ export function createRoutes(ctx: RouteContext): Router {
         : null,
       machines,
     });
+  });
+
+  // GET /pool/poll-cache — WS4.4(f) global pool-cache observability
+  // (MULTI-MACHINE-SEAMLESSNESS-SPEC §WS4.4 clause (f)). Read-only: reports
+  // whether the shared per-peer poll cache is wired, its TTL + load-shed
+  // threshold, the live load-per-core, whether it is currently load-shedding,
+  // and the cumulative counters (fan-outs avoided via cache hits + load-sheds,
+  // single-flight coalesces). 503 while the dark `ws44PoolCache` flag is off
+  // (the ships-dark contract — like /pool/queue), so the route's presence
+  // honestly reflects whether the unification is engaged on this agent.
+  router.get('/pool/poll-cache', (_req, res) => {
+    if (!ctx.poolPollCache) {
+      res.status(503).json({
+        enabled: false,
+        error:
+          'pool-cache unification not enabled on this agent (ships dark; multiMachine.seamlessness.ws44PoolCache — dev-agent gated)',
+      });
+      return;
+    }
+    res.json(ctx.poolPollCache.snapshot());
   });
 
   // GET /pool/queue — Durable Inbound Message Queue observability (spec

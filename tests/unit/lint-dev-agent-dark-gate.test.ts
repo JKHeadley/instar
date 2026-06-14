@@ -340,22 +340,25 @@ describe('lint-dev-agent-dark-gate', () => {
       // seamlessness boolean (NOT `enabled:`, so the attributor ignores it) above
       // sessionPool. WS4.3-role-guard (CMT-1416) inserts another plain
       // `ws43RoleGuard: false` seamlessness boolean (also NOT `enabled:`, ignored
-      // by the attributor) above sessionPool — together shifting every
-      // sessionPool-onward `enabled: false` line +13 from the pre-WS4.3 map.
-      // RE-VERIFIED by hand via the attributor on the merged ConfigDefaults.
-      '751': 'multiMachine.sessionPool.enabled',
-      '776': 'multiMachine.sessionPool.inboundQueue.enabled',
-      '805': 'multiMachine.sessionPool.holdForStability.enabled',
-      '896': 'multiMachine.stateSync.preferences.enabled',
-      '910': 'multiMachine.stateSync.relationships.enabled',
-      '924': 'multiMachine.stateSync.learnings.enabled',
-      '939': 'multiMachine.stateSync.knowledge.enabled',
-      '953': 'multiMachine.stateSync.evolutionActions.enabled',
-      '967': 'multiMachine.stateSync.userRegistry.enabled',
-      '982': 'multiMachine.stateSync.topicOperator.enabled',
-      '1090': 'cartographer.freshnessSweep.enabled',
-      '1135': 'cartographer.conformanceAudit.llmEnrichment.enabled',
-      '1160': 'cartographer.subtreeNav.llmRerank.enabled',
+      // by the attributor) above sessionPool. WS4.4(f) pool-cache unification
+      // (CMT-1416) inserts a 17-line seamlessness block (the OMITTED `ws44PoolCache`
+      // dev-gate comment + the plain `ws44PoolCacheTtlMs: 3000` tunable — neither is
+      // an `enabled:` path, so the attributor ignores both) above sessionPool,
+      // shifting every sessionPool-onward `enabled: false` line +17 from the
+      // pre-WS4.4(f) map. RE-VERIFIED by hand via the attributor on the merged ConfigDefaults.
+      '768': 'multiMachine.sessionPool.enabled',
+      '793': 'multiMachine.sessionPool.inboundQueue.enabled',
+      '822': 'multiMachine.sessionPool.holdForStability.enabled',
+      '913': 'multiMachine.stateSync.preferences.enabled',
+      '927': 'multiMachine.stateSync.relationships.enabled',
+      '941': 'multiMachine.stateSync.learnings.enabled',
+      '956': 'multiMachine.stateSync.knowledge.enabled',
+      '970': 'multiMachine.stateSync.evolutionActions.enabled',
+      '984': 'multiMachine.stateSync.userRegistry.enabled',
+      '999': 'multiMachine.stateSync.topicOperator.enabled',
+      '1107': 'cartographer.freshnessSweep.enabled',
+      '1152': 'cartographer.conformanceAudit.llmEnrichment.enabled',
+      '1177': 'cartographer.subtreeNav.llmRerank.enabled',
     };
     const actual = attributeRealConfigDefaults();
     expect(actual).toEqual(EXPECTED);
