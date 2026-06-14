@@ -96,6 +96,7 @@ import { SessionRecovery } from '../monitoring/SessionRecovery.js';
 import { MultiMachineCoordinator } from '../core/MultiMachineCoordinator.js';
 import { MachineIdentityManager } from '../core/MachineIdentity.js';
 import { isRemotelyHandled } from '../core/SessionRouter.js';
+import { isSlackSessionKey, reconstructSlackMessage } from '../core/SlackForwardBridge.js';
 import { formatForwardedTopicContext } from '../core/ForwardedTopicContext.js';
 import { resolveAdvertisedMeshUrl, advertiseSelfMeshUrl } from '../core/MeshUrlAdvertiser.js';
 import { relayOutbound } from '../core/TelegramRelay.js';
@@ -627,6 +628,13 @@ let _projectDir: string = process.cwd();
 let _sharedIntelligence: import('../core/types.js').IntelligenceProvider | null = null;
 let _selfKnowledgeTree: SelfKnowledgeTree | null = null;
 let _slackAdapter: import('../messaging/slack/SlackAdapter.js').SlackAdapter | null = null;
+// WS1.1 dispatch-to-owner (Slack arm): the owner-side bridge reconstructs a Slack
+// inbound Message from a forwarded mesh deliverMessage and replays it through the
+// SAME local dispatch the live inbound path uses. Set once in startServer's Slack
+// block; null when Slack is not configured (the owner-side Slack branch then
+// no-ops — a forwarded Slack key on a Slack-less owner is a misconfiguration the
+// router's placement should never produce, and falling through is harmless).
+let _slackInboundDispatch: ((message: import('../core/types.js').Message) => Promise<void>) | null = null;
 // SessionRefresh — agent-initiated respawn. Module-scope so onRestartSession
 // (defined outside startServer) can delegate to it once startServer wires it.
 // Null until startServer constructs it; the Telegram /restart handler falls
@@ -5998,7 +6006,14 @@ export async function startServer(options: StartOptions): Promise<void> {
         }
 
         // Wire message handler — inject Slack messages into sessions
-        slackAdapter.onMessage(async (message) => {
+        // ── WS1.1 dispatch-to-owner (Slack arm) ──────────────────────────────
+        // The actual channel→session dispatch for a Slack inbound message. This is
+        // the body the live inbound `onMessage` handler runs AFTER pool routing has
+        // decided the message belongs to THIS machine — AND the body the owner-side
+        // mesh bridge replays when a Slack message was forwarded to this machine
+        // because it owns the conversation. Sharing one function is "Structure >
+        // Willpower": the forwarded path and the live path can never drift.
+        const slackInboundDispatch = async (message: Message): Promise<void> => {
           const channelId = message.channel.identifier;
           const isDM = message.metadata?.isDM as boolean;
           const senderName = message.metadata?.senderName as string || 'User';
@@ -6017,29 +6032,6 @@ export async function startServer(options: StartOptions): Promise<void> {
           const isThreadSession = slackAdapter!.isThreadRoutingKey(routingKey);
           // The thread_ts to thread replies under (only when this is a thread session).
           const replyThreadTs = isThreadSession ? threadTs : undefined;
-
-          // Sentinel intercept — classify message for emergency stop/pause
-          if (sentinel) {
-            try {
-              const classification = await sentinel.classify(message.content);
-              if (classification.category === 'emergency-stop') {
-                // Kill all sessions
-                const sessions = sessionManager.listRunningSessions();
-                for (const s of sessions) {
-                  try { sessionManager.killSession(s.id); } catch { /* ok */ }
-                }
-                slackAdapter!.sendToChannel(channelId, '🛑 Emergency stop — all sessions killed.').catch(() => {});
-                return;
-              } else if (classification.category === 'pause') {
-                const existingSession = slackAdapter!.getSessionForChannel(routingKey);
-                if (existingSession) {
-                  sessionManager.sendKey(existingSession, 'Escape');
-                  slackAdapter!.sendToChannel(channelId, '⏸️ Session paused.').catch(() => {});
-                }
-                return;
-              }
-            } catch { /* fail-open — if Sentinel errors, process message normally */ }
-          }
 
           // Build injection tag with sender info (matches Telegram's buildInjectionTag pattern)
           const slackUserId = message.metadata?.slackUserId as string;
@@ -6215,6 +6207,86 @@ export async function startServer(options: StartOptions): Promise<void> {
           } catch (err) {
             console.error(`[slack] Session spawn failed: ${err instanceof Error ? err.message : err}`);
           }
+        };
+        // Expose to the owner-side mesh bridge (a forwarded Slack message replays
+        // through the same dispatch on the machine that owns the conversation).
+        _slackInboundDispatch = slackInboundDispatch;
+
+        slackAdapter.onMessage(async (message) => {
+          const channelId = message.channel.identifier;
+          const messageTs = message.metadata?.ts as string | undefined;
+          const threadTs = message.metadata?.threadTs as string | undefined;
+          const routingKey = slackAdapter!.resolveRoutingKey(channelId, threadTs, messageTs);
+
+          // Sentinel intercept — classify message for emergency stop/pause. Runs on
+          // the machine the message arrived at (these are local-process actions);
+          // never forwarded.
+          if (sentinel) {
+            try {
+              const classification = await sentinel.classify(message.content);
+              if (classification.category === 'emergency-stop') {
+                // Kill all sessions
+                const sessions = sessionManager.listRunningSessions();
+                for (const s of sessions) {
+                  try { sessionManager.killSession(s.id); } catch { /* ok */ }
+                }
+                slackAdapter!.sendToChannel(channelId, '🛑 Emergency stop — all sessions killed.').catch(() => {});
+                return;
+              } else if (classification.category === 'pause') {
+                const existingSession = slackAdapter!.getSessionForChannel(routingKey);
+                if (existingSession) {
+                  sessionManager.sendKey(existingSession, 'Escape');
+                  slackAdapter!.sendToChannel(channelId, '⏸️ Session paused.').catch(() => {});
+                }
+                return;
+              }
+            } catch { /* fail-open — if Sentinel errors, process message normally */ }
+          }
+
+          // ── Multi-Machine Session Pool (§L4 / WS1.1): route through the pool ──
+          // Mirrors the Telegram inbound dispatch. When the rollout stage is past
+          // 'dark', consult the SessionRouter on the Slack routingKey: it may
+          // forward this conversation's message to the machine that OWNS the session
+          // (over the mesh) instead of binding it to whatever local session happens
+          // to be running. DARK (the default) skips this block entirely → the Slack
+          // inbound path is byte-identical to today's local-only dispatch. Any error
+          // falls back to the local dispatch below (fail-safe). This closes the bug
+          // where a Slack channel pinned/transferred to a peer machine still injected
+          // the next message into the already-running LOCAL session (Telegram's
+          // inbound path already followed the transfer; Slack's never did).
+          if (_sessionRouter && _sessionPoolStage() !== 'dark') {
+            try {
+              const outcome = await _sessionRouter.route({
+                sessionKey: routingKey,
+                messageId: String(message.id),
+                payload: message.content,
+                topicMetadata: _topicPinStore?.asTopicMetadata(routingKey),
+                senderEnvelope: {
+                  userId: (message.metadata?.slackUserId as string) || undefined,
+                  firstName: (message.metadata?.senderName as string) || undefined,
+                },
+              });
+              console.log(`[session-pool] slack route key=${routingKey} → action=${outcome.action} owner=${outcome.owner ?? '?'} self=${_meshSelfId ?? '?'} acked=${outcome.acked}`);
+              if (isRemotelyHandled(outcome, _meshSelfId)) {
+                console.log(`[session-pool] slack key ${routingKey} handled by owner ${outcome.owner ?? '?'} (${outcome.action}) — not dispatching locally`);
+                return;
+              }
+              // Custody-ack short-circuit (§2.2, mirrors the Telegram path): a
+              // queued/placement-blocked verdict whose enqueue COMMITTED (acked) is
+              // the durable queue's message now — no local fall-through (which would
+              // double-handle). Un-custodied (refused/off/dry-run) falls through.
+              if ((outcome.action === 'queued' || outcome.action === 'placement-blocked') && outcome.acked) {
+                console.log(`[session-pool] slack key ${routingKey} in durable custody (${outcome.detail ?? outcome.action}) — drain will deliver`);
+                return;
+              }
+              // 'handled-locally' / self 'spawned'/'owner-dead-replaced' / un-acked
+              // 'queued'/'placement-blocked' → fall through to local dispatch below.
+            } catch (err) {
+              console.warn(`[session-pool] slack route error for key ${routingKey} — falling back to local dispatch: ${err instanceof Error ? err.message : String(err)}`);
+            }
+          }
+
+          await slackInboundDispatch(message);
         });
 
         await slackAdapter.start();
@@ -14431,7 +14503,43 @@ export async function startServer(options: StartOptions): Promise<void> {
               // named here). Never blocks message delivery.
               if (Number.isFinite(wsTopic)) _topicProfileCarrier?.onTopicAcquired(wsTopic);
             }
-            if (_sessionPoolStage() === 'dark' || !telegram) return;
+            if (_sessionPoolStage() === 'dark') return;
+            // ── WS1.1 Slack arm (owner-side bridge) ──────────────────────────
+            // A Slack routing key is a non-numeric string (`C…` channel id, or
+            // `C…:<thread_ts>` for a thread session); a Telegram topic key is a
+            // pure number. When the forwarded session key isn't numeric, this is a
+            // Slack conversation that was forwarded here because THIS machine owns
+            // it: reconstruct the inbound Message and replay it through the SAME
+            // local Slack dispatch the live path uses (which itself handles
+            // inject-into-live-session vs spawn). Fire-and-forget: the durable
+            // receipt is already recorded + ACKed before this runs.
+            const slackKey = cmd.session;
+            if (isSlackSessionKey(slackKey)) {
+              if (!_slackInboundDispatch) return; // Slack not configured here
+              const sText = typeof cmd.payload === 'string'
+                ? cmd.payload
+                : (cmd.payload && typeof cmd.payload === 'object' && 'text' in (cmd.payload as object))
+                  ? String((cmd.payload as { text: unknown }).text)
+                  : '';
+              const envUid = (cmd as { senderEnvelope?: { userId?: string | number } }).senderEnvelope?.userId;
+              const sMessage = reconstructSlackMessage({
+                sessionKey: slackKey,
+                messageId: cmd.messageId,
+                text: sText,
+                senderUserId: envUid != null ? String(envUid) : undefined,
+              });
+              void _slackInboundDispatch(sMessage)
+                .then(() => {
+                  console.log(pc.green(`  [session-pool] owner-side Slack dispatch for forwarded key ${slackKey}`));
+                  _inboundQueue?.markRemoteInjected(cmd.session, cmd.messageId);
+                })
+                .catch((err) => {
+                  console.warn(`  [session-pool] owner-side Slack dispatch failed for key ${slackKey}: ${err instanceof Error ? err.message : String(err)}`);
+                  _inboundQueue?.reportPeerInjectError(cmd.session, cmd.messageId, err instanceof Error ? err.message : String(err));
+                });
+              return;
+            }
+            if (!telegram) return;
             const tg = telegram;
             const topicId = Number(cmd.session);
             if (!Number.isFinite(topicId)) return;

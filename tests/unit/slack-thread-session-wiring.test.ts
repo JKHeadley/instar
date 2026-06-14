@@ -39,13 +39,14 @@ describe('thread→session: adapter API surface exists', () => {
 });
 
 describe('thread→session: the live message path consults the routing key', () => {
-  // Anchor on the onMessage handler region (the handler runs ~200 lines, so the
-  // window must reach past the spawn/register block at the end of it).
-  const handlerStart = SERVER_TS.indexOf('slackAdapter.onMessage(async (message)');
-  const handlerEnd = SERVER_TS.indexOf('await slackAdapter.start();', handlerStart);
+  // Anchor on the shared slackInboundDispatch function — the actual channel→session
+  // dispatch body (WS1.1 split it out of the onMessage closure so the owner-side
+  // mesh bridge can replay it). The window reaches past the spawn/register block.
+  const handlerStart = SERVER_TS.indexOf('const slackInboundDispatch = async (message');
+  const handlerEnd = SERVER_TS.indexOf('_slackInboundDispatch = slackInboundDispatch;', handlerStart);
   const handlerBlock = SERVER_TS.slice(handlerStart, handlerEnd > handlerStart ? handlerEnd : handlerStart + 14000);
 
-  it('the handler computes a routingKey from resolveRoutingKey', () => {
+  it('the dispatch computes a routingKey from resolveRoutingKey', () => {
     expect(handlerStart).toBeGreaterThan(-1);
     expect(handlerBlock).toContain('slackAdapter!.resolveRoutingKey(channelId, threadTs, messageTs)');
   });
@@ -70,6 +71,46 @@ describe('thread→session: the live message path consults the routing key', () 
 
   it('the channel id (raw) is still used for the Slack reply target + spawn channel binding', () => {
     expect(handlerBlock).toContain('slackChannelId: channelId');
+  });
+});
+
+describe('WS1.1 Slack dispatch-to-owner: inbound consults pool placement', () => {
+  // The onMessage handler (distinct from slackInboundDispatch) must route the
+  // inbound message through the SessionRouter BEFORE local dispatch — the exact
+  // fix for "a Slack channel pinned to a peer machine still injected locally".
+  const onMsgStart = SERVER_TS.indexOf('slackAdapter.onMessage(async (message)');
+  const onMsgEnd = SERVER_TS.indexOf('await slackAdapter.start();', onMsgStart);
+  const onMsgBlock = SERVER_TS.slice(onMsgStart, onMsgEnd > onMsgStart ? onMsgEnd : onMsgStart + 6000);
+
+  it('the onMessage handler exists and reaches slackInboundDispatch only after routing', () => {
+    expect(onMsgStart).toBeGreaterThan(-1);
+    expect(onMsgBlock).toContain('await slackInboundDispatch(message)');
+  });
+
+  it('the handler consults the SessionRouter on the routing key (not bare channelId)', () => {
+    expect(onMsgBlock).toContain('_sessionRouter');
+    expect(onMsgBlock).toContain('_sessionRouter.route(');
+    expect(onMsgBlock).toContain('sessionKey: routingKey');
+  });
+
+  it('the handler short-circuits local dispatch when the owner is a remote machine', () => {
+    expect(onMsgBlock).toContain('isRemotelyHandled(outcome, _meshSelfId)');
+  });
+
+  it('routing is gated behind the pool stage so dark = byte-identical local dispatch', () => {
+    expect(onMsgBlock).toContain("_sessionPoolStage() !== 'dark'");
+  });
+
+  it('the owner-side mesh bridge replays a forwarded Slack key through the shared dispatch', () => {
+    // onAccepted: a non-numeric forwarded session key is a Slack conversation
+    // owned by THIS machine → reconstruct the Message and replay it.
+    const acceptStart = SERVER_TS.indexOf('onAccepted: (cmd) => {');
+    expect(acceptStart).toBeGreaterThan(-1);
+    const acceptBlock = SERVER_TS.slice(acceptStart, acceptStart + 4000);
+    expect(acceptBlock).toContain('_slackInboundDispatch');
+    // Slack keys are non-numeric; Telegram topic keys are pure numbers.
+    expect(acceptBlock).toContain('isSlackSessionKey(slackKey)');
+    expect(acceptBlock).toContain('reconstructSlackMessage(');
   });
 });
 
