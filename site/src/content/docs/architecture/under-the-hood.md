@@ -399,7 +399,9 @@ The sections above describe what each subsystem does at a behavioral level. The 
 
 ### `src/scheduler/` — cron + agentmd job execution
 
-`AgentMdAtomicSave`, `AgentMdJobLoader`, `AgentMdLockFile`, `AgentMdReconcile`, `DisabledBodyDrift`, `InstallBuiltinJobs`, `IntegrationGate`, `JobClaimManager`, `JobLoader`, `JobRunHistory`, `JobScheduler`, `MigrationInvariants`, `MigrationLedger`, `SkipLedger`.
+`AgentMdAtomicSave`, `AgentMdJobLoader`, `AgentMdLockFile`, `AgentMdReconcile`, `DisabledBodyDrift`, `InstallBuiltinJobs`, `IntegrationGate`, `JobClaimManager`, `JobLeaseCutoverGate`, `JobLeaseClaimStore`, `JobLoader`, `JobRunHistory`, `JobScheduler`, `MigrationInvariants`, `MigrationLedger`, `SkipLedger`.
+
+**WS4.3 journal-lease cutover.** On a multi-machine pool, scheduled-job claims start on the best-effort AgentBus broadcast (`JobClaimManager`) and upgrade to a durable, epoch-fenced lease over the replicated journal (`JobLeaseClaimStore`) — but only when the `JobLeaseCutoverGate` confirms every online peer advertises the `ws43JournalLease` capability (invariant-5 flag coherence). The gate is the single decision point that guarantees the two claim mechanisms are never both live for the same job set (the named migration hazard); a mixed or single-machine pool stays on the legacy bus path, byte-for-byte today's behavior. Ships dark behind `multiMachine.seamlessness.ws43JournalLease` (dry-run first).
 
 ### `src/identity/` — machine + agent cryptographic identity
 

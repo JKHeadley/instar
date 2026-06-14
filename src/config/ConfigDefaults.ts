@@ -735,6 +735,24 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       // (byte-for-byte today's behavior). Single-machine agents always hold the
       // lease, so the guard never fires there even when on.
       ws43RoleGuard: false,
+      // WS4.3 journal-lease cutover (MULTI-MACHINE-SEAMLESSNESS-SPEC §WS4.3,
+      // "Cutover discipline"). When on AND the pool is flag-coherent (every
+      // online peer advertises ws43JournalLease), job claims upgrade from the
+      // best-effort AgentBus broadcast to a durable, epoch-fenced lease over the
+      // replicated journal. The cutover gate (JobLeaseCutoverGate) guarantees the
+      // two mechanisms are NEVER both live for a job set (the named migration
+      // hazard: one machine leasing via journal while a peer broadcasts via bus).
+      // DARK default; a plain seamlessness boolean (read live at the claim
+      // boundary), mirroring the ws43RoleGuard sibling — NOT named `enabled`, so
+      // outside the dev-agent dark-gate lint. When off, or in a mixed/older pool,
+      // or single-machine, the scheduler stays on the legacy bus path
+      // (byte-for-byte today's behavior).
+      ws43JournalLease: false,
+      // WS4.3 journal-lease DRY-RUN (the WS-wide "log intended claims" posture).
+      // When the gate is coherent-but-dry-run, the intended journal claim is
+      // LOGGED but the legacy bus path still runs — so a dry-run pool never
+      // half-migrates. Default true: the first rung of the rollout ladder.
+      ws43JournalLeaseDryRun: true,
       // WS4.4 "links that survive machine boundaries". DEV-AGENT DARK GATE:
       // `ws44PoolLinks` is DELIBERATELY OMITTED here (not hardcoded false) so
       // resolveDevAgentGate decides at runtime — LIVE on a development agent

@@ -1958,6 +1958,14 @@ export interface MachineCapacity {
      *  → a fronting peer never proxies a /view to it (it stays local-only there).
      *  Advertised only when the dark ws44PoolLinks flag resolved on. */
     ws44PoolLinks?: boolean;
+    /** WS4.3 (§WS4.3 "Cutover discipline"): this machine claims scheduled jobs
+     *  via the durable, epoch-fenced JOURNAL LEASE rather than the legacy AgentBus
+     *  broadcast. The cutover engages pool-wide ONLY when EVERY online peer
+     *  advertises this — a peer that does not (older version, flag off there)
+     *  keeps the whole pool on the bus (invariant-5 flag coherence). ABSENT/false
+     *  = non-participant (the conservative side). Advertised only when the dark
+     *  ws43JournalLease flag is on AND not dry-run. */
+    ws43JournalLease?: boolean;
     /** WS4.4 (f) global pool-cache unification (§WS4.4 clause (f)): this machine
      *  routes its pool-scope per-peer fan-out through the shared PoolPollCache.
      *  Advertised only when the dark ws44PoolCache flag resolved on; ABSENT/false
@@ -2178,6 +2186,24 @@ export interface MultiMachineConfig {
      * attention item. Single-machine agents always hold the lease → never fires.
      */
     ws43RoleGuard?: boolean;
+    /**
+     * WS4.3 journal-lease cutover (§WS4.3, "Cutover discipline"). When on AND
+     * the pool is flag-coherent (every online peer advertises ws43JournalLease),
+     * job claims upgrade from the best-effort AgentBus broadcast to a durable,
+     * epoch-fenced lease over the replicated journal. The cutover gate
+     * (JobLeaseCutoverGate) guarantees the two mechanisms are NEVER both live for
+     * a job set (the named migration hazard). DEFAULT (undefined/false) = strict
+     * no-op (legacy bus path). A mixed/older pool, or single-machine, also stays
+     * on the bus — degrade conservatively.
+     */
+    ws43JournalLease?: boolean;
+    /**
+     * WS4.3 journal-lease DRY-RUN (the WS-wide "log intended claims" posture).
+     * When coherent-but-dry-run, the intended journal claim is LOGGED but the
+     * legacy bus path still runs. DEFAULT (undefined→true via ConfigDefaults) =
+     * dry-run, the first rung of the rollout ladder.
+     */
+    ws43JournalLeaseDryRun?: boolean;
     /**
      * WS4.4 (f) load-shed: when the fronting machine is over this 1-min
      * load-per-core threshold, holder-resolution serves the last-cached
