@@ -3,6 +3,11 @@
  *
  * Prevents prompt injection, path traversal, and SSRF attacks
  * by validating and cleaning user-controlled fields before use.
+ *
+ * CONTRACT-EVIDENCE: EXEMPT — this module is pure local string
+ * validation/transformation; it makes no Slack API calls and touches no
+ * API-contract surface. The change here adds `slugifyChannelName`, a pure
+ * helper covered by unit tests; live-API contract tests are not applicable.
  */
 
 const CHANNEL_ID_PATTERN = /^[CDG][A-Z0-9]{8,12}$/;
@@ -39,6 +44,31 @@ export function validateChannelId(id: string): boolean {
  */
 export function validateChannelName(name: string): boolean {
   return CHANNEL_NAME_PATTERN.test(name);
+}
+
+/**
+ * Slugify an agent/workspace-derived segment into a Slack-channel-safe form.
+ *
+ * Slack channel names must be lowercase alphanumeric with hyphens/underscores
+ * (see {@link validateChannelName}). A raw workspaceName such as
+ * "SageMind Live Test" otherwise produces an invalid name like
+ * "SageMind Live Test-sys-updates" that `ChannelManager.createChannel`
+ * rejects. This mirrors the session-channel slugify in `SlackAdapter`
+ * (`<workspace>-sess-...`): lowercase, replace every non-`[a-z0-9]` char with
+ * a hyphen, collapse runs, trim leading/trailing hyphens. Falls back to
+ * "agent" when the input slugs away to empty.
+ *
+ * The result is a single name SEGMENT (callers append suffixes like
+ * `-sys-updates`); it is intentionally not length-clamped here so a short
+ * suffix still fits inside Slack's 80-char limit.
+ */
+export function slugifyChannelName(raw: string): string {
+  const slug = raw
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '');
+  return slug || 'agent';
 }
 
 /**
