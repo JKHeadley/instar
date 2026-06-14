@@ -6905,6 +6905,13 @@ export async function startServer(options: StartOptions): Promise<void> {
             breakerThreshold: rqCfg.breakerThreshold ?? 3,
             breakerCooldownMin: rqCfg.breakerCooldownMin ?? 30,
             tier1Check: rqCfg.tier1Check ?? true,
+            // Stale-emergency-pause auto-recovery (spec:
+            // resume-queue-stale-emergency-pause.md). CODE-defaulted like the
+            // other resumeQueue.* keys (never frozen into ConfigDefaults — the
+            // fleet flip stays in code). Layer 1 (paused-with-waiting alert) is
+            // always on; autoResumeStalePause gates only Layer 2.
+            staleEmergencyPauseAutoResumeMin: rqCfg.staleEmergencyPauseAutoResumeMin ?? 60,
+            autoResumeStalePause: rqCfg.autoResumeStalePause ?? true,
           },
         );
         resumeDrainer.start();
