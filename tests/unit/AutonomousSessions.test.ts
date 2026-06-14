@@ -11,6 +11,7 @@ import {
   suspendAutonomousTopicForMove,
   listAutonomousJobs,
   activeAutonomousJobs,
+  autonomousRunRemainingForTopic,
   canStartAutonomousJob,
   stopAutonomousTopic,
   stopAllAutonomousJobs,
@@ -219,5 +220,61 @@ describe('WS1.4 — suspendAutonomousTopicForMove (MULTI-MACHINE-SEAMLESSNESS-SP
     expect(emitted[0].topic).toBe(42);
     expect(emitted[0].data.action).toBe('stopped');
     expect(String((emitted[0].data.artifactPaths as string[])[0])).toContain('42.local.md');
+  });
+});
+
+describe('autonomousRunRemainingForTopic (honest-recycle helper)', () => {
+  function writeRun(
+    topic: string,
+    opts: { active?: boolean; paused?: boolean; startedAt?: string; durationSeconds?: number | null } = {},
+  ) {
+    const {
+      active = true,
+      paused = false,
+      startedAt = '2026-06-13T18:40:00Z',
+      durationSeconds = 86400,
+    } = opts;
+    fs.mkdirSync(path.join(stateDir, 'autonomous'), { recursive: true });
+    const dur = durationSeconds == null ? '' : `\nduration_seconds: ${durationSeconds}`;
+    fs.writeFileSync(
+      path.join(stateDir, 'autonomous', `${topic}.local.md`),
+      `---\nactive: ${active}\npaused: ${paused}\niteration: 3\ngoal: "run ${topic}"\nstarted_at: "${startedAt}"${dur}\nreport_topic: "${topic}"\n---\n\ntask\n`,
+    );
+  }
+
+  it('returns active + remaining for an in-flight run (the topic-13481 case)', () => {
+    writeRun('13481', { startedAt: '2026-06-13T18:40:00Z', durationSeconds: 86400 });
+    // 12h17m after start → ~11h43m remaining.
+    const now = new Date('2026-06-14T06:57:00Z').getTime();
+    const r = autonomousRunRemainingForTopic(stateDir, 13481, now);
+    expect(r).not.toBeNull();
+    expect(r!.active).toBe(true);
+    // ~42180s remaining; allow a small rounding window.
+    expect(r!.remainingSeconds).toBeGreaterThan(42000);
+    expect(r!.remainingSeconds).toBeLessThan(42300);
+  });
+
+  it('accepts a numeric OR string topic', () => {
+    writeRun('77');
+    const now = new Date('2026-06-13T19:00:00Z').getTime();
+    expect(autonomousRunRemainingForTopic(stateDir, 77, now)).not.toBeNull();
+    expect(autonomousRunRemainingForTopic(stateDir, '77', now)).not.toBeNull();
+  });
+
+  it('returns null when the run window is already OVER (not a continuation)', () => {
+    writeRun('5', { startedAt: '2026-06-13T18:40:00Z', durationSeconds: 3600 });
+    const now = new Date('2026-06-13T20:00:00Z').getTime(); // 80m later, cap 60m
+    expect(autonomousRunRemainingForTopic(stateDir, 5, now)).toBeNull();
+  });
+
+  it('returns null for a topic with no active run, a paused run, or a missing duration', () => {
+    const now = new Date('2026-06-13T19:00:00Z').getTime();
+    expect(autonomousRunRemainingForTopic(stateDir, 999, now)).toBeNull(); // no file
+    writeRun('inactive', { active: false });
+    expect(autonomousRunRemainingForTopic(stateDir, 'inactive', now)).toBeNull();
+    writeRun('paused', { paused: true });
+    expect(autonomousRunRemainingForTopic(stateDir, 'paused', now)).toBeNull();
+    writeRun('nodur', { durationSeconds: null });
+    expect(autonomousRunRemainingForTopic(stateDir, 'nodur', now)).toBeNull();
   });
 });

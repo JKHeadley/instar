@@ -1,0 +1,43 @@
+## What Changed
+
+Reap notices no longer dress a routine **session recycle** up as a death. A long
+autonomous run periodically hits its per-session lifetime cap, at which point the
+old terminal process is replaced by a fresh one that continues the run — but the
+user used to see `🪦 Your session was shut down — it reached its maximum allowed
+runtime`, even while the run's own clock still showed many hours remaining. Now,
+when an `age-limit` reap targets a session whose topic has an ACTIVE autonomous
+run, ReapNotifier emits honest continuation copy instead:
+`🔄 Your session was recycled at its per-session lifetime cap — your autonomous
+run has 11h 42m left, so no work was lost. I'll pick it back up on my next turn —
+send a message if I stay quiet.`
+
+It never goes silent: any read error, or a run that is genuinely over, falls back
+to the normal loud "shut down" notice. Only the age-limit-recycle-of-an-active-run
+case is reworded; a stuck-session death is still surfaced loudly even mid-run.
+
+## What to Tell Your User
+
+If you run long autonomous sessions and were alarmed by repeated "your session was
+shut down — reached its maximum allowed runtime" messages: those were usually a
+routine recycle, not a failure — your work was never lost and the run kept going.
+You'll now see an honest "🔄 recycled, your run has Xh left, no work lost" notice
+for that case instead of the tombstone. A genuine stop still shows the loud notice.
+
+## Summary of New Capabilities
+
+- Honest reap-notice wording for an age-limit recycle of a still-active autonomous
+  run (continuation, not death), with the run's real remaining time.
+- New shared helper `autonomousRunRemainingForTopic` (one source of truth for "is
+  this topic's run in-flight, and how long is left?").
+
+## Evidence
+
+- `tests/unit/reap-notifier.test.ts` — honest-recycle block: recycle copy,
+  never-contradicts-clock, no-run→death, only-age-limit, throws→fail-loud,
+  over-window→death.
+- `tests/unit/AutonomousSessions.test.ts` — `autonomousRunRemainingForTopic`:
+  in-flight remaining, numeric/string topic, over-window null, no-run/paused/
+  missing-duration null.
+- `tests/integration/honest-session-recycle-wiring.test.ts` — real helper composed
+  with real notifier (dep non-null, real computed remaining).
+- `npx tsc --noEmit` clean; 51/51 unit + 2/2 integration green.
