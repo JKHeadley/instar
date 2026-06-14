@@ -63,6 +63,7 @@ import { GuardRegistry } from '../monitoring/GuardRegistry.js';
 import { isPeerUrlAllowedForCredentials } from './peerUrlGuard.js';
 import { classifyMachineEmptyState } from './poolEmptyState.js';
 import { RemoteCloseAudit } from '../core/RemoteCloseAudit.js';
+import { RemoteAckStore } from '../core/RemoteAckStore.js';
 import { FailureLedger } from '../monitoring/FailureLedger.js';
 import { FailureAttributionEngine } from '../monitoring/FailureAttributionEngine.js';
 import { FailureAnalyzer } from '../monitoring/FailureAnalyzer.js';
@@ -10364,6 +10365,78 @@ export function createRoutes(ctx: RouteContext): Router {
   const attentionPoolCache = new Map<string, { at: number; payload: unknown }>();
   const ATTENTION_POOL_CACHE_TTL_MS = 3_000;
   const ATTENTION_PEER_TIMEOUT_MS = 5_000;
+
+  // WS4.1 follow-up (CMT-1416): durable operator-bound /ack across machines.
+  // Plain seamlessness boolean read LIVE (mirrors ws21PreferencesPool) — off ⇒
+  // POST /attention/:id/remote-ack 503s, the PATCH precedence guard is inert,
+  // and the store is never touched (strict no-op on a flag-off agent).
+  const ws41DurableAckEnabled = (): boolean =>
+    ((ctx.config as Record<string, any>).multiMachine?.seamlessness ?? {}).ws41DurableAck === true;
+  const remoteAckStore = new RemoteAckStore(ctx.config.stateDir);
+  const remoteAckLimiter = rateLimiter(60_000, 30);
+  const REMOTE_ACK_GIVE_UP_ATTEMPTS = 50;
+
+  // Best-effort delivery of one pending ack intent to its owning machine via the
+  // peer's existing PATCH /attention/:id (carrying the X-Instar-Remote-Ack
+  // annotation so the owner runs its precedence guard). Returns the terminal
+  // disposition; 'queued' means the owner is still unreachable (keep the intent).
+  async function deliverRemoteAck(
+    intent: { itemId: string; targetMachineId: string; status: string; operatorUid: string; operatorDisplayName?: string },
+  ): Promise<'delivered' | 'stale-superseded' | 'queued'> {
+    const machine = (ctx.listPoolMachines?.() ?? []).find((m) => m.machineId === intent.targetMachineId);
+    if (!machine || !machine.lastKnownUrl) return 'queued';
+    const extraAllowlist = (ctx.config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)?.peerUrlAllowlist;
+    if (!isPeerUrlAllowedForCredentials(machine.lastKnownUrl, extraAllowlist).ok) return 'queued';
+    try {
+      const r = await fetch(`${machine.lastKnownUrl}/attention/${encodeURIComponent(intent.itemId)}`, {
+        method: 'PATCH',
+        headers: {
+          Authorization: `Bearer ${ctx.config.authToken}`,
+          'Content-Type': 'application/json',
+          'X-Instar-Remote-Ack': intent.operatorUid || 'operator',
+        },
+        body: JSON.stringify({ status: intent.status }),
+        signal: AbortSignal.timeout(ATTENTION_PEER_TIMEOUT_MS),
+      });
+      if (r.ok) return 'delivered';
+      // 425 = the owner's precedence guard rejected a stale resolve (item since
+      // escalated). 404 = item already gone on the owner. Both are TERMINAL —
+      // drop the intent; retrying can never succeed.
+      if (r.status === 425 || r.status === 404) return 'stale-superseded';
+      return 'queued';
+    } catch {
+      // @silent-fallback-ok — unreachable owner (timeout/offline) keeps the
+      // intent durable for the next drain; never a thrown error in the ack path.
+      return 'queued';
+    }
+  }
+
+  // Drain every still-pending intent (called on the route's enqueue path AND on
+  // a peer-online signal). Gives up loudly past the attempt cap so a permanently
+  // unreachable owner doesn't leave an intent retrying forever.
+  async function drainRemoteAcks(): Promise<{ delivered: number; dropped: number; pending: number }> {
+    if (!ws41DurableAckEnabled()) return { delivered: 0, dropped: 0, pending: 0 };
+    let delivered = 0;
+    let dropped = 0;
+    for (const intent of remoteAckStore.list()) {
+      if (intent.attempts >= REMOTE_ACK_GIVE_UP_ATTEMPTS) {
+        remoteAckStore.resolve(intent.itemId, intent.targetMachineId);
+        dropped += 1;
+        continue;
+      }
+      const disposition = await deliverRemoteAck(intent);
+      if (disposition === 'delivered') {
+        remoteAckStore.resolve(intent.itemId, intent.targetMachineId);
+        delivered += 1;
+      } else if (disposition === 'stale-superseded') {
+        remoteAckStore.resolve(intent.itemId, intent.targetMachineId);
+        dropped += 1;
+      } else {
+        remoteAckStore.recordAttempt(intent.itemId, intent.targetMachineId, 'unreachable');
+      }
+    }
+    return { delivered, dropped, pending: remoteAckStore.size };
+  }
   // P17 coalesce key: items sharing this key across machines collapse to ONE
   // merged row (a pool-wide event whose per-machine tripwires each raised an
   // item). Mirrors the WS3.3 episode-key pattern: prefer an explicit
@@ -10488,6 +10561,14 @@ export function createRoutes(ctx: RouteContext): Router {
     // per-machine budgets remain the write-side bound). Plain GET stays a
     // back-compatible object.
     if (req.query.scope === 'pool') {
+      // WS4.1 follow-up: opportunistically drain any pending durable remote-acks
+      // — the pool read is exactly when a previously-dark owner is likely back
+      // online (the dashboard polls this). Fire-and-forget; never blocks the read.
+      if (ws41DurableAckEnabled() && remoteAckStore.size > 0) {
+        void drainRemoteAcks().catch(() => {
+          /* @silent-fallback-ok — drain is best-effort; failures keep intents durable */
+        });
+      }
       const merged = await attentionPoolMerge(localItems, status);
       res.json(merged);
       return;
@@ -10522,6 +10603,36 @@ export function createRoutes(ctx: RouteContext): Router {
       return;
     }
 
+    // WS4.1 follow-up (CMT-1416) receiver-side precedence guard. When a PATCH
+    // arrives carrying X-Instar-Remote-Ack (a relayed operator ack from a peer,
+    // possibly enqueued while THIS machine was offline), the OWNER's CURRENT
+    // item state wins: a stale resolve against an item that has SINCE escalated
+    // to HIGH/URGENT is rejected (and surfaced) rather than silently applied.
+    // Gated on ws41DurableAck — off ⇒ this whole block is inert (the header is
+    // ignored and the PATCH behaves exactly as before). The header is only an
+    // ANNOTATION; the Bearer auth (already enforced upstream) is the authority.
+    if (req.get('X-Instar-Remote-Ack') && ws41DurableAckEnabled()) {
+      const current = ctx.telegram.getAttentionItem(req.params.id);
+      if (!current) {
+        res.status(404).json({ error: 'Attention item not found' });
+        return;
+      }
+      const currentPriority = String(current.priority ?? 'NORMAL');
+      const downgrades = status === 'DONE' || status === 'WONT_DO' || status === 'ACKNOWLEDGED';
+      if ((currentPriority === 'HIGH' || currentPriority === 'URGENT') && downgrades) {
+        // Reconcile precedence: never auto-resolve a since-escalated critical
+        // item via a stale relayed ack. Surfaced to the relayer (425) so the
+        // RemoteAckStore drops the stale intent rather than retrying forever.
+        res.status(425).json({
+          error: 'stale-superseded',
+          reason: `item has escalated to ${currentPriority} since the ack was issued — current state wins`,
+          itemId: req.params.id,
+          currentPriority,
+        });
+        return;
+      }
+    }
+
     const success = await ctx.telegram.updateAttentionStatus(req.params.id, status);
     if (!success) {
       res.status(404).json({ error: 'Attention item not found' });
@@ -10530,6 +10641,87 @@ export function createRoutes(ctx: RouteContext): Router {
 
     const item = ctx.telegram.getAttentionItem(req.params.id);
     res.json(item);
+  });
+
+  // WS4.1 follow-up (CMT-1416): durable operator-bound /ack for an attention
+  // item OWNED BY ANOTHER MACHINE. The dashboard sends this when the operator
+  // acks a pooled (remote) item; the ack is delivered to the owner immediately
+  // when reachable, else persisted (with the authenticated operator principal)
+  // and re-delivered when the owner returns — so the operator's intent survives
+  // a briefly-dark owner instead of evaporating. Bearer auth (already enforced)
+  // is the operator authority; the topicId resolves the bound operator uid for
+  // the owner's revalidation. Mutating mesh verb → rate-limited like remote-close.
+  router.post('/attention/:id/remote-ack', remoteAckLimiter, async (req, res) => {
+    if (!ws41DurableAckEnabled()) {
+      res.status(503).json({ error: 'WS4.1 durable remote-ack is disabled (multiMachine.seamlessness.ws41DurableAck)' });
+      return;
+    }
+    const { machineId, status: rawStatus, topicId } = (req.body ?? {}) as {
+      machineId?: unknown;
+      status?: unknown;
+      topicId?: unknown;
+    };
+    // machineId is a registry LOOKUP KEY ONLY — charset-clamped, never a URL.
+    if (typeof machineId !== 'string' || !/^[A-Za-z0-9_-]{1,64}$/.test(machineId)) {
+      res.status(400).json({ error: 'machineId required (the owning machine)' });
+      return;
+    }
+    const status = normalizeAttentionStatus(rawStatus);
+    if (!status) {
+      res.status(400).json({ error: `"status" must be one of: ${ATTENTION_STATUSES.join(', ')}` });
+      return;
+    }
+    // Self-ack is a plain local PATCH — refuse the mesh verb for own items so a
+    // single-machine agent (or an item that lives here) never round-trips.
+    if (ctx.meshSelfId && machineId === ctx.meshSelfId) {
+      res.status(400).json({ error: 'item is owned by this machine — use PATCH /attention/:id' });
+      return;
+    }
+    // Bind the authenticated operator principal from the topic-operator store
+    // when a topicId is supplied (the same VERIFIED-binding source as Operator
+    // Binding — never a name from content). Absent/unresolvable → 'operator'.
+    let operatorUid = 'operator';
+    let operatorDisplayName: string | undefined;
+    if (typeof topicId === 'number' || (typeof topicId === 'string' && topicId.trim())) {
+      const op = ctx.topicOperatorStore?.asVerifiedOperator(topicId as number | string);
+      if (op) {
+        operatorUid = op.uid;
+        operatorDisplayName = op.names?.[0];
+      }
+    }
+    const intent = { itemId: req.params.id, targetMachineId: machineId, status, operatorUid, operatorDisplayName };
+    // Try immediate delivery; on success no durable row is needed.
+    const disposition = await deliverRemoteAck(intent);
+    if (disposition === 'delivered') {
+      res.json({ ok: true, delivered: true, itemId: req.params.id, machineId });
+      return;
+    }
+    if (disposition === 'stale-superseded') {
+      res.status(409).json({ ok: false, staleSuperseded: true, itemId: req.params.id, machineId, reason: 'owner rejected — item has since escalated; current state wins' });
+      return;
+    }
+    // Owner unreachable: persist the intent durably and report it queued.
+    remoteAckStore.enqueue(intent);
+    res.json({ ok: true, queued: true, itemId: req.params.id, machineId, reason: 'owner unreachable — ack persisted and will be delivered when it returns', pending: remoteAckStore.size });
+  });
+
+  // Pending durable remote-acks (observability + a manual drain trigger). Two
+  // segments past /attention so it never collides with GET /attention/:id.
+  router.get('/attention/_remote-ack/pending', (_req, res) => {
+    if (!ws41DurableAckEnabled()) {
+      res.status(503).json({ error: 'WS4.1 durable remote-ack is disabled (multiMachine.seamlessness.ws41DurableAck)' });
+      return;
+    }
+    res.json({ pending: remoteAckStore.list(), count: remoteAckStore.size });
+  });
+
+  router.post('/attention/_remote-ack/drain', async (_req, res) => {
+    if (!ws41DurableAckEnabled()) {
+      res.status(503).json({ error: 'WS4.1 durable remote-ack is disabled (multiMachine.seamlessness.ws41DurableAck)' });
+      return;
+    }
+    const result = await drainRemoteAcks();
+    res.json({ ok: true, ...result });
   });
 
   router.delete('/attention/:id', async (req, res) => {

@@ -253,6 +253,9 @@ with respect to behavior; the ratio is a signal, never a gate.
 - `GET /attention/:id`
 - `PATCH /attention/:id`
 - `POST /attention`
+- `POST /attention/:id/remote-ack` — durable operator-bound ack for a pooled attention item owned by ANOTHER machine (WS4.1 follow-up). Delivers immediately when the owner is reachable, else persists the intent (bound to the authenticated operator) and re-delivers when the owner returns; the owner revalidates at apply time and rejects a stale resolve against a since-escalated HIGH/URGENT item. Ships dark behind `multiMachine.seamlessness.ws41DurableAck`.
+- `GET /attention/_remote-ack/pending` — list still-pending durable remote-acks (observability).
+- `POST /attention/_remote-ack/drain` — manually drain pending durable remote-acks to their owning machines.
 
 ## /autonomy
 - `GET /autonomy`

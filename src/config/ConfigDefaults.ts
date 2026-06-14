@@ -711,6 +711,17 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       // NOT named `enabled`, so it is outside the dev-agent dark-gate lint (which
       // matches the literal `enabled: false` spelling only).
       ws21PreferencesPool: false,
+      // WS4.1 follow-up "durable operator-bound /ack" (CMT-1416). When an
+      // operator acks a pooled attention item whose OWNER is briefly offline,
+      // the ack intent is persisted (with the authenticated operator principal)
+      // and re-delivered when the owner returns — so the intent survives a dark
+      // owner instead of evaporating. DARK default; a plain seamlessness boolean
+      // (read live at the route + drain sites), mirroring the ws21PreferencesPool
+      // sibling — NOT named `enabled`, so it is outside the dev-agent dark-gate
+      // lint. When off, POST /attention/:id/remote-ack 503s and the receiver's
+      // remote-ack precedence guard is a no-op; single-machine agents are a
+      // strict no-op even when on (no peers to route to).
+      ws41DurableAck: false,
       // WS4.4 "links that survive machine boundaries". DEV-AGENT DARK GATE:
       // `ws44PoolLinks` is DELIBERATELY OMITTED here (not hardcoded false) so
       // resolveDevAgentGate decides at runtime — LIVE on a development agent

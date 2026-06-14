@@ -114,6 +114,18 @@
       "grandfathered": false
     },
     {
+      "category": "remote-ack-queue",
+      "description": "Operator-bound ack/resolve INTENT for a pooled attention item whose owner machine is briefly offline (WS4.1 follow-up, dark behind multiMachine.seamlessness.ws41DurableAck). Carries the authenticated operator principal; the owner revalidates it at apply time on return/boot. Append-then-compact, idempotent on (itemId,targetMachineId).",
+      "scope": "must-be-coherent",
+      "freshness": "eventual",
+      "conflictShape": "single-writer",
+      "transport": "peer-http",
+      "paths": [
+        "logs/remote-ack-queue.jsonl"
+      ],
+      "grandfathered": false
+    },
+    {
       "category": "slack-permission-decisions",
       "description": "Observe-only ledger of Slack org permission-gate decisions (allow/clarify/refuse/step-up) with the verified principal + basis. Append-only; feeds false-positive-rate measurement before any enforcement is enabled. See docs/specs/SLACK-ORG-INTEGRATION-SPEC.md.",
       "scope": "machine-local",

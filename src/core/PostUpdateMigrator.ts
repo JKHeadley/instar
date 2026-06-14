@@ -5489,6 +5489,22 @@ Strip the \`[telegram:N]\` prefix before interpreting the message. Respond natur
       result.upgraded.push('CLAUDE.md: added Attention Queue pool-scope bullet (WS4.1)');
     }
 
+    // WS4.1 follow-up (CMT-1416) — durable cross-machine /ack awareness. A
+    // deployed agent whose CLAUDE.md already carries the Attention Queue section
+    // gets the remote-ack bullet inserted after the Resolve line. Content-sniff
+    // on 'remote-ack' (route-qualified) keeps it idempotent.
+    if (content.includes('**Attention Queue**') && !content.includes('remote-ack')) {
+      const ackBullet = `- **Durable cross-machine ack (WS4.1, ships DARK behind \`multiMachine.seamlessness.ws41DurableAck\`):** when you (or the operator via the dashboard) acknowledge a POOLED attention item whose OWNER is a DIFFERENT machine, resolve it durably so the intent survives a briefly-offline owner instead of evaporating: \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/attention/ATT-ID/remote-ack -H 'Content-Type: application/json' -d '{"machineId":"<owning machine id>","status":"resolved","topicId":N}'\`. If the owner is reachable the ack lands immediately; if it is dark the intent is persisted (bound to the authenticated operator) and re-delivered when the owner returns. The owner REVALIDATES at apply time — a stale resolve against an item that has SINCE escalated to HIGH/URGENT is rejected (current state wins), never silently applied. Pending durable acks: \`GET /attention/_remote-ack/pending\`. When the flag is off the route 503s and a single-machine agent is a strict no-op.\n`;
+      const ackAnchor = /^- Resolve:[^\n]*\/attention[^\n]*$/m;
+      if (ackAnchor.test(content)) {
+        content = content.replace(ackAnchor, (m) => `${m}\n${ackBullet.trimEnd()}`);
+      } else {
+        content = content.replace(/\*\*Attention Queue\*\*[^\n]*\n/, (m) => `${m}${ackBullet}`);
+      }
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Attention Queue durable cross-machine remote-ack bullet (WS4.1 follow-up, CMT-1416)');
+    }
+
     // WS4.3 (MULTI-MACHINE-SEAMLESSNESS-SPEC) — pool-scope jobs awareness.
     // A deployed agent whose CLAUDE.md already carries the Job Scheduler
     // section gets the ?scope=pool bullet inserted after the /jobs View line.

@@ -336,19 +336,23 @@ describe('lint-dev-agent-dark-gate', () => {
       '582': 'mentor.enabled',
       '593': 'mentor.autonomousFix.enabled',
       '608': 'mentee.enabled',
-      '727': 'multiMachine.sessionPool.enabled',
-      '752': 'multiMachine.sessionPool.inboundQueue.enabled',
-      '781': 'multiMachine.sessionPool.holdForStability.enabled',
-      '872': 'multiMachine.stateSync.preferences.enabled',
-      '886': 'multiMachine.stateSync.relationships.enabled',
-      '900': 'multiMachine.stateSync.learnings.enabled',
-      '915': 'multiMachine.stateSync.knowledge.enabled',
-      '929': 'multiMachine.stateSync.evolutionActions.enabled',
-      '943': 'multiMachine.stateSync.userRegistry.enabled',
-      '958': 'multiMachine.stateSync.topicOperator.enabled',
-      '1066': 'cartographer.freshnessSweep.enabled',
-      '1111': 'cartographer.conformanceAudit.llmEnrichment.enabled',
-      '1136': 'cartographer.subtreeNav.llmRerank.enabled',
+      // WS4.1-durable-ack (CMT-1416) inserts a plain `ws41DurableAck: false`
+      // seamlessness boolean (NOT `enabled:`, so the attributor ignores it) above
+      // sessionPool — shifting every sessionPool-onward `enabled: false` line +11.
+      // RE-VERIFIED by hand via the attributor on the merged ConfigDefaults.
+      '738': 'multiMachine.sessionPool.enabled',
+      '763': 'multiMachine.sessionPool.inboundQueue.enabled',
+      '792': 'multiMachine.sessionPool.holdForStability.enabled',
+      '883': 'multiMachine.stateSync.preferences.enabled',
+      '897': 'multiMachine.stateSync.relationships.enabled',
+      '911': 'multiMachine.stateSync.learnings.enabled',
+      '926': 'multiMachine.stateSync.knowledge.enabled',
+      '940': 'multiMachine.stateSync.evolutionActions.enabled',
+      '954': 'multiMachine.stateSync.userRegistry.enabled',
+      '969': 'multiMachine.stateSync.topicOperator.enabled',
+      '1077': 'cartographer.freshnessSweep.enabled',
+      '1122': 'cartographer.conformanceAudit.llmEnrichment.enabled',
+      '1147': 'cartographer.subtreeNav.llmRerank.enabled',
     };
     const actual = attributeRealConfigDefaults();
     expect(actual).toEqual(EXPECTED);
