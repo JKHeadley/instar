@@ -179,6 +179,63 @@ export function migrateConfigCredentialRepointingDevGate(config: Record<string, 
   return true;
 }
 
+/** The 7 stateSync memory stores re-gated to the developmentAgent gate on 2026-06-13. */
+const STATE_SYNC_DEV_GATED_STORES = [
+  'preferences',
+  'relationships',
+  'learnings',
+  'knowledge',
+  'evolutionActions',
+  'userRegistry',
+  'topicOperator',
+] as const;
+
+/**
+ * The 7 multiMachine.stateSync.* memory stores (preferences, relationships, learnings,
+ * knowledge, evolutionActions, userRegistry, topicOperator) were re-gated from
+ * DARK_GATE_EXCLUSIONS (off for everyone) to the developmentAgent gate (live-on-dev,
+ * dark fleet) per the 2026-06-13 operator directive (topic 13481: "NOTHING should ship
+ * dark on development agents"). Existing agents that ran the old ConfigDefaults carry an
+ * explicit `enabled: false` per store, which (being explicit) would keep
+ * resolveDevAgentGate DARK even on a dev agent. Strip that default-shaped `false` so the
+ * gate resolves (live on dev, dark on fleet) — mirroring the credentialRepointing strip.
+ *
+ * UNLIKE credentialRepointing (which keeps `dryRun:true` as the write-safety canary for a
+ * destructive keychain write), these stores have NO destructive write and the operator's
+ * decision is GENUINELY LIVE — so the new ConfigDefaults set `dryRun:false`. Existing
+ * agents carry the old default-shaped `dryRun:true`; applyDefaults (add-missing-only)
+ * would NOT overwrite it, leaving the agent on a stale dryRun:true. To land the operator's
+ * not-dry-run intent, the OLD-DEFAULT SIGNATURE is treated as one unit: a store whose
+ * block is exactly `{ enabled:false, dryRun:true }` (the ConfigDefaults-backfilled shape,
+ * never an operator's hand edit) has BOTH stripped, so applyDefaults backfills the new
+ * `{ dryRun:false }`. A store with any divergence (explicit `enabled:true`, a different
+ * dryRun, extra keys) is treated as operator-touched and left ENTIRELY alone — reach is
+ * not authority. Idempotent (a second run finds nothing default-shaped to strip).
+ */
+export function migrateConfigStateSyncStoresDevGate(config: Record<string, unknown>): boolean {
+  const mm = config.multiMachine as Record<string, unknown> | undefined;
+  if (!mm || typeof mm !== 'object') return false;
+  const ss = mm.stateSync as Record<string, unknown> | undefined;
+  if (!ss || typeof ss !== 'object') return false;
+  let changed = false;
+  for (const store of STATE_SYNC_DEV_GATED_STORES) {
+    const block = ss[store] as Record<string, unknown> | undefined;
+    if (!block || typeof block !== 'object') continue;
+    const keys = Object.keys(block);
+    // ONLY the exact old-default signature `{ enabled:false, dryRun:true }` is migrated —
+    // anything else is operator-touched and left entirely alone.
+    const isOldDefaultSignature =
+      keys.length === 2 &&
+      block.enabled === false &&
+      block.dryRun === true;
+    if (!isOldDefaultSignature) continue;
+    delete block.enabled; // gate resolves it (live-on-dev / dark-fleet)
+    delete block.dryRun;  // applyDefaults backfills the new dryRun:false (genuinely live)
+    changed = true;
+  }
+  return changed;
+}
+
 export class PostUpdateMigrator {
   private config: MigratorConfig;
   /**
@@ -7277,6 +7334,17 @@ Create worktrees for collaborator repos with \`instar worktree create <branch>\`
       result.upgraded.push('config.json: stripped default-shaped subscriptionPool.credentialRepointing.enabled=false so the developmentAgent gate resolves it (live-on-dev dry-run, dark fleet)');
     } else {
       result.skipped.push('config.json: subscriptionPool.credentialRepointing.enabled dev-gate already correct (omitted or operator-set)');
+    }
+
+    // The 7 multiMachine.stateSync.* memory stores re-gated to the developmentAgent gate
+    // (2026-06-13 operator directive topic 13481): strip a default-shaped
+    // { enabled:false, dryRun:true } so the gate resolves them live-on-dev / dark-fleet and
+    // applyDefaults backfills the new dryRun:false (genuinely live — no destructive write).
+    if (migrateConfigStateSyncStoresDevGate(config)) {
+      patched = true;
+      result.upgraded.push('config.json: stripped default-shaped multiMachine.stateSync.* memory-store {enabled:false,dryRun:true} blocks so the developmentAgent gate resolves them (live-on-dev, dark fleet, dryRun:false)');
+    } else {
+      result.skipped.push('config.json: multiMachine.stateSync.* memory-store dev-gates already correct (omitted or operator-set)');
     }
 
     if (patched) {

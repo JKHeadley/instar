@@ -43,3 +43,37 @@ export function resolveDevAgentGate(
 ): boolean {
   return explicitEnabled ?? !!config?.developmentAgent;
 }
+
+/**
+ * Resolve the developmentAgent dark-feature gate across the multiMachine.stateSync
+ * per-store map, returning a NEW stores map where each store's `enabled` is the
+ * gate-RESOLVED boolean (the raw `enabled` ?? `!!developmentAgent`), preserving
+ * every other per-store field (e.g. `dryRun`).
+ *
+ * WHY (operator directive 2026-06-13, topic 13481): the 7 stateSync memory stores
+ * were moved from DARK_GATE_EXCLUSIONS to DEV_GATED_FEATURES so they run LIVE on a
+ * dev agent and DARK on the fleet. Their ConfigDefaults OMIT `enabled` so the gate
+ * decides — but the four consumer funnels (selfStateSyncReceive,
+ * ReplicatedStoreReader.isLive, isStoreEmissionEnabled, checkPoolFlagCoherence) read
+ * `stores[store].enabled === true` DIRECTLY off config, which would see `undefined`
+ * and stay dark even on a dev agent. Routing the config through this helper ONCE at
+ * the construction boundary makes the gate genuinely flip them live without changing
+ * any funnel's `enabled === true` semantics (they receive a pre-resolved map). An
+ * explicit `enabled` in config still wins (force-dark false / fleet-flip true).
+ */
+export function resolveStateSyncStores(
+  config: { developmentAgent?: boolean; multiMachine?: { stateSync?: Record<string, { enabled?: boolean } & Record<string, unknown>> } } | undefined,
+): Record<string, { enabled?: boolean } & Record<string, unknown>> | undefined {
+  const stores = config?.multiMachine?.stateSync;
+  if (!stores) return undefined;
+  const out: Record<string, { enabled?: boolean } & Record<string, unknown>> = {};
+  for (const [store, flags] of Object.entries(stores)) {
+    if (flags == null || typeof flags !== 'object') {
+      // Preserve non-store foundation knobs (numbers like maxDriftMs) untouched.
+      out[store] = flags as { enabled?: boolean } & Record<string, unknown>;
+      continue;
+    }
+    out[store] = { ...flags, enabled: resolveDevAgentGate(flags.enabled, config) };
+  }
+  return out;
+}

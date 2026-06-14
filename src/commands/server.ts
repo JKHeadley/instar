@@ -18,7 +18,7 @@ import pc from 'picocolors';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 import { loadConfig, ensureStateDir, detectTmuxPath, detectGeminiPath } from '../core/Config.js';
 import { isNonFatalUncaught, shouldLogStackForUncaught } from '../core/uncaughtExceptionPolicy.js';
-import { resolveDevAgentGate } from '../core/devAgentGate.js';
+import { resolveDevAgentGate, resolveStateSyncStores } from '../core/devAgentGate.js';
 import { parseProfileTrigger, platformMessageIdFrom } from '../core/topicProfileIngress.js';
 import {
   TopicProfileOrchestrator,
@@ -3720,9 +3720,21 @@ export async function startServer(options: StartOptions): Promise<void> {
     });
     void storeSnapshotEngine; // consumed by the state-snapshot mesh handler below + the store PRs (WS2.1+)
 
+    // The 7 stateSync memory stores follow the developmentAgent dark-feature gate
+    // (operator directive 2026-06-13, topic 13481): their ConfigDefaults OMIT
+    // `enabled` so the gate decides — LIVE on a dev agent, DARK on the fleet. Resolve
+    // the gate ONCE here so every consumer funnel below (selfStateSyncReceive, the 7
+    // union readers, checkPoolFlagCoherence) receives a stores map whose per-store
+    // `enabled` is already the resolved boolean — the funnels keep their unchanged
+    // `enabled === true` semantics but now see a live flag on a dev agent. An explicit
+    // operator `enabled` in config still wins (force-dark false / fleet-flip true).
+    const _stateSyncStoresResolved = resolveStateSyncStores(
+      config as { developmentAgent?: boolean; multiMachine?: { stateSync?: Record<string, { enabled?: boolean } & Record<string, unknown>> } },
+    ) as import('../core/ReplicatedRecordEnvelope.js').StateSyncStores | undefined;
+
     const selfStateSyncReceive = (): Record<string, boolean> => {
       const out: Record<string, boolean> = {};
-      const stores = (config.multiMachine as unknown as { stateSync?: Record<string, { enabled?: boolean }> } | undefined)?.stateSync;
+      const stores = _stateSyncStoresResolved;
       for (const store of replicatedKindRegistry.stores()) {
         // Advertise the receive capability iff the machinery exists (kind
         // registered) AND the store is enabled here — so a peer never forwards a
@@ -3780,7 +3792,7 @@ export async function startServer(options: StartOptions): Promise<void> {
     const { prefEntryToOriginRecord, prefTierOf, PREF_STORE_KEY } = await import('../core/PreferencesReplicatedStore.js');
     const preferencesUnionReader = new ReplicatedStoreReader({
       registry: replicatedKindRegistry,
-      stores: (config.multiMachine as unknown as { stateSync?: import('../core/ReplicatedRecordEnvelope.js').StateSyncStores } | undefined)?.stateSync,
+      stores: _stateSyncStoresResolved, // gate-resolved (dev-live / fleet-dark) per operator directive 2026-06-13
       tierOf: prefTierOf,
       loadOriginRecords: (store, recordKey) => {
         if (store !== PREF_STORE_KEY || _meshSelfId === null) return [];
@@ -3819,7 +3831,7 @@ export async function startServer(options: StartOptions): Promise<void> {
     const { relationshipTierOf, relationshipToOriginRecord, deriveRelationshipRecordKey, mergeUnionToRelationships, renderForeignRelationshipContext, RELATIONSHIP_STORE_KEY } = await import('../core/RelationshipsReplicatedStore.js');
     const relationshipsUnionReader = new ReplicatedStoreReader({
       registry: replicatedKindRegistry,
-      stores: (config.multiMachine as unknown as { stateSync?: import('../core/ReplicatedRecordEnvelope.js').StateSyncStores } | undefined)?.stateSync,
+      stores: _stateSyncStoresResolved, // gate-resolved (dev-live / fleet-dark) per operator directive 2026-06-13
       tierOf: relationshipTierOf,
       loadOriginRecords: (store, recordKey) => {
         if (store !== RELATIONSHIP_STORE_KEY || _meshSelfId === null || !relationships) return [];
@@ -8252,7 +8264,7 @@ export async function startServer(options: StartOptions): Promise<void> {
     const { learningTierOf, learningToOriginRecord, deriveLearningRecordKey, LEARNING_STORE_KEY } = await import('../core/LearningsReplicatedStore.js');
     const learningsUnionReader = new ReplicatedStoreReader({
       registry: replicatedKindRegistry,
-      stores: (config.multiMachine as unknown as { stateSync?: import('../core/ReplicatedRecordEnvelope.js').StateSyncStores } | undefined)?.stateSync,
+      stores: _stateSyncStoresResolved, // gate-resolved (dev-live / fleet-dark) per operator directive 2026-06-13
       tierOf: learningTierOf,
       loadOriginRecords: (store, recordKey) => {
         if (store !== LEARNING_STORE_KEY || _meshSelfId === null) return [];
@@ -8303,7 +8315,7 @@ export async function startServer(options: StartOptions): Promise<void> {
     } = await import('../core/KnowledgeReplicatedStore.js');
     const knowledgeUnionReader = new ReplicatedStoreReader({
       registry: replicatedKindRegistry,
-      stores: (config.multiMachine as unknown as { stateSync?: import('../core/ReplicatedRecordEnvelope.js').StateSyncStores } | undefined)?.stateSync,
+      stores: _stateSyncStoresResolved, // gate-resolved (dev-live / fleet-dark) per operator directive 2026-06-13
       tierOf: knowledgeTierOf,
       loadOriginRecords: (store, recordKey) => {
         if (store !== KNOWLEDGE_STORE_KEY || _meshSelfId === null) return [];
@@ -8352,7 +8364,7 @@ export async function startServer(options: StartOptions): Promise<void> {
     } = await import('../core/EvolutionActionsReplicatedStore.js');
     const evolutionActionsUnionReader = new ReplicatedStoreReader({
       registry: replicatedKindRegistry,
-      stores: (config.multiMachine as unknown as { stateSync?: import('../core/ReplicatedRecordEnvelope.js').StateSyncStores } | undefined)?.stateSync,
+      stores: _stateSyncStoresResolved, // gate-resolved (dev-live / fleet-dark) per operator directive 2026-06-13
       tierOf: evolutionActionTierOf,
       loadOriginRecords: (store, recordKey) => {
         if (store !== EVOLUTION_ACTION_STORE_KEY || _meshSelfId === null) return [];
@@ -8394,7 +8406,7 @@ export async function startServer(options: StartOptions): Promise<void> {
     const { userTierOf, userToOriginRecord, deriveUserRecordKey, USER_STORE_KEY } = await import('../core/UserRegistryReplicatedStore.js');
     const userRegistryUnionReader = new ReplicatedStoreReader({
       registry: replicatedKindRegistry,
-      stores: (config.multiMachine as unknown as { stateSync?: import('../core/ReplicatedRecordEnvelope.js').StateSyncStores } | undefined)?.stateSync,
+      stores: _stateSyncStoresResolved, // gate-resolved (dev-live / fleet-dark) per operator directive 2026-06-13
       tierOf: userTierOf,
       loadOriginRecords: (store, recordKey) => {
         if (store !== USER_STORE_KEY || _meshSelfId === null) return [];
@@ -8436,7 +8448,7 @@ export async function startServer(options: StartOptions): Promise<void> {
     const { topicOperatorTierOf, topicOperatorToOriginRecord, deriveTopicOperatorRecordKey, TOPIC_OPERATOR_STORE_KEY } = await import('../core/TopicOperatorReplicatedStore.js');
     const topicOperatorUnionReader = new ReplicatedStoreReader({
       registry: replicatedKindRegistry,
-      stores: (config.multiMachine as unknown as { stateSync?: import('../core/ReplicatedRecordEnvelope.js').StateSyncStores } | undefined)?.stateSync,
+      stores: _stateSyncStoresResolved, // gate-resolved (dev-live / fleet-dark) per operator directive 2026-06-13
       tierOf: topicOperatorTierOf,
       loadOriginRecords: (store, recordKey) => {
         if (store !== TOPIC_OPERATOR_STORE_KEY || _meshSelfId === null) return [];
@@ -13957,7 +13969,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                 online: c.online,
                 stateSyncReceive: c.seamlessnessFlags?.stateSyncReceive,
               }));
-            const stores = (config.multiMachine as unknown as { stateSync?: import('../core/ReplicatedRecordEnvelope.js').StateSyncStores } | undefined)?.stateSync;
+            const stores = _stateSyncStoresResolved; // gate-resolved (dev-live / fleet-dark) per operator directive 2026-06-13
             const verdict = checkPoolFlagCoherence(replicatedKindRegistry, stores, peers);
             if (verdict.mixedStores.length > 0) {
               // Surface ONCE (coalesced): one log line listing every mixed store.
