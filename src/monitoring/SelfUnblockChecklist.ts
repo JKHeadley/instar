@@ -304,7 +304,9 @@ export class SelfUnblockRunStore implements SelfUnblockRunLoader {
         const parsed = JSON.parse(tail[i]) as SelfUnblockRun;
         if (parsed && parsed.runId === runId) return parsed;
       } catch {
-        // skip a corrupt/partial line rather than failing the whole read
+        // @silent-fallback-ok — skip a corrupt/partial JSONL line rather than
+        // failing the whole read; a partial trailing line is a normal
+        // crash-during-append artifact, not a degradation worth reporting.
       }
     }
     return null;
@@ -316,6 +318,8 @@ export class SelfUnblockRunStore implements SelfUnblockRunLoader {
     try {
       raw = fs.readFileSync(this.runsPath, 'utf-8');
     } catch {
+      // @silent-fallback-ok — no runs file yet means an empty list (first run),
+      // the same expected first-run condition as loadRun's read above.
       return [];
     }
     const lines = raw.split('\n').filter((l) => l.trim().length > 0);

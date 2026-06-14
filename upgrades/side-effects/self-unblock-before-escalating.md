@@ -241,3 +241,18 @@ and leaks no secret. **Verdict: Concur.**
   settle and the negative anti-gaming assertion), `tests/e2e/self-unblock-lifecycle.test.ts`
   ("feature is alive": 200 enabled / 503-after-auth dark); plus `lint-dev-agent-dark-gate.test.ts` +
   `feature-delivery-completeness.test.ts` (dev-gate registry coherence).
+
+## Addendum — no-silent-fallbacks ratchet (post-CI follow-up)
+
+CI surfaced one deterministic failure after the initial commit: the
+`no-silent-fallbacks` ratchet counts error-swallowing `catch` blocks against a
+tracked baseline (474) and the two new catches in `SelfUnblockRunStore`
+(`loadRun` skipping a corrupt/partial trailing JSONL line; `listRuns` returning
+`[]` when no runs file exists yet) pushed it to 475.
+
+Both are intentional, expected-condition silences — a partial trailing line is a
+normal crash-during-append artifact, and a missing runs file is the first-run
+condition — and they match a pattern already blessed two functions up in the same
+file. The correct fix is therefore the codebase's `@silent-fallback-ok` marker
+with justification on each, NOT raising the baseline or bolting on noisy
+degradation reports. Count is back to 473. No behavior change; pure annotation.
