@@ -41,7 +41,16 @@ function createAttentionAdapter() {
   };
 }
 
-async function startServer(enabled: boolean, tmpDir: string, auth: string): Promise<AgentServer> {
+// `enabled`: when a boolean, set the explicit flag value. When 'dev-gated', OMIT the
+// flag entirely and rely on the developmentAgent gate (resolveDevAgentGate) to resolve it
+// — the heart of mm-pool-seamlessness-devgate: a dev agent runs it live, the fleet stays
+// dark, with NO explicit config value present.
+async function startServer(
+  enabled: boolean | 'dev-gated',
+  tmpDir: string,
+  auth: string,
+  opts: { developmentAgent?: boolean } = {},
+): Promise<AgentServer> {
   const stateDir = path.join(tmpDir, '.instar');
   fs.mkdirSync(stateDir, { recursive: true });
   const config: InstarConfig = {
@@ -52,12 +61,14 @@ async function startServer(enabled: boolean, tmpDir: string, auth: string): Prom
     authToken: auth,
     requestTimeoutMs: 10000,
     version: '0.0.0',
+    developmentAgent: opts.developmentAgent,
     sessions: { claudePath: '/usr/bin/echo', maxSessions: 3, defaultMaxDurationMinutes: 30, protectedSessions: [], monitorIntervalMs: 5000 },
     scheduler: { enabled: false, jobsFile: '', maxParallelJobs: 1 },
     messaging: [],
     monitoring: {},
     updates: {},
-    multiMachine: { seamlessness: { ws41DurableAck: enabled } },
+    // 'dev-gated' → OMIT the flag so the dev-gate decides; otherwise set it explicitly.
+    multiMachine: { seamlessness: enabled === 'dev-gated' ? {} : { ws41DurableAck: enabled } },
   } as unknown as InstarConfig;
 
   const server = new AgentServer({
@@ -124,6 +135,42 @@ describe('E2E: WS4.1 durable remote-ack routes are ALIVE through the real AgentS
     } finally {
       await offServer.stop();
       SafeFsExecutor.safeRmSync(offDir, { recursive: true, force: true, operation: 'tests/e2e/attention-remote-ack-alive.test.ts' });
+    }
+  });
+
+  // mm-pool-seamlessness-devgate (operator directive topic 13481): with the flag OMITTED
+  // (no explicit config value), the developmentAgent gate must flip the route ALIVE on a
+  // dev agent and keep it 503 on the fleet — proving the dev-gate actually flips the route,
+  // not just shuffles a registry. This is the load-bearing PR2 behavior for ws41DurableAck.
+  it('dev-gate: flag OMITTED + developmentAgent:true → route ALIVE (not the dark-fleet 503)', async () => {
+    const devDir = fs.mkdtempSync(path.join(os.tmpdir(), 'remote-ack-dev-'));
+    const devServer = await startServer('dev-gated', devDir, AUTH, { developmentAgent: true });
+    try {
+      const res = await request(devServer.getApp())
+        .post('/attention/att-dev/remote-ack')
+        .set(auth())
+        .send({ machineId: 'm_owner', status: 'DONE' });
+      expect(res.status).toBe(200);
+      expect(res.body).toMatchObject({ ok: true, queued: true });
+    } finally {
+      await devServer.stop();
+      SafeFsExecutor.safeRmSync(devDir, { recursive: true, force: true, operation: 'tests/e2e/attention-remote-ack-alive.test.ts' });
+    }
+  });
+
+  it('dev-gate: flag OMITTED + developmentAgent:false (fleet) → 503 (dark by default)', async () => {
+    const fleetDir = fs.mkdtempSync(path.join(os.tmpdir(), 'remote-ack-fleet-'));
+    const fleetServer = await startServer('dev-gated', fleetDir, AUTH, { developmentAgent: false });
+    try {
+      const res = await request(fleetServer.getApp())
+        .post('/attention/x/remote-ack')
+        .set(auth())
+        .send({ machineId: 'm_owner', status: 'DONE' });
+      expect(res.status).toBe(503);
+      expect(res.body.error).toMatch(/ws41DurableAck/);
+    } finally {
+      await fleetServer.stop();
+      SafeFsExecutor.safeRmSync(fleetDir, { recursive: true, force: true, operation: 'tests/e2e/attention-remote-ack-alive.test.ts' });
     }
   });
 });

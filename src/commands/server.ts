@@ -5414,7 +5414,12 @@ export async function startServer(options: StartOptions): Promise<void> {
         const telegramForRoleGuard = telegram; // const-narrow for the closure
         scheduler.setRoleGuard(
           () => ({
-            enabled: config.multiMachine?.seamlessness?.ws43RoleGuard === true,
+            // DEV-AGENT DARK GATE (operator directive 2026-06-13, topic 13481):
+            // read ws43RoleGuard through resolveDevAgentGate so it resolves LIVE on
+            // a dev agent / DARK on the fleet. The guard can only ever REFUSE a
+            // spawn (never wrongly spawn — the safe direction); single-machine
+            // agents always hold the lease, so it never fires there even live.
+            enabled: resolveDevAgentGate(config.multiMachine?.seamlessness?.ws43RoleGuard, config),
             holdsLease: coordinator.holdsLease(),
           }),
           (slug, machineId) => {
@@ -9750,7 +9755,12 @@ export async function startServer(options: StartOptions): Promise<void> {
     const { SpeakerElection } = await import('../monitoring/SpeakerElection.js');
     const ws3Cfg = () => ((config as Record<string, any>).multiMachine?.seamlessness ?? {}) as { ws3OneVoice?: boolean; ws3DwellMs?: number };
     const speakerElection = new SpeakerElection({
-      enabled: () => ws3Cfg().ws3OneVoice === true,
+      // DEV-AGENT DARK GATE (operator directive 2026-06-13, topic 13481): read
+      // ws3OneVoice through resolveDevAgentGate so it resolves LIVE on a dev agent
+      // (config OMITS it → undefined → !!developmentAgent) and DARK on the fleet.
+      // An explicit config value still wins. Single-machine is a no-op regardless
+      // (the election never engages below 2 online machines).
+      enabled: () => resolveDevAgentGate(ws3Cfg().ws3OneVoice, config),
       currentMachineId: (() => {
         // @silent-fallback-ok — no machine identity = the election's legacy-no-machine-id
         // verdict (always speak): the designed single-machine degradation, not a loss.
@@ -13821,8 +13831,18 @@ export async function startServer(options: StartOptions): Promise<void> {
           scheduler.setJournalLeaseCutover(
             leaseStore,
             () => ({
-              enabled: config.multiMachine?.seamlessness?.ws43JournalLease === true,
-              dryRun: config.multiMachine?.seamlessness?.ws43JournalLeaseDryRun !== false,
+              // DEV-AGENT DARK GATE (operator directive 2026-06-13, topic 13481):
+              // read ws43JournalLease through resolveDevAgentGate → LIVE on a dev
+              // agent / DARK on the fleet (config OMITS both flags). ws43JournalLease
+              // DryRun resolves COHERENTLY: on a dev agent the cutover goes genuinely
+              // live (dryRun → false) so the journal-lease path is actually exercised,
+              // not just logged; on the fleet it resolves to the safe dry-run default
+              // (true). An explicit config value still wins on either flag. A genuine
+              // live cutover only engages when the flag resolves live AND the pool is
+              // flag-coherent (≥2 machines all advertising not-dry-run), so a
+              // single-machine dev agent never half-migrates.
+              enabled: resolveDevAgentGate(config.multiMachine?.seamlessness?.ws43JournalLease, config),
+              dryRun: config.multiMachine?.seamlessness?.ws43JournalLeaseDryRun ?? !resolveDevAgentGate(undefined, config),
               epoch: coordinator.getLeaseEpoch(),
               peers: registryForCutover
                 .getCapacities()
@@ -13913,7 +13933,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                 // WS1.1 capability advertisement (spec invariant 5): a bounded
                 // fixed-size summary, never an inventory. Reported live each
                 // heartbeat so a queue going dark withdraws the capability.
-                seamlessnessFlags: { ws11DeliverReceive: !!_inboundQueue, ws12DrainReceive: !!_drainRunner, ws44PoolLinks: !!_poolLink, ws44PoolCache: !!_poolPollCache, ws43JournalLease: config.multiMachine?.seamlessness?.ws43JournalLease === true && config.multiMachine?.seamlessness?.ws43JournalLeaseDryRun !== true, stateSyncReceive: selfStateSyncReceive() },
+                seamlessnessFlags: { ws11DeliverReceive: !!_inboundQueue, ws12DrainReceive: !!_drainRunner, ws44PoolLinks: !!_poolLink, ws44PoolCache: !!_poolPollCache, ws43JournalLease: resolveDevAgentGate(config.multiMachine?.seamlessness?.ws43JournalLease, config) && (config.multiMachine?.seamlessness?.ws43JournalLeaseDryRun ?? !resolveDevAgentGate(undefined, config)) !== true, stateSyncReceive: selfStateSyncReceive() },
                 // Durable Inbound Message Queue §5.1: depth + oldest + tenure +
                 // bounded top-K — the survivor's loss-SUSPECTED item, capped
                 // re-placement arm, and supersede-dedupe key all read these.
@@ -14204,7 +14224,14 @@ export async function startServer(options: StartOptions): Promise<void> {
           const ws13Cfg = () => ((config as Record<string, any>).multiMachine?.seamlessness ?? {}) as { ws13Reconcile?: boolean; ws13DryRun?: boolean; ws13TickMs?: number };
           const { OwnershipReconciler } = await import('../core/OwnershipReconciler.js');
           const reconciler = new OwnershipReconciler({
-            enabled: () => ws13Cfg().ws13Reconcile === true,
+            // DEV-AGENT DARK GATE (operator directive 2026-06-13, topic 13481):
+            // read ws13Reconcile through resolveDevAgentGate so the reconcile loop
+            // resolves LIVE on a dev agent / DARK on the fleet. ws13DryRun STAYS a
+            // plain config read (the in-component "log intended CAS without
+            // performing it" rung — NOT the dev-gate); so on a dev agent the loop
+            // runs live but in dry-run (no destructive CAS), exactly as the rollout
+            // ladder intends. Strict single-machine no-op inside the module.
+            enabled: () => resolveDevAgentGate(ws13Cfg().ws13Reconcile, config),
             dryRun: () => ws13Cfg().ws13DryRun !== false,
             selfMachineId: _meshSelfId,
             pinStore: _topicPinStore,
