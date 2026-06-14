@@ -41,7 +41,7 @@ describe('BlobInboxClient — wire protocol', () => {
     expect(call.init.method).toBe('PUT');
     const h = call.init.headers as Record<string, string>;
     expect(h.authorization).toBe('Bearer tok');
-    expect(h['x-api-version']).toBe('9');
+    expect(h['x-api-version']).toBe('7');
     expect(h['x-add-random-suffix']).toBe('1');
     expect(h['x-content-type']).toBe('application/json');
     expect(call.init.body).toBe('{"feedbackId":"fb-1"}');

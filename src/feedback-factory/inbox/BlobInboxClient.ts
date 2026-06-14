@@ -9,7 +9,13 @@
  *
  * Protocol pinned against @vercel/blob 0.27.3 source (dist/chunk-*.js):
  *   - base `https://blob.vercel-storage.com`, headers `authorization: Bearer <token>`
- *     + `x-api-version: 9`
+ *     + `x-api-version: 7` (this client speaks the v7-era request shape — pathname in
+ *       the URL path, simple PUT body. The live Blob API rejects that shape with
+ *       `400 bad_request "Invalid pathname"` once `x-api-version` is declared as 9+
+ *       (newer protocol versions expect a different request format). `7` is the
+ *       declared version whose wire contract matches the request this client builds;
+ *       verified live against PUT/LIST/DELETE. Adopting the @vercel/blob 2.x v12
+ *       protocol would be a larger rewrite, tracked as receiver hardening.)
  *   - PUT  /<pathname>            (body = content; `x-content-type`; `x-add-random-suffix: 1`)
  *   - GET  /?prefix=&limit=&cursor=  → { blobs: [{url, pathname, size, uploadedAt}], cursor, hasMore }
  *   - POST /delete                (JSON { urls: [...] })
@@ -45,7 +51,7 @@ export interface BlobInboxClientOptions {
 }
 
 const DEFAULT_API_BASE = 'https://blob.vercel-storage.com';
-const API_VERSION = '9';
+const API_VERSION = '7';
 
 export class BlobApiError extends Error {
   constructor(

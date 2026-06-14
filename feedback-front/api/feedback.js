@@ -186,7 +186,7 @@ var BlobInboxStore = class {
 
 // ../src/feedback-factory/inbox/BlobInboxClient.ts
 var DEFAULT_API_BASE = "https://blob.vercel-storage.com";
-var API_VERSION = "9";
+var API_VERSION = "7";
 var BlobApiError = class extends Error {
   constructor(status, operation, detail) {
     super(`blob ${operation} failed: HTTP ${status} \u2014 ${detail}`);

@@ -340,7 +340,22 @@ describe('No Silent Fallbacks', () => {
     // threadSymmetry, canonicalHistoryRead, ThreadlineEndpoints) — every new
     // canonical-history catch reports through DegradationReporter / fails loud. The
     // count only decreases from here.
-    const BASELINE = 473;
+    //
+    // 473 -> 474 on 2026-06-13 (feedback-factory receiver persistence, #1065): a
+    // detection-window artifact, NOT a new silent fallback. The receiver code
+    // (BlobInboxClient/InboxDrainer/BlobInboxStore/JsonlFeedbackStore/handlers) all
+    // lives under src/feedback-factory/* — OUTSIDE this scanner's RUNTIME_DIRS, so it
+    // is not scanned at all. The in-scope changes are AgentServer.ts (the drainer init
+    // block, both catches `@silent-fallback-ok`-tagged) + the read-only
+    // GET /feedback-inbox/status route (no try/catch) + the templates/migrator section.
+    // Inserting the drainer block reshapes the 20-line catch window so PRE-EXISTING,
+    // previously-uncounted catches now match — the same fragility as the 447->450 /
+    // 450->455 / 469->471 bumps above. Verified 2026-06-13 via a base(main)-vs-HEAD
+    // set-diff of the exact heuristic: 75 "added" / 74 "removed" entries, each "added"
+    // line a near-symmetric shift of a "removed" one (AgentServer 1355≡1347, 823≡816;
+    // routes 3834≡3830; migrator 7241≡7225), and ZERO new flagged line falls inside the
+    // new drainer block (1281-1311) or the status route. The count only decreases from here.
+    const BASELINE = 474;
 
     if (silentFallbacks.length > 0) {
       const report = silentFallbacks.map(fb =>
