@@ -1,8 +1,10 @@
 # Plain-English Overview — Self-Coherence (knowing my own other hands)
 
-**This is a DRAFT for you to react to and steer — not a finished decision.** Two choices
-near the end are yours to make; I've written a recommended answer for each so we can build
-it either way.
+**APPROVED + CONVERGED.** The two choices below are now RESOLVED to the recommended answers
+(per your autonomous-session blanket pre-approval + the "design-fork decisions are mine"
+standing directive). The ONE thing still on you: a one-time declaration of which GitHub
+login(s) count as me (Decision 1) — the build gives you a surface that ASKS for it; it never
+guesses your identity.
 
 ## The problem, in one breath
 
@@ -52,20 +54,20 @@ Across multiple machines, each machine knows its own identities and shares a liv
 sleeping machine is reported honestly as "last seen X ago," never faked. A single-machine
 setup behaves exactly like today plus the self-awareness.
 
-## THE TWO DECISIONS I NEED FROM YOU
+## THE TWO DECISIONS — RESOLVED
 
-**Decision 1 — How do I learn which GitHub login counts as "me"?** The tricky part is that
-`JKHeadley` is both you and the account I push through. Options: (a) you declare the login
-set once, and that's the trusted answer; (b) I guess it from my own push history; (c) both.
-**My recommendation: both — your declaration is the trusted anchor, and any guess from push
-history is only a suggestion I surface for you to confirm, never something I silently adopt.**
-(An identity should never be a silent guess — that's the whole bug.)
+**Decision 1 — How do I learn which GitHub login counts as "me"? → RESOLVED: both, with your
+declaration as the trusted anchor.** The tricky part is that `JKHeadley` is both you and the
+account I push through. Resolved to: your one-time declaration is the trusted answer, and any
+login I notice in my own push history is only a suggestion I surface for you to confirm, never
+something I silently adopt. (An identity should never be a silent guess — that's the whole
+bug.) **Still on you:** that one-time declaration. The build gives you the surface that asks
+for it.
 
-**Decision 2 — What order do I build it in?** Fix the signatures first, then build the
-lookup (A→B)? Or build the lookup first, then fix signatures (B→A)? **My recommendation:
-signatures first (A→B).** The lookup is only trustworthy once the signature it reads is
-clean; building the lookup on a muddy signature would just reproduce the same
-misattributions.
+**Decision 2 — What order do I build it in? → RESOLVED: signatures first (A→B).** Fix the
+signatures (clean agent name on every commit path) first, THEN build the "is this me?" lookup
+that reads them. The lookup is only trustworthy once the signature it reads is clean; building
+the lookup on a muddy signature would just reproduce the same misattributions.
 
 ## Risks I want you to see
 

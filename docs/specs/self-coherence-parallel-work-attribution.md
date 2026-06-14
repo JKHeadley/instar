@@ -4,8 +4,9 @@ slug: "self-coherence-parallel-work-attribution"
 date: 2026-06-13
 author: "echo"
 eli16-overview: "self-coherence-parallel-work-attribution.eli16.md"
-status: "draft-for-convergence"
-approved: false
+status: "approved"
+approved: true
+review-convergence: 2026-06-14T03:47:44Z
 parent-principle: "Cross-Machine Coherence — One Agent"
 layer: "core-instar-primitive"
 project: "self-coherence"
@@ -22,11 +23,14 @@ depends-on: >
 
 # Self-Coherence — SelfIdentityRegistry + Parallel-Work Attribution
 
-> **THIS IS A DRAFT FOR OPERATOR REVIEW.** `approved: false`, `status: draft-for-convergence`.
-> Its job is to give the operator a concrete artifact to react to and steer — not to be
-> final. Two open operator decisions are flagged PROMINENTLY below (and in the `.eli16`);
-> each carries a recommended default so the design is buildable either way. Do not treat
-> any choice here as settled until the operator weighs in.
+> **APPROVED + CONVERGED.** `approved: true`, `status: approved`. Both formerly-open operator
+> decisions are RESOLVED to their recommended defaults (see "OPERATOR DECISIONS — RESOLVED"
+> below) by Echo per Justin's autonomous-session blanket pre-approval +
+> design-fork-decisions-are-mine. The GitHub-login trust anchor (Decision #1) still requires
+> the operator's one-time declaration to populate — the build provides the surface that ASKS,
+> never guesses. Convergence was a genuine adversarial review across four lenses
+> (distributed-correctness, security/adversarial, integration-on-existing-primitives,
+> signal-vs-authority); all cited primitives were verified present on `JKHeadley/main`.
 
 ## Problem
 
@@ -107,9 +111,18 @@ commit author line itself.
   through `InstarWorktreeManager.setLocalGitIdentity` (or an equivalent post-create
   identity-set). The raw `git worktree add` callsites are the leak; they must either be
   funnelled through the manager or immediately followed by the per-worktree identity write.
-  A startup/`instar doctor` check asserts that every agent worktree under
-  `~/.instar/agents/<agent>/.worktrees/` has a local `user.email` matching `*@instar.local`,
-  and warns (does not auto-rewrite history) on any that don't.
+  **Enumerated leak callsites (verified by direct inspection 2026-06-13; the build must
+  address each):** (i) `src/core/WorktreeManager.ts` `createWorktree` — the in-tree
+  `worktree add` (`SafeGitExecutor.execSync([... 'worktree', 'add', ...])`) has NO subsequent
+  identity write; (ii) `src/core/ProjectRoundWorktrees.ts` `allocate` —
+  `SafeGitExecutor.run(['worktree', 'add', '--detach', ...])` likewise sets no per-worktree
+  identity. (`src/core/InstarWorktreeManager.ts` ALREADY calls `setLocalGitIdentity` after its
+  `worktree add` — verified at the `setLocalGitIdentity(worktreePath, agentName)` callsite
+  immediately following the manager's `worktree add`; it is the correct reference path, NOT a
+  leak.) Each of (i)/(ii) gains an immediate post-create `setLocalGitIdentity` (or the shared
+  audit-then-fix helper). A startup/`instar doctor` check asserts that every agent worktree
+  under `~/.instar/agents/<agent>/.worktrees/` has a local `user.email` matching
+  `*@instar.local`, and warns (does not auto-rewrite history) on any that don't.
 - **A2 — Set the machine's GLOBAL git identity to the agent identity.** On an agent machine,
   the global git config should be the agent's identity
   (`Instar Agent (<agent>) <<agent>@instar.local>`), NOT the operator's personal identity.
@@ -465,13 +478,29 @@ constraints the operator asked to be weighed against.
 
 ---
 
-## OPEN OPERATOR DECISIONS (the forks the operator wants to weigh in on)
+## OPERATOR DECISIONS — RESOLVED
 
-> Both decisions carry a RECOMMENDED default so the design is buildable either way. These
-> are restated in plain English in the `.eli16` so the operator can decide WITHOUT opening
-> this spec.
+> Both decisions are now RESOLVED to their recommended defaults. (Resolved by Echo per
+> Justin's autonomous-session blanket pre-approval + design-fork-decisions-are-mine; the
+> GitHub-login trust anchor still requires the operator's one-time declaration to populate —
+> the build provides the surface that ASKS, never guesses.)
 
-### Open Decision #1 — How is the operated-by-me GitHub-login set established?
+### Decision #1 — How is the operated-by-me GitHub-login set established? → RESOLVED: 1c
+
+**RESOLVED to Option 1c** (self-asserted as the trust anchor + auto-discovery as advisory
+enrichment). Rationale: an identity claim must never be a silent guess — the operator's
+declared login set is authoritative (the anchor components D and B's `isSelf` key on for hard
+answers), and any login inferred from push history is surfaced for the operator to confirm,
+never silently adopted. This matches B-INV-2/INV-3 (self-asserted beats auto-discovered).
+(Resolved by Echo per Justin's autonomous-session blanket pre-approval +
+design-fork-decisions-are-mine; the GitHub-login trust anchor still requires the operator's
+one-time declaration to populate — the build provides the surface that ASKS, never guesses.)
+
+<details><summary>Original fork options (for the record)</summary>
+
+The most ambiguous handle in the root cause is the GitHub login (`JKHeadley` is both the
+operator AND the account the agent pushes through). How does the registry learn which
+GitHub login(s) count as "me"?
 
 The most ambiguous handle in the root cause is the GitHub login (`JKHeadley` is both the
 operator AND the account the agent pushes through). How does the registry learn which
@@ -484,25 +513,34 @@ GitHub login(s) count as "me"?
   identity is exactly the failure mode this spec exists to fix.
 - **Option 1c — both.**
 
-**RECOMMENDED: 1c with self-asserted as the trust anchor + auto-discovery as advisory
-enrichment.** The operator-declared set is authoritative (the trust anchor that components D
-and B's `isSelf` key on for hard answers); auto-discovery from push history is advisory
-enrichment that surfaces "you've also pushed as X — should I treat X as you?" for the
+**RECOMMENDED (now adopted): 1c with self-asserted as the trust anchor + auto-discovery as
+advisory enrichment.** The operator-declared set is authoritative (the trust anchor that
+components D and B's `isSelf` key on for hard answers); auto-discovery from push history is
+advisory enrichment that surfaces "you've also pushed as X — should I treat X as you?" for the
 operator to confirm, never silently adopted. This matches B-INV-2/INV-3 (self-asserted beats
 auto-discovered) and keeps an identity claim from ever being a silent guess.
 
-### Open Decision #2 — Sequencing: identity-hygiene-first (A→B) or registry-first (B→A)?
+</details>
+
+### Decision #2 — Sequencing: identity-hygiene-first (A→B) or registry-first (B→A)? → RESOLVED: 2a
+
+**RESOLVED to Option 2a** (A-first — identity hygiene precondition, then registry). Rationale:
+identity hygiene is the precondition that makes the registry's commit-author signal
+trustworthy (Root Cause #5 / B-INV-1); a registry built on an ambiguous author line (B-first)
+would reproduce the very misattributions this spec exists to prevent. Build A, verify the
+author line is clean, then B reads a signal it can trust. (Resolved by Echo per Justin's
+autonomous-session blanket pre-approval + design-fork-decisions-are-mine; the GitHub-login
+trust anchor still requires the operator's one-time declaration to populate — the build
+provides the surface that ASKS, never guesses.)
+
+<details><summary>Original fork options (for the record)</summary>
 
 - **Option 2a — A-first (hygiene then registry).** Fix the commit-author signal first, then
   build the registry that reads it.
 - **Option 2b — B-first (registry then hygiene).** Build the registry first, accept that its
   commit-author signal is initially unreliable, then fix hygiene.
 
-**RECOMMENDED: 2a (A-first).** Identity hygiene is the precondition that makes the
-registry's commit-author signal trustworthy (Root Cause #5 / B-INV-1). A registry built on
-an ambiguous author line (B-first) would itself produce the very misattributions this spec
-exists to prevent. Build A, verify the author line is clean, then B reads a signal it can
-trust.
+</details>
 
 ---
 
