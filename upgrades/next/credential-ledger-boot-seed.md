@@ -1,0 +1,20 @@
+## What Changed
+
+Wired the missing runtime trigger for the live-credential-repointing **location ledger**. The build (spec §52) shipped the ability to seed the ledger from the identity oracle but never called it at boot, so on every agent the ledger stayed permanently NEVER-SEEDED: `GET /credentials/locations` returned `assignments: []` and the autonomous use-it-or-lose-it `CredentialRebalancer` could *decide* but never *actuate* a drain (it only ever saw the single default slot). This change adds a boot-seed in `src/commands/server.ts` (just before the B3b rebalancer timer), guarded by a new pure `shouldBootSeedCredentialLedger(enabled, isSeeded)` helper in `CredentialLocationLedger.ts`: it seeds once at startup when re-pointing is dev-gated-on AND the ledger is not already seeded (`isSeeded()` is false for both never-seeded and corrupt/unknown mode, so it doubles as the spec's named recovery path), idempotent across restarts. Fire-and-forget so boot is never blocked on the per-slot oracle probes. **Non-destructive**: it writes only the local slot→account map; moving a credential still requires the executor's `dryRun:false` gate + the write funnel + the one-home invariant — none of which this change touches.
+
+## What to Tell Your User
+
+Nothing changes for regular agents — this ships switched off for them and does nothing there. For the developer agent, the account optimizer that spreads work across your subscriptions can now actually see your accounts at startup instead of starting blank, so its practice runs reflect your real accounts. Nothing is moved by this change — the separate step that lets it actually shift logins between accounts still needs your explicit go-ahead.
+
+## Summary of New Capabilities
+
+- The credential location ledger now self-seeds at server boot on a dev agent (dev-gated; dark/no-op on the fleet) — `GET /credentials/locations` shows real slot↔account assignments (`mode: 'active'`) instead of `assignments: []`.
+- The autonomous credential rebalancer (use-it-or-lose-it drainer) now has real slots to operate over in its dry-run dogfooding, instead of only ever seeing the default slot.
+- Doubles as the ledger's boot-recovery path (a corrupt/unknown-mode ledger is re-seeded from the identity oracle on the next restart).
+
+## Evidence
+
+- Unit (new): `tests/unit/credential-ledger-boot-seed-guard.test.ts` — 4 tests, both sides of every boundary (enabled+unseeded→seed incl. unknown-mode recovery / disabled→no-op / already-seeded→no-op idempotent).
+- Unit (existing, unchanged): `tests/unit/credential-location-ledger.test.ts` — 17 tests for `seedFromOracle` itself (oracle-unavailable→quarantine, ambiguous/unknown-email→refuse+attention, one-home invariant, unknown-mode recovery).
+- E2E (new): `tests/e2e/credential-ledger-boot-seed.test.ts` — 2 tests booting the real `GET /credentials/locations` route over the server.ts wiring chain (pool → oracle → ledger → guard → seed): dev-gate ON boot-seeds and the mapped slots flow to the route (`mode: 'active'`, 2 assignments); dev-gate OFF the guard skips the seed so the ledger stays never-seeded (`assignments: []`, `mode: 'dark'`).
+- `tsc --noEmit` clean. Side-effects review: `upgrades/side-effects/credential-ledger-boot-seed.md`.
