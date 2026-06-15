@@ -12,13 +12,23 @@
  * un-awaited context, and we assert the OS-level process outcome.
  */
 
-import { describe, it, expect, beforeAll } from 'vitest';
-import { spawn, execFileSync } from 'node:child_process';
+import { describe, it, expect } from 'vitest';
+import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 
 const POLICY_PATH = path.resolve(__dirname, '../../dist/core/uncaughtExceptionPolicy.js');
-const REPO_ROOT = path.resolve(__dirname, '../..');
+
+// This E2E exercises the BUILT artifact (closest to production), so it needs a
+// fresh dist. Mirror the repo convention (tests/e2e/dev-preflight-cli.test.ts):
+// SKIP when dist is absent rather than building it — a test must never run
+// `npm run build` as a side-effect. The unit-test CI shards do NOT build dist
+// (only `npm ci` + `test:push`), and a build here would materialize dist for
+// every OTHER dist-gated test sharing the shard (e.g. dev-preflight, which then
+// runs `pnpm` and fails on runners without it). The build happens before push
+// locally, so this runs there; CI coverage of the policy is the in-process
+// process-level-error-handler unit tests.
+const DIST_BUILT = existsSync(POLICY_PATH);
 
 // The child registers the REAL handlers (real process.on, real process.exit)
 // delegating to the built handleProcessLevelError — the production wiring.
@@ -55,16 +65,7 @@ function runChild(scenario: string): Promise<ChildResult> {
   });
 }
 
-describe('Slack containment — process survives a contained error, crashes on an unknown one', () => {
-  beforeAll(() => {
-    // The E2E exercises the BUILT artifact (closest to production). CI builds
-    // before tests; build here if the dist is missing so the test is self-contained.
-    if (!existsSync(POLICY_PATH)) {
-      execFileSync('npm', ['run', 'build'], { cwd: REPO_ROOT, stdio: 'ignore' });
-    }
-    expect(existsSync(POLICY_PATH)).toBe(true);
-  }, 300_000);
-
+describe.skipIf(!DIST_BUILT)('Slack containment — process survives a contained error, crashes on an unknown one', () => {
   it('survives a contained Slack WebSocket error thrown as an uncaughtException', async () => {
     const { code, stdout } = await runChild('contained-uncaught');
     expect(stdout).toContain('STILL-ALIVE');
