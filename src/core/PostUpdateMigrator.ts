@@ -2899,6 +2899,13 @@ export class PostUpdateMigrator {
       result.errors.push(`external-operation-gate.js: ${err instanceof Error ? err.message : String(err)}`);
     }
 
+    try {
+      fs.writeFileSync(path.join(instarHooksDir, 'action-claim-followthrough.js'), this.getActionClaimFollowthroughHook(), { mode: 0o755 });
+      result.upgraded.push('hooks/instar/action-claim-followthrough.js (action-claim follow-through sentinel, signal-only)');
+    } catch (err) {
+      result.errors.push(`action-claim-followthrough.js: ${err instanceof Error ? err.message : String(err)}`);
+    }
+
     // Codex enforcement-hook registration (migration parity): existing Codex
     // agents get the per-project .codex/hooks.json on update. installCodexHooks
     // otherwise runs only via init's refreshHooksAndSettings — so without this an
@@ -3766,6 +3773,15 @@ setTimeout(() => process.exit(0), 2000);
       content += `\n### Self-Unblock Before Escalating (constitutional standard)\n\n**A blocker is MY problem to solve first — WITHIN my permissions and any access an organizational authority has granted me.** That boundary leads; "find a way" is subordinate to it. I never exceed granted scope, never exfiltrate, and operator-only credentials stay operator-only — ALL existing safety gates (coherence, external-operation, mandate, SourceTreeGuard, and BlockerLedger's own settle authority) still apply on top. Within that boundary, my DEFAULT is to unblock myself and to require as LITTLE from a human as possible.\n\nThe human-requirement ladder — ask for the LOWEST rung, named exactly:\n- **Rung 0 — Nothing:** resolve it entirely within my own permissions/accounts (own vault → org Bitwarden → cloud accounts I'm authed on (Vercel/Cloudflare/GitHub/launchd) → MCP tools → browser sessions → a resource I already control). Exhaust these FIRST.\n- **Rung 1 — An approval:** a yes/no the human taps (no credential, no manual work). An approval that unblocks MUST resolve against a VERIFIED principal (mandate / verified-operator surface) — never a name I only saw in content (Know Your Principal).\n- **Rung 2 — An operator-only credential:** a secret only an authorized employee can produce (LAST resort), collected securely (Secret Drop / vault unlock) and then STORED so it is never re-asked.\n\n**Rung FLOOR (capability ≠ authority):** an action that is irreversible, cost-bearing above a threshold, out-of-original-scope, or policy-sensitive has a MINIMUM rung of 1 (approval) EVEN IF a self-unblock credential exists. The ladder's downward pull never overrides this floor.\n\nMechanically (dev-gated, ships dark): the \`SelfUnblockChecklist\` runs an ordered, deterministic probe of those sources and persists each run; \`BlockerLedger\`'s \`settleTrueBlocker\` will only settle a credential/account blocker as a true-blocker after a VERIFIED, persisted exhaustion run (every probe came up empty) — so "I'm blocked" is mechanically gated behind "I genuinely exhausted every self-unblock path I'm allowed to use". Read recent runs: \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/blockers/self-unblock-runs?limit=50"\` (503 when the feature is dark).\n`;
       patched = true;
       result.upgraded.push('CLAUDE.md: added Self-Unblock Before Escalating section');
+    }
+
+    // Action-Claim Follow-Through Sentinel (action-claim-followthrough-sentinel.md).
+    // Agent Awareness: an agent that doesn't know this exists will be confused when a
+    // commitment appears after it says "I'll restart X". Content-sniffed; idempotent.
+    if (!content.includes('Action-Claim Follow-Through Sentinel')) {
+      content += `\n- **Action-Claim Follow-Through Sentinel (signal-only, dark by default).** A backstop for the word≠action gap (you say "relaunching now" / "I'll push the change" and then don't). A thin Stop hook posts each finished conversational turn to \`POST /action-claim/observe\`, which classifies a CONCRETE future-action claim (restart/relaunch/push/merge/deploy/fix/…) and opens an idempotent follow-through commitment for the topic — so the existing PromiseBeacon + the revival path make sure it actually happens. High-precision (vague "I'll take a look" never triggers it), de-duplicated by \`externalKey\` (a restated claim updates one commitment, not many), auto-expiring, per-topic capped. It NEVER blocks a message. Off by default; enable with \`messaging.actionClaim.enabled\` (dev-first soak before fleet). Proactive: user asks "why did a commitment appear when I said I'd restart something?" → that's this sentinel tracking your stated action so it isn't silently dropped.\n`;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Action-Claim Follow-Through Sentinel section');
     }
 
     // Outbound advisory (outbound-jargon-filepath-gap §5) — the inform-only
@@ -7323,6 +7339,28 @@ Create worktrees for collaborator repos with \`instar worktree create <branch>\`
         result.upgraded.push('.claude/settings.json: added Stop stop-gate-router hook');
       }
     }
+    {
+      // Action-Claim Follow-Through Sentinel (signal-only Stop hook). Register in
+      // existing agents' Stop array (Migration Parity). The hook itself no-ops unless
+      // messaging.actionClaim.enabled, so registering it dark is safe.
+      const stopHooks = (hooks.Stop ?? []) as Array<{ matcher?: string; hooks?: Array<{ command?: string; type?: string; timeout?: number }> }>;
+      const hasActionClaim = stopHooks.some(e =>
+        e.hooks?.some(h => h.command?.includes('action-claim-followthrough.js')),
+      );
+      if (!hasActionClaim) {
+        stopHooks.push({
+          matcher: '',
+          hooks: [{
+            type: 'command',
+            command: 'node ${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/action-claim-followthrough.js',
+            timeout: 6000,
+          }],
+        });
+        hooks.Stop = stopHooks;
+        patched = true;
+        result.upgraded.push('.claude/settings.json: added Stop action-claim-followthrough hook');
+      }
+    }
     if (hooks.Stop) {
       this.migrateSettingsHookPaths(hooks.Stop as unknown[], result);
       patched = true;
@@ -10492,6 +10530,64 @@ process.stdin.on('end', () => {
     process.stdout.write(JSON.stringify({ decision: 'approve', additionalContext: reminder }));
   } catch { /* don't break on errors */ }
   process.exit(0);
+});
+`;
+  }
+
+  private getActionClaimFollowthroughHook(): string {
+    return `#!/usr/bin/env node
+// Action-Claim Follow-Through — thin Stop hook (spec: action-claim-followthrough-sentinel.md).
+//
+// SIGNAL-ONLY: posts the finished turn's outbound text + topicId to the server's
+// /action-claim/observe route, which (server-side) classifies a concrete future-action
+// claim ("I'll restart it", "relaunching now") and opens an idempotent follow-through
+// commitment. This hook NEVER blocks — it ALWAYS exit(0), pass or fail. Dark by default
+// (messaging.actionClaim.enabled, code-default false).
+const _r = require;
+const fs = _r('fs');
+const path = _r('path');
+
+let serverPort = 4040;
+let authToken = '';
+let enabled = false;
+try {
+  const configPath = path.join(process.env.CLAUDE_PROJECT_DIR || '.', '.instar', 'config.json');
+  const cfg = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+  serverPort = cfg.port || 4040;
+  authToken = cfg.authToken || '';
+  enabled = !!(cfg.messaging && cfg.messaging.actionClaim && cfg.messaging.actionClaim.enabled);
+} catch {}
+
+if (!enabled) process.exit(0);
+
+let data = '';
+process.stdin.on('data', (chunk) => (data += chunk));
+process.stdin.on('end', async () => {
+  try {
+    const input = JSON.parse(data);
+    const message = input.last_assistant_message || '';
+    const topicRaw = process.env.INSTAR_TELEGRAM_TOPIC;
+    if (!message || message.length < 20 || !topicRaw) process.exit(0);
+    const topicId = parseInt(topicRaw, 10);
+    if (!Number.isFinite(topicId)) process.exit(0);
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 5000);
+    try {
+      await fetch('http://127.0.0.1:' + serverPort + '/action-claim/observe', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + authToken },
+        body: JSON.stringify({ message, topicId }),
+        signal: controller.signal,
+      });
+    } catch {
+      // network/timeout — signal-only, ignore
+    } finally {
+      clearTimeout(timeout);
+    }
+  } catch {
+    // bad stdin — ignore
+  }
+  process.exit(0); // ALWAYS exit 0 — never block a turn
 });
 `;
   }

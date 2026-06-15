@@ -1,0 +1,62 @@
+# Upgrade Guide — Action-Claim Follow-Through Sentinel
+
+<!-- bump: patch -->
+
+## What Changed
+
+A signal-only backstop for the word≠action gap: when the agent says a CONCRETE
+future action in a conversational turn ("I'll restart the server", "relaunching
+now", "pushing the change"), a thin Stop hook posts the turn to a new server route
+`POST /action-claim/observe`, which classifies the claim and opens an idempotent
+follow-through **commitment** for the topic — so the existing PromiseBeacon + the
+revival path make sure the action actually happens instead of being silently
+dropped.
+
+- `src/core/action-claim.ts` — deterministic, high-precision classifier (closed
+  concrete-verb set; first-person-scoped; sentence-initial-participle for the
+  "Relaunching now" idiom; rejects vague filler, past tense, quotes, and
+  imperatives/questions/third-person directed at others). Fails toward NOT
+  registering.
+- `CommitmentTracker.record()` — idempotent `externalKey` create (the missing
+  dedupe primitive): a restated claim updates ONE commitment instead of spawning N.
+- The route enforces a per-topic cap + a 6h auto-expiry. The hook ALWAYS exits 0 —
+  it never blocks a message. Off by default behind `messaging.actionClaim.enabled`.
+
+Completed-action verification (checking "I already pushed it" against real evidence)
+is a tracked follow-up <!-- tracked: CMT-1554-sibling action-claim-A2-evidence-primitive --> — it needs a per-turn tool-call-evidence primitive that
+doesn't exist yet; the founding incident was a future-action claim, which this
+covers.
+
+## What to Tell Your User
+
+- **A concrete thing I say I'll do becomes a tracked promise** (when enabled): "If I
+  say I'll restart/push/deploy/merge something, that now opens a tracked commitment
+  so I actually follow through — instead of it being a sentence that might quietly
+  never happen. It's careful (vague 'I'll take a look' doesn't trigger it), it never
+  blocks my messages, and it de-duplicates so restating the same thing doesn't pile
+  up reminders." ⚗️ Experimental — ships off by default; enabled on the dev agent
+  first to prove it out before any fleet rollout.
+
+## Summary of New Capabilities
+
+| Capability | How to Use |
+|-----------|-----------|
+| A concrete future-action claim opens a tracked follow-through commitment | Automatic when `messaging.actionClaim.enabled` (off by default) |
+| Idempotent — a restated claim updates one commitment, not many | Automatic (`externalKey` dedupe) |
+| Diagnose "why did a commitment appear when I said I'd restart X?" | `GET /commitments` — that's this sentinel tracking the stated action |
+
+## Evidence
+
+- Unit (`tests/unit/action-claim.test.ts`, 9): classifier both sides — catches the
+  founding "Relaunching now" + first-person near-future forms + participle
+  normalization; rejects vague filler, past tense, quotes, AND
+  imperatives/questions/third-person directed at others (the Phase-5 precision fix).
+- Unit (`tests/unit/CommitmentTracker-externalKey-dedupe.test.ts`, 3): `record()`
+  returns the existing open commitment on a repeated `externalKey`; distinct keys →
+  distinct; no-key → unchanged behavior.
+- Integration (`tests/integration/action-claim-route.test.ts`, 6): `POST
+  /action-claim/observe` over the real HTTP pipeline — flag-off no-op, register,
+  dedupe, non-claim no-op, per-topic cap, 400.
+- Regression: 87 existing CommitmentTracker tests green; tsc clean; settings-template
+  valid JSON. Phase-5 second-pass review raised a precision concern (third-person
+  false positives) which was fixed and re-verified.
