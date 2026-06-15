@@ -1,6 +1,5 @@
-# Upgrade Guide — vNEXT
+# Upgrade Guide — WS2-SEND-2b: topicOperator send-side replication
 
-<!-- assembled-by: assemble-next-md -->
 <!-- bump: patch -->
 
 ## What Changed
