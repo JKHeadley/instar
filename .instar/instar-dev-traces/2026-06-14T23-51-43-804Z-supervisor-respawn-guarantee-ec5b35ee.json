@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "sessionId": "a278d903-203a-4d7b-be17-7d0492c4bde9",
+  "timestamp": "2026-06-14T23:51:43.804Z",
+  "artifactPath": "upgrades/side-effects/supervisor-respawn-guarantee.md",
+  "artifactSha256": "61f81bfce3398df95fb03e338e36f2d137b1390753fc592e9f42f9e072bc9306",
+  "specPath": "docs/specs/SUPERVISOR-RESPAWN-GUARANTEE-SPEC.md",
+  "coveredFiles": [
+    "docs/specs/SUPERVISOR-RESPAWN-GUARANTEE-SPEC.eli16.md",
+    "docs/specs/SUPERVISOR-RESPAWN-GUARANTEE-SPEC.md",
+    "src/lifeline/ServerSupervisor.ts",
+    "tests/unit/server-supervisor-respawn-guarantee.test.ts",
+    "upgrades/next/supervisor-respawn-guarantee.md",
+    "upgrades/side-effects/supervisor-respawn-guarantee.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Safety-invariant server crash-recovery change (session lifecycle / respawn authority); full chain.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

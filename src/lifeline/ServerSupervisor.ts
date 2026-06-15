@@ -224,6 +224,16 @@ export class ServerSupervisor extends EventEmitter {
   // separately; this grace makes restarts safe in the meantime.)
   private startupGraceMs = 600_000;
   private spawnedAt = 0;
+  // Fix C (supervisor-respawn-guarantee): wall-clock of the FIRST spawn in the
+  // current not-yet-healthy episode. `spawnedAt` can be repeatedly reset to now
+  // by sleep/wake handling, which re-arms the startup-grace window indefinitely;
+  // `firstSpawnedAt` is NOT reset by those handlers, so it anchors an absolute
+  // ceiling on cumulative grace (startupGraceMs * graceCeilingMultiplier). Past
+  // the ceiling, failures are acted on normally even if `spawnedAt` was just
+  // reset — a server that has never gone healthy after 3× the grace window is
+  // hung, not booting. Cleared on the first healthy tick.
+  private firstSpawnedAt = 0;
+  private readonly graceCeilingMultiplier = 3;
   private retryCooldownMs = 5 * 60_000; // 5 minutes cooldown after max retries exhausted
   private maxRetriesExhaustedAt = 0;
   private consecutiveFailures = 0; // Hysteresis: require 2 consecutive failures before marking unhealthy
@@ -1128,19 +1138,40 @@ export class ServerSupervisor extends EventEmitter {
       // that still cause health check failures during the transition.
       this.sleepWakeDetector = new SleepWakeDetector({ driftThresholdMs: 15_000 });
       this.sleepWakeDetector.on('wake', (event: { sleepDurationSeconds: number }) => {
-        console.log(`[Supervisor] SleepWakeDetector: wake after ~${event.sleepDurationSeconds}s. Resetting failure counters.`);
+        // Fix B (supervisor-respawn-guarantee): the same load guard the gap-based
+        // check uses. SleepWakeDetector infers a wake from a monotonic-clock drift,
+        // which CPU starvation can also produce. Always reset the (possibly stale)
+        // failure counters, but only re-arm the startup-grace window (`spawnedAt =
+        // now`) when the box is NOT starved — otherwise a starvation false-wake
+        // would pin the supervisor in grace and suppress Fix A's recovery of a
+        // genuinely-dead server.
+        const loadPerCore = this.loadRatioProvider();
+        const starved = loadPerCore > this.maxLoadRatio;
+        console.log(`[Supervisor] SleepWakeDetector: wake after ~${event.sleepDurationSeconds}s (load ratio ${loadPerCore.toFixed(2)}). Resetting failure counters${starved ? ' (CPU-starved — NOT re-arming startup grace)' : ''}.`);
         this.restartAttempts = 0;
         this.maxRetriesExhaustedAt = 0;
         this.consecutiveFailures = 0;
         this.totalFailures = 0;
         this.totalFailureWindowStart = 0;
-        this.spawnedAt = Date.now();
-        this.wakeTransitionUntil = Date.now() + this.wakeTransitionMs;
+        if (!starved) {
+          this.spawnedAt = Date.now();
+          this.firstSpawnedAt = this.spawnedAt; // fresh episode — re-anchor Fix C ceiling (see gap-check)
+          this.wakeTransitionUntil = Date.now() + this.wakeTransitionMs;
+        }
       });
       this.sleepWakeDetector.start();
     }
 
-    this.healthCheckInterval = setInterval(async () => {
+    this.healthCheckInterval = setInterval(() => { void this.runHealthTick(); }, 10_000); // Check every 10 seconds
+  }
+
+  /**
+   * One health-check tick — extracted from the setInterval callback so a single
+   * tick can be driven directly in unit tests (Fix A/B/C, supervisor-respawn-
+   * guarantee) and so the wiring-integrity test can assert the loop probes
+   * isServerSessionAlive() before honoring any startup-grace early-return.
+   */
+  private async runHealthTick(): Promise<void> {
       const now = Date.now();
 
       // Sleep/wake detection: if the gap between health checks is much larger than
@@ -1149,15 +1180,43 @@ export class ServerSupervisor extends EventEmitter {
       // exhaust restart attempts before the machine is fully awake.
       if (this.lastHealthCheckAt > 0 && (now - this.lastHealthCheckAt) > this.sleepWakeGapMs) {
         const gapSec = Math.round((now - this.lastHealthCheckAt) / 1000);
-        console.log(`[Supervisor] Sleep/wake detected (${gapSec}s gap). Resetting failure counters.`);
-        this.restartAttempts = 0;
-        this.maxRetriesExhaustedAt = 0;
-        this.consecutiveFailures = 0;
-        this.totalFailures = 0;
-        this.totalFailureWindowStart = 0;
-        // Give the server the full startup grace period from wake time
-        this.spawnedAt = now;
-        this.wakeTransitionUntil = now + this.wakeTransitionMs;
+        // Fix B (supervisor-respawn-guarantee): a large inter-tick gap is NOT
+        // necessarily a machine suspend. Under sustained CPU starvation the event
+        // loop stalls for minutes, so 10s ticks arrive 300-980s apart — and the
+        // unconditional `spawnedAt = now` below would pin the supervisor in
+        // startup-grace forever (the 2026-06-14 trap), suppressing recovery of a
+        // server that has actually crashed. Consult system load (the same signal
+        // SleepWakeDetector and the CPU-starvation defer already use): if the box
+        // is starved, classify the gap as a STALLED EVENT LOOP, not a suspend —
+        // reset the failure counters (safe; they may be stale) but do NOT reset
+        // `spawnedAt`, so the grace window is not re-armed and Fix A below can act
+        // on a genuinely-missing server on this very tick.
+        const loadPerCore = this.loadRatioProvider();
+        const starvedGap = loadPerCore > this.maxLoadRatio;
+        if (starvedGap) {
+          console.log(`[Supervisor] Large health-check gap (${gapSec}s) under CPU starvation (load ratio ${loadPerCore.toFixed(2)} > ${this.maxLoadRatio}) — classifying as a stalled event loop, NOT sleep/wake. Resetting failure counters but NOT re-arming startup grace.`);
+          this.restartAttempts = 0;
+          this.maxRetriesExhaustedAt = 0;
+          this.consecutiveFailures = 0;
+          this.totalFailures = 0;
+          this.totalFailureWindowStart = 0;
+          // Deliberately NOT resetting spawnedAt / firstSpawnedAt — see Fix B above.
+        } else {
+          console.log(`[Supervisor] Sleep/wake detected (${gapSec}s gap). Resetting failure counters.`);
+          this.restartAttempts = 0;
+          this.maxRetriesExhaustedAt = 0;
+          this.consecutiveFailures = 0;
+          this.totalFailures = 0;
+          this.totalFailureWindowStart = 0;
+          // Give the server the full startup grace period from wake time. A
+          // genuine suspend/wake is a fresh boot episode, so re-anchor the Fix C
+          // grace ceiling too (firstSpawnedAt = now) — otherwise a long sleep
+          // would make the wall-clock ceiling fire immediately on the post-wake
+          // boot and deny a legitimately slow wake its grace.
+          this.spawnedAt = now;
+          this.firstSpawnedAt = now;
+          this.wakeTransitionUntil = now + this.wakeTransitionMs;
+        }
       }
       this.lastHealthCheckAt = now;
 
@@ -1170,17 +1229,51 @@ export class ServerSupervisor extends EventEmitter {
         return;
       }
 
+      // Fix A (supervisor-respawn-guarantee) — MISSING-SESSION OVERRIDE (primary,
+      // load-bearing). A startup grace period is a promise about a process that
+      // EXISTS and is booting; it must never apply to a process that does not
+      // exist. A missing server tmux session is unambiguous death — not subject
+      // to sleep/wake or load interpretation. Probe it BEFORE the startup-grace
+      // early-return below, so a crashed server is respawned on the very next 10s
+      // tick regardless of any spawnedAt reset that pinned us in grace (the exact
+      // 2026-06-14 trap that left the server dead for ~2h). A normally-booting
+      // server DOES have a live tmux session (created synchronously at spawn; the
+      // HTTP listener binds later), so this never fights a legitimate boot — it
+      // only fires when the process is genuinely gone. handleUnhealthy() carries
+      // the full circuit-breaker / restart-attempt / cooldown accounting, so a
+      // genuine crash-loop still trips the breaker rather than hot-spinning.
+      if (!this.isServerSessionAlive()) {
+        console.log('[Supervisor] Server tmux session is GONE — overriding startup grace and respawning (a missing process is unambiguous death, not a boot).');
+        this.handleUnhealthy();
+        return;
+      }
+
+      // Fix C (supervisor-respawn-guarantee) — ABSOLUTE GRACE CEILING
+      // (belt-and-suspenders). Anchor the first spawn of this not-yet-healthy
+      // episode so repeated `spawnedAt` resets can never extend the
+      // ignore-failures window beyond startupGraceMs × graceCeilingMultiplier of
+      // real wall-clock. A server whose session is alive but has NEVER answered
+      // /health after 3× the grace window is hung, not booting — past the ceiling
+      // we fall through to act on failures normally.
+      if (this.spawnedAt > 0 && this.firstSpawnedAt === 0) {
+        this.firstSpawnedAt = this.spawnedAt;
+      }
+      const graceCeilingExceeded =
+        this.firstSpawnedAt > 0 &&
+        (now - this.firstSpawnedAt) >= this.startupGraceMs * this.graceCeilingMultiplier;
+
       // During startup grace period: probe health optimistically but don't act on failures.
       // This allows `lastHealthy` to update as soon as the server is responsive, so
       // TelegramLifeline can forward messages immediately instead of queuing them for
       // the entire grace period. Failures are ignored — the server is still booting.
-      if (this.spawnedAt > 0 && (now - this.spawnedAt) < this.startupGraceMs) {
+      if (!graceCeilingExceeded && this.spawnedAt > 0 && (now - this.spawnedAt) < this.startupGraceMs) {
         this.checkRestartRequest();
         // Optimistic health probe — update lastHealthy on success, ignore failures
         try {
           const alive = await this.checkHealth();
           if (alive) {
             this.lastHealthy = Date.now();
+            this.firstSpawnedAt = 0; // Fix C: episode resolved healthy — re-anchor next episode
             if (!this.isRunning) {
               this.isRunning = true;
               this.emit('serverUp');
@@ -1217,6 +1310,7 @@ export class ServerSupervisor extends EventEmitter {
           this.restartAttempts = 0;
           this.consecutiveFailures = 0;
           this.consecutiveBindFailures = 0;
+          this.firstSpawnedAt = 0; // Fix C: episode resolved healthy — re-anchor next episode
 
           // F-6: notify any pending Remediator restart-requested entries
           // that the planned restart has completed. Idempotent.
@@ -1246,7 +1340,6 @@ export class ServerSupervisor extends EventEmitter {
       this.checkDebugRestartRequest();
       // Agent hard-sleep: honor a sleep-request written by the live SleepController
       this.checkSleepRequest();
-    }, 10_000); // Check every 10 seconds
   }
 
   private stopHealthChecks(): void {
