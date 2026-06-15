@@ -16637,6 +16637,32 @@ export async function startServer(options: StartOptions): Promise<void> {
     // server's own store instance.
     _agentServerRef = server;
 
+    // ── WS2.6 SEND-SIDE: topicOperator (the THIRD PII kind) ──────────────
+    // The AUTHORITATIVE topic-operator writer is the AgentServer's OWN
+    // TopicOperatorStore (it constructs `this.topicOperatorStore` internally and
+    // binds it from the authenticated sender via setOperator). server.ts has no
+    // canonical instance of its own, so we attach the journal-backed emitter to the
+    // server's store here, right after the AgentServer exists. setOperator already
+    // fires emitPut on every real bind/rebind. PUT-ONLY BY CONSTRUCTION — a topic
+    // rebinds, never unbinds, so there is NO emitDelete path (the receive side
+    // resolves the latest binding by HLC). Dark by default
+    // (multiMachine.stateSync.topicOperator); off ⇒ no-op. A content name can never
+    // become an operator — only the platform-verified uid is emitted (Know Your
+    // Principal); a replicated record is NEVER authoritative for inbound resolution.
+    if (replicatedRecordEmitter) {
+      const _topicOpEmitter = replicatedRecordEmitter;
+      const { TOPIC_OPERATOR_STORE_KEY, deriveTopicOperatorRecordKey, buildTopicOperatorRecordData } =
+        await import('../core/TopicOperatorReplicatedStore.js');
+      server.getTopicOperatorStore()?.setOperatorReplicationEmitter({
+        emitPut: (topicId, record) =>
+          _topicOpEmitter.emit(
+            TOPIC_OPERATOR_STORE_KEY,
+            deriveTopicOperatorRecordKey(topicId, record.uid),
+            (hlc, origin, observed) => buildTopicOperatorRecordData({ topicId, record, hlc, origin, observed }),
+          ),
+      });
+    }
+
     // ── WS5.3 (escalation-rides-topic) destination re-admit driver ──
     // Bound here (after the AgentServer exists) so it can reach the SAME
     // ModelSwapService the /sessions/:name/model-swap route uses. Re-admission
