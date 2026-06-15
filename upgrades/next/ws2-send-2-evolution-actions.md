@@ -1,0 +1,46 @@
+# Upgrade Guide — WS2-SEND-2: evolutionActions send-side replication
+
+<!-- bump: patch -->
+
+## What Changed
+
+The `evolutionActions` memory store is now wired into the WS2 send-side — the next of the
+WS2-SEND-2 table-row stores (after `relationships` + `knowledge`). The generic emitter
+from #1168 is attached to `EvolutionManager`'s existing action-queue hooks (the manager
+already fired `emitPut` per surviving action + `emitDelete` per pruned action in
+`saveActions`; the emitter was a `void` placeholder), and `evolutionActions` flips
+PENDING→WIRED in the send-wiring ratchet. The evolution-actions union reader and the
+disclosure-minimized projection already shipped (WS2.5); this is the send attachment +
+its end-to-end proof. Dark by default (`multiMachine.stateSync.evolutionActions`). No new
+route/verb/config-default/migration. Only the enumerated action projection crosses — never
+the local internal id.
+
+## What to Tell Your User
+
+- **Cross-machine self-improvement queue now actually crosses**: "If you run me on more
+  than one machine, a self-improvement action I raise on one now shows up on the others —
+  one shared action queue instead of one per machine. The load-bearing part: a peer SEES
+  when an action was already completed or is in progress elsewhere, so I don't redo work
+  another of my machines already did. Only the action's content crosses (title,
+  description, priority, status, tags) — never the local internal id. It stays off until
+  you ask me to turn on multi-machine sync." ⚗️ Experimental — ships dark.
+
+## Summary of New Capabilities
+
+| Capability | How to Use |
+|-----------|-----------|
+| Cross-machine replication of the evolution action queue | Automatic once `multiMachine.stateSync.evolutionActions` is enabled (off by default) |
+| Status visibility — a peer sees completed/in_progress and won't redo a finished action | Automatic (a status change re-emits) |
+| Removal (prune-over-maxActions) propagates as a fingerprint-keyed tombstone (no resurrection) | Automatic (save path); a RETAINED terminal action is never tombstoned |
+
+## Evidence
+
+Verified by a two-instance in-process E2E
+(`tests/e2e/ws2-evolution-actions-cross-instance.test.ts`): an action raised on instance A
+is read back on B through the bypass-proof union reader as a foreign-origin record — with
+the local `ACT-NNN` id confirmed ABSENT from the projection — and a status change
+(updateAction → completed) on A re-replicates so B's latest read shows `status:'completed'`
+(the peer-won't-redo-it behavior), all over the real journal serve/apply path. `tsc
+--noEmit` clean; the new e2e (2) passes; the ws2-send-wiring integration ratchet (4)
+accepts the PENDING→WIRED move; the unified-trust-system integration suite is green with
+the de-flaked PoW test.
