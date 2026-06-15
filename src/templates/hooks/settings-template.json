@@ -189,6 +189,16 @@
             "timeout": 10000
           }
         ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .instar/hooks/instar/action-claim-followthrough.js",
+            "timeout": 6000
+          }
+        ]
       }
     ]
   }
