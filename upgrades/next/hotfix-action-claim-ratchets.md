@@ -1,11 +1,24 @@
-# Unbreak main — track #1178's action-claim section + hook in the parity ratchets
+# Unbreak main — register #1178's action-claim section, hook, and route in the CI gates
 
-<!-- internal-only -->
+<!-- bump: patch -->
 
 ## What Changed
 
-PR #1178 (action-claim follow-through sentinel) added a CLAUDE.md migrator section and a migrator-installed hook without registering them in the two parity ratchets (`feature-delivery-completeness`, `migration-parity-hooks`), turning `main` red and blocking every open PR via update-branch. This adds the two missing allowlist entries — the standard acceptance step #1178 skipped: the section to `legacyMigratorSections` (dark, signal-only migrator awareness) and the hook to `INSTALL_VS_MIGRATE_KNOWN_GAPS` (dark/dev-first, migrator-only-for-now with a fleet-rollout follow-up). Test-only; no runtime change.
+PR #1178 (the action-claim follow-through sentinel) merged with four failing tests because it added a dark feature's surfaces without registering them in the CI gates that enforce instar's constitutional standards — turning `main` red and blocking every open PR via update-branch. This fixes all four, fix-forward:
+
+1. **`feature-delivery-completeness`** — added the migrator CLAUDE.md section `'Action-Claim Follow-Through Sentinel'` to `legacyMigratorSections` (dark, signal-only migrator awareness, like the cartographer / "Honest progress messaging" entries).
+2. **`migration-parity-hooks`** — added the migrator-installed hook `action-claim-followthrough.js` to `INSTALL_VS_MIGRATE_KNOWN_GAPS` with a rationale (dark/dev-first, migrator-only-for-now with a fleet-rollout follow-up, like `free-text-guard.sh` / `skill-usage-telemetry.sh`).
+3. **`capabilities-discoverability`** — registered the `action-claim` route prefix in `INTERNAL_PREFIXES` (`src/server/CapabilityIndex.ts`). The `/action-claim/observe` route is the Stop-hook's internal ingest for a dark sentinel; it is agent-invisible by design, so suppression (not surfacing) is correct.
+4. **`no-bare-require-in-generated-hooks`** — rewrote `getActionClaimFollowthroughHook` (`src/core/PostUpdateMigrator.ts`) to load `fs`/`path` via `await import('node:...')` inside the async handler instead of a top-level `const _r = require` alias. The alias crashes with "require is not defined in ES module scope" in an ESM-host agent — the exact 2026-05-27 silent-stall regression this gate exists to prevent.
+
+## What to Tell Your User
+
+None — this is an internal build-unblock hotfix. It changes nothing you would notice: the action-claim feature stays switched off, the new internal route stays invisible, and the hook change is a same-behavior safety fix. The only effect is that the build goes green again so development can continue.
+
+## Summary of New Capabilities
+
+None — no new capability. This restores the CI gates' parity for the already-merged (dark) action-claim feature and hardens its generated hook against the ESM-host crash mode.
 
 ## Evidence
 
-Both ratchet tests pass with the additions: `feature-delivery-completeness.test.ts` (101 tests) + `migration-parity-hooks.test.ts` (5 tests) = 106/106. The additions mirror existing accepted entries (`/secrets/sync-status`, `Token-Burn Alerts` for the section list; `free-text-guard.sh`, `skill-usage-telemetry.sh` for the hook gaps). No other test references these allowlists.
+All four previously-failing tests pass with the fixes: `feature-delivery-completeness` (101) + `migration-parity-hooks` (5) + `capabilities-discoverability` (132) + `no-bare-require-in-generated-hooks` (23) = 261/261. `tsc --noEmit` clean. The action-claim-referencing `CommitmentTracker-externalKey-dedupe` (3) still passes. Side-effects review: `upgrades/side-effects/hotfix-action-claim-ratchets.md`. The only residual local-shard failure (`sign-instar-lockfile`, `ERR_MODULE_NOT_FOUND: js-yaml`) is a missing-dev-dependency artifact of an incomplete local `npm install` (js-yaml is declared in package.json `^4.1.1`); it resolves under CI's `npm ci` and is unrelated to this change.

@@ -14,9 +14,12 @@ Instar has two CI ratchets that enforce its constitutional standards:
 
 ## What's new
 
-Two allowlist additions — the standard, already-blessed acceptance pattern:
+#1178 actually broke FOUR gates, not two. This fixes all four fix-forward:
+
 1. `'Action-Claim Follow-Through Sentinel'` → `legacyMigratorSections` (it is a dark, signal-only awareness section added by the migrator, exactly like the cartographer / "Honest progress messaging" sections already listed there).
 2. `'action-claim-followthrough.js'` → `INSTALL_VS_MIGRATE_KNOWN_GAPS` with a rationale (it is dark-by-default and in dev-first soak before fleet rollout, so migrator-only-for-now is intentional — matching `free-text-guard.sh` / `skill-usage-telemetry.sh`, which are already accepted as migrator-only).
+3. `{ prefix: 'action-claim', ... }` → `INTERNAL_PREFIXES` (`src/server/CapabilityIndex.ts`). The `capabilities-discoverability` lint found `/action-claim` registered in `routes.ts` but unclassified. The route is the Stop-hook's internal ingest for a dark sentinel — agent-invisible by design — so the lint's option (b), suppress-from-discovery, is the correct call (it would never be a `/capabilities` entry).
+4. `getActionClaimFollowthroughHook` (`src/core/PostUpdateMigrator.ts`) rewritten to load `fs`/`path` via `await import('node:...')` inside the async handler instead of a top-level `const _r = require` alias. The `no-bare-require-in-generated-hooks` gate bans that alias because it crashes with "require is not defined in ES module scope" in an ESM-host agent — the exact 2026-05-27 silent-stall regression. The rewrite preserves the hook's behavior exactly (signal-only, always `exit(0)`, dark unless `messaging.actionClaim.enabled`).
 
 ## Why allowlist rather than add fresh-init parity
 
@@ -24,4 +27,4 @@ Action-claim ships dark (`messaging.actionClaim.enabled`, off) and is explicitly
 
 ## What you'd decide
 
-This is a green-the-build hotfix that completes the acceptance step another PR forgot. It changes only two test files (no runtime code), is grounded in the existing precedent in both allowlists, and the two ratchet tests pass locally (106/106). The trade-off is whether action-claim's hook should be migrator-only-for-now (this change) or installed on fresh init immediately; given the dark/dev-first posture, migrator-only-with-a-tracked-follow-up matches how the codebase already treats dark migrator hooks.
+This is a green-the-build hotfix that completes the four acceptance steps another PR forgot. It adds two CI-allowlist entries (test files) and two small, no-behavior-change runtime fixes (an internal route-prefix classification + an ESM-safe import rewrite of a dark hook), all grounded in existing precedent. All four previously-red tests pass locally (261/261) and `tsc` is clean. The trade-off is fix-forward vs revert #1178: revert was considered but rejected — #1178 is a substantial dark feature whose surfaces are individually fixable with the codebase's blessed patterns, so registering them correctly (and preserving the author's work) is lower-risk than reverting a large feature across hot files (PostUpdateMigrator). The migrator-only posture for the section/hook matches how the codebase already treats dark migrator hooks.
