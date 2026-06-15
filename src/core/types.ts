@@ -4221,6 +4221,16 @@ export interface MonitoringConfig {
     /** Minimum gap (ms) between EMITTED wakes; short drifts within it are
      *  rate-limited. Long sleeps bypass it. Default: 60000. */
     minWakeIntervalMs?: number;
+    /** A SHORT drift within this window (ms) of a PRIOR short drift, while load is
+     *  above `recentDriftLoadFloor`, is treated as recurring CPU starvation and
+     *  suppressed — catching the moderate-load band (below `maxLoadRatio`) where
+     *  isolated drifts dodge the consecutive burst floor. Default: 300000 (5 min).
+     *  Set 0 to disable this guard. */
+    recentDriftWindowMs?: number;
+    /** loadavg[0]/cpuCount above which the recent-drift recurrence guard applies.
+     *  Below this, a recurring short drift is trusted as a real brief sleep. Default:
+     *  1.0 (the oversubscription threshold; the host has more runnable work than cores). */
+    recentDriftLoadFloor?: number;
   };
   /**
    * SessionReaper — pressure-aware reaper of idle-but-alive sessions. The only
