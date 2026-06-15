@@ -17,7 +17,7 @@ import pc from 'picocolors';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 import { loadConfig, ensureStateDir, detectTmuxPath, detectGeminiPath } from '../core/Config.js';
-import { isNonFatalUncaught, shouldLogStackForUncaught } from '../core/uncaughtExceptionPolicy.js';
+import { handleProcessLevelError } from '../core/uncaughtExceptionPolicy.js';
 import { resolveDevAgentGate, resolveStateSyncStores } from '../core/devAgentGate.js';
 import { parseProfileTrigger, platformMessageIdFrom } from '../core/topicProfileIngress.js';
 import { slugifyChannelName } from '../messaging/slack/sanitize.js';
@@ -17182,30 +17182,25 @@ export async function startServer(options: StartOptions): Promise<void> {
     // (e.g., cloudflared crash cascade during sleep/wake), close databases to prevent
     // the "mutex lock failed" error on next start. This doesn't prevent the crash,
     // but ensures the next boot is clean.
+    // Route BOTH process-level error events through one shared decision
+    // (uncaughtExceptionPolicy.handleProcessLevelError) so they cannot drift to
+    // divergent policies: one narrow allowlist (HTTP double-response races, the
+    // Slack Socket Mode reconnect race, standby read-only writes), one
+    // fail-toward-crash default, one dedup'd log path. Isolated/recoverable
+    // errors log-and-continue; anything unknown closes ALL registered SQLite
+    // handles (so the crash exit doesn't compound into a "mutex lock failed"
+    // SIGABRT) and exits — net #2 respawns a clean process in ~10s.
+    //
+    // The unhandledRejection handler is essential, not optional: the Slack
+    // 'message' listener calls the async _handleRawMessage, so an escaping throw
+    // there surfaces as a REJECTION, not a sync exception (net #1). Cleanup is
+    // injected so the policy module stays pure decision-logic.
+    const onFatalCleanup = (): void => { closeAllSqlite(); };
     process.on('uncaughtException', (err) => {
-      // Isolated, recoverable uncaught exceptions — log and continue, don't
-      // crash the server (which would close its databases + drop in-flight
-      // work). See isNonFatalUncaught for the allowlist + rationale (HTTP
-      // double-response races, Slack Socket Mode reconnect races).
-      if (isNonFatalUncaught(err)) {
-        // Attach the stack the first time a given origin is seen so the offending
-        // call site (e.g. a route that double-responds → "Cannot set headers")
-        // is diagnosable; repeats log message-only to avoid flooding the log
-        // (these isolated races recur ~10-20x/hour).
-        const stackSuffix =
-          shouldLogStackForUncaught(err) && err.stack
-            ? `\n  first-seen stack (for diagnosis):\n${err.stack}`
-            : '';
-        console.warn(`[WARN] Non-fatal uncaught exception (suppressed): ${err.message}${stackSuffix}`);
-        return; // Don't crash — the server is fine
-      }
-
-      console.error('[FATAL] Uncaught exception — closing databases before crash:', err.message);
-      // Close ALL registered SQLite handles (not just topic/semantic memory) so
-      // the crash exit doesn't compound into a "mutex lock failed" SIGABRT on top
-      // of the original error. closeAllSqlite() is best-effort + idempotent.
-      try { closeAllSqlite(); } catch { /* best effort */ }
-      process.exit(1);
+      handleProcessLevelError(err, 'uncaughtException', { onFatalCleanup });
+    });
+    process.on('unhandledRejection', (reason) => {
+      handleProcessLevelError(reason, 'unhandledRejection', { onFatalCleanup });
     });
 
     // Wire the ForegroundRestartWatcher to the graceful shutdown function.

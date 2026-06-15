@@ -28,6 +28,21 @@ const NON_FATAL_UNCAUGHT_PATTERNS = [
   // that sleeps/wakes often, where reconnects are frequent). The root cause is
   // also guarded at the ack send site; this is the defense-in-depth backstop.
   'Sent before connected',
+  // The SAME non-OPEN-WebSocket-send race as 'Sent before connected', but the
+  // message form thrown by Node's BUILT-IN WebSocket (Node 22+, the default
+  // runtime path — the 'ws' polyfill only loads on Node <22). Built-in throws
+  // a DOMException `"WebSocket is not open: readyState N"` (see Node's
+  // lib/internal/deps/undici/undici.js — sendMessage's not-OPEN guard), which
+  // 'Sent before connected' does not match. This is a TRANSPORT-level non-fatal
+  // class, correct for EVERY WebSocket user in the tree (Slack Socket Mode,
+  // Threadline relay/client, server WebSocketManager, SlackLifeline) — each owns
+  // its own reconnect and a dropped frame is best-effort. ANCHORED to
+  // "WebSocket is not open" (NOT the bare "is not open", which collides with
+  // live "<name> is not open for public registration" and "database connection
+  // is not open" messages and would swallow a genuinely-fatal error — guarded by
+  // a negative test). Net #1's _safeSend funnel + grep ratchet is the PRIMARY
+  // guarantee; this only ever catches an un-funneled future regression.
+  'WebSocket is not open',
   // Standby read-only write: when this machine is on standby (a peer holds the
   // multi-machine lease), StateManager.guardWrite() throws on any stray
   // write ("StateManager is read-only (this machine is on standby)"). That is a
@@ -107,4 +122,55 @@ export function shouldLogStackForUncaught(err: unknown): boolean {
 /** Test-only: reset the dedup memory so each test starts from a clean slate. */
 export function __resetUncaughtStackDedupeForTests(): void {
   seenUncaughtStacks.clear();
+}
+
+/**
+ * The single crash-vs-continue decision shared by BOTH process-level handlers
+ * (`uncaughtException` and `unhandledRejection`). Extracting it into one function
+ * is what guarantees the two handlers cannot drift to divergent policies — there
+ * is exactly one allowlist, one default-crash posture, one dedup'd log path.
+ *
+ * Behavior:
+ * - A non-fatal match (`isNonFatalUncaught`) → `console.warn` (with the first-seen
+ *   stack attached once per distinct origin) and returns `'recovered'`. The server
+ *   stays up.
+ * - Anything else → `console.error`, run `opts.onFatalCleanup()` (best-effort —
+ *   wrapped so a cleanup failure can't mask the original error), then exit(1) and
+ *   return `'fatal'`. This is the fail-toward-crash default: an unknown error
+ *   crashes, and net #2 respawns a clean process in ~10s.
+ *
+ * Cleanup and exit are INJECTED callbacks (server.ts passes `closeAllSqlite` and
+ * the real `process.exit`) so this module stays pure decision-logic — it does NOT
+ * import the SQLite registry, and the unit test injects fakes to assert the fatal
+ * path triggers cleanup + exit under BOTH labels without actually exiting.
+ *
+ * The `exit` callback is typed `(code) => never`, but the function still has a
+ * trailing `return 'fatal'`: with the real `process.exit` that line is
+ * unreachable; with an injected test fake that returns, the assertion can observe
+ * the verdict. This is the standard injectable-exit test pattern.
+ */
+export function handleProcessLevelError(
+  err: unknown,
+  label: 'uncaughtException' | 'unhandledRejection',
+  opts: { onFatalCleanup: () => void; exit?: (code: number) => never },
+): 'recovered' | 'fatal' {
+  const message = err instanceof Error ? err.message : typeof err === 'string' ? err : String(err);
+  if (isNonFatalUncaught(err)) {
+    // Attach the stack the first time a given origin is seen so the offending
+    // call site is diagnosable; repeats log message-only to avoid flooding the
+    // log (these isolated races recur).
+    const stackSuffix =
+      shouldLogStackForUncaught(err) && err instanceof Error && err.stack
+        ? `\n  first-seen stack (for diagnosis):\n${err.stack}`
+        : '';
+    console.warn(`[WARN] Non-fatal ${label} (suppressed): ${message}${stackSuffix}`);
+    return 'recovered';
+  }
+
+  console.error(`[FATAL] Uncaught ${label} — closing databases before crash: ${message}`);
+  // Close ALL registered SQLite handles before the crash exit so it doesn't
+  // compound into a "mutex lock failed" SIGABRT. onFatalCleanup is best-effort.
+  try { opts.onFatalCleanup(); } catch { /* best effort */ }
+  (opts.exit ?? process.exit)(1);
+  return 'fatal';
 }

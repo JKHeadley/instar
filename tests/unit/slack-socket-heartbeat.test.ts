@@ -39,19 +39,28 @@ describe('Heartbeat timing constants', () => {
 });
 
 describe('Active liveness probe', () => {
-  it('sends a ping probe when no events for DEAD_SILENCE_MS', () => {
-    // After DEAD_SILENCE_MS of silence, sends a JSON ping
-    expect(socketClientSource).toMatch(/sinceLastEvent > DEAD_SILENCE_MS[\s\S]*?ws\?\.send\(.*ping/);
+  it('sends a ping probe through the _safeSend funnel when no events for DEAD_SILENCE_MS', () => {
+    // After DEAD_SILENCE_MS of silence, sends a JSON ping via _safeSend (net #1)
+    expect(socketClientSource).toMatch(
+      /sinceLastEvent > DEAD_SILENCE_MS[\s\S]*?_safeSend\('\{"type":"ping"\}', 'liveness-probe', true\)/,
+    );
   });
 
-  it('resets silence timer after successful send (TCP alive)', () => {
-    // Successful send() means TCP connection is alive — reset lastEventAt
-    // so we don't immediately re-probe on the next tick
-    expect(socketClientSource).toMatch(/ws\?\.send\(.*ping[\s\S]*?lastEventAt = Date\.now\(\)/);
+  it('resets silence timer after a successful probe send (TCP alive)', () => {
+    // _safeSend returning true means the send succeeded → reset lastEventAt so we
+    // don't immediately re-probe on the next tick.
+    expect(socketClientSource).toMatch(
+      /_safeSend\('\{"type":"ping"\}', 'liveness-probe', true\)\) \{[\s\S]*?lastEventAt = Date\.now\(\)/,
+    );
   });
 
-  it('forces reconnect if send() throws (socket already dead)', () => {
-    expect(socketClientSource).toMatch(/catch[\s\S]*?Liveness probe send failed[\s\S]*?_forceReconnect/);
+  it('forces reconnect via _safeSend reconnectOnFailure when the probe send throws', () => {
+    // The probe passes reconnectOnFailure=true; the funnel force-reconnects on a
+    // caught throw (socket dead at the OS level), guarded by the identity check.
+    expect(socketClientSource).toMatch(/_safeSend\('\{"type":"ping"\}', 'liveness-probe', true\)/);
+    expect(socketClientSource).toMatch(
+      /reconnectOnFailure && this\.started && !this\.reconnecting && this\.ws === sock\) \{[\s\S]*?this\._forceReconnect\(\)/,
+    );
   });
 });
 

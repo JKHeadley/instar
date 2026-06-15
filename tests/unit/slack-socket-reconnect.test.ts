@@ -145,35 +145,39 @@ describe('Ack send guard against a mid-reconnect socket (#43 — no whole-agent 
     await expect(handleRaw(client, JSON.stringify(payload))).resolves.toBeUndefined();
 
     expect(send).toHaveBeenCalledWith(JSON.stringify({ envelope_id: 'E-send-race' }));
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining('Ack send failed'));
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('ack send failed'));
     expect(handlers.onEvent).toHaveBeenCalledWith('message', payload.payload);
     warn.mockRestore();
   });
 
-  it('guards the event ack on socket readyState === OPEN', () => {
-    // The "must ack within 3s" send previously called this.ws?.send() with only
-    // a null check — during a reconnect race the socket can be CONNECTING/CLOSING,
-    // and the unguarded send threw "Sent before connected" → uncaught → FATAL.
+  it('routes the event ack through the _safeSend funnel (net #1)', () => {
+    // The "must ack within 3s" send now goes through _safeSend, which owns the
+    // readyState guard + try/catch — during a reconnect race the socket can be
+    // CONNECTING/CLOSING, and an unguarded send threw "Sent before connected" →
+    // uncaught → FATAL. The ack path passes no reconnectOnFailure (a failed ack
+    // does not by itself prove the socket is dead).
     expect(socketClientSource).toMatch(
-      /envelope\.envelope_id[\s\S]*?this\.ws\.readyState === WebSocket\.OPEN[\s\S]*?this\.ws\.send\(/,
+      /envelope\.envelope_id\)\s*\{[\s\S]*?this\._safeSend\(JSON\.stringify\(\{ envelope_id: envelope\.envelope_id \}\), 'ack'\)/,
     );
   });
 
-  it('wraps the ack send in try/catch (state can change between check and send)', () => {
+  it('_safeSend guards the send on readyState === OPEN and wraps it in try/catch', () => {
+    // The funnel reads this.ws once into a local, returns false on a non-OPEN
+    // precheck (no throw), and wraps the OPEN-socket send in try/catch so a
+    // state flip between check and send cannot escape.
     expect(socketClientSource).toMatch(
-      /this\.ws\.readyState === WebSocket\.OPEN\) \{[\s\S]*?try \{[\s\S]*?this\.ws\.send\([\s\S]*?\} catch/,
+      /_safeSend\([^)]*\): boolean \{[\s\S]*?readyState !== WebSocket\.OPEN\) return false;[\s\S]*?try \{[\s\S]*?sock\.send\([\s\S]*?\} catch/,
     );
   });
 
-  it('server routes uncaught exceptions through the isNonFatalUncaught policy (defense-in-depth)', () => {
-    // The recoverable-error allowlist (HTTP races + the Slack WS race) is now a
-    // testable module, used by the process-level handler instead of an inline list.
-    // Tolerate additional named imports from the policy module (e.g.
-    // shouldLogStackForUncaught) — the intent is "server imports the
-    // isNonFatalUncaught policy", not a byte-exact import line.
+  it('server routes BOTH process-level error events through the shared policy (defense-in-depth)', () => {
+    // The recoverable-error allowlist is a testable module; both the
+    // uncaughtException AND unhandledRejection handlers delegate to the one
+    // shared handleProcessLevelError so they cannot drift to divergent policies.
     expect(serverSource).toMatch(
-      /import \{[^}]*\bisNonFatalUncaught\b[^}]*\} from '\.\.\/core\/uncaughtExceptionPolicy\.js'/,
+      /import \{[^}]*\bhandleProcessLevelError\b[^}]*\} from '\.\.\/core\/uncaughtExceptionPolicy\.js'/,
     );
-    expect(serverSource).toMatch(/if \(isNonFatalUncaught\(err\)\) \{[\s\S]*?return;/);
+    expect(serverSource).toMatch(/process\.on\('uncaughtException'[\s\S]*?handleProcessLevelError\(/);
+    expect(serverSource).toMatch(/process\.on\('unhandledRejection'[\s\S]*?handleProcessLevelError\(/);
   });
 });
