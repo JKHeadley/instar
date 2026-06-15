@@ -39,6 +39,24 @@ const NON_FATAL_UNCAUGHT_PATTERNS = [
   // This is a crash backstop ONLY — it does not change lease/standby behavior;
   // it stops a standby write from taking the process down.
   'StateManager is read-only',
+  // Network-class outbound failures (transient upstream/peer outage). A failed
+  // outbound fetch — the multi-machine lease-wire peer broadcast, a Slack
+  // connect/reconnect, any HTTP call — is ISOLATED by nature: the call has
+  // already unwound and SQLite, HTTP, and the other subsystems are intact. The
+  // owning subsystem retries/self-heals (lease-wire re-broadcasts; the socket
+  // reconnects with backoff). Crashing the whole agent on a transient network
+  // blip is strictly worse than logging + continuing — it was the cause of the
+  // 2026-06-15 crash-during-API-instability (an uncaught `fetch failed` took the
+  // server down mid-outage). The first-seen-stack logging below still surfaces
+  // the un-guarded callsite so the real missing `.catch` gets fixed; this is the
+  // crash backstop, NOT a license to skip the catch. (CMT-1548)
+  'fetch failed',          // undici / Node global fetch network failure
+  'ECONNREFUSED',
+  'ECONNRESET',
+  'ETIMEDOUT',
+  'ENOTFOUND',
+  'EAI_AGAIN',
+  'socket hang up',
 ];
 
 /**
