@@ -1034,6 +1034,10 @@ export interface RouteContext {
    *  gated). Null/absent while dark (the route returns own rows only, byte-
    *  identical to before). */
   preferenceReplicaStore?: import('../core/PreferencesSync.js').PreferenceReplicaStore | null;
+  /** WS2.1 SEND-SIDE: the journal-backed replicated-record emitter. The correction-loop's
+   *  per-request PreferencesManager (the sole recordPreference writer) attaches to this so a
+   *  learned preference replicates. Null/absent while dark ⇒ strict single-machine no-op. */
+  replicatedRecordEmitter?: import('../core/ReplicatedRecordEmitter.js').ReplicatedRecordEmitter | null;
   /** Replicated-store conflict ledger (multi-machine-replicated-store-foundation
    *  §7.2/§7.3) — backs GET /state/conflicts + POST /state/resolve-conflict.
    *  Null/absent while dark (the routes answer 503). */
@@ -16752,6 +16756,22 @@ export function createRoutes(ctx: RouteContext): Router {
       });
 
       const prefs = new PreferencesManager(ctx.config.stateDir);
+      // WS2.1 SEND-SIDE: this per-request PreferencesManager is the SOLE recordPreference
+      // writer (the correction loop routes every write through it below). Attach the
+      // journal-backed emitter so a learned preference replicates. PUT-ONLY (recordPreference
+      // upserts on dedupeKey; no delete path). Dark by default ⇒ emitter absent ⇒ no-op.
+      if (ctx.replicatedRecordEmitter) {
+        const _prefEmitter = ctx.replicatedRecordEmitter;
+        const { PREF_STORE_KEY, buildPrefRecordData } = await import('../core/PreferencesReplicatedStore.js');
+        prefs.setReplicationEmitter({
+          emitPut: (entry) =>
+            _prefEmitter.emit(
+              PREF_STORE_KEY,
+              entry.dedupeKey,
+              (hlc, origin, observed) => buildPrefRecordData({ entry, hlc, op: 'put', origin, observed }),
+            ),
+        });
+      }
       const port = ctx.config.port;
       const authToken = ctx.config.authToken;
       const evo = ctx.evolution as { addAction?: (o: never) => { id: string } } | null;
