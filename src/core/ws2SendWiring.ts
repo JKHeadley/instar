@@ -25,16 +25,18 @@ export const WS2_SEND_WIRED_STORES: ReadonlyArray<string> = Object.freeze([
   'evolutionActions',
   'topicOperator',
   'userRegistry',
+  'preferences',
 ]);
 
 /**
  * Stores registered for RECEIVE but whose SEND wiring is a KNOWN, enumerated
- * follow-up — NOT a silent omission. Each is here for a stated reason:
- *  - preferences: NO manager emit seam yet — it rode the deprecated `preferences-sync`
- *    verb; needs a manager emit hook before it can be wired (WS2-SEND-3).
+ * follow-up — NOT a silent omission. EMPTY: all 7 replicated memory/PII stores are now
+ * SEND-WIRED (learnings, relationships, knowledge, evolutionActions, topicOperator,
+ * userRegistry, preferences). A future replicated store registered for RECEIVE before its
+ * SEND wiring lands goes here with a stated reason (the ratchet keeps it from being a
+ * silent omission).
  */
 export const WS2_SEND_PENDING_STORES: ReadonlyArray<string> = Object.freeze([
-  'preferences',
 ]);
 
 /** A registered store's send-wiring classification. */
