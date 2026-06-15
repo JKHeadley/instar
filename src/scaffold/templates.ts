@@ -9,6 +9,13 @@
  * When augmenting an existing project, only missing files are created.
  */
 
+// The "Playwright Profile Registry" CLAUDE.md awareness section is authored ONCE in
+// PostUpdateMigrator (the single source of truth shared by new installs here and the
+// existing-agent migration there) so the two can never drift. Imported as a runtime
+// function call inside generateClaudeMd — no module-init cycle (PostUpdateMigrator
+// never imports templates).
+import { PLAYWRIGHT_PROFILE_REGISTRY_CLAUDEMD_SECTION } from '../core/PostUpdateMigrator.js';
+
 export interface AgentIdentity {
   name: string;
   role: string;
@@ -804,7 +811,7 @@ I declare owner/blockedOn at commitment creation; a later state change goes thro
 - **Swap two slots' credentials live** — \`POST /credentials/swap\` \`{"slotA":"<home>","slotB":"<home>"}\` (the staged §2.3 exchange). **Restore the enrollment layout** — \`POST /credentials/restore-enrollment\` (parks any identity-incoherent blob one-directionally; never exchanges it into a healthy slot). All levers are DETECTIVE controls — operator-notified + audited + param-validated + per-pair cooldown + a force budget on \`force:true\`. No token material ever exits any \`/credentials/*\` surface (the single CredentialAuditEmit scrub chokepoint).
 - **The autonomous balancer surface** — \`GET /credentials/rebalancer\` (the use-it-or-lose-it drainer is Increment B; this surfaces the env-token applicability gate's verdict + WHY re-pointing would refuse, when enabled).
 - **When to use** (PROACTIVE — these are the triggers): "flip my default account to X" / "make X my default" → \`POST /credentials/set-default\`; "which account is this session/slot on?" / "where does ~/.claude point?" → \`GET /credentials/locations\` (read it, don't infer from \`claude auth status\` — that reads a metadata file, not the live credential). Single-account agents are a no-op. (Spec: \`docs/specs/live-credential-repointing-rebalancer.md\`.)
-
+${PLAYWRIGHT_PROFILE_REGISTRY_CLAUDEMD_SECTION(port)}
 **Per-Feature LLM Metrics & LLM Activity (Observable Intelligence)** — Audit what each of your LLM-driven gates/sentinels actually does: WHICH provider + model ran it, how often it ACTED (fired) vs found nothing (noop), how often it was skipped to save rate limits (shed), cost, and latency. This is the *Observable Intelligence* standard — no autonomous AI action the system takes is allowed to be invisible. Read-only observability — it never gates anything.
 - Check: \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/metrics/features?sinceHours=24"\`
 - Returns \`{ totals, features: [{ feature, frameworks, models, byModel, calls, realCalls, tokensIn, tokensOut, tokensCached, fired, noop, shed, fireRate, p50LatencyMs, p95LatencyMs, ... }] }\` — one row per system (e.g. MessagingToneGate, MessageSentinel). \`frameworks\`/\`models\` = which provider(s) actually served the call; \`fireRate\` = how often it acts; \`shed\` = skipped by the rate-limit guard. Filter with \`?feature=<name>\`.
@@ -1010,6 +1017,7 @@ I maintain registries that are the source of truth for specific categories. Thes
 | Other agents on this machine? | \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/agents\` |
 | Behavioral issues logged while onboarding a framework? / the onboarding playbook? | \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/framework-issues\` (read-only) + \`/framework-issues/playbook?targetFramework=X\` — the Framework-Onboarding Mentor System's issue ledger (observability only; never gates). Log a discovered issue: \`POST /framework-issues/observe\` {framework,bucket,severity,title,dedupKey,...} |
 | What is this topic pinned to (model/thinking/framework)? | \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/topic-profile/TOPIC_ID\` — no entry = the topic runs on defaults |
+| Which browser profile holds account X? / what browser access do I have? | \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/playwright-profiles\` (full detail) + \`…/resolve?service=&identity=\` (pick one) — the Playwright Profile Registry; read it, never guess |
 | Why/when did this topic's pin change? | \`logs/topic-profile-changes.jsonl\` (per-change audit) |
 | Project architecture? | This file (CLAUDE.md), then project docs |
 
