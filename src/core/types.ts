@@ -2736,6 +2736,19 @@ export interface InstarConfig {
     defaults?: Record<string, { model?: string; thinkingMode?: string; effort?: string }>;
   };
   /**
+   * Playwright Profile Registry (docs/specs/playwright-profile-registry.md).
+   * The profile↔accounts registry + boot awareness + activate. DEV-GATED:
+   * `enabled` is deliberately OMITTED from ConfigDefaults so resolveDevAgentGate
+   * decides — LIVE on a development agent, DARK on the fleet. `dryRun` ships
+   * `true` (the activate write+refresh canary; a real switch needs dryRun:false).
+   */
+  playwrightRegistry?: {
+    /** Master dev-gate switch. Omit to ride resolveDevAgentGate. */
+    enabled?: boolean;
+    /** Activate dry-run canary — log the intended .mcp.json rewrite + refresh, perform neither (default true). */
+    dryRun?: boolean;
+  };
+  /**
    * Topic-intent auto-capture loop config (rung 0 of continuous-working-awareness).
    * `capture.enabled` (default true) is the kill-switch for the per-turn extraction
    * loop. See docs/specs/topic-intent-capture-loop.md.

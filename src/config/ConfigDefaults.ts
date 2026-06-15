@@ -1265,6 +1265,19 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       manualLeversEnabled: true,
     },
   },
+  // Playwright profile↔accounts registry (spec: playwright-profile-registry.md).
+  // developmentAgent dark-feature gate: `enabled` is OMITTED so resolveDevAgentGate
+  // resolves it LIVE on a dev agent + DARK on the fleet (the DEV_GATED_FEATURES
+  // entry). The only destructive op (activate: MCP-config rewrite + session restart)
+  // is gated by the SEPARATE dryRun flag (default true): live-on-dev computes + audits
+  // the intended rewrite/refresh but performs NEITHER while dryRun holds — the
+  // dry-run canary, mirroring credentialRepointing/topicProfiles. A real switch needs
+  // a deliberate dryRun:false. DO NOT hardcode `enabled` here (a baked-in false would
+  // dark dev agents too — the #1001 shape the dark-gate lint forbids for a dev-gated
+  // block).
+  playwrightRegistry: {
+    dryRun: true,
+  },
 };
 
 /**
