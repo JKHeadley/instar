@@ -31,7 +31,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
-export type LedgerState = 'received' | 'processing' | 'reply_committed' | 'cursor_advanced';
+export type LedgerState = 'received' | 'processing' | 'reply_committed' | 'cursor_advanced' | 'abandoned';
 
 export interface LedgerEntry {
   dedupeKey: string;
@@ -42,6 +42,9 @@ export interface LedgerEntry {
   processingStartedAt: string | null;
   replyCommittedAt: string | null;
   cursorAdvancedAt: string | null;
+  /** When this entry was terminally abandoned (stuck-recovery exhausted its
+   *  re-run budget without a reply). Set iff state === 'abandoned'. */
+  abandonedAt: string | null;
   replyIdempotencyKey: string | null;
   replyEpoch: number | null;
   inputSnapshot: string | null;
@@ -71,6 +74,7 @@ CREATE TABLE IF NOT EXISTS message_ledger (
   processing_started_at TEXT,
   reply_committed_at TEXT,
   cursor_advanced_at TEXT,
+  abandoned_at TEXT,
   reply_idempotency_key TEXT,
   reply_epoch INTEGER,
   input_snapshot TEXT,
@@ -90,7 +94,7 @@ CREATE INDEX IF NOT EXISTS idx_message_ledger_topic_committed ON message_ledger(
  */
 function ensureSchema(db: BetterSqliteDatabase): void {
   db.exec(SCHEMA);
-  for (const col of ['sender_envelope TEXT']) {
+  for (const col of ['sender_envelope TEXT', 'abandoned_at TEXT']) {
     try {
       db.exec(`ALTER TABLE message_ledger ADD COLUMN ${col}`);
     } catch {
@@ -166,10 +170,13 @@ export class MessageProcessingLedger {
     return { firstSeen: info.changes === 1, state: row.state };
   }
 
-  /** Has this event already been acted on (reply committed or cursor advanced)? */
+  /** Has this event already been acted on (reply committed, cursor advanced, or
+   *  terminally abandoned)? An 'abandoned' entry is terminal — a provider
+   *  redelivery of the SAME event is dropped (we gave up on it; a genuine resend
+   *  arrives with a fresh dedupeKey). */
   isActedOn(dedupeKey: string): boolean {
     const row = this.get(dedupeKey);
-    return !!row && (row.state === 'reply_committed' || row.state === 'cursor_advanced');
+    return !!row && (row.state === 'reply_committed' || row.state === 'cursor_advanced' || row.state === 'abandoned');
   }
 
   /**
@@ -180,7 +187,7 @@ export class MessageProcessingLedger {
   beginProcessing(dedupeKey: string, epoch: number): boolean {
     const row = this.get(dedupeKey);
     if (!row) return false;
-    if (row.state === 'reply_committed' || row.state === 'cursor_advanced') return false;
+    if (row.state === 'reply_committed' || row.state === 'cursor_advanced' || row.state === 'abandoned') return false;
     this.db
       .prepare(
         `UPDATE message_ledger
@@ -214,6 +221,25 @@ export class MessageProcessingLedger {
          WHERE dedupe_key = ? AND state = 'reply_committed'`,
       )
       .run(new Date().toISOString(), dedupeKey);
+  }
+
+  /**
+   * Terminally abandon a stuck 'processing' entry whose re-run budget is exhausted
+   * (stuck-recovery gave up). Moves it OUT of 'processing' so `reclaimStuck` stops
+   * re-selecting it every cycle (the give-up log-loop), WITHOUT setting
+   * `reply_committed_at` — so it never masquerades as a real reply in
+   * `hasReplyCommittedForTopicSince`. Terminal: `beginProcessing`/`isActedOn` treat
+   * it as acted-on, so a provider redelivery is dropped (a genuine resend has a
+   * fresh dedupeKey). The caller is expected to surface a "I didn't get to this"
+   * loss notice so the abandonment is never silent. No-op unless still 'processing'.
+   */
+  markAbandoned(dedupeKey: string, epoch: number): void {
+    this.db
+      .prepare(
+        `UPDATE message_ledger SET state = 'abandoned', abandoned_at = ?, reply_epoch = ?
+         WHERE dedupe_key = ? AND state = 'processing'`,
+      )
+      .run(new Date().toISOString(), epoch, dedupeKey);
   }
 
   /**
@@ -297,6 +323,7 @@ function rowToEntry(row: any): LedgerEntry {
     processingStartedAt: row.processing_started_at ?? null,
     replyCommittedAt: row.reply_committed_at ?? null,
     cursorAdvancedAt: row.cursor_advanced_at ?? null,
+    abandonedAt: row.abandoned_at ?? null,
     replyIdempotencyKey: row.reply_idempotency_key ?? null,
     replyEpoch: row.reply_epoch ?? null,
     inputSnapshot: row.input_snapshot ?? null,

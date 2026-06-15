@@ -43,7 +43,7 @@ describe('recoverStuckMessages', () => {
       ledger: led, holdsLease: () => false, epoch: 2, maxProcessingMs: -1,
       reinject: () => reinjected.push(1),
     });
-    expect(res).toEqual({ recovered: 0, skipped: 0, alreadyHandled: 0 });
+    expect(res).toEqual({ recovered: 0, skipped: 0, alreadyHandled: 0, abandoned: [] });
     expect(reinjected).toHaveLength(0);
   });
 
@@ -82,10 +82,33 @@ describe('recoverStuckMessages', () => {
     });
     run(); // attempts 1→2
     run(); // 2→3
-    const third = run(); // attempts now 3 ≥ 3 → skip
+    const third = run(); // attempts now 3 ≥ 3 → abandon
     expect(third.recovered).toBe(0);
     expect(third.skipped).toBe(1);
     expect(led.get(KEY)!.attempts).toBe(3); // not bumped past the cap
+  });
+
+  // ── Gap #2 (2026-06-15): exhausted entry is TERMINALLY abandoned + surfaced, not
+  // left to re-loop the give-up log every cycle nor silently dropped ──
+  it('abandons an exhausted entry: marks it terminal, surfaces it, and stops re-selecting it', () => {
+    const led = MessageProcessingLedger.openMemory();
+    claim(led);
+    const run = () => recoverStuckMessages({
+      ledger: led, holdsLease: () => true, epoch: 1, maxProcessingMs: -1, maxReplayAttempts: 3,
+      reinject: () => {},
+    });
+    run(); run(); // attempts → 3
+    const exhausting = run(); // attempts 3 ≥ 3 → abandon THIS pass
+    expect(exhausting.abandoned).toEqual([{ topic: TOPIC, dedupeKey: KEY }]);
+    // Terminal 'abandoned' state — out of 'processing', no false reply evidence.
+    expect(led.get(KEY)!.state).toBe('abandoned');
+    expect(led.get(KEY)!.abandonedAt).toBeTruthy();
+    expect(led.get(KEY)!.replyCommittedAt).toBeNull();
+    expect(led.isActedOn(KEY)).toBe(true); // a redelivery of the SAME event is dropped
+    // The give-up loop is gone: a subsequent pass does NOT re-select or re-surface it.
+    const next = run();
+    expect(next.abandoned).toEqual([]);
+    expect(next.skipped).toBe(0);
   });
 
   it('skips an entry with no stored input (cannot replay what was not captured)', () => {

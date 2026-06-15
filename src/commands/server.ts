@@ -17091,7 +17091,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       };
       const runStuckRecovery = (): void => {
         try {
-          recoverStuckMessages({
+          const res = recoverStuckMessages({
             ledger: ledgerForRecovery,
             holdsLease: () => coordinator.holdsLease(),
             epoch: coordinator.getLeaseEpoch(),
@@ -17099,6 +17099,21 @@ export async function startServer(options: StartOptions): Promise<void> {
             reinject: reinjectStuck,
             logger: (m) => console.log(pc.dim(`  ${m}`)),
           });
+          // Gap #2 (wedge-recovery-drops-messages): an entry whose re-run budget is
+          // exhausted is now terminally abandoned (no more give-up log-loop) and
+          // surfaced here — emit ONE per-topic "resend" notice so the loss is never
+          // silent. Fires exactly once per entry (markAbandoned moves it out of
+          // 'processing', so the next cycle won't re-select it).
+          if (res.abandoned.length > 0) {
+            const byTopic = new Map<string, number>();
+            for (const a of res.abandoned) byTopic.set(a.topic, (byTopic.get(a.topic) ?? 0) + 1);
+            for (const [topic, count] of byTopic) {
+              const tid = Number(topic);
+              notify('SUMMARY', 'stuck-recovery',
+                `I didn't get to ${count} message(s) you sent earlier — I tried but couldn't complete the turn. Resend anything still needed.`,
+                Number.isFinite(tid) ? tid : undefined);
+            }
+          }
         } catch (err) {
           console.error(`[stuck-recovery] ${err instanceof Error ? err.message : err}`);
         }

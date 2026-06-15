@@ -51,6 +51,13 @@ export interface StuckRecoveryResult {
   skipped: number;
   /** Entries recognized as already-answered (reply evidence) and committed, not re-run. */
   alreadyHandled: number;
+  /**
+   * Entries whose re-run budget was exhausted this pass: terminally marked
+   * 'abandoned' (so they stop re-looping every cycle) and surfaced here so the
+   * caller emits a "I didn't get to this — resend" loss notice. The abandonment
+   * is never silent. Each: the topic it arrived on + its dedupeKey.
+   */
+  abandoned: Array<{ topic: string; dedupeKey: string }>;
 }
 
 /**
@@ -60,7 +67,7 @@ export interface StuckRecoveryResult {
  */
 export function recoverStuckMessages(deps: StuckRecoveryDeps): StuckRecoveryResult {
   const maxAttempts = deps.maxReplayAttempts ?? 3;
-  if (!deps.holdsLease()) return { recovered: 0, skipped: 0, alreadyHandled: 0 };
+  if (!deps.holdsLease()) return { recovered: 0, skipped: 0, alreadyHandled: 0, abandoned: [] };
 
   const repliedSince =
     deps.hasRepliedSince ?? ((topic, sinceISO) => deps.ledger.hasReplyCommittedForTopicSince(topic, sinceISO));
@@ -69,6 +76,7 @@ export function recoverStuckMessages(deps: StuckRecoveryDeps): StuckRecoveryResu
   let recovered = 0;
   let skipped = 0;
   let alreadyHandled = 0;
+  const abandoned: Array<{ topic: string; dedupeKey: string }> = [];
   for (const entry of stuck) {
     if (!entry.inputSnapshot || !entry.topic) {
       skipped++;
@@ -87,9 +95,16 @@ export function recoverStuckMessages(deps: StuckRecoveryDeps): StuckRecoveryResu
       continue;
     }
     if (entry.attempts >= maxAttempts) {
-      // Re-run budget exhausted — leave it (a message that legitimately never
-      // got a reply, or a persistently failing turn) rather than loop forever.
-      deps.logger?.(`stuck-recovery: giving up on ${entry.dedupeKey} after ${entry.attempts} attempts`);
+      // Re-run budget exhausted (a message that legitimately never got a reply,
+      // or a persistently failing turn). TERMINALLY abandon it: marking it out of
+      // 'processing' stops reclaimStuck re-selecting it every cycle (the give-up
+      // log-loop that fired every ~10 min) AND surfaces it so the caller emits a
+      // "I didn't get to this — resend" notice — the abandonment is never silent
+      // (the 2026-06-15 wedge-recovery-drops-messages gap). markAbandoned leaves
+      // reply_committed_at NULL, so it never masquerades as a real reply.
+      deps.ledger.markAbandoned(entry.dedupeKey, deps.epoch);
+      deps.logger?.(`stuck-recovery: abandoned ${entry.dedupeKey} after ${entry.attempts} attempts (loss notice surfaced)`);
+      abandoned.push({ topic: entry.topic, dedupeKey: entry.dedupeKey });
       skipped++;
       continue;
     }
@@ -100,5 +115,5 @@ export function recoverStuckMessages(deps: StuckRecoveryDeps): StuckRecoveryResu
     deps.logger?.(`stuck-recovery: re-ran ${entry.dedupeKey} (attempt ${entry.attempts + 1})`);
     recovered++;
   }
-  return { recovered, skipped, alreadyHandled };
+  return { recovered, skipped, alreadyHandled, abandoned };
 }
