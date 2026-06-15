@@ -232,6 +232,8 @@ describe('Feature Delivery Completeness', () => {
       '/coherence/check',         // alternate check for Coherence Gate
       '/operations/evaluate',     // alternate check for External Operation Safety
       'instar playbook',          // alternate check for Playbook
+      'Playwright Profile Registry', // playwright-profile-registry spec (P4): dev-gated DARK, machine-local browser-profile↔account registry for self-unblock — fleet routes 503 when off. Migrator-only awareness (added via migrateClaudeMd content-sniff; also emitted by the template so fresh init self-matches), not a universal user-invokable capability needing Codex/Gemini template-shadow parity (same classification as the cartographer / secret-sync-status sections above).
+      'Action-Claim Follow-Through Sentinel', // action-claim-followthrough-sentinel spec (P2, PR #1178): signal-only word-vs-action follow-through sentinel, dark by default (messaging.actionClaim.enabled, code-default false). Migrator-only awareness (added via migrateClaudeMd content-sniff; also emitted by the template so a fresh init self-matches), not a universal user-invokable capability needing Codex/Gemini template-shadow parity (same classification as the Playwright Profile Registry / cartographer sections above).
       '## Self-Observations',     // AGENT.md section, not CLAUDE.md — no template parity needed
       '## Identity History',      // AGENT.md section, not CLAUDE.md — no template parity needed
       'Session Continuity',       // conditional (Telegram-only), not a universal feature

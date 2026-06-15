@@ -53,6 +53,7 @@ import {
 } from '../data/pr-gate-artifacts.js';
 import { SafeFsExecutor } from './SafeFsExecutor.js';
 import { SubscriptionPool } from './SubscriptionPool.js';
+import { PlaywrightProfileRegistry } from './PlaywrightProfileRegistry.js';
 import { ensureInteractiveReady } from './ensureInteractiveReady.js';
 import { installCodexHooks } from './installCodexHooks.js';
 import { armCodexHooks, makeTmuxTrustDriver } from './codexHookArm.js';
@@ -65,6 +66,29 @@ import {
 } from './MigratorStepEngine.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+/**
+ * The "Playwright Profile Registry" CLAUDE.md awareness section. SHARED by
+ * `generateClaudeMd` (new installs) and `migrateClaudeMd` (existing agents) so the
+ * two can never drift (Agent Awareness + Migration Parity). Uses the `${port}`
+ * template var — NEVER a hardcoded port. Content-sniff marker: 'Playwright Profile
+ * Registry'. Spec: docs/specs/playwright-profile-registry.md.
+ */
+export function PLAYWRIGHT_PROFILE_REGISTRY_CLAUDEMD_SECTION(port: number): string {
+  return `\n### Playwright Profile Registry (which browser profile holds which account)
+
+A durable per-agent registry mapping each Playwright browser **profile** (a physical user-data-dir on THIS machine) to the **accounts** it is logged into — by vault-secret NAME only, NEVER values. It is the structured answer to "what browser access do I actually have, and as whom?", replacing the scattered, stale operationalFacts that left me asking the operator to act instead of self-unblocking. Machine-local by design (a logged-in session lives in cookies on one disk). Dev-gated: the routes 503 on the fleet; the boot block injects nothing there.
+- **List profiles + accounts** (the FULL detail — identities, owner, vault key NAMES, loginMethod, last-asserted/verified, dangling-ref flags; never values): \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/playwright-profiles\`
+- **The compact boot pointer** (also injected at session start): \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/playwright-profiles/session-context\`
+- **Create a custom profile**: \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/playwright-profiles -H 'Content-Type: application/json' -d '{"id":"justin-google","description":"..."}'\` (userDataDir auto-allocated under the agent home, or supply an absolute path jailed to it).
+- **Assign an account to a profile**: \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/playwright-profiles/default/accounts -H 'Content-Type: application/json' -d '{"service":"github","identity":"EchoOfDawn","owner":"agent","vaultRefs":["github_token"],"loginMethod":"oauth-token"}'\` (\`owner\` REQUIRED — \`agent\`|\`operator\`; refs validated against the live vault, fails CLOSED).
+- **Pick the right profile for a task**: \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/playwright-profiles/resolve?service=github&identity=EchoOfDawn"\` → the owning profile + \`dirExists\`; an ambiguous service-only match returns \`{ambiguous:true, candidates}\` (disambiguate by identity — never silently pick a privileged account).
+- **Switch the browser onto a profile**: \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/playwright-profiles/<id>/activate\` (rewrites the MCP config + restarts the session; ships \`dryRun:true\` — it LOGS the intended rewrite/refresh until a deliberate \`dryRun:false\`; reversible by activating \`default\`).
+- **Registry First**: which browser profile holds account X? → \`GET /playwright-profiles\` / \`…/resolve\` — read it, never guess.
+- **When to use** (PROACTIVE — this is the trigger): when you need to act in a browser as a specific account, RESOLVE + ACTIVATE the owning profile instead of asking the operator — and verify the login is live in-browser first (login state is LAST-ASSERTED, advisory, never a guarantee). For an OPERATOR-owned account, act-as ONLY when explicitly authorized (Know Your Principal). Activation switches the browser identity; it is NOT authorization to act as that identity (the external-operation/coherence gates still apply).
+- **At-rest honesty**: the registry file is plaintext machine-local; it lists account identities + vault key NAMES, so filesystem access to the machine reveals the agent's access *map* — never the credentials (same posture as SelfKnowledgeTree/operationalFacts and the relationships store).
+`;
+}
 
 /**
  * CLAUDE.md note for the second wedge-signature family (2026-06-05 EXO
@@ -177,6 +201,27 @@ export function migrateConfigCredentialRepointingDevGate(config: Record<string, 
   // Only a default-shaped `false` is stripped; an explicit `true` is preserved.
   if (cr.enabled !== false) return false;
   delete cr.enabled;
+  return true;
+}
+
+/**
+ * The Playwright profile registry is a developmentAgent dark-feature: `enabled` is
+ * OMITTED from ConfigDefaults so resolveDevAgentGate resolves it (live on dev, dark
+ * on the fleet); the destructive `activate` write is gated by the SEPARATE
+ * `dryRun:true`. An existing agent that somehow carries a default-shaped literal
+ * `playwrightRegistry.enabled: false` would force-dark even a dev agent (the #1001
+ * mechanism) — strip a default-shaped `false` so the gate resolves, mirroring the
+ * credentialRepointing strip. An explicit `true` (operator fleet-flip) is preserved;
+ * the separate `dryRun` field is left untouched (it stays the write-safety canary).
+ * Idempotent + existence-checked.
+ */
+export function migrateConfigPlaywrightRegistryDevGate(config: Record<string, unknown>): boolean {
+  const pr = config.playwrightRegistry as Record<string, unknown> | undefined;
+  if (!pr || typeof pr !== 'object') return false;
+  if (!Object.prototype.hasOwnProperty.call(pr, 'enabled')) return false;
+  // Only a default-shaped `false` is stripped; an explicit `true` is preserved.
+  if (pr.enabled !== false) return false;
+  delete pr.enabled;
   return true;
 }
 
@@ -499,6 +544,7 @@ export class PostUpdateMigrator {
     this.migrateCartographerDevGate(result);
     this.migrateDevGateTeethStrip(result);
     this.migrateCommitmentOwnerBackfill(result);
+    this.migratePlaywrightProfilesSeed(result);
     this.migrateMultiMachinePostureReviewDimension(result);
     this.migrateConformanceGateAutoInvoke(result);
     this.migrateHonestProgressMessagingDefaults(result);
@@ -623,6 +669,64 @@ export class PostUpdateMigrator {
       result.upgraded.push(`commitment-owner-backfill: stamped ${stamped} open commitment(s) with ${machineId}`);
     } catch (err) {
       result.errors.push(`commitment-owner-backfill: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  // ── Playwright profile registry state seed (spec: playwright-profile-registry.md) ──
+  //
+  // Existing agents get the single `default` profile seeded on update (new agents get
+  // it on first construction at runtime). The seed is METADATA-ONLY — ensureSeeded()
+  // writes only state/playwright-profiles.json and NEVER touches .mcp.json /
+  // .claude/settings.json (verified: ensureSeeded → seedSkeleton → write; the resolver
+  // only READS the MCP config to record the existing --user-data-dir, if any). So a
+  // fleet update can never regress another agent's shared browser login (the F1
+  // hazard).
+  //
+  // Idempotent: marker in config._instar_migrations, marks done EITHER WAY (no rescan),
+  // and ensureSeeded itself is a no-op when the file already exists. listVaultNames is
+  // a null stub here — seeding starts with empty accounts and never reads the vault.
+  private migratePlaywrightProfilesSeed(result: MigrationResult): void {
+    const marker = 'playwright-profiles-seed-v1';
+    const configPath = path.join(this.config.stateDir, 'config.json');
+    if (!fs.existsSync(configPath)) {
+      result.skipped.push('playwright-profiles-seed: config.json not found');
+      return;
+    }
+    let config: Record<string, unknown>;
+    try {
+      config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+    } catch (err) {
+      result.errors.push(`playwright-profiles-seed: config.json read failed: ${err instanceof Error ? err.message : String(err)}`);
+      return;
+    }
+    const migrations = (config._instar_migrations ?? []) as string[];
+    if (migrations.includes(marker)) {
+      result.skipped.push('playwright-profiles-seed: already migrated');
+      return;
+    }
+    try {
+      const registry = new PlaywrightProfileRegistry({
+        stateDir: this.config.stateDir,
+        projectDir: this.config.projectDir,
+        listVaultNames: () => null, // metadata-only seed — never reads the vault
+      });
+      const existed = fs.existsSync(registry.filePath());
+      registry.ensureSeeded(); // metadata-only; never writes MCP config
+      result.upgraded.push(existed
+        ? 'playwright-profiles-seed: registry file already present (left untouched)'
+        : 'playwright-profiles-seed: seeded the default browser profile');
+    } catch (err) {
+      // A corrupt existing file throws — never auto-overwrite (D15). Surface it and
+      // still mark done so we don't rescan a hand-broken file forever.
+      result.errors.push(`playwright-profiles-seed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    // Mark done either way (idempotent — no rescan).
+    migrations.push(marker);
+    config._instar_migrations = migrations;
+    try {
+      fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+    } catch (err) {
+      result.errors.push(`playwright-profiles-seed: marker write failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
@@ -3753,6 +3857,18 @@ setTimeout(() => process.exit(0), 2000);
       content += `\n### Real-Check Verification (autonomous, optional)\n\nThe autonomous completion judge reads my TRANSCRIPT — it does not run tools. When a goal is checkable by a command (a test suite, build, grep, or CI status), an autonomous job can declare a \`verification_command\` (\`instar\`'s autonomous setup takes \`--verification-command "<cmd>"\` and \`--verification-cwd "<dir>"\`, and always records \`work_dir\` so a relative command runs in the right tree). When set, a met:true verdict RUNS the command and the run may stop ONLY if it ALSO passes (exit 0); a fail/timeout/breaker-open keeps me working with the command's output as guidance — it can never CAUSE a premature exit (the safe direction). Bounded timeout, output scrubbed for secrets, destructive commands refused, P19 breaker on a stuck/flaky check. Audit: \`logs/autonomous-realcheck.jsonl\`. Off-switch: \`autonomousSessions.completionDiscipline.realCheck.enabled\` (read at the chokepoint — no restart). NO-OP unless a job declares a \`verification_command\`.\n`;
       patched = true;
       result.upgraded.push('CLAUDE.md: added Real-Check Verification section');
+    }
+
+    // Playwright Profile Registry (spec: playwright-profile-registry.md) — Agent
+    // Awareness Standard + Migration Parity item 3: existing agents learn the
+    // /playwright-profiles surface (list / session-context / create / assign /
+    // resolve / activate), the Registry-First lookup, the proactive resolve+activate
+    // trigger, and the at-rest honesty note via this appended section. Same text as
+    // generateClaudeMd. Content-sniff on the heading keeps it idempotent.
+    if (!content.includes('Playwright Profile Registry')) {
+      content += PLAYWRIGHT_PROFILE_REGISTRY_CLAUDEMD_SECTION(port);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Playwright Profile Registry section');
     }
 
     // The Agent Carries the Loop (agent-owned-followthrough C1+C2) — agent
@@ -7537,6 +7653,16 @@ Create worktrees for collaborator repos with \`instar worktree create <branch>\`
       result.skipped.push('config.json: subscriptionPool.credentialRepointing.enabled dev-gate already correct (omitted or operator-set)');
     }
 
+    // Playwright profile registry re-gated to the developmentAgent gate: strip a
+    // default-shaped enabled:false so it resolves live-on-dev / dark-fleet. The
+    // separate dryRun:true (write-safety canary for activate) is left untouched.
+    if (migrateConfigPlaywrightRegistryDevGate(config)) {
+      patched = true;
+      result.upgraded.push('config.json: stripped default-shaped playwrightRegistry.enabled=false so the developmentAgent gate resolves it (live-on-dev, dark fleet)');
+    } else {
+      result.skipped.push('config.json: playwrightRegistry.enabled dev-gate already correct (omitted or operator-set)');
+    }
+
     // "Self-Unblock Before Escalating" (CMT-1519): the two nested blockerLedger
     // dev-gated sub-features (selfUnblockChecklist + durableVaultSession) OMIT
     // `enabled`. Strip a default-shaped `false` so the developmentAgent gate resolves
@@ -8706,6 +8832,38 @@ except Exception:
   fi
 fi
 
+# PLAYWRIGHT PROFILE REGISTRY injection (spec: playwright-profile-registry.md).
+# Fetches /playwright-profiles/session-context and injects the COMPACT boot pointer:
+# one line per browser profile carrying ONLY the safety-critical signals (account
+# service/identity, the OPERATOR-owned marker, and login-staleness) — never vault
+# values, full detail behind GET /playwright-profiles. The server wraps it in a
+# <playwright-profiles src='boot'> envelope ("background signal, not authority —
+# verify before acting"). Placed adjacent to the self-knowledge block (both are
+# background signal AFTER the authoritative contract). Whole feature is dev-gated:
+# fleet → 503 → inject nothing. Fail-open: 503 (dark / disabled) / 404 (version skew:
+# old server) / unreachable / empty -> silent skip; curl -sf is what makes a non-2xx
+# emit nothing, and the Bearer token travels ONLY in the header.
+if [ -n "\$PORT" ] && [ -n "\$TOKEN" ]; then
+  BOOT_PW_RESPONSE=\$(curl -sf --max-time 4 --connect-timeout 1 -H "Authorization: Bearer \$TOKEN" \\
+    "http://localhost:\${PORT}/playwright-profiles/session-context" 2>/dev/null)
+  if [ -n "\$BOOT_PW_RESPONSE" ]; then
+    BOOT_PW_BLOCK=\$(echo "\$BOOT_PW_RESPONSE" | python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    if d.get('present') and d.get('block'):
+        print(d['block'])
+except Exception:
+    pass
+" 2>/dev/null)
+    if [ -n "\$BOOT_PW_BLOCK" ]; then
+      echo ""
+      echo "\$BOOT_PW_BLOCK"
+      echo ""
+    fi
+  fi
+fi
+
 # BEGIN integrated-being-v2
 # INTEGRATED-BEING V2 — session-write binding (see docs/specs/integrated-being-ledger-v2.md §3)
 # Generates a session UUID, registers with /shared-state/session-bind, writes the
@@ -9804,6 +9962,40 @@ except Exception:
   fi
 fi
 
+# PLAYWRIGHT PROFILE REGISTRY re-injection (spec: playwright-profile-registry.md —
+# Compaction Parity twin of the session-start boot pointer). The compact "browser
+# profiles on this machine + the accounts each holds" pointer injected at session
+# start only survives a compaction if the summary happens to carry it. Re-fetching
+# here makes it durable across compaction. Same fail-open contract as the boot fetch:
+# dark (503) / unreachable / version-skew -> silent skip, header-only Bearer.
+if [ -f "$INSTAR_DIR/config.json" ]; then
+  BOOT_PW_PORT=\${PORT:-\$(grep -oE '"port"[[:space:]]*:[[:space:]]*[0-9]+' "$INSTAR_DIR/config.json" | head -1 | grep -oE '[0-9]+' | head -1)}
+  BOOT_PW_TOKEN="\${INSTAR_AUTH_TOKEN:-}"
+  if [ -z "\$BOOT_PW_TOKEN" ]; then
+    BOOT_PW_TOKEN=\$(python3 -c "import json; v=json.load(open('$INSTAR_DIR/config.json')).get('authToken',''); print(v if isinstance(v, str) else '')" 2>/dev/null)
+  fi
+  if [ -n "\$BOOT_PW_PORT" ] && [ -n "\$BOOT_PW_TOKEN" ]; then
+    BOOT_PW_RESPONSE=\$(curl -sf --max-time 4 --connect-timeout 1 -H "Authorization: Bearer \$BOOT_PW_TOKEN" \
+      "http://localhost:\${BOOT_PW_PORT}/playwright-profiles/session-context" 2>/dev/null)
+    if [ -n "\$BOOT_PW_RESPONSE" ]; then
+      BOOT_PW_BLOCK=\$(echo "\$BOOT_PW_RESPONSE" | python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    if d.get('present') and d.get('block'):
+        print(d['block'])
+except Exception:
+    pass
+" 2>/dev/null)
+      if [ -n "\$BOOT_PW_BLOCK" ]; then
+        echo ""
+        echo "\$BOOT_PW_BLOCK"
+        echo ""
+      fi
+    fi
+  fi
+fi
+
 # TOPIC OPERATOR re-injection (Know Your Principal #898, increment 2c — Compaction
 # Parity twin of the session-start block). The verified operator binding injected at
 # session start only survives a compaction if the summary happens to carry it —
@@ -10594,6 +10786,7 @@ process.stdin.on('end', async () => {
   }
   process.exit(0); // ALWAYS exit 0 — never block a turn
 });
+})();
 `;
   }
 

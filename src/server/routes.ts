@@ -43,6 +43,13 @@ import type { InstarConfig, JobPriority } from '../core/types.js';
 import { IntelligenceRouter } from '../core/IntelligenceRouter.js';
 import { knownComponents } from '../core/componentCategories.js';
 import { SecretStore } from '../core/SecretStore.js';
+import { secretKeyPaths } from '../core/SecretSync.js';
+import {
+  PlaywrightProfileRegistry,
+  PlaywrightRegistryError,
+  PlaywrightRegistryCorruptError,
+  DEFAULT_BLOCK_MAX_BYTES as PLAYWRIGHT_BLOCK_MAX_BYTES,
+} from '../core/PlaywrightProfileRegistry.js';
 import { writeConfigAtomic, readSelfKnowledgeFlags } from '../core/BootSelfKnowledge.js';
 import { rateLimiter, signViewPath, OUTBOUND_GATE_REVIEW_BUDGET_MS } from './middleware.js';
 import { reviewWithinBudget } from './outboundGateBudget.js';
@@ -726,6 +733,13 @@ export interface RouteContext {
      *  + the /pool/transfer acquire seam. Null on single-machine installs. */
     carrier?: import('../core/TopicProfileTransferCarrier.js').TopicProfileTransferCarrier | null;
   } | null;
+  /** Playwright Profile Registry (docs/specs/playwright-profile-registry.md) —
+   *  optional factory override. Production constructs the registry per-request
+   *  from `ctx.config` (mirroring how the self-knowledge route builds
+   *  BootSelfKnowledge per request, so flags + the vault-name list are always
+   *  read FRESH from disk). Tests inject this to control listVaultNames /
+   *  hostname hermetically. When absent the route builds the default. */
+  playwrightRegistry?: () => PlaywrightProfileRegistry;
   /** Agent-initiated session respawn. Null when no Telegram adapter is
    *  wired (v1 requires a Telegram-bound session). */
   sessionRefresh: SessionRefresh | null;
@@ -16643,6 +16657,351 @@ export function createRoutes(ctx: RouteContext): Router {
       res.json({ success: true, ...outcome.value });
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to remove fact' });
+    }
+  });
+
+  // ── Playwright Profile Registry (docs/specs/playwright-profile-registry.md) ──
+  //
+  // The durable per-agent map of which Playwright browser PROFILE holds which
+  // logged-in ACCOUNT (by vault secret NAME only — NEVER value), plus the compact
+  // boot-awareness surface and the activate switch. The WHOLE feature is dev-gated
+  // (D4): the `enabled` flag is read FRESH from disk per request and resolved
+  // through resolveDevAgentGate (LIVE on a dev agent, DARK on the fleet → 503),
+  // exactly like /self-knowledge/session-context. The registry is constructed
+  // per-request from ctx.config (so flags + the vault-name list are always fresh),
+  // with listVaultNames sourced from the SAME secretKeyPaths derivation the boot
+  // self-knowledge surface uses (vault unreadable → null → ref-validation fails
+  // CLOSED per D17).
+  //
+  // Errors: PlaywrightRegistryError.status → HTTP status (400/404/409/422);
+  // PlaywrightRegistryCorruptError → 500 "registry file corrupt — will not
+  // overwrite" (writes fail CLOSED, never auto-overwrite — D15).
+  //
+  // Audit (D20): every successful write (create/assign/patch/delete/activate)
+  // appends ONE JSON line to logs/playwright-profiles.jsonl (writer session id if
+  // available, action, old→new summary, dryRun flag). Vault NAMES only.
+
+  /** Fresh per-request read of the playwrightRegistry config block (no restart needed). */
+  const readPlaywrightFlags = (): { enabled?: boolean; dryRun?: boolean } => {
+    try {
+      const configPath = path.join(ctx.config.projectDir, '.instar', 'config.json');
+      const raw = JSON.parse(fs.readFileSync(configPath, 'utf8')) as {
+        playwrightRegistry?: { enabled?: boolean; dryRun?: boolean };
+      };
+      return raw.playwrightRegistry ?? {};
+    } catch {
+      // @silent-fallback-ok — unreadable/absent config means no explicit flags; the
+      // route then resolves the developmentAgent gate default + the dryRun:true default.
+      return {};
+    }
+  };
+
+  /** True when the whole feature is live for this agent (D4 dev-gate, fresh per request). */
+  const playwrightFeatureEnabled = (): boolean =>
+    resolveDevAgentGate(readPlaywrightFlags().enabled, ctx.config);
+
+  /** Construct the registry for this request (test override via ctx.playwrightRegistry). */
+  const buildPlaywrightRegistry = (): PlaywrightProfileRegistry => {
+    if (ctx.playwrightRegistry) return ctx.playwrightRegistry();
+    const stateDir = ctx.config.stateDir;
+    return new PlaywrightProfileRegistry({
+      stateDir,
+      projectDir: ctx.config.projectDir,
+      // listVaultNames returns NAMES only (D3), via the SAME derivation BootSelfKnowledge
+      // uses. A vault that is absent/decrypt-failed → null so assign fails CLOSED (D17).
+      listVaultNames: () => {
+        const vaultPath = path.join(stateDir, 'secrets', 'config.secrets.enc');
+        if (!fs.existsSync(vaultPath)) return []; // no vault yet → no names, but readable (empty)
+        try {
+          const store = new SecretStore({ stateDir, forceFileKey: ctx.config.secrets?.forceFileKey });
+          return secretKeyPaths(store.read());
+        } catch {
+          // @silent-fallback-ok — decrypt-failed/unreadable → null signals "fail closed" to assign (D17).
+          return null;
+        }
+      },
+    });
+  };
+
+  /** Best-effort audit append to logs/playwright-profiles.jsonl (D20). NAMES only. */
+  const appendPlaywrightAudit = (action: string, profileId: string, detail: Record<string, unknown>): void => {
+    try {
+      const logsDir = path.join(ctx.config.stateDir, '..', 'logs');
+      fs.mkdirSync(logsDir, { recursive: true });
+      const auditPath = path.join(logsDir, 'playwright-profiles.jsonl');
+      const writerSession =
+        typeof (ctx.config as { sessionId?: string }).sessionId === 'string'
+          ? (ctx.config as { sessionId?: string }).sessionId
+          : null;
+      fs.appendFileSync(
+        auditPath,
+        `${JSON.stringify({ ts: new Date().toISOString(), action, profileId, writerSession, ...detail })}\n`,
+      );
+    } catch {
+      // @silent-fallback-ok — the audit sink is best-effort; a write must NEVER fail on an
+      // audit-log fault (full disk / transient fs error can't break the registry — D20).
+    }
+  };
+
+  /** Map a thrown registry error to the right HTTP status; returns true if it handled it. */
+  const handlePlaywrightError = (err: unknown, res: ExpressResponse): boolean => {
+    if (err instanceof PlaywrightRegistryCorruptError) {
+      res.status(500).json({ error: 'registry file corrupt — will not overwrite' });
+      return true;
+    }
+    if (err instanceof PlaywrightRegistryError) {
+      res.status(err.status).json({ error: err.message });
+      return true;
+    }
+    return false;
+  };
+
+  // Per-session activate loop-guard (D19): a per-session cooldown + a per-window
+  // breaker, mirroring the credential-repointing per-pair cooldown. Module-scope so
+  // it survives across requests for the life of the router.
+  const PLAYWRIGHT_ACTIVATE_COOLDOWN_MS = 30_000;
+  const PLAYWRIGHT_ACTIVATE_WINDOW_MS = 5 * 60_000;
+  const PLAYWRIGHT_ACTIVATE_MAX_PER_WINDOW = 5;
+  const playwrightActivateLog = new Map<string, number[]>();
+  const playwrightActivateGuard = (sessionKey: string): { ok: true } | { ok: false; reason: string; retryAfterMs: number } => {
+    const now = Date.now();
+    const history = (playwrightActivateLog.get(sessionKey) ?? []).filter((t) => now - t < PLAYWRIGHT_ACTIVATE_WINDOW_MS);
+    const last = history.length > 0 ? history[history.length - 1] : 0;
+    if (last && now - last < PLAYWRIGHT_ACTIVATE_COOLDOWN_MS) {
+      return { ok: false, reason: 'activate cooldown — too soon since the last switch', retryAfterMs: PLAYWRIGHT_ACTIVATE_COOLDOWN_MS - (now - last) };
+    }
+    if (history.length >= PLAYWRIGHT_ACTIVATE_MAX_PER_WINDOW) {
+      return { ok: false, reason: 'activate breaker — too many switches in the window', retryAfterMs: PLAYWRIGHT_ACTIVATE_WINDOW_MS - (now - history[0]) };
+    }
+    history.push(now);
+    playwrightActivateLog.set(sessionKey, history);
+    return { ok: true };
+  };
+
+  // GET /playwright-profiles — the FULL detail surface (vault NAMES, dangling-ref flags).
+  router.get('/playwright-profiles', (req, res) => {
+    if (!playwrightFeatureEnabled()) {
+      res.status(503).json({ error: 'playwright profile registry disabled' });
+      return;
+    }
+    try {
+      const profiles = buildPlaywrightRegistry().listProfiles();
+      res.json({ profiles });
+    } catch (err) {
+      if (handlePlaywrightError(err, res)) return;
+      res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to list playwright profiles' });
+    }
+  });
+
+  // GET /playwright-profiles/session-context — the compact boot pointer (?full=1 bypasses the cap).
+  router.get('/playwright-profiles/session-context', (req, res) => {
+    if (!playwrightFeatureEnabled()) {
+      res.status(503).json({ error: 'playwright profile registry disabled' });
+      return;
+    }
+    try {
+      const full = String(req.query.full ?? '') === '1';
+      const result = buildPlaywrightRegistry().buildSessionContextBlock(PLAYWRIGHT_BLOCK_MAX_BYTES, { full });
+      res.json({ ...result, full });
+    } catch (err) {
+      // buildSessionContextBlock is fail-open internally; this catch is belt-and-suspenders.
+      res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to build playwright boot block' });
+    }
+  });
+
+  // GET /playwright-profiles/resolve?service=&identity= — the selector (D18 ambiguity).
+  router.get('/playwright-profiles/resolve', (req, res) => {
+    if (!playwrightFeatureEnabled()) {
+      res.status(503).json({ error: 'playwright profile registry disabled' });
+      return;
+    }
+    const service = typeof req.query.service === 'string' ? req.query.service : '';
+    if (!service) {
+      res.status(400).json({ error: 'service query param is required' });
+      return;
+    }
+    const identity = typeof req.query.identity === 'string' && req.query.identity ? req.query.identity : undefined;
+    try {
+      res.json(buildPlaywrightRegistry().resolve(service, identity));
+    } catch (err) {
+      if (handlePlaywrightError(err, res)) return;
+      res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to resolve playwright profile' });
+    }
+  });
+
+  // POST /playwright-profiles — create a custom profile (id charset/length-clamped, jailed userDataDir).
+  router.post('/playwright-profiles', (req, res) => {
+    if (!playwrightFeatureEnabled()) {
+      res.status(503).json({ error: 'playwright profile registry disabled' });
+      return;
+    }
+    const { id, description, userDataDir } = req.body || {};
+    try {
+      const profile = buildPlaywrightRegistry().createProfile({ id, description, userDataDir });
+      appendPlaywrightAudit('create', profile.id, { userDataDir: profile.userDataDir, dryRun: false });
+      res.json({ profile });
+    } catch (err) {
+      if (handlePlaywrightError(err, res)) return;
+      res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to create playwright profile' });
+    }
+  });
+
+  // POST /playwright-profiles/:id/accounts — assign an account (owner REQUIRED; ref-validation D17).
+  router.post('/playwright-profiles/:id/accounts', (req, res) => {
+    if (!playwrightFeatureEnabled()) {
+      res.status(503).json({ error: 'playwright profile registry disabled' });
+      return;
+    }
+    const profileId = req.params.id;
+    const { service, identity, owner, vaultRefs, loginMethod, note } = req.body || {};
+    try {
+      const account = buildPlaywrightRegistry().assignAccount(profileId, {
+        service, identity, owner, vaultRefs, loginMethod, note,
+      });
+      appendPlaywrightAudit('assign', profileId, {
+        service: account.service, identity: account.identity, owner: account.owner, vaultRefs: account.vaultRefs, dryRun: false,
+      });
+      res.json({ account });
+    } catch (err) {
+      if (handlePlaywrightError(err, res)) return;
+      res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to assign account' });
+    }
+  });
+
+  // PATCH /playwright-profiles/:id/accounts — update lastAsserted/lastVerifiedAt/note.
+  router.patch('/playwright-profiles/:id/accounts', (req, res) => {
+    if (!playwrightFeatureEnabled()) {
+      res.status(503).json({ error: 'playwright profile registry disabled' });
+      return;
+    }
+    const profileId = req.params.id;
+    const { service, identity, lastAsserted, lastVerifiedAt, note } = req.body || {};
+    if (typeof service !== 'string' || !service || typeof identity !== 'string' || !identity) {
+      res.status(400).json({ error: 'service and identity are required' });
+      return;
+    }
+    try {
+      const account = buildPlaywrightRegistry().patchAccount(profileId, service, identity, { lastAsserted, lastVerifiedAt, note });
+      appendPlaywrightAudit('patch', profileId, {
+        service, identity, lastAsserted: account.lastAsserted, lastVerifiedAt: account.lastVerifiedAt, dryRun: false,
+      });
+      res.json({ account });
+    } catch (err) {
+      if (handlePlaywrightError(err, res)) return;
+      res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to patch account' });
+    }
+  });
+
+  // DELETE /playwright-profiles/:id — delete a custom profile (refuses the default, 409).
+  router.delete('/playwright-profiles/:id', (req, res) => {
+    if (!playwrightFeatureEnabled()) {
+      res.status(503).json({ error: 'playwright profile registry disabled' });
+      return;
+    }
+    const profileId = req.params.id;
+    try {
+      buildPlaywrightRegistry().deleteProfile(profileId);
+      appendPlaywrightAudit('delete-profile', profileId, { dryRun: false });
+      res.json({ success: true });
+    } catch (err) {
+      if (handlePlaywrightError(err, res)) return;
+      res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to delete playwright profile' });
+    }
+  });
+
+  // DELETE /playwright-profiles/:id/accounts — delete one account by (service, identity).
+  router.delete('/playwright-profiles/:id/accounts', (req, res) => {
+    if (!playwrightFeatureEnabled()) {
+      res.status(503).json({ error: 'playwright profile registry disabled' });
+      return;
+    }
+    const profileId = req.params.id;
+    const { service, identity } = req.body || {};
+    if (typeof service !== 'string' || !service || typeof identity !== 'string' || !identity) {
+      res.status(400).json({ error: 'service and identity are required' });
+      return;
+    }
+    try {
+      buildPlaywrightRegistry().deleteAccount(profileId, service, identity);
+      appendPlaywrightAudit('delete-account', profileId, { service, identity, dryRun: false });
+      res.json({ success: true });
+    } catch (err) {
+      if (handlePlaywrightError(err, res)) return;
+      res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to delete account' });
+    }
+  });
+
+  // POST /playwright-profiles/:id/activate — the COMPLETE switch, with the dry-run canary (D5),
+  // already-active fast path (D19), and loop-guard (D19). Activation is an identity switch, NOT
+  // authorization — it does NOT bypass any external-operation / coherence gate (Adversarial#4).
+  router.post('/playwright-profiles/:id/activate', (req, res) => {
+    if (!playwrightFeatureEnabled()) {
+      res.status(503).json({ error: 'playwright profile registry disabled' });
+      return;
+    }
+    const profileId = req.params.id;
+    const sessionName = typeof req.body?.sessionName === 'string' ? req.body.sessionName : '';
+    const dryRun = readPlaywrightFlags().dryRun !== false; // default TRUE (D5)
+    try {
+      const reg = buildPlaywrightRegistry();
+      const plan = reg.computeActivation(profileId);
+
+      // Already-active: skip BOTH the write and the refresh (D19) — kills the repeat-call loop.
+      if (plan.alreadyActive) {
+        res.json({ alreadyActive: true, userDataDir: plan.userDataDir, dirExists: plan.dirExists });
+        return;
+      }
+
+      // Dry-run (default-on-dev): LOG the intended rewrite + refresh, perform NEITHER (D5).
+      if (dryRun) {
+        appendPlaywrightAudit('activate', profileId, {
+          dryRun: true, wouldWriteFile: plan.file, userDataDir: plan.userDataDir, dirExists: plan.dirExists,
+        });
+        res.json({
+          dryRun: true,
+          wouldWriteFile: plan.file,
+          wouldRefresh: true,
+          userDataDir: plan.userDataDir,
+          dirExists: plan.dirExists,
+          alreadyActive: false,
+        });
+        return;
+      }
+
+      // Real switch (dryRun:false). Loop-guard the per-session activate (D19).
+      const guardKey = sessionName || 'unkeyed';
+      const guard = playwrightActivateGuard(guardKey);
+      if (!guard.ok) {
+        res.status(429).json({ error: guard.reason, retryAfterMs: guard.retryAfterMs });
+        return;
+      }
+
+      const written = reg.writeActivation(plan);
+      appendPlaywrightAudit('activate', profileId, {
+        dryRun: false, file: written.file, userDataDir: plan.userDataDir, dirExists: plan.dirExists,
+      });
+
+      // Trigger the session refresh server-side (activation takes effect at the next MCP boot).
+      // Reversible by activating `default`. Refresh is best-effort (202-scheduled) and only when
+      // a session name + the refresh orchestrator are both present.
+      let refresh: { scheduled: boolean; reason?: string } = { scheduled: false, reason: 'no sessionName or no session-refresh wired' };
+      if (sessionName && ctx.sessionRefresh && SESSION_NAME_RE.test(sessionName)) {
+        const sessionRefresh = ctx.sessionRefresh;
+        refresh = { scheduled: true };
+        setTimeout(() => {
+          sessionRefresh
+            .refreshSession({ sessionName, reason: `playwright profile activate: ${profileId}` })
+            .then((r) => {
+              if (!r.ok) console.warn(`[playwright-profiles/activate] refresh refused sessionName=${sessionName} code=${r.code}`);
+            })
+            .catch((e) => console.error(`[playwright-profiles/activate] refresh error sessionName=${sessionName}:`, e));
+        }, 500);
+      }
+
+      res.json({ activated: true, userDataDir: plan.userDataDir, dirExists: plan.dirExists, refresh });
+    } catch (err) {
+      if (handlePlaywrightError(err, res)) return;
+      res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to activate playwright profile' });
     }
   });
 
