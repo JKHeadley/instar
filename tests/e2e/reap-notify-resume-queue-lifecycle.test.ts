@@ -42,6 +42,7 @@ import { ReapNotifier } from '../../src/monitoring/ReapNotifier.js';
 import { ReapNoticeDrain } from '../../src/monitoring/ReapNoticeDrain.js';
 import { ResumeQueue } from '../../src/monitoring/ResumeQueue.js';
 import { ResumeQueueDrainer } from '../../src/monitoring/ResumeQueueDrainer.js';
+import { AGE_LIMIT_ACTIVE_RUN_REASON } from '../../src/core/WorkEvidence.js';
 import { LlmQueue } from '../../src/monitoring/LlmQueue.js';
 import { sampleHostPressure } from '../../src/monitoring/HostPressureSampler.js';
 import type { InstarConfig, Session } from '../../src/core/types.js';
@@ -381,6 +382,77 @@ describe('Reap-notify + resume-queue E2E lifecycle (feature is alive)', () => {
 
       // P17: no per-entry attention items were raised on the happy path.
       expect(attentionIds.filter((id) => id !== 'resume-queue:aggregate')).toEqual([]);
+    });
+  });
+
+  describe('Phase 4: stale emergency-stop pause self-heals (resume-queue-stale-emergency-pause.md)', () => {
+    const STALE_TOPIC = 31;
+
+    it('full lifecycle: emergency-stop pauses the queue → an active-run session is admitted later → the drainer auto-resumes and the entry is respawned (paused:false over HTTP)', async () => {
+      // A dedicated drainer over the SAME live queue with a 0-min staleness
+      // window + no calm dwell, so the auto-resume fires deterministically once
+      // the active-run entry is admitted strictly after the pause.
+      const staleDrainer = new ResumeQueueDrainer(
+        {
+          queue: resumeQueue,
+          pressureTier: () => 'normal',
+          canSpawnSession: () => true,
+          sessionCountOk: () => true,
+          migrationInFlight: () => false,
+          liveSessionForTopic: () => false,
+          currentResumeUuid: (topicId) => topicResumeMap.get(topicId) ?? null,
+          topicOwnerElsewhere: () => false,
+          topicBindingMatches: () => true,
+          operatorStopSince: () => false,
+          jobCheck: () => ({ ok: false, why: 'scheduler-unavailable' }),
+          pathExists: (p) => fs.existsSync(p),
+          respawnTopic: async (entry) => {
+            const session = await mockSm.spawnSession({
+              name: entry.sessionName, prompt: 'continue', cwd: entry.worktreePath ?? entry.cwd,
+            } as Parameters<MockSessionManager['spawnSession']>[0]);
+            topicByTmux.set(session.tmuxSession, entry.topicId!);
+            return session.tmuxSession;
+          },
+          triggerJob: async () => 'skipped',
+          spawnAliveAfterGrace: async (tmuxSession) => mockSm.isSessionAlive(tmuxSession),
+          notifyResumed: (entry) => { if (entry.topicId != null) resumedNotices.push(entry.topicId); },
+          raiseAggregated,
+          audit: (e) => audits.push(e),
+        },
+        { drainIntervalSec: 60, requiredCalmTicks: 0, staleEmergencyPauseAutoResumeMin: 0, autoResumeStalePause: true },
+      );
+
+      // Emergency-stop pauses the queue globally (R2.7 reach).
+      resumeQueue.pause('message-sentinel emergency stop');
+      expect(resumeQueue.isPaused()).toBe(true);
+      // A paused queue is observable over the live HTTP route.
+      const paused = await request(app).get('/sessions/resume-queue').set(auth());
+      expect(paused.body.paused).toBe(true);
+
+      // An active-autonomous-run session is admitted AFTER the pause (a real
+      // wall-clock gap → queuedAt strictly after pausedAt; 0-min threshold).
+      await new Promise((r) => setTimeout(r, 5));
+      topicResumeMap.set(STALE_TOPIC, '11111111-1111-4111-8111-111111111111');
+      resumeQueue.considerEnqueue({
+        sessionName: 'stale-active-session', tmuxSession: 'tmux-stale-active', topicId: STALE_TOPIC,
+        resumeUuid: '11111111-1111-4111-8111-111111111111', cwd: workDir,
+        reason: AGE_LIMIT_ACTIVE_RUN_REASON, disposition: 'terminal', origin: 'autonomous',
+        workEvidence: ['build-or-autonomous-active'],
+      });
+
+      // The next calm tick auto-resumes the stale pause and drains the entry.
+      const result = await staleDrainer.tick();
+      expect(result.resumed).toBe(true);
+      expect(audits.some((a) => a.event === 'auto-resumed-stale-pause')).toBe(true);
+
+      // The live HTTP route observes the auto-resume + the respawned entry.
+      const after = await request(app).get('/sessions/resume-queue').set(auth());
+      expect(after.status).toBe(200);
+      expect(after.body.paused).toBe(false);
+      const entry = (after.body.entries as Array<{ stableKey: string; status: string }>)
+        .find((e) => e.stableKey === `topic:${STALE_TOPIC}`);
+      expect(entry?.status).toBe('respawned');
+      expect(resumedNotices).toContain(STALE_TOPIC);
     });
   });
 });

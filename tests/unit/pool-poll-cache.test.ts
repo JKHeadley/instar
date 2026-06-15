@@ -34,7 +34,12 @@ describe('PoolPollCache (WS4.4(f))', () => {
   it('re-fetches once the TTL window has elapsed', async () => {
     const fetcher = vi.fn(async () => ({ v: 1 }));
     let t = 1_000;
-    const cache = new PoolPollCache({ ttlMs: 1000, now: () => t });
+    // Inject a low load reader so this TTL test is HERMETIC: without it the cache
+    // falls back to the real os.loadavg(), and on a loaded CI/dev box (≥1.5/core)
+    // the load-shed path serves the stale cache INSTEAD of re-fetching — masking
+    // the TTL-expiry re-fetch this test asserts (a non-hermetic flake unrelated to
+    // the behavior under test).
+    const cache = new PoolPollCache({ ttlMs: 1000, now: () => t, loadReader: () => 0 });
 
     await cache.fetchPeer('peer-1', '/jobs', fetcher);
     t = 2_500; // past the 1s TTL

@@ -14,6 +14,7 @@ import { mergeConfigWithSecrets } from './SecretMigrator.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 import os from 'node:os';
 import type { InstarConfig, SessionManagerConfig, JobSchedulerConfig, FeedbackConfig, AgentType } from './types.js';
+import { CANONICAL_FEEDBACK_URL } from './canonicalFeedback.js';
 
 const DEFAULT_PORT = 4040;
 const DEFAULT_MAX_SESSIONS = 10;
@@ -957,7 +958,7 @@ export function loadConfig(projectDir?: string): InstarConfig {
     },
     feedback: {
       enabled: true,
-      webhookUrl: 'https://dawn.bot-me.ai/api/instar/feedback',
+      webhookUrl: CANONICAL_FEEDBACK_URL,
       feedbackFile: path.join(stateDir, 'feedback.json'),
       ...fileConfig.feedback,
     },

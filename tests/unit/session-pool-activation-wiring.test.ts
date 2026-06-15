@@ -74,8 +74,12 @@ describe('Session Pool activation wiring (§L4)', () => {
     // Window widened 4200→5000: the working-set move trigger (WORKING-SET-HANDOFF §3.3)
     // now prefixes the onAccepted body before the stage gate.
     const block = src.slice(idx, idx + 7500);
-    // Gated on a non-dark stage + only with Telegram present.
-    expect(block).toContain("_sessionPoolStage() === 'dark' || !telegram");
+    // Gated on a non-dark stage (early return), then the Telegram arm requires
+    // Telegram present. (WS1.1 split the combined gate so a Slack routing key
+    // branches between the two: dark-gate stays shared, the !telegram gate now
+    // applies only to the numeric/Telegram arm.)
+    expect(block).toContain("_sessionPoolStage() === 'dark'");
+    expect(block).toContain('if (!telegram) return;');
     // Bridges to the existing local spawn/resume path for the topic (now wrapped in an
     // async IIFE that first fetches the moved topic's history from the router — bug #2).
     // The spawn name is a clean topic-derived name, NOT the prefixed getSessionForTopic

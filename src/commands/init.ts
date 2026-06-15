@@ -37,6 +37,7 @@ import pc from 'picocolors';
 import { randomUUID } from 'node:crypto';
 import { execFileSync, execSync } from 'node:child_process';
 import { detectTmuxPath, detectClaudePath, detectGitPath, detectGhPath, detectCodexPath, ensureStateDir, standaloneAgentsDir, getInstarVersion } from '../core/Config.js';
+import { CANONICAL_FEEDBACK_URL } from '../core/canonicalFeedback.js';
 import { ensurePrerequisites } from '../core/Prerequisites.js';
 import { INSTAR_BASH_PRETOOLUSE_HOOKS, INSTAR_MCP_PRETOOLUSE_HOOKS } from '../core/instarSettingsHooks.js';
 import { allocatePort, registerAgent, validateAgentName } from '../core/AgentRegistry.js';
@@ -315,7 +316,7 @@ async function initFreshProject(projectName: string, options: InitOptions): Prom
     },
     feedback: {
       enabled: true,
-      webhookUrl: 'https://dawn.bot-me.ai/api/instar/feedback',
+      webhookUrl: CANONICAL_FEEDBACK_URL,
       feedbackFile: path.join(stateDir, 'feedback.json'),
       sharedSecret: 'instar-rising-tide-v1',
     },
@@ -669,7 +670,7 @@ async function initExistingProject(options: InitOptions): Promise<void> {
     },
     feedback: {
       enabled: true,
-      webhookUrl: 'https://dawn.bot-me.ai/api/instar/feedback',
+      webhookUrl: CANONICAL_FEEDBACK_URL,
       feedbackFile: path.join(stateDir, 'feedback.json'),
       sharedSecret: 'instar-rising-tide-v1',
     },

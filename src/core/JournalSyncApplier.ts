@@ -65,7 +65,13 @@ import {
   type AutonomousAction,
   type PlacementReason,
   type SessionStatus,
+  REPLICATED_RECORD_MAX_ENTRY_BYTES,
 } from './CoherenceJournal.js';
+import {
+  validateReplicatedEnvelope,
+  type ReplicatedKindRegistry,
+  type EnvelopeValidationCounters,
+} from './ReplicatedRecordEnvelope.js';
 import { SafeFsExecutor } from './SafeFsExecutor.js';
 
 // ---- tunables (§3.4) -------------------------------------------------------
@@ -196,6 +202,15 @@ export interface JournalSyncApplierConfig {
   fsImpl?: JournalFs;
   /** Per-entry size cap override. Default APPLIER_MAX_ENTRY_BYTES. */
   maxEntryBytes?: number;
+  /**
+   * The replicated-kind registry (WS2 send-side receive half). Injected so the
+   * applier can VALIDATE + APPLY a registered `*-record` kind a peer serves —
+   * without it, a peer's learning-record would be marked `invalid` and
+   * suspect-flag the stream (the receive-only gap). ABSENT ⇒ unchanged behavior
+   * (only the 5 lifecycle kinds validate). The registry is the SAME instance the
+   * journal writer + the stateSyncReceive advert read (one source of truth).
+   */
+  replicatedRegistry?: ReplicatedKindRegistry;
 }
 
 function realFs(): JournalFs {
@@ -227,6 +242,10 @@ export class JournalSyncApplier {
   private readonly logger?: (msg: string) => void;
   private readonly io: JournalFs;
   private readonly maxEntryBytes: number;
+  /** The replicated-kind registry (WS2 send-side receive half). Settable because the
+   *  applier is constructed before the registry is populated (server.ts boot order);
+   *  the config option is for tests that have the registry up front. */
+  private replicatedRegistry?: ReplicatedKindRegistry;
 
   /** In-memory meta cache per peer machine (keyed by RAW machineId). */
   private metaCache = new Map<string, PeerMeta>();
@@ -252,10 +271,27 @@ export class JournalSyncApplier {
     this.logger = config.logger;
     this.io = config.fsImpl ?? realFs();
     this.maxEntryBytes = config.maxEntryBytes ?? APPLIER_MAX_ENTRY_BYTES;
+    this.replicatedRegistry = config.replicatedRegistry;
+  }
+
+  /** The per-entry byte cap for a kind — RAISED for replicated `*-record` kinds so
+   *  a fat-but-legal record the writer emitted is not rejected as oversize on
+   *  receive (must match CoherenceJournal.maxEntryBytesForKind). */
+  private maxEntryBytesForKind(kind: JournalKind): number {
+    return this.replicatedRegistry?.isReplicatedKind(kind)
+      ? REPLICATED_RECORD_MAX_ENTRY_BYTES
+      : this.maxEntryBytes;
   }
 
   getDegradation(): Readonly<ApplierDegradation> {
     return { ...this.degradation };
+  }
+
+  /** Inject the replicated-kind registry (WS2 send-side). Called once at wiring time
+   *  after the concrete stores register, so a peer's registered `*-record` kind
+   *  validates + applies instead of suspect-flagging the stream. Idempotent. */
+  setReplicatedKindRegistry(registry: ReplicatedKindRegistry | undefined): void {
+    this.replicatedRegistry = registry;
   }
 
   // ---- advert state (for delta requests) ---------------------------------
@@ -495,7 +531,7 @@ export class JournalSyncApplier {
     } catch {
       return 'invalid';
     }
-    if (Buffer.byteLength(line, 'utf-8') > this.maxEntryBytes) return 'invalid';
+    if (Buffer.byteLength(line, 'utf-8') > this.maxEntryBytesForKind(kind)) return 'invalid';
 
     // kind binding — the entry must belong to the stream slice it arrived in.
     if (entry.kind !== kind) return 'invalid';
@@ -532,6 +568,24 @@ export class JournalSyncApplier {
     if (!data || typeof data !== 'object' || Array.isArray(data)) return false;
     const raw = data as Record<string, unknown>;
     const keys = Object.keys(raw);
+
+    // WS2 send-side receive half: a registered replicated `*-record` kind
+    // validates through the GENERIC envelope validator + its store schema — the
+    // SAME strict discipline the writer applied (reject free text / unknown fields,
+    // jail path-shaped fields, validate hlc + observed). Without this branch a
+    // peer's learning-record would be `invalid` ⇒ suspect-flag the stream (the
+    // receive-only gap). The counters are a no-op here — the applier surfaces
+    // receive degradation via its own ApplierDegradation counters / suspect status,
+    // not these per-field bumps; we only need the boolean verdict.
+    const reg = this.replicatedRegistry?.getByKind(kind);
+    if (reg) {
+      const noopCounters: EnvelopeValidationCounters = {
+        bumpSchemaReject: () => {},
+        bumpDroppedField: () => {},
+        bumpJailReject: () => {},
+      };
+      return validateReplicatedEnvelope(raw, reg.schema, noopCounters).ok;
+    }
 
     if (kind === 'topic-placement') {
       const reasons: PlacementReason[] = ['user-move', 'placed', 'failover', 'released', 'quota-block-move'];

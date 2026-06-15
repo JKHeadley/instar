@@ -17,9 +17,10 @@ import pc from 'picocolors';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 import { loadConfig, ensureStateDir, detectTmuxPath, detectGeminiPath } from '../core/Config.js';
-import { isNonFatalUncaught, shouldLogStackForUncaught } from '../core/uncaughtExceptionPolicy.js';
+import { handleProcessLevelError } from '../core/uncaughtExceptionPolicy.js';
 import { resolveDevAgentGate, resolveStateSyncStores } from '../core/devAgentGate.js';
 import { parseProfileTrigger, platformMessageIdFrom } from '../core/topicProfileIngress.js';
+import { slugifyChannelName } from '../messaging/slack/sanitize.js';
 import {
   TopicProfileOrchestrator,
   resolvedToApplied,
@@ -30,7 +31,8 @@ import {
 import { CodexResumeMap, type CodexSpawnFence } from '../core/CodexResumeMap.js';
 import { paneIdleWithEmptyInput } from '../core/ModelSwapService.js';
 import { escalatedModelIds, normalizeTierEscalationConfig, type TierEscalationConfig } from '../core/ModelTierEscalation.js';
-import { activeAutonomousJobs } from '../core/AutonomousSessions.js';
+import { activeAutonomousJobs, autonomousRunRemainingForTopic } from '../core/AutonomousSessions.js';
+import { AGE_LIMIT_ACTIVE_RUN_REASON } from '../core/WorkEvidence.js';
 import { TopicProfileTransferCarrier, createTopicProfilePullHandler } from '../core/TopicProfileTransferCarrier.js';
 import type { SendPullOutcome, TopicProfilePullResponse } from '../core/TopicProfileTransferCarrier.js';
 import type { ResolvedTopicProfile } from '../core/TopicProfileResolver.js';
@@ -94,6 +96,7 @@ import { SessionRecovery } from '../monitoring/SessionRecovery.js';
 import { MultiMachineCoordinator } from '../core/MultiMachineCoordinator.js';
 import { MachineIdentityManager } from '../core/MachineIdentity.js';
 import { isRemotelyHandled } from '../core/SessionRouter.js';
+import { isSlackSessionKey, reconstructSlackMessage } from '../core/SlackForwardBridge.js';
 import { formatForwardedTopicContext } from '../core/ForwardedTopicContext.js';
 import { resolveAdvertisedMeshUrl, advertiseSelfMeshUrl } from '../core/MeshUrlAdvertiser.js';
 import { relayOutbound } from '../core/TelegramRelay.js';
@@ -625,6 +628,13 @@ let _projectDir: string = process.cwd();
 let _sharedIntelligence: import('../core/types.js').IntelligenceProvider | null = null;
 let _selfKnowledgeTree: SelfKnowledgeTree | null = null;
 let _slackAdapter: import('../messaging/slack/SlackAdapter.js').SlackAdapter | null = null;
+// WS1.1 dispatch-to-owner (Slack arm): the owner-side bridge reconstructs a Slack
+// inbound Message from a forwarded mesh deliverMessage and replays it through the
+// SAME local dispatch the live inbound path uses. Set once in startServer's Slack
+// block; null when Slack is not configured (the owner-side Slack branch then
+// no-ops — a forwarded Slack key on a Slack-less owner is a misconfiguration the
+// router's placement should never produce, and falling through is harmless).
+let _slackInboundDispatch: ((message: import('../core/types.js').Message) => Promise<void>) | null = null;
 // SessionRefresh — agent-initiated respawn. Module-scope so onRestartSession
 // (defined outside startServer) can delegate to it once startServer wires it.
 // Null until startServer constructs it; the Telegram /restart handler falls
@@ -2583,7 +2593,7 @@ async function ensureSlackAttentionChannel(
 
   try {
     const agentName = (slack as unknown as { config: { workspaceName?: string } }).config?.workspaceName?.replace(/-agent$/, '') || 'agent';
-    const channelId = await slack.createChannel(`${agentName}-sys-attention`);
+    const channelId = await slack.createChannel(slugifyChannelName(`${agentName}-sys-attention`));
     state.set('slack-attention-channel', channelId);
     await slack.sendToChannel(channelId,
       `Attention channel active. Blocked tasks, critical errors, quota alerts, and anything that needs your attention will appear here.`
@@ -2606,7 +2616,7 @@ async function ensureSlackUpdatesChannel(
 
   try {
     const agentName = (slack as unknown as { config: { workspaceName?: string } }).config?.workspaceName?.replace(/-agent$/, '') || 'agent';
-    const channelId = await slack.createChannel(`${agentName}-sys-updates`);
+    const channelId = await slack.createChannel(slugifyChannelName(`${agentName}-sys-updates`));
     state.set('slack-updates-channel', channelId);
     await slack.sendToChannel(channelId,
       `Updates channel active. Version updates, new features, and system announcements will appear here.`
@@ -3690,6 +3700,67 @@ export async function startServer(options: StartOptions): Promise<void> {
     const { TOPIC_OPERATOR_KIND_REGISTRATION } = await import('../core/TopicOperatorReplicatedStore.js');
     replicatedKindRegistry.register(TOPIC_OPERATOR_KIND_REGISTRATION);
 
+    // ── WS2 SEND-SIDE wiring (docs/specs/WS2-SEND-SIDE-EMISSION-SPEC.md). The
+    //    substrate above ships the registry + receive/serve machinery + advert; THIS
+    //    wires the SEND half that was deferred ("the journal-backed emitter is attached
+    //    in a later rollout stage"). Three pieces, all KIND-AGNOSTIC: (1) inject the
+    //    now-populated registry into the journal writer + the applier so a registered
+    //    `*-record` kind validates/accepts on BOTH ends (without it a peer's record
+    //    suspect-flags the stream — the receive-only gap); (2) the peer-stream reader
+    //    that materializes own + peer journal streams into the union's per-origin
+    //    records (makes a received record READABLE) + the snapshot loadOwnEntries
+    //    source + the emitter's `observed`-witness source; (3) the author-side HLC
+    //    clock. All require the coherence journal (the emit sink + the streams to read);
+    //    when it is dark these stay undefined and every consumer degrades to its
+    //    existing single-machine no-op. The generic record emitter is constructed below
+    //    (it also needs the resolved stateSync flags).
+    let replicatedPeerStreamReader: import('../core/ReplicatedPeerStreamReader.js').ReplicatedPeerStreamReader | undefined;
+    let replicatedRecordEmitter: import('../core/ReplicatedRecordEmitter.js').ReplicatedRecordEmitter | undefined;
+    let replicatedHlcClock: import('../core/HybridLogicalClock.js').HybridLogicalClock | undefined;
+    if (coherenceJournal && cjOwnMachineId) {
+      try {
+        coherenceJournal.setReplicatedKindRegistry(replicatedKindRegistry);
+        journalSyncApplier?.setReplicatedKindRegistry(replicatedKindRegistry);
+
+        const { ReplicatedPeerStreamReader } = await import('../core/ReplicatedPeerStreamReader.js');
+        replicatedPeerStreamReader = new ReplicatedPeerStreamReader({
+          stateDir: config.stateDir,
+          registry: replicatedKindRegistry,
+          selfMachineId: cjOwnMachineId,
+        });
+
+        // Author-side HLC clock — persisted under the journal dir (atomic temp+rename)
+        // so the merge total order survives restarts (§3.5). node = this machine's id.
+        const { HybridLogicalClock } = await import('../core/HybridLogicalClock.js');
+        const hlcSafeId = cjOwnMachineId.replace(/[^A-Za-z0-9_.-]/g, '_');
+        const hlcPath = path.join(config.stateDir, 'state', 'coherence-journal', `hlc-${hlcSafeId}.json`);
+        replicatedHlcClock = new HybridLogicalClock({
+          node: cjOwnMachineId,
+          now: () => Date.now(),
+          persist: {
+            load: () => {
+              try {
+                const o = JSON.parse(fs.readFileSync(hlcPath, 'utf-8')) as { physical?: unknown };
+                return o && typeof o.physical === 'number' ? (o as import('../core/HybridLogicalClock.js').HlcTimestamp) : null;
+              } catch { /* @silent-fallback-ok: absent/corrupt hlc file = fresh clock (first boot) — the clock starts at 0, never throws. */ return null; }
+            },
+            save: (t) => {
+              try {
+                fs.mkdirSync(path.dirname(hlcPath), { recursive: true });
+                const tmp = `${hlcPath}.tmp-${process.pid}`;
+                fs.writeFileSync(tmp, JSON.stringify(t));
+                fs.renameSync(tmp, hlcPath);
+              } catch { /* @silent-fallback-ok: a failed hlc persist degrades to in-memory-only (the clock still advances this run); replication merge order is best-effort durable, never a boot blocker. */ }
+            },
+          },
+        });
+      } catch (e) { /* @silent-fallback-ok: the SEND-side wiring must never endanger boot — a failure leaves replication dark (undefined seams), exactly the pre-WS2-send behavior. */
+        replicatedPeerStreamReader = undefined;
+        replicatedHlcClock = undefined;
+        console.log(pc.dim(`  [ws2-send] emitter wiring skipped: ${e instanceof Error ? e.message : String(e)}`));
+      }
+    }
+
     // Snapshot-then-tail engine (Component 4 / build-order step 3,
     // multi-machine-replicated-store-foundation §6). The cache (FIXED ceiling,
     // §8.2 — NOT pool-scaled), the per-peer rebuild breaker (§6.3), and the engine
@@ -3710,10 +3781,13 @@ export async function startServer(options: StartOptions): Promise<void> {
       cache: snapshotCache,
       breaker: snapshotRebuildBreaker,
       seams: {
-        // Step-3 substrate: no concrete store kind is registered yet, so there are
-        // no contributing own-streams to load. A consumer PR (WS2.1) replaces this
-        // with a loader that reads the CoherenceJournal own streams for its kind(s).
-        loadOwnEntries: () => ({}),
+        // WS2 send-side: read the OWN journal streams for the store's registered
+        // kind(s) so a snapshot serve returns real entries (replaces the no-op stub).
+        // Single-origin is enforced inside the reader (it serves only this machine's
+        // own stream). When the journal is dark the reader is undefined ⇒ `{}` (the
+        // correct no-store no-op; serveSnapshot then answers 'no-entries').
+        loadOwnEntries: (store, origin) =>
+          replicatedPeerStreamReader ? replicatedPeerStreamReader.loadOwnEntries(store, origin) : {},
         now: () => Date.now(),
       },
       maxSnapshotBytes: stateSync.maxCacheBytes,
@@ -3731,6 +3805,27 @@ export async function startServer(options: StartOptions): Promise<void> {
     const _stateSyncStoresResolved = resolveStateSyncStores(
       config as { developmentAgent?: boolean; multiMachine?: { stateSync?: Record<string, { enabled?: boolean } & Record<string, unknown>> } },
     ) as import('../core/ReplicatedRecordEnvelope.js').StateSyncStores | undefined;
+
+    // WS2 send-side: the generic journal-backed record emitter (the concrete emitter
+    // the per-store managers' emit hooks call). Needs the journal sink, the HLC clock,
+    // the registry (store → kind), this machine's origin id, the resolved stateSync
+    // flags (the dark gate — read via a getter so a live flip is honored), and the
+    // peer-stream reader as the `observed`-witness source. Constructed only when the
+    // journal + clock + reader exist (all gated on the coherence journal being live);
+    // otherwise it stays undefined and every per-store emit adapter is simply never
+    // attached (the managers' hooks stay no-ops, the pre-WS2-send behavior).
+    if (coherenceJournal && replicatedHlcClock && replicatedPeerStreamReader) {
+      const { ReplicatedRecordEmitter } = await import('../core/ReplicatedRecordEmitter.js');
+      replicatedRecordEmitter = new ReplicatedRecordEmitter({
+        journal: coherenceJournal,
+        clock: replicatedHlcClock,
+        registry: replicatedKindRegistry,
+        origin: cjOwnMachineId as string,
+        stores: () => _stateSyncStoresResolved,
+        loadWitness: (store, recordKey) => replicatedPeerStreamReader!.loadWitness(store, recordKey),
+        log: (event, detail) => console.log(pc.dim(`  [ws2-send] ${event} ${JSON.stringify(detail)}`)),
+      });
+    }
 
     const selfStateSyncReceive = (): Record<string, boolean> => {
       const out: Record<string, boolean> = {};
@@ -3828,7 +3923,7 @@ export async function startServer(options: StartOptions): Promise<void> {
     // (= that one local record). tierOf returns HIGH (append-both-and-flag never
     // silently clobbers two divergent people). Consulted by the relationships peer-read
     // surface ONLY when stateSync.relationships.enabled is true.
-    const { relationshipTierOf, relationshipToOriginRecord, deriveRelationshipRecordKey, mergeUnionToRelationships, renderForeignRelationshipContext, RELATIONSHIP_STORE_KEY } = await import('../core/RelationshipsReplicatedStore.js');
+    const { relationshipTierOf, relationshipToOriginRecord, deriveRelationshipRecordKey, buildRelationshipRecordData, buildRelationshipTombstoneData, mergeUnionToRelationships, renderForeignRelationshipContext, RELATIONSHIP_STORE_KEY } = await import('../core/RelationshipsReplicatedStore.js');
     const relationshipsUnionReader = new ReplicatedStoreReader({
       registry: replicatedKindRegistry,
       stores: _stateSyncStoresResolved, // gate-resolved (dev-live / fleet-dark) per operator directive 2026-06-13
@@ -5996,7 +6091,14 @@ export async function startServer(options: StartOptions): Promise<void> {
         }
 
         // Wire message handler — inject Slack messages into sessions
-        slackAdapter.onMessage(async (message) => {
+        // ── WS1.1 dispatch-to-owner (Slack arm) ──────────────────────────────
+        // The actual channel→session dispatch for a Slack inbound message. This is
+        // the body the live inbound `onMessage` handler runs AFTER pool routing has
+        // decided the message belongs to THIS machine — AND the body the owner-side
+        // mesh bridge replays when a Slack message was forwarded to this machine
+        // because it owns the conversation. Sharing one function is "Structure >
+        // Willpower": the forwarded path and the live path can never drift.
+        const slackInboundDispatch = async (message: Message): Promise<void> => {
           const channelId = message.channel.identifier;
           const isDM = message.metadata?.isDM as boolean;
           const senderName = message.metadata?.senderName as string || 'User';
@@ -6015,29 +6117,6 @@ export async function startServer(options: StartOptions): Promise<void> {
           const isThreadSession = slackAdapter!.isThreadRoutingKey(routingKey);
           // The thread_ts to thread replies under (only when this is a thread session).
           const replyThreadTs = isThreadSession ? threadTs : undefined;
-
-          // Sentinel intercept — classify message for emergency stop/pause
-          if (sentinel) {
-            try {
-              const classification = await sentinel.classify(message.content);
-              if (classification.category === 'emergency-stop') {
-                // Kill all sessions
-                const sessions = sessionManager.listRunningSessions();
-                for (const s of sessions) {
-                  try { sessionManager.killSession(s.id); } catch { /* ok */ }
-                }
-                slackAdapter!.sendToChannel(channelId, '🛑 Emergency stop — all sessions killed.').catch(() => {});
-                return;
-              } else if (classification.category === 'pause') {
-                const existingSession = slackAdapter!.getSessionForChannel(routingKey);
-                if (existingSession) {
-                  sessionManager.sendKey(existingSession, 'Escape');
-                  slackAdapter!.sendToChannel(channelId, '⏸️ Session paused.').catch(() => {});
-                }
-                return;
-              }
-            } catch { /* fail-open — if Sentinel errors, process message normally */ }
-          }
 
           // Build injection tag with sender info (matches Telegram's buildInjectionTag pattern)
           const slackUserId = message.metadata?.slackUserId as string;
@@ -6213,6 +6292,86 @@ export async function startServer(options: StartOptions): Promise<void> {
           } catch (err) {
             console.error(`[slack] Session spawn failed: ${err instanceof Error ? err.message : err}`);
           }
+        };
+        // Expose to the owner-side mesh bridge (a forwarded Slack message replays
+        // through the same dispatch on the machine that owns the conversation).
+        _slackInboundDispatch = slackInboundDispatch;
+
+        slackAdapter.onMessage(async (message) => {
+          const channelId = message.channel.identifier;
+          const messageTs = message.metadata?.ts as string | undefined;
+          const threadTs = message.metadata?.threadTs as string | undefined;
+          const routingKey = slackAdapter!.resolveRoutingKey(channelId, threadTs, messageTs);
+
+          // Sentinel intercept — classify message for emergency stop/pause. Runs on
+          // the machine the message arrived at (these are local-process actions);
+          // never forwarded.
+          if (sentinel) {
+            try {
+              const classification = await sentinel.classify(message.content);
+              if (classification.category === 'emergency-stop') {
+                // Kill all sessions
+                const sessions = sessionManager.listRunningSessions();
+                for (const s of sessions) {
+                  try { sessionManager.killSession(s.id); } catch { /* ok */ }
+                }
+                slackAdapter!.sendToChannel(channelId, '🛑 Emergency stop — all sessions killed.').catch(() => {});
+                return;
+              } else if (classification.category === 'pause') {
+                const existingSession = slackAdapter!.getSessionForChannel(routingKey);
+                if (existingSession) {
+                  sessionManager.sendKey(existingSession, 'Escape');
+                  slackAdapter!.sendToChannel(channelId, '⏸️ Session paused.').catch(() => {});
+                }
+                return;
+              }
+            } catch { /* fail-open — if Sentinel errors, process message normally */ }
+          }
+
+          // ── Multi-Machine Session Pool (§L4 / WS1.1): route through the pool ──
+          // Mirrors the Telegram inbound dispatch. When the rollout stage is past
+          // 'dark', consult the SessionRouter on the Slack routingKey: it may
+          // forward this conversation's message to the machine that OWNS the session
+          // (over the mesh) instead of binding it to whatever local session happens
+          // to be running. DARK (the default) skips this block entirely → the Slack
+          // inbound path is byte-identical to today's local-only dispatch. Any error
+          // falls back to the local dispatch below (fail-safe). This closes the bug
+          // where a Slack channel pinned/transferred to a peer machine still injected
+          // the next message into the already-running LOCAL session (Telegram's
+          // inbound path already followed the transfer; Slack's never did).
+          if (_sessionRouter && _sessionPoolStage() !== 'dark') {
+            try {
+              const outcome = await _sessionRouter.route({
+                sessionKey: routingKey,
+                messageId: String(message.id),
+                payload: message.content,
+                topicMetadata: _topicPinStore?.asTopicMetadata(routingKey),
+                senderEnvelope: {
+                  userId: (message.metadata?.slackUserId as string) || undefined,
+                  firstName: (message.metadata?.senderName as string) || undefined,
+                },
+              });
+              console.log(`[session-pool] slack route key=${routingKey} → action=${outcome.action} owner=${outcome.owner ?? '?'} self=${_meshSelfId ?? '?'} acked=${outcome.acked}`);
+              if (isRemotelyHandled(outcome, _meshSelfId)) {
+                console.log(`[session-pool] slack key ${routingKey} handled by owner ${outcome.owner ?? '?'} (${outcome.action}) — not dispatching locally`);
+                return;
+              }
+              // Custody-ack short-circuit (§2.2, mirrors the Telegram path): a
+              // queued/placement-blocked verdict whose enqueue COMMITTED (acked) is
+              // the durable queue's message now — no local fall-through (which would
+              // double-handle). Un-custodied (refused/off/dry-run) falls through.
+              if ((outcome.action === 'queued' || outcome.action === 'placement-blocked') && outcome.acked) {
+                console.log(`[session-pool] slack key ${routingKey} in durable custody (${outcome.detail ?? outcome.action}) — drain will deliver`);
+                return;
+              }
+              // 'handled-locally' / self 'spawned'/'owner-dead-replaced' / un-acked
+              // 'queued'/'placement-blocked' → fall through to local dispatch below.
+            } catch (err) {
+              console.warn(`[session-pool] slack route error for key ${routingKey} — falling back to local dispatch: ${err instanceof Error ? err.message : String(err)}`);
+            }
+          }
+
+          await slackInboundDispatch(message);
         });
 
         await slackAdapter.start();
@@ -6551,6 +6710,22 @@ export async function startServer(options: StartOptions): Promise<void> {
         quietHoursEndAt: (now) => notificationBatcher.quietHoursEndAt(now),
         summaryReleaseAt: (now) => notificationBatcher.nextSummaryReleaseAt(now),
         resumeQueuedFor: (tmuxSession) => resumeQueuedForSession(tmuxSession),
+        // Honest-recycle (honest-session-recycle-spec): tell ReapNotifier whether
+        // this session's topic has an ACTIVE autonomous run (and how long is left),
+        // so an age-limit RECYCLE of a still-active run reads as a continuation
+        // instead of a "reached its maximum allowed runtime" death. Read here at
+        // the wiring layer (which has the autonomous state) — SessionManager's kill
+        // chokepoint is untouched. Returns null ⇒ legacy death copy (safe default).
+        autonomousRunActiveFor: (tmuxSession) => {
+          try {
+            const t = telegram?.getTopicForSession(tmuxSession);
+            if (t == null) return null;
+            return autonomousRunRemainingForTopic(config.stateDir, t);
+          } catch {
+            // Fail toward the legacy death copy — never silence the notice.
+            return null;
+          }
+        },
         reportDegradation: (reason, impact) => {
           try {
             DegradationReporter.getInstance().report({
@@ -6679,7 +6854,13 @@ export async function startServer(options: StartOptions): Promise<void> {
         },
         {
           enabled: rqCfg.enabled ?? true,
-          dryRun: rqCfg.dryRun ?? true, // shipped observe-only (decision 2)
+          // Live-on-dev (no-dark-on-dev directive, topic 13481): the queue ships
+          // observe-only (dryRun:true) fleet-wide, but resolves to LIVE
+          // (dryRun:false) on a development agent so the resume-idle-autonomous
+          // fix is genuinely exercised on Echo. An explicit operator
+          // monitoring.resumeQueue.dryRun still wins; the resume-queue keys stay
+          // CODE-defaulted (never frozen into ConfigDefaults — preserves the fleet flip).
+          dryRun: rqCfg.dryRun ?? !resolveDevAgentGate(undefined, config),
           maxAttempts: rqCfg.maxAttempts ?? 3,
           maxResurrections: rqCfg.maxResurrections ?? 2,
           entryTtlHours: rqCfg.entryTtlHours ?? 24,
@@ -6752,6 +6933,16 @@ export async function startServer(options: StartOptions): Promise<void> {
               } catch { /* no flag */ }
               return Math.max(perTopic, globalOperatorStopAt, flagAt) > since;
             },
+            // Resume-idle-autonomous fix (spec: resume-idle-autonomous-on-reap.md):
+            // drain-time liveness re-check for an entry admitted via the
+            // age-limit-active-run path. Returns true (= run FINISHED) when the topic's
+            // autonomous run is no longer active (completed OR window elapsed) since
+            // enqueue → the drainer invalidates `autonomous-run-finished`, never a
+            // spawn. Reads the LOCAL autonomous-run state file (same vantage that
+            // admitted the entry). A throw resolves to NOT-finished inside the drainer's
+            // safeBool (SAFE side — the revival still passes the other reality gates).
+            autonomousRunFinished: (topicId) =>
+              autonomousRunRemainingForTopic(config.stateDir, topicId) == null,
             jobCheck: (slug, queuedAtIso) => {
               if (!scheduler) return { ok: false, why: 'scheduler-unavailable' };
               const job = scheduler.getJobs().find((j) => j.slug === slug);
@@ -6871,10 +7062,17 @@ export async function startServer(options: StartOptions): Promise<void> {
             breakerThreshold: rqCfg.breakerThreshold ?? 3,
             breakerCooldownMin: rqCfg.breakerCooldownMin ?? 30,
             tier1Check: rqCfg.tier1Check ?? true,
+            // Stale-emergency-pause auto-recovery (spec:
+            // resume-queue-stale-emergency-pause.md). CODE-defaulted like the
+            // other resumeQueue.* keys (never frozen into ConfigDefaults — the
+            // fleet flip stays in code). Layer 1 (paused-with-waiting alert) is
+            // always on; autoResumeStalePause gates only Layer 2.
+            staleEmergencyPauseAutoResumeMin: rqCfg.staleEmergencyPauseAutoResumeMin ?? 60,
+            autoResumeStalePause: rqCfg.autoResumeStalePause ?? true,
           },
         );
         resumeDrainer.start();
-        console.log(pc.green(`  ResumeQueue started (${rqCfg.dryRun ?? true ? 'dry-run observe-only' : 'LIVE'}; drainer ${rqCfg.drainIntervalSec ?? 60}s tick)`));
+        console.log(pc.green(`  ResumeQueue started (${(rqCfg.dryRun ?? !resolveDevAgentGate(undefined, config)) ? 'dry-run observe-only' : 'LIVE'}; drainer ${rqCfg.drainIntervalSec ?? 60}s tick)`));
 
         // Boot reconciliation half 2 (R2.4): re-enqueue recent mid-work reaps
         // the queue lost to a crash window. Deferred 30s so the Telegram
@@ -6952,6 +7150,28 @@ export async function startServer(options: StartOptions): Promise<void> {
           const jobDef = e.session.jobSlug
             ? scheduler?.getJobs().find((j) => j.slug === e.session.jobSlug)
             : undefined;
+          // Resume-idle-autonomous fix (spec: resume-idle-autonomous-on-reap.md):
+          // an age-limit reap fires precisely when an autonomous session is IDLE
+          // between turns, so its process-based work evidence is empty by
+          // construction → it is never enqueued for revival, and an away-operator's
+          // run sits dead until the next message. When the reaped topic still has an
+          // ACTIVE autonomous run, the live run IS the work evidence: append the TRUE
+          // `build-or-autonomous-active` strong signal (re-clamped by considerEnqueue)
+          // and tag the reason so the drainer can re-verify liveness at drain time.
+          // Guard ordering is load-bearing: the cold-path autonomousRunRemainingForTopic
+          // read runs ONLY on the literal `age-limit` reason (every other reap pays
+          // zero added cost), and the whole block sits inside the existing try/catch so
+          // a throw fails toward NO injection (status-quo no-revive), never a spawn.
+          let candidateReason = e.reason;
+          let candidateWorkEvidence = e.workEvidence ?? [];
+          if (
+            e.reason === 'age-limit' &&
+            topicId != null &&
+            autonomousRunRemainingForTopic(config.stateDir, topicId) != null
+          ) {
+            candidateReason = AGE_LIMIT_ACTIVE_RUN_REASON;
+            candidateWorkEvidence = [...candidateWorkEvidence, 'build-or-autonomous-active'];
+          }
           resumeQueue.considerEnqueue({
             sessionName: e.session.name,
             tmuxSession: e.session.tmuxSession,
@@ -6960,10 +7180,10 @@ export async function startServer(options: StartOptions): Promise<void> {
             jobResumeOptIn: jobDef?.resumeOnReap === true,
             resumeUuid: topicId != null ? (_topicResumeMap?.get(topicId) ?? null) : null,
             cwd: e.session.cwd ?? _projectDir,
-            reason: e.reason,
+            reason: candidateReason,
             disposition: e.disposition ?? 'terminal',
             origin: e.origin ?? 'autonomous',
-            workEvidence: e.workEvidence ?? [],
+            workEvidence: candidateWorkEvidence,
           });
         }
       } catch (err) {
@@ -8266,34 +8486,88 @@ export async function startServer(options: StartOptions): Promise<void> {
     // and-flag never silently clobbers two divergent lessons; the READ layer is advisory,
     // injecting both variants as hints rather than blocking — fork #2). Consulted by a
     // learnings peer-read surface ONLY when stateSync.learnings.enabled is true.
-    const { learningTierOf, learningToOriginRecord, deriveLearningRecordKey, LEARNING_STORE_KEY } = await import('../core/LearningsReplicatedStore.js');
+    const {
+      learningTierOf,
+      deriveLearningRecordKey,
+      buildLearningRecordData,
+      buildLearningTombstoneData,
+      LEARNING_STORE_KEY,
+    } = await import('../core/LearningsReplicatedStore.js');
     const learningsUnionReader = new ReplicatedStoreReader({
       registry: replicatedKindRegistry,
       stores: _stateSyncStoresResolved, // gate-resolved (dev-live / fleet-dark) per operator directive 2026-06-13
       tierOf: learningTierOf,
-      loadOriginRecords: (store, recordKey) => {
-        if (store !== LEARNING_STORE_KEY || _meshSelfId === null) return [];
-        for (const l of evolution.listLearnings()) {
-          if (deriveLearningRecordKey(l.title, l.category, l.source) === recordKey) {
-            const o = learningToOriginRecord(l, _meshSelfId);
-            return o ? [o] : [];
-          }
-        }
-        return [];
-      },
-      listRecordKeys: (store) => {
-        if (store !== LEARNING_STORE_KEY) return [];
-        const keys: string[] = [];
-        for (const l of evolution.listLearnings()) {
-          const k = deriveLearningRecordKey(l.title, l.category, l.source);
-          if (k !== null) keys.push(k);
-        }
-        return keys;
-      },
+      // WS2 send-side: the union now reads OWN + PEER journal streams (each record's
+      // authoritative emit-time HLC) via the peer-stream reader — so a learning
+      // replicated FROM a peer is READABLE here, not just the local one. Dark / no
+      // journal ⇒ reader undefined ⇒ [] (isLive already gates a disabled store to a
+      // strict no-op, so this never changes single-machine behavior).
+      loadOriginRecords: (store, recordKey) =>
+        store === LEARNING_STORE_KEY && replicatedPeerStreamReader
+          ? replicatedPeerStreamReader.loadOriginRecords(store, recordKey)
+          : [],
+      listRecordKeys: (store) =>
+        store === LEARNING_STORE_KEY && replicatedPeerStreamReader
+          ? replicatedPeerStreamReader.listRecordKeys(store)
+          : [],
       droppedOrigins: droppedOriginRegistry,
       conflictStore,
     });
-    void learningsUnionReader; // consumed by the learnings peer-read surface + the journal-apply rollout stage (WS2.2+)
+    void learningsUnionReader; // consumed by the learnings peer-read surface (the E2E reads through it) + future session-context injection
+
+    // WS2 SEND-SIDE: attach the journal-backed emitter to the EvolutionManager's
+    // learning hooks. The call sites already fire emitPut/emitDelete on every
+    // saveLearnings (prune→emitDelete, survivor→emitPut); the adapter maps the
+    // manager's emit signature to the store's build*RecordData. The emitter owns the
+    // dark gate, HLC tick, `observed` witness, and journal append. Attached only when
+    // the emitter exists (journal live); when dark the hooks stay no-ops (byte-
+    // identical single-machine behavior — the local LRN-NNN id never crosses the wire).
+    if (replicatedRecordEmitter) {
+      const emitter = replicatedRecordEmitter;
+      evolution.setLearningReplicationEmitter({
+        emitPut: (rec) =>
+          emitter.emit(
+            LEARNING_STORE_KEY,
+            deriveLearningRecordKey(rec.title, rec.category, rec.source),
+            (hlc, origin, observed) => buildLearningRecordData({ record: rec, hlc, origin, observed }),
+          ),
+        emitDelete: (title, category, source, deletedAt) =>
+          emitter.emit(
+            LEARNING_STORE_KEY,
+            deriveLearningRecordKey(title, category, source),
+            (hlc, origin, observed) => buildLearningTombstoneData({ title, category, source, hlc, origin, deletedAt, observed }),
+          ),
+      });
+    }
+
+    // WS2.3 SEND-SIDE: attach the journal-backed emitter to the RelationshipManager's
+    // replication hooks. The manager already fires emitPut on every saved person and
+    // emitDelete on erase/merge (RelationshipManager.setReplicationEmitter); the adapter
+    // maps the manager's emit signature to the relationship build*RecordData projection.
+    // The generic emitter owns the dark gate, HLC tick, `observed` witness, journal
+    // append, and ALL the safety guards (null recordKey ⇒ skip, null projection ⇒ skip,
+    // over-cap throw ⇒ counted no-op) — so the adapter mirrors learnings with no extra
+    // guarding. Attached only when the emitter exists (journal live) AND the manager is
+    // constructed; when stateSync.relationships is dark the hooks stay no-ops (byte-
+    // identical single-machine behavior — the local UUID id never crosses; only the
+    // disclosure-minimized, channel-keyed projection does — REQ-M4).
+    if (replicatedRecordEmitter && relationships) {
+      const emitter = replicatedRecordEmitter;
+      relationships.setReplicationEmitter({
+        emitPut: (rec) =>
+          emitter.emit(
+            RELATIONSHIP_STORE_KEY,
+            deriveRelationshipRecordKey(rec.channels),
+            (hlc, origin, observed) => buildRelationshipRecordData({ record: rec, hlc, origin, observed }),
+          ),
+        emitDelete: (channels, deletedAt) =>
+          emitter.emit(
+            RELATIONSHIP_STORE_KEY,
+            deriveRelationshipRecordKey(channels),
+            (hlc, origin, observed) => buildRelationshipTombstoneData({ channels, hlc, origin, deletedAt, observed }),
+          ),
+      });
+    }
 
     // WS2.4 — the bypass-proof union reader for the `knowledge` store + the emit seam on
     // the KnowledgeManager. The KnowledgeManager reads the local catalog.json (cheap, no
@@ -8316,6 +8590,8 @@ export async function startServer(options: StartOptions): Promise<void> {
       knowledgeTierOf,
       knowledgeToOriginRecord,
       deriveKnowledgeRecordKey,
+      buildKnowledgeRecordData,
+      buildKnowledgeTombstoneData,
       KNOWLEDGE_STORE_KEY,
     } = await import('../core/KnowledgeReplicatedStore.js');
     const knowledgeUnionReader = new ReplicatedStoreReader({
@@ -8345,7 +8621,34 @@ export async function startServer(options: StartOptions): Promise<void> {
       conflictStore,
     });
     void knowledgeUnionReader; // consumed by the knowledge peer-read surface + the journal-apply rollout stage (WS2.4+)
-    void knowledgeManager.setKnowledgeReplicationEmitter; // the emit seam exists (unit-tested + dark by default); the journal-backed emitter is attached in a later rollout stage, mirroring the WS2.2 learnings sibling
+
+    // WS2.4 SEND-SIDE: attach the journal-backed emitter to the KnowledgeManager's
+    // replication hooks. The manager already fires emitPut on every ingested source and
+    // emitDelete on remove() (KnowledgeManager.setKnowledgeReplicationEmitter); the adapter
+    // maps the manager's emit signature to the knowledge build*RecordData projection. The
+    // generic emitter owns the dark gate, HLC tick, `observed` witness, journal append, and
+    // ALL the safety guards (null recordKey ⇒ skip, null projection ⇒ skip, over-cap throw ⇒
+    // counted no-op) — so the adapter mirrors learnings/relationships with no extra guarding.
+    // Only the catalog METADATA crosses (title/url/type/tags/summary/wordCount) — NEVER the
+    // markdown file body, NEVER the local id/filePath (fork #2). Attached only when the
+    // emitter exists; dark by default ⇒ no-op (byte-identical single-machine behavior).
+    if (replicatedRecordEmitter) {
+      const emitter = replicatedRecordEmitter;
+      knowledgeManager.setKnowledgeReplicationEmitter({
+        emitPut: (rec) =>
+          emitter.emit(
+            KNOWLEDGE_STORE_KEY,
+            deriveKnowledgeRecordKey(rec.title, rec.url, rec.type),
+            (hlc, origin, observed) => buildKnowledgeRecordData({ record: rec, hlc, origin, observed }),
+          ),
+        emitDelete: (title, url, type, deletedAt) =>
+          emitter.emit(
+            KNOWLEDGE_STORE_KEY,
+            deriveKnowledgeRecordKey(title, url, type),
+            (hlc, origin, observed) => buildKnowledgeTombstoneData({ title, url, type, hlc, origin, deletedAt, observed }),
+          ),
+      });
+    }
 
     // WS2.5 — the bypass-proof union reader for the `evolutionActions` store. The single
     // funnel every replicated action read routes through, so no caller reads a raw replica
@@ -8365,6 +8668,8 @@ export async function startServer(options: StartOptions): Promise<void> {
       evolutionActionTierOf,
       evolutionActionToOriginRecord,
       deriveEvolutionActionRecordKey,
+      buildEvolutionActionRecordData,
+      buildEvolutionActionTombstoneData,
       EVOLUTION_ACTION_STORE_KEY,
     } = await import('../core/EvolutionActionsReplicatedStore.js');
     const evolutionActionsUnionReader = new ReplicatedStoreReader({
@@ -8394,7 +8699,36 @@ export async function startServer(options: StartOptions): Promise<void> {
       conflictStore,
     });
     void evolutionActionsUnionReader; // consumed by the evolution-actions peer-read surface + the journal-apply rollout stage (WS2.5+)
-    void evolution.setEvolutionActionReplicationEmitter; // the emit seam exists (unit-tested + dark by default); the journal-backed emitter is attached in a later rollout stage, mirroring the WS2.2 learnings sibling
+
+    // WS2.5 SEND-SIDE: attach the journal-backed emitter to the EvolutionManager's
+    // action-queue hooks. saveActions already fires emitPut on every surviving action
+    // (so a STATUS CHANGE re-emits — a peer SEES completed/in_progress and won't redo it)
+    // and emitDelete on every action actually pruned out of the queue (a RETAINED terminal
+    // action is never tombstoned — only a real queue-removal is). The adapter maps the
+    // manager's emit signature to the action build*RecordData projection; the generic emitter
+    // owns the dark gate, HLC tick, `observed` witness, journal append, and ALL the safety
+    // guards (null recordKey ⇒ skip, null projection ⇒ skip, over-cap throw ⇒ counted no-op).
+    // `evolution` is the canonical instance handed to the AgentServer, so the action routes'
+    // real writes flow through these hooks. Attached only when the emitter exists; dark by
+    // default ⇒ no-op (byte-identical single-machine behavior; the local ACT-NNN id never
+    // crosses the wire — fork #1, only the enumerated content projection does).
+    if (replicatedRecordEmitter) {
+      const emitter = replicatedRecordEmitter;
+      evolution.setEvolutionActionReplicationEmitter({
+        emitPut: (rec) =>
+          emitter.emit(
+            EVOLUTION_ACTION_STORE_KEY,
+            deriveEvolutionActionRecordKey(rec.title, rec.commitTo, rec.createdAt),
+            (hlc, origin, observed) => buildEvolutionActionRecordData({ record: rec, hlc, origin, observed }),
+          ),
+        emitDelete: (title, commitTo, createdAt, deletedAt) =>
+          emitter.emit(
+            EVOLUTION_ACTION_STORE_KEY,
+            deriveEvolutionActionRecordKey(title, commitTo, createdAt),
+            (hlc, origin, observed) => buildEvolutionActionTombstoneData({ title, commitTo, createdAt, hlc, origin, deletedAt, observed }),
+          ),
+      });
+    }
 
     // WS2.6 — the bypass-proof union reader for the `userRegistry` store (the SECOND PII kind). The
     // single funnel every replicated user read routes through, so no caller reads a raw replica
@@ -14388,7 +14722,43 @@ export async function startServer(options: StartOptions): Promise<void> {
               // named here). Never blocks message delivery.
               if (Number.isFinite(wsTopic)) _topicProfileCarrier?.onTopicAcquired(wsTopic);
             }
-            if (_sessionPoolStage() === 'dark' || !telegram) return;
+            if (_sessionPoolStage() === 'dark') return;
+            // ── WS1.1 Slack arm (owner-side bridge) ──────────────────────────
+            // A Slack routing key is a non-numeric string (`C…` channel id, or
+            // `C…:<thread_ts>` for a thread session); a Telegram topic key is a
+            // pure number. When the forwarded session key isn't numeric, this is a
+            // Slack conversation that was forwarded here because THIS machine owns
+            // it: reconstruct the inbound Message and replay it through the SAME
+            // local Slack dispatch the live path uses (which itself handles
+            // inject-into-live-session vs spawn). Fire-and-forget: the durable
+            // receipt is already recorded + ACKed before this runs.
+            const slackKey = cmd.session;
+            if (isSlackSessionKey(slackKey)) {
+              if (!_slackInboundDispatch) return; // Slack not configured here
+              const sText = typeof cmd.payload === 'string'
+                ? cmd.payload
+                : (cmd.payload && typeof cmd.payload === 'object' && 'text' in (cmd.payload as object))
+                  ? String((cmd.payload as { text: unknown }).text)
+                  : '';
+              const envUid = (cmd as { senderEnvelope?: { userId?: string | number } }).senderEnvelope?.userId;
+              const sMessage = reconstructSlackMessage({
+                sessionKey: slackKey,
+                messageId: cmd.messageId,
+                text: sText,
+                senderUserId: envUid != null ? String(envUid) : undefined,
+              });
+              void _slackInboundDispatch(sMessage)
+                .then(() => {
+                  console.log(pc.green(`  [session-pool] owner-side Slack dispatch for forwarded key ${slackKey}`));
+                  _inboundQueue?.markRemoteInjected(cmd.session, cmd.messageId);
+                })
+                .catch((err) => {
+                  console.warn(`  [session-pool] owner-side Slack dispatch failed for key ${slackKey}: ${err instanceof Error ? err.message : String(err)}`);
+                  _inboundQueue?.reportPeerInjectError(cmd.session, cmd.messageId, err instanceof Error ? err.message : String(err));
+                });
+              return;
+            }
+            if (!telegram) return;
             const tg = telegram;
             const topicId = Number(cmd.session);
             if (!Number.isFinite(topicId)) return;
@@ -15648,7 +16018,33 @@ export async function startServer(options: StartOptions): Promise<void> {
             // wouldEnqueue/wouldHold/wouldRefuse counters ARE the promotion
             // evidence and /pool/queue must serve them. The boot sweep already
             // gate-expired any live→dry-run residual rows.
-            if (qcfg.enabled && _sessionPoolStage() !== 'dark') {
+            //
+            // BOOT-ORDER FIX: do NOT consult `_sessionPoolStage()` here — at this
+            // point in the synchronous boot flow it is still the line-~443 stub
+            // (`() => 'dark'`); the real impl is only assigned ~350 lines BELOW
+            // (the `_sessionPoolStage = () => { ... }` reassignment after the
+            // peer-presence puller is wired). Reading the stub made the gate
+            // ALWAYS false, so the inbound-queue engine never constructed even
+            // when correctly configured, and `/pool/queue` 503'd forever. Resolve
+            // the stage INLINE from config here — mirroring the line-~16045 impl
+            // exactly (liveConfig override with the static config block as the
+            // fallback) — instead of depending on the not-yet-wired ref.
+            const _sessionPoolStageNow = ((): string => {
+              try {
+                const fallback = (config.multiMachine?.sessionPool ?? {}) as { enabled?: boolean; stage?: string };
+                const live = liveConfig.get('multiMachine.sessionPool', fallback) as { enabled?: boolean; stage?: string };
+                return iqcMod.resolveSessionPoolStage(live);
+              } catch {
+                // @silent-fallback-ok: a config-read failure resolves the stage
+                // to 'dark' (the inert default) → the queue simply does not
+                // construct this boot, byte-identical to the ships-dark default.
+                // This is the SAFE direction (fail-closed: no queue), not a
+                // degraded capability worth a DegradationReporter event. Mirrors
+                // the live _sessionPoolStage getter's identical guard below.
+                return 'dark';
+              }
+            })();
+            if (qcfg.enabled && _sessionPoolStageNow !== 'dark') {
               const inv = iqcMod.validateInboundQueueInvariants(qcfg, hcfg);
               if (!inv.ok) {
                 for (const v of inv.violations) {
@@ -15889,39 +16285,20 @@ export async function startServer(options: StartOptions): Promise<void> {
             fetchPeerCapacity: async (machineId, url) => {
               const res = await meshClient.send({ machineId, url }, { type: 'session-status' }, 0);
               if (res.ok && res.result && typeof res.result === 'object') {
-                const cap = res.result as {
-                  selfReportedLastSeen?: string;
-                  loadAvg?: number;
-                  journalAdvert?: Record<string, Record<string, { incarnation: string; lastSeq: number }>>;
-                  commitmentsAdvert?: { incarnation: string; replicationSeq: number };
-                  preferencesAdvert?: { incarnation: string; replicationSeq: number };
-                  quotaState?: { blocked: boolean; blockedUntil?: string; reason?: string };
-                  guardPosture?: import('../core/types.js').GuardPostureSummary;
-                };
-                const journalAdvert = _unwrapPeerJournalAdvert(machineId, cap.journalAdvert);
-                // #930 sibling (live, v1.3.369): the commitments advert was
-                // parsed AWAY here — served by the peer, dropped by this
-                // narrowing return — so driveCommitmentsSync never fired and
-                // zero replicas ever landed. Pass it through.
-                // A2 (live, v1.3.384): the SAME narrowing also dropped the
-                // peer's quotaState (its getCapacity(self) includes it), so the
-                // router only ever saw its OWN quota and quota-aware placement
-                // (#804) could never avoid a rate-limited PEER — the original
-                // EXO failure. Pass it through too. Absent = not blocked.
-                return {
-                  selfReportedLastSeen: cap.selfReportedLastSeen,
-                  loadAvg: cap.loadAvg,
-                  journalAdvert,
-                  ...(cap.commitmentsAdvert ? { commitmentsAdvert: cap.commitmentsAdvert } : {}),
-                  // §WS2.1 sibling pass-through (the #930/A2 narrowing lesson): the
-                  // peer's preferences advert is served but would be dropped here
-                  // without this, so drivePreferencesSync would never fire.
-                  ...(cap.preferencesAdvert ? { preferencesAdvert: cap.preferencesAdvert } : {}),
-                  ...(cap.quotaState ? { quotaState: cap.quotaState } : {}),
-                  // Guard posture rides the same pass-through (the A2 narrowing
-                  // lesson): dropping it here would blind the pool to peers' posture.
-                  ...(cap.guardPosture ? { guardPosture: cap.guardPosture } : {}),
-                };
+                // The journal advert is the one slice that needs closure context
+                // (the machine-id-keyed unwrap), so it is computed HERE; the rest
+                // of the narrowing — commitmentsAdvert (#930), quotaState (A2/#804),
+                // preferencesAdvert (WS2.1), guardPosture, and seamlessnessFlags
+                // (THIS fix, the 4th instance of the narrowing-return-forgets-a-field
+                // class) — is the SINGLE shared `narrowSessionStatusToPeerCapacity`
+                // pass-through that the peer-presence round-trip test also runs, so
+                // the test proves the REAL mapping and a forgotten field can't recur
+                // silently (the wiring-integrity ratchet asserts over this helper).
+                const journalAdvert = _unwrapPeerJournalAdvert(
+                  machineId,
+                  (res.result as { journalAdvert?: Record<string, Record<string, { incarnation: string; lastSeq: number }>> }).journalAdvert,
+                );
+                return presenceMod.narrowSessionStatusToPeerCapacity(res.result, journalAdvert);
               }
               return null;
             },
@@ -15999,11 +16376,12 @@ export async function startServer(options: StartOptions): Promise<void> {
           const peerPresenceTimer = setInterval(() => { void peerPresencePuller.pullOnce(); }, 30_000);
           if (typeof peerPresenceTimer.unref === 'function') peerPresenceTimer.unref();
 
+          const { resolveSessionPoolStage: _resolveSessionPoolStage } = await import('../core/inboundQueueConfig.js');
           _sessionPoolStage = () => {
             try {
               const fallback = (config.multiMachine?.sessionPool ?? {}) as { enabled?: boolean; stage?: string };
               const live = liveConfig.get('multiMachine.sessionPool', fallback) as { enabled?: boolean; stage?: string };
-              return live?.enabled && live?.stage ? String(live.stage) : 'dark';
+              return _resolveSessionPoolStage(live);
             } catch { return 'dark'; }
           };
           console.log(pc.green('  SessionRouter wired (L4) — inert until rollout stage advances past dark'));
@@ -16271,6 +16649,32 @@ export async function startServer(options: StartOptions): Promise<void> {
     // wired before the server existed; from here on inbound binds use the
     // server's own store instance.
     _agentServerRef = server;
+
+    // ── WS2.6 SEND-SIDE: topicOperator (the THIRD PII kind) ──────────────
+    // The AUTHORITATIVE topic-operator writer is the AgentServer's OWN
+    // TopicOperatorStore (it constructs `this.topicOperatorStore` internally and
+    // binds it from the authenticated sender via setOperator). server.ts has no
+    // canonical instance of its own, so we attach the journal-backed emitter to the
+    // server's store here, right after the AgentServer exists. setOperator already
+    // fires emitPut on every real bind/rebind. PUT-ONLY BY CONSTRUCTION — a topic
+    // rebinds, never unbinds, so there is NO emitDelete path (the receive side
+    // resolves the latest binding by HLC). Dark by default
+    // (multiMachine.stateSync.topicOperator); off ⇒ no-op. A content name can never
+    // become an operator — only the platform-verified uid is emitted (Know Your
+    // Principal); a replicated record is NEVER authoritative for inbound resolution.
+    if (replicatedRecordEmitter) {
+      const _topicOpEmitter = replicatedRecordEmitter;
+      const { TOPIC_OPERATOR_STORE_KEY, deriveTopicOperatorRecordKey, buildTopicOperatorRecordData } =
+        await import('../core/TopicOperatorReplicatedStore.js');
+      server.getTopicOperatorStore()?.setOperatorReplicationEmitter({
+        emitPut: (topicId, record) =>
+          _topicOpEmitter.emit(
+            TOPIC_OPERATOR_STORE_KEY,
+            deriveTopicOperatorRecordKey(topicId, record.uid),
+            (hlc, origin, observed) => buildTopicOperatorRecordData({ topicId, record, hlc, origin, observed }),
+          ),
+      });
+    }
 
     // ── WS5.3 (escalation-rides-topic) destination re-admit driver ──
     // Bound here (after the AgentServer exists) so it can reach the SAME
@@ -17016,30 +17420,25 @@ export async function startServer(options: StartOptions): Promise<void> {
     // (e.g., cloudflared crash cascade during sleep/wake), close databases to prevent
     // the "mutex lock failed" error on next start. This doesn't prevent the crash,
     // but ensures the next boot is clean.
+    // Route BOTH process-level error events through one shared decision
+    // (uncaughtExceptionPolicy.handleProcessLevelError) so they cannot drift to
+    // divergent policies: one narrow allowlist (HTTP double-response races, the
+    // Slack Socket Mode reconnect race, standby read-only writes), one
+    // fail-toward-crash default, one dedup'd log path. Isolated/recoverable
+    // errors log-and-continue; anything unknown closes ALL registered SQLite
+    // handles (so the crash exit doesn't compound into a "mutex lock failed"
+    // SIGABRT) and exits — net #2 respawns a clean process in ~10s.
+    //
+    // The unhandledRejection handler is essential, not optional: the Slack
+    // 'message' listener calls the async _handleRawMessage, so an escaping throw
+    // there surfaces as a REJECTION, not a sync exception (net #1). Cleanup is
+    // injected so the policy module stays pure decision-logic.
+    const onFatalCleanup = (): void => { closeAllSqlite(); };
     process.on('uncaughtException', (err) => {
-      // Isolated, recoverable uncaught exceptions — log and continue, don't
-      // crash the server (which would close its databases + drop in-flight
-      // work). See isNonFatalUncaught for the allowlist + rationale (HTTP
-      // double-response races, Slack Socket Mode reconnect races).
-      if (isNonFatalUncaught(err)) {
-        // Attach the stack the first time a given origin is seen so the offending
-        // call site (e.g. a route that double-responds → "Cannot set headers")
-        // is diagnosable; repeats log message-only to avoid flooding the log
-        // (these isolated races recur ~10-20x/hour).
-        const stackSuffix =
-          shouldLogStackForUncaught(err) && err.stack
-            ? `\n  first-seen stack (for diagnosis):\n${err.stack}`
-            : '';
-        console.warn(`[WARN] Non-fatal uncaught exception (suppressed): ${err.message}${stackSuffix}`);
-        return; // Don't crash — the server is fine
-      }
-
-      console.error('[FATAL] Uncaught exception — closing databases before crash:', err.message);
-      // Close ALL registered SQLite handles (not just topic/semantic memory) so
-      // the crash exit doesn't compound into a "mutex lock failed" SIGABRT on top
-      // of the original error. closeAllSqlite() is best-effort + idempotent.
-      try { closeAllSqlite(); } catch { /* best effort */ }
-      process.exit(1);
+      handleProcessLevelError(err, 'uncaughtException', { onFatalCleanup });
+    });
+    process.on('unhandledRejection', (reason) => {
+      handleProcessLevelError(reason, 'unhandledRejection', { onFatalCleanup });
     });
 
     // Wire the ForegroundRestartWatcher to the graceful shutdown function.

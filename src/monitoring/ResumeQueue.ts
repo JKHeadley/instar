@@ -39,7 +39,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
-import { evidenceEligible, clampWorkEvidence } from '../core/WorkEvidence.js';
+import { evidenceEligible, clampWorkEvidence, isAutoResumableEmergencyPauseReason } from '../core/WorkEvidence.js';
 
 export type ResumePriorityClass = 'interactive' | 'job' | 'other';
 
@@ -646,9 +646,33 @@ export class ResumeQueue {
     return this.transition(id, 'queued') ? { ok: true } : { ok: false, why: 'transition-failed' };
   }
 
-  /** Queue-global pause (R2.7): entries keep their states; TTLs freeze. */
+  /**
+   * Queue-global pause (R2.7): entries keep their states; TTLs freeze.
+   *
+   * UPGRADE-ON-DELIBERATE-HALT (spec: resume-queue-stale-emergency-pause.md,
+   * review rounds 4–5 — codex/gemini): pause is first-writer-wins EXCEPT that a
+   * DELIBERATE, non-auto-resumable reason (e.g. `'autonomous stop-all'`) UPGRADES
+   * an existing AUTO-RESUMABLE (emergency/sentinel) pause — so an operator's
+   * explicit "halt all automation" issued while a stale-emergency pause is active
+   * is honored, not silently no-op'd into something the drainer can later
+   * auto-clear. The reverse (an emergency stop while a deliberate halt is active)
+   * stays a no-op: a deliberate halt is never downgraded into auto-resumable.
+   */
   pause(reason: string): void {
-    if (this.state.paused) return;
+    if (this.state.paused) {
+      const currentAutoResumable = isAutoResumableEmergencyPauseReason(this.state.pauseReason);
+      const incomingAutoResumable = isAutoResumableEmergencyPauseReason(reason);
+      // Only upgrade: auto-resumable (current) → deliberate halt (incoming).
+      if (currentAutoResumable && !incomingAutoResumable) {
+        const priorReason = this.state.pauseReason;
+        this.state.pauseReason = reason;
+        // pausedAt is NOT advanced — the freeze clock is continuous; only the
+        // reason (and thus the auto-resume eligibility) is upgraded.
+        this.persist();
+        this.audit({ event: 'pause-upgraded', from: priorReason, to: reason });
+      }
+      return;
+    }
     this.state.paused = true;
     this.state.pausedAt = new Date(this.now()).toISOString();
     this.state.pauseReason = reason;

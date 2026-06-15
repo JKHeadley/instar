@@ -31,6 +31,7 @@ import { fileURLToPath } from 'node:url';
 import { TreeGenerator } from '../knowledge/TreeGenerator.js';
 import { HTTP_HOOK_TEMPLATES, buildHttpHookSettings } from '../data/http-hook-templates.js';
 import { getMigrationDefaults, applyDefaults } from '../config/ConfigDefaults.js';
+import { CANONICAL_FEEDBACK_URL, LEGACY_FEEDBACK_URLS } from './canonicalFeedback.js';
 import { installBuiltinSkills } from '../commands/init.js';
 import { crossesBreaking, writeLifelineRestartSignal } from './version-skew.js';
 import { IdentityManager } from '../threadline/client/IdentityManager.js';
@@ -177,6 +178,36 @@ export function migrateConfigCredentialRepointingDevGate(config: Record<string, 
   if (cr.enabled !== false) return false;
   delete cr.enabled;
   return true;
+}
+
+/**
+ * "Self-Unblock Before Escalating" (docs/specs/self-unblock-before-escalating.md):
+ * the two nested blockerLedger sub-features — selfUnblockChecklist + durableVaultSession
+ * — are dev-gated dark features resolved via resolveDevAgentGate, so the config must
+ * OMIT their `enabled` (present-on-dev ⇒ live, absent-on-fleet ⇒ dark). An existing
+ * agent that somehow carries a default-shaped literal `enabled: false` on either nested
+ * block would force-dark even a dev agent (the #1001 mechanism) — strip a default-shaped
+ * `false` so the gate resolves (live on dev, dark on fleet), mirroring the
+ * credentialRepointing strip. An explicit `true` (operator fleet-flip) is preserved; the
+ * separate ttlMs/idleMs tunables are left untouched. applyDefaults backfills the nested
+ * empty objects. Idempotent + existence-checked.
+ */
+export function migrateConfigSelfUnblockChecklistDevGate(config: Record<string, unknown>): boolean {
+  const monitoring = config.monitoring as Record<string, unknown> | undefined;
+  if (!monitoring || typeof monitoring !== 'object') return false;
+  const bl = monitoring.blockerLedger as Record<string, unknown> | undefined;
+  if (!bl || typeof bl !== 'object') return false;
+  let patched = false;
+  for (const sub of ['selfUnblockChecklist', 'durableVaultSession'] as const) {
+    const block = bl[sub] as Record<string, unknown> | undefined;
+    if (!block || typeof block !== 'object') continue;
+    if (!Object.prototype.hasOwnProperty.call(block, 'enabled')) continue;
+    // Only a default-shaped `false` is stripped; an explicit `true` is preserved.
+    if (block.enabled !== false) continue;
+    delete block.enabled;
+    patched = true;
+  }
+  return patched;
 }
 
 /** The 7 stateSync memory stores re-gated to the developmentAgent gate on 2026-06-13. */
@@ -3726,6 +3757,17 @@ setTimeout(() => process.exit(0), 2000);
       result.upgraded.push('CLAUDE.md: added The Agent Carries the Loop section');
     }
 
+    // Self-Unblock Before Escalating (docs/specs/self-unblock-before-escalating.md,
+    // CMT-1519) — Agent Awareness Standard + Migration Parity item 3. The reflex
+    // LEADS WITH THE BOUNDARY (within permissions / org-granted scope), THEN "find a
+    // way", THEN the rung ladder. Content-sniff on the section heading keeps it
+    // idempotent.
+    if (!content.includes('Self-Unblock Before Escalating')) {
+      content += `\n### Self-Unblock Before Escalating (constitutional standard)\n\n**A blocker is MY problem to solve first — WITHIN my permissions and any access an organizational authority has granted me.** That boundary leads; "find a way" is subordinate to it. I never exceed granted scope, never exfiltrate, and operator-only credentials stay operator-only — ALL existing safety gates (coherence, external-operation, mandate, SourceTreeGuard, and BlockerLedger's own settle authority) still apply on top. Within that boundary, my DEFAULT is to unblock myself and to require as LITTLE from a human as possible.\n\nThe human-requirement ladder — ask for the LOWEST rung, named exactly:\n- **Rung 0 — Nothing:** resolve it entirely within my own permissions/accounts (own vault → org Bitwarden → cloud accounts I'm authed on (Vercel/Cloudflare/GitHub/launchd) → MCP tools → browser sessions → a resource I already control). Exhaust these FIRST.\n- **Rung 1 — An approval:** a yes/no the human taps (no credential, no manual work). An approval that unblocks MUST resolve against a VERIFIED principal (mandate / verified-operator surface) — never a name I only saw in content (Know Your Principal).\n- **Rung 2 — An operator-only credential:** a secret only an authorized employee can produce (LAST resort), collected securely (Secret Drop / vault unlock) and then STORED so it is never re-asked.\n\n**Rung FLOOR (capability ≠ authority):** an action that is irreversible, cost-bearing above a threshold, out-of-original-scope, or policy-sensitive has a MINIMUM rung of 1 (approval) EVEN IF a self-unblock credential exists. The ladder's downward pull never overrides this floor.\n\nMechanically (dev-gated, ships dark): the \`SelfUnblockChecklist\` runs an ordered, deterministic probe of those sources and persists each run; \`BlockerLedger\`'s \`settleTrueBlocker\` will only settle a credential/account blocker as a true-blocker after a VERIFIED, persisted exhaustion run (every probe came up empty) — so "I'm blocked" is mechanically gated behind "I genuinely exhausted every self-unblock path I'm allowed to use". Read recent runs: \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/blockers/self-unblock-runs?limit=50"\` (503 when the feature is dark).\n`;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Self-Unblock Before Escalating section');
+    }
+
     // Outbound advisory (outbound-jargon-filepath-gap §5) — the inform-only
     // preflight for automated job sends. An agent that never learns what a
     // "NOT SENT — advisory" transcript line means will treat it as an error
@@ -5115,6 +5157,24 @@ When sessions are shut down autonomously (resource pressure, quota, age limits),
       result.upgraded.push('CLAUDE.md: added Mid-Work Resume Queue section');
     } else {
       result.skipped.push('CLAUDE.md: Mid-Work Resume Queue section already present');
+    }
+
+    // Stale emergency-stop pause self-heal (resume-queue-stale-emergency-pause).
+    // An agent whose Mid-Work Resume Queue section predates this fix doesn't know
+    // a stale emergency pause now self-heals — so it would tell the user a
+    // self-restart "shouldn't happen" (Agent Awareness standard). Separately
+    // sniffed on a unique phrase so it appends even when the parent section is
+    // already present. Idempotent.
+    if (content.includes('/sessions/resume-queue') && !content.includes('autoResumeStalePause')) {
+      const staleNote = `
+- **A stale emergency-stop pause self-heals (resume-queue-stale-emergency-pause).** An emergency-stop pauses the WHOLE revival queue, and that pause used to never lift — silently stranding later, unrelated active-run revivals (the 2026-06-14 4-hour-silent-strand). Now: while the queue is paused with sessions waiting, you get ONE plain-English heads-up that revival is paused (Layer 1, always on); and if the pause is a stale emergency/sentinel stop AND an active autonomous run has since been recycled and queued well after the stop, the queue auto-resumes itself (Layer 2, on by default — \`monitoring.resumeQueue.autoResumeStalePause: false\` to disable; \`staleEmergencyPauseAutoResumeMin\` tunes the window, default 60). Any topic you actually stopped stays blocked by its per-topic operator-stop record even after the queue resumes, and a deliberate \`autonomous stop-all\` halt is NEVER auto-cleared. Proactive: user asks "why did my session restart by itself after a stop?" / "why is revival paused?" → GET /sessions/resume-queue (paused state) + the resume-queue audit log, then explain in plain words.`;
+      // Append the note inside the existing section by inserting after the
+      // section's last resume-queue proactive line if present; otherwise append.
+      content += '\n' + staleNote + '\n';
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added stale emergency-stop pause self-heal note');
+    } else if (content.includes('autoResumeStalePause')) {
+      result.skipped.push('CLAUDE.md: stale emergency-stop pause self-heal note already present');
     }
 
     // Green-PR Auto-Merge (green-pr-automerge-enforcement). Content-sniffed on
@@ -7340,6 +7400,23 @@ Create worktrees for collaborator repos with \`instar worktree create <branch>\`
       result.skipped.push('config.json: dashboard PIN already set');
     }
 
+    // Canonical feedback URL repoint (feedback-factory-migration §2.5 Phase 4 —
+    // Migration Parity). Deployed agents carry the OLD canonical URL written
+    // verbatim into config.json at init time, so flipping the in-code default
+    // alone only reaches NEW installs. This block rewrites a webhookUrl that
+    // EXACTLY equals a known prior canonical default to the current canonical
+    // URL. Idempotent (already-canonical matches nothing) and conservative: an
+    // operator's custom webhook URL is never in LEGACY_FEEDBACK_URLS, so it is
+    // never touched. Reversible by the same mechanism (re-migrate to the old
+    // URL) — spec Part-3 §5 rollback path.
+    const feedbackCfg = config.feedback as Record<string, unknown> | undefined;
+    if (feedbackCfg && typeof feedbackCfg.webhookUrl === 'string' && LEGACY_FEEDBACK_URLS.includes(feedbackCfg.webhookUrl)) {
+      const fromUrl = feedbackCfg.webhookUrl;
+      feedbackCfg.webhookUrl = CANONICAL_FEEDBACK_URL;
+      patched = true;
+      result.upgraded.push(`config.json: feedback.webhookUrl repointed to the canonical front (was ${fromUrl})`);
+    }
+
     // Apply defaults from the canonical ConfigDefaults registry.
     // This single call replaces ALL individual migration blocks (externalOperations,
     // promptGate, threadline, etc.). Adding a new default to ConfigDefaults.ts
@@ -7404,6 +7481,17 @@ Create worktrees for collaborator repos with \`instar worktree create <branch>\`
       result.upgraded.push('config.json: stripped default-shaped subscriptionPool.credentialRepointing.enabled=false so the developmentAgent gate resolves it (live-on-dev dry-run, dark fleet)');
     } else {
       result.skipped.push('config.json: subscriptionPool.credentialRepointing.enabled dev-gate already correct (omitted or operator-set)');
+    }
+
+    // "Self-Unblock Before Escalating" (CMT-1519): the two nested blockerLedger
+    // dev-gated sub-features (selfUnblockChecklist + durableVaultSession) OMIT
+    // `enabled`. Strip a default-shaped `false` so the developmentAgent gate resolves
+    // them (live-on-dev, dark fleet); applyDefaults backfills the nested empty objects.
+    if (migrateConfigSelfUnblockChecklistDevGate(config)) {
+      patched = true;
+      result.upgraded.push('config.json: stripped default-shaped monitoring.blockerLedger.{selfUnblockChecklist,durableVaultSession}.enabled=false so the developmentAgent gate resolves them (live-on-dev, dark fleet)');
+    } else {
+      result.skipped.push('config.json: monitoring.blockerLedger self-unblock dev-gates already correct (omitted or operator-set)');
     }
 
     // The 7 multiMachine.stateSync.* memory stores re-gated to the developmentAgent gate

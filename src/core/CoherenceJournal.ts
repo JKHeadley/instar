@@ -34,6 +34,12 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
+import { coerceHlc, serializeHlcKey } from './HybridLogicalClock.js';
+import {
+  validateReplicatedEnvelope,
+  type ReplicatedKindRegistry,
+  type EnvelopeValidationCounters,
+} from './ReplicatedRecordEnvelope.js';
 import { SafeFsExecutor } from './SafeFsExecutor.js';
 
 export type JournalKind = 'topic-placement' | 'session-lifecycle' | 'autonomous-run' | 'threadline-conversation' | 'guard-latch' | 'pref-record' | 'relationship-record' | 'learning-record' | 'knowledge-record' | 'evolution-action-record' | 'user-record' | 'topic-operator-record';
@@ -256,6 +262,16 @@ export const DEFAULT_RETENTION: Record<JournalKind, KindRetention> = {
 
 export const DEFAULT_FLUSH_INTERVAL_MS = 250;
 export const DEFAULT_MAX_ENTRY_BYTES = 8 * 1024;
+/**
+ * Per-entry byte cap for a REPLICATED `*-record` kind (WS2 send-side). A
+ * disclosure-minimized record's `data` is capped at 64 KB by its store builder
+ * (e.g. LEARNING_MAX_ENTRY_BYTES); the serialized journal LINE adds the entry
+ * envelope (seq/ts/machine/kind), so the line cap must sit a margin ABOVE the
+ * data cap or a legal-but-fat record would be dropped as oversize. 80 KB clears
+ * the 64 KB data ceiling with comfortable headroom while staying bounded. The
+ * applier's receive-side cap (JournalSyncApplier) uses the SAME constant so a
+ * record the writer emits can never be rejected as oversize on receive. */
+export const REPLICATED_RECORD_MAX_ENTRY_BYTES = 80 * 1024;
 /** Tail-scan window for op-key dedupe reconstruction (§3.1). */
 export const DEDUPE_WINDOW = 200;
 /** Token-bucket defaults per kind (emits/sec sustained; burst = capacity). */
@@ -421,6 +437,14 @@ export class CoherenceJournal {
   private readonly now: () => Date;
   private readonly logger?: (msg: string) => void;
   private readonly io: JournalFs;
+  /**
+   * The replicated-kind registry (WS2 send-side). Injected via
+   * setReplicatedKindRegistry so the journal can validate + accept a registered
+   * `*-record` kind's envelope. ABSENT ⇒ unchanged behavior (only the 5 hardcoded
+   * lifecycle kinds validate; a `*-record` kind schema-rejects exactly as before
+   * this seam landed). The journal never depends on the registry being present.
+   */
+  private replicatedRegistry?: ReplicatedKindRegistry;
 
   private state: WriterState = 'closed';
   private incarnation = '';
@@ -702,6 +726,60 @@ export class CoherenceJournal {
   }
 
   /**
+   * Inject the replicated-kind registry (WS2 send-side). Idempotent + optional:
+   * the journal validates a registered `*-record` kind's envelope via the store
+   * schema the registry carries; absent ⇒ unchanged behavior. Called once at
+   * wiring time (server.ts), after the concrete stores register their kinds.
+   */
+  setReplicatedKindRegistry(registry: ReplicatedKindRegistry | undefined): void {
+    this.replicatedRegistry = registry;
+  }
+
+  /**
+   * Emit a replicated-store record (WS2 send-side). `data` MUST be a built,
+   * disclosure-minimized envelope `data` (the store's `build*RecordData` output)
+   * carrying `recordKey`/`hlc`/`op`/`origin` (+ optional `observed`). The op-key
+   * is `recordKey:serializeHlcKey(hlc)` so a retry of the EXACT logical event
+   * (same key + same HLC) dedupes, while a new HLC is a distinct event — the §4
+   * idempotency rule. Validation runs in the shared `emit()` path (which delegates
+   * a registered replicated kind to `validateReplicatedEnvelope`), so a malformed
+   * record is a counted schema-reject, never a throw. Non-blocking; never throws
+   * into the caller (the manager emit hooks are best-effort). A no-op when the
+   * kind is not a registered replicated kind (the registry is the authority).
+   */
+  emitReplicatedRecord(kind: JournalKind, data: Record<string, unknown>): void {
+    try {
+      if (!this.replicatedRegistry?.isReplicatedKind(kind)) return; // not a registered replicated kind ⇒ no-op
+      const opKey = this.replicatedOpKey(data);
+      this.emit(kind, undefined, data, opKey);
+    } catch (e) { /* @silent-fallback-ok: journal observability must never endanger the observed operation (COHERENCE-JOURNAL-SPEC §3.1) */
+      this.log('emit-record', `[coherence-journal] emitReplicatedRecord failed (swallowed): ${(e as Error)?.message}`);
+    }
+  }
+
+  /** Derive the restart-proof op-key for a replicated record: `recordKey:hlcKey`.
+   *  Best-effort — a malformed key/hlc still yields a stable string (the record is
+   *  then rejected by validate(), so the op-key only matters for well-formed ones). */
+  private replicatedOpKey(data: Record<string, unknown>): string {
+    const recordKey = typeof data.recordKey === 'string' ? data.recordKey : '';
+    let hlcKey = '';
+    try {
+      hlcKey = serializeHlcKey(coerceHlc(data.hlc));
+    } catch { /* @silent-fallback-ok: a malformed hlc yields an empty hlcKey; validate() then rejects the whole record (schemaRejects) — the op-key never gates a malformed record's acceptance. */
+      hlcKey = '';
+    }
+    return `${recordKey}:${hlcKey}`;
+  }
+
+  /** The per-entry byte cap for a kind — RAISED for replicated `*-record` kinds
+   *  (a disclosure-minimized record can exceed the 8 KB lifecycle cap; §4). */
+  private maxEntryBytesForKind(kind: JournalKind): number {
+    return this.replicatedRegistry?.isReplicatedKind(kind)
+      ? REPLICATED_RECORD_MAX_ENTRY_BYTES
+      : this.maxEntryBytes;
+  }
+
+  /**
    * Generic non-blocking emit: validate + jail + dedupe + rate-cap + serialize,
    * assign a seq, enqueue, and RETURN. No synchronous file I/O on this stack —
    * the flusher does all of it. Never throws into the caller.
@@ -741,8 +819,8 @@ export class CoherenceJournal {
       };
       const line = JSON.stringify(entry);
 
-      // Per-entry size cap (default 8KB) — over-cap drop + count.
-      if (Buffer.byteLength(line, 'utf-8') > this.maxEntryBytes) {
+      // Per-entry size cap (8KB lifecycle / 80KB replicated record) — over-cap drop + count.
+      if (Buffer.byteLength(line, 'utf-8') > this.maxEntryBytesForKind(kind)) {
         this.degradation.oversize++;
         return;
       }
@@ -766,6 +844,27 @@ export class CoherenceJournal {
    */
   private validate(kind: JournalKind, raw: Record<string, unknown>): Record<string, unknown> | null {
     if (!raw || typeof raw !== 'object') return null;
+
+    // WS2 send-side: a registered replicated `*-record` kind validates through the
+    // GENERIC envelope validator + its store-specific schema (the same strict
+    // discipline as the lifecycle kinds — reject free text, drop unknown fields,
+    // jail path-shaped fields, validate hlc/observed). The reconstructed `data`
+    // (validated envelope fields authoritative) is what enqueues. Absent registry
+    // ⇒ falls through to the lifecycle switch (which rejects an unknown kind).
+    const reg = this.replicatedRegistry?.getByKind(kind);
+    if (reg) {
+      const counters: EnvelopeValidationCounters = {
+        // emit() bumps schemaRejects ONCE when validate() returns null (the
+        // lifecycle path's contract) — so the validator's schema-reject is a no-op
+        // here to avoid double-counting; the single emit()-side bump stands.
+        bumpSchemaReject: () => { /* counted once by emit() on a null return */ },
+        bumpDroppedField: () => { this.degradation.droppedFields++; },
+        bumpJailReject: () => { this.degradation.jailRejects++; },
+      };
+      const result = validateReplicatedEnvelope(raw, reg.schema, counters);
+      return result.ok ? result.data : null;
+    }
+
     const seen = Object.keys(raw);
     let out: Record<string, unknown> | null = null;
     let known: string[] = [];

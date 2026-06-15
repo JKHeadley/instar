@@ -15,6 +15,10 @@ import {
   ResumeQueueDrainer,
   type ResumeQueueDrainerDeps,
 } from '../../src/monitoring/ResumeQueueDrainer.js';
+import {
+  AGE_LIMIT_ACTIVE_RUN_REASON,
+  isAutoResumableEmergencyPauseReason,
+} from '../../src/core/WorkEvidence.js';
 
 let tmpDir: string;
 
@@ -443,5 +447,243 @@ describe('ResumeQueueDrainer — ACT-839 R2.2 worktree-revival obligation hook',
     const r = await h.drainer.tick();
     expect(r.resumed).toBe(true);
     expect(h.queue.get(d.entry!.id)?.status).toBe('respawned');
+  });
+});
+
+describe('isAutoResumableEmergencyPauseReason — closed-world predicate (codex r2 #2)', () => {
+  it('matches the MessageSentinel emergency-stop reason → true', () => {
+    expect(isAutoResumableEmergencyPauseReason('message-sentinel emergency stop')).toBe(true);
+  });
+  it('does NOT match the deliberate autonomous stop-all reason → false', () => {
+    expect(isAutoResumableEmergencyPauseReason('autonomous stop-all')).toBe(false);
+  });
+  it('does NOT match an unrelated maintenance-style reason → false', () => {
+    expect(isAutoResumableEmergencyPauseReason('scheduled maintenance pause')).toBe(false);
+  });
+  it('a missing/undefined reason → false (safe side)', () => {
+    expect(isAutoResumableEmergencyPauseReason(undefined)).toBe(false);
+    expect(isAutoResumableEmergencyPauseReason(null)).toBe(false);
+  });
+
+  // Mechanical closed-world enforcement (codex r6 #2): a comment is not enough.
+  // Discover every STRING-LITERAL passed to `ResumeQueue.pause(...)` across src/
+  // and assert each is pinned to a KNOWN auto-resume verdict here. A new pause
+  // callsite with an un-pinned reason fails this test — so a future reason can
+  // never silently change Layer-2 auto-resume behavior.
+  it('every ResumeQueue.pause(...) string-literal callsite in src/ is pinned to a known verdict', () => {
+    const srcRoot = path.resolve(__dirname, '../../src');
+    const KNOWN: Record<string, boolean> = {
+      'message-sentinel emergency stop': true, // routes.ts MessageSentinel emergency-stop → auto-resumable
+      'autonomous stop-all': false,            // routes.ts deliberate operator halt → NOT auto-resumable
+    };
+    const found = new Set<string>();
+    const walk = (dir: string): void => {
+      for (const name of fs.readdirSync(dir)) {
+        const full = path.join(dir, name);
+        const st = fs.statSync(full);
+        if (st.isDirectory()) { walk(full); continue; }
+        if (!full.endsWith('.ts')) continue;
+        const text = fs.readFileSync(full, 'utf-8');
+        // Match `.pause('…')` / `.pause("…")` string-literal callsites (the
+        // resume-queue pause lever; dynamic-reason callsites, if any, are
+        // out of scope for the literal scan and would be caught at review).
+        const re = /\.pause\(\s*(['"])([^'"]+)\1/g;
+        let m: RegExpExecArray | null;
+        while ((m = re.exec(text)) !== null) found.add(m[2]);
+      }
+    };
+    walk(srcRoot);
+    // Every discovered literal reason must be a known, pinned verdict.
+    for (const reason of found) {
+      expect(
+        Object.prototype.hasOwnProperty.call(KNOWN, reason),
+        `Unpinned ResumeQueue.pause() reason "${reason}" — add it to KNOWN with its ` +
+        `auto-resume verdict (and consider isAutoResumableEmergencyPauseReason()).`,
+      ).toBe(true);
+      expect(isAutoResumableEmergencyPauseReason(reason)).toBe(KNOWN[reason]);
+    }
+    // Sanity: the scan actually found the two known resume-queue pause reasons.
+    expect(found.has('message-sentinel emergency stop')).toBe(true);
+    expect(found.has('autonomous stop-all')).toBe(true);
+  });
+});
+
+describe('ResumeQueueDrainer — stale emergency-pause robustness (Layer 1 + Layer 2)', () => {
+  const EMERGENCY = 'message-sentinel emergency stop';
+  const STOP_ALL = 'autonomous stop-all';
+
+  /** Enqueue an active-autonomous-run entry (the only reason that triggers Layer 2). */
+  function activeRunCandidate(over: Partial<ResumeCandidateInput> = {}): ResumeCandidateInput {
+    return candidate({ reason: AGE_LIMIT_ACTIVE_RUN_REASON, ...over });
+  }
+
+  it('Layer 1: paused + waiting + live → raises paused-waiting ONCE per pause episode; never spawns; still blocked:paused when not stale', async () => {
+    const h = harness();
+    h.queue.considerEnqueue(candidate()); // plain mid-work entry (not active-run)
+    await warmCalm(h, 2);
+    h.queue.pause(EMERGENCY);
+    expect((await h.drainer.tick()).blocked).toBe('paused');
+    expect((await h.drainer.tick()).blocked).toBe('paused');
+    expect((await h.drainer.tick()).blocked).toBe('paused');
+    // Fired exactly once across the steady episode.
+    expect(h.aggregated.filter((a) => a.kind === 'paused-waiting')).toHaveLength(1);
+    expect(h.respawns).toHaveLength(0);
+  });
+
+  it('Layer 1: a NEW pause episode (unpause + re-pause) re-raises paused-waiting', async () => {
+    const h = harness();
+    h.queue.considerEnqueue(candidate());
+    h.queue.pause(EMERGENCY);
+    await h.drainer.tick();
+    h.queue.unpause();
+    h.advance(1000);
+    h.queue.pause(EMERGENCY); // new pausedAt
+    await h.drainer.tick();
+    expect(h.aggregated.filter((a) => a.kind === 'paused-waiting')).toHaveLength(2);
+  });
+
+  it('Layer 1: a GROWING backlog under the SAME pause re-raises; a steady count does not (codex r3 #3)', async () => {
+    const h = harness();
+    h.queue.considerEnqueue(candidate({ topicId: 1, tmuxSession: 't1' }));
+    h.queue.pause(EMERGENCY);
+    await h.drainer.tick(); // count=1 → alert
+    await h.drainer.tick(); // count=1 → no re-alert
+    h.queue.considerEnqueue(candidate({ topicId: 2, tmuxSession: 't2' })); // count grows to 2
+    await h.drainer.tick(); // count=2 → re-alert
+    await h.drainer.tick(); // count=2 → no re-alert
+    expect(h.aggregated.filter((a) => a.kind === 'paused-waiting')).toHaveLength(2);
+  });
+
+  it('Layer 1+2: paused + waiting + DRY-RUN → no alert, no auto-resume (observe-only silence)', async () => {
+    const h = harness({ queueCfg: { dryRun: true } });
+    h.queue.considerEnqueue(activeRunCandidate());
+    h.queue.pause(EMERGENCY);
+    h.advance(61 * 60_000); // well past the 60-min default — would be stale if live
+    expect((await h.drainer.tick()).blocked).toBe('paused');
+    expect(h.aggregated.filter((a) => a.kind === 'paused-waiting')).toHaveLength(0);
+    expect(h.aggregated.filter((a) => a.kind === 'auto-resumed-stale-pause')).toHaveLength(0);
+    expect(h.queue.isPaused()).toBe(true);
+  });
+
+  it('Layer 2: stale emergency pause (active-run entry queued > threshold after pausedAt) → unpause, audit, notice, then drains', async () => {
+    const h = harness();
+    await warmCalm(h, 3); // satisfy calm gate so the fall-through actually drains
+    h.queue.pause(EMERGENCY); // pausedAt = T0
+    h.advance(61 * 60_000); // past 60-min default
+    h.queue.considerEnqueue(activeRunCandidate()); // queuedAt = T0 + 61m
+    const r = await h.drainer.tick();
+    expect(r.resumed).toBe(true); // fell through to normal draining and spawned
+    expect(h.queue.isPaused()).toBe(false);
+    expect(h.audits.some((a) => a.event === 'auto-resumed-stale-pause')).toBe(true);
+    expect(h.aggregated.some((a) => a.kind === 'auto-resumed-stale-pause')).toBe(true);
+    expect(h.respawns).toHaveLength(1);
+  });
+
+  it('Layer 2 boundary: exactly AT threshold → NOT stale (strict >), stays paused', async () => {
+    const h = harness({ drainerCfg: { staleEmergencyPauseAutoResumeMin: 60 } });
+    h.queue.pause(EMERGENCY);
+    h.advance(60 * 60_000); // exactly 60 min → NOT strictly greater
+    h.queue.considerEnqueue(activeRunCandidate());
+    expect((await h.drainer.tick()).blocked).toBe('paused');
+    expect(h.queue.isPaused()).toBe(true);
+  });
+
+  it('Layer 2 boundary: just over threshold (+1ms) → stale, auto-resumes', async () => {
+    const h = harness({ drainerCfg: { staleEmergencyPauseAutoResumeMin: 60 } });
+    await warmCalm(h, 3);
+    h.queue.pause(EMERGENCY);
+    h.advance(60 * 60_000 + 1); // strictly greater
+    h.queue.considerEnqueue(activeRunCandidate());
+    await h.drainer.tick();
+    expect(h.queue.isPaused()).toBe(false);
+  });
+
+  it('Layer 2: malformed pausedAt → NOT stale (safe side, no unpause)', async () => {
+    const h = harness();
+    h.queue.considerEnqueue(activeRunCandidate());
+    h.queue.pause(EMERGENCY);
+    // Corrupt the persisted pausedAt out-of-band (simulates on-disk corruption).
+    (h.queue as unknown as { state: { pausedAt: string } }).state.pausedAt = 'not-a-date';
+    h.advance(120 * 60_000);
+    expect((await h.drainer.tick()).blocked).toBe('paused');
+    expect(h.queue.isPaused()).toBe(true);
+  });
+
+  it('Layer 2: FRESH emergency pause (active-run queued < threshold after pausedAt) → does NOT auto-resume', async () => {
+    const h = harness();
+    h.queue.pause(EMERGENCY);
+    h.advance(5 * 60_000); // only 5 min — fresh
+    h.queue.considerEnqueue(activeRunCandidate());
+    expect((await h.drainer.tick()).blocked).toBe('paused');
+    expect(h.queue.isPaused()).toBe(true);
+    expect(h.aggregated.some((a) => a.kind === 'auto-resumed-stale-pause')).toBe(false);
+    // Layer 1 still fires for the waiting entry.
+    expect(h.aggregated.filter((a) => a.kind === 'paused-waiting')).toHaveLength(1);
+  });
+
+  it('Layer 2: deliberate autonomous stop-all pause + active-run entry → does NOT auto-resume', async () => {
+    const h = harness();
+    h.queue.pause(STOP_ALL); // reason does NOT match /emergency|sentinel/i
+    h.advance(120 * 60_000);
+    h.queue.considerEnqueue(activeRunCandidate());
+    expect((await h.drainer.tick()).blocked).toBe('paused');
+    expect(h.queue.isPaused()).toBe(true);
+  });
+
+  it('overlap: stop-all THEN emergency-stop → deliberate halt NOT downgraded; NOT auto-resumed (codex r4 #3 / gemini r4 #2)', async () => {
+    const h = harness();
+    h.queue.pause(STOP_ALL); // the deliberate halt pauses FIRST
+    h.queue.pause(EMERGENCY); // no-op: an emergency stop never downgrades a deliberate halt
+    expect(h.queue.pauseInfo().reason).toBe(STOP_ALL); // the deliberate halt is preserved
+    h.advance(120 * 60_000);
+    h.queue.considerEnqueue(activeRunCandidate());
+    expect((await h.drainer.tick()).blocked).toBe('paused');
+    expect(h.queue.isPaused()).toBe(true);
+  });
+
+  it('overlap: emergency-stop THEN stop-all → pause UPGRADED to the deliberate halt; NOT auto-resumed (codex r5 #1 / gemini r5 #2)', async () => {
+    const h = harness();
+    const pausedAtBefore = (() => { h.queue.pause(EMERGENCY); return h.queue.pauseInfo().pausedAt; })();
+    h.queue.pause(STOP_ALL); // a later deliberate halt UPGRADES the auto-resumable pause
+    expect(h.queue.pauseInfo().reason).toBe(STOP_ALL);
+    expect(h.queue.pauseInfo().pausedAt).toBe(pausedAtBefore); // freeze clock continuous (pausedAt unchanged)
+    expect(h.audits.some((a) => a.event === 'pause-upgraded' && a.to === STOP_ALL)).toBe(true);
+    h.advance(120 * 60_000);
+    h.queue.considerEnqueue(activeRunCandidate());
+    expect((await h.drainer.tick()).blocked).toBe('paused'); // the upgraded halt is not auto-resumed
+    expect(h.queue.isPaused()).toBe(true);
+  });
+
+  it('Layer 2: a plain mid-work entry (not active-run) under a stale emergency pause → does NOT auto-resume', async () => {
+    const h = harness();
+    h.queue.pause(EMERGENCY);
+    h.advance(120 * 60_000);
+    h.queue.considerEnqueue(candidate()); // reason 'quota-shed', not AGE_LIMIT_ACTIVE_RUN_REASON
+    expect((await h.drainer.tick()).blocked).toBe('paused');
+    expect(h.queue.isPaused()).toBe(true);
+  });
+
+  it('Layer 2: autoResumeStalePause:false → Layer 2 off, Layer 1 still fires', async () => {
+    const h = harness({ drainerCfg: { autoResumeStalePause: false } });
+    h.queue.pause(EMERGENCY);
+    h.advance(120 * 60_000);
+    h.queue.considerEnqueue(activeRunCandidate());
+    expect((await h.drainer.tick()).blocked).toBe('paused');
+    expect(h.queue.isPaused()).toBe(true);
+    expect(h.aggregated.filter((a) => a.kind === 'paused-waiting')).toHaveLength(1);
+  });
+
+  it('Layer 2: after auto-resume, a candidate whose topic has an operatorStopSince record is still invalidated:operator-stop (per-topic guardrail intact — gemini r2 #1)', async () => {
+    const h = harness({ deps: { operatorStopSince: () => true } });
+    await warmCalm(h, 3);
+    h.queue.pause(EMERGENCY);
+    h.advance(61 * 60_000);
+    h.queue.considerEnqueue(activeRunCandidate());
+    const r = await h.drainer.tick();
+    // The queue auto-resumed, but the per-topic stop guard still blocks the spawn.
+    expect(h.queue.isPaused()).toBe(false);
+    expect(r.invalidated).toBe(1);
+    expect(h.respawns).toHaveLength(0);
+    expect(h.queue.list()[0].status).toBe('invalidated:operator-stop');
   });
 });

@@ -95,6 +95,36 @@ export function activeAutonomousJobs(stateDir: string): AutonomousJobSummary[] {
   return listAutonomousJobs(stateDir).filter((j) => j.active && !j.paused);
 }
 
+/**
+ * Honest-recycle helper (honest-session-recycle-spec): the ACTIVE autonomous run
+ * for `topic` with the seconds remaining on its window — or null when there is no
+ * active run for the topic, or its window is already over. This is the single
+ * place the run-window remaining is computed, so the recycle copy (and any future
+ * caller) agree on "is this an in-flight run, and how long is left?". The reaper's
+ * per-session age cap is a SEPARATE, shorter clock; this answers the run clock.
+ */
+export function autonomousRunRemainingForTopic(
+  stateDir: string,
+  topic: string | number,
+  nowMs: number = Date.now(),
+): { active: true; remainingSeconds: number } | null {
+  const topicStr = String(topic);
+  const job = activeAutonomousJobs(stateDir).find(
+    (j) => j.topic != null && String(j.topic) === topicStr,
+  );
+  if (!job || !job.active || !job.startedAt || !job.durationSeconds) return null;
+  const startedMs = new Date(job.startedAt).getTime();
+  if (!Number.isFinite(startedMs)) return null;
+  const remainingSeconds = Math.max(
+    0,
+    Math.round(job.durationSeconds - (nowMs - startedMs) / 1000),
+  );
+  // A run already past its own window is NOT a continuation — the terminal death
+  // copy should stand for it.
+  if (remainingSeconds <= 0) return null;
+  return { active: true, remainingSeconds };
+}
+
 export interface CanStartDeps {
   stateDir: string;
   maxConcurrent: number;

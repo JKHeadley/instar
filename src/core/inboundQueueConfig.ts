@@ -95,6 +95,25 @@ export const PROTOCOL_REDISPATCH_HORIZON_MAX_MS = 12 * 60 * 60 * 1000; // 12h
  */
 export const BOOT_SWEEP_WINDOW_MS = 5 * 60 * 1000; // 5 min
 
+/**
+ * Resolve the Multi-Machine Session Pool rollout STAGE from a config block.
+ * Returns the configured `stage` string only when the pool is BOTH enabled AND
+ * carries a `stage`; otherwise 'dark' (the inert default). This is the single
+ * source of truth for "is the session pool active, and at what stage?" — both
+ * the boot-time inbound-queue construction gate AND the live `_sessionPoolStage`
+ * getter in server.ts resolve through this one pure function, so the two can
+ * never drift (the original divergence is exactly what let the construction gate
+ * read a stale stub and keep the inbound queue dark forever — boot-order bug).
+ *
+ * @param cfg the resolved `multiMachine.sessionPool` block (liveConfig override
+ *   merged over the static config block, or just the static block at boot).
+ */
+export function resolveSessionPoolStage(
+  cfg: { enabled?: boolean; stage?: string } | null | undefined,
+): string {
+  return cfg?.enabled && cfg?.stage ? String(cfg.stage) : 'dark';
+}
+
 /** Σbackoff: total worst-case backoff across maxAttempts (capped curve). */
 export function sumBackoffMs(cfg: Pick<InboundQueueConfig, 'baseBackoffMs' | 'maxBackoffMs' | 'maxAttempts'>): number {
   let sum = 0;

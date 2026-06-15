@@ -72,6 +72,76 @@ export interface PeerCapacity {
    * posture. Absent from old peers = no posture ("guards: unknown").
    */
   guardPosture?: import('./types.js').GuardPostureSummary;
+  /**
+   * The peer's self-advertised seamlessness capabilities (MULTI-MACHINE-
+   * SEAMLESSNESS-SPEC invariant 5), the carrier of `stateSyncReceive` — which
+   * replicated kinds the peer can durably RECEIVE. Carried in the peer's
+   * session-status response (its getCapacity(self) includes it via assemble);
+   * the #930/A2/WS2.1 narrowing lesson applies a FOURTH time — dropping it here
+   * makes the flag-coherence gate read every peer as "cannot receive" and
+   * blocks cross-machine replication in BOTH directions (root-caused live on
+   * Laptop↔Mini, 2026-06-14). Absent from old peers = non-participant (the
+   * conservative side). See `narrowSessionStatusToPeerCapacity` below — the
+   * single pass-through both production and the round-trip test share.
+   */
+  seamlessnessFlags?: import('./types.js').MachineCapacity['seamlessnessFlags'];
+}
+
+/**
+ * The advert fields a peer's `session-status` response can carry that the
+ * receive mapping MUST pass through. A SINGLE source of truth shared by
+ * `narrowSessionStatusToPeerCapacity` and the wiring-integrity ratchet test, so
+ * "added a new advert field to the sender without a pass-through" fails LOUDLY
+ * (the #930/A2/WS2.1/seamlessnessFlags class — a narrowing return that forgets a
+ * field, now four instances deep). Add a new advert field here and the ratchet
+ * covers it automatically.
+ */
+export const SESSION_STATUS_ADVERT_FIELDS = [
+  'journalAdvert',
+  'commitmentsAdvert',
+  'preferencesAdvert',
+  'quotaState',
+  'guardPosture',
+  'seamlessnessFlags',
+] as const;
+
+/**
+ * Narrow a peer's raw `session-status` response into the `PeerCapacity` slice
+ * the puller records — the ONE pass-through both the production `fetchPeerCapacity`
+ * (src/commands/server.ts) and `peer-presence-roundtrip.test.ts` run, so the test
+ * proves the REAL mapping, not a hand-copied mirror that can silently drift from it
+ * (the integration-fidelity gap this extraction closes). Presence guards (`!== undefined`),
+ * never truthiness, so the "present even when every sub-flag is false/empty" invariant
+ * the seamlessnessFlags carry-forward depends on can't be defeated by a normalized-falsy value.
+ * `journalAdvert` is passed in ALREADY UNWRAPPED (the caller owns the machine-id-keyed
+ * unwrap, which needs closure context the puller doesn't carry).
+ */
+export function narrowSessionStatusToPeerCapacity(
+  raw: unknown,
+  unwrappedJournalAdvert?: Record<string, { incarnation: string; lastSeq: number }>,
+): PeerCapacity | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const cap = raw as {
+    selfReportedLastSeen?: string;
+    loadAvg?: number;
+    commitmentsAdvert?: { incarnation: string; replicationSeq: number };
+    preferencesAdvert?: { incarnation: string; replicationSeq: number };
+    quotaState?: { blocked: boolean; blockedUntil?: string; reason?: string };
+    guardPosture?: import('./types.js').GuardPostureSummary;
+    seamlessnessFlags?: import('./types.js').MachineCapacity['seamlessnessFlags'];
+  };
+  return {
+    selfReportedLastSeen: cap.selfReportedLastSeen,
+    loadAvg: cap.loadAvg,
+    journalAdvert: unwrappedJournalAdvert,
+    ...(cap.commitmentsAdvert !== undefined ? { commitmentsAdvert: cap.commitmentsAdvert } : {}),
+    ...(cap.preferencesAdvert !== undefined ? { preferencesAdvert: cap.preferencesAdvert } : {}),
+    ...(cap.quotaState !== undefined ? { quotaState: cap.quotaState } : {}),
+    ...(cap.guardPosture !== undefined ? { guardPosture: cap.guardPosture } : {}),
+    // THE FIX (4th instance of the narrowing-return-forgets-a-field class): the
+    // peer's receive advert must cross the wire or replication never starts.
+    ...(cap.seamlessnessFlags !== undefined ? { seamlessnessFlags: cap.seamlessnessFlags } : {}),
+  };
 }
 
 /** One stream slice of a journal-sync delta (mirrors MeshRpc's `journal-sync.batch`). */
@@ -94,7 +164,7 @@ export interface PeerPresencePullerDeps {
    */
   fetchPeerCapacity: (machineId: string, url: string) => Promise<PeerCapacity | null>;
   /** Record an observed peer heartbeat into the pool registry (marks it online for the failover window). */
-  recordHeartbeat: (obs: { machineId: string; selfReportedLastSeen: string; loadAvg?: number; quotaState?: { blocked: boolean; blockedUntil?: string; reason?: string }; guardPosture?: import('./types.js').GuardPostureSummary }) => void;
+  recordHeartbeat: (obs: { machineId: string; selfReportedLastSeen: string; loadAvg?: number; quotaState?: { blocked: boolean; blockedUntil?: string; reason?: string }; guardPosture?: import('./types.js').GuardPostureSummary; seamlessnessFlags?: import('./types.js').MachineCapacity['seamlessnessFlags'] }) => void;
   /** Wall clock — injectable for tests. Defaults to `Date`. */
   now?: () => Date;
   /** Optional structured log line per pass (e.g. for the boot log). */
@@ -176,7 +246,7 @@ export class PeerPresencePuller {
         }
         if (!cap) return null;
         const seen = cap.selfReportedLastSeen ?? (this.d.now?.() ?? new Date()).toISOString();
-        this.d.recordHeartbeat({ machineId: m.machineId, selfReportedLastSeen: seen, loadAvg: cap.loadAvg, ...(cap.quotaState ? { quotaState: cap.quotaState } : {}), ...(cap.guardPosture ? { guardPosture: cap.guardPosture } : {}) });
+        this.d.recordHeartbeat({ machineId: m.machineId, selfReportedLastSeen: seen, loadAvg: cap.loadAvg, ...(cap.quotaState !== undefined ? { quotaState: cap.quotaState } : {}), ...(cap.guardPosture !== undefined ? { guardPosture: cap.guardPosture } : {}), ...(cap.seamlessnessFlags !== undefined ? { seamlessnessFlags: cap.seamlessnessFlags } : {}) });
         // REPLICATION-GATED journal-delta drive — only when the server wired the
         // delta deps (i.e. replication.enabled === true). Otherwise a complete
         // no-op (engine/transport stay dark). Never throws into the puller.

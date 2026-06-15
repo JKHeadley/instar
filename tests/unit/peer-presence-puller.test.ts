@@ -16,16 +16,24 @@
  *  - selfReportedLastSeen falls back to the injected clock when the peer omits it
  */
 import { describe, it, expect, vi } from 'vitest';
-import { PeerPresencePuller, type PeerPresenceMachine } from '../../src/core/PeerPresencePuller.js';
+import {
+  PeerPresencePuller,
+  type PeerPresenceMachine,
+  type PeerCapacity,
+  narrowSessionStatusToPeerCapacity,
+  SESSION_STATUS_ADVERT_FIELDS,
+} from '../../src/core/PeerPresencePuller.js';
+import type { MachineCapacity } from '../../src/core/types.js';
 
 type QuotaState = { blocked: boolean; blockedUntil?: string; reason?: string };
+type SeamlessFlags = MachineCapacity['seamlessnessFlags'];
 function makePuller(opts: {
   self: string;
   peers: PeerPresenceMachine[];
-  fetchImpl: (machineId: string, url: string) => Promise<{ selfReportedLastSeen?: string; loadAvg?: number; quotaState?: QuotaState } | null>;
+  fetchImpl: (machineId: string, url: string) => Promise<PeerCapacity | null>;
   now?: () => Date;
 }) {
-  const recorded: Array<{ machineId: string; selfReportedLastSeen: string; loadAvg?: number; quotaState?: QuotaState }> = [];
+  const recorded: Array<{ machineId: string; selfReportedLastSeen: string; loadAvg?: number; quotaState?: QuotaState; seamlessnessFlags?: SeamlessFlags }> = [];
   const puller = new PeerPresencePuller({
     selfMachineId: opts.self,
     listPeers: () => opts.peers,
@@ -184,5 +192,107 @@ describe('PeerPresencePuller.pullOnce', () => {
     peers = [{ machineId: 'm_late', url: 'https://late.example.dev' }];
     expect((await puller.pullOnce()).recorded).toEqual(['m_late']); // picked up next pass
     expect(recorded).toEqual(['m_late']);
+  });
+
+  // STATESYNC-PEER-ADVERT-PROPAGATION-FIX (4th instance of the narrowing-return-
+  // forgets-a-field class, after commitmentsAdvert #930 / quotaState A2 / preferencesAdvert
+  // WS2.1): the peer's seamlessnessFlags advert (carrier of stateSyncReceive) rides
+  // session-status but was parsed away, so the flag-coherence gate read every peer as
+  // "cannot receive" and blocked cross-machine replication in BOTH directions.
+  it('propagates a peer seamlessnessFlags (incl. stateSyncReceive) into the recorded heartbeat', async () => {
+    const { puller, recorded } = makePuller({
+      self: 'm_self',
+      peers: [{ machineId: 'm_mini', url: 'https://mini.example.dev' }],
+      fetchImpl: async () => ({
+        selfReportedLastSeen: '2026-06-14T10:00:00.000Z',
+        loadAvg: 0.5,
+        seamlessnessFlags: { ws11DeliverReceive: true, stateSyncReceive: { learnings: true, knowledge: true } },
+      }),
+    });
+
+    await puller.pullOnce();
+
+    expect(recorded).toHaveLength(1);
+    expect(recorded[0].seamlessnessFlags).toEqual({
+      ws11DeliverReceive: true,
+      stateSyncReceive: { learnings: true, knowledge: true },
+    });
+  });
+
+  it('omits seamlessnessFlags when the peer does not advertise one (old peer = non-participant)', async () => {
+    const { puller, recorded } = makePuller({
+      self: 'm_self',
+      peers: [{ machineId: 'm_old', url: 'https://old.example.dev' }],
+      fetchImpl: async () => ({ selfReportedLastSeen: '2026-06-14T10:00:00.000Z', loadAvg: 0.5 }),
+    });
+
+    await puller.pullOnce();
+
+    expect(recorded).toHaveLength(1);
+    expect('seamlessnessFlags' in recorded[0]).toBe(false);
+  });
+});
+
+// The shared receive-mapping the production fetchPeerCapacity (src/commands/server.ts)
+// AND the round-trip integration test both run — so the test proves the REAL mapping,
+// not a hand-copied mirror. This is the wiring-integrity ratchet: the SINGLE place the
+// narrowing happens, made directly unit-testable to kill the recurring "forgot a field"
+// class (#930 / A2 / WS2.1 / seamlessnessFlags).
+describe('narrowSessionStatusToPeerCapacity — the shared receive-mapping (wiring-integrity ratchet)', () => {
+  // A fully-populated session-status response: every advert field set. The journal
+  // advert is passed UNWRAPPED (the caller owns the machine-id-keyed unwrap).
+  const FULL_RAW = {
+    selfReportedLastSeen: '2026-06-14T10:00:00.000Z',
+    loadAvg: 1.5,
+    commitmentsAdvert: { incarnation: 'inc-c', replicationSeq: 7 },
+    preferencesAdvert: { incarnation: 'inc-p', replicationSeq: 3 },
+    quotaState: { blocked: false },
+    guardPosture: { generatedAt: '2026-06-14T10:00:00.000Z', on: 2, off: 1, total: 3 } as unknown,
+    seamlessnessFlags: { ws11DeliverReceive: true, stateSyncReceive: { learnings: true } },
+  };
+  const UNWRAPPED_JOURNAL = { 'learning-record': { incarnation: 'inc-j', lastSeq: 12 } };
+
+  it('preserves EVERY advert field in SESSION_STATUS_ADVERT_FIELDS (a forgotten field fails loudly)', () => {
+    const out = narrowSessionStatusToPeerCapacity(FULL_RAW, UNWRAPPED_JOURNAL);
+    expect(out).not.toBeNull();
+    // The single source of truth: each named advert field MUST survive the narrowing.
+    // Add a new advert field to SESSION_STATUS_ADVERT_FIELDS and this loop covers it;
+    // forget the pass-through in the helper and the assertion goes red.
+    for (const field of SESSION_STATUS_ADVERT_FIELDS) {
+      expect(out, `advert field "${field}" was dropped by the narrowing return`).toHaveProperty(field);
+    }
+    // And the values are carried through intact, not just present-as-undefined.
+    expect(out!.journalAdvert).toEqual(UNWRAPPED_JOURNAL);
+    expect(out!.commitmentsAdvert).toEqual({ incarnation: 'inc-c', replicationSeq: 7 });
+    expect(out!.preferencesAdvert).toEqual({ incarnation: 'inc-p', replicationSeq: 3 });
+    expect(out!.quotaState).toEqual({ blocked: false });
+    expect(out!.seamlessnessFlags).toEqual({ ws11DeliverReceive: true, stateSyncReceive: { learnings: true } });
+  });
+
+  it('uses presence (!== undefined), not truthiness — an all-disabled seamlessnessFlags object survives', () => {
+    // The carry-forward invariant: a peer that has DISABLED every store still emits a
+    // PRESENT object (e.g. stateSyncReceive: {}), distinct from a peer that never
+    // advertised. The narrowing must keep that present-but-empty object (a falsy-ish
+    // value must not be dropped).
+    const out = narrowSessionStatusToPeerCapacity({ seamlessnessFlags: { stateSyncReceive: {} } }, undefined);
+    expect(out).not.toBeNull();
+    expect('seamlessnessFlags' in out!).toBe(true);
+    expect(out!.seamlessnessFlags).toEqual({ stateSyncReceive: {} });
+  });
+
+  it('returns null for a non-object response (peer did not answer / rejected)', () => {
+    expect(narrowSessionStatusToPeerCapacity(null, undefined)).toBeNull();
+    expect(narrowSessionStatusToPeerCapacity('nope', undefined)).toBeNull();
+    expect(narrowSessionStatusToPeerCapacity(undefined, undefined)).toBeNull();
+  });
+
+  it('omits absent advert fields (old peer) — only selfReportedLastSeen/loadAvg/journalAdvert present', () => {
+    const out = narrowSessionStatusToPeerCapacity({ selfReportedLastSeen: 'x', loadAvg: 0.1 }, undefined);
+    expect(out).not.toBeNull();
+    expect('commitmentsAdvert' in out!).toBe(false);
+    expect('preferencesAdvert' in out!).toBe(false);
+    expect('quotaState' in out!).toBe(false);
+    expect('guardPosture' in out!).toBe(false);
+    expect('seamlessnessFlags' in out!).toBe(false);
   });
 });

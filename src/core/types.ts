@@ -1139,7 +1139,7 @@ export interface FeedbackItem {
 export interface FeedbackConfig {
   /** Whether feedback is enabled */
   enabled: boolean;
-  /** Webhook URL to forward feedback to (default: https://dawn.bot-me.ai/api/instar/feedback) */
+  /** Webhook URL to forward feedback to (default: CANONICAL_FEEDBACK_URL in core/canonicalFeedback.ts) */
   webhookUrl: string;
   /** Local feedback storage file */
   feedbackFile: string;
@@ -3984,6 +3984,48 @@ export interface MonitoringConfig {
     maxNoEvidenceResettles?: number;
     /** Max free-text length accepted on any ledger field, in chars (default 4000). */
     maxFreeTextChars?: number;
+    /**
+     * "Self-Unblock Before Escalating" — the deterministic exhaustion checklist
+     * that PRODUCES the failed-attempt evidence settleTrueBlocker requires (§5.1).
+     * Deliberately OPTIONAL (dev-gate convention): when `enabled` is OMITTED the
+     * runtime resolves it via resolveDevAgentGate — LIVE on a development agent,
+     * DARK on the fleet. When ON, the run store is injected into BlockerLedger and
+     * a true-blocker settle requires a verified, persisted checklist run (a caller-
+     * embedded failedAttempt with no run is HARD-rejected). Registered in
+     * DEV_GATED_FEATURES. Spec: docs/specs/self-unblock-before-escalating.md.
+     */
+    selfUnblockChecklist?: {
+      /** Master switch — OMIT it (dev-gate decides). Set explicitly to force. */
+      enabled?: boolean;
+      /**
+       * OPERATOR-DECLARED, fail-closed relevance map for the production probe
+       * providers (the PRODUCER half, §5). Keyed by probe SOURCE name (e.g.
+       * `org-bitwarden`, `cloud-vercel`, `cloud-cloudflare`) AND/OR by a vault key
+       * name, each mapping to a list of NON-SECRET `service:scope` scope tags (e.g.
+       * `{ "cloud-cloudflare": ["cloudflare:dawn-tunnel.dev"] }`). A source with no
+       * entry advertises an EMPTY tag list → it is never surfaced as relevant
+       * (fail-closed: under-self-unblock, never mis-apply). Nothing declared ⇒ every
+       * probe non-matching ⇒ runs exhaust ⇒ behaves like today. Providers NEVER
+       * infer relevance — this map is the only source of advertised tags (alongside
+       * the live cloudflare zone list).
+       */
+      credentialScopeTags?: Record<string, string[]>;
+    };
+    /**
+     * Durable org-Bitwarden session (§5.3) — a flag-gated, TTL+idle-bounded,
+     * in-flight-only warm session the org-vault probe uses. The session value lives
+     * in process memory ONLY (never log/config/temp/argv, never on the secretSync
+     * path). Deliberately OPTIONAL (dev-gate convention): OMIT `enabled`. Spec:
+     * docs/specs/self-unblock-before-escalating.md §5.3.
+     */
+    durableVaultSession?: {
+      /** Master switch — OMIT it (dev-gate decides). Set explicitly to force. */
+      enabled?: boolean;
+      /** TTL (ms) for a derived warm session (default 600000 / 10 min). */
+      ttlMs?: number;
+      /** Idle-expiry (ms) before the warm session is dropped (default 120000 / 2 min). */
+      idleMs?: number;
+    };
   };
   rateLimitSentinel?: {
     /** Master kill switch (default: true). false → pre-feature behavior. */
@@ -4292,6 +4334,20 @@ export interface MonitoringConfig {
     includeOperatorKills?: boolean;
     /** The observe-only Tier 1 LLM check's own experiment lever. */
     tier1Check?: boolean;
+    /**
+     * Stale-emergency-pause auto-recovery (spec:
+     * resume-queue-stale-emergency-pause.md). Layer 2 auto-resumes a stale
+     * emergency/sentinel pause only when an active-autonomous-run entry was
+     * queued STRICTLY MORE than this many minutes after the pause began
+     * (default 60). CODE-defaulted in the drainer (absent from ConfigDefaults).
+     */
+    staleEmergencyPauseAutoResumeMin?: number;
+    /**
+     * Master off-switch for Layer 2 (the bounded auto-resume behavior change;
+     * default true). Layer 1 (the paused-with-waiting-work alert) is unaffected
+     * and always on.
+     */
+    autoResumeStalePause?: boolean;
   };
   /**
    * AgentWorktreeReaper (Responsible Resource Usage — OS resource hygiene).
