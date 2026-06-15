@@ -1,3 +1,19 @@
+---
+title: "Autonomous-Run Registration Guarantee (GAP-B)"
+slug: "autonomous-run-registration-guarantee"
+author: "echo"
+eli16-overview: "autonomous-run-registration-guarantee.eli16.md"
+status: draft
+parent-principle: "An Autonomous Run Must Outlive Its Session"
+review-convergence: "2026-06-15T23:25:00.000Z"
+review-iterations: 1
+review-completed-at: "2026-06-15T23:25:00.000Z"
+review-report: "docs/specs/reports/autonomous-run-registration-guarantee-convergence.md"
+cross-model-review: "unavailable"
+cross-model-review-reason: "worktree-build-env-split (no cross-model harness assemblable in-context; matches P1/P2/P4 this run)"
+single-run-completable: true
+approved: true
+---
 # Spec: Autonomous-Run Registration Guarantee (GAP-B)
 
 Status: CONVERGED (R1 review resolved all blockers; grounded vs canonical main `ace7bee4c` / v1.3.582, 2026-06-15)
@@ -92,7 +108,7 @@ violates the dev-agent-dogfood standard, STANDARDS-REGISTRY:371-375; "soaking IS
   age-limit reap** (extends resume-idle-autonomous-lifecycle). "Surfaced-but-still-dies" is NOT a passing
   E2E for a guarantee.
 
-## Resolved open questions (R1 — answered by reading code, not deferred)
+## Resolved open questions (R1 — answered by reading code, none left open)
 - Topic in stop-hook payload? **No** — resolved via topic-session-registry.json inversion (D2/B1).
 - Legacy `.instar/autonomous-state.local.md` live consumer? **Yes** (`AutonomousSessions.ts:86-88`) — keep as fallback.
 - GAP-C standard exists? **Yes** (`STANDARDS-REGISTRY.md:124-127`) — cite, don't duplicate.

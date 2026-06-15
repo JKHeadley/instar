@@ -330,23 +330,131 @@ export interface HotPathInputs {
   autonomousStateFile?: string;
   recoveryScriptPath?: string;
   now?: number;
+  /**
+   * GAP-B (autonomous-run-registration-guarantee D2): the topic this
+   * session serves, resolved SERVER-SIDE by inverting
+   * `.instar/topic-session-registry.json`'s `topicToSession` map on the
+   * session's tmux name (the same inversion the bash stop hook uses). When
+   * present, readAutonomousActive checks the CANONICAL per-topic
+   * registration `.instar/autonomous/<topicId>.local.md` FIRST.
+   *
+   * Unresolved (a registry-lookup miss) → undefined. The read then falls
+   * back to BOTH legacy single-file paths — NEVER a silent
+   * autonomousActive:false (no-silent-fallbacks ratchet).
+   */
+  topicId?: string | number;
+  /**
+   * Agent home root the relative autonomous-state paths resolve against.
+   * Defaults to process.cwd() (the agent home the server runs in). Tests
+   * inject a tmp dir. The per-topic file lives at
+   * `<stateRoot>/.instar/autonomous/<topicId>.local.md`; the two legacy
+   * single-files at `<stateRoot>/.instar/autonomous-state.local.md` and
+   * `<stateRoot>/.claude/autonomous-state.local.md`.
+   */
+  stateRoot?: string;
 }
 
 /**
- * Heuristic for autonomousActive: existence of `.claude/autonomous-state
- * .local.md` is the existing convention agents use to signal autonomous
- * intent. Tests may override.
+ * GAP-B D1 — fixed read precedence for autonomousActive. An autonomous run
+ * registered per-topic at `.instar/autonomous/<topicId>.local.md` (the
+ * canonical path the reaper/revival machinery reads) was previously
+ * INVISIBLE to the stop gate, which only ever checked the oldest legacy
+ * path. The precedence, applied with the SAME existence check the original
+ * function used (consistently across all three):
+ *
+ *   1. `.instar/autonomous/<topicId>.local.md`  (per-topic — canonical;
+ *      only when a topicId is resolved)
+ *   2. `.instar/autonomous-state.local.md`       (legacy single-file)
+ *   3. `.claude/autonomous-state.local.md`       (oldest legacy)
+ *
+ * autonomousActive:true if ANY exists. The legacy paths are ALWAYS checked
+ * as fallbacks — even on an unresolved topic — so a registry-lookup miss
+ * can never silently return false (no-silent-fallbacks ratchet, D2).
+ *
+ * `autonomousStateFile` (the historical test/override seam) still wins:
+ * when supplied it is the sole path read, preserving back-compat for
+ * existing callers/tests that point at one explicit file.
+ *
+ * E2E-PAIRING: EXEMPT — a read-path correction to an existing internal
+ * gate route (/internal/stop-gate/*); it adds no new route or feature
+ * surface that could 503 in prod, so the "feature is alive" E2E does not
+ * apply. The full HTTP hot-path (UUID to tmux to topic to per-topic file)
+ * is covered by tests/integration/stop-gate-autonomous-topic-resolution.test.ts;
+ * the incident-level boot E2E belongs to the registration-guard increment.
  */
 function readAutonomousActive(opts: HotPathInputs): boolean {
   if (typeof opts.autonomousActiveOverride === 'boolean') {
     return opts.autonomousActiveOverride;
   }
-  const file = opts.autonomousStateFile
-    ?? path.resolve(process.cwd(), '.claude/autonomous-state.local.md');
+
+  const existsSafe = (file: string): boolean => {
+    try {
+      return fs.existsSync(file);
+    } catch { /* @silent-fallback-ok: GAP-B — a per-PATH stat error is not a registry miss; the precedence chain continues to the next path, never short-circuiting the whole read. */
+      return false;
+    }
+  };
+
+  // Back-compat: an explicit single-file override is the sole path read.
+  if (opts.autonomousStateFile) {
+    return existsSafe(opts.autonomousStateFile);
+  }
+
+  const root = opts.stateRoot ?? process.cwd();
+
+  // 1. Per-topic canonical path — ONLY when a topic was resolved. A topicId
+  //    of undefined/'' means the registry inversion missed (or no session);
+  //    we fall through to the legacy paths below (the explicit, recorded
+  //    no-silent-fallback handling for the unresolved-topic case).
+  const topicIdStr =
+    opts.topicId === undefined || opts.topicId === null ? '' : String(opts.topicId).trim();
+  if (topicIdStr) {
+    const perTopic = path.resolve(root, '.instar/autonomous', `${topicIdStr}.local.md`);
+    if (existsSafe(perTopic)) return true;
+  }
+
+  // 2 + 3. Legacy single-file fallbacks (ALWAYS checked — including on an
+  //        unresolved topic). Precedence: .instar then .claude.
+  const legacyInstar = path.resolve(root, '.instar/autonomous-state.local.md');
+  if (existsSafe(legacyInstar)) return true;
+
+  const legacyClaude = path.resolve(root, '.claude/autonomous-state.local.md');
+  if (existsSafe(legacyClaude)) return true;
+
+  return false;
+}
+
+/**
+ * GAP-B D2 — resolve the topic a session serves SERVER-SIDE, mirroring the
+ * bash stop hook's inversion of `topic-session-registry.json`'s
+ * `topicToSession` (topic→tmux) map keyed on the session's tmux name.
+ *
+ * The stop-gate hot-path receives the Claude session UUID, not the tmux
+ * name, so the caller resolves UUID→tmux first (via the session manager's
+ * claudeSessionId record) and passes the tmux name here. Pure + fail-open:
+ * any read/parse error → null (the read then uses the legacy fallbacks; a
+ * null is the explicit unresolved-topic case, never a silent false).
+ *
+ * @param registryPath absolute path to topic-session-registry.json
+ * @param tmuxSession  the session's tmux name (the registry value to invert on)
+ */
+export function resolveTopicForTmux(
+  registryPath: string,
+  tmuxSession: string | null | undefined,
+  readFile: (p: string) => string = (p) => fs.readFileSync(p, 'utf-8'),
+): string | null {
+  if (!tmuxSession) return null;
   try {
-    return fs.existsSync(file);
-  } catch {
-    return false;
+    const reg = JSON.parse(readFile(registryPath)) as {
+      topicToSession?: Record<string, string>;
+    };
+    const t2s = reg.topicToSession ?? {};
+    for (const [topicId, sess] of Object.entries(t2s)) {
+      if (sess === tmuxSession) return topicId;
+    }
+    return null;
+  } catch { /* @silent-fallback-ok: GAP-B — a missing/corrupt registry yields null (unresolved topic), which the read handles EXPLICITLY by checking both legacy paths; it is never coerced to autonomousActive:false. */
+    return null;
   }
 }
 

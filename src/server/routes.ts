@@ -94,6 +94,7 @@ import {
   setMode,
   computeGreenPrBlock,
   resolveBranchFromCwd,
+  resolveTopicForTmux,
 } from './stopGate.js';
 import {
   UnjustifiedStopGate,
@@ -2571,9 +2572,41 @@ export function createRoutes(ctx: RouteContext): Router {
   // PR3 migrates to SQLite. All endpoints respect the existing auth
   // middleware (drift-correction threat model — local auth is enough).
 
+  // GAP-B D2 (autonomous-run-registration-guarantee): resolve the topic a
+  // stop-gate sessionId serves so getHotPathState can check the CANONICAL
+  // per-topic registration `.instar/autonomous/<topicId>.local.md` (which
+  // was previously invisible to the gate). The hot-path receives the Claude
+  // session UUID; map UUID→tmux via the session manager's claudeSessionId
+  // record, then invert topic-session-registry.json's topicToSession map on
+  // the tmux name (the SAME inversion the bash stop hook uses).
+  //
+  // Returns undefined on ANY miss (no session record, no tmux name, no
+  // registry match). The caller passes that through to getHotPathState,
+  // whose read then falls back to BOTH legacy single-file paths — the
+  // unresolved-topic case is handled EXPLICITLY there, never as a silent
+  // autonomousActive:false (no-silent-fallbacks ratchet).
+  const resolveTopicForStopGate = (sessionId: string): string | undefined => {
+    if (!sessionId) return undefined;
+    let tmuxSession: string | null = null;
+    try {
+      const running = ctx.sessionManager.listRunningSessions();
+      const match = running.find((s) => s.claudeSessionId === sessionId);
+      tmuxSession = match?.tmuxSession ?? null;
+    } catch { /* @silent-fallback-ok: GAP-B — session-manager read failure leaves tmuxSession null; the resolver returns undefined and getHotPathState falls back to the legacy paths (explicit unresolved-topic handling, never a silent false). */
+      tmuxSession = null;
+    }
+    if (!tmuxSession) return undefined;
+    const registryPath = path.join(ctx.config.stateDir, 'topic-session-registry.json');
+    return resolveTopicForTmux(registryPath, tmuxSession) ?? undefined;
+  };
+
   router.get('/internal/stop-gate/hot-path', (req, res) => {
     const sessionId = typeof req.query.session === 'string' ? req.query.session : '';
-    const state = getHotPathState({ sessionId: sessionId || undefined });
+    const state = getHotPathState({
+      sessionId: sessionId || undefined,
+      topicId: resolveTopicForStopGate(sessionId),
+      stateRoot: path.dirname(ctx.config.stateDir),
+    });
     // green-pr-automerge Layer 2: compute greenPrBlock LAZILY — only when the
     // watcher has snapshot candidates (the common zero-candidate stop costs
     // nothing). Branch resolution reads .git/HEAD (fail-open).
@@ -2669,7 +2702,11 @@ export function createRoutes(ctx: RouteContext): Router {
     // notify-on-stop Layer B: whether the stopping session is unattended
     // (autonomous). Used only to gate the user-facing notice (StopNotifier);
     // never affects the gate decision itself.
-    const autonomousActive = getHotPathState({ sessionId: sessionId || undefined }).autonomousActive;
+    const autonomousActive = getHotPathState({
+      sessionId: sessionId || undefined,
+      topicId: resolveTopicForStopGate(sessionId),
+      stateRoot: path.dirname(ctx.config.stateDir),
+    }).autonomousActive;
 
     // Kill-switch or mode=off: short-circuit to allow, no authority
     // call, no event logged (caller already knows not to call us here,
