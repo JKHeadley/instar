@@ -20,19 +20,19 @@
  *  follow on the SAME emitter (WS2-SEND-2). */
 export const WS2_SEND_WIRED_STORES: ReadonlyArray<string> = Object.freeze([
   'learnings',
+  'relationships',
 ]);
 
 /**
  * Stores registered for RECEIVE but whose SEND wiring is a KNOWN, enumerated
  * follow-up — NOT a silent omission. Each is here for a stated reason:
- *  - relationships / knowledge / evolutionActions / userRegistry: fully seamed
+ *  - knowledge / evolutionActions / userRegistry: fully seamed
  *    managers (emitPut + emitDelete); table-row wiring onto the same emitter (WS2-SEND-2).
  *  - topicOperator: seamed put-only (no emitDelete in its manager interface yet) (WS2-SEND-3).
  *  - preferences: NO manager emit seam yet — it rode the deprecated `preferences-sync`
  *    verb; needs a manager emit hook before it can be wired (WS2-SEND-3).
  */
 export const WS2_SEND_PENDING_STORES: ReadonlyArray<string> = Object.freeze([
-  'relationships',
   'knowledge',
   'evolutionActions',
   'userRegistry',

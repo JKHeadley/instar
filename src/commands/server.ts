@@ -3923,7 +3923,7 @@ export async function startServer(options: StartOptions): Promise<void> {
     // (= that one local record). tierOf returns HIGH (append-both-and-flag never
     // silently clobbers two divergent people). Consulted by the relationships peer-read
     // surface ONLY when stateSync.relationships.enabled is true.
-    const { relationshipTierOf, relationshipToOriginRecord, deriveRelationshipRecordKey, mergeUnionToRelationships, renderForeignRelationshipContext, RELATIONSHIP_STORE_KEY } = await import('../core/RelationshipsReplicatedStore.js');
+    const { relationshipTierOf, relationshipToOriginRecord, deriveRelationshipRecordKey, buildRelationshipRecordData, buildRelationshipTombstoneData, mergeUnionToRelationships, renderForeignRelationshipContext, RELATIONSHIP_STORE_KEY } = await import('../core/RelationshipsReplicatedStore.js');
     const relationshipsUnionReader = new ReplicatedStoreReader({
       registry: replicatedKindRegistry,
       stores: _stateSyncStoresResolved, // gate-resolved (dev-live / fleet-dark) per operator directive 2026-06-13
@@ -8536,6 +8536,35 @@ export async function startServer(options: StartOptions): Promise<void> {
             LEARNING_STORE_KEY,
             deriveLearningRecordKey(title, category, source),
             (hlc, origin, observed) => buildLearningTombstoneData({ title, category, source, hlc, origin, deletedAt, observed }),
+          ),
+      });
+    }
+
+    // WS2.3 SEND-SIDE: attach the journal-backed emitter to the RelationshipManager's
+    // replication hooks. The manager already fires emitPut on every saved person and
+    // emitDelete on erase/merge (RelationshipManager.setReplicationEmitter); the adapter
+    // maps the manager's emit signature to the relationship build*RecordData projection.
+    // The generic emitter owns the dark gate, HLC tick, `observed` witness, journal
+    // append, and ALL the safety guards (null recordKey ⇒ skip, null projection ⇒ skip,
+    // over-cap throw ⇒ counted no-op) — so the adapter mirrors learnings with no extra
+    // guarding. Attached only when the emitter exists (journal live) AND the manager is
+    // constructed; when stateSync.relationships is dark the hooks stay no-ops (byte-
+    // identical single-machine behavior — the local UUID id never crosses; only the
+    // disclosure-minimized, channel-keyed projection does — REQ-M4).
+    if (replicatedRecordEmitter && relationships) {
+      const emitter = replicatedRecordEmitter;
+      relationships.setReplicationEmitter({
+        emitPut: (rec) =>
+          emitter.emit(
+            RELATIONSHIP_STORE_KEY,
+            deriveRelationshipRecordKey(rec.channels),
+            (hlc, origin, observed) => buildRelationshipRecordData({ record: rec, hlc, origin, observed }),
+          ),
+        emitDelete: (channels, deletedAt) =>
+          emitter.emit(
+            RELATIONSHIP_STORE_KEY,
+            deriveRelationshipRecordKey(channels),
+            (hlc, origin, observed) => buildRelationshipTombstoneData({ channels, hlc, origin, deletedAt, observed }),
           ),
       });
     }
