@@ -385,9 +385,14 @@ describe('lint-dev-agent-dark-gate', () => {
       // removal shrank the stateSync block, shifting cartographer up: 1125→1100,
       // 1170→1145, 1195→1170. RE-VERIFIED by hand via the attributor on the edited
       // ConfigDefaults (each maps to a real `enabled: false,` line).
-      '1138': 'cartographer.freshnessSweep.enabled',
-      '1183': 'cartographer.conformanceAudit.llmEnrichment.enabled',
-      '1208': 'cartographer.subtreeNav.llmRerank.enabled',
+      // agent-owned-followthrough merge of JKHeadley/main (2026-06-15): main's WS2
+      // send-side stateSync replication + topicOperator work inserted config between
+      // the sessionPool block (824/849/878, unchanged) and cartographer, shifting all
+      // three cartographer keys DOWN by +14 (1138→1152, 1183→1197, 1208→1222).
+      // RE-VERIFIED by hand via the attributor on the merged ConfigDefaults.
+      '1152': 'cartographer.freshnessSweep.enabled',
+      '1197': 'cartographer.conformanceAudit.llmEnrichment.enabled',
+      '1222': 'cartographer.subtreeNav.llmRerank.enabled',
     };
     const actual = attributeRealConfigDefaults();
     expect(actual).toEqual(EXPECTED);
