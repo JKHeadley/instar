@@ -396,6 +396,13 @@ export class AgentServer {
      *  funnel GET /preferences/session-context reads the no-clobber union through
      *  when stateSync.preferences.enabled. Absent while dark. */
     preferencesUnionReader?: import('../core/ReplicatedStoreReader.js').ReplicatedStoreReader;
+    /** WS2-SEND-2b: the journal-backed emit hook for the `topicOperator` store. The
+     *  CANONICAL TopicOperator writer is THIS AgentServer's `this.topicOperatorStore`
+     *  (created in the constructor from the authenticated sender uid), so the emitter is
+     *  plumbed in here rather than attached to a server.ts-level var. Built in server.ts
+     *  (where the emitter + envelope helpers live) and attached after store creation.
+     *  Put-only by construction (a topic rebinds, never unbinds). Absent while dark. */
+    topicOperatorReplicationEmitter?: import('../users/TopicOperatorStore.js').TopicOperatorReplicationEmitter;
     /** P1.5b owner-routed mutation forward (§3.4). Absent while dark. */
     forwardCommitmentMutate?: (ownerMachineId: string, payload: import('../core/CommitmentMutation.js').CommitmentMutatePayload) => Promise<
       { kind: 'verdict'; outcome: import('../core/CommitmentMutation.js').MutateOutcome } | { kind: 'queued'; reason: string }
@@ -1095,6 +1102,16 @@ export class AgentServer {
       // @silent-fallback-ok — reported via console.warn; an operator-store init failure must never block server boot.
       console.warn('[instar] topic-operator-store init failed (non-fatal):', err);
       this.topicOperatorStore = null;
+    }
+
+    // WS2-SEND-2b: attach the journal-backed replication emitter to the canonical
+    // topic-operator writer (this.topicOperatorStore). The store fires emitPut on every
+    // authenticated setOperator bind; the emitter (built in server.ts with the dark gate,
+    // HLC tick, witness, and journal append) is plumbed in here because THIS is the
+    // authoritative TopicOperator instance. Strict no-op when dark (emitter absent) or
+    // when the store failed to init. Put-only by construction (no unbind/delete path).
+    if (this.topicOperatorStore && options.topicOperatorReplicationEmitter) {
+      this.topicOperatorStore.setOperatorReplicationEmitter(options.topicOperatorReplicationEmitter);
     }
 
     // Coordination Mandate enforcement (docs/specs/coordination-mandate.md §4).
