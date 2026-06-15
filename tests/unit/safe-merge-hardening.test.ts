@@ -68,6 +68,20 @@ describe('parseArgs — strict argv', () => {
     const a = parseArgs(['42', '--extra-floor', 'Foo, Bar ,Baz']);
     expect(a.extraFloor).toEqual(['Foo', 'Bar', 'Baz']);
   });
+
+  it('parses --auto (native auto-merge) and defaults it off', () => {
+    expect(parseArgs(['42']).auto).toBe(false);
+    const a = parseArgs(['1183', '--repo', 'JKHeadley/instar', '--squash', '--auto', '--delete-branch']);
+    expect(a.auto).toBe(true);
+    expect(a.admin).toBe(false);
+    expect(a.method).toBe('--squash');
+    expect(a.deleteBranch).toBe(true);
+  });
+
+  it('REJECTS --auto and --admin together (contradictory strategies)', () => {
+    expect(() => parseArgs(['42', '--squash', '--auto', '--admin'])).toThrow(UsageError);
+    expect(() => parseArgs(['42', '--squash', '--admin', '--auto'])).toThrow(UsageError);
+  });
 });
 
 describe('capabilities — contract probe', () => {
@@ -76,7 +90,9 @@ describe('capabilities — contract probe', () => {
     expect(c.contract).toBe(CONTRACT_VERSION);
     expect(c.features).toContain('head-pinning');
     expect(c.features).toContain('producer-binding');
+    expect(c.features).toContain('native-auto-merge');
     expect(c.exitCodes.merged).toBe(0);
+    expect(c.exitCodes.autoMergeArmed).toBe(5);
   });
 });
 

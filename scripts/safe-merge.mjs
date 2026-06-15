@@ -25,8 +25,17 @@
  *  - `--delete-branch` pass-through; `--deadline-ms` so the caller's timeout
  *    and the internal wait can never invert (B24)
  *
- * Usage:  node scripts/safe-merge.mjs <PR#> [--admin] [--squash|--merge|--rebase]
+ * Usage:  node scripts/safe-merge.mjs <PR#> [--auto|--admin] [--squash|--merge|--rebase]
  *           [--repo <owner/name>] [--delete-branch] [--deadline-ms <n>]
+ *
+ *   --auto  PREFERRED. Arms GitHub native auto-merge and returns immediately —
+ *           GitHub merges the instant every required check passes, enforcing
+ *           branch protection itself (no --admin bypass) and never timing out.
+ *           Requires "Allow auto-merge" enabled on the repo. Exit 5 = armed,
+ *           exit 0 = merged immediately (checks were already green).
+ *   --admin Legacy synchronous path: polls for green, re-imposes the required
+ *           contexts that --admin would bypass, then merges. Use only when the
+ *           repo has auto-merge disabled.
  *           [--match-head-commit <sha>] [--extra-floor <ctx,ctx>]
  *         node scripts/safe-merge.mjs --capabilities
  *
@@ -62,7 +71,7 @@ export const REQUIRED_CONTEXTS_FLOOR = [
 ];
 
 const ALLOWED_FLAGS = new Set([
-  '--admin', '--squash', '--merge', '--rebase', '--delete-branch', '--capabilities',
+  '--admin', '--auto', '--squash', '--merge', '--rebase', '--delete-branch', '--capabilities',
 ]);
 const ALLOWED_VALUE_FLAGS = new Set([
   '--repo', '--deadline-ms', '--match-head-commit', '--extra-floor',
@@ -72,7 +81,7 @@ const ALLOWED_VALUE_FLAGS = new Set([
  * confused caller must fail loudly, not have its intent silently ignored). */
 export function parseArgs(argv) {
   const out = {
-    pr: null, repo: DEFAULT_REPO, method: '--merge', admin: false,
+    pr: null, repo: DEFAULT_REPO, method: '--merge', admin: false, auto: false,
     deleteBranch: false, deadlineMs: DEFAULT_DEADLINE_MS,
     matchHeadCommit: null, extraFloor: [], capabilities: false,
   };
@@ -103,6 +112,7 @@ export function parseArgs(argv) {
     }
     if (ALLOWED_FLAGS.has(a)) {
       if (a === '--admin') out.admin = true;
+      else if (a === '--auto') out.auto = true;
       else if (a === '--delete-branch') out.deleteBranch = true;
       else if (a === '--capabilities') out.capabilities = true;
       else out.method = a; // --squash | --merge | --rebase
@@ -111,6 +121,10 @@ export function parseArgs(argv) {
     throw new UsageError(`unknown flag: ${a} (strict argv — see --capabilities for the contract)`);
   }
   if (!out.capabilities && out.pr === null) throw new UsageError('a PR number is required');
+  // --auto (native GitHub auto-merge: GitHub enforces every required check
+  // before merging) and --admin (bypass-then-re-impose) are contradictory
+  // strategies — refuse the incoherent combo rather than silently pick one.
+  if (out.auto && out.admin) throw new UsageError('--auto and --admin are mutually exclusive: --auto relies on GitHub native required-check enforcement, --admin bypasses it');
   return out;
 }
 
@@ -123,8 +137,9 @@ export function capabilities() {
       'strict-argv', 'repo-param', 'json-checks', 'head-pinning',
       'required-contexts-cross-check', 'producer-binding', 'floor',
       'reviews-required-refusal', 'classified-exits', 'delete-branch', 'deadline-ms',
+      'native-auto-merge',
     ],
-    exitCodes: { merged: 0, refused: 1, usageOrError: 2, alreadyMerged: 3, closed: 4 },
+    exitCodes: { merged: 0, refused: 1, usageOrError: 2, alreadyMerged: 3, closed: 4, autoMergeArmed: 5 },
   };
 }
 
@@ -328,7 +343,7 @@ async function main() {
   } catch (e) {
     if (e instanceof UsageError) {
       console.error(`safe-merge: ${e.message}`);
-      console.error('usage: node scripts/safe-merge.mjs <PR#> [--admin] [--squash|--merge|--rebase] [--repo <owner/name>] [--delete-branch] [--deadline-ms <n>] [--match-head-commit <sha>] [--extra-floor <ctx,ctx>]');
+      console.error('usage: node scripts/safe-merge.mjs <PR#> [--auto|--admin] [--squash|--merge|--rebase] [--repo <owner/name>] [--delete-branch] [--deadline-ms <n>] [--match-head-commit <sha>] [--extra-floor <ctx,ctx>]');
       result({ result: 'error:usage', detail: e.message });
       process.exit(2);
     }
@@ -368,6 +383,54 @@ async function main() {
     result({ result: 'refused:head-moved', pr: Number(pr), expected: args.matchHeadCommit, actual: view.headRefOid });
     console.error('safe-merge: REFUSING — the PR head moved past the verified commit.');
     process.exit(1);
+  }
+
+  // --- Native auto-merge path (--auto): arm-and-return, no polling ----------
+  // GitHub's native auto-merge merges the PR the instant every REQUIRED check
+  // passes and the branch is mergeable — and it NEVER bypasses a check (unlike
+  // --admin). So the required-context re-imposition this script does manually
+  // for the --admin path is enforced by GitHub itself here. We only run the
+  // cheap pre-flight above (open, not draft, head not moved), arm auto-merge,
+  // confirm it's armed, and exit. No deadline, so it can't time out the way a
+  // foreground/background poller does (the failure mode that wedged hot-branch
+  // merges: the watcher is killed before slow CI finishes).
+  if (args.auto) {
+    const autoArgs = ['pr', 'merge', pr, '--repo', repo, args.method, '--auto'];
+    if (args.matchHeadCommit) autoArgs.push('--match-head-commit', pinnedHead);
+    if (args.deleteBranch) autoArgs.push('--delete-branch');
+    console.log(`safe-merge: arming native auto-merge for PR #${pr} (${args.method}, head ${pinnedHead.slice(0, 12)}) — GitHub will merge when all required checks pass...`);
+    const a = spawnSync('gh', autoArgs, { encoding: 'utf-8' });
+    process.stdout.write(a.stdout ?? '');
+    process.stderr.write(a.stderr ?? '');
+    if (a.status !== 0 || a.signal) {
+      const cls = classifyMergeFailure(a.stderr, a.status, a.signal);
+      if (cls === 'already-merged') { result({ result: 'already-merged', pr: Number(pr) }); process.exit(3); }
+      if (cls === 'closed') { result({ result: 'closed', pr: Number(pr) }); process.exit(4); }
+      result({ result: `refused:auto-arm-${cls}`, raw: cls });
+      console.error(`safe-merge: could not arm auto-merge (${cls}). Is "Allow auto-merge" enabled on the repo settings?`);
+      process.exit(1);
+    }
+    // Independent confirmation (B10: never trust the exit code alone). If the
+    // checks were ALREADY green, GitHub merges immediately and we report merged.
+    try {
+      const after = ghJson(['pr', 'view', pr, '--repo', repo, '--json', 'state,mergedAt,autoMergeRequest']);
+      if (after.state === 'MERGED' || after.mergedAt) {
+        result({ result: 'merged', pr: Number(pr), head: pinnedHead });
+        process.exit(0);
+      }
+      if (after.autoMergeRequest) {
+        result({ result: 'auto-merge-armed', pr: Number(pr), head: pinnedHead });
+        console.log('safe-merge: auto-merge armed. GitHub will merge when required checks pass — no further action needed.');
+        process.exit(5);
+      }
+      result({ result: 'error:auto-arm-unconfirmed', state: after.state });
+      console.error('safe-merge: gh reported success but auto-merge is not armed on re-read. NOT claiming success.');
+      process.exit(2);
+    } catch (e) {
+      result({ result: 'error:auto-confirm-unreadable', detail: String(e.message).slice(0, 300) });
+      console.error('safe-merge: could not independently confirm auto-merge was armed. NOT claiming success.');
+      process.exit(2);
+    }
   }
 
   // --- Wait for checks to settle (bucket-based, never name-based) ----------
