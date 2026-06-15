@@ -8681,6 +8681,8 @@ export async function startServer(options: StartOptions): Promise<void> {
       evolutionActionTierOf,
       evolutionActionToOriginRecord,
       deriveEvolutionActionRecordKey,
+      buildEvolutionActionRecordData,
+      buildEvolutionActionTombstoneData,
       EVOLUTION_ACTION_STORE_KEY,
     } = await import('../core/EvolutionActionsReplicatedStore.js');
     const evolutionActionsUnionReader = new ReplicatedStoreReader({
@@ -8710,7 +8712,36 @@ export async function startServer(options: StartOptions): Promise<void> {
       conflictStore,
     });
     void evolutionActionsUnionReader; // consumed by the evolution-actions peer-read surface + the journal-apply rollout stage (WS2.5+)
-    void evolution.setEvolutionActionReplicationEmitter; // the emit seam exists (unit-tested + dark by default); the journal-backed emitter is attached in a later rollout stage, mirroring the WS2.2 learnings sibling
+
+    // WS2.5 SEND-SIDE: attach the journal-backed emitter to the EvolutionManager's
+    // action-queue hooks. saveActions already fires emitPut on every surviving action
+    // (so a STATUS CHANGE re-emits — a peer SEES completed/in_progress and won't redo it)
+    // and emitDelete on every action actually pruned out of the queue (a RETAINED terminal
+    // action is never tombstoned — only a real queue-removal is). The adapter maps the
+    // manager's emit signature to the action build*RecordData projection; the generic emitter
+    // owns the dark gate, HLC tick, `observed` witness, journal append, and ALL the safety
+    // guards (null recordKey ⇒ skip, null projection ⇒ skip, over-cap throw ⇒ counted no-op).
+    // `evolution` is the canonical instance handed to the AgentServer, so the action routes'
+    // real writes flow through these hooks. Attached only when the emitter exists; dark by
+    // default ⇒ no-op (byte-identical single-machine behavior; the local ACT-NNN id never
+    // crosses the wire — fork #1, only the enumerated content projection does).
+    if (replicatedRecordEmitter) {
+      const emitter = replicatedRecordEmitter;
+      evolution.setEvolutionActionReplicationEmitter({
+        emitPut: (rec) =>
+          emitter.emit(
+            EVOLUTION_ACTION_STORE_KEY,
+            deriveEvolutionActionRecordKey(rec.title, rec.commitTo, rec.createdAt),
+            (hlc, origin, observed) => buildEvolutionActionRecordData({ record: rec, hlc, origin, observed }),
+          ),
+        emitDelete: (title, commitTo, createdAt, deletedAt) =>
+          emitter.emit(
+            EVOLUTION_ACTION_STORE_KEY,
+            deriveEvolutionActionRecordKey(title, commitTo, createdAt),
+            (hlc, origin, observed) => buildEvolutionActionTombstoneData({ title, commitTo, createdAt, hlc, origin, deletedAt, observed }),
+          ),
+      });
+    }
 
     // WS2.6 — the bypass-proof union reader for the `userRegistry` store (the SECOND PII kind). The
     // single funnel every replicated user read routes through, so no caller reads a raw replica
@@ -16618,6 +16649,32 @@ export async function startServer(options: StartOptions): Promise<void> {
     // wired before the server existed; from here on inbound binds use the
     // server's own store instance.
     _agentServerRef = server;
+
+    // ── WS2.6 SEND-SIDE: topicOperator (the THIRD PII kind) ──────────────
+    // The AUTHORITATIVE topic-operator writer is the AgentServer's OWN
+    // TopicOperatorStore (it constructs `this.topicOperatorStore` internally and
+    // binds it from the authenticated sender via setOperator). server.ts has no
+    // canonical instance of its own, so we attach the journal-backed emitter to the
+    // server's store here, right after the AgentServer exists. setOperator already
+    // fires emitPut on every real bind/rebind. PUT-ONLY BY CONSTRUCTION — a topic
+    // rebinds, never unbinds, so there is NO emitDelete path (the receive side
+    // resolves the latest binding by HLC). Dark by default
+    // (multiMachine.stateSync.topicOperator); off ⇒ no-op. A content name can never
+    // become an operator — only the platform-verified uid is emitted (Know Your
+    // Principal); a replicated record is NEVER authoritative for inbound resolution.
+    if (replicatedRecordEmitter) {
+      const _topicOpEmitter = replicatedRecordEmitter;
+      const { TOPIC_OPERATOR_STORE_KEY, deriveTopicOperatorRecordKey, buildTopicOperatorRecordData } =
+        await import('../core/TopicOperatorReplicatedStore.js');
+      server.getTopicOperatorStore()?.setOperatorReplicationEmitter({
+        emitPut: (topicId, record) =>
+          _topicOpEmitter.emit(
+            TOPIC_OPERATOR_STORE_KEY,
+            deriveTopicOperatorRecordKey(topicId, record.uid),
+            (hlc, origin, observed) => buildTopicOperatorRecordData({ topicId, record, hlc, origin, observed }),
+          ),
+      });
+    }
 
     // ── WS5.3 (escalation-rides-topic) destination re-admit driver ──
     // Bound here (after the AgentServer exists) so it can reach the SAME
