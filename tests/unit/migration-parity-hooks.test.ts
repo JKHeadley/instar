@@ -73,6 +73,11 @@ const INSTALL_VS_MIGRATE_KNOWN_GAPS: Record<string, string> = {
     'Deferred-install accepted: free-text-guard hook is migrator-only.',
   'skill-usage-telemetry.sh':
     'Deferred-install accepted: telemetry hook is migrator-only.',
+  'action-claim-followthrough.js':
+    'Deferred-install accepted: action-claim follow-through sentinel hook (#1178) is ' +
+    'dark by default (messaging.actionClaim.enabled, off) and in dev-first soak before ' +
+    'fleet rollout — installed migrator-only for now, like free-text-guard.sh / ' +
+    'skill-usage-telemetry.sh. Follow-up: add to installHooks() at fleet rollout.',
 };
 
 /**
