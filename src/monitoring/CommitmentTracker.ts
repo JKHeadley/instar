@@ -497,6 +497,17 @@ export class CommitmentTracker extends EventEmitter {
     actionClass?: string;
     supersededBy?: string;
   }): Commitment {
+    // FD3 (action-claim-followthrough): idempotent create keyed on externalKey.
+    // If an OPEN (non-terminal) commitment already carries this externalKey,
+    // RETURN it instead of minting a duplicate — so a restated claim ("I'll
+    // restart it" across turns) updates one commitment rather than spawning N.
+    // Mirrors the live precedent at server.ts (getActive().some(externalKey===)).
+    // Runs FIRST: a dup short-circuits before validation (the existing commitment
+    // was already well-formed when created).
+    if (input.externalKey) {
+      const existing = this.getActive().find((c) => c.externalKey === input.externalKey);
+      if (existing) return existing;
+    }
     // ── C1+C2 well-formedness gates (spec §4.1) — STRUCTURAL only (Signal-vs-
     // Authority): validate the agent's own declaration; do NOT classify prose;
     // hold NO side-effect authority (that stays with the tool-call gate).

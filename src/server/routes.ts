@@ -9,6 +9,7 @@ import { Router } from 'express';
 import type { Request as ExpressRequest, Response as ExpressResponse } from 'express';
 import { execFileSync } from 'node:child_process';
 import { createHash, timingSafeEqual, randomUUID } from 'node:crypto';
+import { classifyActionClaim } from '../core/action-claim.js';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -19130,6 +19131,68 @@ export function createRoutes(ctx: RouteContext): Router {
       const msg = err instanceof Error ? err.message : 'Failed to record';
       const isWellFormedness = /invalid owner|invalid blockedOn|requires a non-empty actionClass/.test(msg);
       res.status(isWellFormedness ? 400 : 500).json({ error: msg });
+    }
+  });
+
+  // Action-Claim Follow-Through Sentinel (spec: action-claim-followthrough-sentinel.md).
+  // The thin Stop hook POSTs the finished turn's outbound text + topicId here; the
+  // classifier + idempotent commitment-create run SERVER-SIDE. SIGNAL-ONLY: this
+  // NEVER blocks a message — it opens (or returns) a follow-through commitment so a
+  // claimed future action ("I'll restart it", "relaunching now") is durably tracked.
+  // Dark + dev-first via messaging.actionClaim.enabled (code-default false on fleet).
+  router.post('/action-claim/observe', (req, res) => {
+    const enabled = ctx.liveConfig?.get<boolean>('messaging.actionClaim.enabled', false) ?? false;
+    if (!enabled) {
+      res.json({ observed: false, registered: false, reason: 'feature-disabled' });
+      return;
+    }
+    if (!ctx.commitmentTracker) {
+      res.json({ observed: false, registered: false, reason: 'no-commitment-tracker' });
+      return;
+    }
+    const { message, topicId } = req.body ?? {};
+    if (typeof message !== 'string' || typeof topicId !== 'number') {
+      res.status(400).json({ error: 'message (string) and topicId (number) are required' });
+      return;
+    }
+    const result = classifyActionClaim(message);
+    if (!result.isActionClaim || !result.claim) {
+      res.json({ observed: true, registered: false, reason: 'no-action-claim' });
+      return;
+    }
+    const verb = result.claim.normalizedClaimVerb;
+    // FD3 dedupe key: tagged so the per-topic cap can count action-claim commitments
+    // (the sha256 alone is opaque). record() returns-existing on an open same-key.
+    const externalKey =
+      'actionclaim:' + createHash('sha256').update(`${topicId}|${verb}`).digest('hex').slice(0, 16);
+    // FD3 per-topic cap (default 5): bound the durable surface (Bounded Notification).
+    const cap = ctx.liveConfig?.get<number>('messaging.actionClaim.perTopicCap', 5) ?? 5;
+    const openForTopic = ctx.commitmentTracker
+      .getActive()
+      .filter((c) => c.topicId === topicId && typeof c.externalKey === 'string' && c.externalKey.startsWith('actionclaim:'));
+    // If this exact claim is already open, record() will return it (no new row) —
+    // so only refuse on the cap when it would be a genuinely NEW claim.
+    const alreadyOpen = openForTopic.some((c) => c.externalKey === externalKey);
+    if (!alreadyOpen && openForTopic.length >= cap) {
+      res.json({ observed: true, registered: false, reason: 'per-topic-cap', verb, cap });
+      return;
+    }
+    const expiresHrs = ctx.liveConfig?.get<number>('messaging.actionClaim.expiresHours', 6) ?? 6;
+    const expiresAt = new Date(Date.now() + expiresHrs * 3600_000).toISOString();
+    try {
+      const commitment = ctx.commitmentTracker.record({
+        type: 'one-time-action',
+        userRequest: `(action-claim) follow through on: ${verb}`,
+        agentResponse: message.slice(0, 500),
+        topicId,
+        source: 'sentinel',
+        externalKey,
+        expiresAt,
+      });
+      res.json({ observed: true, registered: true, verb, commitmentId: commitment.id, externalKey });
+    } catch (err) {
+      // Signal-only: never surface a failure as a block. Audit via the 500-free path.
+      res.json({ observed: true, registered: false, reason: 'record-failed', detail: err instanceof Error ? err.message : String(err) });
     }
   });
 
