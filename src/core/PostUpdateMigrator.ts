@@ -10543,27 +10543,32 @@ process.stdin.on('end', () => {
 // claim ("I'll restart it", "relaunching now") and opens an idempotent follow-through
 // commitment. This hook NEVER blocks — it ALWAYS exit(0), pass or fail. Dark by default
 // (messaging.actionClaim.enabled, code-default false).
-const _r = require;
-const fs = _r('fs');
-const path = _r('path');
-
-let serverPort = 4040;
-let authToken = '';
-let enabled = false;
-try {
-  const configPath = path.join(process.env.CLAUDE_PROJECT_DIR || '.', '.instar', 'config.json');
-  const cfg = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
-  serverPort = cfg.port || 4040;
-  authToken = cfg.authToken || '';
-  enabled = !!(cfg.messaging && cfg.messaging.actionClaim && cfg.messaging.actionClaim.enabled);
-} catch {}
-
-if (!enabled) process.exit(0);
+//
+// ESM-safe: fs/path are loaded via await import('node:...') INSIDE the async handler
+// (works in both CJS and ESM host agents); a bare top-level require(...) crashes with
+// "require is not defined in ES module scope" in an ESM-mode agent — see the 2026-05-27
+// silent-stall postmortem (no-bare-require-in-generated-hooks regression test).
 
 let data = '';
 process.stdin.on('data', (chunk) => (data += chunk));
 process.stdin.on('end', async () => {
   try {
+    const { readFileSync } = await import('node:fs');
+    const { join } = await import('node:path');
+
+    let serverPort = 4040;
+    let authToken = '';
+    let enabled = false;
+    try {
+      const configPath = join(process.env.CLAUDE_PROJECT_DIR || '.', '.instar', 'config.json');
+      const cfg = JSON.parse(readFileSync(configPath, 'utf-8'));
+      serverPort = cfg.port || 4040;
+      authToken = cfg.authToken || '';
+      enabled = !!(cfg.messaging && cfg.messaging.actionClaim && cfg.messaging.actionClaim.enabled);
+    } catch {}
+
+    if (!enabled) process.exit(0);
+
     const input = JSON.parse(data);
     const message = input.last_assistant_message || '';
     const topicRaw = process.env.INSTAR_TELEGRAM_TOPIC;
