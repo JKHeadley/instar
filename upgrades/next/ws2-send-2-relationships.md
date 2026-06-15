@@ -1,0 +1,54 @@
+# Upgrade Guide — WS2-SEND-2: relationships send-side replication
+
+<!-- bump: patch -->
+
+## What Changed
+
+The `relationships` memory store is now wired into the WS2 send-side, the first of the
+four "table-row" stores the WS2-SEND-SIDE-EMISSION-SPEC enumerated as the WS2-SEND-2
+follow-on. #1168 proved the generic `ReplicatedRecordEmitter` machinery end-to-end for
+`learnings`; this change attaches that same emitter to the `RelationshipManager`'s
+existing write hooks (the manager already fired `emitPut` on every saved person and
+`emitDelete` on erase/merge — the emitter was simply never attached), and flips
+`relationships` from PENDING to WIRED in the send-wiring ratchet (`ws2SendWiring.ts`).
+
+No new design: the disclosure-minimized projection (`buildRelationshipRecordData` /
+`buildRelationshipTombstoneData`), the channel-set identity surface, the receive-side
+schema, and the no-clobber union read all already shipped with the WS2.3 relationships
+work. This is the send attachment + its end-to-end proof. Everything stays behind the
+per-store dark gate (`multiMachine.stateSync.relationships`, off by default — the
+development-agent gate flips it live on a dev agent only). Records ride the existing
+journal-sync tail and pull — no new HTTP route or mesh verb.
+
+## What to Tell Your User
+
+- **Cross-machine relationships now actually cross**: "If you run me on more than one
+  machine, a person I know on one is now known on the others — one shared relationship
+  graph instead of one per machine. Only a disclosure-minimized, channel-keyed
+  projection crosses (never the raw record or the local id), a copy from another machine
+  is always a hint and never the authority on who is messaging you, and an erased person
+  stays erased everywhere via a tombstone. It stays off until you ask me to turn on
+  multi-machine relationship sync." ⚗️ Experimental — ships dark; the learnings slice is
+  the proven path and the remaining stores follow on the same wiring.
+
+## Summary of New Capabilities
+
+| Capability | How to Use |
+|-----------|-----------|
+| Cross-machine replication of known people (relationships) | Automatic once `multiMachine.stateSync.relationships` is enabled (off by default) |
+| Channel-keyed identity — same person on two machines collapses to one record | Automatic (read path) |
+| Erasure propagates as a channel-keyed tombstone (stays erased on offline-then-rejoining peers) | Automatic (delete path) |
+
+## Evidence
+
+Verified by a two-instance in-process E2E
+(`tests/e2e/ws2-relationships-cross-instance.test.ts`): a person recorded on instance A
+(`findOrCreate`), shipped over the real journal serve/apply path, is read back on
+instance B through the bypass-proof union reader as a foreign-origin record — and the
+local UUID is confirmed absent from the projection; a `delete` on A replicates as a
+channel-keyed tombstone and B's union read resolves the key to "no record"; the same
+person (same channel set) recorded on both machines collapses to one record key across
+origins. Before the attachment B's union read returned null; after, it returns A's
+record. `tsc --noEmit` clean; the new e2e (3) + the learnings e2e (3) pass; the
+ws2-send-wiring integration ratchet (4) accepts the PENDING→WIRED move; the existing
+`relationship-replication-emit` seam unit tests (6) stay green.
