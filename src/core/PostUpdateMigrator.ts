@@ -5177,6 +5177,22 @@ When sessions are shut down autonomously (resource pressure, quota, age limits),
       result.skipped.push('CLAUDE.md: stale emergency-stop pause self-heal note already present');
     }
 
+    // An autonomous run must outlive its session (autonomous-run-outlives-session).
+    // An agent whose resume-queue section predates this fix doesn't know a
+    // machine RENAME now self-heals the revival lock, or that a disabled revival
+    // queue surfaces on /guards — so it would tell the user a silently-disabled
+    // queue "shouldn't happen" (Agent Awareness standard). Sniffed on a unique
+    // phrase so it appends even when the parent section is already present.
+    if (content.includes('/sessions/resume-queue') && !content.includes('autoHealStaleHostLock')) {
+      const outliveNote = `
+- **An autonomous run must outlive its session (autonomous-run-outlives-session).** The revival queue takes a host-local lock so two machines can't share its state. A machine RENAME used to leave a stale lock the queue mistook for a shared-volume conflict → it silently disabled the whole revival guard (the 2026-06-15 incident). Now: on the dev agent, a stale FOREIGN-host lock that is provably a single-host rename (host-local disk + dead pid + ≥5min-stale heartbeat) is AUTO-HEALED instead of disabling (fail-closed on any uncertainty; \`monitoring.resumeQueue.autoHealStaleHostLock\`, fleet-default false). And a disabled revival queue now self-reports to the guard-posture inventory — it shows as \`off-runtime-divergent\` on \`GET /guards\` and raises one aggregated attention item, never silently inert. Proactive: user asks "why didn't my autonomous run come back after a restart/rename?" → GET /guards (is the resume queue off-runtime-divergent?) + GET /sessions/resume-queue (disabled reason), then explain.`;
+      content += '\n' + outliveNote + '\n';
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added autonomous-run-outlives-session note');
+    } else if (content.includes('autoHealStaleHostLock')) {
+      result.skipped.push('CLAUDE.md: autonomous-run-outlives-session note already present');
+    }
+
     // Green-PR Auto-Merge (green-pr-automerge-enforcement). Content-sniffed on
     // the route path. Off fleet-wide; the awareness still ships so an agent on a
     // dev install where it's armed knows the hold contract + the levers.

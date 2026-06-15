@@ -6905,9 +6905,22 @@ export async function startServer(options: StartOptions): Promise<void> {
           entryTtlHours: rqCfg.entryTtlHours ?? 24,
           maxQueueSize: rqCfg.maxQueueSize ?? 50,
           includeOperatorKills: rqCfg.includeOperatorKills ?? false,
+          // FD5: auto-heal a stale single-host RENAME lock instead of disabling.
+          // Fleet code-default FALSE (touches a durable-state-corruption invariant);
+          // resolves TRUE on a development agent. The dryRun above still gates the
+          // actual lock rewrite (dryRun logs "would auto-heal" without rewriting).
+          autoHealStaleHostLock: rqCfg.autoHealStaleHostLock ?? resolveDevAgentGate(undefined, config),
         },
       );
       const queueStarted = resumeQueue.start();
+      // D2: register the guard-posture getter UNCONDITIONALLY (even when start()
+      // returned false), so a queue disabled by an un-healable foreign-host lock
+      // derives `off-runtime-divergent` (config on, runtime off → alerting class)
+      // instead of `missing` — a silently-disabled revival guard becomes loud.
+      {
+        const rqForGuard = resumeQueue;
+        guardRegistry.register('monitoring.resumeQueue.enabled', () => rqForGuard.guardStatus());
+      }
       if (!queueStarted) {
         console.log(pc.yellow(`  ResumeQueue disabled: ${resumeQueue.isDisabled()}`));
       } else {

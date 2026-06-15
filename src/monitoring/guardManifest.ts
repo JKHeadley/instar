@@ -92,6 +92,23 @@ export const GUARD_MANIFEST: readonly GuardManifestEntry[] = [
     description: 'Pressure-aware reaper of idle-but-alive sessions (the guard the Mini ran without for a week).',
   },
   {
+    key: 'monitoring.resumeQueue.enabled',
+    kind: 'config',
+    configPath: 'monitoring.resumeQueue.enabled',
+    // Code-defaulted true (#1157 keeps resume-queue keys OUT of ConfigDefaults to
+    // preserve the fleet flip; this is the runtime-fallback default).
+    defaultEnabled: true,
+    dryRunConfigPath: 'monitoring.resumeQueue.dryRun',
+    process: 'server',
+    // The runtime getter (ResumeQueue.guardStatus) registers UNCONDITIONALLY at
+    // boot, so a disabled queue (e.g. an un-healable foreign-host lock) derives
+    // off-runtime-divergent (config on, runtime off) rather than `missing` —
+    // the alerting class that makes a silently-disabled revival guard loud.
+    expectRuntime: true,
+    component: 'ResumeQueue',
+    description: 'Mid-work resume queue: revives a reaped registered autonomous run (#1157). A disabled queue reports off-runtime-divergent so it is never silently inert (an autonomous run must outlive its session).',
+  },
+  {
     key: 'monitoring.reapNotify.enabled',
     kind: 'config',
     configPath: 'monitoring.reapNotify.enabled',
