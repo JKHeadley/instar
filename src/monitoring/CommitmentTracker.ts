@@ -447,6 +447,15 @@ export class CommitmentTracker extends EventEmitter {
     externalKey?: string;
     beaconCreatedBySource?: 'skill' | 'api-loopback' | 'sentinel' | 'manual';
   }): Commitment {
+    // FD3 (action-claim-followthrough): idempotent create keyed on externalKey.
+    // If an OPEN (non-terminal) commitment already carries this externalKey,
+    // RETURN it instead of minting a duplicate — so a restated claim ("I'll
+    // restart it" across turns) updates one commitment rather than spawning N.
+    // Mirrors the live precedent at server.ts (getActive().some(externalKey===)).
+    if (input.externalKey) {
+      const existing = this.getActive().find((c) => c.externalKey === input.externalKey);
+      if (existing) return existing;
+    }
     const id = `CMT-${String(this.nextId++).padStart(3, '0')}`;
 
     // Auto-enable PromiseBeacon on time-promise commitments. If the
