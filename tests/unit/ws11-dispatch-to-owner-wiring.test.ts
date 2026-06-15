@@ -5,7 +5,10 @@
  * own suite; SessionRouter.test.ts covers the new skew gate's decision table.)
  *
  *  1. seamlessnessFlags roundtrip: heartbeat observation → getCapacity, with
- *     ABSENT = non-participant (older peer) and live-only passthrough.
+ *     ABSENT = non-participant (older peer); a rich beat propagates a flipped
+ *     flag (withdrawal), while a sparse liveness beat that OMITS the object
+ *     carries the last advert forward (STATESYNC-PEER-ADVERT-PROPAGATION-FIX —
+ *     the light-beat clobber that blocked cross-machine replication).
  *  2. The drain spawn-boundary ownership re-check seam (TOCTOU double-spawn
  *     guard) — source-level assertions on the server wiring, following the
  *     established dashboard/ws3 at-rest pattern.
@@ -37,11 +40,24 @@ describe('WS1.1 — seamlessnessFlags heartbeat roundtrip', () => {
     expect(reg.getCapacity('m_old')?.seamlessnessFlags).toBeUndefined(); // absent = non-participant
   });
 
-  it('the advertisement is LIVE-only: withdrawing it on a later heartbeat withdraws the capability', () => {
+  it('the advertisement is LIVE: flipping the flag false on a later (rich) heartbeat withdraws the capability', () => {
     const reg = makeRegistry();
     reg.recordHeartbeat({ machineId: 'm_new', selfReportedLastSeen: new Date().toISOString(), seamlessnessFlags: { ws11DeliverReceive: true } });
-    reg.recordHeartbeat({ machineId: 'm_new', selfReportedLastSeen: new Date().toISOString() }); // queue went dark
-    expect(reg.getCapacity('m_new')?.seamlessnessFlags).toBeUndefined();
+    // A withdrawal is a PRESENT object with the flag flipped — the self-heartbeat
+    // ALWAYS builds the seamlessnessFlags object (server.ts ~L14071), so a dark
+    // queue reports `ws11DeliverReceive: false`, it never OMITS the object. (An
+    // omitted object is only a sparse liveness beat, which now carries the last
+    // value forward — STATESYNC-PEER-ADVERT-PROPAGATION-FIX; see the
+    // MachinePoolRegistry seamlessnessFlags carry-forward.)
+    reg.recordHeartbeat({ machineId: 'm_new', selfReportedLastSeen: new Date().toISOString(), seamlessnessFlags: { ws11DeliverReceive: false } }); // queue went dark
+    expect(reg.getCapacity('m_new')?.seamlessnessFlags?.ws11DeliverReceive).toBe(false);
+  });
+
+  it('a SPARSE liveness beat (no seamlessnessFlags) carries the last advert forward (does NOT wipe it)', () => {
+    const reg = makeRegistry();
+    reg.recordHeartbeat({ machineId: 'm_new', selfReportedLastSeen: new Date().toISOString(), seamlessnessFlags: { ws11DeliverReceive: true } });
+    reg.recordHeartbeat({ machineId: 'm_new', selfReportedLastSeen: new Date().toISOString() }); // sparse liveness echo — omits flags
+    expect(reg.getCapacity('m_new')?.seamlessnessFlags?.ws11DeliverReceive).toBe(true); // carried forward
   });
 });
 

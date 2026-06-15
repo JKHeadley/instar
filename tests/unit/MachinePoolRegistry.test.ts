@@ -179,3 +179,111 @@ describe('MachinePoolRegistry — quotaState passthrough (quota-aware placement)
     expect(reg.getCapacity('m1')?.quotaState).toBeUndefined();
   });
 });
+
+// STATESYNC-PEER-ADVERT-PROPAGATION-FIX (root-caused live Laptop↔Mini, 2026-06-14):
+// the HTTP-pulled stateSyncReceive advert was being WIPED every 30s by refreshPool's
+// sparse `{machineId,selfReportedLastSeen}` liveness echo (recordHeartbeat replaced obs
+// wholesale), so the flag-coherence gate falsely read "peer cannot receive" and blocked
+// cross-machine replication. recordHeartbeat now carries seamlessnessFlags forward across
+// a beat that OMITS it — the same pattern guardPosture already uses — while a genuine
+// withdrawal (a present object with the flag flipped) still propagates.
+describe('MachinePoolRegistry — seamlessnessFlags carry-forward (light-beat clobber fix)', () => {
+  const machines = [
+    { machineId: 'm_mini', nickname: 'Mac Mini' },
+    { machineId: 'm_laptop', nickname: 'Laptop' },
+  ];
+  function mk(now: () => number) {
+    return new MachinePoolRegistry({
+      listMachines: () => machines,
+      clockSkewToleranceMs: 300_000,
+      failoverThresholdMs: 120_000,
+      now,
+    });
+  }
+
+  it('a SPARSE liveness beat does NOT wipe a previously-pulled seamlessnessFlags (carry-forward)', () => {
+    let now = 1_000_000;
+    const reg = mk(() => now);
+    // Rich pull: the peer advertised it can receive these stores.
+    reg.recordHeartbeat({
+      machineId: 'm_mini',
+      selfReportedLastSeen: new Date(now).toISOString(),
+      loadAvg: 1.0,
+      seamlessnessFlags: { ws11DeliverReceive: true, stateSyncReceive: { learnings: true, knowledge: true } },
+    });
+    expect(reg.getCapacity('m_mini')?.seamlessnessFlags?.stateSyncReceive).toEqual({ learnings: true, knowledge: true });
+
+    // 30s sparse liveness echo (refreshPool L14095) — carries NO seamlessnessFlags.
+    now += 30_000;
+    reg.recordHeartbeat({ machineId: 'm_mini', selfReportedLastSeen: new Date(now).toISOString() });
+
+    // The pulled advert SURVIVES (was wiped before the fix → peer read as "cannot receive").
+    const cap = reg.getCapacity('m_mini');
+    expect(cap?.seamlessnessFlags?.stateSyncReceive).toEqual({ learnings: true, knowledge: true });
+    expect(cap?.online).toBe(true);
+  });
+
+  it('a GENUINE withdrawal (present object, flag flipped) PROPAGATES — no false carry-forward', () => {
+    let now = 1_000_000;
+    const reg = mk(() => now);
+    reg.recordHeartbeat({
+      machineId: 'm_mini',
+      selfReportedLastSeen: new Date(now).toISOString(),
+      seamlessnessFlags: { stateSyncReceive: { learnings: true } },
+    });
+    // The peer DISABLED the learnings store: it still emits a PRESENT object with the
+    // store removed (a rich beat ALWAYS builds the object — server.ts L14071). This is
+    // a real withdrawal and must NOT be masked by carry-forward.
+    now += 30_000;
+    reg.recordHeartbeat({
+      machineId: 'm_mini',
+      selfReportedLastSeen: new Date(now).toISOString(),
+      seamlessnessFlags: { stateSyncReceive: {} },
+    });
+    expect(reg.getCapacity('m_mini')?.seamlessnessFlags?.stateSyncReceive).toEqual({});
+  });
+
+  it('carry-forward is SCOPED to seamlessnessFlags — quotaState still clears on a sparse beat (fail-open preserved)', () => {
+    let now = 1_000_000;
+    const reg = mk(() => now);
+    reg.recordHeartbeat({
+      machineId: 'm_mini',
+      selfReportedLastSeen: new Date(now).toISOString(),
+      quotaState: { blocked: true, reason: 'busy' },
+      seamlessnessFlags: { stateSyncReceive: { learnings: true } },
+    });
+    now += 30_000;
+    reg.recordHeartbeat({ machineId: 'm_mini', selfReportedLastSeen: new Date(now).toISOString() });
+    const cap = reg.getCapacity('m_mini');
+    // seamlessnessFlags (fail-CLOSED) is carried forward; quotaState (fail-OPEN) is NOT.
+    expect(cap?.seamlessnessFlags?.stateSyncReceive).toEqual({ learnings: true });
+    expect(cap?.quotaState).toBeUndefined();
+  });
+
+  it('carry-forward is PER-PEER (correct for N ≥ 1) — a sparse beat for one peer does not touch another', () => {
+    let now = 1_000_000;
+    const reg = mk(() => now);
+    reg.recordHeartbeat({
+      machineId: 'm_mini',
+      selfReportedLastSeen: new Date(now).toISOString(),
+      seamlessnessFlags: { stateSyncReceive: { learnings: true } },
+    });
+    reg.recordHeartbeat({
+      machineId: 'm_laptop',
+      selfReportedLastSeen: new Date(now).toISOString(),
+      seamlessnessFlags: { stateSyncReceive: { knowledge: true } },
+    });
+    // A sparse beat for m_mini only.
+    now += 30_000;
+    reg.recordHeartbeat({ machineId: 'm_mini', selfReportedLastSeen: new Date(now).toISOString() });
+    expect(reg.getCapacity('m_mini')?.seamlessnessFlags?.stateSyncReceive).toEqual({ learnings: true });
+    expect(reg.getCapacity('m_laptop')?.seamlessnessFlags?.stateSyncReceive).toEqual({ knowledge: true });
+  });
+
+  it('no prior pull → a sparse beat does NOT fabricate a seamlessnessFlags (nothing to carry)', () => {
+    const now = 1_000_000;
+    const reg = mk(() => now);
+    reg.recordHeartbeat({ machineId: 'm_mini', selfReportedLastSeen: new Date(now).toISOString() });
+    expect(reg.getCapacity('m_mini')?.seamlessnessFlags).toBeUndefined();
+  });
+});

@@ -202,7 +202,24 @@ export class MachinePoolRegistry {
       posture = { block: obs.guardPosture, receivedAtMs: nowMs };
       this.d.postureStore?.record(obs.machineId, obs.guardPosture, nowMs);
     }
-    this.observed.set(obs.machineId, { routerReceivedAtMs: nowMs, obs, skew: next, posture });
+    // seamlessnessFlags carry-forward (the SAME pattern as `posture` above): a
+    // LIGHT/liveness beat that OMITS seamlessnessFlags (e.g. refreshPool's 30s
+    // sparse `{machineId, selfReportedLastSeen}` echo) must NOT erase a peer's
+    // last pulled capability — otherwise the HTTP-pulled stateSyncReceive advert
+    // is wiped every 30s and the flag-coherence gate falsely reads "peer cannot
+    // receive", blocking cross-machine replication (root-caused live Laptop↔Mini,
+    // 2026-06-14). A GENUINE rich beat ALWAYS builds the object (server.ts
+    // ~L14071) — a withdrawn sub-capability flips its boolean to false INSIDE a
+    // present object, never omitting it — so carry-forward preserves a real
+    // capability across our own synthetic beats and never strands a withdrawn
+    // one. Field-specific (not a generic deep-merge) by design: merging stale
+    // fail-OPEN fields like quotaState forward would regress placement. A fully
+    // offline peer still ages out via routerReceivedAtMs → online:false.
+    const obsToStore: HeartbeatObservation =
+      obs.seamlessnessFlags === undefined && prev?.obs.seamlessnessFlags !== undefined
+        ? { ...obs, seamlessnessFlags: prev.obs.seamlessnessFlags }
+        : obs;
+    this.observed.set(obs.machineId, { routerReceivedAtMs: nowMs, obs: obsToStore, skew: next, posture });
     if (sideEffect === 'removed') {
       this.d.onClockQuarantine?.(
         obs.machineId,
@@ -267,9 +284,15 @@ export class MachinePoolRegistry {
       clockSkewStatus: live?.skew.status ?? 'ok',
       quotaState: live?.obs.quotaState,
       inboundQueue: live?.obs.inboundQueue,
-      // WS1.1: capability advertisement passthrough. LIVE observation only —
-      // a peer that goes dark stops advertising (no durable fallback), which
-      // is the safe direction: senders queue instead of forwarding blind.
+      // WS1.1: capability advertisement passthrough. Memory-only (lost on a
+      // local restart, like posture's in-memory half — no durable disk
+      // fallback): a peer that goes dark stops advertising and ages out of
+      // `online`, the safe direction. recordHeartbeat carries the last pulled
+      // value forward across our OWN sparse liveness beats (see its
+      // carry-forward note), so a 30s `{machineId,selfReportedLastSeen}` echo no
+      // longer erases an HTTP-pulled stateSyncReceive advert. A genuine
+      // withdrawal flips a boolean inside a still-present object and DOES
+      // propagate.
       seamlessnessFlags: live?.obs.seamlessnessFlags,
       // Guard posture: live observation first, durable last-known second —
       // a machine with no posture EVER received carries neither field

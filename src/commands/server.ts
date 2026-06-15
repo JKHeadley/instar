@@ -16073,39 +16073,20 @@ export async function startServer(options: StartOptions): Promise<void> {
             fetchPeerCapacity: async (machineId, url) => {
               const res = await meshClient.send({ machineId, url }, { type: 'session-status' }, 0);
               if (res.ok && res.result && typeof res.result === 'object') {
-                const cap = res.result as {
-                  selfReportedLastSeen?: string;
-                  loadAvg?: number;
-                  journalAdvert?: Record<string, Record<string, { incarnation: string; lastSeq: number }>>;
-                  commitmentsAdvert?: { incarnation: string; replicationSeq: number };
-                  preferencesAdvert?: { incarnation: string; replicationSeq: number };
-                  quotaState?: { blocked: boolean; blockedUntil?: string; reason?: string };
-                  guardPosture?: import('../core/types.js').GuardPostureSummary;
-                };
-                const journalAdvert = _unwrapPeerJournalAdvert(machineId, cap.journalAdvert);
-                // #930 sibling (live, v1.3.369): the commitments advert was
-                // parsed AWAY here — served by the peer, dropped by this
-                // narrowing return — so driveCommitmentsSync never fired and
-                // zero replicas ever landed. Pass it through.
-                // A2 (live, v1.3.384): the SAME narrowing also dropped the
-                // peer's quotaState (its getCapacity(self) includes it), so the
-                // router only ever saw its OWN quota and quota-aware placement
-                // (#804) could never avoid a rate-limited PEER — the original
-                // EXO failure. Pass it through too. Absent = not blocked.
-                return {
-                  selfReportedLastSeen: cap.selfReportedLastSeen,
-                  loadAvg: cap.loadAvg,
-                  journalAdvert,
-                  ...(cap.commitmentsAdvert ? { commitmentsAdvert: cap.commitmentsAdvert } : {}),
-                  // §WS2.1 sibling pass-through (the #930/A2 narrowing lesson): the
-                  // peer's preferences advert is served but would be dropped here
-                  // without this, so drivePreferencesSync would never fire.
-                  ...(cap.preferencesAdvert ? { preferencesAdvert: cap.preferencesAdvert } : {}),
-                  ...(cap.quotaState ? { quotaState: cap.quotaState } : {}),
-                  // Guard posture rides the same pass-through (the A2 narrowing
-                  // lesson): dropping it here would blind the pool to peers' posture.
-                  ...(cap.guardPosture ? { guardPosture: cap.guardPosture } : {}),
-                };
+                // The journal advert is the one slice that needs closure context
+                // (the machine-id-keyed unwrap), so it is computed HERE; the rest
+                // of the narrowing — commitmentsAdvert (#930), quotaState (A2/#804),
+                // preferencesAdvert (WS2.1), guardPosture, and seamlessnessFlags
+                // (THIS fix, the 4th instance of the narrowing-return-forgets-a-field
+                // class) — is the SINGLE shared `narrowSessionStatusToPeerCapacity`
+                // pass-through that the peer-presence round-trip test also runs, so
+                // the test proves the REAL mapping and a forgotten field can't recur
+                // silently (the wiring-integrity ratchet asserts over this helper).
+                const journalAdvert = _unwrapPeerJournalAdvert(
+                  machineId,
+                  (res.result as { journalAdvert?: Record<string, Record<string, { incarnation: string; lastSeq: number }>> }).journalAdvert,
+                );
+                return presenceMod.narrowSessionStatusToPeerCapacity(res.result, journalAdvert);
               }
               return null;
             },
