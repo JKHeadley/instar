@@ -40,7 +40,7 @@ export const DEFAULT_MAX_PENDING_PER_COMMITMENT = 4;
 export const DEFAULT_MAX_PENDING_PER_OWNER = 64;
 export const DEFAULT_PENDING_MUTATION_TTL_DAYS = 7;
 
-export type CommitmentMutateOp = 'deliver' | 'withdraw' | 'resume' | 'patch-beacon';
+export type CommitmentMutateOp = 'deliver' | 'withdraw' | 'resume' | 'patch-beacon' | 'probe' | 'transition';
 
 export type MutateVerdict =
   | 'applied'
@@ -129,6 +129,38 @@ export async function applyOwnerMutation(
       if (!Object.keys(patch).length) return { verdict: 'idempotent-noop', status: existing.status };
       const r = await tracker.mutate(payload.id, (c) => ({ ...c, ...patch } as Commitment));
       return { verdict: 'applied', status: r.status, ...(stale ? { staleObservation: true } : {}) };
+    }
+    case 'transition': {
+      // C1+C2 §4.1 — guarded owner⟂blockedOn transition. transitionState()
+      // re-runs the well-formedness gate and throws on an invalid new state.
+      if (TERMINAL.has(existing.status)) {
+        return { verdict: 'invalid-transition', status: existing.status, ...(stale ? { staleObservation: true } : {}) };
+      }
+      try {
+        const r = tracker.transitionState(payload.id, {
+          owner: typeof payload.args?.owner === 'string' ? payload.args.owner : undefined,
+          blockedOn: typeof payload.args?.blockedOn === 'string' ? payload.args.blockedOn : undefined,
+          actionClass: typeof payload.args?.actionClass === 'string' ? payload.args.actionClass : undefined,
+          supersededBy: typeof payload.args?.supersededBy === 'string' ? payload.args.supersededBy : undefined,
+        });
+        return { verdict: 'applied', status: r.status, ...(stale ? { staleObservation: true } : {}) };
+      } catch {
+        return { verdict: 'invalid-transition', status: existing.status };
+      }
+    }
+    case 'probe': {
+      // C1+C2 §4.4 — dependency-probe on an owner:'agent', blockedOn:'external'
+      // commitment. Non-terminal field write (resets the staleness window).
+      if (TERMINAL.has(existing.status)) {
+        return { verdict: 'invalid-transition', status: existing.status, ...(stale ? { staleObservation: true } : {}) };
+      }
+      const checked = typeof payload.args?.checked === 'string' ? payload.args.checked : '';
+      const readinessSignal =
+        typeof payload.args?.readinessSignal === 'string' ? payload.args.readinessSignal : '';
+      const r = tracker.recordProbe(payload.id, { checked, readinessSignal });
+      return r
+        ? { verdict: 'applied', status: r.status, ...(stale ? { staleObservation: true } : {}) }
+        : { verdict: 'invalid-transition', status: existing.status };
     }
     default:
       return { verdict: 'invalid-transition', status: existing.status };

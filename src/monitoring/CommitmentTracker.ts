@@ -60,6 +60,50 @@ export interface Commitment {
   /** Source: 'agent' (self-registered) or 'sentinel' (detected by LLM scanner) */
   source?: 'agent' | 'sentinel' | 'manual';
 
+  // ── C1+C2 "The Agent Carries the Loop" state model (owner ⟂ blockedOn) ──
+  // Two ORTHOGONAL fields (spec agent-owned-followthrough §4.1, FD1/FD6):
+  // `owner` = who drives the next action; `blockedOn` = what it waits on.
+  // Agent-declared, NEVER regex-auto-classified. Back-filled on load
+  // (owner ??= 'agent', blockedOn ??= 'none') and clamped on commitments-sync
+  // receive. `owner`/`blockedOn` are immutable via plain PATCH (a transition
+  // goes through the guarded /commitments/:id/transition route that re-runs the
+  // record()-time well-formedness gates).
+  /** Who drives the next action. Default 'agent' (the agent owns follow-through). */
+  owner?: 'agent' | 'user';
+  /** What the next action waits on. Default 'none'. */
+  blockedOn?: 'none' | 'external' | 'user-input' | 'user-authorization';
+  /**
+   * For an owner:'agent' commitment whose work is side-effecting: the agent's
+   * self-declared action class. INERT in C1+C2 (well-formedness-validated only,
+   * no runtime consumer); forward-compatible plumbing for the C3 ratchet
+   * follow-on (agent-autonomy-ratchet). Side-effect authority remains the
+   * existing tool-call-time external-operation-gate, unchanged by this feature.
+   */
+  actionClass?: string;
+  /**
+   * For owner:'agent', blockedOn:'external': the last observable dependency-probe
+   * recorded by the agent's own session (via POST /commitments/:id/probe). A
+   * fresh probe resets the external-block staleness window (§4.4); it never
+   * resets the absolute lifetime ceiling. Observation Needs Structure — the
+   * refused-without-it artifact that makes "monitoring" falsifiable.
+   */
+  lastProbe?: { at: string; checked: string; readinessSignal: string };
+  /**
+   * Set when the external-block staleness governor (§4.4) has dead-lettered this
+   * commitment (raised the ONE operator Attention item). Dedupes the dead-letter
+   * so it fires once per stale episode. Cleared by a fresh recordProbe (a renewed
+   * genuine wait re-arms the governor).
+   */
+  externalBlockDeadLetteredAt?: string;
+  /**
+   * Names a newer commitment that supersedes this one. Objective close-evidence
+   * for the §4.5 graveyard reconciler: when the named superseder reaches a
+   * terminal-success status, this commitment is auto-closed as superseded (a
+   * disposition with evidence — NOT an "abandoned" auto-close). Settable at
+   * record() or via the guarded transition route.
+   */
+  supersededBy?: string;
+
   // ── Type-specific fields ────────────────────────────────
 
   /** For config-change: the config path and expected value */
@@ -446,16 +490,30 @@ export class CommitmentTracker extends EventEmitter {
     ownerMachineId?: string;
     externalKey?: string;
     beaconCreatedBySource?: 'skill' | 'api-loopback' | 'sentinel' | 'manual';
+    // C1+C2 "The Agent Carries the Loop" state model (spec §4.1). Optional +
+    // additive; default owner='agent', blockedOn='none'.
+    owner?: 'agent' | 'user';
+    blockedOn?: 'none' | 'external' | 'user-input' | 'user-authorization';
+    actionClass?: string;
+    supersededBy?: string;
   }): Commitment {
     // FD3 (action-claim-followthrough): idempotent create keyed on externalKey.
     // If an OPEN (non-terminal) commitment already carries this externalKey,
     // RETURN it instead of minting a duplicate — so a restated claim ("I'll
     // restart it" across turns) updates one commitment rather than spawning N.
     // Mirrors the live precedent at server.ts (getActive().some(externalKey===)).
+    // Runs FIRST: a dup short-circuits before validation (the existing commitment
+    // was already well-formed when created).
     if (input.externalKey) {
       const existing = this.getActive().find((c) => c.externalKey === input.externalKey);
       if (existing) return existing;
     }
+    // ── C1+C2 well-formedness gates (spec §4.1) — STRUCTURAL only (Signal-vs-
+    // Authority): validate the agent's own declaration; do NOT classify prose;
+    // hold NO side-effect authority (that stays with the tool-call gate).
+    // Shared with transitionState() so a guarded transition re-runs the SAME gate.
+    const { owner, blockedOn, actionClass } = CommitmentTracker.normalizeState(input);
+
     const id = `CMT-${String(this.nextId++).padStart(3, '0')}`;
 
     // Auto-enable PromiseBeacon on time-promise commitments. If the
@@ -490,6 +548,11 @@ export class CommitmentTracker extends EventEmitter {
       violationCount: 0,
       topicId: input.topicId,
       source: input.source ?? 'agent',
+      // C1+C2 "The Agent Carries the Loop" state model (spec §4.1).
+      owner,
+      blockedOn,
+      ...(actionClass ? { actionClass } : {}),
+      ...(input.supersededBy ? { supersededBy: input.supersededBy } : {}),
       configPath: input.configPath,
       configExpectedValue: input.configExpectedValue,
       behavioralRule: input.behavioralRule,
@@ -652,6 +715,152 @@ export class CommitmentTracker extends EventEmitter {
       ...c,
       lastReplyAt: replyAt ?? new Date().toISOString(),
     }));
+  }
+
+  /**
+   * C1+C2 (spec agent-owned-followthrough §4.4) — record an observable
+   * dependency-probe on an owner:'agent', blockedOn:'external' commitment. The
+   * agent's own session calls this (via POST /commitments/:id/probe) when it
+   * checks the external dependency; a fresh probe RESETS the staleness window
+   * (but never the absolute lifetime ceiling). This is the "Observation Needs
+   * Structure" artifact that makes "monitoring" falsifiable. No-op (returns
+   * null) on a missing commitment, a terminal status, or a commitment that is
+   * not currently an external-block — a probe only means something for the
+   * state it governs.
+   */
+  recordProbe(id: string, probe: { checked: string; readinessSignal: string }): Commitment | null {
+    const existing = this.store.commitments.find(c => c.id === id);
+    if (!existing) return null;
+    if (['verified', 'violated', 'expired', 'withdrawn', 'delivered'].includes(existing.status)) {
+      return null;
+    }
+    if (existing.blockedOn !== 'external') return null;
+    const checked = String(probe.checked ?? '').trim().slice(0, 500);
+    const readinessSignal = String(probe.readinessSignal ?? '').trim().slice(0, 500);
+    if (!checked || !readinessSignal) return null;
+    const updated = this.mutateSync(id, c => ({
+      ...c,
+      lastProbe: { at: new Date().toISOString(), checked, readinessSignal },
+      // A fresh probe re-arms the governor: clear any prior dead-letter mark so a
+      // future re-stale fires again (a renewed genuine wait, not a stuck one).
+      externalBlockDeadLetteredAt: undefined,
+    }));
+    this.emit('probe-recorded', updated);
+    return updated;
+  }
+
+  /**
+   * C1+C2 §4.5 — evidence-gated graveyard reconciler. Auto-closes a pending
+   * commitment ONLY on objective evidence: its `supersededBy` names a commitment
+   * that has reached a terminal-SUCCESS status (verified | delivered). It NEVER
+   * closes a row that merely looks stale — "abandoned" is never an auto-close
+   * (CMT-1101 scar); evidence-less stale rows route to agent-drive / surface via
+   * the give-up + the external-block governor. Bounded by maxClosesPerPass;
+   * dryRun computes the close set without mutating. Each close writes a
+   * disposition-evidence resolution. (Verification-method passes are handled by
+   * the continuous verify() sweep, not here — this adds the supersession
+   * evidence type + the bounded, dry-run-able, feature/lease-gated drain.)
+   */
+  reconcileGraveyard(opts: { maxClosesPerPass?: number; dryRun?: boolean } = {}): {
+    closed: string[];
+    wouldClose: string[];
+    scanned: number;
+  } {
+    const max = opts.maxClosesPerPass ?? 25;
+    const dryRun = opts.dryRun ?? false;
+    const TERMINAL_SUCCESS = new Set<CommitmentStatus>(['verified', 'delivered']);
+    const closed: string[] = [];
+    const wouldClose: string[] = [];
+    let scanned = 0;
+    for (const c of this.getActive()) {
+      if (closed.length >= max || wouldClose.length >= max) break;
+      if (c.status !== 'pending') continue;
+      if (!c.supersededBy) continue; // no objective evidence → NEVER auto-close
+      scanned++;
+      const superseder = this.store.commitments.find(s => s.id === c.supersededBy);
+      if (!superseder || !TERMINAL_SUCCESS.has(superseder.status)) continue; // evidence not present yet
+      if (dryRun) { wouldClose.push(c.id); continue; }
+      this.mutateSync(c.id, prev => ({
+        ...prev,
+        status: 'withdrawn' as CommitmentStatus,
+        resolvedAt: new Date().toISOString(),
+        resolution: `superseded-by-${c.supersededBy} (auto-reconciled: superseder is ${superseder.status})`,
+      }));
+      closed.push(c.id);
+      this.emit('graveyard-reconciled', { id: c.id, supersededBy: c.supersededBy, superseder: superseder.id });
+    }
+    return { closed, wouldClose, scanned };
+  }
+
+  /**
+   * C1+C2 §4.1 — STRUCTURAL well-formedness validator for the owner⟂blockedOn
+   * state. Shared by record() and transitionState() so a guarded transition
+   * re-runs the SAME gate. Throws on an invalid enum or a blank
+   * user-authorization. Never classifies prose; holds no side-effect authority.
+   */
+  static normalizeState(input: { owner?: string; blockedOn?: string; actionClass?: string }): {
+    owner: 'agent' | 'user';
+    blockedOn: 'none' | 'external' | 'user-input' | 'user-authorization';
+    actionClass?: string;
+  } {
+    const OWNERS = ['agent', 'user'];
+    const BLOCKED_ON = ['none', 'external', 'user-input', 'user-authorization'];
+    const owner = (input.owner ?? 'agent') as 'agent' | 'user';
+    const blockedOn = (input.blockedOn ?? 'none') as
+      | 'none' | 'external' | 'user-input' | 'user-authorization';
+    if (!OWNERS.includes(owner)) {
+      throw new Error(`invalid owner '${owner}' (expected agent|user)`);
+    }
+    if (!BLOCKED_ON.includes(blockedOn)) {
+      throw new Error(
+        `invalid blockedOn '${blockedOn}' (expected none|external|user-input|user-authorization)`,
+      );
+    }
+    const actionClass =
+      typeof input.actionClass === 'string' && input.actionClass.trim().length > 0
+        ? input.actionClass.trim()
+        : undefined;
+    if (blockedOn === 'user-authorization' && !actionClass) {
+      throw new Error(
+        "blockedOn:'user-authorization' requires a non-empty actionClass naming the privileged action being authorized",
+      );
+    }
+    return { owner, blockedOn, actionClass };
+  }
+
+  /**
+   * C1+C2 §4.1 — guarded in-place state transition (round-4 codex #4: blanket
+   * immutability is too rigid; real commitments change as a dependency resolves /
+   * auth is granted / the agent takes ownership back). Re-runs the well-formedness
+   * gate on the NEW combined (current+patch) state and applies it IN PLACE — no
+   * close-and-reopen, so the commitment id + its existing history are preserved.
+   * Rejects a terminal commitment. Throws on an invalid new state (route → 400).
+   */
+  transitionState(
+    id: string,
+    patch: { owner?: string; blockedOn?: string; actionClass?: string; supersededBy?: string },
+  ): Commitment {
+    const existing = this.store.commitments.find(c => c.id === id);
+    if (!existing) throw new Error(`Commitment ${id} not found`);
+    if (['verified', 'violated', 'expired', 'withdrawn', 'delivered'].includes(existing.status)) {
+      throw new Error(`Commitment ${id} is terminal (${existing.status}) — cannot transition state`);
+    }
+    const { owner, blockedOn, actionClass } = CommitmentTracker.normalizeState({
+      owner: patch.owner ?? existing.owner,
+      blockedOn: patch.blockedOn ?? existing.blockedOn,
+      actionClass: patch.actionClass ?? existing.actionClass,
+    });
+    const updated = this.mutateSync(id, c => ({
+      ...c,
+      owner,
+      blockedOn,
+      actionClass,
+      ...(patch.supersededBy !== undefined
+        ? { supersededBy: patch.supersededBy.trim() || undefined }
+        : {}),
+    }));
+    this.emit('state-transitioned', { id, owner, blockedOn });
+    return updated;
   }
 
   /**
@@ -1407,6 +1616,14 @@ export class CommitmentTracker extends EventEmitter {
             // as 0 — backfilling here keeps the on-disk representation
             // consistent with what the engine expects.
             if (c.redriveCount === undefined) c.redriveCount = 0;
+            // C1+C2 "The Agent Carries the Loop" back-fill (spec §4.7).
+            // Default owner→'agent' (the agent carries the loop) and
+            // blockedOn→'none'. NEVER silently classify a legacy row as
+            // 'user-authorization' (that would invent an operator-approval
+            // obligation that was never made). actionClass/lastProbe stay
+            // absent for legacy rows (optional, read as undefined).
+            if (c.owner === undefined) c.owner = 'agent';
+            if (c.blockedOn === undefined) c.blockedOn = 'none';
           }
           // Bump on-disk version tag; persisted on next saveStore().
           data.version = 2;

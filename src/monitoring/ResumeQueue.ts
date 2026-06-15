@@ -38,6 +38,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { execFileSync } from 'node:child_process';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 import { evidenceEligible, clampWorkEvidence, isAutoResumableEmergencyPauseReason } from '../core/WorkEvidence.js';
 
@@ -89,9 +90,60 @@ export interface ResurrectionTombstone {
   lastResumeAt?: string;
 }
 
+/**
+ * FD1 — Is the resume-queue state dir on a HOST-LOCAL filesystem (not a network/
+ * shared mount)? FAIL-CLOSED: anything we cannot positively confirm as local
+ * returns false, so a genuine shared volume is NEVER auto-healed (the two-hosts-
+ * one-volume corruption the host-lock invariant protects against). Portable
+ * device-column classification via `df -P` (field 1 of the data row):
+ *   - `/dev/...`           → local disk          → true
+ *   - `host:/path` (NFS) / `//host/share` (SMB)  → network             → false
+ *   - df failure / timeout / unparseable / unknown source → false (fail-closed)
+ * Checked ONCE at lock-acquisition. Exported for the unit truth-table + canary.
+ */
+export function isStateDirHostLocalDefault(stateDir: string): boolean {
+  let out: string;
+  try {
+    out = execFileSync('df', ['-P', stateDir], { timeout: 3000, encoding: 'utf-8' });
+  } catch {
+    // @silent-fallback-ok — df unavailable/failed ⇒ cannot confirm local ⇒
+    // fail-closed to NOT-local (the safe direction: never auto-heal on doubt).
+    return false;
+  }
+  const lines = out.trim().split('\n');
+  if (lines.length < 2) return false; // unparseable → fail-closed
+  const source = lines[1]?.trim().split(/\s+/)[0] ?? '';
+  return classifyDfSourceLocal(source);
+}
+
+/**
+ * Pure FD1 classifier over the `df -P` device-source column. Exported for the
+ * unit truth-table + drift canary. FAIL-CLOSED: only a positively-recognized
+ * local block device is local; network signatures and anything unrecognized
+ * (map/tmpfs/empty) are NOT local.
+ */
+export function classifyDfSourceLocal(source: string): boolean {
+  if (!source) return false;
+  // Network/shared mount signatures → NOT local.
+  if (source.startsWith('//')) return false; // SMB/CIFS //host/share
+  if (/^[^/][^:]*:/.test(source)) return false; // NFS host:/path (a colon before any slash)
+  // Positively-local: a real block device.
+  if (source.startsWith('/dev/')) return true;
+  // map (devfs/autofs), tmpfs, anything else we don't recognize → fail-closed.
+  return false;
+}
+
 export interface ResumeQueueConfig {
   enabled: boolean;
   dryRun: boolean;
+  /**
+   * FD5 — auto-heal a stale FOREIGN-host lock when it is provably a single-host
+   * RENAME (local FS + dead pid + stale heartbeat), instead of disabling the
+   * queue. Fleet code-default FALSE (touches a durable-state-corruption
+   * invariant — never "cheap"); the dev-agent gate flips it true at the
+   * consumption site, dryRun-first. When false → today's disable-on-mismatch.
+   */
+  autoHealStaleHostLock: boolean;
   maxAttempts: number;
   maxResurrections: number;
   entryTtlHours: number;
@@ -102,6 +154,7 @@ export interface ResumeQueueConfig {
 export const DEFAULT_RESUME_QUEUE_CONFIG: ResumeQueueConfig = {
   enabled: true,
   dryRun: true, // code default — the fleet ships observe-only (decision 2)
+  autoHealStaleHostLock: false, // FD5 — fleet code-default OFF; dev-agent gate flips true
   maxAttempts: 3,
   maxResurrections: 2,
   entryTtlHours: 24,
@@ -154,6 +207,8 @@ export interface ResumeQueueDeps {
   hostname?: () => string;
   /** pid liveness probe (tests override). */
   pidAlive?: (pid: number) => boolean;
+  /** FD1 host-local FS probe (tests override; default `isStateDirHostLocalDefault`). */
+  isStateDirHostLocal?: (stateDir: string) => boolean;
 }
 
 /** Pure eligibility classifier (R2.2) — exported for tests. */
@@ -280,13 +335,95 @@ export class ResumeQueue {
           lock = {};
         }
         if (lock.hostname && lock.hostname !== hostname) {
-          // HARD INVARIANT: never probe/reclaim a foreign-host lock.
+          // A foreign-host lock. DEFAULT (HARD INVARIANT): treat as a shared-
+          // volume conflict and disable WITHOUT probing (the original behavior;
+          // a cross-host pid is meaningless here). FD1–FD5: ONLY when auto-heal
+          // is ENABLED do we probe to distinguish a single-host RENAME (provably
+          // local FS + dead pid + stale heartbeat) and self-heal — fail-closed.
+          let fsLocal = false;
+          let pidDead = false;
+          let foreignHeartbeatStale = false;
+          if (this.cfg.autoHealStaleHostLock) {
+            const foreignMtime = (() => {
+              try {
+                return fs.statSync(this.lockPath).mtimeMs;
+              } catch {
+                // @silent-fallback-ok — unreadable mtime ⇒ heartbeat treated as
+                // stale (one of three conjunctive conditions; FS-local still gates).
+                return 0;
+              }
+            })();
+            foreignHeartbeatStale = this.now() - foreignMtime >= 5 * 60_000;
+            const isHostLocal = this.deps.isStateDirHostLocal ?? isStateDirHostLocalDefault;
+            // FD2: FS-local is DISPOSITIVE and evaluated first. A foreign lock on
+            // a non-local/unknown FS is treated as a genuine shared-volume case.
+            fsLocal = (() => {
+              try {
+                return isHostLocal(this.deps.stateDir);
+              } catch {
+                // @silent-fallback-ok — detector threw ⇒ cannot confirm local ⇒
+                // fail-closed (never auto-heal on doubt).
+                return false;
+              }
+            })();
+            // Only probe the pid once FS-local is confirmed — preserves the
+            // "never pid-probe a genuine foreign/shared-volume lock" invariant.
+            pidDead = fsLocal && (typeof lock.pid !== 'number' || !pidAlive(lock.pid));
+          }
+          const renameSafe = fsLocal && pidDead && foreignHeartbeatStale;
+          if (this.cfg.autoHealStaleHostLock && renameSafe) {
+            if (this.cfg.dryRun) {
+              // dryRun: log what we WOULD do, do NOT rewrite, then disable. The
+              // surface still fires below-equivalent here, so it is never silent.
+              this.audit({
+                event: 'lock-foreign-host-would-autoheal',
+                lockHost: lock.hostname,
+                thisHost: hostname,
+                fsLocal,
+                pidDead,
+                foreignHeartbeatStale,
+              });
+              this.deps.raiseAggregated?.(
+                'lock-foreign-host-would-autoheal',
+                `resume-queue WOULD auto-heal a stale rename lock from host "${lock.hostname}" → "${hostname}" (dryRun: not rewritten).`,
+              );
+              this.disabledReason =
+                `resume-queue disabled (dryRun): WOULD auto-heal stale rename lock from "${lock.hostname}" → "${hostname}" ` +
+                `(fsLocal, pid dead, heartbeat stale). Set dryRun:false to enable the self-heal.`;
+              return false;
+            }
+            // FD4: atomic first-writer-wins takeover. Loser re-evaluates next
+            // start (never blind-overwrites).
+            const took = this.takeOverLockAtomic(hostname);
+            this.audit({ event: 'lock-foreign-host-autohealed', lockHost: lock.hostname, thisHost: hostname, took });
+            if (took) {
+              this.lockHeld = true;
+              this.disabledReason = null;
+              return true;
+            }
+            this.disabledReason =
+              `resume-queue disabled: lost the atomic takeover race healing a rename lock from "${lock.hostname}". Re-evaluates next start.`;
+            this.deps.raiseAggregated?.('lock-autoheal-lost-race', this.disabledReason);
+            return false;
+          }
+          // Not a safe rename (or auto-heal off): disable + LOUD surface.
+          const declined = this.cfg.autoHealStaleHostLock
+            ? `Auto-heal declined (fsLocal=${fsLocal}, pidDead=${pidDead}, heartbeatStale=${foreignHeartbeatStale}). `
+            : '';
           this.disabledReason =
             `resume-queue disabled: lock at ${this.lockPath} belongs to host "${lock.hostname}" ` +
             `(this host: "${hostname}"). The queue's state dir must be host-local; shared volumes are ` +
-            `unsupported. Recovery: after verifying nothing else uses this state dir (host renamed, or ` +
+            `unsupported. ${declined}Recovery: after verifying nothing else uses this state dir (host renamed, or ` +
             `restored from a backup), delete state/resume-queue.lock and restart.`;
-          this.audit({ event: 'lock-foreign-host', lockHost: lock.hostname, thisHost: hostname });
+          this.audit({
+            event: 'lock-foreign-host',
+            lockHost: lock.hostname,
+            thisHost: hostname,
+            autoHeal: this.cfg.autoHealStaleHostLock,
+            fsLocal,
+            pidDead,
+            foreignHeartbeatStale,
+          });
           this.deps.raiseAggregated?.('lock-foreign-host', this.disabledReason);
           return false;
         }
@@ -323,6 +460,51 @@ export class ResumeQueue {
       this.disabledReason = `resume-queue disabled: lock acquisition raised: ${err instanceof Error ? err.message : String(err)}`;
       return false;
     }
+  }
+
+  /**
+   * FD4 — atomic first-writer-wins takeover of a classified-stale lock. Removes
+   * the stale lock then creates the new one with O_EXCL ('wx'): exactly one
+   * racer's create succeeds; a concurrent boot gets EEXIST → false (it disables
+   * and re-evaluates next start, never blind-overwrites). The next-acquire
+   * live-pid + heartbeat check backstops the ultra-narrow double-unlink window.
+   */
+  private takeOverLockAtomic(hostname: string): boolean {
+    try {
+      try {
+        SafeFsExecutor.safeUnlinkSync(this.lockPath, { operation: 'ResumeQueue.takeOverLockAtomic stale-rename heal' });
+      } catch {
+        // @silent-fallback-ok — already gone (another racer removed it) is fine;
+        // the 'wx' create below is the actual mutual-exclusion gate.
+      }
+      const fd = fs.openSync(this.lockPath, 'wx');
+      try {
+        fs.writeSync(fd, JSON.stringify({ pid: process.pid, hostname }));
+      } finally {
+        fs.closeSync(fd);
+      }
+      return true;
+    } catch {
+      // @silent-fallback-ok — EEXIST (lost the race) or any error ⇒ we did NOT
+      // take the lock; caller disables and re-evaluates. The safe direction.
+      return false;
+    }
+  }
+
+  /**
+   * D2 — guard-posture self-report. `enabled:false` whenever the queue is
+   * disabled (e.g. an un-healable foreign-host lock), so the guard-posture
+   * inventory classifies a disabled revival queue as `off-runtime-divergent`
+   * (config on, runtime off → the alerting class) instead of it being visible
+   * only as a `disabled:` string. ALWAYS reflects live runtime state — NOT
+   * dryRun-gated (a disabled guard must be loud even during a dryRun soak).
+   */
+  guardStatus(): { enabled: boolean; dryRun: boolean; reason?: string } {
+    return {
+      enabled: this.cfg.enabled && !this.disabledReason,
+      dryRun: this.cfg.dryRun,
+      reason: this.disabledReason ?? undefined,
+    };
   }
 
   private load(): void {

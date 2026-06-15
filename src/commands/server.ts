@@ -3827,6 +3827,42 @@ export async function startServer(options: StartOptions): Promise<void> {
       });
     }
 
+    // WS2.6 SEND-SIDE: userRegistry (a PII kind). Unlike the seamed memory stores,
+    // there is NO single canonical UserManager — telegram (send-only + normal mode)
+    // and slack each construct their OWN long-lived instance against the same
+    // users.json. This shared attacher wires the journal-backed emitter to each so a
+    // user written on ANY in-process path replicates (upsertUser→persistUsers fires
+    // emitPut for every survivor; removeUser fires the channel-keyed emitDelete
+    // tombstone). Channel-keyed identity — the local userId NEVER crosses the wire.
+    // Dark by default ⇒ no-op. SECONDARY paths NOT covered by this in-process emitter
+    // (documented in the side-effects review): the Slack org-permission admin route
+    // (per-request UserManager in routes.ts, would need RouteContext plumbing) and
+    // the `instar user add` CLI (a separate process — the snapshot reads the journal,
+    // not users.json). REQ-M14: a replicated user record is NEVER authoritative for
+    // inbound-principal resolution — the local channel index always wins.
+    const _userReplStores = replicatedRecordEmitter
+      ? await import('../core/UserRegistryReplicatedStore.js')
+      : null;
+    const attachUserReplication = (um: UserManager): void => {
+      if (!replicatedRecordEmitter || !_userReplStores) return;
+      const emitter = replicatedRecordEmitter;
+      const { USER_STORE_KEY, deriveUserRecordKey, buildUserRecordData, buildUserTombstoneData } = _userReplStores;
+      um.setUserReplicationEmitter({
+        emitPut: (rec) =>
+          emitter.emit(
+            USER_STORE_KEY,
+            deriveUserRecordKey(rec.channels),
+            (hlc, origin, observed) => buildUserRecordData({ record: rec, hlc, origin, observed }),
+          ),
+        emitDelete: (channels, deletedAt) =>
+          emitter.emit(
+            USER_STORE_KEY,
+            deriveUserRecordKey(channels),
+            (hlc, origin, observed) => buildUserTombstoneData({ channels, hlc, origin, deletedAt, observed }),
+          ),
+      });
+    };
+
     const selfStateSyncReceive = (): Record<string, boolean> => {
       const out: Record<string, boolean> = {};
       const stores = _stateSyncStoresResolved;
@@ -5279,6 +5315,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       // "--no-telegram (registry-only) injection" branch and slash-commands
       // reached the AI session as plain chat text.
       const userManagerSendOnly = new UserManager(config.stateDir, config.users);
+      attachUserReplication(userManagerSendOnly); // WS2.6 send-side (dark by default)
       _fixDeps = { state, liveConfig, sessionManager, telegram, config };
       wireTelegramRouting(telegram, sessionManager, quotaTracker, topicMemory, userManagerSendOnly,
         (topicId, text) => handleFixCommand(topicId, text, _fixDeps!),
@@ -5409,6 +5446,7 @@ export async function startServer(options: StartOptions): Promise<void> {
 
       // Initialize persistent UserManager for user identity resolution (Gap 8)
       const userManager = new UserManager(config.stateDir, config.users);
+      attachUserReplication(userManager); // WS2.6 send-side (dark by default)
 
       // Fix command dependencies — populated later when subsystems initialize.
       // Uses a mutable ref so wireTelegramRouting can capture it in a closure now.
@@ -5941,6 +5979,7 @@ export async function startServer(options: StartOptions): Promise<void> {
             // Own UserManager instance for verified-principal resolution (the
             // Telegram-block userManager is out of scope here). Reads users.json.
             const slackUserManager = new UserManager(config.stateDir, config.users);
+            attachUserReplication(slackUserManager); // WS2.6 send-side (dark by default)
             // ── Floor-action grants are read from the SIGNED Coordination Mandate ──
             // A MandateStore reader over the SAME file + SAME HMAC sign/verify deps as
             // the coordination engine in AgentServer (which is constructed later, so we
@@ -6866,9 +6905,22 @@ export async function startServer(options: StartOptions): Promise<void> {
           entryTtlHours: rqCfg.entryTtlHours ?? 24,
           maxQueueSize: rqCfg.maxQueueSize ?? 50,
           includeOperatorKills: rqCfg.includeOperatorKills ?? false,
+          // FD5: auto-heal a stale single-host RENAME lock instead of disabling.
+          // Fleet code-default FALSE (touches a durable-state-corruption invariant);
+          // resolves TRUE on a development agent. The dryRun above still gates the
+          // actual lock rewrite (dryRun logs "would auto-heal" without rewriting).
+          autoHealStaleHostLock: rqCfg.autoHealStaleHostLock ?? resolveDevAgentGate(undefined, config),
         },
       );
       const queueStarted = resumeQueue.start();
+      // D2: register the guard-posture getter UNCONDITIONALLY (even when start()
+      // returned false), so a queue disabled by an un-healable foreign-host lock
+      // derives `off-runtime-divergent` (config on, runtime off → alerting class)
+      // instead of `missing` — a silently-disabled revival guard becomes loud.
+      {
+        const rqForGuard = resumeQueue;
+        guardRegistry.register('monitoring.resumeQueue.enabled', () => rqForGuard.guardStatus());
+      }
       if (!queueStarted) {
         console.log(pc.yellow(`  ResumeQueue disabled: ${resumeQueue.isDisabled()}`));
       } else {
@@ -10662,6 +10714,13 @@ export async function startServer(options: StartOptions): Promise<void> {
           const escRawCfg = ((config as { monitoring?: { promiseBeacon?: { escalation?: Record<string, unknown> } } })
             .monitoring?.promiseBeacon?.escalation) ?? {};
           const escEnabled = resolveDevAgentGate(escRawCfg.enabled as boolean | undefined, config);
+          // ── C1+C2 "The Agent Carries the Loop" rollout (spec §4.8) ────────
+          // Dark-on-fleet / live-in-dryRun-on-dev via the developmentAgent gate;
+          // dryRun defaults true (the dark→live promotion is the operator's flip).
+          const aoftRawCfg = ((config as { commitments?: { agentOwnedFollowthrough?: Record<string, unknown> } })
+            .commitments?.agentOwnedFollowthrough) ?? {};
+          const aoftEnabled = resolveDevAgentGate(aoftRawCfg.enabled as boolean | undefined, config);
+          const aoftDryRun = aoftRawCfg.dryRun !== false;
           // I14 — spawn-surface idempotency: a duplicate revive for the SAME
           // attemptId (within the window) is a no-op, so a beacon-side marker
           // loss or a crash between persist and spawn cannot double-spawn.
@@ -10795,6 +10854,12 @@ export async function startServer(options: StartOptions): Promise<void> {
             // B2 turn-finished detection — "is the session still generating now?"
             looksActivelyWorking: (frame: string, name: string) =>
               _beaconLooksGeneratingNow(frame, sessionManager.frameworkForSession(name)),
+            // ── C1+C2 "The Agent Carries the Loop" (§4.2/§4.4/§4.5/§4.8) ──
+            agentOwnedFollowthrough: () => ({ enabled: aoftEnabled, dryRun: aoftDryRun }),
+            externalBlockWindowMs: aoftRawCfg.externalBlockWindowMs as number | undefined,
+            externalBlockCeilingMs: aoftRawCfg.externalBlockCeilingMs as number | undefined,
+            externalBlockSweepMs: aoftRawCfg.externalBlockSweepMs as number | undefined,
+            holdsLease: () => (leaseCoordinatorRef ? leaseCoordinatorRef.holdsLease() : true),
           });
           promiseBeacon.start();
           (globalThis as Record<string, unknown>).__instarPromiseBeacon = promiseBeacon;

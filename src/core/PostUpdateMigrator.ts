@@ -3755,6 +3755,15 @@ setTimeout(() => process.exit(0), 2000);
       result.upgraded.push('CLAUDE.md: added Real-Check Verification section');
     }
 
+    // The Agent Carries the Loop (agent-owned-followthrough C1+C2) — agent
+    // awareness for the owner⟂blockedOn commitment model + the probe + that the
+    // user is never status-pinged for an agent-owned commitment. Content-sniffed.
+    if (!content.includes('The Agent Carries the Loop')) {
+      content += `\n### The Agent Carries the Loop (commitment follow-through)\n\nA commitment is MY job to finish — never something the user has to remember or chase. Every commitment carries \`owner\` (agent|user) ⟂ \`blockedOn\` (none|external|user-input|user-authorization):\n- **owner:agent** → I drive it to closure; the user is NEVER status-pinged (the beacon suppresses my status sends). They hear from me only on a result.\n- **owner:agent, blockedOn:external** (waiting on a vendor/CI/calendar) → I monitor and record a dependency-probe each time I check (\`POST /commitments/:id/probe\` with \`{checked, readinessSignal}\`); a fresh probe resets the staleness window. If a wait goes silent past the window (or an absolute ceiling), ONE honest dead-letter surfaces — never a nagging stream, never silence.\n- **owner:user, blockedOn:user-input** → a genuine info/taste decision that is theirs: I surface it ONCE as a plain question, then wait.\n- **owner:user, blockedOn:user-authorization** → an approval I lack: surfaced ONCE (no self-grant).\n\nI declare owner/blockedOn at commitment creation; a later state change goes through \`POST /commitments/:id/transition\` (re-runs the gate, no close-and-reopen). I never park my own action on the user ("your call", "remember to") — the B-PARK/B-IDLEAK signals flag that for the outbound gate. Ships dark-on-fleet / live-in-dryRun-on-dev (\`commitments.agentOwnedFollowthrough\`). Constitution: "The Agent Carries the Loop".\n`;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added The Agent Carries the Loop section');
+    }
+
     // Self-Unblock Before Escalating (docs/specs/self-unblock-before-escalating.md,
     // CMT-1519) — Agent Awareness Standard + Migration Parity item 3. The reflex
     // LEADS WITH THE BOUNDARY (within permissions / org-granted scope), THEN "find a
@@ -5182,6 +5191,22 @@ When sessions are shut down autonomously (resource pressure, quota, age limits),
       result.upgraded.push('CLAUDE.md: added stale emergency-stop pause self-heal note');
     } else if (content.includes('autoResumeStalePause')) {
       result.skipped.push('CLAUDE.md: stale emergency-stop pause self-heal note already present');
+    }
+
+    // An autonomous run must outlive its session (autonomous-run-outlives-session).
+    // An agent whose resume-queue section predates this fix doesn't know a
+    // machine RENAME now self-heals the revival lock, or that a disabled revival
+    // queue surfaces on /guards — so it would tell the user a silently-disabled
+    // queue "shouldn't happen" (Agent Awareness standard). Sniffed on a unique
+    // phrase so it appends even when the parent section is already present.
+    if (content.includes('/sessions/resume-queue') && !content.includes('autoHealStaleHostLock')) {
+      const outliveNote = `
+- **An autonomous run must outlive its session (autonomous-run-outlives-session).** The revival queue takes a host-local lock so two machines can't share its state. A machine RENAME used to leave a stale lock the queue mistook for a shared-volume conflict → it silently disabled the whole revival guard (the 2026-06-15 incident). Now: on the dev agent, a stale FOREIGN-host lock that is provably a single-host rename (host-local disk + dead pid + ≥5min-stale heartbeat) is AUTO-HEALED instead of disabling (fail-closed on any uncertainty; \`monitoring.resumeQueue.autoHealStaleHostLock\`, fleet-default false). And a disabled revival queue now self-reports to the guard-posture inventory — it shows as \`off-runtime-divergent\` on \`GET /guards\` and raises one aggregated attention item, never silently inert. Proactive: user asks "why didn't my autonomous run come back after a restart/rename?" → GET /guards (is the resume queue off-runtime-divergent?) + GET /sessions/resume-queue (disabled reason), then explain.`;
+      content += '\n' + outliveNote + '\n';
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added autonomous-run-outlives-session note');
+    } else if (content.includes('autoHealStaleHostLock')) {
+      result.skipped.push('CLAUDE.md: autonomous-run-outlives-session note already present');
     }
 
     // Green-PR Auto-Merge (green-pr-automerge-enforcement). Content-sniffed on
