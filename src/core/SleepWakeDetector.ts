@@ -68,6 +68,31 @@ export interface SleepWakeDetectorConfig {
    * (the 2nd consecutive drift is already a storm). Set 0 to disable.
    */
   driftBurstSuppressFloor?: number;
+  /**
+   * If ANOTHER drift was recorded within this window (ms), a new SHORT drift is treated
+   * as CPU starvation and suppressed — even when it is NOT back-to-back. This catches the
+   * gap `driftBurstSuppressFloor` misses: a repeating ~2-minute false-sleep cycle, where
+   * many on-time ticks BETWEEN the drifts reset `consecutiveDrifts` to 0, so each drift
+   * looks "isolated" and never reaches the burst floor. A healthy host does not genuinely
+   * sleep-and-wake repeatedly every couple of minutes; repeated short drifts are the
+   * starvation signature. Long sleeps (>= longSleepFloorSeconds) are exempt. Default:
+   * 300000 (5 min). Set 0 to disable. (2026-06-15: sustained-saturation false-wake cascade.)
+   */
+  recentDriftWindowMs?: number;
+  /**
+   * If the host saw inbound user/mesh activity within this window (ms) of a drift, the
+   * host was demonstrably awake during that window, so a SHORT "sleep" drift overlapping
+   * recent activity is far more likely starvation than a real suspend — suppress it.
+   * Requires `recentActivityAt`; absent ⇒ this signal is a no-op. Long sleeps are exempt.
+   * Default: 120000 (2 min). Set 0 to disable.
+   */
+  activeHostWindowMs?: number;
+  /**
+   * Injectable provider of the wall-clock ms of the most recent inbound activity (a user
+   * message, a mesh event), or null if unknown. Feeds the active-host signal above.
+   * Absent ⇒ the active-host signal is a strict no-op (back-compat).
+   */
+  recentActivityAt?: () => number | null;
   /** Injectable system-load source (testing). Default: os.loadavg. */
   loadAvgProvider?: () => number[];
   /** Injectable CPU-count source (testing). Default: os.cpus().length. */
@@ -118,6 +143,12 @@ export class SleepWakeDetector extends EventEmitter {
    *  (2026-06-07: tunnel-restart storm from 10-42s drifts firing whenever loadRatio
    *  momentarily dipped below maxLoadRatio). */
   private consecutiveDrifts = 0;
+  /** Wall-clock ms of the most recent drift (consecutive OR not), or null. Feeds the
+   *  recent-drift suppressor that catches the non-back-to-back ~2min false-sleep cycle. */
+  private lastDriftAtMs: number | null = null;
+  private recentDriftWindowMs: number;
+  private activeHostWindowMs: number;
+  private recentActivityAt: (() => number | null) | null;
   private loadAvgProvider: () => number[];
   private cpuCountProvider: () => number;
   private now: () => number;
@@ -132,6 +163,13 @@ export class SleepWakeDetector extends EventEmitter {
     this.longSleepFloorSeconds = config.longSleepFloorSeconds ?? 300;
     this.minWakeIntervalMs = config.minWakeIntervalMs ?? 60000;
     this.driftBurstSuppressFloor = config.driftBurstSuppressFloor ?? 2;
+    // ON by default (300000) — this is the FIX for the false-wake-under-load cascade, not a
+    // new opt-in feature; shipping it disabled would leave the harmful detector bug in place.
+    // The fail-safe direction (suppress-on-doubt) + the long-sleep exemption (>=300s always
+    // emits) bound the risk; set to 0 to revert to exact pre-fix behavior (the rollback lever).
+    this.recentDriftWindowMs = config.recentDriftWindowMs ?? 300000;
+    this.activeHostWindowMs = config.activeHostWindowMs ?? 120000;
+    this.recentActivityAt = config.recentActivityAt ?? null;
     this.loadAvgProvider = config.loadAvgProvider ?? (() => os.loadavg());
     this.cpuCountProvider = config.cpuCountProvider ?? (() => os.cpus().length);
     this.now = config.nowProvider ?? (() => Date.now());
@@ -153,6 +191,11 @@ export class SleepWakeDetector extends EventEmitter {
       const isLongSleep = sleepDuration >= this.longSleepFloorSeconds;
       const loadRatio = this.currentLoadRatio();
       this.consecutiveDrifts += 1;
+      // Age of the PREVIOUS drift (computed before we stamp this one). A repeating
+      // false-sleep cycle is ~minutes apart — not back-to-back — so the consecutive
+      // counter resets between drifts and never catches it; this timestamp does.
+      const driftAgoMs = this.lastDriftAtMs !== null ? now - this.lastDriftAtMs : Infinity;
+      this.lastDriftAtMs = now;
 
       // Consecutive-drift burst = sustained CPU starvation, not sleep. A genuine sleep
       // is ONE isolated drift (the next on-time tick resets the counter); the 2nd+
@@ -169,6 +212,35 @@ export class SleepWakeDetector extends EventEmitter {
             `(>= ${this.driftBurstSuppressFloor}) = starvation burst, suppressing wake`,
         );
         return;
+      }
+
+      // Recent-drift memory: another drift within the window (even NOT back-to-back) =
+      // a repeating starvation cycle, not genuine sleep. This is the suppressor the
+      // consecutive-burst floor misses, because many on-time ticks between the ~2-min-apart
+      // drifts reset consecutiveDrifts to 0 (so each looks isolated). A real host does not
+      // sleep-and-wake repeatedly every few minutes. Long sleeps stay exempt.
+      if (!isLongSleep && this.recentDriftWindowMs > 0 && driftAgoMs < this.recentDriftWindowMs) {
+        this.recordSuppression('cpu-starvation', sleepDuration, loadRatio, now);
+        console.warn(
+          `[SleepWakeDetector] Drift ~${sleepDuration}s — prior drift ${Math.round(driftAgoMs / 1000)}s ago ` +
+            `(< ${Math.round(this.recentDriftWindowMs / 1000)}s) = repeating starvation cycle, suppressing wake`,
+        );
+        return;
+      }
+
+      // Active-host signal: inbound activity within the window means the host was awake
+      // during it, so a SHORT "sleep" drift overlapping recent activity is starvation, not
+      // a real suspend. No-op when no recentActivityAt provider is wired. Long sleeps exempt.
+      if (!isLongSleep && this.activeHostWindowMs > 0 && this.recentActivityAt) {
+        const lastActivityAt = this.recentActivityAt();
+        if (lastActivityAt !== null && now - lastActivityAt < this.activeHostWindowMs) {
+          this.recordSuppression('cpu-starvation', sleepDuration, loadRatio, now);
+          console.warn(
+            `[SleepWakeDetector] Drift ~${sleepDuration}s — host active ${Math.round((now - lastActivityAt) / 1000)}s ago ` +
+              `(< ${Math.round(this.activeHostWindowMs / 1000)}s) = awake under load, suppressing wake`,
+          );
+          return;
+        }
       }
 
       // Short drift under heavy CPU load = event-loop starvation, not sleep.

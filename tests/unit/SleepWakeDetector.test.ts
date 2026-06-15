@@ -59,22 +59,138 @@ describe('SleepWakeDetector', () => {
       expect(events).toHaveLength(0);
     });
 
-    it('detects multiple sleep/wake cycles', () => {
+    it('detects multiple distinct (long) sleep/wake cycles', () => {
+      // Two genuine distinct sleeps both emit. Uses LONG sleeps (>= longSleepFloorSeconds)
+      // so they are real-sleep-exempt — short drifts close together are now collapsed by the
+      // recent-drift suppressor (see the dedicated tests below), which is the intended fix.
       detector = new SleepWakeDetector({ checkIntervalMs: 1000, driftThresholdMs: 5000, minWakeIntervalMs: 0, loadAvgProvider: () => [0, 0, 0] });
       const events: unknown[] = [];
       detector.on('wake', (e) => events.push(e));
       detector.start();
 
-      // First sleep
-      simulateSleep(10000, 1000);
+      // First sleep (long → always emits)
+      simulateSleep(310000, 1000);
       expect(events).toHaveLength(1);
 
       // Normal ticks
       vi.advanceTimersByTime(1000);
       vi.advanceTimersByTime(1000);
 
-      // Second sleep
-      simulateSleep(20000, 1000);
+      // Second sleep (long → always emits)
+      simulateSleep(320000, 1000);
+      expect(events).toHaveLength(2);
+    });
+  });
+
+  // ── 2026-06-15: false-fire-under-load hardening (recent-drift + active-host) ──────────
+  describe('false-fire-under-load suppression', () => {
+    it('SUPPRESSES a repeating short-drift cycle that the consecutive-burst floor misses', () => {
+      // The bug: ~2-min-apart short drifts. Many on-time ticks BETWEEN them reset
+      // consecutiveDrifts to 0, so each looks isolated and never reaches the burst floor —
+      // yet it is a starvation cycle, not real sleep. recentDriftWindowMs catches it.
+      detector = new SleepWakeDetector({
+        checkIntervalMs: 1000, driftThresholdMs: 5000, minWakeIntervalMs: 0,
+        recentDriftWindowMs: 300000, loadAvgProvider: () => [0, 0, 0],
+      });
+      const events: unknown[] = [];
+      detector.on('wake', (e) => events.push(e));
+      detector.start();
+
+      // First short drift: no prior drift → emits (recovery happens once).
+      simulateSleep(25000, 1000);
+      expect(events).toHaveLength(1);
+
+      // ~2 min of on-time ticks (resets consecutiveDrifts to 0 between drifts).
+      for (let i = 0; i < 120; i++) vi.advanceTimersByTime(1000);
+
+      // Second short drift ~2 min later — NOT back-to-back, but within the recent-drift
+      // window → suppressed as a starvation cycle (this is the false-wake the cascade rode).
+      simulateSleep(25000, 1000);
+      expect(events).toHaveLength(1); // still 1 — the repeat was suppressed
+
+      // And a third, same story.
+      for (let i = 0; i < 120; i++) vi.advanceTimersByTime(1000);
+      simulateSleep(30000, 1000);
+      expect(events).toHaveLength(1);
+    });
+
+    it('STILL emits a genuinely isolated short sleep after a quiet period', () => {
+      // Symmetry: a real brief sleep with no recent drift must still fire (recovery essential).
+      detector = new SleepWakeDetector({
+        checkIntervalMs: 1000, driftThresholdMs: 5000, minWakeIntervalMs: 0,
+        recentDriftWindowMs: 300000, loadAvgProvider: () => [0, 0, 0],
+      });
+      const events: unknown[] = [];
+      detector.on('wake', (e) => events.push(e));
+      detector.start();
+
+      // Long quiet period of on-time ticks, then ONE short sleep → emits.
+      for (let i = 0; i < 30; i++) vi.advanceTimersByTime(1000);
+      simulateSleep(25000, 1000);
+      expect(events).toHaveLength(1);
+    });
+
+    it('STILL emits a long sleep even within the recent-drift window (real-sleep exempt)', () => {
+      detector = new SleepWakeDetector({
+        checkIntervalMs: 1000, driftThresholdMs: 5000, minWakeIntervalMs: 0,
+        recentDriftWindowMs: 300000, loadAvgProvider: () => [0, 0, 0],
+      });
+      const events: unknown[] = [];
+      detector.on('wake', (e) => events.push(e));
+      detector.start();
+
+      simulateSleep(25000, 1000);          // short drift, emits, stamps lastDriftAt
+      expect(events).toHaveLength(1);
+      for (let i = 0; i < 30; i++) vi.advanceTimersByTime(1000);
+      simulateSleep(320000, 1000);         // long sleep within window → still emits
+      expect(events).toHaveLength(2);
+    });
+
+    it('SUPPRESSES a short drift overlapping recent host activity (active-host signal)', () => {
+      let lastActivity = Date.now();
+      detector = new SleepWakeDetector({
+        checkIntervalMs: 1000, driftThresholdMs: 5000, minWakeIntervalMs: 0,
+        recentDriftWindowMs: 0, // isolate the active-host signal
+        activeHostWindowMs: 120000, recentActivityAt: () => lastActivity,
+        loadAvgProvider: () => [0, 0, 0],
+      });
+      const events: unknown[] = [];
+      detector.on('wake', (e) => events.push(e));
+      detector.start();
+
+      // Activity right now; a short drift moments later → host was awake → suppressed.
+      lastActivity = Date.now();
+      vi.advanceTimersByTime(1000);
+      simulateSleep(25000, 1000);
+      expect(events).toHaveLength(0);
+    });
+
+    it('active-host signal is a no-op with no recentActivityAt provider (back-compat)', () => {
+      detector = new SleepWakeDetector({
+        checkIntervalMs: 1000, driftThresholdMs: 5000, minWakeIntervalMs: 0,
+        recentDriftWindowMs: 0, activeHostWindowMs: 120000, // no provider
+        loadAvgProvider: () => [0, 0, 0],
+      });
+      const events: unknown[] = [];
+      detector.on('wake', (e) => events.push(e));
+      detector.start();
+      simulateSleep(25000, 1000);
+      expect(events).toHaveLength(1); // emits — signal inert without a provider
+    });
+
+    it('both windows at 0 ⇒ byte-identical legacy behavior (rollback lever)', () => {
+      detector = new SleepWakeDetector({
+        checkIntervalMs: 1000, driftThresholdMs: 5000, minWakeIntervalMs: 0,
+        recentDriftWindowMs: 0, activeHostWindowMs: 0, loadAvgProvider: () => [0, 0, 0],
+      });
+      const events: unknown[] = [];
+      detector.on('wake', (e) => events.push(e));
+      detector.start();
+      // Two short drifts close together both emit, exactly as before the change.
+      simulateSleep(25000, 1000);
+      vi.advanceTimersByTime(1000);
+      vi.advanceTimersByTime(1000);
+      simulateSleep(25000, 1000);
       expect(events).toHaveLength(2);
     });
   });
@@ -133,7 +249,9 @@ describe('SleepWakeDetector', () => {
     });
 
     it('aggregates wake events', () => {
-      detector = new SleepWakeDetector({ checkIntervalMs: 1000, driftThresholdMs: 5000, minWakeIntervalMs: 0, loadAvgProvider: () => [0, 0, 0] });
+      // recentDriftWindowMs:0 isolates stats aggregation from the repeat-drift suppressor
+      // (two short sleeps close together would otherwise collapse to one — covered above).
+      detector = new SleepWakeDetector({ checkIntervalMs: 1000, driftThresholdMs: 5000, minWakeIntervalMs: 0, recentDriftWindowMs: 0, loadAvgProvider: () => [0, 0, 0] });
       detector.start();
 
       simulateSleep(10000, 1000); // ~9s sleep
@@ -147,7 +265,7 @@ describe('SleepWakeDetector', () => {
     });
 
     it('filters by sinceMs', () => {
-      detector = new SleepWakeDetector({ checkIntervalMs: 1000, driftThresholdMs: 5000, minWakeIntervalMs: 0, loadAvgProvider: () => [0, 0, 0] });
+      detector = new SleepWakeDetector({ checkIntervalMs: 1000, driftThresholdMs: 5000, minWakeIntervalMs: 0, recentDriftWindowMs: 0, loadAvgProvider: () => [0, 0, 0] });
       detector.start();
 
       simulateSleep(10000, 1000); // first wake

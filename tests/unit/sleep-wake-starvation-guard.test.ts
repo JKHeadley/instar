@@ -29,6 +29,12 @@ describe('SleepWakeDetector — CPU-starvation guard', () => {
       maxLoadRatio: 1.5,
       longSleepFloorSeconds: 300,
       minWakeIntervalMs: 60_000,
+      // This suite targets the legacy cooldown / burst / load guards in isolation.
+      // The 2026-06-15 recent-drift + active-host suppressors are a SEPARATE concern
+      // (covered in SleepWakeDetector.test.ts); disable them here so two short drifts
+      // close together exercise the guard under test, not the new recent-drift window.
+      recentDriftWindowMs: 0,
+      activeHostWindowMs: 0,
       nowProvider: () => fakeNow,
       loadAvgProvider: () => load,
       cpuCountProvider: () => CPU_COUNT,
