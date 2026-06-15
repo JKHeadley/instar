@@ -4348,6 +4348,15 @@ export interface MonitoringConfig {
      * and always on.
      */
     autoResumeStalePause?: boolean;
+    /**
+     * FD5 (autonomous-run-outlives-session): auto-heal a stale FOREIGN-host
+     * resume-queue lock when it is provably a single-host RENAME (local FS + dead
+     * pid + stale heartbeat), instead of disabling the queue. Fleet default FALSE
+     * (touches a durable-state-corruption invariant — never "cheap"); resolves
+     * TRUE on a development agent, dryRun-first. CODE-defaulted (absent from
+     * ConfigDefaults — preserves the fleet flip).
+     */
+    autoHealStaleHostLock?: boolean;
   };
   /**
    * AgentWorktreeReaper (Responsible Resource Usage — OS resource hygiene).

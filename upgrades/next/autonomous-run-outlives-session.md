@@ -1,0 +1,63 @@
+# Upgrade Guide — An autonomous run must outlive its session
+
+<!-- bump: patch -->
+
+## What Changed
+
+A new constitutional standard ("An Autonomous Run Must Outlive Its Session") plus the
+fix behind it. The mid-work resume queue (the system that revives a reaped autonomous
+run, #1157) takes a host-local lock so two machines can't corrupt its shared state.
+A machine RENAME used to leave a stale lock the queue mistook for a shared-volume
+conflict — so it silently disabled the entire run-revival guard and never said so
+(the 2026-06-15 incident). Two changes:
+
+- **Rename-aware lock (GAP-D).** When the lock shows a different host, the queue now
+  distinguishes a single-host rename (provably host-local disk + dead pid + ≥5min
+  stale heartbeat → auto-heal the lock via an O_EXCL first-writer-wins takeover) from
+  a genuine shared-volume conflict (stay disabled). FAIL-CLOSED on any uncertainty
+  (unknown filesystem, `df` failure, live pid, fresh heartbeat). The original HARD
+  INVARIANT — never pid-probe a foreign-host lock — is fully preserved when auto-heal
+  is off. Ships **fleet-default OFF** (`monitoring.resumeQueue.autoHealStaleHostLock`),
+  dev-agent dryRun-first (logs "would auto-heal" without rewriting) before going live.
+- **A disabled revival queue is now LOUD (D2).** The queue self-reports to the
+  guard-posture inventory (`GUARD_MANIFEST` entry + `guardStatus()` + an unconditional
+  registration), so a disabled revival queue reads `off-runtime-divergent` on
+  `GET /guards` and raises one aggregated attention item — never silently inert.
+
+No new route. New code-defaulted config key (kept out of ConfigDefaults to preserve
+the fleet flip, consistent with #1157). Signal-only surfacing; the only authority is
+the queue refusing to start itself (bounded self-recovery, fail-closed).
+
+## What to Tell Your User
+
+- **Your autonomous work survives a machine rename now** (dev agent): "If I rename or
+  restore this machine, the system that brings a reaped autonomous run back no longer
+  quietly switches itself off. On a provable same-machine rename it heals its own lock
+  (carefully — only on a local disk, with the old process gone); on anything uncertain
+  it stays cautious. And if that revival system is ever genuinely disabled, you'll see
+  it flagged on the guards view with one alert instead of silence." ⚗️ Experimental —
+  the self-heal ships dark on the fleet (dev-agent first) and rolls out more widely
+  only after it's proven safe.
+
+## Summary of New Capabilities
+
+| Capability | How to Use |
+|-----------|-----------|
+| A machine rename auto-heals the resume-queue lock instead of silently disabling revival | Automatic on the dev agent (`monitoring.resumeQueue.autoHealStaleHostLock`; fleet default off) |
+| A disabled revival queue surfaces as `off-runtime-divergent` | `GET /guards` (automatic) |
+| Diagnose "why didn't my autonomous run come back?" | `GET /guards` + `GET /sessions/resume-queue` (disabled reason) |
+
+## Evidence
+
+- Unit (`tests/unit/resume-queue-autoheal-lock.test.ts`, 11): the FD1 device-source
+  truth-table (local `/dev/*` → local; `//host`/`host:/path` → not; unknown/tmpfs/map →
+  fail-closed); auto-heal fires only on local-FS + dead-pid + stale-heartbeat; stays
+  disabled on a non-local FS or a live pid; dryRun logs-but-does-not-rewrite; auto-heal
+  off preserves today's behavior; `guardStatus()` reporting.
+- Integration (`tests/integration/resume-queue-guard-posture.test.ts`, 3): a
+  runtime-disabled queue classifies `off-runtime-divergent` through the real
+  GUARD_MANIFEST entry + `deriveGuardRow`; a healthy queue does not.
+- Regression: the full resume-queue unit + route suite (100 tests) stays green —
+  including the existing HARD-INVARIANT test that a foreign-host lock is never
+  pid-probed (which guards against re-introducing the cross-host probe). tsc clean;
+  `lint-guard-manifest` clean. Independent Phase-5 second-pass review concurred.
