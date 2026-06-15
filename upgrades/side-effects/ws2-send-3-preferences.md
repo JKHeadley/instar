@@ -11,7 +11,7 @@ Completes WS2 send-side emission — the LAST of the 7 replicated stores. `prefe
 
 - `src/core/PreferencesManager.ts`: a new `PreferenceReplicationEmitter` interface + private `replication` field + `setReplicationEmitter()` (mirroring RelationshipManager), and a best-effort `this.replication?.emitPut(result)` fired at the end of `recordPreference` (after the durable write). PUT-ONLY: `recordPreference` is the sole writer and upserts on `dedupeKey`; there is no delete path.
 - The sole `recordPreference` writer is the correction-loop's per-request PreferencesManager in `routes.ts` (16739). The journal emitter is plumbed to it through the EXISTING RouteContext replication-field channel: `replicatedRecordEmitter` added to `RouteContext` (routes.ts) + `AgentServerOptions` + the AgentServer→ctx forward + the server.ts AgentServer construction; routes.ts attaches it to `prefs` right after construction.
-- `src/core/ws2SendWiring.ts`: `preferences` PENDING→WIRED; `WS2_SEND_PENDING_STORES` now holds only `userRegistry` (its own increment, WS2-SEND-2b / PR #1175). Once that lands too, PENDING is empty (all 7 stores wired).
+- `src/core/ws2SendWiring.ts`: `preferences` PENDING→WIRED. With userRegistry (#1175) now merged, `WS2_SEND_PENDING_STORES` is EMPTY — all 7 replicated stores send.
 
 The union reader + projection already shipped (WS2.1). New e2e round-trip.
 
@@ -20,7 +20,7 @@ The union reader + projection already shipped (WS2.1). New e2e round-trip.
 - `ReplicatedRecordEmitter.emit` dark gate (`stateSync.preferences.enabled`) — **pass-through** — pre-existing; `preferences` becomes a registered emit target. Default false ⇒ no-op.
 - `PreferencesManager.recordPreference` emit funnel — **NEW (additive)** — the authored seam fires emitPut after the durable write, best-effort (try/catch). When no emitter is attached (default) it is a strict no-op — byte-identical single-machine behavior.
 - `RouteContext.replicatedRecordEmitter` plumb — **NEW field (additive)** — null while dark; mirrors the existing preferenceReplicaStore plumbing.
-- `ws2SendWiring` ratchet — **modify** — `preferences` reclassified PENDING→WIRED; PENDING now holds only `userRegistry` (#1175).
+- `ws2SendWiring` ratchet — **modify** — `preferences` reclassified PENDING→WIRED; PENDING now EMPTY (all 7 stores wired; userRegistry #1175 merged).
 
 ---
 

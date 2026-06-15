@@ -9,9 +9,10 @@ stores. Unlike the others, `preferences` had no emit seam (it rode the deprecate
 `preferences-sync` verb), so this authors one on `PreferencesManager` (a
 `setReplicationEmitter` + a best-effort emitPut at the end of `recordPreference`) and plumbs
 the journal emitter to the correction-loop's PreferencesManager (the sole writer) through the
-existing RouteContext replication channel. `ws2SendWiring`'s PENDING set now holds only
-`userRegistry` (its own increment, WS2-SEND-2b). PUT-ONLY (recordPreference upserts on
-dedupeKey; no delete path). Dark by default (`multiMachine.stateSync.preferences`).
+existing RouteContext replication channel. With userRegistry (#1175) merged too,
+`ws2SendWiring`'s PENDING set is now EMPTY — all 7 replicated memory/PII stores send across
+machines. PUT-ONLY (recordPreference upserts on dedupeKey; no delete path). Dark by default
+(`multiMachine.stateSync.preferences`).
 
 ## What to Tell Your User
 

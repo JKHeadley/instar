@@ -24,18 +24,18 @@ export const WS2_SEND_WIRED_STORES: ReadonlyArray<string> = Object.freeze([
   'knowledge',
   'evolutionActions',
   'topicOperator',
+  'userRegistry',
   'preferences',
 ]);
 
 /**
  * Stores registered for RECEIVE but whose SEND wiring is a KNOWN, enumerated
- * follow-up — NOT a silent omission. Each is here for a stated reason:
- *  - userRegistry: fully seamed manager (emitPut + emitDelete); its canonical write
- *    instance lives in the AgentServer, so it needs the emitter plumbed there before it
- *    can be wired (WS2-SEND-2b).
+ * follow-up — NOT a silent omission. This set is now EMPTY: all 7 replicated stores
+ * (learnings, relationships, knowledge, evolutionActions, topicOperator, userRegistry,
+ * preferences) send across machines. The ratchet keeps it that way — a NEW replicated
+ * kind added to the registry must be classified wired (or re-listed here with a reason).
  */
 export const WS2_SEND_PENDING_STORES: ReadonlyArray<string> = Object.freeze([
-  'userRegistry',
 ]);
 
 /** A registered store's send-wiring classification. */
