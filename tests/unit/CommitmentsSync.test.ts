@@ -124,6 +124,29 @@ describe('CommitmentReplicaStore — receive side (§3.2)', () => {
     expect(b.allReplicas()[0].records[0].id).toBe('CMT-001');
   });
 
+  it('C1+C2: clamps out-of-enum owner/blockedOn on receive (untrusted-peer hardening, §4.1)', () => {
+    const store = new CommitmentReplicaStore({ stateDir: tmpDir });
+    // A peer (or corrupted row) sends garbage in the routing-significant enums.
+    const evil = servedRow({
+      id: 'CMT-007',
+      owner: 'evil' as unknown as 'agent',
+      blockedOn: 'whoknows' as unknown as 'none',
+    });
+    store.applyPage('m_peer', { incarnation: 'inc-1', replicationSeq: 5, records: [evil], nextSinceSeq: 5, done: true });
+    const row = store.allReplicas()[0].records.find((c) => c.id === 'CMT-007');
+    expect(row?.owner).toBe('agent'); // fail-safe default, never the un-handled value
+    expect(row?.blockedOn).toBe('none');
+  });
+
+  it('C1+C2: preserves valid owner/blockedOn on receive', () => {
+    const store = new CommitmentReplicaStore({ stateDir: tmpDir });
+    const ok = servedRow({ id: 'CMT-008', owner: 'user', blockedOn: 'user-input' });
+    store.applyPage('m_peer', { incarnation: 'inc-1', replicationSeq: 5, records: [ok], nextSinceSeq: 5, done: true });
+    const row = store.allReplicas()[0].records.find((c) => c.id === 'CMT-008');
+    expect(row?.owner).toBe('user');
+    expect(row?.blockedOn).toBe('user-input');
+  });
+
   it('FIRST-HOP WITH TEETH: rows claiming another machine are rejected + counted, never applied', () => {
     const store = new CommitmentReplicaStore({ stateDir: tmpDir });
     const r = store.applyPage('m_peer', {

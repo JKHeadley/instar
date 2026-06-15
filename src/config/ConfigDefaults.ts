@@ -1122,6 +1122,20 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
   // add-missing backfill carries these to existing agents that already have a
   // `promiseBeacon` block; the honest-progress-messaging-defaults migrator is the
   // audited belt-and-suspenders backfill for agents without one.
+  // C1+C2 "The Agent Carries the Loop" (spec agent-owned-followthrough §4.8).
+  // Top-level `commitments` config — the resolver reads
+  // config.commitments.agentOwnedFollowthrough. `enabled` is DELIBERATELY OMITTED
+  // here: it is resolved via the developmentAgent gate (dark-on-fleet /
+  // live-on-dev) — migrateConfig must never write the enabled literal (round-13
+  // dev-gate lesson). These are the operator's tuning/opt-out dials; dryRun
+  // defaults true so the dark→live promotion is the operator's deliberate flip.
+  commitments: {
+    agentOwnedFollowthrough: {
+      dryRun: true,
+      // externalBlockWindowMs / externalBlockCeilingMs / externalBlockSweepMs:
+      // left to the code defaults (24h / 14d / 1h) unless the operator tunes them.
+    },
+  },
   promiseBeacon: {
     suppressUnchangedHeartbeats: true, // B1 — false restores the legacy every-tick templated heartbeat (rollback)
     beaconLivenessIntervalMs: 3_600_000, // B1b — at most one sparse "still watching" line per 60m

@@ -272,6 +272,8 @@ import { isJunkPayload } from '../core/junk-payload.js';
 import { detectLocalhostLink } from '../core/localhost-link.js';
 import { detectJargon } from '../core/JargonDetector.js';
 import { detectRawFilePath } from '../core/raw-file-path.js';
+import { detectParkedOnUser } from '../core/parked-on-user.js';
+import { detectInternalIdLeak } from '../core/internal-id-leak.js';
 import type { MessageKind } from '../core/MessagingToneGate.js';
 import {
   OutboundAdvisoryAudit,
@@ -1625,6 +1627,22 @@ export function createRoutes(ctx: RouteContext): Router {
         }
       } catch {
         // @silent-fallback-ok — detector errors never override the authority; skip the signal (outbound-jargon-filepath-gap §2.3).
+      }
+
+      // C1+C2 §4.3 — parked-on-user (B19) + internal-id-leak (B20) signals.
+      // SIGNAL ONLY: the authority (B19/B20 rules) decides with carve-outs +
+      // fail-toward-sending. Fail-OPEN: a detector throw skips the signal.
+      try {
+        const park = detectParkedOnUser(text);
+        if (park.parked) signals.parkedOnUser = { parked: true, phrase: park.phrase };
+      } catch {
+        // @silent-fallback-ok — detector errors never override the authority; skip the signal.
+      }
+      try {
+        const leak = detectInternalIdLeak(text);
+        if (leak.leaked) signals.internalIdLeak = { leaked: true, terms: leak.terms };
+      } catch {
+        // @silent-fallback-ok — detector errors never override the authority; skip the signal.
       }
 
       // Recent conversation — used by both the authority and the dedup detector.
@@ -19090,7 +19108,9 @@ export function createRoutes(ctx: RouteContext): Router {
             // Promise Beacon fields (PROMISE-BEACON-SPEC.md Phase 1)
             beaconEnabled, cadenceMs, nextUpdateDueAt,
             softDeadlineAt, hardDeadlineAt, sessionEpoch,
-            ownerMachineId, externalKey, beaconCreatedBySource } = req.body;
+            ownerMachineId, externalKey, beaconCreatedBySource,
+            // C1+C2 "The Agent Carries the Loop" state model (§4.1).
+            owner, blockedOn, actionClass, supersededBy } = req.body;
 
     if (!type || !userRequest || !agentResponse) {
       res.status(400).json({ error: 'type, userRequest, and agentResponse are required' });
@@ -19122,10 +19142,14 @@ export function createRoutes(ctx: RouteContext): Router {
         beaconEnabled, cadenceMs, nextUpdateDueAt,
         softDeadlineAt, hardDeadlineAt, sessionEpoch,
         ownerMachineId, externalKey, beaconCreatedBySource,
+        owner, blockedOn, actionClass, supersededBy,
       });
       res.status(201).json(commitment);
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to record' });
+      // C1+C2 well-formedness gate failures are client errors (400), not 500.
+      const msg = err instanceof Error ? err.message : 'Failed to record';
+      const isWellFormedness = /invalid owner|invalid blockedOn|requires a non-empty actionClass/.test(msg);
+      res.status(isWellFormedness ? 400 : 500).json({ error: msg });
     }
   });
 
@@ -19353,6 +19377,75 @@ export function createRoutes(ctx: RouteContext): Router {
       return;
     }
     res.json({ delivered: true, id: updated.id, commitment: updated });
+  });
+
+  // POST /commitments/:id/probe — C1+C2 §4.4. The agent's own session records an
+  // observable dependency-probe on an owner:'agent', blockedOn:'external'
+  // commitment; a fresh probe resets the staleness window. Cross-machine routed
+  // like /deliver (the owning machine records it).
+  router.post('/commitments/:id/probe', async (req, res) => {
+    if (!ctx.commitmentTracker) {
+      res.status(404).json({ error: 'CommitmentTracker not configured' });
+      return;
+    }
+    const { checked, readinessSignal } = req.body ?? {};
+    if (
+      typeof checked !== 'string' || !checked.trim() ||
+      typeof readinessSignal !== 'string' || !readinessSignal.trim()
+    ) {
+      res.status(400).json({ error: 'probe requires non-empty `checked` and `readinessSignal` strings' });
+      return;
+    }
+    const origin = typeof req.query.origin === 'string' ? req.query.origin : undefined;
+    const route = await resolveCommitmentRoute(req.params.id, origin);
+    if (route === 'ambiguous') {
+      res.status(409).json({ error: `Commitment id ${req.params.id} is ambiguous across machines — retry with ?origin=<machineId>` });
+      return;
+    }
+    if (typeof route === 'object') {
+      await forwardMutation(res, route.forward.owner, mutatePayload(req, route.forward.owner, 'probe', { checked, readinessSignal }));
+      return;
+    }
+    const updated = ctx.commitmentTracker.recordProbe(req.params.id, { checked, readinessSignal });
+    if (!updated) {
+      res.status(404).json({ error: `Commitment ${req.params.id} not found, terminal, or not an external-block (blockedOn must be 'external')` });
+      return;
+    }
+    res.json({ probed: true, id: updated.id, lastProbe: updated.lastProbe });
+  });
+
+  // POST /commitments/:id/transition — C1+C2 §4.1. Guarded owner⟂blockedOn
+  // transition: re-runs the well-formedness gate on the new state and applies it
+  // IN PLACE (no close-and-reopen). Cross-machine routed like /deliver.
+  router.post('/commitments/:id/transition', async (req, res) => {
+    if (!ctx.commitmentTracker) {
+      res.status(404).json({ error: 'CommitmentTracker not configured' });
+      return;
+    }
+    const { owner, blockedOn, actionClass, supersededBy } = req.body ?? {};
+    const args: Record<string, unknown> = {};
+    if (owner !== undefined) args.owner = owner;
+    if (blockedOn !== undefined) args.blockedOn = blockedOn;
+    if (actionClass !== undefined) args.actionClass = actionClass;
+    if (supersededBy !== undefined) args.supersededBy = supersededBy;
+    const origin = typeof req.query.origin === 'string' ? req.query.origin : undefined;
+    const route = await resolveCommitmentRoute(req.params.id, origin);
+    if (route === 'ambiguous') {
+      res.status(409).json({ error: `Commitment id ${req.params.id} is ambiguous across machines — retry with ?origin=<machineId>` });
+      return;
+    }
+    if (typeof route === 'object') {
+      await forwardMutation(res, route.forward.owner, mutatePayload(req, route.forward.owner, 'transition', args));
+      return;
+    }
+    try {
+      const updated = ctx.commitmentTracker.transitionState(req.params.id, { owner, blockedOn, actionClass, supersededBy });
+      res.json({ transitioned: true, id: updated.id, owner: updated.owner, blockedOn: updated.blockedOn });
+    } catch (err) {
+      const msg = (err as Error).message;
+      const code = /not found/.test(msg) ? 404 : /terminal/.test(msg) ? 409 : 400;
+      res.status(code).json({ error: msg });
+    }
   });
 
   router.post('/commitments/:id/withdraw', async (req, res) => {

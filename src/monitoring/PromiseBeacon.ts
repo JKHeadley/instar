@@ -37,6 +37,7 @@ import type { LlmQueue } from './LlmQueue.js';
 import { LlmAbortedError } from './LlmQueue.js';
 import type { ProxyCoordinator } from './ProxyCoordinator.js';
 import { sanitizeTmuxOutput, guardProxyOutput } from './PresenceProxy.js';
+import { detectInternalIdLeak } from '../core/internal-id-leak.js';
 
 // ─── Config & types ─────────────────────────────────────────────────────────
 
@@ -175,6 +176,30 @@ export interface PromiseBeaconConfig {
   requestRevive?: (req: ReviveRequest) => Promise<ReviveResult>;
   /** Raise ONE deduped operator Attention item for a Rung-3 give-up (§3.3). */
   raiseAttention?: (commitmentId: string, detail: string) => void;
+  /**
+   * C1+C2 "The Agent Carries the Loop" rollout resolver (spec
+   * agent-owned-followthrough §4.8). Returns the live feature state for the
+   * owner-gated outbound chokepoint (emitUserSend). ABSENT or `enabled:false`
+   * ⇒ the chokepoint is a strict no-op (current behavior preserved — beacon
+   * sends go out normally regardless of owner). `enabled:true, dryRun:true`
+   * ⇒ logs the intended suppression/reroute but STILL sends (observe-first).
+   * `enabled:true, dryRun:false` ⇒ actually suppresses status under
+   * owner:'agent' and reroutes a terminal send to the Attention dead-letter.
+   * Wired dark-on-fleet / live-on-dev via the developmentAgent gate.
+   */
+  agentOwnedFollowthrough?: () => { enabled: boolean; dryRun: boolean };
+  /** §4.4 external-block staleness window (no probe within → dead-letter). Default 24h. */
+  externalBlockWindowMs?: number;
+  /** §4.4 absolute external-wait ceiling (dead-letter regardless of probes). Default 14d. */
+  externalBlockCeilingMs?: number;
+  /** §4.4 governor sweep cadence. Default 1h (a slow closer, off the hot verify path). */
+  externalBlockSweepMs?: number;
+  /**
+   * §4.4/§4.5 — lease gate for the governor + reconciler sweep. Returns true when
+   * this machine should run the (mutating) sweep — one machine in a pool. Default
+   * (absent) → always run (single-machine / unconfigured is a safe no-op).
+   */
+  holdsLease?: () => boolean;
 }
 
 /** Escalation tunables (§5). All code-defaulted; dev-gated `enabled`. */
@@ -368,6 +393,8 @@ export class PromiseBeacon extends EventEmitter {
   private started = false;
   private stateDir: string;
   private timers: Map<string, ReturnType<typeof setTimeout>> = new Map();
+  /** C1+C2 §4.4 — the periodic external-block staleness governor sweep timer. */
+  private externalBlockSweepTimer?: ReturnType<typeof setInterval>;
   private prefix: string;
   private minCadenceMs: number;
   private maxCadenceMs: number;
@@ -487,6 +514,20 @@ export class PromiseBeacon extends EventEmitter {
         this.schedule(c);
       }
     });
+    // C1+C2 §4.4 — arm the external-block staleness governor (a slow global
+    // sweep, off the per-commitment timer path). No-op each tick when the
+    // feature is off; cheap O(active) scan otherwise.
+    const sweepMs = this.config.externalBlockSweepMs ?? 60 * 60_000;
+    this.externalBlockSweepTimer = setInterval(() => {
+      // Lease-gated (§4.5): only the lease-holder runs the mutating sweep.
+      if (this.config.holdsLease && !this.config.holdsLease()) return;
+      this.sweepExternalBlocks()
+        .then(() => this.maybeReconcileGraveyard())
+        .catch(err =>
+          console.warn('[PromiseBeacon] external-block sweep error:', (err as Error).message),
+        );
+    }, sweepMs * this.timerMult);
+    if (typeof this.externalBlockSweepTimer.unref === 'function') this.externalBlockSweepTimer.unref();
     console.log(`[PromiseBeacon] Started (${this.prefix})`);
   }
 
@@ -495,6 +536,10 @@ export class PromiseBeacon extends EventEmitter {
     this.started = false;
     for (const t of this.timers.values()) clearTimeout(t);
     this.timers.clear();
+    if (this.externalBlockSweepTimer) {
+      clearInterval(this.externalBlockSweepTimer);
+      this.externalBlockSweepTimer = undefined;
+    }
     console.log('[PromiseBeacon] Stopped');
   }
 
@@ -739,11 +784,7 @@ export class PromiseBeacon extends EventEmitter {
       // ── Send (only if there is something true to say — B1) ──
       const sent = text != null;
       if (sent) {
-        await this.config.sendMessage(c.topicId, text!, {
-          source: 'promise-beacon',
-          isProxy: true,
-          tier: 1,
-        });
+        await this.emitUserSend(c, text!, 'heartbeat');
         if (livenessFired) hot.lastLivenessAt = nowIso;
         hot.heartbeatCount += 1;
       }
@@ -804,11 +845,7 @@ export class PromiseBeacon extends EventEmitter {
     const suffix = excerpt ? ` — re: ${excerpt}` : '';
     const finalText = `${this.prefix} auto-paused after long quiet${suffix}\nReply "keep watching" on this topic to resume.`;
     try {
-      await this.config.sendMessage(c.topicId!, finalText, {
-        source: 'promise-beacon',
-        isProxy: true,
-        tier: 1,
-      });
+      await this.emitUserSend(c, finalText, 'closeOut');
     } catch (err) {
       console.warn(`[PromiseBeacon] auto-pause send failed for ${c.id}:`, (err as Error).message);
     }
@@ -882,11 +919,7 @@ export class PromiseBeacon extends EventEmitter {
       `${this.prefix} I said I'd follow up on "${re}" but that work's session has wrapped — ` +
       `want me to pick it back up, or close this out?`;
     try {
-      await this.config.sendMessage(c.topicId!, finalText, {
-        source: 'promise-beacon',
-        isProxy: true,
-        tier: 1,
-      });
+      await this.emitUserSend(c, finalText, 'closeOut');
     } catch (err) {
       console.warn(`[PromiseBeacon] turn-finished close-out send failed for ${c.id}:`, (err as Error).message);
     }
@@ -1148,7 +1181,7 @@ export class PromiseBeacon extends EventEmitter {
     const text = rung2Message(state, excerpt);
     if (text && c.topicId) {
       try {
-        await this.config.sendMessage(c.topicId, text, { source: 'promise-beacon', isProxy: true, tier: 1 });
+        await this.emitUserSend(c, text, 'rung2');
       } catch (err) {
         console.warn(`[PromiseBeacon] rung2 send failed for ${c.id}:`, (err as Error).message);
       }
@@ -1184,6 +1217,133 @@ export class PromiseBeacon extends EventEmitter {
   /** Record a confirmed double-spawn (§6) — invoked by the per-topic reconciliation. */
   recordDoubleSpawn(): void { this.doubleSpawnCount += 1; }
 
+  /**
+   * C1+C2 owner-gated outbound chokepoint (spec agent-owned-followthrough §4.2).
+   * EVERY beacon user-send routes through here. Beacon sends are `isProxy:true`
+   * and bypass MessagingToneGate, so the owner-gate MUST live here, not at the
+   * gate. Rollout-gated (§4.8): when the feature is off (fleet default) this is a
+   * strict no-op — sends go out exactly as before. When on+dryRun it logs the
+   * intended action but still sends (observe-first). When on+live and the
+   * commitment is owner:'agent', status kinds are suppressed (the agent carries
+   * the loop — the user is never status-messaged) while a `terminal` kind is
+   * NEVER suppressed: it reroutes to the Attention dead-letter (raiseAttention,
+   * the one always-surfaced channel) so a failure is never swallowed (C2 /
+   * "never nag ≠ swallow a failure"). owner:'user' always sends normally.
+   */
+  private async emitUserSend(
+    c: Commitment,
+    text: string,
+    kind: 'heartbeat' | 'closeOut' | 'rung2' | 'terminal',
+  ): Promise<void> {
+    const sendNormally = async (): Promise<void> => {
+      if (c.topicId == null) return;
+      // Beacon-local B-IDLEAK pass (C1+C2 §4.3): beacon sends are isProxy:true and
+      // bypass MessagingToneGate, so B20 can't run on them. Signal-only
+      // observability — emit when beacon text leaks internal plumbing (never
+      // blocks/scrubs; secret/path redaction stays with guardProxyOutput).
+      try {
+        const leak = detectInternalIdLeak(text);
+        if (leak.leaked) this.emit('aoft.beacon-id-leak', { id: c.id, terms: leak.terms });
+      } catch { /* non-fatal */ }
+      await this.config.sendMessage(c.topicId, text, {
+        source: 'promise-beacon',
+        isProxy: true,
+        tier: 1,
+      });
+    };
+    const state = this.config.agentOwnedFollowthrough?.() ?? { enabled: false, dryRun: true };
+    // Feature off, or not an agent-owned commitment → unchanged behavior.
+    if (!state.enabled || c.owner !== 'agent') {
+      await sendNormally();
+      return;
+    }
+    if (kind === 'terminal') {
+      // Terminal failure: reroute to the Attention dead-letter (never status,
+      // never swallowed). In dryRun, log the intent but preserve current behavior.
+      if (state.dryRun) {
+        this.emit('aoft.would-reroute-terminal', { id: c.id, topicId: c.topicId, kind });
+        await sendNormally();
+        return;
+      }
+      const detail = text.replace(/^⚠️\s*\[?promise-beacon\]?\s*/i, '').trim() || text;
+      try { this.config.raiseAttention?.(c.id, detail); } catch { /* non-fatal */ }
+      this.emit('aoft.terminal-rerouted', { id: c.id, topicId: c.topicId, kind });
+      return;
+    }
+    // Status kind under owner:'agent'.
+    if (state.dryRun) {
+      this.emit('aoft.would-suppress', { id: c.id, topicId: c.topicId, kind });
+      await sendNormally();
+      return;
+    }
+    this.emit('aoft.suppressed', { id: c.id, topicId: c.topicId, kind });
+  }
+
+  /**
+   * C1+C2 §4.4 — the external-block staleness governor. A slow global sweep over
+   * owner:'agent', blockedOn:'external' pending commitments. The WINDOW
+   * dead-letter is the hard guarantee: when no dependency-probe has landed within
+   * the staleness window — OR the wait is past the absolute ceiling regardless of
+   * probes — it raises ONE deduped operator Attention item (raiseAttention),
+   * NEVER auto-closing (CMT-1101 scar). Deduped via externalBlockDeadLetteredAt
+   * (a fresh probe re-arms it). Rollout-gated: off → no-op; dryRun → logs the
+   * would-be dead-letter but does not raise it. Public for tests.
+   */
+  async sweepExternalBlocks(): Promise<void> {
+    const state = this.config.agentOwnedFollowthrough?.() ?? { enabled: false, dryRun: true };
+    if (!state.enabled) return;
+    const windowMs = this.config.externalBlockWindowMs ?? 24 * 60 * 60_000;
+    const ceilingMs = this.config.externalBlockCeilingMs ?? 14 * 24 * 60 * 60_000;
+    const now = this.now();
+    for (const c of this.config.commitmentTracker.getActive()) {
+      if (c.owner !== 'agent' || c.blockedOn !== 'external' || c.status !== 'pending') continue;
+      if (c.externalBlockDeadLetteredAt) continue; // already surfaced this episode
+      const createdMs = Date.parse(c.createdAt);
+      const lastTouchMs = c.lastProbe?.at ? Date.parse(c.lastProbe.at) : createdMs;
+      const windowStale = Number.isFinite(lastTouchMs) && now - lastTouchMs > windowMs;
+      const ceilingHit = Number.isFinite(createdMs) && now - createdMs > ceilingMs;
+      if (!windowStale && !ceilingHit) continue;
+      const reason = ceilingHit ? 'absolute-ceiling' : 'no-probe-within-window';
+      if (state.dryRun) {
+        this.emit('aoft.would-deadletter-external', { id: c.id, reason });
+        continue;
+      }
+      const waited = Number.isFinite(createdMs) ? humanizeMs(now - createdMs) : 'a while';
+      const detail =
+        `I've been waiting on an external dependency for "${(c.agentResponse || c.userRequest).slice(0, 80)}" ` +
+        `for ${waited} (${reason === 'absolute-ceiling' ? 'past the max wait' : 'no movement in a while'}) — ` +
+        `want me to keep waiting or drop it?`;
+      try { this.config.raiseAttention?.(c.id, detail); } catch { /* non-fatal */ }
+      await this.config.commitmentTracker.mutate(c.id, prev => ({
+        ...prev,
+        externalBlockDeadLetteredAt: new Date(now).toISOString(),
+      }));
+      this.emit('aoft.deadlettered-external', { id: c.id, reason });
+    }
+  }
+
+  /**
+   * C1+C2 §4.5 — drive the evidence-gated graveyard reconciler on the slow sweep
+   * cadence (lease-gated by the caller). Rollout-gated: off → no-op; passes the
+   * feature's dryRun through so the dark→live promotion is evidence-gated.
+   */
+  private maybeReconcileGraveyard(): void {
+    const state = this.config.agentOwnedFollowthrough?.() ?? { enabled: false, dryRun: true };
+    if (!state.enabled) return;
+    try {
+      const r = this.config.commitmentTracker.reconcileGraveyard({ dryRun: state.dryRun });
+      if (r.closed.length || r.wouldClose.length) {
+        this.emit('aoft.graveyard-reconciled', {
+          closed: r.closed.length,
+          wouldClose: r.wouldClose.length,
+          dryRun: state.dryRun,
+        });
+      }
+    } catch (err) {
+      console.warn('[PromiseBeacon] graveyard reconcile error:', (err as Error).message);
+    }
+  }
+
   private async transitionViolated(c: Commitment, reason: string): Promise<void> {
     await this.config.commitmentTracker.mutate(c.id, prev => ({
       ...prev,
@@ -1191,13 +1351,16 @@ export class PromiseBeacon extends EventEmitter {
       resolvedAt: new Date().toISOString(),
       resolution: reason,
     }));
-    if (c.topicId) {
-      await this.config.sendMessage(
-        c.topicId,
-        `⚠️ [promise-beacon] commitment "${(c.agentResponse || c.userRequest).slice(0, 80)}" violated: ${reason}`,
-        { source: 'promise-beacon', isProxy: true, tier: 1 },
-      );
-    }
+    // Route through the owner-gated chokepoint as a TERMINAL kind: under
+    // owner:'agent' (live) this reroutes to the Attention dead-letter instead of
+    // a topic status message (never swallowed, never C2-violating status); off /
+    // owner:'user' it sends to the topic exactly as before (guarded on topicId
+    // inside emitUserSend).
+    await this.emitUserSend(
+      c,
+      `⚠️ [promise-beacon] commitment "${(c.agentResponse || c.userRequest).slice(0, 80)}" violated: ${reason}`,
+      'terminal',
+    );
     this.stopFor(c.id);
     this.emit('promise.violated', { id: c.id, reason });
   }

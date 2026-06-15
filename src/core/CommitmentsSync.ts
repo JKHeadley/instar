@@ -136,6 +136,25 @@ function serveRecord(c: Commitment, ownMachineId: string): ReplicatedCommitment 
   return served;
 }
 
+// ── Receive-side enum clamp (C1+C2 agent-owned-followthrough §4.1) ──
+// applyPage stores replicated rows wholesale; a peer (or a corrupted row that
+// passed the first-hop origin check) must not be able to inject an out-of-enum
+// owner/blockedOn that the beacon's owner-routing then branches on. Clamp to the
+// known enums, defaulting absent/unrecognized to agent/none — fail-safe toward
+// agent-drive + a bounded backstop, never an un-handled routing branch. (A
+// replicated row is advisory context, never authoritative, but it must still be
+// well-formed.)
+const OWNER_VALUES = new Set(['agent', 'user']);
+const BLOCKED_ON_VALUES = new Set(['none', 'external', 'user-input', 'user-authorization']);
+function clampReplicatedRow(row: ReplicatedCommitment): ReplicatedCommitment {
+  const owner = OWNER_VALUES.has(((row as { owner?: string }).owner ?? '')) ? row.owner : 'agent';
+  const blockedOn = BLOCKED_ON_VALUES.has(((row as { blockedOn?: string }).blockedOn ?? ''))
+    ? row.blockedOn
+    : 'none';
+  if (owner === row.owner && blockedOn === row.blockedOn) return row;
+  return { ...row, owner, blockedOn } as ReplicatedCommitment;
+}
+
 // ── Receive side (§3.2) ─────────────────────────────────────────────
 
 interface ReplicaFileShape {
@@ -214,7 +233,7 @@ export class CommitmentReplicaStore {
         forgedRows++; // first-hop with teeth (§3.2) — counted, never applied
         continue;
       }
-      replica.records[row.id] = row;
+      replica.records[row.id] = clampReplicatedRow(row);
       applied++;
     }
     replica.sinceSeq = Math.max(replica.sinceSeq, page.nextSinceSeq);

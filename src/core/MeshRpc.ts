@@ -117,7 +117,7 @@ export type MeshCommand =
       payload: {
         origin: string;
         id: string;
-        op: 'deliver' | 'withdraw' | 'resume' | 'patch-beacon';
+        op: 'deliver' | 'withdraw' | 'resume' | 'patch-beacon' | 'probe' | 'transition';
         args?: Record<string, unknown>;
         opKey: string;
         requestedAt: string;
