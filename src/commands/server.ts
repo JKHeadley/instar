@@ -9726,7 +9726,7 @@ export async function startServer(options: StartOptions): Promise<void> {
     // off (always, while dark) every gate read returns the enrollment-home fallback, so every
     // consumer is byte-for-byte today's behavior. A never-seeded ledger is the same fallback (back-
     // compat); only UNKNOWN mode (corrupt on-disk) raises a HIGH attention item, never throws.
-    const { CredentialLocationLedger } = await import('../core/CredentialLocationLedger.js');
+    const { CredentialLocationLedger, shouldBootSeedCredentialLedger } = await import('../core/CredentialLocationLedger.js');
     const { CredentialIdentityOracle } = await import('../core/CredentialIdentityOracle.js');
     const { CredentialLocationGate } = await import('../core/CredentialLocationGate.js');
     const credentialGateEmitAttention = telegram
@@ -9914,6 +9914,32 @@ export async function startServer(options: StartOptions): Promise<void> {
         }
       },
     };
+
+    // B3a — boot-seed the credential location ledger. This is the MISSING runtime trigger for
+    // seedFromOracle: without it the ledger stays NEVER-SEEDED forever, so getAssignments() returns
+    // [] and the rebalancer (B3b) only ever sees the default slot — it can decide but never actuate
+    // a use-it-or-lose-it drain (it has no other slots to move between). Gated on the SAME dev-gate
+    // as the rest of re-pointing (strict no-op / no probe on the fleet) and ONLY when the ledger is
+    // not already seeded — isSeeded() is false for both never-seeded AND UNKNOWN (corrupt) mode, so
+    // this also doubles as the named recovery path, and it's idempotent across restarts (a seeded
+    // ledger is skipped). Fire-and-forget: the oracle probes are per-slot network calls, so boot is
+    // never blocked on them; failures are loud at the slot level (quarantine + attention) INSIDE
+    // seedFromOracle. Seeding writes ONLY the local slot→account map — it moves ZERO credentials
+    // (the executor's dryRun gate + the one-home invariant still guard every real swap). <!-- tracked: 20905 -->
+    if (
+      shouldBootSeedCredentialLedger(
+        resolveDevAgentGate(config.subscriptionPool?.credentialRepointing?.enabled, config),
+        credentialLocationLedger.isSeeded(),
+      )
+    ) {
+      void credentialLocationLedger
+        .seedFromOracle()
+        .then((outcomes) => {
+          const assigned = outcomes.filter((o) => o.result === 'assigned').length;
+          console.log(pc.green(`  Credential location ledger seeded: ${assigned}/${outcomes.length} slot(s) mapped`));
+        })
+        .catch((e) => console.warn(`[CredentialLedger] boot seed failed: ${e instanceof Error ? e.message : String(e)}`));
+    }
 
     // B3b — the periodic balancer pass. tick() is a strict no-op while the feature resolves dark
     // (so the timer can always run; the gate lives INSIDE tick()), and on a dev agent it runs the

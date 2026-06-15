@@ -482,3 +482,15 @@ export class CredentialLocationLedger {
     }
   }
 }
+
+/**
+ * The boot-seed decision (B3a). Pure + isolated so the wiring decision is unit-testable without
+ * booting server.ts. Returns true ONLY when the re-pointing feature is enabled AND the ledger is
+ * not already seeded — `isSeeded()` is false for BOTH never-seeded and UNKNOWN (corrupt) mode, so
+ * a true result also covers the named recovery path, and a seeded ledger is always skipped (so the
+ * boot-seed is idempotent across restarts). The actual seed (`seedFromOracle()`) is non-destructive
+ * and already unit-tested; this guard is the new logic the wiring introduced.
+ */
+export function shouldBootSeedCredentialLedger(enabled: boolean, isSeeded: boolean): boolean {
+  return enabled && !isSeeded;
+}
