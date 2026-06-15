@@ -3700,6 +3700,67 @@ export async function startServer(options: StartOptions): Promise<void> {
     const { TOPIC_OPERATOR_KIND_REGISTRATION } = await import('../core/TopicOperatorReplicatedStore.js');
     replicatedKindRegistry.register(TOPIC_OPERATOR_KIND_REGISTRATION);
 
+    // ── WS2 SEND-SIDE wiring (docs/specs/WS2-SEND-SIDE-EMISSION-SPEC.md). The
+    //    substrate above ships the registry + receive/serve machinery + advert; THIS
+    //    wires the SEND half that was deferred ("the journal-backed emitter is attached
+    //    in a later rollout stage"). Three pieces, all KIND-AGNOSTIC: (1) inject the
+    //    now-populated registry into the journal writer + the applier so a registered
+    //    `*-record` kind validates/accepts on BOTH ends (without it a peer's record
+    //    suspect-flags the stream — the receive-only gap); (2) the peer-stream reader
+    //    that materializes own + peer journal streams into the union's per-origin
+    //    records (makes a received record READABLE) + the snapshot loadOwnEntries
+    //    source + the emitter's `observed`-witness source; (3) the author-side HLC
+    //    clock. All require the coherence journal (the emit sink + the streams to read);
+    //    when it is dark these stay undefined and every consumer degrades to its
+    //    existing single-machine no-op. The generic record emitter is constructed below
+    //    (it also needs the resolved stateSync flags).
+    let replicatedPeerStreamReader: import('../core/ReplicatedPeerStreamReader.js').ReplicatedPeerStreamReader | undefined;
+    let replicatedRecordEmitter: import('../core/ReplicatedRecordEmitter.js').ReplicatedRecordEmitter | undefined;
+    let replicatedHlcClock: import('../core/HybridLogicalClock.js').HybridLogicalClock | undefined;
+    if (coherenceJournal && cjOwnMachineId) {
+      try {
+        coherenceJournal.setReplicatedKindRegistry(replicatedKindRegistry);
+        journalSyncApplier?.setReplicatedKindRegistry(replicatedKindRegistry);
+
+        const { ReplicatedPeerStreamReader } = await import('../core/ReplicatedPeerStreamReader.js');
+        replicatedPeerStreamReader = new ReplicatedPeerStreamReader({
+          stateDir: config.stateDir,
+          registry: replicatedKindRegistry,
+          selfMachineId: cjOwnMachineId,
+        });
+
+        // Author-side HLC clock — persisted under the journal dir (atomic temp+rename)
+        // so the merge total order survives restarts (§3.5). node = this machine's id.
+        const { HybridLogicalClock } = await import('../core/HybridLogicalClock.js');
+        const hlcSafeId = cjOwnMachineId.replace(/[^A-Za-z0-9_.-]/g, '_');
+        const hlcPath = path.join(config.stateDir, 'state', 'coherence-journal', `hlc-${hlcSafeId}.json`);
+        replicatedHlcClock = new HybridLogicalClock({
+          node: cjOwnMachineId,
+          now: () => Date.now(),
+          persist: {
+            load: () => {
+              try {
+                const o = JSON.parse(fs.readFileSync(hlcPath, 'utf-8')) as { physical?: unknown };
+                return o && typeof o.physical === 'number' ? (o as import('../core/HybridLogicalClock.js').HlcTimestamp) : null;
+              } catch { /* @silent-fallback-ok: absent/corrupt hlc file = fresh clock (first boot) — the clock starts at 0, never throws. */ return null; }
+            },
+            save: (t) => {
+              try {
+                fs.mkdirSync(path.dirname(hlcPath), { recursive: true });
+                const tmp = `${hlcPath}.tmp-${process.pid}`;
+                fs.writeFileSync(tmp, JSON.stringify(t));
+                fs.renameSync(tmp, hlcPath);
+              } catch { /* @silent-fallback-ok: a failed hlc persist degrades to in-memory-only (the clock still advances this run); replication merge order is best-effort durable, never a boot blocker. */ }
+            },
+          },
+        });
+      } catch (e) { /* @silent-fallback-ok: the SEND-side wiring must never endanger boot — a failure leaves replication dark (undefined seams), exactly the pre-WS2-send behavior. */
+        replicatedPeerStreamReader = undefined;
+        replicatedHlcClock = undefined;
+        console.log(pc.dim(`  [ws2-send] emitter wiring skipped: ${e instanceof Error ? e.message : String(e)}`));
+      }
+    }
+
     // Snapshot-then-tail engine (Component 4 / build-order step 3,
     // multi-machine-replicated-store-foundation §6). The cache (FIXED ceiling,
     // §8.2 — NOT pool-scaled), the per-peer rebuild breaker (§6.3), and the engine
@@ -3720,10 +3781,13 @@ export async function startServer(options: StartOptions): Promise<void> {
       cache: snapshotCache,
       breaker: snapshotRebuildBreaker,
       seams: {
-        // Step-3 substrate: no concrete store kind is registered yet, so there are
-        // no contributing own-streams to load. A consumer PR (WS2.1) replaces this
-        // with a loader that reads the CoherenceJournal own streams for its kind(s).
-        loadOwnEntries: () => ({}),
+        // WS2 send-side: read the OWN journal streams for the store's registered
+        // kind(s) so a snapshot serve returns real entries (replaces the no-op stub).
+        // Single-origin is enforced inside the reader (it serves only this machine's
+        // own stream). When the journal is dark the reader is undefined ⇒ `{}` (the
+        // correct no-store no-op; serveSnapshot then answers 'no-entries').
+        loadOwnEntries: (store, origin) =>
+          replicatedPeerStreamReader ? replicatedPeerStreamReader.loadOwnEntries(store, origin) : {},
         now: () => Date.now(),
       },
       maxSnapshotBytes: stateSync.maxCacheBytes,
@@ -3741,6 +3805,27 @@ export async function startServer(options: StartOptions): Promise<void> {
     const _stateSyncStoresResolved = resolveStateSyncStores(
       config as { developmentAgent?: boolean; multiMachine?: { stateSync?: Record<string, { enabled?: boolean } & Record<string, unknown>> } },
     ) as import('../core/ReplicatedRecordEnvelope.js').StateSyncStores | undefined;
+
+    // WS2 send-side: the generic journal-backed record emitter (the concrete emitter
+    // the per-store managers' emit hooks call). Needs the journal sink, the HLC clock,
+    // the registry (store → kind), this machine's origin id, the resolved stateSync
+    // flags (the dark gate — read via a getter so a live flip is honored), and the
+    // peer-stream reader as the `observed`-witness source. Constructed only when the
+    // journal + clock + reader exist (all gated on the coherence journal being live);
+    // otherwise it stays undefined and every per-store emit adapter is simply never
+    // attached (the managers' hooks stay no-ops, the pre-WS2-send behavior).
+    if (coherenceJournal && replicatedHlcClock && replicatedPeerStreamReader) {
+      const { ReplicatedRecordEmitter } = await import('../core/ReplicatedRecordEmitter.js');
+      replicatedRecordEmitter = new ReplicatedRecordEmitter({
+        journal: coherenceJournal,
+        clock: replicatedHlcClock,
+        registry: replicatedKindRegistry,
+        origin: cjOwnMachineId as string,
+        stores: () => _stateSyncStoresResolved,
+        loadWitness: (store, recordKey) => replicatedPeerStreamReader!.loadWitness(store, recordKey),
+        log: (event, detail) => console.log(pc.dim(`  [ws2-send] ${event} ${JSON.stringify(detail)}`)),
+      });
+    }
 
     const selfStateSyncReceive = (): Record<string, boolean> => {
       const out: Record<string, boolean> = {};
@@ -8401,34 +8486,59 @@ export async function startServer(options: StartOptions): Promise<void> {
     // and-flag never silently clobbers two divergent lessons; the READ layer is advisory,
     // injecting both variants as hints rather than blocking — fork #2). Consulted by a
     // learnings peer-read surface ONLY when stateSync.learnings.enabled is true.
-    const { learningTierOf, learningToOriginRecord, deriveLearningRecordKey, LEARNING_STORE_KEY } = await import('../core/LearningsReplicatedStore.js');
+    const {
+      learningTierOf,
+      deriveLearningRecordKey,
+      buildLearningRecordData,
+      buildLearningTombstoneData,
+      LEARNING_STORE_KEY,
+    } = await import('../core/LearningsReplicatedStore.js');
     const learningsUnionReader = new ReplicatedStoreReader({
       registry: replicatedKindRegistry,
       stores: _stateSyncStoresResolved, // gate-resolved (dev-live / fleet-dark) per operator directive 2026-06-13
       tierOf: learningTierOf,
-      loadOriginRecords: (store, recordKey) => {
-        if (store !== LEARNING_STORE_KEY || _meshSelfId === null) return [];
-        for (const l of evolution.listLearnings()) {
-          if (deriveLearningRecordKey(l.title, l.category, l.source) === recordKey) {
-            const o = learningToOriginRecord(l, _meshSelfId);
-            return o ? [o] : [];
-          }
-        }
-        return [];
-      },
-      listRecordKeys: (store) => {
-        if (store !== LEARNING_STORE_KEY) return [];
-        const keys: string[] = [];
-        for (const l of evolution.listLearnings()) {
-          const k = deriveLearningRecordKey(l.title, l.category, l.source);
-          if (k !== null) keys.push(k);
-        }
-        return keys;
-      },
+      // WS2 send-side: the union now reads OWN + PEER journal streams (each record's
+      // authoritative emit-time HLC) via the peer-stream reader — so a learning
+      // replicated FROM a peer is READABLE here, not just the local one. Dark / no
+      // journal ⇒ reader undefined ⇒ [] (isLive already gates a disabled store to a
+      // strict no-op, so this never changes single-machine behavior).
+      loadOriginRecords: (store, recordKey) =>
+        store === LEARNING_STORE_KEY && replicatedPeerStreamReader
+          ? replicatedPeerStreamReader.loadOriginRecords(store, recordKey)
+          : [],
+      listRecordKeys: (store) =>
+        store === LEARNING_STORE_KEY && replicatedPeerStreamReader
+          ? replicatedPeerStreamReader.listRecordKeys(store)
+          : [],
       droppedOrigins: droppedOriginRegistry,
       conflictStore,
     });
-    void learningsUnionReader; // consumed by the learnings peer-read surface + the journal-apply rollout stage (WS2.2+)
+    void learningsUnionReader; // consumed by the learnings peer-read surface (the E2E reads through it) + future session-context injection
+
+    // WS2 SEND-SIDE: attach the journal-backed emitter to the EvolutionManager's
+    // learning hooks. The call sites already fire emitPut/emitDelete on every
+    // saveLearnings (prune→emitDelete, survivor→emitPut); the adapter maps the
+    // manager's emit signature to the store's build*RecordData. The emitter owns the
+    // dark gate, HLC tick, `observed` witness, and journal append. Attached only when
+    // the emitter exists (journal live); when dark the hooks stay no-ops (byte-
+    // identical single-machine behavior — the local LRN-NNN id never crosses the wire).
+    if (replicatedRecordEmitter) {
+      const emitter = replicatedRecordEmitter;
+      evolution.setLearningReplicationEmitter({
+        emitPut: (rec) =>
+          emitter.emit(
+            LEARNING_STORE_KEY,
+            deriveLearningRecordKey(rec.title, rec.category, rec.source),
+            (hlc, origin, observed) => buildLearningRecordData({ record: rec, hlc, origin, observed }),
+          ),
+        emitDelete: (title, category, source, deletedAt) =>
+          emitter.emit(
+            LEARNING_STORE_KEY,
+            deriveLearningRecordKey(title, category, source),
+            (hlc, origin, observed) => buildLearningTombstoneData({ title, category, source, hlc, origin, deletedAt, observed }),
+          ),
+      });
+    }
 
     // WS2.4 — the bypass-proof union reader for the `knowledge` store + the emit seam on
     // the KnowledgeManager. The KnowledgeManager reads the local catalog.json (cheap, no
