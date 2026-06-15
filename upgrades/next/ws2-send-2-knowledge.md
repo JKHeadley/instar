@@ -1,0 +1,46 @@
+# Upgrade Guide — WS2-SEND-2: knowledge send-side replication
+
+<!-- bump: patch -->
+
+## What Changed
+
+The `knowledge` memory store is now wired into the WS2 send-side — the second of the
+WS2-SEND-2 table-row stores (after `relationships`). The generic emitter from #1168 is
+attached to `KnowledgeManager`'s existing ingest/remove hooks (the manager already fired
+`emitPut`/`emitDelete`; the emitter was a `void` placeholder), and `knowledge` flips
+PENDING→WIRED in the send-wiring ratchet. The knowledge union reader and the
+disclosure-minimized projection already shipped (WS2.4); this is the send attachment +
+its end-to-end proof. Dark by default (`multiMachine.stateSync.knowledge`). No new
+route/verb/config-default/migration. Only catalog METADATA crosses — never the markdown
+body, never the local id/filePath.
+
+## What to Tell Your User
+
+- **Cross-machine knowledge catalog now actually crosses**: "If you run me on more than
+  one machine, a source I ingest on one (an article, transcript, or doc) now shows up in
+  the catalog on the others — one shared knowledge index instead of one per machine. Only
+  the catalog entry crosses (title, link, type, tags, summary) — never the full document
+  text and never the local file path; the other machine learns the source exists and can
+  re-fetch it itself. It stays off until you ask me to turn on multi-machine knowledge
+  sync." ⚗️ Experimental — ships dark; metadata-only by design (full-content sync is a
+  separate tracked stage).
+
+## Summary of New Capabilities
+
+| Capability | How to Use |
+|-----------|-----------|
+| Cross-machine replication of the knowledge catalog (metadata only) | Automatic once `multiMachine.stateSync.knowledge` is enabled (off by default) |
+| Content-fingerprint identity — the same source on two machines collapses to one record | Automatic (read path) |
+| Removal propagates as a fingerprint-keyed tombstone (no resurrection of a removed source) | Automatic (remove path) |
+
+## Evidence
+
+Verified by a two-instance in-process E2E
+(`tests/e2e/ws2-knowledge-cross-instance.test.ts`): a source ingested on instance A is
+read back on B through the bypass-proof union reader as a foreign-origin record — and the
+markdown body, local `id`, and `filePath` are confirmed ABSENT from the projection
+(metadata only); a `remove` on A replicates as a fingerprint-keyed tombstone and B's
+union read resolves the key to "no record" (no resurrection); the same source (same
+url+type) ingested on both machines collapses to one record key across origins. `tsc
+--noEmit` clean; the new e2e (3) + relationships e2e (3) pass; the ws2-send-wiring
+integration ratchet (4) accepts the PENDING→WIRED move.

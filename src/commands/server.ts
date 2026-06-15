@@ -8590,6 +8590,8 @@ export async function startServer(options: StartOptions): Promise<void> {
       knowledgeTierOf,
       knowledgeToOriginRecord,
       deriveKnowledgeRecordKey,
+      buildKnowledgeRecordData,
+      buildKnowledgeTombstoneData,
       KNOWLEDGE_STORE_KEY,
     } = await import('../core/KnowledgeReplicatedStore.js');
     const knowledgeUnionReader = new ReplicatedStoreReader({
@@ -8619,7 +8621,34 @@ export async function startServer(options: StartOptions): Promise<void> {
       conflictStore,
     });
     void knowledgeUnionReader; // consumed by the knowledge peer-read surface + the journal-apply rollout stage (WS2.4+)
-    void knowledgeManager.setKnowledgeReplicationEmitter; // the emit seam exists (unit-tested + dark by default); the journal-backed emitter is attached in a later rollout stage, mirroring the WS2.2 learnings sibling
+
+    // WS2.4 SEND-SIDE: attach the journal-backed emitter to the KnowledgeManager's
+    // replication hooks. The manager already fires emitPut on every ingested source and
+    // emitDelete on remove() (KnowledgeManager.setKnowledgeReplicationEmitter); the adapter
+    // maps the manager's emit signature to the knowledge build*RecordData projection. The
+    // generic emitter owns the dark gate, HLC tick, `observed` witness, journal append, and
+    // ALL the safety guards (null recordKey ⇒ skip, null projection ⇒ skip, over-cap throw ⇒
+    // counted no-op) — so the adapter mirrors learnings/relationships with no extra guarding.
+    // Only the catalog METADATA crosses (title/url/type/tags/summary/wordCount) — NEVER the
+    // markdown file body, NEVER the local id/filePath (fork #2). Attached only when the
+    // emitter exists; dark by default ⇒ no-op (byte-identical single-machine behavior).
+    if (replicatedRecordEmitter) {
+      const emitter = replicatedRecordEmitter;
+      knowledgeManager.setKnowledgeReplicationEmitter({
+        emitPut: (rec) =>
+          emitter.emit(
+            KNOWLEDGE_STORE_KEY,
+            deriveKnowledgeRecordKey(rec.title, rec.url, rec.type),
+            (hlc, origin, observed) => buildKnowledgeRecordData({ record: rec, hlc, origin, observed }),
+          ),
+        emitDelete: (title, url, type, deletedAt) =>
+          emitter.emit(
+            KNOWLEDGE_STORE_KEY,
+            deriveKnowledgeRecordKey(title, url, type),
+            (hlc, origin, observed) => buildKnowledgeTombstoneData({ title, url, type, hlc, origin, deletedAt, observed }),
+          ),
+      });
+    }
 
     // WS2.5 — the bypass-proof union reader for the `evolutionActions` store. The single
     // funnel every replicated action read routes through, so no caller reads a raw replica
