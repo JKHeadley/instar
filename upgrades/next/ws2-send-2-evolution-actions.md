@@ -13,11 +13,7 @@ PENDING→WIRED in the send-wiring ratchet. The evolution-actions union reader a
 disclosure-minimized projection already shipped (WS2.5); this is the send attachment +
 its end-to-end proof. Dark by default (`multiMachine.stateSync.evolutionActions`). No new
 route/verb/config-default/migration. Only the enumerated action projection crosses — never
-the local `ACT-NNN` id.
-
-This PR also fixes a probabilistic CI flake in the Sybil-protection integration test (a
-PoW wrong-IP assertion that false-accepted ~0.4% of runs at difficulty 8; raised to 16 so
-it's negligible). Pure test hygiene, no production behavior change.
+the local internal id.
 
 ## What to Tell Your User
 
@@ -26,7 +22,7 @@ it's negligible). Pure test hygiene, no production behavior change.
   one shared action queue instead of one per machine. The load-bearing part: a peer SEES
   when an action was already completed or is in progress elsewhere, so I don't redo work
   another of my machines already did. Only the action's content crosses (title,
-  description, priority, status, tags) — never the local `ACT-NNN` id. It stays off until
+  description, priority, status, tags) — never the local internal id. It stays off until
   you ask me to turn on multi-machine sync." ⚗️ Experimental — ships dark.
 
 ## Summary of New Capabilities
