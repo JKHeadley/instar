@@ -30,6 +30,25 @@
  * On top of classification, a `minWakeIntervalMs` cooldown caps the emit rate so
  * even a misclassified burst can't trigger a recovery storm.
  *
+ * ## Recurring-drift guard for the MODERATE-load band (2026-06-15)
+ *
+ * The load guard (`maxLoadRatio`, default 1.5) and the consecutive-drift burst floor
+ * together miss one real cascade: a host oversubscribed only MODERATELY — load just
+ * above 1.0/core but below `maxLoadRatio` — stalls its event loop for tens of seconds
+ * *intermittently*, ~every couple of minutes. Because on-time ticks fall between those
+ * drifts, the consecutive counter resets (so the burst floor never trips), and because
+ * the 1-minute `loadavg[0]` sits below 1.5, the load guard never trips either. Each
+ * isolated drift then emits a FALSE wake, and the ~2-minute cadence outlasts the
+ * `minWakeIntervalMs` cooldown — the 2026-06-15 multi-machine cascade (loadRatio ~1.1/core,
+ * `Wake detected after ~33s sleep` roughly every 2 minutes while the host was in use).
+ *
+ * The recurring-drift guard closes that band: a SHORT drift within `recentDriftWindowMs`
+ * of a PRIOR short drift, while `loadRatio > recentDriftLoadFloor`, is recurring
+ * starvation and is suppressed — generalizing the burst floor from *consecutive* ticks
+ * to *recent* ticks. A genuine isolated sleep (no recent prior drift) and any drift on a
+ * lightly-loaded host (ratio <= the floor) are unaffected and still emit; long sleeps are
+ * always exempt. Set `recentDriftWindowMs: 0` to disable.
+ *
  * Suppressed events are NOT added to `wakeHistory`, so `getCumulativeSleepMsBetween`
  * (the wake-reaper's sleep-credit source) only ever counts genuine sleep.
  */
@@ -68,6 +87,20 @@ export interface SleepWakeDetectorConfig {
    * (the 2nd consecutive drift is already a storm). Set 0 to disable.
    */
   driftBurstSuppressFloor?: number;
+  /**
+   * A SHORT drift within this window (ms) of a PRIOR short drift, while
+   * `loadRatio > recentDriftLoadFloor`, is treated as recurring CPU starvation and
+   * suppressed — closing the moderate-load band (above the floor, below `maxLoadRatio`)
+   * where intermittent drifts dodge BOTH the load guard and the consecutive burst floor.
+   * Default: 300000 (5 min). Set 0 to disable.
+   */
+  recentDriftWindowMs?: number;
+  /**
+   * `loadavg[0] / cpuCount` above which the recurring-drift guard applies. At or below
+   * this the host is not oversubscribed, so a recurring short drift is trusted as a real
+   * brief sleep and still emits. Default: 1.0.
+   */
+  recentDriftLoadFloor?: number;
   /** Injectable system-load source (testing). Default: os.loadavg. */
   loadAvgProvider?: () => number[];
   /** Injectable CPU-count source (testing). Default: os.cpus().length. */
@@ -111,6 +144,12 @@ export class SleepWakeDetector extends EventEmitter {
   private longSleepFloorSeconds: number;
   private minWakeIntervalMs: number;
   private driftBurstSuppressFloor: number;
+  private recentDriftWindowMs: number;
+  private recentDriftLoadFloor: number;
+  /** Wall-clock (ms) of the most recent SHORT drift, emitted or suppressed. Drives the
+   *  recurring-drift guard: a fresh short drift within `recentDriftWindowMs` of this,
+   *  under elevated load, is recurring starvation. Null until the first short drift. */
+  private lastShortDriftAtMs: number | null = null;
   /** Count of BACK-TO-BACK drift ticks (reset by any on-time tick). A real sleep is
    *  ONE isolated drift; sustained CPU starvation produces consecutive drifts. The
    *  Nth+ consecutive drift is a storm, not a sleep, and is suppressed regardless of
@@ -132,6 +171,8 @@ export class SleepWakeDetector extends EventEmitter {
     this.longSleepFloorSeconds = config.longSleepFloorSeconds ?? 300;
     this.minWakeIntervalMs = config.minWakeIntervalMs ?? 60000;
     this.driftBurstSuppressFloor = config.driftBurstSuppressFloor ?? 2;
+    this.recentDriftWindowMs = config.recentDriftWindowMs ?? 300000;
+    this.recentDriftLoadFloor = config.recentDriftLoadFloor ?? 1.0;
     this.loadAvgProvider = config.loadAvgProvider ?? (() => os.loadavg());
     this.cpuCountProvider = config.cpuCountProvider ?? (() => os.cpus().length);
     this.now = config.nowProvider ?? (() => Date.now());
@@ -153,6 +194,10 @@ export class SleepWakeDetector extends EventEmitter {
       const isLongSleep = sleepDuration >= this.longSleepFloorSeconds;
       const loadRatio = this.currentLoadRatio();
       this.consecutiveDrifts += 1;
+      // Record every SHORT drift's time (emitted or suppressed) so the recurring-drift
+      // guard below can measure recurrence; capture the prior value first for the check.
+      const prevShortDriftAtMs = this.lastShortDriftAtMs;
+      if (!isLongSleep) this.lastShortDriftAtMs = now;
 
       // Consecutive-drift burst = sustained CPU starvation, not sleep. A genuine sleep
       // is ONE isolated drift (the next on-time tick resets the counter); the 2nd+
@@ -177,6 +222,31 @@ export class SleepWakeDetector extends EventEmitter {
         console.warn(
           `[SleepWakeDetector] Drift ~${sleepDuration}s under load ratio ${loadRatio.toFixed(2)} ` +
             `(> ${this.maxLoadRatio}) — treating as CPU starvation, suppressing wake`,
+        );
+        return;
+      }
+
+      // Recurring short drift under MODERATE load (the band the two guards above miss):
+      // a short drift within recentDriftWindowMs of a PRIOR short drift, while load is
+      // above recentDriftLoadFloor (oversubscribed) but below maxLoadRatio, is recurring
+      // CPU starvation — the 2026-06-15 cascade where loadRatio sat ~1.1/core (under the
+      // 1.5 hard guard) yet the loop stalled every ~2min, and on-time ticks between the
+      // drifts reset the consecutive counter so the burst floor never tripped. A genuine
+      // isolated sleep (no recent prior drift) and any drift on a lightly-loaded host
+      // (ratio <= floor) still emit; long sleeps are exempt (handled above).
+      if (
+        !isLongSleep &&
+        this.recentDriftWindowMs > 0 &&
+        loadRatio > this.recentDriftLoadFloor &&
+        prevShortDriftAtMs !== null &&
+        now - prevShortDriftAtMs < this.recentDriftWindowMs
+      ) {
+        this.recordSuppression('cpu-starvation', sleepDuration, loadRatio, now);
+        console.warn(
+          `[SleepWakeDetector] Recurring short drift ~${sleepDuration}s within ` +
+            `${this.recentDriftWindowMs}ms of a prior short drift at load ratio ` +
+            `${loadRatio.toFixed(2)} (> ${this.recentDriftLoadFloor}) — recurring CPU ` +
+            `starvation, suppressing wake`,
         );
         return;
       }

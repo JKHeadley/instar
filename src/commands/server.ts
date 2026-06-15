@@ -11019,6 +11019,8 @@ export async function startServer(options: StartOptions): Promise<void> {
       maxLoadRatio: sleepWakeCfg?.maxLoadRatio,
       longSleepFloorSeconds: sleepWakeCfg?.longSleepFloorSeconds,
       minWakeIntervalMs: sleepWakeCfg?.minWakeIntervalMs,
+      recentDriftWindowMs: sleepWakeCfg?.recentDriftWindowMs,
+      recentDriftLoadFloor: sleepWakeCfg?.recentDriftLoadFloor,
     });
     // §P0 #9 (SE-8): give the scheduler's wake-reaper a cumulative-sleep view
     // (not the single last sleep event) so a job that spanned multiple sleeps
