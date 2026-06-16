@@ -413,8 +413,11 @@ export class PrHandLease {
       const parsed = JSON.parse(raw) as Record<string, PrHandLeaseRecord>;
       return this.pruneExpiredTombstones(parsed);
     } catch (err) {
+      // @silent-fallback-ok: corrupt/torn/absent lease file → fail-OPEN (treat as no lease,
+      // the push proceeds — a missing lease must NEVER block all pushes). NOT silent:
+      // recordFailOpen() logs every occurrence and raises an attention item on recurrence.
       this.recordFailOpen('readAll');
-      return {}; // fail-OPEN: corrupt/torn/absent → no lease (never block all pushes)
+      return {};
     }
   }
 

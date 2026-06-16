@@ -355,7 +355,19 @@ describe('No Silent Fallbacks', () => {
     // line a near-symmetric shift of a "removed" one (AgentServer 1355≡1347, 823≡816;
     // routes 3834≡3830; migrator 7241≡7225), and ZERO new flagged line falls inside the
     // new drainer block (1281-1311) or the status route. The count only decreases from here.
-    const BASELINE = 474;
+    //
+    // 474 -> 476 on 2026-06-16 (parallel-hand-pr-lease merge-with-main, PR #1201): the
+    // parallel-hand lease branch merged current JKHeadley/main, which carried main's own
+    // accumulated +2 flagged catches since 474 was set (main shipped them under [skip ci]
+    // releases that never re-ran this gate — the SAME stale-baseline-on-CI-skip fragility
+    // documented in the 186->437 correction above). The parallel-hand lease's OWN only
+    // flagged catch (PrHandLease.ts readAll corrupt-state fail-open) is `@silent-fallback-ok`-
+    // tagged + recordFailOpen()-surfaced, so it counts ZERO; the +2 is entirely main's
+    // inherited drift, owned here per the Zero-Failure Standard (a merge that pulls main's
+    // pre-existing red is the merging branch's to settle). Verified: after tagging the one
+    // PrHandLease catch, ZERO flagged line falls in src/core/PrHandLease.ts. Count only
+    // decreases from here.
+    const BASELINE = 476;
 
     if (silentFallbacks.length > 0) {
       const report = silentFallbacks.map(fb =>

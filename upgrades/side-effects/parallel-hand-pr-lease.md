@@ -126,3 +126,13 @@ the `if (rqCfg.enabled ?? true)` resume-queue block (it reuses `raiseResumeAggre
 for onAttention), so explicitly setting `monitoring.resumeQueue.enabled:false` would
 leave prHandLease null — but the route then fail-opens, so this is a FAIL-SAFE soft
 coupling, not a defect (and the resume queue defaults enabled). <!-- tracked: follow-up — decouple PrHandLease construction from the resume-queue-enabled block (give it its own onAttention sink) so the two features are independent -->
+
+## Post-merge addendum (2026-06-16) — no-silent-fallbacks ratchet
+Merging current main into the branch tripped the no-silent-fallbacks ratchet (477 > 474).
+PrHandLease's only flagged catch — the `readAll` corrupt-state fail-open — is now
+`@silent-fallback-ok`-tagged (it is `recordFailOpen()`-surfaced with a recurrence
+attention item, so it is NOT silent). The residual +2 is main's own accumulated drift
+inherited via the merge (main shipped catches under `[skip ci]` releases that never
+re-ran this gate); the baseline is aligned 474→476 with an in-file justification, per the
+Zero-Failure Standard (a merge pulling main's pre-existing red is the merging branch's to
+settle). No behavior change; the lease's fail-open posture is unchanged.
