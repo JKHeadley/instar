@@ -10,6 +10,7 @@ import type { Request as ExpressRequest, Response as ExpressResponse } from 'exp
 import { execFileSync } from 'node:child_process';
 import { createHash, timingSafeEqual, randomUUID } from 'node:crypto';
 import { classifyActionClaim } from '../core/action-claim.js';
+import { canonicalPushKey } from '../core/PrHandLease.js';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -657,6 +658,10 @@ export interface RouteContext {
   orphanReaper: OrphanProcessReaper | null;
   coherenceMonitor: CoherenceMonitor | null;
   commitmentTracker: CommitmentTracker | null;
+  /** PrHandLease — per-branch push-ownership lease so two of the agent's own
+   *  concurrent sessions can't push competing commits to the same branch.
+   *  Null until dev-gated construction in server.ts (spec: parallel-hand-pr-lease). */
+  prHandLease?: import('../core/PrHandLease.js').PrHandLease | null;
   /** SubscriptionPool (multi-account subscription registry, P1.1 of the
    *  Subscription & Auth Standard). Null until an operator opts in / enrolls. */
   subscriptionPool: import('../core/SubscriptionPool.js').SubscriptionPool | null;
@@ -19636,6 +19641,62 @@ export function createRoutes(ctx: RouteContext): Router {
   // NEVER blocks a message — it opens (or returns) a follow-through commitment so a
   // claimed future action ("I'll restart it", "relaunching now") is durably tracked.
   // Dark + dev-first via messaging.actionClaim.enabled (code-default false on fleet).
+  // ── Parallel-Hand PR Lease (spec: docs/specs/parallel-hand-pr-lease.md) ──
+  // The PreToolUse Bash hook posts here before a `git push`; the server runs the
+  // lease decision (tested TS) and the hook exits 0 (allow) / 2 (deny). Dev-gated.
+  router.post('/pr-leases/evaluate', (req, res) => {
+    if (!ctx.prHandLease) {
+      // Feature dark / not wired → FAIL-OPEN (a missing lease must never block a push).
+      res.json({ decision: 'allow', reason: 'feature-disabled' });
+      return;
+    }
+    const dryRun = ctx.liveConfig?.get<boolean>('monitoring.prHandLease.dryRun', true) ?? true;
+    const { command, cwd, topicId, sessionName, intent, prNumber } = req.body ?? {};
+    if (typeof command !== 'string' || typeof cwd !== 'string' || typeof topicId !== 'number' || typeof sessionName !== 'string') {
+      // Malformed → fail-open (never block on a bad request).
+      res.json({ decision: 'allow', reason: 'bad-request-failopen' });
+      return;
+    }
+    // Redact the liveness-probe handle from any holder we surface to the caller.
+    const redactHolder = (h: { holderTopicId: number; intent: string; prNumber?: number | null } | undefined) =>
+      h ? { holderTopicId: h.holderTopicId, intent: h.intent, prNumber: h.prNumber ?? null } : undefined;
+    try {
+      const key = canonicalPushKey(command, cwd);
+      if (!key) {
+        res.json({ decision: 'allow', reason: 'no-branch-key' });
+        return;
+      }
+      const evalResult = ctx.prHandLease.evaluate(key, topicId, sessionName);
+      // Always (re)acquire/renew MY lease on the allow-because-mine / no-lease paths,
+      // and take over on a stale path — so a peer can see I hold it.
+      if (evalResult.decision === 'allow' && (evalResult.reason === 'own-topic' || evalResult.reason === 'no-lease')) {
+        ctx.prHandLease.acquireOrRenew(key, { topicId, sessionId: sessionName, intent, prNumber, dryRun });
+      } else if (evalResult.decision === 'allow' && (evalResult.reason === 'stale-dead' || evalResult.reason === 'stale-past-ceiling')) {
+        const holder = evalResult.holder;
+        if (holder) {
+          ctx.prHandLease.takeOverIfStale(key, { holderTopicId: holder.holderTopicId, acquiredAt: holder.acquiredAt }, { topicId, sessionId: sessionName, intent, prNumber, dryRun });
+        }
+      }
+      // dryRun: log the would-decision but ALWAYS allow (observe-only; §5).
+      if (dryRun && (evalResult.decision === 'deny' || evalResult.decision === 'escalate')) {
+        res.json({ decision: 'allow', wouldDeny: true, wouldReason: evalResult.reason, holder: redactHolder(evalResult.holder) });
+        return;
+      }
+      res.json({ decision: evalResult.decision, reason: evalResult.reason, holder: redactHolder(evalResult.holder) });
+    } catch (err) {
+      // Inner fail-open — never block a push on an internal error.
+      res.json({ decision: 'allow', reason: 'eval-error-failopen' });
+    }
+  });
+
+  router.get('/pr-leases', (req, res) => {
+    if (!ctx.prHandLease) {
+      res.status(503).json({ error: 'pr-hand-lease feature is not enabled on this agent' });
+      return;
+    }
+    res.json({ leases: ctx.prHandLease.list().map((l) => ({ ...l, holderSessionId: undefined })) });
+  });
+
   router.post('/action-claim/observe', (req, res) => {
     const enabled = ctx.liveConfig?.get<boolean>('messaging.actionClaim.enabled', false) ?? false;
     if (!enabled) {

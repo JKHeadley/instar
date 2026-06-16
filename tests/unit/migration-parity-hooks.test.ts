@@ -78,6 +78,12 @@ const INSTALL_VS_MIGRATE_KNOWN_GAPS: Record<string, string> = {
     'dark by default (messaging.actionClaim.enabled, off) and in dev-first soak before ' +
     'fleet rollout — installed migrator-only for now, like free-text-guard.sh / ' +
     'skill-usage-telemetry.sh. Follow-up: add to installHooks() at fleet rollout.',
+  'pr-hand-lease-guard.js':
+    'Deferred-install accepted: parallel-hand PR-lease guard (spec parallel-hand-pr-lease) is ' +
+    'dev-gated dark (monitoring.prHandLease, developmentAgent-only) + dryRun-first and in ' +
+    'dev soak before fleet rollout — installed migrator-only for now, like ' +
+    'action-claim-followthrough.js. Fail-open on every uncertainty, so a migrator-only ' +
+    'install never blocks a push on a fresh-init agent. Follow-up: add to installHooks() at fleet rollout.',
 };
 
 /**

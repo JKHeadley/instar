@@ -74,6 +74,16 @@ export const INSTAR_BASH_PRETOOLUSE_HOOKS: ReadonlyArray<InstarSettingsHookEntry
     command: `node ${PD}/.instar/hooks/instar/post-action-reflection.js`,
     timeout: 5000,
   },
+  {
+    // Parallel-Hand PR Lease guard (spec: parallel-hand-pr-lease.md): before a
+    // `git push`, asks the server whether another LIVE session of this agent owns
+    // the branch's lease; blocks (exit 2) only on a deny. Dev-gated dark + dryRun;
+    // fail-open on every uncertainty (a broken guard never blocks a push).
+    type: 'command',
+    command: `node ${PD}/.instar/hooks/instar/pr-hand-lease-guard.js`,
+    blocking: true,
+    timeout: 6000,
+  },
 ];
 
 /**

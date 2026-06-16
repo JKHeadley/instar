@@ -36,6 +36,11 @@ const BLOCKED_PATH_PREFIXES = new Set([
   // how includeFiles entries resolve (sourcePath = path.join(stateDir, entry)).
   'state/pending-inbound.',
   'state/pending-inbound-quarantine/',
+  // Parallel-Hand PR Lease (spec parallel-hand-pr-lease §8): the lease store is
+  // ephemeral per-machine coordination state (TTL-bounded, self-healing). Restoring
+  // it to another machine would resurrect a stale lease as "live" — a regression.
+  // Safe to lose (reconstructed on demand). stateDir-relative prefix.
+  'state/pr-hand-leases.json',
 ]);
 
 /**

@@ -3041,6 +3041,13 @@ export class PostUpdateMigrator {
       result.errors.push(`action-claim-followthrough.js: ${err instanceof Error ? err.message : String(err)}`);
     }
 
+    try {
+      fs.writeFileSync(path.join(instarHooksDir, 'pr-hand-lease-guard.js'), this.getPrHandLeaseGuardHook(), { mode: 0o755 });
+      result.upgraded.push('hooks/instar/pr-hand-lease-guard.js (parallel-hand PR-lease guard, PreToolUse Bash, fail-open)');
+    } catch (err) {
+      result.errors.push(`pr-hand-lease-guard.js: ${err instanceof Error ? err.message : String(err)}`);
+    }
+
     // Codex enforcement-hook registration (migration parity): existing Codex
     // agents get the per-project .codex/hooks.json on update. installCodexHooks
     // otherwise runs only via init's refreshHooksAndSettings — so without this an
@@ -3939,6 +3946,15 @@ setTimeout(() => process.exit(0), 2000);
       content += `\n- **Action-Claim Follow-Through Sentinel (signal-only, dark by default).** A backstop for the word≠action gap (you say "relaunching now" / "I'll push the change" and then don't). A thin Stop hook posts each finished conversational turn to \`POST /action-claim/observe\`, which classifies a CONCRETE future-action claim (restart/relaunch/push/merge/deploy/fix/…) and opens an idempotent follow-through commitment for the topic — so the existing PromiseBeacon + the revival path make sure it actually happens. High-precision (vague "I'll take a look" never triggers it), de-duplicated by \`externalKey\` (a restated claim updates one commitment, not many), auto-expiring, per-topic capped. It NEVER blocks a message. Off by default; enable with \`messaging.actionClaim.enabled\` (dev-first soak before fleet). Proactive: user asks "why did a commitment appear when I said I'd restart something?" → that's this sentinel tracking your stated action so it isn't silently dropped.\n`;
       patched = true;
       result.upgraded.push('CLAUDE.md: added Action-Claim Follow-Through Sentinel section');
+    }
+
+    // Parallel-Hand PR Lease (parallel-hand-pr-lease.md) — Agent Awareness + Migration
+    // Parity: an agent that doesn't know this exists will be confused when a `git push`
+    // stands down. Content-sniffed; idempotent.
+    if (!content.includes('Parallel-Hand PR Lease')) {
+      content += `\n- **Parallel-Hand PR Lease (dev-cycle infra, dev-gated dark).** When more than one of my own sessions runs at once, two of them can independently drive the same PR — each force-pushing over the other and restarting CI (the 2026-06-15 #1183 thrash). A per-branch LEASE prevents this: a PreToolUse Bash hook (\`pr-hand-lease-guard.js\`) checks, before a \`git push\`, whether another LIVE session of mine already owns that branch's lease (via \`POST /pr-leases/evaluate\`); if so the second hand STANDS DOWN instead of pushing a competing commit. Keyed on the conversation TOPIC (survives session respawn), one process-wide lock + atomic-CAS takeover, TTL + dead-holder auto-heal + a 90m ceiling so it can never wedge, and FAIL-OPEN on every uncertainty (corrupt state, server down, hook crash → the push is allowed; a broken guard never blocks). Coordinates my OWN cooperating hands only — never authority over a principal, a human action always wins. Who owns a branch's lease? \`GET /pr-leases\` (Registry First). Dev-gated dark + dryRun-first (\`monitoring.prHandLease\`); single-session agents are a no-op. Proactive: user asks "why did my push get blocked / stand down?" → another live hand of mine holds that branch's lease; it lands as a follow-up once that hand releases.\n`;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Parallel-Hand PR Lease section');
     }
 
     // Outbound advisory (outbound-jargon-filepath-gap §5) — the inform-only
@@ -10883,6 +10899,96 @@ process.stdin.on('end', async () => {
   process.exit(0); // ALWAYS exit 0 — never block a turn
 });
 })();
+`;
+  }
+
+  private getPrHandLeaseGuardHook(): string {
+    return `#!/usr/bin/env node
+// Parallel-Hand PR Lease guard — PreToolUse Bash hook (spec: parallel-hand-pr-lease.md).
+//
+// Before a session runs \`git push\`, this asks the server whether another LIVE
+// session of THIS agent already owns that branch's lease; if so the server says
+// deny and this hook exits 2 (blocks the push). Coordinates the agent's OWN
+// cooperating hands only — never authority over a principal. Dev-gated + dryRun.
+//
+// FAIL-OPEN is the load-bearing safety property: the ENTIRE body is wrapped so
+// that ANY error (bad stdin, no config, server down/slow, internal throw) exits 0
+// (ALLOW). A PreToolUse hook that exits non-zero blocks the command, so a crashing
+// guard must never lock out every push (the hook-event-reporter.js lockout class).
+//
+// ESM-safe: node:fs via await import() inside the async handler (works in CJS+ESM).
+
+let data = '';
+process.stdin.on('data', (chunk) => (data += chunk));
+process.stdin.on('end', async () => {
+  try {
+    const input = JSON.parse(data || '{}');
+    // Only gate the Bash tool, and only a literal \`git push\` in the command.
+    if (input.tool_name !== 'Bash') process.exit(0);
+    const command = (input.tool_input && input.tool_input.command) || '';
+    if (typeof command !== 'string' || !/\\bgit\\b[^\\n;&|]*\\bpush\\b/.test(command)) process.exit(0);
+
+    const { readFileSync } = await import('node:fs');
+    const { join } = await import('node:path');
+    let serverPort = 4040;
+    let authToken = '';
+    let enabled = false;
+    try {
+      const cfg = JSON.parse(readFileSync(join(process.env.CLAUDE_PROJECT_DIR || '.', '.instar', 'config.json'), 'utf-8'));
+      serverPort = cfg.port || 4040;
+      authToken = cfg.authToken || '';
+      // Dev-gated dark: only the development agent runs the guard (matches the route gate).
+      enabled = !!(cfg.developmentAgent === true || (cfg.monitoring && cfg.monitoring.prHandLease));
+    } catch {}
+    if (!enabled) process.exit(0);
+
+    const topicRaw = process.env.INSTAR_TELEGRAM_TOPIC;
+    // INSTAR_SESSION_NAME is injected = the tmux session name (SessionManager spawn),
+    // which is exactly what the store's running-set probe matches on (M-C consistency).
+    const sessionName = process.env.INSTAR_SESSION_NAME || '';
+    if (!topicRaw || !sessionName) process.exit(0); // can't evaluate → fail-open
+    const topicId = parseInt(topicRaw, 10);
+    if (!Number.isFinite(topicId)) process.exit(0);
+    const cwd = input.cwd || process.env.CLAUDE_PROJECT_DIR || process.cwd();
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 5000);
+    let decision = 'allow';
+    let body = null;
+    try {
+      const resp = await fetch('http://127.0.0.1:' + serverPort + '/pr-leases/evaluate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + authToken },
+        body: JSON.stringify({ command, cwd, topicId, sessionName }),
+        signal: controller.signal,
+      });
+      body = await resp.json();
+      decision = (body && body.decision) || 'allow';
+    } catch {
+      // server down/slow/timeout → fail-open (never block a push on a transient).
+      process.exit(0);
+    } finally {
+      clearTimeout(timeout);
+    }
+
+    if (decision === 'deny') {
+      const h = (body && body.holder) || {};
+      const who = h.holderTopicId ? ('topic ' + h.holderTopicId + (h.intent ? ' (' + h.intent + ')' : '')) : 'another live session';
+      process.stderr.write(
+        'pr-hand-lease: another live hand (' + who + ') holds this branch\\'s push lease. ' +
+        'Standing down to avoid a competing push. If your change is genuinely distinct, ' +
+        'land it as a follow-up commit/PR once that hand releases.\\n'
+      );
+      process.exit(2); // block the push
+    }
+    process.exit(0); // allow / escalate / dryRun-would-deny → never block here
+  } catch {
+    process.exit(0); // own-crash fail-open — a broken guard must never block a push
+  }
+});
+
+// Backstop: if stdin never ends, never hang the tool — allow after a bounded wait.
+setTimeout(() => process.exit(0), 8000);
 `;
   }
 

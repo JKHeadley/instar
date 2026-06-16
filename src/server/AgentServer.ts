@@ -327,6 +327,7 @@ export class AgentServer {
     orphanReaper?: import('../monitoring/OrphanProcessReaper.js').OrphanProcessReaper;
     coherenceMonitor?: import('../monitoring/CoherenceMonitor.js').CoherenceMonitor;
     commitmentTracker?: import('../monitoring/CommitmentTracker.js').CommitmentTracker;
+    prHandLease?: import('../core/PrHandLease.js').PrHandLease;
     subscriptionPool?: import('../core/SubscriptionPool.js').SubscriptionPool;
     quotaPoller?: import('../core/QuotaPoller.js').QuotaPoller;
     quotaAwareScheduler?: import('../core/QuotaAwareScheduler.js').QuotaAwareScheduler;
@@ -1960,6 +1961,7 @@ export class AgentServer {
       orphanReaper: options.orphanReaper ?? null,
       coherenceMonitor: options.coherenceMonitor ?? null,
       commitmentTracker: options.commitmentTracker ?? null,
+      prHandLease: options.prHandLease ?? null,
       subscriptionPool: options.subscriptionPool ?? null,
       quotaPoller: options.quotaPoller ?? null,
       quotaAwareScheduler: options.quotaAwareScheduler ?? null,

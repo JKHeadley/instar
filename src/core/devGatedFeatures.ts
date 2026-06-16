@@ -139,6 +139,12 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     description: 'Playwright profile↔accounts registry + boot awareness + activate.',
     justification: 'Stores vault secret NAMES only (never values) + browser-profile metadata; reads are advisory signal; the only destructive op (activate: MCP-config rewrite + session restart) ships dryRun:true and is reversible; dev-dogfooded.',
   },
+  {
+    name: 'prHandLease',
+    configPath: 'monitoring.prHandLease.enabled',
+    description: 'Per-branch PR-push lease so two of the agent’s own concurrent sessions can’t push competing commits to the same branch (spec: parallel-hand-pr-lease).',
+    justification: 'Ships dryRun:true (the dry-run canary): on a dev agent the PreToolUse hook + the /pr-leases/evaluate route run the FULL decision loop and AUDIT every would-deny, but the route returns decision:allow (wouldDeny flag) while dryRun holds, so NO push is ever blocked until a deliberate dryRun:false. Coordinates the agent’s OWN cooperating hands only — never authority over a principal, never external egress; every uncertainty (corrupt state, server down, hook crash, no branch key) fails OPEN (allows the push). No spend, no destructive action while the canary holds. Same dogfooding posture as topicProfiles / credentialRepointing.',
+  },
   // ── multi-machine seamlessness coherence layers (WS3 / WS1.3 / WS4.1 / WS4.3),
   //    MOVED from hardcoded `false` in ConfigDefaults on 2026-06-13 per operator
   //    directive topic 13481 ("NOTHING should ship dark on development agents —
