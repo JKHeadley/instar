@@ -589,7 +589,10 @@ describe('ThreadlineMCP Integration', () => {
       ctx = await createIntegrationContext();
 
       const tools = await ctx.client.listTools();
-      expect(tools.tools).toHaveLength(8); // includes threadline_request_secret (sealed-handoff keystone)
+      // includes threadline_request_secret (sealed-handoff keystone) +
+      // threadline_pair (Secure A2A Verified Pairing §3.6).
+      expect(tools.tools).toHaveLength(9);
+      expect(tools.tools.map((t) => t.name)).toContain('threadline_pair');
 
       // Verify each tool has input schema
       for (const tool of tools.tools) {

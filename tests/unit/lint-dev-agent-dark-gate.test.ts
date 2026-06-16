@@ -348,9 +348,14 @@ describe('lint-dev-agent-dark-gate', () => {
       '431': 'monitoring.geminiCapacityEscalation.enabled',
       '455': 'monitoring.greenPrAutoMerge.enabled',
       '505': 'threadline.a2aCheckIn.enabled',
-      '597': 'mentor.enabled',
-      '608': 'mentor.autonomousFix.enabled',
-      '623': 'mentee.enabled',
+      // secure-a2a-verified-pairing §3.10 (Increment 6): the new
+      // threadline.verifiedPairing block (~21 lines, NO `enabled:` literal — see the
+      // note below the sessionPool keys) was inserted inside the `threadline` block
+      // ABOVE mentor, shifting every subsequent `enabled: false` line DOWN by +19.
+      // RE-VERIFIED by hand via the attributor on the edited ConfigDefaults.
+      '616': 'mentor.enabled',
+      '627': 'mentor.autonomousFix.enabled',
+      '642': 'mentee.enabled',
       // WS4.1-durable-ack (CMT-1416) inserts a plain `ws41DurableAck: false`
       // seamlessness boolean (NOT `enabled:`, so the attributor ignores it) above
       // sessionPool. WS4.3-role-guard (CMT-1416) inserts another plain
@@ -373,9 +378,10 @@ describe('lint-dev-agent-dark-gate', () => {
       // stay HARDCODED false (held — they share the StageAdvancer `stage !== 'dark'` gate,
       // not cleanly dev-gatable), so they remain attributed here. RE-VERIFIED by hand via
       // the attributor on the edited ConfigDefaults (each maps to a real `enabled: false,` line).
-      '824': 'multiMachine.sessionPool.enabled',
-      '849': 'multiMachine.sessionPool.inboundQueue.enabled',
-      '878': 'multiMachine.sessionPool.holdForStability.enabled',
+      // (+19 shift from the Increment-6 verifiedPairing block — see the mentor note above.)
+      '843': 'multiMachine.sessionPool.enabled',
+      '868': 'multiMachine.sessionPool.inboundQueue.enabled',
+      '897': 'multiMachine.sessionPool.holdForStability.enabled',
       // mm-stores-devgate (operator directive 2026-06-13, topic 13481): the 7
       // multiMachine.stateSync.* memory stores MOVED from DARK_GATE_EXCLUSIONS to
       // DEV_GATED_FEATURES and their `enabled: false` literals were REMOVED from
@@ -390,9 +396,27 @@ describe('lint-dev-agent-dark-gate', () => {
       // the sessionPool block (824/849/878, unchanged) and cartographer, shifting all
       // three cartographer keys DOWN by +14 (1138→1152, 1183→1197, 1208→1222).
       // RE-VERIFIED by hand via the attributor on the merged ConfigDefaults.
-      '1152': 'cartographer.freshnessSweep.enabled',
-      '1197': 'cartographer.conformanceAudit.llmEnrichment.enabled',
-      '1222': 'cartographer.subtreeNav.llmRerank.enabled',
+      // secure-a2a-verified-pairing §3.8 (Increment 5): a NEW
+      // multiMachine.stateSync.threadlinePairing block with an EXPLICIT `enabled: false`
+      // (+ dryRun:true) was appended to the stateSync map (after topicOperator). UNLIKE
+      // the 7 WS2 stores it is NOT dev-gated — it ships hard-dark (a credential-gating
+      // surface) and is classified in DARK_GATE_EXCLUSIONS (action-bearing). The new
+      // `enabled: false` literal IS attributed here (line 1047), and the ~17 lines it
+      // adds shift the three cartographer keys DOWN by +17 (1152→1169, 1197→1214,
+      // 1222→1239). RE-VERIFIED by hand via the attributor on the edited ConfigDefaults.
+      // secure-a2a-verified-pairing §3.10 (Increment 6): a NEW
+      // threadline.verifiedPairing block (~21 lines: an OMITTED-`enabled` dev-gate
+      // comment + `dryRun:true` + `credentialShareEnforced:false`) was inserted into the
+      // `threadline` block ABOVE the stateSync map. It deliberately adds NO `enabled:`
+      // literal (the flag rides the developmentAgent gate — a literal `false` would
+      // force-dark dev agents, the PR #1001 anti-pattern), so it introduces no new
+      // attributed path; it only shifts the threadlinePairing + cartographer keys DOWN
+      // by +19 (1047→1066, 1169→1188, 1214→1233, 1239→1258). RE-VERIFIED by hand via the
+      // attributor on the edited ConfigDefaults.
+      '1066': 'multiMachine.stateSync.threadlinePairing.enabled',
+      '1188': 'cartographer.freshnessSweep.enabled',
+      '1233': 'cartographer.conformanceAudit.llmEnrichment.enabled',
+      '1258': 'cartographer.subtreeNav.llmRerank.enabled',
     };
     const actual = attributeRealConfigDefaults();
     expect(actual).toEqual(EXPECTED);

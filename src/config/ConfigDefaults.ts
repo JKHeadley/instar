@@ -567,6 +567,25 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       backfillMaxRecordsPerResponse: 50,
       backfillRequestsPerPeerPerMinute: 6, // rate-limits episode INITIATION, not in-episode requests
     },
+    // Secure A2A Verified Pairing — mutual SAS identity verification + the
+    // credential-share gate (docs/specs/secure-a2a-verified-pairing.md §3.10).
+    // DARK-SHIP: `enabled` is deliberately OMITTED so the server resolves it via
+    // the developmentAgent gate (resolveDevAgentGate: `enabled ?? !!developmentAgent`)
+    // — live on a dev agent, dark on the fleet. Writing `enabled: false` here would
+    // force-dark even dev agents (the PR #1001 anti-pattern) and defeat dogfooding.
+    // Per FD10 the OUTBOUND credential-share refusal is ALWAYS live when enabled (a
+    // leak gate has no allow-by-default soak); `dryRun:true` governs ONLY inbound
+    // observability + attention verbosity, and `credentialShareEnforced:false` arms
+    // inbound credential-ingestion enforcement (read live at the chokepoint, no
+    // restart). applyDefaults deep-merges this nested block under the existing
+    // `threadline` key on update (Migration Parity §5), so existing agents backfill
+    // dryRun + credentialShareEnforced without an explicit patch; an operator's
+    // existing values are NEVER overwritten. Mirrors `singleNegotiator` posture.
+    verifiedPairing: {
+      // `enabled` OMITTED on purpose (dev-gate decides). NEVER hardcode it here.
+      dryRun: true,
+      credentialShareEnforced: false,
+    },
   },
   // Topic-intent auto-capture loop (rung 0 of continuous-working-awareness).
   // ON by default (ratified): every substantive conversation turn gets a cheap
@@ -1029,6 +1048,23 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       // authenticated setOperator binds the principal; Know-Your-Principal).
       topicOperator: {
         dryRun: false,
+      },
+      // Secure A2A Verified Pairing §3.8 (FD11) — `threadline-pairing-record`, the EIGHTH
+      // replicated-store consumer. Replicates ONLY the verified-IDENTITY RESULT of a pairing
+      // { peerFp, peerIdentityPub, state:'mutual-verified', verifiedAt, verifiedOnMachine } —
+      // NEVER the SAS words, shared secret, or relay token (those stay machine-local BY DESIGN,
+      // bound to the machine-local handshake's ephemeral secret). Machine B honors a replicated
+      // record ONLY by pinning peerIdentityPub; inherited = identity-verified, NOT channel-ready.
+      // UNLIKE the 7 WS2 memory stores above (which OMIT `enabled` so the developmentAgent gate
+      // decides), this store is a CREDENTIAL-GATING surface, so per the spec it ships fully DARK
+      // with an EXPLICIT `enabled:false` + `dryRun:true` on EVERY agent (dev agents included) —
+      // the cautious rollout posture for a feature that feeds the credential-share gate. Flag-off
+      // ⇒ strict no-op (single-machine agents unaffected). applyDefaults add-missing semantics →
+      // migrateConfig backfills these on update (Migration Parity); an operator's existing values
+      // are NEVER overwritten.
+      threadlinePairing: {
+        enabled: false,
+        dryRun: true,
       },
     },
   },

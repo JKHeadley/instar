@@ -7,17 +7,44 @@
  * Part of PROP-relay-auto-connect.
  */
 
-import type { AgentTrustManager, AgentTrustLevel } from './AgentTrustManager.js';
+import { CREDENTIAL_SHARE_OP, type AgentTrustManager, type AgentTrustLevel } from './AgentTrustManager.js';
 import type { ThreadlineRouter } from './ThreadlineRouter.js';
 import type { ReceivedMessage } from './client/ThreadlineClient.js';
+import { PAIR_VERIFY_OP, processPairVerifyReceipt } from './PairVerifyReceipt.js';
 
 // ── Types ────────────────────────────────────────────────────────────
+
+/**
+ * Verified-pairing config snapshot (spec §3.10). Read live at the chokepoint so a
+ * config edit takes effect without a gate rebuild. When `enabled` is false the gate
+ * is a complete pass-through — byte-identical legacy behavior.
+ */
+export interface VerifiedPairingGateConfig {
+  /** Master flag (§3.10). Resolved (dev-gate applied) by the caller. */
+  enabled: boolean;
+  /** Governs inbound observability ONLY (FD10) — never the outbound refusal. */
+  dryRun: boolean;
+  /** Arms inbound credential-ingestion enforcement (read live). */
+  credentialShareEnforced: boolean;
+}
 
 export interface InboundGateConfig {
   /** Max payload size in bytes (default: 64KB) */
   maxPayloadBytes?: number;
   /** Per-trust-level rate limits */
   rateLimits?: Partial<Record<AgentTrustLevel, { probesPerHour: number; messagesPerHour: number; messagesPerDay: number }>>;
+  /**
+   * THIS agent's own fingerprint — bound into pair-verify receipt verification +
+   * the self-pair guard (FD12). Optional: when absent, the recipient-fp check on a
+   * receipt is skipped (the sender-fp + signature checks still hold).
+   */
+  ownFingerprint?: string;
+  /**
+   * Live reader for the verified-pairing config (spec §3.10). A function so the gate
+   * reads the CURRENT flag state on every message (credentialShareEnforced is read
+   * live). When absent/returns enabled:false, verified-pairing is a pass-through.
+   */
+  getVerifiedPairingConfig?: () => VerifiedPairingGateConfig;
 }
 
 export interface GateDecision {
@@ -26,6 +53,11 @@ export interface GateDecision {
   fingerprint?: string;
   message?: ReceivedMessage;
   trustLevel?: AgentTrustLevel;
+  /**
+   * Set for a consumed control-plane message (e.g. a `pair-verify` receipt): the
+   * gate handled it inline and it must NOT be routed onward to ThreadlineRouter.
+   */
+  controlPlane?: boolean;
 }
 
 /** Operations that are probes (don't spawn sessions) */
@@ -126,6 +158,10 @@ export class InboundMessageGate {
     blockedBySize: 0,
     blockedByReplay: 0,
     probesHandled: 0,
+    pairVerifyProcessed: 0,
+    pairVerifyDropped: 0,
+    credentialBlocked: 0,
+    credentialDryRunWouldBlock: 0,
   };
 
   constructor(
@@ -185,9 +221,80 @@ export class InboundMessageGate {
     const opType = this.classifyOperation(message);
     const isProbe = PROBE_OPS.has(opType);
 
+    // Resolve the verified-pairing config ONCE (read live so credentialShareEnforced
+    // takes effect without a restart, §3.10). enabled:false ⇒ complete pass-through.
+    const vp = this.resolveVerifiedPairingConfig();
+
+    // 1a. pair-verify control-plane message (spec §3.4) — processed BEFORE the trust
+    // gate (gate-EXEMPT for the trust-level gate, like a probe). Still subject to the
+    // replay+size cheap rejections above; the receipt handler itself does strict schema
+    // validation, Ed25519 signature verification against the BOUND identity key, and the
+    // pairingId/sasFingerprint/pending-state checks. It is NEVER routed onward and NEVER
+    // subject to the credential gate. Only handled when verified-pairing is enabled.
+    if (vp.enabled && opType === PAIR_VERIFY_OP) {
+      const rawPayload = this.extractControlPayload(message);
+      const outcome = processPairVerifyReceipt(this.trustManager, fingerprint, rawPayload, this.config.ownFingerprint);
+      if (messageId) this.seenMessageIds.set(messageId, Date.now());
+      if (outcome.processed) {
+        this.metrics.pairVerifyProcessed++;
+        console.log(`[inbound-gate] pair-verify ACCEPTED from=${fingerprint.slice(0, 12)} (peerAcked set)`);
+      } else {
+        this.metrics.pairVerifyDropped++;
+        // No state change on a failing receipt (spec §3.4). Drop with a visible reason.
+        this.logBlock('pair_verify_dropped', fingerprint, `reason=${outcome.reason}`);
+      }
+      // Consumed control-plane message: handled inline, do NOT route onward.
+      return { action: 'block', reason: 'pair-verify', fingerprint, controlPlane: true };
+    }
+
     // 2. Trust check (keyed by fingerprint)
     const trust = this.trustManager.getTrustLevelByFingerprint(fingerprint);
     const limits = this.getRateLimits(trust);
+
+    // 2a. Inbound credential-ingestion gate (spec §3.5 / FD5). The security boundary
+    // is the RESOLVED SENDER trust source (mutual-verified), NOT the message's
+    // self-declared kind or content. An explicit kind:'credential-share' is a fast-path
+    // courtesy ONLY — it is NOT the security boundary (FD5). When enforcement is armed
+    // (credentialShareEnforced), an inbound that would be acted on AS a credential from a
+    // non-mutual-verified sender is REFUSED (fail-closed, FD9). dryRun governs THIS side's
+    // observability ONLY — it LOGS the verdict it WOULD apply but still passes (FD10);
+    // the OUTBOUND refusal (the relay-send funnel) is always live regardless of dryRun.
+    // When verified-pairing is enabled, the credential gate is the AUTHORITATIVE
+    // decision for the credential op — it short-circuits the generic step-4 op check
+    // (which would also reject `credential-share` for a non-mutual-verified peer). This
+    // is what makes dryRun's "observe, don't enforce" semantics actually observable
+    // (FD10): under dryRun the verdict is logged but the message still passes onward.
+    if (vp.enabled && opType === CREDENTIAL_SHARE_OP) {
+      let allowed = false;
+      try {
+        allowed = this.trustManager.isCredentialShareAllowedByFingerprint(fingerprint);
+      } catch {
+        allowed = false; // FD9 — any uncertainty fails closed.
+      }
+      if (allowed) {
+        // Mutual-verified sender: record + pass (the only inbound credential PASS path).
+        this.trustManager.recordMessageReceivedByFingerprint(fingerprint);
+        if (messageId) this.seenMessageIds.set(messageId, Date.now());
+        this.metrics.passed++;
+        console.log(`[inbound-gate] PASS credential from=${fingerprint.slice(0, 12)} trust=${trust} (mutual-verified)`);
+        return { action: 'pass', message, trustLevel: trust };
+      }
+      if (vp.credentialShareEnforced && !vp.dryRun) {
+        // Armed + live: REFUSE (fail-closed, §3.5/FD5/FD9).
+        this.metrics.blocked++;
+        this.metrics.credentialBlocked++;
+        this.logBlock('credential_not_mutually_verified', fingerprint, `trust=${trust}`);
+        return { action: 'block', reason: 'credential_not_mutually_verified', fingerprint };
+      }
+      // dryRun (or not-yet-armed): observe only — log the verdict it WOULD apply, then
+      // PASS (FD10 — inbound observability never enforces; the outbound gate is live).
+      this.metrics.credentialDryRunWouldBlock++;
+      this.trustManager.recordMessageReceivedByFingerprint(fingerprint);
+      if (messageId) this.seenMessageIds.set(messageId, Date.now());
+      this.metrics.passed++;
+      console.log(`[inbound-gate] credential WOULD-BLOCK (dryRun/observe) from=${fingerprint.slice(0, 12)} trust=${trust} enforced=${vp.credentialShareEnforced} — passing`);
+      return { action: 'pass', message, trustLevel: trust };
+    }
 
     // Observability: every inbound evaluation is logged with the RESOLVED trust
     // level + operation. A silently-blocked inbound (e.g. a trusted peer whose
@@ -284,6 +391,31 @@ export class InboundMessageGate {
     }
     // Default: treat as 'message'
     return 'message';
+  }
+
+  /**
+   * Resolve the verified-pairing config live (spec §3.10). Defaults to a complete
+   * pass-through (enabled:false) when no reader is wired, so legacy behavior is
+   * byte-identical on a non-pairing agent.
+   */
+  private resolveVerifiedPairingConfig(): VerifiedPairingGateConfig {
+    try {
+      const v = this.config.getVerifiedPairingConfig?.();
+      if (v) return v;
+    } catch {
+      // A broken config reader must never break inbound evaluation — pass through.
+    }
+    return { enabled: false, dryRun: true, credentialShareEnforced: false };
+  }
+
+  /**
+   * Extract the control-plane payload object (e.g. a pair-verify receipt) from an
+   * inbound message. The receipt fields ride alongside `type` on the content object.
+   */
+  private extractControlPayload(message: ReceivedMessage): unknown {
+    const content = message.content;
+    if (typeof content === 'object' && content !== null) return content;
+    return null;
   }
 
   private estimatePayloadSize(message: ReceivedMessage): number {

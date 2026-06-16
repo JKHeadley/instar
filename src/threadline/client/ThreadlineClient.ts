@@ -330,6 +330,20 @@ export class ThreadlineClient extends EventEmitter {
   }
 
   /**
+   * Whether the ENCRYPTED+SIGNED send path is available for a recipient — i.e. we
+   * know its keys so `send()`/`sendAuto()` would use MessageEncryptor.encrypt rather
+   * than the plaintext fallback. Mirrors the exact key check in `sendAuto`.
+   *
+   * Used by the credential-share gate (Secure A2A Verified Pairing §3.5): a credential
+   * must NEVER traverse the plaintext fallback, so the outbound chokepoint refuses a
+   * credential-bearing send when this returns false.
+   */
+  hasEncryptedSendPath(recipientId: AgentFingerprint): boolean {
+    const known = this.knownAgents.get(recipientId);
+    return Boolean(known?.publicKey && known?.x25519PublicKey);
+  }
+
+  /**
    * Discover agents on the relay.
    */
   async discover(filter?: {

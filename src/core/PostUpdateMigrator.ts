@@ -4528,6 +4528,27 @@ When I run on more than one machine and a dashboard polls several pool-scope tab
       result.upgraded.push('CLAUDE.md: added WS4.4(f) shared pool-cache section');
     }
 
+    // Secure A2A Verified Pairing (docs/specs/secure-a2a-verified-pairing.md §5,
+    // Migration Parity P5): existing agents must learn the verified-pairing
+    // capability — how to check whether a peer is mutually verified, how to pair
+    // (the threadline_pair MCP tool / the dashboard verify), and the load-bearing
+    // rule "never send a peer a secret until mutual-verified." Content-sniffed on a
+    // distinctive marker for idempotency.
+    if (!content.includes('Verified Pairing — is my channel to a peer mutually verified')) {
+      const verifiedPairingSection = `
+### Verified Pairing — is my channel to a peer mutually verified before I share a secret?
+
+Before I send another agent a credential, that peer must be **mutually verified** out-of-band — not merely handshaked. The handshake proves the endpoint holds *a* private key; it does NOT prove fingerprint \`63b1…\` belongs to the *peer you actually trust* (a malicious relay could substitute keys). Verified pairing closes that with a mutual **Short Authentication String (SAS)**: each side renders 6 words locally, a human compares them out-of-band, and on match the operator confirms — binding the fingerprint to a human-verified identity (\`mutual-verified\` trust source). Ships DARK behind \`threadline.verifiedPairing.enabled\` (dev-agent gated; routes 503 when off); a credential to an unverified peer is REFUSED fail-closed from day one.
+- **Is my channel to <peer> mutually verified?** (Registry First — read it, never guess): \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/threadline/pairing\` → pairings \`{ peerFp, peerName, state, verifiedAt?, trustSource }\` (\`?scope=pool\` merges across machines). \`GET /threadline/health\` carries \`mutualVerifiedCount\`. The SAS words show ONLY via \`GET /threadline/pairing/:peerFp\` to a dashboard-PIN-authed operator request while \`pending-verification\` — never on the list, never to a bearer-only request.
+- **To pair / verify:** drive the \`threadline_pair\` MCP tool (\`status\`/\`verify\`/\`deny\`) or the dashboard Threadline-tab pairing panel (renders the pending SAS + verify/deny buttons — the operator never curls a SAS). The verify route (\`POST /threadline/pairing/:peerFp/verify {match:true|false}\`) REQUIRES the dashboard PIN (FD7) — my Bearer token is structurally insufficient to confirm a pairing; the local human SAS comparison is the load-bearing gate.
+- **The credential rule (load-bearing):** NEVER send a peer a secret until that peer is \`mutual-verified\`. The credential-share gate is enforced at the relay-send funnel and the inbound credential-ingestion chokepoint, keyed on WHO the peer is (trust source) — never on message labels or content. A credential is also refused over the plaintext-only fallback (it must traverse the encrypted+signed path). This is the structural answer to "Dawn declined to send me a secret because she couldn't prove my identity."
+- **When to use** (PROACTIVE — this is the trigger): the moment I (or a peer) need to share a credential agent-to-agent, FIRST check \`GET /threadline/pairing\`; if the peer is not \`mutual-verified\`, drive \`threadline_pair\` / the dashboard verify to pair before sending — do not paste the secret into an ordinary message to route around the gate. Spec: \`docs/specs/secure-a2a-verified-pairing.md\`.
+`;
+      content += '\n' + verifiedPairingSection;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Secure A2A Verified Pairing awareness section');
+    }
+
     // CMT-519 — Threadline hub topic + "open this"/bind guidance. Existing agents
     // need to know threadline notices route parent-or-hub (never per-event topics)
     // and that "open this" / "tie this to X" in the hub means calling the bind
@@ -6917,6 +6938,11 @@ Create worktrees for collaborator repos with \`instar worktree create <branch>\`
       // migrateClaudeMd's H3); each CLAUDE.md contains exactly one, so the other no-ops.
       '**One Memory (replicated stores)',
       '### One Memory (replicated stores)',
+      // Secure A2A Verified Pairing — reaches Codex/Gemini agents so they also know
+      // never to send a peer a credential until it shows mutual-verified. Two variants
+      // cover the template's bold heading and migrateClaudeMd's H3.
+      '**Verified Pairing — is my channel to a peer mutually verified',
+      '### Verified Pairing — is my channel to a peer mutually verified',
     ];
 
     for (const shadowName of ['AGENTS.md', 'GEMINI.md']) {

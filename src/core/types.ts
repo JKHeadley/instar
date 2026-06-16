@@ -3636,6 +3636,29 @@ export interface ThreadlineConfig {
   spawn?: ThreadlineSpawnConfig;
   /** Warm-session A2A keep-alive integration (Arch Y). */
   warmSessionA2A?: ThreadlineWarmSessionConfig;
+  /** Secure A2A Verified Pairing — SAS mutual verification + credential-share gate (§3.10). */
+  verifiedPairing?: ThreadlineVerifiedPairingConfig;
+}
+
+/**
+ * Secure A2A Verified Pairing config (docs/specs/secure-a2a-verified-pairing.md §3.10).
+ *
+ * Ships DARK: `enabled` default false fleet-wide (dev-live via the developmentAgent
+ * gate when omitted). When `enabled` is false the gate is a complete pass-through —
+ * byte-identical legacy behavior, no refusals, no pair-verify handling.
+ *
+ * `dryRun` (default true) governs ONLY inbound observability/logging (FD10) — the
+ * OUTBOUND credential-share refusal is ALWAYS live when `enabled` (a leak gate has
+ * no allow-by-default soak). `credentialShareEnforced` arms inbound enforcement and
+ * is read live at the gate chokepoint (no restart).
+ */
+export interface ThreadlineVerifiedPairingConfig {
+  /** Master flag. Default false fleet; omit → resolves via the developmentAgent gate. */
+  enabled?: boolean;
+  /** Governs inbound observability + attention verbosity ONLY (FD10). Default true. */
+  dryRun?: boolean;
+  /** Arms inbound credential-ingestion enforcement. Read live at the chokepoint. Default false. */
+  credentialShareEnforced?: boolean;
 }
 
 /**
