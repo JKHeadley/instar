@@ -24965,8 +24965,10 @@ export function createRoutes(ctx: RouteContext): Router {
       // wired — its scenarios then surface as a driver-error FAIL via RealChannelDriver's
       // loud "no real sender configured" throw, NEVER a fabricated reply or the live
       // agent token. We read demo creds from config.liveTest.demo (the documented keys).
-      const liveTestCfg = (ctx.config as { liveTest?: { demo?: { slackUserToken?: string; telegramBotToken?: string } } }).liveTest;
+      const liveTestCfg = (ctx.config as { liveTest?: { demo?: { slackUserToken?: string; slackUserCookie?: string; slackWorkspaceHost?: string; telegramBotToken?: string } } }).liveTest;
       const demoSlackUserToken = liveTestCfg?.demo?.slackUserToken;
+      const demoSlackUserCookie = liveTestCfg?.demo?.slackUserCookie;
+      const demoSlackWorkspaceHost = liveTestCfg?.demo?.slackWorkspaceHost;
       const demoTelegramBotToken = liveTestCfg?.demo?.telegramBotToken;
 
       const senders: Partial<Record<Surface, SurfaceSender>> = {};
@@ -25006,8 +25008,47 @@ export function createRoutes(ctx: RouteContext): Router {
       // Slack demo sender — posts as the NON-AGENT demo user token, waits for a reply
       // authored by Echo's bot user id (from the live SlackAdapter).
       if (slackChannelId) {
+        // E2E-PAIRING: EXEMPT — no new route and no liveness/503 change. This only
+        // swaps the Slack demo SENDER's credential transport inside the existing,
+        // already-E2E-covered /live-test/multi-machine-capstone route (Bearer
+        // SlackApiClient → xoxc web-client LiveTestSlackCaller when the sender token is
+        // xoxc). The transport selection is fully covered by the LiveTestSlackCaller
+        // unit tests (tests/unit/LiveTestSlackCaller.test.ts); the route's liveness is
+        // unchanged.
         const agentBotUserId = ctx.slack?.getBotUserId() ?? null;
-        if (demoSlackUserToken && agentBotUserId) {
+        // An xoxc web-client token (member browser auth) needs a DIFFERENT transport
+        // than a Bearer token: the member posts via xoxc-in-body + the `d` cookie, while
+        // history reads still go over Echo's own Bearer bot token. Detect xoxc by its
+        // `xoxc-` prefix; anything else is treated as a normal Bearer sender token.
+        const isXoxcSender = typeof demoSlackUserToken === 'string' && demoSlackUserToken.startsWith('xoxc-');
+        const slackBotToken = (ctx.config.messaging?.find((m) => m.type === 'slack')?.config as { botToken?: string } | undefined)?.botToken;
+        if (isXoxcSender && agentBotUserId) {
+          // Member-as-real-user path: require the `d` cookie + a workspace host + a
+          // Bearer bot token for the history reads. A missing one is a wiring error, not
+          // a silent fallback — record it loudly as a blocked surface so the scenario is
+          // a real driver-error FAIL rather than a fabricated reply.
+          if (demoSlackUserCookie && demoSlackWorkspaceHost && slackBotToken) {
+            const { LiveTestSlackCaller } = await import('../core/LiveTestSlackCaller.js');
+            const demoApi = new LiveTestSlackCaller({
+              workspaceHost: demoSlackWorkspaceHost,
+              xoxcToken: demoSlackUserToken as string,
+              dCookie: demoSlackUserCookie,
+              botToken: slackBotToken,
+              logger: (m: string) => console.log(`  ${m}`),
+            });
+            senders.slack = new SlackLiveSender({
+              api: demoApi,
+              agentBotUserId,
+              logger: (m: string) => console.log(`  ${m}`),
+            });
+          } else {
+            blockedSurfaces.push({
+              surface: 'slack',
+              reason: 'credential-unavailable (xoxc sender needs liveTest.demo.slackUserCookie + slackWorkspaceHost + a slack bot token for history reads)',
+            });
+          }
+        } else if (demoSlackUserToken && agentBotUserId) {
+          // Bearer (xoxp/xoxb) sender path — the original SlackApiClient transport.
           const { SlackApiClient } = await import('../messaging/slack/SlackApiClient.js');
           const demoApi = new SlackApiClient(demoSlackUserToken);
           senders.slack = new SlackLiveSender({

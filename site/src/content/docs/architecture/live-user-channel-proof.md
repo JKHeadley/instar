@@ -36,6 +36,22 @@ reply text and the machine that actually answered. `LiveTestHarness` refuses to 
 volatile or permission-changing scenario on anything but an isolated demo channel, so a
 dangerous test can never touch the live operator channel.
 
+### Driving Slack as a real member
+
+The Slack arm of the harness posts as a *non-agent* identity so the agent never replies to
+itself. `SlackLiveSender` consumes a small `SlackCaller` seam, and the multi-machine capstone
+route picks the credential transport for that seam at wiring time. A plain Bearer (xoxp/xoxb)
+sender token uses the standard `SlackApiClient`. But the only distinct non-Echo senders we can
+capture for a demo workspace are real test *users*, authenticated the browser way — an `xoxc`
+web-client token plus the user's `d` session cookie — which are not Bearer tokens. For those,
+`LiveTestSlackCaller` is the adapter: it posts `chat.postMessage` *as the member* via the
+`xoxc` token in the form body and the `d` cookie in a `Cookie` header against the workspace
+host, while reading history (`conversations.history`) over the agent's own Bearer bot token at
+`slack.com`. The route detects an `xoxc-` sender by prefix and wires `LiveTestSlackCaller`
+behind `SlackLiveSender`; a missing cookie, workspace host, or bot token fails closed as a
+recorded blocked-surface, never a fabricated reply. That is what lets the harness drive a real
+Slack channel end-to-end as a genuine member.
+
 ## First feature held to the bar: durable multi-machine ownership
 
 The standard's first application was the cross-machine transfer fix. The bug: moving a
