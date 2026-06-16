@@ -62,7 +62,10 @@ export class PlacementResponderReader {
       const p = await this.d.fetchPlacement(topicId);
       return p?.owner ?? null;
     } catch (err) {
-      // Tolerate: the driver degrades to an unattributed reply, never a thrown scenario.
+      // @silent-fallback-ok: a transient /pool/placement read failure degrades this
+      // best-effort responder-machine lookup to null — the RealChannelDriver then
+      // proceeds with an unattributed reply rather than throwing the whole scenario.
+      // The failure is logged with topic context; it is not a gating/authority path.
       this.log(`fetchPlacement failed for topic ${topicId}: ${err instanceof Error ? err.message : String(err)}`);
       return null;
     }
