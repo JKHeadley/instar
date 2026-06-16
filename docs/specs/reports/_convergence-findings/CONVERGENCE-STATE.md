@@ -12,7 +12,9 @@
   - §7 — tests for M1/M3/M5/M7/M11/Q5. §5 migrateClaudeMd + multi-machine machine-local posture.
   - Frontloaded Decisions added (Q1/Q2/Q4/Q5; 4 frontloaded, 1 contested-cleared). Open questions = none.
 
-## NEXT: ROUND 2 (Phase 3 convergence check)
+## ROUND 2 DONE (rewrite committed): externals→MINOR (codex was SERIOUS); fixed N1 orphan-promise CRASH hazard (.catch+unref+AbortSignal), N2 cap-dominance prose, N3 garbage-output=caller-handled (resolves No-Deferrals), N4 migrateClaudeMd new-marker (old sniff no-ops+leaves wrong text), N5-N9 precision. decision-completeness+lessons already CONVERGED.
+
+## NEXT: ROUND 3 (Phase 3 convergence check)
 - Externals are MANDATORY (spec body changed since round-1 external pass — codex+gemini were active <7d).
 - Re-run: conformance gate + 6 internal reviewers + codex + gemini on the UPDATED spec.
 - Convergence criteria: (1) no material NEW findings, (2) Open questions already = none ✅.

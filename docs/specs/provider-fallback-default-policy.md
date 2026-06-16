@@ -7,7 +7,7 @@ eli16-overview: "docs/specs/provider-fallback-default-policy.eli16.md"
 
 # Provider-Fallback Default Policy — internal components run off Claude by default
 
-**Status:** draft (converging — round 1 review folded in)
+**Status:** draft (converging — rounds 1–2 review folded in)
 **Author:** echo
 **Commitments:** CMT-1554, CMT-1555
 **Origin directive (Justin, 2026-06-15):** "All gates, sentinels, and internal
@@ -170,32 +170,73 @@ If `config.sessions.componentFrameworks` is **explicitly set by the operator**, 
 verbatim — do NOT merge the default into it (directive: "the user can
 configure/override"). The detection of "operator-set" is **load-bearing and must not
 be foolable**:
-- **Snapshot the operator-set boolean ONCE at boot, from the RAW on-disk config value**,
-  *before any runtime mutator runs.* Some background features (notably `CartographerSweep`)
-  auto-vivify `config.sessions.componentFrameworks` in memory to set their own routing;
-  if the resolver tested the *live, possibly-mutated* object it would mistake an
-  auto-vivified block for an operator override and silently disable the default policy
-  (round-1 M5). The snapshot reads the operator's actual file value, so a later in-memory
-  mutation by another feature cannot defeat it.
+- **Snapshot the operator-set boolean ONCE at the router-construction site** (`server.ts:4687`),
+  which provably runs **before** the only runtime mutator of this object (`CartographerSweep`'s
+  auto-vivify at `server.ts:11266`). The contract is an **ordering one** (round-2 N6): capture
+  whether the operator set `componentFrameworks` from the in-memory config value AT CONSTRUCTION
+  TIME and never re-read it later — `loadConfig` exposes the value by reference (no separate "raw"
+  object), so a snapshot-then-freeze of the boolean at 4687 is what makes it mutation-proof. If
+  the resolver instead tested the live object after boot, it would mistake `CartographerSweep`'s
+  auto-vivified block for an operator override and silently disable the default policy (round-1 M5).
+- **Boot decides default-vs-operator; block contents are live (round-2 N8).** The choice of WHICH
+  `resolveConfig` to install (computed-default vs operator's own) is made once at boot from that
+  snapshot. Consequence, documented honestly: an operator who **ADDS** a `componentFrameworks`
+  block *after* boot needs a server restart for it to take effect (consistent with §4.3's
+  boot-computed primary). An operator whose block was already set at boot gets **live-read** edits
+  to that block's contents (the engine reads `resolveConfig` live). This is the same restart-to-adopt
+  semantics as the active-set; it is stated, not silent.
 - Excluding `job` (§4.1) also shrinks this surface: the default no longer writes the
   `job` slot where `CartographerSweep` lives, so the two no longer contend for it.
 
 ### 4.5 Bounded per-attempt swap timeout (resolves round-1 M1 — the crux)
 The longer default chain makes an unbounded swap loop dangerous (§2). Add a **minimal,
-bounded per-attempt timeout** to the swap loop only:
-- Each swap attempt (`tp.evaluate()`) races a per-attempt timeout (default ~`gateTimeoutMs`,
-  e.g. 5s, config: `intelligence.swapAttemptTimeoutMs`). A provider that is *slow but not
-  erroring* is abandoned at the cap and treated as a failure → the loop advances to the
-  next target instead of sitting the full provider timeout. This is what stops the chain
-  from STACKING slow providers into a worse stall than the single slow Claude it replaces.
-- The **gating caller's own overall budget still bounds the total** (the tone-gate already
-  wraps its `evaluate()` in a 5s budget — verify each gating caller imposes one; where a
-  caller has none, the per-attempt cap × chain-length is the ceiling). Net: total swap
-  latency is bounded, and within that budget multiple providers can actually be tried.
-- This is the ONE engine touch in this change. It is justified: the engine's no-timeout
-  swap was safe with a 1-link tail but is not with a 3–4-link default chain. The timeout
-  is fail-open (a timed-out attempt is just a failed attempt → next target → Claude tail →
-  fail-closed if all exhausted), so it never weakens the fail-closed guarantee.
+bounded per-attempt timeout** to the swap loop only.
+
+**The per-attempt cap is the universal ceiling (round-2 N2 — corrected basis).** Each swap
+attempt (`tp.evaluate()`) races a per-attempt timeout (default **5s** literal, config:
+`intelligence.swapAttemptTimeoutMs` — *not* a pre-existing `gateTimeoutMs`, which does not
+exist). A provider that is *slow but not erroring* is abandoned at the cap and treated as a
+failure → the loop advances to the next target. **Total swap latency = `cap × (1 + activeTail.length)`** —
+this cap, applied INSIDE the loop, is the sole guarantee, holding for **all** gating callers
+(round-2 grounding: of the 7 gating callers, only InputGuard has its own budget; MessageSentinel
+and ExternalOperationGate have none and depend entirely on this cap; the tone-gate's outer route
+ceiling is **20s** `OUTBOUND_GATE_REVIEW_BUDGET_MS`, not 5s — the earlier "5s caller budget"
+claim was wrong and is removed).
+- **The cap must DOMINATE the provider's inner `rateLimitWaitMs` (round-2 N2, load-bearing).**
+  `CircuitBreakingIntelligenceProvider.acquireOrWait` honors a `rateLimitWaitMs` (≈120s) passed
+  through `options`; because the 5s cap RACES the whole `tp.evaluate()` (including that internal
+  wait), it abandons a rate-limit-waiting attempt at 5s instead of letting three links stack 120s
+  waits and blow the 20s route budget — i.e. the cap is what actually prevents re-creating
+  tonight's stall. Stated explicitly so the build does not "fix" it away.
+
+**Orphaned-attempt safety (round-2 N1 — HARD REQUIREMENT, was a crash hazard).** Racing a timeout
+leaves the abandoned `tp.evaluate()` promise pending and, for a CLI provider, a subprocess running.
+The build MUST:
+- **Swallow the abandoned promise's later settlement** — attach `.catch(() => {})` (and ignore a
+  late resolve) to the abandoned attempt. Without this, the provider's eventual rejection (the
+  likely outcome when a slow CLI finally errors) hits the fail-toward-crash `unhandledRejection`
+  policy (`uncaughtExceptionPolicy.ts` — CLI error shapes are not in the non-fatal allowlist) and
+  **crashes the server mid-outage**. This is non-negotiable.
+- **Clear/`unref()` the timeout timer** on the winning path so it never keeps the loop alive.
+- **Propagate cancellation where supported** — pass an `AbortSignal` into `tp.evaluate()` so a
+  timed-out CLI attempt is actually killed, not merely ignored; where a provider can't cancel,
+  the orphan runs to completion and its result is discarded (a bounded waste — at most one extra
+  in-flight CLI per timed-out swap attempt, breaker- and cap-bounded). Document which providers
+  support cancellation.
+- **Regression test** (§7): a swap target that resolves/rejects AFTER the cap fired must not crash
+  and must not be used.
+
+**`buildProvider` probe contract (round-2 N5/N7).** The §4.2 active-probe reuses the router's own
+`providerFor` cache (`this.cache`) so a framework is built **at most once** at boot, never
+double-built for the probe. `buildProvider` is contractually **idempotent, non-networking, and
+non-spawning beyond minimal CLI-existence detection**, safe to call once per framework at boot;
+if a future provider needs heavier construction, a dedicated `canBuildProvider`/`probeProvider`
+predicate is added rather than abusing `buildProvider`.
+
+This is the ONE engine touch in this change. It is justified: the engine's no-timeout swap was
+safe with a 1-link tail but is not with a 3–4-link default chain. The timeout is fail-open (a
+timed-out attempt is just a failed attempt → next target → Claude tail → fail-closed if all
+exhausted), so it never weakens the fail-closed guarantee.
 
 ### 4.6 Where the resolution happens
 At the router construction site in `server.ts` (~line 4687): if the boot-snapshot says
@@ -255,13 +296,22 @@ Claude onto Codex — and with §4.5, abandoned the slow primary at the cap). Co
 InputGuard:327, IntentLlmJudge (IntentTestHarness:251), RelationshipAnomalyScorer:392,
 LlmIntentClassifier:134.
 
-### 6.4 Known limitation — garbage-but-not-erroring output (round-1 M8, scoped OUT)
-A provider that is reachable but returns malformed/low-quality output (not an error) is
-NOT trapped by the circuit breaker, so a gating decision could be served by a weak answer.
-This is a **pre-existing property of the engine**, not introduced by this spec; output
-validation is the calling gate's responsibility. This spec broadens exposure (more calls
-go to non-Claude providers) but does not change the property. Out of scope here; flagged
-for a future "swap-target output sanity" follow-up. Documented, not silently inherited.
+### 6.4 Malformed/low-quality provider output — CALLER-HANDLED (round-2 N3; resolves the "No Deferrals" conformance flag)
+A provider that is reachable but returns malformed/low-quality output (not an error) is not
+trapped by the circuit breaker. Round-2 grounding confirms this is **already handled by the
+gating CALLERS, not deferred**: `MessagingToneGate.review()` runs `parseResponse()` which
+**fail-opens** on malformed JSON / non-boolean output AND validates the returned rule against
+the `VALID_RULES` (B1..B20) allowlist (an invented/invalid rule → fail-open, `invalidRule:true`),
+inside an outer try/catch fail-open; `MessageSentinel` fail-opens in its own try/catch. So a
+garbage answer from any provider — Claude included — is parsed, validated, and safely fail-opened
+**at the gate**, exactly per *Signal vs. Authority* (output validation is the gate's job, not the
+router's). This spec does **not** change that property; it only changes *which* provider can serve
+a weak answer. The single true residual is a **well-formed but semantically-wrong** verdict — a
+pre-existing property of ANY LLM gate, provider-independent, not introduced here. This is therefore
+**not a deferral of this feature's in-scope work** (the "No Deferrals" standard governs that); it
+is correctly out-of-scope engine/caller work, documented rather than silently inherited.
+<!-- tracked: a future "swap-target output sanity" hardening for the semantically-wrong residual
+is a separate, lower-priority item; recorded here for No-Deferrals hygiene, not owed by this spec. -->
 
 ### 6.5 Framework-Agnostic conformance finding — resolves IN FAVOR
 The Standards-Conformance gate flagged the fixed Codex-first/Claude-last chain as
@@ -294,7 +344,13 @@ component). The operator can SEE that sentinels now run on Codex, and that a swa
     order; all down → re-throws (fail-closed).
   - **§4.5 per-attempt timeout:** a swap target that is SLOW (never errors) is abandoned at
     the cap and the loop advances; total swap time ≤ cap × active-tail length (M1 regression
-    guard — the core "doesn't re-create the stall" test).
+    guard — the core "doesn't re-create the stall" test). The cap also abandons an attempt that
+    is internally waiting on `rateLimitWaitMs` (the cap dominates the 120s wait — round-2 N2).
+  - **§4.5 orphaned-attempt safety (round-2 N1 — crash regression guard):** a swap target whose
+    promise REJECTS *after* the cap fired must NOT produce an unhandled rejection / crash, and a
+    target that RESOLVES after the cap must NOT be used. Assert the abandoned attempt is
+    `.catch`-swallowed and the timer is cleared; where the provider supports `AbortSignal`, assert
+    the timed-out attempt is cancelled.
   - **`{}` rollback:** `componentFrameworks: {}` → all categories resolve to the agent default,
     empty swap (M7 — confirm the documented rollback lever).
   - **Model-size preservation (Q5):** a `fast`-tier call routed through a swap target keeps its
@@ -313,12 +369,28 @@ component). The operator can SEE that sentinels now run on Codex, and that a swa
 
 ## 8. Agent-awareness (CLAUDE.md template)
 
-Update `generateClaudeMd()` (AND `migrateClaudeMd()` for existing agents — §5): the
-"Per-Component Framework Routing" section gains the new DEFAULT behavior ("internal
-components — sentinels, gates, reflectors — run off Claude by default via the active-filtered
-chain Codex→PI→Gemini→Claude; `job` stays on the agent default; override via
-`sessions.componentFrameworks`"), and the proactive trigger ("user hits Claude rate limits /
-'why are my sentinels on Codex?'" → explain the default + how to override + the `{}` rollback).
+**Two halves, because `migrateClaudeMd` only APPENDS and never edits a section in place
+(round-2 N4 — the naive version would no-op AND leave wrong text).**
+
+- **`generateClaudeMd()` (new agents):** EDIT the existing "Per-Component Framework Routing"
+  section's now-false sentences — the shipped template says routing is "opt-in" and that a
+  rate-limited component "falls back to its heuristic (no herd)". After this ships, for
+  sentinel/gate/reflector routing is **default-ON** and a *gating* call **swaps down the active
+  chain** rather than degrading to heuristic. Rewrite those two sentences so a fresh install is
+  not internally contradictory, and add the default behavior + the `{}` rollback + a concrete
+  example (N9): "with no `componentFrameworks` set, sentinels/gates/reflectors auto-route to the
+  first active off-Claude CLI (Codex→PI→Gemini→Claude); set `sessions.componentFrameworks` to
+  override; set it to `{}` to force everything back to the default framework."
+- **`migrateClaudeMd()` (existing agents):** content-sniff on a **NEW unique marker** (the literal
+  `run off Claude by default` / `INTERNAL_FRAMEWORK_PREFERENCE`), **NOT** the existing
+  `## Per-Component Framework Routing` heading — that heading already exists on every deployed
+  agent, so sniffing it would make the migration a silent no-op and existing agents would keep the
+  now-false "opt-in / heuristic" text. APPEND a short corrective subsection that states the new
+  default-ON behavior, the gating-call swap (superseding the old heuristic line), the override, and
+  the `{}` rollback. (Append-with-new-marker is the only path `migrateClaudeMd` can actually
+  execute; an in-place sentence edit is `generateClaudeMd`-only.)
+- **Proactive trigger** (both): "user hits Claude rate limits / 'why are my sentinels on Codex?'"
+  → explain the default + how to override + the `{}` rollback.
 
 ## 9. Rollout
 
