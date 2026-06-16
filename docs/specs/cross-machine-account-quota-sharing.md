@@ -18,53 +18,53 @@ lessons-engaged:
   - "reach ≠ authority (L15): cross-machine routing rides signed mesh RPC carrying this machine's identity"
   - "Comprehensive-First (P10): own the coarse-quotaState foundation gap in-scope, do not defer the load-bearing mechanism"
   - "No silent degradation: replace the 'place anyway → dead reply' all-walled path with an honest in-channel notice"
-  - "Operator override outranks a prior convergence: credential SHARING is the directed primary; do not defer it"
-# CONVERGENCE TAG VOID — the 2026-06-16T20:38Z convergence was for the prior
-# (credential-move-deferred) design, which the operator overrode at 14:49 PDT.
-# This revision (credential-sharing PRIMARY) MUST be re-converged before /instar-dev build.
-prior-review-convergence-void: "2026-06-16T20:38:09.360Z (design superseded by operator override)"
+  - "Operator override outranks a prior convergence: seamless cross-machine sharing is the directed goal — delivered ToS-safe via WS5.2 auto-enroll (Decision A), this spec owning the orchestration layer"
+# DECISION LOCKED (Justin 2026-06-16, Telegram 13481): Option A — ToS-safe
+# agent-driven per-machine auto-enroll. The credential MECHANISM is WS5.2
+# Mechanism B (no Claude OAuth blob crosses machines); THIS spec owns the
+# orchestration layer (per-account serveability + the auto-enroll bridge +
+# quota-aware seat-transfer failover + honest degradation). Under A the design
+# reverts to the prior orchestration shape, so the body (§2/§4/§5–§12) is
+# substantially valid; a re-converge over the §3 reframe is still required before
+# /instar-dev build, AND build remains coordination-gated (Subscription & Auth
+# Standard session) on the shared subsystem files.
+prior-review-convergence-void: "2026-06-16T20:38:09.360Z (superseded; re-converge under Decision A pending)"
 ---
 
 # Cross-Machine Account & Quota Sharing
 
-> **⚠ REVISION IN PROGRESS — read §3 first.** The operator overrode the prior
-> design (2026-06-16 14:49 PDT): cross-machine credential **SHARING** is now the
-> directed PRIMARY mechanism (see §3). Sections §2 (hard constraints C1/C2 framed
-> as bars), §4 (Frontloaded Decisions), and §5–§12 still describe the SUPERSEDED
-> seat-transfer-primary design — they will be reconciled to the credential-sharing
-> primary at the next re-converge. The seat-transfer/placement machinery in those
-> sections is RETAINED but DEMOTED to a complementary optimization layer (§5B).
-> The prior convergence tag is VOID (frontmatter). This must re-converge before
-> any /instar-dev build, AND is coordination-gated: build edits to SubscriptionPool
-> / secret-sync / credential read-write must be synced with the "Subscription &
-> Auth Standard" session first (shared subsystem).
+> **✅ DECISION A LOCKED (Justin 2026-06-16, Telegram 13481): "Let's go with A."**
+> Cross-machine "seamless" is delivered the **ToS-safe** way: each machine
+> auto-enrolls its OWN login (agent-driven; operator approves once), and NO Claude
+> OAuth blob is copied between machines. The credential MECHANISM is the
+> already-approved **WS5.2 Mechanism B** (`ws52-account-follow-me-security.md`,
+> CMT-1413). **THIS spec owns only the orchestration layer:** §5.1 per-account
+> serveability (CMT-1416), §5.3 quota-aware seat-transfer failover, §5.4 honest
+> degradation, plus the auto-enroll *bridge* that invokes WS5.2's mechanism so a
+> walled machine becomes serve-capable. Because A keeps the orchestration shape of
+> the originally-converged design, §2 (C1/C2 invariants — now load-bearing, NOT
+> overridden) + §4 + §5–§12 are substantially valid; the §3 reframe (below) just
+> points the credential step at WS5.2 Mechanism B. **Still required before any
+> /instar-dev build:** (1) a re-converge over the §3 reframe, (2) the coordination
+> sync with the Subscription & Auth Standard session on shared-subsystem file
+> ownership (SubscriptionPool / secret-sync / credential read-write).
 
-> **⛔ BLOCKED ON OPERATOR DECISION (2026-06-16 15:10 PDT) — DO NOT BUILD §5A YET.**
-> Coordinating with the Subscription & Auth Standard (topic 20390 / 20905, no live
-> session) surfaced a CONVERGED, OPERATOR-PRE-APPROVED spec that already owns this:
-> `docs/specs/ws52-account-follow-me-security.md` (WS5.2, CMT-1413, approved Justin
-> 2026-06-12). It reached the OPPOSITE decision from the §3 pivot below:
-> - **WS5.2 default = Mechanism B (re-mint per machine, agent-driven).** ToS-safe;
->   no token ever crosses the wire; the operator taps approve once per machine.
-> - **WS5.2 gates literal credential-copy (Mechanism A) OFF for Anthropic by
->   default** on two hard grounds: (1) Anthropic ToS forbids relocating a Claude
->   OAuth token out of Claude Code's own store; (2) live-credential-on-every-machine
->   blast radius + refresh-token rotation requires cross-machine refresh coordination.
-> So the §3 pivot below ("share the credential as PRIMARY") == WS5.2 Mechanism A
-> applied to Anthropic — a deliberate operator opt-in, NOT a default Echo may pick.
->
-> **Decision put to Justin 2026-06-16 15:10 PDT (Telegram 13481):** (A) ToS-safe
-> agent-driven auto-enroll [Echo's recommendation] vs (B) literal credential-sync
-> with the ToS risk owned by the operator. The build direction FORKS on his answer:
-> - **If (A):** §3/§5A REDIRECT to WS5.2 Mechanism B (auto-enroll); this spec keeps
->   only the orchestration layer (§5.1 per-account serveability/CMT-1416, §5.3 quota-
->   aware seat-transfer failover, §5.4 honest degradation) as the seamless fallback.
-> - **If (B):** §3/§5A = enable WS5.2 Mechanism A for Anthropic; that credential work
->   lands in the WS5.2 / subscription-auth workstream (coordinate file ownership),
->   this spec still owns the orchestration layer.
-> Either way the credential MECHANISM is WS5.2's; THIS spec owns the orchestration
-> layer (serveability + failover + honest degradation), which is build-stable under
-> BOTH answers. Re-converge AFTER the decision lands, not before.
+> **✅ OPERATOR DECISION RESOLVED (2026-06-16, Telegram 13481): Option A.**
+> The WS5.2 spec (`docs/specs/ws52-account-follow-me-security.md`, CMT-1413,
+> approved Justin 2026-06-12) already owns the credential mechanism and defaults to
+> **Mechanism B (re-mint per machine, agent-driven)** — ToS-safe; no token crosses
+> the wire; the operator approves once per machine. Justin chose **A** = that
+> ToS-safe path. So §3/§5A REDIRECT to WS5.2 Mechanism B (auto-enroll); this spec
+> keeps **only the orchestration layer** (§5.1 per-account serveability/CMT-1416,
+> §5.3 quota-aware seat-transfer failover, §5.4 honest degradation) + the
+> auto-enroll bridge. The literal-credential-copy fork (B) is NOT taken — the C1
+> token-extraction ban and C2 refresh-rotation strand (§2) stay load-bearing
+> invariants, NOT overridden.
+> **Remaining gates before /instar-dev build:** (1) re-converge over this §3
+> reframe; (2) coordinate file ownership of the shared subsystem (SubscriptionPool
+> / secret-sync / credential read-write) with the Subscription & Auth Standard
+> session (topics 20390 / 20905 — currently offline); (3) operator `approved:true`
+> after re-converge. Spec-only work (re-converge) may proceed now.
 
 ## 0. Key concepts (glossary)
 - **Seat** — a conversation's durable ownership + per-topic state on one machine
