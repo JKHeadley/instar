@@ -185,6 +185,40 @@ address in the next round before convergence:
    CI-asserted (e.g. a test that a `multiMachine.*` dev-gated entry resolves the same across
    a simulated 2-machine config), not just a declaration string.
 
+## Round-2 resolution of the findings
+
+1. **Predicate (HIGH) — RESOLVED above:** gate on `_replicationEnabled` (the grounded
+   `coherenceJournal.replication.enabled === true` signal at server.ts:16588), the same one
+   gating `journalSyncApplier`.
+2. **Detector activation-health record (MED) — ADOPTED:** each pool-coordinated feature
+   exposes `{configured, effective, dependencyActive, componentStarted, lastAppliedPeerJournal}`
+   in `GET /guards?scope=pool`; the detector compares **effective** (runtime) across peers, not
+   raw config (the incident was a config-vs-behavior mismatch — comparing config alone would
+   have missed it). Signal-only: ONE aggregated, deduped Attention item; clears on consistency.
+3. **Boot-before-peer race (MED) — ALREADY HANDLED by the applier's design:** `OwnershipApplier.
+   tick()` queries the recent placement journal each tick (not new-only) and materializes any
+   entry with epoch > local — so a machine that activates AFTER placements arrived BACKFILLS
+   them on its first tick. No new code needed; add a test asserting backfill-on-activation.
+4. **Detector false-positives (LOW→MED) — RESOLVED:** the detector compares peer VERSIONS
+   (from the heartbeat) and suppresses while a rolling deploy is in flight (mixed versions);
+   honors a `poolConsistent:false` silence flag (a feature meant to drift); a single-machine
+   agent (no peers) never fires. Dedup/clear window = the GuardPostureProbe's existing cadence.
+5. **Capability-handshake alternative (MED) — EVALUATED, dependency-following CHOSEN as primary;
+   capability-REFUSE adopted as the rolling-deploy safety net.** Tradeoff:
+   - *Dependency-following* (the §2.1 fix): smallest-correct, no new protocol, converges the
+     pool. Weakness: a brief rolling-deploy window where the old machine lacks the gate.
+   - *Capability-handshake/refuse*: a machine advertises `durableOwnershipActive` in its
+     heartbeat; `/pool/transfer` REFUSES a move to a peer NOT advertising it (honest
+     `seatMoved:false` + reason) rather than half-moving. This is the **fail-closed** safety net
+     for the rolling-deploy gap — a transfer to a not-yet-upgraded peer is refused, never
+     half-applied. ADOPTED as a thin guard on top of dependency-following (the §7.3 of the main
+     spec already has the `seatMoved:false` honesty surface to reuse).
+   - *Pool-config push*: rejected — adds a config-distribution dependency.
+6. **Testable lint (MED) — ADOPTED:** the lint asserts the INVARIANT, not paperwork — a test
+   applies the real ConfigDefaults to a simulated 2-machine pool (one dev, one not, replication
+   on) and asserts a `multiMachine.*` feature marked `poolConsistent:true` resolves the SAME
+   effective activation on both. A new such feature that resolves split fails CI.
+
 ## Open questions
 
 *(none)*
