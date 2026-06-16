@@ -240,3 +240,82 @@ describe('PlacementExecutor.decide — quota gate', () => {
     expect(d.reason).toBe('hard-pin-unavailable');
   });
 });
+
+describe('PlacementExecutor.decide — platform/workspace-aware serve filter (placement-platform-workspace-aware)', () => {
+  const sl = (ws: string[]) => ({ servesChannels: { slack: { workspaceIds: ws } } });
+  const tg = (cs: string[]) => ({ servesChannels: { telegram: { chatIds: cs } } });
+
+  it('slack: places on the machine that serves the workspace, not the one that does not (the live-test bug)', () => {
+    const d = exec.decide(req({
+      reason: 'failover',
+      channel: { platform: 'slack', workspaceId: 'W-LIVE', channelId: 'C1' },
+      machineRegistry: [machine('laptop', { ...sl(['W-LIVE']), loadAvg: 5 }), machine('mini', { ...sl(['W-OTHER']), loadAvg: 0 })],
+    }));
+    expect(d.outcome).toBe('placed');
+    expect(d.chosenMachine).toBe('laptop'); // mini is load-cheaper but cannot serve W-LIVE
+  });
+
+  it('yes ranks ABOVE unknown: a known-reachable machine wins over an old (unknown) peer even when the peer is cheaper', () => {
+    const d = exec.decide(req({
+      channel: { platform: 'slack', workspaceId: 'W1', channelId: 'C1' },
+      machineRegistry: [machine('known', { ...sl(['W1']), loadAvg: 5 }), machine('oldpeer', { loadAvg: 0 })], // oldpeer has no servesChannels → unknown
+    }));
+    expect(d.chosenMachine).toBe('known'); // unknown must not outrank yes by load
+  });
+
+  it('all machines structurally cannot serve → queued + no-machine-serves-channel (never a black-hole pick)', () => {
+    const d = exec.decide(req({
+      channel: { platform: 'slack', workspaceId: 'W-LIVE', channelId: 'C1' },
+      machineRegistry: [machine('a', sl(['W-OTHER'])), machine('b', sl(['W-OTHER2']))],
+    }));
+    expect(d.outcome).toBe('queued');
+    expect(d.reason).toBe('no-machine-serves-channel');
+    expect(d.escalationReason).toBe('no-machine-serves-channel');
+    expect(d.chosenMachine).toBeNull();
+  });
+
+  it('telegram shared chat: both machines are yes (no exclusion) → normal least-loaded', () => {
+    const d = exec.decide(req({
+      channel: { platform: 'telegram', chatId: '-100SHARED', channelId: '5' },
+      machineRegistry: [machine('a', { ...tg(['-100SHARED']), loadAvg: 5 }), machine('b', { ...tg(['-100SHARED']), loadAvg: 0 })],
+    }));
+    expect(d.chosenMachine).toBe('b');
+  });
+
+  it('fail-open: all machines absent signal (unknown) → places normally (rolling deploy)', () => {
+    const d = exec.decide(req({
+      channel: { platform: 'slack', workspaceId: 'W1', channelId: 'C1' },
+      machineRegistry: [machine('a', { loadAvg: 5 }), machine('b', { loadAvg: 0 })],
+    }));
+    expect(d.outcome).toBe('placed');
+    expect(d.chosenMachine).toBe('b');
+  });
+
+  it('absent req.channel (legacy caller) → filter no-ops (unchanged behavior)', () => {
+    const d = exec.decide(req({
+      machineRegistry: [machine('a', sl(['W-OTHER'])), machine('b', sl(['W-OTHER2']))], // would be all-no IF channel were set
+    }));
+    expect(d.outcome).toBe('placed'); // no channel → no filter → normal placement
+  });
+
+  it('hard-pin to a machine that structurally CANNOT serve → hard-pin-unsatisfiable (not honored onto a non-serving machine)', () => {
+    const tp: TopicPlacement = { preferredMachine: 'mini', pinned: true };
+    const d = exec.decide(req({
+      topicMetadata: tp,
+      channel: { platform: 'slack', workspaceId: 'W-LIVE', channelId: 'C1' },
+      machineRegistry: [machine('mini', sl(['W-OTHER'])), machine('laptop', sl(['W-LIVE']))],
+    }));
+    expect(d.outcome).toBe('queued');
+    expect(d.escalationReason).toBe('hard-pin-unsatisfiable');
+  });
+
+  it('hard-pin to an UNKNOWN (absent-signal) machine → still honored (fail-open)', () => {
+    const tp: TopicPlacement = { preferredMachine: 'oldpeer', pinned: true };
+    const d = exec.decide(req({
+      topicMetadata: tp,
+      channel: { platform: 'slack', workspaceId: 'W-LIVE', channelId: 'C1' },
+      machineRegistry: [machine('oldpeer', { loadAvg: 1 }), machine('laptop', sl(['W-LIVE']))], // oldpeer unknown
+    }));
+    expect(d).toMatchObject({ chosenMachine: 'oldpeer', outcome: 'placed', reason: 'hard-pin' });
+  });
+});

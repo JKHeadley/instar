@@ -85,6 +85,8 @@ export interface PeerCapacity {
    * single pass-through both production and the round-trip test share.
    */
   seamlessnessFlags?: import('./types.js').MachineCapacity['seamlessnessFlags'];
+  /** Platform/workspace reachability (placement-platform-workspace-aware) — replicated like the others. */
+  servesChannels?: import('./types.js').MachineCapacity['servesChannels'];
 }
 
 /**
@@ -103,6 +105,7 @@ export const SESSION_STATUS_ADVERT_FIELDS = [
   'quotaState',
   'guardPosture',
   'seamlessnessFlags',
+  'servesChannels',
 ] as const;
 
 /**
@@ -129,6 +132,7 @@ export function narrowSessionStatusToPeerCapacity(
     quotaState?: { blocked: boolean; blockedUntil?: string; reason?: string };
     guardPosture?: import('./types.js').GuardPostureSummary;
     seamlessnessFlags?: import('./types.js').MachineCapacity['seamlessnessFlags'];
+    servesChannels?: import('./types.js').MachineCapacity['servesChannels'];
   };
   return {
     selfReportedLastSeen: cap.selfReportedLastSeen,
@@ -138,6 +142,7 @@ export function narrowSessionStatusToPeerCapacity(
     ...(cap.preferencesAdvert !== undefined ? { preferencesAdvert: cap.preferencesAdvert } : {}),
     ...(cap.quotaState !== undefined ? { quotaState: cap.quotaState } : {}),
     ...(cap.guardPosture !== undefined ? { guardPosture: cap.guardPosture } : {}),
+    ...(cap.servesChannels !== undefined ? { servesChannels: cap.servesChannels } : {}),
     // THE FIX (4th instance of the narrowing-return-forgets-a-field class): the
     // peer's receive advert must cross the wire or replication never starts.
     ...(cap.seamlessnessFlags !== undefined ? { seamlessnessFlags: cap.seamlessnessFlags } : {}),
@@ -164,7 +169,7 @@ export interface PeerPresencePullerDeps {
    */
   fetchPeerCapacity: (machineId: string, url: string) => Promise<PeerCapacity | null>;
   /** Record an observed peer heartbeat into the pool registry (marks it online for the failover window). */
-  recordHeartbeat: (obs: { machineId: string; selfReportedLastSeen: string; loadAvg?: number; quotaState?: { blocked: boolean; blockedUntil?: string; reason?: string }; guardPosture?: import('./types.js').GuardPostureSummary; seamlessnessFlags?: import('./types.js').MachineCapacity['seamlessnessFlags'] }) => void;
+  recordHeartbeat: (obs: { machineId: string; selfReportedLastSeen: string; loadAvg?: number; quotaState?: { blocked: boolean; blockedUntil?: string; reason?: string }; guardPosture?: import('./types.js').GuardPostureSummary; seamlessnessFlags?: import('./types.js').MachineCapacity['seamlessnessFlags']; servesChannels?: import('./types.js').MachineCapacity['servesChannels'] }) => void;
   /** Wall clock — injectable for tests. Defaults to `Date`. */
   now?: () => Date;
   /** Optional structured log line per pass (e.g. for the boot log). */
@@ -246,7 +251,7 @@ export class PeerPresencePuller {
         }
         if (!cap) return null;
         const seen = cap.selfReportedLastSeen ?? (this.d.now?.() ?? new Date()).toISOString();
-        this.d.recordHeartbeat({ machineId: m.machineId, selfReportedLastSeen: seen, loadAvg: cap.loadAvg, ...(cap.quotaState !== undefined ? { quotaState: cap.quotaState } : {}), ...(cap.guardPosture !== undefined ? { guardPosture: cap.guardPosture } : {}), ...(cap.seamlessnessFlags !== undefined ? { seamlessnessFlags: cap.seamlessnessFlags } : {}) });
+        this.d.recordHeartbeat({ machineId: m.machineId, selfReportedLastSeen: seen, loadAvg: cap.loadAvg, ...(cap.quotaState !== undefined ? { quotaState: cap.quotaState } : {}), ...(cap.guardPosture !== undefined ? { guardPosture: cap.guardPosture } : {}), ...(cap.seamlessnessFlags !== undefined ? { seamlessnessFlags: cap.seamlessnessFlags } : {}), ...(cap.servesChannels !== undefined ? { servesChannels: cap.servesChannels } : {}) });
         // REPLICATION-GATED journal-delta drive — only when the server wired the
         // delta deps (i.e. replication.enabled === true). Otherwise a complete
         // no-op (engine/transport stay dark). Never throws into the puller.

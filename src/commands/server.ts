@@ -6454,6 +6454,10 @@ export async function startServer(options: StartOptions): Promise<void> {
                   userId: (message.metadata?.slackUserId as string) || undefined,
                   firstName: (message.metadata?.senderName as string) || undefined,
                 },
+                // Thread the Slack channel scope so placement never owns this channel on a
+                // machine not connected to its workspace (the live-test bug, a failover placement).
+                // workspaceId from the live adapter; channelId is the raw Slack channel.
+                channel: { platform: 'slack', workspaceId: _slackAdapter?.getWorkspaceId(), channelId },
               });
               console.log(`[session-pool] slack route key=${routingKey} → action=${outcome.action} owner=${outcome.owner ?? '?'} self=${_meshSelfId ?? '?'} acked=${outcome.acked}`);
               if (isRemotelyHandled(outcome, _meshSelfId)) {
@@ -14578,6 +14582,30 @@ export async function startServer(options: StartOptions): Promise<void> {
               return computeSelfQuotaState(quotaTracker?.getState(), llmCircuitAvailable());
             } catch { return undefined; /* unknown ≠ blocked */ }
           };
+          // Platform/workspace reachability block riding the capacity heartbeat
+          // (spec: placement-platform-workspace-aware). ADAPTER-DERIVED: a slack
+          // workspaceId is reported ONLY while the Socket-Mode adapter is genuinely
+          // connected (cleared on disconnect — recomputed each beat). Telegram is a
+          // SHARED chat (every machine reports the same chatId → placement no-op), so
+          // it's included when its chatId is a concrete value; the FILTER's value is the
+          // slack per-workspace case. Absent block (this returns undefined) = older peer
+          // = placement treats as `unknown`/fail-open.
+          const selfServesChannels = (): import('../core/machineServesChannel.js').ServesChannels | undefined => {
+            // No try/catch (avoids a silent-fallback catch): these reads don't throw on normal
+            // input, and a wrong-shaped value is guarded inline (typeof / optional chaining), so an
+            // unresolvable field simply omits its block → placement treats it as unknown/fail-open.
+            const out: { telegram?: { chatIds: string[] }; slack?: { workspaceIds: string[] } } = {};
+            const tg = config.messaging.find((m) => m.type === 'telegram' && m.enabled);
+            const rawChatId = tg ? (tg.config as { chatId?: unknown }).chatId : undefined;
+            if (typeof rawChatId === 'string' || typeof rawChatId === 'number') {
+              out.telegram = { chatIds: [String(rawChatId)] };
+            }
+            if (_slackAdapter && _slackAdapter.isConnected()) {
+              const ws = _slackAdapter.getWorkspaceId();
+              if (ws) out.slack = { workspaceIds: [ws] };
+            }
+            return (out.telegram || out.slack) ? out : undefined;
+          };
           // Self guard-posture block riding the capacity heartbeat (spec §2.3).
           // Computed per beat from the same one-read snapshot GET /guards uses;
           // a failed compute omits the block (older-peer semantics), never throws.
@@ -14621,6 +14649,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                 selfReportedLastSeen: new Date().toISOString(),
                 loadAvg: osMod.loadavg()[0],
                 quotaState: selfQuotaState(),
+                servesChannels: selfServesChannels(),
                 guardPosture: selfGuardPosture(),
                 // WS1.1 capability advertisement (spec invariant 5): a bounded
                 // fixed-size summary, never an inventory. Reported live each

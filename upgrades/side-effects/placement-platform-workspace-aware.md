@@ -1,0 +1,43 @@
+# Side-Effects Review — platform/workspace-aware placement (CMT-1568)
+
+**Slug:** placement-platform-workspace-aware
+**Spec:** docs/specs/placement-platform-workspace-aware.md (converged 6 iterations + approved)
+**Files:** src/core/machineServesChannel.ts (+test), src/core/PlacementExecutor.ts (+test), src/core/types.ts, src/core/PeerPresencePuller.ts, src/core/MachinePoolRegistry.ts, src/messaging/slack/SlackAdapter.ts, src/commands/server.ts, src/core/SessionRouter.ts (+test)
+**Posture:** ships behind the EXISTING multi-machine path. Single-machine = no-op (lone machine serves its own channels / fail-open). The filter is a strict no-op until a caller threads `req.channel` (only the Slack inbound does) — so the change is inert everywhere else.
+
+## What it is
+Closes the live-test-caught bug: placement assigned a Slack channel to a machine connected to a DIFFERENT workspace → black-hole. Adds `MachineCapacity.servesChannels` (adapter-DERIVED reachability), a three-valued (`yes`/`no`/`unknown`) `machineServesChannel` filter in `PlacementExecutor.decide()`, and threads the channel scope from the Slack inbound through the router into placement.
+
+## Phase 1 — Principle check (signal vs authority)
+The `yes`/`unknown` narrowing is a pure SIGNAL fed into the existing `PlacementExecutor` authority (same posture as CMT-1570's quota signal) — it never blocks a message. The one deterministic refusal (all-`no` → `queued`/`no-machine-serves-channel`) is a STRUCTURAL VALIDATOR per docs/signal-vs-authority.md: it rests on the enumerable objective fact "zero connected machines reach this workspace," not a judgment — and it reuses the EXISTING `queued`/null unsatisfiable outcome (no new blocking authority, no new return variant). Compliant.
+
+## Phase 4 — Side-effects answers
+1. **Over-block** — could a machine that CAN serve be dropped? Only on a PRESENT-and-fresh `no`. Absent/legacy signal = `unknown` = eligible (fail-open). `yes` is ranked ABOVE `unknown` so a missing signal never strands a known-reachable machine. Worst over-block: a brief stale `no` between a workspace reconnect and the next heartbeat → that machine is skipped for one window (recovered next beat). Bounded.
+2. **Under-block** — workspace-membership ≠ channel-permission (private-channel/bot-membership/Slack-Connect). Accepted as a first-stage filter (the spec's reachability-not-authority scope); the failed-post-feedback follow-up unifies it with the false-`yes` case. The wrong-workspace STRUCTURAL black-hole (the actual bug) IS closed.
+3. **Level-of-abstraction fit** — correct: mirrors CMT-1570 exactly (a capability signal on the capacity heartbeat + a parallel `decide()` filter). No new layer.
+4. **Signal vs authority** — see Phase 1. Compliant.
+5. **Interactions** — the filter runs AFTER the quota gate, BEFORE the ordering loop; it narrows `candidates` (and `eligible`, so a hard-pin to a `no` machine → the existing `hard-pin-unavailable`/`hard-pin-unsatisfiable` path). It does not shadow the quota gate (orthogonal signal) or the capability (`capOk`) gate. The all-`no` `queued` outcome flows into the EXISTING SessionRouter `decision.outcome === 'queued'` handler (raiseAttention + queueMessage) — no new consumer code; the dedup/wording refinement of that attention is a tracked follow-up (the generic attention already surfaces it, never a black-hole).
+6. **External surfaces** — the producer reports `servesChannels` on the capacity heartbeat (other machines read it — same surface as quotaState). The Slack inbound now threads the channel scope. **KEY DECISION: telegram is NOT threaded** — telegram is a SHARED chat (every machine reports the same chatId → the filter is a no-op for telegram), so only the Slack inbound sets `req.channel`. This sidesteps the telegram-chatId-secret-resolution complication AND the "present-servesChannels-without-a-telegram-block reads as `no`" trap (telegram channels never consult the filter). The producer still reports telegram when its chatId is a concrete value, for completeness.
+7. **Multi-machine posture** — REPLICATED: `servesChannels` rides the existing capacity-heartbeat path (PeerPresencePuller allow-list + recordHeartbeat + both PeerCapacity types; MachinePoolRegistry obs type + forward), exactly like quotaState. Single-machine = no-op. This is the whole point — it makes "follow the user across machines" correct for per-machine-scoped Slack workspaces.
+8. **Rollback cost** — low: revert the commit. The filter is fail-open + inert without `req.channel`; `servesChannels` is an optional heartbeat field (older peers omit it → `unknown`). No migration, no durable-state change.
+
+## Spec-implementation reconciliations (documented build-time refinements of the approved spec)
+- **all-`no` returns `queued` (not "local-ingress machine"):** the real `decide()` contract ALREADY returns `queued`/null for unsatisfiable cases (`no-capable-machine`, `hard-pin-unavailable`); the pure `decide()` has no "ingress machine" concept. So all-`no` reuses `queued`/`no-machine-serves-channel` — contract-consistent, surfaced via the existing queued→attention path. Spec updated to match.
+- **telegram not threaded** (finding G6 above) — documented in the spec's ingress-model section (telegram is shared → filter no-op) and here.
+
+## No-deferrals
+The security-hardening (corroborated/leased `yes`), the channel-ACL routing, and the Attention-dedup-wording refinement are tracked follow-ups (`<!-- tracked: CMT-1568 -->` in the spec) — NOT deferrals of THIS fix, which closes the wrong-workspace black-hole completely and is fully tested (71 unit tests across machineServesChannel + PlacementExecutor + SessionRouter, incl. the behavioral proof + the failover wiring-integrity test).
+
+## Phase 5 — Second-pass review (routing decision point)
+An independent implementation reviewer traced every `decide()` branch + the threading. **Concur — implementation correct on the routing hot path, no ship-blocking bugs.** Verified: yes-over-unknown ranking; all-`no` early-return guarded (`candidates.length>0` — never a misleading channel verdict when quota already emptied candidates); `eligible` narrowing makes pin-to-`no`→hard-pin-unsatisfiable while pin-to-`unknown` stays honored; producer is adapter-derived (slack gated on `isConnected`) and the telegram `typeof` guard correctly rejects a `{secret:true}` object marker; undefined workspaceId → `unknown`/fail-open (not `no`); `_connected` lifecycle correct across reconnects; the telegram trap is avoided (verified BOTH telegram `route()` callers + the mesh redrive thread NO `channel` → telegram always `unknown`/no-op).
+
+Two non-blocking forward-looking notes (both tracked, neither a live bug):
+- **RebalancePlanner.decide() doesn't thread `channel`** — a dormant black-hole door (rebalance could move a Slack session onto a non-serving machine). DORMANT: RebalancePlanner is not wired into server.ts. Added a tracked guard-comment at RebalancePlanner.ts:83 to plumb `channel` before rebalance is ever activated. <!-- tracked: CMT-1568 -->
+- **machineServesChannel telegram→`no` foot-gun** — if a future caller threads a telegram channel, a Slack-only machine would be wrongly excluded. Safe NOW by producer discipline (telegram is never threaded — documented invariant). <!-- tracked: CMT-1568 -->
+
+## Phase 6 — CI-ratchet fix (post-review, 2026-06-16)
+Two structural-gate failures surfaced on CI after the advert field landed; both fixed without weakening the gates:
+- **no-silent-fallbacks ratchet (475→474):** the `selfServesChannels` heartbeat producer originally wrapped its reads in a `try/catch { return undefined }`, which the ratchet counts as a silent fallback. Refactored to inline non-throwing reads — `config.messaging.find` + `typeof`/optional-chaining guards never throw on normal input, so an unresolvable field simply omits its block (→ placement treats the machine as `unknown`/fail-open, identical older-peer semantics). No catch, no `@silent-fallback-ok` exemption — the count returns to baseline 474 by ELIMINATING the fallback, not annotating it.
+- **peer-presence-puller wiring-integrity ratchet:** the every-advert-field round-trip test (`SESSION_STATUS_ADVERT_FIELDS`) failed because its fixture didn't set the new `servesChannels` field. Fixture updated; the narrowing return already passed the field through. The ratchet did its job — a forgotten field failed loudly.
+
+No behavior change to the placement hot path; the producer's reachability output is identical. 91 unit tests green (machineServesChannel + PlacementExecutor + SessionRouter + peer-presence-puller + no-silent-fallbacks).
