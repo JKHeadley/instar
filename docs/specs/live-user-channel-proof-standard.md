@@ -230,8 +230,10 @@ Resolution order (deterministic, no LLM authority):
    fixed, unit-tested keyword set: channel, dashboard, message, transfer, Slack,
    Telegram, UX, reply, …) emits a **signal** per §4.2 — never a standalone block.
 
-`userFacing:false` requires a recorded `userFacingWaiverReason`; a waiver that
-conflicts with touched surfaces fails closed (§4.2).
+`userFacing:false` requires a recorded `userFacingWaiverReason`; a waiver that looks
+like it conflicts with touched surfaces is **surfaced for review (signal-only, §4.2)**,
+not auto-blocked — until an objective path→surface manifest exists to make the
+contradiction deterministic.
 
 ### 4.4 Anti-hallucination anchoring (the load-bearing part)
 
@@ -277,6 +279,17 @@ security reviewers' findings):
   feature-level failure signal (e.g. `seatMoved:false`, an `ok:true`-but-no-effect
   response) is recorded as **FAIL** — it can never sit under a PASS row. A PASS row
   whose evidence contradicts the verdict poisons the artifact (rejected).
+- **What the signature does and does NOT prove (codex r3 — narrow the claim).** The
+  signature proves **harness-origin + tamper-evidence**, NOT scenario adequacy — a
+  trusted key signed this, not "a meaningful scenario truly ran." So a PASS row MUST
+  carry **deterministic protocol evidence captured from the real platform**, which is
+  the primary evidence: the platform **message ids** (Telegram message_id / Slack ts),
+  channel/group id, sender + responder ids, the **responder machine id** + an
+  **ownership-record snapshot** (for transfer scenarios), and timestamps. A row whose
+  protocol evidence is absent or internally inconsistent (e.g. responder machine ≠ the
+  expected owner) is rejected regardless of its verdict. This is the non-LLM, objective
+  spine of the artifact; the signature is the wrapper, the protocol evidence is the
+  substance.
 
 ### 4.5 Surface-specific proof (codex finding)
 
@@ -425,25 +438,31 @@ and surfaced**, never silently skipped or downgraded to A.
 ### 5.5 Flakiness management (gemini/scalability finding)
 
 Live external services flake. The harness: per-scenario timeout (`timeoutMs`, default
-30s, range 10–120s); on timeout → `BLOCKED-real (timeout)`; automatic retry (bounded,
-e.g. 2×) before recording a flake; a flake-classification record; a run with >N
-timeouts escalates (harness stops, returns the partial artifact) rather than hanging;
-total run cap (~10 min). Quarantine: a scenario flagged persistently flaky is recorded
-as quarantined (visible, not silently dropped) and does not satisfy its risk category.
+30s, range 10–120s); automatic retry (bounded, e.g. 2×) before recording anything. **A
+generic timeout is recorded as FAIL by default** (codex r3) — it is NOT auto-promoted to
+`BLOCKED-real`, because a timeout can equally be app slowness or a harness bug. A timeout
+only becomes `BLOCKED-real` when **independently attributed** to a verified platform
+outage (the harness-health probe §4.6 confirms the platform is down) or an accepted
+**flake quarantine**. A run with >N timeouts escalates (harness stops, returns the
+partial artifact) rather than hanging; total run cap (~10 min). Quarantine: a scenario
+flagged persistently flaky is recorded as quarantined (visible, not silently dropped) and
+does not satisfy its risk category.
 
 ### 5.6 Tier-1 LLM supervision (LLM-Supervised Execution standard)
 
 The harness drives real external channels and mutates throwaway state — a critical
-shipping path. Per the LLM-Supervised Execution standard it runs under at minimum a
-**Tier-1 supervisor**: a Haiku-class supervisor wraps the deterministic harness and,
-**after each scenario step**, validates that the observed reply genuinely matches the
-asserted `expect` (catching the "the bot replied SOMETHING, but it was wrong/empty"
-case a brittle string-match would pass), confirms the correct surface/machine answered,
-and flags a step whose evidence contradicts a PASS before it is written. The supervisor
-is advisory over the recording (it can downgrade a PASS it cannot confirm to
-BLOCKED-needs-review), never the channel-driving authority. The gate's artifact
-verification (§4.4) stays deterministic — the supervisor hardens the harness's
-*authoring* of the artifact, not the gate's *reading* of it.
+shipping path. **Deterministic assertions are PRIMARY and required** (codex r3): the
+protocol evidence (§4.4 — message ids, channel/sender/responder ids, machine id,
+ownership snapshot, no-duplicate-reply) is what passes or fails a scenario, encoded as
+exact checks. Per the LLM-Supervised Execution standard, a **Tier-1 supervisor**
+(Haiku-class) runs ONLY over the residue the deterministic checks cannot encode — a
+**semantic/natural-language** expectation ("the reply actually answers the question,
+not just that *a* reply arrived"). The supervisor is advisory (it can downgrade a PASS
+it cannot semantically confirm to BLOCKED-needs-review), never the channel-driving
+authority, and never the substitute for a missing deterministic check. The gate's
+artifact verification (§4.4) stays deterministic — the supervisor hardens the harness's
+*authoring* of NL expectations, not the gate's *reading* of the artifact. This keeps
+fuzzy interpretation off the critical proof path.
 
 ### 5.7 Layered tests for the harness itself
 
@@ -541,8 +560,18 @@ coherence-journal replication path the 7 memory stores now use). Concretely:
 is **CP-leaning, lease-fenced**, aligned with instar's EXISTING fenced-lease awake-machine
 model (the numbered "who's in charge" badge) rather than a new consensus service:
 
-- An ownership transition is authorized by the **lease holder** and stamped with a
-  **fencing token** (the lease epoch). A write carrying a stale fencing token is rejected —
+- **Lease authority (made concrete, codex r3).** The authority is the EXISTING fenced
+  awake-machine lease (`multiMachine.syncStatus.leaseHolder` / `leaseEpoch` — the
+  numbered "who's in charge" badge), NOT a new service. The **fencing token** is that
+  `leaseEpoch`; it is issued/renewed by the existing lease machinery (clock-proof,
+  monotonic across restarts — a restart re-acquires under a higher epoch, never reuses an
+  old one). **Compare/write atomicity** is the durable store's CAS over the
+  `{ownerMachineId, ownershipEpoch, leaseEpoch}` record (a single atomic ref update).
+  **Reconciliation precedence:** higher `ownershipEpoch` wins; ties broken by higher
+  `leaseEpoch`; a record carrying a `leaseEpoch` below the current lease is stale and
+  discarded.
+- An ownership transition is authorized by the **lease holder** and stamped with the
+  **fencing token** (lease epoch). A write carrying a stale fencing token is rejected —
   this is the split-brain guard.
 - **Under partition / unreachable remote, the transfer REFUSES rather than completing
   optimistically** (it reuses the existing offline-target `needsConfirmation` path). We do
@@ -613,7 +642,8 @@ autonomy). Honest reversibility per the Decision-Completeness reviewer.
   absent it, a deterministic keyword classifier emits a **signal only** (§4.2) — it
   never blocks standalone. Tie-break: explicit flag is final; an undeclared
   user-facing-looking goal is surfaced (return-to-work nudge), not hard-blocked; a
-  `userFacing:false` contradicted by touched surfaces fails closed. _Reversibility:
+  `userFacing:false` that looks contradicted by touched surfaces is surfaced for review
+  (signal-only), not auto-blocked. _Reversibility:
   cheap-to-change-after — classification logic behind the dark flag, no external
   side-effect._
 - **D2 — harness channel drive.** DECIDED: **real-account drive (B)** via isolated
