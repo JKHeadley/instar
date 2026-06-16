@@ -68,8 +68,25 @@ A3 wiring (dev-gated `multiMachine.durableOwnership`, registered in DEV_GATED_FE
 A4 seatMoved false-positive, A5 crash-safety. 18 tests green, dark-gate lint clean, tsc
 clean, dev-gate wiring test green. NOT "done" until task 6 LIVE proof + deploy.
 
+### UPDATE 2 — foundation COMPLETE (17 commits, 37 tests green)
+- ✅ Task 1 spec, Task 2 constitution+migration (DONE), Task 5 transfer fix code-complete (18 tests).
+- ✅ §4.4 `LiveTestArtifactStore` — signed, hash-chained per-machine ledger segments,
+  canonical-hash anti-hallucination (8 tests). The contract gate+harness share.
+- ✅ §4 `LiveTestGate` core veto logic — allow/veto/nudge, surfaces+risk-categories,
+  Signal-vs-Authority (hard veto only on declared userFacing+no-artifact), mode ladder (11 tests).
+
 REMAINING (in order):
-- **Task 6 LIVE proof (the bar):** build dist on this branch, deploy to Laptop + Mini
+- **Task 3 wiring:** hook `LiveTestGate` into the autonomous completion path
+  (CompletionEvaluator / UnjustifiedStopGate `U_LEGIT_COMPLETION`) so a user-facing run
+  can't resolve "done" without a verified artifact. Config `monitoring.liveTestGate`
+  (mode dry-run default; register in DEV_GATED_FEATURES). 3-tier tests incl. e2e "alive".
+- **Task 4 harness:** `LiveTestHarness` core = scenario-matrix runner over an INJECTED
+  `ChannelDriver` (send/awaitReply/isDemoChannel) → writes the artifact via the store;
+  structural guard refuses volatile/permission on a non-demo channel (§5.3); Tier-1
+  supervisor for NL-only expects (§5.6); flake mgmt (§5.5). Build the core testable with a
+  FAKE driver first, then the REAL Telegram + Slack drivers (demo channels) + Playwright
+  dashboard driver. "alive" e2e is the key test.
+- **Task 6 LIVE proof (THE BAR):** build dist on this branch, deploy to Laptop + Mini
   (or test-as-self), enable `multiMachine.durableOwnership` (dev-gate already flips it
   live on dev), run a real Laptop↔Mini transfer, confirm a reply genuinely served from
   the Mini + `seatMoved:true`. Ideally via the Task-4 harness; a careful manual live
