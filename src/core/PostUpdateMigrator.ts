@@ -3891,6 +3891,16 @@ setTimeout(() => process.exit(0), 2000);
       result.upgraded.push('CLAUDE.md: added Self-Unblock Before Escalating section');
     }
 
+    // Live-User-Channel Proof Before Done (docs/specs/live-user-channel-proof-standard.md,
+    // CMT-1568) — constitutional standard. Migration Parity item 3 + Agent Awareness:
+    // existing agents learn the "not done until proven live through the real channel"
+    // bar via this appended section (same text as generateClaudeMd). Content-sniffed.
+    if (!content.includes('Live-User-Channel Proof Before Done')) {
+      content += `\n**Live-User-Channel Proof Before Done** — A user-facing feature is NOT "done" until a user-role session has driven it end-to-end through its REAL user surface — Telegram AND Slack for a channel feature, the real dashboard for a dashboard feature — across the required risk categories (happy-path, channel-parity, lifecycle, permission/volatile, failure/rollback, concurrency, idempotency, regression), in a LIVE environment, BEFORE the operator is ever asked to test. The operator discovering a defect on first use is a process failure. Before claiming done/shipped on a user-facing feature I run the user-role live-test harness (acts as the user through the real surface, records a signed PASS/FAIL scenario matrix; volatile/permission scenarios run on throwaway agents + demo channels, never the live operator channel); the completion gate refuses "done" without that artifact, and the north-star metric is *operator-found escapes* (a defect you hit after the gate passed) driven toward zero. Spec: \`docs/specs/live-user-channel-proof-standard.md\`. Constitution: "Live-User-Channel Proof Before Done".\n`;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Live-User-Channel Proof Before Done section');
+    }
+
     // Action-Claim Follow-Through Sentinel (action-claim-followthrough-sentinel.md).
     // Agent Awareness: an agent that doesn't know this exists will be confused when a
     // commitment appears after it says "I'll restart X". Content-sniffed; idempotent.
