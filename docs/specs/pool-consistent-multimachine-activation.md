@@ -4,11 +4,22 @@ slug: "pool-consistent-multimachine-activation"
 author: "echo"
 parent-principle: "No Silent Degradation to Brittle Fallback"
 eli16-overview: "pool-consistent-multimachine-activation.eli16.md"
+review-convergence: "2026-06-16T05:45:11.401Z"
+review-iterations: 4
+review-completed-at: "2026-06-16T05:45:11.401Z"
+review-report: "docs/specs/reports/pool-consistent-multimachine-activation-convergence.md"
+cross-model-review: "codex-cli:gpt-5.5"
+single-run-completable: true
+frontloaded-decisions: 3
+cheap-to-change-tags: 2
+contested-then-cleared: 1
+approved: true
+approved-by: "echo (autonomous run, standing pre-approval — Justin 2026-06-15 24h run + design-fork autonomy)"
 ---
 
 # Spec: Pool-Consistent Activation for Multi-Machine Dev-Gated Features
 
-**Status:** draft (pre-convergence)
+**Status:** CONVERGED (4 rounds) + self-approved under standing autonomous pre-approval
 **Tracking:** CMT-1568 (follow-on)
 **Earned from:** the live Laptop↔Mini transfer-fix proof (v1.3.589, 2026-06-16).
 
@@ -243,6 +254,28 @@ address in the next round before convergence:
 This converges the design: the dev-flag drift, replication drift, rolling-deploy gap, boot race,
 and the detector's own failure mode are each addressed. Ready for a final convergence pass +
 approval, then the /instar-dev build.
+
+## Round-4 fold (codex r3, MINOR — converged)
+
+1. **Honest framing: the predicate is LOCAL; correctness comes from the LAYERED defense.**
+   `replication.enabled === true` is read per-machine — it is NOT assumed magically
+   pool-consistent. Correctness is the COMBINATION: (a) local activation on the replication
+   signal converges the common case (every replication-on machine activates), (b) the
+   capability-refuse guard fail-closes the rolling-deploy / drift window (a transfer to a peer
+   not freshly-active is refused, never half-moved), and (c) the split-active detector surfaces
+   any residual inconsistency. No single layer assumes config parity.
+2. **Capability-refuse checks EPOCH freshness, not just liveness.** A target can be
+   `durableOwnershipActive` yet BEHIND the placement journal. `/pool/transfer` refuses (or
+   briefly waits) unless the target's advertised `lastAppliedPlacementEpoch` is ≥ the source's
+   current ownership epoch for the topic — so a transfer never lands on a peer that hasn't
+   caught up to the ownership it's about to receive. (Reuses the §7.4 `seatMoved:false` honesty
+   surface with reason `target-behind-epoch`.)
+
+**Converged.** Verdict trajectory SERIOUS→MINOR→MINOR→MINOR; the residual findings are
+hardening refinements (capability-refuse semantics, framing), all folded. The CORE fix (the
+activation predicate) is stable, built, and unit-tested. Build order: (PR1) the predicate
+[done in code] + tests = the bar; (PR2) the capability-refuse guard + heartbeat fields; (PR3)
+the split-active detector + the testable lint.
 
 ## Open questions
 
