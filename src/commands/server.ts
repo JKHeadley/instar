@@ -4682,43 +4682,106 @@ export async function startServer(options: StartOptions): Promise<void> {
         const { IntelligenceRouter } = await import('../core/IntelligenceRouter.js');
         const { buildIntelligenceProvider: buildIP } = await import('../core/intelligenceProviderFactory.js');
         const { LlmCircuitBreaker } = await import('../core/LlmCircuitBreaker.js');
+        const {
+          INTERNAL_FRAMEWORK_PREFERENCE,
+          resolveInternalFrameworkDefault,
+        } = await import('../core/internalFrameworkDefault.js');
         const defaultFw = resolvedFramework;
         const rawDefault = sharedIntelligence;
+
+        // Build a non-default framework's provider (its OWN breaker → a Claude trip
+        // can't pause Codex). claude-code builds inherit subscription-path routing so a
+        // component routed to Claude under a codex default still honors June-15 routing.
+        const buildFrameworkProvider = (
+          fw: import('../core/intelligenceProviderFactory.js').IntelligenceFramework,
+        ) => buildIP({
+          framework: fw,
+          breaker: new LlmCircuitBreaker(),
+          // The per-component routing path is the one the cartographer sweep actually
+          // uses — the kill-switch must reach it too.
+          ...(fw === 'codex-cli' && resolveCodexExecJson ? { resolveExecJson: resolveCodexExecJson } : {}),
+          ...(fw === 'claude-code' && subscriptionPathOption
+            ? { subscriptionPath: subscriptionPathOption }
+            : {}),
+          // pi-cli routing (PI-HARNESS-INTEGRATION-SPEC §4.4): thread the configured
+          // model pattern + the explicit Anthropic override. Absent pattern ⇒ the
+          // factory degrades to null (guarded by design).
+          ...(fw === 'pi-cli'
+            ? {
+                ...(config.sessions?.frameworkDefaultModels?.['pi-cli']
+                  ? { piModel: config.sessions.frameworkDefaultModels['pi-cli'] }
+                  : {}),
+                ...(config.sessions?.piCliAllowAnthropicProviders !== undefined
+                  ? { piAllowAnthropicProviders: config.sessions.piCliAllowAnthropicProviders }
+                  : {}),
+              }
+            : {}),
+        });
+
+        // §4.2/§4.5 probe-cache: build each framework's provider AT MOST ONCE at boot.
+        // Both the active-set probe (below) and the router's buildProvider read from
+        // this single cache so a framework is never double-built (round-2 N5/N7).
+        type IFw = import('../core/intelligenceProviderFactory.js').IntelligenceFramework;
+        const probeCache = new Map<IFw, ReturnType<typeof buildFrameworkProvider>>();
+        const cachedBuild = (fw: IFw) => {
+          if (probeCache.has(fw)) return probeCache.get(fw)!;
+          let p: ReturnType<typeof buildFrameworkProvider> = null;
+          try { p = buildFrameworkProvider(fw); } catch { p = null; }
+          probeCache.set(fw, p);
+          return p;
+        };
+
+        // §4.2 active-provider filtering: the active-set is the preference chain
+        // filtered to frameworks whose provider genuinely BUILDS on this machine
+        // (`buildProvider(fw) !== null` — the router's own truth, not a bare `which`).
+        // claude-code is the default framework (always "active" — buildIP not needed),
+        // so it's never dropped from the tail; off-default frameworks are probed.
+        // Memoize ONLY this SET (§4.6 — never a frozen config object). Machine-local
+        // by design (§5): each machine probes its own installed CLIs.
+        const activeFrameworkSet: IFw[] = INTERNAL_FRAMEWORK_PREFERENCE.filter(
+          (fw) => fw === defaultFw || cachedBuild(fw) !== null,
+        );
+
+        // §4.4 boot snapshot — load-bearing & mutation-proof: capture WHETHER the
+        // operator set componentFrameworks ONCE here, at construction, BEFORE the only
+        // runtime mutator (CartographerSweep auto-vivify, ~server.ts:11266). If we
+        // tested the live object later, we'd mistake the auto-vivified block for an
+        // operator override and silently disable the default policy (round-1 M5).
+        const operatorSetComponentFrameworks =
+          config.sessions?.componentFrameworks !== undefined;
+
+        const computedDefault = resolveInternalFrameworkDefault(activeFrameworkSet);
+
         sharedIntelligence = new IntelligenceRouter({
           defaultProvider: rawDefault,
           defaultFramework: defaultFw,
-          // Live read: each call sees the current config object's componentFrameworks
-          // (a config edit that mutates the in-memory object is hot; a file reload is
-          // out of B1 scope — same semantics as the rest of instar's config).
-          resolveConfig: () => config.sessions?.componentFrameworks,
-          // Each non-default framework gets its OWN breaker → a Claude trip can't
-          // pause Codex (the whole point). Default framework keeps the shared one.
-          // claude-code builds inherit the subscription-path routing so a
-          // component routed to Claude under a codex default still honors
-          // the June-15 SDK-pot-vs-subscription decision.
-          buildProvider: (fw) => buildIP({
-            framework: fw,
-            breaker: new LlmCircuitBreaker(),
-            // The per-component routing path is the one the cartographer
-            // sweep actually uses — the kill-switch must reach it too.
-            ...(fw === 'codex-cli' && resolveCodexExecJson ? { resolveExecJson: resolveCodexExecJson } : {}),
-            ...(fw === 'claude-code' && subscriptionPathOption
-              ? { subscriptionPath: subscriptionPathOption }
-              : {}),
-            // pi-cli routing (PI-HARNESS-INTEGRATION-SPEC §4.4): thread the
-            // configured model pattern + the explicit Anthropic override.
-            // Absent pattern ⇒ the factory degrades to null (guarded by design).
-            ...(fw === 'pi-cli'
-              ? {
-                  ...(config.sessions?.frameworkDefaultModels?.['pi-cli']
-                    ? { piModel: config.sessions.frameworkDefaultModels['pi-cli'] }
-                    : {}),
-                  ...(config.sessions?.piCliAllowAnthropicProviders !== undefined
-                    ? { piAllowAnthropicProviders: config.sessions.piCliAllowAnthropicProviders }
-                    : {}),
-                }
-              : {}),
-          }),
+          // §4.6 live-read, layered resolveConfig:
+          //  - operator-set at boot → return the LIVE operator block unchanged (live
+          //    edits to its contents flow through; today's behavior).
+          //  - else → the computed default LAYERED UNDER any live in-memory override
+          //    (e.g. CartographerSweep's runtime-injected categories/overrides WIN for
+          //    their slot — this layering is what stops a frozen default from silently
+          //    disabling the freshness sweep, round-3 R3-2). Reads live every call;
+          //    memoizes only the active-SET, never a frozen config object.
+          resolveConfig: () => {
+            const live = config.sessions?.componentFrameworks;
+            if (operatorSetComponentFrameworks) return live;
+            if (!live) return computedDefault;
+            // Layer the live in-memory override OVER the computed default.
+            return {
+              ...computedDefault,
+              ...live,
+              categories: { ...computedDefault.categories, ...live.categories },
+              ...(live.overrides ? { overrides: live.overrides } : {}),
+              ...(live.failureSwap !== undefined ? { failureSwap: live.failureSwap } : {}),
+            };
+          },
+          // §4.5: per-attempt swap timeout, inline-defaulted to 5s (no ConfigDefaults
+          // entry — codexExecJson precedent; absent ⇒ 5s, present ⇒ operator's value).
+          swapAttemptTimeoutMs: config.intelligence?.swapAttemptTimeoutMs ?? 5000,
+          // Each non-default framework gets its OWN breaker (built once, from the
+          // shared probe-cache so the active-set probe doesn't double-build).
+          buildProvider: (fw) => cachedBuild(fw),
           onDegrade: (info) => {
             try {
               DegradationReporter.getInstance().report({

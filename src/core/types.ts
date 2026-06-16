@@ -225,6 +225,14 @@ export interface SessionManagerConfig {
     categories?: Partial<Record<'sentinel' | 'gate' | 'job' | 'reflector' | 'other', 'claude-code' | 'codex-cli' | 'gemini-cli' | 'pi-cli'>>;
     overrides?: Record<string, 'claude-code' | 'codex-cli' | 'gemini-cli' | 'pi-cli'>;
     fallback?: 'default' | 'none';
+    /**
+     * Ordered fallback frameworks a SAFETY-GATING call tries when its primary
+     * provider fails at runtime, before failing closed (provider-fallback-default-policy.md).
+     * The provider-fallback DEFAULT POLICY computes this automatically from the active
+     * set (sentinel/gate/reflector → first active off-Claude, remaining active as the
+     * tail) when this whole block is unset; an operator who sets the block supplies it.
+     */
+    failureSwap?: Array<'claude-code' | 'codex-cli' | 'gemini-cli' | 'pi-cli'>;
   };
   /**
    * The agent's resolved runtime framework — the single source of
@@ -2825,6 +2833,16 @@ export interface InstarConfig {
        */
       openMs?: number;
     };
+    /**
+     * Per-attempt swap timeout (ms) for the IntelligenceRouter failure-swap loop
+     * (docs/specs/provider-fallback-default-policy.md §4.5). Each gating swap attempt
+     * races this cap; a slow-but-not-erroring provider is abandoned at the cap and the
+     * loop advances to the next target. INLINE-DEFAULTED to 5000ms at the router
+     * construction site — absent ⇒ 5s applies; present ⇒ the operator's value wins.
+     * Deliberately kept out of ConfigDefaults/migrateConfig (codexExecJson precedent)
+     * so absence is the default state, never a persisted block.
+     */
+    swapAttemptTimeoutMs?: number;
     /**
      * Anthropic subscription-path routing for INTERNAL intelligence calls
      * (sentinels, gates, extractors) — the June-15 readiness lever

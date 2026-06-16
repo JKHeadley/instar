@@ -71,6 +71,16 @@ export interface IntelligenceRouterOptions {
   /** Live config getter — read on EVERY call so changes are hot. Returns undefined ⇒ routing disabled (all default). */
   resolveConfig: () => ComponentFrameworksConfig | undefined;
   /**
+   * Per-attempt swap timeout in ms (provider-fallback-default-policy.md §4.5). Each
+   * failure-swap attempt races this cap; a slow-but-not-erroring provider is abandoned
+   * at the cap and the loop advances. The cap is ALSO passed through to the provider as
+   * its `timeoutMs` so the CLI subprocess SIGTERMs itself at the same bound (the cap and
+   * the subprocess kill are the same bound). Inline-defaulted to 5000ms by the caller
+   * (no ConfigDefaults entry — codexExecJson precedent). Omitted ⇒ no per-attempt cap
+   * (legacy unbounded behavior, for callers that build the router without the policy).
+   */
+  swapAttemptTimeoutMs?: number;
+  /**
    * Build a provider for a non-default framework, with its OWN circuit breaker.
    * Returns null when that framework's binary isn't available. Called at most
    * once per framework (result cached). MUST NOT throw (catch internally).
@@ -194,12 +204,38 @@ export class IntelligenceRouter implements IntelligenceProvider {
       return await primary.evaluate(prompt, options);
     } catch (err) {
       if (swapTargets.length === 0) throw err; // not gating / no swap configured ⇒ today's behavior
+      // §4.5 bounded per-attempt swap timeout: a positive cap races each attempt so a
+      // slow-but-not-erroring provider is abandoned at the cap (total swap latency ≤
+      // cap × (1 + tail.length)) instead of stacking long waits and re-creating the
+      // very stall this policy exists to prevent. The cap also flows through to the
+      // provider as `timeoutMs` so the CLI subprocess SIGTERMs itself at the same bound.
+      const capMs = this.opts.swapAttemptTimeoutMs;
+      const cap = typeof capMs === 'number' && capMs > 0 ? capMs : undefined;
+      // Pass the cap through as the provider's per-call timeout so the subprocess
+      // self-terminates at the bound (no AbortSignal exists on IntelligenceOptions).
+      const attemptOptions: IntelligenceOptions | undefined = cap
+        ? { ...(options ?? {}), timeoutMs: cap }
+        : options;
       for (const target of swapTargets) {
         if (target === framework) continue; // don't retry the framework that just failed
         const tp = this.resolveProvider(target);
         if (!tp) continue; // target binary missing → skip
         try {
-          const result = await tp.evaluate(prompt, options);
+          // Promise.race is the shipped, crash-safe pattern (InputGuard precedent):
+          // it attaches a settlement handler to EACH input, so a late rejection from
+          // an abandoned attempt is already handled (no unhandledRejection) and a late
+          // resolve is ignored. NEVER a detached/awaited handle.
+          const result = cap
+            ? await Promise.race([
+                tp.evaluate(prompt, attemptOptions),
+                new Promise<never>((_, reject) =>
+                  setTimeout(
+                    () => reject(new Error(`swap-attempt-timeout: ${target} (${cap}ms)`)),
+                    cap,
+                  ),
+                ),
+              ])
+            : await tp.evaluate(prompt, attemptOptions);
           this.opts.onDegrade?.({
             component: component ?? '(none)',
             category,
@@ -208,8 +244,23 @@ export class IntelligenceRouter implements IntelligenceProvider {
             reason: `failure-swap: '${framework}' failed (${err instanceof Error ? err.message : 'error'}); served by '${target}'`,
           });
           return result;
-        } catch {
-          continue; // target also down (circuit-open / error) → try the next one
+        } catch (attemptErr) {
+          // A timed-out attempt emits a distinct degrade reason so the cap firing is
+          // visible in DegradationReporter + /metrics/features (§4.5 observability),
+          // then the loop advances to the next target (fail-open per-attempt).
+          if (
+            attemptErr instanceof Error &&
+            attemptErr.message.startsWith('swap-attempt-timeout:')
+          ) {
+            this.opts.onDegrade?.({
+              component: component ?? '(none)',
+              category,
+              from: framework,
+              to: target,
+              reason: `swap-attempt-timeout: ${target}`,
+            });
+          }
+          continue; // target also down (timeout / circuit-open / error) → try the next one
         }
       }
       // Every swap target is also down → re-throw so the (gating) caller fails CLOSED,

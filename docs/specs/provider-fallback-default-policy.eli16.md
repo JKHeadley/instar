@@ -51,3 +51,8 @@ agent's internal decisions, so the agent's behavior depends a little on which CL
 installed; the design is honest about that (it's "machine-local" — each machine uses what it
 has) and never silently degrades a safety decision: if every provider is down, a safety gate
 still fails *closed* rather than guessing.
+
+**Constitutional anchor:** *No Silent Degradation to Brittle Fallback* — the agent swaps to
+another provider before it would ever quietly fall back to a brittle guess, and a safety net
+that could quietly switch itself off (a maxed-out Claude account strangling every gate) is
+exactly the failure this closes.

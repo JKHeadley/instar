@@ -5531,6 +5531,24 @@ Run different INTERNAL components on different agentic frameworks to spread LLM 
       result.upgraded.push('CLAUDE.md: added pi-cli framework awareness note');
     }
 
+    // Provider-Fallback Default Policy (2026-06-16) — Agent Awareness + Migration
+    // Parity: the SHIPPED DEFAULT now routes internal sentinel/gate/reflector calls
+    // OFF Claude (codex→pi→gemini→claude), and a gating call SWAPS down the chain on
+    // failure rather than degrading to a heuristic — superseding the old "rate-limited
+    // → heuristic, no herd" line and the "opt-in" framing of the section above.
+    // migrateClaudeMd only APPENDS (never edits a section in place), so this is a
+    // corrective subsection. Content-sniffed on the NEW marker `run off Claude by
+    // default` (NOT the existing heading, which is on every agent → no-op; NOT a
+    // bare `pi-cli` token, which collides with the pi-cli guard above).
+    if (!content.includes('run off Claude by default')) {
+      const defaultPolicyNote = `
+**Internal components run off Claude by default (Provider-Fallback Default Policy)** — Updating the framing above: sentinel/gate/reflector calls now **run off Claude by default** with NO config — they auto-route to the first ACTIVE off-Claude CLI in the chain \`codex-cli → pi-cli → gemini-cli → claude-code\` (Claude last). The remaining active frameworks form an ordered failure-swap tail: when a *gating* call's primary provider fails at runtime it swaps DOWN the active chain (each circuit-checked, each attempt bounded by \`intelligence.swapAttemptTimeoutMs\`, default 5s) before failing closed — this SUPERSEDES the older "rate-limited → falls back to its heuristic (no herd)" line. \`job\` (cost-bearing background work like CartographerSweep) stays on the agent default. On a Claude-only agent the default is a no-op (everything stays on Claude). Override per-component/per-category in \`sessions.componentFrameworks\` (an explicit block is used verbatim); set it to \`{}\` to force everything back to the default framework. Proactive: user hits Claude rate limits / "why are my sentinels on Codex?" → explain the default + override + \`{}\` rollback. (Spec: \`docs/specs/provider-fallback-default-policy.md\`.)
+`;
+      content += '\n' + defaultPolicyNote;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Provider-Fallback Default Policy awareness');
+    }
+
     // Correction & Preference Learning Sentinel (Slice 1a) §7 — Agent Awareness +
     // Migration Parity: existing agents must learn about the preferences read-
     // surface (the session-start hook now fetches /preferences/session-context

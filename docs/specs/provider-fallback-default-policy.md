@@ -2,6 +2,7 @@
 title: "Provider-Fallback Default Policy — internal components run off Claude by default"
 slug: "provider-fallback-default-policy"
 author: "echo"
+parent-principle: "No Silent Degradation to Brittle Fallback"
 review-convergence: "2026-06-16T02:13:48.963Z"
 review-iterations: 4
 review-completed-at: "2026-06-16T02:13:48.963Z"
@@ -341,7 +342,7 @@ LlmIntentClassifier:134.
 ### 6.4 Malformed/low-quality provider output — CALLER-HANDLED (round-2 N3; resolves the "No Deferrals" conformance flag)
 A provider that is reachable but returns malformed/low-quality output (not an error) is not
 trapped by the circuit breaker. Round-2 grounding confirms this is **already handled by the
-gating CALLERS, not deferred**: `MessagingToneGate.review()` runs `parseResponse()` which
+gating CALLERS, not punted downstream**: `MessagingToneGate.review()` runs `parseResponse()` which
 **fail-opens** on malformed JSON / non-boolean output AND validates the returned rule against
 the `VALID_RULES` (B1..B20) allowlist (an invented/invalid rule → fail-open, `invalidRule:true`),
 inside an outer try/catch fail-open; `MessageSentinel` fail-opens in its own try/catch. So a
@@ -350,7 +351,7 @@ garbage answer from any provider — Claude included — is parsed, validated, a
 router's). This spec does **not** change that property; it only changes *which* provider can serve
 a weak answer. The single true residual is a **well-formed but semantically-wrong** verdict — a
 pre-existing property of ANY LLM gate, provider-independent, not introduced here. This is therefore
-**not a deferral of this feature's in-scope work** (the "No Deferrals" standard governs that); it
+**not a postponement of this feature's in-scope work** (the "No Deferrals" standard governs that); it
 is correctly out-of-scope engine/caller work, documented rather than silently inherited.
 <!-- tracked: a future "swap-target output sanity" hardening for the semantically-wrong residual
 is a separate, lower-priority item; recorded here for No-Deferrals hygiene, not owed by this spec. -->
