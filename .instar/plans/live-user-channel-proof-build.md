@@ -182,3 +182,22 @@ completeness, eli16 (PR body ≥200 chars under ## ELI16), dark-gate golden line
 (recompute on ConfigDefaults edits), capability index for new routes, migration parity.
 Self-approve specs (standing pre-approval). Green-PR auto-merge / native auto-merge is
 the merge path (`gh pr merge --auto --squash`).
+
+### UPDATE 5 — Zero-Failure verified (21 commits)
+Full UNIT suite run: green. The single transient (hook-events-route.test.ts) PASSES IN
+ISOLATION (18/18) — a flaky port-binding race under parallel route tests, NOT a regression
+(flake-requires-pass-in-isolation rule). All 49 new tests green. tsc + dark-gate lint +
+dev-gate wiring + no-silent-fallbacks all clean. The whole structural foundation is
+PR-READY (ships dark/dev-gated).
+
+NEXT (execution phase — careful, fresh context):
+1. PR the branch through the instar-dev gate. The merge is SAFE deploy: agents auto-update
+   to the merged version; durableOwnership (dev-gate) goes live on the dev agents on their
+   next restart. PR-body needs ## ELI16 ≥200 chars. Watch husky-shim-in-raw-worktree, CI
+   dispatch on push, golden line-map, capability index. Spec tags present (review-convergence
+   + approved). Push target: JKHeadley repo, branch echo/gold-standard-live-testing; PR vs
+   JKHeadley/main; merge via native auto-merge (gh pr merge --auto --squash, EchoOfDawn).
+2. Task 4 real ChannelDrivers (Telegram sendToTopic + read telegram-messages.jsonl /
+   getRecentMessages ~line 3520 for the reply; Slack adapter; responderMachine from pool).
+3. Task 6 LIVE proof (THE BAR) on a throwaway topic, post auto-update: transfer Laptop↔Mini,
+   assert reply served FROM mini (seatMoved:true), signed all-PASS artifact.

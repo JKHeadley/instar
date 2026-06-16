@@ -10,6 +10,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { OwnershipApplier, type PlacementReader } from '../../src/core/OwnershipApplier.js';
 import { LocalSessionOwnershipStore } from '../../src/core/LocalSessionOwnershipStore.js';
 
@@ -31,7 +32,7 @@ describe('OwnershipApplier', () => {
     store = new LocalSessionOwnershipStore({ dir });
   });
   afterEach(() => {
-    try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* best-effort */ }
+    try { SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: "live-test-cleanup" }); } catch { /* best-effort */ }
   });
 
   it('materializes a peer placement into a local ownership record (THE core fix)', () => {

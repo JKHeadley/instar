@@ -13,6 +13,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import type { AddressInfo } from 'node:net';
 import { createRoutes } from '../../src/server/routes.js';
 import { LiveTestArtifactStore, type LiveTestArtifact } from '../../src/core/LiveTestArtifactStore.js';
@@ -39,7 +40,7 @@ function buildServer(opts: { met: boolean; mode: LiveTestGateMode | null }): Pro
   return new Promise((resolve) => {
     const srv = app.listen(0, () => {
       const port = (srv.address() as AddressInfo).port;
-      resolve({ url: `http://127.0.0.1:${port}`, dir, store, close: () => new Promise<void>((r) => srv.close(() => { try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* */ } r(); })) });
+      resolve({ url: `http://127.0.0.1:${port}`, dir, store, close: () => new Promise<void>((r) => srv.close(() => { try { SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: "live-test-cleanup" }); } catch { /* */ } r(); })) });
     });
   });
 }

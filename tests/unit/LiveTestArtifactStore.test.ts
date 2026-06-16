@@ -10,6 +10,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { LiveTestArtifactStore, type LiveTestArtifact, type LedgerEntry } from '../../src/core/LiveTestArtifactStore.js';
 
 const { publicKey, privateKey } = crypto.generateKeyPairSync('ed25519');
@@ -40,7 +41,7 @@ describe('LiveTestArtifactStore', () => {
     store = new LiveTestArtifactStore({ stateDir: dir, machineId: 'laptop', signerFingerprint: 'fp-runner', sign, verify });
   });
   afterEach(() => {
-    try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* best-effort */ }
+    try { SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: "live-test-cleanup" }); } catch { /* best-effort */ }
   });
 
   it('writes a signed artifact and verifies it end-to-end', () => {

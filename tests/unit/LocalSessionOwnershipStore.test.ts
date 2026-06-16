@@ -9,6 +9,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { LocalSessionOwnershipStore } from '../../src/core/LocalSessionOwnershipStore.js';
 import type { SessionOwnershipRecord } from '../../src/core/SessionOwnership.js';
 
@@ -29,7 +30,7 @@ describe('LocalSessionOwnershipStore', () => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ownership-store-'));
   });
   afterEach(() => {
-    try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* best-effort */ }
+    try { SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: "live-test-cleanup" }); } catch { /* best-effort */ }
   });
 
   it('persists a record and reads it back', () => {

@@ -10,6 +10,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { LiveTestArtifactStore, type LiveTestArtifact, type Surface, type RiskCategory } from '../../src/core/LiveTestArtifactStore.js';
 import { LiveTestGate, looksUserFacing } from '../../src/core/LiveTestGate.js';
 
@@ -42,7 +43,7 @@ describe('LiveTestGate', () => {
     store = new LiveTestArtifactStore({ stateDir: dir, machineId: 'm', signerFingerprint: 'fp', sign, verify });
     gate = new LiveTestGate(store);
   });
-  afterEach(() => { try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* */ } });
+  afterEach(() => { try { SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: "live-test-cleanup" }); } catch { /* */ } });
 
   it('classifier: detects user-facing keywords, ignores internal goals', () => {
     expect(looksUserFacing('fix the cross-machine transfer reply')).toBe(true);

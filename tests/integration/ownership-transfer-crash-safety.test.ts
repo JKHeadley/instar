@@ -14,6 +14,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { LocalSessionOwnershipStore } from '../../src/core/LocalSessionOwnershipStore.js';
 import { OwnershipApplier, type PlacementReader } from '../../src/core/OwnershipApplier.js';
 import type { SessionOwnershipRecord } from '../../src/core/SessionOwnership.js';
@@ -52,7 +53,7 @@ describe('ownership transfer crash-safety (§7.3/§9.4)', () => {
     miniDir = path.join(root, 'mini');
   });
   afterEach(() => {
-    try { fs.rmSync(root, { recursive: true, force: true }); } catch { /* best-effort */ }
+    try { SafeFsExecutor.safeRmSync(root, { recursive: true, force: true, operation: "live-test-cleanup" }); } catch { /* best-effort */ }
   });
 
   it('crash AFTER source commits but BEFORE target materializes → applier converges to ONE owner (the target)', () => {

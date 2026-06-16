@@ -11,6 +11,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { LiveTestArtifactStore, type Surface } from '../../src/core/LiveTestArtifactStore.js';
 import { LiveTestGate } from '../../src/core/LiveTestGate.js';
 import { LiveTestHarness, HarnessVolatileChannelError, type ChannelDriver, type HarnessMatrix, type ReplyResult } from '../../src/core/LiveTestHarness.js';
@@ -57,7 +58,7 @@ describe('LiveTestHarness', () => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'harness-'));
     store = new LiveTestArtifactStore({ stateDir: dir, machineId: 'laptop', signerFingerprint: 'fp', sign, verify });
   });
-  afterEach(() => { try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* */ } });
+  afterEach(() => { try { SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: "live-test-cleanup" }); } catch { /* */ } });
 
   it('a passing run writes a gate-satisfying artifact (end-to-end harness→artifact→gate)', async () => {
     const driver = fakeDriver({ reply: () => ({ text: "I'm here", messageId: 'r1', responderMachineId: 'mini' }) });
