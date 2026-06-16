@@ -821,6 +821,10 @@ export interface RouteContext {
   discoveryEvaluator: import('../core/DiscoveryEvaluator.js').DiscoveryEvaluator | null;
   /** Independent autonomous-completion judge (mirrors /goal). Null if no IntelligenceProvider. */
   completionEvaluator: import('../core/CompletionEvaluator.js').CompletionEvaluator | null;
+  /** Live-user-channel-proof completion gate (§4) — vetoes "done" for a user-facing
+   *  feature without a verified live-test artifact. Null when dark/unwired. */
+  liveTestGate: import('../core/LiveTestGate.js').LiveTestGate | null;
+  liveTestGateMode: import('../core/LiveTestGate.js').LiveTestGateMode;
   unifiedTrust: UnifiedTrustSystem | null;
   /** Shared proxy coordinator — mutex + /build heartbeat record for the
    *  PresenceProxy ↔ PromiseBeacon ↔ /build-heartbeat three-way deconfliction
@@ -4166,6 +4170,34 @@ export function createRoutes(ctx: RouteContext): Router {
         typeof transcriptTail === 'string' ? transcriptTail : '',
         parseStopSignals(req.body),
       );
+      // ── Live-user-channel-proof veto (spec §4) ──────────────────────────────
+      // A deterministic post-check on a met:true verdict: a USER-FACING feature
+      // cannot resolve "done" without a verified live-test artifact. Same shape as
+      // the anti-laundering veto — filing/claiming "done" never buys the exit.
+      // dry-run/warn COMPUTE the veto (telemetry) but never override; only veto-mode
+      // overrides met:true → met:false (the safe direction — keep working).
+      if (verdict.met && ctx.liveTestGate) {
+        try {
+          const body = (req.body ?? {}) as { featureId?: unknown; userFacing?: unknown };
+          const featureId = typeof body.featureId === 'string' && body.featureId
+            ? body.featureId
+            : condition.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 80) || 'autonomous-goal';
+          const userFacing = typeof body.userFacing === 'boolean' ? body.userFacing : undefined;
+          const gate = ctx.liveTestGate.evaluate({ featureId, userFacing, goalText: condition, mode: ctx.liveTestGateMode });
+          if (gate.outcome !== 'allow') {
+            if (gate.blocks) {
+              res.json({ met: false, reason: `live-test gate: ${gate.reason}`, liveTestGate: { outcome: gate.outcome, mode: gate.mode, overrode: true } });
+              return;
+            }
+            // dry-run / warn: surface the would-block but honor the original verdict.
+            res.json({ ...verdict, liveTestGate: { outcome: gate.outcome, mode: gate.mode, wouldBlock: gate.wouldBlock, reason: gate.reason, overrode: false } });
+            return;
+          }
+        } catch {
+          // @silent-fallback-ok — a gate error must never trap a genuine completion
+          // (the completion judge is the primary authority); fall through to the verdict.
+        }
+      }
       res.json(verdict);
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : String(err) });

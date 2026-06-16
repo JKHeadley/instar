@@ -200,6 +200,12 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     justification: 'Pure read-side observability/efficiency: caches only peer route bodies the surfaces ALREADY fetch over the mesh, introduces NO new authority, NEVER mutates, never caches private end-user content; a failed fetch is never cached; single-machine = no-op (no peers). No destructive action, no third-party spend.',
   },
   {
+    name: 'liveTestGate',
+    configPath: 'monitoring.liveTestGate.enabled',
+    description: 'Live-User-Channel Proof completion gate (spec §4, CMT-1568) — refuses an autonomous "done" verdict for a user-facing feature without a verified, signed live-test artifact (right surfaces + risk categories).',
+    justification: 'Ships mode:dry-run by default (the canary): on a dev agent the gate runs the FULL decision over POST /autonomous/evaluate-completion and LOGS the veto it WOULD apply, but dry-run/warn NEVER override the verdict — only an explicit mode:veto can flip met:true→met:false, and even then the only effect is keeping the run WORKING (the safe direction, never a destructive action, never a false "done"). Pure local read of signed artifacts on disk (no egress, no spend, no LLM of its own); a gate error falls through to the original verdict (the completion judge stays primary authority). Same dogfooding posture as topicProfiles / threadline.singleNegotiator.',
+  },
+  {
     name: 'durableOwnership',
     configPath: 'multiMachine.durableOwnership.enabled',
     description: 'Transfer fix (live-user-channel-proof spec §7.2) — swaps the in-memory session-ownership store for a DURABLE per-session store + the OwnershipApplier that materializes ownership on the target from the REPLICATED placement journal, so a topic seat genuinely moves between machines.',
