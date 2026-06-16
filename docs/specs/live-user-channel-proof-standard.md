@@ -202,12 +202,17 @@ classifier never blocks by itself; it only emits **signals**:
   classifier **surfaces** "declare `userFacing` and run the harness, or justify
   `userFacing:false`" and the run is returned to work (a non-terminal nudge, not a
   hard block on an unverifiable guess).
-- When `userFacing:false` is declared but the changed files / touched surfaces
-  contradict it → the classifier **surfaces the conflict** and the gate **fails
-  closed** (treats the run as user-facing-unproven) — closing the escape hatch
-  (codex/security finding) without giving the classifier standalone authority,
-  because the trigger is the *objective* file/surface evidence, not the classifier's
-  opinion.
+- When `userFacing:false` is declared but the changed files / touched surfaces look
+  like they contradict it → this is raised as a **surfaced review signal** (an
+  attention item + a recorded `userFacingWaiverContested` note), NOT a standalone
+  veto. "Touched surfaces" detection is itself heuristic, so per Signal-vs-Authority
+  it may not hold blocking authority; making it a hard block would re-introduce
+  exactly the classifier-authority the design rejects (codex r2 finding). The
+  contradiction is made VISIBLE (the operator/reviewer sees the questionable waiver)
+  rather than silently honored — which closes the escape hatch through *visibility*,
+  not a brittle auto-block. (A future objective surface-ownership manifest — reviewed
+  path→surface mappings — could upgrade this to a deterministic hard signal; until
+  that exists, it is signal-only.)
 
 `CompletionEvaluator` cannot override the veto: the artifact is objective, so the
 "is it proven?" question is not an LLM judgment. The "is it user-facing?" scope IS
@@ -257,6 +262,17 @@ security reviewers' findings):
 - **Recency + replay.** The gate uses the **freshest** `{featureId, runId}` entry and
   requires it to be from the current autonomous session (or the immediately preceding
   one); a stale-artifact replay is rejected.
+- **Threat model (honest, like `UnjustifiedStopGate`).** This is **drift-correction,
+  NOT a security boundary against a compromised runner.** The signing + hash-chain
+  defend against an LLM *drifting* into self-certification (hand-authoring an artifact
+  to buy "done") — they make that require deliberate, multi-step forgery rather than a
+  one-line transcript claim. A deliberately adversarial runner that controls both the
+  artifact and the ledger before replication can still forge the chain; we do not
+  claim otherwise. The cheap external strengthening is that artifacts + ledger are
+  **committed to git** as part of the run, so git history is an out-of-band,
+  agent-write-fenced anchor (tampering after the fact is visible in the diff). A
+  server-side monotonic ledger outside agent write authority is the stronger follow-on
+  if the threat model ever needs to harden.
 - **`seatMoved:false` poison rule.** Any scenario whose recorded evidence contains a
   feature-level failure signal (e.g. `seatMoved:false`, an `ok:true`-but-no-effect
   response) is recorded as **FAIL** — it can never sit under a PASS row. A PASS row
@@ -283,6 +299,25 @@ idempotency, regression.** Uncovered categories are recorded explicitly; the gat
 requires every applicable category present with at least one PASS (a category with
 only BLOCKED rows is not covered).
 
+Categories are a **floor, not a checklist to box-tick** (codex r2 finding). The matrix
+declares, per feature, which categories apply and a one-line **per-category rationale**
+naming the concrete scenario(s) that exercise it — so a thin category (one trivial PASS
+standing in for real coverage) is *visible* to the Tier-1 supervisor (§5.6) and a
+reviewer, not hidden behind a green checkmark. The category set is the minimum; a
+feature with more failure modes records more.
+
+**Environment-readiness vs feature-completion (codex r2 finding).** A platform outage or
+missing demo credential is an *environment* problem, not a *feature* problem, and the
+two are separated so ordinary shipping is not held hostage to third-party state. The gate
+is already per-feature, so a Slack outage only affects features with a Slack surface. For
+those: a recent **harness-health artifact** (Telegram/Slack infra reachable) is the
+environment precondition; when the platform is genuinely down, the load-bearing
+categories (happy-path, channel-parity) **cannot** be proven, so the feature is honestly
+**not-done-yet** (the correct outcome — don't ship unproven). The escape valve is an
+**operator-gated, time-bounded platform-unavailable waiver** (recorded, attested,
+expiring) that permits a *degraded release class* with the unproven surface explicitly
+flagged — never a silent pass, and never self-granted.
+
 **BLOCKED taxonomy.** A BLOCKED row is honored ONLY when it carries a recorded,
 machine-verifiable external blocker: a platform API error (status code + body
 captured), an external-service outage (with expiry/retry recorded), or an
@@ -304,7 +339,17 @@ a different feature cannot satisfy this run.
 Ships dark behind `monitoring.liveTestGate` (dev-agent-gated, omit `enabled` per the
 dev-gate convention; registered in `DEV_GATED_FEATURES`). Strictness ladder
 `mode: "dry-run" | "warn" | "veto"` (default `dry-run` — logs the veto it WOULD apply
-without blocking), promoted along the graduated-rollout ladder. When the gate cannot
+without blocking), promoted along the graduated-rollout ladder.
+
+**Dry-run is a bounded soak, not permanent theater (conformance: Structure beats
+Willpower).** The end state is `veto` — the structural teeth. `dry-run`/`warn` exist only
+to measure false-positive rate before the teeth bite, and the promotion is a **tracked,
+time-bounded obligation** (a registered commitment with a promotion criterion: e.g. "N
+dev-agent runs with zero false-positive vetoes → promote to `warn`, then `veto`"), so it
+**Closes the Loop** rather than resting in dry-run forever. A gate stuck in dry-run past
+its soak window surfaces as an overdue commitment, not silent willpower. On the dev agent
+the gate runs live-in-dry-run from day one (dogfood); the fleet promotion follows the
+measured soak. When the gate cannot
 verify an artifact (ledger stale/unreadable on this machine), it treats the feature as
 **not-proven → veto (return-to-work)** — the safe direction is to keep working until
 proof exists, which is non-destructive (it never lets a false "done" through, and
@@ -386,7 +431,21 @@ timeouts escalates (harness stops, returns the partial artifact) rather than han
 total run cap (~10 min). Quarantine: a scenario flagged persistently flaky is recorded
 as quarantined (visible, not silently dropped) and does not satisfy its risk category.
 
-### 5.6 Layered tests for the harness itself
+### 5.6 Tier-1 LLM supervision (LLM-Supervised Execution standard)
+
+The harness drives real external channels and mutates throwaway state — a critical
+shipping path. Per the LLM-Supervised Execution standard it runs under at minimum a
+**Tier-1 supervisor**: a Haiku-class supervisor wraps the deterministic harness and,
+**after each scenario step**, validates that the observed reply genuinely matches the
+asserted `expect` (catching the "the bot replied SOMETHING, but it was wrong/empty"
+case a brittle string-match would pass), confirms the correct surface/machine answered,
+and flags a step whose evidence contradicts a PASS before it is written. The supervisor
+is advisory over the recording (it can downgrade a PASS it cannot confirm to
+BLOCKED-needs-review), never the channel-driving authority. The gate's artifact
+verification (§4.4) stays deterministic — the supervisor hardens the harness's
+*authoring* of the artifact, not the gate's *reading* of it.
+
+### 5.7 Layered tests for the harness itself
 
 Per the Testing Integrity Standard + L5 (State-Detection Robustness): unit
 (scenario-matrix parse, canonical-hash + signature, ledger hash-chain, veto evidence
@@ -478,8 +537,25 @@ coherence-journal replication path the 7 memory stores now use). Concretely:
 - The pin is also synced to the target (or made unnecessary by the replicated record) so
   routing is correct from the replicated ownership, not a router-local pin.
 
-This is no longer a bespoke protocol — it reuses the proven replicated-state +
-reconciler infrastructure, with caching to keep reads off the hot path.
+**Consistency contract under partition (codex r2 — "git refs are not consensus").** This
+is **CP-leaning, lease-fenced**, aligned with instar's EXISTING fenced-lease awake-machine
+model (the numbered "who's in charge" badge) rather than a new consensus service:
+
+- An ownership transition is authorized by the **lease holder** and stamped with a
+  **fencing token** (the lease epoch). A write carrying a stale fencing token is rejected —
+  this is the split-brain guard.
+- **Under partition / unreachable remote, the transfer REFUSES rather than completing
+  optimistically** (it reuses the existing offline-target `needsConfirmation` path). We do
+  not move a seat we cannot durably hand off — the safe direction is "the topic stays whole
+  on its current machine," never two optimistic owners. Exactly-one-owner is preserved by
+  refusing the move when the remote authority can't be reached, not by hoping replication
+  catches up.
+- Availability tradeoff stated honestly: a partition makes a *cross-machine move*
+  temporarily unavailable (it refuses); it does NOT make the *existing* owner stop serving.
+  The conversation keeps working where it is.
+
+This is no longer a bespoke protocol — it reuses the proven replicated-state + reconciler
++ fenced-lease infrastructure, with caching to keep reads off the hot path.
 
 ### 7.3 Crash-safety contract (§9.4; security/lessons findings)
 
@@ -619,6 +695,28 @@ monthly files; the gate reads active + current archive); gate evidence is cached
 feature.
 
 ---
+
+## 11. Observability (Observable Intelligence standard)
+
+The gate and harness emit effectiveness metrics so the standard itself can be tuned —
+you can't improve what you can't see:
+
+- **Gate metrics** (per-feature, into the existing `/metrics/features` surface, feature
+  key `live-test-gate`): veto **fired** vs **noop** vs **shed**, the strictness `mode`
+  at decision time, the reason a veto fired (no-artifact / wrong-surface / category-gap /
+  tampered / stale), and the artifact-verification latency.
+- **Harness metrics** (feature key `live-test-harness`): scenarios run, PASS/FAIL/
+  BLOCKED-real counts, risk-category coverage per feature, flake rate + quarantined
+  count, per-surface run time.
+- **The headline effectiveness metric — operator-found escapes.** When the operator
+  reports a defect in a feature that had ALREADY passed the gate, it is recorded as an
+  `operatorFoundEscape` against that feature id (the gate let a real bug through). This
+  is the true north-star: the standard exists to drive operator-found escapes toward
+  zero. A rising escape rate means the scenario matrices are too thin — surfaced, not
+  buried.
+- Read surface: `GET /metrics/features?feature=live-test-gate` / `live-test-harness`;
+  the dashboard renders the escape rate + coverage in plain language. Read-only
+  observability — it never gates.
 
 ## Open questions
 
