@@ -132,69 +132,64 @@ Violating any one strands a credential or trips Anthropic enforcement.
   attention item, NOT a conversational in-channel notice. So "honest degradation"
   is **net-new work** (§5.4), not a mirror of an existing fix.
 
-## 3. Design decision: SHARE THE CREDENTIAL across machines (operator-directed primary)
+## 3. Design decision: make EVERY machine serve-capable (orchestration-primary); credential mechanism = WS5.2 Mechanism B auto-enroll
 
-> **OPERATOR OVERRIDE (Justin, 2026-06-16 14:49 PDT):** an earlier converged
-> revision made "move the WORK to the logged-in machine" the answer and DEFERRED
-> credential sharing. The operator rejected that as unsatisfactory: *"once the user
-> logged in one time on one machine, that account should be shareable across
-> machines — I've logged into the same account on multiple machines and used it,
-> there's no reason this isn't possible."* He is right. This revision makes
-> **cross-machine credential sharing the PRIMARY mechanism**; the convergence tag
-> on the prior revision is STALE and this must be re-converged before build.
+> **OPERATOR DECISION A (Justin, 2026-06-16, Telegram 13481 — "Let's go with A").**
+> The end-state requirement is unchanged: *"once the user logged in one time on one
+> machine, that account should be shareable across machines."* Justin chose the
+> **ToS-safe way to deliver it: agent-driven per-machine auto-enroll** — each
+> machine obtains its OWN login for the account (the agent drives the flow; the
+> operator approves once), so every machine becomes serve-capable WITHOUT copying a
+> Claude OAuth blob between machines. The literal-blob-sync alternative (fork B) is
+> NOT taken; it remains an operator opt-in for later (see Rejected/deferred).
 
-> **PRIMARY: the user logs into a Claude account ONCE on one machine; that account
-> credential is securely synced to the operator's other machines so EVERY machine
-> can serve from it — with zero per-machine login and free scaling. The
-> refresh-token rotation hazard is handled by cross-machine coordination, not by
-> avoiding sharing.**
+> **PRIMARY (Decision A): every machine in the pool is made serve-capable via WS5.2
+> Mechanism B (agent-driven per-machine auto-enroll). Then quota-aware placement /
+> seat-transfer routes each conversation onto a serve-capable machine. The user
+> logs in once; the agent propagates serve-capability by RE-MINTING per machine,
+> never by relocating the credential. Result: zero ongoing per-machine login burden,
+> free scaling, and the refresh-rotation hazard is sidestepped entirely (each
+> machine holds its OWN independent grant lineage — no shared lineage to serialize).**
 
-The genuine technical facts (verified in v1.3.602 source), and why sharing IS safe:
-- **Refresh-token rotation is real but NARROW** (`live-credential-repointing §0.c`
-  E2 `rotated:true`; `OAuthRefresher.ts:285`): exchanging a refresh token mints a
-  new one and invalidates the old. The hazard is ONLY two machines refreshing the
-  **same lineage concurrently** — NOT a bar on sharing. The 8h access token
-  (`expires_in:28800`) can be used by many machines at once; only the occasional
-  REFRESH must be serialized.
-- **This matches the operator's lived experience:** the same account works on
-  multiple devices because each holds a usable grant; collisions only happen if a
-  single token lineage is refreshed from two places at the same instant.
-- **C1 ("instar never extracts tokens into NON-Claude-Code tools",
-  `SubscriptionPool.ts:17-20`) does NOT bar machine→machine sync into the PEER's
-  Claude Code** config-home. Syncing the operator's own credential, encrypted
-  end-to-end, to the operator's own other machine's Claude Code is in-bounds — the
-  prior revision over-applied C1. (The existing secret-sync already moves the
-  operator's other secrets this way; Claude OAuth was simply never enrolled —
-  `SecretMigrator.ts:42-48` omits `claudeAiOauth`. The fix is to enroll it.)
+The genuine technical facts (verified in v1.3.602 source), and why auto-enroll (A) is the safe delivery:
+- **Independent grants, no shared-lineage hazard.** Real multi-device login works
+  because each device holds its OWN grant for the account; the refresh-token
+  rotation collision (`live-credential-repointing §0.c` E2 `rotated:true`;
+  `OAuthRefresher.ts:285`) only arises when two machines refresh the **same**
+  lineage. Per-machine auto-enroll gives each machine a distinct lineage, so there
+  is **no cross-machine refresh to serialize** — A is strictly simpler/safer than
+  blob-sync on exactly the hazard that made blob-sync costly.
+- **C1/C2 stay load-bearing invariants (NOT overridden).** Because A never extracts
+  or relocates the OAuth blob, C1 (no token extraction, `SubscriptionPool.ts:17-20`)
+  and C2 (one blob, one home — `live-credential-repointing-rebalancer.md §0.d`)
+  hold by construction. The credential MECHANISM is owned by the already-approved
+  WS5.2 spec (`ws52-account-follow-me-security.md`, CMT-1413), whose default IS
+  Mechanism B; this spec does not re-implement it.
 
-### Primary mechanism — credential sync + refresh coordination (§5A, NET-NEW, the core build)
-1. **Enroll Claude OAuth into the existing E2E secret-sync** (X25519/AES-256-GCM,
-   per-recipient, forward-secret — `SecretStore.ts:9-13`): the account credential
-   blob (`claudeAiOauth`) is encrypted and synced to the operator's registered
-   peer machines, landing in each peer's Claude Code config-home keychain slot
-   (`CredentialProvider.writeCredentials` / the `CredentialWriteFunnel`). One login
-   → usable on every machine. No second login, no per-machine work.
-2. **Refresh-coordination lease (the rotation fix):** concurrent SERVING is free
-   (shared 8h access token); but a REFRESH takes a pool-wide single-flight lease —
-   the refreshing machine exchanges, then **propagates the rotated blob back to all
-   peers** before releasing. A peer never refreshes a lineage it doesn't hold the
-   lease for; a peer whose copy is superseded pulls the fresh blob first. This is
-   the one-lineage-one-refresher-at-a-time invariant, enforced ACROSS machines
-   (the live-credential-repointing work did it within one machine; this lifts it to
-   the pool via the mesh coordinator).
-3. **At-rest honesty:** the synced credential lands on each peer's disk (keychain
-   or `.credentials.json`). Transit is encrypted; at rest it is protected by that
-   machine's keychain/file perms. If a pool machine is one the operator does not
-   physically control (a rented cloud VM), the operator can exclude it as a
-   credential-sync RECIPIENT (residency opt-out). Stated, not hidden.
+### Primary mechanism — per-machine auto-enroll bridge (§5A; delegates to WS5.2 Mechanism B)
+1. **A walled machine becomes serve-capable by auto-enrolling its own login**, not
+   by receiving a blob. The orchestration layer detects a machine that cannot serve
+   (no live account / all walled — §5.1 serveability signal) and invokes WS5.2
+   Mechanism B's agent-driven enrollment for that machine (the operator approves
+   once, mobile-first). This spec owns the *trigger + bridge*; WS5.2 owns the
+   enrollment + credential handling. **File-ownership of the WS5.2 surface must be
+   settled with the Subscription & Auth Standard workstream before any build edit
+   to it (coordination gate).**
+2. **No refresh-coordination lease needed** (the blob-sync design's central
+   complexity): each machine's grant is its own lineage, so refreshes never collide
+   across machines. This is the concrete simplification A buys over fork B.
+3. **At-rest honesty:** each machine holds only its OWN credential in its OWN Claude
+   Code config-home, exactly as a normal single-machine login does — no new
+   cross-machine credential residency surface is introduced.
 
 ### Complementary layer — quota-aware placement / seat transfer (§5B, reuses proven primitives)
-With the credential shared, ANY machine can serve, so placement is now free to put
-a conversation on the best machine. The proven `POST /pool/transfer` +
-`OwnershipApplier` + quota-aware placement remain — but as an OPTIMIZATION
-(availability + affinity), no longer the workaround for a credential-less machine.
-The earlier revision's hard-won correctness work (one-voice, epoch-fencing,
-honest-degradation, operator-binding carry) is RETAINED for this layer.
+With every machine serve-capable (via per-machine auto-enroll), placement is free
+to put a conversation on the best machine. The proven `POST /pool/transfer` +
+`OwnershipApplier` + quota-aware placement remain — covering the window before a
+walled machine has auto-enrolled (route the seat to a peer that can serve NOW) and
+ongoing availability/affinity optimization. The earlier revision's hard-won
+correctness work (one-voice, epoch-fencing, honest-degradation, operator-binding
+carry) is RETAINED for this layer.
 
 Why the collapse-to-owner==server reasoning still holds for the placement layer:
 
@@ -238,27 +233,36 @@ human invokes with "move this to the Mac Mini," fired automatically by the pool
 when (and only when) the current owner cannot serve and a peer can — guarded by
 hysteresis so a flapping account can't thrash the seat.
 
-**Why P2P credential sync and not a centralized broker:** a centralized token
-service would mean instar holding/serving the operator's Claude tokens from a
+**Why per-machine auto-enroll and not a centralized token broker:** a centralized
+token service would mean instar holding/serving the operator's Claude tokens from a
 shared backend — that genuinely trips C1 (extracting tokens into a non-Claude-Code
-service). P2P sync keeps each token landing only in a real Claude Code config-home
-on one of the operator's own machines, encrypted in transit. So the choice is P2P
-sync (in-bounds) over a broker (out-of-bounds), NOT "no sharing at all."
+service). Decision A's auto-enroll keeps each token minted and held only in a real
+Claude Code config-home on the operator's own machine, never extracted, never
+relocated — the in-bounds form of "shared across machines."
 
 ### Tradeoff stated explicitly
-With the credential shared, the design delivers BOTH availability AND affinity:
-every machine can serve, so placement is free to pick the most capable / least-
-loaded machine. The only residual cost is the refresh-coordination lease (a brief
-pool-wide single-flight on the occasional token refresh) — negligible vs. the 8h
-access-token window.
+With every machine serve-capable via per-machine auto-enroll, the design delivers
+BOTH availability AND affinity: placement is free to pick the most capable / least-
+loaded machine. The residual cost is a one-time per-machine enrollment (operator
+approves once per machine, agent-driven) rather than blob-sync's ongoing
+refresh-coordination lease — A trades a tiny one-time setup for eliminating the
+cross-machine refresh-collision hazard entirely.
 
 ### Rejected / deferred alternatives
 - **Centralized token broker** — rejected on C1 (instar would serve tokens from a
   shared backend; P2P sync into real Claude Code homes is the in-bounds form).
-- **"Move the work, never the credential" (the prior revision's primary)** —
-  DEMOTED to a complementary optimization (§5B). Rejected AS THE PRIMARY answer
-  per the operator override: it puts the burden back on which machine happens to
-  hold a login, which is exactly the non-seamless behavior the operator rejected.
+- **Literal credential blob-sync (fork B — sync the OAuth blob to peers)** — **NOT
+  taken under Decision A.** It was the credential-SHARING-primary design Justin
+  weighed against A; he chose A (auto-enroll). B carries the cross-machine
+  refresh-rotation hazard (needs a pool-wide refresh-coordination lease), an
+  at-rest credential-residency surface on every peer, and ToS exposure on the
+  Claude OAuth blob — all of which A avoids. B remains an explicit **operator
+  opt-in for later** via WS5.2 Mechanism A (operator owns that ToS-risk decision);
+  this spec does not build it.
+- **"Move the work, never the credential" alone (an earlier revision's primary)** —
+  under A this is no longer a *standalone* answer (every machine is made
+  serve-capable), but its seat-transfer/placement machinery is RETAINED as §5B (the
+  pre-enroll routing window + availability/affinity optimization).
 - **Serve≠owner remote-serve split** — still rejected (double/zero-voice, stranded
   state). The placement layer keeps owner==server.
 - **Turn-proxy (relay each LLM turn through a peer)** — rejected on C1 (no token
