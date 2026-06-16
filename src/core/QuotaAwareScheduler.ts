@@ -116,6 +116,48 @@ export function selectAccount(
     .sort((x, y) => y.s - x.s)[0].a;
 }
 
+/**
+ * Pool-headroom summary for the QUOTA THROTTLE (`QuotaTracker` provider). This is
+ * DISTINCT from `selectAccount`, which picks WHERE to place a session for
+ * use-it-or-lose-it (it favors the soonest-to-reset account, which may be highly
+ * used). The throttle asks a different question — "is there capacity for this work
+ * ANYWHERE in the pool?" — so it must gate on the MOST-HEADROOM eligible account,
+ * not the drain-first winner. (Live proof against the real pool, 2026-06-16: with a
+ * fresh 0% reserve alongside an 85% drain-first account, gating on the drain-first
+ * account wrongly shed all non-critical work — overriding codex round-2 minor #2's
+ * "accepted as marginal" with real evidence that it materially under-delivered.)
+ *
+ * Crucially it shares the EXACT eligibility predicate `selectAccount` uses
+ * (`isEligibleStatus` + binding utilization below the soft threshold), so
+ * `placeable` here ⟺ `selectAccount(...) !== null` — the never-loop invariant
+ * holds (the throttle never allows when placement can place nothing). Percentages
+ * are clamped to [0,100]; `degraded:true` when the best account has no trustworthy
+ * live reading, so the throttle applies its bounded degraded cap instead of a
+ * phantom "0% fresh".
+ */
+export function poolHeadroom(
+  accounts: SubscriptionAccount[],
+  opts: SelectionOptions = {},
+): { placeable: boolean; weeklyPercent: number | null; fiveHourPercent: number | null; degraded: boolean } {
+  const soft = opts.softThresholdPct ?? DEFAULT_SOFT_THRESHOLD;
+  const eligible = accounts.filter(
+    (a) => isEligibleStatus(a) && bindingUtilization(a.lastQuota) < soft,
+  );
+  if (eligible.length === 0) {
+    return { placeable: false, weeklyPercent: null, fiveHourPercent: null, degraded: false };
+  }
+  let best = eligible[0];
+  for (const a of eligible) {
+    if (bindingUtilization(a.lastQuota) < bindingUtilization(best.lastQuota)) best = a;
+  }
+  const clamp = (v: number | undefined): number | null =>
+    typeof v === 'number' && isFinite(v) ? Math.max(0, Math.min(100, v)) : null;
+  const weeklyPercent = clamp(best.lastQuota?.sevenDay?.utilizationPct);
+  const fiveHourPercent = clamp(best.lastQuota?.fiveHour?.utilizationPct);
+  const degraded = weeklyPercent === null && fiveHourPercent === null;
+  return { placeable: true, weeklyPercent, fiveHourPercent, degraded };
+}
+
 /** Is this account at/over the soft pressure threshold on its binding window? */
 export function accountAtPressure(
   a: SubscriptionAccount,

@@ -80,11 +80,26 @@ describe('QuotaTracker — invalid input handling', () => {
       expect(tracker.canRunJob('critical')).toBe(true);
     });
 
-    it('clamps values above 100 to 100 (nothing runs)', () => {
+    it('BOUNDED fail-open on an impossible >100% value (degraded-data hardening)', () => {
+      // DELIBERATE behavior change (POOL-AWARE-QUOTA-THROTTLE-SPEC §3): a value >100%
+      // is impossible for a real percentage, so it signals corrupt/estimated data
+      // (the 2026-06-15 incident was a claude-jsonl estimate of 186% that jammed the
+      // brake and stopped the WHOLE agent while fresh accounts sat idle). Stopping
+      // everything on an implausible reading IS the bug — BUT we don't KNOW the real
+      // usage, so fail-open is BOUNDED: low-priority work is shed, medium+ runs.
+      // (No source tag here ⇒ not 'anthropic-oauth' ⇒ treated as non-authoritative.)
       writeRawQuota({ usagePercent: 150, lastUpdated: new Date().toISOString() });
       const tracker = createTracker();
-      // 150 clamped to 100, which is above shutdown (95)
-      expect(tracker.canRunJob('low')).toBe(false);
+      expect(tracker.canRunJob('low')).toBe(false);     // shed — degraded mode
+      expect(tracker.canRunJob('medium')).toBe(true);
+      expect(tracker.canRunJob('critical')).toBe(true);
+    });
+
+    it('an AUTHORITATIVE >100 reading still STOPS (fail-open gated to non-authoritative)', () => {
+      // F4: a genuine authoritative source is never treated as degraded — a real
+      // wall must still stop, even at the (clamped) ceiling.
+      writeRawQuota({ usagePercent: 150, source: 'anthropic-oauth', lastUpdated: new Date().toISOString() });
+      const tracker = createTracker();
       expect(tracker.canRunJob('critical')).toBe(false);
     });
   });

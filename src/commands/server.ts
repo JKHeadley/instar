@@ -9917,6 +9917,25 @@ export async function startServer(options: StartOptions): Promise<void> {
       console.log(pc.green(`  Subscription pool: ${subscriptionPool.size()} account(s) registered`));
     }
 
+    // POOL-AWARE QUOTA THROTTLE wiring (docs/specs/POOL-AWARE-QUOTA-THROTTLE-SPEC.md):
+    // give the global quota brake the SAME placeability predicate the placement layer
+    // (selectAccount) uses, reading the LIVE SubscriptionPool. Effect: the brake never
+    // stops the whole agent while a placeable account has headroom (the 2026-06-15
+    // "one maxed account stalls everything while reserves sit idle" bug), and never
+    // allows work placement can't land (the 90–95% respawn-loop band — selectAccount's
+    // soft threshold is stricter than the shutdown threshold). Only for a genuine pool
+    // (>1 account); a solo agent keeps the legacy single-account gating untouched.
+    if (quotaTracker && subscriptionPool.size() > 1) {
+      const { poolHeadroom } = await import('../core/QuotaAwareScheduler.js');
+      // poolHeadroom shares placement's exact eligibility predicate, so a throttle
+      // "allow" always corresponds to a placeable account, AND it gates on the
+      // MOST-HEADROOM account (not the use-it-or-lose-it drain-first winner) — so
+      // non-critical work runs whenever ANY account has room, while placement still
+      // drains the soonest-to-reset account. Clamps + degraded signal are built in.
+      quotaTracker.setPoolQuotaProvider(() => poolHeadroom(subscriptionPool.list(), { nowMs: Date.now() }));
+      console.log(pc.green('  Pool-aware quota throttle: wired (placement-shared eligibility, most-headroom gating)'));
+    }
+
     // ── Live credential re-pointing — census consumer re-routing (WS5.2 Step 6) ──
     // The CredentialLocationLedger is the machine-local source of truth for "which account is in
     // which config-home slot" once re-pointing is enabled. The CredentialLocationGate re-routes
