@@ -36,14 +36,20 @@ function baseCtx(stateDir: string, over: Partial<RouteContext>): RouteContext {
   } as never;
 }
 
-function fakeWatcher(stateDir: string, latches: GuardLatchStore, prs: PrSummary[] = []): GreenPrAutoMerger {
+const disarmTracker: { calls: number[] } = { calls: [] };
+
+function fakeWatcher(stateDir: string, latches: GuardLatchStore, prs: PrSummary[] = [], seedArmed: Array<{ pr: number; armedHead: string }> = []): GreenPrAutoMerger {
   let state = freshState();
+  for (const a of seedArmed) {
+    state.episodes[a.pr] = { pr: a.pr, headRefOid: a.armedHead, attempts: 0, rearmEpisodes: 0, state: 'active', armedAt: Date.now(), armedHead: a.armedHead };
+  }
   const deps: GreenPrAutoMergerDeps = {
     holdsLease: () => true,
     leaseEpoch: () => 1,
     listOpenPrs: async () => prs,
     protectedPaths: async () => ({ touches: false, unverifiable: false }),
-    refetchPr: async () => ({ title: 'feat', labels: [], isDraft: false, headRefOid: 'sha', state: 'OPEN' }),
+    refetchPr: async () => ({ title: 'feat', labels: [], isDraft: false, headRefOid: 'sha', state: 'OPEN', autoMergeRequest: null }),
+    disarmArmedEpisodes: async (n) => { disarmTracker.calls.push(n); return true; },
     resolveGhLogin: async () => 'echo-bot',
     holdEligible: async () => ({ ok: true }),
     applyHoldMarker: async () => true,
@@ -67,6 +73,7 @@ describe('green-pr-automerge routes (integration)', () => {
     stateDir = path.join(tmp, '.instar');
     fs.mkdirSync(stateDir, { recursive: true });
     latches = new GuardLatchStore({ stateDir, machineId: 'm1', leaseEpoch: () => 1 });
+    disarmTracker.calls = [];
   });
   afterEach(() => { try { SafeFsExecutor.safeRmSync(tmp, { recursive: true, force: true, operation: 'test-cleanup' }); } catch { /* ignore */ } });
 
@@ -139,5 +146,56 @@ describe('green-pr-automerge routes (integration)', () => {
     expect(first.body.reason).toBe('warm-up'); // first tick of a tenure is observe-only
     const second = await request(app).post('/green-pr-automerge/tick');
     expect(second.body.acted).toBe(true); // merges on the second tick
+  });
+
+  // ── mergerunner-auto-arm-handoff ────────────────────────────────────────
+
+  it('GET serializes armedCount + armed[] (non-optional) and shows an armed episode', async () => {
+    // Nothing armed → armedCount:0, armed:[] (never undefined).
+    const empty = fakeWatcher(stateDir, latches);
+    const emptyApp = appWith(baseCtx(stateDir, { greenPrAutoMerger: empty, guardLatchStore: latches }));
+    const emptyRes = await request(emptyApp).get('/green-pr-automerge');
+    expect(emptyRes.body.armedCount).toBe(0);
+    expect(emptyRes.body.armed).toEqual([]);
+
+    // An armed episode is first-class observable.
+    const armed = fakeWatcher(stateDir, latches, [], [{ pr: 55, armedHead: 'sha55' }]);
+    const armedApp = appWith(baseCtx(stateDir, { greenPrAutoMerger: armed, guardLatchStore: latches }));
+    const res = await request(armedApp).get('/green-pr-automerge');
+    expect(res.body.armedCount).toBe(1);
+    expect(res.body.armed).toHaveLength(1);
+    expect(res.body.armed[0]).toMatchObject({ pr: 55, armedHead: 'sha55', overdue: false });
+    expect(res.body.armed[0].armedAt).toBeTruthy();
+  });
+
+  it('rollback invokes disarmAllArmed IN-LINE (an armed episode is disarmed by the route call, not a subsequent tick)', async () => {
+    const watcher = fakeWatcher(stateDir, latches, [], [{ pr: 77, armedHead: 'sha77' }]);
+    const app = appWith(baseCtx(stateDir, { greenPrAutoMerger: watcher, guardLatchStore: latches }));
+    const rb = await request(app).post('/green-pr-automerge/rollback').send({ reason: 'stop' });
+    expect(rb.status).toBe(200);
+    expect(disarmTracker.calls).toContain(77); // disabled in-line by the route
+    expect(rb.body.disarmed).toContain(77);
+    // The armed episode is now cleared (confirmed disable).
+    const after = await request(app).get('/green-pr-automerge');
+    expect(after.body.armedCount).toBe(0);
+  });
+
+  it('pool-disarm (PIN) invokes disarmAllArmed in-line', async () => {
+    const watcher = fakeWatcher(stateDir, latches, [], [{ pr: 88, armedHead: 'sha88' }]);
+    const app = appWith(baseCtx(stateDir, { greenPrAutoMerger: watcher, guardLatchStore: latches }));
+    const res = await request(app).post('/green-pr-automerge/pool-disarm').send({ pin: PIN });
+    expect(res.status).toBe(200);
+    expect(disarmTracker.calls).toContain(88);
+    expect(res.body.disarmed).toContain(88);
+  });
+
+  it('rollback is a null-safe no-op for disarm when the merger is absent (latch still set)', async () => {
+    // guardLatchStore present, greenPrAutoMerger null → the route still rolls
+    // back the latch and does not throw on the in-line disarm.
+    const app = appWith(baseCtx(stateDir, { greenPrAutoMerger: null as never, guardLatchStore: latches }));
+    const rb = await request(app).post('/green-pr-automerge/rollback').send({ reason: 'stop' });
+    expect(rb.status).toBe(200);
+    expect(rb.body.rolledBack).toBe(true);
+    expect(rb.body.disarmed).toEqual([]);
   });
 });

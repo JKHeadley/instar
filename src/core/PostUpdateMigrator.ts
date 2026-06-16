@@ -373,6 +373,37 @@ export function migrateConfigSeamlessnessDevGate(config: Record<string, unknown>
   return changed;
 }
 
+/**
+ * mergerunner-auto-arm-handoff (Migration Parity §k). Add the FIVE new
+ * greenPrAutoMerge defaults existence-checked. Only acts when the
+ * `monitoring.greenPrAutoMerge` object ALREADY exists (a fleet agent without the
+ * feature is never touched — this is config-defaults, not feature-enablement).
+ * Each field is added ONLY when MISSING, so an operator's explicit override is
+ * never clobbered and the migration is idempotent (a second run finds them all
+ * present). The five fields are the four DEFAULTS additions + unconfirmedArmCeiling.
+ */
+export function migrateConfigGreenPrAutoArmDefaults(config: Record<string, unknown>): boolean {
+  const monitoring = config.monitoring as Record<string, unknown> | undefined;
+  if (!monitoring || typeof monitoring !== 'object') return false;
+  const block = monitoring.greenPrAutoMerge as Record<string, unknown> | undefined;
+  if (!block || typeof block !== 'object') return false;
+  const adds: Record<string, unknown> = {
+    mergeStrategy: 'auto',
+    armedConfirmCeilingMs: 86_400_000,
+    armedOverdueReraiseMs: 86_400_000,
+    armTimeoutMs: 60_000,
+    unconfirmedArmCeiling: 3,
+  };
+  let changed = false;
+  for (const [k, v] of Object.entries(adds)) {
+    if (!Object.prototype.hasOwnProperty.call(block, k)) {
+      block[k] = v;
+      changed = true;
+    }
+  }
+  return changed;
+}
+
 export class PostUpdateMigrator {
   private config: MigratorConfig;
   /**
@@ -5335,27 +5366,51 @@ When sessions are shut down autonomously (resource pressure, quota, age limits),
       result.skipped.push('CLAUDE.md: autonomous-run-outlives-session note already present');
     }
 
-    // Green-PR Auto-Merge (green-pr-automerge-enforcement). Content-sniffed on
-    // the route path. Off fleet-wide; the awareness still ships so an agent on a
-    // dev install where it's armed knows the hold contract + the levers.
-    if (!content.includes('/green-pr-automerge')) {
-      const section = `
+    // Green-PR Auto-Merge (green-pr-automerge-enforcement + mergerunner-auto-arm-
+    // handoff). Off fleet-wide; the awareness still ships so an agent on a dev
+    // install where it's armed knows the hold contract + the levers.
+    //
+    // Migration Parity (mergerunner-auto-arm-handoff M1): the OLD content-sniff
+    // appended ONLY when the route string was ABSENT, so an agent that ALREADY
+    // has the section (Echo — the exact agent where this feature is armed and
+    // most needs the new facts) took the SKIP branch and never received the
+    // disarm-reach + mergeStrategy correction. The new content-sniff detects the
+    // OLD section by the ABSENCE of a marker that exists ONLY in the updated copy
+    // (\`mergeStrategy\`) and REPLACES it; a brand-new install still gets the
+    // appended section. Idempotent: once the marker is present, no-op.
+    const GREEN_PR_SECTION = `
 ## Green-PR Auto-Merge (Phase 7 becomes machinery)
 
 When one of my own PRs goes green, a background watcher merges it — I never hand the merge click back to the operator, and the merge survives my session dying (the prose "Phase 7" rule died with the session that read it; this is machinery). Off fleet-wide (\`monitoring.greenPrAutoMerge\`); armed per dev agent with \`expectedGhLogin\`. Repo-gated → 503 on a plain install.
 
-- Status: \`curl -H "Authorization: Bearer $AUTH" http://localhost:4042/green-pr-automerge\` — last tick, breaker, episodes, the dual-latch gate, the Layer-2 snapshot.
-- **Holds always win.** A \`[HOLD: …]\` title, a \`hold\`/\`do-not-merge\` label, or draft status excludes a PR. **The marker IS the hold** — the moment the operator says "hold #N", fire \`POST /green-pr-automerge/hold {"pr":N,"reason":"…"}\` (one call applies the marker); never rely on remembering.
-- **Kill switch (anyone can STOP):** \`POST /green-pr-automerge/rollback\` disarms the watcher pool-wide (absorbing, survives a lease move). Re-arming is the operator's — \`POST /green-pr-automerge/enable\` is dashboard-PIN-gated. Pool-disarm marker: \`POST /green-pr-automerge/pool-disarm\` (PIN).
-- **Manual trigger / soak:** \`POST /green-pr-automerge/tick\` (lease + single-flight + warm-up gated, rate-limited). \`dryRun: true\` observes without merging.
+- Status: \`curl -H "Authorization: Bearer $AUTH" http://localhost:4042/green-pr-automerge\` — last tick, breaker, episodes, the dual-latch gate, the Layer-2 snapshot, plus \`armedCount\` + \`armed[]\` (PRs whose GitHub native auto-merge is armed and waiting on CI).
+- **How the merge happens (\`mergeStrategy\`).** Default \`auto\`: the watcher ARMS GitHub native auto-merge (\`safe-merge … --auto\`) and hands the wait off to GitHub — GitHub merges the instant every required check passes (enforcing branch protection, never bypassing it), so a server-restart-mid-merge can't strand it. The eventual merge is confirmed on a later reconciliation tick. \`mergeStrategy:'admin'\` restores the legacy synchronous poll-then-\`--admin\` behavior — the rollback lever and the escape hatch for a repo with "Allow auto-merge" disabled. An \`armed\`/\`armed-overdue\` (>24h, surfaced) episode means "GitHub owns the merge, waiting on CI" — not a failure.
+- **Holds always win — but a label/title alone does NOT stop an ARMED merge.** A \`[HOLD: …]\` title, a \`hold\`/\`do-not-merge\` label, or draft status excludes a PR from being armed in the first place. **But GitHub native auto-merge gates on required checks/mergeability, NOT on the PR title or labels — so a HOLD label alone does NOT stop a PR that is ALREADY armed.** To actually stop an in-flight armed merge, the operator's HOLD/rollback/pause now ALSO runs \`gh pr merge <pr> --disable-auto\` on every armed episode. The moment the operator says "hold #N", fire \`POST /green-pr-automerge/hold {"pr":N,"reason":"…"}\` (it applies the marker AND disables the in-flight auto-merge; it returns a non-2xx if it could not disable, so I never falsely claim the hold stopped the merge); never rely on remembering.
+- **Kill switch (anyone can STOP):** \`POST /green-pr-automerge/rollback\` disarms the watcher pool-wide AND \`--disable-auto\`s every already-armed PR in-line (absorbing, survives a lease move). Re-arming is the operator's — \`POST /green-pr-automerge/enable\` is dashboard-PIN-gated. Pool-disarm marker (PIN): \`POST /green-pr-automerge/pool-disarm\` also disarms in-flight armed merges. A per-PR \`--disable-auto\` that FAILS is reported as a DISTINCT "could NOT disable — disable it on GitHub directly" line, never folded into the disarmed-OK set.
+- **Manual trigger / soak:** \`POST /green-pr-automerge/tick\` (lease + single-flight + warm-up gated, rate-limited). \`dryRun: true\` observes without arming.
 - A green PR touching protected paths (\`.github/**\`, safe-merge, the watcher's own source) is NEVER auto-merged — it routes to the operator on the attention queue. The session-exit nudge tells me to hold-or-wait, and NEVER hands me a runnable merge command.
-- Proactive: operator asks "why didn't my PR merge?" → GET /green-pr-automerge (held? breaker open? identity mismatch? protected paths?). "stop auto-merging" → POST /green-pr-automerge/rollback. Spec: \`docs/specs/green-pr-automerge-enforcement.md\`.
+- Proactive: operator asks "why didn't my PR merge?" → GET /green-pr-automerge (held? breaker open? identity mismatch? protected paths? armed-and-waiting-on-CI? armed-overdue? auto-merge disabled on the repo?). "stop auto-merging" → POST /green-pr-automerge/rollback (also disarms in-flight). Spec: \`docs/specs/green-pr-automerge-enforcement.md\`, \`docs/specs/mergerunner-auto-arm-handoff.md\`.
 `;
-      content += '\n' + section;
+    if (!content.includes('/green-pr-automerge')) {
+      content += '\n' + GREEN_PR_SECTION;
       patched = true;
       result.upgraded.push('CLAUDE.md: added Green-PR Auto-Merge section');
+    } else if (!content.includes('mergeStrategy')) {
+      // OLD section present (route string yes, the updated-copy marker no) →
+      // replace the section body with the updated content. Match from the
+      // section heading up to (but not including) the next top-level heading.
+      const sectionRe = /\n## Green-PR Auto-Merge \(Phase 7 becomes machinery\)[\s\S]*?(?=\n## |\s*$)/;
+      if (sectionRe.test(content)) {
+        content = content.replace(sectionRe, GREEN_PR_SECTION.replace(/\s+$/, ''));
+      } else {
+        // Heading not found in the expected shape (hand-edited) — append the
+        // updated content as an addendum so the new facts still land.
+        content += '\n' + GREEN_PR_SECTION;
+      }
+      patched = true;
+      result.upgraded.push('CLAUDE.md: updated Green-PR Auto-Merge section (mergeStrategy + disarm-reach + armed states)');
     } else {
-      result.skipped.push('CLAUDE.md: Green-PR Auto-Merge section already present');
+      result.skipped.push('CLAUDE.md: Green-PR Auto-Merge section already up to date');
     }
 
     // GuardPostureTripwire — a disabled guard is itself an incident. Tells the
@@ -7724,6 +7779,19 @@ Create worktrees for collaborator repos with \`instar worktree create <branch>\`
       result.upgraded.push('config.json: stripped default-shaped multiMachine.seamlessness.{ws3OneVoice,ws13Reconcile,ws41DurableAck,ws43RoleGuard,ws43JournalLease}=false (and paired ws43JournalLeaseDryRun:true) so the developmentAgent gate resolves them (live-on-dev, dark fleet)');
     } else {
       result.skipped.push('config.json: multiMachine.seamlessness coherence-flag dev-gates already correct (omitted or operator-set)');
+    }
+
+    // mergerunner-auto-arm-handoff (Migration Parity §k): add the FIVE new
+    // greenPrAutoMerge defaults existence-checked. Only patches when the
+    // monitoring.greenPrAutoMerge object ALREADY exists (a fleet agent without
+    // the feature is untouched — never force-creates it). Each field is added
+    // only when MISSING, so an operator's explicit override is never clobbered
+    // and the migration is idempotent.
+    if (migrateConfigGreenPrAutoArmDefaults(config)) {
+      patched = true;
+      result.upgraded.push("config.json: added greenPrAutoMerge auto-arm defaults (mergeStrategy:'auto', armedConfirmCeilingMs, armedOverdueReraiseMs, armTimeoutMs, unconfirmedArmCeiling)");
+    } else {
+      result.skipped.push('config.json: greenPrAutoMerge auto-arm defaults already present or feature absent');
     }
 
     if (patched) {

@@ -1,0 +1,25 @@
+# MergeRunner Auto-Arm Handoff — the green-PR auto-merge watcher hands the merge to GitHub
+
+## What Changed
+
+The green-PR auto-merge watcher (the background machinery that merges an agent's own green, mergeable, non-held PRs without a human clicking merge) now **arms GitHub's native auto-merge and hands off**, instead of running a merge command and synchronously watching it land inside a time-boxed helper. Once armed, GitHub merges the PR itself the instant every required check passes; the watcher confirms the landed merge on a later reconciliation tick. This frees the watcher's single-work slot in seconds instead of holding it for up to 25 minutes, and it survives the watcher's own merge triggering a server restart (GitHub owns the merge, so a restart can't kill it).
+
+Because GitHub now owns an armed merge, the operator's stop controls were upgraded to actually reach in-flight merges: rollback, emergency-pause, pool-disarm, and an explicit per-PR HOLD now actively turn OFF auto-merge on each armed PR. A new honest signal flags the one accepted residual risk (a write-capable push landing between arm and merge could merge an un-vetted head — surfaced post-hoc, never silent). Ships dark (off fleet-wide; armed per dev agent; soaks in dry-run first).
+
+## Evidence
+
+- `src/monitoring/MergeRunner.ts`, `GreenPrAutoMerger.ts`, `greenPrLogic.ts`, `greenPrAutomergeWiring.ts` — the arm path, the new armed/armed-overdue states, the reconciliation tick, the disarm reach, the config threading.
+- `scripts/safe-merge.mjs` — a distinct refused-auto-arm-unavailable result so the watcher can tell "repo setting off" from a transient failure.
+- `src/server/routes.ts`, `src/core/PostUpdateMigrator.ts`, `src/core/types.ts`, `src/commands/server.ts` — observability, the content-sniff CLAUDE.md migration for existing agents, config defaults, wiring.
+- 302 tests across 10 suites green (unit + integration + wiring-integrity + migration); tsc clean; full lint clean (dark-gate, guard-manifest, capabilities-discoverability).
+- Spec `docs/specs/mergerunner-auto-arm-handoff.md` — CONVERGED over 3 review rounds (6 internal lenses + conformance gate each).
+
+## What to Tell Your User
+
+If your agent runs the green-PR auto-merge watcher, it now hands each merge to GitHub's own auto-merge instead of babysitting it — so a server restart in the middle no longer leaves a merge in limbo, and the watcher frees up faster. One important behavior change for operators: once a merge is armed on GitHub, simply pausing the watcher or adding a hold label no longer stops it — so the stop controls now actively turn the armed auto-merge off for you. The feature ships off by default and soaks in a no-op dry-run mode first, so nothing changes for you unless you explicitly run this watcher.
+
+## Summary of New Capabilities
+
+- The auto-merge watcher arms GitHub native auto-merge and hands off, surviving a restart-mid-merge and freeing its work slot in seconds.
+- Operator stop controls (rollback, emergency-pause, per-PR hold) now actively disarm in-flight armed merges.
+- An armed-but-stuck PR keeps being watched and re-surfaces rather than being silently dropped, and a merge at an unexpected commit is flagged.

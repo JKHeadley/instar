@@ -90,6 +90,8 @@ The point: coverage grows over time and is visible. A glance at this file tells 
 |---|---|---|---|---|---|---|---|---|---|
 | (catch-all for `~/.claude/projects/` directory existence checks) | filesystem | Low | per-check | Very stable | n/a | n/a | n/a | 🔵 Exempt | Filesystem semantics don't drift. Direct file-existence checks don't need canaries. |
 | (catch-all for `ps` / `tmux list-sessions` exit codes) | OS process tools | Low | per-check | Very stable | n/a | n/a | n/a | 🔵 Exempt | Same — OS tools have stable command-line contracts. |
+| `monitoring/greenPrAutomergeWiring.ts` — `gh pr view/list --json` PR/state/autoMergeRequest/identity reads + `--disable-auto` disarm seam | GitHub `gh` CLI structured `--json` output | High (merge watcher acts on this) | per-tick (≤ ~10 min) | Stable (`gh --json` is a versioned structured contract, never regex over human text) | n/a | n/a | ✅ unit + wiring-integrity coverage | 🔵 Exempt | Rule 3.1 rationale block present in-file. Every read fails toward NOT merging (throw → tick-failed; unparseable → skip/UNKNOWN), and `safe-merge` re-verifies at act time, so a misread can only cause a refusal, never an unintended merge. |
+| `monitoring/MergeRunner.ts` — parses `safe-merge` JSON result line + in-flight record | safe-merge.mjs structured result + own durable record | High (merge accounting) | per-attempt | Stable (own structured format) | n/a | n/a | ✅ unit coverage | 🔵 Exempt | Rule 3.1 rationale block present in-file. Reads its OWN structured `safe-merge-result:` line + own in-flight JSON; unparseable → null/skip (never an unconfirmed-merge claim — B10 confirm is independent). |
 
 ---
 

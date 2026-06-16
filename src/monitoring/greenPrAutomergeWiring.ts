@@ -78,6 +78,13 @@ export interface GreenPrWiringOpts {
   agentNamespace: string;
   mergeTimeoutMs: number;
   mergeKillGraceMs: number;
+  /**
+   * mergerunner-auto-arm-handoff. The two runner-path fields threaded into
+   * MergeRunnerConfig: `mergeStrategy` ('auto' default | 'admin') selects
+   * --auto vs --admin; `armTimeoutMs` is the --auto spawn deadline (60s).
+   */
+  mergeStrategy?: 'auto' | 'admin';
+  armTimeoutMs?: number;
   /** Lease accessors (single-machine: () => true / () => 0). */
   holdsLease: () => boolean;
   leaseEpoch: () => number;
@@ -128,6 +135,11 @@ export function buildGreenPrDeps(opts: GreenPrWiringOpts, latches: GuardLatchSto
       mergeTimeoutMs: opts.mergeTimeoutMs,
       mergeKillGraceMs: opts.mergeKillGraceMs,
       expectedContractVersion: 2,
+      // mergerunner-auto-arm-handoff M2: the runner selects --auto vs --admin and
+      // the auto-path deadline from these (config → GreenPrAutoMergerConfig →
+      // buildGreenPrDeps → MergeRunnerConfig). Defaults keep the arm path.
+      mergeStrategy: opts.mergeStrategy ?? 'auto',
+      armTimeoutMs: opts.armTimeoutMs ?? 60_000,
     },
     {
       confirmMerged: async (pr, repo) => {
@@ -176,7 +188,10 @@ export function buildGreenPrDeps(opts: GreenPrWiringOpts, latches: GuardLatchSto
     listOpenPrs: async () => {
       const r = await exec([
         'pr', 'list', '--author', '@me', '--state', 'open', '--base', 'main',
-        '--limit', '100', '--json', 'number,title,labels,isDraft,headRefName,headRefOid,mergeable,statusCheckRollup',
+        // Widened (mergerunner-auto-arm-handoff Blocker 4 — the cheap-pass): one
+        // extra field on the single oldest-first list call already made each tick
+        // lets gather() skip an already-armed PR FREE, regardless of local state.
+        '--limit', '100', '--json', 'number,title,labels,isDraft,headRefName,headRefOid,mergeable,statusCheckRollup,autoMergeRequest',
         '--search', 'sort:created-asc',
       ]);
       if (r.code !== 0) throw new Error(`gh pr list failed: ${r.stderr.slice(0, 200)}`);
@@ -191,18 +206,44 @@ export function buildGreenPrDeps(opts: GreenPrWiringOpts, latches: GuardLatchSto
       return { touches: diffTouchesProtected(files), unverifiable: false };
     },
     refetchPr: async (pr: number) => {
-      const r = await exec(['pr', 'view', String(pr), '--repo', opts.repo, '--json', 'title,labels,isDraft,headRefOid,state']);
+      // Widened (mergerunner-auto-arm-handoff Blocker 4): also returns
+      // mergeCommitOid (informational for the merged-at-unexpected-head audit)
+      // and autoMergeRequest (present ⇔ armed; expectedHeadOid = the PR's final
+      // head GitHub will merge — the head-pin comparison operand). Used by the
+      // act-time pre-arm gate AND the armed-episode reconciliation read.
+      const r = await exec(['pr', 'view', String(pr), '--repo', opts.repo, '--json', 'title,labels,isDraft,headRefOid,state,mergeCommitOid,autoMergeRequest']);
       if (r.code !== 0) return null;
       try {
         const j = JSON.parse(r.stdout);
+        const amr = j.autoMergeRequest && typeof j.autoMergeRequest === 'object'
+          ? { enabledAt: j.autoMergeRequest.enabledAt ?? null, expectedHeadOid: j.autoMergeRequest.expectedHeadOid ?? null }
+          : null;
         return {
           title: String(j.title ?? ''),
           labels: Array.isArray(j.labels) ? j.labels.map((l: { name?: string }) => l.name ?? '') : [],
           isDraft: !!j.isDraft,
           headRefOid: String(j.headRefOid ?? ''),
           state: String(j.state ?? 'UNKNOWN'),
+          mergeCommitOid: j.mergeCommitOid != null ? String(j.mergeCommitOid) : null,
+          autoMergeRequest: amr,
         };
       } catch { /* @silent-fallback-ok: green-pr-automerge fail-safe — skip/refuse, never over-merge; safe-merge is the act-time authority */ return null; }
+    },
+    disarmArmedEpisodes: async (pr: number) => {
+      // gh pr merge <pr> --disable-auto. Confirmed-disabled ⇔ the command
+      // succeeds AND an independent re-read shows autoMergeRequest absent.
+      const r = await exec(['pr', 'merge', String(pr), '--repo', opts.repo, '--disable-auto']);
+      if (r.code !== 0) {
+        // An "already disabled / not armed" stderr is a confirmed not-armed state.
+        if (/not.*auto.?merge|auto.?merge.*not|no auto-?merge/i.test(r.stderr)) return true;
+        return false;
+      }
+      try {
+        const v = await exec(['pr', 'view', String(pr), '--repo', opts.repo, '--json', 'autoMergeRequest']);
+        if (v.code !== 0) return false;
+        const j = JSON.parse(v.stdout);
+        return !j.autoMergeRequest;
+      } catch { /* @silent-fallback-ok: green-pr-automerge fail-safe — could not confirm disable → honest FAILED, never claim success */ return false; }
     },
     resolveGhLogin: async () => {
       const r = await exec(['api', 'user', '--jq', '.login']);
@@ -255,6 +296,9 @@ function mapPr(row: Record<string, unknown>): PrSummary {
     headRefOid: String(row.headRefOid ?? ''),
     mergeable: String(row.mergeable ?? 'UNKNOWN'),
     statusRollup: deriveRollup(rollup),
+    // mergerunner-auto-arm-handoff Blocker 4: GitHub-side armed state, derived
+    // from the autoMergeRequest field of the widened pr-list projection.
+    autoMergeArmed: !!row.autoMergeRequest,
   };
 }
 

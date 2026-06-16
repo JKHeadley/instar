@@ -46,10 +46,27 @@ export interface MergeAttempt {
 
 /** The classified result of a merge attempt (from the MergeRunner). */
 export interface MergeRunResult {
-  /** safe-merge's classified result slug, e.g. merged / refused:* / error:* / already-merged / closed. */
+  /**
+   * safe-merge's classified result slug, e.g. merged / armed / refused:* /
+   * error:* / already-merged / closed. `armed` (mergerunner-auto-arm-handoff)
+   * is terminal-success-PENDING: GitHub native auto-merge is armed and now
+   * owns the merge — confirmed later by the reconciliation tick, NOT here.
+   */
   outcome: string;
-  /** True only when an INDEPENDENT gh pr view confirmed MERGED (B10). */
+  /**
+   * True only when an INDEPENDENT gh pr view confirmed MERGED (B10). ALWAYS
+   * false for `armed` BY DESIGN — the merge has not landed at arm time, so an
+   * independent confirm at arm time is meaningless. `confirmedMerged:false` is
+   * CORRECT and EXPECTED for `armed`, NOT a B10 violation (the B10 rewrite line
+   * in act() is gated on outcome === 'merged' and MUST NOT touch `armed`).
+   */
   confirmedMerged: boolean;
+  /**
+   * For an `armed` outcome: the head sha GitHub auto-merge was armed against
+   * (the `--match-head-commit` we passed). Carried so the episode stamps
+   * `armedHead` and reconciliation can compare it to the PR's final head.
+   */
+  armedHead?: string;
   /** Set when the watcher hard-killed the child at the deadline. */
   deadlineKilled?: boolean;
 }
@@ -81,8 +98,30 @@ export interface GreenPrAutoMergerDeps {
   listOpenPrs(): Promise<PrSummary[]>;
   /** Did this PR's diff touch protected paths? Enumerated to exhaustion. */
   protectedPaths(pr: PrSummary): Promise<ProtectedPathsVerdict>;
-  /** Re-fetch hold-relevant + state fields immediately before acting. null → vanished. */
-  refetchPr(pr: number): Promise<Pick<PrSummary, 'title' | 'labels' | 'isDraft' | 'headRefOid'> & { state: string } | null>;
+  /**
+   * Re-fetch hold-relevant + state fields immediately before acting AND for the
+   * armed-episode reconciliation read. null → vanished. Widened
+   * (mergerunner-auto-arm-handoff Blocker 4): also returns `mergeCommitOid` (the
+   * squashed base commit on a MERGED read — informational for the audit line,
+   * NOT the head-pin comparison operand) and `autoMergeRequest` (present ⇔
+   * GitHub auto-merge armed; `expectedHeadOid` is the PR's FINAL head GitHub
+   * will merge — the head-pin comparison operand when present).
+   */
+  refetchPr(pr: number): Promise<
+    | (Pick<PrSummary, 'title' | 'labels' | 'isDraft' | 'headRefOid'> & {
+        state: string;
+        mergeCommitOid?: string | null;
+        autoMergeRequest?: { enabledAt?: string | null; expectedHeadOid?: string | null } | null;
+      })
+    | null
+  >;
+  /**
+   * Disarm GitHub native auto-merge on a PR (`gh pr merge <pr> --disable-auto`).
+   * Returns a per-PR CONFIRMED-disabled boolean. The operator-authorized reach
+   * of the documented kill switch (rollback / pause / pool-disarm / per-PR HOLD
+   * on an armed episode — mergerunner-auto-arm-handoff Blocker 3). Idempotent.
+   */
+  disarmArmedEpisodes(pr: number): Promise<boolean>;
   /** gh api user login (async, never blocks boot). null → unresolved. */
   resolveGhLogin(): Promise<string | null>;
   /**
@@ -150,6 +189,21 @@ export interface GreenPrAutoMergerConfig {
   agentNamespace: string;
   repo: string;
   backoffBaseMs?: number;
+  /**
+   * mergerunner-auto-arm-handoff. `auto` (default) arms GitHub native
+   * auto-merge and confirms on a later reconciliation tick; `admin` is the
+   * legacy synchronous poll+merge. The rollback lever + the escape hatch for a
+   * repo without native auto-merge.
+   */
+  mergeStrategy?: 'auto' | 'admin';
+  /** ms an armed episode may stay OPEN before transitioning to armed-overdue (24h). */
+  armedConfirmCeilingMs?: number;
+  /** deduped re-raise cadence for an armed-overdue episode (24h). */
+  armedOverdueReraiseMs?: number;
+  /** the `--auto` spawn deadline (60s) — threaded into MergeRunnerConfig. */
+  armTimeoutMs?: number;
+  /** K-consecutive-unconfirmed-arms-on-same-head threshold before the Blocker-D line. */
+  unconfirmedArmCeiling?: number;
 }
 
 type ResolvedConfig = Required<Omit<GreenPrAutoMergerConfig, 'expectedGhLogin'>> & { expectedGhLogin: string };
@@ -171,6 +225,11 @@ const DEFAULTS = {
   holdReleaseTicks: 2,
   staleHoldDays: 7,
   backoffBaseMs: 30_000,
+  mergeStrategy: 'auto' as 'auto' | 'admin',
+  armedConfirmCeilingMs: 86_400_000,
+  armedOverdueReraiseMs: 86_400_000,
+  armTimeoutMs: 60_000,
+  unconfirmedArmCeiling: 3,
 };
 
 export function freshState(): GreenPrState {
@@ -204,10 +263,15 @@ export class GreenPrAutoMerger extends EventEmitter {
       repo: cfg.repo,
       expectedGhLogin: cfg.expectedGhLogin ?? '',
     } as ResolvedConfig;
+    // B24 invariant scope (mergerunner-auto-arm-handoff §armTimeoutMs): on the
+    // auto path the busy-skip budget is checked against the SHORT armTimeoutMs
+    // (a hung arm trips in minutes, not ~26 min); the admin path keeps the
+    // 25-min mergeTimeoutMs invariant verbatim.
+    const invTimeoutMs = this.cfg.mergeStrategy === 'admin' ? this.cfg.mergeTimeoutMs : this.cfg.armTimeoutMs;
     const inv = validateTimeoutInvariant(
       this.cfg.busySkipBreakerThreshold,
       this.cfg.tickIntervalMs,
-      this.cfg.mergeTimeoutMs,
+      invTimeoutMs,
       this.cfg.mergeKillGraceMs,
     );
     this.invariantOk = inv.ok;
@@ -245,6 +309,27 @@ export class GreenPrAutoMerger extends EventEmitter {
       const applied = await this.deps.applyHoldMarker(pr, reason);
       if (!applied) return { ok: false, status: 502, detail: 'gh failed to apply the hold marker', pr };
       this.deps.audit({ kind: 'green-pr-automerge', event: 'hold-applied', pr });
+
+      // The HOLD-label/title path does NOT stop GitHub native auto-merge (GitHub
+      // gates on checks/mergeability, not title/labels — mergerunner-auto-arm-
+      // handoff Blocker 3). If this PR is armed, ALSO --disable-auto it; the
+      // marker only blocks a LATER re-arm. Honest non-2xx on a disable failure.
+      const state = this.deps.loadState();
+      const ep = state.episodes[pr];
+      if (ep && ep.armedAt != null) {
+        let disabled = false;
+        try { disabled = await this.deps.disarmArmedEpisodes(pr); }
+        catch { /* @silent-fallback-ok: green-pr-automerge fail-safe — a disable error is honest; never claim the hold stopped the merge */ disabled = false; }
+        if (disabled) {
+          delete ep.armedAt; delete ep.armedHead; delete ep.overdue; delete ep.overdueSurfacedAt;
+          this.deps.audit({ kind: 'green-pr-automerge', event: 'disarmed', pr, reason: 'hold' });
+          this.deps.saveState(state);
+        } else {
+          this.deps.audit({ kind: 'green-pr-automerge', event: 'disarm-failed', pr, reason: 'hold' });
+          this.deps.saveState(state);
+          return { ok: false, status: 502, detail: 'hold marker applied but could not disable the in-flight auto-merge — PR may still merge; disable it on GitHub directly', pr };
+        }
+      }
       return { ok: true, pr };
     } catch (e) { /* @silent-fallback-ok: green-pr-automerge fail-safe — skip/refuse, never over-merge; safe-merge is the act-time authority */
       return { ok: false, status: 502, detail: String((e as Error)?.message).slice(0, 200), pr };
@@ -285,6 +370,14 @@ export class GreenPrAutoMerger extends EventEmitter {
       this.deps.saveState(state);
       return { acted: false, reason: 'breaker-open' };
     }
+
+    // Armed-episode reconciliation (mergerunner-auto-arm-handoff): the top-of-
+    // acting-tick step. READ-ONLY accounting — confirms an eventual GitHub merge
+    // one tick later (the B10 truth, just moved off the synchronous arm). Below
+    // the disabled: early-return (so it never runs under a live disarm latch —
+    // which is exactly why the disarm reach lives in the route, not here), above
+    // gather(). Fail-open on any read error; never feeds the breaker.
+    await this.reconcileArmed(state);
 
     // Warm-up (R10): the first tick of a new lease tenure is OBSERVE-ONLY.
     const epoch = safeNum(() => this.deps.leaseEpoch());
@@ -349,6 +442,19 @@ export class GreenPrAutoMerger extends EventEmitter {
     const nowMs = this.deps.now();
 
     for (const pr of prs) {
+      // Skip an already-armed PR (mergerunner-auto-arm-handoff Blocker 2 — re-arm
+      // thrash). An armed PR is GitHub's and never re-enters the act path; it
+      // re-enters ONLY after reconciliation clears armedAt. The GitHub-side
+      // autoMergeArmed flag (cheap-pass, from the widened PrSummary) is the belt
+      // that catches a lease move where the local episode is stale/absent
+      // (Blocker 4). It is still surfaced in the Layer-2 snapshot so status sees it.
+      const localArmed = state.episodes[pr.number]?.armedAt != null;
+      const githubArmed = pr.autoMergeArmed === true;
+      if (localArmed || githubArmed) {
+        this.deps.audit({ kind: 'green-pr-automerge', event: 'skipped:already-armed', pr: pr.number, source: localArmed ? 'local-episode' : 'github' });
+        snapshotEntries.push({ pr: pr.number, headRefName: pr.headRefName, headRefOid: pr.headRefOid, kind: 'mergeable' });
+        continue;
+      }
       const verdict = classifyCandidate(pr, this.cfg.agentNamespace);
       // Hold-release debounce (R3): a PR that WAS held resumes only after the
       // marker is absent for holdReleaseTicks AND tickIntervalMs elapsed.
@@ -427,6 +533,19 @@ export class GreenPrAutoMerger extends EventEmitter {
       this.deps.audit({ kind: 'green-pr-automerge', event: 'skipped:held-on-refetch', pr: target.number });
       return false;
     }
+    // Authoritative pre-arm gate (mergerunner-auto-arm-handoff Blocker 4 — defense
+    // in depth): if the cheap-pass autoMergeArmed was stale-false but the live
+    // refetchPr shows auto-merge already armed, REFUSE to re-arm right before
+    // spawning. Synthesize the local episode so reconciliation tracks the merge.
+    if (live.autoMergeRequest) {
+      this.deps.audit({ kind: 'green-pr-automerge', event: 'skipped:already-armed-on-refetch', pr: target.number });
+      const ep = state.episodes[target.number] ?? { pr: target.number, headRefOid: target.headRefOid, attempts: 0, rearmEpisodes: 0, state: 'active' as const };
+      ep.armedAt = ep.armedAt ?? this.deps.now();
+      ep.armedHead = ep.armedHead ?? (live.autoMergeRequest.expectedHeadOid ?? live.headRefOid);
+      ep.lastOutcome = 'armed';
+      state.episodes[target.number] = ep;
+      return false;
+    }
     if (live.headRefOid !== target.headRefOid) {
       this.deps.audit({ kind: 'green-pr-automerge', event: 'skipped:head-moved', pr: target.number });
       return false;
@@ -448,15 +567,41 @@ export class GreenPrAutoMerger extends EventEmitter {
       state.breaker = feedBreaker(state.breaker, 'deadline-kill', this.deps.now(), this.breakerCfg());
     }
 
-    // B10: classify "merged" ONLY on independent confirmation.
+    // B10: classify "merged" ONLY on independent confirmation. This rewrite is
+    // gated on outcome === 'merged' and MUST NOT touch 'armed' — an `armed`
+    // result carries confirmedMerged:false BY DESIGN (the merge has not landed
+    // at arm time; the independent confirm happens ONE TICK LATER in
+    // reconcileArmed). Generalizing this to a merged-MIRROR form
+    // ((merged || armed) && !confirmedMerged → error) would rewrite every
+    // legitimate armed into an error and give up on a PR GitHub genuinely armed
+    // — the exact inverse of intent. Do NOT do that (mergerunner-auto-arm-
+    // handoff Blocker B).
     const outcome = result.outcome === 'merged' && !result.confirmedMerged ? 'error:merge-unconfirmed' : result.outcome;
-    this.recordOutcome(state, target, outcome);
-    return outcome === 'merged';
+    this.recordOutcome(state, target, outcome, result.armedHead);
+    // `act()` returns "did the watcher perform a real, intended terminal action"
+    // — NOT "did the PR merge." Both `merged` (immediate) and `armed`
+    // (terminal-success-pending; GitHub now owns the merge, the slot is freed,
+    // the episode is stamped armedAt) are real terminal actions → acted:true.
+    return outcome === 'merged' || outcome === 'armed';
   }
 
-  private recordOutcome(state: GreenPrState, target: PrSummary, outcome: string): void {
+  private recordOutcome(state: GreenPrState, target: PrSummary, outcome: string, armedHead?: string): void {
+    // auto-merge-unavailable (repo setting OFF) — terminal-non-ladder. A
+    // PERMANENT condition; do NOT burn maxAttempts over three pointless ticks
+    // and do NOT silently flip to --admin (signal, not authority). Record the
+    // refusal + raise ONE attention line; the operator chooses.
+    if (outcome === 'refused:auto-arm-unavailable') {
+      const ep: Episode = state.episodes[target.number] ?? { pr: target.number, headRefOid: target.headRefOid, attempts: 0, rearmEpisodes: 0, state: 'active' };
+      ep.lastOutcome = outcome;
+      ep.lastAttemptAt = this.deps.now();
+      state.episodes[target.number] = ep;
+      this.deps.audit({ kind: 'green-pr-automerge', event: 'auto-merge-unavailable', pr: target.number });
+      void this.refreshAggregate(state, [`PR #${target.number} is green but I could not arm auto-merge — "Allow auto-merge" is disabled on the repo. Enable it, or set mergeStrategy:'admin'.`]);
+      return;
+    }
+
     const ep: Episode = state.episodes[target.number] ?? { pr: target.number, headRefOid: target.headRefOid, attempts: 0, rearmEpisodes: 0, state: 'active' };
-    const folded = applyOutcome(ep, outcome, this.deps.now(), this.ladderCfg());
+    const folded = applyOutcome(ep, outcome, this.deps.now(), this.ladderCfg(), { armedHead: armedHead ?? target.headRefOid });
     state.episodes[target.number] = folded.ep;
     if (folded.feedsBreaker) {
       // Per-PR ladder failures do NOT feed the global breaker directly (that is
@@ -466,11 +611,171 @@ export class GreenPrAutoMerger extends EventEmitter {
     if (outcome === 'merged') {
       // Reap the episode on success.
       delete state.episodes[target.number];
+    } else if (outcome === 'armed') {
+      // GitHub now owns the merge — the episode stays armed; reconciliation
+      // confirms the eventual merge. No attention, no reap.
+    } else if (outcome === 'error:auto-arm-unconfirmed' || outcome === 'error:auto-confirm-unreadable') {
+      // Non-ladder retry (Blocker D). The head-keyed unconfirmedArmAttempts
+      // counter advanced in applyOutcome; surface ONE deduped attention line at
+      // the ceiling (signal, not authority — never blocks the next attempt).
+      const ctr = folded.ep.unconfirmedArmAttempts;
+      if (ctr && ctr.count >= this.cfg.unconfirmedArmCeiling) {
+        void this.refreshAggregate(state, [`Armed PR #${target.number} but cannot confirm it stuck (${ctr.count} attempts) — check GitHub auto-merge state for #${target.number}`]);
+      }
     } else if (folded.ep.state === 'gave-up' && outcome !== 'merged-by-other' && outcome !== 'closed-by-other') {
       void this.refreshAggregate(state, [`PR #${target.number} could not be auto-merged after ${folded.ep.attempts} attempts (${outcome}) — needs a look`]);
     } else if (outcome === 'closed-by-other') {
       void this.refreshAggregate(state, [`PR #${target.number} was closed without merging — discarded work`]);
     }
+  }
+
+  // ---- armed-episode reconciliation (mergerunner-auto-arm-handoff) ---------
+
+  /**
+   * The top-of-acting-tick reconciliation: confirm the eventual GitHub merge of
+   * each armed episode one tick after arming (the B10 truth, moved off the
+   * synchronous arm). READ-ONLY — never calls `gh pr merge`; the disarm reach is
+   * the SEPARATE in-route call (Blocker 3a). Resolves each `armedAt` episode:
+   *   MERGED → reap (head-pin verified) · CLOSED → reap (closed-by-other)
+   *   OPEN+armed → steady state (leave) · OPEN+disarmed/head-moved → clear + re-evaluate
+   *   >ceiling → armed-overdue (keep reconciling + deduped re-raise) · read-fail → fail-open
+   */
+  private async reconcileArmed(state: GreenPrState): Promise<void> {
+    const armed = Object.values(state.episodes).filter((e) => e.armedAt != null);
+    for (const ep of armed) {
+      let live: Awaited<ReturnType<GreenPrAutoMergerDeps['refetchPr']>>;
+      try {
+        live = await this.deps.refetchPr(ep.pr);
+      } catch { /* @silent-fallback-ok: green-pr-automerge fail-safe — fail-open on a reconciliation read error; never give up on a real in-flight merge */
+        live = undefined as never;
+      }
+      // UNKNOWN / read-failure → fail-open: leave armed, NO ladder, NO breaker,
+      // retry next tick. We never give up on a real in-flight merge.
+      if (!live || live.state === 'UNKNOWN') {
+        this.deps.audit({ kind: 'green-pr-automerge', event: 'armed-reconcile-read-failed', pr: ep.pr });
+        this.maybeMarkOverdue(state, ep);
+        continue;
+      }
+
+      if (live.state === 'MERGED') {
+        // The PR's FINAL HEAD (autoMergeRequest.expectedHeadOid else headRefOid)
+        // is the comparison operand — NEVER mergeCommitOid (the squash base
+        // commit never equals the head; comparing it would false-fire on EVERY
+        // clean squash merge).
+        const finalHead = live.autoMergeRequest?.expectedHeadOid ?? live.headRefOid;
+        if (finalHead && ep.armedHead && finalHead === ep.armedHead) {
+          this.deps.audit({ kind: 'green-pr-automerge', event: 'merged', pr: ep.pr, head: finalHead, viaArmed: true });
+        } else {
+          // Merged at a head we did NOT arm — post-hoc detection of the residual
+          // race. Audit + ONE attention line, but STILL reap (the merge happened).
+          this.deps.audit({ kind: 'green-pr-automerge', event: 'merged-at-unexpected-head', pr: ep.pr, armedHead: ep.armedHead ?? null, finalHead: finalHead ?? null, mergeCommitOid: live.mergeCommitOid ?? null });
+          void this.refreshAggregate(state, [`PR #${ep.pr} auto-merged at a head I did not arm — review the merged commit`]);
+        }
+        delete state.episodes[ep.pr];
+        continue;
+      }
+
+      if (live.state === 'CLOSED') {
+        this.deps.audit({ kind: 'green-pr-automerge', event: 'closed-by-other', pr: ep.pr, viaArmed: true });
+        delete state.episodes[ep.pr];
+        void this.refreshAggregate(state, [`PR #${ep.pr} was closed without merging — discarded work`]);
+        continue;
+      }
+
+      // Still OPEN.
+      const stillArmed = !!live.autoMergeRequest;
+      const headMoved = ep.armedHead != null && live.headRefOid !== ep.armedHead;
+      if (!stillArmed || headMoved) {
+        // A force-push disarmed it, a maintainer turned it off, or the head moved
+        // past armedHead → clear armedAt/armedHead and let the candidate path
+        // re-evaluate and (if still eligible) re-arm. A new head is a genuine new
+        // attempt, bounded by the existing maybeRearm ladder.
+        this.deps.audit({ kind: 'green-pr-automerge', event: 'armed-cleared', pr: ep.pr, reason: !stillArmed ? 'disarmed' : 'head-moved' });
+        const fresh = state.episodes[ep.pr];
+        if (fresh) {
+          delete fresh.armedAt;
+          delete fresh.armedHead;
+          delete fresh.overdue;
+          delete fresh.overdueSurfacedAt;
+        }
+        continue;
+      }
+
+      // Steady state while CI runs — no ladder advance, no breaker feed. Leave
+      // the armed episode; surface armed-overdue past the ceiling (Close the Loop).
+      this.maybeMarkOverdue(state, ep);
+    }
+  }
+
+  /**
+   * Transition an armed episode to `armed-overdue` past armedConfirmCeilingMs and
+   * re-raise a byte-stable deduped attention line on the armedOverdueReraiseMs
+   * cadence (Blocker 5). Never clears armedAt — the loop stays open.
+   */
+  private maybeMarkOverdue(state: GreenPrState, ep: Episode): void {
+    if (ep.armedAt == null) return;
+    const now = this.deps.now();
+    const overdue = now - ep.armedAt >= this.cfg.armedConfirmCeilingMs;
+    if (!overdue) return;
+    const live = state.episodes[ep.pr];
+    if (!live) return;
+    const dueToReraise = live.overdueSurfacedAt == null || (now - live.overdueSurfacedAt) >= this.cfg.armedOverdueReraiseMs;
+    if (!dueToReraise) return;
+    live.overdue = true;
+    live.overdueSurfacedAt = now;
+    this.deps.audit({ kind: 'green-pr-automerge', event: 'armed-overdue', pr: ep.pr });
+    // Byte-stable text so P17 attention-coalescing dedupes it instead of flooding.
+    void this.refreshAggregate(state, [`PR #${ep.pr} has had auto-merge armed >24h and still hasn't merged — CI may be stuck or red; needs a look`]);
+  }
+
+  // ---- disarm reach — operator kill-switch (Blocker 3) --------------------
+
+  /**
+   * Enumerate every `armedAt` episode and `gh pr merge <pr> --disable-auto` it.
+   * Called IN-LINE from the rollback / pool-disarm route handlers (NOT the
+   * latch-gated tick — the latch the operator just set is the very thing that
+   * stops the tick reaching this code). LEASE-INDEPENDENT (like applyHold); the
+   * operator's kill switch must reach the armed merges from wherever the route
+   * is served, and `--disable-auto` is idempotent/safe from any holder.
+   *
+   * Honest failure (Blocker 3b): on a CONFIRMED disable, clear armedAt/armedHead
+   * and add to the disarmed-confirmed set; on a FAILED disable, LEAVE armedAt set
+   * (reconciliation keeps watching it) and add to a DISTINCT disarm-FAILED set.
+   * The two outcomes are NEVER collapsed into one attention line.
+   */
+  async disarmAllArmed(reason: string): Promise<{ disarmed: number[]; failed: number[] }> {
+    const state = this.deps.loadState();
+    const armed = Object.values(state.episodes).filter((e) => e.armedAt != null).map((e) => e.pr);
+    const disarmed: number[] = [];
+    const failed: number[] = [];
+    for (const pr of armed) {
+      let ok = false;
+      try {
+        ok = await this.deps.disarmArmedEpisodes(pr);
+      } catch { /* @silent-fallback-ok: green-pr-automerge fail-safe — a disable error is an honest FAILED disarm, never a silent strand */
+        ok = false;
+      }
+      const ep = state.episodes[pr];
+      if (ok) {
+        if (ep) { delete ep.armedAt; delete ep.armedHead; delete ep.overdue; delete ep.overdueSurfacedAt; }
+        disarmed.push(pr);
+        this.deps.audit({ kind: 'green-pr-automerge', event: 'disarmed', pr, reason });
+      } else {
+        // Leave armedAt set so reconciliation keeps watching it.
+        failed.push(pr);
+        this.deps.audit({ kind: 'green-pr-automerge', event: 'disarm-failed', pr, reason });
+      }
+    }
+    const lines: string[] = [];
+    if (disarmed.length > 0) {
+      lines.push(`Disarmed auto-merge on PR ${disarmed.map((p) => `#${p}`).join(', ')} per ${reason} — they will NOT merge until re-armed`);
+    }
+    for (const pr of failed) {
+      lines.push(`Could NOT disable auto-merge on PR #${pr} — disable it on GitHub directly; it may still merge`);
+    }
+    if (lines.length > 0) await this.refreshAggregate(state, lines);
+    this.deps.saveState(state);
+    return { disarmed, failed };
   }
 
   // ---- identity (R4) ------------------------------------------------------

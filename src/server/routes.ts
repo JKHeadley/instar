@@ -8054,12 +8054,19 @@ export function createRoutes(ctx: RouteContext): Router {
     }
     const state = ctx.greenPrAutoMerger.snapshot();
     const latch = ctx.guardLatchStore?.snapshot() ?? null;
+    // mergerunner-auto-arm-handoff: armed/armed-overdue is first-class observable
+    // (Observable Intelligence — an in-flight autonomous merge must never be
+    // invisible). NON-OPTIONAL — a NUMBER (0) / EMPTY ARRAY when nothing is armed.
+    const armedEpisodes = Object.values(state.episodes ?? {}).filter((e) => e.armedAt != null);
+    const armed = armedEpisodes.map((e) => ({ pr: e.pr, armedAt: e.armedAt ?? null, armedHead: e.armedHead ?? null, overdue: e.overdue === true }));
     res.json({
       lastTickAt: state.lastTickAt ?? null,
       lastSuccessfulListAt: state.lastSuccessfulListAt ?? null,
       consecutiveWarmupOnlyTenures: state.consecutiveWarmupOnlyTenures,
       breaker: state.breaker,
       episodes: Object.values(state.episodes ?? {}),
+      armedCount: armed.length,
+      armed,
       snapshot: state.snapshot,
       gate: latch,
       invariantOk: ctx.greenPrAutoMerger.invariantOk,
@@ -8077,14 +8084,23 @@ export function createRoutes(ctx: RouteContext): Router {
 
   // Rollback is Bearer-gated and LOUD: anyone may STOP. The latch is absorbing
   // and pool-replicated, so a STOP survives a lease move (R9).
-  router.post('/green-pr-automerge/rollback', (req, res) => {
+  router.post('/green-pr-automerge/rollback', async (req, res) => {
     if (!ctx.guardLatchStore) {
       res.status(503).json({ error: 'green-pr auto-merge not configured' });
       return;
     }
     const reason = typeof req.body?.reason === 'string' ? req.body.reason : 'operator-rollback';
     const latchId = ctx.guardLatchStore.set('rollback', reason);
-    res.json({ ok: true, rolledBack: true, latchId });
+    // The latch set (stop NEW arming) and the in-line disarm (un-arm what is
+    // already armed) are the two halves of one kill switch (mergerunner-auto-arm-
+    // handoff Blocker 3a). The disarm must be IN-LINE here, not in the tick — the
+    // latch the operator just set is the very thing that stops the tick reaching
+    // the disarm code. Null-safe no-op when the watcher is absent (the
+    // GuardLatchStore can exist when greenPrAutoMerger is null).
+    let disarm: { disarmed: number[]; failed: number[] } | undefined;
+    try { disarm = await ctx.greenPrAutoMerger?.disarmAllArmed(reason); }
+    catch { /* disarm failure is surfaced via the watcher's own attention line; the latch still landed */ }
+    res.json({ ok: true, rolledBack: true, latchId, disarmed: disarm?.disarmed ?? [], disarmFailed: disarm?.failed ?? [] });
   });
 
   // Re-arming merge authority is the operator's: dashboard-PIN-gated (the Mandates
@@ -8118,14 +8134,19 @@ export function createRoutes(ctx: RouteContext): Router {
   });
 
   // Pool-disarm marker (R7): PIN-gated, superseding entry → grades back to healthy.
-  router.post('/green-pr-automerge/pool-disarm', (req, res) => {
+  router.post('/green-pr-automerge/pool-disarm', async (req, res) => {
     if (!ctx.guardLatchStore) {
       res.status(503).json({ error: 'green-pr auto-merge not configured' });
       return;
     }
     if (!checkMandatePin(req, res)) return;
     ctx.guardLatchStore.markPoolDisarmed();
-    res.json({ ok: true, poolDisarmed: true });
+    // Same kill-switch two-halves contract as rollback (Blocker 3a): also disarm
+    // every already-armed PR in-line. Null-safe no-op when the watcher is absent.
+    let disarm: { disarmed: number[]; failed: number[] } | undefined;
+    try { disarm = await ctx.greenPrAutoMerger?.disarmAllArmed('pool-disarm'); }
+    catch { /* disarm failure is surfaced via the watcher's own attention line; the pool-disarm marker still landed */ }
+    res.json({ ok: true, poolDisarmed: true, disarmed: disarm?.disarmed ?? [], disarmFailed: disarm?.failed ?? [] });
   });
 
   // ── Human-as-Detector heat map ───────────────────────────────────────

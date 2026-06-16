@@ -144,6 +144,62 @@ describe('applyOutcome — failure ladder', () => {
   });
 });
 
+describe('applyOutcome — armed branch (mergerunner-auto-arm-handoff)', () => {
+  const cfg = { maxAttempts: 3, maxRearmEpisodes: 3, backoffBaseMs: 1000 };
+  const ep0: Episode = { pr: 1, headRefOid: 'h', attempts: 2, rearmEpisodes: 0, state: 'active', nextEligibleAt: 9999 };
+
+  it('armed is terminal:false, feedsBreaker:false with the EXACT field-state pinned', () => {
+    const r = applyOutcome(ep0, 'armed', 5000, cfg, { armedHead: 'armedSha' });
+    expect(r.terminal).toBe(false);
+    expect(r.feedsBreaker).toBe(false);
+    expect(r.ep.state).toBe('active');          // NOT gave-up
+    expect(r.ep.attempts).toBe(2);              // UNCHANGED (not a ladder attempt)
+    expect(r.ep.nextEligibleAt).toBeUndefined(); // CLEARED (no backoff)
+    expect(r.ep.armedAt).toBe(5000);
+    expect(r.ep.armedHead).toBe('armedSha');
+    expect(r.ep.lastOutcome).toBe('armed');
+    expect(r.ep.lastAttemptAt).toBe(5000);
+  });
+
+  it('armed defaults armedHead to the episode head when not supplied', () => {
+    const r = applyOutcome(ep0, 'armed', 5000, cfg);
+    expect(r.ep.armedHead).toBe('h');
+  });
+
+  it('a clean arm clears any prior confirm-gap counter', () => {
+    const epWithGap: Episode = { ...ep0, unconfirmedArmAttempts: { head: 'h', count: 2 } };
+    const r = applyOutcome(epWithGap, 'armed', 5000, cfg, { armedHead: 'h' });
+    expect(r.ep.unconfirmedArmAttempts).toBeUndefined();
+  });
+});
+
+describe('applyOutcome — non-ladder confirm-gap classes (Blocker D)', () => {
+  const cfg = { maxAttempts: 3, maxRearmEpisodes: 3, backoffBaseMs: 1000 };
+  const ep0: Episode = { pr: 1, headRefOid: 'h', attempts: 2, rearmEpisodes: 0, state: 'active' };
+
+  for (const slug of ['error:auto-arm-unconfirmed', 'error:auto-confirm-unreadable']) {
+    it(`${slug} does NOT advance the ladder or feed the breaker`, () => {
+      const r = applyOutcome(ep0, slug, 5000, cfg, { armedHead: 'h' });
+      expect(r.terminal).toBe(false);
+      expect(r.feedsBreaker).toBe(false);
+      expect(r.ep.attempts).toBe(2); // UNCHANGED
+      expect(r.ep.state).toBe('active');
+      expect(r.ep.lastOutcome).toBe(slug);
+      expect(r.ep.unconfirmedArmAttempts).toEqual({ head: 'h', count: 1 });
+    });
+  }
+
+  it('advances the head-keyed counter on the SAME head and resets on a head change', () => {
+    let r = applyOutcome(ep0, 'error:auto-arm-unconfirmed', 1, cfg, { armedHead: 'h1' });
+    expect(r.ep.unconfirmedArmAttempts).toEqual({ head: 'h1', count: 1 });
+    r = applyOutcome(r.ep, 'error:auto-arm-unconfirmed', 2, cfg, { armedHead: 'h1' });
+    expect(r.ep.unconfirmedArmAttempts).toEqual({ head: 'h1', count: 2 });
+    // A genuine new push (head change) resets the counter to 1.
+    r = applyOutcome(r.ep, 'error:auto-arm-unconfirmed', 3, cfg, { armedHead: 'h2' });
+    expect(r.ep.unconfirmedArmAttempts).toEqual({ head: 'h2', count: 1 });
+  });
+});
+
 describe('maybeRearm', () => {
   const cfg = { maxAttempts: 3, maxRearmEpisodes: 2, backoffBaseMs: 1000 };
   it('re-arms a gave-up episode on a new head sha', () => {

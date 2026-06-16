@@ -144,7 +144,7 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
   {
     key: 'greenPrAutoMerge',
     prefixes: ['/green-pr-automerge'],
-    description: 'Green-PR auto-merge watcher (green-pr-automerge-enforcement) — merges a green, mergeable, non-held PR this agent authored, surviving session death (Phase 7 becomes machinery). Off fleet-wide (deliberate-fleet-default), armed per dev agent with expectedGhLogin, repo-gated. Pool-visible rollback kill-switch (Bearer); PIN-gated re-arm + pool-disarm; conversational-hold assist. Null on installs with no analyzable instar repo + safe-merge, or when disabled.',
+    description: 'Green-PR auto-merge watcher (green-pr-automerge-enforcement + mergerunner-auto-arm-handoff) — lands a green, mergeable, non-held PR this agent authored, surviving session death (Phase 7 becomes machinery). Default mergeStrategy:auto ARMS GitHub native auto-merge and hands the wait off to GitHub (confirmed on a later reconciliation tick); mergeStrategy:admin is the legacy synchronous poll+merge. Off fleet-wide (deliberate-fleet-default), armed per dev agent with expectedGhLogin, repo-gated. Pool-visible rollback kill-switch (Bearer) that ALSO --disable-autos in-flight armed merges; PIN-gated re-arm + pool-disarm; conversational-hold assist (a HOLD also disables an armed PR — a label alone does NOT). GET reports armedCount + armed[]. Null on installs with no analyzable instar repo + safe-merge, or when disabled.',
     build: ({ ctx }) => ({
       configured: !!ctx.greenPrAutoMerger,
       endpoints: [

@@ -19,6 +19,15 @@ export interface PrSummary {
   mergeable: string;
   /** Worst-case rollup of the head's checks: SUCCESS | PENDING | FAILURE | null. */
   statusRollup: string | null;
+  /**
+   * GitHub-side native-auto-merge state derived from the `autoMergeRequest`
+   * field of the `gh pr list` projection (true ⇔ the PR has auto-merge armed).
+   * Optional/forward-compatible — absent on a legacy projection that did not
+   * request the field. The CHEAP-PASS source of truth for "already armed,"
+   * surviving a lease move with no local episode (mergerunner-auto-arm-handoff
+   * Blocker 4: GitHub-side armed state is authoritative, not the local episode).
+   */
+  autoMergeArmed?: boolean;
 }
 
 export type HoldReason = 'draft' | 'hold-title' | 'hold-label' | null;
@@ -146,6 +155,30 @@ export interface Episode {
   lastAttemptAt?: number;
   nextEligibleAt?: number;
   lastOutcome?: string;
+  /**
+   * NEW (mergerunner-auto-arm-handoff). When set, GitHub native auto-merge was
+   * armed for this PR at `armedAt` (ms) against `armedHead` (the head sha we
+   * passed to `--match-head-commit`). An armed episode is GitHub's — it stays
+   * `state:'active'`, does NOT advance the ladder, and is reconciled at the top
+   * of each acting tick until it merges/closes/disarms. Absent ⇒ not armed.
+   */
+  armedAt?: number;
+  armedHead?: string;
+  /**
+   * Set true once the episode crosses `armedConfirmCeilingMs` (24h) still
+   * OPEN + armed — the `armed-overdue` state (Close the Loop, Blocker 5). It
+   * KEEPS reconciling; `armedAt` is never cleared by the ceiling alone.
+   * `overdueSurfacedAt` drives the deduped re-raise cadence.
+   */
+  overdue?: boolean;
+  overdueSurfacedAt?: number;
+  /**
+   * Head-keyed confirm-gap counter (Blocker D). Bounds the non-ladder retry of
+   * `error:auto-arm-unconfirmed` / `error:auto-confirm-unreadable` so a
+   * persistent confirm gap becomes VISIBLE rather than an invisible tick-loop.
+   * Reset to 1 whenever the head changes. Absent ⇒ never had a confirm gap.
+   */
+  unconfirmedArmAttempts?: { head: string; count: number };
 }
 
 export interface LadderConfig {
@@ -166,12 +199,45 @@ export function applyOutcome(
   outcome: string,
   nowMs: number,
   cfg: LadderConfig,
+  opts: { armedHead?: string } = {},
 ): { ep: Episode; terminal: boolean; feedsBreaker: boolean } {
   const next: Episode = { ...ep };
   if (outcome === 'merged') {
     next.state = 'gave-up'; // episode complete; reaped by the caller on confirm
     next.lastOutcome = 'merged';
     return { ep: next, terminal: true, feedsBreaker: false };
+  }
+  // ARMED (mergerunner-auto-arm-handoff): terminal-success-PENDING. GitHub now
+  // owns the merge — the episode stays ALIVE so a LATER reconciliation tick
+  // confirms the eventual merge. NOT a ladder attempt and NOT a breaker feed.
+  // Exact field-state pinned by the spec: state:'active', attempts UNCHANGED,
+  // nextEligibleAt CLEARED, armedAt/armedHead set, lastOutcome:'armed'.
+  if (outcome === 'armed') {
+    next.state = 'active';
+    next.lastOutcome = 'armed';
+    next.lastAttemptAt = nowMs;
+    next.armedAt = nowMs;
+    next.armedHead = opts.armedHead ?? ep.headRefOid;
+    next.nextEligibleAt = undefined;
+    // A clean arm clears any prior confirm-gap counter for this head.
+    next.unconfirmedArmAttempts = undefined;
+    return { ep: next, terminal: false, feedsBreaker: false };
+  }
+  // NON-LADDER retry (Blocker D): safe-merge armed but could not confirm on
+  // re-read. NOT a maxAttempts-consuming merge failure — do NOT advance attempts,
+  // do NOT feed the breaker. The reconciliation step + the gather() autoMergeArmed
+  // belt resolve the true state next tick. Bound it with a head-keyed counter so a
+  // genuinely-persistent confirm gap on the SAME head becomes visible (the caller
+  // surfaces one deduped attention line at unconfirmedArmCeiling). Stamps only
+  // lastOutcome + the counter — never the ladder.
+  if (outcome === 'error:auto-arm-unconfirmed' || outcome === 'error:auto-confirm-unreadable') {
+    next.lastOutcome = outcome;
+    next.lastAttemptAt = nowMs;
+    const head = opts.armedHead ?? ep.headRefOid;
+    const prior = ep.unconfirmedArmAttempts;
+    next.unconfirmedArmAttempts =
+      prior && prior.head === head ? { head, count: prior.count + 1 } : { head, count: 1 };
+    return { ep: next, terminal: false, feedsBreaker: false };
   }
   if (outcome === 'already-merged' || outcome === 'closed' || outcome === 'merged-by-other' || outcome === 'closed-by-other') {
     next.lastOutcome = outcome;

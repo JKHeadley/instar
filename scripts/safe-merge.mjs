@@ -137,7 +137,7 @@ export function capabilities() {
       'strict-argv', 'repo-param', 'json-checks', 'head-pinning',
       'required-contexts-cross-check', 'producer-binding', 'floor',
       'reviews-required-refusal', 'classified-exits', 'delete-branch', 'deadline-ms',
-      'native-auto-merge',
+      'native-auto-merge', 'auto-arm-unavailable-detection',
     ],
     exitCodes: { merged: 0, refused: 1, usageOrError: 2, alreadyMerged: 3, closed: 4, autoMergeArmed: 5 },
   };
@@ -234,6 +234,23 @@ export function classifyMergeFailure(stderrText, status, signal) {
   if (signal) return `error:signal-${signal}`;
   if (status === null) return 'error:null-status';
   return 'error:merge-command-failed';
+}
+
+/**
+ * The auto-merge-disabled discriminator (mergerunner-auto-arm-handoff §
+ * "auto-merge-unavailable — terminal-non-ladder"). `classifyMergeFailure`
+ * collapses BOTH "auto-merge is OFF on the repo" (a PERMANENT condition) and a
+ * generic transient gh failure into `error:merge-command-failed`. The
+ * orchestrator must be able to tell those apart so it does not burn three
+ * pointless ladder attempts on a repo setting that will never flip on its own.
+ * On the --auto refusal path ONLY, we match gh's stderr against the
+ * auto-merge-disabled signature; on a match the result slug becomes the DISTINCT
+ * `refused:auto-arm-unavailable` (the orchestrator keys terminal-non-ladder on
+ * exactly this slug). A generic gh error keeps `refused:auto-arm-error:*`.
+ */
+export function isAutoMergeUnavailable(stderrText) {
+  const text = String(stderrText ?? '');
+  return /auto.?merge.*(not\s*(allowed|enabled))|allow\s*auto-?merge/i.test(text);
 }
 
 // ---------------------------------------------------------------------------
@@ -406,6 +423,15 @@ async function main() {
       const cls = classifyMergeFailure(a.stderr, a.status, a.signal);
       if (cls === 'already-merged') { result({ result: 'already-merged', pr: Number(pr) }); process.exit(3); }
       if (cls === 'closed') { result({ result: 'closed', pr: Number(pr) }); process.exit(4); }
+      // Distinguish "auto-merge is disabled on the repo" (a PERMANENT condition →
+      // terminal-non-ladder for the orchestrator) from a generic transient gh
+      // failure. The discriminator is a REAL stderr-signature match, not the
+      // human-only console.error hint below.
+      if (isAutoMergeUnavailable(a.stderr)) {
+        result({ result: 'refused:auto-arm-unavailable', raw: cls });
+        console.error('safe-merge: could not arm auto-merge — "Allow auto-merge" appears DISABLED on the repo settings. Enable it, or run with --admin.');
+        process.exit(1);
+      }
       result({ result: `refused:auto-arm-${cls}`, raw: cls });
       console.error(`safe-merge: could not arm auto-merge (${cls}). Is "Allow auto-merge" enabled on the repo settings?`);
       process.exit(1);

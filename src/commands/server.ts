@@ -14409,6 +14409,11 @@ export async function startServer(options: StartOptions): Promise<void> {
             repo: 'JKHeadley/instar', agentNamespace,
             mergeTimeoutMs: Number(gpCfg.mergeTimeoutMs) || 1_500_000,
             mergeKillGraceMs: Number(gpCfg.mergeKillGraceMs) || 60_000,
+            // mergerunner-auto-arm-handoff M2: thread the two runner-path fields so
+            // run() selects --auto vs --admin + the auto-path deadline (not the
+            // previously-hardcoded --admin). Defaults keep the arm path.
+            mergeStrategy: gpCfg.mergeStrategy === 'admin' ? 'admin' as const : 'auto' as const,
+            armTimeoutMs: Number(gpCfg.armTimeoutMs) || 60_000,
             holdsLease: () => (leaseCoordinatorRef ? leaseCoordinatorRef.holdsLease() : true),
             leaseEpoch: () => (leaseCoordinatorRef ? leaseCoordinatorRef.currentEpoch() : 0),
             // Single-machine: the durable local file is the authoritative gate.

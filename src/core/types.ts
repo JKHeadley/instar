@@ -4773,6 +4773,21 @@ export interface MonitoringConfig {
     floorDriftCheckTicks?: number;
     floorDriftLookbackPrs?: number;
     floorDriftLookbackCommits?: number;
+    /**
+     * mergerunner-auto-arm-handoff. `auto` (default) arms GitHub native
+     * auto-merge (`safe-merge … --auto`) and confirms on a later reconciliation
+     * tick; `admin` restores the legacy synchronous poll+merge (`--admin`) — the
+     * rollback lever and the escape hatch for a repo without native auto-merge.
+     */
+    mergeStrategy?: 'auto' | 'admin';
+    /** ms an armed episode may stay OPEN before transitioning to armed-overdue (default 24h). */
+    armedConfirmCeilingMs?: number;
+    /** deduped re-raise cadence for an armed-overdue episode (default 24h). */
+    armedOverdueReraiseMs?: number;
+    /** the `--auto` spawn deadline (default 60s). */
+    armTimeoutMs?: number;
+    /** K-consecutive-unconfirmed-arms-on-same-head threshold before the attention line (default 3). */
+    unconfirmedArmCeiling?: number;
   };
   /**
    * Master gate for Telegram delivery of silently-stopped-sentinel escalations

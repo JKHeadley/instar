@@ -15,6 +15,7 @@ import {
   classifyChecks,
   evaluateRequiredContexts,
   classifyMergeFailure,
+  isAutoMergeUnavailable,
   CONTRACT_VERSION,
   DEFAULT_REPO,
   REQUIRED_CONTEXTS_FLOOR,
@@ -91,8 +92,24 @@ describe('capabilities — contract probe', () => {
     expect(c.features).toContain('head-pinning');
     expect(c.features).toContain('producer-binding');
     expect(c.features).toContain('native-auto-merge');
+    expect(c.features).toContain('auto-arm-unavailable-detection');
     expect(c.exitCodes.merged).toBe(0);
     expect(c.exitCodes.autoMergeArmed).toBe(5);
+  });
+});
+
+describe('isAutoMergeUnavailable — the repo-disabled discriminator (mergerunner-auto-arm-handoff)', () => {
+  it('matches the GitHub "auto-merge not allowed/enabled" signatures', () => {
+    expect(isAutoMergeUnavailable('Auto-merge is not allowed for this repository')).toBe(true);
+    expect(isAutoMergeUnavailable('auto-merge is not enabled on this repo')).toBe(true);
+    expect(isAutoMergeUnavailable('Please enable "Allow auto-merge" in repository settings')).toBe(true);
+    expect(isAutoMergeUnavailable('GraphQL: Allow auto-merge must be enabled')).toBe(true);
+  });
+  it('does NOT match a generic transient gh failure (which stays a normal backoff refusal)', () => {
+    expect(isAutoMergeUnavailable('error connecting to api.github.com')).toBe(false);
+    expect(isAutoMergeUnavailable('HTTP 502 Bad Gateway')).toBe(false);
+    expect(isAutoMergeUnavailable('')).toBe(false);
+    expect(isAutoMergeUnavailable(undefined)).toBe(false);
   });
 });
 
