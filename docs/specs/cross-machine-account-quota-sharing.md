@@ -18,18 +18,26 @@ lessons-engaged:
   - "reach ≠ authority (L15): cross-machine routing rides signed mesh RPC carrying this machine's identity"
   - "Comprehensive-First (P10): own the coarse-quotaState foundation gap in-scope, do not defer the load-bearing mechanism"
   - "No silent degradation: replace the 'place anyway → dead reply' all-walled path with an honest in-channel notice"
-review-convergence: "2026-06-16T20:38:09.360Z"
-review-iterations: 5
-review-completed-at: "2026-06-16T20:38:09.360Z"
-review-report: "docs/specs/reports/cross-machine-account-quota-sharing-convergence.md"
-cross-model-review: "codex-cli:gpt-5.5"
-single-run-completable: true
-frontloaded-decisions: 13
-cheap-to-change-tags: 5
-contested-then-cleared: 2
+  - "Operator override outranks a prior convergence: credential SHARING is the directed primary; do not defer it"
+# CONVERGENCE TAG VOID — the 2026-06-16T20:38Z convergence was for the prior
+# (credential-move-deferred) design, which the operator overrode at 14:49 PDT.
+# This revision (credential-sharing PRIMARY) MUST be re-converged before /instar-dev build.
+prior-review-convergence-void: "2026-06-16T20:38:09.360Z (design superseded by operator override)"
 ---
 
 # Cross-Machine Account & Quota Sharing
+
+> **⚠ REVISION IN PROGRESS — read §3 first.** The operator overrode the prior
+> design (2026-06-16 14:49 PDT): cross-machine credential **SHARING** is now the
+> directed PRIMARY mechanism (see §3). Sections §2 (hard constraints C1/C2 framed
+> as bars), §4 (Frontloaded Decisions), and §5–§12 still describe the SUPERSEDED
+> seat-transfer-primary design — they will be reconciled to the credential-sharing
+> primary at the next re-converge. The seat-transfer/placement machinery in those
+> sections is RETAINED but DEMOTED to a complementary optimization layer (§5B).
+> The prior convergence tag is VOID (frontmatter). This must re-converge before
+> any /instar-dev build, AND is coordination-gated: build edits to SubscriptionPool
+> / secret-sync / credential read-write must be synced with the "Subscription &
+> Auth Standard" session first (shared subsystem).
 
 ## 0. Key concepts (glossary)
 - **Seat** — a conversation's durable ownership + per-topic state on one machine
@@ -97,20 +105,71 @@ Violating any one strands a credential or trips Anthropic enforcement.
   attention item, NOT a conversational in-channel notice. So "honest degradation"
   is **net-new work** (§5.4), not a mirror of an existing fix.
 
-## 3. Design decision: collapse serve and ownership (this is the converged direction)
+## 3. Design decision: SHARE THE CREDENTIAL across machines (operator-directed primary)
 
-The pre-convergence draft proposed a new "serve where the quota is" routing layer
-where the SERVE could run on a different machine than the OWNER/seat. **Six
-independent review angles (adversarial, lessons-aware foundation audit, security,
-integration, scalability, decision-completeness) converged on rejecting that
-split** and adopting its opposite:
+> **OPERATOR OVERRIDE (Justin, 2026-06-16 14:49 PDT):** an earlier converged
+> revision made "move the WORK to the logged-in machine" the answer and DEFERRED
+> credential sharing. The operator rejected that as unsatisfactory: *"once the user
+> logged in one time on one machine, that account should be shareable across
+> machines — I've logged into the same account on multiple machines and used it,
+> there's no reason this isn't possible."* He is right. This revision makes
+> **cross-machine credential sharing the PRIMARY mechanism**; the convergence tag
+> on the prior revision is STALE and this must be re-converged before build.
 
-> **When a conversation's owner machine cannot serve it (no working account / all
-> its accounts walled), TRANSFER THE SEAT to a pool peer that CAN serve — using
-> the already-proven durable-ownership-transfer + quota-aware placement — rather
-> than serving remotely while ownership stays put.**
+> **PRIMARY: the user logs into a Claude account ONCE on one machine; that account
+> credential is securely synced to the operator's other machines so EVERY machine
+> can serve from it — with zero per-machine login and free scaling. The
+> refresh-token rotation hazard is handled by cross-machine coordination, not by
+> avoiding sharing.**
 
-Why the collapse (not the split):
+The genuine technical facts (verified in v1.3.602 source), and why sharing IS safe:
+- **Refresh-token rotation is real but NARROW** (`live-credential-repointing §0.c`
+  E2 `rotated:true`; `OAuthRefresher.ts:285`): exchanging a refresh token mints a
+  new one and invalidates the old. The hazard is ONLY two machines refreshing the
+  **same lineage concurrently** — NOT a bar on sharing. The 8h access token
+  (`expires_in:28800`) can be used by many machines at once; only the occasional
+  REFRESH must be serialized.
+- **This matches the operator's lived experience:** the same account works on
+  multiple devices because each holds a usable grant; collisions only happen if a
+  single token lineage is refreshed from two places at the same instant.
+- **C1 ("instar never extracts tokens into NON-Claude-Code tools",
+  `SubscriptionPool.ts:17-20`) does NOT bar machine→machine sync into the PEER's
+  Claude Code** config-home. Syncing the operator's own credential, encrypted
+  end-to-end, to the operator's own other machine's Claude Code is in-bounds — the
+  prior revision over-applied C1. (The existing secret-sync already moves the
+  operator's other secrets this way; Claude OAuth was simply never enrolled —
+  `SecretMigrator.ts:42-48` omits `claudeAiOauth`. The fix is to enroll it.)
+
+### Primary mechanism — credential sync + refresh coordination (§5A, NET-NEW, the core build)
+1. **Enroll Claude OAuth into the existing E2E secret-sync** (X25519/AES-256-GCM,
+   per-recipient, forward-secret — `SecretStore.ts:9-13`): the account credential
+   blob (`claudeAiOauth`) is encrypted and synced to the operator's registered
+   peer machines, landing in each peer's Claude Code config-home keychain slot
+   (`CredentialProvider.writeCredentials` / the `CredentialWriteFunnel`). One login
+   → usable on every machine. No second login, no per-machine work.
+2. **Refresh-coordination lease (the rotation fix):** concurrent SERVING is free
+   (shared 8h access token); but a REFRESH takes a pool-wide single-flight lease —
+   the refreshing machine exchanges, then **propagates the rotated blob back to all
+   peers** before releasing. A peer never refreshes a lineage it doesn't hold the
+   lease for; a peer whose copy is superseded pulls the fresh blob first. This is
+   the one-lineage-one-refresher-at-a-time invariant, enforced ACROSS machines
+   (the live-credential-repointing work did it within one machine; this lifts it to
+   the pool via the mesh coordinator).
+3. **At-rest honesty:** the synced credential lands on each peer's disk (keychain
+   or `.credentials.json`). Transit is encrypted; at rest it is protected by that
+   machine's keychain/file perms. If a pool machine is one the operator does not
+   physically control (a rented cloud VM), the operator can exclude it as a
+   credential-sync RECIPIENT (residency opt-out). Stated, not hidden.
+
+### Complementary layer — quota-aware placement / seat transfer (§5B, reuses proven primitives)
+With the credential shared, ANY machine can serve, so placement is now free to put
+a conversation on the best machine. The proven `POST /pool/transfer` +
+`OwnershipApplier` + quota-aware placement remain — but as an OPTIMIZATION
+(availability + affinity), no longer the workaround for a credential-less machine.
+The earlier revision's hard-won correctness work (one-voice, epoch-fencing,
+honest-degradation, operator-binding carry) is RETAINED for this layer.
+
+Why the collapse-to-owner==server reasoning still holds for the placement layer:
 
 - **It reuses proven primitives (Structure > Willpower).** `POST /pool/transfer`
   + `OwnershipApplier` + quota-aware placement already move a seat between
@@ -152,26 +211,31 @@ human invokes with "move this to the Mac Mini," fired automatically by the pool
 when (and only when) the current owner cannot serve and a peer can — guarded by
 hysteresis so a flapping account can't thrash the seat.
 
-**Why P2P seat-transfer and not the industry-standard centralized broker:** the
-common solution to "share a credential across machines" is a centralized token
-service (a broker / Vault-style store). The hard constraints C1/C2 **forbid that
-entirely** — the Claude OAuth token may not be extracted or centralized at all. So
-the P2P seat-transfer is not a quirky choice; it is the principled adaptation
-*forced* by the credential constraints (external/gemini #2).
+**Why P2P credential sync and not a centralized broker:** a centralized token
+service would mean instar holding/serving the operator's Claude tokens from a
+shared backend — that genuinely trips C1 (extracting tokens into a non-Claude-Code
+service). P2P sync keeps each token landing only in a real Claude Code config-home
+on one of the operator's own machines, encrypted in transit. So the choice is P2P
+sync (in-bounds) over a broker (out-of-bounds), NOT "no sharing at all."
 
-### Tradeoff stated explicitly (external/gemini)
-This design optimizes for **service availability, not performance affinity**: it
-moves the WORK to where the quota is, so a compute-heavy topic can land on a
-low-powered machine if that is the only one with quota. That is the right call for
-the operator's stated outcome (a reply always comes), but it means "serve on the
-most CAPABLE machine" is explicitly NOT a goal here — it belongs to the deferred
-`cross-machine-credential-move` spec (move the credential to the capable machine).
+### Tradeoff stated explicitly
+With the credential shared, the design delivers BOTH availability AND affinity:
+every machine can serve, so placement is free to pick the most capable / least-
+loaded machine. The only residual cost is the refresh-coordination lease (a brief
+pool-wide single-flight on the occasional token refresh) — negligible vs. the 8h
+access-token window.
 
 ### Rejected / deferred alternatives
-- **Serve≠owner remote-serve split** — rejected (double/zero-voice, stranded
-  state, net-new architecture; see above).
+- **Centralized token broker** — rejected on C1 (instar would serve tokens from a
+  shared backend; P2P sync into real Claude Code homes is the in-bounds form).
+- **"Move the work, never the credential" (the prior revision's primary)** —
+  DEMOTED to a complementary optimization (§5B). Rejected AS THE PRIMARY answer
+  per the operator override: it puts the burden back on which machine happens to
+  hold a login, which is exactly the non-seamless behavior the operator rejected.
+- **Serve≠owner remote-serve split** — still rejected (double/zero-voice, stranded
+  state). The placement layer keeps owner==server.
 - **Turn-proxy (relay each LLM turn through a peer)** — rejected on C1 (no token
-  interception seam without extracting the token; the wall that killed Option B).
+  interception seam without extracting the token).
   Cross-ref: a legitimate relay seam could only come from the in-flight
   provider-substrate / subscription-path interactive-pool work — out of scope.
 - **Credential MOVE (copy/relocate an OAuth blob across machines)** — **REMOVED
