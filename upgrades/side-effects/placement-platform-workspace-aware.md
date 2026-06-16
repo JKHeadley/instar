@@ -34,3 +34,10 @@ An independent implementation reviewer traced every `decide()` branch + the thre
 Two non-blocking forward-looking notes (both tracked, neither a live bug):
 - **RebalancePlanner.decide() doesn't thread `channel`** — a dormant black-hole door (rebalance could move a Slack session onto a non-serving machine). DORMANT: RebalancePlanner is not wired into server.ts. Added a tracked guard-comment at RebalancePlanner.ts:83 to plumb `channel` before rebalance is ever activated. <!-- tracked: CMT-1568 -->
 - **machineServesChannel telegram→`no` foot-gun** — if a future caller threads a telegram channel, a Slack-only machine would be wrongly excluded. Safe NOW by producer discipline (telegram is never threaded — documented invariant). <!-- tracked: CMT-1568 -->
+
+## Phase 6 — CI-ratchet fix (post-review, 2026-06-16)
+Two structural-gate failures surfaced on CI after the advert field landed; both fixed without weakening the gates:
+- **no-silent-fallbacks ratchet (475→474):** the `selfServesChannels` heartbeat producer originally wrapped its reads in a `try/catch { return undefined }`, which the ratchet counts as a silent fallback. Refactored to inline non-throwing reads — `config.messaging.find` + `typeof`/optional-chaining guards never throw on normal input, so an unresolvable field simply omits its block (→ placement treats the machine as `unknown`/fail-open, identical older-peer semantics). No catch, no `@silent-fallback-ok` exemption — the count returns to baseline 474 by ELIMINATING the fallback, not annotating it.
+- **peer-presence-puller wiring-integrity ratchet:** the every-advert-field round-trip test (`SESSION_STATUS_ADVERT_FIELDS`) failed because its fixture didn't set the new `servesChannels` field. Fixture updated; the narrowing return already passed the field through. The ratchet did its job — a forgotten field failed loudly.
+
+No behavior change to the placement hot path; the producer's reachability output is identical. 91 unit tests green (machineServesChannel + PlacementExecutor + SessionRouter + peer-presence-puller + no-silent-fallbacks).

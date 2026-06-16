@@ -14591,19 +14591,20 @@ export async function startServer(options: StartOptions): Promise<void> {
           // slack per-workspace case. Absent block (this returns undefined) = older peer
           // = placement treats as `unknown`/fail-open.
           const selfServesChannels = (): import('../core/machineServesChannel.js').ServesChannels | undefined => {
-            try {
-              const out: { telegram?: { chatIds: string[] }; slack?: { workspaceIds: string[] } } = {};
-              const tg = config.messaging.find((m) => m.type === 'telegram' && m.enabled);
-              const rawChatId = tg ? (tg.config as { chatId?: unknown }).chatId : undefined;
-              if (typeof rawChatId === 'string' || typeof rawChatId === 'number') {
-                out.telegram = { chatIds: [String(rawChatId)] };
-              }
-              if (_slackAdapter && _slackAdapter.isConnected()) {
-                const ws = _slackAdapter.getWorkspaceId();
-                if (ws) out.slack = { workspaceIds: [ws] };
-              }
-              return (out.telegram || out.slack) ? out : undefined;
-            } catch { return undefined; /* unresolvable → omit → unknown/fail-open */ }
+            // No try/catch (avoids a silent-fallback catch): these reads don't throw on normal
+            // input, and a wrong-shaped value is guarded inline (typeof / optional chaining), so an
+            // unresolvable field simply omits its block → placement treats it as unknown/fail-open.
+            const out: { telegram?: { chatIds: string[] }; slack?: { workspaceIds: string[] } } = {};
+            const tg = config.messaging.find((m) => m.type === 'telegram' && m.enabled);
+            const rawChatId = tg ? (tg.config as { chatId?: unknown }).chatId : undefined;
+            if (typeof rawChatId === 'string' || typeof rawChatId === 'number') {
+              out.telegram = { chatIds: [String(rawChatId)] };
+            }
+            if (_slackAdapter && _slackAdapter.isConnected()) {
+              const ws = _slackAdapter.getWorkspaceId();
+              if (ws) out.slack = { workspaceIds: [ws] };
+            }
+            return (out.telegram || out.slack) ? out : undefined;
           };
           // Self guard-posture block riding the capacity heartbeat (spec §2.3).
           // Computed per beat from the same one-read snapshot GET /guards uses;

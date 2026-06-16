@@ -1,0 +1,17 @@
+{
+  "version": 2,
+  "sessionId": "9b4b87f1-2ee3-40d9-b9bc-6b4318195b5a",
+  "timestamp": "2026-06-16T12:31:58.051Z",
+  "artifactPath": "upgrades/side-effects/placement-platform-workspace-aware.md",
+  "artifactSha256": "ec725768f875493588242ec0b753303e125cda01ea3a69e488abda90eb548c4e",
+  "specPath": "docs/specs/placement-platform-workspace-aware.md",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "tests/unit/peer-presence-puller.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "CI-fix on the placement change: peer-presence golden-fixture + remove the selfServesChannels try/catch (no-silent-fallbacks ratchet); same converged spec + second-pass.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
