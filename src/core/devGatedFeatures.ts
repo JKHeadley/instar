@@ -212,6 +212,12 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     justification: 'Ships mode:dry-run by default (the canary): on a dev agent the gate runs the FULL decision over POST /autonomous/evaluate-completion and LOGS the veto it WOULD apply, but dry-run/warn NEVER override the verdict — only an explicit mode:veto can flip met:true→met:false, and even then the only effect is keeping the run WORKING (the safe direction, never a destructive action, never a false "done"). Pure local read of signed artifacts on disk (no egress, no spend, no LLM of its own); a gate error falls through to the original verdict (the completion judge stays primary authority). Same dogfooding posture as topicProfiles / threadline.singleNegotiator.',
   },
   {
+    name: 'liveTestRunner',
+    configPath: 'monitoring.liveTestRunner.enabled',
+    description: 'Live-User-Channel Proof CAPSTONE runner (spec §6/§7.5) — makes the dark cross-machine transfer capstone harness RUNNABLE via POST /live-test/multi-machine-capstone: moves the seat first (POST /pool/transfer), demands the honest seatMoved signal, runs the §7.5 risk-category matrix through the REAL demo surfaces, and records a signed PASS/FAIL artifact (PASS only when the reply came FROM the target machine).',
+    justification: 'Drives the operator\'s OWN machines + DEMO channels only (the §5.3 demo-channel isolation + fail-closed demo creds — a surface with no demo cred is BLOCKED-real, never the live agent token, never the live operator channel). The transfer it triggers is the operator\'s own /pool/transfer (the same lever a session calls), bounded + already-validated; the run only WRITES a local signed artifact (no egress beyond the operator\'s own demo workspaces, no third-party spend, no destructive action). When dark the /live-test/* routes 503 (strict no-op). Same dogfooding posture as liveTestGate / topicProfiles.',
+  },
+  {
     name: 'durableOwnership',
     configPath: 'multiMachine.durableOwnership.enabled',
     description: 'Transfer fix (live-user-channel-proof spec §7.2) — swaps the in-memory session-ownership store for a DURABLE per-session store + the OwnershipApplier that materializes ownership on the target from the REPLICATED placement journal, so a topic seat genuinely moves between machines.',

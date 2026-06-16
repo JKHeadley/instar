@@ -1,0 +1,27 @@
+{
+  "version": 2,
+  "sessionId": "9b4b87f1-2ee3-40d9-b9bc-6b4318195b5a",
+  "timestamp": "2026-06-16T13:13:59.342Z",
+  "artifactPath": "upgrades/side-effects/live-test-capstone-runner-route.md",
+  "artifactSha256": "eb65113d64ea1f339b905fee165b48056813dcb9035a632b28da565cf628d599",
+  "specPath": "docs/specs/live-user-channel-proof-standard.md",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "src/core/devGatedFeatures.ts",
+    "src/core/multiMachineCapstoneMatrix.ts",
+    "src/server/AgentServer.ts",
+    "src/server/CapabilityIndex.ts",
+    "src/server/routes.ts",
+    "tests/e2e/live-test-capstone-alive.test.ts",
+    "tests/integration/live-test-capstone-route.test.ts",
+    "tests/unit/LiveTestRunner-capstone.test.ts",
+    "tests/unit/multiMachineCapstoneMatrix.test.ts",
+    "upgrades/next/live-test-capstone-runner-route.md",
+    "upgrades/side-effects/live-test-capstone-runner-route.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "New dev-gated route + wiring driven by a converged+approved spec; new-capability signal → Tier 2",
+  "secondPass": "not-required",
+  "reviewerConcurred": false
+}

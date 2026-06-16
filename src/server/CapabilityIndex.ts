@@ -1138,6 +1138,7 @@ export const INTERNAL_PREFIXES: ReadonlyArray<{ prefix: string; reason: string }
   { prefix: 'internal', reason: 'internal-only IPC namespace' },
   { prefix: 'pastes', reason: 'internal Claude Code paste-callback receiver' },
   { prefix: 'listener', reason: 'internal heartbeat/listener wiring' },
+  { prefix: 'live-test', reason: 'dev-only live-user-channel-proof harness (POST /live-test/multi-machine-capstone, GET /live-test/artifacts) — dev-gated + dark behind monitoring.liveTestRunner; an internal self-test surface, never an agent/user capability' },
   { prefix: 'events', reason: 'internal SSE/event-stream' },
   { prefix: 'config', reason: 'global config CRUD used by setup/migrator' },
   { prefix: 'status', reason: 'legacy status endpoint, superseded by /capabilities' },

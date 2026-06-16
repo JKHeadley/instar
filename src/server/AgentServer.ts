@@ -166,6 +166,39 @@ export function readMentorConfigFromDisk(
   }
 }
 
+/**
+ * The request-time wiring for the live-test capstone runner (§6/§7.5). The route
+ * builds a RealChannelDriver from whatever demo creds exist and calls `makeRunner`
+ * to get a LiveTestRunner whose harness wraps that driver — sharing `artifactStore`
+ * with the LiveTestGate so a run's artifact is exactly the artifact the gate verifies.
+ */
+export interface LiveTestRunnerWiring {
+  artifactStore: import('../core/LiveTestArtifactStore.js').LiveTestArtifactStore;
+  runnerFingerprint: string;
+  /** Build a LiveTestRunner whose harness wraps the request-built driver (seat-move-first orchestration). */
+  makeRunner: (
+    driver: import('../core/LiveTestHarness.js').ChannelDriver,
+  ) => import('../core/LiveTestRunner.js').LiveTestRunner;
+  /** Build the harness directly (for running the richer §7.5 matrix after the seat-move gate). */
+  makeHarness: (
+    driver: import('../core/LiveTestHarness.js').ChannelDriver,
+  ) => import('../core/LiveTestHarness.js').LiveTestHarness;
+  /**
+   * Optional injection seam: when present, the route uses THIS to build the request's
+   * ChannelDriver instead of constructing the real Telegram/Slack senders from config.
+   * Production leaves it undefined (the route builds the real, fail-closed driver);
+   * tests provide a fake driver so a wired run can be exercised with no live network.
+   */
+  driverForRequest?: () => import('../core/LiveTestHarness.js').ChannelDriver;
+  /**
+   * Optional injection seam for the seat-move action. Production leaves it undefined
+   * (the route POSTs the local /pool/transfer and reads the honest seatMoved signal);
+   * tests inject a deterministic transfer so the capstone can be exercised end-to-end
+   * without a live multi-machine pool.
+   */
+  transferForRequest?: (topicId: string, toMachine: string) => Promise<{ seatMoved: boolean; detail?: string }>;
+}
+
 export class AgentServer {
   private app: Express;
   private server: Server | null = null;
@@ -539,6 +572,10 @@ export class AgentServer {
     /** Live-user-channel-proof completion gate (§4) — refuses "done" without a verified artifact. */
     liveTestGate?: import('../core/LiveTestGate.js').LiveTestGate;
     liveTestGateMode?: import('../core/LiveTestGate.js').LiveTestGateMode;
+    /** Live-user-channel-proof CAPSTONE runner wiring (§6/§7.5) — dev-gated + dark.
+     *  A factory (not a pre-bound runner) so the route can wrap the request-built
+     *  RealChannelDriver, sharing the gate's artifact store. Undefined when dark/unwired. */
+    liveTestRunnerCtx?: LiveTestRunnerWiring;
     unifiedTrust?: import('../threadline/UnifiedTrustWiring.js').UnifiedTrustSystem;
     liveConfig?: { set(path: string, value: unknown): void; get?<T>(path: string, def: T): T };
     /** Shared proxy coordinator (PresenceProxy ↔ PromiseBeacon ↔ /build heartbeat). */
@@ -2034,6 +2071,7 @@ export class AgentServer {
       completionEvaluator: options.completionEvaluator ?? null,
       liveTestGate: options.liveTestGate ?? null,
       liveTestGateMode: options.liveTestGateMode ?? 'dry-run',
+      liveTestRunnerCtx: options.liveTestRunnerCtx ?? null,
       unifiedTrust: options.unifiedTrust ?? null,
       threadlineReplyWaiters: options.threadlineReplyWaiters ?? new Map(),
       proxyCoordinator: options.proxyCoordinator ?? null,
