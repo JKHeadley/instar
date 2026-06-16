@@ -109,6 +109,10 @@ export interface HeartbeatObservation {
   /** The machine's self-reported LLM-account quota state (quota-aware placement,
    *  2026-06-05). Absent = unknown (older heartbeats) = treated as not blocked. */
   quotaState?: MachineCapacity['quotaState'];
+  /** Platform/workspace reachability (placement-platform-workspace-aware) — which
+   *  channels this machine's adapters are connected to; consumed by placement so a
+   *  channel is never owned by a machine that can't reach it. Absent = older heartbeat. */
+  servesChannels?: MachineCapacity['servesChannels'];
   /** WS1.1 (MULTI-MACHINE-SEAMLESSNESS-SPEC invariant 5): the machine's
    *  self-advertised seamlessness capabilities. Absent = pre-spec peer or
    *  feature dark = non-participant (the conservative side). */
@@ -283,6 +287,7 @@ export class MachinePoolRegistry {
       hardware: known.hardware,
       clockSkewStatus: live?.skew.status ?? 'ok',
       quotaState: live?.obs.quotaState,
+      servesChannels: live?.obs.servesChannels,
       inboundQueue: live?.obs.inboundQueue,
       // WS1.1: capability advertisement passthrough. Memory-only (lost on a
       // local restart, like posture's in-memory half — no durable disk

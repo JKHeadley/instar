@@ -101,6 +101,11 @@ export class SlackAdapter implements MessagingAdapter {
 
   // Disconnect tracking for missed message recovery
   private _lastDisconnectedAt = 0;
+  // Live Socket-Mode connection state (placement-platform-workspace-aware): true between
+  // onConnected and onDisconnected. Distinct from `started` (which is "ever connected").
+  // Consumed by isConnected() so the capacity heartbeat reports this workspace reachable
+  // ONLY while the socket is genuinely up (clear-on-disconnect).
+  private _connected = false;
 
   // Stall tracking (matches Telegram's trackMessageInjection pattern)
   private pendingStalls: Map<string, { channelId: string; sessionName: string; text: string; injectedAt: number }> = new Map();
@@ -197,6 +202,7 @@ export class SlackAdapter implements MessagingAdapter {
         console.log('[slack] Socket Mode connected');
         const wasStarted = this.started;
         this.started = true;
+        this._connected = true;
         // On reconnection (not initial connect), recover missed messages
         if (wasStarted && this._lastDisconnectedAt > 0) {
           this._recoverMissedMessages().catch(err => {
@@ -207,6 +213,7 @@ export class SlackAdapter implements MessagingAdapter {
       onDisconnected: (reason) => {
         console.log(`[slack] Disconnected: ${reason}`);
         this._lastDisconnectedAt = Date.now();
+        this._connected = false;
       },
       onError: (err, permanent) => {
         if (permanent) {
@@ -370,6 +377,13 @@ export class SlackAdapter implements MessagingAdapter {
   }
 
   // ── Slack-Specific Public Methods ──
+
+  /** True iff the Socket-Mode connection is currently up (placement-platform-workspace-aware:
+   *  the capacity heartbeat reports this workspace reachable only while connected). */
+  isConnected(): boolean { return this._connected; }
+
+  /** The Slack workspace/team id this adapter is configured for (undefined if unset). */
+  getWorkspaceId(): string | undefined { return this.config.workspaceId; }
 
   /** Get the current workspace behavior config. */
   getWorkspaceConfig(): { mode: SlackWorkspaceMode; autoJoinChannels: boolean; respondMode: SlackRespondMode } {

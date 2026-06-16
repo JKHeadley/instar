@@ -20,8 +20,8 @@ Telegram doesn't have this problem because both computers share the same Telegra
 ## The safeguards (in plain terms)
 
 - **Old computers aren't penalized.** During an update, a computer that hasn't learned to report this yet is treated as "can serve" (fail-open), so nothing breaks mid-rollout. Only a computer that *explicitly says* "I don't serve this workspace" is skipped.
-- **Nobody gets stranded.** If somehow *no* computer can serve a channel, placement still picks one (least-loaded) rather than dropping the message — and raises a flag (`no-machine-serves-channel`) so we can see it.
-- **A deliberate pin is respected but flagged.** If someone pinned a channel to a computer that can't serve it, placement honors the pin but flags it (`pinned-machine-cannot-serve`) instead of silently black-holing.
+- **No black-holes, and an honest "nobody can serve this".** If *no* computer can actually reach a channel (e.g. no machine is in that Slack workspace), placement does NOT pick a computer that can't serve it (that's the bug). Instead it returns the same "can't place" result the system already uses for other unsatisfiable cases (`no-machine-serves-channel`), which raises an attention notice — an honest "this channel isn't served on any connected machine" rather than a silent black-hole. The message isn't dropped; it waits, and you're told.
+- **A pin to a computer that can't serve the channel is refused, not honored into a black-hole.** If someone pinned a channel to a computer not connected to its workspace, placement returns "pin unsatisfiable" (the existing pin-can't-be-honored path) rather than silently sending messages somewhere they'll never be answered. A pin to a computer we just don't have fresh info about is still honored (fail-open).
 
 ## What you need to decide
 

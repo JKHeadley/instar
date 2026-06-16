@@ -57,6 +57,12 @@ export interface InboundMessage {
   payload: unknown;
   topicMetadata?: TopicPlacement;
   senderEnvelope?: InboundSenderEnvelope | null;
+  /** The channel scope this message arrived on — threaded into placement so a Slack channel
+   *  is never placed on a machine not connected to its workspace (spec:
+   *  placement-platform-workspace-aware). Populated at the inbound from the platform event
+   *  (Slack: team_id → workspaceId + channelId). Absent (telegram — a SHARED chat — or a legacy
+   *  inbound) → placement resolves `unknown` → fail-open. */
+  channel?: import('./machineServesChannel.js').ChannelScope & { channelId?: string };
 }
 
 /** Tri-state custody outcome from the queueMessage dep (§2.2): the router
@@ -314,6 +320,10 @@ export class SessionRouter {
       machineRegistry: this.deps.machineRegistry(),
       currentOwner: undefined,
       reason,
+      // Thread the channel scope so a Slack channel is never placed on a machine not connected
+      // to its workspace (the live-test bug — a FAILOVER placement; both new+failover route through
+      // here). Absent → unknown/fail-open (telegram shared, or legacy inbound).
+      ...(msg.channel ? { channel: msg.channel } : {}),
     });
 
     if (decision.outcome === 'placement-blocked') {

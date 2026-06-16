@@ -1932,6 +1932,13 @@ export interface MachineCapacity {
    *  unless every machine is blocked or the user hard-pinned here. Absent =
    *  unknown = treated as not blocked (heartbeats from older versions). */
   quotaState?: { blocked: boolean; blockedUntil?: string; reason?: string };
+  /** Platform/workspace reachability — which channels this machine's adapters are CONNECTED to
+   *  (spec: placement-platform-workspace-aware). ADAPTER-DERIVED at heartbeat time (NOT config):
+   *  a slack workspaceId appears only because the Socket-Mode adapter is genuinely connected to that
+   *  team; cleared immediately on adapter disconnect. Consumed by placement (machineServesChannel) so
+   *  a channel is never owned by a machine whose adapter can't reach it. Absent = older heartbeat
+   *  (placement treats as `unknown`/fail-open). */
+  servesChannels?: import('./machineServesChannel.js').ServesChannels;
   /** Durable Inbound Message Queue (spec §5.1): self-reported custody state —
    *  consumed by the survivor's loss-SUSPECTED item + capped re-placement arm
    *  and the supersede-dedupe episode key (machineId + tenure). Absent =
