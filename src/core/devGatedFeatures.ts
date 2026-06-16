@@ -200,6 +200,12 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     justification: 'Pure read-side observability/efficiency: caches only peer route bodies the surfaces ALREADY fetch over the mesh, introduces NO new authority, NEVER mutates, never caches private end-user content; a failed fetch is never cached; single-machine = no-op (no peers). No destructive action, no third-party spend.',
   },
   {
+    name: 'durableOwnership',
+    configPath: 'multiMachine.durableOwnership.enabled',
+    description: 'Transfer fix (live-user-channel-proof spec §7.2) — swaps the in-memory session-ownership store for a DURABLE per-session store + the OwnershipApplier that materializes ownership on the target from the REPLICATED placement journal, so a topic seat genuinely moves between machines.',
+    justification: 'Coordinates between the operator\'s OWN machines only — no external egress. The durable store is a per-session atomic JSON write (a cache of journal-decided ownership, not a new authority); the applier only ADOPTS a placement strictly newer than local via fast-forward CAS (it can never clobber a fresher local decision) and runs OFF the routing hot path on an interval; fully reversible (flip back to InMemory — the journal remains the source of truth); single-machine = no-op (no peer placements to apply). No destructive action, no third-party spend. Runs live (dryRun N/A — no destructive write to gate) on dev / dark on fleet.',
+  },
+  {
     name: 'canonicalHistoryConversationDiscipline',
     configPath: 'threadline.canonicalHistory.conversationDiscipline.enabled',
     description:

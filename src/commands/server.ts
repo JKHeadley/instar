@@ -14608,8 +14608,34 @@ export async function startServer(options: StartOptions): Promise<void> {
         // is constructed further down (working-set wiring); until then the floor
         // reads 0, which preserves pre-fix behavior for the boot window.
         let ownershipEpochFloor: ((sessionKey: string) => number) | null = null;
+        // ── Transfer fix (spec docs/specs/live-user-channel-proof-standard.md §7.2) ──
+        // The in-memory store was the bug: a transfer wrote the target's ownership
+        // into the SOURCE's process Map → vanished on restart, never crossed machines.
+        // Behind the DEV-AGENT DARK GATE (live on a dev agent / dark on the fleet),
+        // swap in the DURABLE per-session store; the OwnershipApplier (wired below)
+        // materializes ownership on the target from the REPLICATED placement journal,
+        // so a seat genuinely moves. Off → InMemory (today's exact behavior).
+        const durableOwnershipOn = resolveDevAgentGate(
+          (config as Record<string, any>).multiMachine?.durableOwnership?.enabled,
+          config,
+        );
+        let durableOwnershipStore:
+          | import('../core/LocalSessionOwnershipStore.js').LocalSessionOwnershipStore
+          | null = null;
+        let ownershipStore: import('../core/SessionOwnershipRegistry.js').SessionOwnershipStore;
+        if (durableOwnershipOn) {
+          const { LocalSessionOwnershipStore } = await import('../core/LocalSessionOwnershipStore.js');
+          durableOwnershipStore = new LocalSessionOwnershipStore({
+            dir: path.join(config.stateDir, 'ownership', 'local'),
+            logger: (m: string) => console.log(pc.dim(`  ${m}`)),
+          });
+          ownershipStore = durableOwnershipStore;
+          console.log(pc.dim('  [ownership] durable LocalSessionOwnershipStore active (dev-gate live) — transfer-fix §7.2'));
+        } else {
+          ownershipStore = new ownMod.InMemorySessionOwnershipStore();
+        }
         sessionOwnershipRegistry = new ownMod.SessionOwnershipRegistry({
-          store: new ownMod.InMemorySessionOwnershipStore(),
+          store: ownershipStore,
           seenNonce: (k) => seenOwnNonces.has(k),
           recordNonce: (k) => seenOwnNonces.add(k),
           epochFloorOf: (sk) => ownershipEpochFloor?.(sk) ?? 0,
@@ -14706,6 +14732,33 @@ export async function startServer(options: StartOptions): Promise<void> {
             }
           }, tickMs);
           ws13Timer.unref?.();
+        }
+        // ── Transfer fix §7.2: OwnershipApplier ─────────────────────────────────
+        // Materialize durable local ownership from the REPLICATED placement journal
+        // (peers/<machineId>.topic-placement.jsonl) so the machine a topic moved TO
+        // resolves the right owner on the next message — the step the in-memory store
+        // never had. Off the hot path: ticked on an interval + once at boot (to adopt
+        // a transfer that landed while we were down). Only when the durable store is
+        // active (dev-gate); InMemory has no cross-machine replication to apply.
+        if (durableOwnershipStore && _meshSelfId) {
+          const { OwnershipApplier } = await import('../core/OwnershipApplier.js');
+          const { CoherenceJournalReader } = await import('../core/CoherenceJournalReader.js');
+          const applier = new OwnershipApplier({
+            reader: new CoherenceJournalReader({ stateDir: config.stateDir }),
+            store: durableOwnershipStore,
+            selfMachineId: _meshSelfId,
+            logger: (m: string) => console.log(pc.dim(`  ${m}`)),
+          });
+          try { applier.tick(); } catch { /* @silent-fallback-ok — boot tick best-effort; the interval converges */ }
+          const applierTimer = setInterval(() => {
+            try {
+              const r = applier.tick();
+              if (r.materialized) console.log(pc.dim(`  [OwnershipApplier] materialized ${r.materialized}/${r.examined} topic(s) from replicated placements`));
+            } catch (err) {
+              console.error('[OwnershipApplier] tick failed:', err instanceof Error ? err.message : String(err));
+            }
+          }, 15000);
+          applierTimer.unref?.();
         }
         // Coherence journal §3.3: the emit is a thin wrapper at every CAS call
         // site — `reason` is caller knowledge (cas() is a storage primitive and
