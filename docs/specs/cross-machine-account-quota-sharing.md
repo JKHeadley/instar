@@ -39,6 +39,33 @@ prior-review-convergence-void: "2026-06-16T20:38:09.360Z (design superseded by o
 > / secret-sync / credential read-write must be synced with the "Subscription &
 > Auth Standard" session first (shared subsystem).
 
+> **⛔ BLOCKED ON OPERATOR DECISION (2026-06-16 15:10 PDT) — DO NOT BUILD §5A YET.**
+> Coordinating with the Subscription & Auth Standard (topic 20390 / 20905, no live
+> session) surfaced a CONVERGED, OPERATOR-PRE-APPROVED spec that already owns this:
+> `docs/specs/ws52-account-follow-me-security.md` (WS5.2, CMT-1413, approved Justin
+> 2026-06-12). It reached the OPPOSITE decision from the §3 pivot below:
+> - **WS5.2 default = Mechanism B (re-mint per machine, agent-driven).** ToS-safe;
+>   no token ever crosses the wire; the operator taps approve once per machine.
+> - **WS5.2 gates literal credential-copy (Mechanism A) OFF for Anthropic by
+>   default** on two hard grounds: (1) Anthropic ToS forbids relocating a Claude
+>   OAuth token out of Claude Code's own store; (2) live-credential-on-every-machine
+>   blast radius + refresh-token rotation requires cross-machine refresh coordination.
+> So the §3 pivot below ("share the credential as PRIMARY") == WS5.2 Mechanism A
+> applied to Anthropic — a deliberate operator opt-in, NOT a default Echo may pick.
+>
+> **Decision put to Justin 2026-06-16 15:10 PDT (Telegram 13481):** (A) ToS-safe
+> agent-driven auto-enroll [Echo's recommendation] vs (B) literal credential-sync
+> with the ToS risk owned by the operator. The build direction FORKS on his answer:
+> - **If (A):** §3/§5A REDIRECT to WS5.2 Mechanism B (auto-enroll); this spec keeps
+>   only the orchestration layer (§5.1 per-account serveability/CMT-1416, §5.3 quota-
+>   aware seat-transfer failover, §5.4 honest degradation) as the seamless fallback.
+> - **If (B):** §3/§5A = enable WS5.2 Mechanism A for Anthropic; that credential work
+>   lands in the WS5.2 / subscription-auth workstream (coordinate file ownership),
+>   this spec still owns the orchestration layer.
+> Either way the credential MECHANISM is WS5.2's; THIS spec owns the orchestration
+> layer (serveability + failover + honest degradation), which is build-stable under
+> BOTH answers. Re-converge AFTER the decision lands, not before.
+
 ## 0. Key concepts (glossary)
 - **Seat** — a conversation's durable ownership + per-topic state on one machine
   (the machine that "holds" the conversation).
