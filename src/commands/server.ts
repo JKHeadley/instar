@@ -14858,10 +14858,19 @@ export async function startServer(options: StartOptions): Promise<void> {
         // swap in the DURABLE per-session store; the OwnershipApplier (wired below)
         // materializes ownership on the target from the REPLICATED placement journal,
         // so a seat genuinely moves. Off → InMemory (today's exact behavior).
-        const durableOwnershipOn = resolveDevAgentGate(
-          (config as Record<string, any>).multiMachine?.durableOwnership?.enabled,
-          config,
-        );
+        // Pool-consistent activation (docs/specs/pool-consistent-multimachine-activation.md):
+        // gating PURELY on the per-machine dev flag left the durable store DARK on a non-dev
+        // pool machine (the Mini), so a transferred seat's ownership was never materialized
+        // there → the seat died on arrival (caught by the live Laptop↔Mini proof, 2026-06-16).
+        // The durable store MUST run on every machine that CONSUMES replicated placement
+        // journals. So activate ALSO on the explicit, pool-consistent
+        // `coherenceJournal.replication.enabled === true` signal — the SAME one that gates the
+        // journalSyncApplier (~server.ts:16588). Invariant: a machine running the placement-
+        // replication applier runs the ownership applier + durable store too (same placements).
+        // Single-machine agents (no replication) stay on InMemory — strict no-op.
+        const { shouldActivateDurableOwnership, isPlacementReplicationEnabled } = await import('../core/durableOwnershipActivation.js');
+        const _replicationOn = isPlacementReplicationEnabled(config);
+        const durableOwnershipOn = shouldActivateDurableOwnership(config, resolveDevAgentGate);
         let durableOwnershipStore:
           | import('../core/LocalSessionOwnershipStore.js').LocalSessionOwnershipStore
           | null = null;
@@ -14873,7 +14882,7 @@ export async function startServer(options: StartOptions): Promise<void> {
             logger: (m: string) => console.log(pc.dim(`  ${m}`)),
           });
           ownershipStore = durableOwnershipStore;
-          console.log(pc.dim('  [ownership] durable LocalSessionOwnershipStore active (dev-gate live) — transfer-fix §7.2'));
+          console.log(pc.dim(`  [ownership] durable LocalSessionOwnershipStore active (${_replicationOn ? 'pool: replication-on' : 'dev-gate'}) — transfer-fix §7.2`));
         } else {
           ownershipStore = new ownMod.InMemorySessionOwnershipStore();
         }
