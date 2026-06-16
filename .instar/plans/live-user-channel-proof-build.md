@@ -75,7 +75,32 @@ clean, dev-gate wiring test green. NOT "done" until task 6 LIVE proof + deploy.
 - ✅ §4 `LiveTestGate` core veto logic — allow/veto/nudge, surfaces+risk-categories,
   Signal-vs-Authority (hard veto only on declared userFacing+no-artifact), mode ladder (11 tests).
 
-REMAINING (in order):
+### UPDATE 3 — ALL structural cores built + tested (18 commits, 43 tests green)
+- ✅ §4.4 `LiveTestArtifactStore` (8), ✅ §4 `LiveTestGate` (11), ✅ §5 `LiveTestHarness` core (6).
+  Harness→artifact→gate end-to-end proven in a unit test with a fake driver.
+
+KEY INTEGRATION DESIGN POINTS for the remaining work (decide at wiring time):
+- **Artifact signing key (gate wiring):** the harness SIGNS with, and the gate VERIFIES
+  with, an Ed25519 key. FIRST increment (dev dogfood, dry-run, same machine): use the
+  MACHINE IDENTITY keypair (MachineIdentity.sign/verify) — harness + gate on the same
+  machine share it, no cross-machine key resolution needed. Cross-machine verify (gate on
+  machine B verifying machine A's harness artifact → resolve A's pubkey from mesh/identity)
+  is a TRACKED FOLLOW-ON, not needed for the dev dogfood. Find the machine privkey in the
+  server wiring (grep MachineIdentity / identity keypair in src/commands/server.ts).
+- **Gate veto wire point:** `POST /autonomous/evaluate-completion` (routes.ts:4153-4173).
+  After `verdict = completionEvaluator.evaluate(...)`, if `verdict.met===true` AND the gate
+  is enabled, run `liveTestGate.evaluate({featureId: slug(condition), userFacing: body.userFacing,
+  goalText: condition, mode})`; if `.blocks` → override to `{met:false, reason: gate.reason}`.
+  dry-run/warn → don't override, include would-block telemetry. Construct
+  liveTestGate+store in server.ts gated by resolveDevAgentGate(config.monitoring?.liveTestGate?.enabled),
+  register in DEV_GATED_FEATURES, add to routes ctx. + wiring-integrity test + e2e "alive".
+- **Real ChannelDrivers (task 4):** implement `ChannelDriver` (send/awaitReply/isDemoChannel)
+  against the real Telegram + Slack adapters; demo channels from config `liveTest.demoChannels`
+  (signed bindings §5.3). Playwright driver for dashboard. ToS-sanctioned modes (§5.4).
+- **Task 6 LIVE proof:** build dist, deploy Laptop+Mini, enable durableOwnership + run the
+  harness over the transfer through Telegram AND Slack → signed all-PASS artifact = THE BAR.
+
+### (historical) original remaining list:
 - **Task 3 wiring:** hook `LiveTestGate` into the autonomous completion path
   (CompletionEvaluator / UnjustifiedStopGate `U_LEGIT_COMPLETION`) so a user-facing run
   can't resolve "done" without a verified artifact. Config `monitoring.liveTestGate`
