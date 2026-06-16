@@ -54,6 +54,37 @@ Config `monitoring.liveTestGate` in `DEV_GATED_FEATURES`. Layered tests both sid
 Run harness over the transfer through Telegram AND Slack on a throwaway topic; signed
 all-PASS artifact; deploy both machines.
 
+## PROGRESS LOG (continuation state)
+
+Branch `echo/gold-standard-live-testing`. Committed so far:
+- ✅ Spec CONVERGED (6 rounds, cross-model) + self-approved + report + ELI16 (commit 34e4f3010).
+- ✅ A1 durable `LocalSessionOwnershipStore` + 8 unit tests (restart-survival proven) — 91a04b01f.
+- ✅ A4 `/pool/transfer` `seatMoved` false-positive surfacing — e60400405. (tsc clean.)
+- ✅ B incr-1 constitution standard in STANDARDS-REGISTRY.md — 98f3fba97.
+
+NEXT (in order):
+1. **A2 `OwnershipApplier`** (the delicate cross-machine heart — do with care/fresh context).
+   - READ FIRST: `src/core/CoherenceJournal.ts` (emitPlacement + how peer streams are written),
+     and the journal sync applier that writes `peers/<machineId>.topic-placement.jsonl` (grep
+     JournalSyncApplier / peer stream reading). Need the exact API to READ replicated peer
+     placement entries on the receiving machine.
+   - Implement: on a tick (off hot path), read peer placement entries, and for each
+     `{topic, owner, epoch}` newer than the local ownership record, CAS-materialize a local
+     ownership record (status active, ownerMachineId=owner, ownershipEpoch=epoch) via the
+     registry's `cas`/store. Fence: discard a placement whose leaseEpoch is below current
+     (stale-lease guard). This is what makes the target machine resolve owner=self after a move.
+   - Unit test: peer placement entry → local ownership materialized; stale epoch ignored.
+2. **A3 wire** server.ts:14612 swap InMemory→LocalSessionOwnershipStore (dir e.g.
+   `.instar/ownership/local/`); construct + tick the OwnershipApplier; keep epochFloorOf.
+   Dev-gated/dark per convention.
+3. **A5 crash-safety integration test** (§7.3/§9.4): crash at each transfer step →
+   single-owner convergence + contended messages queue (not double-route).
+4. Then B incr-2 (CLAUDE.md template generateClaudeMd + PostUpdateMigrator.migrateClaudeMd/
+   migrateAgentMdSections + migrateConfig for the standard — watch the golden line-map gate),
+   then PR the transfer fix + standard through gates (NOT before A2/A3 — the store isn't wired
+   yet, so a PR now wouldn't actually fix the transfer).
+5. Then Task 4 harness, Task 3 gate, Task 6 live proof.
+
 ## Key wiring facts (from grounding)
 - Swap point: `src/commands/server.ts:14605-14617`.
 - `emitPlacement` wrapper: server.ts:14716-14741; CAS sites: 14748-14751.
