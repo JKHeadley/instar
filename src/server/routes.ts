@@ -12286,8 +12286,35 @@ export function createRoutes(ctx: RouteContext): Router {
       // next real message, so a CAS failure must never fail the transfer itself.
       // `placedOwnership:false` is reported to the caller.
     }
+    // §7.4 (live-user-channel-proof spec): surface whether the seat ACTUALLY moved,
+    // not just ok:true. The 2026-06-15 bug was `ok:true` with the topic never moving —
+    // a lie-by-omission. The honest signal is the post-transfer owner: did the target
+    // end up the active owner? A real transfer that did NOT land that is reported
+    // `seatMoved:false` + a reason, so a caller (or the live-test harness) can never
+    // read `ok` as `moved`.
+    let seatMoved: boolean;
+    let seatMoveReason: string | undefined;
+    {
+      const ownerNow = ctx.sessionOwnershipRegistry.ownerOf(topicId);
+      const post = ctx.sessionOwnershipRegistry.read(topicId);
+      if (plan.action === 'noop') {
+        seatMoved = true; // already-there / no move required — the seat is at the target
+      } else if (post?.status === 'active' && ownerNow === target) {
+        seatMoved = true; // the target is the confirmed active owner — a real move
+      } else {
+        seatMoved = false;
+        seatMoveReason =
+          drainLeg.attempted && drainLeg.ok === false
+            ? 'drain failed — the seat did not move (topic stays whole on its current machine)'
+            : 'ownership did not transfer to the target (the pin is set, but the target is not the active owner)';
+      }
+    }
     res.json({
       ok: true,
+      // seatMoved is the load-bearing honesty field — ok:true means "request processed",
+      // seatMoved means "the conversation actually runs on the target now".
+      seatMoved,
+      ...(seatMoveReason ? { seatMoveReason } : {}),
       topicId,
       targetMachine: target,
       targetNickname: ctx.machinePoolRegistry?.getCapacity(target)?.nickname ?? null,
