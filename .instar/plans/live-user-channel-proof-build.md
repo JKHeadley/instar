@@ -79,7 +79,28 @@ clean, dev-gate wiring test green. NOT "done" until task 6 LIVE proof + deploy.
 - ✅ §4.4 `LiveTestArtifactStore` (8), ✅ §4 `LiveTestGate` (11), ✅ §5 `LiveTestHarness` core (6).
   Harness→artifact→gate end-to-end proven in a unit test with a fake driver.
 
-KEY INTEGRATION DESIGN POINTS for the remaining work (decide at wiring time):
+### UPDATE 4 — gate WIRED LIVE (20 commits, 49 tests). Tasks 1,2,3 DONE; 5 code-complete; 4 core done.
+Gate is wired into POST /autonomous/evaluate-completion (dev-gated dry-run), 6 route
+wiring-integrity tests green. ALL structural build is done. What's left is EXECUTION:
+
+EXECUTION PHASE (needs real adapters / a live deploy — do with care/fresh context):
+1. **Task 4 real ChannelDrivers:** implement `ChannelDriver` (send/awaitReply/isDemoChannel)
+   against the real Telegram + Slack adapters (src/messaging/TelegramAdapter, SlackAdapter);
+   `awaitReply` = poll the adapter's message history for the agent's reply after the sent id;
+   `responderMachineId` from the pool/ownership. Demo channels from config liveTest.demoChannels
+   (signed bindings §5.3). Playwright driver for dashboard. ToS-sanctioned modes (§5.4).
+2. **Task 6 LIVE proof (THE BAR):** build dist; deploy Laptop+Mini (test-as-self or real);
+   enable multiMachine.durableOwnership (dev-gate already live) + restart; run the harness
+   over the transfer through Telegram AND Slack on a throwaway topic → assert a reply genuinely
+   served FROM the Mini after a Laptop→Mini transfer (seatMoved:true, responderMachine=mini) →
+   signed all-PASS artifact. THIS is what the run is judged on.
+3. **PR/merge (Task 7):** PR the branch through the full instar-dev gate (husky, decision-audit,
+   docs-coverage ≥2, no-silent-fallbacks tags DONE, feature-delivery DONE, eli16 PR body ≥200
+   chars under ## ELI16, dark-gate golden map, capability index). Ships DARK (dev-gated) — the
+   flag flip to enabled is gated on the live proof. Zero-failure suite + deploy both machines.
+   NOTE: green-pr-automerge / native auto-merge = the merge path (gh pr merge --auto --squash).
+
+### (resolved) KEY INTEGRATION DESIGN POINTS — gate wiring DONE; harness/proof remain:
 - **Artifact signing key (gate wiring):** the harness SIGNS with, and the gate VERIFIES
   with, an Ed25519 key. FIRST increment (dev dogfood, dry-run, same machine): use the
   MACHINE IDENTITY keypair (MachineIdentity.sign/verify) — harness + gate on the same
