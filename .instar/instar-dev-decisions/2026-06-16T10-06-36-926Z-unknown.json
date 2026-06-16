@@ -1,0 +1,15 @@
+{
+  "ts": "2026-06-16T10:06:36.926Z",
+  "slug": "unknown",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 173,
+  "causalAutopsy": null,
+  "verdict": "pass"
+}
