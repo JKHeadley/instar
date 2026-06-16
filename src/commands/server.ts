@@ -13054,6 +13054,9 @@ export async function startServer(options: StartOptions): Promise<void> {
     // (resolve a peer's harness pubkey) is a tracked follow-on.
     let liveTestGate: import('../core/LiveTestGate.js').LiveTestGate | undefined;
     let liveTestGateMode: import('../core/LiveTestGate.js').LiveTestGateMode = 'dry-run';
+    // Shared between the gate (which VERIFIES artifacts) and the runner (which WRITES
+    // them) so a run's artifact is exactly the artifact the gate later reads.
+    let liveTestArtifactStore: import('../core/LiveTestArtifactStore.js').LiveTestArtifactStore | undefined;
     try {
       const ltgEnabled = resolveDevAgentGate(
         (config as Record<string, any>).monitoring?.liveTestGate?.enabled, config,
@@ -13066,7 +13069,7 @@ export async function startServer(options: StartOptions): Promise<void> {
         const signingKeyPem = idMgrForLtg.loadSigningKey();
         const publicKeyPem = nodeCrypto.createPublicKey({ key: signingKeyPem }).export({ type: 'spki', format: 'pem' }).toString();
         const machineId = coordinator.identity.machineId;
-        const ltStore = new LiveTestArtifactStore({
+        liveTestArtifactStore = new LiveTestArtifactStore({
           stateDir: config.stateDir,
           machineId,
           signerFingerprint: machineId,
@@ -13074,7 +13077,7 @@ export async function startServer(options: StartOptions): Promise<void> {
           verify: (d: string, s: string) => verifyEd25519(d, s, publicKeyPem),
           logger: (m: string) => console.log(pc.dim(`  ${m}`)),
         });
-        liveTestGate = new LiveTestGate(ltStore);
+        liveTestGate = new LiveTestGate(liveTestArtifactStore);
         const m = (config as Record<string, any>).monitoring?.liveTestGate?.mode;
         liveTestGateMode = m === 'warn' || m === 'veto' ? m : 'dry-run';
         console.log(pc.dim(`  [live-test-gate] active (dev-gate, mode=${liveTestGateMode}) — completion veto §4`));
@@ -13083,6 +13086,52 @@ export async function startServer(options: StartOptions): Promise<void> {
       // @silent-fallback-ok — gate not wired → no veto (today's exact completion
       // behavior). Logged; never blocks server boot.
       console.log(pc.dim(`  [live-test-gate] not wired: ${err instanceof Error ? err.message : String(err)}`));
+    }
+
+    // ── LiveTestRunner (live-user-channel-proof spec §6/§7.5) ───────────────
+    // Makes the (already-built, dark) cross-machine transfer CAPSTONE harness
+    // RUNNABLE: per request the route builds a RealChannelDriver from whatever demo
+    // creds exist (fail-closed per surface), wraps it in a LiveTestHarness over the
+    // SHARED artifact store, and runs the runner — which moves the seat FIRST
+    // (POST /pool/transfer), demands the honest seatMoved signal, then drives the §7.5
+    // matrix and records a signed PASS/FAIL artifact (PASS only when the reply came
+    // FROM the target machine). DEV-GATED + DARK (monitoring.liveTestRunner.enabled
+    // omitted from ConfigDefaults → resolveDevAgentGate: live on dev, dark on fleet).
+    // The ctx carries a FACTORY (not a pre-bound runner) because the harness must wrap
+    // the request-built driver; the factory shares the gate's artifact store so a run's
+    // artifact IS the artifact the gate later verifies.
+    let liveTestRunnerCtx: import('../server/AgentServer.js').LiveTestRunnerWiring | undefined;
+    try {
+      const ltrEnabled = resolveDevAgentGate(
+        (config as Record<string, any>).monitoring?.liveTestRunner?.enabled, config,
+      );
+      if (ltrEnabled && liveTestArtifactStore && coordinator?.identity?.machineId) {
+        const { LiveTestRunner } = await import('../core/LiveTestRunner.js');
+        const { LiveTestHarness } = await import('../core/LiveTestHarness.js');
+        const sharedStore = liveTestArtifactStore;
+        const machineId = coordinator.identity.machineId;
+        const makeHarness = (driver: import('../core/LiveTestHarness.js').ChannelDriver) =>
+          new LiveTestHarness({
+            store: sharedStore,
+            driver,
+            runnerFingerprint: machineId,
+            logger: (m: string) => console.log(pc.dim(`  ${m}`)),
+          });
+        liveTestRunnerCtx = {
+          artifactStore: sharedStore,
+          runnerFingerprint: machineId,
+          makeHarness,
+          makeRunner: (driver) => new LiveTestRunner({
+            harness: makeHarness(driver),
+            logger: (m: string) => console.log(pc.dim(`  ${m}`)),
+          }),
+        };
+        console.log(pc.dim('  [live-test-runner] active (dev-gate, dark) — cross-machine capstone §7.5'));
+      }
+    } catch (err) {
+      // @silent-fallback-ok — runner not wired → /live-test routes 503 (the dark
+      // default; no capstone runs). Logged; never blocks server boot.
+      console.log(pc.dim(`  [live-test-runner] not wired: ${err instanceof Error ? err.message : String(err)}`));
     }
 
     // ── CollaborationRedriveEngine ────────────────────────────────────
@@ -17090,7 +17139,7 @@ export async function startServer(options: StartOptions): Promise<void> {
             carrier: _topicProfileCarrier,
           }
         : null;
-    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, cartographer: cartographer ?? undefined, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, subscriptionPool, quotaPoller, quotaAwareScheduler: _quotaAwareScheduler ?? undefined, proactiveSwapMonitor: _proactiveSwapMonitor ?? undefined, inUseAccountResolver, enrollmentWizard, credentialRepointing, semanticMemory, activitySentinel, rateLimitSentinel, releaseReadinessSentinel: releaseReadinessSentinel ?? undefined, greenPrAutoMerger: greenPrAutoMerger ?? undefined, guardLatchStore: guardLatchStore ?? undefined, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, topicProfile: _topicProfileCtx ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, localSigningKeyPem, leaseTransport, onLeasePullRequest: () => leaseCoordinatorRef?.currentLease() ?? null, liveTailReceiver, handoffWireTransport, onHandoffBegin, onHandoffInitiate: handoffInitiate, handoffInProgress: handoffSentinelInProgress, messageLedger, currentInboundByTopic, replyMarkerTransport, onReplyMarker: messageLedger ? (marker: unknown) => { const m = marker as { dedupeKey: string; platform: string; replyIdempotencyKey: string; epoch: number; topic?: string | null }; messageLedger!.applyRemoteReplyMarker(m.dedupeKey, { platform: m.platform, replyIdempotencyKey: m.replyIdempotencyKey, epoch: m.epoch, topic: m.topic ?? null }); } : undefined, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, threadLog, threadMessageRecorder, warrantsReplyGate, collaborationSurfacer, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, a2aDeliveryTracker: a2aDeliveryTracker ?? undefined, responseReviewGate, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, machinePoolRegistry, getInboundQueue: () => _inboundQueue, meshRpcDispatcher, workingSetPullCoordinator, commitmentReplicaStore, preferenceReplicaStore, replicatedRecordEmitter, conflictStore, rollbackUnmerge, droppedOriginRegistry, preferencesUnionReader, forwardCommitmentMutate, sessionOwnershipRegistry, topicPinStore: _topicPinStore ?? undefined, streamTicketStore: _streamTicketStore ?? undefined, poolStreamAllowRemoteInput: (config as { dashboard?: { poolStream?: { allowRemoteInput?: boolean } } }).dashboard?.poolStream?.allowRemoteInput ?? false, poolStreamConnector: _poolStreamConnector ?? undefined, secretSync: _secretSyncHandle ?? undefined, meshSelfId: _meshSelfId ?? undefined, resolveRouterUrl: _resolveRouterUrl ?? undefined, resolvePeerUrls: _resolvePeerUrls ?? undefined, guardRegistry, listPoolMachines: _listPoolMachines ?? undefined, poolLink: _poolLink ?? undefined, poolPollCache: _poolPollCache ?? undefined, sessionPoolE2EResultStore, proxyCoordinator, topicIntentStore, topicIntentArcCheck, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, briefDeps, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, agentWorktreeReaper, orphanedWorkSentinel, mcpProcessReaper, geminiLoopRunner, sleepController, agentActivityState, reapLog, resumeQueue, resumeDrainer, operatorStopRecorder: recordOperatorStop, sleepWakeDetector, unjustifiedStopGate, stopGateDb, stopNotifier, liveTestGate, liveTestGateMode });    // Resolve the late-bound topic-operator getter (increment 2e): routing was
+    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, cartographer: cartographer ?? undefined, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, subscriptionPool, quotaPoller, quotaAwareScheduler: _quotaAwareScheduler ?? undefined, proactiveSwapMonitor: _proactiveSwapMonitor ?? undefined, inUseAccountResolver, enrollmentWizard, credentialRepointing, semanticMemory, activitySentinel, rateLimitSentinel, releaseReadinessSentinel: releaseReadinessSentinel ?? undefined, greenPrAutoMerger: greenPrAutoMerger ?? undefined, guardLatchStore: guardLatchStore ?? undefined, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, topicProfile: _topicProfileCtx ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, localSigningKeyPem, leaseTransport, onLeasePullRequest: () => leaseCoordinatorRef?.currentLease() ?? null, liveTailReceiver, handoffWireTransport, onHandoffBegin, onHandoffInitiate: handoffInitiate, handoffInProgress: handoffSentinelInProgress, messageLedger, currentInboundByTopic, replyMarkerTransport, onReplyMarker: messageLedger ? (marker: unknown) => { const m = marker as { dedupeKey: string; platform: string; replyIdempotencyKey: string; epoch: number; topic?: string | null }; messageLedger!.applyRemoteReplyMarker(m.dedupeKey, { platform: m.platform, replyIdempotencyKey: m.replyIdempotencyKey, epoch: m.epoch, topic: m.topic ?? null }); } : undefined, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, threadLog, threadMessageRecorder, warrantsReplyGate, collaborationSurfacer, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, a2aDeliveryTracker: a2aDeliveryTracker ?? undefined, responseReviewGate, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, machinePoolRegistry, getInboundQueue: () => _inboundQueue, meshRpcDispatcher, workingSetPullCoordinator, commitmentReplicaStore, preferenceReplicaStore, replicatedRecordEmitter, conflictStore, rollbackUnmerge, droppedOriginRegistry, preferencesUnionReader, forwardCommitmentMutate, sessionOwnershipRegistry, topicPinStore: _topicPinStore ?? undefined, streamTicketStore: _streamTicketStore ?? undefined, poolStreamAllowRemoteInput: (config as { dashboard?: { poolStream?: { allowRemoteInput?: boolean } } }).dashboard?.poolStream?.allowRemoteInput ?? false, poolStreamConnector: _poolStreamConnector ?? undefined, secretSync: _secretSyncHandle ?? undefined, meshSelfId: _meshSelfId ?? undefined, resolveRouterUrl: _resolveRouterUrl ?? undefined, resolvePeerUrls: _resolvePeerUrls ?? undefined, guardRegistry, listPoolMachines: _listPoolMachines ?? undefined, poolLink: _poolLink ?? undefined, poolPollCache: _poolPollCache ?? undefined, sessionPoolE2EResultStore, proxyCoordinator, topicIntentStore, topicIntentArcCheck, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, briefDeps, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, agentWorktreeReaper, orphanedWorkSentinel, mcpProcessReaper, geminiLoopRunner, sleepController, agentActivityState, reapLog, resumeQueue, resumeDrainer, operatorStopRecorder: recordOperatorStop, sleepWakeDetector, unjustifiedStopGate, stopGateDb, stopNotifier, liveTestGate, liveTestGateMode, liveTestRunnerCtx });    // Resolve the late-bound topic-operator getter (increment 2e): routing was
     // wired before the server existed; from here on inbound binds use the
     // server's own store instance.
     _agentServerRef = server;
