@@ -62,7 +62,25 @@ Branch `echo/gold-standard-live-testing`. Committed so far:
 - ✅ A4 `/pool/transfer` `seatMoved` false-positive surfacing — e60400405. (tsc clean.)
 - ✅ B incr-1 constitution standard in STANDARDS-REGISTRY.md — 98f3fba97.
 
-NEXT (in order):
+### UPDATE — transfer fix is CODE-COMPLETE + tested (2026-06-15 late)
+Committed on branch (af0e9a8e0 + crash-safety): A1 durable store, A2 OwnershipApplier,
+A3 wiring (dev-gated `multiMachine.durableOwnership`, registered in DEV_GATED_FEATURES),
+A4 seatMoved false-positive, A5 crash-safety. 18 tests green, dark-gate lint clean, tsc
+clean, dev-gate wiring test green. NOT "done" until task 6 LIVE proof + deploy.
+
+REMAINING (in order):
+- **Task 6 LIVE proof (the bar):** build dist on this branch, deploy to Laptop + Mini
+  (or test-as-self), enable `multiMachine.durableOwnership` (dev-gate already flips it
+  live on dev), run a real Laptop↔Mini transfer, confirm a reply genuinely served from
+  the Mini + `seatMoved:true`. Ideally via the Task-4 harness; a careful manual live
+  test is acceptable as the first proof. THIS is what the run is judged on.
+- **Task 2 incr-2 (migration parity):** generateClaudeMd (templates.ts) + PostUpdateMigrator
+  .migrateClaudeMd/.migrateAgentMdSections so existing agents get the standard text.
+  (No ConfigDefaults `enabled:` line added — golden line-map gate not affected.)
+- **Task 4 harness** (big): per spec §5. **Task 3 gate**: per spec §4. Then PR everything
+  through gates + zero-failure suite + deploy.
+
+### (historical) original increment list:
 1. **A2 `OwnershipApplier`** (the delicate cross-machine heart — do with care/fresh context).
    - READ FIRST: `src/core/CoherenceJournal.ts` (emitPlacement + how peer streams are written),
      and the journal sync applier that writes `peers/<machineId>.topic-placement.jsonl` (grep
