@@ -213,6 +213,12 @@ classifier never blocks by itself; it only emits **signals**:
   not a brittle auto-block. (A future objective surface-ownership manifest — reviewed
   path→surface mappings — could upgrade this to a deterministic hard signal; until
   that exists, it is signal-only.)
+- **In `veto` mode specifically (the end state), a contradicted waiver is not free**
+  (codex r4): a `userFacing:false` whose surfaced signal conflicts requires an
+  **operator-attested** waiver (recorded attestation) OR the path→surface manifest
+  before it suppresses the gate. In `dry-run`/`warn` it is signal-only as above. So the
+  hard-teeth state cannot be talked around by an un-reviewed self-waiver, while the soak
+  states stay non-blocking.
 
 `CompletionEvaluator` cannot override the veto: the artifact is objective, so the
 "is it proven?" question is not an LLM judgment. The "is it user-facing?" scope IS
@@ -250,10 +256,16 @@ security reviewers' findings):
   it). The ledger entry (`state/live-test-ledger.jsonl`) records
   `{featureId, runId, contentHash, signature, runnerFingerprint, channels|surfaces,
   riskCategories, createdAt, prevEntryHash}`.
-- **Hash-chained ledger.** Each ledger entry includes `prevEntryHash` (hash of the
-  prior entry); the gate reads sequentially and **rejects on a broken chain** (a
-  deleted/edited entry is detectable). The ledger is append-only and replicated
-  (§10).
+- **Hash-chained, single-writer-per-machine ledger (codex r4 — avoid concurrent-append
+  divergence).** Each MACHINE appends only to **its own ledger segment**
+  (`state/live-test-ledger.<machineId>.jsonl`), hash-chained **within that segment** — so
+  there is never cross-machine concurrent append to one file, no order-dependent merge,
+  and replication only ever *adds* a peer's segment (it cannot fork a shared chain). The
+  gate reads the **union** of all segments. A broken chain *within a segment* is a real
+  tamper signal (reject that segment's entries); a missing peer segment is just
+  replication lag (treated as not-yet-proven on this machine, never a false veto of an
+  unrelated feature). This removes the "two machines append → false broken-chain veto"
+  failure mode.
 - **Gate verification (server-side, like the stop gate's hook-enumerated evidence).**
   A "done" verdict must cite a ledger entry whose `featureId` matches the run's goal
   (§4.7), whose surfaces satisfy §4.5, whose risk categories satisfy §4.6, whose
@@ -435,6 +447,20 @@ the secret-drop/vault path, never the operator's live account by default; missin
 revoked demo creds → the affected scenario is **BLOCKED-real (credential-unavailable)
 and surfaced**, never silently skipped or downgraded to A.
 
+**Platform-sanctioned automation modes (codex r4 — ToS + token types are load-bearing).**
+The harness uses only platform-APPROVED automation per surface, validated before a run:
+- **Slack**: a real human actor in the **demo workspace** driven via a Slack **user
+  token** scoped to that workspace (or the workspace's approved test-automation path) —
+  never bot-token-masquerading-as-user, never the operator's workspace. The harness
+  asserts the token type + workspace id match the signed demo binding.
+- **Telegram**: a dedicated **demo bot** OR a user account in the demo group via the
+  official client API where ToS-permitted; brittle/disallowed user-client automation is
+  NOT used — if a surface has no ToS-compliant automation mode available, that scenario
+  records **BLOCKED-real (automation-unavailable)** and is surfaced, rather than the
+  harness doing something against platform policy.
+The approved mode per platform is documented in the harness config and validated at
+startup (fail-fast with a clear reason, never a silent fallback to a non-compliant mode).
+
 ### 5.5 Flakiness management (gemini/scalability finding)
 
 Live external services flake. The harness: per-scenario timeout (`timeoutMs`, default
@@ -582,6 +608,13 @@ model (the numbered "who's in charge" badge) rather than a new consensus service
 - Availability tradeoff stated honestly: a partition makes a *cross-machine move*
   temporarily unavailable (it refuses); it does NOT make the *existing* owner stop serving.
   The conversation keeps working where it is.
+- **Claim scope, narrowed honestly (codex r4).** "Exactly-one-owner" holds *given* the
+  existing fenced lease's mutual-exclusion invariant (one lease holder at a time, monotonic
+  epoch). This layer does NOT independently re-solve lease split-brain — where the LEASE
+  itself is in an unresolved split-brain (the rare case the existing system surfaces to the
+  operator as an attention item), ownership transfer **refuses** rather than asserting a
+  resolution the lease layer hasn't reached. We claim exactly-one-owner *under a healthy
+  lease*, and *refuse-on-doubt* otherwise — not a new consensus guarantee.
 
 This is no longer a bespoke protocol — it reuses the proven replicated-state + reconciler
 + fenced-lease infrastructure, with caching to keep reads off the hot path.
@@ -743,7 +776,11 @@ you can't improve what you can't see:
   `operatorFoundEscape` against that feature id (the gate let a real bug through). This
   is the true north-star: the standard exists to drive operator-found escapes toward
   zero. A rising escape rate means the scenario matrices are too thin — surfaced, not
-  buried.
+  buried. **This is also the answer to "performative coverage" (codex r4/r5):** no static
+  check can judge whether a category's scenarios are *deep enough*, but an escape
+  attributed to a shallow-matrix category is the empirical signal that thickens it.
+  Category presence is the floor; the escape metric is the ratchet — the standard
+  self-corrects from real escapes rather than pretending presence/PASS proves adequacy.
 - Read surface: `GET /metrics/features?feature=live-test-gate` / `live-test-harness`;
   the dashboard renders the escape rate + coverage in plain language. Read-only
   observability — it never gates.
