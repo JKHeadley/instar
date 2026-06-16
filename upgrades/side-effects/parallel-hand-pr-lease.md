@@ -136,3 +136,18 @@ inherited via the merge (main shipped catches under `[skip ci]` releases that ne
 re-ran this gate); the baseline is aligned 474→476 with an in-file justification, per the
 Zero-Failure Standard (a merge pulling main's pre-existing red is the merging branch's to
 settle). No behavior change; the lease's fail-open posture is unchanged.
+
+## Post-CI addendum (2026-06-16) — discoverability classification
+
+CI surfaced a second gap from the build: the new `GET /pr-leases` +
+`POST /pr-leases/evaluate` routes were registered in routes.ts but the
+`/pr-leases` prefix was never classified, so the capabilities-discoverability
+ratchet failed. Resolved by adding `{ prefix: 'pr-leases', ... }` to
+`INTERNAL_PREFIXES` in `src/server/CapabilityIndex.ts` — the lease is dev-gated
+coordination machinery (a PreToolUse git-push guard consults it; the CLAUDE.md
+template documents it), agent-invisible and 503 on the fleet, so it is correctly
+INTERNAL (skips `/capabilities` discovery) rather than a user-invokable
+capability — same class as `/action-claim` and `/playwright-profiles`.
+Classification only; no runtime behavior change. (Also in this PR: the
+`instar-settings-hooks` anti-drift contract was updated to include the new
+`pr-hand-lease-guard.js` PreToolUse hook.)
