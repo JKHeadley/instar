@@ -1,0 +1,30 @@
+## What Changed
+
+Fixed a multi-machine placement bug where a rate-limited machine could still be picked to serve
+new conversations. The "can this machine take work?" health flag was computed only from the
+slow account-usage poll and ignored the circuit breaker that trips when a machine's AI calls are
+actually failing. So a machine with an open circuit advertised itself as available, and a new
+conversation routed there died on arrival. Placement now treats an open (or recovering) circuit
+as "blocked", so it steers new work to a machine that can actually answer. Caught by applying
+the live-testing standard to the multi-machine transfer.
+
+## What to Tell Your User
+
+If one of your machines is rate-limited, I now send new conversations to a machine that can
+actually answer, instead of into a dead end where you'd get a "session stopped" notice. The only
+time nothing improves is when every machine is rate-limited at once — then there is genuinely
+nowhere good to send it, and I say so honestly. Single-machine setups are unaffected, and there
+is no new setting to learn.
+
+## Summary of New Capabilities
+
+| Capability | How to Use |
+|-----------|-----------|
+| Placement avoids a machine whose AI calls are currently failing | Automatic; a rate-limited machine shows as "blocked — llm-circuit-open" in the machines view and new conversations skip it |
+
+## Evidence
+
+- 8 new unit tests (`tests/unit/selfQuotaState.test.ts`, both sides of every boundary) + a new
+  PlacementExecutor test asserting a circuit-open machine is skipped; tsc clean.
+- Release gate: live two-machine re-run — a circuit-open machine reports blocked in the pool view
+  and a new conversation lands on a machine that can serve it.
