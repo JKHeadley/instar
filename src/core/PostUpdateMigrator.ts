@@ -6938,6 +6938,11 @@ Create worktrees for collaborator repos with \`instar worktree create <branch>\`
       // migrateClaudeMd's H3); each CLAUDE.md contains exactly one, so the other no-ops.
       '**One Memory (replicated stores)',
       '### One Memory (replicated stores)',
+      // Secure A2A Verified Pairing — reaches Codex/Gemini agents so they also know
+      // never to send a peer a credential until it shows mutual-verified. Two variants
+      // cover the template's bold heading and migrateClaudeMd's H3.
+      '**Verified Pairing — is my channel to a peer mutually verified',
+      '### Verified Pairing — is my channel to a peer mutually verified',
     ];
 
     for (const shadowName of ['AGENTS.md', 'GEMINI.md']) {
