@@ -1,0 +1,13 @@
+{
+  "ts": "2026-06-16T05:48:54.786Z",
+  "slug": "pool-consistent-multimachine-activation",
+  "suggestedTier": 1,
+  "declaredTier": null,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 2,
+  "causalAutopsy": null,
+  "verdict": "pass"
+}

@@ -41,3 +41,5 @@ export function shouldActivateDurableOwnership(
   const devOn = isDevAgentGate(c?.multiMachine?.durableOwnership?.enabled, config);
   return devOn || isPlacementReplicationEnabled(config);
 }
+
+// (pool-consistent activation — see docs/specs/pool-consistent-multimachine-activation.md)

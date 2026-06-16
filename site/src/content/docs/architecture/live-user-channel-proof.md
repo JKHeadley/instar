@@ -66,3 +66,11 @@ reads the materialized ownership so the conversation lands on the right machine.
 stores `LocalLeaseStore` and `GitLeaseStore`, the router `SessionRouter`, and the legacy
 `InMemorySessionOwnershipStore` are the surrounding pieces a reader will meet here.
 
+
+## Pool-consistent activation
+
+The durable store's activation is decided by `durableOwnershipActivation` — specifically
+`shouldActivateDurableOwnership`, which activates the store on every machine where placement
+replication is explicitly on, not only on a dev-flagged machine. This closed a live-test
+finding where the Mini's store stayed dark and a transferred seat died on arrival;
+`durableOwnershipActivation` makes a replication-enabled pool activate consistently.
