@@ -122,14 +122,57 @@ auto-converge is §2.1's job.)
 
 ## 4. Frontloaded Decisions
 
-- **D1 — activation signal.** DECIDED: gate on the coherence-journal placement-replication
-  being active (the durable store's real, already-pool-consistent dependency), OR dev.
-  _Reversibility: cheap — a one-expression activation-gate change; reversible to the
-  per-machine dev-gate; no external side-effect._
+- **D1 — activation signal.** REVISED after round-1 review (both reviewers flagged the
+  original as under-specified / flag-conflating). The fix is modeled as **POOL-SCOPED
+  activation on an invariant**, not a loose `dev || dependency` OR:
+  > **Invariant:** *every machine that CONSUMES replicated placement journals must run the
+  > durable ownership store + `OwnershipApplier`; no placement journal may run without the
+  > applier where durable ownership records exist.*
+  The activation predicate keys on the **explicit, already-pool-consistent**
+  `multiMachine.coherenceJournal.replication.enabled === true` signal (NOT the dev-gated
+  `coherenceJournal.enabled`, and NOT the per-machine dev flag) — verified in the live
+  incident: the Mini carried `coherenceJournal.enabled:true` explicitly yet durableOwnership
+  was dark purely on the dev flag. Gating on `replication.enabled` (operator-set,
+  non-dev-gated, pool-consistent by deployment discipline) is what genuinely fixes it.
+  This is **production promotion** of the durable store wherever placement replication is
+  on — disclose the blast radius (it's pool-scoped activation, not local dev). _Reversibility:
+  NOT cheap — it changes the activation MODEL (local→pool-scoped) + promotes the feature past
+  the dev ladder; frontloaded with the invariant + blast-radius disclosure._
 - **D2 — backstop strength.** DECIDED: signal-only split-active detector first (an
   Attention item + log row), no auto-disable. _Reversibility: cheap — observe-only._
 - **D3 — generalization.** DECIDED: doc the convention + add the CI lint for new
   `multiMachine.*` dev-gated features. _Reversibility: cheap — docs + a lint._
+
+## Round-1 review findings to fold (next convergence cycle)
+
+Both reviewers (internal panel + codex external, verdict SERIOUS) converged on these — to
+address in the next round before convergence:
+
+1. **Precise activation predicate (HIGH).** Define the exact code: gate on
+   `multiMachine.coherenceJournal.replication.enabled === true` (the explicit signal at
+   ~server.ts:16589, NOT the dev-gated `coherenceJournal.enabled` at ~3462, NOT the dev
+   flag at 14861). State the invariant (§D1) + that this is **pool-scoped production
+   promotion** with operator-visible blast-radius.
+2. **Detector = deterministic activation-health record (MEDIUM).** The incident was a
+   config-vs-materialized-behavior mismatch. The split-active detector must compare
+   **effective runtime** activation, not raw config — each pool-coordinated feature exposes
+   `{configured, effective, dependencyActive, componentStarted, lastAppliedPeerJournal}` via
+   `GET /guards?scope=pool`; the detector flags when `effective` diverges across peers.
+3. **Rolling-deploy + boot-race (MEDIUM).** Old code (pre-gate) won't materialize a new
+   machine's placements mid-deploy → half-applied transfer. Document the safe deploy
+   sequence; the `OwnershipApplier` must **backfill** materializations on first run (scan
+   existing replicated placements at activation), so a boot-before-peer machine converges.
+4. **Detector false-positives (LOW→MED).** Suppress during a known version-mismatch
+   (rolling deploy — compare peer versions in the heartbeat) and honor a `poolConsistent:false`
+   silence for features SUPPOSED to drift; define the de-dup/clear window.
+5. **Evaluate the capability-handshake alternative (MED).** Add a tradeoff table:
+   dependency-following (lean) vs heartbeat capability-gossip (peers advertise
+   `durableOwnershipActive`, refuse a transfer to a peer lacking it — fail-closed, arguably
+   safer) vs pool-config. The capability-refuse option may be the safest: a transfer to a
+   peer that can't materialize is REFUSED (honest `seatMoved:false`) rather than half-moved.
+6. **Testable lint, not paperwork (MED).** The `poolConsistent` invariant should be
+   CI-asserted (e.g. a test that a `multiMachine.*` dev-gated entry resolves the same across
+   a simulated 2-machine config), not just a declaration string.
 
 ## Open questions
 
