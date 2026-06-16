@@ -151,10 +151,14 @@ installs, not just `init`:
 - **No herd:** swap is gating-scoped + per-framework-breakered (unchanged).
 - **Claude-only agents unaffected:** §4.2 no-op guarantee.
 - **The tone-gate (the thing that broke tonight):** is it `attribution.gating`?
-  **VERIFY in build** — if the outbound tone-gate is not flagged gating, the swap
-  won't fire for it and tonight's exact failure recurs. If it isn't flagged, flag
-  it (it gates message delivery — it is safety-gating by definition). This is the
-  single most important wiring check in the whole change.
+  **GROUNDED ✅ — YES.** `src/core/MessagingToneGate.ts:269` calls `.evaluate()` with
+  `attribution: { component: 'MessagingToneGate', gating: true }`. So the outbound
+  tone-gate already participates in the failure-swap chain — this default policy,
+  once shipped, would have prevented tonight's delivery strangle (the tone-gate
+  would have swapped off a slow Claude onto codex instead of sitting the timeout).
+  Confirmed gating coverage across the safety machinery: MessageSentinel:562,
+  ExternalOperationGate:513, InputGuard:327, IntentLlmJudge (IntentTestHarness:251),
+  RelationshipAnomalyScorer:392, LlmIntentClassifier:134 — all `gating: true`.
 - **Observability:** every swap/degrade already routes through `onDegrade` →
   `DegradationReporter` and the per-feature LLM metrics (`/metrics/features` shows
   `frameworks`/`models` actually serving each component). The operator can SEE that
