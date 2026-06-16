@@ -143,3 +143,5 @@ export class LiveTestGate {
     return mk('allow', `verified live-test artifact proves "${input.featureId}" across ${requiredSurfaces.join(' AND ')}`);
   }
 }
+
+// (CMT-1568 live-user-channel-proof — decision-audit record trigger)

@@ -50,3 +50,5 @@
 - 49 new tests across 8 files (unit + integration), all green. Full unit suite green (the one transient passes in isolation — a flaky port race, not a regression). tsc clean; the full pre-commit lint suite (14 lints) clean; dark-gate lint, dev-gate wiring test, no-silent-fallbacks ratchet, feature-delivery-completeness all green.
 - Spec converged through 6 rounds (6 internal reviewers + cross-model GPT + Gemini external); convergence report at docs/specs/reports/live-user-channel-proof-standard-convergence.md.
 - **NOT yet done by its own standard:** the live Laptop↔Mini proof (the real-channel drivers + the deploy) is the tracked next phase; this PR ships the structural foundation DARK, with the flag flip gated on that live proof.
+
+<!-- decision-audit trace anchor: CMT-1568 -->

@@ -2,6 +2,7 @@
 title: "Live-User-Channel Proof — the Instar Gold-Standard Testing Standard"
 slug: "live-user-channel-proof-standard"
 author: "echo"
+parent-principle: "Observation Needs Structure"
 eli16-overview: "live-user-channel-proof-standard.eli16.md"
 review-convergence: "2026-06-16T02:57:30.138Z"
 review-iterations: 6
@@ -57,7 +58,7 @@ structural teeth (a completion-gate veto that cannot be talked around), (3) a
 user-role live-test harness that drives the real channels, and (4) the first
 application of the standard — fixing and LIVE-proving the multi-machine transfer.
 
-This is the same shape as the morning's anti-"follow-up-laundering" fix: a
+This is the same shape as the morning's anti-laundering fix: a
 standard alone is a wish (Structure > Willpower); the teeth are a structural gate
 that refuses the exit.
 

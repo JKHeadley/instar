@@ -1,0 +1,13 @@
+{
+  "ts": "2026-06-16T04:20:12.990Z",
+  "slug": "live-user-channel-proof-standard",
+  "suggestedTier": 1,
+  "declaredTier": null,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 2,
+  "causalAutopsy": null,
+  "verdict": "blocked"
+}

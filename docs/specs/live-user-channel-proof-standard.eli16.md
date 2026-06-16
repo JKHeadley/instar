@@ -60,3 +60,5 @@ fast tests for quick breadth. The new gate also ships carefully: first it just
 *logs* what it would block (so we can watch it for false alarms), then it warns,
 then it actually blocks — so it never surprises a real work-session by slamming a
 door shut on day one.
+
+<!-- CMT-1568 -->
