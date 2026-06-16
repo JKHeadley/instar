@@ -1,10 +1,16 @@
+---
+title: "Live-User-Channel Proof — the Instar Gold-Standard Testing Standard"
+slug: "live-user-channel-proof-standard"
+author: "echo"
+eli16-overview: "docs/specs/live-user-channel-proof-standard.eli16.md"
+---
+
 # Spec: Live-User-Channel Proof — the Instar Gold-Standard Testing Standard
 
-**Status:** draft (pre-convergence)
+**Status:** converged-draft (round 2)
 **Author:** Echo (autonomous run, topic 13481)
 **Date:** 2026-06-15
 **Tracking:** CMT-1568
-**Tags:** _(to be set by spec-converge)_
 
 ---
 
@@ -54,15 +60,16 @@ In scope:
    awareness (CLAUDE.md template) + migration to existing agents.
 2. **The completion-gate teeth** — the autonomous completion judge / stop gate
    VETOES a "done"/"shipped" verdict for a **user-facing** feature unless a
-   recorded **live-user-channel test artifact** exists (a scenario matrix with
-   PASS/FAIL, run through Telegram AND Slack), anchored the same anti-hallucination
-   way the existing `UnjustifiedStopGate` anchors artifact pointers.
+   recorded, **signed** live-user-channel test artifact exists (a scenario matrix
+   with PASS/FAIL covering the required risk categories §4.6, run through the
+   feature's real surfaces — Telegram AND Slack for channel features), anchored the
+   same anti-hallucination way `UnjustifiedStopGate` anchors artifact pointers.
 3. **The user-role live-test harness** — a runner that drives a feature
    end-to-end **as a real human user through the real channels** (Telegram AND
-   Slack), records the PASS/FAIL scenario matrix as the durable artifact the gate
-   reads, and runs volatile/dangerous/permission scenarios on **throwaway agents
-   + demo channels** (demo Slack workspace + demo Telegram group), never the live
-   operator channel.
+   Slack), records the signed PASS/FAIL scenario matrix as the durable artifact the
+   gate reads, and runs volatile/dangerous/permission scenarios on **throwaway
+   agents + isolated demo channels** (demo Slack workspace + demo Telegram group),
+   never the live operator channel.
 4. **First application: multi-machine transfer** — fix cross-machine
    topic-ownership replication (root-caused below) so a topic can actually move
    Laptop↔Mini, then prove it LIVE through the harness.
@@ -71,32 +78,49 @@ Out of scope (tracked, not done here):
 
 - Retrofitting every existing user-facing feature with a live-channel artifact
   (the gate applies going forward; a backfill campaign is its own track).
-- A demo-channel provisioning wizard beyond what the harness needs for the
-  multi-machine proof (the harness defines the throwaway-channel contract; a
-  general self-service provisioner is a follow-on).
+- A self-service demo-channel provisioning wizard beyond the deterministic
+  config + migration contract the harness needs (§5.3).
 
 ---
 
-## 2. Definitions
+## 2. Definitions & glossary
 
 - **User-facing feature**: a capability whose behavior the operator experiences
-  through a messaging channel or the dashboard (vs. purely internal infra like a
-  sentinel's scoring math). The gate's veto applies only to user-facing features;
-  internal-only changes are judged as today.
+  through a messaging channel OR the dashboard (vs. purely internal infra like a
+  sentinel's scoring math). The gate's veto applies only to user-facing features.
+- **Surface**: where a feature is experienced — `channel` (Telegram/Slack) and/or
+  `dashboard`. Proof requirements are surface-specific (§4.5).
 - **User-role session**: an Instar session that assumes the **human user's role**
   and drives a *target* through the real interface exactly as a human would —
   sending real messages on a real channel, reading the real replies — while
-  (optionally) inspecting the target's internals. One loop, both lenses.
-- **Live user channel**: Telegram AND Slack. "AND" is load-bearing — a feature
-  proven only on Telegram is not proven (Slack has materially different session
-  lifecycle, socket behavior, and threading).
-- **Throwaway agent / demo channel**: a disposable agent home + a demo Slack
-  workspace + a demo Telegram group used for volatile/dangerous/permission
-  scenarios so the live operator channel is never the test surface.
-- **Live-test artifact**: a durable, machine-written record of a harness run — a
-  scenario matrix (each scenario → PASS/FAIL/BLOCKED + evidence) keyed to a
-  feature id, with the channels exercised and a content hash. This is the object
-  the completion gate reads. The agent cannot hand-write it (§5.4).
+  optionally inspecting the target's internals. One loop, both lenses.
+- **Live user channel**: Telegram AND Slack. "AND" is load-bearing for a channel
+  feature — Slack has materially different session lifecycle, socket behavior, and
+  threading than Telegram.
+- **Throwaway agent / demo channel**: a disposable agent home + an **isolated** demo
+  Slack workspace (NOT the operator's) + a demo Telegram group, used for
+  volatile/dangerous/permission scenarios so the live operator channel is never the
+  test surface.
+- **Live-test artifact**: a durable, **harness-written + signed** record of a run —
+  a scenario matrix (each scenario → PASS/FAIL/BLOCKED + evidence) keyed to
+  `{featureId, runId}`, with the surfaces exercised, the risk categories covered,
+  a canonical content hash, and an Ed25519 signature over that hash. The object the
+  completion gate reads. The agent cannot hand-write it to buy the exit (§4.4).
+- **seat** (multi-machine): the live ownership of a topic — which machine actually
+  serves it and answers the user. "Move the seat" = the conversation genuinely runs
+  on the destination machine, not just a pin pointing at it.
+- **pin** (`topicPinStore`): a router-local hint recording which machine a topic
+  *prefers*. Today it is set on transfer but not synced cross-machine (a defect §7).
+- **CAS / ownership record / epoch**: the `SessionOwnershipRegistry`'s
+  compare-and-swap over a per-topic record (`place`→`claim`→`active`/`release`),
+  carrying a monotonically increasing `ownershipEpoch` so a stale write loses to a
+  fresher one.
+- **drain leg**: the transfer step that finishes the in-flight turn on the source,
+  suspends any autonomous run, and hands the topic to the target so an active
+  conversation moves whole rather than half-moving.
+- **reconciler** (`OwnershipReconciler`): the background process that converges
+  ownership when records disagree, so a crash mid-move resolves to exactly one
+  owner.
 
 ---
 
@@ -108,18 +132,21 @@ New entry for `docs/STANDARDS-REGISTRY.md`, in the registry's existing format
 > ### Live-User-Channel Proof Before Done
 >
 > **Rule.** A user-facing feature is not "done" until a user-role session has
-> exercised it end-to-end **through the real user channels — Telegram AND Slack —
-> across an enumerated scenario matrix targeting ~90% of conceivable scenarios, in
-> a LIVE environment, BEFORE the operator is ever asked to test.** The operator
-> discovering a defect on first use is a process failure, not a normal outcome.
+> exercised it end-to-end **through its real user surface — Telegram AND Slack for
+> a channel feature, the real dashboard for a dashboard feature — across the
+> required risk categories, in a LIVE environment, BEFORE the operator is ever asked
+> to test.** The operator discovering a defect on first use is a process failure,
+> not a normal outcome.
 >
 > **In practice.** Before claiming done/shipped on a user-facing feature, run the
 > user-role live-test harness: one session acts as the human user and drives the
-> feature over Telegram AND Slack, recording a PASS/FAIL scenario matrix as a
-> durable artifact. Volatile, dangerous, or permission-changing scenarios run on
-> throwaway agents + demo channels (demo Slack workspace + demo Telegram group),
-> never the live operator channel. The completion gate refuses "done" without that
-> artifact (§4) — the teeth, not the willpower.
+> feature over its real surface, recording a signed PASS/FAIL scenario matrix that
+> covers the required risk categories (happy-path, channel-parity, lifecycle
+> boundaries, permission/volatile, failure/rollback, concurrency, idempotency,
+> regression). Volatile, dangerous, or permission-changing scenarios run on
+> throwaway agents + isolated demo channels, never the live operator channel. The
+> completion gate refuses "done" without that artifact (§4) — the teeth, not the
+> willpower.
 >
 > **Earned from.** 2026-06-15: the multi-machine topic transfer reported success
 > but never moved the seat; the operator found it on the first live test. Every
@@ -133,12 +160,11 @@ New entry for `docs/STANDARDS-REGISTRY.md`, in the registry's existing format
 >
 > **Applied through.** The user-role live-test harness (§5); the completion-gate
 > live-test-artifact veto (§4); the Testing Integrity Standard's Tier-4
-> (test-as-self) becomes "user-role live testing" and is sharpened to require the
-> real-channel drive half, not just internals inspection.
+> (test-as-self) is sharpened to "user-role live testing" — the real-channel drive
+> half is required, not just internals inspection.
 
 Migration parity (§6): the standard's agent-awareness text goes into the CLAUDE.md
-template and is migrated to existing agents; no config behavior depends on the
-prose alone.
+template and is migrated to existing agents; no behavior depends on the prose alone.
 
 ---
 
@@ -149,76 +175,141 @@ prose alone.
 Two completion surfaces exist today:
 
 - `CompletionEvaluator.evaluate(condition, transcriptTail)` — the autonomous run's
-  "is the goal met?" judge (`src/core/CompletionEvaluator.ts`). Conservative,
-  small-tier model, transcript-only.
-- `UnjustifiedStopGate` — the Stop-hook authority that classifies a stop as
-  continue/allow/escalate (`src/core/UnjustifiedStopGate.ts`), with the
-  `U_LEGIT_COMPLETION` allow-rule. It already anchors evidence to verbatim
+  "is the goal met?" judge (`src/core/CompletionEvaluator.ts`).
+- `UnjustifiedStopGate` — the Stop-hook authority (`src/core/UnjustifiedStopGate.ts`)
+  with the `U_LEGIT_COMPLETION` allow-rule, already anchoring evidence to verbatim
   artifact pointers the authority cannot hallucinate.
 
-The live-test veto is a **deterministic pre-check** that runs BEFORE the LLM
-completion judgment can resolve to "done" for a user-facing feature. It mirrors
-the anti-laundering veto's shape (CMT-1561): the verdict cannot be "done" while a
-disqualifying condition holds. Determinism matters — the gate must not depend on
-the same LLM that might be motivated to declare done.
+The live-test veto is a **deterministic pre-check** that runs BEFORE a "done"
+verdict can resolve for a user-facing feature. It mirrors the anti-laundering veto
+(CMT-1561).
 
-### 4.2 The rule
+### 4.2 Signal vs. Authority — where the blocking authority lives (conformance + lessons-aware finding)
 
-For an autonomous run (or stop-gate completion) whose goal/condition is a
-**user-facing feature**:
+The keyword classifier (§4.3) is a **brittle low-context filter** and therefore
+holds **NO blocking authority** (Signal vs. Authority). Blocking authority rests
+ONLY on two **objective** facts:
 
-```
-IF the run is about to resolve "done"/"shipped" for a user-facing feature
-AND no live-test artifact exists for that feature id covering BOTH Telegram AND Slack
-   with all enumerated scenarios PASS (or BLOCKED-with-recorded-real-blocker)
-THEN veto the "done" verdict; emit guidance "run the user-role harness over <feature>
-     through Telegram AND Slack and record the scenario matrix before this can close."
-```
+1. **An author-declared `userFacing` value** (an objective declaration on the
+   job/commitment, not a guess), and
+2. **The presence-or-absence of a verified, signed live-test artifact** (an
+   objective on-disk fact).
 
-The veto is **non-terminal**: it returns the run to work with explicit guidance,
-exactly like the context-death continue path and the anti-laundering veto.
+The block is: `userFacing == true (declared) AND no verified artifact → veto`. The
+classifier never blocks by itself; it only emits **signals**:
 
-### 4.3 Determining "user-facing"
+- When `userFacing` is undeclared and the goal text looks user-facing → the
+  classifier **surfaces** "declare `userFacing` and run the harness, or justify
+  `userFacing:false`" and the run is returned to work (a non-terminal nudge, not a
+  hard block on an unverifiable guess).
+- When `userFacing:false` is declared but the changed files / touched surfaces
+  contradict it → the classifier **surfaces the conflict** and the gate **fails
+  closed** (treats the run as user-facing-unproven) — closing the escape hatch
+  (codex/security finding) without giving the classifier standalone authority,
+  because the trigger is the *objective* file/surface evidence, not the classifier's
+  opinion.
 
-A run is treated as user-facing when its registered goal/condition references a
-user-facing surface. Resolution order (deterministic, no LLM):
+`CompletionEvaluator` cannot override the veto: the artifact is objective, so the
+"is it proven?" question is not an LLM judgment. The "is it user-facing?" scope IS
+the declared/objective side. This split is stated explicitly so the
+authority-placement is consistent with the rest of the system (the LLM judges
+fuzzy end-state; structure enforces objective facts).
 
-1. Explicit declaration on the autonomous job / commitment:
-   `userFacing: true|false` (authoritative when present).
-2. Otherwise a keyword classifier over the goal text (channel/dashboard/
-   message/transfer/Slack/Telegram/UX/reply/...). Classifier is advisory and
-   **fail-toward-applying** the gate when ambiguous (the safe direction is to
-   require proof, not to skip it). An explicit `userFacing:false` is the only way
-   to opt a genuinely-internal change out.
+### 4.3 Determining "user-facing" (signal only)
 
-This is a design fork (see §8 Q1) — explicit-flag-first vs classifier-first. Lean:
-explicit flag wins; classifier is the fallback and biases toward applying the gate.
+Resolution order (deterministic, no LLM authority):
+
+1. Explicit `userFacing: true|false` on the autonomous job / commitment —
+   authoritative.
+2. Otherwise the keyword classifier (deterministic, whole-word/boundary match over a
+   fixed, unit-tested keyword set: channel, dashboard, message, transfer, Slack,
+   Telegram, UX, reply, …) emits a **signal** per §4.2 — never a standalone block.
+
+`userFacing:false` requires a recorded `userFacingWaiverReason`; a waiver that
+conflicts with touched surfaces fails closed (§4.2).
 
 ### 4.4 Anti-hallucination anchoring (the load-bearing part)
 
 The artifact MUST be machine-written by the harness and **cannot be hand-authored
-by the agent to buy the exit** — this is the exact failure mode the standard
-exists to kill. Mechanism, mirroring `UnjustifiedStopGate`'s artifact-pointer
-discipline:
+by the agent to buy the exit** — the exact failure mode the standard exists to kill.
+Mechanism (hardening the `UnjustifiedStopGate` artifact-pointer discipline with the
+security reviewers' findings):
 
-- The harness writes the artifact to a canonical, confined path
-  (`state/live-test-artifacts/<featureId>/<runId>.json`) and records its content
-  hash in a small append-only ledger (`state/live-test-ledger.jsonl`).
-- The gate's evidence collector (server-side, like the stop gate's hook-enumerated
-  artifact set) reads the ledger and the artifact from disk — the agent's
-  transcript claims are NEVER the evidence. A "done" verdict must cite a ledger
-  entry whose featureId matches, whose `channels` ⊇ {telegram, slack}, whose
-  scenario rows are all PASS/BLOCKED-real, and whose content hash verifies.
-- A BLOCKED row is only honored if it carries a real, recorded external blocker
-  (same bar as the anti-laundering "genuinely blocked" exemption) — a BLOCKED row
-  with no exhausted-blocker evidence counts as not-proven.
+- **Canonical serialization + content hash.** The harness serializes the artifact
+  canonically (sorted keys, normalized line endings), computes `sha256` at
+  write-time, and writes the artifact to `state/live-test-artifacts/<featureId>/<runId>.json`.
+- **Signature + runner identity.** The harness signs the content hash with an
+  Ed25519 key bound to the **harness runner identity** (the machine/agent that ran
+  it). The ledger entry (`state/live-test-ledger.jsonl`) records
+  `{featureId, runId, contentHash, signature, runnerFingerprint, channels|surfaces,
+  riskCategories, createdAt, prevEntryHash}`.
+- **Hash-chained ledger.** Each ledger entry includes `prevEntryHash` (hash of the
+  prior entry); the gate reads sequentially and **rejects on a broken chain** (a
+  deleted/edited entry is detectable). The ledger is append-only and replicated
+  (§10).
+- **Gate verification (server-side, like the stop gate's hook-enumerated evidence).**
+  A "done" verdict must cite a ledger entry whose `featureId` matches the run's goal
+  (§4.7), whose surfaces satisfy §4.5, whose risk categories satisfy §4.6, whose
+  signature verifies against a trusted runner key, whose `contentHash` **re-verifies
+  against the artifact re-read from disk** (mismatch → TAMPERED → reject), and whose
+  rows are all PASS or BLOCKED-real (§4.6). The agent's transcript claims are NEVER
+  the evidence.
+- **Recency + replay.** The gate uses the **freshest** `{featureId, runId}` entry and
+  requires it to be from the current autonomous session (or the immediately preceding
+  one); a stale-artifact replay is rejected.
+- **`seatMoved:false` poison rule.** Any scenario whose recorded evidence contains a
+  feature-level failure signal (e.g. `seatMoved:false`, an `ok:true`-but-no-effect
+  response) is recorded as **FAIL** — it can never sit under a PASS row. A PASS row
+  whose evidence contradicts the verdict poisons the artifact (rejected).
 
-### 4.5 Rollout (dark-first, dev-gated)
+### 4.5 Surface-specific proof (codex finding)
 
-Ships dark behind a config flag, dev-agent-gated, dry-run first (logs the veto it
-WOULD apply without blocking), per the graduated-rollout ladder and the
-dark-features-dogfood-on-dev-agents rule. The flag, default state, and dev gate
-follow the existing `DEV_GATED_FEATURES` / `devGatedFeatures.ts` convention.
+- **Channel feature** → required surfaces = {telegram, slack}. A feature genuinely
+  absent from Slack records that absence as an explicit, audited exemption
+  (`surfaceExemption: {surface:"slack", reason}` in the artifact), never a silent
+  Telegram-only pass.
+- **Dashboard feature** → required surface = a browser-driven live check (the harness
+  drives the real dashboard via Playwright and asserts the rendered result) recorded
+  as the artifact.
+- **Both** → both surfaces required.
+
+### 4.6 Risk-category coverage + BLOCKED taxonomy (codex/lessons/decision findings)
+
+"~90% of conceivable scenarios" is replaced by **required risk-category coverage** —
+objective and gate-checkable. The artifact must cover, per applicable surface:
+**happy-path, channel-parity (Telegram vs Slack agree), lifecycle boundaries
+(restart/transfer/wedge), permission/volatile, failure/rollback, concurrency,
+idempotency, regression.** Uncovered categories are recorded explicitly; the gate
+requires every applicable category present with at least one PASS (a category with
+only BLOCKED rows is not covered).
+
+**BLOCKED taxonomy.** A BLOCKED row is honored ONLY when it carries a recorded,
+machine-verifiable external blocker: a platform API error (status code + body
+captured), an external-service outage (with expiry/retry recorded), or an
+operator-approved exemption (recorded in the ledger with attestation). A
+self-authored BLOCKED with no recorded external error counts as **FAIL**. BLOCKED
+never satisfies a **happy-path** or **channel-parity** scenario (the load-bearing
+ones) — those must PASS.
+
+### 4.7 featureId provenance (security/decision finding)
+
+`featureId` is derived from an authoritative source: the run's CMT commitment id or
+GitHub issue/PR if present, else a slug deterministically derived from the goal;
+immutable once assigned and recorded in both artifact and ledger. The gate validates
+that the cited `featureId` matches the current run's goal/condition — an artifact for
+a different feature cannot satisfy this run.
+
+### 4.8 Rollout (dark-first, dev-gated, graduated)
+
+Ships dark behind `monitoring.liveTestGate` (dev-agent-gated, omit `enabled` per the
+dev-gate convention; registered in `DEV_GATED_FEATURES`). Strictness ladder
+`mode: "dry-run" | "warn" | "veto"` (default `dry-run` — logs the veto it WOULD apply
+without blocking), promoted along the graduated-rollout ladder. When the gate cannot
+verify an artifact (ledger stale/unreadable on this machine), it treats the feature as
+**not-proven → veto (return-to-work)** — the safe direction is to keep working until
+proof exists, which is non-destructive (it never lets a false "done" through, and
+never hard-stalls since the run simply continues its job). This is distinct from an
+*advisory* gate's fail-open; a safety veto fails toward requiring proof.
 
 ---
 
@@ -227,84 +318,103 @@ follow the existing `DEV_GATED_FEATURES` / `devGatedFeatures.ts` convention.
 ### 5.1 Responsibility
 
 Drive a target feature end-to-end **as a real human user, through the real
-channels**, and emit the live-test artifact §4.4 reads.
-
-It is NOT a unit/integration test (those still apply per the Testing Integrity
-Standard). It is the Tier-4 "user-role live test" — the real-channel drive that
-test-as-self was supposed to be but had been half-doing (internals-only).
+surface**, and emit the signed live-test artifact §4.4 reads. It is the Tier-4
+"user-role live test" — the real-channel drive test-as-self was supposed to be but
+had been half-doing (internals-only). Unit/integration tests still apply (Testing
+Integrity Standard).
 
 ### 5.2 Shape
 
-A scenario matrix per feature: a list of `{ id, description, channel:
-telegram|slack|both, volatility: safe|volatile|permission, steps[], expect }`.
-The harness, for each scenario:
+A scenario matrix per feature: `{ id, description, surface: telegram|slack|dashboard,
+riskCategory, volatility: safe|volatile|permission, steps[], expect, timeoutMs }`.
+For each scenario the harness:
 
-1. Picks the surface: **safe** scenarios may run on the live operator's own
-   channels read-as-user (non-destructive); **volatile/permission** scenarios run
-   on throwaway agent + demo channel (§5.3).
-2. Sends the real user input on the real channel (Telegram send / Slack post) as
-   the user-role actor.
-3. Reads the real reply from the channel and asserts `expect` (content, which
-   machine answered, no-double-voice, history carried, latency bound).
-4. Records PASS/FAIL/BLOCKED + evidence (message ids, the observed reply, the
-   resolved owner machine) into the artifact.
+1. Picks the surface per §5.3 (safe → may use the operator's own channel read-as-user,
+   non-destructive; volatile/permission → throwaway agent + demo channel only).
+2. Sends the real user input on the real surface as the user-role actor.
+3. Reads the real reply and asserts `expect` (content, which machine answered,
+   no-double-voice, history carried, latency bound).
+4. Records PASS/FAIL/BLOCKED + evidence (message ids, observed reply, resolved owner
+   machine) into the artifact.
 
-### 5.3 Throwaway agents + demo channels
+### 5.3 Throwaway agents + isolated demo channels (security/adversarial findings)
 
-- A **demo Telegram group** and a **demo Slack workspace** are registered in
-  config as the throwaway surfaces (`liveTest.demoChannels`). Volatile/permission
-  scenarios target these, never the operator's live channel.
-- A **throwaway agent home** (disposable `.instar` under a temp root) is spun for
-  scenarios that mutate agent state irreversibly (permission grants, destructive
-  ops). Reuses the existing `test-as-self` throwaway-home machinery
-  (`instar test-as-self` deploys dist into a throwaway home) where possible.
-- The harness MUST refuse to run a `volatile|permission` scenario against a live
-  operator channel (a structural guard, not a convention).
+- **Isolation is structural, not convention.** Demo channels live in **separate
+  workspaces/groups** from the operator's (the demo Slack workspace is NOT the
+  operator's workspace; a demo Telegram group). Demo-channel bindings are written
+  once to `state/demo-channel-bindings.json`, **signed**, and the harness refuses to
+  run if the bindings changed unsigned.
+- **Credential segregation.** Demo-account credentials live in a **separate vault
+  namespace** (`vault://demo/*`) from production. A `volatile|permission` scenario
+  that resolves a production-tier credential or a non-whitelisted channel **throws
+  before any message is sent** — the harness asserts the target channel **ID**
+  (not name) is on the signed demo whitelist. Unit-tested with intentional
+  mismatches.
+- **Permission-scenario isolation.** Permission-changing scenarios run in a **fresh
+  throwaway agent home that is discarded after**, and always **after** safe
+  scenarios — a permission mutation can never bleed into a later safe scenario.
+- **Transcript masking.** Credential names/values are redacted before any transcript
+  or artifact capture (reuse the existing `SecretRedactor`).
+- The throwaway-home machinery reuses the existing `test-as-self` deploy path where
+  possible.
 
-### 5.4 How the actor drives the channels
+### 5.4 How the actor drives the surfaces (Frontloaded — D2)
 
-The user-role actor needs to send/receive on Telegram and Slack as a *user*, not
-as the agent's outbound relay. Two candidate mechanisms (design fork §8 Q2):
+Two mechanisms:
 
-- **A. API-level injection** — the harness injects an inbound message via the
-  platform adapter's receive path (simulating a user message arriving) and reads
-  the outbound the agent produces. Fast, deterministic, no external creds; risk:
-  it bypasses the real platform transport (the very layer that broke nothing here,
-  but could mask a real transport bug).
-- **B. Real-account drive** — the harness logs in as a real human (Telegram user
-  account / Slack user via the demo workspace) and sends genuine messages through
-  the platform, reading genuine replies. Highest fidelity (this is literally what
-  the operator does); cost: real creds + Playwright/native client + slower.
+- **A. API-level injection** — inject an inbound via the platform adapter's receive
+  path and read the agent's outbound. Fast, no external creds; bypasses real
+  transport. Recorded as **NON-satisfying** for the gate (a fast breadth inner-loop
+  only).
+- **B. Real-account drive** — the harness sends genuine messages as a real human via
+  the demo account (Telegram user client / Slack user in the demo workspace) and
+  reads genuine replies. This is the only mechanism that produces a **gate-satisfying**
+  artifact (it is the operator's exact path — the only thing that catches this bug
+  class). Dashboard features use Playwright against the real dashboard (also B-class).
 
-Lean: **B for the headline proof** (the operator's exact path is the only thing
-that would have caught this class of bug), with **A available** as a fast inner
-loop for breadth. The standard's bar ("through the real user channel") is only
-satisfied by B for the artifact the gate accepts; A-only runs are recorded but do
-not satisfy the veto. This keeps the teeth honest.
+Credential model (D2, frontloaded): demo creds in `vault://demo/*`, provisioned via
+the secret-drop/vault path, never the operator's live account by default; missing/
+revoked demo creds → the affected scenario is **BLOCKED-real (credential-unavailable)
+and surfaced**, never silently skipped or downgraded to A.
 
-### 5.5 Layered tests for the harness itself
+### 5.5 Flakiness management (gemini/scalability finding)
 
-Per the Testing Integrity Standard, the harness ships with unit (scenario-matrix
-parsing, artifact writing, veto evidence matching), integration (the gate reads a
-real artifact from the ledger and vetoes/permits correctly over HTTP), and E2E
-("the harness is alive" — it can drive a demo channel and write a verifying
-artifact). The "feature is alive" E2E is the single most important test.
+Live external services flake. The harness: per-scenario timeout (`timeoutMs`, default
+30s, range 10–120s); on timeout → `BLOCKED-real (timeout)`; automatic retry (bounded,
+e.g. 2×) before recording a flake; a flake-classification record; a run with >N
+timeouts escalates (harness stops, returns the partial artifact) rather than hanging;
+total run cap (~10 min). Quarantine: a scenario flagged persistently flaky is recorded
+as quarantined (visible, not silently dropped) and does not satisfy its risk category.
+
+### 5.6 Layered tests for the harness itself
+
+Per the Testing Integrity Standard + L5 (State-Detection Robustness): unit
+(scenario-matrix parse, canonical-hash + signature, ledger hash-chain, veto evidence
+matching, both sides of the user-facing/BLOCKED/surface boundaries), integration (the
+gate reads a real signed artifact from the ledger over HTTP and vetoes/permits
+correctly), and E2E ("the harness is alive" — it drives a demo channel and writes a
+verifying signed artifact the gate accepts). The "alive" E2E is the single most
+important test. **L5 explicit:** the gate's check is deterministic (hash + signature +
+schema) — rationale: artifact authenticity is an objective, signable fact, not a fuzzy
+judgment; a **ledger schema version + canary** fires on an unreadable/format-drifted
+ledger; the E2E proves real data flows end-to-end (no mocks-only).
 
 ---
 
 ## 6. Migration parity
 
-- **CLAUDE.md template** (`src/scaffold/templates.ts` → `generateClaudeMd`): add
-  the standard's awareness text + the harness/gate triggers.
+- **CLAUDE.md template** (`src/scaffold/templates.ts` → `generateClaudeMd`): add the
+  standard's awareness text + the harness/gate triggers.
 - **PostUpdateMigrator**: `migrateClaudeMd` / `migrateAgentMdSections` append the
   standard section to existing agents (content-sniff guarded, idempotent);
-  `migrateConfig` adds the new dark flags + `liveTest` defaults (existence-checked,
-  never overwriting).
-- **Skill**: the existing `test-as-self` skill is reframed as user-role live
-  testing and points at the harness (idempotent skill-content migration, scoped to
-  the default-skill allowlist).
-- The conformance/standards-coverage audit (when live) will see the standard names
-  a real guard on disk (the veto + the harness), not a documented-only wish.
+  `migrateConfig` adds the dark flags + `liveTest` defaults (existence-checked).
+  Config keys are committed to git and distributed; an offline machine runs the
+  idempotent migration on next startup.
+- **Skill**: the `test-as-self` skill is reframed as user-role live testing and points
+  at the harness (idempotent skill-content migration, scoped to the default-skill
+  allowlist).
+- The conformance/standards-coverage audit will see the standard names a real guard on
+  disk (the veto + the harness), not a documented-only wish.
 
 ---
 
@@ -313,126 +423,200 @@ artifact). The "feature is alive" E2E is the single most important test.
 ### 7.1 Root cause (grounded, v1.3.586)
 
 `SessionOwnershipRegistry` uses `InMemorySessionOwnershipStore`
-(`src/core/SessionOwnershipRegistry.ts:32-62`) with **no cross-machine
-replication**. Its own doc comment says the durable cross-machine store
-("git single-ref-per-session push, mirroring `GitLeaseStore`") "swaps in for the
-Track-H real-hardware proof" — it was **never wired in**. Consequently:
+(`src/core/SessionOwnershipRegistry.ts:32-62`) with **no cross-machine replication**.
+Its own doc comment says the durable cross-machine store ("git single-ref-per-session
+push, mirroring `GitLeaseStore`") "swaps in for the Track-H real-hardware proof" — it
+was **never wired in**. Consequently:
 
-1. `POST /pool/transfer` on the source writes a `place`→`claim` CAS for the target
-   into the **source's** in-memory Map (`routes.ts:12249-12250`) and sets a
-   router-local pin (`routes.ts:12175`).
-2. The coherence journal `emitPlacement` carries **metadata** (owner, epoch,
-   reason) — not the ownership record itself — and the target never materializes
-   an ownership record from it on the inbound path (`routes.ts:12239-12244`).
-3. On the next inbound message, owner resolution reads the **local** in-memory
-   store (`server.ts:16002-16012`); the target's Map is empty → `{owner:null}`.
-4. `SessionRouter.dispatchOne` treats a null owner as **Unowned → place+claim
-   locally** (`src/core/SessionRouter.ts:259`) instead of forwarding to the owner.
-5. The pin that would force a forward is **also router-local** and never synced to
-   the target (`server.ts:15643-15646`).
+1. `POST /pool/transfer` on the source writes a `place`→`claim` CAS for the target into
+   the **source's** in-memory Map (`routes.ts:12249-12250`) and sets a router-local pin
+   (`routes.ts:12175`).
+2. The coherence journal `emitPlacement` carries **metadata** (owner, epoch, reason) —
+   not the ownership record itself — and the target never materializes an ownership
+   record from it on the inbound path (`routes.ts:12239-12244`).
+3. On the next inbound, owner resolution reads the **local** in-memory store
+   (`server.ts:16002-16012`); the target's Map is empty → `{owner:null}`.
+4. `SessionRouter.dispatchOne` treats a null owner as **Unowned → place+claim locally**
+   (`src/core/SessionRouter.ts:259`) instead of forwarding to the owner.
+5. The pin that would force a forward is **also router-local** and never synced to the
+   target (`server.ts:15643-15646`).
 
-Net: the transfer pins and CASes on the source, but neither the ownership record
-nor the pin crosses, so the seat cannot move. (In the operator's run the
-source-side `placedOwnership` also came back `false`; the dominant architectural
-defect — non-replicated ownership — makes the move impossible even when the
-source CAS succeeds, so the fix targets replication; the source-side CAS-false
-sub-reason is pinned during build with a live repro.)
+Net: the transfer pins and CASes on the source, but neither the ownership record nor
+the pin crosses, so the seat cannot move. (In the operator's run the source-side
+`placedOwnership` also came back `false`; the dominant defect — non-replicated
+ownership — makes the move impossible even when the source CAS succeeds, so the fix
+targets replication; the source-side CAS-false sub-reason is pinned during build with
+a live repro.)
 
-### 7.2 Fix design (fork — §8 Q3)
+### 7.2 Fix design (D3 — DECIDED after cross-model review: durable replicated store)
 
-The seat must move means: after a transfer, the **target** machine must resolve
-itself as the topic's owner on inbound, and the **source** must forward (or have
-released) so it does not re-place locally.
+**Both external reviewers (gemini, codex) plus three internal reviewers** rejected the
+original "cooperative push handoff" lean as reinventing distributed lease/consensus
+(atomicity, split-brain, epochs, exactly-one-owner convergence). **Decision reversed**
+to the design the code comment always intended:
 
-Two candidate designs:
+**Wire the durable, cross-machine-replicated ownership store behind
+`SessionOwnershipRegistry`** — the `GitLeaseStore`-style single-ref-per-session
+durable record, mirroring the existing replicated-state machinery (the same
+coherence-journal replication path the 7 memory stores now use). Concretely:
 
-- **A. Durable replicated ownership store** — wire the long-intended
-  `GitLeaseStore`-style single-ref-per-session durable store behind
-  `SessionOwnershipRegistry` (the "swaps in" the comment promised). Both machines
-  read/write the same durable ref; ownership is globally consistent. Cleanest,
-  matches the original design intent; cost: heavier, git-ref round-trip latency on
-  the routing path, more failure modes.
-- **B. Cooperative push handoff on transfer** — the transfer leg (which already
-  contacts the target via `sendDrain`/working-set carrier) **pushes the ownership
-  record + pin to the target** as part of the move, and the target CASes itself
-  active before the move returns. The journal already replicates placement entries;
-  add a receiver that **materializes an ownership record from a replicated
-  placement entry** so an inbound on the target resolves owner=self. Smaller,
-  reuses existing drain/carrier/journal seams; cost: handoff must be atomic enough
-  that a crash mid-move can't strand the topic ownerless (mitigated by the pin +
-  the existing reconciler).
+- The ownership record is **persisted and replicated** (not an in-memory Map): a CAS
+  `place`/`claim`/`release` writes the durable record, which replicates to peers via
+  the existing journal-replication path. The target machine reads ownership from the
+  **replicated durable record** (`store.read(sessionKey)` hits the persisted/replicated
+  state), so an inbound on the target resolves `owner=self`.
+- **Off the hot path (the latency answer that drove the original lean).** The routing
+  hot path reads an **in-memory cache** of the ownership record; the cache is
+  invalidated by a new replicated journal entry (watch/subscription) or a short TTL.
+  The durable/replicated write is **not** inline on every message — only on an
+  ownership *transition*. So the hot path stays an in-memory read; the git-ref/replication
+  round-trip happens only on transfer, not per message. SLO: ownership read <100ms p99.
+- **Epochs + reconciler for crash-safety.** The existing `ownershipEpoch` orders writes;
+  `OwnershipReconciler` converges divergent records to exactly one owner. A transfer
+  records the placement with a fresh epoch; a concurrent/raced write loses to the
+  higher epoch.
+- The pin is also synced to the target (or made unnecessary by the replicated record) so
+  routing is correct from the replicated ownership, not a router-local pin.
 
-Lean: **B** — materialize ownership on the receiver from the replicated placement
-journal entry, and sync the pin to the target during transfer, so routing is
-correct immediately rather than after a journal round-trip. It is the
-smallest-correct change consistent with the existing replication infra and avoids
-putting a git-ref round-trip on the hot routing path. A is the fallback if B can't
-be made crash-safe without effectively rebuilding A.
+This is no longer a bespoke protocol — it reuses the proven replicated-state +
+reconciler infrastructure, with caching to keep reads off the hot path.
 
-### 7.3 Surface the false positive
+### 7.3 Crash-safety contract (§9.4; security/lessons findings)
 
-`POST /pool/transfer` returning `ok:true` while `placedOwnership=false` /
-`releasedLocalOwnership=false` is a lie-by-omission. The transfer response must
-distinguish "the seat moved" from "the pin is set but ownership did not move." A
-move that did not actually transfer ownership (and isn't a legitimate
-already-there noop) returns a non-ok / explicit `seatMoved:false` with the reason,
-so a caller (and the harness) can never read "ok" as "moved."
+Formally: at every step (pin-set → durable place → durable claim → cache-invalidate),
+a crash leaves the topic owned by **exactly one** machine after the reconciler runs —
+never zero, never two:
 
-### 7.4 The proof
+- Epochs make a half-written transition lose to the last fully-committed one.
+- A message arriving during an ownership-in-flight window routes **conservatively**:
+  it is **queued as ownership-contention** (the existing `placing`/`transferring`
+  branch in `SessionRouter`), never double-routed and never lost.
+- Bound: the reconciler runs on a fixed cadence (config) and on inbound contention; a
+  topic is never ownerless longer than one reconciler cadence, and contended messages
+  queue rather than mis-route during it.
 
-Apply the standard: run the harness over the transfer through **Telegram AND
-Slack** on a throwaway topic. Required PASS scenarios (≥90% of the conceivable
-matrix), each with recorded evidence:
+### 7.4 Surface the false positive
 
-- Idle topic Laptop→Mini: next message resolves owner=Mini, reply comes FROM the
-  Mini, conversation history carried, no re-greeting.
-- Active topic Laptop→Mini (drain leg): in-flight turn completes, then the seat
-  moves; no double-voice (exactly one machine answers each message).
-- Mini→Laptop reverse.
-- Offline-target: transfer to an offline Mini → honest `needsConfirmation` / safe
-  refusal, no half-move, no ownerless strand.
+`POST /pool/transfer` returning `ok:true` while ownership did not move is a
+lie-by-omission. The response must distinguish "seat moved" from "pin set but ownership
+did not move": a move that did not actually transfer ownership (and isn't a legitimate
+already-there noop) returns a non-ok / explicit `seatMoved:false` with the reason, so a
+caller (and the harness) can never read "ok" as "moved." The harness records
+`seatMoved:false` as a scenario FAIL (§4.4 poison rule).
+
+### 7.5 The proof
+
+Apply the standard: run the harness over the transfer through **Telegram AND Slack** on
+a throwaway topic. Required PASS scenarios across the risk categories, each with recorded
+evidence:
+
+- Idle topic Laptop→Mini: next message resolves owner=Mini, reply comes FROM the Mini,
+  history carried, no re-greeting. (happy-path, lifecycle)
+- Active topic Laptop→Mini (drain leg): in-flight turn completes, then the seat moves;
+  no double-voice. (lifecycle, concurrency)
+- Mini→Laptop reverse. (happy-path)
+- Telegram vs Slack agree. (channel-parity)
+- Offline-target → honest `needsConfirmation`/safe refusal, no half-move, no ownerless
+  strand. (failure/rollback)
+- Crash mid-move → single-owner convergence (§7.3). (failure/rollback)
 - The false-positive guard: a transfer that doesn't move ownership reports it.
-- Same matrix over **Slack** (different session lifecycle).
+  (regression)
+- Repeat-transfer idempotency. (idempotency)
 
-The run is judged on this matrix existing as a real artifact with all rows PASS —
-the bar the whole 24h run is held to.
+The run is judged on this matrix existing as a signed all-PASS artifact — the bar the
+whole 24h run is held to.
 
 ---
 
-## 8. Design forks (for spec-converge reviewers)
+## 8. Frontloaded Decisions
 
-- **Q1 — "user-facing" classification:** explicit-flag-first (lean) vs
-  classifier-first vs require-explicit-always. Lean: explicit flag wins,
-  classifier fallback biases toward applying the gate.
-- **Q2 — harness channel drive:** API-injection (fast, lower fidelity) vs
-  real-account drive (high fidelity, the operator's exact path). Lean: real-account
-  drive for the gate-satisfying artifact; API-injection as a fast breadth loop that
-  does NOT satisfy the veto.
-- **Q3 — transfer fix:** durable replicated store (A) vs cooperative push handoff
-  + journal-materialized ownership on the receiver (B, lean).
-- **Q4 — gate strictness at rollout:** dry-run-log-only first (lean, per dark
-  rollout) vs warn vs hard-veto. Lean: dry-run → warn → veto on the graduated
-  ladder.
-- **Q5 — Slack "AND" hardness:** is Telegram-only ever sufficient (e.g. a feature
-  with no Slack surface)? Lean: if the feature has a Slack surface, Slack is
-  required; a feature genuinely absent from Slack records that absence as an
-  explicit, audited exemption rather than silently passing on Telegram alone.
+Resolved here (my lean is the decision; this run is pre-approved for design-fork
+autonomy). Honest reversibility per the Decision-Completeness reviewer.
+
+- **D1 — "user-facing" classification.** DECIDED: explicit `userFacing` flag wins;
+  absent it, a deterministic keyword classifier emits a **signal only** (§4.2) — it
+  never blocks standalone. Tie-break: explicit flag is final; an undeclared
+  user-facing-looking goal is surfaced (return-to-work nudge), not hard-blocked; a
+  `userFacing:false` contradicted by touched surfaces fails closed. _Reversibility:
+  cheap-to-change-after — classification logic behind the dark flag, no external
+  side-effect._
+- **D2 — harness channel drive.** DECIDED: **real-account drive (B)** via isolated
+  demo accounts is the only gate-satisfying mechanism; API-injection (A) is a
+  non-satisfying fast inner-loop. Credential model: `vault://demo/*`, never the live
+  account by default; missing creds → BLOCKED-real + surfaced (§5.4). _Reversibility:
+  NOT cheap — touches real platform credentials + a published testing contract;
+  frontloaded with the credential/isolation model in §5.3–5.4._
+- **D3 — transfer fix architecture.** DECIDED (reversed after cross-model review):
+  **durable replicated ownership store** off the hot path with an in-memory cache +
+  epoch + reconciler (§7.2), NOT the bespoke push handoff. _Reversibility: NOT cheap —
+  changes cross-machine routing authority; frontloaded with the crash-safety contract
+  (§7.3) + false-positive surfacing (§7.4) as acceptance criteria._
+- **D4 — gate strictness at rollout.** DECIDED: graduated ladder
+  `dry-run → warn → veto`, dark + dev-gated first (`monitoring.liveTestGate.mode`).
+  Cannot-verify → not-proven → veto (return-to-work), the safe direction (§4.8).
+  _Reversibility: cheap-to-change-after — a config dial behind the dark gate; promotion
+  is an operator-visible step._
+- **D5 — Slack "AND" hardness + dashboard.** DECIDED: channel features require
+  {telegram, slack}; a genuine Slack absence is an explicit audited exemption recorded
+  in the artifact; dashboard features prove via a Playwright live check (§4.5).
+  _Reversibility: cheap-to-change-after — artifact-matching policy behind the dark flag._
 
 ---
 
 ## 9. Acceptance criteria
 
 1. The standard is in `docs/STANDARDS-REGISTRY.md` and migrated to existing agents.
-2. The completion gate vetoes "done" for a user-facing feature lacking a verified
-   live-test artifact (Telegram AND Slack), anchored anti-hallucination, dark-gated,
-   dry-run-first — with unit + integration + E2E tests (both sides of the boundary).
-3. The user-role harness drives Telegram AND Slack, writes the artifact the gate
-   reads, refuses volatile scenarios on live channels — with unit + integration +
-   E2E ("alive") tests.
-4. The multi-machine transfer actually moves the seat (ownership + pin replicate),
-   the false-positive is surfaced, and it is PROVEN LIVE through the harness over
-   Telegram AND Slack with a recorded all-PASS scenario matrix.
-5. Zero-failure suite; migration parity; deployed to both machines.
+2. The completion gate vetoes "done" for a user-facing feature lacking a verified,
+   **signed** live-test artifact (right surfaces §4.5, required risk categories §4.6),
+   anchored anti-hallucination (canonical hash + Ed25519 signature + hash-chained ledger
+   + recency/replay + seatMoved poison), with the classifier holding NO standalone
+   blocking authority (§4.2). Dark-gated, dry-run-first. Unit + integration + E2E tests
+   covering both sides of every boundary (user-facing/internal, PASS/BLOCKED-real,
+   surface-present/absent, tampered/clean, fresh/stale).
+3. The user-role harness drives the real surface (Telegram AND Slack for channel,
+   Playwright for dashboard), writes the signed artifact the gate reads, isolates
+   volatile scenarios to signed demo channels (refusing live channels by ID), manages
+   flakiness (§5.5) — with unit + integration + E2E ("alive") tests.
+4. The multi-machine transfer actually moves the seat (durable replicated ownership +
+   cache off the hot path), the false-positive is surfaced (§7.4), a crash mid-move
+   never strands the topic ownerless (§7.3 / §9.4), and it is PROVEN LIVE through the
+   harness over Telegram AND Slack with a recorded all-PASS scenario matrix.
+   - **§9.4 crash-safety:** an interrupted transfer (process killed between pin-set,
+     durable place, durable claim, cache-invalidate) leaves the topic owned by exactly
+     one machine after the reconciler runs — never zero, never two — and messages
+     arriving in the in-flight window queue (ownership-contention) rather than
+     double-route. Covered by an integration test injecting a crash at each step and
+     asserting single-owner convergence + no double-route.
+5. **Multi-machine posture (§10):** the artifact store + ledger replicate; the gate
+   runs on the machine executing the run and treats unverifiable/stale evidence as
+   not-proven (veto), never a false pass. Hot-path ownership reads stay <100ms p99.
+6. Zero-failure suite; migration parity; deployed to both machines.
+
+---
+
+## 10. Multi-machine posture (mandatory cross-machine declaration)
+
+Per the Cross-Machine Coherence check, every state surface this spec introduces
+declares its posture:
+
+- **`state/live-test-artifacts/` + `state/live-test-ledger.jsonl`** — **REPLICATED**
+  via the existing coherence-journal replication path (the same machinery the 7 memory
+  stores use). An artifact written on machine A is readable on machine B; the
+  hash-chained ledger replicates append-only. Identity is `{featureId, runId}`.
+- **Gate evaluation** — runs on the **machine executing the autonomous run**. If that
+  machine has not yet seen the ledger entry (replication lag beyond a freshness bound),
+  the gate treats the feature as **not-proven → veto (return-to-work)**, never a false
+  pass and never a hard stall. (The run can re-run the harness locally, or the entry
+  arrives via replication.)
+- **`liveTest.demoChannels` + `demo-channel-bindings.json`** — **REPLICATED** via git
+  config + migration so every machine sees the same signed demo bindings.
+- **Ownership store (§7.2)** — **REPLICATED** durable record + per-machine in-memory
+  cache (proxied/cached-on-read), the load-bearing fix.
+
+Retention/scale: the ledger compacts (>90d archived to `state/live-test-ledger-archive/`,
+monthly files; the gate reads active + current archive); gate evidence is cached
+(journal-invalidated, SLO <500ms first-run / <100ms cache-hit); artifacts capped per
+feature.
 
 ---
 
