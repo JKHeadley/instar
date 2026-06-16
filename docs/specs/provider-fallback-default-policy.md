@@ -1,3 +1,10 @@
+---
+title: "Provider-Fallback Default Policy — internal components run off Claude by default"
+slug: "provider-fallback-default-policy"
+author: "echo"
+eli16-overview: "docs/specs/provider-fallback-default-policy.eli16.md"
+---
+
 # Provider-Fallback Default Policy — internal components run off Claude by default
 
 **Status:** draft (pre-convergence)
