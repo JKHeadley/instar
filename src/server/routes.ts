@@ -825,6 +825,9 @@ export interface RouteContext {
    *  feature without a verified live-test artifact. Null when dark/unwired. */
   liveTestGate: import('../core/LiveTestGate.js').LiveTestGate | null;
   liveTestGateMode: import('../core/LiveTestGate.js').LiveTestGateMode;
+  /** Live-user-channel-proof CAPSTONE runner wiring (§6/§7.5). Null when dark/unwired —
+   *  the /live-test/* routes 503 then. A factory so the route wraps the request-built driver. */
+  liveTestRunnerCtx: import('./AgentServer.js').LiveTestRunnerWiring | null;
   unifiedTrust: UnifiedTrustSystem | null;
   /** Shared proxy coordinator — mutex + /build heartbeat record for the
    *  PresenceProxy ↔ PromiseBeacon ↔ /build-heartbeat three-way deconfliction
@@ -24900,6 +24903,221 @@ export function createRoutes(ctx: RouteContext): Router {
       }
     });
   }
+
+  // ── Live-User-Channel Proof: cross-machine transfer CAPSTONE (§6/§7.5) ──────
+  // POST /live-test/multi-machine-capstone — drive the (already-built, dark) capstone
+  // harness: move the seat FIRST (POST /pool/transfer), demand the honest seatMoved
+  // signal, then run the §7.5 matrix through the REAL user surfaces and record a
+  // signed PASS/FAIL artifact (PASS only when the reply came FROM the target machine).
+  // 503 when dark/unwired. A seat that did NOT move is a recorded 200 outcome
+  // (capstone:'aborted'), NOT a 500 — the honesty contract.
+  router.post('/live-test/multi-machine-capstone', async (req, res) => {
+    if (!ctx.liveTestRunnerCtx) {
+      res.status(503).json({ error: 'live-test runner not available (dark / dev-gated off)' });
+      return;
+    }
+    const body = (req.body ?? {}) as {
+      targetMachine?: unknown; telegramTopicId?: unknown; slackChannelId?: unknown;
+      message?: unknown; featureId?: unknown; timeoutMs?: unknown; runId?: unknown;
+    };
+    const targetMachine = typeof body.targetMachine === 'string' ? body.targetMachine.trim() : '';
+    const telegramTopicId = body.telegramTopicId != null ? String(body.telegramTopicId).trim() : '';
+    const slackChannelId = typeof body.slackChannelId === 'string' && body.slackChannelId.trim() ? body.slackChannelId.trim() : undefined;
+    const message = typeof body.message === 'string' && body.message.trim() ? body.message.trim() : `live-test capstone probe ${Date.now()}`;
+    const featureId = typeof body.featureId === 'string' && body.featureId.trim() ? body.featureId.trim() : undefined;
+    const timeoutMs = typeof body.timeoutMs === 'number' && Number.isFinite(body.timeoutMs) ? body.timeoutMs : undefined;
+    const runId = typeof body.runId === 'string' && body.runId.trim() ? body.runId.trim() : undefined;
+    if (!targetMachine || !telegramTopicId) {
+      res.status(400).json({ error: 'targetMachine and telegramTopicId are required' });
+      return;
+    }
+
+    try {
+      const [
+        { RealChannelDriver },
+        { TelegramLiveSender },
+        { SlackLiveSender },
+        { PlacementResponderReader },
+        { DemoChannelRegistry },
+        { buildMultiMachineCapstoneMatrix },
+      ] = await Promise.all([
+        import('../core/RealChannelDriver.js'),
+        import('../core/TelegramLiveSender.js'),
+        import('../core/SlackLiveSender.js'),
+        import('../core/PlacementResponderReader.js'),
+        import('../core/DemoChannelRegistry.js'),
+        import('../core/multiMachineCapstoneMatrix.js'),
+      ]);
+
+      type Surface = import('../core/LiveTestArtifactStore.js').Surface;
+      type SurfaceSender = import('../core/RealChannelDriver.js').SurfaceSender;
+      type ChannelDriver = import('../core/LiveTestHarness.js').ChannelDriver;
+
+      // Driver: the test injection seam wins; production builds the real, fail-closed
+      // driver from config + adapters below.
+      let driver: ChannelDriver;
+      const blockedSurfaces: Array<{ surface: Surface; reason: string }> = [];
+      const port = ctx.config.port;
+      if (ctx.liveTestRunnerCtx.driverForRequest) {
+        driver = ctx.liveTestRunnerCtx.driverForRequest();
+      } else {
+      // ── Demo creds (fail-closed): a surface whose demo cred is ABSENT is simply not
+      // wired — its scenarios then surface as a driver-error FAIL via RealChannelDriver's
+      // loud "no real sender configured" throw, NEVER a fabricated reply or the live
+      // agent token. We read demo creds from config.liveTest.demo (the documented keys).
+      const liveTestCfg = (ctx.config as { liveTest?: { demo?: { slackUserToken?: string; telegramBotToken?: string } } }).liveTest;
+      const demoSlackUserToken = liveTestCfg?.demo?.slackUserToken;
+      const demoTelegramBotToken = liveTestCfg?.demo?.telegramBotToken;
+
+      const senders: Partial<Record<Surface, SurfaceSender>> = {};
+
+      // Telegram demo sender — posts as the DEMO bot (NOT Echo's), reads history via
+      // the live TelegramAdapter (Echo's getTopicHistory).
+      if (demoTelegramBotToken && ctx.telegram) {
+        const tgAdapter = ctx.telegram;
+        senders.telegram = new TelegramLiveSender({
+          postAsDemoUser: async (topicId: number, text: string) => {
+            const url = `https://api.telegram.org/bot${demoTelegramBotToken}/sendMessage`;
+            const chatId = (ctx.config as { liveTest?: { demo?: { telegramChatId?: string | number } } }).liveTest?.demo?.telegramChatId;
+            if (chatId == null) {
+              // Not a silent fallback: a demo telegram topic needs its chat id to post —
+              // surface it loudly so the scenario records a real driver-error FAIL.
+              throw new Error('liveTest.demo.telegramChatId is required to post a demo Telegram message');
+            }
+            const r = await fetch(url, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ chat_id: chatId, message_thread_id: topicId, text }),
+            });
+            const j = (await r.json()) as { ok?: boolean; result?: { message_id?: number }; description?: string };
+            if (!j.ok || j.result?.message_id == null) {
+              throw new Error(`demo Telegram sendMessage failed: ${j.description ?? `ok=${j.ok}`}`);
+            }
+            return { messageId: j.result.message_id };
+          },
+          getHistory: (topicId: number, limit?: number) =>
+            tgAdapter.getTopicHistory(topicId, limit).map((e) => ({ messageId: e.messageId, text: e.text, fromUser: e.fromUser })),
+          logger: (m: string) => console.log(`  ${m}`),
+        });
+      } else {
+        blockedSurfaces.push({ surface: 'telegram', reason: 'credential-unavailable (liveTest.demo.telegramBotToken / no telegram adapter)' });
+      }
+
+      // Slack demo sender — posts as the NON-AGENT demo user token, waits for a reply
+      // authored by Echo's bot user id (from the live SlackAdapter).
+      if (slackChannelId) {
+        const agentBotUserId = ctx.slack?.getBotUserId() ?? null;
+        if (demoSlackUserToken && agentBotUserId) {
+          const { SlackApiClient } = await import('../messaging/slack/SlackApiClient.js');
+          const demoApi = new SlackApiClient(demoSlackUserToken);
+          senders.slack = new SlackLiveSender({
+            api: demoApi,
+            agentBotUserId,
+            logger: (m: string) => console.log(`  ${m}`),
+          });
+        } else {
+          blockedSurfaces.push({
+            surface: 'slack',
+            reason: 'credential-unavailable (liveTest.demo.slackUserToken / agent bot user id unresolved)',
+          });
+        }
+      }
+
+      // Demo-channel registry (§5.3) — verified, signed bindings or fail-closed (none).
+      const bindingsPath = path.join(ctx.config.stateDir, 'demo-channel-bindings.json');
+      let bindingsDoc: import('../core/DemoChannelRegistry.js').DemoChannelBindingsDoc | null = null;
+      if (fs.existsSync(bindingsPath)) {
+        try {
+          bindingsDoc = JSON.parse(fs.readFileSync(bindingsPath, 'utf-8')) as import('../core/DemoChannelRegistry.js').DemoChannelBindingsDoc;
+        } catch (err) {
+          // @silent-fallback-ok — an unreadable/corrupt bindings doc fails CLOSED (null
+          // ⇒ zero demo channels ⇒ only safe scenarios run). The capstone scenarios are
+          // all SAFE-volatility, so this never blocks them; it only withholds the
+          // demo-channel vouch a volatile scenario would need.
+          console.warn(`[live-test] demo-channel bindings unreadable, failing closed: ${err instanceof Error ? err.message : String(err)}`);
+          bindingsDoc = null;
+        }
+      }
+      const demoRegistry = new DemoChannelRegistry({
+        doc: bindingsDoc,
+        // Verification rides the gate's artifact-store signer surface; the route does
+        // not re-derive Ed25519 here — when no signed bindings exist this is never
+        // called. A present doc with no verifier wired fails closed (returns false).
+        verify: () => false,
+      });
+
+      // Responder-machine reader — GET /pool/placement?topic=N → owner. For the
+      // capstone every surface is the SAME logical conversation being moved, keyed on
+      // telegramTopicId (the placement key). [GUESS: slack channel→topic uses the
+      // capstone's telegramTopicId; there is no live slack-channel→topic resolver.]
+      const placementReader = new PlacementResponderReader({
+        topicForChannel: (_surface: Surface, _channelId: string) => telegramTopicId,
+        fetchPlacement: async (topicId: string) => {
+          const r = await fetch(`http://localhost:${port}/pool/placement?topic=${encodeURIComponent(topicId)}`, {
+            headers: { Authorization: `Bearer ${ctx.config.authToken}` },
+          });
+          if (!r.ok) return null;
+          const j = (await r.json()) as { owner?: string | null; ownerNickname?: string | null };
+          return { owner: j.owner ?? null, ownerNickname: j.ownerNickname ?? null };
+        },
+        logger: (m: string) => console.log(`  ${m}`),
+      });
+
+      driver = new RealChannelDriver({
+        senders,
+        demoRegistry,
+        resolveResponderMachine: placementReader.resolve,
+        logger: (m: string) => console.log(`  ${m}`),
+      });
+      } // end real-driver construction (production path)
+
+      // The seat-move action: POST the LOCAL /pool/transfer and read the honest
+      // seatMoved signal (the #1188 fix). A non-2xx or a missing seatMoved is reported
+      // as seatMoved:false with a reason — never assumed moved. The injection seam wins
+      // when present (tests deterministically control seatMoved).
+      const transfer = ctx.liveTestRunnerCtx.transferForRequest
+        ?? (async (topicId: string, toMachine: string): Promise<{ seatMoved: boolean; detail?: string }> => {
+          const r = await fetch(`http://localhost:${port}/pool/transfer`, {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${ctx.config.authToken}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ topic: topicId, to: toMachine, confirm: true }),
+          });
+          const j = (await r.json().catch(() => ({}))) as { seatMoved?: boolean; seatMoveReason?: string; error?: string };
+          if (!r.ok) return { seatMoved: false, detail: j.error ?? `pool/transfer ${r.status}` };
+          return { seatMoved: j.seatMoved === true, detail: j.seatMoveReason };
+        });
+
+      // Move the seat FIRST and demand the honest seatMoved signal — the same
+      // seat-move-first contract LiveTestRunner.runMultiMachineTransferCapstone
+      // enforces (a non-move is a recorded 200 'aborted', never a misleading PASS).
+      const t = await transfer(telegramTopicId, targetMachine);
+      if (!t.seatMoved) {
+        res.status(200).json({ ok: true, seatMoved: false, capstone: 'aborted', reason: t.detail ?? 'seat did not move', blockedSurfaces });
+        return;
+      }
+      // Seat moved — run the full §7.5 risk-category matrix through the harness and
+      // record the signed artifact (PASS only where the reply came FROM targetMachine).
+      const matrix = buildMultiMachineCapstoneMatrix({ featureId, targetMachine, telegramTopicId, slackChannelId, message, timeoutMs });
+      const harness = ctx.liveTestRunnerCtx.makeHarness(driver);
+      const result = await harness.run(matrix, runId ? { runId } : {});
+      res.json({ ok: true, seatMoved: true, capstone: 'ran', artifact: result.artifact, entry: result.entry, blockedSurfaces });
+    } catch (err) {
+      // A genuine internal error surfaces LOUDLY as a 500 with the reason — never a
+      // fabricated PASS, never a swallowed run. This is the honest error path.
+      res.status(500).json({ error: `capstone run failed: ${err instanceof Error ? err.message : String(err)}` });
+    }
+  });
+
+  // GET /live-test/artifacts — read-only list of recorded live-test artifacts (the
+  // signed scenario matrices the gate verifies). 503 when the runner is dark.
+  router.get('/live-test/artifacts', (_req, res) => {
+    if (!ctx.liveTestRunnerCtx) {
+      res.status(503).json({ error: 'live-test runner not available (dark / dev-gated off)' });
+      return;
+    }
+    const entries = ctx.liveTestRunnerCtx.artifactStore.allEntries();
+    res.json({ count: entries.length, entries });
+  });
 
   return router;
 }
