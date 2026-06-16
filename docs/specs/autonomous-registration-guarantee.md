@@ -163,16 +163,21 @@ ReapGuard keeps the stub makes KEEP and eligibility **DISAGREE** — exactly the
 13-session loop D8 exists to prevent. Neither is acceptable; the predicate must become
 real and **shared**.
 
-**The promotion.** Replace the stub with a real predicate `recentUserMessage(topicId,
-windowMs)` that returns true iff there is an **inbound USER message** on the topic within
-`windowMs`. Mechanism (grounded): `MessageStore.queryInbox(agentName, { threadId })`
-(`src/messaging/MessageStore.ts:166` → `Promise<MessageEnvelope[]>`; live precedent at
-`server.ts:11988`). It is wired ONCE and **shared** by both ReapGuard's KEEP-probe (Gate-I)
-and the new GAP-B eligibility (D8), so the two decisions are computed from the identical
-truth and **cannot disagree**. Window default = ReapGuard's existing
-`staleCommitmentWindowMs` (8h). Filter strictly to inbound user messages (not agent/system
-echoes) — the build grounds the `MessageEnvelope` direction/role + timestamp fields and the
-`topicId → threadId` mapping before implementing.
+**The promotion (store CORRECTED in re-converge — F1).** Replace the stub with a real
+predicate `recentUserMessage(topicId, windowMs)` that returns true iff there is an **inbound
+USER message** on the topic within `windowMs`. **Correct store: `TelegramAdapter.getTopicHistory(topicId, limit)`**
+(`src/messaging/TelegramAdapter.ts:3529` → `LogEntry[]`, an in-memory recent-tail cache) — NOT
+`MessageStore.queryInbox`, which is the **Threadline agent-to-agent** store and contains no
+Telegram user messages (grounding it there would re-create the exact inert-predicate bug Part D
+exists to fix). The build filters `LogEntry` to **inbound user** entries (not agent/system echoes)
+and checks the newest such entry's timestamp against `windowMs` — the exact `LogEntry`
+direction/role + timestamp fields are ground-checked at build time. Synchronous (`getTopicHistory`
+returns a cached array, no I/O) — which also dissolves the sync→async concern below. It is wired
+ONCE and **shared by every consumer of the `recentUserMessage` dep** (see blast-radius), so the
+KEEP decisions and the new GAP-B eligibility (D8) are computed from the identical truth and
+**cannot disagree**. The D8 agreement specifically pairs with the **commitment-coupled** KEEP
+(`ReapGuard.ts:149`, window = `staleCommitmentWindowMs` = `staleCommitmentWindowMinutes` 480 / 8h,
+`ConfigDefaults.ts:153`); GAP-B's eligibility uses that same window.
 
 **Sync/async wiring (build must resolve).** The stub is synchronous (`() => false`);
 `queryInbox` is async. The build either (a) makes the KEEP-probe async and has ReapGuard
@@ -180,21 +185,33 @@ echoes) — the build grounds the `MessageEnvelope` direction/role + timestamp f
 Decided at build time against ReapGuard's actual call-site signature; both preserve the
 shared-predicate guarantee.
 
-**Reaper-class risk — and why it is CONTAINED (the load-bearing safety argument).** This is
-a LIVE `ReapGuard` KEEP-behavior change (the only non-dark part of the feature): today the
-KEEP-probe is inert; once real, ReapGuard **keeps** a session that has an open commitment AND
-a recent user message instead of reaping it. That is the **safe direction** (it retains a
-likely-in-use session; it never reaps something active), and it is **narrow** (requires BOTH
-a qualifying open commitment AND an inbound user message inside the window). Critically, the
-2026-06-13 catastrophic loop requires the **revival** path to fire (reap → revive → reap),
-and the revival path here — the Part B commitment-evidence injection — ships **dark/dryRun**
-(`monitoring.resumeQueue` dev-gate). **With injection dark, no revival occurs, so no loop is
-possible even with `recentUserMessage` live.** The worst case of the live KEEP change alone
-is mild resource-retention pressure, bounded by the window — not a loop. Rollout: ship the
-real `recentUserMessage` + the injection dark, soak, and enable injection only after the dark
-soak confirms KEEP and eligibility agree on real data.
+**Reaper-class risk — full blast-radius (F2/F2a, corrected in re-converge).** The stub at
+`server.ts:13530` is spread into BOTH `ReapGuard` AND `SessionReaper`, so promoting it un-stubs
+**five live sites at once** — every one in the **safe (keep-more) direction**:
+- `ReapGuard.ts:137` — a **standalone recency KEEP** (window `recentUserWindowMs` ~30min, NOT
+  commitment-coupled): a session messaged in the last ~30min is kept.
+- `ReapGuard.ts:149` — the **commitment-coupled KEEP** (8h `staleCommitmentWindowMs`): the D8 one
+  GAP-B's eligibility agrees with.
+- `ReapGuard.ts:221` / `:239` — the same two KEEPs mirrored on the `terminateSession()` enforcement
+  path (the shared guard chain; order/reasons preserved).
+- `SessionReaper.ts:489` — a **`staleIdle` INVERSION**: `staleIdle = … && !recentUserMessage(…)`.
+  With the stub (`false`) `!false=true`, so an active-children session can be reaped as stale;
+  promoted, a recent message makes `staleIdle` false → the session is KEPT.
+None of the five makes the reaper kill MORE — each retains a likely-in-use session; the only
+downside is mild resource-retention (a recently-messaged-but-idle session lingers up to its
+window), bounded and deliberate.
 
-**Fail-open (D7, extended).** If `queryInbox` throws, the predicate returns `false` — no KEEP
+**Why the catastrophic LOOP is CONTAINED (grounded-verified in re-converge).** The 2026-06-13
+loop needs the **revival** path to fire (reap → revive → reap). Revival is the Part B injection,
+which ships **dark/dryRun** (`monitoring.resumeQueue` dev-gate). Verified at
+`ResumeQueueDrainer.ts:311-317`: `if (queue.isDryRun()) { …audit…; return { blocked:'dry-run' } }`
+returns BEFORE the `respawnTopic`/`triggerJob` spawn block, and `ResumeQueue` ships `dryRun:true`.
+So dryRun genuinely suppresses the SPAWN (not just logs) ⇒ no revival ⇒ the loop is **structurally
+impossible** while injection is dark, even with all five KEEP sites live. Rollout: ship the real
+`recentUserMessage` + injection dark, soak, and enable injection only after the dark soak confirms
+KEEP and eligibility agree on real data.
+
+**Fail-open (D7, extended).** If `getTopicHistory` throws, the predicate returns `false` — no KEEP
 on this basis, no injection. A throw fails toward today's behavior, never toward a spurious
 keep/revive.
 
