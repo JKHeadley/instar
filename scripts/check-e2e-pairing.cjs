@@ -44,7 +44,10 @@ function stagedFiles() {
 
 function stagedContent(file) {
   try {
-    return execSync(`git show :${file}`, { encoding: 'utf-8' });
+    // maxBuffer raised well above the default 1MB: routes.ts already exceeds 1MB,
+    // and the default would throw ENOBUFS → the catch returned '' → a present
+    // E2E-PAIRING:EXEMPT marker was invisible and the gate false-blocked. (32MB cap.)
+    return execSync(`git show :${file}`, { encoding: 'utf-8', maxBuffer: 32 * 1024 * 1024 });
   } catch {
     return '';
   }

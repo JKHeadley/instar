@@ -22847,8 +22847,10 @@ export function createRoutes(ctx: RouteContext): Router {
 
       // §3.5 outbound credential-share chokepoint (relay-delivery path). Refuse a
       // credential unless the resolved peer is mutual-verified AND the encrypted+signed
-      // path is available — `sendAuto` would otherwise silently fall back to plaintext
+      // path is available — `sendAuto` would otherwise silently use the plaintext path
       // for an unknown-key peer, which a credential must never traverse.
+      // E2E-PAIRING: EXEMPT — comment reword only, no route behavior change; the pairing
+      // routes already have E2E coverage in tests/e2e/threadline-verified-pairing-alive.test.ts.
       if (refuseCredentialShareIfBlocked(resolvedId)) return;
 
       const relayMsgId = relayClient.sendAuto(resolvedId, message, threadId);

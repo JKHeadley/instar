@@ -1,3 +1,4 @@
+// safe-git-allow: throwaway test temp-dir cleanup (recursive rm of an isolated tmp dir)
 /**
  * Tier-2 WIRING-INTEGRITY tests for Secure A2A Verified Pairing (spec §6).
  *

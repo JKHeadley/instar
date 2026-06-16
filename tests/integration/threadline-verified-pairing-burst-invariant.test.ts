@@ -1,3 +1,4 @@
+// safe-git-allow: throwaway test temp-dir cleanup (recursive rm of an isolated tmp dir)
 /**
  * BURST INVARIANT — Secure A2A Verified Pairing verification-failed re-attempt loop
  * (spec §3.2 / §3.7 / §6).

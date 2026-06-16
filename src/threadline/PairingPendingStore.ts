@@ -63,6 +63,10 @@ function safeJsonParse<T>(filePath: string, fallback: T): T {
     if (!fs.existsSync(filePath)) return fallback;
     return JSON.parse(fs.readFileSync(filePath, 'utf-8'));
   } catch {
+    // @silent-fallback-ok: the pending-pairing store is an ephemeral, machine-local
+    // 0600 cache of in-flight SAS state. A missing/corrupt file legitimately returns
+    // the default — the SAS is simply re-derived on the next handshake (FD4). There is
+    // no durable state to degrade and nothing actionable to report.
     return fallback;
   }
 }
