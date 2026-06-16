@@ -148,11 +148,22 @@ auto-converge is §2.1's job.)
 Both reviewers (internal panel + codex external, verdict SERIOUS) converged on these — to
 address in the next round before convergence:
 
-1. **Precise activation predicate (HIGH).** Define the exact code: gate on
-   `multiMachine.coherenceJournal.replication.enabled === true` (the explicit signal at
-   ~server.ts:16589, NOT the dev-gated `coherenceJournal.enabled` at ~3462, NOT the dev
-   flag at 14861). State the invariant (§D1) + that this is **pool-scoped production
-   promotion** with operator-visible blast-radius.
+1. **Precise activation predicate (HIGH) — GROUNDED.** The exact signal is
+   `config.multiMachine?.coherenceJournal?.replication?.enabled === true` — the SAME
+   `_replicationEnabled` value computed at **server.ts:16588** that already gates the
+   `journalSyncApplier` (16592, `_replicationEnabled && journalSyncApplier`). It is explicit
+   (`=== true`, ConfigDefaults leaves it absent — 16585) and NOT dev-gated. So the fix at
+   server.ts:14861 becomes:
+   ```
+   const _replicationOn = (config.multiMachine?.coherenceJournal as
+     { replication?: { enabled?: boolean } } | undefined)?.replication?.enabled === true;
+   const durableOwnershipOn = resolveDevAgentGate(durableOwnership.enabled, config) || _replicationOn;
+   ```
+   The invariant: *a machine that runs the placement-replication applier (`journalSyncApplier`,
+   gated on `_replicationOn`) MUST also run the ownership applier + durable store* — they
+   consume the same replicated placements. This is **pool-scoped production promotion** of the
+   durable store wherever replication is on; disclose the blast-radius (it activates on every
+   replication-enabled pool machine, not just dev).
 2. **Detector = deterministic activation-health record (MEDIUM).** The incident was a
    config-vs-materialized-behavior mismatch. The split-active detector must compare
    **effective runtime** activation, not raw config — each pool-coordinated feature exposes
