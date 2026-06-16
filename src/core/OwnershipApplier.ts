@@ -46,7 +46,14 @@ export interface OwnershipApplierDeps {
   /** The SAME durable store the SessionOwnershipRegistry reads — so a materialized
    *  record is immediately visible to owner-resolution / routing. */
   store: SessionOwnershipStore;
-  selfMachineId: string;
+  /**
+   * This machine's mesh id — used ONLY for the SELF-vs-peer log label, never for
+   * materialization (every placement is adopted regardless of owner). Accepts a
+   * **late-bound getter** so a caller can wire the applier before `_meshSelfId` is
+   * resolved without capturing a stale `null` (the boot-ordering hazard this fix closes);
+   * a plain string still works for callers/tests that already have the id.
+   */
+  selfMachineId: string | (() => string | null | undefined);
   /** Max placement entries to scan per tick (bounded cost). Default 1000. */
   scanLimit?: number;
   logger?: (msg: string) => void;
@@ -73,6 +80,12 @@ export class OwnershipApplier {
 
   private log(m: string): void {
     this.d.logger?.(`[ownership-applier] ${m}`);
+  }
+
+  /** Resolve the (possibly late-bound) self machine id at tick time, for the log label only. */
+  private resolveSelf(): string | null | undefined {
+    const s = this.d.selfMachineId;
+    return typeof s === 'function' ? s() : s;
   }
 
   /**
@@ -117,9 +130,14 @@ export class OwnershipApplier {
         const r = this.d.store.casWrite(rec);
         if (r.ok) {
           materialized++;
+          const self = this.resolveSelf();
           this.log(
             `materialized topic ${sessionKey} → owner ${best.owner} @epoch ${best.epoch}` +
-              (best.owner === this.d.selfMachineId ? ' (SELF — this machine now serves it)' : ' (peer — route forwards there)'),
+              (self && best.owner === self
+                ? ' (SELF — this machine now serves it)'
+                : self
+                  ? ' (peer — route forwards there)'
+                  : ''),
           );
         }
       }

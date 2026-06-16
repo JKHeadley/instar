@@ -1,0 +1,19 @@
+{
+  "ts": "2026-06-16T06:37:44.080Z",
+  "slug": "ownership-applier-meshself-ordering-fix",
+  "suggestedTier": 2,
+  "declaredTier": null,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 110,
+  "causalAutopsy": {
+    "origin": "latent",
+    "relatedPrs": [
+      1190
+    ],
+    "notes": "The transfer-fix §7.2 applier (introduced with the durable-ownership work, hardened in #1190) had a boot-ordering defect from inception: its server.ts guard read _meshSelfId ~650 lines before assignment, so it never ran. Latent until the gold-standard live re-run of the transfer exercised the real destination path."
+  },
+  "verdict": "pass"
+}

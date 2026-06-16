@@ -14991,20 +14991,29 @@ export async function startServer(options: StartOptions): Promise<void> {
         // resolves the right owner on the next message — the step the in-memory store
         // never had. Off the hot path: ticked on an interval + once at boot (to adopt
         // a transfer that landed while we were down). Only when the durable store is
-        // active (dev-gate); InMemory has no cross-machine replication to apply.
-        if (durableOwnershipStore && _meshSelfId) {
-          const { OwnershipApplier } = await import('../core/OwnershipApplier.js');
-          const { CoherenceJournalReader } = await import('../core/CoherenceJournalReader.js');
-          const applier = new OwnershipApplier({
-            reader: new CoherenceJournalReader({ stateDir: config.stateDir }),
-            store: durableOwnershipStore,
-            selfMachineId: _meshSelfId,
-            logger: (m: string) => console.log(pc.dim(`  ${m}`)),
-          });
-          try { applier.tick(); } catch { /* @silent-fallback-ok — boot tick best-effort; the interval converges */ }
+        // active; InMemory has no cross-machine replication to apply.
+        //
+        // Construction is gated on the durable store ALONE — NOT on `_meshSelfId`. The
+        // old `&& _meshSelfId` guard ran here, ~650 lines before `_meshSelfId` is assigned
+        // in the boot sequence, so it was always null at this point and the applier was
+        // never wired (the boot-ordering bug the live test caught). `selfMachineId` is now
+        // a late-bound getter (label-only; materialization never needs it), so an early
+        // tick is correct and later ticks label SELF/peer once the id resolves. The wiring
+        // factory is extracted + unit-tested so this condition can never silently regress.
+        // Spec: docs/specs/ownership-applier-meshself-ordering-fix.md.
+        const { CoherenceJournalReader } = await import('../core/CoherenceJournalReader.js');
+        const { wireOwnershipApplier } = await import('../core/ownershipApplierWiring.js');
+        const ownershipApplier = wireOwnershipApplier({
+          durableOwnershipStore,
+          reader: new CoherenceJournalReader({ stateDir: config.stateDir }),
+          getSelfMachineId: () => _meshSelfId,
+          logger: (m: string) => console.log(pc.dim(`  ${m}`)),
+        });
+        if (ownershipApplier) {
+          try { ownershipApplier.tick(); } catch { /* @silent-fallback-ok — boot tick best-effort; the interval converges */ }
           const applierTimer = setInterval(() => {
             try {
-              const r = applier.tick();
+              const r = ownershipApplier.tick();
               if (r.materialized) console.log(pc.dim(`  [OwnershipApplier] materialized ${r.materialized}/${r.examined} topic(s) from replicated placements`));
             } catch (err) {
               console.error('[OwnershipApplier] tick failed:', err instanceof Error ? err.message : String(err));

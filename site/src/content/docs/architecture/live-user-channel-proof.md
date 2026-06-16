@@ -74,3 +74,15 @@ The durable store's activation is decided by `durableOwnershipActivation` — sp
 replication is explicitly on, not only on a dev-flagged machine. This closed a live-test
 finding where the Mini's store stayed dark and a transferred seat died on arrival;
 `durableOwnershipActivation` makes a replication-enabled pool activate consistently.
+
+## OwnershipApplier wiring (the second finding)
+
+The first live re-run of the transfer caught a deeper bug than the activation gap: the
+`OwnershipApplier` — the component that materializes durable ownership on the machine a topic
+moved *to* — was never wired at runtime, because its construction guard read a mesh-id
+variable hundreds of lines before the boot sequence assigned it. The fix extracts the
+construction condition into a testable `wireOwnershipApplier` factory that gates on the
+durable store alone and late-binds the machine id. `wireOwnershipApplier` returns a live
+applier whenever the durable store is active — even before the mesh id resolves — so a
+reordering of the boot sequence can never again silently disable it; the durable destination
+record (not a log line) is the authoritative proof the seat actually moved.
