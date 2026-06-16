@@ -55,7 +55,8 @@ import { getTelegramInboundDir } from '../messaging/shared/telegramInboundFiles.
 import { RelationshipManager } from '../core/RelationshipManager.js';
 import { ClaudeCliIntelligenceProvider } from '../core/ClaudeCliIntelligenceProvider.js';
 import { wrapIntelligenceWithCircuitBreaker } from '../core/CircuitBreakingIntelligenceProvider.js';
-import { configureLlmCircuitBreaker } from '../core/LlmCircuitBreaker.js';
+import { configureLlmCircuitBreaker, llmCircuitAvailable } from '../core/LlmCircuitBreaker.js';
+import { computeSelfQuotaState } from '../core/selfQuotaState.js';
 import { isClaudeForbidden } from '../core/claudeForbiddenGuard.js';
 import { FeedbackManager } from '../core/FeedbackManager.js';
 import { FeedbackAnomalyDetector } from '../monitoring/FeedbackAnomalyDetector.js';
@@ -14568,16 +14569,13 @@ export async function startServer(options: StartOptions): Promise<void> {
           // quota-conflation lesson). Absent/unreadable state = not blocked.
           const selfQuotaState = (): { blocked: boolean; blockedUntil?: string; reason?: string } | undefined => {
             try {
-              const q = quotaTracker?.getState();
-              if (!q) return undefined;
-              const blockActive = !!q.blockedUntil && Date.parse(q.blockedUntil) > Date.now();
-              const fiveHourExhausted = (q.fiveHourPercent ?? 0) >= 95;
-              if (!blockActive && !fiveHourExhausted) return { blocked: false };
-              return {
-                blocked: true,
-                blockedUntil: q.blockedUntil,
-                reason: q.blockReason ?? (fiveHourExhausted ? `5-hour window at ${q.fiveHourPercent}%` : 'provider block'),
-              };
+              // Two signals, OR-ed: the account-quota poll AND the live llm-circuit. An OPEN
+              // circuit means provider calls are actually failing right now, so the machine
+              // cannot serve a session no matter what the account poll reports — placement must
+              // avoid it. (Live-test 2026-06-16: the Mini's circuit was open while its quota poll
+              // said blocked:false → placement misrouted a session onto it; it died on arrival.)
+              // Spec: docs/specs/placement-llm-circuit-aware-quota.md.
+              return computeSelfQuotaState(quotaTracker?.getState(), llmCircuitAvailable());
             } catch { return undefined; /* unknown ≠ blocked */ }
           };
           // Self guard-posture block riding the capacity heartbeat (spec §2.3).

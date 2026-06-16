@@ -147,6 +147,22 @@ describe('PlacementExecutor.decide — quota gate', () => {
     expect(d.escalationReason).toBeUndefined();
   });
 
+  it('avoids a machine blocked by an OPEN llm-circuit (the new cause flows through to placement)', () => {
+    // The live-test finding: a circuit-open machine is least-loaded but cannot serve. The
+    // selfQuotaState fix now reports {blocked:true, reason:'llm-circuit-open'} for it, and
+    // placement must steer off it exactly as it does for an account-quota block.
+    const circuitBlocked = { blocked: true, reason: 'llm-circuit-open' };
+    const d = exec.decide(req({
+      machineRegistry: [
+        machine('rate-limited-mini', { loadAvg: 0.1, quotaState: circuitBlocked }),
+        machine('healthy-laptop', { loadAvg: 5 }),
+      ],
+    }));
+    expect(d.outcome).toBe('placed');
+    expect(d.chosenMachine).toBe('healthy-laptop');
+    expect(d.escalationReason).toBeUndefined();
+  });
+
   it('a quota-blocked current owner loses stickiness (the topic moves off the silent machine)', () => {
     const d = exec.decide(req({
       currentOwner: 'limited',

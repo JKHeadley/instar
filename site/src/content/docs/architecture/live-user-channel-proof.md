@@ -86,3 +86,12 @@ durable store alone and late-binds the machine id. `wireOwnershipApplier` return
 applier whenever the durable store is active — even before the mesh id resolves — so a
 reordering of the boot sequence can never again silently disable it; the durable destination
 record (not a log line) is the authoritative proof the seat actually moved.
+
+## Quota-aware placement sees the open circuit (the third finding)
+
+The live test's third catch was placement-side: a machine whose `LlmCircuitBreaker` was open
+still advertised `quotaState:{blocked:false}`, so placement routed sessions onto a rate-limited
+machine. The fix extracts `computeSelfQuotaState` into a testable pure function that OR-s the
+open-circuit state into the block; `computeSelfQuotaState` is called with both the account-quota
+snapshot and `llmCircuitAvailable()`, so a machine that cannot serve LLM work now reports itself
+blocked and placement steers off it.
