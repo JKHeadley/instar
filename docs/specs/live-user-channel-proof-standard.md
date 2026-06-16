@@ -2,12 +2,23 @@
 title: "Live-User-Channel Proof — the Instar Gold-Standard Testing Standard"
 slug: "live-user-channel-proof-standard"
 author: "echo"
-eli16-overview: "docs/specs/live-user-channel-proof-standard.eli16.md"
+eli16-overview: "live-user-channel-proof-standard.eli16.md"
+review-convergence: "2026-06-16T02:57:30.138Z"
+review-iterations: 6
+review-completed-at: "2026-06-16T02:57:30.138Z"
+review-report: "docs/specs/reports/live-user-channel-proof-standard-convergence.md"
+cross-model-review: "codex-cli:gpt-5.5"
+single-run-completable: true
+frontloaded-decisions: 5
+cheap-to-change-tags: 3
+contested-then-cleared: 2
+approved: true
+approved-by: "echo (autonomous run, standing pre-approval — Justin 2026-06-15 'start a 24h autonomous session to implement this'; design-fork autonomy granted)"
 ---
 
 # Spec: Live-User-Channel Proof — the Instar Gold-Standard Testing Standard
 
-**Status:** converged-draft (round 2)
+**Status:** converged (iteration 6) + self-approved under standing autonomous pre-approval
 **Author:** Echo (autonomous run, topic 13481)
 **Date:** 2026-06-15
 **Tracking:** CMT-1568
@@ -236,10 +247,13 @@ Resolution order (deterministic, no LLM authority):
    fixed, unit-tested keyword set: channel, dashboard, message, transfer, Slack,
    Telegram, UX, reply, …) emits a **signal** per §4.2 — never a standalone block.
 
-`userFacing:false` requires a recorded `userFacingWaiverReason`; a waiver that looks
-like it conflicts with touched surfaces is **surfaced for review (signal-only, §4.2)**,
-not auto-blocked — until an objective path→surface manifest exists to make the
-contradiction deterministic.
+`userFacing:false` requires a recorded `userFacingWaiverReason` AND is **always surfaced
+on the "done" claim** (recorded + operator-visible on every such claim, not only when a
+heuristic contests it — codex r5) — so a misdeclared scope cannot pass silently even if
+the touched-surface heuristic misses it. A waiver that looks like it conflicts with
+touched surfaces is additionally flagged for review (signal-only, §4.2); in `veto` mode a
+contradicted waiver requires operator attestation. The path→surface manifest, once it
+exists, upgrades the contradiction check to deterministic.
 
 ### 4.4 Anti-hallucination anchoring (the load-bearing part)
 
@@ -738,10 +752,15 @@ autonomy). Honest reversibility per the Decision-Completeness reviewer.
 Per the Cross-Machine Coherence check, every state surface this spec introduces
 declares its posture:
 
-- **`state/live-test-artifacts/` + `state/live-test-ledger.jsonl`** — **REPLICATED**
-  via the existing coherence-journal replication path (the same machinery the 7 memory
-  stores use). An artifact written on machine A is readable on machine B; the
-  hash-chained ledger replicates append-only. Identity is `{featureId, runId}`.
+- **`state/live-test-artifacts/` + per-machine ledger segments
+  `state/live-test-ledger.<machineId>.jsonl`** — **REPLICATED** via the existing
+  coherence-journal replication path (the same machinery the 7 memory stores use). An
+  artifact written on machine A is readable on machine B; each machine's hash-chained
+  ledger SEGMENT replicates append-only (a peer only ever *adds* its own segment — never
+  a shared concurrent append, §4.4). The gate reads the **derived union** of all
+  discovered `live-test-ledger.*.jsonl` segments (discovery = glob the segment files);
+  the union is computed on read, not materialized into a shared file. Identity is
+  `{featureId, runId}`.
 - **Gate evaluation** — runs on the **machine executing the autonomous run**. If that
   machine has not yet seen the ledger entry (replication lag beyond a freshness bound),
   the gate treats the feature as **not-proven → veto (return-to-work)**, never a false
