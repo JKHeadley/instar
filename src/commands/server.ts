@@ -3703,6 +3703,21 @@ export async function startServer(options: StartOptions): Promise<void> {
     const { TOPIC_OPERATOR_KIND_REGISTRATION } = await import('../core/TopicOperatorReplicatedStore.js');
     replicatedKindRegistry.register(TOPIC_OPERATOR_KIND_REGISTRATION);
 
+    // Secure A2A Verified Pairing §3.8 (FD11) — register the EIGHTH concrete replicated kind,
+    // `threadline-pairing-record`, onto the registry. Unlike the WS2 memory/PII stores it
+    // replicates ONLY the verified-IDENTITY RESULT of a pairing { peerFp, peerIdentityPub,
+    // state:'mutual-verified', verifiedAt, verifiedOnMachine } — NEVER the SAS, shared secret, or
+    // relay token (those stay machine-local BY DESIGN). Dual-registry's dynamic half (the static
+    // half is CoherenceJournal.JOURNAL_KINDS, which now lists 'threadline-pairing-record').
+    // Registration is INERT — emission/serve/pull stay gated behind
+    // `multiMachine.stateSync.threadlinePairing.enabled` (default false ⇒ strict no-op). Machine B
+    // honors a replicated record ONLY by pinning peerIdentityPub (a mismatching handshake key is
+    // refused inheritance + downgraded to pending-verification); inherited = identity-verified, NOT
+    // channel-ready (the outbound CredentialShareGate enforces the encrypted-path half). A revoke /
+    // verification-failed propagates as a tombstone (ThreadlinePairingReplicatedStore).
+    const { THREADLINE_PAIRING_KIND_REGISTRATION } = await import('../core/ThreadlinePairingReplicatedStore.js');
+    replicatedKindRegistry.register(THREADLINE_PAIRING_KIND_REGISTRATION);
+
     // ── WS2 SEND-SIDE wiring (docs/specs/WS2-SEND-SIDE-EMISSION-SPEC.md). The
     //    substrate above ships the registry + receive/serve machinery + advert; THIS
     //    wires the SEND half that was deferred ("the journal-backed emitter is attached
@@ -12552,6 +12567,17 @@ export async function startServer(options: StartOptions): Promise<void> {
         relayUrl: config.threadline?.relayUrl,
         visibility: config.threadline?.visibility,
         capabilities: config.threadline?.capabilities,
+        // Secure A2A Verified Pairing (spec §3.10). Live reader so credentialShareEnforced
+        // takes effect without a restart. `enabled` rides the developmentAgent gate when
+        // omitted (dev-live, dark-fleet); when off the inbound gate is a pass-through.
+        getVerifiedPairingConfig: () => {
+          const vp = config.threadline?.verifiedPairing;
+          return {
+            enabled: resolveDevAgentGate(vp?.enabled, config),
+            dryRun: vp?.dryRun ?? true,
+            credentialShareEnforced: vp?.credentialShareEnforced ?? false,
+          };
+        },
       });
       threadlineHandshake = threadline.handshakeManager;
       threadlineShutdown = threadline.shutdown;
@@ -12567,6 +12593,53 @@ export async function startServer(options: StartOptions): Promise<void> {
           console.log(`Unified trust system initialized (identity: ${unifiedTrust.identity.get()?.displayFingerprint ?? 'none'})`);
         } catch (err) {
           console.error(`Unified trust system init failed (non-fatal): ${err instanceof Error ? err.message : err}`);
+        }
+      }
+
+      // Secure A2A Verified Pairing §3.8 (FD11) — SEND-SIDE: attach the journal-backed
+      // emitter to the trust manager's pairing-replication hooks so a local markMutualVerified
+      // ALSO replicates the verified-IDENTITY RESULT to the agent's OWN machines, and a
+      // verification-failed propagates a tombstone. The emitter is handed ONLY the 5-field
+      // result (it has NO access to the SAS store), so the SAS / shared secret / relay token
+      // can never cross. Gated on the EXPLICIT `multiMachine.stateSync.threadlinePairing.enabled`
+      // (default false ⇒ NOT attached ⇒ strict no-op, single-machine behavior). Attached only
+      // when the journal-backed emitter exists (journal live) AND the store is enabled.
+      if (threadline.trustManager && replicatedRecordEmitter && cjOwnMachineId) {
+        const pairingStoreEnabled =
+          (config.multiMachine?.stateSync as { threadlinePairing?: { enabled?: boolean } } | undefined)
+            ?.threadlinePairing?.enabled === true;
+        if (pairingStoreEnabled) {
+          const emitter = replicatedRecordEmitter;
+          const {
+            THREADLINE_PAIRING_STORE_KEY,
+            deriveThreadlinePairingRecordKey,
+            buildThreadlinePairingRecordData,
+            buildThreadlinePairingTombstoneData,
+          } = await import('../core/ThreadlinePairingReplicatedStore.js');
+          threadline.trustManager.setPairingReplicationEmitter(
+            {
+              emitVerified: (result) =>
+                emitter.emit(
+                  THREADLINE_PAIRING_STORE_KEY,
+                  deriveThreadlinePairingRecordKey(result.peerFp),
+                  (hlc, origin, observed) =>
+                    buildThreadlinePairingRecordData({
+                      result: { ...result, state: 'mutual-verified' },
+                      hlc,
+                      origin,
+                      observed,
+                    }),
+                ),
+              emitRevoke: (peerFp, deletedAt) =>
+                emitter.emit(
+                  THREADLINE_PAIRING_STORE_KEY,
+                  deriveThreadlinePairingRecordKey(peerFp),
+                  (hlc, origin, observed) =>
+                    buildThreadlinePairingTombstoneData({ peerFp, hlc, origin, deletedAt, observed }),
+                ),
+            },
+            cjOwnMachineId,
+          );
         }
       }
 

@@ -80,6 +80,7 @@
     "upgrades",
     "src/templates",
     "src/data",
+    "src/threadline/data",
     "skills",
     "playbook-scripts",
     "scripts",

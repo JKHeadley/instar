@@ -42,9 +42,23 @@ import {
 } from './ReplicatedRecordEnvelope.js';
 import { SafeFsExecutor } from './SafeFsExecutor.js';
 
-export type JournalKind = 'topic-placement' | 'session-lifecycle' | 'autonomous-run' | 'threadline-conversation' | 'guard-latch' | 'pref-record' | 'relationship-record' | 'learning-record' | 'knowledge-record' | 'evolution-action-record' | 'user-record' | 'topic-operator-record';
+export type JournalKind = 'topic-placement' | 'session-lifecycle' | 'autonomous-run' | 'threadline-conversation' | 'guard-latch' | 'pref-record' | 'relationship-record' | 'learning-record' | 'knowledge-record' | 'evolution-action-record' | 'user-record' | 'topic-operator-record' | 'threadline-pairing-record';
 
-export const JOURNAL_KINDS: JournalKind[] = ['topic-placement', 'session-lifecycle', 'autonomous-run', 'threadline-conversation', 'guard-latch', 'pref-record', 'relationship-record', 'learning-record', 'knowledge-record', 'evolution-action-record', 'user-record', 'topic-operator-record'];
+export const JOURNAL_KINDS: JournalKind[] = ['topic-placement', 'session-lifecycle', 'autonomous-run', 'threadline-conversation', 'guard-latch', 'pref-record', 'relationship-record', 'learning-record', 'knowledge-record', 'evolution-action-record', 'user-record', 'topic-operator-record', 'threadline-pairing-record'];
+// 'threadline-pairing-record' added for Secure A2A Verified Pairing §3.8 (FD11): the EIGHTH
+// replicated-store consumer. Unlike the WS2 memory/PII stores it replicates ONLY the verified-
+// IDENTITY RESULT of a pairing { peerFp, peerIdentityPub, state:'mutual-verified', verifiedAt,
+// verifiedOnMachine } — NEVER the SAS words, shared secret, or relay token (those are bound to the
+// machine-local handshake's ephemeral secret and stay machine-local BY DESIGN). Like the other kinds
+// it is the STATIC half of the DUAL REGISTRY — a kind in ReplicatedKindRegistry but NOT here would
+// advertise stateSyncReceive=true yet serve/apply/pull NOTHING. Its schema (discriminated union on
+// `op` for value + tombstone; state MUST equal 'mutual-verified'; verifiedAt ISO-8601-only;
+// peerFp/peerIdentityPub hex-only), fingerprint recordKey, and consumer key-pinning honoring rule
+// live in ThreadlinePairingReplicatedStore.ts. Machine B honors a replicated record ONLY by pinning
+// peerIdentityPub (a mismatching handshake key is refused inheritance + downgraded to
+// pending-verification); inherited = identity-verified, NOT channel-ready. A revoke/verification-failed
+// propagates as a tombstone. Ships DARK behind multiMachine.stateSync.threadlinePairing
+// (enabled:false, dryRun:true). Additive — readers ignore unknown kinds.
 // 'user-record' + 'topic-operator-record' added for WS2.6 (multi-machine-replicated-store-foundation):
 // the SIXTH + SEVENTH replicated-store consumers and the SECOND + THIRD PII kinds (after WS2.3
 // relationships), completing the WS2 memory family. Like 'relationship-record' they are the STATIC
@@ -258,6 +272,12 @@ export const DEFAULT_RETENTION: Record<JournalKind, KindRetention> = {
   // cap is RAISED to 64KB on the applier path (TOPIC_OPERATOR_MAX_ENTRY_BYTES). NOTE: this kind is
   // ADVISORY-only — a replicated topic-operator record is NEVER the authoritative principal.
   'topic-operator-record': { maxFileBytes: 2 * 1024 * 1024, rotateKeep: 4 },
+  // threadline-pairing-record (Secure A2A Verified Pairing §3.8): the verified-IDENTITY
+  // RESULT store — FEW records (one per verified peer), bounded. NEVER the SAS/secret/token
+  // (those never enter the journal). The store's own bounds
+  // (ThreadlinePairingReplicatedStore.THREADLINE_PAIRING_RECORD_BOUNDS) override the
+  // replicated stream; this is the journal-level fallback.
+  'threadline-pairing-record': { maxFileBytes: 1 * 1024 * 1024, rotateKeep: 4 },
 };
 
 export const DEFAULT_FLUSH_INTERVAL_MS = 250;
@@ -449,7 +469,7 @@ export class CoherenceJournal {
   private state: WriterState = 'closed';
   private incarnation = '';
   /** Next seq to assign at enqueue, per kind (in-memory counter seeded at open). */
-  private nextSeq: Record<JournalKind, number> = { 'topic-placement': 1, 'session-lifecycle': 1, 'autonomous-run': 1, 'threadline-conversation': 1, 'guard-latch': 1, 'pref-record': 1, 'relationship-record': 1, 'learning-record': 1, 'knowledge-record': 1, 'evolution-action-record': 1, 'user-record': 1, 'topic-operator-record': 1 };
+  private nextSeq: Record<JournalKind, number> = { 'topic-placement': 1, 'session-lifecycle': 1, 'autonomous-run': 1, 'threadline-conversation': 1, 'guard-latch': 1, 'pref-record': 1, 'relationship-record': 1, 'learning-record': 1, 'knowledge-record': 1, 'evolution-action-record': 1, 'user-record': 1, 'topic-operator-record': 1, 'threadline-pairing-record': 1 };
   /** Durable highWaterSeq per kind (advanced after data fdatasync). */
   private highWaterSeq: Record<JournalKind, number> = {
     'topic-placement': 0,
@@ -464,6 +484,7 @@ export class CoherenceJournal {
     'evolution-action-record': 0,
     'user-record': 0,
     'topic-operator-record': 0,
+    'threadline-pairing-record': 0,
   };
   /** In-memory enqueue order; drained by the flusher in seq order per kind. */
   private queue: QueuedEntry[] = [];
@@ -481,6 +502,7 @@ export class CoherenceJournal {
     'evolution-action-record': new Set(),
     'user-record': new Set(),
     'topic-operator-record': new Set(),
+    'threadline-pairing-record': new Set(),
   };
   private rateBuckets: Record<JournalKind, RateBucket>;
   private timer: ReturnType<typeof setInterval> | null = null;
@@ -528,6 +550,7 @@ export class CoherenceJournal {
       'evolution-action-record': config.retention?.['evolution-action-record'] ?? DEFAULT_RETENTION['evolution-action-record'],
       'user-record': config.retention?.['user-record'] ?? DEFAULT_RETENTION['user-record'],
       'topic-operator-record': config.retention?.['topic-operator-record'] ?? DEFAULT_RETENTION['topic-operator-record'],
+      'threadline-pairing-record': config.retention?.['threadline-pairing-record'] ?? DEFAULT_RETENTION['threadline-pairing-record'],
     };
     this.rateCapCfg = config.rateCap ?? DEFAULT_RATE_CAP;
     this.artifactRoots = (config.artifactRoots ?? [path.join(this.stateDir, 'autonomous'), this.stateDir]).map((r) => {
@@ -558,6 +581,7 @@ export class CoherenceJournal {
       'evolution-action-record': { tokens: this.rateCapCfg.capacity, lastRefillMs: initMs },
       'user-record': { tokens: this.rateCapCfg.capacity, lastRefillMs: initMs },
       'topic-operator-record': { tokens: this.rateCapCfg.capacity, lastRefillMs: initMs },
+      'threadline-pairing-record': { tokens: this.rateCapCfg.capacity, lastRefillMs: initMs },
     };
   }
 

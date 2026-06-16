@@ -265,6 +265,7 @@ import { THREAD_ID_RE } from '../threadline/ThreadLog.js';
 import { readThreadHistoryUnion, type CanonicalReadDeps, type AggregateMessage } from '../threadline/canonicalHistoryRead.js';
 import { computeSymmetryState, localThreadSync, honorPeerThreadSync, type SymmetryState } from '../threadline/threadSymmetry.js';
 import { resolveSingleNegotiatorConfig, readNegotiatorCounts } from '../threadline/NegotiatorLease.js';
+import { evaluateOutboundCredentialShare } from '../threadline/CredentialShareGate.js';
 import { detectCommitmentClass, commitmentNudge } from '../threadline/ContentClassifier.js';
 import type { UnifiedTrustSystem } from '../threadline/UnifiedTrustWiring.js';
 import { DEFAULT_RELAY_URL } from '../threadline/constants.js';
@@ -10315,6 +10316,273 @@ export function createRoutes(ctx: RouteContext): Router {
       ? Number(req.query.staleAfterMs)
       : undefined;
     res.json(ctx.a2aDeliveryTracker.peerHealth(req.params.fp, { staleAfterMs }));
+  });
+
+  // ── Secure A2A Verified Pairing surfaces (§3.6) ────────────────────────
+  // List + detail + the PIN-gated operator verify. Ships DARK behind
+  // threadline.verifiedPairing.enabled (resolved via the developmentAgent gate
+  // when omitted, devAgentGate.ts) — when off, every route 503s and legacy
+  // behavior is byte-identical. SAS WORDS are shown ONLY on the detail route to a
+  // PIN-authed operator request while the pairing is pending-verification (§3.9);
+  // they are never on the list route and never to a bearer-only request. The
+  // verify route additionally REQUIRES the dashboard PIN (FD7): the agent Bearer
+  // token is structurally insufficient to confirm a pairing — checkMandatePin is
+  // the exact mechanism /mandate/issue uses (sha256 + timingSafeEqual + per-IP cap).
+  const verifiedPairingRouteEnabled = (): boolean =>
+    resolveDevAgentGate(
+      (ctx.config.threadline?.verifiedPairing as { enabled?: boolean } | undefined)?.enabled,
+      ctx.config as { developmentAgent?: boolean },
+    );
+
+  // Build THIS machine's local pairings list (the shape the plain + pool reads share,
+  // so a peer's plain reply merges in identically). No SAS words ever.
+  const buildLocalPairings = (): Array<Record<string, unknown>> => {
+    const trustManager = ctx.unifiedTrust?.trustManager;
+    if (!trustManager) return [];
+    return trustManager
+      .listProfiles()
+      .filter((p) => p.pairingState !== undefined)
+      .map((p) => ({
+        peerFp: p.fingerprint ?? null,
+        peerName: p.agent,
+        state: p.pairingState,
+        verifiedAt: p.verifiedAt,
+        trustSource: p.source,
+        peerAcked: p.peerAcked,
+      }));
+  };
+
+  // Pool-scope pairing aggregation (Secure A2A Verified Pairing §3.8 — "is my channel to
+  // <peer> verified?" gives ONE consistent answer regardless of fronting machine). Mirrors
+  // the proven jobsPoolMerge shape: short-TTL cache, known-offline-peer skip, per-peer
+  // timeout → failed marker (never a 500), shared pool-cache when wired. Single-machine ⇒
+  // just the local list tagged scope:'pool'. The replicated RESULT itself flows via the
+  // stateSync transport; THIS read is the cross-machine VIEW.
+  const pairingPoolCache = new Map<string, { at: number; payload: unknown }>();
+  const PAIRING_POOL_CACHE_TTL_MS = 3_000;
+  const PAIRING_PEER_TIMEOUT_MS = 5_000;
+  async function pairingPoolMerge(localPairings: Array<Record<string, unknown>>): Promise<Record<string, unknown>> {
+    const cached = pairingPoolCache.get('pairing');
+    if (cached && Date.now() - cached.at < PAIRING_POOL_CACHE_TTL_MS) {
+      return cached.payload as Record<string, unknown>;
+    }
+    const selfMachineId = ctx.meshSelfId ?? null;
+    const selfNickname = selfMachineId
+      ? ctx.machinePoolRegistry?.getCapacity(selfMachineId)?.nickname ?? null
+      : null;
+    const peers = ctx.resolvePeerUrls?.() ?? [];
+    const failed: Array<{ machineId: string; error: string }> = [];
+    const remote: Array<Record<string, unknown>> = [];
+    let poolStale = false;
+    await Promise.all(
+      peers.map(async (p) => {
+        const cap = ctx.machinePoolRegistry?.getCapacity(p.machineId);
+        if (cap && cap.online === false) {
+          failed.push({ machineId: p.machineId, error: 'offline' });
+          return;
+        }
+        try {
+          const fetchPeer = async () => {
+            const r = await fetch(`${p.url}/threadline/pairing`, {
+              headers: { Authorization: `Bearer ${ctx.config.authToken}` },
+              signal: AbortSignal.timeout(PAIRING_PEER_TIMEOUT_MS),
+            });
+            if (!r.ok) throw new Error(`HTTP ${r.status}`);
+            return (await r.json()) as { pairings?: Array<Record<string, unknown>> };
+          };
+          let body: { pairings?: Array<Record<string, unknown>> };
+          if (ctx.poolPollCache) {
+            const res = await ctx.poolPollCache.fetchPeer(p.machineId, '/threadline/pairing', fetchPeer);
+            body = res.body;
+            if (res.stale) poolStale = true;
+          } else {
+            body = await fetchPeer();
+          }
+          const nickname = cap?.nickname ?? null;
+          for (const pr of body.pairings ?? []) {
+            remote.push({ ...pr, machineId: pr.machineId ?? p.machineId, machineNickname: pr.machineNickname ?? nickname ?? undefined, remote: true });
+          }
+        } catch (err) {
+          failed.push({ machineId: p.machineId, error: err instanceof Error ? err.message : String(err) });
+        }
+      }),
+    );
+    const localTagged = localPairings.map((pr) => ({
+      ...pr,
+      machineId: pr.machineId ?? selfMachineId ?? undefined,
+      machineNickname: pr.machineNickname ?? selfNickname ?? undefined,
+    }));
+    const pairings: Array<Record<string, unknown>> = [...localTagged, ...remote];
+    const mutualVerifiedCount = pairings.filter((pr) => pr.state === 'mutual-verified' || pr.state === 'identity-verified').length;
+    const payload = {
+      pairings,
+      mutualVerifiedCount,
+      scope: 'pool',
+      pool: {
+        enabled: !!ctx.machinePoolRegistry,
+        selfMachineId,
+        peersQueried: peers.length,
+        peersOk: peers.length - failed.length,
+        failed,
+        ...(poolStale ? { stale: true } : {}),
+      },
+    };
+    pairingPoolCache.set('pairing', { at: Date.now(), payload });
+    return payload;
+  }
+
+  // List all pairings (read-only, no SAS words ever). 503 when the feature is off.
+  // `?scope=pool` merges every online machine's pairings (dark-peer-tolerant) so the
+  // "is this channel verified?" answer is consistent regardless of fronting machine (§3.8).
+  router.get('/threadline/pairing', async (req, res) => {
+    if (!verifiedPairingRouteEnabled()) {
+      res.status(503).json({ error: 'verified pairing not enabled' });
+      return;
+    }
+    const trustManager = ctx.unifiedTrust?.trustManager;
+    if (!trustManager) {
+      res.status(503).json({ error: 'trust manager unavailable' });
+      return;
+    }
+    const pairings = buildLocalPairings();
+    if (req.query.scope === 'pool') {
+      res.json(await pairingPoolMerge(pairings));
+      return;
+    }
+    res.json({ pairings });
+  });
+
+  // One pairing's detail. The SAS WORDS are included ONLY while the pairing is
+  // pending-verification AND the request carries a valid dashboard-PIN operator
+  // auth (§3.9). Without the PIN the words are omitted (the rest is returned).
+  // The PIN arrives in the request body (mirrors checkMandatePin's body.pin); a
+  // GET with a JSON body is accepted by the express.json() middleware. Detection
+  // of "PIN present" is non-throwing — an absent/incorrect PIN simply omits words,
+  // it does not 403 the read (the read itself is bearer-gated, like the list).
+  router.get('/threadline/pairing/:peerFp', (req, res) => {
+    if (!verifiedPairingRouteEnabled()) {
+      res.status(503).json({ error: 'verified pairing not enabled' });
+      return;
+    }
+    const trustManager = ctx.unifiedTrust?.trustManager;
+    if (!trustManager) {
+      res.status(503).json({ error: 'trust manager unavailable' });
+      return;
+    }
+    const peerFp = req.params.peerFp;
+    const profile = trustManager.getProfileByFingerprint(peerFp);
+    if (!profile || profile.pairingState === undefined) {
+      res.status(404).json({ error: `no pairing for fingerprint "${peerFp}"` });
+      return;
+    }
+
+    const detail: Record<string, unknown> = {
+      peerFp: profile.fingerprint ?? peerFp,
+      peerName: profile.agent,
+      state: profile.pairingState,
+      verifiedAt: profile.verifiedAt,
+      trustSource: profile.source,
+      peerAcked: profile.peerAcked,
+      pairingId: profile.pairingId,
+      sasFingerprint: profile.sasFingerprint,
+    };
+
+    // SAS words: pending-verification ONLY, and ONLY to a valid-PIN operator.
+    // We validate the PIN WITHOUT sending a response (the detail read succeeds
+    // regardless) — a non-throwing constant-time compare mirroring checkMandatePin.
+    const pin = (req.body ?? {}).pin;
+    const pinValid =
+      !!ctx.config.dashboardPin &&
+      typeof pin === 'string' &&
+      pin.length > 0 &&
+      (() => {
+        const ha = createHash('sha256').update(pin).digest();
+        const hb = createHash('sha256').update(ctx.config.dashboardPin!).digest();
+        return ha.length === hb.length && timingSafeEqual(ha, hb);
+      })();
+    if (profile.pairingState === 'pending-verification' && pinValid) {
+      const pending = trustManager.getPendingPairing(peerFp);
+      if (pending) detail.sasWords = pending.sasWords;
+    }
+
+    res.json({ pairing: detail });
+  });
+
+  // Operator confirm/deny of a pairing — PIN-GATED (FD7). The local human SAS
+  // comparison is the load-bearing security event; the agent Bearer token CANNOT
+  // confirm. checkMandatePin is the EXACT mechanism /mandate/issue uses.
+  router.post('/threadline/pairing/:peerFp/verify', (req, res) => {
+    if (!verifiedPairingRouteEnabled()) {
+      res.status(503).json({ error: 'verified pairing not enabled' });
+      return;
+    }
+    if (!checkMandatePin(req, res)) return; // FD7 — PIN required (response already sent)
+
+    const trustManager = ctx.unifiedTrust?.trustManager;
+    if (!trustManager) {
+      res.status(503).json({ error: 'trust manager unavailable' });
+      return;
+    }
+    const peerFp = req.params.peerFp;
+    const body = req.body ?? {};
+    if (typeof body.match !== 'boolean') {
+      res.status(400).json({ error: 'match (boolean) is required' });
+      return;
+    }
+
+    const profile = trustManager.getProfileByFingerprint(peerFp);
+    if (!profile || profile.pairingState === undefined) {
+      res.status(404).json({ error: `no pairing for fingerprint "${peerFp}"` });
+      return;
+    }
+
+    if (body.match === false) {
+      const ok = trustManager.markVerificationFailed(
+        peerFp,
+        'Operator-asserted SAS mismatch (POST /threadline/pairing/:peerFp/verify)',
+      );
+      if (!ok) {
+        res.status(409).json({ error: 'could not mark verification-failed for this pairing' });
+        return;
+      }
+      // §3.2 / §3.7 — an operator-asserted SAS mismatch is a potential MITM and must
+      // raise ONE HIGH attention item, deduped per (peerFp) episode, NEVER coalesced
+      // (a re-attempt LOOP — repeated handshake-then-mismatch — collapses onto the SAME
+      // item by its stable per-peerFp id rather than spawning one topic per attempt).
+      // HIGH priority is itself never coalesced by the AttentionTopicGuard, so the
+      // flood-guard chokepoint enforces the burst invariant for free. Best-effort —
+      // a notification failure never breaks the local trust write (which already landed).
+      void ctx.telegram?.createAttentionItem?.({
+        id: `threadline-pairing-verification-failed:${peerFp}`,
+        title: 'Threadline pairing verification FAILED — possible MITM',
+        summary: `The SAS for peer ${peerFp.slice(0, 12)}… was asserted NOT to match. The peer was forced to untrusted and credential-share revoked. Re-handshake before retrying.`,
+        category: 'general',
+        priority: 'HIGH',
+        sourceContext: 'threadline-verified-pairing',
+      });
+      res.json({ ok: true, peerFp, state: 'verification-failed' });
+      return;
+    }
+
+    // match === true → confirm. Bind to the CURRENT pairingId from the pending
+    // record (epoch binding, FD4). markMutualVerified is the SOLE writer of the
+    // mutual-verified source (§3.3) and re-verifies the operator-confirm precondition.
+    const pending = trustManager.getPendingPairing(peerFp);
+    const pairingId = pending?.pairingId ?? profile.pairingId;
+    if (!pairingId) {
+      res.status(409).json({ error: 'no current pairingId for this pairing — re-handshake required' });
+      return;
+    }
+    const ok = trustManager.markMutualVerified(peerFp, {
+      pairingId,
+      operatorConfirm: true,
+      peerAcked: profile.peerAcked,
+    });
+    if (!ok) {
+      res.status(409).json({ error: 'could not confirm pairing (state/epoch mismatch or not pending) — re-handshake required' });
+      return;
+    }
+    res.json({ ok: true, peerFp, state: 'mutual-verified' });
   });
 
   // ── Negotiator lease state (Robustness Phase 1, FD-9) ──────────────────
@@ -21653,6 +21921,20 @@ export function createRoutes(ctx: RouteContext): Router {
         localAgent: ctx.config.projectName,
         version: '1.0',
         stateDir: ctx.config.stateDir,
+        // Secure A2A Verified Pairing (§3.6): surface mutualVerifiedCount on
+        // /threadline/health. The count is the number of profiles whose pairing
+        // reached 'mutual-verified'. Gated on the verified-pairing flag so a dark
+        // agent reports nothing new (legacy health shape preserved).
+        mutualVerifiedCount: () => {
+          const enabled = resolveDevAgentGate(
+            (ctx.config.threadline?.verifiedPairing as { enabled?: boolean } | undefined)?.enabled,
+            ctx.config as { developmentAgent?: boolean },
+          );
+          if (!enabled) return 0;
+          const tm = ctx.unifiedTrust?.trustManager;
+          if (!tm) return 0;
+          return tm.listProfiles().filter((p) => p.pairingState === 'mutual-verified').length;
+        },
       },
       // Robustness Phase 1 (D-E / F4): wire the ack funnel so the verified E2E
       // relay inbound path records the implicit ack (the one path that lacked it).
@@ -21874,6 +22156,56 @@ export function createRoutes(ctx: RouteContext): Router {
       res.status(400).json({ success: false, error: 'Missing required fields: targetAgent, message' });
       return;
     }
+
+    // ── Outbound credential-share intent (Secure A2A Verified Pairing §3.5) ──
+    // A credential-bearing send is signalled by the caller (kind:'credential-share'
+    // or credentialShare:true). This is a caller HINT for the OUTBOUND path only — the
+    // SECURITY decision is keyed on WHO the resolved recipient is (mutual-verified),
+    // never the label (FD5). When set, the funnel REFUSES the send unless the recipient
+    // is mutual-verified AND the encrypted+signed path is available (never plaintext).
+    // LIVE whenever verified-pairing is enabled — NOT gated by dryRun (FD10).
+    const isCredentialShareSend =
+      req.body?.kind === 'credential-share' || req.body?.credentialShare === true;
+    const verifiedPairingEnabled = resolveDevAgentGate(
+      (ctx.config.threadline?.verifiedPairing as { enabled?: boolean } | undefined)?.enabled,
+      ctx.config as { developmentAgent?: boolean },
+    );
+    /**
+     * Outbound credential-share chokepoint (load-bearing, §3.5). Returns true if the
+     * caller is sending a credential to a NON-eligible recipient and the response has
+     * been written (the route must `return`). When verified-pairing is disabled, or the
+     * send is not credential-bearing, this is a no-op (returns false). Fail-closed (FD9):
+     * a missing trust manager / relay client → refuse a credential-bearing send.
+     *
+     * @param recipientFp the RESOLVED full routing fingerprint (never a name).
+     */
+    const refuseCredentialShareIfBlocked = (recipientFp: string): boolean => {
+      if (!isCredentialShareSend || !verifiedPairingEnabled) return false;
+      const trustManager = ctx.unifiedTrust?.trustManager;
+      if (!trustManager) {
+        // FD9 — cannot resolve pairing state ⇒ fail closed for a credential.
+        res.status(403).json({
+          success: false,
+          refused: true,
+          reason: 'peer-not-mutually-verified',
+          error: 'Credential-share refused: pairing state cannot be resolved.',
+        });
+        return true;
+      }
+      const decision = evaluateOutboundCredentialShare(
+        trustManager,
+        ctx.threadlineRelayClient ?? null,
+        recipientFp,
+      );
+      if (!decision.allow) {
+        console.warn(
+          `[relay-send] credential-share REFUSED to=${recipientFp.slice(0, 12)} reason=${decision.reason}`,
+        );
+        res.status(403).json({ success: false, refused: true, reason: decision.reason, error: `Credential-share refused: ${decision.reason}.` });
+        return true;
+      }
+      return false;
+    };
 
     // Caller-supplied priority — accept ['critical','high','medium','low'].
     // Default to 'medium' when omitted. Reject any unknown string so caller
@@ -22262,6 +22594,11 @@ export function createRoutes(ctx: RouteContext): Router {
           } catch { /* @silent-fallback-ok — identity.json read is best-effort */ }
         }
         if (localTarget?.port && !isSelfTarget) {
+          // §3.5 outbound credential-share chokepoint (local-delivery path). A credential
+          // must go to a mutual-verified peer over the encrypted+signed path only — the
+          // plaintext localhost relay-agent path is refused for a credential.
+          const localFp = resolvePeerFingerprint(localTarget) ?? '';
+          if (refuseCredentialShareIfBlocked(localFp)) return;
           // Check if the local agent is actually running
           try {
             const healthResp = await fetch(`http://localhost:${localTarget.port}/threadline/health`, {
@@ -22507,6 +22844,12 @@ export function createRoutes(ctx: RouteContext): Router {
         });
         return;
       }
+
+      // §3.5 outbound credential-share chokepoint (relay-delivery path). Refuse a
+      // credential unless the resolved peer is mutual-verified AND the encrypted+signed
+      // path is available — `sendAuto` would otherwise silently fall back to plaintext
+      // for an unknown-key peer, which a credential must never traverse.
+      if (refuseCredentialShareIfBlocked(resolvedId)) return;
 
       const relayMsgId = relayClient.sendAuto(resolvedId, message, threadId);
       const effectiveRelayThreadId = threadId ?? relayMsgId;

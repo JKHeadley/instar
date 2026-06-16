@@ -55,6 +55,13 @@ export interface ThreadlineBootstrapConfig {
   framework?: string;
   /** Agent capabilities */
   capabilities?: string[];
+  /**
+   * Live reader for the Secure A2A Verified Pairing config (spec §3.10). Supplied by
+   * server.ts so the inbound gate reads the CURRENT flag state (enabled/dryRun/
+   * credentialShareEnforced) on every message. When omitted, verified-pairing is a
+   * complete pass-through (byte-identical legacy behavior).
+   */
+  getVerifiedPairingConfig?: () => { enabled: boolean; dryRun: boolean; credentialShareEnforced: boolean };
 }
 
 export interface ThreadlineBootstrapResult {
@@ -228,6 +235,11 @@ export async function bootstrapThreadline(
     // The gate will be wired to the router after server setup
     inboundGate = new InboundMessageGate(trustManager!, null, {
       maxPayloadBytes: 64 * 1024,
+      // Bind THIS agent's routing fingerprint for pair-verify receipt verification +
+      // the self-pair guard (FD12). Resolved above via the read-only IdentityManager.
+      ownFingerprint: routingIdentity?.fingerprint,
+      // Live verified-pairing config reader (spec §3.10) — supplied by server.ts.
+      getVerifiedPairingConfig: config.getVerifiedPairingConfig,
     });
 
     // Only wire inbound message handling and connect if daemon is NOT handling relay.

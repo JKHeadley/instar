@@ -491,6 +491,11 @@ export const DARK_GATE_EXCLUSIONS: DarkGateExclusion[] = [
     reason: 'A2A check-in summarizer — sends UNBOUNDED user-facing Telegram summaries on a heartbeat while a conversation is active; live-on-dev would flood the operator. Opt-in to keep the operator un-flooded.',
   },
   {
+    configPath: 'multiMachine.stateSync.threadlinePairing.enabled',
+    category: 'action-bearing',
+    reason: 'Secure A2A Verified Pairing §3.8 — replicates the verified-IDENTITY RESULT of a pairing across the agent\'s own machines; the inherited record AUTHORIZES the identity half of the credential-share gate on a peer machine (key-pinned). A credential-gating surface, so it ships hard-dark with explicit enabled:false + dryRun:true on EVERY agent (dev included) — the cautious rollout posture the spec mandates, NOT the dev-gate-live posture of the 7 WS2 memory/PII stores. NEVER replicates the SAS, shared secret, or relay token (structurally — they are not fields of the replicated result). Opt-in per agent after soak.',
+  },
+  {
     configPath: 'monitoring.apprenticeshipCycleSla.enabled',
     category: 'action-bearing',
     reason: 'D4-grounded action-bearing: auto-ticks on the always-running TokenLedgerPoller cadence and, on each overdue cycle, calls telegram.createAttentionItem → createForumTopic + sendMessage (a user-facing Telegram escalation, flood-guard/dedup bounded). Read-only on the cycle store, but the auto-send contradicts the observe-only claim — held off-on-dev, opt-in per agent.',

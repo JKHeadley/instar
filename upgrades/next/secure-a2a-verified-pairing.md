@@ -1,0 +1,36 @@
+<!-- bump: minor -->
+
+## What Changed
+
+Adds **Secure Agent Pairing** — mutual out-of-band identity verification that lets two agents prove who they're talking to before sharing a credential, defeating relay/man-in-the-middle substitution.
+
+The Threadline cryptographic foundation (Ed25519 signing, the X25519 handshake, the trust model) already existed; this adds the missing **identity-binding + policy** layer on top of it:
+
+- **6-word SAS verification.** Both agents derive an identical 6-word Short Authentication String (66 bits, vendored BIP-39 wordlist, sha256-pinned + fail-closed load) from the handshake shared secret. A man-in-the-middle who swapped a key produces a *different* shared secret → the codes won't match → the operator catches it. The SAS is never transmitted; only a non-reversible `sasFingerprint` is logged. New `ThreadlineCrypto` primitives: `deriveSAS`, `deriveSasFingerprint`, `derivePairingId` (a per-handshake epoch id that invalidates a stale verification when a new handshake replaces it).
+- **Operator-confirmed, structurally un-self-grantable.** `AgentTrustManager` gains a `mutual-verified` trust source settable ONLY by the dedicated `markMutualVerified` method (the generic setter rejects it; an unknown source degrades to un-verified). Confirming a SAS match requires the operator's **dashboard PIN** (the exact `checkMandatePin` mechanism) — the agent's API token is structurally insufficient. The peer's `pair-verify` receipt is a fully-validated liveness ACK only; it can never flip a pairing by itself.
+- **Credential-share gate, fail-closed.** A new `credential-share` operation opens ONLY between mutually-verified peers. Enforced at the relay-send chokepoint (`CredentialShareGate`) + the inbound ingestion point, keyed on the peer's trust source (never a message label/content). A credential to an unverified peer, or over any unencrypted path, is refused — fail-closed on any uncertainty.
+- **Verification follows you across machines.** `ThreadlinePairingReplicatedStore` replicates ONLY the verified-identity result `{peerFp, peerIdentityPub, state, verifiedAt, verifiedOnMachine}` (never the SAS/secret/token) across the agent's machines, honoring an inherited record only by pinning the peer's identity key; the machine still needs its own live encrypted channel before a credential flows.
+- A failed SAS match (probable MITM) raises ONE high-priority attention item and forces the peer to untrusted.
+
+Ships **dark**: the credential gate behind `threadline.verifiedPairing.*` (dev-gated; outbound enforcement fail-closed from the first moment it's enabled), the cross-machine replication behind `multiMachine.stateSync.threadlinePairing` (hard-dark). Flag-off = byte-identical to today. Built in 6 increments, 140 new tests, the credential-blocking authority independently second-pass-reviewed twice.
+
+## What to Tell Your User
+
+- "I can now verify another agent's identity strongly — like confirming a Signal contact: we each show the same 6-word code and you confirm they match. Only after that can we exchange a secret, and confirming needs your dashboard PIN, so I can't approve myself."
+- "It's off by default and changes nothing until you turn it on. When on, I will refuse to send a credential to a peer I haven't verified with you — that's the point."
+- "Is my channel to a peer verified? — just ask, or check the dashboard pairing panel; never send a peer a secret until it shows mutually-verified."
+
+## Summary of New Capabilities
+
+| Capability | How to Use |
+|-----------|-----------|
+| Mutual SAS verified pairing | Drive `threadline_pair` (status) or the dashboard pairing panel; confirm the 6-word match with your PIN (`POST /threadline/pairing/:peerFp/verify`) |
+| "Is my channel to a peer mutually verified?" | `GET /threadline/pairing` (+ `?scope=pool`) · `GET /threadline/pairing/:peerFp` |
+| Credential-share gate | Automatic once enabled — a credential only sends to a `mutual-verified` peer, fail-closed (`threadline.verifiedPairing.*`) |
+| Cross-machine verified-identity sync | Hard-dark (`multiMachine.stateSync.threadlinePairing`); replicates the result, never the secret |
+
+## Evidence
+
+- 140 new tests across 6 increments (SAS derivation, pairing/trust, credential gate, routes, MCP tool, replication, E2E "feature alive", wiring-integrity, burst-invariant, migration-parity) — all green; `tsc`/lint clean.
+- Converged spec + ELI16 + convergence report: `docs/specs/secure-a2a-verified-pairing.md` (PR #1204).
+- Side-effects review with two independent Phase-5 second-pass concurrences: `upgrades/side-effects/secure-a2a-verified-pairing.md`.

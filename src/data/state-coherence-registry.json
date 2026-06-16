@@ -529,6 +529,32 @@
       "grandfathered": false
     },
     {
+      "category": "threadline-trust-profiles",
+      "description": "Per-peer agent trust profiles (AgentTrustManager) + audit trail. Now CREDENTIAL-GATING (Secure A2A Verified Pairing §3.8): the profile carries the pairing lifecycle state (pending-verification / mutual-verified / verification-failed / identity-verified) that the credential-share gate keys on. MACHINE-LOCAL: the SAS-bound pending state + the machine-local handshake's identity decision live here; the SAS words themselves are in a separate 0600 store (pairing-pending.json, never in the registry). The VERIFIED-IDENTITY RESULT alone replicates via the threadline-pairing stateSync transport (see threadline-pairing-result) — this file is never whole-file-synced.",
+      "scope": "machine-local",
+      "freshness": "real-time",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "threadline/trust-profiles.json",
+        "threadline/trust-audit.jsonl",
+        "threadline/pairing-pending.json"
+      ],
+      "grandfathered": false
+    },
+    {
+      "category": "threadline-pairing-result",
+      "description": "The replicated verified-IDENTITY RESULT of a Secure A2A pairing (Secure A2A Verified Pairing §3.8 / FD11). Replicates ONLY { peerFp, peerIdentityPub, state:'mutual-verified', verifiedAt, verifiedOnMachine } across the agent's OWN machines via the HLC replicated-store foundation (kind 'threadline-pairing-record') — NEVER the SAS words, shared secret, or relay token (those stay machine-local, bound to the machine-local handshake's ephemeral secret). Machine B honors a replicated record ONLY by pinning peerIdentityPub; a revoke/verification-failed propagates as a tombstone. Ships DARK behind multiMachine.stateSync.threadlinePairing (enabled:false, dryRun:true). Rides the coherence-journal stream files (no dedicated path).",
+      "scope": "must-be-coherent",
+      "freshness": "eventual",
+      "conflictShape": "lww",
+      "transport": "peer-http",
+      "paths": [
+        "state/coherence-journal/"
+      ],
+      "grandfathered": false
+    },
+    {
       "category": "process-restart-coordination",
       "description": "Process/restart coordination: boot-id, restart markers, auto-updater state, caffeinate pid, slept-marker. Per-process lifecycle.",
       "scope": "machine-local",
