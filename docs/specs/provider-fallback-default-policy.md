@@ -2,12 +2,22 @@
 title: "Provider-Fallback Default Policy — internal components run off Claude by default"
 slug: "provider-fallback-default-policy"
 author: "echo"
-eli16-overview: "docs/specs/provider-fallback-default-policy.eli16.md"
+review-convergence: "2026-06-16T02:13:48.963Z"
+review-iterations: 4
+review-completed-at: "2026-06-16T02:13:48.963Z"
+review-report: "docs/specs/reports/provider-fallback-default-policy-convergence.md"
+cross-model-review: "codex-cli:gpt-5.5"
+single-run-completable: true
+frontloaded-decisions: 4
+cheap-to-change-tags: 0
+contested-then-cleared: 1
+approved: true
+approved-note: "Justin full-preapproval for this autonomous run (2026-06-15: 'don't stop and wait for anything; get this done yourself') — same basis as the merged P1/P2/P4 specs."
 ---
 
 # Provider-Fallback Default Policy — internal components run off Claude by default
 
-**Status:** draft (converging — rounds 1–3 review folded in)
+**Status:** CONVERGED (4 review rounds; all 6 internal lenses + codex/gemini external + conformance gate)
 **Author:** echo
 **Commitments:** CMT-1554, CMT-1555
 **Origin directive (Justin, 2026-06-15):** "All gates, sentinels, and internal
@@ -203,10 +213,11 @@ and ExternalOperationGate have none and depend entirely on this cap; the tone-ga
 ceiling is **20s** `OUTBOUND_GATE_REVIEW_BUDGET_MS`, not 5s — the earlier "5s caller budget"
 claim was wrong and is removed).
 - **The cap must DOMINATE the provider's inner `rateLimitWaitMs` (round-2 N2, load-bearing).**
-  `CircuitBreakingIntelligenceProvider.acquireOrWait` honors a `rateLimitWaitMs` (≈120s) passed
-  through `options`; because the 5s cap RACES the whole `tp.evaluate()` (including that internal
-  wait), it abandons a rate-limit-waiting attempt at 5s instead of letting three links stack 120s
-  waits and blow the 20s route budget — i.e. the cap is what actually prevents re-creating
+  `CircuitBreakingIntelligenceProvider.acquireOrWait` honors a `rateLimitWaitMs` (illustratively
+  large — on the order of a minute-plus, not a code constant to pin) passed through `options`;
+  because the 5s cap RACES the whole `tp.evaluate()` (including that internal wait), it abandons a
+  rate-limit-waiting attempt at 5s instead of letting links stack those long waits and blow the 20s
+  route budget — i.e. the cap is what actually prevents re-creating
   tonight's stall. Stated explicitly so the build does not "fix" it away.
 
 **Orphaned-attempt safety (round-3 R3-2 — corrected, simpler, reuses shipped primitives).**
@@ -263,6 +274,13 @@ sweep refuse-to-author on every agent running the default policy.** Reading live
 computed default UNDER the live override preserves CartographerSweep's injection (and any other
 runtime override) while still defaulting unset slots off Claude. The boot-snapshot only decides
 default-vs-operator (§4.4); it never freezes the object the engine reads.
+
+**Documented foot-gun (round-4 A6):** because `resolveConfig` reads live and `sessions` is a
+`PATCH /config`-writable key, a Bearer-authed runtime `PATCH /config {sessions:{componentFrameworks}}`
+DOES change gating routing live (it is honored by the layer). This is an authenticated,
+operator-scoped capability, and every resulting path still fail-opens (a bad route → swap → Claude
+tail → heuristic), so it is a foot-gun to be aware of, not a safety hole — noted for completeness,
+not a blocker.
 
 ## 5. Migration parity (REQUIRED — existing agents)
 
@@ -453,4 +471,4 @@ Counts: frontloaded-decisions = 4 · cheap-to-change-after tags = 0 · contested
 
 ## Open questions
 
-*(none — all resolved into Frontloaded Decisions above.)*
+*(none)*
