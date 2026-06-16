@@ -219,6 +219,31 @@ address in the next round before convergence:
    on) and asserts a `multiMachine.*` feature marked `poolConsistent:true` resolves the SAME
    effective activation on both. A new such feature that resolves split fails CI.
 
+## Round-3 fold (codex r2, MINOR — converging)
+
+1. **Replication-config drift is the SAME class — the detector covers it.** `replication.enabled`
+   could itself drift across peers. The §2.2 detector compares **effective** activation, which
+   IS the materialized result of replication+ownership — so a replication-drift split surfaces
+   the same way (one peer applying placements, one not). State explicitly: the detector's unit of
+   comparison is *effective ownership materialization*, which catches both the dev-flag drift
+   (the original incident) AND replication-config drift. No separate invariant needed.
+2. **Capability-refuse heartbeat contract (freshness).** The advertised record is
+   `{machineId, version, replicationEnabled, durableOwnershipActive, lastAppliedPlacementEpoch,
+   observedAt}`. `/pool/transfer` refuses a move to a target whose record is STALE (observedAt
+   older than `2×heartbeatInterval`) OR not `durableOwnershipActive` OR version-incompatible —
+   **fail-closed**: an unconfirmed-active target is refused (`seatMoved:false`, reason names the
+   missing field), never half-moved. A stale heartbeat thus errs toward refusal, never a false
+   permit.
+3. **Detector must not depend solely on the system it validates.** Each machine writes its OWN
+   activation-health row locally (independent of the fan-out). The pool detector compares BOTH
+   the live `GET /guards?scope=pool` fan-out AND the replicated/self-reported health rows; a peer
+   with NO reachable health is **"unknown"** (its own dedup'd attention item), NOT silently
+   "dark" — so a broken fan-out/discovery can't mask a real split.
+
+This converges the design: the dev-flag drift, replication drift, rolling-deploy gap, boot race,
+and the detector's own failure mode are each addressed. Ready for a final convergence pass +
+approval, then the /instar-dev build.
+
 ## Open questions
 
 *(none)*
