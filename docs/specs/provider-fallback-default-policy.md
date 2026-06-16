@@ -7,7 +7,7 @@ eli16-overview: "docs/specs/provider-fallback-default-policy.eli16.md"
 
 # Provider-Fallback Default Policy — internal components run off Claude by default
 
-**Status:** draft (converging — rounds 1–2 review folded in)
+**Status:** draft (converging — rounds 1–3 review folded in)
 **Author:** echo
 **Commitments:** CMT-1554, CMT-1555
 **Origin directive (Justin, 2026-06-15):** "All gates, sentinels, and internal
@@ -209,22 +209,27 @@ claim was wrong and is removed).
   waits and blow the 20s route budget — i.e. the cap is what actually prevents re-creating
   tonight's stall. Stated explicitly so the build does not "fix" it away.
 
-**Orphaned-attempt safety (round-2 N1 — HARD REQUIREMENT, was a crash hazard).** Racing a timeout
-leaves the abandoned `tp.evaluate()` promise pending and, for a CLI provider, a subprocess running.
-The build MUST:
-- **Swallow the abandoned promise's later settlement** — attach `.catch(() => {})` (and ignore a
-  late resolve) to the abandoned attempt. Without this, the provider's eventual rejection (the
-  likely outcome when a slow CLI finally errors) hits the fail-toward-crash `unhandledRejection`
-  policy (`uncaughtExceptionPolicy.ts` — CLI error shapes are not in the non-fatal allowlist) and
-  **crashes the server mid-outage**. This is non-negotiable.
-- **Clear/`unref()` the timeout timer** on the winning path so it never keeps the loop alive.
-- **Propagate cancellation where supported** — pass an `AbortSignal` into `tp.evaluate()` so a
-  timed-out CLI attempt is actually killed, not merely ignored; where a provider can't cancel,
-  the orphan runs to completion and its result is discarded (a bounded waste — at most one extra
-  in-flight CLI per timed-out swap attempt, breaker- and cap-bounded). Document which providers
-  support cancellation.
+**Orphaned-attempt safety (round-3 R3-2 — corrected, simpler, reuses shipped primitives).**
+Round-2 over-prescribed an `.catch()`/`unref()`/`AbortSignal` mechanism on a mis-grounded crash
+premise; round-3 grounding against the live code corrects it:
+- **Use `Promise.race([tp.evaluate(), timeoutPromise])` (the codebase's shipped pattern, InputGuard
+  precedent).** `Promise.race` attaches a settlement handler to EACH input, so the abandoned
+  attempt's later **rejection is already handled** by the race and does NOT become an
+  `unhandledRejection` — there is **no crash hazard** with this form (Node-confirmed). A late
+  *resolve* is likewise ignored (the loop already advanced). So the elaborate manual `.catch()`/
+  `unref()` is unnecessary; the only rule is **use `Promise.race`, never a detached/awaited handle**.
+- **Subprocess kill = the providers' EXISTING `timeoutMs → SIGTERM` (no new engine API).** All four
+  CLI providers already `execFile` with a `timeoutMs` that SIGTERMs the child on expiry. The swap
+  loop passes a tight per-attempt `timeoutMs` (= `swapAttemptTimeoutMs`) into `tp.evaluate()`'s
+  options so the provider self-terminates its subprocess at the cap — the cap and the subprocess
+  kill are the SAME bound. There is **no `AbortSignal` on `IntelligenceOptions`** (it has no
+  receiver) — that round-2 language is dropped.
+- **Observability (round-3 R3-4 + conformance "Observability" finding):** a timed-out swap attempt
+  emits a distinct `onDegrade({ reason: 'swap-attempt-timeout: <target>' })` so the cap firing is
+  visible in `DegradationReporter` + `/metrics/features` — the operator can SEE a slow provider
+  being abandoned and tune `swapAttemptTimeoutMs`.
 - **Regression test** (§7): a swap target that resolves/rejects AFTER the cap fired must not crash
-  and must not be used.
+  (Promise.race form) and must not be used; assert the per-attempt `timeoutMs` is passed through.
 
 **`buildProvider` probe contract (round-2 N5/N7).** The §4.2 active-probe reuses the router's own
 `providerFor` cache (`this.cache`) so a framework is built **at most once** at boot, never
@@ -238,12 +243,26 @@ safe with a 1-link tail but is not with a 3–4-link default chain. The timeout 
 timed-out attempt is just a failed attempt → next target → Claude tail → fail-closed if all
 exhausted), so it never weakens the fail-closed guarantee.
 
-### 4.6 Where the resolution happens
-At the router construction site in `server.ts` (~line 4687): if the boot-snapshot says
-the operator did NOT set `componentFrameworks`, pass a `resolveConfig` that returns the
-**computed effective config** (memoized; active-set computed once at boot). If they did,
-pass their config through unchanged (today's behavior). This preserves live-read
-semantics for the operator's own later edits.
+### 4.6 Where the resolution happens — live-read, layered (round-3 R3-1)
+At the router construction site in `server.ts` (~line 4687), install a `resolveConfig` that
+**reads the live config on every call** (never a frozen object). **Memoize only the active-framework
+SET** (the boot-computed `INTERNAL_FRAMEWORK_PREFERENCE ∩ active` list — §4.2), NOT the resulting
+config. Per call:
+- If the **boot snapshot** says the operator set `componentFrameworks` (§4.4): return the live
+  `config.sessions.componentFrameworks` unchanged (today's behavior; live edits to its contents
+  flow through).
+- Else: return the **computed default layered UNDER any live in-memory `componentFrameworks`** —
+  i.e. start from the computed `{categories(sentinel/gate/reflector), failureSwap}` and let a live
+  override that another feature injected at runtime WIN for its slot.
+
+**Why layered, not frozen (round-3 R3-2 / R3-S2 — a real cross-feature regression otherwise):**
+`CartographerSweep` injects its own routing at runtime by mutating
+`config.sessions.componentFrameworks` (an in-memory component/category override, `server.ts:~11268`).
+A *frozen* memoized computed-default would ignore that mutation and **silently make the freshness
+sweep refuse-to-author on every agent running the default policy.** Reading live + layering the
+computed default UNDER the live override preserves CartographerSweep's injection (and any other
+runtime override) while still defaulting unset slots off Claude. The boot-snapshot only decides
+default-vs-operator (§4.4); it never freezes the object the engine reads.
 
 ## 5. Migration parity (REQUIRED — existing agents)
 
@@ -253,6 +272,11 @@ not just `init`:
   runtime from an unset `componentFrameworks`. `migrateConfig()` writes **no** frozen
   `componentFrameworks` block (a frozen block would pin a stale active-set and break the
   §4.3 tail-self-heal). The "migration" is purely the new code shipping.
+- **`intelligence.swapAttemptTimeoutMs` is INLINE-defaulted, no migration (round-3 R3-3b).**
+  The new config key (§4.5, default 5s) is read with an inline fallback (`?? 5000`); it gets
+  **no `ConfigDefaults`/`migrateConfig` entry** — absent ⇒ the 5s default applies, present ⇒
+  the operator's value wins. This matches the `codexExecJson` precedent (a behavior key kept out
+  of the persisted defaults so absence is the dark/default state).
 - **Agent-awareness migration (resolves round-1 integration finding):** the CLAUDE.md
   template change (§8) must land on EXISTING agents via `migrateClaudeMd()` with a
   content-sniff guard, not only on `init`. A capability the agent doesn't know about it
@@ -381,14 +405,14 @@ component). The operator can SEE that sentinels now run on Codex, and that a swa
   example (N9): "with no `componentFrameworks` set, sentinels/gates/reflectors auto-route to the
   first active off-Claude CLI (Codex→PI→Gemini→Claude); set `sessions.componentFrameworks` to
   override; set it to `{}` to force everything back to the default framework."
-- **`migrateClaudeMd()` (existing agents):** content-sniff on a **NEW unique marker** (the literal
-  `run off Claude by default` / `INTERNAL_FRAMEWORK_PREFERENCE`), **NOT** the existing
-  `## Per-Component Framework Routing` heading — that heading already exists on every deployed
-  agent, so sniffing it would make the migration a silent no-op and existing agents would keep the
-  now-false "opt-in / heuristic" text. APPEND a short corrective subsection that states the new
-  default-ON behavior, the gating-call swap (superseding the old heuristic line), the override, and
-  the `{}` rollback. (Append-with-new-marker is the only path `migrateClaudeMd` can actually
-  execute; an in-place sentence edit is `generateClaudeMd`-only.)
+- **`migrateClaudeMd()` (existing agents):** content-sniff on a **NEW unique marker** — use the
+  literal **`run off Claude by default`**, **NOT** the existing `## Per-Component Framework Routing`
+  heading (already on every deployed agent ⇒ silent no-op, stale "opt-in / heuristic" text left in
+  place). **Do NOT use a marker containing the bare token `pi-cli`** (round-3 R3-3a — it collides
+  with the existing pi-cli migration guard at `PostUpdateMigrator.ts:5525`). APPEND a short
+  corrective subsection stating the new default-ON behavior, the gating-call swap (superseding the
+  old heuristic line), the override, and the `{}` rollback. (Append-with-new-marker is the only
+  path `migrateClaudeMd` can execute; an in-place sentence edit is `generateClaudeMd`-only.)
 - **Proactive trigger** (both): "user hits Claude rate limits / 'why are my sentinels on Codex?'"
   → explain the default + how to override + the `{}` rollback.
 

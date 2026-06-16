@@ -14,7 +14,9 @@
 
 ## ROUND 2 DONE (rewrite committed): externals→MINOR (codex was SERIOUS); fixed N1 orphan-promise CRASH hazard (.catch+unref+AbortSignal), N2 cap-dominance prose, N3 garbage-output=caller-handled (resolves No-Deferrals), N4 migrateClaudeMd new-marker (old sniff no-ops+leaves wrong text), N5-N9 precision. decision-completeness+lessons already CONVERGED.
 
-## NEXT: ROUND 3 (Phase 3 convergence check)
+## ROUND 3 DONE (rewrite committed): externals MINOR/MINOR; CONVERGED lenses=decision-completeness+lessons+scalability. Fixed R3-2 (§4.5 simplified to Promise.race+existing timeoutMs->SIGTERM; dropped mis-grounded AbortSignal/.catch — InputGuard precedent), R3-1 (§4.6 live-read+layer computed default UNDER live override so CartographerSweep injection survives), R3-3a/b precision, R3-4 observability (swap-attempt-timeout onDegrade).
+
+## NEXT: ROUND 4 (Phase 3 — expected to CONVERGE; trajectory M11->N9->R3-4, externals SERIOUS->MINOR->MINOR, 3 lenses already converged). If converged: Phase 4 report + ELI16 companion (>=800 chars) + write-convergence-tag.mjs --cross-model-review "codex-cli:gpt-5.5" --frontloaded-decisions 4 --cheap-tags 0 --contested-cleared 1 + publish-spec-review handoff.
 - Externals are MANDATORY (spec body changed since round-1 external pass — codex+gemini were active <7d).
 - Re-run: conformance gate + 6 internal reviewers + codex + gemini on the UPDATED spec.
 - Convergence criteria: (1) no material NEW findings, (2) Open questions already = none ✅.
