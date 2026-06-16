@@ -17,6 +17,7 @@ import {
 } from '../../src/monitoring/ResumeQueueDrainer.js';
 import {
   AGE_LIMIT_ACTIVE_RUN_REASON,
+  COMMITMENT_ACTIVE_RUN_REASON,
   isAutoResumableEmergencyPauseReason,
 } from '../../src/core/WorkEvidence.js';
 
@@ -685,5 +686,49 @@ describe('ResumeQueueDrainer — stale emergency-pause robustness (Layer 1 + Lay
     expect(r.invalidated).toBe(1);
     expect(h.respawns).toHaveLength(0);
     expect(h.queue.list()[0].status).toBe('invalidated:operator-stop');
+  });
+});
+
+describe('ResumeQueueDrainer — GAP-B D9 commitment drain-time re-check (both sides)', () => {
+  const committedCandidate = (over?: Partial<import('../../src/monitoring/ResumeQueue.js').ResumeQueueEntry>) =>
+    candidate({ reason: COMMITMENT_ACTIVE_RUN_REASON, workEvidence: ['build-or-autonomous-active'], ...over });
+
+  it('commitment still active at drain ⇒ spawn proceeds', async () => {
+    const h = harness({ deps: { commitmentStillActiveForTopic: () => true } });
+    h.queue.considerEnqueue(committedCandidate());
+    await warmCalm(h, 2);
+    expect((await h.drainer.tick()).resumed).toBe(true);
+    expect(h.respawns).toHaveLength(1);
+  });
+
+  it('commitment closed/lapsed between enqueue and drain ⇒ invalidated (never spawns)', async () => {
+    const h = harness({ deps: { commitmentStillActiveForTopic: () => false } });
+    h.queue.considerEnqueue(committedCandidate());
+    await warmCalm(h, 2);
+    const r = await h.drainer.tick();
+    expect(r.invalidated).toBe(1);
+    expect(h.respawns).toHaveLength(0);
+    expect(h.queue.list()[0].status).toBe('invalidated:commitment-no-longer-active');
+  });
+
+  it('the re-check is gated on the COMMITMENT reason only (a quota-shed entry never consults it)', async () => {
+    let consulted = false;
+    const h = harness({
+      deps: { commitmentStillActiveForTopic: () => { consulted = true; return false; } },
+    });
+    // reason 'quota-shed' (the candidate default), NOT the commitment reason.
+    h.queue.considerEnqueue(candidate());
+    await warmCalm(h, 2);
+    expect((await h.drainer.tick()).resumed).toBe(true);
+    expect(consulted).toBe(false);
+  });
+
+  it('a throwing dep resolves SAFE (still-active ⇒ spawn proceeds, never wrongly dropped)', async () => {
+    const h = harness({
+      deps: { commitmentStillActiveForTopic: () => { throw new Error('boom'); } },
+    });
+    h.queue.considerEnqueue(committedCandidate());
+    await warmCalm(h, 2);
+    expect((await h.drainer.tick()).resumed).toBe(true);
   });
 });

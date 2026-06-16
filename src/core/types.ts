@@ -4398,6 +4398,27 @@ export interface MonitoringConfig {
      * ConfigDefaults — preserves the fleet flip).
      */
     autoHealStaleHostLock?: boolean;
+    /**
+     * GAP-B commitment-evidence backstop (spec:
+     * autonomous-registration-guarantee.md, Part B). When an age-limit reap hits
+     * a topic with NO per-topic autonomous-run state file but a FRESH qualifying
+     * open agent-commitment corroborated by a recent user message (D8), inject
+     * `build-or-autonomous-active` so an UNregistered-but-working run survives.
+     *
+     * Ships DARK (the containment): `enabled` is OMITTED so the injection is OFF
+     * on BOTH fleet AND dev by default — no injection ⇒ no revival ⇒ the
+     * 2026-06-13 loop is structurally impossible while dark. Set `enabled:true`
+     * to arm; `dryRun:true` (the default when armed) logs "would inject" without
+     * tagging the candidate, so a dark-soak can confirm KEEP/eligibility agree on
+     * real data BEFORE evidence actually flows. CODE-defaulted (absent from
+     * ConfigDefaults — the resumeQueue.* dark-default discipline, no migration).
+     */
+    commitmentEvidence?: {
+      enabled?: boolean;
+      dryRun?: boolean;
+      /** Freshness horizon on `createdAt` (D1). Default 6h. */
+      freshCommitmentWindowMs?: number;
+    };
   };
   /**
    * AgentWorktreeReaper (Responsible Resource Usage — OS resource hygiene).

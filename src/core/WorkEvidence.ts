@@ -59,6 +59,24 @@ export const MARKER_WORK_EVIDENCE = ['unverified-under-pressure'] as const;
 export const AGE_LIMIT_ACTIVE_RUN_REASON = 'age-limit (active autonomous run)';
 
 /**
+ * The reap-reason tag for an age-limit recycle whose topic has no per-topic
+ * autonomous-run state file (the run was never registered) BUT carries a fresh,
+ * qualifying open agent-commitment corroborated by a recent user message
+ * (spec: docs/specs/autonomous-registration-guarantee.md, GAP-B Part B). This is
+ * the BACKSTOP for an unregistered-but-actively-working autonomous run: the
+ * commitment is the independent live-work signal the state-file source cannot see.
+ *
+ * Parallel to AGE_LIMIT_ACTIVE_RUN_REASON (registered runs) so the drainer can
+ * route this candidate to its OWN drain-time liveness re-check
+ * (`commitmentStillActiveForTopic`) instead of the state-file read (which is
+ * absent here by construction). The reason is the provenance carrier — there is
+ * NO new WorkEvidence enum value (the strong `build-or-autonomous-active` signal
+ * is reused; the clamped WorkEvidenceName union is untouched). Imported by
+ * server.ts (injection) + ResumeQueueDrainer.ts (drain-time routing).
+ */
+export const COMMITMENT_ACTIVE_RUN_REASON = 'age-limit (committed unregistered run)';
+
+/**
  * Closed-world predicate: is this resume-queue PAUSE reason a blunt
  * emergency/sentinel stop that the drainer may auto-resume once it has gone
  * provably stale (spec: docs/specs/resume-queue-stale-emergency-pause.md)?

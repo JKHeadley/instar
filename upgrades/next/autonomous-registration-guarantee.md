@@ -1,0 +1,24 @@
+# Autonomous-Registration Guarantee (GAP-B) — revive an unregistered-but-working run
+
+## What Changed
+
+When an autonomous run is age-limit-reaped, the reaper can now recognize it as live work and revive it even if it was never formally registered — as long as it has a fresh, agent-owned open commitment for the topic AND a recent user message. This closes the exact gap that killed a run overnight: the operator said "go autonomous", the formal state file was never written, and the session died as a plain idle timeout, invisible to all the revival machinery.
+
+The revival path ships dark (off by default; explicit enable, then a dry-run soak before going live). The one live change is that the reaper's "recently messaged" keep-guard — previously inert — now actually works, so a session you messaged recently is kept rather than reaped (always the safe direction). A new, deliberately shared check guarantees the keep-guard and the revive-check always agree, which structurally prevents the kill-then-revive loop that a naive version would re-create.
+
+## Evidence
+
+- New src/core/gapBCommitmentEvidence.ts — the shared qualifying/freshness/agreement/dark-gate predicates (one source of truth for enqueue + drain so they cannot disagree).
+- src/commands/server.ts — the dark-gated commitment-evidence injection in the reaped path + the inert keep-predicate promoted to real (shared across ReapGuard and SessionReaper).
+- 54 new tests across unit/integration/e2e incl. the anti-loop regression and the dark-no-op; tsc clean; 14 lints clean; independent reaper-class second-pass concurred.
+- Spec docs/specs/autonomous-registration-guarantee.md — converged (2 rounds + a focused Part-D re-converge that caught a build-blocking store error before any code).
+
+## What to Tell Your User
+
+If a long autonomous run gets recycled by the reaper while it still has live work, it now revives itself instead of silently dying — even if it was never formally registered. This ships off by default and goes through a careful dry-run soak before it ever revives anything, so nothing changes for you until you turn it on. The only immediately-live improvement is that a session you messaged recently is now reliably kept rather than reaped.
+
+## Summary of New Capabilities
+
+- The reaper revives an unregistered-but-actively-working autonomous run (corroborated by a fresh commitment plus recent activity), instead of letting it die as a plain idle timeout.
+- A previously-inert "recently messaged" keep-guard now actually protects active sessions from the reaper.
+- A shared agreement-check structurally prevents the kill-then-revive loop, so the resilience fix cannot misfire.

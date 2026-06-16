@@ -68,6 +68,16 @@ export interface ReapLogEntry {
   midWork?: boolean;
   /** Reaped entries: the clamped work-evidence names that drove midWork. */
   workEvidence?: string[];
+  /**
+   * Reaped entries: which evidence SOURCE drove the revival-eligibility tag
+   * (autonomous-registration-guarantee spec, GAP-B D3). Default (absent) ⇒
+   * `'state-file'` — the registered-run path, back-compat for older rows.
+   * `'commitment'` ⇒ the GAP-B backstop fired (a fresh qualifying open
+   * commitment + recent-user-message corroboration on an UNregistered run).
+   * PII constraint (D3): this field + at most the commitment id may be logged —
+   * NEVER userRequest/agentResponse (this JSONL is world-readable).
+   */
+  evidenceSource?: 'state-file' | 'commitment';
   /** Notify entries: the notice this outcome record belongs to. */
   noticeId?: string;
   /** Notify entries: the topic the notice targets (absent for lifeline-only). */
@@ -95,6 +105,7 @@ export class ReapLog {
     launchLane?: 'headless' | 'rerouted-interactive';
     midWork?: boolean;
     workEvidence?: string[];
+    evidenceSource?: 'state-file' | 'commitment';
   }): void {
     this.append({
       ts: new Date().toISOString(),
@@ -109,6 +120,7 @@ export class ReapLog {
       ...(e.launchLane ? { launchLane: e.launchLane } : {}),
       ...(e.midWork !== undefined ? { midWork: e.midWork } : {}),
       ...(e.workEvidence && e.workEvidence.length > 0 ? { workEvidence: e.workEvidence } : {}),
+      ...(e.evidenceSource ? { evidenceSource: e.evidenceSource } : {}),
     });
   }
 

@@ -40,7 +40,7 @@
  */
 
 import type { ResumeQueue, ResumeQueueEntry } from './ResumeQueue.js';
-import { AGE_LIMIT_ACTIVE_RUN_REASON, isAutoResumableEmergencyPauseReason } from '../core/WorkEvidence.js';
+import { AGE_LIMIT_ACTIVE_RUN_REASON, COMMITMENT_ACTIVE_RUN_REASON, isAutoResumableEmergencyPauseReason } from '../core/WorkEvidence.js';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const JOB_SLUG_RE = /^[a-z0-9-]+$/;
@@ -73,6 +73,21 @@ export interface ResumeQueueDrainerDeps {
    * Absent (undefined) ⇒ today's behavior (no extra check) — back-compat.
    */
   autonomousRunFinished?: (topicId: number, reason: string) => boolean;
+  /**
+   * GAP-B D9 (spec: autonomous-registration-guarantee.md) — OPTIONAL drain-time
+   * re-validation for an entry admitted via the COMMITMENT_ACTIVE_RUN_REASON
+   * backstop (an UNregistered run kept alive by a fresh open commitment). Returns
+   * `true` when the qualifying commitment + recent-user-activity STILL hold at
+   * drain time → spawn proceeds; `false` when the commitment was
+   * delivered/expired/violated or the user-activity window lapsed between enqueue
+   * and drain → the entry invalidates `commitment-no-longer-active`, never a
+   * spawn (so a done-but-not-marked commitment can't revive finished work). The
+   * state-file `autonomousRunFinished` re-check is useless here (no state file by
+   * construction), so this is its parallel. Absent ⇒ today's behavior. A
+   * throwing/absent dep resolves to the SAFE side (still-active ⇒ allow), matching
+   * autonomousRunFinished's contract: it never wrongly drops a legitimate revival.
+   */
+  commitmentStillActiveForTopic?: (topicId: number) => boolean;
   /** Jobs: exists, not disabled, not CrashLoopPauser-paused, not run since queuedAt. */
   jobCheck: (slug: string, queuedAtIso: string) => { ok: boolean; why?: string };
   pathExists: (p: string) => boolean;
@@ -563,6 +578,19 @@ export class ResumeQueueDrainer {
         this.safeBool(() => this.deps.autonomousRunFinished!(topicId, entry.reason), false)
       ) {
         return 'autonomous-run-finished';
+      }
+      // GAP-B D9: the parallel drain-time re-check for the committed-unregistered-
+      // run backstop. The state-file read above is inert here (no state file by
+      // construction), so re-validate the commitment liveness instead. A
+      // throwing/absent dep resolves to STILL-ACTIVE (safeBool fallback true ⇒ no
+      // invalidation), the SAFE side — it can only ADD an invalidation when the
+      // commitment provably closed, never wrongly drop a legitimate revival.
+      if (
+        entry.reason === COMMITMENT_ACTIVE_RUN_REASON &&
+        this.deps.commitmentStillActiveForTopic &&
+        !this.safeBool(() => this.deps.commitmentStillActiveForTopic!(topicId), true)
+      ) {
+        return 'commitment-no-longer-active';
       }
     } else if (entry.jobSlug) {
       const check = this.safeVal(() => this.deps.jobCheck(entry.jobSlug!, sinceIso), { ok: false, why: 'job-check-failed' });

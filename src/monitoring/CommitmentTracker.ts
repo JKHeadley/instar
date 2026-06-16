@@ -951,6 +951,21 @@ export class CommitmentTracker extends EventEmitter {
   }
 
   /**
+   * Get active commitments bound to a specific Telegram topic.
+   *
+   * GAP-B (spec: docs/specs/autonomous-registration-guarantee.md, Part B) — a
+   * thin synchronous wrapper over `getActive().filter(c => c.topicId === topicId)`.
+   * No new state, no I/O, no lock: Node's single thread guarantees no torn read
+   * vs `mutate()`. The QUALIFYING filter (status==='pending', agent-driven,
+   * not-beacon-paused/suppressed, local-origin, fresh) is applied by the CALLER
+   * (the reaped-session evidence wiring), not here — this method is the cheap
+   * topic-scoped read; eligibility policy stays at the decision point.
+   */
+  getActiveByTopicId(topicId: number): Commitment[] {
+    return this.getActive().filter((c) => c.topicId === topicId);
+  }
+
+  /**
    * True if a one-time-action commitment has no way to be verified
    * automatically — no verificationMethod at all, or the `manual` method
    * (which by design cannot self-resolve). The verify sweep is a strict

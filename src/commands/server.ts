@@ -32,7 +32,8 @@ import { CodexResumeMap, type CodexSpawnFence } from '../core/CodexResumeMap.js'
 import { paneIdleWithEmptyInput } from '../core/ModelSwapService.js';
 import { escalatedModelIds, normalizeTierEscalationConfig, type TierEscalationConfig } from '../core/ModelTierEscalation.js';
 import { activeAutonomousJobs, autonomousRunRemainingForTopic } from '../core/AutonomousSessions.js';
-import { AGE_LIMIT_ACTIVE_RUN_REASON } from '../core/WorkEvidence.js';
+import { AGE_LIMIT_ACTIVE_RUN_REASON, COMMITMENT_ACTIVE_RUN_REASON } from '../core/WorkEvidence.js';
+import { gapBEligibleForTopic, recentUserMessageFromHistory, resolveGapBInjectionGate, decideGapBInjection } from '../core/gapBCommitmentEvidence.js';
 import { TopicProfileTransferCarrier, createTopicProfilePullHandler } from '../core/TopicProfileTransferCarrier.js';
 import type { SendPullOutcome, TopicProfilePullResponse } from '../core/TopicProfileTransferCarrier.js';
 import type { ResolvedTopicProfile } from '../core/TopicProfileResolver.js';
@@ -6899,6 +6900,56 @@ export async function startServer(options: StartOptions): Promise<void> {
     const rqCfg = config.monitoring?.resumeQueue ?? {};
     let resumeQueue: import('../monitoring/ResumeQueue.js').ResumeQueue | null = null;
     let resumeDrainer: import('../monitoring/ResumeQueueDrainer.js').ResumeQueueDrainer | null = null;
+    // GAP-B Part A surface (spec: autonomous-registration-guarantee.md) — the
+    // aggregated-attention chokepoint reference, hoisted to the handler's scope.
+    // Assigned inside the `if (rqCfg.enabled)` block (where raiseResumeAggregated
+    // is built); null otherwise ⇒ Part A is a silent no-op (never blocks).
+    let gapBRaiseAggregated: ((kind: string, detail: string) => void) | null = null;
+    // GAP-B Part B (the commitment-evidence backstop, ships DARK). The gate is
+    // armed ONLY by an explicit `monitoring.resumeQueue.commitmentEvidence.enabled
+    // === true` (omitted ⇒ OFF on fleet AND dev — the containment: no injection ⇒
+    // no revival ⇒ the 2026-06-13 loop is structurally impossible while dark).
+    const gapBCfg = rqCfg.commitmentEvidence ?? {};
+    const gapBGate = resolveGapBInjectionGate(gapBCfg);
+    const gapBFreshWindowMs = gapBCfg.freshCommitmentWindowMs ?? 6 * 60 * 60_000; // D1: 6h
+    // D8 window — reuse SessionReaper's staleCommitmentWindowMinutes (480/8h,
+    // ConfigDefaults) so the GAP-B recent-user-message corroboration uses the SAME
+    // horizon as ReapGuard's commitment-coupled KEEP (no new ConfigDefaults entry).
+    const gapBStaleWindowMs =
+      (config.monitoring?.sessionReaper?.staleCommitmentWindowMinutes ?? 480) * 60_000;
+    // Part D (spec: autonomous-registration-guarantee.md) — the SHARED inbound-
+    // user-message recency predicate. ONE definition, used by BOTH the GAP-B
+    // eligibility helper (D8) below AND the ReapGuard/SessionReaper deps further
+    // down, so a KEEP decision and the revival eligibility are computed from the
+    // identical truth and CANNOT disagree (the loop the agreement prevents).
+    // Store: TelegramAdapter.getTopicHistory (sync in-memory LogEntry tail cache —
+    // NOT the Threadline A2A MessageStore). Inbound user = LogEntry.fromUser ===
+    // true; freshness = its `timestamp` within `withinMs`. Fail-open (D7): a throw
+    // ⇒ false (no KEEP, no inject) — never endangers the kill path.
+    const recentUserMessageShared = (topicId: number, withinMs: number): boolean => {
+      try {
+        if (!telegram) return false;
+        // 50-entry tail is within getTopicHistory's TAIL_CACHE_LIMIT fast path
+        // (sync cache read, no file scan for live topics).
+        return recentUserMessageFromHistory(telegram.getTopicHistory(topicId, 50), withinMs);
+      } catch {
+        // @silent-fallback-ok — Part D D7: fail toward today's behavior.
+        return false;
+      }
+    };
+    // GAP-B Part B + D9 — the SHARED qualifying-commitment + D8 agreement verdict,
+    // ONE closure used by BOTH the reaped-session injection (enqueue time) AND the
+    // drainer's drain-time re-validation (`commitmentStillActiveForTopic`), so the
+    // two cannot disagree on "what a qualifying open commitment means". Delegates
+    // to the pure, unit-tested predicate; reads THIS machine's local tracker.
+    // Fail-open (D7): handled inside gapBEligibleForTopic (a throw ⇒ false).
+    const gapBCommitmentQualifies = (topicId: number): boolean =>
+      gapBEligibleForTopic(topicId, commitmentTracker, {
+        ownMachineId: cjOwnMachineId,
+        freshCommitmentWindowMs: gapBFreshWindowMs,
+        staleCommitmentWindowMs: gapBStaleWindowMs,
+        recentUserMessage: recentUserMessageShared,
+      });
     // Operator-stop record for the drainer's R2.6 validation (in-memory map +
     // the durable autonomous-emergency-stop flag file's mtime as global stop).
     const operatorStopsByTopic = new Map<number, number>();
@@ -6947,6 +6998,10 @@ export async function startServer(options: StartOptions): Promise<void> {
           }).catch(() => { /* best-effort */ });
         } catch { /* never endanger the caller */ }
       };
+      // GAP-B Part A: route the unregistered-autonomous surface through the SAME
+      // aggregated chokepoint (P17 — the bound lives at the creation chokepoint so
+      // a unique key can't dodge it). Hoist the reference to the handler's scope.
+      gapBRaiseAggregated = raiseResumeAggregated;
 
       resumeQueue = new ResumeQueue(
         {
@@ -7058,6 +7113,13 @@ export async function startServer(options: StartOptions): Promise<void> {
             // safeBool (SAFE side — the revival still passes the other reality gates).
             autonomousRunFinished: (topicId) =>
               autonomousRunRemainingForTopic(config.stateDir, topicId) == null,
+            // GAP-B D9: the parallel drain-time re-check for a COMMITMENT-admitted
+            // entry. Re-runs the SAME qualifying + D8 agreement check used at
+            // enqueue; `true` ⇒ still active (spawn proceeds), `false` ⇒ the
+            // commitment closed or user-activity lapsed since enqueue (the drainer
+            // invalidates `commitment-no-longer-active`, never a spawn). A throw
+            // resolves SAFE (still-active) inside the drainer's safeBool.
+            commitmentStillActiveForTopic: (topicId) => gapBCommitmentQualifies(topicId),
             jobCheck: (slug, queuedAtIso) => {
               if (!scheduler) return { ok: false, why: 'scheduler-unavailable' };
               const job = scheduler.getJobs().find((j) => j.slug === slug);
@@ -7234,6 +7296,46 @@ export async function startServer(options: StartOptions): Promise<void> {
       }
     }
     sessionManager.on('sessionReaped', (e: { session: import('../core/types.js').Session; reason: string; disposition?: 'terminal' | 'recovery-bounce'; origin?: 'operator' | 'autonomous'; midWork?: boolean; workEvidence?: string[]; via?: string }) => {
+      // ── GAP-B Part B (spec: autonomous-registration-guarantee.md) — the
+      //    commitment-evidence BACKSTOP for an UNregistered-but-working autonomous
+      //    run. Computed ONCE here (cheap, fail-open) so its verdict feeds BOTH the
+      //    reap-log `evidenceSource` tag and the enqueue-time injection below.
+      //    Pinned to the SAME branch the state-file source uses: an `age-limit`
+      //    reap whose per-topic state file is ABSENT (a registered run is handled
+      //    by the AGE_LIMIT_ACTIVE_RUN_REASON path; this is the gap it can't see).
+      //    Ships DARK (`gapBGate.armed`) — when off it is a strict no-op. ──
+      let gapBDecision = { fired: false, inject: false };
+      try {
+        if (gapBGate.armed && e.reason === 'age-limit') {
+          // Only resolve topic + the cost-bearing eligibility on the armed
+          // age-limit branch (every other reap pays zero added cost).
+          const rawTopicG = telegram?.getTopicForSession(e.session.tmuxSession);
+          const topicG =
+            rawTopicG == null ? null : Number.isFinite(Number(rawTopicG)) ? Number(rawTopicG) : null;
+          if (topicG != null) {
+            gapBDecision = decideGapBInjection({
+              gate: gapBGate,
+              reason: e.reason,
+              // State-file PRESENT ⇒ the registered-run path covers it upstream;
+              // GAP-B fires only when ABSENT.
+              stateFilePresent: autonomousRunRemainingForTopic(config.stateDir, topicG) != null,
+              // D1/D2 qualifying set + D8 recent-user-message agreement (shared with
+              // the drainer's drain-time re-check so the two cannot disagree).
+              eligible: gapBCommitmentQualifies(topicG),
+            });
+          }
+        }
+      } catch (err) {
+        // @silent-fallback-ok — D7 fail-open: any read throwing ⇒ no injection,
+        // the reap proceeds exactly as today. Never endangers the kill path.
+        gapBDecision = { fired: false, inject: false };
+        console.warn('[gap-b] commitment-evidence probe raised (non-fatal):', err);
+      }
+      const gapBCommitmentFired = gapBDecision.fired;
+      // dryRun (default when armed): the verdict is logged but the candidate is
+      // NOT tagged — the dark-soak proving KEEP/eligibility agree before evidence
+      // actually flows. `gapBInject` is the LIVE-injection switch.
+      const gapBInject = gapBDecision.inject;
       reapLog.recordReaped({
         session: e.session.name,
         tmuxSession: e.session.tmuxSession,
@@ -7251,7 +7353,29 @@ export async function startServer(options: StartOptions): Promise<void> {
         // chokepoint; the reap-log row is the boot-reconciliation source of truth.
         ...(e.midWork !== undefined ? { midWork: e.midWork } : {}),
         ...(e.workEvidence && e.workEvidence.length > 0 ? { workEvidence: e.workEvidence } : {}),
+        // GAP-B D3: tag the source only when the LIVE injection fired (dryRun
+        // logs but does not tag — the row must reflect what actually drove
+        // eligibility). No PII: the field carries only the source token.
+        ...(gapBInject ? { evidenceSource: 'commitment' as const } : {}),
       });
+      if (gapBCommitmentFired) {
+        // Part A (observe-only): surface the unregistered-but-committed run through
+        // the SAME aggregated chokepoint (P17), deduped per topic. Never blocks.
+        // Fires on the VERDICT (even in dryRun) — the surface exists to make the
+        // invisible visible so the run gets registered, independent of injection.
+        try {
+          const rawTopicA = telegram?.getTopicForSession(e.session.tmuxSession);
+          const topicA =
+            rawTopicA == null ? null : Number.isFinite(Number(rawTopicA)) ? Number(rawTopicA) : null;
+          gapBRaiseAggregated?.(
+            `unregistered-autonomous:${topicA ?? '?'}`,
+            `An autonomous-flavored run on topic ${topicA ?? '?'} is proceeding UNREGISTERED (no per-topic state file) — surfaced from a fresh open commitment + recent user activity. Register it so its survival doesn't depend on a commitment existing.`,
+          );
+        } catch { /* @silent-fallback-ok — Part A never endangers the reap path */ }
+        console.log(
+          `[gap-b] commitment-evidence ${gapBInject ? 'INJECTED' : 'would inject (dryRun)'} for ${e.session.name} (unregistered autonomous run)`,
+        );
+      }
       // Enqueue hook (reap-notify R2.2): every terminal autonomous reap is
       // OFFERED to the resume queue; eligibility (evidence classes, job
       // opt-in, operator exclusion, resurrection cap) is decided inside.
@@ -7285,6 +7409,18 @@ export async function startServer(options: StartOptions): Promise<void> {
             autonomousRunRemainingForTopic(config.stateDir, topicId) != null
           ) {
             candidateReason = AGE_LIMIT_ACTIVE_RUN_REASON;
+            candidateWorkEvidence = [...candidateWorkEvidence, 'build-or-autonomous-active'];
+          } else if (gapBInject) {
+            // GAP-B Part B (the committed-unregistered-run backstop, LIVE only when
+            // armed + NOT dryRun — see the verdict computed at the top of the
+            // handler). Mutually exclusive with the branch above by construction:
+            // that requires the per-topic state file PRESENT, gapBCommitmentFired
+            // requires it ABSENT. Tag the DISTINCT reason so the drainer routes
+            // this candidate to its own drain-time re-check (commitment liveness,
+            // not the absent state file). The strong signal then flows through the
+            // already-shipped evidenceEligible gate → ResumeQueue → drainer,
+            // inheriting the resurrection cap (≤2/24h/topic — P19 bound).
+            candidateReason = COMMITMENT_ACTIVE_RUN_REASON;
             candidateWorkEvidence = [...candidateWorkEvidence, 'build-or-autonomous-active'];
           }
           resumeQueue.considerEnqueue({
@@ -13587,12 +13723,17 @@ export async function startServer(options: StartOptions): Promise<void> {
       hasPendingInjection: (s) => sessionManager.getPendingInjection(s) != null,
       isRelayLeaseActive: (id) => sessionManager.isRelayLeaseActive(id),
       topicBinding: _resolveTopic,
-      // Gate I is a v1 stub (returns false): active conversation is already
-      // covered by the relay-lease + pending-injection gates and by render
-      // stasis (a session being talked to is not render-static for the full
-      // hysteresis+threshold window). Promoting to a real message-recency
-      // query is a tracked tuning follow-up.
-      recentUserMessage: () => false,
+      // Part D (spec: autonomous-registration-guarantee.md) — promoted from the
+      // v1 stub (`() => false`) to the SHARED real inbound-user-message recency
+      // predicate (`recentUserMessageShared`, defined once near the resume-queue
+      // wiring). This dep feeds FIVE live sites at once: ReapGuard's standalone
+      // ~30min KEEP @137, its commitment-coupled 8h KEEP @149, the two terminate-
+      // path mirrors @221/@239, and SessionReaper's staleIdle inversion @489. By
+      // sharing the SAME predicate the GAP-B eligibility uses (D8), the KEEP
+      // decisions and the revival eligibility are computed from identical truth
+      // and cannot disagree (the 2026-06-13 loop the agreement prevents). All five
+      // un-stub in the SAFE (keep-more) direction; fail-open (D7) on a throw.
+      recentUserMessage: recentUserMessageShared,
       activeCommitmentForTopic: (topicId) => {
         try { return commitmentTracker.getActive().some(c => c.topicId === topicId); }
         catch { return true; } // cannot tell → protect

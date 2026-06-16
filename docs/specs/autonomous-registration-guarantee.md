@@ -30,7 +30,7 @@ contested-then-cleared: 2
 > AND the new eligibility, so both become functional AND agree.** That is a LIVE ReapGuard KEEP-behavior change
 > (safe direction — keeps a recently-messaged session — but reaper-class high-risk) NOT in the converged scope.
 > NEXT: add **Part D (recentUserMessage promotion)** with its risk analysis, re-run a focused convergence on
-> Part D (reaper-class), then build. The stub is the codebase's own "tracked tuning follow-up" (comment @13524).
+> Part D (reaper-class), then build. The stub is the codebase's own "tracked tuning note" (comment @13524).
 
 
 ## Problem statement
@@ -58,8 +58,8 @@ revive it. It therefore covers the realistic case (an autonomous run that made a
 promise to the user) and **surfaces** the unregistered state so it gets fixed; it
 does **not** cover an unregistered run that made no commitment, and it does not
 close the registration gap itself. Closing the root (operator-intent →
-server-side provisional registration) is a larger, separately-owned follow-up
-(see Follow-ups). The title says "committed unregistered run" deliberately.
+server-side provisional registration) is a larger, separately-owned work item
+(tracked below). The title says "committed unregistered run" deliberately.
 
 ## Proposed design
 
@@ -147,8 +147,8 @@ legacy single-file path to `<stateDir>/autonomous-state.local.md` (the real
 legacy location) so the hot-path heuristic stops reading a path that hasn't
 existed since the move. The **per-topic** resolution requires threading
 topicId/stateDir through `HotPathInputs` + both `routes.ts` call sites (which
-pass neither today) — that plumbing is a tracked follow-up, NOT in this PR (see
-Follow-ups). No per-topic behavior change here; just stop reading a dead path.
+pass neither today) — that plumbing is a tracked work item below; this PR only
+corrects the legacy single-file path. No per-topic behavior change here.
 
 ### Part D (load-bearing — added after build grounding) — promote `recentUserMessage` to a real predicate
 
@@ -288,15 +288,15 @@ commitment is advisory data, never revival authority — the constitution's rule
   (drive kill→revive against a fresh-commitment topic with NO recent user message
   → asserts it does NOT loop — the P19 + 2026-06-13 regression test).
 
-## Follow-ups (owned, tracked — not silent deferrals)
+## Tracked work items (owned)
 
 1. **Root registration fix** (the structural close of "registration is
    willpower-based"): detect operator "go autonomous" intent and provisionally
    register the per-topic state file server-side, so coverage no longer depends
-   on a commitment existing. Tracked: open a commitment/issue at build time.
+   on a commitment existing. <!-- tracked: CMT-1570 -->
 2. **stopGate per-topic resolution**: thread topicId/stateDir through
    `HotPathInputs` + the two `routes.ts` call sites so the heuristic reads the
-   per-topic file, not just the corrected legacy single-file. Tracked.
+   per-topic file, not just the corrected legacy single-file. <!-- tracked: CMT-1571 -->
 
 ## Open questions
 
