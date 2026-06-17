@@ -3718,6 +3718,18 @@ export async function startServer(options: StartOptions): Promise<void> {
     const { THREADLINE_PAIRING_KIND_REGISTRATION } = await import('../core/ThreadlinePairingReplicatedStore.js');
     replicatedKindRegistry.register(THREADLINE_PAIRING_KIND_REGISTRATION);
 
+    // WS5.2 Account Follow-Me §6.1a — register the `subscription-account-meta` kind onto the
+    // registry: registry follow-me = METADATA ONLY (a redacted, credential-free projection of a
+    // SubscriptionAccount; configHome + every credential field STRIPPED). Dual-registry's dynamic
+    // half (the static half is CoherenceJournal.JOURNAL_KINDS, which now lists
+    // 'subscription-account-meta'). Registration is INERT — emission/serve/pull stay gated behind
+    // `multiMachine.accountFollowMe.enabled` (default false ⇒ strict no-op, NO account metadata
+    // crosses a machine boundary). The recordKey is the account id (charset-clamped). This kind
+    // carries NO login: the credential half is the SEPARATE account-credential-share verb +
+    // re-mint-per-machine default (Mechanism B); see ws52-account-follow-me-security.md.
+    const { SUBSCRIPTION_ACCOUNT_META_KIND_REGISTRATION } = await import('../core/SubscriptionAccountMetaReplicatedStore.js');
+    replicatedKindRegistry.register(SUBSCRIPTION_ACCOUNT_META_KIND_REGISTRATION);
+
     // ── WS2 SEND-SIDE wiring (docs/specs/WS2-SEND-SIDE-EMISSION-SPEC.md). The
     //    substrate above ships the registry + receive/serve machinery + advert; THIS
     //    wires the SEND half that was deferred ("the journal-backed emitter is attached
@@ -3820,9 +3832,23 @@ export async function startServer(options: StartOptions): Promise<void> {
     // `enabled` is already the resolved boolean — the funnels keep their unchanged
     // `enabled === true` semantics but now see a live flag on a dev agent. An explicit
     // operator `enabled` in config still wins (force-dark false / fleet-flip true).
-    const _stateSyncStoresResolved = resolveStateSyncStores(
+    const _stateSyncStoresBase = resolveStateSyncStores(
       config as { developmentAgent?: boolean; multiMachine?: { stateSync?: Record<string, { enabled?: boolean } & Record<string, unknown>> } },
     ) as import('../core/ReplicatedRecordEnvelope.js').StateSyncStores | undefined;
+    // WS5.2 §6.1a — the `subscriptionAccountMeta` store gates on `multiMachine.accountFollowMe`
+    // (NOT a `stateSync.*` flag). Inject its dev-gate-resolved enabled-state into the SAME
+    // store-flags map the generic emitter + receive-advert consult, so account-meta emission +
+    // the receive capability gate on accountFollowMe (dev-live / fleet-dark) coherently. When the
+    // gate resolves OFF the entry is absent ⇒ the emitter's `enabled===true` check fails ⇒ strict
+    // no-op (no account metadata ever crosses), exactly like the dark stateSync stores.
+    const _accountFollowMeEnabled = resolveDevAgentGate(
+      (config as { multiMachine?: { accountFollowMe?: { enabled?: boolean } } }).multiMachine?.accountFollowMe?.enabled,
+      config,
+    );
+    const _stateSyncStoresResolved: import('../core/ReplicatedRecordEnvelope.js').StateSyncStores | undefined =
+      _accountFollowMeEnabled
+        ? { ...(_stateSyncStoresBase ?? {}), subscriptionAccountMeta: { enabled: true } }
+        : _stateSyncStoresBase;
 
     // WS2 send-side: the generic journal-backed record emitter (the concrete emitter
     // the per-store managers' emit hooks call). Needs the journal sink, the HLC clock,
@@ -9761,6 +9787,11 @@ export async function startServer(options: StartOptions): Promise<void> {
     let socketRecoveryActive: ((sessionName: string) => boolean) | undefined;
     let silenceRecoveryActive: ((sessionName: string) => boolean) | undefined;
     let wedgeRecoveryActive: ((sessionName: string) => boolean) | undefined;
+    // Lifted out of the trio block so AutonomousProgressHeartbeat (wired later,
+    // near PromiseBeacon) can read ActiveWorkSilenceSentinel's ALREADY-COMPUTED
+    // lastOutputAt snapshot (predicate #8 — a shared/cached read, never its own
+    // tmux capture). undefined when the silence sentinel is disabled.
+    let sharedOutputTracker: import('../monitoring/sentinelWiring.js').OutputActivityTracker | undefined;
     {
       const { SocketDisconnectSentinel } = await import('../monitoring/SocketDisconnectSentinel.js');
       const { ActiveWorkSilenceSentinel } = await import('../monitoring/ActiveWorkSilenceSentinel.js');
@@ -9838,6 +9869,9 @@ export async function startServer(options: StartOptions): Promise<void> {
       const silenceCfg = config.monitoring?.activeWorkSilenceSentinel ?? { enabled: true };
       if (silenceCfg.enabled !== false) {
         const tracker = new OutputActivityTracker(sessionSurface);
+        // Share this tracker's snapshot with AutonomousProgressHeartbeat
+        // (predicate #8 reads its lastOutputAt — never its own capture).
+        sharedOutputTracker = tracker;
         // Auto-heal ladder (DARK, off by default): when a confirmed-silent session
         // can't be nudged back, respawn it fresh (conversation preserved via
         // --resume) instead of only asking the user. Gated by autoRecover; the
@@ -10216,6 +10250,36 @@ export async function startServer(options: StartOptions): Promise<void> {
     const subscriptionPool = new SubscriptionPool({ stateDir: config.stateDir });
     if (subscriptionPool.size() > 0) {
       console.log(pc.green(`  Subscription pool: ${subscriptionPool.size()} account(s) registered`));
+    }
+
+    // WS5.2 §6.1a — wire cross-machine registry follow-me (METADATA ONLY). When the generic
+    // record emitter exists AND accountFollowMe resolves enabled (the entry was injected into
+    // _stateSyncStoresResolved above), attach the emit adapter so an account add/status/quota
+    // change/remove replicates a REDACTED projection (projectAccountToMeta strips configHome +
+    // every credential field by allowlist). The emitter itself re-checks the store-flag gate, so
+    // a dark/fleet agent is a strict no-op even if the adapter is attached. NO login crosses.
+    if (replicatedRecordEmitter && _accountFollowMeEnabled) {
+      const emitter = replicatedRecordEmitter;
+      const {
+        SUBSCRIPTION_ACCOUNT_META_STORE_KEY,
+        deriveSubscriptionAccountMetaRecordKey,
+        buildSubscriptionAccountMetaData,
+        buildSubscriptionAccountMetaTombstoneData,
+      } = await import('../core/SubscriptionAccountMetaReplicatedStore.js');
+      subscriptionPool.setMetaReplicationEmitter({
+        emitPut: (acct) =>
+          emitter.emit(
+            SUBSCRIPTION_ACCOUNT_META_STORE_KEY,
+            deriveSubscriptionAccountMetaRecordKey(acct.id),
+            (hlc, origin, observed) => buildSubscriptionAccountMetaData({ account: acct, hlc, origin, observed }),
+          ),
+        emitDelete: (accountId, deletedAt) =>
+          emitter.emit(
+            SUBSCRIPTION_ACCOUNT_META_STORE_KEY,
+            deriveSubscriptionAccountMetaRecordKey(accountId),
+            (hlc, origin, observed) => buildSubscriptionAccountMetaTombstoneData({ accountId, hlc, origin, deletedAt, observed }),
+          ),
+      });
     }
 
     // POOL-AWARE QUOTA THROTTLE wiring (docs/specs/POOL-AWARE-QUOTA-THROTTLE-SPEC.md):
@@ -11470,6 +11534,111 @@ export async function startServer(options: StartOptions): Promise<void> {
           });
           promiseBeacon.start();
           (globalThis as Record<string, unknown>).__instarPromiseBeacon = promiseBeacon;
+
+          // ── AutonomousProgressHeartbeat ──────────────────────────────────
+          // Hedged, change-gated, sparse liveness BACKSTOP for an autonomous run
+          // gone silent-to-user while its terminal output is STILL changing. NOT
+          // the suppressed PromiseBeacon §B1 filler — much higher bar (long
+          // user-silence gate + corroborated recent output change from
+          // ActiveWorkSilenceSentinel's shared snapshot + per-topic cooldown +
+          // widening per-run backoff + hard cap + the shared one-voice lease).
+          // DEV-GATED dark: enabled via resolveDevAgentGate (LIVE on a dev agent,
+          // DARK on the fleet); dryRun defaults true (would-emit log, no send).
+          // Spec: docs/specs/autonomous-progress-heartbeat.md.
+          try {
+            const ahRawCfg = config.monitoring?.autonomousHeartbeat ?? {};
+            const ahEnabled = resolveDevAgentGate(ahRawCfg.enabled, config);
+            if (ahEnabled && telegram) {
+              const { AutonomousProgressHeartbeat } = await import('../monitoring/AutonomousProgressHeartbeat.js');
+              const {
+                activeAutonomousJobs,
+                autonomousRunRemainingForTopic,
+                readAutonomousRunMarkers,
+              } = await import('../core/AutonomousSessions.js');
+              const { ParallelActivityIndex: AHParallelActivityIndex } = await import('../core/ParallelActivityIndex.js');
+              // Own ParallelActivityIndex (focus source) — fetched ONCE per tick
+              // and indexed by topic inside the deps closure.
+              const ahActivityIndex = new AHParallelActivityIndex({ stateDir: config.stateDir });
+              const localTelegram2 = telegram;
+              const autonomousHeartbeat = new AutonomousProgressHeartbeat(
+                {
+                  listActiveAutonomousRuns: () => {
+                    const out: import('../monitoring/AutonomousProgressHeartbeat.js').ActiveAutonomousRun[] = [];
+                    const now = Date.now();
+                    for (const job of activeAutonomousJobs(config.stateDir)) {
+                      if (job.topic == null) continue; // legacy single-file job has no topic
+                      const remaining = autonomousRunRemainingForTopic(config.stateDir, job.topic, now);
+                      if (!remaining) continue;
+                      const topicId = Number(job.topic);
+                      if (!Number.isFinite(topicId)) continue;
+                      out.push({
+                        topicId,
+                        sessionName: localTelegram2.getSessionForTopic(topicId) ?? null,
+                        remainingSeconds: remaining.remainingSeconds,
+                      });
+                    }
+                    return out;
+                  },
+                  getRunMarkers: (topicId) => readAutonomousRunMarkers(config.stateDir, topicId),
+                  isSessionAlive: (name) => sessionManager.isSessionAlive(name),
+                  getTopicHistory: (topicId) =>
+                    localTelegram2.getTopicHistory(topicId, 50).map((e) => ({
+                      fromUser: e.fromUser,
+                      at: new Date(e.timestamp).getTime(),
+                    })),
+                  // Predicate #8 — read ActiveWorkSilenceSentinel's ALREADY-computed
+                  // snapshot (the shared OutputActivityTracker). NEVER a capture.
+                  // undefined when the silence sentinel is disabled → fails closed.
+                  getSharedLastOutputAt: (name) =>
+                    sharedOutputTracker ? sharedOutputTracker.lastOutputAtFor(name) : null,
+                  getFocusForTopic: (() => {
+                    // Index the cross-topic activities ONCE per tick (O(1)/topic).
+                    let cachedAt = 0;
+                    let cache = new Map<number, string | null>();
+                    return (topicId: number): string | null => {
+                      const now = Date.now();
+                      if (now - cachedAt > 5_000) {
+                        cache = new Map(
+                          ahActivityIndex.activities(now).map((a) => [a.topicId, a.focus]),
+                        );
+                        cachedAt = now;
+                      }
+                      return cache.get(topicId) ?? null;
+                    };
+                  })(),
+                  proxyCoordinator,
+                  sendMessage: async (topicId, text, metadata) => {
+                    const url = `http://localhost:${config.port}/telegram/reply/${topicId}`;
+                    const response = await fetch(url, {
+                      method: 'POST',
+                      headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${config.authToken}`,
+                      },
+                      body: JSON.stringify({ text, metadata }),
+                    });
+                    if (!response.ok) throw new Error(`Autonomous-heartbeat reply failed: ${response.status}`);
+                  },
+                },
+                {
+                  enabled: true, // gate already resolved above
+                  dryRun: ahRawCfg.dryRun !== false,
+                  silenceThresholdMinutes: ahRawCfg.silenceThresholdMinutes,
+                  tickIntervalMs: ahRawCfg.tickIntervalMs,
+                  maxHeartbeatsPerRun: ahRawCfg.maxHeartbeatsPerRun,
+                  recentOutputChangeWindowMs: ahRawCfg.recentOutputChangeWindowMs,
+                },
+              );
+              autonomousHeartbeat.start();
+              (globalThis as Record<string, unknown>).__instarAutonomousHeartbeat = autonomousHeartbeat;
+              guardRegistry.register('monitoring.autonomousHeartbeat.enabled', () => autonomousHeartbeat.guardStatus());
+              console.log(pc.green(
+                `  AutonomousProgressHeartbeat enabled (silence backstop — ${(ahRawCfg.dryRun !== false) ? 'dry-run observe-only' : 'LIVE'})`,
+              ));
+            }
+          } catch (err) {
+            console.warn('[AutonomousProgressHeartbeat] init failed (non-fatal):', (err as Error).message);
+          }
 
           // ── "keep watching" resume detector ─────────────────────────────
           // When a user replies on a topic that has any auto-paused beacons,

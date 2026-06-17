@@ -579,8 +579,86 @@ export class PostUpdateMigrator {
     this.migrateMultiMachinePostureReviewDimension(result);
     this.migrateConformanceGateAutoInvoke(result);
     this.migrateHonestProgressMessagingDefaults(result);
+    this.migrateAutonomousHeartbeatDefaults(result);
 
     return result;
+  }
+
+  /**
+   * Backfill the AutonomousProgressHeartbeat config defaults into an EXISTING
+   * agent's config.json (Migration Parity item 2 + the spec's §Migration parity).
+   * Writes ONLY `dryRun` / `silenceThresholdMinutes` / `tickIntervalMs` /
+   * `maxHeartbeatsPerRun` / `recentOutputChangeWindowMs` with existence checks —
+   * it must NEVER write `enabled` (that would pin existing dev agents DARK and
+   * defeat the resolveDevAgentGate dev-gate). Idempotent (marker + per-key
+   * existence-checked; operator overrides preserved). Pairs with the CLAUDE.md
+   * section added in migrateClaudeMd and the framework-shadow marker carried by
+   * migrateFrameworkShadowCapabilities (the new CLAUDE.md heading is copied into
+   * any framework-shadow CLAUDE.md automatically by that pass).
+   */
+  private migrateAutonomousHeartbeatDefaults(result: MigrationResult): void {
+    const configPath = path.join(this.config.stateDir, 'config.json');
+    if (!fs.existsSync(configPath)) {
+      result.skipped.push('autonomous-heartbeat-defaults: config.json not found');
+      return;
+    }
+
+    let config: Record<string, unknown>;
+    try {
+      config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+    } catch (err) {
+      result.errors.push(`autonomous-heartbeat-defaults: config.json read failed: ${err instanceof Error ? err.message : String(err)}`);
+      return;
+    }
+
+    const migrations = (config._instar_migrations ?? []) as string[];
+    const marker = 'autonomous-heartbeat-defaults';
+    if (migrations.some(m => m.startsWith(marker))) {
+      result.skipped.push('autonomous-heartbeat-defaults: already migrated');
+      return;
+    }
+
+    const ensureObj = (parent: Record<string, unknown>, key: string): Record<string, unknown> => {
+      const cur = parent[key];
+      if (cur && typeof cur === 'object' && !Array.isArray(cur)) return cur as Record<string, unknown>;
+      const fresh: Record<string, unknown> = {};
+      parent[key] = fresh;
+      return fresh;
+    };
+    const backfilled: string[] = [];
+    const setIfAbsent = (obj: Record<string, unknown>, key: string, value: unknown, label: string): void => {
+      if (!(key in obj)) {
+        obj[key] = value;
+        backfilled.push(label);
+      }
+    };
+
+    const monitoring = ensureObj(config, 'monitoring');
+    const hb = ensureObj(monitoring, 'autonomousHeartbeat');
+    // NEVER write `enabled` — the dev-gate (resolveDevAgentGate) decides it.
+    setIfAbsent(hb, 'dryRun', true, 'monitoring.autonomousHeartbeat.dryRun');
+    setIfAbsent(hb, 'silenceThresholdMinutes', 25, 'monitoring.autonomousHeartbeat.silenceThresholdMinutes');
+    setIfAbsent(hb, 'tickIntervalMs', 60_000, 'monitoring.autonomousHeartbeat.tickIntervalMs');
+    setIfAbsent(hb, 'maxHeartbeatsPerRun', 6, 'monitoring.autonomousHeartbeat.maxHeartbeatsPerRun');
+    setIfAbsent(hb, 'recentOutputChangeWindowMs', 300_000, 'monitoring.autonomousHeartbeat.recentOutputChangeWindowMs');
+    // Defensive: an operator who hand-disabled by writing `enabled:false` keeps
+    // it; we never ADD enabled, but we must not strip an explicit operator value.
+
+    const now = new Date().toISOString();
+    migrations.push(`${marker}-${now}`);
+    config._instar_migrations = migrations;
+    try {
+      fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+    } catch (err) {
+      result.errors.push(`autonomous-heartbeat-defaults: config.json write failed: ${err instanceof Error ? err.message : String(err)}`);
+      return;
+    }
+
+    if (backfilled.length > 0) {
+      result.upgraded.push(`autonomous-heartbeat-defaults: backfilled ${backfilled.join(', ')} (existence-checked, NEVER enabled — dev-gate decides)`);
+    } else {
+      result.skipped.push('autonomous-heartbeat-defaults: all keys already present (marker set)');
+    }
   }
 
   // ── Standards-Conformance Gate auto-invocation (2026-06-12, topic 13481) ──
@@ -3948,6 +4026,17 @@ setTimeout(() => process.exit(0), 2000);
       result.upgraded.push('CLAUDE.md: added Action-Claim Follow-Through Sentinel section');
     }
 
+    // Autonomous-run silence backstop (autonomous-progress-heartbeat.md) — Agent
+    // Awareness Standard + Migration Parity item 3: existing agents learn the
+    // /autonomous-heartbeat surface AND that this is NOT the suppressed
+    // PromiseBeacon "still on it" filler (per the spec's reconciliation). The
+    // content-sniff anchor is the section heading; idempotent.
+    if (!content.includes('Autonomous-run silence backstop')) {
+      content += `\n## Autonomous-run silence backstop (AutonomousProgressHeartbeat)\n\nA proactive backstop that posts ONE purely-observational liveness line when an autonomous run has gone silent on you for a long stretch while its terminal output is still changing. **This is NOT the commitment-cadence "still on it" heartbeat that the honest-progress work removed** — it fires only on a LONG user-silence gate (≥25m) WITH corroborated recent output change (a liveness signal, NOT a progress claim), and the wording is observational ("I haven't posted here in a while — last observed activity was «…». Message me if you need me."), never an assertive "still working" / "still going" claim. It closes the *busy-but-silent-to-user* gap the other watchers miss: the silent-freeze watchdog stays quiet while output is moving, PresenceProxy needs an inbound message, and PromiseBeacon needs an open commitment — a long heads-down autonomous run with no commitment and no inbound message falls through all three. The real fix is still you sending your own milestones; this only catches a lapse.\n- **It can't spam you (three LOCAL brakes, NOT dedup):** a long user-silence gate that ANY outbound (including your own normal reply) resets; a per-topic emit-cooldown; and a widening per-run backoff (25→40→60→90m) with a hard cap (~6 lines per run). Output advancing proves only LIVENESS, never progress — which is exactly why the wording is liveness-only.\n- **Signal-only:** it only ever ADDS a line — never blocks, delays, or rewrites your real messages. Every predicate fails CLOSED (no emit) on uncertainty (can't read history, the shared snapshot is unavailable, the run is mid-move to another machine). The interpolated \`focus\` is scrubbed for credentials/secrets/paths (drop-to-generic on any match), length-clamped, and HTML-escaped.\n- **Status:** \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/autonomous-heartbeat\` → \`{ enabled, dryRun, silenceThresholdMinutes, lastTickAt, topicsConsidered, lastEmits }\` (503 when dark). Ships dark on the fleet + \`dryRun: true\` on a dev agent. Tune/disable: \`monitoring.autonomousHeartbeat\`. Spec: \`docs/specs/autonomous-progress-heartbeat.md\`.\n`;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Autonomous-run silence backstop section');
+    }
+
     // Parallel-Hand PR Lease (parallel-hand-pr-lease.md) — Agent Awareness + Migration
     // Parity: an agent that doesn't know this exists will be confused when a `git push`
     // stands down. Content-sniffed; idempotent.
@@ -5317,6 +5406,27 @@ When enabled, certain stores (preferences, relationships) replicate across my ma
       }
       patched = true;
       result.upgraded.push('CLAUDE.md: added WS2.6 user-registry + topic-operator PII lines to One Memory (replicated stores)');
+    }
+
+    // WS5.2 Account Follow-Me — seamless cross-machine account/quota sharing. A STANDALONE
+    // awareness section (NOT part of the WS2 "One Memory" family — it's account continuity, not a
+    // replicated memory store). Migration Parity: a deployed agent must be able to answer "do I
+    // have to log in on every machine?" and "is my login copied between machines?" before any
+    // operator enables it. Idempotent via the unique 'Cross-Machine Account Follow-Me (WS5.2'
+    // marker; spliced before the "**Relationships**" anchor that follows the One Memory block.
+    if (!content.includes('Cross-Machine Account Follow-Me (WS5.2')) {
+      const ws52Section =
+        '**Cross-Machine Account Follow-Me (WS5.2 — seamless account/quota sharing)** — When I run on more than one machine, "log in once, the account works everywhere" is delivered the ToS-SAFE way: each machine RE-MINTS its OWN login (operator approves once per machine; Mechanism B — default), and NO Claude OAuth token is ever copied between machines (Anthropic\'s ToS forbids relocating a Claude login). Only a redacted, credential-free METADATA projection of each account (id, nickname, email, provider, framework, status, quota) replicates so a peer KNOWS an account\'s depth/quota — the login LOCATION (configHome) and every credential field are STRIPPED and never cross the wire. A cross-machine credential SHARE (Mechanism A, sealed-transport) is fully designed but REFUSED for Anthropic by default (per-provider allowlist, default empty). Authorization is operator-mandate-gated (deny-by-default; a peer can NEVER enroll an account onto itself via the mesh), the cross-machine mandate carries an asymmetric Ed25519 issuance signature (the local HMAC proof is machine-local), de-pairing ROTATES the recipient key so old sealed credentials die, and per-account spend is lease-sliced (sum-of-leases bound). Ships DARK on the fleet, LIVE on a development agent (dogfooding); gate: `multiMachine.accountFollowMe`. Spec: `docs/specs/ws52-account-follow-me-security.md`.\n' +
+        '- **When to use** (PROACTIVE): the user asks "do I have to log my account in on every machine?" / "share my account across machines" → explain the re-mint-per-machine model (one approval per machine, then that machine serves from the shared pool\'s quota; no token copied). "is my login copied to my other machines?" → NO — only non-credential account metadata replicates; each machine holds its own grant.\n\n';
+      const relAnchor = '**Relationships** — Track people I interact with.';
+      const relIdx = content.indexOf(relAnchor);
+      if (relIdx >= 0) {
+        content = content.slice(0, relIdx) + ws52Section + content.slice(relIdx);
+      } else {
+        content += `\n${ws52Section}`;
+      }
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added WS5.2 Account Follow-Me awareness section');
     }
 
     // ContextWedgeSentinel — the 4th silently-stopped sentinel. Tells the agent

@@ -1,0 +1,13 @@
+{
+  "ts": "2026-06-17T08:23:04.864Z",
+  "slug": "url-pathname-path-encoding-fix",
+  "suggestedTier": 1,
+  "declaredTier": null,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 18,
+  "causalAutopsy": null,
+  "verdict": "blocked"
+}

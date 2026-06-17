@@ -167,6 +167,15 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     }),
   },
   {
+    key: 'autonomousHeartbeat',
+    prefixes: ['/autonomous-heartbeat'],
+    description: 'AutonomousProgressHeartbeat — a hedged, change-gated, sparse liveness BACKSTOP that posts ONE purely-observational line when an autonomous run has gone silent on the user for a long stretch while its terminal output is STILL changing. NOT the suppressed PromiseBeacon "still on it" filler that HONEST-PROGRESS-MESSAGING removed — it fires only on a long user-silence gate (≥25m) AND a corroborated recent output change (read from ActiveWorkSilenceSentinel\'s already-computed snapshot — a liveness signal, NOT a progress claim), with a per-topic cooldown, a widening per-run backoff + hard cap, and the shared one-voice lease. Signal-only; never gates. Dev-gated dark + dryRun-first → 503 on the fleet.',
+    build: ({ ctx }) => ({
+      enabled: resolveDevAgentGate(ctx.config.monitoring?.autonomousHeartbeat?.enabled, ctx.config),
+      endpoints: ['GET /autonomous-heartbeat'],
+    }),
+  },
+  {
     key: 'growthAnalyst',
     prefixes: ['/growth'],
     description: 'Growth & Milestone Analyst — composes InitiativeTracker rollout stages + staleness, ApprovalLedger approve-vs-change, and CorrectionLedger recurrence into one digest with explicit notify-rules (R1 promotion-ready, R2 incubation-expired-unproven, R3 initiative-stalling, R4 spec-pattern, R5 correction-pattern). A TIGHT incubation window whose expiry is itself the trigger, so a feature is never silently left behind; promotion requires real proof-of-life, never elapsed time alone. Ships dark (monitoring.growthAnalyst.enabled) and is compute + read-only — no Telegram sending in this slice. Null/503 when disabled.',

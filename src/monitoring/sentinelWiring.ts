@@ -279,6 +279,25 @@ export class OutputActivityTracker {
     }
     return out;
   }
+
+  /**
+   * Cached read of the LAST-computed output-change time for a session, WITHOUT
+   * capturing (no tmux frame is read). Returns the `lastChangeAt` recorded by
+   * the most recent `snapshot()` call, or null when the session has not been
+   * observed yet OR its first sighting only recorded the baseline (lastChangeAt
+   * is still 0 — i.e. no real output change has been observed).
+   *
+   * This is the AutonomousProgressHeartbeat's predicate #8 read (spec
+   * §Shared-snapshot dependency): the heartbeat shares THIS tracker (the one
+   * ActiveWorkSilenceSentinel ticks on its own 60s loop) and reads the value it
+   * already computed — it NEVER captures its own frame. Returns null fails-closed
+   * for the heartbeat (no emit).
+   */
+  lastOutputAtFor(sessionName: string): number | null {
+    const rec = this.last.get(sessionName);
+    if (!rec || rec.lastChangeAt <= 0) return null;
+    return rec.lastChangeAt;
+  }
 }
 
 export function buildActiveWorkSilenceDeps(opts: {

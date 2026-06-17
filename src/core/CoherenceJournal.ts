@@ -42,9 +42,16 @@ import {
 } from './ReplicatedRecordEnvelope.js';
 import { SafeFsExecutor } from './SafeFsExecutor.js';
 
-export type JournalKind = 'topic-placement' | 'session-lifecycle' | 'autonomous-run' | 'threadline-conversation' | 'guard-latch' | 'pref-record' | 'relationship-record' | 'learning-record' | 'knowledge-record' | 'evolution-action-record' | 'user-record' | 'topic-operator-record' | 'threadline-pairing-record';
+export type JournalKind = 'topic-placement' | 'session-lifecycle' | 'autonomous-run' | 'threadline-conversation' | 'guard-latch' | 'pref-record' | 'relationship-record' | 'learning-record' | 'knowledge-record' | 'evolution-action-record' | 'user-record' | 'topic-operator-record' | 'threadline-pairing-record' | 'subscription-account-meta';
 
-export const JOURNAL_KINDS: JournalKind[] = ['topic-placement', 'session-lifecycle', 'autonomous-run', 'threadline-conversation', 'guard-latch', 'pref-record', 'relationship-record', 'learning-record', 'knowledge-record', 'evolution-action-record', 'user-record', 'topic-operator-record', 'threadline-pairing-record'];
+export const JOURNAL_KINDS: JournalKind[] = ['topic-placement', 'session-lifecycle', 'autonomous-run', 'threadline-conversation', 'guard-latch', 'pref-record', 'relationship-record', 'learning-record', 'knowledge-record', 'evolution-action-record', 'user-record', 'topic-operator-record', 'threadline-pairing-record', 'subscription-account-meta'];
+// 'subscription-account-meta' added for WS5.2 Account Follow-Me §6.1a (registry follow-me =
+// METADATA ONLY): a redacted, credential-free projection of a SubscriptionAccount (id, nickname,
+// email, provider, framework, status, quota) replicates so a peer KNOWS an account's depth/quota
+// WITHOUT holding its login. configHome + every credential field are STRIPPED (never on the wire).
+// Schema + strict whitelist/clamps live in SubscriptionAccountMetaReplicatedStore.ts; it rides the
+// modern ReplicatedKindRegistry path (validated by both CoherenceJournal.validate() and
+// JournalSyncApplier.validateData via the registry). Ships DARK behind multiMachine.accountFollowMe.
 // 'threadline-pairing-record' added for Secure A2A Verified Pairing §3.8 (FD11): the EIGHTH
 // replicated-store consumer. Unlike the WS2 memory/PII stores it replicates ONLY the verified-
 // IDENTITY RESULT of a pairing { peerFp, peerIdentityPub, state:'mutual-verified', verifiedAt,
@@ -278,6 +285,12 @@ export const DEFAULT_RETENTION: Record<JournalKind, KindRetention> = {
   // (ThreadlinePairingReplicatedStore.THREADLINE_PAIRING_RECORD_BOUNDS) override the
   // replicated stream; this is the journal-level fallback.
   'threadline-pairing-record': { maxFileBytes: 1 * 1024 * 1024, rotateKeep: 4 },
+  // subscription-account-meta (WS5.2 §6.1a): a metadata-only projection — NEVER rotateKeep:0
+  // (rotate-but-never-delete parity with the other replicated kinds). Accounts are FEW + bounded
+  // (a handful per operator), so a small window with a few archives suffices; the churny quota-
+  // refresh loop is coalesced upstream. Carries NO credential and NO PII beyond email (the
+  // configHome + every credential field are stripped at the projector).
+  'subscription-account-meta': { maxFileBytes: 2 * 1024 * 1024, rotateKeep: 4 },
 };
 
 export const DEFAULT_FLUSH_INTERVAL_MS = 250;
@@ -469,7 +482,7 @@ export class CoherenceJournal {
   private state: WriterState = 'closed';
   private incarnation = '';
   /** Next seq to assign at enqueue, per kind (in-memory counter seeded at open). */
-  private nextSeq: Record<JournalKind, number> = { 'topic-placement': 1, 'session-lifecycle': 1, 'autonomous-run': 1, 'threadline-conversation': 1, 'guard-latch': 1, 'pref-record': 1, 'relationship-record': 1, 'learning-record': 1, 'knowledge-record': 1, 'evolution-action-record': 1, 'user-record': 1, 'topic-operator-record': 1, 'threadline-pairing-record': 1 };
+  private nextSeq: Record<JournalKind, number> = { 'topic-placement': 1, 'session-lifecycle': 1, 'autonomous-run': 1, 'threadline-conversation': 1, 'guard-latch': 1, 'pref-record': 1, 'relationship-record': 1, 'learning-record': 1, 'knowledge-record': 1, 'evolution-action-record': 1, 'user-record': 1, 'topic-operator-record': 1, 'threadline-pairing-record': 1, 'subscription-account-meta': 1 };
   /** Durable highWaterSeq per kind (advanced after data fdatasync). */
   private highWaterSeq: Record<JournalKind, number> = {
     'topic-placement': 0,
@@ -485,6 +498,7 @@ export class CoherenceJournal {
     'user-record': 0,
     'topic-operator-record': 0,
     'threadline-pairing-record': 0,
+    'subscription-account-meta': 0,
   };
   /** In-memory enqueue order; drained by the flusher in seq order per kind. */
   private queue: QueuedEntry[] = [];
@@ -503,6 +517,7 @@ export class CoherenceJournal {
     'user-record': new Set(),
     'topic-operator-record': new Set(),
     'threadline-pairing-record': new Set(),
+    'subscription-account-meta': new Set(),
   };
   private rateBuckets: Record<JournalKind, RateBucket>;
   private timer: ReturnType<typeof setInterval> | null = null;
@@ -551,6 +566,7 @@ export class CoherenceJournal {
       'user-record': config.retention?.['user-record'] ?? DEFAULT_RETENTION['user-record'],
       'topic-operator-record': config.retention?.['topic-operator-record'] ?? DEFAULT_RETENTION['topic-operator-record'],
       'threadline-pairing-record': config.retention?.['threadline-pairing-record'] ?? DEFAULT_RETENTION['threadline-pairing-record'],
+      'subscription-account-meta': config.retention?.['subscription-account-meta'] ?? DEFAULT_RETENTION['subscription-account-meta'],
     };
     this.rateCapCfg = config.rateCap ?? DEFAULT_RATE_CAP;
     this.artifactRoots = (config.artifactRoots ?? [path.join(this.stateDir, 'autonomous'), this.stateDir]).map((r) => {
@@ -582,6 +598,7 @@ export class CoherenceJournal {
       'user-record': { tokens: this.rateCapCfg.capacity, lastRefillMs: initMs },
       'topic-operator-record': { tokens: this.rateCapCfg.capacity, lastRefillMs: initMs },
       'threadline-pairing-record': { tokens: this.rateCapCfg.capacity, lastRefillMs: initMs },
+      'subscription-account-meta': { tokens: this.rateCapCfg.capacity, lastRefillMs: initMs },
     };
   }
 

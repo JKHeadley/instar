@@ -182,6 +182,12 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     justification: 'Coordinates between the operator\'s OWN machines only — no external egress; the persisted intent is bound to the AUTHENTICATED operator and the owner REVALIDATES at apply time (a stale resolve against a since-escalated item is rejected — current state wins); when dark the routes 503 and the precedence guard is inert; strict single-machine no-op (no peers). No destructive action, no third-party spend. Operator directive 2026-06-13 topic 13481.',
   },
   {
+    name: 'accountFollowMe',
+    configPath: 'multiMachine.accountFollowMe.enabled',
+    description: 'WS5.2 Account Follow-Me — seamless cross-machine account/quota sharing (re-mint per machine, ToS-safe; no OAuth token copied). Gates the non-credential metadata projection + the security primitives.',
+    justification: 'No external egress and no third-party spend from the flag itself. The credential SHARE path (Mechanism A sealed-transport) is SEPARATELY gated by credentialTransport (default empty, anthropic REFUSED); the enroll path (Mechanism B) is operator-mandate-gated (deny-by-default, needs a PIN-issued mandate) — so the real authority is the operator mandate, NOT this flag. In PR1 there is NO live-credential code path at all (only the non-credential subscription-account-meta projection + inert primitives), so live-on-dev is functionally inert. Dev-live is the dogfooding intent (prove follow-me on the operator\'s own machines). Strict single-machine no-op. Operator directive 2026-06-13 topic 13481 + ws52-account-follow-me-security.md §9.',
+  },
+  {
     name: 'ws43RoleGuard',
     configPath: 'multiMachine.seamlessness.ws43RoleGuard',
     description: 'WS4.3 role-guard-at-spawn — the scheduler refuses to spawn a STATE-WRITING job on a machine that does NOT hold the lease (closes the TOCTOU hole where a machine demotes to read-only standby mid-run while its cron tasks keep firing).',
@@ -286,6 +292,12 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     configPath: 'monitoring.autonomousLivenessReconciler.enabled',
     description: 'Level-triggered self-heal for an autonomous run marked active but with no live session ("dead but marked active" — docs/specs/autonomous-liveness-reconciler.md).',
     justification: 'Ships dryRun-first (the component code-defaults dryRun:true): on the dev agent the gate makes the reconcile loop + GET /autonomous/liveness LIVE but it only LOGS "would respawn" until a deliberate dryRun:false flip — zero spawns, zero spend while dark/dryRun. Live, its only action is a bounded (P19 cap), lease-gated, operator-stop-respecting, quota-gated respawn of a run the run-state file already says should be alive — the strictly-safe direction. Never blocks/rewrites a message. Routes 503 when off.',
+  },
+  {
+    name: 'autonomousHeartbeat',
+    configPath: 'monitoring.autonomousHeartbeat.enabled',
+    description: 'AutonomousProgressHeartbeat — hedged, change-gated, sparse liveness backstop for an autonomous run gone silent-to-user while output is still moving (autonomous-progress-heartbeat spec).',
+    justification: 'Dev-gated under the Maturation Path standard. CAN send a user-facing Telegram line, so it does not ship LIVE on dev: its persisted ConfigDefaults default is `dryRun: true` (the route + tick run, but the final send is swapped for a "would emit" log, gated on the SAME cooldown/budget as live — no per-tick flood). So enabling on dev makes only the READ surface + dry-run observation live; an actual send requires a deliberate `dryRun: false` after the dev soak. Signal-only (never gates/blocks/rewrites); every predicate fails CLOSED on uncertainty; bounded by a long user-silence gate + a corroborated recent-output-change + per-topic cooldown + widening per-run backoff + a hard per-run cap + the shared one-voice ProxyCoordinator lease. No spend (no LLM), no destructive action.',
   },
   {
     name: 'failureLearning',
