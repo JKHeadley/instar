@@ -326,15 +326,22 @@ describe('lint-dev-agent-dark-gate', () => {
       // new attributed path; it only shifts EVERY `enabled:` line below it DOWN by
       // +13. Each key below RE-VERIFIED by hand via the attributor on the edited
       // ConfigDefaults (each maps to a real `enabled:` line).
-      '151': 'monitoring.sessionReaper.enabled',
-      '209': 'monitoring.agentWorktreeReaper.enabled',
+      // autonomous-liveness-reconciler (2026-06-17): a NEW
+      // monitoring.autonomousLivenessReconciler ConfigDefaults block (+22 lines)
+      // was inserted near the top of SHARED_DEFAULTS (above autonomousHeartbeat). It
+      // OMITS the `enabled:` literal (dev-gated — resolveDevAgentGate decides), so it
+      // adds NO new attributed path; it only shifts EVERY `enabled:` line below it
+      // DOWN by +22. Each key below RE-VERIFIED via the attributor on the merged
+      // ConfigDefaults (still 19 entries, same paths — confirming the dev-gate convention).
+      '173': 'monitoring.sessionReaper.enabled',
+      '231': 'monitoring.agentWorktreeReaper.enabled',
       // REBASE onto current main (incl. operator-auth-request #1138 authorizationRequests +
       // credential-repointing Increment B): main shifted mcpProcessReaper-onward; WS2.6 inserts
       // two new `enabled: false` stateSync blocks (userRegistry+topicOperator) after evolutionActions,
       // pushing cartographer to 1066/1111/1136. credentialRepointing + authorizationRequests OMIT
       // enabled (dev-gated). Every line RE-VERIFIED by hand via the attributor on the merged ConfigDefaults.
-      '257': 'monitoring.mcpProcessReaper.enabled',
-      '271': 'monitoring.agentSleep.enabled',
+      '279': 'monitoring.mcpProcessReaper.enabled',
+      '293': 'monitoring.agentSleep.enabled',
       // self-unblock-before-escalating (CMT-1519): the blockerLedger ConfigDefaults block
       // gained two nested OMITTED-`enabled` dev-gate sub-blocks (selfUnblockChecklist +
       // durableVaultSession) + a 6-line explanatory comment. Neither sub-block carries an
@@ -350,19 +357,19 @@ describe('lint-dev-agent-dark-gate', () => {
       // comment (NOT an `enabled:` path, so the attributor ignores it) ABOVE every
       // block below — shifting each subsequent `enabled: false` line DOWN by +5.
       // RE-VERIFIED by hand via the attributor on the edited ConfigDefaults.
-      '342': 'monitoring.correctionLearning.enabled',
-      '436': 'monitoring.apprenticeshipCycleSla.enabled',
-      '444': 'monitoring.geminiCapacityEscalation.enabled',
-      '468': 'monitoring.greenPrAutoMerge.enabled',
-      '518': 'threadline.a2aCheckIn.enabled',
+      '364': 'monitoring.correctionLearning.enabled',
+      '458': 'monitoring.apprenticeshipCycleSla.enabled',
+      '466': 'monitoring.geminiCapacityEscalation.enabled',
+      '490': 'monitoring.greenPrAutoMerge.enabled',
+      '540': 'threadline.a2aCheckIn.enabled',
       // secure-a2a-verified-pairing §3.10 (Increment 6): the new
       // threadline.verifiedPairing block (~21 lines, NO `enabled:` literal — see the
       // note below the sessionPool keys) was inserted inside the `threadline` block
       // ABOVE mentor, shifting every subsequent `enabled: false` line DOWN by +19.
       // RE-VERIFIED by hand via the attributor on the edited ConfigDefaults.
-      '629': 'mentor.enabled',
-      '640': 'mentor.autonomousFix.enabled',
-      '655': 'mentee.enabled',
+      '651': 'mentor.enabled',
+      '662': 'mentor.autonomousFix.enabled',
+      '677': 'mentee.enabled',
       // WS4.1-durable-ack (CMT-1416) inserts a plain `ws41DurableAck: false`
       // seamlessness boolean (NOT `enabled:`, so the attributor ignores it) above
       // sessionPool. WS4.3-role-guard (CMT-1416) inserts another plain
@@ -393,9 +400,9 @@ describe('lint-dev-agent-dark-gate', () => {
       // DEV_GATED_FEATURES) so it introduces no new attributed path. After merging JKHeadley/main
       // (which added its own config above), the sessionPool keys resolve to 872/897/926.
       // RE-VERIFIED by hand via the attributor on the MERGED ConfigDefaults.
-      '872': 'multiMachine.sessionPool.enabled',
-      '897': 'multiMachine.sessionPool.inboundQueue.enabled',
-      '926': 'multiMachine.sessionPool.holdForStability.enabled',
+      '894': 'multiMachine.sessionPool.enabled',
+      '919': 'multiMachine.sessionPool.inboundQueue.enabled',
+      '948': 'multiMachine.sessionPool.holdForStability.enabled',
       // mm-stores-devgate (operator directive 2026-06-13, topic 13481): the 7
       // multiMachine.stateSync.* memory stores MOVED from DARK_GATE_EXCLUSIONS to
       // DEV_GATED_FEATURES and their `enabled: false` literals were REMOVED from
@@ -429,10 +436,10 @@ describe('lint-dev-agent-dark-gate', () => {
       // attributor on the edited ConfigDefaults.
       // After merging JKHeadley/main + my accountFollowMe block, these resolve as below.
       // RE-VERIFIED by hand via the attributor on the MERGED ConfigDefaults.
-      '1095': 'multiMachine.stateSync.threadlinePairing.enabled',
-      '1217': 'cartographer.freshnessSweep.enabled',
-      '1262': 'cartographer.conformanceAudit.llmEnrichment.enabled',
-      '1287': 'cartographer.subtreeNav.llmRerank.enabled',
+      '1117': 'multiMachine.stateSync.threadlinePairing.enabled',
+      '1239': 'cartographer.freshnessSweep.enabled',
+      '1284': 'cartographer.conformanceAudit.llmEnrichment.enabled',
+      '1309': 'cartographer.subtreeNav.llmRerank.enabled',
     };
     const actual = attributeRealConfigDefaults();
     expect(actual).toEqual(EXPECTED);

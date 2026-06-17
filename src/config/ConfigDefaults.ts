@@ -57,6 +57,28 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
     // detects cross-topic work overlap, and emits ONE deduped in-process councilor
     // nudge (signal-only; never gates). docs/specs/parallel-activity-coherence.md.
     parallelWorkSentinel: {},
+    // AutonomousLivenessReconciler — a level-triggered self-heal for an autonomous
+    // run marked active (with time remaining) but with NO live session ("dead but
+    // marked active"). DEV-GATED: `enabled` is deliberately OMITTED so
+    // resolveDevAgentGate decides — LIVE on a developmentAgent, DARK on the fleet.
+    // NEVER hardcode `enabled: false` here (it would dark dev agents too). Ships
+    // dryRun-FIRST on dev (logs "would respawn" + a shadow "would-have-capped"
+    // until a deliberate dryRun:false flip — zero spawns while dark/dryRun).
+    // docs/specs/autonomous-liveness-reconciler.md.
+    autonomousLivenessReconciler: {
+      dryRun: true,
+      tickIntervalSec: 120,
+      debounceTicks: 2,
+      debounceWindowSec: 180,
+      respawnTimeoutMs: 45000,
+      respawnCapPerWindow: 3,
+      respawnCapWindowSec: 21600,
+      spawnFailureRetryCeiling: 6,
+      maxPressureBlockedTicks: 10,
+      maxPressureBlockedSec: 1800,
+      allowFreshFallback: false,
+      notifyUser: true,
+    },
     // AutonomousProgressHeartbeat — hedged, change-gated, sparse liveness backstop
     // for an autonomous run gone silent-to-user while its output is still moving.
     // DEV-GATED: `enabled` is OMITTED so resolveDevAgentGate decides — LIVE on a
