@@ -1008,6 +1008,12 @@ export interface RouteContext {
    *  or the queue is lock-disabled. Powers /sessions/resume-queue*. */
   resumeQueue?: import('../monitoring/ResumeQueue.js').ResumeQueue | null;
   resumeDrainer?: import('../monitoring/ResumeQueueDrainer.js').ResumeQueueDrainer | null;
+  /** AutonomousLivenessReconciler — level-triggered self-heal for an autonomous
+   *  run marked active but with no live session. Null when dark/disabled.
+   *  Powers GET /autonomous/liveness (spec: autonomous-liveness-reconciler.md). */
+  autonomousLivenessReconciler?:
+    | import('../monitoring/AutonomousLivenessReconciler.js').AutonomousLivenessReconciler
+    | null;
   /** Records an operator stop instruction (per-topic, or null = global) so the
    *  drainer's R2.6 operator-stop validation can see stops that post-date an
    *  entry's enqueue. Wired by the boot block alongside the queue. */
@@ -4101,6 +4107,17 @@ export function createRoutes(ctx: RouteContext): Router {
   // These routes are the management surface; the stop hook is the per-session enforcer.
   router.get('/autonomous/sessions', (_req, res) => {
     res.json({ sessions: listAutonomousJobs(ctx.config.stateDir) });
+  });
+
+  // Level-triggered liveness reconciler status (spec: autonomous-liveness-reconciler.md).
+  // 503 when dark/disabled (dev-gate resolves enablement); else the content-free
+  // status (topic ids + counters + conditions — no topic content/paths/secrets).
+  router.get('/autonomous/liveness', (_req, res) => {
+    if (!ctx.autonomousLivenessReconciler) {
+      res.status(503).json({ error: 'autonomous-liveness-reconciler not available on this agent' });
+      return;
+    }
+    res.json(ctx.autonomousLivenessReconciler.status());
   });
 
   router.get('/autonomous/can-start', (req, res) => {

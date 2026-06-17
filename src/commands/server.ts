@@ -32,7 +32,7 @@ import {
 import { CodexResumeMap, type CodexSpawnFence } from '../core/CodexResumeMap.js';
 import { paneIdleWithEmptyInput } from '../core/ModelSwapService.js';
 import { escalatedModelIds, normalizeTierEscalationConfig, type TierEscalationConfig } from '../core/ModelTierEscalation.js';
-import { activeAutonomousJobs, autonomousRunRemainingForTopic } from '../core/AutonomousSessions.js';
+import { activeAutonomousJobs, autonomousRunRemainingForTopic, listAutonomousJobs } from '../core/AutonomousSessions.js';
 import { AGE_LIMIT_ACTIVE_RUN_REASON, COMMITMENT_ACTIVE_RUN_REASON } from '../core/WorkEvidence.js';
 import { gapBEligibleForTopic, recentUserMessageFromHistory, resolveGapBInjectionGate, decideGapBInjection } from '../core/gapBCommitmentEvidence.js';
 import { TopicProfileTransferCarrier, createTopicProfilePullHandler } from '../core/TopicProfileTransferCarrier.js';
@@ -6947,6 +6947,9 @@ export async function startServer(options: StartOptions): Promise<void> {
     const rqCfg = config.monitoring?.resumeQueue ?? {};
     let resumeQueue: import('../monitoring/ResumeQueue.js').ResumeQueue | null = null;
     let resumeDrainer: import('../monitoring/ResumeQueueDrainer.js').ResumeQueueDrainer | null = null;
+    let autonomousLivenessReconciler:
+      | import('../monitoring/AutonomousLivenessReconciler.js').AutonomousLivenessReconciler
+      | null = null;
     let prHandLease: import('../core/PrHandLease.js').PrHandLease | null = null;
     // GAP-B Part A surface (spec: autonomous-registration-guarantee.md) — the
     // aggregated-attention chokepoint reference, hoisted to the handler's scope.
@@ -7128,33 +7131,53 @@ export async function startServer(options: StartOptions): Promise<void> {
           }
         };
 
+        // ── Shared closures (spec §"Shared closures"): extracted to named consts
+        // and passed by the SAME reference into BOTH the ResumeQueueDrainer and the
+        // AutonomousLivenessReconciler, so "the reaper, the drainer, and the
+        // reconciler agree" is structurally true (no divergent re-created copy —
+        // the operator-stop file-mtime arm in particular cannot be forgotten). ──
+        const sharedCanSpawnSession = (): boolean =>
+          quotaManager ? quotaManager.canSpawnSession().allowed : true;
+        const sharedSessionCountOk = (): boolean =>
+          sessionManager.listRunningSessions().length <
+          ((config as { maxSessions?: number }).maxSessions ?? 10);
+        const sharedMigrationInFlight = (): boolean => quotaManager?.isMigrationInFlight() ?? false;
+        const sharedLiveSessionForTopic = (topicId: number): boolean =>
+          sessionManager.listRunningSessions().some((s) => resolveTopicForTmux(s.tmuxSession) === topicId);
+        const sharedTopicOwnerElsewhere = (topicId: number): boolean => {
+          // Pool not wired → single-machine → always local.
+          const reg = sessionOwnershipRegistry;
+          const self = _meshSelfId;
+          if (!reg || !self) return false;
+          const owner = reg.ownerOf(String(topicId));
+          return !!owner && owner !== self;
+        };
+        const sharedOperatorStopSince = (topicId: number, sinceIso: string): boolean => {
+          const since = Date.parse(sinceIso);
+          const perTopic = operatorStopsByTopic.get(topicId) ?? 0;
+          let flagAt = 0;
+          try {
+            flagAt = fs.statSync(path.join(_projectDir, '.instar', 'autonomous-emergency-stop')).mtimeMs;
+          } catch { /* no flag */ }
+          return Math.max(perTopic, globalOperatorStopAt, flagAt) > since;
+        };
+
         resumeDrainer = new ResumeQueueDrainer(
           {
             queue: rq,
             pressureTier: sharedPressureTier,
-            canSpawnSession: () => (quotaManager ? quotaManager.canSpawnSession().allowed : true),
-            sessionCountOk: () =>
-              sessionManager.listRunningSessions().length <
-              ((config as { maxSessions?: number }).maxSessions ?? 10),
+            canSpawnSession: sharedCanSpawnSession,
+            sessionCountOk: sharedSessionCountOk,
             // No catch: a throwing dep resolves to the SAFE side (blocked)
             // inside the drainer's gate — wrapping it here would flip the
             // failure to the lenient side.
-            migrationInFlight: () => quotaManager?.isMigrationInFlight() ?? false,
-            liveSessionForTopic: (topicId) =>
-              sessionManager
-                .listRunningSessions()
-                .some((s) => resolveTopicForTmux(s.tmuxSession) === topicId),
+            migrationInFlight: sharedMigrationInFlight,
+            liveSessionForTopic: sharedLiveSessionForTopic,
             currentResumeUuid: (topicId) => _topicResumeMap?.get(topicId) ?? null,
-            topicOwnerElsewhere: (topicId) => {
-              // Pool not wired → single-machine → always local. No catch: a
-              // registry error propagates to the drainer's validateReality,
-              // which resolves a throwing dep to the SAFE side (invalidated).
-              const reg = sessionOwnershipRegistry;
-              const self = _meshSelfId;
-              if (!reg || !self) return false;
-              const owner = reg.ownerOf(String(topicId));
-              return !!owner && owner !== self;
-            },
+            // Shared reference — the reconciler uses the SAME closure (no catch: a
+            // registry error propagates to the drainer's validateReality, which
+            // resolves a throwing dep to the SAFE side (invalidated)).
+            topicOwnerElsewhere: sharedTopicOwnerElsewhere,
             topicBindingMatches: (topicId, cwd) => {
               const bindings = scopeVerifier?.loadTopicBindings?.() as
                 | Record<string, { projectDir?: string }>
@@ -7163,15 +7186,7 @@ export async function startServer(options: StartOptions): Promise<void> {
               if (!binding?.projectDir) return true; // unbound topic → default project
               return path.resolve(cwd).startsWith(path.resolve(binding.projectDir));
             },
-            operatorStopSince: (topicId, sinceIso) => {
-              const since = Date.parse(sinceIso);
-              const perTopic = operatorStopsByTopic.get(topicId) ?? 0;
-              let flagAt = 0;
-              try {
-                flagAt = fs.statSync(path.join(_projectDir, '.instar', 'autonomous-emergency-stop')).mtimeMs;
-              } catch { /* no flag */ }
-              return Math.max(perTopic, globalOperatorStopAt, flagAt) > since;
-            },
+            operatorStopSince: sharedOperatorStopSince,
             // Resume-idle-autonomous fix (spec: resume-idle-autonomous-on-reap.md):
             // drain-time liveness re-check for an entry admitted via the
             // age-limit-active-run path. Returns true (= run FINISHED) when the topic's
@@ -7362,6 +7377,228 @@ export async function startServer(options: StartOptions): Promise<void> {
           }
         }, 30_000);
         if (typeof reconcileTimer.unref === 'function') reconcileTimer.unref();
+
+        // ── AutonomousLivenessReconciler (spec: autonomous-liveness-reconciler.md) ──
+        // Level-triggered self-heal for a "dead but marked active" autonomous run.
+        // Constructed here (after SessionManager + the ResumeQueueDrainer), inside
+        // the queue-started block where rq + resolveTopicForTmux + the shared
+        // closures are in scope. Gated by the dev-agent gate (enabled OMITTED in
+        // ConfigDefaults). Reuses the SAME shared closures as the drainer.
+        const livenessCfgRaw = config.monitoring?.autonomousLivenessReconciler ?? {};
+        if (resolveDevAgentGate(livenessCfgRaw.enabled, config)) {
+          const { AutonomousLivenessReconciler } = await import('../monitoring/AutonomousLivenessReconciler.js');
+          const livenessAuditPath = path.join(_projectDir, 'logs', 'autonomous-liveness.jsonl');
+          const auditLiveness = (entry: Record<string, unknown>): void => {
+            try {
+              fs.mkdirSync(path.dirname(livenessAuditPath), { recursive: true });
+              try {
+                const st = fs.statSync(livenessAuditPath);
+                if (st.size > 5 * 1024 * 1024) fs.renameSync(livenessAuditPath, `${livenessAuditPath}.1`);
+              } catch { /* no file yet */ }
+              fs.appendFileSync(livenessAuditPath, JSON.stringify(entry) + '\n');
+            } catch { /* the audit sink never endangers the reconciler */ }
+          };
+          // Durable cap state (separate redie + spawn-failure counters).
+          const livenessCapPath = path.join(_projectDir, 'state', 'autonomous-liveness-cap.json');
+          // Process-local in-memory in-flight-spawn claim map (spec §"in-flight
+          // claim primitive"): NOT a cross-machine lock — criterion 5 ensures only
+          // the owning+lease-holding machine reconciles a topic, so this only
+          // serializes THIS machine's ticks + its own queue/reconciler paths. A
+          // process restart clears it (a claim never outlives its process).
+          const livenessInflight = new Map<number, { state: 'claimed' | 'spawning' | 'live-grace'; sinceMs: number }>();
+          // Resolve the agent home for the cwd-escape check (the worktree root is a
+          // legitimate non-project-root path INSIDE the agent home).
+          const agentHomeReal = (() => {
+            try { return fs.realpathSync(path.join(os.homedir(), '.instar', 'agents', config.projectName ?? '')); }
+            catch {
+              // @silent-fallback-ok — no resolvable agent home → resolveCwd falls
+              // back to the project-dir prefix check only (still fail-closed on a
+              // cwd that escapes the project). Never widens the cwd allowlist.
+              return null;
+            }
+          })();
+          const reconciler = new AutonomousLivenessReconciler(
+            {
+              now: () => Date.now(),
+              listActiveRuns: () => {
+                // Source of truth = the per-topic run-state files; UNTRUSTED — read
+                // ONLY active+remaining+topicId+started_at (generation key).
+                const out: import('../monitoring/AutonomousLivenessReconciler.js').ReconcilerActiveRun[] = [];
+                for (const job of listAutonomousJobs(config.stateDir)) {
+                  if (job.topic == null) continue;
+                  const topicId = Number(job.topic);
+                  if (!Number.isFinite(topicId)) continue;
+                  const remaining = autonomousRunRemainingForTopic(config.stateDir, topicId);
+                  if (!remaining) continue; // not active or window over → not a candidate
+                  const startedAtMs = job.startedAt ? new Date(job.startedAt).getTime() : NaN;
+                  out.push({
+                    topicId,
+                    remainingSeconds: remaining.remainingSeconds,
+                    paused: job.paused,
+                    movedTo: null,
+                    moveSuspended: false,
+                    startedAtMs: Number.isFinite(startedAtMs) ? startedAtMs : null,
+                  });
+                }
+                return out;
+              },
+              liveTopicSnapshot: () => {
+                const set = new Set<number>();
+                for (const s of sessionManager.listRunningSessions()) {
+                  const t = resolveTopicForTmux(s.tmuxSession);
+                  if (t != null) set.add(t);
+                }
+                return set;
+              },
+              queuePaused: () => rq.isPaused(),
+              topicInResumeQueue: (topicId) =>
+                rq.list().some((e) => e.topicId === topicId && (e.status === 'queued' || e.status === 'starting')),
+              operatorStoppedSince: sharedOperatorStopSince,
+              topicOwnerElsewhere: sharedTopicOwnerElsewhere,
+              // DEFAULTS TO HELD on a single-machine agent (coordinator.holdsLease()
+              // returns _role==='awake' ⇒ true when no lease coordinator is wired).
+              holdsLease: () => coordinator.holdsLease(),
+              currentGenerationMs: (topicId) => {
+                // Re-read the topic's CURRENT started_at from disk: a newer run on a
+                // reused topic id writes a newer started_at → obsolete prior run rejected.
+                try {
+                  const job = listAutonomousJobs(config.stateDir).find((j) => String(j.topic) === String(topicId));
+                  if (!job?.startedAt) return null;
+                  const ms = new Date(job.startedAt).getTime();
+                  return Number.isFinite(ms) ? ms : null;
+                } catch {
+                  // @silent-fallback-ok — unreadable generation → null = "no
+                  // competing registration"; the reconciler treats the run as
+                  // current (the safe side: a missed obsolete-rejection at worst
+                  // respawns a run the state file still says is active).
+                  return null;
+                }
+              },
+              quotaOk: sharedCanSpawnSession,
+              sessionCountOk: sharedSessionCountOk,
+              migrationInFlight: sharedMigrationInFlight,
+              pressureTier: sharedPressureTier,
+              inflightSpawnStatus: (topicId) => livenessInflight.get(topicId) ?? { state: 'none' },
+              resolveResumeUuid: (topicId) => _topicResumeMap?.get(topicId) ?? null,
+              resolveCwd: (topicId) => {
+                // Authoritative cwd from the topic-binding registry; realpath-resolved
+                // and validated inside the agent home (worktree root is legitimate).
+                try {
+                  const bindings = scopeVerifier?.loadTopicBindings?.() as
+                    | Record<string, { projectDir?: string }>
+                    | undefined;
+                  const raw = bindings?.[String(topicId)]?.projectDir ?? _projectDir;
+                  let real: string;
+                  try { real = fs.realpathSync(raw); } catch {
+                    // @silent-fallback-ok — an unresolvable path is REFUSED (null),
+                    // never spawned against; the reconciler raises attention.
+                    return null;
+                  }
+                  if (agentHomeReal && !real.startsWith(agentHomeReal) && !real.startsWith(fs.realpathSync(_projectDir))) {
+                    // realpath escapes both the agent home AND the project dir → refuse.
+                    return null;
+                  }
+                  return real;
+                } catch {
+                  // @silent-fallback-ok — cwd resolution failed → REFUSE (null);
+                  // the reconciler raises attention and does NOT spawn against a guess.
+                  return null;
+                }
+              },
+              bindingUnambiguous: (topicId) => {
+                // Consistent across the resume map + the running-session list: a
+                // topic resolving to >1 distinct live session is ambiguous.
+                try {
+                  const live = sessionManager
+                    .listRunningSessions()
+                    .filter((s) => resolveTopicForTmux(s.tmuxSession) === topicId);
+                  return live.length <= 1; // 0 (orphaned, expected) or 1 → unambiguous
+                } catch {
+                  // @silent-fallback-ok — can't resolve the binding → treat as
+                  // AMBIGUOUS (false), which routes to attention, never an
+                  // auto-respawn (the safe side per criterion 8).
+                  return false;
+                }
+              },
+              respawn: async ({ topicId, cwd }) => {
+                if (!telegram) throw new Error('telegram adapter not available');
+                const topicName = `topic-${topicId}`;
+                const newSession = await spawnSessionForTopic(
+                  sessionManager, telegram, topicName, topicId,
+                  'Resuming your autonomous run — your previous session had no live process; picking the work back up.',
+                  topicMemory, undefined, undefined, undefined, { cwd },
+                );
+                // Tag the respawned session midWork so a later reaper kill is offered
+                // to the ResumeQueue (attacking the incident root cause) rather than
+                // re-entering the reconciler's respawn budget.
+                try {
+                  const sess = sessionManager.listRunningSessions().find((s) => s.tmuxSession === newSession);
+                  if (sess) { sess.endedMidWork = true; state.saveSession(sess); }
+                } catch { /* @silent-fallback-ok: best-effort midWork tag; a failure must never undo the successful respawn (the run is alive, which is the goal). */ }
+              },
+              claimInflight: (topicId) => {
+                if (livenessInflight.has(topicId)) return false; // CAS: someone holds it
+                livenessInflight.set(topicId, { state: 'spawning', sinceMs: Date.now() });
+                return true;
+              },
+              releaseClaim: (topicId) => { livenessInflight.delete(topicId); },
+              settleKill: async (topicId) => {
+                // Terminal abort: clear midWork FIRST (so the ResumeQueue does not
+                // revive an operator-stopped topic), then kill — never via revival.
+                try {
+                  const sess = sessionManager.listRunningSessions().find((s) => resolveTopicForTmux(s.tmuxSession) === topicId);
+                  if (sess) {
+                    sess.endedMidWork = false;
+                    state.saveSession(sess);
+                    sessionManager.killSession(sess.id);
+                  }
+                } catch { /* @silent-fallback-ok: settle-kill is best-effort; the operator-stop record already prevents future revival of this topic. */ }
+              },
+              notifyTopic: async (topicId, text) => { notify('SUMMARY', 'autonomous-liveness', text, topicId); },
+              raiseAggregated: (kind, detail) => raiseResumeAggregated(`liveness:${kind}`, detail),
+              audit: auditLiveness,
+              queueResurrectionCount: (topicId) => rq.resurrectionCountForTopic(topicId),
+              loadCapState: () => {
+                try {
+                  const raw = fs.readFileSync(livenessCapPath, 'utf8');
+                  const parsed = JSON.parse(raw) as import('../monitoring/AutonomousLivenessReconciler.js').DurableCapState;
+                  return { redie: parsed.redie ?? {}, spawnFailure: parsed.spawnFailure ?? {} };
+                } catch {
+                  // @silent-fallback-ok — no/corrupt durable cap → start with empty
+                  // in-memory counters (a fresh window). The cap is a brake, not a
+                  // safety gate; the in-flight claim + recheck prevent over-spawn.
+                  return null;
+                }
+              },
+              saveCapState: (st) => {
+                try {
+                  fs.mkdirSync(path.dirname(livenessCapPath), { recursive: true });
+                  fs.writeFileSync(livenessCapPath, JSON.stringify(st));
+                } catch { /* cap persistence is best-effort */ }
+              },
+            },
+            {
+              enabled: livenessCfgRaw.enabled,
+              dryRun: livenessCfgRaw.dryRun ?? true, // dryRun-FIRST on dev
+              tickIntervalSec: livenessCfgRaw.tickIntervalSec ?? 120,
+              debounceTicks: livenessCfgRaw.debounceTicks ?? 2,
+              debounceWindowSec: livenessCfgRaw.debounceWindowSec ?? 180,
+              respawnTimeoutMs: livenessCfgRaw.respawnTimeoutMs ?? 45_000,
+              respawnCapPerWindow: livenessCfgRaw.respawnCapPerWindow ?? 3,
+              respawnCapWindowSec: livenessCfgRaw.respawnCapWindowSec ?? 21_600,
+              spawnFailureRetryCeiling: livenessCfgRaw.spawnFailureRetryCeiling ?? 6,
+              maxPressureBlockedTicks: livenessCfgRaw.maxPressureBlockedTicks ?? 10,
+              maxPressureBlockedSec: livenessCfgRaw.maxPressureBlockedSec ?? 1_800,
+              allowFreshFallback: livenessCfgRaw.allowFreshFallback ?? false,
+              inflightSpawnTtlMs: livenessCfgRaw.inflightSpawnTtlMs,
+              notifyUser: livenessCfgRaw.notifyUser ?? true,
+            },
+          );
+          reconciler.start();
+          autonomousLivenessReconciler = reconciler;
+          guardRegistry.register('monitoring.autonomousLivenessReconciler.enabled', () => reconciler.guardStatus());
+          console.log(pc.green(`  AutonomousLivenessReconciler started (${(livenessCfgRaw.dryRun ?? true) ? 'dry-run observe-only' : 'LIVE'})`));
+        }
       }
     }
     sessionManager.on('sessionReaped', (e: { session: import('../core/types.js').Session; reason: string; disposition?: 'terminal' | 'recovery-bounce'; origin?: 'operator' | 'autonomous'; midWork?: boolean; workEvidence?: string[]; via?: string }) => {
@@ -7453,8 +7690,29 @@ export async function startServer(options: StartOptions): Promise<void> {
       try {
         if (resumeQueue && !resumeQueue.isDisabled()) {
           const rawTopic = telegram?.getTopicForSession(e.session.tmuxSession);
-          const topicId =
+          let topicId =
             rawTopic == null ? null : Number.isFinite(Number(rawTopic)) ? Number(rawTopic) : null;
+          // ── ROOT-CAUSE FIX (spec §"Root cause"): the session-name→topic map can
+          //    be stale/evicted at the kill instant, so getTopicForSession returns
+          //    null precisely when an age-limit recycle should be resumed — and the
+          //    entire active-autonomous-run injection branch below is skipped, the
+          //    run silently dies (the 2026-06-16 incident). FALL BACK to resolving
+          //    the topic from the session name (the SAME parse used at the
+          //    coherence-journal emit below) and confirm it against the run-state
+          //    file, so the autonomousRunRemainingForTopic check still runs.
+          //    Confined to the null case (the resolved-topic path is unchanged) and
+          //    inside the existing try/catch (a throw fails toward NO injection).
+          if (topicId == null) {
+            const m = /(?:^|[-_])(?:topic|telegram)[-_]?(\d+)(?:$|[-_])/.exec(
+              e.session.name ?? e.session.tmuxSession ?? '',
+            );
+            const parsed = m ? Number(m[1]) : NaN;
+            // Only adopt the parsed topic when the run-state file confirms an active
+            // run for it — never resurrect against a guessed-but-unconfirmed id.
+            if (Number.isFinite(parsed) && autonomousRunRemainingForTopic(config.stateDir, parsed) != null) {
+              topicId = parsed;
+            }
+          }
           const jobDef = e.session.jobSlug
             ? scheduler?.getJobs().find((j) => j.slug === e.session.jobSlug)
             : undefined;
@@ -17466,7 +17724,7 @@ export async function startServer(options: StartOptions): Promise<void> {
             carrier: _topicProfileCarrier,
           }
         : null;
-    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, cartographer: cartographer ?? undefined, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, subscriptionPool, quotaPoller, quotaAwareScheduler: _quotaAwareScheduler ?? undefined, proactiveSwapMonitor: _proactiveSwapMonitor ?? undefined, inUseAccountResolver, enrollmentWizard, credentialRepointing, semanticMemory, activitySentinel, rateLimitSentinel, releaseReadinessSentinel: releaseReadinessSentinel ?? undefined, greenPrAutoMerger: greenPrAutoMerger ?? undefined, guardLatchStore: guardLatchStore ?? undefined, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, topicProfile: _topicProfileCtx ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, localSigningKeyPem, leaseTransport, onLeasePullRequest: () => leaseCoordinatorRef?.currentLease() ?? null, liveTailReceiver, handoffWireTransport, onHandoffBegin, onHandoffInitiate: handoffInitiate, handoffInProgress: handoffSentinelInProgress, messageLedger, currentInboundByTopic, replyMarkerTransport, onReplyMarker: messageLedger ? (marker: unknown) => { const m = marker as { dedupeKey: string; platform: string; replyIdempotencyKey: string; epoch: number; topic?: string | null }; messageLedger!.applyRemoteReplyMarker(m.dedupeKey, { platform: m.platform, replyIdempotencyKey: m.replyIdempotencyKey, epoch: m.epoch, topic: m.topic ?? null }); } : undefined, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, threadLog, threadMessageRecorder, warrantsReplyGate, collaborationSurfacer, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, a2aDeliveryTracker: a2aDeliveryTracker ?? undefined, responseReviewGate, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, machinePoolRegistry, getInboundQueue: () => _inboundQueue, meshRpcDispatcher, workingSetPullCoordinator, commitmentReplicaStore, preferenceReplicaStore, replicatedRecordEmitter, conflictStore, rollbackUnmerge, droppedOriginRegistry, preferencesUnionReader, forwardCommitmentMutate, sessionOwnershipRegistry, topicPinStore: _topicPinStore ?? undefined, streamTicketStore: _streamTicketStore ?? undefined, poolStreamAllowRemoteInput: (config as { dashboard?: { poolStream?: { allowRemoteInput?: boolean } } }).dashboard?.poolStream?.allowRemoteInput ?? false, poolStreamConnector: _poolStreamConnector ?? undefined, secretSync: _secretSyncHandle ?? undefined, meshSelfId: _meshSelfId ?? undefined, resolveRouterUrl: _resolveRouterUrl ?? undefined, resolvePeerUrls: _resolvePeerUrls ?? undefined, guardRegistry, listPoolMachines: _listPoolMachines ?? undefined, poolLink: _poolLink ?? undefined, poolPollCache: _poolPollCache ?? undefined, sessionPoolE2EResultStore, proxyCoordinator, topicIntentStore, topicIntentArcCheck, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, briefDeps, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, agentWorktreeReaper, orphanedWorkSentinel, mcpProcessReaper, geminiLoopRunner, sleepController, agentActivityState, reapLog, resumeQueue, resumeDrainer, prHandLease: prHandLease ?? undefined, operatorStopRecorder: recordOperatorStop, sleepWakeDetector, unjustifiedStopGate, stopGateDb, stopNotifier, liveTestGate, liveTestGateMode, liveTestRunnerCtx });    // Resolve the late-bound topic-operator getter (increment 2e): routing was
+    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, cartographer: cartographer ?? undefined, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, subscriptionPool, quotaPoller, quotaAwareScheduler: _quotaAwareScheduler ?? undefined, proactiveSwapMonitor: _proactiveSwapMonitor ?? undefined, inUseAccountResolver, enrollmentWizard, credentialRepointing, semanticMemory, activitySentinel, rateLimitSentinel, releaseReadinessSentinel: releaseReadinessSentinel ?? undefined, greenPrAutoMerger: greenPrAutoMerger ?? undefined, guardLatchStore: guardLatchStore ?? undefined, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, topicProfile: _topicProfileCtx ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, localSigningKeyPem, leaseTransport, onLeasePullRequest: () => leaseCoordinatorRef?.currentLease() ?? null, liveTailReceiver, handoffWireTransport, onHandoffBegin, onHandoffInitiate: handoffInitiate, handoffInProgress: handoffSentinelInProgress, messageLedger, currentInboundByTopic, replyMarkerTransport, onReplyMarker: messageLedger ? (marker: unknown) => { const m = marker as { dedupeKey: string; platform: string; replyIdempotencyKey: string; epoch: number; topic?: string | null }; messageLedger!.applyRemoteReplyMarker(m.dedupeKey, { platform: m.platform, replyIdempotencyKey: m.replyIdempotencyKey, epoch: m.epoch, topic: m.topic ?? null }); } : undefined, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, threadLog, threadMessageRecorder, warrantsReplyGate, collaborationSurfacer, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, a2aDeliveryTracker: a2aDeliveryTracker ?? undefined, responseReviewGate, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, machinePoolRegistry, getInboundQueue: () => _inboundQueue, meshRpcDispatcher, workingSetPullCoordinator, commitmentReplicaStore, preferenceReplicaStore, replicatedRecordEmitter, conflictStore, rollbackUnmerge, droppedOriginRegistry, preferencesUnionReader, forwardCommitmentMutate, sessionOwnershipRegistry, topicPinStore: _topicPinStore ?? undefined, streamTicketStore: _streamTicketStore ?? undefined, poolStreamAllowRemoteInput: (config as { dashboard?: { poolStream?: { allowRemoteInput?: boolean } } }).dashboard?.poolStream?.allowRemoteInput ?? false, poolStreamConnector: _poolStreamConnector ?? undefined, secretSync: _secretSyncHandle ?? undefined, meshSelfId: _meshSelfId ?? undefined, resolveRouterUrl: _resolveRouterUrl ?? undefined, resolvePeerUrls: _resolvePeerUrls ?? undefined, guardRegistry, listPoolMachines: _listPoolMachines ?? undefined, poolLink: _poolLink ?? undefined, poolPollCache: _poolPollCache ?? undefined, sessionPoolE2EResultStore, proxyCoordinator, topicIntentStore, topicIntentArcCheck, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, briefDeps, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, agentWorktreeReaper, orphanedWorkSentinel, mcpProcessReaper, geminiLoopRunner, sleepController, agentActivityState, reapLog, resumeQueue, resumeDrainer, autonomousLivenessReconciler, prHandLease: prHandLease ?? undefined, operatorStopRecorder: recordOperatorStop, sleepWakeDetector, unjustifiedStopGate, stopGateDb, stopNotifier, liveTestGate, liveTestGateMode, liveTestRunnerCtx });    // Resolve the late-bound topic-operator getter (increment 2e): routing was
     // wired before the server existed; from here on inbound binds use the
     // server's own store instance.
     _agentServerRef = server;
