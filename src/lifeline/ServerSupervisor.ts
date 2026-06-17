@@ -256,6 +256,19 @@ export class ServerSupervisor extends EventEmitter {
   private readonly maxLoadRatio = DEFAULT_MAX_LOAD_RATIO; // loadavg[0]/cpuCount above this = starved
   private readonly starvationRestartThreshold = 30; // ~5min at 10s checks — force a restart even if starved if unresponsiveness persists this long
   private readonly loadRatioProvider: () => number; // injectable for tests; default cpuLoadRatio
+  // Sustained-starvation window. The starvation guard must judge load over the
+  // unresponsive window, NOT a single instant: the 1-min loadavg oscillates
+  // around the threshold on an oversubscribed box, and a momentary dip below it
+  // must not authorize restarting a server that has been starved the whole time
+  // — that restart only deepens the starvation and loops (the 2026-06-17
+  // restart-loop incident: restarts fired at "10 checks", below the hard cap,
+  // because the instantaneous ratio dipped under the line for one sample). We
+  // sample the ratio on each unresponsive tick and treat the box as starved if
+  // it was starved at ANY point in the recent window.
+  private readonly loadSampleWindow = 6; // ~60s at 10s checks
+  private recentLoadRatios: number[] = [];
+  private lastStarvationCheckFailures = 0; // detect a failure-streak reset to drop stale samples
+  private lastSustainedLoadRatio = 0; // windowed max from the most recent defer check (for the log line)
   private stateDir: string | null;
 
   // Planned restart / maintenance wait — suppress alerts during expected downtime
@@ -1895,7 +1908,7 @@ export class ServerSupervisor extends EventEmitter {
       // Box is CPU-starved — bouncing the server won't help, it only drops the
       // in-flight message. Defer; the next healthy tick resets the counter.
       if (this.consecutiveFailures === effectiveThreshold) {
-        console.log(`[Supervisor] Server alive but unresponsive (${this.consecutiveFailures} checks) AND the box is CPU-starved (load ratio ${this.loadRatioProvider().toFixed(2)} > ${this.maxLoadRatio}) — DEFERRING restart; restarting a starved server only drops in-flight messages. Will force-restart at ${this.starvationRestartThreshold} checks (~${this.starvationRestartThreshold * 10}s) if it persists.`);
+        console.log(`[Supervisor] Server alive but unresponsive (${this.consecutiveFailures} checks) AND the box is CPU-starved (sustained load ratio ${this.lastSustainedLoadRatio.toFixed(2)} > ${this.maxLoadRatio} over the last ~${this.loadSampleWindow * 10}s) — DEFERRING restart; restarting a starved server only drops in-flight messages. Will force-restart at ${this.starvationRestartThreshold} checks (~${this.starvationRestartThreshold * 10}s) if it persists.`);
       }
     } else {
       console.log(`[Supervisor] Server process alive but unresponsive for ${this.consecutiveFailures} checks (~${this.consecutiveFailures * 10}s) — restarting`);
@@ -1911,10 +1924,33 @@ export class ServerSupervisor extends EventEmitter {
    * True when we should hold off restarting an alive-but-unresponsive server
    * because the machine is CPU-starved — but only up to the hard cap. Past the
    * cap we restart regardless (the server may be genuinely hung, not starved).
+   *
+   * The starvation signal is SUSTAINED, not instantaneous: we record the load
+   * ratio on each unresponsive tick and treat the box as starved if it exceeded
+   * the threshold at any point in the recent window. This prevents a momentary
+   * dip in the oscillating 1-min loadavg from triggering a pointless restart of
+   * a server that has been starved the whole time (the 2026-06-17 loop). The
+   * window is dropped when the failure streak resets (the server recovered), so
+   * stale high samples can't over-defer a later, unrelated unresponsive episode.
    */
   private deferRestartForCpuStarvation(): boolean {
+    // Within one unresponsive streak the failure counter strictly increases on
+    // each tick (++ before this runs); a new episode restarts at the threshold.
+    // So a non-increase means the prior streak ended (the server recovered) —
+    // drop the stale samples so they can't over-defer this fresh episode.
+    if (this.consecutiveFailures <= this.lastStarvationCheckFailures) {
+      this.recentLoadRatios = [];
+    }
+    this.lastStarvationCheckFailures = this.consecutiveFailures;
+
+    this.recentLoadRatios.push(this.loadRatioProvider());
+    if (this.recentLoadRatios.length > this.loadSampleWindow) {
+      this.recentLoadRatios.shift();
+    }
+    this.lastSustainedLoadRatio = Math.max(...this.recentLoadRatios);
+
     if (this.consecutiveFailures >= this.starvationRestartThreshold) return false; // hard cap — restart even if starved
-    return this.loadRatioProvider() > this.maxLoadRatio;
+    return this.lastSustainedLoadRatio > this.maxLoadRatio;
   }
 
   private handleUnhealthy(): void {

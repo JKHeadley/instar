@@ -76,17 +76,66 @@ describe('ServerSupervisor — CPU-starvation restart guard', () => {
     expect(sup.handleUnhealthy).not.toHaveBeenCalled();
   });
 
-  it('a starved-then-eased server restarts once load drops (defer is not permanent)', () => {
+  it('a starved-then-SUSTAINEDLY-eased server restarts once load stays down for the window (defer is not permanent)', () => {
+    // Sustained semantics: after load eases it takes a full window of low
+    // samples to flush the earlier high reading before a restart is authorized.
     const sup = makeSup(2.0); // starts starved
+    vi.spyOn(sup, 'isServerSessionAlive').mockReturnValue(true);
+    let cf = PROCESS_ALIVE_THRESHOLD;
+    sup.consecutiveFailures = cf;
+    sup.evaluateUnhealthyServer();
+    expect(sup.handleUnhealthy).not.toHaveBeenCalled(); // deferred while starved
+    // Load eases — but the window still holds the earlier high sample, so the
+    // FIRST eased tick must NOT restart (this is the 2026-06-17 dip-loop fix).
+    (sup as any).loadRatioProvider = () => 0.4;
+    cf += 1;
+    sup.consecutiveFailures = cf;
+    sup.evaluateUnhealthyServer();
+    expect(sup.handleUnhealthy).not.toHaveBeenCalled();
+    // Drive enough eased ticks to flush the window (loadSampleWindow = 6); once
+    // load has genuinely stayed down across the window it restarts — defer is
+    // not permanent.
+    for (let i = 0; i < 6; i++) {
+      cf += 1;
+      sup.consecutiveFailures = cf;
+      sup.evaluateUnhealthyServer();
+    }
+    expect(sup.handleUnhealthy).toHaveBeenCalled();
+  });
+
+  it('a momentary load DIP does NOT restart a sustainedly-starved server (the 2026-06-17 loop)', () => {
+    // The exact failure: load oscillates around the threshold; a single 1-min
+    // dip below the line must not authorize a restart while the box has been
+    // starved across the window.
+    const ratios = [2.0, 1.8, 2.1, 1.4 /* the dip, < 1.5 */, 1.9];
+    let idx = 0;
+    const sup = makeSup(2.0);
+    (sup as any).loadRatioProvider = () => ratios[Math.min(idx, ratios.length - 1)];
+    vi.spyOn(sup, 'isServerSessionAlive').mockReturnValue(true);
+    let cf = PROCESS_ALIVE_THRESHOLD;
+    for (idx = 0; idx < ratios.length; idx++) {
+      sup.consecutiveFailures = cf++;
+      sup.evaluateUnhealthyServer();
+    }
+    // Despite the dip at idx 3, the windowed max stayed > 1.5 the whole time.
+    expect(sup.handleUnhealthy).not.toHaveBeenCalled();
+  });
+
+  it('the sustained window is dropped when the failure streak resets (no stale over-defer)', () => {
+    // Episode 1: starved, defers and accumulates a high sample.
+    const sup = makeSup(2.0);
     vi.spyOn(sup, 'isServerSessionAlive').mockReturnValue(true);
     sup.consecutiveFailures = PROCESS_ALIVE_THRESHOLD;
     sup.evaluateUnhealthyServer();
-    expect(sup.handleUnhealthy).not.toHaveBeenCalled(); // deferred while starved
-    // Load eases — provider now reports a healthy ratio.
-    (sup as any).loadRatioProvider = () => 0.4;
-    sup.consecutiveFailures = PROCESS_ALIVE_THRESHOLD + 1;
+    expect(sup.handleUnhealthy).not.toHaveBeenCalled();
+    // Server recovers — the streak resets to 0 (done by the health loop).
+    sup.consecutiveFailures = 0;
+    // Episode 2: a genuinely-hung server on a now-IDLE box. The stale high
+    // sample from episode 1 must NOT keep deferring — load is low now.
+    (sup as any).loadRatioProvider = () => 0.3;
+    sup.consecutiveFailures = PROCESS_ALIVE_THRESHOLD;
     sup.evaluateUnhealthyServer();
-    expect(sup.handleUnhealthy).toHaveBeenCalledTimes(1);
+    expect(sup.handleUnhealthy).toHaveBeenCalledTimes(1); // restarts promptly
   });
 });
 

@@ -1,0 +1,17 @@
+## What Changed
+
+Fixed a server restart loop that could hit an agent on an overloaded machine. The supervisor's CPU-starvation guard — which is supposed to NOT restart an alive-but-slow server while the box is oversubscribed — judged load at a single instant. On a machine whose 1-minute load average oscillates around the starvation threshold, a momentary dip below the line tricked the guard into restarting a server that had been starved the whole time; the restart's heavy boot deepened the overload and the cycle repeated every ~11–15 minutes (2026-06-17 incident, topic 12476). `ServerSupervisor.deferRestartForCpuStarvation()` now judges **sustained** load — it samples the load ratio on each unresponsive health-check tick, keeps the last ~60 seconds of readings, and treats the box as starved if it was starved at any point in that window. A single dip can no longer authorize a restart. The recent-load window is dropped the moment the server recovers, so stale readings can't over-defer a later, unrelated episode. The genuinely-dead-process path (instant restart), the idle-machine-hung path (fast restart), and the ~5-minute hard-cap backstop are all unchanged.
+
+## What to Tell Your User
+
+If your agent felt laggy or kept "auto-restarting" on a busy machine — replies arriving late, messages queueing, the dashboard briefly 502-ing every ~10–15 minutes — that was this loop. Your agent now rides out short load spikes instead of bouncing itself, so it stays responsive under load. Nothing for you to do; it applies automatically on update. (Separately: if a machine is *chronically* overloaded, the real cure is reducing how much is running on it — this fix stops the self-inflicted restart loop, not the underlying load.)
+
+## Summary of New Capabilities
+
+No new user-facing capability — this is a reliability fix to the existing server supervisor. The supervisor's CPU-starvation restart guard now uses a sustained (windowed) load signal instead of an instantaneous one.
+
+## Evidence
+
+- `src/lifeline/ServerSupervisor.ts` — `deferRestartForCpuStarvation()` rewritten to use a windowed-max load signal over `loadSampleWindow` (6 samples ≈ 60s); window cleared on failure-streak reset; deferral log line now reports the sustained ratio.
+- `tests/unit/supervisor-cpu-starvation-defer.test.ts` — updated the test that encoded the old instantaneous behavior (it expected a restart after a single dip — the bug); added cases: a momentary dip does NOT restart a sustainedly-starved server (the 2026-06-17 loop), sustained easing eventually restarts (defer is not permanent), and the window is dropped on streak reset (no stale over-defer).
+- All 4 supervisor-related unit suites green: 40 tests passed (10 in the starvation-defer file). `tsc --noEmit` clean.
