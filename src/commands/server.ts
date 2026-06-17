@@ -10708,6 +10708,67 @@ export async function startServer(options: StartOptions): Promise<void> {
     }, config.subscriptionPool?.enrollment?.reissueSweepMs ?? 5 * 60_000);
     if (enrollReissueTimer.unref) enrollReissueTimer.unref();
 
+    // ── WS5.2 R12 — Account Follow-Me revocation data-plane wiring (PER-SERVER model, OQ6) ──
+    // The operator revokes the `account-follow-me` mandate on the TARGET machine's OWN dashboard,
+    // so when /mandate/:id/revoke fires here, THIS machine IS the target — the data-plane wipe is
+    // LOCAL (cooperative-online posture), never a cross-machine wipe-instruction. The pure executor
+    // (AccountFollowMeRevocation) is constructed once with REAL deps:
+    //   - cooperativeWipe: framework logout against the account's CLAUDE_CONFIG_DIR + delete the
+    //     per-account config slot (SafeFsExecutor) + SubscriptionPool.remove(accountId) — FAIL-CLOSED
+    //     (a step that throws surfaces as not-done, never a silent "removed").
+    //   - pendingStore: a DURABLE JSON ledger (survives restarts) — offline targets get a bounded
+    //     pending wipe that fires on reconnect or escalates to revocation-FAILED at the deadline.
+    //   - emitRevocationFailed: the real attention emitter (HIGH item, one running item per pair).
+    //   - enabled: the SAME dev-gate as the rest of accountFollowMe (LIVE on a dev agent / DARK on
+    //     the fleet), read LIVE per-call so a config flip is honored without a restart.
+    // Everything is DARK behind `multiMachine.accountFollowMe`: when the gate resolves OFF, revoke()
+    // is a strict no-op (the route trigger does nothing) and sweepDeadlines() returns [].
+    const { AccountFollowMeRevocation } = await import('../core/AccountFollowMeRevocation.js');
+    const { DurablePendingWipeStore } = await import('../core/AccountFollowMeRevocationStore.js');
+    const { buildCooperativeWipe } = await import('../core/accountFollowMeCooperativeWipe.js');
+    const accountFollowMeRevocationEnabled = (): boolean =>
+      resolveDevAgentGate(
+        (config as { multiMachine?: { accountFollowMe?: { enabled?: boolean } } }).multiMachine?.accountFollowMe?.enabled,
+        config,
+      );
+    const accountFollowMeRevocation = new AccountFollowMeRevocation({
+      enabled: accountFollowMeRevocationEnabled,
+      cooperativeWipe: buildCooperativeWipe({
+        pool: subscriptionPool,
+        log: (m) => console.log(m),
+      }),
+      pendingStore: new DurablePendingWipeStore({ stateDir: config.stateDir }),
+      emitRevocationFailed: (item) => {
+        if (!telegram) return;
+        void telegram.createAttentionItem({
+          id: item.id,
+          title: item.title,
+          summary: item.body,
+          description: item.body,
+          category: 'account-follow-me',
+          priority: 'HIGH',
+          sourceContext: 'account-follow-me-revocation',
+        });
+      },
+      reconnectDeadlineMs: () =>
+        (config as { multiMachine?: { accountFollowMe?: { revocationReconnectDeadlineMs?: number } } })
+          .multiMachine?.accountFollowMe?.revocationReconnectDeadlineMs ?? 6 * 60 * 60_000,
+      log: (m) => console.log(m),
+    });
+    // R12.iii — periodic deadline sweep so an offline-pending wipe past its reconnect-deadline
+    // ESCALATES to the LOUD revocation-FAILED attention item (resume-queue give-up discipline).
+    // sweepDeadlines() is a strict no-op while the feature resolves dark (the gate lives INSIDE it),
+    // so the timer can always run. Reentrancy is irrelevant (synchronous); unref'd so it never holds
+    // the process open. Cleared on shutdown alongside the other subscription timers.
+    const accountFollowMeRevocationSweepTimer = setInterval(() => {
+      try {
+        accountFollowMeRevocation.sweepDeadlines();
+      } catch (e) {
+        console.warn(`[account-follow-me] revocation deadline sweep error: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    }, 5 * 60_000);
+    accountFollowMeRevocationSweepTimer.unref?.();
+
     // Commitment Sentinel — LLM-powered scanner that finds unregistered commitments.
     let commitmentSentinel: import('../monitoring/CommitmentSentinel.js').CommitmentSentinel | undefined;
     if (sharedIntelligence) {
@@ -17744,7 +17805,7 @@ export async function startServer(options: StartOptions): Promise<void> {
             carrier: _topicProfileCarrier,
           }
         : null;
-    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, cartographer: cartographer ?? undefined, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, subscriptionPool, accountFollowMePeerViews: async () => { const machines = (_listPoolMachines?.() ?? []).filter((m) => m.machineId !== _meshSelfId && !!m.lastKnownUrl); if (machines.length === 0) return []; const { fetchPeerSubscriptionViews } = await import('../core/fetchPeerSubscriptionViews.js'); return fetchPeerSubscriptionViews({ peers: () => machines.map((m) => ({ machineId: m.machineId, nickname: m.nickname ?? m.machineId, url: m.lastKnownUrl as string })), fetchImpl: fetch as unknown as Parameters<typeof fetchPeerSubscriptionViews>[0]['fetchImpl'], authToken: config.authToken ?? '' }); }, quotaPoller, quotaAwareScheduler: _quotaAwareScheduler ?? undefined, proactiveSwapMonitor: _proactiveSwapMonitor ?? undefined, inUseAccountResolver, enrollmentWizard, credentialRepointing, semanticMemory, activitySentinel, rateLimitSentinel, releaseReadinessSentinel: releaseReadinessSentinel ?? undefined, greenPrAutoMerger: greenPrAutoMerger ?? undefined, guardLatchStore: guardLatchStore ?? undefined, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, topicProfile: _topicProfileCtx ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, localSigningKeyPem, leaseTransport, onLeasePullRequest: () => leaseCoordinatorRef?.currentLease() ?? null, liveTailReceiver, handoffWireTransport, onHandoffBegin, onHandoffInitiate: handoffInitiate, handoffInProgress: handoffSentinelInProgress, messageLedger, currentInboundByTopic, replyMarkerTransport, onReplyMarker: messageLedger ? (marker: unknown) => { const m = marker as { dedupeKey: string; platform: string; replyIdempotencyKey: string; epoch: number; topic?: string | null }; messageLedger!.applyRemoteReplyMarker(m.dedupeKey, { platform: m.platform, replyIdempotencyKey: m.replyIdempotencyKey, epoch: m.epoch, topic: m.topic ?? null }); } : undefined, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, threadLog, threadMessageRecorder, warrantsReplyGate, collaborationSurfacer, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, a2aDeliveryTracker: a2aDeliveryTracker ?? undefined, responseReviewGate, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, machinePoolRegistry, getInboundQueue: () => _inboundQueue, meshRpcDispatcher, workingSetPullCoordinator, commitmentReplicaStore, preferenceReplicaStore, replicatedRecordEmitter, conflictStore, rollbackUnmerge, droppedOriginRegistry, preferencesUnionReader, forwardCommitmentMutate, sessionOwnershipRegistry, topicPinStore: _topicPinStore ?? undefined, streamTicketStore: _streamTicketStore ?? undefined, poolStreamAllowRemoteInput: (config as { dashboard?: { poolStream?: { allowRemoteInput?: boolean } } }).dashboard?.poolStream?.allowRemoteInput ?? false, poolStreamConnector: _poolStreamConnector ?? undefined, secretSync: _secretSyncHandle ?? undefined, meshSelfId: _meshSelfId ?? undefined, resolveRouterUrl: _resolveRouterUrl ?? undefined, resolvePeerUrls: _resolvePeerUrls ?? undefined, guardRegistry, listPoolMachines: _listPoolMachines ?? undefined, poolLink: _poolLink ?? undefined, poolPollCache: _poolPollCache ?? undefined, sessionPoolE2EResultStore, proxyCoordinator, topicIntentStore, topicIntentArcCheck, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, briefDeps, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, agentWorktreeReaper, orphanedWorkSentinel, mcpProcessReaper, geminiLoopRunner, sleepController, agentActivityState, reapLog, resumeQueue, resumeDrainer, autonomousLivenessReconciler, prHandLease: prHandLease ?? undefined, operatorStopRecorder: recordOperatorStop, sleepWakeDetector, unjustifiedStopGate, stopGateDb, stopNotifier, liveTestGate, liveTestGateMode, liveTestRunnerCtx });    // Resolve the late-bound topic-operator getter (increment 2e): routing was
+    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, cartographer: cartographer ?? undefined, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, subscriptionPool, accountFollowMePeerViews: async () => { const machines = (_listPoolMachines?.() ?? []).filter((m) => m.machineId !== _meshSelfId && !!m.lastKnownUrl); if (machines.length === 0) return []; const { fetchPeerSubscriptionViews } = await import('../core/fetchPeerSubscriptionViews.js'); return fetchPeerSubscriptionViews({ peers: () => machines.map((m) => ({ machineId: m.machineId, nickname: m.nickname ?? m.machineId, url: m.lastKnownUrl as string })), fetchImpl: fetch as unknown as Parameters<typeof fetchPeerSubscriptionViews>[0]['fetchImpl'], authToken: config.authToken ?? '' }); }, quotaPoller, quotaAwareScheduler: _quotaAwareScheduler ?? undefined, proactiveSwapMonitor: _proactiveSwapMonitor ?? undefined, inUseAccountResolver, enrollmentWizard, accountFollowMeRevocation, credentialRepointing, semanticMemory, activitySentinel, rateLimitSentinel, releaseReadinessSentinel: releaseReadinessSentinel ?? undefined, greenPrAutoMerger: greenPrAutoMerger ?? undefined, guardLatchStore: guardLatchStore ?? undefined, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, topicProfile: _topicProfileCtx ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, localSigningKeyPem, leaseTransport, onLeasePullRequest: () => leaseCoordinatorRef?.currentLease() ?? null, liveTailReceiver, handoffWireTransport, onHandoffBegin, onHandoffInitiate: handoffInitiate, handoffInProgress: handoffSentinelInProgress, messageLedger, currentInboundByTopic, replyMarkerTransport, onReplyMarker: messageLedger ? (marker: unknown) => { const m = marker as { dedupeKey: string; platform: string; replyIdempotencyKey: string; epoch: number; topic?: string | null }; messageLedger!.applyRemoteReplyMarker(m.dedupeKey, { platform: m.platform, replyIdempotencyKey: m.replyIdempotencyKey, epoch: m.epoch, topic: m.topic ?? null }); } : undefined, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, threadLog, threadMessageRecorder, warrantsReplyGate, collaborationSurfacer, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, a2aDeliveryTracker: a2aDeliveryTracker ?? undefined, responseReviewGate, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, machinePoolRegistry, getInboundQueue: () => _inboundQueue, meshRpcDispatcher, workingSetPullCoordinator, commitmentReplicaStore, preferenceReplicaStore, replicatedRecordEmitter, conflictStore, rollbackUnmerge, droppedOriginRegistry, preferencesUnionReader, forwardCommitmentMutate, sessionOwnershipRegistry, topicPinStore: _topicPinStore ?? undefined, streamTicketStore: _streamTicketStore ?? undefined, poolStreamAllowRemoteInput: (config as { dashboard?: { poolStream?: { allowRemoteInput?: boolean } } }).dashboard?.poolStream?.allowRemoteInput ?? false, poolStreamConnector: _poolStreamConnector ?? undefined, secretSync: _secretSyncHandle ?? undefined, meshSelfId: _meshSelfId ?? undefined, resolveRouterUrl: _resolveRouterUrl ?? undefined, resolvePeerUrls: _resolvePeerUrls ?? undefined, guardRegistry, listPoolMachines: _listPoolMachines ?? undefined, poolLink: _poolLink ?? undefined, poolPollCache: _poolPollCache ?? undefined, sessionPoolE2EResultStore, proxyCoordinator, topicIntentStore, topicIntentArcCheck, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, briefDeps, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, agentWorktreeReaper, orphanedWorkSentinel, mcpProcessReaper, geminiLoopRunner, sleepController, agentActivityState, reapLog, resumeQueue, resumeDrainer, autonomousLivenessReconciler, prHandLease: prHandLease ?? undefined, operatorStopRecorder: recordOperatorStop, sleepWakeDetector, unjustifiedStopGate, stopGateDb, stopNotifier, liveTestGate, liveTestGateMode, liveTestRunnerCtx });    // Resolve the late-bound topic-operator getter (increment 2e): routing was
     // wired before the server existed; from here on inbound binds use the
     // server's own store instance.
     _agentServerRef = server;

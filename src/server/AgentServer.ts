@@ -377,6 +377,7 @@ export class AgentServer {
     proactiveSwapMonitor?: import('../core/ProactiveSwapMonitor.js').ProactiveSwapMonitor;
     inUseAccountResolver?: import('../core/InUseAccountResolver.js').InUseAccountResolver;
     enrollmentWizard?: import('../core/EnrollmentWizard.js').EnrollmentWizard;
+    accountFollowMeRevocation?: import('../core/AccountFollowMeRevocation.js').AccountFollowMeRevocation;
     credentialRepointing?: import('./routes.js').RouteContext['credentialRepointing'];
     semanticMemory?: import('../memory/SemanticMemory.js').SemanticMemory;
     activitySentinel?: import('../monitoring/SessionActivitySentinel.js').SessionActivitySentinel;
@@ -2045,6 +2046,7 @@ export class AgentServer {
       proactiveSwapMonitor: options.proactiveSwapMonitor,
       inUseAccountResolver: options.inUseAccountResolver,
       enrollmentWizard: options.enrollmentWizard ?? null,
+      accountFollowMeRevocation: options.accountFollowMeRevocation ?? null,
       credentialRepointing: options.credentialRepointing ?? null,
       semanticMemory: options.semanticMemory ?? null,
       activitySentinel: options.activitySentinel ?? null,
