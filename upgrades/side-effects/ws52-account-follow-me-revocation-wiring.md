@@ -98,3 +98,7 @@ The reviewer confirmed: `removed` is reachable only after a fully-successful loc
 - `npx tsc --noEmit` clean.
 - 46 tests green: `account-followme-revocation-wiring` (10), `account-followme-revocation-server-wiring` (17), `account-followme-revocation-route` (4 — Tier-2 + dark no-op), plus the merged executor's 15. The existing `ws52-account-follow-me-wiring` (12) + `mandate-routes` (15) still pass (no regression).
 - Tier-2 live-pipeline evidence: revoking an account-follow-me mandate over the real route returns `accountFollowMeRevocation.state === 'removed'` AND `pool.get('acct-x') === null` (the real data-plane effect); a non-follow-me revoke carries no revocation payload and leaves the account intact; flag-off returns `reason: 'feature-disabled'` with the account untouched.
+
+## CI-green follow-up (same PR)
+
+The `cooperativeWipe` fail-closed catches are tagged `@silent-fallback-ok` (each surfaces its failure through the function's return value → the executor keeps a durable pending, never a false `removed`), keeping the `no-silent-fallbacks` ratchet at baseline 476. The `revocationReconnectDeadlineMs` ConfigDefaults insertion shifted the `lint-dev-agent-dark-gate` hand-authored golden map by +4 lines for every `enabled:` entry below it (7 entries); the map was updated by hand to match. No behavior change — comment tags + a test line-number map.

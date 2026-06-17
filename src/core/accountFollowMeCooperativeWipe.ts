@@ -103,7 +103,9 @@ function defaultFrameworkLogout(args: { framework: string; configHome: string })
     });
     return true;
   } catch {
-    return false; // fail-closed: a non-zero exit / missing CLI / timeout is NOT a confirmed logout.
+    // @silent-fallback-ok: fail-closed — a non-zero exit / missing CLI / timeout is NOT a confirmed
+    // logout; the false return surfaces to the executor (→ pending, never a false `removed`).
+    return false;
   }
 }
 
@@ -126,7 +128,8 @@ function defaultDeleteSlot(args: { configHome: string; framework: string }): boo
     });
     dirGone = !fs.existsSync(home);
   } catch {
-    dirGone = false; // fail-closed.
+    // @silent-fallback-ok: fail-closed — a delete error surfaces as slotDeleted:false → pending.
+    dirGone = false;
   }
   // Best-effort keychain credential delete for claude-code slots (the login token lives here too).
   if (args.framework === 'claude-code') {
@@ -168,21 +171,24 @@ export function buildCooperativeWipe(deps: CooperativeWipeDeps): (req: Revocatio
     try {
       loggedOut = frameworkLogout({ framework, configHome });
     } catch {
-      loggedOut = false; // fail-closed.
+      // @silent-fallback-ok: fail-closed — surfaces as loggedOut:false → executor keeps pending.
+      loggedOut = false;
     }
 
     let slotDeleted = false;
     try {
       slotDeleted = deleteSlot({ configHome, framework });
     } catch {
-      slotDeleted = false; // fail-closed.
+      // @silent-fallback-ok: fail-closed — surfaces as slotDeleted:false → executor keeps pending.
+      slotDeleted = false;
     }
 
     let poolRemoved = false;
     try {
       poolRemoved = deps.pool.remove(req.accountId);
     } catch {
-      poolRemoved = false; // fail-closed.
+      // @silent-fallback-ok: fail-closed — surfaces as poolRemoved:false → executor keeps pending.
+      poolRemoved = false;
     }
 
     deps.log?.(
