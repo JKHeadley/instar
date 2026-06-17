@@ -128,6 +128,27 @@ export interface SubscriptionAccount {
   version: number;
 }
 
+/**
+ * WS5.2 §6.2 — "locally executable" predicate. An account is executable on THIS
+ * machine iff this machine holds it with a real local `configHome` AND a valid
+ * login (status active/warming, never needs-reauth/disabled/rate-limited). A
+ * meta-only account replicated in from a peer (no local credential, empty
+ * `configHome`) is NOT locally executable and must be invisible to every
+ * account-selection / swap-target / placement path — closing the force-mode
+ * "use an account I have metadata for but no credential" hole at SELECTION time.
+ *
+ * This is a pure tightening: every real pool account today carries a non-empty
+ * `configHome` (required by `add()`), so this only ever excludes a credential-less
+ * meta projection — it never changes selection among genuinely-held accounts.
+ */
+export function isLocallyExecutable(a: SubscriptionAccount): boolean {
+  return (
+    typeof a.configHome === 'string' &&
+    a.configHome.trim().length > 0 &&
+    (a.status === 'active' || a.status === 'warming')
+  );
+}
+
 interface SubscriptionPoolStore {
   version: 1;
   accounts: SubscriptionAccount[];
@@ -241,6 +262,15 @@ export class SubscriptionPool {
   get(id: string): SubscriptionAccount | null {
     const found = this.store.accounts.find((a) => a.id === id);
     return found ? { ...found } : null;
+  }
+
+  /**
+   * WS5.2 §6.2 — accounts THIS machine can actually execute against (real local
+   * `configHome` + a valid login). The canonical selectable set for the router and
+   * every swap/placement path; a credential-less meta projection is excluded.
+   */
+  locallyExecutable(): SubscriptionAccount[] {
+    return this.store.accounts.filter(isLocallyExecutable).map((a) => ({ ...a }));
   }
 
   /** Count of accounts. A pool of 0 is the dark/no-op default. */

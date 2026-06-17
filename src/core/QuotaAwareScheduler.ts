@@ -27,6 +27,7 @@ import type {
   SubscriptionAccount,
   AccountQuotaSnapshot,
 } from './SubscriptionPool.js';
+import { isLocallyExecutable } from './SubscriptionPool.js';
 
 /** The binding window for swap decisions: the 7-day window is the scarce one. */
 export interface SelectionOptions {
@@ -38,11 +39,6 @@ export interface SelectionOptions {
 }
 
 const DEFAULT_SOFT_THRESHOLD = 90;
-
-/** An account is selectable only in these statuses. */
-function isEligibleStatus(a: SubscriptionAccount): boolean {
-  return a.status === 'active' || a.status === 'warming';
-}
 
 /**
  * Most-constrained-window utilization: the MAX across the account's known
@@ -106,7 +102,7 @@ export function selectAccount(
   const nowMs = opts.nowMs ?? Date.parse('2026-01-01T00:00:00Z'); // tests pass nowMs; prod callers always set it
   const eligible = accounts.filter(
     (a) =>
-      isEligibleStatus(a) &&
+      isLocallyExecutable(a) &&
       a.id !== excludeId &&
       bindingUtilization(a.lastQuota) < soft,
   );
@@ -128,9 +124,11 @@ export function selectAccount(
  * "accepted as marginal" with real evidence that it materially under-delivered.)
  *
  * Crucially it shares the EXACT eligibility predicate `selectAccount` uses
- * (`isEligibleStatus` + binding utilization below the soft threshold), so
+ * (`isLocallyExecutable` + binding utilization below the soft threshold), so
  * `placeable` here ⟺ `selectAccount(...) !== null` — the never-loop invariant
- * holds (the throttle never allows when placement can place nothing). Percentages
+ * holds (the throttle never allows when placement can place nothing). A
+ * credential-less meta account (WS5.2 §6.2) is excluded from BOTH by the shared
+ * predicate, so the invariant is preserved. Percentages
  * are clamped to [0,100]; `degraded:true` when the best account has no trustworthy
  * live reading, so the throttle applies its bounded degraded cap instead of a
  * phantom "0% fresh".
@@ -141,7 +139,7 @@ export function poolHeadroom(
 ): { placeable: boolean; weeklyPercent: number | null; fiveHourPercent: number | null; degraded: boolean } {
   const soft = opts.softThresholdPct ?? DEFAULT_SOFT_THRESHOLD;
   const eligible = accounts.filter(
-    (a) => isEligibleStatus(a) && bindingUtilization(a.lastQuota) < soft,
+    (a) => isLocallyExecutable(a) && bindingUtilization(a.lastQuota) < soft,
   );
   if (eligible.length === 0) {
     return { placeable: false, weeklyPercent: null, fiveHourPercent: null, degraded: false };
