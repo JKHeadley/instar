@@ -1,0 +1,22 @@
+## What Changed
+
+Fixed a fleet-wide crash in a generated Stop hook. `PostUpdateMigrator.getActionClaimFollowthroughHook()` emitted `.instar/hooks/instar/action-claim-followthrough.js` with a stray, unbalanced `})();` on the last line (the hook body opens with a bare `let data = ''`, not an IIFE). Node rejected the file with `SyntaxError: Unexpected token '}'` on **every** Stop-hook fire — the red "Ran 5 stop hooks → Stop hook error" seen in Claude Code session logs. The hook is signal-only and dark-by-default, so the crash was noisy but harmless (nothing blocked or corrupted); it simply spammed errors once per turn on every agent.
+
+Removed the stray line from the source template. Existing agents auto-heal on their next update via the always-overwrite migration path (`migrateHooks` unconditionally re-writes this hook from the corrected template) — no new migration code needed.
+
+Added a CI parse gate (`tests/unit/generated-hooks-parse.test.ts`) that GENERATES every `get*Hook()` result and runs `node --check` on each JS hook. The pre-existing `no-bare-require-in-generated-hooks.test.ts` only source-scans for one forbidden pattern and never parses, which is exactly how a plain syntax typo shipped. The new gate closes the whole "generated hook fails to parse" class — a hook typo can no longer reach the fleet.
+
+## What to Tell Your User
+
+The recurring "Stop hook error / SyntaxError: Unexpected token '}'" noise in your Claude Code session logs is fixed. It was a harmless-but-noisy typo in one of the always-on bookkeeping hooks — it never blocked or corrupted any work, just printed an error every turn. After this update it's gone, and a new CI check guarantees a broken hook can't ship again.
+
+## Summary of New Capabilities
+
+- No new user capability. This is a reliability fix: a fleet-wide per-turn Stop-hook crash is removed, and CI now parse-checks every generated hook so the class can't recur.
+
+## Evidence
+
+- `tests/unit/generated-hooks-parse.test.ts` — RED before the fix (failed on `getActionClaimFollowthroughHook` with `SyntaxError: Unexpected token '}'`, 23 other generators passed), GREEN after removing the stray line. Runs `node --check` on the real generated output of every `get*Hook()`.
+- `tests/unit/no-bare-require-in-generated-hooks.test.ts` — still GREEN (unchanged; the two tests cover different failure modes).
+- `pnpm build` — clean TypeScript compile after the template edit.
+- Always-overwrite confirmed at `PostUpdateMigrator.ts` (`fs.writeFileSync(..., 'action-claim-followthrough.js', this.getActionClaimFollowthroughHook())`) — the corrected hook is unconditionally re-written on every migration, healing the deployed fleet on update.
