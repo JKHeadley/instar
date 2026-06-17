@@ -12,7 +12,7 @@ import express, { type Express, type Request, type Response } from 'express';
 import type { Server } from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
-import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
+import { createHash, createHmac, timingSafeEqual, createPrivateKey } from 'node:crypto';
 import { ApprovalLedger } from '../core/ApprovalLedger.js';
 import { resolveDevAgentGate } from '../core/devAgentGate.js';
 import { TopicOperatorStore } from '../users/TopicOperatorStore.js';
@@ -23,6 +23,9 @@ import { MandateGate } from '../coordination/MandateGate.js';
 import { MandateAudit } from '../coordination/MandateAudit.js';
 import { ConditionsRegistry } from '../coordination/conditions.js';
 import { ReviewExchangeEngine } from '../coordination/ReviewExchange.js';
+import { DeliveredMandateStore } from '../coordination/DeliveredMandateStore.js';
+import { packageMandateForDelivery, acceptDeliveredMandate } from '../coordination/AccountFollowMeMandateBridge.js';
+import { readFollowMeBounds, acceptMandateDelivery } from '../coordination/AccountFollowMeMandateDelivery.js';
 import { CutoverReadiness } from '../feedback-factory/cutoverReadiness.js';
 import { InboxDrainer } from '../feedback-factory/inbox/InboxDrainer.js';
 import { BlobInboxClient } from '../feedback-factory/inbox/BlobInboxClient.js';
@@ -242,6 +245,9 @@ export class AgentServer {
   /** Coordination Mandate enforcement (spec §4): deny-by-default gate + signed
    *  store + hash-chained audit. Null when stateDir is unavailable. */
   private coordination: { store: MandateStore; gate: MandateGate; audit: MandateAudit; conditions: ConditionsRegistry; reviews: ReviewExchangeEngine } | null = null;
+  /** WS5.2 R4a — durable store of cross-machine-DELIVERED account-follow-me mandates (target side).
+   *  Null when coordination/stateDir is unavailable. */
+  private deliveredMandateStore: import('../coordination/DeliveredMandateStore.js').DeliveredMandateStore | null = null;
   /** Operator Authorization Request (agent proposes → operator approves one-tap). Null
    *  when coordination/stateDir is unavailable. `enabled` is the resolved dev-gate. */
   private authorizationRequests: {
@@ -483,6 +489,13 @@ export class AgentServer {
     /** Signed rollout-stage E2E result store (§Rollout). */
     sessionPoolE2EResultStore?: import('../core/SessionPoolE2EResultStore.js').SessionPoolE2EResultStore;
     localSigningKeyPem?: string;
+    /** WS5.2 R4a — operator/issuer side: deliver an R4a-signed account-follow-me mandate to a REMOTE
+     *  target over the signed mesh. Injected from server.ts (where the mesh client + peer-URL
+     *  resolution live). Absent ⇒ this machine cannot deliver (single-machine / no mesh). */
+    deliverMandateToMachine?: (args: {
+      targetMachineId: string;
+      portable: import('../coordination/AccountFollowMeMandateBridge.js').PortableMandate;
+    }) => Promise<{ ok: boolean; status: number; reason?: string }>;
     /** Lease wire transport — receives peer lease broadcasts at /api/lease (spec §6). */
     leaseTransport?: { recordObserved: (lease: any) => void };
     /**
@@ -1316,6 +1329,22 @@ export class AgentServer {
         });
         this.coordination = { store, gate, audit, conditions, reviews };
 
+        // WS5.2 R4a — ONE-DASHBOARD cross-machine mandate delivery: the durable store of mandates
+        // delivered+verified to THIS machine from the operator machine. Built on the SAME stateDir
+        // as the mandate store; it retains the full R4a-signed PortableMandate so the enroll-start
+        // route re-verifies at point-of-use. No new authority path — a delivered mandate is trusted
+        // ONLY via the R4a asymmetric signature (verified by the mesh handler), never local authorship.
+        try {
+          this.deliveredMandateStore = new DeliveredMandateStore({
+            filePath: path.join(options.config.stateDir, 'state', 'delivered-mandates.json'),
+          });
+        } catch (dmErr) {
+          // @silent-fallback-ok — null leaves the delivered-mandate path inert (enroll-start falls
+          // back to deny-by-default), never blocks boot.
+          console.warn('[instar] delivered-mandate store init failed (non-fatal):', dmErr);
+          this.deliveredMandateStore = null;
+        }
+
         // Operator Authorization Request — agent proposes → operator approves one-tap.
         // Built on the SAME stateDir; the approve route issues grants via `store` above
         // (the existing signed MandateStore), so no new authority path is introduced.
@@ -2132,6 +2161,36 @@ export class AgentServer {
       approvalLedger: this.approvalLedger,
       topicOperatorStore: this.topicOperatorStore,
       coordination: this.coordination,
+      deliveredMandateStore: this.deliveredMandateStore,
+      // WS5.2 R4a — operator side: package an issued mandate with the asymmetric issuance signature
+      // using THIS machine's Ed25519 identity key + fingerprint (meshSelfId). Null when no mesh
+      // identity (single-machine) — the issue-for-machine route then 503s on a remote target.
+      packageMandateForDelivery: (() => {
+        const pem = options.localSigningKeyPem;
+        const selfId = options.meshSelfId;
+        if (!pem || !selfId) return null;
+        return (mandate: import('../coordination/types.js').CoordinationMandate) => {
+          const priv = createPrivateKey(pem);
+          return packageMandateForDelivery(mandate, selfId, priv);
+        };
+      })(),
+      deliverMandateToMachine: options.deliverMandateToMachine ?? null,
+      // WS5.2 R4a — target side: re-verify a DELIVERED mandate AT POINT OF USE against the operator
+      // key recorded at delivery (defense-in-depth; never trust a stored flag). Returns the verified
+      // account-follow-me bounds, or null on any failure (fail-closed).
+      verifyDeliveredMandate: this.deliveredMandateStore
+        ? (mandateId: string) => {
+            const record = this.deliveredMandateStore!.get(mandateId);
+            if (!record) return null;
+            const accept = acceptDeliveredMandate({
+              portable: record.portable,
+              operatorEd25519PublicKey: record.operatorPublicKeyPem,
+              expectedOperatorMachineFingerprint: record.deliveredBy,
+            });
+            if (!accept.accepted) return null;
+            return readFollowMeBounds(accept.mandate);
+          }
+        : null,
       authorizationRequests: this.authorizationRequests,
       cutoverReadiness: this.cutoverReadiness,
       inboxDrainer: this.inboxDrainer,
@@ -3790,6 +3849,41 @@ export class AgentServer {
    */
   getApp(): Express {
     return this.app;
+  }
+
+  /**
+   * WS5.2 R4a — TARGET-side acceptance of a cross-machine-delivered account-follow-me mandate (the
+   * brains behind the `account-follow-me-mandate-deliver` mesh handler, which is wired in server.ts
+   * where the peer-key resolver lives). `sender` MUST be the mesh-AUTHENTICATED envelope sender;
+   * `operatorPublicKeyPem` is that sender's REGISTERED Ed25519 key (resolved by the caller from the
+   * same registered-identity store verifyEnvelope used) — never a key from the payload. FAIL CLOSED:
+   * feature dark / no store / signature-or-bounds failure → refuse + persist nothing.
+   */
+  acceptDeliveredMandateCommand(
+    sender: string,
+    portable: import('../coordination/AccountFollowMeMandateBridge.js').PortableMandate | undefined | null,
+    operatorPublicKeyPem: string | null,
+  ): { accepted: boolean; reason?: string; mandateId?: string } {
+    if (!this.deliveredMandateStore) return { accepted: false, reason: 'delivered-mandate-store-unavailable' };
+    const enabled = resolveDevAgentGate(
+      (this.config as unknown as { multiMachine?: { accountFollowMe?: { enabled?: boolean } } })
+        .multiMachine?.accountFollowMe?.enabled,
+      this.config,
+    );
+    const result = acceptMandateDelivery(
+      {
+        enabled: () => enabled,
+        selfMachineId: () => this.meshSelfId ?? (this.config as { machineId?: string }).machineId ?? 'local',
+        operatorMachinePublicKey: () => operatorPublicKeyPem,
+        store: this.deliveredMandateStore,
+        log: (m) => console.log(m),
+      },
+      sender,
+      portable,
+    );
+    return result.accepted
+      ? { accepted: true, mandateId: result.mandateId }
+      : { accepted: false, reason: result.reason };
   }
 
   /** Wiring-integrity accessor: the ParallelWorkSentinel when constructed (enabled), else null. */
