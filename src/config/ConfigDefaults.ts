@@ -1314,6 +1314,21 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
   playwrightRegistry: {
     dryRun: true,
   },
+  // Feedback-factory processing wiring (docs/specs/feedback-factory-migration.md
+  // §191 — "the processor job is actually constructed and scheduled, not dead
+  // code"). Turns the already-parity'd processUnprocessed clustering pass into a
+  // real triggerable capability: GET /feedback-factory/stats (read-only counts) +
+  // POST /feedback-factory/process (one clustering pass over the canonical store) +
+  // a cadenced built-in job (feedback-factory-process) that drives the trigger.
+  // developmentAgent dark-feature gate: `enabled` is OMITTED so resolveDevAgentGate
+  // resolves it LIVE on a dev agent + DARK on the fleet (when off, both routes 503
+  // and the job exits silently). The processor only appends local JSONL (clusters +
+  // unprocessed→processing flips) — zero external side effects. DO NOT hardcode
+  // `enabled` here (a baked-in false would dark dev agents too — the #1001 shape the
+  // dark-gate lint forbids for a dev-gated block).
+  feedbackFactory: {
+    processing: {},
+  },
 };
 
 /**

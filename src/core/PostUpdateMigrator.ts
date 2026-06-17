@@ -4051,6 +4051,17 @@ setTimeout(() => process.exit(0), 2000);
       result.upgraded.push('CLAUDE.md: added Feedback-Inbox Receiving End section');
     }
 
+    // Feedback-Factory Processing (feedback-factory-migration §191) — the clustering
+    // side of the operated instance + its two dev-gated routes + the cadenced
+    // feedback-factory-process job. Keyed on its OWN marker, independent + idempotent.
+    // Agent Awareness Standard: the feature ships dark, but an agent that enables it
+    // must know the routes.
+    if (!content.includes('Feedback-Factory Processing (operated feedback factory)')) {
+      content += `\n**Feedback-Factory Processing (operated feedback factory)** — The clustering/triage side of the operated instance. The InboxDrainer fills the canonical store with raw fleet reports; THIS is what groups them. The processor reads unprocessed reports, clusters them into dedup groups (similarity/Jaccard), auto-reopens a cluster on a possible-regression merge, and flips each item unprocessed→processing. It appends LOCAL JSONL only — no external action, and it NEVER force-closes a curated cluster (terminal transitions stay evidence-gated). Dev-gated dark behind \`feedbackFactory.processing\` (LIVE on a development agent, both routes 503 on the fleet). The cadenced \`feedback-factory-process\` built-in job (off by default, tier-1 supervised) drives the trigger so reports are clustered on a schedule, not just on demand.\n- Read-only stats over the canonical store: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/feedback-factory/stats\` → \`{ total, byStatus, clusterCount, dispatchCount, lastWriteAt }\`. \`byStatus.unprocessed\` is the backlog awaiting the next pass.\n- Trigger ONE clustering pass now: \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/feedback-factory/process\` → \`{ processed, metrics: { captured, created, merged, reopened }, stats }\`. Idempotent + forward-only — a re-run is a no-op over already-processed items.\n- **When to use** (PROACTIVE): "are incoming reports getting clustered / how many are unprocessed?" → \`GET /feedback-factory/stats\`. "process the feedback backlog now" → \`POST /feedback-factory/process\` (or let the \`feedback-factory-process\` job handle the cadence). A 503 on either route means this agent isn't running the operated processing side (\`feedbackFactory.processing\` dark) — say so honestly rather than guessing.\n`;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Feedback-Factory Processing section');
+    }
+
     // Cross-Agent Communication Discipline (anti-confabulation) — codex-instar
     // audit Item 11. Existing agents need this section even if they were
     // initialized before it existed. The check uses a content-sniffing marker
@@ -6826,6 +6837,12 @@ Create worktrees for collaborator repos with \`instar worktree create <branch>\`
       // a Codex/Gemini agent on the operated machine also needs to know where
       // to read "are fleet reports flowing?" Mirrored like every capability.
       '**Feedback-Inbox Receiving End (operated feedback factory)**',
+      // Feedback-Factory Processing (feedback-factory-migration §191): the
+      // clustering side of the operated instance + the two dev-gated routes +
+      // the cadenced feedback-factory-process job. Framework-agnostic HTTP — a
+      // Codex/Gemini agent on the operated machine also needs to know how to
+      // read the stats / trigger a clustering pass. Mirrored like every capability.
+      '**Feedback-Factory Processing (operated feedback factory)**',
       // Subscription Pool (Subscription & Auth Standard): a framework-agnostic
       // capability — a Codex/Gemini agent should also know it can manage a
       // multi-account subscription pool, swap to keep a session alive, and drive

@@ -938,6 +938,10 @@ export interface RouteContext {
    *  durable canonical store drainer. Null when dark (config off / no token) →
    *  GET /feedback-inbox/status 503s. */
   inboxDrainer?: import('../feedback-factory/inbox/InboxDrainer.js').InboxDrainer | null;
+  /** Feedback-factory processing trigger (feedback-factory-migration §191). Backs
+   *  GET /feedback-factory/stats + POST /feedback-factory/process. Null when
+   *  dev-gate dark (feedbackFactory.processing) → both routes 503. */
+  feedbackProcessing?: import('../feedback-factory/processing/FeedbackProcessingService.js').FeedbackProcessingService | null;
   /** Cross-topic activity index (Parallel-Work Awareness Phase A). Backs GET /parallel-work/activities. */
   parallelActivityIndex?: import('../core/ParallelActivityIndex.js').ParallelActivityIndex | null;
   /** The shared intelligence provider (an IntelligenceRouter when per-component routing is wired). Backs GET /intelligence/routing. */
@@ -7822,6 +7826,39 @@ export function createRoutes(ctx: RouteContext): Router {
       return;
     }
     res.json(ctx.inboxDrainer.status());
+  });
+
+  // ── Feedback-factory processing (feedback-factory-migration §191) ──
+  // Wires the already-parity'd processUnprocessed clustering pass into a real
+  // triggerable capability. Both routes are dev-gated: ctx.feedbackProcessing is
+  // null on the fleet (resolveDevAgentGate dark) → 503, live on a dev agent.
+
+  // Read-only stats over the canonical store. Never mutates.
+  router.get('/feedback-factory/stats', (_req, res) => {
+    if (!ctx.feedbackProcessing) {
+      res.status(503).json({ error: 'feedback-factory processing unavailable (feedbackFactory.processing dark for this agent)' });
+      return;
+    }
+    res.json(ctx.feedbackProcessing.stats());
+  });
+
+  // Trigger ONE clustering pass over the canonical store. Appends local JSONL
+  // only (create/merge clusters + flip items unprocessed→processing); no external
+  // action. Idempotent + forward-only — a re-run is a no-op over already-processed
+  // items. This is the server-side work the cadenced feedback-factory-process job
+  // drives (the agent asks; the server computes — same shape as the cutover-readiness
+  // parity-pass + release-readiness tick triggers).
+  router.post('/feedback-factory/process', (_req, res) => {
+    if (!ctx.feedbackProcessing) {
+      res.status(503).json({ error: 'feedback-factory processing unavailable (feedbackFactory.processing dark for this agent)' });
+      return;
+    }
+    const { result, stats } = ctx.feedbackProcessing.processNow();
+    res.json({
+      processed: result.results.length,
+      metrics: result.metrics,
+      stats,
+    });
   });
 
   // The readiness signal. Read-only.

@@ -44,9 +44,9 @@ export class JsonlFeedbackStore implements FeedbackStore {
   private readonly clustersPath: string;
   private readonly dispatchesPath: string;
 
-  private feedback: Map<string, FeedbackItem>;
-  private clusters: Map<string, Cluster>;
-  private dispatches: Map<string, DispatchRecord>;
+  private feedback!: Map<string, FeedbackItem>;
+  private clusters!: Map<string, Cluster>;
+  private dispatches!: Map<string, DispatchRecord>;
   private counts: FeedbackMetrics = { captured: 0, created: 0, merged: 0, reopened: 0 };
 
   constructor(private readonly dir: string) {
@@ -55,6 +55,31 @@ export class JsonlFeedbackStore implements FeedbackStore {
     this.clustersPath = join(dir, 'clusters.jsonl');
     this.dispatchesPath = join(dir, 'dispatches.jsonl');
 
+    this.loadAll();
+  }
+
+  /**
+   * Re-fold all three on-disk JSONL files into fresh in-memory state — the SAME
+   * load the constructor runs. Use this when another PROCESS may have appended to
+   * the shared store since this instance was built (e.g. the InboxDrainer, a
+   * separate launchd process, appends `unprocessed` rows to `feedback.jsonl`
+   * continuously; without a reload this in-memory Map is frozen at construction
+   * time and the processing pass becomes a permanent no-op over everything
+   * ingested after boot).
+   *
+   * Concurrency: this is a read-only re-fold and appends are atomic single-line
+   * writes (appendFileSync). A reload that races a mid-append at worst skips one
+   * torn trailing line (already handled by loadJsonl's torn-line skip); the next
+   * reload picks up the completed line — identical to the constructor's load path.
+   * The in-memory `counts` (FeedbackMetrics) are session-scoped tallies of THIS
+   * instance's own mutations, not durable rows, so they are intentionally NOT
+   * reset by a reload.
+   */
+  reload(): void {
+    this.loadAll();
+  }
+
+  private loadAll(): void {
     this.feedback = this.loadAndMaybeCompact<FeedbackItem>(this.feedbackPath, (r) =>
       pickId(r, 'feedbackId', 'feedback_id', 'id'),
     );
@@ -190,6 +215,49 @@ export class JsonlFeedbackStore implements FeedbackStore {
   /** Read-only size snapshot for the status surface. */
   sizes(): { feedback: number; clusters: number; dispatches: number } {
     return { feedback: this.feedback.size, clusters: this.clusters.size, dispatches: this.dispatches.size };
+  }
+
+  /**
+   * Read-only aggregate snapshot for `GET /feedback-factory/stats`. Pure read —
+   * never mutates. `byStatus` buckets every feedback row by its `status`
+   * (defaulting an absent status to 'unprocessed', mirroring getUnprocessedFeedback).
+   * `lastWriteAt` is the latest content timestamp across all entities
+   * (feedback.receivedAt, cluster.updatedAt/createdAt, dispatch.createdAt) — a
+   * deterministic, content-derived high-water mark, null when the store is empty.
+   */
+  stats(): {
+    total: number;
+    byStatus: Record<string, number>;
+    clusterCount: number;
+    dispatchCount: number;
+    lastWriteAt: string | null;
+  } {
+    const byStatus: Record<string, number> = {};
+    let lastWriteAt: string | null = null;
+    const consider = (ts: unknown): void => {
+      if (typeof ts === 'string' && ts.length > 0 && (lastWriteAt === null || ts > lastWriteAt)) {
+        lastWriteAt = ts;
+      }
+    };
+    for (const f of this.feedback.values()) {
+      const status = (f.status ?? 'unprocessed') as string;
+      byStatus[status] = (byStatus[status] ?? 0) + 1;
+      consider(f.receivedAt);
+    }
+    for (const c of this.clusters.values()) {
+      consider(c.updatedAt);
+      consider(c.createdAt);
+    }
+    for (const d of this.dispatches.values()) {
+      consider(d.createdAt);
+    }
+    return {
+      total: this.feedback.size,
+      byStatus,
+      clusterCount: this.clusters.size,
+      dispatchCount: this.dispatches.size,
+      lastWriteAt,
+    };
   }
 }
 

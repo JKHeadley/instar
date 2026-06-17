@@ -27,6 +27,7 @@ import { CutoverReadiness } from '../feedback-factory/cutoverReadiness.js';
 import { InboxDrainer } from '../feedback-factory/inbox/InboxDrainer.js';
 import { BlobInboxClient } from '../feedback-factory/inbox/BlobInboxClient.js';
 import { JsonlFeedbackStore } from '../feedback-factory/store/JsonlFeedbackStore.js';
+import { FeedbackProcessingService, resolveCanonicalStoreDir } from '../feedback-factory/processing/FeedbackProcessingService.js';
 import { DurableParityMonitor, JsonlPassPersistence } from '../feedback-factory/monitor/parityMonitorStore.js';
 import { HttpParitySource } from '../feedback-factory/dryrun/HttpParitySource.js';
 import { runDryRunCompare } from '../feedback-factory/dryrun/dryRunCompare.js';
@@ -253,6 +254,11 @@ export class AgentServer {
    *  Blob inbox into the durable canonical JsonlFeedbackStore. Null when dark
    *  (feedbackFactory.receiverPersistence.enabled !== true) → route 503s. */
   private inboxDrainer: InboxDrainer | null = null;
+  /** Feedback-factory processing trigger (feedback-factory-migration §191): backs
+   *  GET /feedback-factory/stats + POST /feedback-factory/process. Dev-gated —
+   *  constructed only when resolveDevAgentGate(feedbackFactory.processing.enabled)
+   *  is live; null on the fleet → both routes 503. */
+  private feedbackProcessing: FeedbackProcessingService | null = null;
   private parallelActivityIndex: ParallelActivityIndex | null = null;
   private parallelWorkSentinel: ParallelWorkSentinel | null = null;
   private parallelWorkSentinelTimer: ReturnType<typeof setInterval> | null = null;
@@ -1369,6 +1375,32 @@ export class AgentServer {
       this.inboxDrainer = null;
     }
 
+    // Feedback-factory PROCESSING trigger (feedback-factory-migration §191: "the
+    // processor job is actually constructed and scheduled, not dead code"). Wires
+    // the already-parity'd processUnprocessed pass into a real triggerable
+    // capability: GET /feedback-factory/stats + POST /feedback-factory/process,
+    // driven on a cadence by the feedback-factory-process built-in job. DEV-GATED:
+    // `enabled` is OMITTED in ConfigDefaults so resolveDevAgentGate decides — LIVE
+    // on a development agent, DARK on the fleet (both routes 503 + the job exits
+    // silently when null). Resolves the SAME canonical store dir the InboxDrainer
+    // fills. Own try/catch so an init failure can never block boot (deny-safe
+    // null → 503).
+    try {
+      if (resolveDevAgentGate(options.config.feedbackFactory?.processing?.enabled, options.config)) {
+        const dataDir = resolveCanonicalStoreDir(options.config);
+        if (!dataDir) {
+          console.warn('[feedback-factory] processing gate live but no stateDir/dataDir — trigger stays dark');
+        } else {
+          this.feedbackProcessing = new FeedbackProcessingService({ dataDir });
+          console.log(`[feedback-factory] processing trigger live (store: ${dataDir})`);
+        }
+      }
+    } catch (err) {
+      // @silent-fallback-ok — reported via console.warn; init failure leaves the service null → routes 503 (deny-safe), never blocks boot.
+      console.warn('[feedback-factory] processing trigger init failed (non-fatal):', err);
+      this.feedbackProcessing = null;
+    }
+
     // Failure-Learning Loop (docs/specs/FAILURE-LEARNING-LOOP-SPEC.md) — instar
     // self-hosting dev-process forensics. DEV-GATED (CMT-1438): `enabled` is OMITTED
     // from the ConfigDefaults block so the developmentAgent gate decides — LIVE on a
@@ -2093,6 +2125,7 @@ export class AgentServer {
       authorizationRequests: this.authorizationRequests,
       cutoverReadiness: this.cutoverReadiness,
       inboxDrainer: this.inboxDrainer,
+      feedbackProcessing: this.feedbackProcessing,
       parallelActivityIndex: this.parallelActivityIndex,
       frameworkIssueLedger: this.frameworkIssueLedger,
       mentorRunner: this.mentorRunner,
