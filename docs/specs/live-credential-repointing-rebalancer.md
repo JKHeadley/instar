@@ -665,6 +665,42 @@ A periodic pass (default every 5 min, clamp [1 min, 60 min]) in `CredentialRebal
   accepted residual of the autonomy posture; it is named here rather than left implicit, and
   it is the concrete reason PIN-gating returns on the multi-operator-fleet review.
 
+#### 2.4.1 Scheduled identity audit — IMPLEMENTED (B3c, 2026-06-16)
+
+The "always-on scheduled identity audit" this section, §2.3, §6, and §0.c repeatedly name as the
+long-tail detector is now BUILT and wired (it was specified but never implemented in Increment B's
+first landing — the canary cross-check existed only inside `seedFromOracle()`/the executor's
+post-swap re-verify, never on a standing cadence). `CredentialLocationLedger.auditIdentities()` is a
+NON-DESTRUCTIVE periodic re-verification: it re-probes each EXISTING tracked slot via the oracle and
+updates ONLY its verification/quarantine state (it WIPES nothing — distinct from `seedFromOracle`).
+
+**Why it is load-bearing, not cosmetic (the bug it closes):** the balancer's every objective
+(wall-rescue AND the §2.4-obj-2 use-it-or-lose-it drain) only acts on a DESTINATION slot that passes
+`targetVerifiedRecent` = `lastVerifiedAt` within `auditCadenceMs` (default 6h, §resolver). Nothing
+re-stamped `lastVerifiedAt` after the boot seed — `markVerified` had ZERO callers and the periodic
+`rebalancer.tick()` never re-verified — so every slot decayed to "not recently verified" ~6h after
+seed, leaving every objective with zero eligible targets: a permanently-INERT optimizer that decided
+nothing (the observed live symptom: `decisions: []`, `noActuationReason: "… missing eligible
+target"`, on a pool with an idle soon-resetting account begging to be drained). The audit keeps the
+target set live.
+
+**Safe direction (§2.11 never-guess / quarantine-never-repair):** oracle unavailable/throws → HOLD a
+currently-healthy slot (NEVER quarantine on a transient probe failure — that would re-create the very
+inert-optimizer stall this method prevents); a confirmed `email` for a DIFFERENT account than the
+recorded tenant → quarantine (the oracle never guesses a mismatch, so a differing confirmed email is a
+real login divergence); ambiguous/unknown email on a healthy slot → quarantine; a quarantined slot
+that now resolves cleanly → RECOVER (un-quarantine + record). It moves ZERO credentials and never
+triggers a swap — it only refreshes the ledger state the rebalancer reads next pass. Gated on the SAME
+dev-gate as the rebalancer (strict no-op / no probe on the dark fleet); reentrancy-guarded; cadence =
+`auditCadenceMs/2` capped at 30 min, floored at 1 min, plus a one-shot boot pass (~90 s after start,
+after the seed) so a long-running agent's verification refreshes immediately on restart. Wiring gate:
+the pure `shouldRunIdentityAudit(enabled, seeded, unknownMode, inFlight)` predicate. Surfaced on
+`GET /credentials/rebalancer` as `identityAudit` (last-pass counts: refreshed/recovered/quarantined/
+unresolved; null until the first pass). Tests: `tests/unit/credential-identity-audit.test.ts` (both
+sides of every branch), the predicate in `tests/unit/credential-ledger-boot-seed-guard.test.ts`,
+integration in `tests/integration/credential-routes.test.ts`, e2e-alive in
+`tests/e2e/credential-repointing-routes-alive.test.ts`.
+
 ### 2.5 Robustness comparison — one-account-for-all vs spread (the delegated decision)
 
 - **(i) Single-account convergence** — impossible under §0.d (one lineage can't occupy

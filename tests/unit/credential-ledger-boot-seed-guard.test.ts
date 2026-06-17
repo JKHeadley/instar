@@ -16,7 +16,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { shouldBootSeedCredentialLedger } from '../../src/core/CredentialLocationLedger.js';
+import { shouldBootSeedCredentialLedger, shouldRunIdentityAudit } from '../../src/core/CredentialLocationLedger.js';
 
 describe('shouldBootSeedCredentialLedger — boot-seed guard (B3a)', () => {
   it('seeds when enabled AND the ledger is not yet seeded (never-seeded / unknown-mode recovery)', () => {
@@ -33,5 +33,28 @@ describe('shouldBootSeedCredentialLedger — boot-seed guard (B3a)', () => {
 
   it('does NOT seed when disabled even if somehow already seeded', () => {
     expect(shouldBootSeedCredentialLedger(false, true)).toBe(false);
+  });
+});
+
+describe('shouldRunIdentityAudit — periodic audit gate (B3c)', () => {
+  // Runs ONLY on the all-true path; every other combination is a no-op. Args: (enabled, seeded, unknown, inFlight).
+  it('runs when enabled AND seeded AND not-unknown AND not-in-flight', () => {
+    expect(shouldRunIdentityAudit(true, true, false, false)).toBe(true);
+  });
+
+  it('does NOT run when the feature is disabled (dark fleet — no oracle probe)', () => {
+    expect(shouldRunIdentityAudit(false, true, false, false)).toBe(false);
+  });
+
+  it('does NOT run before the ledger is seeded (nothing to re-verify)', () => {
+    expect(shouldRunIdentityAudit(true, false, false, false)).toBe(false);
+  });
+
+  it('does NOT run in UNKNOWN (corrupt) mode — recovery is seedFromOracle’s job', () => {
+    expect(shouldRunIdentityAudit(true, true, true, false)).toBe(false);
+  });
+
+  it('does NOT run while a prior pass is in flight (reentrancy guard — no overlap)', () => {
+    expect(shouldRunIdentityAudit(true, true, false, true)).toBe(false);
   });
 });

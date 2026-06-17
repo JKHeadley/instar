@@ -20808,6 +20808,10 @@ export function createRoutes(ctx: RouteContext): Router {
       // B3b: the balancer is now WIRED — surface its last-pass + breaker status.
       balancerWired: !!cr.rebalancer,
       rebalancer: cr.rebalancer ? cr.rebalancer.status() : null,
+      // B3c: the NON-DESTRUCTIVE identity audit's last pass — the freshness-keeper that prevents
+      // the rebalancer from decaying to inert (every objective needs verified-recent targets).
+      // null until the first audit runs (~90s after boot). Counts only; no credential material.
+      identityAudit: cr.ledger.getLastAuditReport(),
       envTokenGate: {
         refused: verdict.refused,
         // A named CATEGORY, not a credential; scrubbed regardless by credSend → audit.response.

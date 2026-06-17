@@ -1,0 +1,54 @@
+<!-- bump: patch -->
+
+## What Changed
+
+Implements the **always-on scheduled identity audit** the live-credential-repointing design already
+specified (§2.4 / §0.c) but never actually built — the missing piece that lets the account
+"use-it-or-lose-it" optimizer actually act.
+
+Background: the credential rebalancer can only move an account's work onto a slot whose identity was
+**verified recently** (within `auditCadenceMs`, default 6h). But nothing re-verified after the initial
+boot seed — `markVerified` had **zero callers** and the periodic balancer loop never re-checked — so
+~6h after seeding, every slot decayed to "not recently verified", the rebalancer found zero eligible
+targets, and the optimizer went **permanently inert** (it decided nothing even with an idle account
+whose quota was about to reset and go to waste).
+
+- **`CredentialLocationLedger.auditIdentities()`** — a NON-DESTRUCTIVE periodic re-verification (wipes
+  nothing, unlike `seedFromOracle`): re-probes each tracked slot via the identity oracle and refreshes
+  ONLY its verification/quarantine state. A re-confirmed healthy slot is re-stamped fresh; a slot that
+  has since become resolvable EXITS quarantine; a slot whose credential now belongs to a different
+  account (a confirmed login divergence) is quarantined.
+- **Safe direction (never re-creates the stall):** a transient oracle failure/timeout **HOLDS** a
+  healthy slot — it is never knocked offline on a momentary probe failure. It moves **zero**
+  credentials and never triggers a swap; it only refreshes the ledger state the rebalancer reads.
+- **Wiring:** a boot one-shot (~90s after start, guarded against the in-flight boot seed) plus a
+  periodic pass at `auditCadenceMs/2` (capped 30 min), behind the pure `shouldRunIdentityAudit` gate
+  and the SAME dev-gate as the rebalancer. Surfaced read-only on `GET /credentials/rebalancer` as
+  `identityAudit` (last-pass counts).
+
+Ships **dark on the fleet** (rides `subscriptionPool.credentialRepointing.enabled`; strict no-op / no
+oracle probe when off) and runs **live in dry-run on a development agent** (refreshes verification,
+moves zero credentials). Flag-off = byte-identical to today.
+
+## What to Tell Your User
+
+- "The account load-balancer that drains a soon-to-reset account before its quota is wasted now stays
+  alive — previously it quietly stopped finding anything to do after a few hours and sat idle."
+- "It changes nothing on a normal install (off by default) and still moves zero real logins on its own
+  — it just keeps the optimizer's view of your accounts fresh so it can act when you turn it loose."
+
+## Summary of New Capabilities
+
+| Capability | How to Use |
+|-----------|-----------|
+| Scheduled credential identity audit (keeps the rebalancer's targets fresh) | Automatic when credential re-pointing is enabled; no action needed |
+| Audit status | `GET /credentials/rebalancer` → `identityAudit` (last-pass refreshed/recovered/quarantined/unresolved counts) |
+
+## Evidence
+
+- 16 new/extended tests across all three tiers + a pure wiring predicate (`auditIdentities` both sides
+  of every branch, `shouldRunIdentityAudit` all 5 combos, integration route surfacing a real pass,
+  e2e "feature alive") — all green; broader credential sweep 88 green; `tsc` clean.
+- Spec implementation note: `docs/specs/live-credential-repointing-rebalancer.md` §2.4.1.
+- Side-effects review with an independent Phase-5 second-pass concurrence:
+  `upgrades/side-effects/credential-identity-audit.md`.

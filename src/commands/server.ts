@@ -9987,7 +9987,7 @@ export async function startServer(options: StartOptions): Promise<void> {
     // off (always, while dark) every gate read returns the enrollment-home fallback, so every
     // consumer is byte-for-byte today's behavior. A never-seeded ledger is the same fallback (back-
     // compat); only UNKNOWN mode (corrupt on-disk) raises a HIGH attention item, never throws.
-    const { CredentialLocationLedger, shouldBootSeedCredentialLedger } = await import('../core/CredentialLocationLedger.js');
+    const { CredentialLocationLedger, shouldBootSeedCredentialLedger, shouldRunIdentityAudit } = await import('../core/CredentialLocationLedger.js');
     const { CredentialIdentityOracle } = await import('../core/CredentialIdentityOracle.js');
     const { CredentialLocationGate } = await import('../core/CredentialLocationGate.js');
     const credentialGateEmitAttention = telegram
@@ -10187,19 +10187,27 @@ export async function startServer(options: StartOptions): Promise<void> {
     // never blocked on them; failures are loud at the slot level (quarantine + attention) INSIDE
     // seedFromOracle. Seeding writes ONLY the local slot→account map — it moves ZERO credentials
     // (the executor's dryRun gate + the one-home invariant still guard every real swap). <!-- tracked: 20905 -->
+    // `credSeedInFlight` closes the fresh-agent seed↔audit interleave: a never-seeded boot fires
+    // seedFromOracle() fire-and-forget at t=0, and the boot identity audit fires at t≈90s. If the
+    // oracle hangs past 90s the two passes could otherwise touch the in-memory assignments view at
+    // their respective awaits. isSeeded() does NOT protect this (seedFromOracle bumps version at
+    // 'begin', so isSeeded() flips true mid-seed), so the audit gate also checks this flag.
+    let credSeedInFlight = false;
     if (
       shouldBootSeedCredentialLedger(
         resolveDevAgentGate(config.subscriptionPool?.credentialRepointing?.enabled, config),
         credentialLocationLedger.isSeeded(),
       )
     ) {
+      credSeedInFlight = true;
       void credentialLocationLedger
         .seedFromOracle()
         .then((outcomes) => {
           const assigned = outcomes.filter((o) => o.result === 'assigned').length;
           console.log(pc.green(`  Credential location ledger seeded: ${assigned}/${outcomes.length} slot(s) mapped`));
         })
-        .catch((e) => console.warn(`[CredentialLedger] boot seed failed: ${e instanceof Error ? e.message : String(e)}`));
+        .catch((e) => console.warn(`[CredentialLedger] boot seed failed: ${e instanceof Error ? e.message : String(e)}`))
+        .finally(() => { credSeedInFlight = false; });
     }
 
     // B3b — the periodic balancer pass. tick() is a strict no-op while the feature resolves dark
@@ -10220,6 +10228,60 @@ export async function startServer(options: StartOptions): Promise<void> {
         .finally(() => { credRebalancerTickInFlight = false; });
     }, credRebalancerPassMs);
     credRebalancerTimer.unref?.();
+
+    // B3c — the periodic NON-DESTRUCTIVE identity audit. THE FIX for the inert-optimizer bug:
+    // the rebalancer's every objective (wall-rescue AND the use-it-or-lose-it drain) only acts on
+    // a DESTINATION slot whose identity was verified within `auditCadenceMs` (default 6h). Nothing
+    // re-stamped verification after the boot seed (markVerified had zero callers), so every slot
+    // decayed to "not recently verified" and the rebalancer went permanently inert — it decided
+    // nothing because it had no eligible targets. auditIdentities() re-probes each slot and refreshes
+    // its verification (and lets a since-resolvable slot EXIT quarantine), keeping the optimizer's
+    // target set live. It moves ZERO credentials (ledger verification state only); never triggers a
+    // swap; HOLDS a healthy slot on a transient oracle blip (never re-creates the stall). Same
+    // dev-gate as the rebalancer (strict no-op / no probe on the dark fleet); reentrancy-guarded;
+    // unref'd. Audit cadence = half of auditCadenceMs, capped at 30min, floored at 1min, so a
+    // healthy slot is always re-confirmed well inside the verified-recent window. <!-- tracked: 20905 -->
+    const credAuditCadenceMs = credResolveBalancerConfig({
+      ...(config.subscriptionPool?.credentialRepointing?.balancer ?? {}),
+      slotCount: credentialLocationLedger.getAssignments().length,
+    }).auditCadenceMs;
+    const credAuditIntervalMs = Math.max(60_000, Math.min(Math.floor(credAuditCadenceMs / 2), 30 * 60_000));
+    let credAuditInFlight = false;
+    const runCredentialIdentityAudit = async (trigger: 'boot' | 'periodic'): Promise<void> => {
+      // Pure, unit-tested gate (shouldRunIdentityAudit): enabled (no-op/no-probe on the dark fleet)
+      // AND seeded AND not UNKNOWN-mode AND not already in flight (reentrancy guard).
+      // `credSeedInFlight` is the runtime seed↔audit interleave guard (a boot seed can be mid-probe
+      // when the boot audit fires); the pure predicate covers the persistent-state gates.
+      if (
+        credSeedInFlight ||
+        !shouldRunIdentityAudit(
+          resolveDevAgentGate(config.subscriptionPool?.credentialRepointing?.enabled, config),
+          credentialLocationLedger.isSeeded(),
+          credentialLocationLedger.isUnknownMode(),
+          credAuditInFlight,
+        )
+      ) {
+        return;
+      }
+      credAuditInFlight = true;
+      try {
+        const r = await credentialLocationLedger.auditIdentities();
+        if (r.refreshed || r.recovered || r.quarantined) {
+          console.log(pc.dim(`  Credential identity audit (${trigger}): ${r.refreshed} refreshed, ${r.recovered} recovered, ${r.quarantined} quarantined, ${r.unresolved} unresolved`));
+        }
+      } catch (e) {
+        console.warn(`[CredentialIdentityAudit] ${trigger} error: ${e instanceof Error ? e.message : String(e)}`);
+      } finally {
+        credAuditInFlight = false;
+      }
+    };
+    // Boot one-shot (delayed so it never races the boot seed) — refreshes stale verification
+    // immediately on restart so a long-running agent's rebalancer has fresh targets without
+    // waiting a full cadence.
+    const credAuditBootTimer = setTimeout(() => void runCredentialIdentityAudit('boot'), 90_000);
+    credAuditBootTimer.unref?.();
+    const credAuditTimer = setInterval(() => void runCredentialIdentityAudit('periodic'), credAuditIntervalMs);
+    credAuditTimer.unref?.();
 
     // QuotaPoller — per-account live quota reader (P1.2 of the Subscription &
     // Auth Standard). Reads each account's 5h/weekly utilization + reset dates
