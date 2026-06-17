@@ -773,6 +773,10 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
     accountFollowMe: {
       credentialTransport: {},
       maxFollowMachines: 5,
+      // WS5.2 R12.iii — reconnect-deadline before an offline-pending revocation wipe escalates to
+      // the LOUD `revocation-FAILED — rotate at provider NOW` attention item (gap 9; lean: hours,
+      // not days, for a live credential — operator-tunable). Default 6h.
+      revocationReconnectDeadlineMs: 6 * 60 * 60_000,
       // WS5.2 R6b — the scrape-timeout budget (ms) for a REMOTE/cloud follow-me
       // enrollment drive. Cloud→provider latency + the two-code Claude window do
       // NOT fit the local-LAN 60s assumption, so the follow-me start path threads

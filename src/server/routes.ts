@@ -682,6 +682,12 @@ export interface RouteContext {
   inUseAccountResolver?: import('../core/InUseAccountResolver.js').InUseAccountResolver;
   /** EnrollmentWizard (P2.1) — mobile-first login + auto-reissue. Null until wired. */
   enrollmentWizard: import('../core/EnrollmentWizard.js').EnrollmentWizard | null;
+  /** WS5.2 R12 — Account Follow-Me revocation data-plane executor. Constructed in the server with
+   *  REAL deps (cooperative local wipe + durable pending store + attention emit). Null when the
+   *  server wiring did not construct it (e.g. lightweight test harnesses). The `/mandate/:id/revoke`
+   *  route fires this for an `account-follow-me` mandate; everything is DARK behind
+   *  `multiMachine.accountFollowMe` (revoke() is a strict no-op when the gate resolves off). */
+  accountFollowMeRevocation?: import('../core/AccountFollowMeRevocation.js').AccountFollowMeRevocation | null;
   /** Live credential re-pointing (WS5.2) — the swap/set-default/restore-enrollment levers
    *  + ledger census + audit-scrub chokepoint. Null until the server wiring constructs it;
    *  ships DARK behind `subscriptionPool.credentialRepointing.enabled` (the routes 503 /
@@ -7542,7 +7548,55 @@ export function createRoutes(ctx: RouteContext): Router {
       res.status(404).json({ error: `mandate "${req.params.id}" not found` });
       return;
     }
-    res.json({ revoked: true, mandate: m });
+
+    // WS5.2 R12 — Account Follow-Me revocation data-plane trigger (PER-SERVER model, OQ6). The
+    // control-plane revoke above already fired (every subsequent MandateGate.evaluate denies). If
+    // the revoked mandate carried an `account-follow-me` authority, run THIS machine's OWN local
+    // data-plane wipe (the operator revoked on the target's OWN dashboard ⇒ the target IS this
+    // machine ⇒ cooperative-online posture). Non-account-follow-me mandates are completely
+    // unaffected. Strict no-op when the executor is unwired OR the feature gate resolves dark
+    // (revoke() returns feature-disabled and runs nothing). Surfaces the honest data-plane outcome
+    // on the response so the operator/dashboard never sees a false "removed".
+    let accountFollowMeRevocation:
+      | import('../core/AccountFollowMeRevocation.js').RevocationOutcome
+      | undefined;
+    try {
+      const followMeAuthority = (m.authorities ?? []).find((a) => a.action === 'account-follow-me');
+      if (followMeAuthority && ctx.accountFollowMeRevocation) {
+        const bounds = (followMeAuthority.bounds ?? {}) as Record<string, unknown>;
+        const accountId = typeof bounds.accountId === 'string' ? bounds.accountId : '';
+        const targetMachineId = typeof bounds.targetMachineId === 'string' ? bounds.targetMachineId : '';
+        const mechanism =
+          bounds.mechanism === 'credential-transport' ? 'credential-transport' : 're-mint';
+        if (accountId && targetMachineId) {
+          const acct = ctx.subscriptionPool?.get(accountId) ?? null;
+          accountFollowMeRevocation = ctx.accountFollowMeRevocation.revoke(
+            {
+              accountId,
+              accountEmail: acct?.email ?? accountId,
+              targetMachineId,
+              targetMachineNickname:
+                typeof bounds.targetMachineNickname === 'string' ? bounds.targetMachineNickname : targetMachineId,
+              provider: acct?.provider ?? (typeof bounds.provider === 'string' ? bounds.provider : 'the provider'),
+              mandateId: m.id,
+              mechanism,
+            },
+            // PER-SERVER: the operator revoked on the target's own dashboard ⇒ target is online &
+            // cooperative (this very machine). The local wipe runs; an offline/de-paired posture is
+            // only reachable on the cross-machine path, which the per-server model does not use.
+            'cooperative-online',
+          );
+        }
+      }
+    } catch {
+      // @silent-fallback-ok: the data-plane effect must never break the control-plane revoke (which
+      // already succeeded). A wipe error is surfaced honestly INSIDE the executor (fail-closed to
+      // pending) for the normal path; this catch is the last-resort backstop so the route always
+      // returns the successful revoke.
+      accountFollowMeRevocation = undefined;
+    }
+
+    res.json({ revoked: true, mandate: m, ...(accountFollowMeRevocation ? { accountFollowMeRevocation } : {}) });
   });
 
   // Add user→agent authority grant(s) to a mandate — PIN-GATED (the same human-

@@ -404,6 +404,24 @@ export function migrateConfigGreenPrAutoArmDefaults(config: Record<string, unkno
   return changed;
 }
 
+/**
+ * WS5.2 R12.iii — add the offline-revocation reconnect-deadline default to an existing
+ * `multiMachine.accountFollowMe` block. Existence-checked + idempotent: only ADDS
+ * `revocationReconnectDeadlineMs` when MISSING (never clobbers an operator override), and only when
+ * the accountFollowMe block already exists (a pre-spec agent without it is untouched — the field is
+ * inert without the feature). Returns true iff it patched. Default 6h (hours, not days — a live
+ * credential, gap 9 lean).
+ */
+export function migrateConfigAccountFollowMeRevocationDeadline(config: Record<string, unknown>): boolean {
+  const mm = config.multiMachine as Record<string, unknown> | undefined;
+  if (!mm || typeof mm !== 'object') return false;
+  const block = mm.accountFollowMe as Record<string, unknown> | undefined;
+  if (!block || typeof block !== 'object') return false;
+  if (Object.prototype.hasOwnProperty.call(block, 'revocationReconnectDeadlineMs')) return false;
+  block.revocationReconnectDeadlineMs = 6 * 60 * 60_000;
+  return true;
+}
+
 export class PostUpdateMigrator {
   private config: MigratorConfig;
   /**
@@ -7980,6 +7998,16 @@ Create worktrees for collaborator repos with \`instar worktree create <branch>\`
       result.upgraded.push("config.json: added greenPrAutoMerge auto-arm defaults (mergeStrategy:'auto', armedConfirmCeilingMs, armedOverdueReraiseMs, armTimeoutMs, unconfirmedArmCeiling)");
     } else {
       result.skipped.push('config.json: greenPrAutoMerge auto-arm defaults already present or feature absent');
+    }
+
+    // WS5.2 R12.iii (Migration Parity §2): add the offline-revocation reconnect-deadline default to
+    // an existing multiMachine.accountFollowMe block. Existence-checked, idempotent, never clobbers
+    // an override; a pre-spec agent without the block is untouched.
+    if (migrateConfigAccountFollowMeRevocationDeadline(config)) {
+      patched = true;
+      result.upgraded.push('config.json: added multiMachine.accountFollowMe.revocationReconnectDeadlineMs default (6h)');
+    } else {
+      result.skipped.push('config.json: accountFollowMe revocation deadline already present or feature absent');
     }
 
     if (patched) {

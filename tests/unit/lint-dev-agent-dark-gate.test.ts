@@ -400,11 +400,12 @@ describe('lint-dev-agent-dark-gate', () => {
       // DEV_GATED_FEATURES) so it introduces no new attributed path. After merging JKHeadley/main
       // (which added its own config above), the sessionPool keys resolve to 872/897/926.
       // RE-VERIFIED by hand via the attributor on the MERGED ConfigDefaults.
-      // R6b: the accountFollowMe block gained `remoteScrapeTimeoutMs` (+7); R7a added the
-      // `spendSlice` block (+23 more) ABOVE these keys → +23 vs R6b. RE-VERIFIED via the attributor.
-      '924': 'multiMachine.sessionPool.enabled',
-      '949': 'multiMachine.sessionPool.inboundQueue.enabled',
-      '978': 'multiMachine.sessionPool.holdForStability.enabled',
+      // R6b added `remoteScrapeTimeoutMs` (+7) and R7a added the `spendSlice` block ABOVE
+      // these keys; merged with main's revocation-wiring (#1215) config additions → the
+      // sessionPool keys resolve as below. RE-VERIFIED via the attributor on the MERGED ConfigDefaults.
+      '928': 'multiMachine.sessionPool.enabled',
+      '953': 'multiMachine.sessionPool.inboundQueue.enabled',
+      '982': 'multiMachine.sessionPool.holdForStability.enabled',
       // mm-stores-devgate (operator directive 2026-06-13, topic 13481): the 7
       // multiMachine.stateSync.* memory stores MOVED from DARK_GATE_EXCLUSIONS to
       // DEV_GATED_FEATURES and their `enabled: false` literals were REMOVED from
@@ -438,10 +439,10 @@ describe('lint-dev-agent-dark-gate', () => {
       // attributor on the edited ConfigDefaults.
       // After merging JKHeadley/main + my accountFollowMe block, these resolve as below.
       // RE-VERIFIED by hand via the attributor on the MERGED ConfigDefaults.
-      '1147': 'multiMachine.stateSync.threadlinePairing.enabled',
-      '1269': 'cartographer.freshnessSweep.enabled',
-      '1314': 'cartographer.conformanceAudit.llmEnrichment.enabled',
-      '1339': 'cartographer.subtreeNav.llmRerank.enabled',
+      '1151': 'multiMachine.stateSync.threadlinePairing.enabled',
+      '1273': 'cartographer.freshnessSweep.enabled',
+      '1318': 'cartographer.conformanceAudit.llmEnrichment.enabled',
+      '1343': 'cartographer.subtreeNav.llmRerank.enabled',
     };
     const actual = attributeRealConfigDefaults();
     expect(actual).toEqual(EXPECTED);
