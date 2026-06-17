@@ -11098,7 +11098,6 @@ process.stdin.on('end', async () => {
   }
   process.exit(0); // ALWAYS exit 0 — never block a turn
 });
-})();
 `;
   }
 
