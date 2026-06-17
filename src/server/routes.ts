@@ -666,6 +666,9 @@ export interface RouteContext {
   /** SubscriptionPool (multi-account subscription registry, P1.1 of the
    *  Subscription & Auth Standard). Null until an operator opts in / enrolls. */
   subscriptionPool: import('../core/SubscriptionPool.js').SubscriptionPool | null;
+  /** WS5.2 Account Follow-Me — cross-machine per-peer account views for depth detection. Prod-wired
+   *  to the `?scope=pool` fan-out; absent ⇒ local-only (single-machine = no depth-zero peers). */
+  accountFollowMePeerViews?: () => Promise<import('../core/accountFollowMeDepth.js').MachinePoolView[]>;
   /** QuotaPoller (P1.2) — per-account live quota reader. Null until wired. */
   quotaPoller: import('../core/QuotaPoller.js').QuotaPoller | null;
   /** QuotaAwareScheduler (P1.3) — account selection + swap-and-resume guarantee. */
@@ -20781,6 +20784,55 @@ export function createRoutes(ctx: RouteContext): Router {
       res.status(201).json({ enabled: true, login });
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : 'failed to start enrollment' });
+    }
+  });
+
+  // WS5.2 §5.2 — Account Follow-Me: SURFACE (never act on) depth-zero enrollment offers.
+  // Detects machines with no usable account (this machine + peers via the injected peer-views
+  // reader, prod-wired to ?scope=pool) and surfaces ONE aggregated phone-first consent. The
+  // agent NEVER self-enrolls — authorization is the operator's mandate, issued on the target's
+  // own dashboard (per-server, OQ6). Dark behind multiMachine.accountFollowMe (503 when off).
+  router.post('/subscription-pool/follow-me/scan', async (_req, res) => {
+    const afmCfg = (ctx.config as unknown as { multiMachine?: { accountFollowMe?: { enabled?: boolean; maxFollowMachines?: number } } }).multiMachine?.accountFollowMe;
+    if (!resolveDevAgentGate(afmCfg?.enabled, ctx.config)) {
+      res.status(503).json({ error: 'account follow-me not enabled' });
+      return;
+    }
+    if (!ctx.subscriptionPool || !ctx.coordination) {
+      res.json({ enabled: true, offered: [] });
+      return;
+    }
+    try {
+      const { buildDepthInput } = await import('../core/accountFollowMeDepth.js');
+      const { AccountFollowMeOrchestrator } = await import('../core/AccountFollowMeOrchestrator.js');
+      const { AccountFollowMeService } = await import('../core/AccountFollowMeService.js');
+      const localRows = ctx.subscriptionPool.list().map((a) => ({
+        accountId: a.id, email: a.email, status: a.status, locallyHeld: typeof a.configHome === 'string' && a.configHome.length > 0,
+      }));
+      const selfView = { machineId: '(self)', nickname: 'this machine', accounts: localRows };
+      const peerViews = ctx.accountFollowMePeerViews ? await ctx.accountFollowMePeerViews() : [];
+      const orchestrator = new AccountFollowMeOrchestrator({
+        gate: ctx.coordination.gate,
+        agentFp: () => ctx.config.projectName ?? 'self',
+        mandatesDeepLink: (a) => `/dashboard?tab=mandates&account=${encodeURIComponent(a.accountId)}&target=${encodeURIComponent(a.targetMachineId)}&mechanism=${a.mechanism}`,
+      });
+      const svc = new AccountFollowMeService({
+        readPoolDepth: () => buildDepthInput([selfView, ...peerViews]),
+        maxFollowMachines: () => afmCfg?.maxFollowMachines ?? 5,
+        inFlight: () => new Set<string>(),
+        orchestrator,
+        emitAggregatedConsent: (c) => {
+          // Map the service's consent to the attention-queue item shape (medium → NORMAL).
+          void ctx.telegram?.createAttentionItem?.({
+            id: c.id, title: c.title, summary: c.body, description: c.body,
+            category: 'account-follow-me', priority: 'NORMAL', sourceContext: 'account-follow-me',
+          });
+        },
+      });
+      const { offered } = svc.scanAndOffer();
+      res.json({ enabled: true, offered });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : 'follow-me scan failed' });
     }
   });
 

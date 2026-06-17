@@ -368,6 +368,7 @@ export class AgentServer {
     commitmentTracker?: import('../monitoring/CommitmentTracker.js').CommitmentTracker;
     prHandLease?: import('../core/PrHandLease.js').PrHandLease;
     subscriptionPool?: import('../core/SubscriptionPool.js').SubscriptionPool;
+    accountFollowMePeerViews?: import('./routes.js').RouteContext['accountFollowMePeerViews'];
     quotaPoller?: import('../core/QuotaPoller.js').QuotaPoller;
     quotaAwareScheduler?: import('../core/QuotaAwareScheduler.js').QuotaAwareScheduler;
     proactiveSwapMonitor?: import('../core/ProactiveSwapMonitor.js').ProactiveSwapMonitor;
@@ -2032,6 +2033,7 @@ export class AgentServer {
       commitmentTracker: options.commitmentTracker ?? null,
       prHandLease: options.prHandLease ?? null,
       subscriptionPool: options.subscriptionPool ?? null,
+      accountFollowMePeerViews: options.accountFollowMePeerViews,
       quotaPoller: options.quotaPoller ?? null,
       quotaAwareScheduler: options.quotaAwareScheduler ?? null,
       proactiveSwapMonitor: options.proactiveSwapMonitor,
