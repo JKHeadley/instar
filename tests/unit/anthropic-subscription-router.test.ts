@@ -234,3 +234,59 @@ describe('InteractivePoolIntelligenceProvider', () => {
     );
   });
 });
+
+describe('AnthropicSubscriptionRouter — WS5.2 R7a slice consultation (S5, §6.2)', () => {
+  it('unwired consultSlice → byte-identical: pool is called, no consultation surfaced', async () => {
+    const pool = provider('pool');
+    const onSliceConsult = vi.fn();
+    const router = new AnthropicSubscriptionRouter({
+      headless: provider('hl'), pool, mode: 'force',
+      readSdkCredit: async () => null, onSliceConsult,
+    });
+    expect(await router.evaluate('x')).toBe('pool:ok');
+    expect(pool.calls.length).toBe(1);
+    expect(onSliceConsult).not.toHaveBeenCalled();
+  });
+
+  it('force mode → consults the slice before the subscription-pool call', async () => {
+    const consultSlice = vi.fn(() => ({ use: 'own' as const, reason: 'no-slice' as const }));
+    const onSliceConsult = vi.fn();
+    const router = new AnthropicSubscriptionRouter({
+      headless: provider('hl'), pool: provider('pool'), mode: 'force',
+      readSdkCredit: async () => null, consultSlice, onSliceConsult,
+    });
+    await router.evaluate('x', { attribution: { component: 'C' } });
+    expect(consultSlice).toHaveBeenCalledTimes(1);
+    expect(onSliceConsult).toHaveBeenCalledWith({ decision: { use: 'own', reason: 'no-slice' }, component: 'C' });
+  });
+
+  it('auto mode → consults ONLY when the subscription-pool path is selected (not on sdk-credit)', async () => {
+    const consultSlice = vi.fn(() => ({ use: 'borrowed' as const, remaining: 0.3, reason: 'live-slice' as const }));
+    // Above margin → sdk-credit primary → NO slice consultation.
+    const sdk = new AnthropicSubscriptionRouter({
+      headless: provider('hl'), pool: provider('pool'), mode: 'auto',
+      readSdkCredit: async () => snapshot(200, 200), consultSlice,
+    });
+    await sdk.evaluate('x');
+    expect(consultSlice).not.toHaveBeenCalled();
+    // Null credit → subscription floor primary → slice IS consulted.
+    consultSlice.mockClear();
+    const sub = new AnthropicSubscriptionRouter({
+      headless: provider('hl'), pool: provider('pool'), mode: 'auto',
+      readSdkCredit: async () => null, consultSlice,
+    });
+    await sub.evaluate('x');
+    expect(consultSlice).toHaveBeenCalledTimes(1);
+  });
+
+  it('auto mode fallback to subscription after sdk failure → consults the slice on the fallback', async () => {
+    const consultSlice = vi.fn(() => ({ use: 'own' as const, reason: 'slice-exhausted' as const }));
+    const router = new AnthropicSubscriptionRouter({
+      headless: provider('hl', async () => { throw new Error('sdk down'); }),
+      pool: provider('pool'), mode: 'auto',
+      readSdkCredit: async () => snapshot(200, 200), consultSlice,
+    });
+    expect(await router.evaluate('x')).toBe('pool:ok');
+    expect(consultSlice).toHaveBeenCalledTimes(1);
+  });
+});

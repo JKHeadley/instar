@@ -780,6 +780,29 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       // enrollment (/subscription-pool/enroll) is unchanged — it never reads this
       // and keeps the driver's 60s default.
       remoteScrapeTimeoutMs: 180000,
+      // WS5.2 R7a — per-account SPEND-SLICE control plane. The ceiling is denominated
+      // in provider quota-FRACTION (0..1); a borrowed account is sliced so the sum of
+      // OUTSTANDING slices across N machines can never exceed the ceiling (the
+      // sum-of-leases bound, owned by the FENCED lease holder). The renewal knobs below
+      // bound the requester-side control plane so N VMs on one hot account produce
+      // O(per-account-cap) renewal RPCs, never an O(N) herd:
+      //  - ceilingQuotaFraction: the account-wide spend ceiling (fraction of a provider
+      //    quota window) that the holder slices among machines (default 0.8 — leave the
+      //    holder's own headroom).
+      //  - minRenewIntervalMs: per-account renewal rate cap (the floor between RPCs).
+      //  - renewBackoffMultiplier / maxRenewIntervalMs: exponential backoff on refusal/
+      //    failure, ceilinged so the interval cannot grow unbounded.
+      //  - breakerThreshold / breakerCooldownMs: the P19 sustained-failure breaker — after
+      //    N consecutive transport FAILURES (slow/partitioned/unreachable holder) a VM
+      //    FAILS CLOSED TO ITS OWN ACCOUNT for the cooldown rather than retry-storming.
+      spendSlice: {
+        ceilingQuotaFraction: 0.8,
+        minRenewIntervalMs: 5000,
+        renewBackoffMultiplier: 2,
+        maxRenewIntervalMs: 300000,
+        breakerThreshold: 3,
+        breakerCooldownMs: 60000,
+      },
     },
     // WS3 one-voice gate (MULTI-MACHINE-SEAMLESSNESS-SPEC). Ships DARK: with
     // ws3OneVoice false the SpeakerElection returns "speak" unconditionally —

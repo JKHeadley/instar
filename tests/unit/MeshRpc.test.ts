@@ -138,6 +138,21 @@ describe('MeshRpc — per-command RBAC (§L0)', () => {
     }
   });
 
+  it('slice-renew (WS5.2 R7a): operator-mandate-gated with its OWN refusal — NOT the any-peer class', () => {
+    const cmd: MeshCommand = {
+      type: 'slice-renew', mandateId: 'M1', accountId: 'acct', requestingMachineFp: 'fp-mini', amount: 0.3, expiresAt: 9_000_000_000_000,
+    };
+    // No `authorizeSliceRenew` seam wired ⇒ deny-by-default (fail closed).
+    expect(checkCommandRBAC(cmd, 'ANY_PEER', rbac())).toEqual({ ok: false, reason: 'slice-renew-unauthorized' });
+    // Seam says the mandate does NOT authorize this requester ⇒ refused.
+    expect(checkCommandRBAC(cmd, 'ROGUE', rbac({ authorizeSliceRenew: () => false })).reason).toBe('slice-renew-unauthorized');
+    // Seam authorizes the mandated requester ⇒ ok; the args are threaded to the gate.
+    const seen: unknown[] = [];
+    const ok = checkCommandRBAC(cmd, 'MANDATED', rbac({ authorizeSliceRenew: (a) => { seen.push(a); return true; } }));
+    expect(ok).toEqual({ ok: true, reason: 'ok' });
+    expect(seen[0]).toEqual({ sender: 'MANDATED', mandateId: 'M1', accountId: 'acct', requestingMachineFp: 'fp-mini' });
+  });
+
   it('state-snapshot is read/observe class — any registered peer → ok (no router/owner role)', () => {
     // The single-origin snapshot pull is self-binding (origin === serving machine);
     // RBAC adds NO authorization beyond verifyEnvelope, exactly like the other

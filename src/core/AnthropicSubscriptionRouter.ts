@@ -31,6 +31,7 @@
 import type { IntelligenceProvider, IntelligenceOptions } from './types.js';
 import { decideSdkVsSubscription } from '../providers/costAwareRouting.js';
 import type { AgentSdkCreditSnapshot } from '../providers/primitives/observability/usageMeterProvider.js';
+import type { AccountUseDecision } from './AccountFollowMeSpendSlice.js';
 
 export type SubscriptionPathMode = 'auto' | 'force';
 
@@ -64,6 +65,23 @@ export interface AnthropicSubscriptionRouterOptions {
   onRoute?: (info: SubscriptionRouteInfo) => void;
   /** Observability tap — auto-mode fallback after a primary failure. */
   onDegrade?: (info: SubscriptionDegradeInfo) => void;
+  /**
+   * WS5.2 R7a (S5, §6.2) — OPTIONAL slice consultation. When account follow-me is enabled and
+   * wired, the routing layer injects this to decide, AT SELECTION TIME, whether the subscription
+   * path may use a BORROWED (follow-me) account this call or must fall back to this machine's OWN
+   * account. It returns the same `AccountUseDecision` as `decideAccountUse` — `use:'own'` on EVERY
+   * uncertainty (no slice / exhausted / expired / stale epoch / first-slice-under-partition / flag
+   * off), `use:'borrowed'` only on a live current-epoch slice with remaining budget.
+   *
+   * ABSENT (the default, and ALWAYS when `multiMachine.accountFollowMe` is off) ⇒ this hook is
+   * never invoked, so routing is BYTE-IDENTICAL to today. The router NEVER overspends a borrowed
+   * account: it never reaches for one unless this consultation says `borrowed`, and a borrowed
+   * selection here only ever scopes the subscription-pool path the pool provider already uses
+   * (the pool's own account selection honors the decision via `onSliceConsult`).
+   */
+  consultSlice?: (options?: IntelligenceOptions) => AccountUseDecision;
+  /** Observability tap — the slice consultation result for a subscription-path call. */
+  onSliceConsult?: (info: { decision: AccountUseDecision; component?: string }) => void;
 }
 
 const DEFAULT_SAFETY_MARGIN_FRACTION = 0.1;
@@ -83,11 +101,24 @@ export class AnthropicSubscriptionRouter implements IntelligenceProvider {
     }
   }
 
+  /**
+   * WS5.2 R7a — run the (optional) slice consultation before a subscription-pool call. NO-OP when
+   * `consultSlice` is unwired (the default / flag-off), so today's behavior is byte-identical. When
+   * wired it surfaces the decision (own vs borrowed) to observability + the pool's account selection;
+   * the router never overspends — a `use:'own'` keeps the pool on this machine's own account.
+   */
+  private consultSliceForSubscription(options?: IntelligenceOptions, component?: string): void {
+    if (!this.opts.consultSlice) return;
+    const decision = this.opts.consultSlice(options);
+    this.opts.onSliceConsult?.({ decision, component });
+  }
+
   async evaluate(prompt: string, options?: IntelligenceOptions): Promise<string> {
     const component = options?.attribution?.component;
 
     if (this.opts.mode === 'force') {
       this.opts.onRoute?.({ path: 'subscription-pool', reason: 'forced-subscription-mode', component });
+      this.consultSliceForSubscription(options, component);
       // No fallback by design — force mode guarantees zero `claude -p`
       // traffic; a pool failure must surface, not silently re-route.
       return this.opts.pool.evaluate(prompt, options);
@@ -107,6 +138,7 @@ export class AnthropicSubscriptionRouter implements IntelligenceProvider {
       : 'sdk-credit';
 
     this.opts.onRoute?.({ path: primaryLabel, reason: decision.reason, component });
+    if (primaryLabel === 'subscription-pool') this.consultSliceForSubscription(options, component);
     try {
       return await primary.evaluate(prompt, options);
     } catch (err) {
@@ -120,6 +152,7 @@ export class AnthropicSubscriptionRouter implements IntelligenceProvider {
         reason: `fallback-after-primary-failure: ${reason.slice(0, 200)}`,
         component,
       });
+      if (fallbackLabel === 'subscription-pool') this.consultSliceForSubscription(options, component);
       return fallback.evaluate(prompt, options);
     }
   }

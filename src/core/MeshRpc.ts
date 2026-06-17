@@ -50,6 +50,26 @@ export type MeshCommand =
   | { type: 'capacity-report' }
   | { type: 'session-status'; session?: string }
   | { type: 'secret-share'; encrypted: string }
+  | {
+      // WS5.2 R7a/R7(c) — per-account SPEND-SLICE renewal (account follow-me).
+      // OPERATOR-MANDATE-GATED with its OWN `checkCommandRBAC` case — deliberately
+      // NOT the "any registered peer" read/observe class (R3a/R6a discipline): a
+      // borrowed account is a money/quota credential, so a slice may be issued ONLY
+      // to a machine the operator's mandate names. A requesting VM asks the FENCED
+      // lease holder to renew its slice; the holder (via SliceIssuer) verifies the
+      // grant is live + a slice remains within `maxSpend` before issuing. A
+      // non-holder receiving it MUST NOT issue (only the fenced single-writer
+      // issues) — that refusal lives in the handler/SliceIssuer, the RBAC gate here
+      // only proves the requester is mandate-authorized. The verb is rate-capped +
+      // coalesced + P19-breaker-protected on the REQUESTER side (SliceRenewalControl)
+      // so worst-case RPC rate is O(per-account-cap), not O(N).
+      type: 'slice-renew';
+      mandateId: string;
+      accountId: string;
+      requestingMachineFp: string;
+      amount: number;
+      expiresAt: number;
+    }
   // Pool Dashboard Streaming (POOL-DASHBOARD-STREAM-SPEC §2.3): a peer asks this
   // machine to mint a single-use bearer ticket so it may open a /pool-stream WS
   // and watch `session`. Read/observe class — minting a ticket discloses
@@ -248,7 +268,8 @@ export type RbacReason =
   | 'not-router'
   | 'claim-unauthorized'
   | 'release-unauthorized'
-  | 'drain-unauthorized';
+  | 'drain-unauthorized'
+  | 'slice-renew-unauthorized';
 
 export interface RbacDeps {
   /** The machine currently holding the router lease (verify-on-read, §L1), or null. */
@@ -257,6 +278,19 @@ export interface RbacDeps {
   ownerOf: (session: string) => MachineId | null;
   /** The machine the router last assigned (via place/transfer) for a session, or null. */
   placementTargetOf: (session: string) => MachineId | null;
+  /**
+   * WS5.2 R7a — the operator-mandate gate for the `slice-renew` verb. Returns true ONLY when the
+   * authorizing mandate authorizes (sender, accountId, requesting fingerprint) for account follow-me
+   * — deny-by-default. INJECTED so the dangerous authority decision is a real check, never an
+   * inherit. ABSENT ⇒ the verb is refused (fail-closed): on a build without the seam wired, a
+   * slice-renew can never be authorized. Mirrors the deny-by-default discipline of R3a/R4a.
+   */
+  authorizeSliceRenew?: (args: {
+    sender: MachineId;
+    mandateId: string;
+    accountId: string;
+    requestingMachineFp: string;
+  }) => boolean;
 }
 
 /**
@@ -289,6 +323,23 @@ export function checkCommandRBAC(command: MeshCommand, sender: MachineId, deps: 
       if (deps.ownerOf(command.session) === sender) return { ok: true, reason: 'ok' };
       if (isRouter && command.failover === true) return { ok: true, reason: 'ok' };
       return { ok: false, reason: 'release-unauthorized' };
+    }
+    case 'slice-renew': {
+      // WS5.2 R7a — OPERATOR-MANDATE-GATED, deliberately its OWN case (NOT the
+      // "any registered peer" read class). verifyEnvelope already proved WHO; this
+      // proves the operator's mandate AUTHORIZES this requester to borrow this
+      // account's spend. DENY-BY-DEFAULT: with no `authorizeSliceRenew` seam wired,
+      // or when the mandate does not authorize (sender, account, requesting fp), the
+      // verb is refused. The FENCED-single-writer "only the lease holder issues"
+      // check lives in the handler/SliceIssuer (a non-holder still refuses there);
+      // the gate's job is the mandate authorization, before any issuance work.
+      const authd = deps.authorizeSliceRenew?.({
+        sender,
+        mandateId: command.mandateId,
+        accountId: command.accountId,
+        requestingMachineFp: command.requestingMachineFp,
+      }) ?? false;
+      return authd ? { ok: true, reason: 'ok' } : { ok: false, reason: 'slice-renew-unauthorized' };
     }
     case 'commitment-mutate':
       // MUTATING verb, deliberately its OWN case (COMMITMENTS-COHERENCE-SPEC
@@ -392,6 +443,7 @@ function statusForReason(reason: string): number {
     case 'claim-unauthorized':
     case 'release-unauthorized':
     case 'drain-unauthorized':
+    case 'slice-renew-unauthorized':
       return 403;
     case 'replayed-nonce':
     case 'stale-timestamp':
