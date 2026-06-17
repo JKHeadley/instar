@@ -10,7 +10,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { PendingLoginStore } from '../../src/core/PendingLoginStore.js';
-import { EnrollmentWizard, type LoginArtifact } from '../../src/core/EnrollmentWizard.js';
+import { EnrollmentWizard, EnrollmentDriveError, type LoginArtifact, type LoginDriver } from '../../src/core/EnrollmentWizard.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 const T0 = Date.parse('2026-06-07T00:00:00Z');
@@ -276,6 +276,117 @@ describe('EnrollmentWizard', () => {
       const w = build({ oracle: { resolveSlotTenant: async () => ({ email: 'j@x.com' }) } });
       const r = await w.completeFollowMe('nope', 'the Mini');
       expect(r.outcome).toBe('not-found');
+    });
+  });
+
+  // ── WS5.2 R6b — Phase-C headless-enrollment reliability contract ───────────
+  describe('R6b: honest failure surface + remote timeout/device-code preference', () => {
+    // ── Part 2: honest failure surface (the load-bearing fix) ──
+    it('a driveLogin throw during start() raises a typed EnrollmentDriveError (not opaque)', async () => {
+      const drive: LoginDriver = async () => { throw new Error('login flow timed out'); };
+      const w = new EnrollmentWizard({ store, driveLogin: drive, now: () => clock });
+      await expect(
+        w.start({ id: 'fm-1', label: 'main', provider: 'anthropic', framework: 'claude-code', remote: true }),
+      ).rejects.toBeInstanceOf(EnrollmentDriveError);
+    });
+
+    it('the EnrollmentDriveError carries a code + operator-facing message', async () => {
+      const drive: LoginDriver = async () => { throw new Error('underlying detail'); };
+      const w = new EnrollmentWizard({ store, driveLogin: drive, now: () => clock });
+      const err = await w.start({ id: 'fm-1', label: 'main', provider: 'anthropic', framework: 'claude-code', remote: true })
+        .then(() => null, (e) => e);
+      expect(err).toBeInstanceOf(EnrollmentDriveError);
+      expect(err.code).toBe('enrollment-drive-failed');
+      expect(typeof err.operatorMessage).toBe('string');
+      expect(err.operatorMessage.length).toBeGreaterThan(0);
+      // the underlying cause is preserved for logs/audit (never the raw operator message)
+      expect(err.cause).toBeInstanceOf(Error);
+    });
+
+    it('a drive failure NEVER leaves a dangling/stuck pending-login (store stays empty)', async () => {
+      const drive: LoginDriver = async () => { throw new Error('network stalled'); };
+      const w = new EnrollmentWizard({ store, driveLogin: drive, now: () => clock });
+      await expect(
+        w.start({ id: 'fm-1', label: 'main', provider: 'anthropic', framework: 'claude-code', remote: true }),
+      ).rejects.toBeInstanceOf(EnrollmentDriveError);
+      // The invariant: store is written ONLY after a successful drive → nothing dangling.
+      expect(store.size()).toBe(0);
+      expect(store.get('fm-1')).toBeNull();
+      expect(w.pending()).toEqual([]);
+    });
+
+    it('the honest-failure surface applies to LOCAL (non-remote) starts too', async () => {
+      const drive: LoginDriver = async () => { throw new Error('boom'); };
+      const w = new EnrollmentWizard({ store, driveLogin: drive, now: () => clock });
+      await expect(
+        w.start({ id: 'codex-1', label: 'codex', provider: 'openai', framework: 'codex-cli' }),
+      ).rejects.toBeInstanceOf(EnrollmentDriveError);
+      expect(store.size()).toBe(0);
+    });
+
+    // ── Part 3: device-code preference for remote ──
+    it('remoteKind prefers device-code for OpenAI; keeps url-code-paste for Claude', () => {
+      expect(EnrollmentWizard.remoteKind('openai')).toBe('device-code');
+      expect(EnrollmentWizard.remoteKind('anthropic')).toBe('url-code-paste');
+    });
+
+    it('a remote OpenAI start uses device-code (single-code Phase-C default)', async () => {
+      let seenKind: string | undefined;
+      const drive: LoginDriver = async (req) => {
+        seenKind = req.kind;
+        return { verificationUrl: 'https://auth.openai.com/codex/device', userCode: '7DAU-W4XJA', ttlMs: 15 * 60_000 };
+      };
+      const w = new EnrollmentWizard({ store, driveLogin: drive, now: () => clock });
+      const l = await w.start({ id: 'codex-r', label: 'codex', provider: 'openai', framework: 'codex-cli', remote: true });
+      expect(seenKind).toBe('device-code');
+      expect(l.kind).toBe('device-code');
+    });
+
+    it('a remote Claude start stays url-code-paste (no single-code flow) + keeps the two-code notice', async () => {
+      let seenKind: string | undefined;
+      const drive: LoginDriver = async (req) => {
+        seenKind = req.kind;
+        return { verificationUrl: 'https://claude.ai/oauth/authorize?code=true', ttlMs: 15 * 60_000 };
+      };
+      const w = new EnrollmentWizard({ store, driveLogin: drive, now: () => clock });
+      const l = await w.start({ id: 'claude-r', label: 'main', provider: 'anthropic', framework: 'claude-code', remote: true });
+      expect(seenKind).toBe('url-code-paste');
+      expect(l.notice).toMatch(/two codes/i);
+    });
+
+    it('an explicit kind always wins over the remote preference', async () => {
+      let seenKind: string | undefined;
+      const drive: LoginDriver = async (req) => {
+        seenKind = req.kind;
+        return { verificationUrl: 'https://auth.openai.com/codex/device', userCode: '7DAU-W4XJA', ttlMs: 15 * 60_000 };
+      };
+      const w = new EnrollmentWizard({ store, driveLogin: drive, now: () => clock });
+      await w.start({ id: 'x', label: 'x', provider: 'openai', framework: 'codex-cli', remote: true, kind: 'url-code-paste' });
+      expect(seenKind).toBe('url-code-paste');
+    });
+
+    // ── Part 1: timeout-config resolution (remote = larger budget; local unchanged) ──
+    it('a remote start threads the larger scrapeTimeoutMs to the driver', async () => {
+      let seenTimeout: number | undefined;
+      const drive: LoginDriver = async (req) => {
+        seenTimeout = req.scrapeTimeoutMs;
+        return { verificationUrl: 'https://auth.openai.com/codex/device', userCode: 'AAAA-BBBB', ttlMs: 15 * 60_000 };
+      };
+      const w = new EnrollmentWizard({ store, driveLogin: drive, now: () => clock });
+      await w.start({ id: 'r1', label: 'r', provider: 'openai', framework: 'codex-cli', remote: true, remoteScrapeTimeoutMs: 180_000 });
+      expect(seenTimeout).toBe(180_000);
+    });
+
+    it('a LOCAL start does NOT thread a scrapeTimeoutMs (driver default unchanged)', async () => {
+      let seenTimeout: number | undefined = -1;
+      const drive: LoginDriver = async (req) => {
+        seenTimeout = req.scrapeTimeoutMs;
+        return { verificationUrl: 'https://auth.openai.com/codex/device', userCode: 'AAAA-BBBB', ttlMs: 15 * 60_000 };
+      };
+      const w = new EnrollmentWizard({ store, driveLogin: drive, now: () => clock });
+      // remoteScrapeTimeoutMs is supplied but remote is false → it must be ignored.
+      await w.start({ id: 'l1', label: 'l', provider: 'openai', framework: 'codex-cli', remoteScrapeTimeoutMs: 180_000 });
+      expect(seenTimeout).toBeUndefined();
     });
   });
 });

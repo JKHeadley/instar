@@ -48,7 +48,34 @@ export type LoginDriver = (req: {
   /** The new account's CLAUDE_CONFIG_DIR — isolates this login to its own slot
    *  so enrolling a 2nd account never clobbers the 1st. */
   configHome?: string;
+  /** WS5.2 R6b — per-call scrape-timeout budget (ms). The follow-me/remote path
+   *  passes a larger value (cloud→provider latency + the two-code Claude window);
+   *  omitted ⇒ the driver's own default (the local-LAN budget). */
+  scrapeTimeoutMs?: number;
 }) => Promise<LoginArtifact>;
+
+/**
+ * WS5.2 R6b — the honest-failure surface for a DRIVE failure during `start()`.
+ * Thrown (NOT swallowed) when `driveLogin` fails, so a remote/cloud enrollment
+ * surfaces an operator-facing "couldn't start the login on <nickname> — retry?"
+ * instead of either an opaque 500 OR a silently-stuck pending-login. The key
+ * invariant it guarantees: a drive failure NEVER leaves a pending-login issued
+ * with no artifact (the store is only written AFTER the drive succeeds), so the
+ * caller can render this as a retry-able failure with no dangling state.
+ */
+export class EnrollmentDriveError extends Error {
+  readonly code = 'enrollment-drive-failed' as const;
+  /** A short, operator-facing message (machine nickname interpolated by the caller). */
+  readonly operatorMessage: string;
+  /** The underlying driver error, for logs/audit (never shown to the operator raw). */
+  readonly cause?: unknown;
+  constructor(opts: { operatorMessage: string; cause?: unknown }) {
+    super(opts.operatorMessage);
+    this.name = 'EnrollmentDriveError';
+    this.operatorMessage = opts.operatorMessage;
+    this.cause = opts.cause;
+  }
+}
 
 export interface EnrollmentWizardConfig {
   store: PendingLoginStore;
@@ -91,6 +118,18 @@ export interface StartEnrollmentInput {
   /** WS5.2 §5.3/S7 — the operator-expected account email (follow-me path only). Carried
    *  onto the pending login so `completeFollowMe` can validate the minted account. */
   expectedEmail?: string;
+  /**
+   * WS5.2 R6b — this is a remote/cloud (follow-me) enrollment, not a local-LAN one.
+   * When set: (a) the per-provider flow-kind selection prefers the device-code
+   *   single-code flow where the provider supports it (Phase-C default — sidesteps
+   *   the two-code Claude problem entirely), and (b) `remoteScrapeTimeoutMs` (if
+   *   provided) is threaded to the driver as a larger scrape budget. Defaulted-off,
+   *   so normal local enrollment is byte-for-byte unchanged.
+   */
+  remote?: boolean;
+  /** WS5.2 R6b — larger scrape-timeout budget (ms) used only when `remote` is true.
+   *  Omitted ⇒ the driver's own default (the local-LAN budget). */
+  remoteScrapeTimeoutMs?: number;
 }
 
 export class EnrollmentWizard {
@@ -114,6 +153,21 @@ export class EnrollmentWizard {
    *  flow); everyone else = url-code-paste (the phone-friendly Claude path). */
   static defaultKind(provider: LoginProvider): LoginFlowKind {
     return provider === 'openai' ? 'device-code' : 'url-code-paste';
+  }
+
+  /**
+   * WS5.2 R6b — flow kind for a REMOTE/cloud (follow-me) enrollment. Prefers the
+   * device-code single-code flow wherever the provider supports it (the Phase-C
+   * default per R6b), because a single code sidesteps the two-code Claude window
+   * entirely on a headless VM. Providers that have a device-code endpoint
+   * (OpenAI/Codex) get `device-code`; a provider with no single-code flow
+   * (Anthropic/Claude → url-code-paste) keeps its two-code flow, and the caller
+   * MUST give it the larger scrape budget so the full two-code interaction fits
+   * inside one poll window (the URL appears late on cloud→provider latency). This
+   * is a SUPERSET of defaultKind — anything device-code-capable locally is also
+   * device-code-capable remotely. */
+  static remoteKind(provider: LoginProvider): LoginFlowKind {
+    return provider === 'openai' ? 'device-code' : EnrollmentWizard.defaultKind(provider);
   }
 
   /**
@@ -143,13 +197,36 @@ export class EnrollmentWizard {
    * surface the operator's phone shows.
    */
   async start(input: StartEnrollmentInput): Promise<PendingLogin> {
-    const kind = input.kind ?? EnrollmentWizard.defaultKind(input.provider);
-    const artifact = await this.driveLogin({
-      provider: input.provider,
-      framework: input.framework,
-      kind,
-      configHome: input.configHome,
-    });
+    // WS5.2 R6b — a remote/cloud (follow-me) enrollment prefers the device-code
+    // single-code flow where the provider supports it; an explicit `kind` always
+    // wins. Local enrollment is unchanged (uses defaultKind).
+    const kind =
+      input.kind ??
+      (input.remote ? EnrollmentWizard.remoteKind(input.provider) : EnrollmentWizard.defaultKind(input.provider));
+    // WS5.2 R6b — the honest-failure surface. The store is written ONLY AFTER the
+    // drive succeeds, so a drive throw leaves NO pending-login behind; we re-raise
+    // it as a typed EnrollmentDriveError the caller renders as "couldn't start the
+    // login on <nickname> — retry?", never an opaque 500 / silently-stuck pending.
+    let artifact: LoginArtifact;
+    try {
+      artifact = await this.driveLogin({
+        provider: input.provider,
+        framework: input.framework,
+        kind,
+        configHome: input.configHome,
+        // Threaded only for remote drives; omitted ⇒ the driver's local-LAN default.
+        ...(input.remote && typeof input.remoteScrapeTimeoutMs === 'number'
+          ? { scrapeTimeoutMs: input.remoteScrapeTimeoutMs }
+          : {}),
+      });
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      this.logger.warn(`[EnrollmentWizard] start drive failed for ${input.label} (${input.provider}): ${detail}`);
+      throw new EnrollmentDriveError({
+        operatorMessage: 'the provider login didn’t start in time — retry?',
+        cause: err,
+      });
+    }
     const login = this.store.issue({
       id: input.id,
       label: input.label,

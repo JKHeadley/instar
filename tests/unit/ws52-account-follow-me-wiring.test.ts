@@ -71,6 +71,8 @@ describe('WS5.2 ConfigDefaults + dev-gate', () => {
     expect(defaultsSrc).toMatch(/accountFollowMe:\s*\{/);
     expect(defaultsSrc).toContain('credentialTransport: {}');
     expect(defaultsSrc).toContain('maxFollowMachines: 5');
+    // WS5.2 R6b — the remote/cloud scrape-timeout budget knob (3min default).
+    expect(defaultsSrc).toContain('remoteScrapeTimeoutMs: 180000');
     // The enabled literal must NOT be hardcoded under accountFollowMe (dev-gate decides).
     expect(defaultsSrc).not.toMatch(/accountFollowMe:\s*\{[^}]*enabled:\s*false/s);
   });

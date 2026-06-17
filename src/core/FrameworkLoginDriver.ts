@@ -103,12 +103,19 @@ export class FrameworkLoginDriver {
    * Drive a framework login: spawn it under the target config home, poll the
    * pane until the public artifact appears (or timeout), and return it. Throws
    * on timeout so the wizard logs + leaves the login for the next sweep.
+   *
+   * `scrapeTimeoutMs` (per-call) overrides the constructor default for THIS
+   * drive only — WS5.2 R6b uses it to give a remote/cloud enrollment a larger
+   * budget (cloud→provider latency + the two-code Claude window) without
+   * rebuilding the shared production driver. Omitted ⇒ the constructor default
+   * (the local-LAN budget) is unchanged. A non-finite/≤0 value is ignored.
    */
   async drive(req: {
     provider: LoginProvider;
     framework: FrameworkLoginRequest['framework'];
     kind: LoginFlowKind;
     configHome?: string;
+    scrapeTimeoutMs?: number;
   }): Promise<LoginArtifact> {
     const { session } = await this.deps.spawn({
       provider: req.provider,
@@ -116,7 +123,11 @@ export class FrameworkLoginDriver {
       kind: req.kind,
       configHome: req.configHome,
     });
-    const deadline = this.now() + this.scrapeTimeoutMs;
+    const budgetMs =
+      typeof req.scrapeTimeoutMs === 'number' && Number.isFinite(req.scrapeTimeoutMs) && req.scrapeTimeoutMs > 0
+        ? req.scrapeTimeoutMs
+        : this.scrapeTimeoutMs;
+    const deadline = this.now() + budgetMs;
     let lastText = '';
     while (this.now() < deadline) {
       lastText = await this.deps.capture(session);
@@ -130,10 +141,10 @@ export class FrameworkLoginDriver {
       await this.sleep(this.pollIntervalMs);
     }
     this.logger.warn(
-      `[FrameworkLoginDriver] timed out scraping ${req.kind} login for ${req.provider}/${req.framework}`,
+      `[FrameworkLoginDriver] timed out scraping ${req.kind} login for ${req.provider}/${req.framework} (budget ${budgetMs}ms)`,
     );
     throw new Error(
-      `login artifact not found for ${req.provider}/${req.framework} within ${this.scrapeTimeoutMs}ms`,
+      `login artifact not found for ${req.provider}/${req.framework} within ${budgetMs}ms`,
     );
   }
 

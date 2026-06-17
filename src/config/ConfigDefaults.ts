@@ -777,6 +777,13 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       // the LOUD `revocation-FAILED — rotate at provider NOW` attention item (gap 9; lean: hours,
       // not days, for a live credential — operator-tunable). Default 6h.
       revocationReconnectDeadlineMs: 6 * 60 * 60_000,
+      // WS5.2 R6b — the scrape-timeout budget (ms) for a REMOTE/cloud follow-me
+      // enrollment drive. Cloud→provider latency + the two-code Claude window do
+      // NOT fit the local-LAN 60s assumption, so the follow-me start path threads
+      // this LARGER budget to FrameworkLoginDriver (3min default). Normal LOCAL
+      // enrollment (/subscription-pool/enroll) is unchanged — it never reads this
+      // and keeps the driver's 60s default.
+      remoteScrapeTimeoutMs: 180000,
     },
     // WS3 one-voice gate (MULTI-MACHINE-SEAMLESSNESS-SPEC). Ships DARK: with
     // ws3OneVoice false the SpeakerElection returns "speak" unconditionally —

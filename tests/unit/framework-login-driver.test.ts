@@ -111,4 +111,48 @@ describe('FrameworkLoginDriver.drive', () => {
     const a = await fn({ provider: 'anthropic', framework: 'claude-code', kind: 'url-code-paste' });
     expect(a.verificationUrl).toContain('claude.ai/oauth');
   });
+
+  // ── WS5.2 R6b — per-call scrape-timeout override (larger budget for remote drives) ──
+  it('a per-call scrapeTimeoutMs OVERRIDES the constructor default (larger remote budget)', async () => {
+    // Constructor default 60s would give up at clock=60_000 (one poll/sec). The URL
+    // appears late (at the 100th capture ≈ 100s) — only a larger per-call budget reaches it.
+    let i = 0;
+    let clock = 0;
+    const captures = (n: number) => (n >= 100 ? CLAUDE_PANE : 'still booting...');
+    const driver = new FrameworkLoginDriver({
+      spawn: async () => ({ session: 's' }),
+      capture: async () => captures(i++),
+      sleep: async (ms: number) => { clock += ms; },
+      now: () => clock,
+      pollIntervalMs: 1_000,
+      scrapeTimeoutMs: 60_000, // local default — would time out before 100s
+    });
+    const a = await driver.drive({ provider: 'anthropic', framework: 'claude-code', kind: 'url-code-paste', scrapeTimeoutMs: 180_000 });
+    expect(a.verificationUrl).toContain('claude.ai/oauth');
+  });
+
+  it('without a per-call override, the constructor default still applies (local unchanged)', async () => {
+    let i = 0;
+    let clock = 0;
+    const captures = (n: number) => (n >= 100 ? CLAUDE_PANE : 'still booting...');
+    const driver = new FrameworkLoginDriver({
+      spawn: async () => ({ session: 's' }),
+      capture: async () => captures(i++),
+      sleep: async (ms: number) => { clock += ms; },
+      now: () => clock,
+      pollIntervalMs: 1_000,
+      scrapeTimeoutMs: 60_000,
+    });
+    // URL only appears at ~100s but the local 60s default times out first.
+    await expect(
+      driver.drive({ provider: 'anthropic', framework: 'claude-code', kind: 'url-code-paste' }),
+    ).rejects.toThrow(/not found/);
+  });
+
+  it('an invalid per-call scrapeTimeoutMs (0 / non-finite) falls back to the constructor default', async () => {
+    const { deps } = fakeDeps([CODEX_PANE]);
+    const driver = new FrameworkLoginDriver(deps);
+    const a = await driver.drive({ provider: 'openai', framework: 'codex-cli', kind: 'device-code', scrapeTimeoutMs: 0 });
+    expect(a.userCode).toBe('7DAU-W4XJA');
+  });
 });
