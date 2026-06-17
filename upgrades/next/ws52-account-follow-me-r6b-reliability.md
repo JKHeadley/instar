@@ -1,0 +1,17 @@
+## What Changed
+
+WS5.2 R6b — the Phase-C headless-enrollment reliability contract, layered onto the existing secure enroll-start route without weakening its mandate-gate/authoritative-email guarantees. Three parts: (1) a configurable, larger scrape-timeout budget for remote/cloud enrollments — new config knob `multiMachine.accountFollowMe.remoteScrapeTimeoutMs` (default 180000ms / 3min), threaded into the follow-me enroll path ONLY (normal local enrollment keeps the 60s default); `FrameworkLoginDriver.drive()` gained an optional per-call timeout override (invalid values fall back safely). (2) The honest failure surface: `EnrollmentWizard.start()` now catches a login-drive failure and re-raises a typed `EnrollmentDriveError` — and because the drive runs BEFORE the pending-login is persisted, a failure never leaves a silently-stuck pending-login; both enroll routes map it to an honest, retryable 502 instead of an opaque 500. (3) The two-code Claude case: the remote path prefers the device-code single-code flow where the provider supports it (OpenAI/Codex), and for Claude (no device-code endpoint) the larger budget covers a late-arriving verification URL.
+
+## Evidence
+
+- 60 tests across 4 files: `enrollment-wizard` (honest-failure + no-dangling-pending for local & remote, remoteKind, device-code preference, explicit-kind-wins, timeout threading), `framework-login-driver` (per-call override reaches a late artifact; default still times out; invalid override falls back), `ws52-account-follow-me-wiring` (the new defaults knob), and the enroll-start integration test (kept all of #1214's security cases: dark→503, denied→403, valid→201 w/ S7 email, unresolvable→409, 400; added: drive-throw→502 honest + no stuck pending, and the drive receives the larger remote timeout + device-code). `tsc --noEmit` clean.
+- Side-effects review + mandatory independent second-pass security review (concurred): CRITICALLY verified the reconciliation kept #1214's mandate gate + authoritative-email resolution intact (this change was reconciled after a parallel-timing collision); confirmed no stuck pending-login, local enrollment unchanged, both callers handle the typed error, and no fail-open.
+- Spec: `docs/specs/ws52-account-follow-me-security.md` R6/R6b (converged, approved).
+
+## What to Tell Your User
+
+Still nothing to do — this hardens the multi-machine enrollment (off by default). When a machine enrolls one of your accounts, it now gets a realistic login window (cloud/remote logins are slower than local), prefers the simplest one-code login where possible, and if the login can't start it tells you honestly with a retry instead of leaving a stuck half-started enrollment.
+
+## Summary of New Capabilities
+
+Enrollment reliability (dark): a configurable larger remote scrape-timeout, an honest typed drive-failure surface (no silently-stuck pending logins; retryable 502), and a device-code preference for remote enrollments. No user-facing surface is live in this release.

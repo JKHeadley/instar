@@ -20818,6 +20818,14 @@ export function createRoutes(ctx: RouteContext): Router {
       const login = await ctx.enrollmentWizard.start({ id, label, provider, framework, kind, configHome });
       res.status(201).json({ enabled: true, login });
     } catch (err) {
+      // WS5.2 R6b — a DRIVE failure is honest + retry-able (502), NOT an opaque 500.
+      // No pending-login was issued (the store is written only after the drive
+      // succeeds), so the caller can simply retry.
+      const { EnrollmentDriveError } = await import('../core/EnrollmentWizard.js');
+      if (err instanceof EnrollmentDriveError) {
+        res.status(502).json({ error: 'login-did-not-start', retryable: true, message: err.operatorMessage });
+        return;
+      }
       res.status(500).json({ error: err instanceof Error ? err.message : 'failed to start enrollment' });
     }
   });
@@ -20884,7 +20892,7 @@ export function createRoutes(ctx: RouteContext): Router {
   // what the operator actually approved. Unresolvable email ⇒ 409 fail-closed (never start blank).
   // Dark behind multiMachine.accountFollowMe (503 when off). Mirrors the scan route's dark-gate exactly.
   router.post('/subscription-pool/follow-me/enroll/start', async (req, res) => {
-    const afmCfg = (ctx.config as unknown as { multiMachine?: { accountFollowMe?: { enabled?: boolean } } }).multiMachine?.accountFollowMe;
+    const afmCfg = (ctx.config as unknown as { multiMachine?: { accountFollowMe?: { enabled?: boolean; remoteScrapeTimeoutMs?: number } } }).multiMachine?.accountFollowMe;
     if (!resolveDevAgentGate(afmCfg?.enabled, ctx.config)) {
       res.status(503).json({ error: 'account follow-me not enabled' });
       return;
@@ -20932,6 +20940,16 @@ export function createRoutes(ctx: RouteContext): Router {
       const safeAccountId = accountId.replace(/[^a-z0-9-]/gi, '-');
       const configHome = path.join(os.homedir(), `.claude-followme-${safeAccountId}`);
 
+      // WS5.2 R6b — this IS the remote/cloud (follow-me) enrollment path, so use the
+      // remote-aware kind selection (device-code single-code flow where supported) and
+      // thread the LARGER scrape-timeout budget (cloud→provider latency + the two-code
+      // window). The budget comes from the config knob (default 180000); omitted ⇒ the
+      // driver's local-LAN default.
+      const remoteScrapeTimeoutMs =
+        typeof afmCfg?.remoteScrapeTimeoutMs === 'number' && Number.isFinite(afmCfg.remoteScrapeTimeoutMs)
+          ? afmCfg.remoteScrapeTimeoutMs
+          : undefined;
+
       const login = await ctx.enrollmentWizard.start({
         id: accountId,
         label: target.label,
@@ -20939,9 +20957,23 @@ export function createRoutes(ctx: RouteContext): Router {
         framework: target.framework as import('../core/PendingLoginStore.js').PendingLogin['framework'],
         configHome,
         expectedEmail: target.expectedEmail,
+        remote: true,
+        remoteScrapeTimeoutMs,
       });
       res.status(201).json({ enabled: true, login });
     } catch (err) {
+      // WS5.2 R6b — a DRIVE failure is honest + retry-able (502), NOT an opaque 500.
+      // The store is written ONLY after the drive succeeds, so a drive throw leaves NO
+      // stuck pending-login behind — the caller can simply retry the enrollment.
+      const { EnrollmentDriveError } = await import('../core/EnrollmentWizard.js');
+      if (err instanceof EnrollmentDriveError) {
+        res.status(502).json({
+          error: 'login-did-not-start',
+          retryable: true,
+          message: `couldn’t start the login on the target — ${err.operatorMessage}`,
+        });
+        return;
+      }
       res.status(500).json({ error: err instanceof Error ? err.message : 'follow-me enroll start failed' });
     }
   });
