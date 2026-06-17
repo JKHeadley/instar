@@ -24,6 +24,17 @@ Account Follow-Me is built on a set of hardened primitives, each proven before a
 
 Account Follow-Me is **operator-rooted**: a peer machine can never enroll an account onto itself. Authorization flows from a single PIN-gated coordination mandate, carried across machines by the `CrossMachineMandate` signature and enforced at the `AccountCredentialShare` gate. The metadata projection (`SubscriptionAccountMetaReplicatedStore`) carries no authority — it is reference data only.
 
+## Enrollment detection & consent (PR2)
+
+When a machine has no account it can serve from (a "depth-zero" machine), the agent detects it and asks you to approve — it never enrolls on its own. The pieces:
+
+- **`AccountFollowMeOrchestrator`** — the request-never-self-authorize rule. `AccountFollowMeOrchestrator` checks the operator mandate gate; with no mandate it surfaces a phone-first consent (a dashboard deep-link, never a CLI instruction) and does NOT proceed; only an explicit mandate `allow` lets it proceed.
+- **`AccountFollowMeDetector`** — depth-zero detection. `AccountFollowMeDetector` decides which machines to offer an enrollment for, bounded by the per-account max-follow cap and one-offer-per-(account,target) (R7), so adding machines never multiplies traffic.
+- **`AccountFollowMeService`** — the composition. `AccountFollowMeService.scanAndOffer()` runs detection and raises ONE aggregated consent (enrolling nothing); `AccountFollowMeService.onMandateDelivered()` verifies a delivered mandate before any action.
+- **`AccountFollowMeEmailGate`** — the safety check. `AccountFollowMeEmailGate` validates a freshly-enrolled account's email against what you approved (S7); a surprise account is held for review, never auto-used.
+
+These compose the depth adapter + the tolerant peer-views fetcher (which reuses the `?scope=pool` fan-out, carrying account metadata only — never a login). The scan surface is `POST /subscription-pool/follow-me/scan`, dark behind `multiMachine.accountFollowMe`.
+
 ## Status
 
-PR1 ships the security primitives (`AccountCredentialShare`, `CrossMachineMandate`, `PairingEpochManager`, `AccountFollowMeGrants`) and the `SubscriptionAccountMetaReplicatedStore` metadata kind, with no live-credential code path. Subsequent rounds add per-machine enrollment, revocation, and the live proof.
+PR1 ships the security primitives (`AccountCredentialShare`, `CrossMachineMandate`, `PairingEpochManager`, `AccountFollowMeGrants`) and the `SubscriptionAccountMetaReplicatedStore` metadata kind, with no live-credential code path. PR2 ships the enrollment detection→consent surface (`AccountFollowMeOrchestrator`, `AccountFollowMeDetector`, `AccountFollowMeService`, `AccountFollowMeEmailGate`). Subsequent rounds wire the per-machine enrollment completion + the router selection gate + revocation, then the live proof.
