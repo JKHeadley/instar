@@ -164,6 +164,12 @@ describe('WS5.2 Step 7 /credentials/* E2E lifecycle (feature is alive)', () => {
     expect(loc.status).toBe(200);
     expect(loc.body.enabled).toBe(true);
     expect(loc.body.mode).toBe('active');
+
+    // B3c: the identity-audit surface is ALIVE on the production-shaped bundle (the freshness-keeper
+    // that prevents the rebalancer decaying to inert). The field is present (null until a pass runs).
+    const reb = await request(enabledApp).get('/credentials/rebalancer').set(auth());
+    expect(reb.status).toBe(200);
+    expect(reb.body).toHaveProperty('identityAudit');
   });
 
   it('(b) DARK: every POST lever 503s; rebalancer 503; locations reports dark (strict no-op)', async () => {

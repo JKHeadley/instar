@@ -77,7 +77,7 @@ function makeApp(opts: {
   manualLeversEnabled?: boolean;
   anthropicApiKey?: string;
   fleet?: EnvTokenFleetSession[];
-}): { app: express.Express; stateDir: string; auditLines: string[] } {
+}): { app: express.Express; stateDir: string; auditLines: string[]; ledger: CredentialLocationLedger } {
   const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cred-routes-'));
   fs.mkdirSync(path.join(stateDir, 'logs'), { recursive: true });
   const ledger = buildLedger(stateDir);
@@ -118,7 +118,7 @@ function makeApp(opts: {
     credentialRepointing,
   } as never;
   app.use(createRoutes(ctx));
-  return { app, stateDir, auditLines };
+  return { app, stateDir, auditLines, ledger };
 }
 
 describe('/credentials/* routes (integration)', () => {
@@ -191,6 +191,27 @@ describe('/credentials/* routes (integration)', () => {
     expect(r.body.enabled).toBe(true);
     expect(r.body.balancerWired).toBe(false);
     expect(r.body.envTokenGate.refused).toBe(false);
+  });
+
+  it('B3c: rebalancer surfaces the identity-audit last pass (null before a run, real counts after)', async () => {
+    const built = makeApp({ enabled: true }); stateDir = built.stateDir; cleanup.push(stateDir);
+    server = await listen(built.app);
+    // Before any audit pass: the field is present and null (route reads getLastAuditReport live).
+    const before = await api('/credentials/rebalancer');
+    expect(before.status).toBe(200);
+    expect(before.body).toHaveProperty('identityAudit');
+    expect(before.body.identityAudit).toBeNull();
+    // Run one audit. The test ledger has 2 healthy slots + a noop oracle (always unavailable), so the
+    // safe direction must HOLD both (never quarantine on a transient probe failure) — proven end-to-end.
+    const report = await built.ledger.auditIdentities();
+    expect(report.outcomes.length).toBe(2);
+    expect(report.refreshed).toBe(0);
+    expect(report.quarantined).toBe(0); // a healthy slot is NEVER demoted by an unavailable probe
+    const after = await api('/credentials/rebalancer');
+    expect(after.status).toBe(200);
+    expect(after.body.identityAudit).not.toBeNull();
+    expect(after.body.identityAudit.unresolved).toBe(2);
+    expect(after.body.identityAudit.refreshed).toBe(0);
   });
 
   it('LIVE (flag on): POST /credentials/swap executes the executor; response carries NO token', async () => {
