@@ -57,6 +57,19 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
     // detects cross-topic work overlap, and emits ONE deduped in-process councilor
     // nudge (signal-only; never gates). docs/specs/parallel-activity-coherence.md.
     parallelWorkSentinel: {},
+    // AutonomousProgressHeartbeat — hedged, change-gated, sparse liveness backstop
+    // for an autonomous run gone silent-to-user while its output is still moving.
+    // DEV-GATED: `enabled` is OMITTED so resolveDevAgentGate decides — LIVE on a
+    // developmentAgent (dogfood), DARK on the fleet (GET /autonomous-heartbeat
+    // 503s). NEVER hardcode `enabled: false` here (it would dark dev agents too).
+    // `dryRun: true` holds it to "would emit" logging (same cooldown/budget gates
+    // as live, no per-tick flood) until the dev soak proves it quiet. The
+    // threshold/tick/backoff defaults live in the component; persisting only
+    // dryRun keeps applyDefaults() add-missing-only. Spec:
+    // docs/specs/autonomous-progress-heartbeat.md.
+    autonomousHeartbeat: {
+      dryRun: true,
+    },
     // ResourceLedger — default-on so every agent durably records its rate-limit
     // events (breaker trips + sentinel detections) instead of losing them on
     // restart. Read-only observability; never gates. Event-driven, negligible

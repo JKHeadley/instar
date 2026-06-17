@@ -9503,6 +9503,11 @@ export async function startServer(options: StartOptions): Promise<void> {
     let socketRecoveryActive: ((sessionName: string) => boolean) | undefined;
     let silenceRecoveryActive: ((sessionName: string) => boolean) | undefined;
     let wedgeRecoveryActive: ((sessionName: string) => boolean) | undefined;
+    // Lifted out of the trio block so AutonomousProgressHeartbeat (wired later,
+    // near PromiseBeacon) can read ActiveWorkSilenceSentinel's ALREADY-COMPUTED
+    // lastOutputAt snapshot (predicate #8 — a shared/cached read, never its own
+    // tmux capture). undefined when the silence sentinel is disabled.
+    let sharedOutputTracker: import('../monitoring/sentinelWiring.js').OutputActivityTracker | undefined;
     {
       const { SocketDisconnectSentinel } = await import('../monitoring/SocketDisconnectSentinel.js');
       const { ActiveWorkSilenceSentinel } = await import('../monitoring/ActiveWorkSilenceSentinel.js');
@@ -9580,6 +9585,9 @@ export async function startServer(options: StartOptions): Promise<void> {
       const silenceCfg = config.monitoring?.activeWorkSilenceSentinel ?? { enabled: true };
       if (silenceCfg.enabled !== false) {
         const tracker = new OutputActivityTracker(sessionSurface);
+        // Share this tracker's snapshot with AutonomousProgressHeartbeat
+        // (predicate #8 reads its lastOutputAt — never its own capture).
+        sharedOutputTracker = tracker;
         // Auto-heal ladder (DARK, off by default): when a confirmed-silent session
         // can't be nudged back, respawn it fresh (conversation preserved via
         // --resume) instead of only asking the user. Gated by autoRecover; the
@@ -11212,6 +11220,111 @@ export async function startServer(options: StartOptions): Promise<void> {
           });
           promiseBeacon.start();
           (globalThis as Record<string, unknown>).__instarPromiseBeacon = promiseBeacon;
+
+          // ── AutonomousProgressHeartbeat ──────────────────────────────────
+          // Hedged, change-gated, sparse liveness BACKSTOP for an autonomous run
+          // gone silent-to-user while its terminal output is STILL changing. NOT
+          // the suppressed PromiseBeacon §B1 filler — much higher bar (long
+          // user-silence gate + corroborated recent output change from
+          // ActiveWorkSilenceSentinel's shared snapshot + per-topic cooldown +
+          // widening per-run backoff + hard cap + the shared one-voice lease).
+          // DEV-GATED dark: enabled via resolveDevAgentGate (LIVE on a dev agent,
+          // DARK on the fleet); dryRun defaults true (would-emit log, no send).
+          // Spec: docs/specs/autonomous-progress-heartbeat.md.
+          try {
+            const ahRawCfg = config.monitoring?.autonomousHeartbeat ?? {};
+            const ahEnabled = resolveDevAgentGate(ahRawCfg.enabled, config);
+            if (ahEnabled && telegram) {
+              const { AutonomousProgressHeartbeat } = await import('../monitoring/AutonomousProgressHeartbeat.js');
+              const {
+                activeAutonomousJobs,
+                autonomousRunRemainingForTopic,
+                readAutonomousRunMarkers,
+              } = await import('../core/AutonomousSessions.js');
+              const { ParallelActivityIndex: AHParallelActivityIndex } = await import('../core/ParallelActivityIndex.js');
+              // Own ParallelActivityIndex (focus source) — fetched ONCE per tick
+              // and indexed by topic inside the deps closure.
+              const ahActivityIndex = new AHParallelActivityIndex({ stateDir: config.stateDir });
+              const localTelegram2 = telegram;
+              const autonomousHeartbeat = new AutonomousProgressHeartbeat(
+                {
+                  listActiveAutonomousRuns: () => {
+                    const out: import('../monitoring/AutonomousProgressHeartbeat.js').ActiveAutonomousRun[] = [];
+                    const now = Date.now();
+                    for (const job of activeAutonomousJobs(config.stateDir)) {
+                      if (job.topic == null) continue; // legacy single-file job has no topic
+                      const remaining = autonomousRunRemainingForTopic(config.stateDir, job.topic, now);
+                      if (!remaining) continue;
+                      const topicId = Number(job.topic);
+                      if (!Number.isFinite(topicId)) continue;
+                      out.push({
+                        topicId,
+                        sessionName: localTelegram2.getSessionForTopic(topicId) ?? null,
+                        remainingSeconds: remaining.remainingSeconds,
+                      });
+                    }
+                    return out;
+                  },
+                  getRunMarkers: (topicId) => readAutonomousRunMarkers(config.stateDir, topicId),
+                  isSessionAlive: (name) => sessionManager.isSessionAlive(name),
+                  getTopicHistory: (topicId) =>
+                    localTelegram2.getTopicHistory(topicId, 50).map((e) => ({
+                      fromUser: e.fromUser,
+                      at: new Date(e.timestamp).getTime(),
+                    })),
+                  // Predicate #8 — read ActiveWorkSilenceSentinel's ALREADY-computed
+                  // snapshot (the shared OutputActivityTracker). NEVER a capture.
+                  // undefined when the silence sentinel is disabled → fails closed.
+                  getSharedLastOutputAt: (name) =>
+                    sharedOutputTracker ? sharedOutputTracker.lastOutputAtFor(name) : null,
+                  getFocusForTopic: (() => {
+                    // Index the cross-topic activities ONCE per tick (O(1)/topic).
+                    let cachedAt = 0;
+                    let cache = new Map<number, string | null>();
+                    return (topicId: number): string | null => {
+                      const now = Date.now();
+                      if (now - cachedAt > 5_000) {
+                        cache = new Map(
+                          ahActivityIndex.activities(now).map((a) => [a.topicId, a.focus]),
+                        );
+                        cachedAt = now;
+                      }
+                      return cache.get(topicId) ?? null;
+                    };
+                  })(),
+                  proxyCoordinator,
+                  sendMessage: async (topicId, text, metadata) => {
+                    const url = `http://localhost:${config.port}/telegram/reply/${topicId}`;
+                    const response = await fetch(url, {
+                      method: 'POST',
+                      headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${config.authToken}`,
+                      },
+                      body: JSON.stringify({ text, metadata }),
+                    });
+                    if (!response.ok) throw new Error(`Autonomous-heartbeat reply failed: ${response.status}`);
+                  },
+                },
+                {
+                  enabled: true, // gate already resolved above
+                  dryRun: ahRawCfg.dryRun !== false,
+                  silenceThresholdMinutes: ahRawCfg.silenceThresholdMinutes,
+                  tickIntervalMs: ahRawCfg.tickIntervalMs,
+                  maxHeartbeatsPerRun: ahRawCfg.maxHeartbeatsPerRun,
+                  recentOutputChangeWindowMs: ahRawCfg.recentOutputChangeWindowMs,
+                },
+              );
+              autonomousHeartbeat.start();
+              (globalThis as Record<string, unknown>).__instarAutonomousHeartbeat = autonomousHeartbeat;
+              guardRegistry.register('monitoring.autonomousHeartbeat.enabled', () => autonomousHeartbeat.guardStatus());
+              console.log(pc.green(
+                `  AutonomousProgressHeartbeat enabled (silence backstop — ${(ahRawCfg.dryRun !== false) ? 'dry-run observe-only' : 'LIVE'})`,
+              ));
+            }
+          } catch (err) {
+            console.warn('[AutonomousProgressHeartbeat] init failed (non-fatal):', (err as Error).message);
+          }
 
           // ── "keep watching" resume detector ─────────────────────────────
           // When a user replies on a topic that has any auto-paused beacons,

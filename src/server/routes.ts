@@ -19784,6 +19784,40 @@ export function createRoutes(ctx: RouteContext): Router {
   });
 
   /**
+   * GET /autonomous-heartbeat — read-only status for the AutonomousProgressHeartbeat
+   * (autonomous-progress-heartbeat spec §Status route). Bearer-auth (inherited),
+   * 503 when dark (the dev-gate left it dark / the silence backstop isn't wired).
+   * `lastEmits` is a ring buffer (last ~50); each `focus` stored here is the
+   * ALREADY-SCRUBBED value (never raw attacker content). Observe-only.
+   */
+  router.get('/autonomous-heartbeat', (_req, res) => {
+    const hb = (globalThis as Record<string, unknown>).__instarAutonomousHeartbeat as
+      | {
+          status?: () => {
+            enabled: boolean;
+            dryRun: boolean;
+            silenceThresholdMinutes: number;
+            lastTickAt: number;
+            topicsConsidered: number;
+            lastEmits: Array<{
+              topicId: number;
+              at: number;
+              minutesSilent: number;
+              focus: string | null;
+              dryRun: boolean;
+              suppressedReason?: string;
+            }>;
+          };
+        }
+      | undefined;
+    if (!hb || typeof hb.status !== 'function') {
+      res.status(503).json({ error: 'autonomous-heartbeat not configured (dark on this agent or silence backstop unwired)' });
+      return;
+    }
+    res.json(hb.status());
+  });
+
+  /**
    * POST /commitments/:id/revalidate
    * The revived session's deliberate re-think checkpoint (PROMISE-BEACON-
    * ESCALATION-SPEC §3.0). Records revalidatedAt + revalidatedBy SERVER-SIDE so

@@ -282,6 +282,12 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     justification: 'D4-verified observe-only: ticks on a cadence, emits an in-process `overlap` event with NO listener wired, and appends to a local sentinel-events.jsonl audit. No fetch/Telegram/relay, no LLM, no destructive or external action.',
   },
   {
+    name: 'autonomousHeartbeat',
+    configPath: 'monitoring.autonomousHeartbeat.enabled',
+    description: 'AutonomousProgressHeartbeat — hedged, change-gated, sparse liveness backstop for an autonomous run gone silent-to-user while output is still moving (autonomous-progress-heartbeat spec).',
+    justification: 'Dev-gated under the Maturation Path standard. CAN send a user-facing Telegram line, so it does not ship LIVE on dev: its persisted ConfigDefaults default is `dryRun: true` (the route + tick run, but the final send is swapped for a "would emit" log, gated on the SAME cooldown/budget as live — no per-tick flood). So enabling on dev makes only the READ surface + dry-run observation live; an actual send requires a deliberate `dryRun: false` after the dev soak. Signal-only (never gates/blocks/rewrites); every predicate fails CLOSED on uncertainty; bounded by a long user-silence gate + a corroborated recent-output-change + per-topic cooldown + widening per-run backoff + a hard per-run cap + the shared one-voice ProxyCoordinator lease. No spend (no LLM), no destructive action.',
+  },
+  {
     name: 'failureLearning',
     configPath: 'monitoring.failureLearning.enabled',
     description: 'Failure-Learning Loop — append-only failure ledger + pattern surface (/failures).',
