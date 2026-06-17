@@ -20880,6 +20880,57 @@ export function createRoutes(ctx: RouteContext): Router {
     res.json({ enabled: true, login });
   });
 
+  // WS5.2 §5.3 step 3 / S7 — Account Follow-Me completion with the email-validation gate.
+  // When an operator-authorized follow-me enrollment COMPLETES on this target machine, the
+  // freshly-minted login's account email is validated against the operator's expectation BEFORE
+  // the account becomes a selectable pool account. A surprise/mismatched/unverifiable email is
+  // HELD (NOT added to the pool) and raises a HIGH attention item. Only a verified match adds
+  // the account to the SubscriptionPool. Dark behind multiMachine.accountFollowMe (503 when off).
+  router.post('/subscription-pool/follow-me/enroll/:id/complete', async (req, res) => {
+    const afmCfg = (ctx.config as unknown as { multiMachine?: { accountFollowMe?: { enabled?: boolean } } }).multiMachine?.accountFollowMe;
+    if (!resolveDevAgentGate(afmCfg?.enabled, ctx.config)) {
+      res.status(503).json({ error: 'account follow-me not enabled' });
+      return;
+    }
+    if (!ctx.enrollmentWizard || !ctx.subscriptionPool) {
+      res.status(503).json({ error: 'enrollment wizard or subscription pool not configured' });
+      return;
+    }
+    const nickname = (req.body?.nickname && typeof req.body.nickname === 'string' && req.body.nickname.trim())
+      ? req.body.nickname.trim()
+      : 'this machine';
+    try {
+      const result = await ctx.enrollmentWizard.completeFollowMe(req.params.id, nickname);
+      if (result.outcome === 'not-found') {
+        res.status(404).json({ error: `pending login ${req.params.id} not found` });
+        return;
+      }
+      if (result.outcome === 'held') {
+        // Fail-closed: the account is NOT added to the pool; the gate already raised the
+        // HIGH attention item for the operator.
+        res.json({ enabled: true, outcome: 'held', reason: result.reason, login: result.login });
+        return;
+      }
+      // outcome === 'validated' — the email matched operator expectation; make it selectable.
+      const { login, email } = result;
+      const account = ctx.subscriptionPool.add({
+        id: login.id,
+        nickname: login.label,
+        provider: login.provider,
+        framework: login.framework,
+        configHome: login.configHome ?? '',
+        status: 'active',
+        email,
+      });
+      res.status(201).json({ enabled: true, outcome: 'validated', account });
+    } catch (err) {
+      const isValidation = err instanceof Error && err.name === 'ValidationError';
+      res.status(isValidation ? 400 : 500).json({
+        error: err instanceof Error ? err.message : 'follow-me completion failed',
+      });
+    }
+  });
+
   // ── Live credential re-pointing — levers + ledger census + audit-scrub (WS5.2 Step 7) ──
   //
   // POST /credentials/swap|set-default|restore-enrollment (DETECTIVE controls: operator

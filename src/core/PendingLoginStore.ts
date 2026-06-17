@@ -57,6 +57,11 @@ export interface PendingLogin {
    *  Claude two-code sequence (email-verification code first, then the sign-in code).
    *  Surfaced on the pending-login so the operator knows what to expect. */
   notice?: string;
+  /** WS5.2 §5.3/S7 — the account email the operator EXPECTED to enroll (the mandate's
+   *  account). On a follow-me completion the freshly-minted login's email is validated
+   *  against this before the account becomes selectable; a surprise email is held, not
+   *  auto-used. Absent for a plain (non-follow-me) enrollment. Never a secret. */
+  expectedEmail?: string;
   /** ISO timestamp the code/URL expires. */
   ttlExpiresAt: string;
   status: PendingLoginStatus;
@@ -91,6 +96,9 @@ export interface IssueLoginInput {
   userCode?: string;
   /** Operator-facing flow heads-up (e.g. the Claude two-code sequence). */
   notice?: string;
+  /** WS5.2 §5.3/S7 — the operator-expected account email (a follow-me login carries it
+   *  so completion can validate the minted account against operator expectation). */
+  expectedEmail?: string;
   /** TTL in ms from now (default 15 min — the observed Codex device-code TTL). */
   ttlMs?: number;
 }
@@ -172,6 +180,7 @@ export class PendingLoginStore {
       verificationUrl: input.verificationUrl.trim(),
       ...(input.userCode ? { userCode: input.userCode.trim() } : {}),
       ...(input.notice?.trim() ? { notice: input.notice.trim() } : {}),
+      ...(input.expectedEmail?.trim() ? { expectedEmail: input.expectedEmail.trim() } : {}),
       ttlExpiresAt: new Date(this.now() + (input.ttlMs ?? DEFAULT_TTL_MS)).toISOString(),
       status: 'pending',
       reissueCount: 0,

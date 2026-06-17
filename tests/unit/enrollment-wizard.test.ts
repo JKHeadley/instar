@@ -5,7 +5,7 @@
  * driver-failure resilience, default flow kind per provider, and complete.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -187,5 +187,95 @@ describe('EnrollmentWizard', () => {
     expect(cfg.bypassPermissionsModeAccepted).toBe(true);
     expect(cfg.hasTrustDialogAccepted).toBe(true);
     expect(cfg.oauthAccount).toEqual({ accountUuid: 'u-1' }); // untouched
+  });
+
+  // ── WS5.2 §5.3 step 3 / S7 — completeFollowMe (email-validation gate) ───────────────
+  describe('completeFollowMe (email-validation-before-selectable)', () => {
+    // Pre-issue a follow-me pending login carrying the operator-expected email.
+    function issueFollowMe(expectedEmail: string | undefined, configHome = '/x/.claude-fm') {
+      store.issue({
+        id: 'fm-1',
+        label: 'main',
+        provider: 'anthropic',
+        framework: 'claude-code',
+        kind: 'url-code-paste',
+        configHome,
+        verificationUrl: 'https://claude.com/oauth',
+        ...(expectedEmail !== undefined ? { expectedEmail } : {}),
+      });
+    }
+    function build(opts: {
+      oracle?: { resolveSlotTenant: (slot: string) => Promise<{ email?: string; unavailable?: boolean; reason?: string }> };
+      emitAttention?: (item: { id: string; title: string; body: string; priority: 'high'; source: 'agent' }) => void;
+    }) {
+      return new EnrollmentWizard({
+        store,
+        driveLogin: async () => ({ verificationUrl: 'https://claude.com/oauth', ttlMs: 15 * 60_000 }),
+        now: () => clock,
+        oracle: opts.oracle,
+        emitAttention: opts.emitAttention,
+      });
+    }
+
+    it('(a) matching email → validated, returns the email, no attention', async () => {
+      issueFollowMe('j@x.com');
+      const emit = vi.fn();
+      const w = build({ oracle: { resolveSlotTenant: async () => ({ email: 'j@x.com' }) }, emitAttention: emit });
+      const r = await w.completeFollowMe('fm-1', 'the Mini');
+      expect(r.outcome).toBe('validated');
+      if (r.outcome === 'validated') expect(r.email).toBe('j@x.com');
+      expect(emit).not.toHaveBeenCalled();
+      // the login was still completed (sync complete() ran)
+      expect(store.get('fm-1')?.status).toBe('completed');
+    });
+
+    it('(b) mismatched email → held + HIGH attention emitted + not validated', async () => {
+      issueFollowMe('approved@x.com');
+      const emit = vi.fn();
+      const w = build({ oracle: { resolveSlotTenant: async () => ({ email: 'attacker@evil.com' }) }, emitAttention: emit });
+      const r = await w.completeFollowMe('fm-1', 'the Mini');
+      expect(r.outcome).toBe('held');
+      if (r.outcome === 'held') expect(r.reason).toBe('email-mismatch');
+      expect(emit).toHaveBeenCalledTimes(1);
+      expect(emit.mock.calls[0][0]).toMatchObject({ priority: 'high', source: 'agent' });
+    });
+
+    it('(c) oracle unavailable → held (fail-closed)', async () => {
+      issueFollowMe('j@x.com');
+      const emit = vi.fn();
+      const w = build({ oracle: { resolveSlotTenant: async () => ({ unavailable: true, reason: '401' }) }, emitAttention: emit });
+      const r = await w.completeFollowMe('fm-1', 'the Mini');
+      expect(r.outcome).toBe('held');
+      if (r.outcome === 'held') expect(r.reason).toBe('missing-completed-email');
+      expect(emit).toHaveBeenCalledTimes(1);
+    });
+
+    it('(c2) no oracle configured → held (fail-closed)', async () => {
+      issueFollowMe('j@x.com');
+      const w = build({});
+      const r = await w.completeFollowMe('fm-1', 'the Mini');
+      expect(r.outcome).toBe('held');
+    });
+
+    it('(c3) oracle throws → held (fail-closed, never crashes)', async () => {
+      issueFollowMe('j@x.com');
+      const w = build({ oracle: { resolveSlotTenant: async () => { throw new Error('boom'); } } });
+      const r = await w.completeFollowMe('fm-1', 'the Mini');
+      expect(r.outcome).toBe('held');
+    });
+
+    it('(c4) missing operator-expected email → held (fail-closed even on a real probe)', async () => {
+      issueFollowMe(undefined);
+      const w = build({ oracle: { resolveSlotTenant: async () => ({ email: 'j@x.com' }) } });
+      const r = await w.completeFollowMe('fm-1', 'the Mini');
+      expect(r.outcome).toBe('held');
+      if (r.outcome === 'held') expect(r.reason).toBe('missing-expected-email');
+    });
+
+    it('(d) unknown id → not-found', async () => {
+      const w = build({ oracle: { resolveSlotTenant: async () => ({ email: 'j@x.com' }) } });
+      const r = await w.completeFollowMe('nope', 'the Mini');
+      expect(r.outcome).toBe('not-found');
+    });
   });
 });

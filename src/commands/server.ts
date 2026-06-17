@@ -10656,6 +10656,26 @@ export async function startServer(options: StartOptions): Promise<void> {
     const enrollmentWizard = new EnrollmentWizard({
       store: pendingLoginStore,
       logger: { log: (m) => console.log(m), warn: (m) => console.warn(m) },
+      // WS5.2 §5.3/S7 — the follow-me completion gate reads the minted login's account email
+      // from its config-home slot (the Anthropic OAuth profile endpoint) and validates it against
+      // operator expectation before the account is selectable. Same oracle the credential-location
+      // ledger uses; constructed fresh here (the ledger's instance is not in scope at this point).
+      oracle: new CredentialIdentityOracle(),
+      // A HELD follow-me completion (surprise/mismatched/unverifiable email) raises a HIGH
+      // attention item for the operator. Map the email-gate's {id,title,body,priority,source}
+      // shape onto the telegram attention-queue createAttentionItem shape.
+      emitAttention: telegram
+        ? (item) =>
+            void telegram!.createAttentionItem({
+              id: item.id,
+              title: item.title,
+              summary: item.body,
+              description: item.body,
+              category: 'account-follow-me',
+              priority: 'HIGH',
+              sourceContext: 'account-follow-me-email-gate',
+            })
+        : undefined,
       driveLogin: new FrameworkLoginDriver({
         capture: async (session) => sessionManager.captureOutput(session, 120) || '',
         spawn: async ({ framework, configHome }) => {

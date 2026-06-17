@@ -101,4 +101,17 @@ describe('PendingLoginStore', () => {
     expect(fresh.size()).toBe(0);
     expect(fresh.issue(deviceCode()).id).toBe('codex-1');
   });
+
+  // ── WS5.2 §5.3/S7 — expectedEmail (follow-me email-validation gate) ────────────────
+  it('issue() carries expectedEmail when provided (trimmed)', () => {
+    const login = store.issue({ ...deviceCode(), expectedEmail: '  J@X.com  ' });
+    expect(login.expectedEmail).toBe('J@X.com');
+    // round-trips through get()/list() (persisted onto the record)
+    expect(store.get('codex-1')?.expectedEmail).toBe('J@X.com');
+  });
+
+  it('issue() omits expectedEmail when absent or blank', () => {
+    expect(store.issue(deviceCode()).expectedEmail).toBeUndefined();
+    expect(store.issue({ ...deviceCode('codex-2'), expectedEmail: '   ' }).expectedEmail).toBeUndefined();
+  });
 });

@@ -30,6 +30,8 @@ import {
   ensureInteractiveReady,
   type EnsureInteractiveReadyResult,
 } from './ensureInteractiveReady.js';
+import type { IdentityOracle } from './CredentialLocationLedger.js';
+import { validateEnrolledAccountEmail } from './AccountFollowMeEmailGate.js';
 
 /** The public artifact a framework login yields (no secret). */
 export interface LoginArtifact {
@@ -61,6 +63,20 @@ export interface EnrollmentWizardConfig {
    * Injectable for hermetic tests; production uses the real util.
    */
   ensureReady?: (configHome: string) => EnsureInteractiveReadyResult;
+  /**
+   * WS5.2 §5.3/S7 — identity oracle used by `completeFollowMe` to read the freshly-minted
+   * login's account email from its config-home slot, for validation against operator
+   * expectation. Absent ⇒ the follow-me gate fails CLOSED (the account is HELD, never
+   * auto-selected). The plain `complete()` path never touches it.
+   */
+  oracle?: IdentityOracle;
+  /**
+   * WS5.2 §5.3/S7 — emit a HIGH attention item when a follow-me completion is HELD
+   * (surprise/mismatched/unverifiable email). Best-effort; absence does not change the
+   * fail-closed verdict (the account is still NOT selected), only whether the operator
+   * is paged.
+   */
+  emitAttention?: (item: { id: string; title: string; body: string; priority: 'high'; source: 'agent' }) => void;
 }
 
 export interface StartEnrollmentInput {
@@ -72,6 +88,9 @@ export interface StartEnrollmentInput {
   kind?: LoginFlowKind;
   /** The new account's CLAUDE_CONFIG_DIR — isolates the login to its own slot. */
   configHome?: string;
+  /** WS5.2 §5.3/S7 — the operator-expected account email (follow-me path only). Carried
+   *  onto the pending login so `completeFollowMe` can validate the minted account. */
+  expectedEmail?: string;
 }
 
 export class EnrollmentWizard {
@@ -79,12 +98,16 @@ export class EnrollmentWizard {
   private readonly driveLogin: LoginDriver;
   private readonly logger: { log: (m: string) => void; warn: (m: string) => void };
   private readonly ensureReady: (configHome: string) => EnsureInteractiveReadyResult;
+  private readonly oracle?: IdentityOracle;
+  private readonly emitAttention?: (item: { id: string; title: string; body: string; priority: 'high'; source: 'agent' }) => void;
 
   constructor(cfg: EnrollmentWizardConfig) {
     this.store = cfg.store;
     this.driveLogin = cfg.driveLogin;
     this.logger = cfg.logger ?? { log: () => {}, warn: () => {} };
     this.ensureReady = cfg.ensureReady ?? ensureInteractiveReady;
+    this.oracle = cfg.oracle;
+    this.emitAttention = cfg.emitAttention;
   }
 
   /** Default flow kind per provider: Codex/OpenAI = device-code (its endorsed
@@ -137,6 +160,7 @@ export class EnrollmentWizard {
       verificationUrl: artifact.verificationUrl,
       userCode: artifact.userCode,
       notice: EnrollmentWizard.flowNotice(kind),
+      expectedEmail: input.expectedEmail,
       ttlMs: artifact.ttlMs,
     });
     this.logger.log(`[EnrollmentWizard] started ${kind} login for ${input.label} (${input.provider})`);
@@ -197,6 +221,62 @@ export class EnrollmentWizard {
       }
     }
     return login;
+  }
+
+  /**
+   * WS5.2 §5.3 step 3 / S7 — the FOLLOW-ME completion path. Completes the pending login
+   * (reusing the sync `complete()` so claude-code interactive-readiness still runs), then
+   * validates the freshly-minted account's email against the operator's expectation BEFORE
+   * the account is allowed to become selectable. Only a verified match returns 'validated'
+   * (the caller — the route — then adds it to the SubscriptionPool); everything else FAILS
+   * CLOSED to 'held' (a HIGH attention item is emitted, the account is NOT added to the pool).
+   *
+   * Fail-closed by construction: a missing oracle, an unreadable/missing config-home, an
+   * unavailable identity probe, or a missing operator-expected email all resolve to 'held'
+   * — an account is NEVER auto-selected unless its email provably matches what the operator
+   * approved (this is the FOLLOW-ME path, so the email gate ALWAYS runs).
+   */
+  async completeFollowMe(
+    id: string,
+    targetMachineNickname: string,
+  ): Promise<
+    | { outcome: 'validated'; login: PendingLogin; email: string }
+    | { outcome: 'held'; login: PendingLogin; reason: string }
+    | { outcome: 'not-found' }
+  > {
+    const login = this.complete(id);
+    if (!login) return { outcome: 'not-found' };
+
+    // Read the email the COMPLETED login actually authenticated as. No oracle / no config-home
+    // / a probe failure are all treated as "unavailable" → the gate fails closed below.
+    let completedEmail: string | null = null;
+    if (this.oracle) {
+      let probe;
+      try {
+        probe = await this.oracle.resolveSlotTenant(login.configHome ?? '');
+      } catch (err) {
+        probe = { unavailable: true, reason: `oracle threw: ${err instanceof Error ? err.message : String(err)}` };
+      }
+      completedEmail = 'email' in probe && probe.email ? probe.email : null;
+    }
+
+    // The follow-me gate ALWAYS runs (this IS the follow-me path); a missing expectedEmail
+    // is caller misuse and the gate fails it closed with reason 'missing-expected-email'.
+    const verdict = validateEnrolledAccountEmail({
+      completedEmail,
+      expectedEmail: login.expectedEmail,
+      accountId: login.id,
+      targetMachineNickname,
+    });
+
+    if (verdict.selectable) {
+      this.logger.log(`[EnrollmentWizard] follow-me completion ${login.id} validated as ${verdict.email}`);
+      return { outcome: 'validated', login, email: verdict.email };
+    }
+
+    this.emitAttention?.(verdict.attentionItem);
+    this.logger.warn(`[EnrollmentWizard] follow-me completion ${login.id} HELD (${verdict.reason}) — account NOT selected`);
+    return { outcome: 'held', login, reason: verdict.reason };
   }
 
   /** The phone surface: still-valid logins awaiting approval. */
