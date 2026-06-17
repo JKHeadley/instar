@@ -2690,6 +2690,26 @@ export interface InstarConfig {
       /** Canonical store directory (default <stateDir>/state/feedback-factory/store). */
       dataDir?: string;
     };
+    /**
+     * Processing wiring (feedback-factory-migration spec §191 — "the processor
+     * job is actually constructed and scheduled, not dead code"). Turns the
+     * already-parity'd `processUnprocessed` clustering pass into a real
+     * triggerable capability: `GET /feedback-factory/stats` (read-only counts)
+     * + `POST /feedback-factory/process` (one clustering pass over the canonical
+     * store) + a cadenced built-in job that drives the trigger.
+     *
+     * DEV-GATED dark feature: `enabled` is OMITTED from ConfigDefaults so
+     * `resolveDevAgentGate` decides — LIVE on a development agent, DARK on the
+     * fleet (both routes 503 + the job exits silently when off). An explicit
+     * `enabled` in config always wins (false force-darks, true fleet-flips).
+     */
+    processing?: {
+      /** Dark-gate flag. OMITTED in defaults so the devAgentGate decides. */
+      enabled?: boolean;
+      /** Canonical store directory (default mirrors receiverPersistence:
+       *  <stateDir>/state/feedback-factory/store). */
+      dataDir?: string;
+    };
   };
   /**
    * Model-routing config. `tierEscalation` is the Model-Tier Escalation

@@ -775,6 +775,18 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     }),
   },
   {
+    key: 'feedbackFactoryProcessing',
+    prefixes: ['/feedback-factory'],
+    description: 'Feedback-factory PROCESSING (feedback-factory-migration §191) — the clustering/triage side of the operated instance. The InboxDrainer fills the canonical store; this clusters it. Dev-gated dark (feedbackFactory.processing) — LIVE on a development agent, 503 on the fleet. The cadenced feedback-factory-process built-in job (off by default, tier-1 supervised) drives the trigger. Appends LOCAL JSONL only — no external action, never force-closes a curated cluster.',
+    build: ({ ctx }) => ({
+      enabled: !!ctx.feedbackProcessing,
+      endpoints: [
+        'GET /feedback-factory/stats — { total, byStatus, clusterCount, dispatchCount, lastWriteAt } over the canonical store (read-only)',
+        'POST /feedback-factory/process — TRIGGER one clustering pass over the canonical store (appends local JSONL; idempotent + forward-only) → { processed, metrics, stats }',
+      ],
+    }),
+  },
+  {
     key: 'cutoverReadiness',
     prefixes: ['/cutover-readiness'],
     description: 'Cutover-READINESS checker (coordination-mandate spec §7 G2.4, decision 1A) — everything UP TO the cutover door, never the door. Composes the two objective conditions from REAL durable state: the persisted import IntegrityReport (integrity-gate-pass) and the durable zero-divergence parity window with a freshness bound (parity-zero-divergence). The flip itself is the operator\'s manual click; there is NO fire-cutover route by design.',
