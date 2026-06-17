@@ -218,6 +218,9 @@ export class AgentServer {
   private routeContext: {
     wsManager: import('./WebSocketManager.js').WebSocketManager | null;
     pendingRelayLookup?: (deliveryId: string) => boolean;
+    autonomousLivenessReconciler?:
+      | import('../monitoring/AutonomousLivenessReconciler.js').AutonomousLivenessReconciler
+      | null;
   } | null = null;
   private deliverySentinel: DeliveryFailureSentinel | null = null;
   private deliveryStore: PendingRelayStore | null = null;
@@ -648,6 +651,9 @@ export class AgentServer {
     /** ResumeQueue + drainer (reap-notify spec R2.10) — /sessions/resume-queue*. */
     resumeQueue?: import('../monitoring/ResumeQueue.js').ResumeQueue | null;
     resumeDrainer?: import('../monitoring/ResumeQueueDrainer.js').ResumeQueueDrainer | null;
+    autonomousLivenessReconciler?:
+      | import('../monitoring/AutonomousLivenessReconciler.js').AutonomousLivenessReconciler
+      | null;
     /** Records operator stop instructions for the drainer's R2.6 validation. */
     operatorStopRecorder?: (topicId: number | null) => void;
     /** SleepWakeDetector — timer-drift sleep detection with CPU-starvation guard.
@@ -2151,6 +2157,7 @@ export class AgentServer {
       reapLog: options.reapLog ?? null,
       resumeQueue: options.resumeQueue ?? null,
       resumeDrainer: options.resumeDrainer ?? null,
+      autonomousLivenessReconciler: options.autonomousLivenessReconciler ?? null,
       operatorStopRecorder: options.operatorStopRecorder ?? null,
       sleepWakeDetector: options.sleepWakeDetector ?? null,
       telegramBridgeConfig: options.telegramBridgeConfig ?? null,
@@ -3702,6 +3709,8 @@ export class AgentServer {
       try { this.resourceLedgerPoller.stop(); } catch { /* best-effort */ }
       this.resourceLedgerPoller = null;
     }
+    // Stop the AutonomousLivenessReconciler tick loop (clears its unref'd timer).
+    try { this.routeContext?.autonomousLivenessReconciler?.stop(); } catch { /* best-effort */ }
     if (this.parallelWorkSentinelTimer) {
       try { clearInterval(this.parallelWorkSentinelTimer); } catch { /* best-effort */ }
       this.parallelWorkSentinelTimer = null;

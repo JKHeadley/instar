@@ -4798,6 +4798,25 @@ When narrating a ship, an update I just applied, or a restart I just completed (
       result.upgraded.push('CLAUDE.md: added Multi-Session Autonomy awareness section');
     }
 
+    // Autonomous Liveness Reconciler awareness (Agent Awareness Standard).
+    // Existing agents need to know the level-triggered self-heal + the
+    // GET /autonomous/liveness read surface exist + the proactive trigger
+    // ("why did my autonomous run come back by itself?"), even if initialized
+    // before this capability shipped. Content-sniffed marker.
+    if (!content.includes('Autonomous Liveness Reconciler')) {
+      const livenessSection = `
+### Autonomous Liveness Reconciler
+
+**Autonomous Liveness Reconciler** — A level-triggered self-heal for an autonomous run whose state file says it is ACTIVE (with time remaining) but has NO live session executing it ("dead but marked active"). Per tick it compares desired (run active+remaining) vs actual (a live session exists) and converges: a debounced, lease-gated, quota-gated, pressure-gated respawn of a run that genuinely should be alive, capped (P19) so a flapping run gives up LOUDLY rather than respawn forever, respecting any operator stop. Ships DARK on the fleet (\`monitoring.autonomousLivenessReconciler.enabled\` OMITTED → the dev-agent gate resolves it) and dryRun-FIRST on dev (LOGS "would respawn" until a deliberate \`dryRun:false\` flip).
+
+- Status (content-free: topic ids + counters + conditions): \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/autonomous/liveness\` (503 when dark/disabled).
+- Proactive: user asks "why did my autonomous run come back by itself?" / "why did an autonomous run die / not resume?" → the reconciler noticed the run was marked active with no live session and self-healed it (GET /autonomous/liveness for the conditions; the per-transition audit is \`logs/autonomous-liveness.jsonl\`). A respawn it makes is tagged so a later reaper kill is revived by the resume queue, never silently dropped.
+`;
+      content += '\n' + livenessSection;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Autonomous Liveness Reconciler awareness section');
+    }
+
     // Framework-Onboarding Mentor System — issue-ledger observability (Agent
     // Awareness Standard). Existing agents need to know the read-only
     // /framework-issues + playbook routes exist, even if initialized before this

@@ -4035,6 +4035,43 @@ export interface MonitoringConfig {
     cadenceMinutes?: number;
   };
   /**
+   * AutonomousLivenessReconciler — level-triggered self-heal for an autonomous
+   * run marked active (with time remaining) but with no live session ("dead but
+   * marked active"). DEV-GATED: `enabled` OMITTED in ConfigDefaults so the
+   * dev-agent gate decides (LIVE on dev / DARK on fleet). dryRun-FIRST.
+   * docs/specs/autonomous-liveness-reconciler.md.
+   */
+  autonomousLivenessReconciler?: {
+    /** Live-on-dev / dark-fleet — OMITTED so resolveDevAgentGate decides. */
+    enabled?: boolean;
+    /** Observe-only: log would-respawn + would-have-capped (default: true). */
+    dryRun?: boolean;
+    /** Reconcile cadence (default 120). */
+    tickIntervalSec?: number;
+    /** Consecutive observations before acting (default 2). */
+    debounceTicks?: number;
+    /** Min wall-clock a candidate must persist (default 180). */
+    debounceWindowSec?: number;
+    /** Bound on a single spawn (default 45000). */
+    respawnTimeoutMs?: number;
+    /** P19 redie brake — respawns per window (default 3). */
+    respawnCapPerWindow?: number;
+    /** Redie cap window (default 21600 = 6h). */
+    respawnCapWindowSec?: number;
+    /** Separate infra-failure budget (default 6). */
+    spawnFailureRetryCeiling?: number;
+    /** Bound on pressure-deferral ticks before acting/escalating (default 10). */
+    maxPressureBlockedTicks?: number;
+    /** Wall-clock bound on pressure-deferral (default 1800 = 30m). */
+    maxPressureBlockedSec?: number;
+    /** Respawn fresh when no resume UUID (default false → raise attention). */
+    allowFreshFallback?: boolean;
+    /** Stale-`spawning` TTL (default respawnTimeoutMs + grace). */
+    inflightSpawnTtlMs?: number;
+    /** Self-heal line on a live respawn (default true). */
+    notifyUser?: boolean;
+  };
+  /**
    * Blocker Ledger — the durable resolution-workflow + memory layer that
    * COMPLETES Principle 1 ("almost every blocker is a false blocker — work it").
    * The deferral-detector / B16 / B17 path already DETECTS false-blocker framing;

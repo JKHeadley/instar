@@ -282,6 +282,12 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     justification: 'D4-verified observe-only: ticks on a cadence, emits an in-process `overlap` event with NO listener wired, and appends to a local sentinel-events.jsonl audit. No fetch/Telegram/relay, no LLM, no destructive or external action.',
   },
   {
+    name: 'autonomousLivenessReconciler',
+    configPath: 'monitoring.autonomousLivenessReconciler.enabled',
+    description: 'Level-triggered self-heal for an autonomous run marked active but with no live session ("dead but marked active" — docs/specs/autonomous-liveness-reconciler.md).',
+    justification: 'Ships dryRun-first (the component code-defaults dryRun:true): on the dev agent the gate makes the reconcile loop + GET /autonomous/liveness LIVE but it only LOGS "would respawn" until a deliberate dryRun:false flip — zero spawns, zero spend while dark/dryRun. Live, its only action is a bounded (P19 cap), lease-gated, operator-stop-respecting, quota-gated respawn of a run the run-state file already says should be alive — the strictly-safe direction. Never blocks/rewrites a message. Routes 503 when off.',
+  },
+  {
     name: 'failureLearning',
     configPath: 'monitoring.failureLearning.enabled',
     description: 'Failure-Learning Loop — append-only failure ledger + pattern surface (/failures).',

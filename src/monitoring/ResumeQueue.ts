@@ -740,6 +740,19 @@ export class ResumeQueue {
     return this.state.tombstones.find((t) => t.stableKey === stableKey);
   }
 
+  /**
+   * Public read of the resurrection count for a topic — the SAME stable key the
+   * queue's own cap uses. The AutonomousLivenessReconciler reads this to UNIFY
+   * its redie give-up bound with the queue's resurrection cap (spec §"Loop
+   * brake"): a reconciler-respawned session is marked midWork, so a later reaper
+   * kill is revived by the queue under ITS cap; counting that toward the
+   * reconciler's redie counter makes the two paths share ONE effective give-up
+   * bound. Read-only; never mutates. 0 when no tombstone exists.
+   */
+  resurrectionCountForTopic(topicId: number): number {
+    return this.tombstoneFor(`topic:${topicId}`)?.resurrections ?? 0;
+  }
+
   /** Record a successful resume (drainer, after spawn verification). */
   recordResumeSuccess(stableKey: string): void {
     let tombstone = this.tombstoneFor(stableKey);
