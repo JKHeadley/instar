@@ -1436,6 +1436,24 @@ export const PATCHABLE_CONFIG_KEYS: ReadonlySet<string> = new Set([
   'dispatches', 'feedback',
 ]);
 
+/**
+ * Resolve THIS agent's routing fingerprint — the named-party identity the mandate gate checks
+ * against the mandate's grantedTo. Mirrors the /passport route's best-effort source (the
+ * threadline agent-info.json fingerprint) and falls back to the project name when unavailable.
+ * Used by the account-follow-me enroll-start route's mandate evaluate (deny-by-default).
+ */
+function resolveAgentFingerprint(ctx: RouteContext): string {
+  try {
+    const infoPath = path.join(ctx.config.stateDir, '..', 'threadline', 'agent-info.json');
+    if (fs.existsSync(infoPath)) {
+      const info = JSON.parse(fs.readFileSync(infoPath, 'utf-8')) as { fingerprint?: string; publicKey?: string };
+      if (info.fingerprint) return info.fingerprint;
+      if (info.publicKey) return info.publicKey;
+    }
+  } catch { /* fall through to project name */ }
+  return ctx.config.projectName ?? 'self';
+}
+
 export function createRoutes(ctx: RouteContext): Router {
   const router = Router();
 
@@ -20850,6 +20868,81 @@ export function createRoutes(ctx: RouteContext): Router {
       res.json({ enabled: true, offered });
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : 'follow-me scan failed' });
+    }
+  });
+
+  // WS5.2 §5.3 (R6/R6a) — Account Follow-Me: DRIVE THE ENROLLMENT START on THIS target machine.
+  // After the operator issues the `account-follow-me` mandate (PIN-gated, on this machine's own
+  // dashboard — OQ6 option 2), this route is the keystone that re-mints the login (Mechanism B,
+  // ToS-safe — no token is ever copied). It is the START counterpart to /follow-me/enroll/:id/complete.
+  //
+  // Authorization is the operator MANDATE, deny-by-default (R1): the mandate gate is consulted for
+  // (accountId, this machine, mechanism=re-mint); a deny/absent mandate STOPS with 403. The
+  // operator-expected account email (S7) is resolved AUTHORITATIVELY from real pool state (the local
+  // pool + the same peer-views the scan uses — the replicated subscription-account-meta projection),
+  // NEVER from the request body — so `completeFollowMe` can later validate the minted account against
+  // what the operator actually approved. Unresolvable email ⇒ 409 fail-closed (never start blank).
+  // Dark behind multiMachine.accountFollowMe (503 when off). Mirrors the scan route's dark-gate exactly.
+  router.post('/subscription-pool/follow-me/enroll/start', async (req, res) => {
+    const afmCfg = (ctx.config as unknown as { multiMachine?: { accountFollowMe?: { enabled?: boolean } } }).multiMachine?.accountFollowMe;
+    if (!resolveDevAgentGate(afmCfg?.enabled, ctx.config)) {
+      res.status(503).json({ error: 'account follow-me not enabled' });
+      return;
+    }
+    if (!ctx.enrollmentWizard || !ctx.subscriptionPool || !ctx.coordination?.gate) {
+      res.status(503).json({ error: 'enrollment wizard, subscription pool, or mandate gate not configured' });
+      return;
+    }
+    const b = req.body ?? {};
+    if (typeof b.mandateId !== 'string' || !b.mandateId || typeof b.accountId !== 'string' || !b.accountId) {
+      res.status(400).json({ error: 'mandateId and accountId are required' });
+      return;
+    }
+    const { mandateId, accountId } = b as { mandateId: string; accountId: string };
+    const targetMachineId = ctx.meshSelfId ?? (ctx.config as { machineId?: string }).machineId ?? 'local';
+
+    // THE AUTHORIZATION (deny-by-default): consult the operator mandate for THIS exact
+    // (account, this machine, mechanism). A non-allow verdict STOPS — never work around it.
+    const verdict = ctx.coordination.gate.evaluate({
+      action: 'account-follow-me',
+      params: { accountId, targetMachineId, mechanism: 're-mint' },
+      agentFp: resolveAgentFingerprint(ctx),
+      mandateId,
+    });
+    if (verdict.decision !== 'allow') {
+      res.status(403).json({ error: 'account follow-me not authorized', reason: verdict.reason });
+      return;
+    }
+
+    // S7 — resolve the operator-APPROVED email authoritatively (local pool + peer views), NEVER
+    // from the request body. Unresolvable ⇒ fail-closed (never start with a blank/wrong email).
+    try {
+      const { resolveFollowMeEnrollTarget } = await import('../core/resolveFollowMeEnrollTarget.js');
+      const localAccounts = ctx.subscriptionPool.list().map((a) => ({
+        id: a.id, email: a.email, nickname: a.nickname, provider: a.provider, framework: a.framework,
+      }));
+      const peerViews = ctx.accountFollowMePeerViews ? await ctx.accountFollowMePeerViews() : [];
+      const target = resolveFollowMeEnrollTarget({ accountId, localAccounts, peerViews });
+      if (!target.resolved) {
+        res.status(409).json({ error: 'cannot resolve approved account email' });
+        return;
+      }
+
+      // Allocate this account's own config-home slot on THIS machine (one home per credential).
+      const safeAccountId = accountId.replace(/[^a-z0-9-]/gi, '-');
+      const configHome = path.join(os.homedir(), `.claude-followme-${safeAccountId}`);
+
+      const login = await ctx.enrollmentWizard.start({
+        id: accountId,
+        label: target.label,
+        provider: target.provider as import('../core/PendingLoginStore.js').LoginProvider,
+        framework: target.framework as import('../core/PendingLoginStore.js').PendingLogin['framework'],
+        configHome,
+        expectedEmail: target.expectedEmail,
+      });
+      res.status(201).json({ enabled: true, login });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : 'follow-me enroll start failed' });
     }
   });
 
