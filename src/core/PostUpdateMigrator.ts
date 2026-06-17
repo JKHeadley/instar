@@ -5289,6 +5289,27 @@ When enabled, certain stores (preferences, relationships) replicate across my ma
       result.upgraded.push('CLAUDE.md: added WS2.6 user-registry + topic-operator PII lines to One Memory (replicated stores)');
     }
 
+    // WS5.2 Account Follow-Me — seamless cross-machine account/quota sharing. A STANDALONE
+    // awareness section (NOT part of the WS2 "One Memory" family — it's account continuity, not a
+    // replicated memory store). Migration Parity: a deployed agent must be able to answer "do I
+    // have to log in on every machine?" and "is my login copied between machines?" before any
+    // operator enables it. Idempotent via the unique 'Cross-Machine Account Follow-Me (WS5.2'
+    // marker; spliced before the "**Relationships**" anchor that follows the One Memory block.
+    if (!content.includes('Cross-Machine Account Follow-Me (WS5.2')) {
+      const ws52Section =
+        '**Cross-Machine Account Follow-Me (WS5.2 — seamless account/quota sharing)** — When I run on more than one machine, "log in once, the account works everywhere" is delivered the ToS-SAFE way: each machine RE-MINTS its OWN login (operator approves once per machine; Mechanism B — default), and NO Claude OAuth token is ever copied between machines (Anthropic\'s ToS forbids relocating a Claude login). Only a redacted, credential-free METADATA projection of each account (id, nickname, email, provider, framework, status, quota) replicates so a peer KNOWS an account\'s depth/quota — the login LOCATION (configHome) and every credential field are STRIPPED and never cross the wire. A cross-machine credential SHARE (Mechanism A, sealed-transport) is fully designed but REFUSED for Anthropic by default (per-provider allowlist, default empty). Authorization is operator-mandate-gated (deny-by-default; a peer can NEVER enroll an account onto itself via the mesh), the cross-machine mandate carries an asymmetric Ed25519 issuance signature (the local HMAC proof is machine-local), de-pairing ROTATES the recipient key so old sealed credentials die, and per-account spend is lease-sliced (sum-of-leases bound). Ships DARK on the fleet, LIVE on a development agent (dogfooding); gate: `multiMachine.accountFollowMe`. Spec: `docs/specs/ws52-account-follow-me-security.md`.\n' +
+        '- **When to use** (PROACTIVE): the user asks "do I have to log my account in on every machine?" / "share my account across machines" → explain the re-mint-per-machine model (one approval per machine, then that machine serves from the shared pool\'s quota; no token copied). "is my login copied to my other machines?" → NO — only non-credential account metadata replicates; each machine holds its own grant.\n\n';
+      const relAnchor = '**Relationships** — Track people I interact with.';
+      const relIdx = content.indexOf(relAnchor);
+      if (relIdx >= 0) {
+        content = content.slice(0, relIdx) + ws52Section + content.slice(relIdx);
+      } else {
+        content += `\n${ws52Section}`;
+      }
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added WS5.2 Account Follow-Me awareness section');
+    }
+
     // ContextWedgeSentinel — the 4th silently-stopped sentinel. Tells the agent
     // about the transcript fast-fail wedges (thinking-block 400 + AUP-rejection
     // loop) + that auto-recovery is opt-in. Without it, an agent asked "why did

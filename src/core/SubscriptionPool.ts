@@ -8,11 +8,18 @@
  * provider." Each account is a first-class registry entry keyed to its login
  * LOCATION — its per-account config home (e.g. CLAUDE_CONFIG_DIR) — NOT its
  * tokens. This is the load-bearing invariant behind decision 1A
- * ("re-enroll per machine now, architect for cross-machine sync later"):
- * because the registry only ever stores the config-home path, a future
- * cross-machine sync (decision 1B) is a clean bolt-on that ships each account's
- * credential blob over the existing E2E secret-sync — the registry itself never
- * has to change shape, and a leaked registry file never leaks a credential.
+ * ("re-enroll per machine"): because the registry only ever stores the
+ * config-home path, a leaked registry file never leaks a credential.
+ *
+ * Cross-machine account follow-me (WS5.2, docs/specs/ws52-account-follow-me-security.md):
+ * the DEFAULT is RE-MINT PER MACHINE (Mechanism B) — each machine drives its OWN
+ * operator-approved login and holds its own grant; an OAuth config-home NEVER crosses
+ * machines. Only a NON-credential, redacted metadata projection replicates (the
+ * `subscription-account-meta` JournalKind — id/nickname/email/provider/framework/status/
+ * quota; configHome STRIPPED). Shipping each account's credential blob over E2E secret-sync
+ * is Mechanism A — a SEPARATE, per-provider-allowlist, default-OFF path that is REFUSED for
+ * Anthropic (its ToS prohibits relocating Claude OAuth tokens). NOT the default; do not
+ * conflate the two.
  *
  * Why never tokens: Anthropic prohibits Claude OAuth tokens in non-Claude-Code
  * tools and enforces it. The pool drives each account through its real
@@ -31,6 +38,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { ComponentHealth } from './types.js';
+import type { SubscriptionAccountMetaReplicationEmitter } from './SubscriptionAccountMetaReplicatedStore.js';
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -203,10 +211,23 @@ export class ValidationError extends Error {
 export class SubscriptionPool {
   private storePath: string;
   private store: SubscriptionPoolStore;
+  /**
+   * WS5.2 §6.1a — optional emit seam for cross-machine registry follow-me (metadata only).
+   * Wired in server.ts ONLY when `multiMachine.accountFollowMe` resolves enabled; null = no
+   * replication (single-machine / dark default). The pool emits a REDACTED projection
+   * (projectAccountToMeta strips configHome + every credential field by allowlist) — never the
+   * login location, never a token.
+   */
+  private metaReplication: SubscriptionAccountMetaReplicationEmitter | null = null;
 
   constructor(config: SubscriptionPoolConfig) {
     this.storePath = path.join(config.stateDir, 'subscription-pool.json');
     this.store = this.load();
+  }
+
+  /** Inject the follow-me meta emitter (server.ts, gated behind accountFollowMe). */
+  setMetaReplicationEmitter(emitter: SubscriptionAccountMetaReplicationEmitter | null): void {
+    this.metaReplication = emitter;
   }
 
   // ── Reads ────────────────────────────────────────────────────────
@@ -275,6 +296,7 @@ export class SubscriptionPool {
     };
     this.store.accounts.push(account);
     this.save();
+    this.metaReplication?.emitPut(account);
     return { ...account };
   }
 
@@ -328,6 +350,8 @@ export class SubscriptionPool {
 
     acct.version += 1;
     this.save();
+    // Re-emit on any mutation — a peer must SEE a status/quota change (§6.1a holder stream).
+    this.metaReplication?.emitPut(acct);
     return { ...acct };
   }
 
@@ -336,7 +360,10 @@ export class SubscriptionPool {
     const before = this.store.accounts.length;
     this.store.accounts = this.store.accounts.filter((a) => a.id !== id);
     const removed = this.store.accounts.length < before;
-    if (removed) this.save();
+    if (removed) {
+      this.save();
+      this.metaReplication?.emitDelete(id, new Date().toISOString());
+    }
     return removed;
   }
 

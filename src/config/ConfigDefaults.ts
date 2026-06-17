@@ -723,6 +723,22 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
   // Track H). This is the migration-parity path: every existing agent gets the dark
   // defaults on update. The `stage` field is StageAdvancer-write-only at runtime.
   multiMachine: {
+    // WS5.2 Account Follow-Me (docs/specs/ws52-account-follow-me-security.md). The
+    // `enabled` literal is DELIBERATELY OMITTED (not hardcoded false) so
+    // resolveDevAgentGate decides at runtime — DARK on the fleet (the security spec's
+    // reserved-dark default), and LIVE on a development agent for dogfooding (the goal
+    // is to prove follow-me live on the operator's own machines). Registered in
+    // DEV_GATED_FEATURES (configPath multiMachine.accountFollowMe.enabled). Even when
+    // resolved live there is NO live-credential code path in PR1 — only the non-credential
+    // metadata projection + the security primitives exist; so dev-live is functionally
+    // inert until the later wiring PRs. `credentialTransport` is the per-provider
+    // allowlist for Mechanism A (sealed-transport) — default EMPTY, and anthropic is
+    // REFUSED regardless (its ToS forbids relocating Claude OAuth tokens). `maxFollowMachines`
+    // bounds the per-account fan-out (R7).
+    accountFollowMe: {
+      credentialTransport: {},
+      maxFollowMachines: 5,
+    },
     // WS3 one-voice gate (MULTI-MACHINE-SEAMLESSNESS-SPEC). Ships DARK: with
     // ws3OneVoice false the SpeakerElection returns "speak" unconditionally —
     // byte-for-byte today's behavior. Single-machine pools are a strict no-op

@@ -182,6 +182,12 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     justification: 'Coordinates between the operator\'s OWN machines only — no external egress; the persisted intent is bound to the AUTHENTICATED operator and the owner REVALIDATES at apply time (a stale resolve against a since-escalated item is rejected — current state wins); when dark the routes 503 and the precedence guard is inert; strict single-machine no-op (no peers). No destructive action, no third-party spend. Operator directive 2026-06-13 topic 13481.',
   },
   {
+    name: 'accountFollowMe',
+    configPath: 'multiMachine.accountFollowMe.enabled',
+    description: 'WS5.2 Account Follow-Me — seamless cross-machine account/quota sharing (re-mint per machine, ToS-safe; no OAuth token copied). Gates the non-credential metadata projection + the security primitives.',
+    justification: 'No external egress and no third-party spend from the flag itself. The credential SHARE path (Mechanism A sealed-transport) is SEPARATELY gated by credentialTransport (default empty, anthropic REFUSED); the enroll path (Mechanism B) is operator-mandate-gated (deny-by-default, needs a PIN-issued mandate) — so the real authority is the operator mandate, NOT this flag. In PR1 there is NO live-credential code path at all (only the non-credential subscription-account-meta projection + inert primitives), so live-on-dev is functionally inert. Dev-live is the dogfooding intent (prove follow-me on the operator\'s own machines). Strict single-machine no-op. Operator directive 2026-06-13 topic 13481 + ws52-account-follow-me-security.md §9.',
+  },
+  {
     name: 'ws43RoleGuard',
     configPath: 'multiMachine.seamlessness.ws43RoleGuard',
     description: 'WS4.3 role-guard-at-spawn — the scheduler refuses to spawn a STATE-WRITING job on a machine that does NOT hold the lease (closes the TOCTOU hole where a machine demotes to read-only standby mid-run while its cron tasks keep firing).',

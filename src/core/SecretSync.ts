@@ -144,6 +144,12 @@ export class SecretShareHandler {
 
   /** Decrypt + store. Returns the keyPaths stored. Throws only on a malformed/foreign payload. */
   handle(command: SecretShareCommand, sender: string): { stored: string[] } {
+    // The legacy permissive path must be structurally unreachable for credential-class data
+    // (WS5.2 R3a / §6.5): a credential rides the distinct `account-credential-share` verb +
+    // `decryptAccountCredential`, never this one. Reject anything that is not a secret-share.
+    if (!command || command.type !== 'secret-share') {
+      throw new Error(`SecretShareHandler refuses non-secret-share command (got "${command?.type}") — credential-class data must use account-credential-share`);
+    }
     const payload = JSON.parse(command.encrypted) as EncryptedSecretPayload;
     const secrets = decryptFromSync(payload, this.deps.ownEncryptionPrivateKey());
     const stored: string[] = [];

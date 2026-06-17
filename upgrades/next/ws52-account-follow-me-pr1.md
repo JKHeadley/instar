@@ -1,0 +1,20 @@
+## What Changed
+
+WS5.2 Account Follow-Me, PR1 — the shared security primitives for seamless cross-machine account/quota sharing, with **no live-credential code path** (the security spec's build-order requires the secure mechanism to exist and be proven before any credential-bearing wiring). Ships DARK on the fleet (live on a development agent for dogfooding) behind `multiMachine.accountFollowMe`.
+
+Added: an AAD-bound, fail-closed credential-sealing crypto pair (`encryptAccountCredential`/`decryptAccountCredential`, domain-separated from secret-sync); the distinct `account-credential-share` mesh verb + an RBAC-gated handler (recipient-match → operator-mandate → single-use grant, all before decrypt); an asymmetric Ed25519 cross-machine mandate issuance signature (the existing HMAC proof is machine-local); de-pair X25519 key-rotation with a durable, rollback-resistant epoch anchor; single-use grants + a per-account sum-of-leases spend ceiling; and the `subscription-account-meta` replicated JournalKind — a redacted, credential-free projection (id/nickname/email/provider/framework/status/quota) that replicates so a peer knows an account's depth/quota WITHOUT holding its login (the login location and every credential field are stripped). R0: corrected the `SubscriptionPool.ts` header contradiction (default is re-mint-per-machine, not credential-blob transport).
+
+## Evidence
+
+- 61 new unit tests + the wiring-integrity test, all green; full replication regression suite green (147 tests together); `tsc --noEmit` clean.
+- The wiring-integrity test caught a real bug pre-ship (a reserved-envelope-field collision that would have thrown at server-startup registration and disrupted machine-to-machine sync) — fixed.
+- Side-effects review + mandatory independent second-pass security review (high-risk: credentials/gate/mesh) — reviewer concurred after independently re-running the tests + tsc and verifying no fail-open path, no credential-on-the-wire, and a genuinely-inert fleet default. Artifact: `upgrades/side-effects/ws52-account-follow-me-pr1.md`.
+- Spec: `docs/specs/ws52-account-follow-me-security.md` (converged 2026-06-13, approved).
+
+## What to Tell Your User
+
+Nothing changes for you yet — this lays the secure foundation for "log in once, your account works on every machine," shipped off by default. When the follow-on pieces land, a new machine with no account will (with one approval tap from you) enroll its own login and serve from your shared quota — and no Claude login token is ever copied between machines (each machine mints its own, the ToS-safe way). If asked "do I have to log in on every machine?" the answer will be: the agent does it for you, one tap per machine.
+
+## Summary of New Capabilities
+
+Cross-machine account follow-me security foundation (dark): AAD-bound credential sealing, an operator-mandate-gated credential-share mesh verb, asymmetric cross-machine mandate signatures, de-pair key-rotation revocation, per-account lease-sliced spend bounds, and a credential-free account-metadata replication kind. No user-facing surface is live in this release.

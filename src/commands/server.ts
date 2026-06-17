@@ -3718,6 +3718,18 @@ export async function startServer(options: StartOptions): Promise<void> {
     const { THREADLINE_PAIRING_KIND_REGISTRATION } = await import('../core/ThreadlinePairingReplicatedStore.js');
     replicatedKindRegistry.register(THREADLINE_PAIRING_KIND_REGISTRATION);
 
+    // WS5.2 Account Follow-Me §6.1a — register the `subscription-account-meta` kind onto the
+    // registry: registry follow-me = METADATA ONLY (a redacted, credential-free projection of a
+    // SubscriptionAccount; configHome + every credential field STRIPPED). Dual-registry's dynamic
+    // half (the static half is CoherenceJournal.JOURNAL_KINDS, which now lists
+    // 'subscription-account-meta'). Registration is INERT — emission/serve/pull stay gated behind
+    // `multiMachine.accountFollowMe.enabled` (default false ⇒ strict no-op, NO account metadata
+    // crosses a machine boundary). The recordKey is the account id (charset-clamped). This kind
+    // carries NO login: the credential half is the SEPARATE account-credential-share verb +
+    // re-mint-per-machine default (Mechanism B); see ws52-account-follow-me-security.md.
+    const { SUBSCRIPTION_ACCOUNT_META_KIND_REGISTRATION } = await import('../core/SubscriptionAccountMetaReplicatedStore.js');
+    replicatedKindRegistry.register(SUBSCRIPTION_ACCOUNT_META_KIND_REGISTRATION);
+
     // ── WS2 SEND-SIDE wiring (docs/specs/WS2-SEND-SIDE-EMISSION-SPEC.md). The
     //    substrate above ships the registry + receive/serve machinery + advert; THIS
     //    wires the SEND half that was deferred ("the journal-backed emitter is attached
@@ -3820,9 +3832,23 @@ export async function startServer(options: StartOptions): Promise<void> {
     // `enabled` is already the resolved boolean — the funnels keep their unchanged
     // `enabled === true` semantics but now see a live flag on a dev agent. An explicit
     // operator `enabled` in config still wins (force-dark false / fleet-flip true).
-    const _stateSyncStoresResolved = resolveStateSyncStores(
+    const _stateSyncStoresBase = resolveStateSyncStores(
       config as { developmentAgent?: boolean; multiMachine?: { stateSync?: Record<string, { enabled?: boolean } & Record<string, unknown>> } },
     ) as import('../core/ReplicatedRecordEnvelope.js').StateSyncStores | undefined;
+    // WS5.2 §6.1a — the `subscriptionAccountMeta` store gates on `multiMachine.accountFollowMe`
+    // (NOT a `stateSync.*` flag). Inject its dev-gate-resolved enabled-state into the SAME
+    // store-flags map the generic emitter + receive-advert consult, so account-meta emission +
+    // the receive capability gate on accountFollowMe (dev-live / fleet-dark) coherently. When the
+    // gate resolves OFF the entry is absent ⇒ the emitter's `enabled===true` check fails ⇒ strict
+    // no-op (no account metadata ever crosses), exactly like the dark stateSync stores.
+    const _accountFollowMeEnabled = resolveDevAgentGate(
+      (config as { multiMachine?: { accountFollowMe?: { enabled?: boolean } } }).multiMachine?.accountFollowMe?.enabled,
+      config,
+    );
+    const _stateSyncStoresResolved: import('../core/ReplicatedRecordEnvelope.js').StateSyncStores | undefined =
+      _accountFollowMeEnabled
+        ? { ...(_stateSyncStoresBase ?? {}), subscriptionAccountMeta: { enabled: true } }
+        : _stateSyncStoresBase;
 
     // WS2 send-side: the generic journal-backed record emitter (the concrete emitter
     // the per-store managers' emit hooks call). Needs the journal sink, the HLC clock,
@@ -9958,6 +9984,36 @@ export async function startServer(options: StartOptions): Promise<void> {
     const subscriptionPool = new SubscriptionPool({ stateDir: config.stateDir });
     if (subscriptionPool.size() > 0) {
       console.log(pc.green(`  Subscription pool: ${subscriptionPool.size()} account(s) registered`));
+    }
+
+    // WS5.2 §6.1a — wire cross-machine registry follow-me (METADATA ONLY). When the generic
+    // record emitter exists AND accountFollowMe resolves enabled (the entry was injected into
+    // _stateSyncStoresResolved above), attach the emit adapter so an account add/status/quota
+    // change/remove replicates a REDACTED projection (projectAccountToMeta strips configHome +
+    // every credential field by allowlist). The emitter itself re-checks the store-flag gate, so
+    // a dark/fleet agent is a strict no-op even if the adapter is attached. NO login crosses.
+    if (replicatedRecordEmitter && _accountFollowMeEnabled) {
+      const emitter = replicatedRecordEmitter;
+      const {
+        SUBSCRIPTION_ACCOUNT_META_STORE_KEY,
+        deriveSubscriptionAccountMetaRecordKey,
+        buildSubscriptionAccountMetaData,
+        buildSubscriptionAccountMetaTombstoneData,
+      } = await import('../core/SubscriptionAccountMetaReplicatedStore.js');
+      subscriptionPool.setMetaReplicationEmitter({
+        emitPut: (acct) =>
+          emitter.emit(
+            SUBSCRIPTION_ACCOUNT_META_STORE_KEY,
+            deriveSubscriptionAccountMetaRecordKey(acct.id),
+            (hlc, origin, observed) => buildSubscriptionAccountMetaData({ account: acct, hlc, origin, observed }),
+          ),
+        emitDelete: (accountId, deletedAt) =>
+          emitter.emit(
+            SUBSCRIPTION_ACCOUNT_META_STORE_KEY,
+            deriveSubscriptionAccountMetaRecordKey(accountId),
+            (hlc, origin, observed) => buildSubscriptionAccountMetaTombstoneData({ accountId, hlc, origin, deletedAt, observed }),
+          ),
+      });
     }
 
     // POOL-AWARE QUOTA THROTTLE wiring (docs/specs/POOL-AWARE-QUOTA-THROTTLE-SPEC.md):

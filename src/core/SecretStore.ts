@@ -584,6 +584,186 @@ export function decryptFromSync(
   return JSON.parse(decrypted.toString('utf-8'));
 }
 
+// ── Account-credential sealing (WS5.2 Mechanism A — AAD-bound) ───────
+//
+// CRITICAL (spec §3.1, R3): `encryptForSync`/`decryptFromSync` above CANNOT
+// carry an AAD binding — `decryptFromSync` will decrypt ANY payload sealed to a
+// machine's long-term X25519 key, with no concept of recipient/account/epoch.
+// A captured Mechanism-A blob replayed through that path would decrypt happily,
+// defeating the entire binding. Therefore credential-class payloads use this
+// DISTINCT pair, which:
+//   1. derives its AES key under a SEPARATE HKDF info string, so a blob sealed
+//      by `encryptForSync` can NEVER decrypt here and vice-versa (cryptographic
+//      domain separation — defense in depth on top of the wire-verb split);
+//   2. binds the AAD (recipient fingerprint, account id, mandate id, single-use
+//      grant id, pairing epoch) into AES-256-GCM via `setAAD`, so any mismatch
+//      fails the tag check; AND
+//   3. `decryptAccountCredential` FAILS CLOSED (throws) on an absent or
+//      mismatched AAD BEFORE attempting decryption — never silently degrading.
+
+/** HKDF info string for account-credential sealing — DISTINCT from secret-sync. */
+const ACCOUNT_CRED_HKDF_INFO = 'instar-account-credential-v1';
+
+/**
+ * Additional-authenticated-data binding a sealed credential to exactly one
+ * (recipient machine, account, mandate, single-use grant, key-rotation epoch).
+ * Every field is load-bearing: a payload sealed with one AAD cannot be consumed
+ * under any other (recipient swap, account swap, replay, post-rotation reuse).
+ */
+export interface AccountCredentialAAD {
+  /** Routing fingerprint of the machine this blob is sealed FOR (recipient binding, S1/S2). */
+  recipientFingerprint: string;
+  /** SubscriptionAccount.id the credential belongs to (account binding). */
+  accountId: string;
+  /** Authorizing coordination-mandate id (R1). */
+  mandateId: string;
+  /** Single-use grant id — a consumed grant must be rejected on replay (R3, §8.1). */
+  grantId: string;
+  /** Recipient X25519 key-rotation generation (R4b) — old blobs die on de-pair rotation. */
+  pairingEpoch: number;
+}
+
+/** Encrypted account-credential payload (AAD carried in clear, authenticated by GCM). */
+export interface EncryptedAccountCredentialPayload {
+  /** Ephemeral X25519 public key (base64). */
+  ephemeralPublicKey: string;
+  /** AES-256-GCM initialization vector (base64). */
+  iv: string;
+  /** Encrypted ciphertext (base64). */
+  ciphertext: string;
+  /** AES-GCM authentication tag (base64). */
+  tag: string;
+  /** The AAD this blob was sealed with — authenticated, not confidential. */
+  aad: AccountCredentialAAD;
+}
+
+const ACCOUNT_CRED_AAD_FIELDS: ReadonlyArray<keyof AccountCredentialAAD> = [
+  'recipientFingerprint',
+  'accountId',
+  'mandateId',
+  'grantId',
+  'pairingEpoch',
+];
+
+/**
+ * Validate + canonicalize an AAD into a stable byte string for GCM binding.
+ * Throws (fail-closed) if any field is absent or the wrong type — a malformed
+ * AAD can never produce a usable key.
+ */
+function canonicalizeAccountCredentialAAD(aad: AccountCredentialAAD | undefined | null): Buffer {
+  if (!aad || typeof aad !== 'object') {
+    throw new Error('account-credential AAD missing or not an object (fail-closed)');
+  }
+  for (const f of ACCOUNT_CRED_AAD_FIELDS) {
+    const v = aad[f];
+    if (f === 'pairingEpoch') {
+      if (typeof v !== 'number' || !Number.isFinite(v) || !Number.isInteger(v) || v < 0) {
+        throw new Error(`account-credential AAD field "${f}" must be a non-negative integer (fail-closed)`);
+      }
+    } else if (typeof v !== 'string' || v.length === 0) {
+      throw new Error(`account-credential AAD field "${f}" must be a non-empty string (fail-closed)`);
+    }
+  }
+  // Reject any extra keys so a smuggled field can never ride along unauthenticated.
+  const extra = Object.keys(aad).filter((k) => !ACCOUNT_CRED_AAD_FIELDS.includes(k as keyof AccountCredentialAAD));
+  if (extra.length > 0) {
+    throw new Error(`account-credential AAD has unexpected field(s): ${extra.join(', ')} (fail-closed)`);
+  }
+  // Stable, field-ordered canonical form (independent of input key order).
+  const canonical = ACCOUNT_CRED_AAD_FIELDS.map((f) => `${f}=${String(aad[f])}`).join('\x1f');
+  return Buffer.from(`${ACCOUNT_CRED_HKDF_INFO}|${canonical}`, 'utf-8');
+}
+
+/**
+ * Seal a credential to a single recipient, bound to an AAD (WS5.2 R3 / I2).
+ * NOT `encryptForSync` — that function cannot carry the AAD binding.
+ */
+export function encryptAccountCredential(
+  secrets: Secrets,
+  recipientPublicKeyBase64: string,
+  aad: AccountCredentialAAD,
+): EncryptedAccountCredentialPayload {
+  const aadBytes = canonicalizeAccountCredentialAAD(aad);
+
+  const ephemeral = crypto.generateKeyPairSync('x25519');
+  const ephemeralPublicRaw = ephemeral.publicKey.export({ type: 'spki', format: 'der' });
+  const ephemeralPublicBytes = ephemeralPublicRaw.subarray(ephemeralPublicRaw.length - 32);
+
+  const recipientPublicBytes = Buffer.from(recipientPublicKeyBase64, 'base64');
+  const recipientSpki = recipientPublicBytes.length === 32
+    ? buildX25519Spki(recipientPublicBytes)
+    : recipientPublicBytes;
+  const recipientKey = crypto.createPublicKey({ key: recipientSpki, format: 'der', type: 'spki' });
+
+  const sharedSecret = crypto.diffieHellman({ privateKey: ephemeral.privateKey, publicKey: recipientKey });
+  // DISTINCT HKDF info → domain separation from secret-sync.
+  const derivedKey = crypto.hkdfSync('sha256', sharedSecret, ephemeralPublicBytes, ACCOUNT_CRED_HKDF_INFO, 32);
+
+  const iv = crypto.randomBytes(IV_LENGTH);
+  const cipher = crypto.createCipheriv('aes-256-gcm', Buffer.from(derivedKey), iv);
+  cipher.setAAD(aadBytes);
+  const plaintext = Buffer.from(JSON.stringify(secrets), 'utf-8');
+  const encrypted = Buffer.concat([cipher.update(plaintext), cipher.final()]);
+  const tag = cipher.getAuthTag();
+
+  return {
+    ephemeralPublicKey: ephemeralPublicBytes.toString('base64'),
+    iv: iv.toString('base64'),
+    ciphertext: encrypted.toString('base64'),
+    tag: tag.toString('base64'),
+    // Return a clean, field-ordered copy (never the caller's object).
+    aad: {
+      recipientFingerprint: aad.recipientFingerprint,
+      accountId: aad.accountId,
+      mandateId: aad.mandateId,
+      grantId: aad.grantId,
+      pairingEpoch: aad.pairingEpoch,
+    },
+  };
+}
+
+/**
+ * Decrypt an account credential, verifying the AAD matches expectation.
+ * FAILS CLOSED (throws) when: the payload AAD or `expectedAAD` is absent or
+ * malformed; the two AADs differ; the recipient X25519 key has rotated since
+ * sealing (R4b); or the GCM tag does not authenticate. NOT `decryptFromSync`,
+ * which has no AAD concept and would decrypt a replayed blob.
+ */
+export function decryptAccountCredential(
+  payload: EncryptedAccountCredentialPayload,
+  ownPrivateKey: crypto.KeyObject,
+  expectedAAD: AccountCredentialAAD,
+): Secrets {
+  if (!payload || typeof payload !== 'object') {
+    throw new Error('account-credential payload missing (fail-closed)');
+  }
+  // Canonicalize BOTH (each validates) and compare BEFORE any crypto work.
+  const expectedBytes = canonicalizeAccountCredentialAAD(expectedAAD);
+  const payloadBytes = canonicalizeAccountCredentialAAD(payload.aad);
+  if (!crypto.timingSafeEqual(expectedBytes, payloadBytes)) {
+    throw new Error('account-credential AAD mismatch (fail-closed)');
+  }
+
+  const ephemeralPublicBytes = Buffer.from(payload.ephemeralPublicKey, 'base64');
+  const ephemeralKey = crypto.createPublicKey({
+    key: buildX25519Spki(ephemeralPublicBytes),
+    format: 'der',
+    type: 'spki',
+  });
+  const sharedSecret = crypto.diffieHellman({ privateKey: ownPrivateKey, publicKey: ephemeralKey });
+  const derivedKey = crypto.hkdfSync('sha256', sharedSecret, ephemeralPublicBytes, ACCOUNT_CRED_HKDF_INFO, 32);
+
+  const iv = Buffer.from(payload.iv, 'base64');
+  const ciphertext = Buffer.from(payload.ciphertext, 'base64');
+  const tag = Buffer.from(payload.tag, 'base64');
+
+  const decipher = crypto.createDecipheriv('aes-256-gcm', Buffer.from(derivedKey), iv);
+  decipher.setAAD(expectedBytes);
+  decipher.setAuthTag(tag);
+  const decrypted = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
+  return JSON.parse(decrypted.toString('utf-8'));
+}
+
 // ── Helpers ──────────────────────────────────────────────────────────
 
 /** Build X25519 SPKI DER from raw 32-byte public key. */
