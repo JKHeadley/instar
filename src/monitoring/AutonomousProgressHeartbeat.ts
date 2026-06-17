@@ -346,8 +346,10 @@ export class AutonomousProgressHeartbeat extends EventEmitter {
         this.recordEmit({ topicId, at: now, minutesSilent, focus: scrub.focus, dryRun: false });
         this.emit('emitted', { topicId, minutesSilent, focus: scrub.focus });
       } catch (err) {
-        // Send failed — do NOT advance cooldown/count (a missed heartbeat is the
-        // safe status quo). The lease still releases in finally.
+        // @silent-fallback-ok: NOT silent — a failed heartbeat send is surfaced via
+        // recordSuppressed('send-failed') + the 'send-error' event. We deliberately do
+        // NOT advance cooldown/count (a missed heartbeat is the safe status quo; the
+        // next tick retries). The lease still releases in finally.
         this.recordSuppressed(topicId, now, 'send-failed');
         this.emit('send-error', { topicId, err });
       }
@@ -376,9 +378,11 @@ export class AutonomousProgressHeartbeat extends EventEmitter {
     try {
       history = this.deps.getTopicHistory(topicId) ?? [];
     } catch {
-      // Can't read history → fail closed by treating as "spoke just now" so the
-      // silence gate cannot pass on missing evidence. Returning `now` is wrong
-      // (no `now` here); instead return a sentinel the caller treats as recent.
+      // @silent-fallback-ok: this is fail-CLOSED, not a degraded fallback — when history
+      // can't be read we treat the topic as "spoke just now" (MAX_SAFE_INTEGER sentinel)
+      // so the silence gate CANNOT fire on missing evidence. Suppressing a heartbeat on
+      // an unreadable read is the safe direction; reporting degradation here would be
+      // noise on the common transient-read case.
       return Number.MAX_SAFE_INTEGER;
     }
     let latest: number | null = null;

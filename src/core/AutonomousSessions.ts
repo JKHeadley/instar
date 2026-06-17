@@ -158,6 +158,10 @@ export function readAutonomousRunMarkers(
   try {
     content = fs.readFileSync(f, 'utf8');
   } catch {
+    // @silent-fallback-ok: a missing/unreadable `<topic>.local.md` is the EXPECTED case
+    // (no autonomous run for this topic). null is normal control flow, not degradation —
+    // callers (per readAutonomousRunMarkers' contract above) treat "couldn't read markers"
+    // as the conservative path (the heartbeat suppresses), so this is fail-safe, not silent.
     return null;
   }
   const movedTo = readField(content, 'moved_to');
