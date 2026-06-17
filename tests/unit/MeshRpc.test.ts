@@ -153,6 +153,23 @@ describe('MeshRpc — per-command RBAC (§L0)', () => {
     expect(seen[0]).toEqual({ sender: 'MANDATED', mandateId: 'M1', accountId: 'acct', requestingMachineFp: 'fp-mini' });
   });
 
+  it('account-follow-me-mandate-deliver (WS5.2 R4a): gated with its OWN refusal — NOT the any-peer class', () => {
+    const cmd = {
+      type: 'account-follow-me-mandate-deliver',
+      portable: { mandate: { id: 'MND-1' }, issuanceSignature: { alg: 'ed25519', issuerFingerprint: 'm_op', sig: 'x' } },
+    } as unknown as MeshCommand;
+    // No `authorizeMandateDeliver` seam wired ⇒ deny-by-default (fail closed) — proves it is NOT
+    // in the any-registered-peer read class.
+    expect(checkCommandRBAC(cmd, 'ANY_PEER', rbac())).toEqual({ ok: false, reason: 'mandate-deliver-unauthorized' });
+    // Seam refuses (feature dark / sender not the operator machine) ⇒ refused.
+    expect(checkCommandRBAC(cmd, 'ROGUE', rbac({ authorizeMandateDeliver: () => false })).reason).toBe('mandate-deliver-unauthorized');
+    // Seam authorizes ⇒ ok; the sender is threaded to the gate.
+    const seen: unknown[] = [];
+    const ok = checkCommandRBAC(cmd, 'OPERATOR', rbac({ authorizeMandateDeliver: (a) => { seen.push(a); return true; } }));
+    expect(ok).toEqual({ ok: true, reason: 'ok' });
+    expect(seen[0]).toEqual({ sender: 'OPERATOR' });
+  });
+
   it('state-snapshot is read/observe class — any registered peer → ok (no router/owner role)', () => {
     // The single-origin snapshot pull is self-binding (origin === serving machine);
     // RBAC adds NO authorization beyond verifyEnvelope, exactly like the other

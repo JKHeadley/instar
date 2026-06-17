@@ -526,30 +526,51 @@ export function createController({ doc, els, fetchImpl }) {
     return { problems, authorities };
   }
 
+  // WS5.2 R4a — an account-follow-me authority targets a SPECIFIC machine. From the operator's ONE
+  // dashboard, such a mandate is issued AND delivered to that target via /mandate/issue-for-machine
+  // (which issues locally then dispatches the R4a-signed bundle over the mesh) — the operator NEVER
+  // opens the target's own dashboard. A non-follow-me mandate uses the ordinary /mandate/issue path.
+  function followMeTarget(authorities) {
+    if (!Array.isArray(authorities)) return null;
+    const a = authorities.find((x) => x && x.action === 'account-follow-me'
+      && x.bounds && typeof x.bounds.accountId === 'string' && typeof x.bounds.targetMachineId === 'string');
+    return a ? { accountId: a.bounds.accountId, targetMachineId: a.bounds.targetMachineId } : null;
+  }
+
   async function issue() {
     const { problems, authorities } = validateIssueForm();
     if (problems.length > 0) {
       note('Not issued — fix the following first:\n' + problems.join('\n'), 'error');
       return;
     }
-    const payload = {
-      pin: els.issuePin.value,
-      scope: els.issueScope?.value?.trim(),
-      agents: [els.issueAgentA?.value?.trim(), els.issueAgentB?.value?.trim()],
-      authorities,
-      expiresAt: new Date(els.issueExpires.value).toISOString(),
-    };
+    const expiresAt = new Date(els.issueExpires.value).toISOString();
+    const pin = els.issuePin.value;
+    const agents = [els.issueAgentA?.value?.trim(), els.issueAgentB?.value?.trim()];
+    const fm = followMeTarget(authorities);
+    // Route an account-follow-me mandate through the one-dashboard issue+deliver path; everything
+    // else through the ordinary issue path.
+    const endpoint = fm ? '/mandate/issue-for-machine' : '/mandate/issue';
+    const payload = fm
+      ? { pin, scope: els.issueScope?.value?.trim(), agents, expiresAt, accountId: fm.accountId, targetMachineId: fm.targetMachineId }
+      : { pin, scope: els.issueScope?.value?.trim(), agents, authorities, expiresAt };
     els.issueBtn.disabled = true;
     try {
-      const { status, body } = await fetchJson('/mandate/issue', {
+      const { status, body } = await fetchJson(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
       });
       if (els.issuePin) els.issuePin.value = ''; // never retain the PIN
       if (status === 201) {
-        note(`✓ Mandate ${body?.mandate?.id ?? ''} issued — it is active and listed above. The agents can now act within its bounds.`, 'success');
+        const deliveredNote = fm
+          ? (body?.delivered ? ' and delivered to the target machine' : (body?.local ? ' (target is this machine)' : ''))
+          : '';
+        note(`✓ Mandate ${body?.mandate?.id ?? ''} issued${deliveredNote} — it is active and listed above. The agents can now act within its bounds.`, 'success');
         if (els.issueDetails) els.issueDetails.open = false;
+        await refresh();
+      } else if (fm && status === 502) {
+        // Issued locally but cross-machine DELIVERY failed — honest, retry-able.
+        note(`Mandate ${body?.mandate?.id ?? ''} issued, but delivery to the target failed: ${body?.reason ?? body?.error ?? `HTTP ${status}`}. Retry to re-deliver (issuance is idempotent on the target).`, 'error');
         await refresh();
       } else {
         note(`Not issued — the server refused: ${body?.error ?? `HTTP ${status}`}`, 'error');

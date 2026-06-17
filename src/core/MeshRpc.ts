@@ -70,6 +70,25 @@ export type MeshCommand =
       amount: number;
       expiresAt: number;
     }
+  | {
+      // WS5.2 R4a / R1 — ONE-DASHBOARD cross-machine account-follow-me mandate DELIVERY.
+      // The operator issues the account-follow-me mandate (PIN-gated) on their SINGLE dashboard,
+      // then delivers it to the TARGET machine via this verb so the target's enroll-start route
+      // can honor it — WITHOUT the operator ever opening the target's own dashboard.
+      //
+      // NOT the "any registered peer" read class — it carries a credential-adjacent authorization.
+      // But the REAL gate is NOT a role check at the RBAC layer: a delivered mandate is trusted
+      // ONLY when the R4a asymmetric issuance signature in the carried PortableMandate verifies, IN
+      // THE HANDLER, against THIS machine's REGISTERED operator-machine Ed25519 key + the
+      // AUTHENTICATED sender fingerprint (Know Your Principal — a name in the payload is never
+      // trusted; the §3.1a local HMAC proof is local-only and cannot ground a peer's mandate).
+      // The RBAC case therefore proves only that the sender is a registered ACTIVE peer
+      // (verifyEnvelope already did the Ed25519 + recipient-binding + nonce checks); the handler
+      // fails CLOSED on any verification failure and NEVER persists an unverified mandate.
+      type: 'account-follow-me-mandate-deliver';
+      /** The R4a-signed bundle: the mandate + its asymmetric issuance signature. */
+      portable: import('../coordination/AccountFollowMeMandateBridge.js').PortableMandate;
+    }
   // Pool Dashboard Streaming (POOL-DASHBOARD-STREAM-SPEC §2.3): a peer asks this
   // machine to mint a single-use bearer ticket so it may open a /pool-stream WS
   // and watch `session`. Read/observe class — minting a ticket discloses
@@ -269,7 +288,8 @@ export type RbacReason =
   | 'claim-unauthorized'
   | 'release-unauthorized'
   | 'drain-unauthorized'
-  | 'slice-renew-unauthorized';
+  | 'slice-renew-unauthorized'
+  | 'mandate-deliver-unauthorized';
 
 export interface RbacDeps {
   /** The machine currently holding the router lease (verify-on-read, §L1), or null. */
@@ -291,6 +311,16 @@ export interface RbacDeps {
     accountId: string;
     requestingMachineFp: string;
   }) => boolean;
+  /**
+   * WS5.2 R4a — the gate for `account-follow-me-mandate-deliver`. Returns true ONLY when account
+   * follow-me is ENABLED on this machine AND the sender is THIS machine's trusted operator machine
+   * (the verified-operator binding). Deny-by-default: ABSENT ⇒ the verb is refused (fail-closed) —
+   * on a build without the seam wired, or on a non-dev/dark agent, a delivered mandate can never be
+   * accepted at the gate. This is ONLY the coarse "should I even look at it" gate; the LOAD-BEARING
+   * authority is the R4a asymmetric signature verification in the handler, which re-binds to the
+   * authenticated sender + registered operator key. Mirrors the deny-by-default discipline of R3a.
+   */
+  authorizeMandateDeliver?: (args: { sender: MachineId }) => boolean;
 }
 
 /**
@@ -340,6 +370,17 @@ export function checkCommandRBAC(command: MeshCommand, sender: MachineId, deps: 
         requestingMachineFp: command.requestingMachineFp,
       }) ?? false;
       return authd ? { ok: true, reason: 'ok' } : { ok: false, reason: 'slice-renew-unauthorized' };
+    }
+    case 'account-follow-me-mandate-deliver': {
+      // WS5.2 R4a — deliberately its OWN case (NOT the "any registered peer" read class). The
+      // RBAC gate proves the sender is a registered ACTIVE peer (verifyEnvelope already did the
+      // crypto) AND that follow-me is enabled with this sender bound as the operator machine.
+      // DENY-BY-DEFAULT: with no `authorizeMandateDeliver` seam wired, or when the sender is not
+      // the trusted operator machine / the feature is dark, the verb is refused HERE — before the
+      // handler runs. The LOAD-BEARING authority is still the R4a signature re-verification in the
+      // handler (this gate is the coarse, fail-closed pre-filter).
+      const authd = deps.authorizeMandateDeliver?.({ sender }) ?? false;
+      return authd ? { ok: true, reason: 'ok' } : { ok: false, reason: 'mandate-deliver-unauthorized' };
     }
     case 'commitment-mutate':
       // MUTATING verb, deliberately its OWN case (COMMITMENTS-COHERENCE-SPEC
@@ -444,6 +485,7 @@ function statusForReason(reason: string): number {
     case 'release-unauthorized':
     case 'drain-unauthorized':
     case 'slice-renew-unauthorized':
+    case 'mandate-deliver-unauthorized':
       return 403;
     case 'replayed-nonce':
     case 'stale-timestamp':

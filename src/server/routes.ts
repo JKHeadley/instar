@@ -925,6 +925,34 @@ export interface RouteContext {
     /** ReviewExchange engine (spec §7 G2.3) — mandate-gated mutual code-review sign-offs. */
     reviews: import('../coordination/ReviewExchange.js').ReviewExchangeEngine;
   } | null;
+  /** WS5.2 R4a — ONE-DASHBOARD cross-machine account-follow-me mandate delivery.
+   *  Durable store of mandates DELIVERED+VERIFIED to THIS machine from the operator machine; the
+   *  enroll-start route consults it (re-verifying at point-of-use) when no LOCAL mandate authorizes.
+   *  Null/absent when account follow-me is dark on this agent. */
+  deliveredMandateStore?: import('../coordination/DeliveredMandateStore.js').DeliveredMandateStore | null;
+  /** WS5.2 R4a — re-verify a delivered mandate AT POINT OF USE (defense-in-depth — never trust a
+   *  stored flag). Returns the verified bounds when the persisted PortableMandate's asymmetric
+   *  issuance signature STILL verifies against the registered operator-machine key recorded at
+   *  delivery; null on any failure (fail-closed). Injected so the dangerous re-check is a real check.
+   *  Absent ⇒ the delivered-mandate path is inert (the route falls back to deny-by-default). */
+  verifyDeliveredMandate?: ((mandateId: string) => {
+    accountId: string;
+    targetMachineId: string;
+    mechanism: string;
+  } | null) | null;
+  /** WS5.2 R4a — operator/issuer side: deliver an issued account-follow-me mandate to a REMOTE
+   *  target machine over the signed mesh (the new verb). Resolves the target's mesh address +
+   *  signs the envelope with THIS machine's Ed25519 identity key. Returns the per-target outcome.
+   *  Absent/null when this machine cannot deliver (no mesh identity / single-machine). */
+  deliverMandateToMachine?: ((args: {
+    targetMachineId: string;
+    portable: import('../coordination/AccountFollowMeMandateBridge.js').PortableMandate;
+  }) => Promise<{ ok: boolean; status: number; reason?: string }>) | null;
+  /** WS5.2 R4a — sign an issued mandate for cross-machine delivery (operator side): produce the
+   *  R4a PortableMandate (mandate + asymmetric issuance signature) with THIS machine's Ed25519
+   *  identity key + fingerprint. Absent/null when this machine has no mesh identity. */
+  packageMandateForDelivery?: ((mandate: import('../coordination/types.js').CoordinationMandate) =>
+    import('../coordination/AccountFollowMeMandateBridge.js').PortableMandate) | null;
   /** Operator Authorization Request (agent proposes → operator approves one-tap).
    *  Spec: docs/specs/OPERATOR-AUTHORIZATION-REQUEST-SPEC.md. Null when stateDir is
    *  unavailable. `enabled` is the resolved dev-gate (enabled-on-dev / dark-on-fleet);
@@ -7533,6 +7561,84 @@ export function createRoutes(ctx: RouteContext): Router {
       expiresAt: b.expiresAt,
     });
     res.status(201).json({ issued: true, mandate });
+  });
+
+  // WS5.2 R4a / R1 — ONE-DASHBOARD cross-machine mandate issuance + delivery. Issue an
+  // account-follow-me mandate (PIN-gated, EXACTLY like /mandate/issue) for a REMOTE target machine,
+  // then DELIVER it to that target over the signed mesh so the target's enroll-start route honors it
+  // — WITHOUT the operator ever opening the target's own dashboard. The mandate is signed locally
+  // (its LOCAL authProof is meaningless on the target) AND packaged with the R4a asymmetric issuance
+  // signature (the ONLY thing the target can verify). A LOCAL target (targetMachineId === this
+  // machine) is the unchanged /mandate/issue path and is NOT delivered (the local gate sees it).
+  router.post('/mandate/issue-for-machine', async (req, res) => {
+    if (!ctx.coordination) {
+      res.status(503).json({ error: 'coordination mandate engine unavailable (no stateDir or init failed)' });
+      return;
+    }
+    const afmCfg = (ctx.config as unknown as { multiMachine?: { accountFollowMe?: { enabled?: boolean } } })
+      .multiMachine?.accountFollowMe;
+    if (!resolveDevAgentGate(afmCfg?.enabled, ctx.config)) {
+      res.status(503).json({ error: 'account follow-me not enabled' });
+      return;
+    }
+    if (!checkMandatePin(req, res)) return;
+    const b = req.body ?? {};
+    // The mandate is ALWAYS an account-follow-me grant pinned to ONE account + ONE target machine +
+    // re-mint (R1 exact-bounds): the body carries the bounds, never an arbitrary authority list.
+    if (typeof b.accountId !== 'string' || !b.accountId.trim()) {
+      res.status(400).json({ error: 'accountId is required' });
+      return;
+    }
+    if (typeof b.targetMachineId !== 'string' || !b.targetMachineId.trim()) {
+      res.status(400).json({ error: 'targetMachineId is required' });
+      return;
+    }
+    if (!Array.isArray(b.agents) || b.agents.length !== 2 || b.agents.some((a: unknown) => typeof a !== 'string' || !a)) {
+      res.status(400).json({ error: 'agents must be a pair of two agent fingerprints' });
+      return;
+    }
+    if (typeof b.expiresAt !== 'string' || isNaN(Date.parse(b.expiresAt)) || Date.parse(b.expiresAt) <= Date.now()) {
+      res.status(400).json({ error: 'expiresAt must be a future ISO timestamp (mandates always expire)' });
+      return;
+    }
+    const { accountId, targetMachineId } = b as { accountId: string; targetMachineId: string };
+    const selfMachineId = ctx.meshSelfId ?? (ctx.config as { machineId?: string }).machineId ?? 'local';
+
+    // Issue locally (PIN-gated above) — exact-bounds account-follow-me / re-mint (R1).
+    const mandate = ctx.coordination.store.issue({
+      scope: typeof b.scope === 'string' && b.scope.trim() ? b.scope : 'account-follow-me',
+      agents: [b.agents[0], b.agents[1]],
+      authorities: [
+        { action: 'account-follow-me', bounds: { accountId, targetMachineId, mechanism: 're-mint' } },
+      ],
+      author: typeof b.author === 'string' && b.author ? b.author : 'justin',
+      expiresAt: b.expiresAt,
+    });
+
+    // A LOCAL target is the ordinary path — the local gate already sees this mandate; no delivery.
+    if (targetMachineId === selfMachineId) {
+      res.status(201).json({ issued: true, mandate, delivered: false, local: true });
+      return;
+    }
+
+    // REMOTE target — package with the R4a issuance signature and deliver over the mesh.
+    if (!ctx.packageMandateForDelivery || !ctx.deliverMandateToMachine) {
+      res.status(503).json({ error: 'cross-machine mandate delivery unavailable (no mesh identity)' });
+      return;
+    }
+    try {
+      const portable = ctx.packageMandateForDelivery(mandate);
+      const outcome = await ctx.deliverMandateToMachine({ targetMachineId, portable });
+      if (!outcome.ok) {
+        // The mandate is issued + persisted locally; only the DELIVERY failed. Honest 502 so the
+        // operator can retry delivery without re-issuing (idempotent put on the target by id).
+        res.status(502).json({ issued: true, mandate, delivered: false, deliveryStatus: outcome.status, reason: outcome.reason });
+        return;
+      }
+      res.status(201).json({ issued: true, mandate, delivered: true, deliveryStatus: outcome.status });
+    } catch (err) {
+      res.status(502).json({ issued: true, mandate, delivered: false, error: err instanceof Error ? err.message : 'delivery failed' });
+    }
   });
 
   // Revoke a mandate — PIN-GATED (the operator kill switch; checked on every action).
@@ -20964,7 +21070,8 @@ export function createRoutes(ctx: RouteContext): Router {
     const targetMachineId = ctx.meshSelfId ?? (ctx.config as { machineId?: string }).machineId ?? 'local';
 
     // THE AUTHORIZATION (deny-by-default): consult the operator mandate for THIS exact
-    // (account, this machine, mechanism). A non-allow verdict STOPS — never work around it.
+    // (account, this machine, mechanism). A non-allow verdict STOPS — UNLESS a cross-machine
+    // DELIVERED mandate authorizes it (the one-dashboard path, R4a). Never work around a deny.
     const verdict = ctx.coordination.gate.evaluate({
       action: 'account-follow-me',
       params: { accountId, targetMachineId, mechanism: 're-mint' },
@@ -20972,8 +21079,22 @@ export function createRoutes(ctx: RouteContext): Router {
       mandateId,
     });
     if (verdict.decision !== 'allow') {
-      res.status(403).json({ error: 'account follow-me not authorized', reason: verdict.reason });
-      return;
+      // WS5.2 R4a — ADDITIONAL accepted source (the LOCAL-mandate path above is unchanged; this
+      // never weakens it). The operator issued + delivered the mandate from their SINGLE dashboard,
+      // so it has no LOCAL authorship here and the local gate correctly denies. Consult the
+      // delivered-mandate store, RE-VERIFYING the R4a signature at point-of-use (never a stored
+      // flag), then check the EXACT bounds match this (account, this machine, re-mint). Both paths
+      // are fail-closed: no verified delivered mandate with matching bounds → 403.
+      const deliveredBounds = ctx.verifyDeliveredMandate ? ctx.verifyDeliveredMandate(mandateId) : null;
+      const deliveredOk =
+        !!deliveredBounds &&
+        deliveredBounds.accountId === accountId &&
+        deliveredBounds.targetMachineId === targetMachineId &&
+        deliveredBounds.mechanism === 're-mint';
+      if (!deliveredOk) {
+        res.status(403).json({ error: 'account follow-me not authorized', reason: verdict.reason });
+        return;
+      }
     }
 
     // S7 — resolve the operator-APPROVED email authoritatively (local pool + peer views), NEVER

@@ -171,6 +171,39 @@ describe('mandates.js controller — the PIN discipline', () => {
     controller.stop();
   });
 
+  it('WS5.2 R4a — an account-follow-me authority routes issuance through /mandate/issue-for-machine', async () => {
+    const { controller, els, calls } = controllerWith({
+      '/mandate/issue-for-machine': { status: 201, body: { issued: true, delivered: true, mandate: { id: 'm-fm' } } },
+    });
+    controller.start();
+    // The operator authorizes account acct-1 to follow onto machine m_mini (one dashboard).
+    els.issueAuthorities.value = '[{"action":"account-follow-me","bounds":{"accountId":"acct-1","targetMachineId":"m_mini","mechanism":"re-mint"}}]';
+    els.issuePin.value = '424242';
+    await (els.issueBtn.onclick as any)();
+    // It went to the issue-for-machine route, NOT plain /mandate/issue, carrying the bounds + PIN.
+    const ifm = calls.find((c) => c.url === '/mandate/issue-for-machine');
+    expect(ifm).toBeTruthy();
+    const body = JSON.parse(ifm!.opts.body);
+    expect(body).toMatchObject({ pin: '424242', accountId: 'acct-1', targetMachineId: 'm_mini' });
+    expect(calls.some((c) => c.url === '/mandate/issue')).toBe(false);
+    expect(els.notice.textContent).toMatch(/delivered to the target/);
+    expect(els.issuePin.value).toBe(''); // PIN never retained
+    controller.stop();
+  });
+
+  it('WS5.2 R4a — a follow-me delivery failure (502) is surfaced honestly as retry-able', async () => {
+    const { controller, els } = controllerWith({
+      '/mandate/issue-for-machine': { status: 502, body: { issued: true, delivered: false, mandate: { id: 'm-fm' }, reason: 'no-peer-url' } },
+    });
+    controller.start();
+    els.issueAuthorities.value = '[{"action":"account-follow-me","bounds":{"accountId":"acct-1","targetMachineId":"m_mini","mechanism":"re-mint"}}]';
+    els.issuePin.value = '424242';
+    await (els.issueBtn.onclick as any)();
+    expect(els.notice.textContent).toMatch(/delivery to the target failed/);
+    expect(els.notice.textContent).toMatch(/no-peer-url/);
+    controller.stop();
+  });
+
   it('start() prefills the A/A/B authorities template only when empty', () => {
     const { controller, els } = controllerWith({});
     els.issueAuthorities.value = '';
