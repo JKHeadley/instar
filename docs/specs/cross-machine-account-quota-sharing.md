@@ -29,6 +29,19 @@ lessons-engaged:
 # /instar-dev build, AND build remains coordination-gated (Subscription & Auth
 # Standard session) on the shared subsystem files.
 prior-review-convergence-void: "2026-06-16T20:38:09.360Z (superseded; re-converge under Decision A pending)"
+review-convergence: "2026-06-17T02:50:33.268Z"
+review-iterations: 2
+review-completed-at: "2026-06-17T02:50:33.268Z"
+review-report: "docs/specs/reports/cross-machine-account-quota-sharing-convergence.md"
+cross-model-review: "codex-cli:gpt-5.5"
+single-run-completable: true
+frontloaded-decisions: 16
+cheap-to-change-tags: 2
+contested-then-cleared: 2
+# approved by operator Justin (Telegram 13481, 2026-06-16): "you have my full
+# approval" + "proceed and finish this out"; scope split (orchestration ships now,
+# §5A auto-enroll bridge deferred behind WS5.2 build) disclosed to him before build.
+approved: true
 ---
 
 # Cross-Machine Account & Quota Sharing
@@ -146,10 +159,16 @@ Violating any one strands a credential or trips Anthropic enforcement.
 > **PRIMARY (Decision A): every machine in the pool is made serve-capable via WS5.2
 > Mechanism B (agent-driven per-machine auto-enroll). Then quota-aware placement /
 > seat-transfer routes each conversation onto a serve-capable machine. The user
-> logs in once; the agent propagates serve-capability by RE-MINTING per machine,
-> never by relocating the credential. Result: zero ongoing per-machine login burden,
-> free scaling, and the refresh-rotation hazard is sidestepped entirely (each
-> machine holds its OWN independent grant lineage — no shared lineage to serialize).**
+> logs in once PER ACCOUNT; the agent propagates serve-capability by RE-MINTING per
+> machine via a ONE-TIME operator-approved enrollment per machine (D14 — honest
+> product promise: "agent-assisted per-machine enrollment + quota-aware placement,"
+> NOT a single login that silently spreads; in-place auto-enroll is itself deferred
+> behind the WS5.2 build, D16). Result: minimal one-time per-machine setup then zero
+> ongoing burden, free scaling, and the refresh-rotation hazard is sidestepped
+> entirely (each machine holds its OWN independent grant lineage — no shared lineage
+> to serialize). In the meantime §5B quota-aware seat-transfer already delivers the
+> seamless REPLY (the conversation serves from a peer that has quota), so the user
+> never sees a dead reply even before a machine is enrolled.**
 
 The genuine technical facts (verified in v1.3.602 source), and why auto-enroll (A) is the safe delivery:
 - **Independent grants, no shared-lineage hazard.** Real multi-device login works
@@ -166,15 +185,31 @@ The genuine technical facts (verified in v1.3.602 source), and why auto-enroll (
   WS5.2 spec (`ws52-account-follow-me-security.md`, CMT-1413), whose default IS
   Mechanism B; this spec does not re-implement it.
 
-### Primary mechanism — per-machine auto-enroll bridge (§5A; delegates to WS5.2 Mechanism B)
-1. **A walled machine becomes serve-capable by auto-enrolling its own login**, not
-   by receiving a blob. The orchestration layer detects a machine that cannot serve
-   (no live account / all walled — §5.1 serveability signal) and invokes WS5.2
-   Mechanism B's agent-driven enrollment for that machine (the operator approves
-   once, mobile-first). This spec owns the *trigger + bridge*; WS5.2 owns the
-   enrollment + credential handling. **File-ownership of the WS5.2 surface must be
-   settled with the Subscription & Auth Standard workstream before any build edit
-   to it (coordination gate).**
+### Eventual mechanism — per-machine auto-enroll bridge (§5A; delegates to WS5.2 Mechanism B) — DEFERRED behind WS5.2's build (D16)
+
+> **BUILD-ORDER NOTE (re-converge, D16):** the bridge's target mechanism (WS5.2
+> Mechanism B cross-machine enrollment) **does not exist in source on this branch
+> yet** (verified: zero hits for `accountFollowMe`/`enroll-drive`/`canServe`).
+> So §5A is **NOT in this spec's buildable-now scope** — it ships as a
+> detect→operator-attention-offer **stub** until WS5.2's build round lands, and the
+> §5B seat-transfer layer (below) covers serving in the meantime. What this spec
+> builds now is the orchestration layer (§5.1/§5.3/§5.4). The auto-enroll bridge is
+> a **named deferral** (Close-the-Loop) gated on the WS5.2 build.
+
+1. **A walled machine eventually becomes serve-capable by auto-enrolling its own
+   login** (not by receiving a blob). The orchestration layer detects a machine
+   that cannot serve (no live account / all walled — §5.1 serveability signal) and
+   **SURFACES an operator-INITIATED, PIN-authenticated enrollment offer** (D14) —
+   it does **NOT** invoke or mesh-fire enrollment (WS5.2 invariant: enrollment is
+   operator-initiated, *never* mesh-authenticated; a peer can never enroll an
+   account onto itself via the mesh). Transport is R6a option (2) — operator-side
+   per-server selection, no new mesh verb (D15). This spec owns the
+   *detect + surface-the-offer* trigger; WS5.2 owns the enrollment + credential
+   handling, **and must be built first (D16).** The coordination gate on the
+   WS5.2/shared-subsystem files is now **operator-cleared** (Justin paused the
+   Subscription & Auth Standard topic and gave full approval, Telegram 13481
+   2026-06-16) — but the build-order dependency (WS5.2 mechanism must exist) stands
+   regardless.
 2. **No refresh-coordination lease needed** (the blob-sync design's central
    complexity): each machine's grant is its own lineage, so refreshes never collide
    across machines. This is the concrete simplification A buys over fork B.
@@ -302,6 +337,9 @@ cross-machine refresh-collision hazard entirely.
 | D11 | Auto-transfer consent semantics | Auto-failover targets ONLY `online + canServe:true` peers (the manual `needsConfirmation`-for-offline-target case never applies). For a topic with a LIVE autonomous run, auto-failover **inherits the autonomous-run-suspend behavior** (the owner literally cannot serve, so suspend-and-move is correct) — it does NOT silently skip the suspend | Reconcile the dropped manual consent gate on the no-operator path |
 | D12 | `canServe` capability granularity (external/codex) | **v1 assumes all pool accounts are model/provider/tool equivalent** (the operator's own Claude subscriptions). `canServe` therefore covers liveness + non-walled + channel-reachability only. If a future pool mixes accounts of differing model/plan/org capability, the **admission revalidation (D8) is the enforcement point** — the destination bounces `cannot-serve` if it cannot satisfy the turn's required model/tool tier, falling to the next candidate. Capability mismatch never produces a wrong-tier reply, only a bounce | Accounts may differ by plan/model access; admission is the safe check |
 | D13 | Walled-episode queue policy (external/codex) | During a walled episode the inbound is held by the existing `PendingInboundStore` durable queue — **reuse its ordering (FIFO per topic), TTL, bounded depth, and expiry loss-notice** (`durable-inbound-message-queue.md`); a newer inbound on the same topic supersedes/coalesces with the blocked one rather than fanning out stale replies on drain. No net-new queue semantics — this spec defers to the durable queue's contract | Avoid stale replies draining into an evolved conversation; bounded backlog |
+| D14 | Auto-enroll bridge trigger consent (re-converge: lessons-aware F1 + decision-completeness M1) | **Detect → operator-PIN-INITIATED enrollment, NEVER agent/mesh-auto-fired.** The orchestration layer DETECTS a walled machine and SURFACES an operator attention-item/dashboard offer; the operator initiates + PIN-authenticates the per-machine enrollment. This restates WS5.2's load-bearing invariant verbatim (`ws52-account-follow-me-security.md` §1/S2/R4/I3: enrollment is operator-initiated, **never mesh-authenticated**; a peer machine can NEVER enroll an account onto itself via the mesh — a build test enumerates mesh-verb→handler and fails if any verb routes to enrollment). The agent surfaces/assists; it never auto-mints a credential. | Minting a live OAuth login is an identity/credential side-effect — NEVER cheap behind a dark flag; must match WS5.2's invariant or it is a contradiction, not a delegation |
+| D15 | Bridge transport (re-converge: decision-completeness M3 / WS5.2 R6a) | **R6a option (2): operator-side per-server selection — NO new `enroll-drive` mesh verb.** The bridge surfaces the offer; the operator drives the target machine's own LOCAL enroll route. Requires no new signed mesh command, consistent with D14's operator-initiated invariant. | The mesh command surface is a published/signed interface; inventing an `enroll-drive` verb would contradict WS5.2's "never mesh-authenticated" boundary |
+| D16 | Build order / buildable scope under Decision A (re-converge: decision-completeness M2) | **Buildable NOW = the orchestration layer ONLY** — §5.1 per-account serveability, §5.3 quota-aware seat-transfer failover, §5.4 honest degradation — all realizable today against the existing `/pool/transfer` + `OwnershipApplier` + capacity-heartbeat primitives. **The §5A auto-enroll bridge is DEFERRED behind WS5.2 Mechanism B's build round** (verified: zero source for `accountFollowMe`/`enroll-drive`/`canServe`/`serveFailover` on this branch; WS5.2's first PR is non-credential primitives). Until WS5.2 ships, the bridge is a detect→operator-attention-offer **stub** (no credential minting); the §5B seat-transfer layer covers serving meanwhile (route the seat to a peer that can serve NOW). The bridge NEVER blocks on a missing mechanism — it degrades to the offer + §5B. | A dangling call to an unbuilt dependency is a hard mid-run stop; orchestration-only is independently shippable AND live-provable (Mini→Laptop auto-failover) |
 
 ## 5. Architecture
 

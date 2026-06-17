@@ -1,109 +1,107 @@
-# Convergence Report — Cross-Machine Account & Quota Sharing
+# Convergence Report — Cross-Machine Account & Quota Sharing (Decision-A re-converge)
 
-## Cross-model review: codex-cli:gpt-5.5 + gemini-cli:gemini-2.5-pro
+## Cross-model review: codex-cli:gpt-5.5
 
-Real external (non-Claude) review RAN — both GPT-tier (codex `gpt-5.5`) and
-Gemini-tier (`gemini-2.5-pro`) reviewed the spec independently, on rounds 2, 3,
-and 4, through the agent's own CLI logins. Both endorsed the converged direction;
-their verdict moved from substantive findings → MINOR ISSUES → refinement-only as
-the spec hardened. This is a clean RAN pass.
+A real external (non-Claude) pass RAN in the final round through the agent's own
+codex CLI (GPT-tier, `gpt-5.5`) AND the gemini CLI (`gemini-2.5-pro`). Both returned
+**MINOR ISSUES** on the converged body — no material findings. This is the clean
+RAN state (no ⚠).
 
 ## ELI10 Overview
 
-You run me on more than one computer. A conversation can live on either, and we
-already proved it can move between them. But when it moved to a machine that had
-none of your Claude accounts logged in, that machine couldn't actually answer —
-you got the "🔭 working…" spinner and silence. That dead reply is the bug.
+When you run one agent across two computers (a laptop and a Mac mini), each computer
+can only answer you if it has a working Claude account with quota left. Today, if the
+computer holding your conversation runs out of quota, you get a dead "🔭 working…"
+with no reply. This spec fixes that.
 
-You asked for it to be seamless: share all accounts and quota across machines so
-whichever machine holds a conversation can always answer. The honest finding from
-grounding in the code: literally copying a Claude login onto every machine is
-unsafe — Anthropic forbids extracting the token, and the login's refresh token
-rotates on every use, so the same login on two machines self-destructs (we have a
-live proof of that rotation). So we flip the problem: instead of moving the
-credential to where the work is, we move the **work** to where the quota is. When a
-conversation's machine can't answer, the system automatically moves the whole
-conversation to a machine that can — using the exact, already-proven "move a
-conversation between machines" mechanism — and that machine answers normally. To
-you it's identical to "sharing all accounts": the reply always comes, drawn from
-whatever quota the pool has, with no credential ever leaving the machine it was
-logged into.
+The operator (Justin) asked for the seamless end-state: "once I've logged into an
+account on one machine, that account should work across machines." The chosen path
+(**Decision A**) delivers it the ToS-safe way: each machine gets its OWN login for
+the account (the agent assists; you approve once per machine) — no Claude login token
+is ever copied between machines. Then the system routes each conversation onto a
+machine that can actually serve it.
 
-It ships off, then in a log-only dry-run, and by our own gold standard it isn't
-"done" until a real message you send is genuinely answered by the second machine,
-proven end-to-end through Telegram and Slack, before you ever test it.
+What this re-converge changed is the **honest scope**: the "each machine mints its
+own login" piece depends on a *separate, not-yet-built* workstream (WS5.2 / account
+follow-me — the very topic that was paused). So this spec now ships the part that is
+buildable and provable today — **quota-aware automatic seat-transfer**: when the
+machine holding your chat can't serve, the conversation automatically moves to one
+that can, and your reply still lands. The in-place auto-enroll is a named, deferred
+follow-up behind WS5.2. The user-visible win — you always get a reply — is delivered
+now; the "which machine physically answered" optimization comes later.
 
 ## Original vs Converged
 
-**Originally**, the draft proposed a *new serving layer*: one machine could SERVE a
-conversation while a different machine still OWNED it (serve ≠ owner). Review
-demolished that: the "single voice per conversation" lock it leaned on turns out to
-govern only background sentinel notices, not user replies — so with serve and owner
-on different machines there was no lock spanning both, meaning you could get TWO
-replies or NONE. It also would have stranded per-conversation state and could
-resolve the wrong verified user.
-
-**After convergence**, the design *collapses* serve and ownership: when a machine
-can't answer, the conversation's OWNERSHIP transfers to a machine that can (reusing
-the proven `/pool/transfer` mechanism), so the answering machine is always the
-owner — and the existing single-machine guarantees just hold. This dissolved the
-double/zero-voice problem entirely, eliminated stranded state, and preserved
-"know your principal."
-
-Review also: **removed** the "physically move a credential between machines" idea
-(it adds nothing you'd notice, is genuinely dangerous, and the protocol it claimed
-to reuse is machine-local by construction — deferred to its own future spec);
-**added** hysteresis + stickiness + cooldowns so a flaky account can't make a
-conversation ping-pong; **replaced** a hidden "place it anyway and let it fail"
-path (which manufactured the dead reply) with one honest, de-duplicated,
-cross-topic-aggregated "all accounts at their limit" notice that always reaches a
-deliberate close; **made** the authoritative operator binding travel with the seat
-(fenced by epoch + version so a stale copy can't overwrite a fresher one); and
-**named** concrete defaults for every knob so the build never has to stop and ask.
+- **Original (this re-converge's input):** §3 framed the auto-enroll bridge as the
+  PRIMARY mechanism and said the orchestration layer "detects and **invokes**" a
+  walled machine's enrollment. It read as a clean "WS5.2 owns the credential, I just
+  trigger it" delegation, and the product promise was stated as "user logs in once /
+  zero ongoing per-machine burden."
+- **Converged:** three material decision-completeness findings forced a sharper,
+  honest design:
+  1. **The bridge cannot auto-fire enrollment.** WS5.2's load-bearing invariant is
+     that enrollment is operator-initiated, PIN-authenticated, and **never
+     mesh-authenticated** (a peer can never enroll an account onto itself via the
+     mesh; a build test enforces it). §5A now **surfaces an operator-PIN-initiated
+     offer**, never an agent/mesh-fired mint (**D14**).
+  2. **The bridge's target does not exist in code yet.** WS5.2 Mechanism B is
+     `converged` but unbuilt (zero source for `accountFollowMe`/`enroll-drive`/
+     `canServe`). So the **buildable-now scope is the orchestration layer only**
+     (§5.1 serveability + §5.3 quota-aware seat-transfer failover + §5.4 honest
+     degradation); the §5A bridge is **deferred behind WS5.2's build**, shipping as
+     a detect→operator-attention-offer stub that never blocks on the missing
+     mechanism (**D16**).
+  3. **The bridge implicitly assumed an unresolved transport.** Pinned to WS5.2 R6a
+     **option (2)** — operator-side per-server selection, no new `enroll-drive` mesh
+     verb (**D15**).
+  Plus an honesty fix to the §3 product promise ("agent-assisted per-machine
+  enrollment + quota-aware placement," not "one login that silently spreads"), and
+  the §5B seat-transfer layer is named as the mechanism that delivers the seamless
+  reply in the meantime.
 
 ## Iteration Summary
 
-| Iteration | Reviewers | Material findings | Spec changes |
-|-----------|-----------|-------------------|--------------|
-| 1 | 6 internal + conformance gate | many (CRITICAL: serve≠owner double/zero-voice; HIGH: coarse quotaState, place-anyway dead-reply, missing serve primitive) | full rewrite: collapse serve+ownership, own the foundation gaps, remove credential-move |
-| 2 | 6 internal + codex + gemini + conformance | security NO, decision-completeness NO; adversarial/integration/lessons material (inbound-queue+operator-binding strand, flap-controller coordination, concrete caps/hysteresis, loop-closure, cross-topic flood) | NEW-1 strand fixed; single decision point; concrete caps/hysteresis values; both degradation terminals; D10-D13 added |
-| 3 | 3 internal verify + codex + gemini | internal: NONE; external: 2 material (conditioned fail-open, fenced operator binding) | D10 conditioned on local-can-serve; operator-binding epoch/version fence; handoff state machine; ServeRequirement shape; adversarial tests; glossary |
-| 4 | codex + gemini | refinement-only (no architecture-changing) | folded: canServe as scoped lookup not flat boolean; notice thresholds; auth≠trust threat language; partial-state-transfer reclassified as justified known-limitation |
-| 5 | (converged) | 0 material | none |
+| Iteration | Reviewers who flagged | Material findings | Spec changes |
+|-----------|-----------------------|-------------------|--------------|
+| 1 (re-converge over §3 reframe) | decision-completeness (M1/M2/M3); lessons-aware (1 minor boundary); codex/gemini (minor) | 3 | Added D14/D15/D16; rewrote §5A as operator-initiated + deferred (build-order banner); §3 honesty fix |
+| 2 (confirm) | decision-completeness (confirm: CONVERGED); codex (minor: phrasing); gemini (minor) | 0 | One §3 wording-honesty qualifier (non-material) |
+| 3 | (converged) | 0 | none |
 
-## Full Findings Catalog (by theme)
+Standards-Conformance Gate: ran (0 flags — 22 standards checked, registry canary ok), both rounds.
 
-- **Voice/authority when serve≠owner (CRITICAL, r1–r2):** resolved structurally by
-  collapsing to seat transfer (owner==server); the single-machine claim/lease holds.
-- **Coarse `quotaState` foundation gap (HIGH, r1):** owned in-scope — per-account
-  serveability plumbed through the heartbeat as a scoped capability summary.
-- **"Place anyway → dead reply" (HIGH, r1):** replaced with honest degradation
-  (§5.4), both terminals named, cross-topic aggregated.
-- **Inbound-queue + operator-binding strand on transfer (HIGH, r2):** no-transfer
-  branch keeps the queue local; transfer branch re-delivers via owner-routing (no
-  SQLite migration); authoritative operator binding travels, epoch/version-fenced.
-- **Flap / two uncoordinated controllers (MED, r2):** single decision point feeding
-  the existing hold-for-stability policy; concrete hysteresis + caps + cooldowns.
-- **Fail-open could regress to dead reply (MATERIAL, r3 external):** D10 conditioned
-  — local-certain-cannot-serve + peer-uncertain ⇒ honest degradation, not silent
-  local attempt.
-- **Refinements (r4 external):** ServeRequirement shape; capability-summary advert;
-  notice thresholds; authentication ≠ trustworthiness; partial-state-transfer
-  reclassified as a justified accepted limitation (advisory stores, reply unaffected).
-- **Security throughout:** signed mesh RPC transport; advisory canServe with
-  revalidate-at-admission; typed/clamped fields; router-only RBAC on the transfer
-  verb (a lying peer cannot order a seat to itself); data-residency opt-out.
-- **Conformance gate:** Testing Integrity + Observability flags folded (full test
-  tiers §8; metrics + `serve-failover.jsonl` §10).
+## Full Findings Catalog
+
+**Iteration 1 — material (decision-completeness):**
+- **M1 (material → resolved by D14):** §5A "detects-and-invokes enrollment" collided
+  with WS5.2's "never mesh-authenticated" invariant. Resolution: bridge is
+  detect→operator-PIN-initiated offer; agent surfaces, never auto-mints.
+- **M2 (material → resolved by D16):** WS5.2 Mechanism B unbuilt; bridge had nothing
+  to call. Resolution: buildable scope = orchestration layer only; §5A deferred
+  behind WS5.2's build; stub never blocks.
+- **M3 (material → resolved by D15):** bridge assumed unresolved R6a transport.
+  Resolution: R6a option (2), operator-side per-server, no new mesh verb.
+
+**Iteration 1 — minor/cosmetic (lessons-aware):** R6a-dependency naming (folded into
+D16); per-machine-approval cold-start honesty (folded into §3/§5.4 framing); canServe
+↔ C3 freshness (noted; admission-revalidation D8 already bounces stale canServe so no
+dead reply — non-blocking); frontmatter `lessons-engaged` refresh (cosmetic). Foundation
+audit: WS5.2 Mechanism B itself is sound to build the bridge on (deny-by-default,
+operator-PIN-rooted, C1/C2-preserving) — the only unresolved foundation item was R6a,
+now named (D15).
+
+**Iteration 1 — minor (codex/gemini externals):** "seamless/logs-in-once" overstated
+after Decision A → §3 honesty fix applied. gemini: "fundamentally sound, strong C1/C2
+handling, commendable security focus" — no actionable finding.
+
+**Iteration 2 (confirm):** decision-completeness verified M1/M2/M3 resolved, §5A
+consistent with D14/D15/D16, §12 "(none)" legitimate, no new material stop-point for
+the orchestration-only building agent. codex/gemini: minor only.
 
 ## Convergence verdict
 
-Converged at iteration 5. The final round produced zero material findings. All six
-internal perspectives cleared (security and decision-completeness clean at round 2;
-adversarial, integration, scalability, and lessons-aware clean at round 3); both
-external models (gpt-5.5, gemini-2.5-pro) endorsed the direction with only
-refinement-level suggestions, all folded. Zero unresolved questions in §12
-(single-run-completable: yes — 13 frontloaded decisions, 5 cheap-to-change tags, 2
-contested-then-cleared). The spec is ready for user review and approval.
-
-The build is gated on the user's `approved: true`. It is NOT started.
+Converged at iteration 2 (confirmed). No material findings in the final round; Open
+questions = none (all resolved into §4 Frontloaded Decisions D1–D16). The
+**orchestration-only scope (§5.1/§5.3/§5.4) is decision-complete and buildable today**
+against the proven `/pool/transfer` + `OwnershipApplier` + capacity-heartbeat
+primitives; the §5A auto-enroll bridge is a named deferral behind the WS5.2 build.
+Spec is ready for build under the orchestration-only scope.
