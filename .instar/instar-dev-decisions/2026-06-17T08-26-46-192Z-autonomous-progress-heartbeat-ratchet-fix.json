@@ -1,0 +1,19 @@
+{
+  "ts": "2026-06-17T08:26:46.192Z",
+  "slug": "autonomous-progress-heartbeat-ratchet-fix",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 18,
+  "causalAutopsy": {
+    "origin": "new-code",
+    "relatedPrs": [
+      1207
+    ],
+    "notes": "The autonomous-progress-heartbeat feature (PR #1207) added 3 fail-safe catch blocks that the no-silent-fallbacks ratchet flagged (count 476->479), turning CI red on unit shard 3/4. The catches lacked the @silent-fallback-ok exemption marker despite being fail-safe (surfaced via events or fail-closed sentinels), not silent. Fix tags them with written justifications; comment-only, zero behavior change."
+  },
+  "verdict": "pass"
+}

@@ -57,6 +57,19 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
     // detects cross-topic work overlap, and emits ONE deduped in-process councilor
     // nudge (signal-only; never gates). docs/specs/parallel-activity-coherence.md.
     parallelWorkSentinel: {},
+    // AutonomousProgressHeartbeat — hedged, change-gated, sparse liveness backstop
+    // for an autonomous run gone silent-to-user while its output is still moving.
+    // DEV-GATED: `enabled` is OMITTED so resolveDevAgentGate decides — LIVE on a
+    // developmentAgent (dogfood), DARK on the fleet (GET /autonomous-heartbeat
+    // 503s). NEVER hardcode `enabled: false` here (it would dark dev agents too).
+    // `dryRun: true` holds it to "would emit" logging (same cooldown/budget gates
+    // as live, no per-tick flood) until the dev soak proves it quiet. The
+    // threshold/tick/backoff defaults live in the component; persisting only
+    // dryRun keeps applyDefaults() add-missing-only. Spec:
+    // docs/specs/autonomous-progress-heartbeat.md.
+    autonomousHeartbeat: {
+      dryRun: true,
+    },
     // ResourceLedger — default-on so every agent durably records its rate-limit
     // events (breaker trips + sentinel detections) instead of losing them on
     // restart. Read-only observability; never gates. Event-driven, negligible
@@ -1329,6 +1342,21 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
   // block).
   playwrightRegistry: {
     dryRun: true,
+  },
+  // Feedback-factory processing wiring (docs/specs/feedback-factory-migration.md
+  // §191 — "the processor job is actually constructed and scheduled, not dead
+  // code"). Turns the already-parity'd processUnprocessed clustering pass into a
+  // real triggerable capability: GET /feedback-factory/stats (read-only counts) +
+  // POST /feedback-factory/process (one clustering pass over the canonical store) +
+  // a cadenced built-in job (feedback-factory-process) that drives the trigger.
+  // developmentAgent dark-feature gate: `enabled` is OMITTED so resolveDevAgentGate
+  // resolves it LIVE on a dev agent + DARK on the fleet (when off, both routes 503
+  // and the job exits silently). The processor only appends local JSONL (clusters +
+  // unprocessed→processing flips) — zero external side effects. DO NOT hardcode
+  // `enabled` here (a baked-in false would dark dev agents too — the #1001 shape the
+  // dark-gate lint forbids for a dev-gated block).
+  feedbackFactory: {
+    processing: {},
   },
 };
 

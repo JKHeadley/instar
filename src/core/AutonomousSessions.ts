@@ -125,6 +125,55 @@ export function autonomousRunRemainingForTopic(
   return { active: true, remainingSeconds };
 }
 
+/**
+ * Run-state markers the AutonomousProgressHeartbeat reads for its cheap-first
+ * predicates (autonomous-progress-heartbeat spec §predicates #2 + #3):
+ *   - `movedTo` / `moveSuspendedAt`: a mid-handoff marker (predicate #2 — this
+ *     machine must stay silent on a run about to fire from the destination).
+ *   - `startedAtMs`: the run's start wall-clock (predicate #3 — destination
+ *     warmup elapsed when the run has been active ON THIS MACHINE ≥ one window).
+ *
+ * Returns null when there is no per-topic run file (the heartbeat already
+ * gates on `autonomousRunRemainingForTopic` first; this is a SECOND read of the
+ * same file's markers, isolated here so all run-state file-format knowledge
+ * stays in this module). Reading fails CLOSED via the caller: a null return on
+ * a topic the run-active predicate already passed means the markers couldn't be
+ * read → the heartbeat suppresses.
+ */
+export interface AutonomousRunMarkers {
+  /** The target machine of an in-flight move, or null when not mid-move. */
+  movedTo: string | null;
+  /** Whether a `move_suspended_at` breadcrumb is present (mid-handoff). */
+  moveSuspended: boolean;
+  /** started_at parsed to epoch ms, or null when absent/unparseable. */
+  startedAtMs: number | null;
+}
+
+export function readAutonomousRunMarkers(
+  stateDir: string,
+  topic: string | number,
+): AutonomousRunMarkers | null {
+  const f = path.join(autonomousDir(stateDir), `${String(topic)}.local.md`);
+  let content: string;
+  try {
+    content = fs.readFileSync(f, 'utf8');
+  } catch {
+    // @silent-fallback-ok: a missing/unreadable `<topic>.local.md` is the EXPECTED case
+    // (no autonomous run for this topic). null is normal control flow, not degradation —
+    // callers (per readAutonomousRunMarkers' contract above) treat "couldn't read markers"
+    // as the conservative path (the heartbeat suppresses), so this is fail-safe, not silent.
+    return null;
+  }
+  const movedTo = readField(content, 'moved_to');
+  const startedAt = readField(content, 'started_at');
+  const startedMs = startedAt ? new Date(startedAt).getTime() : NaN;
+  return {
+    movedTo: movedTo && movedTo.length > 0 ? movedTo : null,
+    moveSuspended: /^move_suspended_at:/m.test(content),
+    startedAtMs: Number.isFinite(startedMs) ? startedMs : null,
+  };
+}
+
 export interface CanStartDeps {
   stateDir: string;
   maxConcurrent: number;

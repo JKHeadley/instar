@@ -2690,6 +2690,26 @@ export interface InstarConfig {
       /** Canonical store directory (default <stateDir>/state/feedback-factory/store). */
       dataDir?: string;
     };
+    /**
+     * Processing wiring (feedback-factory-migration spec §191 — "the processor
+     * job is actually constructed and scheduled, not dead code"). Turns the
+     * already-parity'd `processUnprocessed` clustering pass into a real
+     * triggerable capability: `GET /feedback-factory/stats` (read-only counts)
+     * + `POST /feedback-factory/process` (one clustering pass over the canonical
+     * store) + a cadenced built-in job that drives the trigger.
+     *
+     * DEV-GATED dark feature: `enabled` is OMITTED from ConfigDefaults so
+     * `resolveDevAgentGate` decides — LIVE on a development agent, DARK on the
+     * fleet (both routes 503 + the job exits silently when off). An explicit
+     * `enabled` in config always wins (false force-darks, true fleet-flips).
+     */
+    processing?: {
+      /** Dark-gate flag. OMITTED in defaults so the devAgentGate decides. */
+      enabled?: boolean;
+      /** Canonical store directory (default mirrors receiverPersistence:
+       *  <stateDir>/state/feedback-factory/store). */
+      dataDir?: string;
+    };
   };
   /**
    * Model-routing config. `tierEscalation` is the Model-Tier Escalation
@@ -4013,6 +4033,35 @@ export interface MonitoringConfig {
     enabled: boolean;
     /** Cadence between overlap scans, in minutes (default 15). */
     cadenceMinutes?: number;
+  };
+  /**
+   * AutonomousProgressHeartbeat — a hedged, change-gated, sparse liveness
+   * BACKSTOP that posts ONE purely-observational line when an autonomous run
+   * has gone silent on the user for a long stretch while its terminal output is
+   * STILL changing. NOT the suppressed PromiseBeacon §B1 filler — it fires only
+   * on a LONG user-silence gate AND a corroborated recent output change (read
+   * from ActiveWorkSilenceSentinel's already-computed snapshot), with a
+   * per-topic cooldown + a widening per-run backoff + hard cap + the shared
+   * one-voice lease. Signal-only; never gates.
+   *
+   * `enabled` is DELIBERATELY OPTIONAL (dev-gate convention): omitted from
+   * ConfigDefaults so resolveDevAgentGate decides — LIVE on a development agent,
+   * DARK on the fleet (GET /autonomous-heartbeat 503s). `dryRun` defaults true.
+   * Spec: docs/specs/autonomous-progress-heartbeat.md.
+   */
+  autonomousHeartbeat?: {
+    /** Dev-gate convention: omit to let resolveDevAgentGate decide. */
+    enabled?: boolean;
+    /** Log the intended heartbeat instead of sending (default: true). */
+    dryRun?: boolean;
+    /** User-silence gate, minutes (default 25; floor-clamped to ~5). */
+    silenceThresholdMinutes?: number;
+    /** Check cadence, ms (default 60_000; floor-clamped to ~30_000). */
+    tickIntervalMs?: number;
+    /** Hard per-run heartbeat cap (default 6). */
+    maxHeartbeatsPerRun?: number;
+    /** How recently the shared snapshot's lastOutputAt must have advanced (default 300_000). */
+    recentOutputChangeWindowMs?: number;
   };
   /**
    * Blocker Ledger — the durable resolution-workflow + memory layer that
