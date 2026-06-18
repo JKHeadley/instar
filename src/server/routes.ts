@@ -20819,7 +20819,10 @@ export function createRoutes(ctx: RouteContext): Router {
           failed.push({ machineId: p.machineId, error: err instanceof Error ? err.message : String(err) });
         }
       }));
-      res.json({ enabled: true, logins: [...tagLocal, ...remote], pool: { peersOk: peers.length - failed.length, failed } });
+      // `enabled` mirrors LOCAL pool presence (same signal as the non-pool path + the accounts
+      // endpoint) so the dashboard's feature-dark detection still works pool-wide: a machine with no
+      // local enrollment wizard reads enabled:false even though it may forward peers' logins.
+      res.json({ enabled: !!ctx.enrollmentWizard, logins: [...tagLocal, ...remote], pool: { peersOk: peers.length - failed.length, failed } });
       return;
     }
     if (!ctx.enrollmentWizard) {

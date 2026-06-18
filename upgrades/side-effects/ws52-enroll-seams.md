@@ -61,3 +61,7 @@ Verified all 5 review points against real code (cited file:line): (1) consumer i
 ## Evidence pointers
 - `npx tsc --noEmit` clean (full worktree).
 - `tests/integration/pending-logins-pool-merge.test.ts` (NEW, 3) + subscription-enrollment-routes (5) + follow-me-controller-wiring (4) + scan/enroll-start/delivered-mandate route tests (14) + resolve-follow-me-enroll-target (6) + fetch-peer-subscription-views (5) — all green.
+
+## Follow-up (CI fix, 2026-06-18)
+
+CI surfaced two real issues from seam #3, both fixed: (1) the `?scope=pool` branch hardcoded `enabled:true`, which broke the dashboard's feature-dark detection (it needs `pending.enabled===false` alongside accounts) — now it mirrors local pool presence (`enabled: !!ctx.enrollmentWizard`), so a dark machine still reads disabled even while forwarding peers' logins; (2) the `subscriptions-tab` integration-test fetch mocks keyed the old `/subscription-pool/pending-logins` URL, but the controller now fetches `?scope=pool` — updated the mock keys. Verified: subscriptions-tab (5) + subscriptions-tab-lifecycle e2e (2) + pending-logins-pool-merge (3) + follow-me-controller-wiring (4) green; tsc clean.
