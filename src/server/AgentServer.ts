@@ -271,6 +271,10 @@ export class AgentServer {
   private parallelActivityIndex: ParallelActivityIndex | null = null;
   private parallelWorkSentinel: ParallelWorkSentinel | null = null;
   private parallelWorkSentinelTimer: ReturnType<typeof setInterval> | null = null;
+  // WS5.2 Account Follow-Me — delivered-mandate consumer (seam #1): drives enroll-start for
+  // operator-approved+delivered mandates so a tapped Approve actually produces a login.
+  private followMeConsumerTimer: ReturnType<typeof setInterval> | null = null;
+  private followMeConsumerRunning = false;
   private resourceSampler: ResourceSampler | null = null;
   private frameworkIssueLedger: FrameworkIssueLedger | null = null;
   private mentorRunner: MentorOnboardingRunner | null = null;
@@ -3443,6 +3447,20 @@ export class AgentServer {
           this.routeContext.wsManager = this.wsManager;
         }
 
+        // ── Account Follow-Me delivered-mandate consumer (WS5.2 seam #1) ──
+        // A boot-sweep + periodic tick that turns an operator-approved+delivered
+        // mandate into an actual login on this target machine. Idempotent (skips
+        // already-pending/enrolled accounts) and authority-free (it nudges the real
+        // enroll-start route, which enforces the dev-gate + deny-by-default + the
+        // point-of-use mandate re-verify). Inert when there's no delivered-mandate
+        // store. Boot-sweep is delayed a few seconds so routes are fully wired.
+        if (this.deliveredMandateStore) {
+          setTimeout(() => { void this.driveDeliveredFollowMeEnrollments(); }, 8_000);
+          this.followMeConsumerTimer = setInterval(() => {
+            void this.driveDeliveredFollowMeEnrollments();
+          }, 60_000);
+        }
+
         // ── Token Ledger Poller ─────────────────────────────────────────
         // 60s tick scans `~/.claude/projects/*/*.jsonl` and rolls up into
         // the token_events table. Strictly read-only against source files.
@@ -3612,6 +3630,77 @@ export class AgentServer {
    * infrastructure, not a critical-path dependency. Any error here is
    * logged and the rest of the server continues running.
    */
+  /**
+   * WS5.2 Account Follow-Me — the DELIVERED-MANDATE CONSUMER (seam #1 of the live-proof fix).
+   *
+   * After the operator taps Approve on their dashboard, the mandate is issued + delivered to THIS
+   * (target) machine's DeliveredMandateStore — but nothing turned that into an actual login, so the
+   * proof stalled with "machine logging in now" then silence (2026-06-18, topic 13481). This sweep is
+   * the missing caller: it walks the delivered-mandate store and drives the enroll-start for each
+   * account-follow-me mandate that hasn't already produced a pending login or an enrolled account.
+   *
+   * Idempotent + re-mint-safe by construction (no separate single-flight store needed): it SKIPS any
+   * account that already has a pending login (in-flight) or is already in the pool (done), so a fresh
+   * tick never re-drives a login that's underway or complete. It reuses the REAL enroll-start route
+   * (self-POST to localhost) so all auth/gate/email-resolution/device-code logic stays in one place —
+   * including the point-of-use mandate re-verify and the seam #2 peer-view email resolution. The route
+   * enforces the dev-gate (503 when off) + deny-by-default, so this consumer carries NO authority of
+   * its own; it only nudges the route for mandates the operator already approved + delivered.
+   */
+  private async driveDeliveredFollowMeEnrollments(): Promise<void> {
+    if (this.followMeConsumerRunning) return; // re-entrancy guard (a slow tick must not overlap)
+    if (!this.deliveredMandateStore) return;
+    this.followMeConsumerRunning = true;
+    try {
+      const now = Date.now();
+      const delivered = this.deliveredMandateStore.list().filter((r) => {
+        const m = r.portable?.mandate;
+        if (!m || m.revoked) return false;
+        if (m.expiresAt && Date.parse(m.expiresAt) <= now) return false;
+        return (m.authorities ?? []).some((a) => a.action === 'account-follow-me' && (a.bounds ?? {}).accountId);
+      });
+      if (delivered.length === 0) return;
+
+      const host = this.config.host || '127.0.0.1';
+      const base = `http://${host}:${this.config.port}`;
+      const authHeader = { Authorization: `Bearer ${this.config.authToken ?? ''}` };
+
+      // Build the set of accounts already handled (pending login in flight, or already enrolled) so a
+      // tick never re-drives — the durable idempotency (pending logins + pool both persist on disk).
+      const handled = new Set<string>();
+      try {
+        const [pl, sp] = await Promise.all([
+          fetch(`${base}/subscription-pool/pending-logins`, { headers: authHeader }).then((r) => (r.ok ? r.json() : null)).catch(() => null),
+          fetch(`${base}/subscription-pool`, { headers: authHeader }).then((r) => (r.ok ? r.json() : null)).catch(() => null),
+        ]) as [{ logins?: Array<{ id?: string }> } | null, { accounts?: Array<{ id?: string }> } | null];
+        for (const l of pl?.logins ?? []) if (l?.id) handled.add(l.id);
+        for (const a of sp?.accounts ?? []) if (a?.id) handled.add(a.id);
+      } catch { /* best-effort — a read failure just means we may attempt; the route is idempotent-enough */ }
+
+      for (const rec of delivered) {
+        const m = rec.portable.mandate;
+        const accountId = ((m.authorities ?? []).find((a) => a.action === 'account-follow-me')?.bounds ?? {}).accountId as string | undefined;
+        if (!accountId || handled.has(accountId)) continue; // already pending or enrolled — never re-drive
+        try {
+          const resp = await fetch(`${base}/subscription-pool/follow-me/enroll/start`, {
+            method: 'POST',
+            headers: { ...authHeader, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ mandateId: rec.id, accountId }),
+          });
+          const ok = resp.ok;
+          console.log(`[follow-me-consumer] drove enroll-start for ${accountId} (mandate ${rec.id}) → ${resp.status}${ok ? '' : ' (will retry next tick)'}`);
+          if (ok) handled.add(accountId); // don't double-drive within this same tick
+        } catch (err) {
+          console.warn(`[follow-me-consumer] enroll-start self-call failed for ${accountId} (mandate ${rec.id}):`, err);
+        }
+      }
+    } catch (err) {
+      console.warn('[follow-me-consumer] sweep failed (non-fatal):', err);
+    } finally {
+      this.followMeConsumerRunning = false;
+    }
+  }
+
   private async startDeliverySentinel(): Promise<void> {
     const stateDir = this.config.stateDir;
     const agentId = this.config.projectName;
@@ -3777,6 +3866,10 @@ export class AgentServer {
     if (this.parallelWorkSentinelTimer) {
       try { clearInterval(this.parallelWorkSentinelTimer); } catch { /* best-effort */ }
       this.parallelWorkSentinelTimer = null;
+    }
+    if (this.followMeConsumerTimer) {
+      try { clearInterval(this.followMeConsumerTimer); } catch { /* best-effort */ }
+      this.followMeConsumerTimer = null;
     }
     // Stop the growth-digest publisher's cron + pending catch-up timer.
     if (this.growthDigestPublisher) {

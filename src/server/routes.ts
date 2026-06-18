@@ -20789,12 +20789,44 @@ export function createRoutes(ctx: RouteContext): Router {
   // P2.1 — the "Pending Logins" surface (the phone/dashboard panel). MUST be
   // registered before GET /subscription-pool/:id, or the param route shadows the
   // literal "pending-logins" segment. 200 { enabled:false } when unwired.
-  router.get('/subscription-pool/pending-logins', (_req, res) => {
+  router.get('/subscription-pool/pending-logins', async (req, res) => {
+    const localLogins = ctx.enrollmentWizard ? ctx.enrollmentWizard.pending() : [];
+    // WS5.2 seam #3 — POOL-SCOPE merge: a follow-me login is created on the TARGET machine (e.g. the
+    // Mac Mini), but the operator views their SINGLE (fronting) dashboard. Without this, the device-code
+    // login link the operator must tap never surfaces — the proof stalls after Approve. ?scope=pool fans
+    // out to peers' LOCAL pending-logins and merges, tagging each with its machine. Dark/slow peers are
+    // tolerated (a classified failed entry, never a 500) — same pattern as /sessions?scope=pool.
+    if (req.query.scope === 'pool') {
+      const tagLocal = (ctx.enrollmentWizard ? localLogins : []).map((l) => ({ ...l, machineId: ctx.meshSelfId ?? 'self', remote: false }));
+      const peers = ctx.resolvePeerUrls?.() ?? [];
+      const failed: Array<{ machineId: string; error: string }> = [];
+      const remote: Record<string, unknown>[] = [];
+      await Promise.all(peers.map(async (p) => {
+        try {
+          const r = await fetch(`${p.url}/subscription-pool/pending-logins`, {
+            headers: { Authorization: `Bearer ${ctx.config.authToken}` },
+            signal: AbortSignal.timeout(5000),
+          });
+          if (!r.ok) { failed.push({ machineId: p.machineId, error: `HTTP ${r.status}` }); return; }
+          const body = (await r.json()) as { logins?: Record<string, unknown>[] };
+          const nickname = ctx.machinePoolRegistry?.getCapacity(p.machineId)?.nickname ?? null;
+          for (const l of body.logins ?? []) {
+            remote.push({ ...l, machineId: l.machineId ?? p.machineId, machineNickname: l.machineNickname ?? nickname ?? undefined, remote: true });
+          }
+        } catch (err) {
+          // @silent-fallback-ok — a dark/slow peer degrades to a classified failed entry (never a 500);
+          // the operator still sees every reachable machine's pending logins.
+          failed.push({ machineId: p.machineId, error: err instanceof Error ? err.message : String(err) });
+        }
+      }));
+      res.json({ enabled: true, logins: [...tagLocal, ...remote], pool: { peersOk: peers.length - failed.length, failed } });
+      return;
+    }
     if (!ctx.enrollmentWizard) {
       res.json({ enabled: false, logins: [] });
       return;
     }
-    res.json({ enabled: true, logins: ctx.enrollmentWizard.pending() });
+    res.json({ enabled: true, logins: localLogins });
   });
 
   // Which pool account is the agent ACTUALLY running on right now (vs "active" =

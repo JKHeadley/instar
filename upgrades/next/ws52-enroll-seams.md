@@ -1,0 +1,24 @@
+<!-- slug: ws52-enroll-seams -->
+<!-- bump: patch -->
+
+## What Changed
+
+Makes the account-follow-me proof work end-to-end. Driving it as the operator exposed that tapping Approve issued + delivered the mandate to the target machine, but three seams were unwired so nothing happened after ("machine logging in now" then silence). Wired all three:
+
+1. **Delivered-mandate consumer** — a boot-sweep + 60s tick on the target machine walks the delivered-mandate store and drives the real enroll-start route for each approved mandate not already pending/enrolled. Idempotent (survives restart), authority-free (the route still enforces every gate).
+2. **Peer-view email resolution** — `accountFollowMePeerViews` now uses the working peer-resolution path (`resolvePeerUrls`) instead of an empty field, so the target can resolve the approved account's email (fixes the `409 "cannot resolve approved account email"`).
+3. **Pending-login surfacing** — `GET /subscription-pool/pending-logins?scope=pool` merges peers' pending logins (dark-peer-tolerant), and the dashboard polls it pool-scope, so a login created on another machine surfaces on the operator's single dashboard.
+
+## What to Tell Your User
+
+The "let another machine use this subscription" flow now actually completes: tap Approve, and the other machine starts its login and the link shows up on your dashboard for you to tap. Before this, Approve issued the approval but nothing carried it through.
+
+## Summary of New Capabilities
+
+- Account-follow-me works end-to-end: Approve → the target machine enrolls itself → its login link surfaces on your single dashboard. Dark on fleet / live on the dev agent (unchanged gate).
+
+## Evidence
+
+- `tests/integration/pending-logins-pool-merge.test.ts` (NEW, 3 tests) — verifies the `?scope=pool` merge tags logins by machine, tolerates a dark peer (no 500), and leaves the default local-only path unchanged.
+- All existing follow-me / enroll-start / scan / delivered-mandate / resolve / peer-view tests green (no regressions); `tsc --noEmit` clean.
+- The full Approve→enroll→login-link flow driven on the real two-machine setup before release (Live-User-Channel-Proof).
