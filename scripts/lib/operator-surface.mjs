@@ -54,6 +54,69 @@ export function artifactAddressesOperatorSurfaceQuality(content) {
 }
 
 /**
+ * MECHANICAL content check (Part C arm 1 of ws52-operator-tap-not-text) — the
+ * "Operators Act in Taps, Not Text" clause of Operator-Surface Quality.
+ *
+ * Upgrades the §6b gate from prose-attestation (does the artifact MENTION the
+ * question) to a real inspection of the SURFACE FILE itself: does this operator
+ * surface require the operator to paste raw/technical text — a JSON template in a
+ * textarea, an input labelled for a fingerprint/token/base64/curl, or instruction
+ * text telling the operator to paste/author such text? Operators act in taps; the
+ * UI assembles structured data. A surface that needs raw technical input is
+ * finished for an engineer, not its user.
+ *
+ * Allowlist (Structure > Willpower, with its own cap — see "guard bypass carries
+ * its own cap"): a genuine power-user surface may opt out ONLY with an explicit,
+ * co-located, reviewable marker — the token `operator-surface-power-user`
+ * anywhere in the file (e.g. a `data-power-user-surface` attribute, or a comment
+ * of the form "operator-surface-power-user: <reason>"). The marker is the
+ * surface author asserting, on the record, "this is deliberately a power-user
+ * surface and never the default operator path." (The constant/fixture dodge —
+ * moving the JSON template into an imported constant the scanner can't see — is
+ * documented out-of-scope and is backstopped by code review, not pretended
+ * airtight; the gate catches the naive inline regression that actually shipped.)
+ *
+ * SIGNAL-FREE pure predicate: returns the finding; the gate decides.
+ * @param {string} content the operator-surface file text
+ * @returns {{ requiresRawInput: boolean, hasPowerUserMarker: boolean, reasons: string[] }}
+ */
+export function operatorSurfaceRequiresRawInput(content) {
+  const text = String(content ?? '');
+  const hasPowerUserMarker = /operator-surface-power-user|data-power-user-surface/i.test(text);
+  const reasons = [];
+
+  // 1. A JSON / authorities template offered to the operator as a placeholder or
+  //    default value (the exact raw-JSON mandate-form regression, 2026-06-13).
+  //    Look for a JSON-array/object literal of authority-shaped objects, or a
+  //    placeholder/value attribute that carries one.
+  if (/\[\s*\{\s*["']action["']\s*:/.test(text) || /["']authorities["']\s*:\s*\[/.test(text)) {
+    reasons.push('offers a JSON authorities template for the operator to paste/edit');
+  }
+  if (/(?:placeholder|value|defaultValue)\s*=\s*["'][^"']*[[{][^"']*["']/.test(text)
+      && /[[{]\s*["'][a-zA-Z]/.test(text)) {
+    reasons.push('an input placeholder/default is a raw JSON/array template');
+  }
+
+  // 2. An input whose label/placeholder/aria-label asks for a raw technical value
+  //    the operator would have to copy from elsewhere (fingerprint, token, id,
+  //    base64, curl/CLI command, or "paste … JSON").
+  const RAW_INPUT_LABEL =
+    /(?:placeholder|aria-label|label|name)\s*=\s*["'][^"']*\b(?:fingerprint|base64|bearer token|curl|JSON blob|authorities JSON)\b[^"']*["']/i;
+  if (RAW_INPUT_LABEL.test(text)) {
+    reasons.push('an input is labelled for a raw technical value (fingerprint/token/base64/curl/JSON)');
+  }
+
+  // 3. Instruction text telling the operator to paste/author raw technical text.
+  const PASTE_INSTRUCTION =
+    /\b(?:paste|copy)\b[^.\n]{0,40}\b(?:this|the following|the)\b[^.\n]{0,30}\b(?:JSON|fingerprint|authorities|token|command|blob)\b/i;
+  if (PASTE_INSTRUCTION.test(text)) {
+    reasons.push('instructs the operator to paste/copy raw technical text');
+  }
+
+  return { requiresRawInput: reasons.length > 0, hasPowerUserMarker, reasons };
+}
+
+/**
  * Is this staged file an AUTHORIZATION/APPROVAL surface specifically — one where the
  * operator confers authority (a grant/mandate/approval form or its renderer)? A subset
  * of operator surfaces that additionally triggers the "Agent Proposes, Operator

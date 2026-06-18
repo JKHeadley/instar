@@ -172,6 +172,80 @@ export function renderAccounts(doc, target, accounts, now = Date.now(), inUseAcc
   }
 }
 
+/**
+ * Account Follow-Me — the ONE-TAP Approve card (ws52-operator-tap-not-text Part A).
+ * Renders a scan consent-offer as a plain-language card the operator APPROVES with a
+ * single PIN tap — never a JSON/fingerprint paste (the 2026-06-17 operator feedback:
+ * "operators act in taps, not text"). All operator-facing values are sanitized TEXT;
+ * the only machine-readable data on the card are the NON-SENSITIVE account/target ids
+ * as data-* attributes (used to find the offer on Approve). The agent fingerprints
+ * (FD2) are NEVER placed in the DOM — they live in the controller's offer state and
+ * are sent server-side at POST time. By construction this card carries zero raw
+ * technical text, so it PASSES the arm-1 operator-surface gate.
+ */
+export function renderFollowMeApproveCard(doc, offer) {
+  const card = el(doc, 'div', 'sub-followme-offer');
+  // Non-sensitive identifiers, for the Approve handler to resolve the offer. NOT
+  // operator-facing text; never a fingerprint/JSON.
+  card.setAttribute('data-account-id', sanitizeForDisplay(offer && offer.accountId, 'label'));
+  card.setAttribute('data-target-machine-id', sanitizeForDisplay(offer && offer.targetMachineId, 'label'));
+
+  const machine = sanitizeForDisplay(offer && offer.machineNickname, 'label');
+  const account = sanitizeForDisplay(offer && offer.accountLabel, 'label');
+  card.appendChild(el(doc, 'div', 'sub-followme-headline',
+    `Let ${machine} use your ${account} subscription`));
+  card.appendChild(el(doc, 'div', 'sub-followme-sub',
+    sanitizeForDisplay(offer && offer.expiryText, 'summary') || 'Authorizes this one setup, then expires.'));
+
+  const pin = doc.createElement('input');
+  pin.setAttribute('type', 'password');
+  pin.setAttribute('class', 'sub-followme-pin');
+  pin.setAttribute('placeholder', 'Your PIN'); // a PIN box, not a technical value
+  pin.setAttribute('autocomplete', 'off');
+  card.appendChild(pin);
+
+  const approve = el(doc, 'button', 'sub-followme-approve', 'Approve');
+  approve.setAttribute('data-followme-approve', '1');
+  card.appendChild(approve);
+  return card;
+}
+
+/** Render the list of follow-me consent offers as one-tap Approve cards (or nothing if none). */
+export function renderFollowMeOffers(doc, target, offers) {
+  if (!target) return;
+  target.replaceChildren();
+  if (!Array.isArray(offers) || offers.length === 0) return; // silent when nothing to offer
+  target.appendChild(el(doc, 'div', 'sub-followme-title', 'Let another machine use a subscription'));
+  for (const offer of offers) target.appendChild(renderFollowMeApproveCard(doc, offer));
+}
+
+/**
+ * Build the /mandate/issue-for-machine payload from a tapped Approve card + the
+ * held offers + the operator's PIN (ws52-operator-tap-not-text Part A). Pure: the
+ * card carries only the non-sensitive account/target ids; the agent fingerprints
+ * (FD2) come from the matched offer in controller state — the operator never typed
+ * them. Returns the payload, or `{ error }` for a missing PIN, or null when the
+ * card has no matching offer / the offer lacks its FD2 agent pair (fail-closed —
+ * never POST an under-specified mandate request).
+ */
+export function buildFollowMeIssuePayload(card, offers, pinValue) {
+  if (!card || typeof card.getAttribute !== 'function') return null;
+  const accountId = card.getAttribute('data-account-id');
+  const targetMachineId = card.getAttribute('data-target-machine-id');
+  if (!accountId || !targetMachineId) return null;
+  const offer = (Array.isArray(offers) ? offers : []).find(
+    (o) => o && o.accountId === accountId && o.targetMachineId === targetMachineId,
+  );
+  if (!offer) return null; // unknown/stale card — never POST
+  if (!Array.isArray(offer.agents) || offer.agents.length !== 2
+      || offer.agents.some((a) => typeof a !== 'string' || !a)) {
+    return null; // FD2 agent pair missing — fail-closed
+  }
+  const pin = typeof pinValue === 'string' ? pinValue.trim() : '';
+  if (!pin) return { error: 'pin-required' };
+  return { pin, accountId, targetMachineId, agents: [offer.agents[0], offer.agents[1]] };
+}
+
 /** Pending Logins panel: device code / verification URL (as TEXT) + TTL + reissues. */
 export function renderPendingLogins(doc, target, logins, now = Date.now()) {
   if (!target) return;

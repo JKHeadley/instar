@@ -1892,6 +1892,14 @@ export function createRoutes(ctx: RouteContext): Router {
     void observePrincipalCoherence(text, options.topicId).catch(() => {
       /* @silent-fallback-ok — observe-only; a detector error never affects delivery */
     });
+    // ── Operators-Act-in-Taps-Not-Text Signal (OBSERVE-ONLY, ws52 Part C arm 2) ──
+    // Record — but NEVER act on — an outbound message that asks the OPERATOR to paste
+    // raw/technical text (JSON/fingerprints/curl/multi-step). Backstop to the arm-1
+    // build-time gate; per signal-vs-authority this is a SIGNAL, not a blocker. Same
+    // fire-and-forget VOID contract — it cannot block, delay, or rewrite the message.
+    void observeRawTextRequest(text, options.topicId).catch(() => {
+      /* @silent-fallback-ok — observe-only; a detector error never affects delivery */
+    });
 
     const decision = await evaluateOutbound(text, channel, options);
     if (!decision.ok) {
@@ -2147,6 +2155,38 @@ export function createRoutes(ctx: RouteContext): Router {
     } catch {
       // @silent-fallback-ok — observe-only; any error silently no-ops and the
       // outbound message is unaffected.
+    }
+  }
+
+  // ── Operators-Act-in-Taps-Not-Text Signal (OBSERVE-ONLY, ws52 Part C arm 2) ──
+  // Backstop to the arm-1 build-time gate: record — never act on — an outbound
+  // message that asks the OPERATOR to paste raw/technical text. Per signal-vs-authority
+  // this is a SIGNAL (records the occurrence), NOT a blocker (asking-for-JSON is not
+  // irreversible, so the safety-guard block exception does not apply, and a keyword
+  // blocker on a user-visible channel would wedge real conversations). Dark on the
+  // fleet, live on the development agent. Records the SIGNAL (reasons + topic), never
+  // the raw message text. Fire-and-forget; never affects delivery.
+  async function observeRawTextRequest(text: string, topicId?: number): Promise<void> {
+    try {
+      if (typeof text !== 'string' || text.trim().length === 0) return;
+      if (!resolveDevAgentGate(undefined, ctx.config)) return;
+      const { detectRawTextRequestToOperator } = await import('../core/rawTextRequestDetector.js');
+      const sig = detectRawTextRequestToOperator(text);
+      if (!sig.detected) return;
+      const file = path.join(ctx.config.stateDir, 'raw-text-request-signals.jsonl');
+      try {
+        fs.mkdirSync(path.dirname(file), { recursive: true });
+        fs.appendFileSync(
+          file,
+          JSON.stringify({ ts: new Date().toISOString(), topicId: topicId ?? null, reasons: sig.reasons }) + '\n',
+          'utf8',
+        );
+      } catch {
+        /* @silent-fallback-ok — recording must never throw */
+      }
+      console.log(`[operators-act-in-taps] outbound asked operator for raw text: ${sig.reasons.join('; ')}`);
+    } catch {
+      // @silent-fallback-ok — observe-only; any error silently no-ops and delivery is unaffected.
     }
   }
 
@@ -7597,9 +7637,18 @@ export function createRoutes(ctx: RouteContext): Router {
       res.status(400).json({ error: 'agents must be a pair of two agent fingerprints' });
       return;
     }
-    if (typeof b.expiresAt !== 'string' || isNaN(Date.parse(b.expiresAt)) || Date.parse(b.expiresAt) <= Date.now()) {
-      res.status(400).json({ error: 'expiresAt must be a future ISO timestamp (mandates always expire)' });
+    // FD1 (ws52-operator-tap-not-text): the one-tap card sends NO expiry — the server
+    // defaults to 1 hour (a mandate only needs to authorize one re-mint enrollment, not
+    // standing access). A caller MAY still pass an explicit future expiry; an invalid one
+    // is rejected. Mandates always expire either way.
+    let expiresAt: string;
+    if (b.expiresAt === undefined || b.expiresAt === null || b.expiresAt === '') {
+      expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+    } else if (typeof b.expiresAt !== 'string' || isNaN(Date.parse(b.expiresAt)) || Date.parse(b.expiresAt) <= Date.now()) {
+      res.status(400).json({ error: 'expiresAt, if provided, must be a future ISO timestamp' });
       return;
+    } else {
+      expiresAt = b.expiresAt;
     }
     const { accountId, targetMachineId } = b as { accountId: string; targetMachineId: string };
     const selfMachineId = ctx.meshSelfId ?? (ctx.config as { machineId?: string }).machineId ?? 'local';
@@ -7612,7 +7661,7 @@ export function createRoutes(ctx: RouteContext): Router {
         { action: 'account-follow-me', bounds: { accountId, targetMachineId, mechanism: 're-mint' } },
       ],
       author: typeof b.author === 'string' && b.author ? b.author : 'justin',
-      expiresAt: b.expiresAt,
+      expiresAt,
     });
 
     // A LOCAL target is the ordinary path — the local gate already sees this mandate; no delivery.

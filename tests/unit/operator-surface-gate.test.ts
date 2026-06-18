@@ -19,6 +19,7 @@ import {
   artifactAddressesOperatorSurfaceQuality,
   isAuthorizationSurfaceFile,
   artifactAddressesAgentProposesApproves,
+  operatorSurfaceRequiresRawInput,
 } from '../../scripts/lib/operator-surface.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -102,6 +103,56 @@ describe('artifactAddressesAgentProposesApproves — both sides of the boundary'
   });
 });
 
+describe('operatorSurfaceRequiresRawInput — "Operators Act in Taps, Not Text" mechanical check', () => {
+  it('YES: a JSON authorities template offered for the operator to paste/edit (the 2026-06-13 raw-JSON mandate-form regression)', () => {
+    const rawJsonMandateForm = `
+      <label>Authorities</label>
+      <textarea class="mnd-authorities">[{"action":"account-follow-me","bounds":{"accountId":"adriana","targetMachineId":"m_4cbc"}}]</textarea>
+      <input type="password" placeholder="Your PIN" />`;
+    const v = operatorSurfaceRequiresRawInput(rawJsonMandateForm);
+    expect(v.requiresRawInput).toBe(true);
+    expect(v.hasPowerUserMarker).toBe(false);
+    expect(v.reasons.join(' ')).toMatch(/JSON authorities template/i);
+  });
+
+  it('YES: an input labelled for a raw technical value (fingerprint)', () => {
+    const fpForm = `<input type="text" placeholder="paste the other agent's routing fingerprint" />`;
+    expect(operatorSurfaceRequiresRawInput(fpForm).requiresRawInput).toBe(true);
+  });
+
+  it('YES: instructions telling the operator to paste raw technical text', () => {
+    const instr = `<p>Delete the template and paste the authorities JSON below, then enter your PIN.</p>`;
+    expect(operatorSurfaceRequiresRawInput(instr).requiresRawInput).toBe(true);
+  });
+
+  it('NO: a clean one-tap Approve card (button + PIN, no raw text)', () => {
+    const tapCard = `
+      <div class="follow-me-card">
+        Let <strong>the Mac Mini</strong> use your <strong>adriana</strong> subscription.
+        <span>Authorizes this one setup; expires in 1 hour.</span>
+        <input type="password" placeholder="Your PIN" />
+        <button data-approve-follow-me>Approve</button>
+      </div>`;
+    const v = operatorSurfaceRequiresRawInput(tapCard);
+    expect(v.requiresRawInput).toBe(false);
+    expect(v.reasons).toEqual([]);
+  });
+
+  it('marker: a power-user surface with a JSON template is detected as marked (gate will not block it)', () => {
+    const powerUser = `
+      /* operator-surface-power-user: the Advanced author-by-hand form, never the default operator path */
+      <textarea>[{"action":"x","bounds":{}}]</textarea>`;
+    const v = operatorSurfaceRequiresRawInput(powerUser);
+    expect(v.requiresRawInput).toBe(true);     // it DOES require raw input...
+    expect(v.hasPowerUserMarker).toBe(true);   // ...but the marker exempts it (the precommit checks both)
+  });
+
+  it('handles empty / undefined safely', () => {
+    expect(operatorSurfaceRequiresRawInput('').requiresRawInput).toBe(false);
+    expect(operatorSurfaceRequiresRawInput(undefined as unknown as string).requiresRawInput).toBe(false);
+  });
+});
+
 describe('wiring integrity — the gate is actually called, not a no-op', () => {
   it('the precommit defines assertOperatorSurfaceQuality and uses the shared lib predicates', () => {
     expect(PRECOMMIT).toContain('function assertOperatorSurfaceQuality(');
@@ -113,6 +164,14 @@ describe('wiring integrity — the gate is actually called, not a no-op', () => 
   it('the precommit also wires the agent-proposes/operator-approves authorization-surface gate', () => {
     expect(PRECOMMIT).toContain('isAuthorizationSurfaceFile');
     expect(PRECOMMIT).toContain('artifactAddressesAgentProposesApproves');
+  });
+
+  it('the precommit wires the mechanical "Operators Act in Taps, Not Text" check (arm 1) and blocks on it', () => {
+    expect(PRECOMMIT).toContain('operatorSurfaceRequiresRawInput');
+    // it must actually gate: require raw input AND no power-user marker → block
+    expect(PRECOMMIT).toMatch(/operatorSurfaceRequiresRawInput\(/);
+    expect(PRECOMMIT).toContain('verdict.requiresRawInput');
+    expect(PRECOMMIT).toContain('verdict.hasPowerUserMarker');
   });
 
   it('the gate is invoked on BOTH pass paths (Tier-1 lite AND Tier-2 full)', () => {
