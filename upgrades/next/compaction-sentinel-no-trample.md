@@ -1,0 +1,20 @@
+<!-- slug: compaction-sentinel-no-trample -->
+<!-- bump: patch -->
+
+## What Changed
+
+Fixes the recurring mid-turn interrupt of long sessions (the "Claude was interrupted" / "[Request interrupted by user]" you'd see on a long autonomous run). Root cause: the CompactionSentinel's recovery guard deferred a resume-nudge while a session was actively working, but only for ~4 minutes (`maxWorkingDefers`); after that it force-injected the nudge **even if the session was still actively working**, interrupting the live turn. On a long session that compacts periodically, it fired repeatedly. Now, when the defer budget is exhausted but the session is still actively working, the sentinel **stands down** (the session is alive and self-recovered — no nudge needed) instead of force-injecting. The genuinely-frozen-footer case is already owned by the silence/context-wedge sentinels. The `maxWorkingDefers: 0` opt-out (inject-immediately) is preserved.
+
+## What to Tell Your User
+
+If you ever saw your long-running session get "interrupted" out of nowhere, that's fixed. An internal recovery watchdog was occasionally nudging sessions that were actually still working, which interrupted them. It now leaves a working session alone.
+
+## Summary of New Capabilities
+
+- No new capability — a reliability fix. The compaction-recovery watchdog no longer interrupts a session that is still actively working; it stands down instead of forcing a resume nudge.
+
+## Evidence
+
+- `tests/unit/CompactionSentinel.test.ts` — 24/24 pass. Updated the old "caps defers then forces an inject" test to assert STAND-DOWN, and added a dedicated regression test that fails if a still-working session is ever force-injected again.
+- `npx tsc --noEmit` clean.
+- Root cause evidenced in `logs/sentinel-events.jsonl`: `"resume nudge injected via internal recovery channel"` + `"no jsonl growth after 6 attempts"`.

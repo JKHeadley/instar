@@ -325,20 +325,47 @@ export class CompactionSentinel extends EventEmitter {
   }
 
   /**
-   * If the session is actively working (mid-turn) and we haven't exhausted the
-   * defer budget, record a defer, schedule another verify window WITHOUT
-   * injecting, and return true (the caller must return). Otherwise return false
-   * and let the caller proceed with its normal inject/retry/fail path.
+   * If the session is actively working (mid-turn): if we haven't exhausted the
+   * defer budget, record a defer, schedule another verify window WITHOUT injecting,
+   * and return true (the caller must return). If we HAVE exhausted the budget but
+   * the session is STILL working, STAND DOWN (finalize self-recovered, no inject)
+   * and return true — never force a resume nudge into a live, working session.
+   * Only when the session is NOT actively working do we return false and let the
+   * caller proceed with its normal inject/retry/fail path.
    *
    * This is the heart of the busy-session guard: a long extended-think on a
    * large context emits nothing to the JSONL until the turn lands, so the
    * no-growth check would otherwise read it as "stuck" and re-inject — burying
-   * the user's real message. Deferring waits it out instead, and the cap means
-   * a genuinely-hung "working" footer still gets a forced inject eventually.
+   * the user's real message. Deferring waits it out; and crucially, exhausting the
+   * defer budget on a session that is STILL working is NOT a license to interrupt
+   * it — we stand down. (A footer that FALSELY shows "working" while truly hung is
+   * the frozen-frame silence/wedge sentinels' job, not this recovery path's.)
    */
   private deferForActiveWork(state: RecoveryState): boolean {
     if (!this.deps.isActivelyWorking?.(state.sessionName)) return false;
-    if (state.workingDefers >= this.cfg.maxWorkingDefers) return false;
+    // maxWorkingDefers === 0 is the explicit opt-out: "disable the working-guard,
+    // inject immediately even while working." Preserve it — proceed to inject.
+    if (this.cfg.maxWorkingDefers === 0) return false;
+    if (state.workingDefers >= this.cfg.maxWorkingDefers) {
+      // Defer budget exhausted, but the live frame STILL shows active work. Do NOT
+      // force-inject: that would trample a genuinely-working session, which is the
+      // recurring mid-turn "[Request interrupted by user]" on long autonomous
+      // sessions that compact periodically (2026-06-18, topic 13481). A session that
+      // is demonstrably alive AND working has already recovered from the compaction
+      // on its own — a resume nudge here only interrupts its live turn. So STAND
+      // DOWN. (The opposite case — a session whose footer FALSELY shows "working"
+      // while actually hung — is the job of the frozen-frame silence/wedge sentinels,
+      // not this compaction-recovery path; this path's only safe action on a working
+      // session is to wait, never to interrupt.)
+      console.log(
+        `[Sentinel] "${state.sessionName}" still actively working after ` +
+        `${state.workingDefers} defers — standing down, NOT forcing an inject ` +
+        `(session is alive + working; no resume nudge needed)`,
+      );
+      this.emit('compaction:recovered', { ...state });
+      this.finalize(state, 'recovered');
+      return true;
+    }
 
     state.workingDefers += 1;
     state.status = 'deferring';
