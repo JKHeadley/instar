@@ -79,7 +79,7 @@ describe('Subscriptions tab controller (integration)', () => {
 
   it('renders both panes from the two endpoints', async () => {
     fx.script['/subscription-pool'] = { body: ACCOUNTS_OK };
-    fx.script['/subscription-pool/pending-logins'] = { body: PENDING_OK };
+    fx.script['/subscription-pool/pending-logins?scope=pool'] = { body: PENDING_OK };
     const c = ctl();
     c._state.active = true;
     await c.tick();
@@ -90,7 +90,7 @@ describe('Subscriptions tab controller (integration)', () => {
 
   it('feature-dark (both enabled:false) → the disabled copy, no crash', async () => {
     fx.script['/subscription-pool'] = { body: { enabled: false, accounts: [] } };
-    fx.script['/subscription-pool/pending-logins'] = { body: { enabled: false, logins: [] } };
+    fx.script['/subscription-pool/pending-logins?scope=pool'] = { body: { enabled: false, logins: [] } };
     const c = ctl();
     c._state.active = true;
     await c.tick();
@@ -99,7 +99,7 @@ describe('Subscriptions tab controller (integration)', () => {
 
   it('XSS payload in a nickname never becomes an element through the controller', async () => {
     fx.script['/subscription-pool'] = { body: { enabled: true, accounts: [{ id: 'x', nickname: '<script>alert(1)</script>', provider: 'anthropic', framework: 'claude-code', status: 'active' }] } };
-    fx.script['/subscription-pool/pending-logins'] = { body: PENDING_OK };
+    fx.script['/subscription-pool/pending-logins?scope=pool'] = { body: PENDING_OK };
     const c = ctl();
     c._state.active = true;
     await c.tick();
@@ -109,7 +109,7 @@ describe('Subscriptions tab controller (integration)', () => {
 
   it('a fetch failure drops the tick without throwing + reschedules', async () => {
     fx.script['/subscription-pool'] = { throw: true };
-    fx.script['/subscription-pool/pending-logins'] = { body: PENDING_OK };
+    fx.script['/subscription-pool/pending-logins?scope=pool'] = { body: PENDING_OK };
     const c = ctl();
     c._state.active = true;
     await expect(c.tick()).resolves.toBeUndefined();
@@ -119,7 +119,7 @@ describe('Subscriptions tab controller (integration)', () => {
 
   it('visibility gating: hidden stops the timer + aborts in-flight; visible re-arms', async () => {
     fx.script['/subscription-pool'] = { body: ACCOUNTS_OK };
-    fx.script['/subscription-pool/pending-logins'] = { body: PENDING_OK };
+    fx.script['/subscription-pool/pending-logins?scope=pool'] = { body: PENDING_OK };
     const c = ctl();
     c.start();
     await flush();

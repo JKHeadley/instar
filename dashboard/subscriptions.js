@@ -291,7 +291,9 @@ export function renderDisabled(doc, els) {
 // ── Controller (fetch /subscription-pool + /pending-logins, render) ─────────
 const URLS = {
   accounts: '/subscription-pool',
-  pending: '/subscription-pool/pending-logins',
+  // scope=pool so a follow-me login created on ANOTHER machine (e.g. the Mac Mini) surfaces on the
+  // operator's single dashboard (WS5.2 seam #3) — without it the device-code link never appears here.
+  pending: '/subscription-pool/pending-logins?scope=pool',
   inUse: '/subscription-pool/in-use',
   scan: '/subscription-pool/follow-me/scan', // POST — follow-me consent offers (one-tap card)
   issue: '/mandate/issue-for-machine',       // POST (PIN-gated) — Approve issues the mandate
