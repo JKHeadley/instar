@@ -293,6 +293,8 @@ const URLS = {
   accounts: '/subscription-pool',
   pending: '/subscription-pool/pending-logins',
   inUse: '/subscription-pool/in-use',
+  scan: '/subscription-pool/follow-me/scan', // POST — follow-me consent offers (one-tap card)
+  issue: '/mandate/issue-for-machine',       // POST (PIN-gated) — Approve issues the mandate
 };
 
 export function createController(opts) {
@@ -306,7 +308,7 @@ export function createController(opts) {
     cancel = (id) => clearTimeout(id),
   } = opts;
 
-  const state = { timerId: null, active: false, inFlight: null };
+  const state = { timerId: null, active: false, inFlight: null, offers: [], approveWired: false };
 
   async function fetchJson(url, controller) {
     const resp = await fetchImpl(url, { signal: controller.signal });
@@ -314,19 +316,34 @@ export function createController(opts) {
     return resp.json();
   }
 
+  // POST helper (follow-me scan + the PIN-gated issue both POST). Best-effort callers
+  // catch their own failures so a follow-me hiccup never blanks the accounts list.
+  async function postJson(url, body, controller) {
+    const resp = await fetchImpl(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: body == null ? undefined : JSON.stringify(body),
+      signal: controller && controller.signal,
+    });
+    let json = null;
+    try { json = await resp.json(); } catch { /* may be empty */ }
+    return { ok: resp.ok, status: resp.status, json };
+  }
+
   async function tick() {
     if (!state.active) return;
     if (state.inFlight) { try { state.inFlight.abort(); } catch { /* superseded */ } }
     const controller = typeof AbortController !== 'undefined' ? new AbortController() : { signal: undefined, abort() {} };
     state.inFlight = controller;
-    let accountsBody, pendingBody, inUseBody;
+    let accountsBody, pendingBody, inUseBody, scanBody;
     try {
-      // in-use is best-effort — its failure must not blank the accounts list, so
-      // it's caught independently and degrades to "unknown" (no badge).
-      [accountsBody, pendingBody, inUseBody] = await Promise.all([
+      // in-use AND the follow-me scan are best-effort — their failure must not blank the
+      // accounts list, so each is caught independently (in-use → "unknown"; scan → no card).
+      [accountsBody, pendingBody, inUseBody, scanBody] = await Promise.all([
         fetchJson(URLS.accounts, controller),
         fetchJson(URLS.pending, controller),
         fetchJson(URLS.inUse, controller).catch(() => null),
+        postJson(URLS.scan, {}, controller).then((r) => (r.ok ? r.json : null)).catch(() => null),
       ]);
     } catch {
       if (controller.signal && controller.signal.aborted) return;
@@ -342,6 +359,7 @@ export function createController(opts) {
       reschedule();
       return;
     }
+    state.offers = scanBody && Array.isArray(scanBody.offered) ? scanBody.offered : [];
     render(accountsBody, pendingBody, inUseBody);
     reschedule();
   }
@@ -352,6 +370,56 @@ export function createController(opts) {
     const inUseAccountId = inUseBody && inUseBody.activeAccountId ? inUseBody.activeAccountId : null;
     renderAccounts(doc, els.accounts, accounts, now(), inUseAccountId);
     renderPendingLogins(doc, els.pending, logins, now());
+    // The one-tap follow-me Approve card(s) — rendered into els.followMe from the scan offers
+    // (ws52-operator-tap-not-text Part A). Silent when there are none. The Approve click is wired
+    // once (delegated) so re-renders never stack listeners.
+    if (els.followMe) {
+      renderFollowMeOffers(doc, els.followMe, state.offers);
+      wireApprove();
+    }
+  }
+
+  // Delegated, wired ONCE: an Approve tap reads the card's PIN, builds the issue-for-machine
+  // payload from the held offers (FD2 agents resolved server-side — never typed), and POSTs the
+  // PIN-gated mandate. The card carries only non-sensitive ids; the PIN is sent once, never stored.
+  function wireApprove() {
+    if (state.approveWired || !els.followMe) return;
+    state.approveWired = true;
+    els.followMe.addEventListener('click', (ev) => {
+      const btn = ev.target && ev.target.closest ? ev.target.closest('[data-followme-approve]') : null;
+      if (!btn || !els.followMe.contains(btn)) return;
+      const card = btn.closest('.sub-followme-offer');
+      if (!card) return;
+      const pinInput = card.querySelector('.sub-followme-pin');
+      const pinVal = pinInput ? pinInput.value : '';
+      const payload = buildFollowMeIssuePayload(card, state.offers, pinVal);
+      if (payload === null) { setCardStatus(card, 'Couldn’t prepare this request — please refresh.'); return; }
+      if (payload.error === 'pin-required') { setCardStatus(card, 'Enter your PIN to approve.'); return; }
+      setCardStatus(card, 'Approving…');
+      btn.setAttribute('disabled', '1');
+      void (async () => {
+        try {
+          const r = await postJson(URLS.issue, payload);
+          if (r.ok) {
+            setCardStatus(card, 'Approved — the machine is logging in now. Watch the “Logins waiting” panel below for the link to tap.');
+            if (pinInput) pinInput.value = '';
+          } else {
+            const msg = r.json && (r.json.error || r.json.reason) ? (r.json.error || r.json.reason) : `failed (${r.status})`;
+            setCardStatus(card, `Couldn’t approve: ${msg}`);
+            btn.removeAttribute('disabled');
+          }
+        } catch (e) {
+          setCardStatus(card, 'Couldn’t reach the server — try again.');
+          btn.removeAttribute('disabled');
+        }
+      })();
+    });
+  }
+
+  function setCardStatus(card, text) {
+    let s = card.querySelector('.sub-followme-status');
+    if (!s) { s = el(doc, 'div', 'sub-followme-status', ''); card.appendChild(s); }
+    s.textContent = text;
   }
 
   function reschedule() {
@@ -373,5 +441,8 @@ export function createController(opts) {
 }
 
 if (typeof window !== 'undefined') {
-  window.Subscriptions = { createController, sanitizeForDisplay, renderAccounts, renderPendingLogins };
+  window.Subscriptions = {
+    createController, sanitizeForDisplay, renderAccounts, renderPendingLogins,
+    renderFollowMeOffers, renderFollowMeApproveCard, buildFollowMeIssuePayload,
+  };
 }

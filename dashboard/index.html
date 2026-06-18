@@ -3397,6 +3397,10 @@
     <div id="subscriptionsPanel" class="ph-root" style="display:none;flex-direction:column;padding:28px;gap:24px;overflow-y:auto">
       <h2 class="ph-title">Subscriptions</h2>
       <p class="ph-intro">Your subscription accounts and how much of each is left before it resets — plus any logins waiting for you to approve on your phone.</p>
+      <!-- One-tap follow-me Approve card(s) — rendered only when another machine could use one of
+           your subscriptions (ws52-operator-tap-not-text Part A). Leads the panel as the primary
+           action when present; silent otherwise. -->
+      <div id="subFollowMe"></div>
       <section class="ph-section">
         <h3 class="ph-h">Accounts</h3>
         <p class="ph-h-sub">Each account’s live usage (5-hour and weekly) and when it resets.</p>
@@ -3429,6 +3433,14 @@
         <h3 class="ph-h">Issued mandates</h3>
         <div id="mndList"></div>
       </section>
+      <!-- operator-surface-power-user: this dashboard file contains DELIBERATELY-ADVANCED,
+           non-default surfaces that necessarily take raw technical values — the collapsed
+           "Advanced — author a mandate by hand" mandate form below (raw agent fingerprints +
+           the authorities the agents may use) and the Threadline bridge fingerprint/name inputs.
+           These are NOT the default operator path: account-follow-me is the one-tap Approve card
+           (Subscriptions tab) and general grants go through the Agent-Proposes/Operator-Approves
+           approval surface. (Marker is file-level by the gate's design; granular per-region marking
+           + redesigning this legacy raw form to a builder are tracked follow-ups.) -->
       <details class="ph-detail" id="mndIssueDetails">
         <summary class="ph-detail-summary">Advanced — author a mandate by hand (PIN required)</summary>
         <div class="mnd-issue-form">
@@ -9144,10 +9156,13 @@
         const els = {
           accounts: document.getElementById('subAccounts'),
           pending: document.getElementById('subPending'),
+          followMe: document.getElementById('subFollowMe'),
         };
+        // Pass opts through (method/body/signal) so the controller can POST the follow-me
+        // scan + the PIN-gated issue-for-machine, not just GET.
         const fetchImpl = (url, opts = {}) => fetch(url, {
+          ...opts,
           headers: { 'Authorization': `Bearer ${token}`, ...(opts.headers || {}) },
-          signal: opts.signal,
         });
         __subController = __subModule.createController({ doc: document, els, fetchImpl });
       }
