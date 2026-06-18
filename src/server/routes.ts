@@ -21082,7 +21082,22 @@ export function createRoutes(ctx: RouteContext): Router {
         },
       });
       const { offered } = svc.scanAndOffer();
-      res.json({ enabled: true, offered });
+      // Enrich each consent offer for the one-tap Approve card (ws52-operator-tap-not-text Part A +
+      // FD2). The card reads machineNickname / accountLabel / expiryText and the FD2 `agents` pair —
+      // ALL resolved SERVER-SIDE so the operator never types a fingerprint or a JSON authority. The
+      // agents pair is this Echo identity's routing fingerprint (issuer === target identity: the same
+      // agent following its own account onto another machine); the cross-machine enroll authorization
+      // (R4a delivered-mandate path) gates on the mandate's exact bounds + issuance signature, not on
+      // this pair, and issue-for-machine only requires a valid two-fingerprint pair.
+      const localFp = resolveAgentFingerprint(ctx);
+      const enriched = offered.map((o) => ({
+        ...o,
+        machineNickname: o.targetMachineNickname,
+        accountLabel: o.accountEmail || o.accountId,
+        expiryText: 'Authorizes this one setup, then expires (1 hour).',
+        agents: [localFp, localFp] as [string, string],
+      }));
+      res.json({ enabled: true, offered: enriched });
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : 'follow-me scan failed' });
     }
