@@ -3455,10 +3455,15 @@ export class AgentServer {
         // point-of-use mandate re-verify). Inert when there's no delivered-mandate
         // store. Boot-sweep is delayed a few seconds so routes are fully wired.
         if (this.deliveredMandateStore) {
-          setTimeout(() => { void this.driveDeliveredFollowMeEnrollments(); }, 8_000);
+          // .unref() both timers so they NEVER keep the event loop alive — otherwise a
+          // test (or any short-lived boot) that constructs AgentServer hangs waiting for
+          // these handles to drain (the CI shard-4/4 hang). Matches the sibling pollers.
+          const bootSweep = setTimeout(() => { void this.driveDeliveredFollowMeEnrollments(); }, 8_000);
+          if (typeof bootSweep.unref === 'function') bootSweep.unref();
           this.followMeConsumerTimer = setInterval(() => {
             void this.driveDeliveredFollowMeEnrollments();
           }, 60_000);
+          if (typeof this.followMeConsumerTimer.unref === 'function') this.followMeConsumerTimer.unref();
         }
 
         // ── Token Ledger Poller ─────────────────────────────────────────
@@ -3670,8 +3675,8 @@ export class AgentServer {
       const handled = new Set<string>();
       try {
         const [pl, sp] = await Promise.all([
-          fetch(`${base}/subscription-pool/pending-logins`, { headers: authHeader }).then((r) => (r.ok ? r.json() : null)).catch(() => null),
-          fetch(`${base}/subscription-pool`, { headers: authHeader }).then((r) => (r.ok ? r.json() : null)).catch(() => null),
+          fetch(`${base}/subscription-pool/pending-logins`, { headers: authHeader, signal: AbortSignal.timeout(5000) }).then((r) => (r.ok ? r.json() : null)).catch(() => null),
+          fetch(`${base}/subscription-pool`, { headers: authHeader, signal: AbortSignal.timeout(5000) }).then((r) => (r.ok ? r.json() : null)).catch(() => null),
         ]) as [{ logins?: Array<{ id?: string }> } | null, { accounts?: Array<{ id?: string }> } | null];
         for (const l of pl?.logins ?? []) if (l?.id) handled.add(l.id);
         for (const a of sp?.accounts ?? []) if (a?.id) handled.add(a.id);
@@ -3686,6 +3691,9 @@ export class AgentServer {
             method: 'POST',
             headers: { ...authHeader, 'Content-Type': 'application/json' },
             body: JSON.stringify({ mandateId: rec.id, accountId }),
+            // Generous bound (the device-code drive legitimately runs up to ~180s) but never
+            // unbounded — so a wedged drive can't hang the loop / a test process.
+            signal: AbortSignal.timeout(200_000),
           });
           const ok = resp.ok;
           console.log(`[follow-me-consumer] drove enroll-start for ${accountId} (mandate ${rec.id}) → ${resp.status}${ok ? '' : ' (will retry next tick)'}`);

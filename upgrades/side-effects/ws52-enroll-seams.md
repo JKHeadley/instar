@@ -65,3 +65,7 @@ Verified all 5 review points against real code (cited file:line): (1) consumer i
 ## Follow-up (CI fix, 2026-06-18)
 
 CI surfaced two real issues from seam #3, both fixed: (1) the `?scope=pool` branch hardcoded `enabled:true`, which broke the dashboard's feature-dark detection (it needs `pending.enabled===false` alongside accounts) — now it mirrors local pool presence (`enabled: !!ctx.enrollmentWizard`), so a dark machine still reads disabled even while forwarding peers' logins; (2) the `subscriptions-tab` integration-test fetch mocks keyed the old `/subscription-pool/pending-logins` URL, but the controller now fetches `?scope=pool` — updated the mock keys. Verified: subscriptions-tab (5) + subscriptions-tab-lifecycle e2e (2) + pending-logins-pool-merge (3) + follow-me-controller-wiring (4) green; tsc clean.
+
+## Follow-up (CI hang fix, 2026-06-18)
+
+CI shard 4/4 hung ~1h46m — root cause in this change: the seam #1 consumer's `setTimeout` (boot-sweep) + `setInterval` (60s tick) in AgentServer were NOT `.unref()`'d, so a test that boots AgentServer kept the event loop alive (vitest hangs on the open handle). Fixed: `.unref()` both timers (matches the sibling pollers), and added `AbortSignal.timeout` to the consumer's self-fetches (5s on the idempotency reads, 200s on the enroll-start drive) so a wedged fetch can't hold the loop either. tsc clean.
