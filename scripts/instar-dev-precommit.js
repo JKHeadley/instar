@@ -32,7 +32,7 @@ import { checkEli16Overview, MIN_ELI16_CHARS } from './eli16-overview-check.mjs'
 import { verifyProposalDerivedRunbooks } from '../skills/instar-dev/scripts/verify-proposal-derived-runbook.mjs';
 import { classifyTier, decideRequirementSet } from './lib/classify-tier.mjs';
 import { recognizeConvergence } from './lib/convergence-recognition.mjs';
-import { isOperatorSurfaceFile, artifactAddressesOperatorSurfaceQuality, isAuthorizationSurfaceFile, artifactAddressesAgentProposesApproves } from './lib/operator-surface.mjs';
+import { isOperatorSurfaceFile, artifactAddressesOperatorSurfaceQuality, isAuthorizationSurfaceFile, artifactAddressesAgentProposesApproves, operatorSurfaceRequiresRawInput } from './lib/operator-surface.mjs';
 
 // Report-Backed Converging Audit (docs/specs/CONVERGING-AUDIT-DEFAULT.md, Part B).
 // The precommit reads NO config file and runs pre-compile, so it cannot import
@@ -995,6 +995,43 @@ function assertOperatorSurfaceQuality(stagedFiles, trace) {
         '  (Standard: docs/STANDARDS-REGISTRY.md → "Agent Proposes, Operator Approves".)',
       ].join('\n'),
     );
+  }
+  // "Operators Act in Taps, Not Text" clause (ws52-operator-tap-not-text, Part C arm 1).
+  // MECHANICAL upgrade of §6b from prose-attestation to a real inspection of the
+  // SURFACE FILE: an operator surface must never require the operator to paste raw
+  // technical text (a JSON template in a textarea, an input labelled for a
+  // fingerprint/token/base64/curl, or instructions to paste/author such text). The
+  // 2026-06-13 raw-JSON mandate-form passed the prose gate; it must not pass this one.
+  // Opt out ONLY with the explicit, co-located power-user marker (and that surface
+  // must provably never be the default operator path — verified in review).
+  for (const surface of touched) {
+    const abs = path.resolve(ROOT, surface);
+    if (!fs.existsSync(abs)) continue;
+    const surfaceContent = fs.readFileSync(abs, 'utf8');
+    const verdict = operatorSurfaceRequiresRawInput(surfaceContent);
+    if (verdict.requiresRawInput && !verdict.hasPowerUserMarker) {
+      blockCommit(
+        [surface],
+        [
+          'Operators-Act-in-Taps-Not-Text gate:',
+          `  ${surface} is an operator surface that REQUIRES the operator to paste/enter`,
+          '  raw or technical text — a developer action, not an operator action:',
+          ...verdict.reasons.map((r) => `    • ${r}`),
+          '',
+          '  Operators act in taps and plain-language choices; the UI must assemble any',
+          '  structured data (JSON, fingerprints, IDs) from those taps. A flow needing raw',
+          '  technical input is finished for an engineer, not its user (operator feedback,',
+          '  2026-06-17; the 2026-06-13 raw-JSON mandate-form regression).',
+          '',
+          '  Fix: build the one-tap/selection surface so the operator never sees raw text.',
+          '  If this is GENUINELY a power-user surface that is never the default operator',
+          '  path, mark it explicitly and co-located:',
+          '    /* operator-surface-power-user: <why this is never the default path> */',
+          '  (Standard: docs/STANDARDS-REGISTRY.md → "Operator-Surface Quality" →',
+          '  "Operators Act in Taps, Not Text" clause.)',
+        ].join('\n'),
+      );
+    }
   }
 }
 

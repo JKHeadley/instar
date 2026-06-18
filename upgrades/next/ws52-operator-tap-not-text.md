@@ -1,0 +1,31 @@
+<!-- slug: ws52-operator-tap-not-text -->
+<!-- bump: minor -->
+
+## What Changed
+
+Completes the operator-facing half of WS5.2 Account Follow-Me and makes the experience a single tap. Previously, approving an account-follow-me mandate required the Mandates tab's "Advanced — author by hand" form (pasting a raw JSON authorities blob + agent fingerprints), and a delivered mandate then sat inert because nothing drove enrollment to start.
+
+This adds:
+- **One-tap Approve card** (Subscriptions tab): a plain-language card ("Let *machine* use your *account* subscription") with an Approve button + PIN — no JSON, no fingerprints. The UI assembles all structured data from the tap.
+- **The delivery→enroll connector**: after approval the target machine re-verifies the mandate at point-of-use (revocation/expiry/bounds, fail-closed), claims a durable single-flight slot (no double-mint), drives its own re-mint login, and surfaces the device-code login link to the operator via the fronting machine — with a no-silent-stall guarantee (exactly one operator message per outcome, including failures).
+- **"Operators act in taps, not text" enforcement** (a named clause of the Operator-Surface Quality standard): a build-time mechanical check that blocks any new operator surface requiring raw/technical input, plus a runtime observe-only signal that flags an outbound message asking the operator to paste JSON or run a multi-step technical flow.
+
+All shipped dark on the fleet / live on the development agent (the existing account-follow-me dev gate); single-machine installs are a no-op.
+
+## What to Tell Your User
+
+When one of your machines needs to use an account that's logged in on another, you'll now get a simple card on the Subscriptions tab: "Let this machine use your account — Approve," with a PIN box. Tap Approve, type your PIN, and the other machine logs itself in (you tap one normal login link on your phone). No copying codes, no JSON, no fingerprints. And going forward, the system structurally refuses to ship any operator screen that would make you paste raw technical text — approving is your job, not data entry.
+
+## Summary of New Capabilities
+
+- **One-tap account-follow-me approval** on the Subscriptions dashboard tab (no raw JSON/fingerprints).
+- **Automatic cross-machine enrollment** after approval — the target machine re-mints its own login and sends you a single tappable login link; restart-safe and idempotent (no double-enroll).
+- **"Operators act in taps, not text" standard**, mechanically enforced at build time + signalled at runtime, so future operator surfaces can't regress into developer chores.
+
+## Evidence
+
+- `npx tsc --noEmit` clean (full worktree).
+- 78 unit tests across 9 files pass: operator-surface gate (20), single-flight (11), point-of-use re-verify (8), operator outbox (7), raw-text detector (9), connector orchestration (7), approve card (6), issue payload (5), consumer sweep (5).
+- Converged spec (3 rounds, cross-model codex gpt-5.5 + gemini-2.5-pro, both endorsed) + operator-approved.
+- Phase-5 second-pass review: CONCUR (independent audit of signal-vs-authority, fail-closed enrollment, no-silent-stall, leakage, multi-machine posture).
+- Side-effects review: `upgrades/side-effects/ws52-operator-tap-not-text.md`.
