@@ -14,7 +14,7 @@
 // existing-agent migration there) so the two can never drift. Imported as a runtime
 // function call inside generateClaudeMd — no module-init cycle (PostUpdateMigrator
 // never imports templates).
-import { PLAYWRIGHT_PROFILE_REGISTRY_CLAUDEMD_SECTION } from '../core/PostUpdateMigrator.js';
+import { PLAYWRIGHT_PROFILE_REGISTRY_CLAUDEMD_SECTION, MACHINE_LOAD_ASSESSMENT_CLAUDEMD_SECTION } from '../core/PostUpdateMigrator.js';
 
 export interface AgentIdentity {
   name: string;
@@ -828,6 +828,7 @@ I declare owner/blockedOn at commitment creation; a later state change goes thro
 - **The autonomous balancer surface** — \`GET /credentials/rebalancer\` (the use-it-or-lose-it drainer is Increment B; this surfaces the env-token applicability gate's verdict + WHY re-pointing would refuse, when enabled).
 - **When to use** (PROACTIVE — these are the triggers): "flip my default account to X" / "make X my default" → \`POST /credentials/set-default\`; "which account is this session/slot on?" / "where does ~/.claude point?" → \`GET /credentials/locations\` (read it, don't infer from \`claude auth status\` — that reads a metadata file, not the live credential). Single-account agents are a no-op. (Spec: \`docs/specs/live-credential-repointing-rebalancer.md\`.)
 ${PLAYWRIGHT_PROFILE_REGISTRY_CLAUDEMD_SECTION(port)}
+${MACHINE_LOAD_ASSESSMENT_CLAUDEMD_SECTION()}
 **Per-Feature LLM Metrics & LLM Activity (Observable Intelligence)** — Audit what each of your LLM-driven gates/sentinels actually does: WHICH provider + model ran it, how often it ACTED (fired) vs found nothing (noop), how often it was skipped to save rate limits (shed), cost, and latency. This is the *Observable Intelligence* standard — no autonomous AI action the system takes is allowed to be invisible. Read-only observability — it never gates anything.
 - Check: \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/metrics/features?sinceHours=24"\`
 - Returns \`{ totals, features: [{ feature, frameworks, models, byModel, calls, realCalls, tokensIn, tokensOut, tokensCached, fired, noop, shed, fireRate, p50LatencyMs, p95LatencyMs, ... }] }\` — one row per system (e.g. MessagingToneGate, MessageSentinel). \`frameworks\`/\`models\` = which provider(s) actually served the call; \`fireRate\` = how often it acts; \`shed\` = skipped by the rate-limit guard. Filter with \`?feature=<name>\`.

@@ -74,6 +74,16 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
  * template var — NEVER a hardcoded port. Content-sniff marker: 'Playwright Profile
  * Registry'. Spec: docs/specs/playwright-profile-registry.md.
  */
+export function MACHINE_LOAD_ASSESSMENT_CLAUDEMD_SECTION(): string {
+  return `\n### Machine Load Assessment (the go-to way to check if the machine is busy)
+
+Before deferring work because the machine "looks loaded," RUN \`.instar/scripts/load-assess.sh\` (\`--json\` to parse). It is the durable, structural answer to "is this machine genuinely busy, or free to work?" — and it exists because \`uptime\`'s 1-minute load average is the WRONG signal: it is spike-prone AND on macOS inflated by threads stuck in disk I/O (e.g. Spotlight/mds reindex after a cold boot), so a high load average can coexist with a mostly-idle CPU.
+- The script reports the RIGHT signals: real CPU idle% (sampled), instar's time-windowed ResourceLedger (agent-attributed CPU avg/peak over the last hour), per-core load, and WHAT is consuming CPU (agent-work vs external-transient like Spotlight) — then a verdict (OK / ELEVATED / SATURATED).
+- **Scope honesty:** the verdict is CPU-capacity only — it does NOT assess memory/swap/thermal/disk-IO, so \`OK\` means "CPU has headroom," not "everything is fine."
+- **NEVER** judge load from \`uptime\` 1-min load average alone — quote the script's verdict + real idle%, never the load average. (This rule exists because that exact misread caused a false "heavy load" deferral on 2026-06-19.)
+- **When to use** (PROACTIVE — this is the trigger): the moment you catch yourself about to hold off on work, fan out parallel sub-agents, or report "the machine is loaded" → run \`load-assess.sh\` and act on its verdict, not on a load-average glance.\n`;
+}
+
 export function PLAYWRIGHT_PROFILE_REGISTRY_CLAUDEMD_SECTION(port: number): string {
   return `\n### Playwright Profile Registry (which browser profile holds which account)
 
@@ -4005,6 +4015,16 @@ setTimeout(() => process.exit(0), 2000);
       result.upgraded.push('CLAUDE.md: added Playwright Profile Registry section');
     }
 
+    // Machine Load Assessment (CMT-1703, spec robust-load-assessment-fleet) — Agent
+    // Awareness Standard + Migration Parity: existing agents learn the load-assess.sh
+    // go-to method + the "never trust uptime load average" rule via this appended
+    // section. Same text as generateClaudeMd. Content-sniff keeps it idempotent.
+    if (!content.includes('Machine Load Assessment')) {
+      content += MACHINE_LOAD_ASSESSMENT_CLAUDEMD_SECTION();
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Machine Load Assessment section');
+    }
+
     // The Agent Carries the Loop (agent-owned-followthrough C1+C2) — agent
     // awareness for the owner⟂blockedOn commitment model + the probe + that the
     // user is never status-pinged for an agent-owned commitment. Content-sniffed.
@@ -7338,6 +7358,25 @@ Create worktrees for collaborator repos with \`instar worktree create <branch>\`
       result.errors.push(`secret-get.mjs: ${err instanceof Error ? err.message : String(err)}`);
     }
 
+    // Machine-load assessment helper — always overwrite (CMT-1703, spec
+    // robust-load-assessment-fleet). The go-to method for evaluating machine load
+    // (real CPU idle% + time-windowed ResourceLedger + a verdict), so an agent
+    // never misreads the spike-prone, I/O-inflated `uptime` load average as "heavy
+    // load." The session-start hook block points at this script.
+    try {
+      const loadAssessContent = this.loadRelayTemplate('load-assess.sh');
+      if (loadAssessContent) {
+        fs.writeFileSync(
+          path.join(instarScriptsDir, 'load-assess.sh'),
+          loadAssessContent,
+          { mode: 0o755 },
+        );
+        result.upgraded.push('scripts/load-assess.sh (robust machine-load assessment)');
+      }
+    } catch (err) {
+      result.errors.push(`load-assess.sh: ${err instanceof Error ? err.message : String(err)}`);
+    }
+
     // Session-clock injector — always overwrite. New, non-customizable shared
     // routine (docs/specs/ROBUST-SESSION-TIME-AWARENESS-SPEC.md Component 2):
     // renders the SESSION CLOCK line (render mode for the autonomous-stop-hook,
@@ -8923,6 +8962,15 @@ exit 0
 # On compact: delegates to compaction-recovery.sh for full injection
 INSTAR_DIR="\${CLAUDE_PROJECT_DIR:-.}/.instar"
 EVENT="\${CLAUDE_HOOK_MATCHER:-startup}"
+
+# Machine-load assessment awareness (CMT-1703) — placed ABOVE the compact delegate
+# so it is emitted on EVERY event INCLUDING compact (this stdout flushes before the
+# 'exec' below replaces the process). This is what makes it survive compaction.
+echo "--- MACHINE LOAD ---"
+echo "To assess machine load, run .instar/scripts/load-assess.sh (--json to parse)."
+echo "NEVER judge load from 'uptime' 1-min load average — spike-prone AND on macOS inflated by"
+echo "Spotlight/mds disk I/O, so a high load average can coexist with a mostly-idle CPU."
+echo ""
 
 # On compaction, delegate to the dedicated recovery hook
 if [ "\$EVENT" = "compact" ]; then

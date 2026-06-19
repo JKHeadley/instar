@@ -1,0 +1,18 @@
+## What Changed
+
+Added `load-assess.sh` — a robust, durable, go-to method for an agent to evaluate machine load — and shipped it fleet-wide. It reports the RIGHT signals (real CPU idle% sampled, instar's time-windowed ResourceLedger agent-CPU, per-core load, and what's actually consuming CPU) and emits a verdict (OK / ELEVATED / SATURATED), instead of the spike-prone, macOS-Spotlight-I/O-inflated `uptime` 1-minute load average. A static "use load-assess.sh, never trust the load average" reminder is wired into the session-start hook ABOVE its compact-`exec` delegate, so it survives compaction (not just session start), and a Machine Load Assessment section is added to the CLAUDE.md template (generate + migrate) so every agent knows the capability exists.
+
+## Evidence
+
+- 14 new tests pass: verdict thresholds (both sides of each boundary via a `LOAD_ASSESS_FORCE_IDLE` test seam), `--json` contract, fail-soft when the ResourceLedger is unreachable, the compaction-survival property (`blockIdx < execIdx` in `getSessionStartHook()`), `migrateScripts` install (always-overwrite, executable), and `migrateClaudeMd` idempotent append.
+- 568 existing PostUpdateMigrator + scaffold tests still green (no regression).
+- Independent second-pass review (touches compaction) concurred after live simulation — bash builtin `echo` writes directly to fd 1, so the awareness block's stdout reaches the captured output before the process-replacing `exec` on the compact path.
+- Spec converged through `/spec-converge` (2 rounds, `cross-model-review: codex-cli:gpt-5.5`); the review caught two critical bugs in the first draft (editing a dead template file; a mechanically-false compaction guarantee) before any code was written.
+
+## What to Tell Your User
+
+Your agent now judges whether the machine is genuinely busy using real CPU idle% (and its own recent CPU use), not the misleading 1-minute load average — so it won't mistake a quiet-but-disk-indexing machine for an overloaded one and unnecessarily hold off on work. It's read-only: it measures and reports, changing nothing.
+
+## Summary of New Capabilities
+
+- `.instar/scripts/load-assess.sh` (`--json` to parse) — go-to machine-load assessment with a verdict; CPU-capacity-scoped (does not assess memory/thermal). Installed on every agent on update.
