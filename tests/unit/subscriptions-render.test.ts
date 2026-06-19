@@ -171,17 +171,23 @@ describe('renderPendingLogins', () => {
     renderPendingLogins(doc, t, [], NOW);
     expect(t.querySelector('.sub-empty')).toBeTruthy();
   });
-  it('renders code + url-as-text + TTL + reissue count; never a live href', () => {
+  it('renders a tap-simple card: headline + a "Sign in" link to the trusted provider URL + code + TTL (no reissue noise)', () => {
     const t = el();
     renderPendingLogins(doc, t, [{
       id: 'codex-1', label: 'codex', kind: 'device-code', userCode: '7DAU-W4XJA',
       verificationUrl: 'https://auth.openai.com/codex/device', ttlExpiresAt: '2026-06-07T00:12:00Z', reissueCount: 2,
     }], NOW);
+    expect(t.querySelector('.sub-pending-headline')!.textContent).toContain('Sign in to finish setting up');
+    // A trusted provider host (auth.openai.com) → a real tappable "Sign in" link.
+    const a = t.querySelector('a.sub-pending-signin');
+    expect(a).toBeTruthy();
+    expect(a!.getAttribute('href')).toBe('https://auth.openai.com/codex/device');
+    expect(a!.getAttribute('rel')).toContain('noopener');
+    expect(a!.textContent).toBe('Sign in');
     expect(t.querySelector('.sub-pending-code')!.textContent).toContain('7DAU-W4XJA');
-    expect(t.querySelector('.sub-pending-url')!.textContent).toContain('auth.openai.com');
-    expect(t.querySelector('a')).toBeNull(); // URL is TEXT, never a live link
-    expect(t.querySelector('.sub-pending-ttl')!.textContent).toBe('expires in 12m');
-    expect(t.querySelector('.sub-pending-reissue')!.textContent).toContain('2 times');
+    expect(t.querySelector('.sub-pending-ttl')!.textContent).toBe('Link expires in 12m');
+    // The confusing "re-issued N times" noise is gone.
+    expect(t.querySelector('.sub-pending-reissue')).toBeNull();
   });
   it('a javascript: URL renders as inert text, not an anchor', () => {
     const t = el();

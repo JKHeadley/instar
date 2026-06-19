@@ -10686,7 +10686,19 @@ export async function startServer(options: StartOptions): Promise<void> {
             })
         : undefined,
       driveLogin: new FrameworkLoginDriver({
-        capture: async (session) => sessionManager.captureOutput(session, 120) || '',
+        // Capture with `tmux capture-pane -J` so a hard-WRAPPED verification URL is
+        // joined back into one line (the 2026-06-18 "code=t" truncation bug). Falls
+        // back to the generic capture if tmux/the -J capture is unavailable;
+        // parseArtifact ALSO de-wraps defensively.
+        capture: async (session) => {
+          const tmuxPath = detectTmuxPath();
+          if (tmuxPath) {
+            try {
+              return execFileSync(tmuxPath, ['capture-pane', '-p', '-J', '-S', '-300', '-t', `=${session}:`], { encoding: 'utf-8', timeout: 5000 }) || '';
+            } catch { /* @silent-fallback-ok — fall through to the generic capture */ }
+          }
+          return sessionManager.captureOutput(session, 120) || '';
+        },
         spawn: async ({ framework, configHome }) => {
           const tmuxPath = detectTmuxPath();
           if (!tmuxPath) throw new Error('tmux not available for enrollment login');
